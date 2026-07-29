@@ -38,7 +38,9 @@ SERVICE_RE = re.compile(
     re.I)
 ROW_RE = re.compile(r"^\|\s*[^|]*\|\s*(\d{4,})\s*\|([^|]*)\|\s*([^|]+?)\s*\|\s*([A-Z_]+)?\s*\|")
 JIRA_ROW_RE = re.compile(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|([^|]*)\|\s*([^|]+?)\s*\|")
-ID_IN_FILE_RE = re.compile(r"^\s*-\s*\*\*ID:\*\*\s*(\d{4,})", re.M)
+# page_id пишется в шапке зеркала (`page_id: 12345`); `- **ID:** 12345` — формат
+# прежнего синк-скилла, он ещё встречается в старых проектах
+ID_IN_FILE_RE = re.compile(r"^\s*(?:page_id:\s*|-\s*\*\*ID:\*\*\s*)(\d{4,})", re.M)
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
@@ -191,6 +193,26 @@ def audit_confluence(root: str, stale_days: int, out: list) -> int:
             missing.append((pid, path + "  (путь в состоянии обрезан)"))
     orphans = sorted(rel for rel in files if rel not in claimed)
 
+    # Пути, различающиеся только регистром, — это не потеря страницы, а переименование
+    # в источнике, которое не доехало до диска: файловая система macOS и Windows к
+    # регистру нечувствительна и оставляет папку под старым именем. Показывать это
+    # как MISSING и ORPHAN одновременно — врать про потерю.
+    by_ci = {rel.casefold(): rel for rel in orphans}
+    recase = []
+    for pid, path in list(missing):
+        hit = by_ci.get(path.casefold())
+        if hit:
+            recase.append((pid, hit, path))
+            missing.remove((pid, path))
+            orphans.remove(hit)
+            del by_ci[path.casefold()]
+    # то же самое, но найденное по page_id: MOVED сказал бы «перепишите состояние»,
+    # хотя переписывать нужно не состояние, а регистр папки на диске
+    for pid, path, on_disk in list(moved):
+        if path.casefold() == on_disk.casefold():
+            recase.append((pid, on_disk, path))
+            moved.remove((pid, path, on_disk))
+
     age = days_since(state_date)
     out.append(f"- зарегистрировано записей: {len(rows) + len(truncated)} "
                f"(полных путей {len(by_path)}, обрезанных — резолв по page_id: {len(truncated)}), "
@@ -202,9 +224,18 @@ def audit_confluence(root: str, stale_days: int, out: list) -> int:
         out.append(f"- ⚠️ синк пишет обрезанные пути ({len(truncated)} строк) — состояние теряет "
                    "проверяемость; синк-скилл должен писать полный путь от корня зеркала")
     out.append(f"- MISSING: **{len(missing)}** · MOVED: **{len(moved)}** · ORPHAN: **{len(orphans)}** "
-               f"· COLLISION: **{len(collisions)}**\n")
+               f"· CASE: **{len(recase)}** · COLLISION: **{len(collisions)}**\n")
 
-    problems = len(missing) + len(orphans) + len(collisions) + len(moved) + bad
+    problems = len(missing) + len(orphans) + len(collisions) + len(moved) + len(recase) + bad
+    if recase:
+        out.append(f"### CASE — путь отличается только регистром ({len(recase)})\n")
+        out.append("Страницу переименовали в источнике, а файловая система оставила папку "
+                   "под старым именем. Страница на месте, потери нет.\n")
+        for pid, on_disk, in_state in recase[:20]:
+            out.append(f"- {pid} · на диске `{on_disk}` · в состоянии `{in_state}`")
+        if len(recase) > 20:
+            out.append(f"- … ещё {len(recase) - 20}")
+        out.append("")
     if age is not None and age > stale_days:
         out.append(f"⚠️ STALE: состояние синка старше {stale_days} дней — запустите `sync:confluence`.\n")
         problems += 1
@@ -298,6 +329,7 @@ def main() -> int:
             "- ORPHAN → либо страница переименована/удалена в источнике (тогда удалить зеркало",
             "  и проверить карточки, чьи `source` на неё ссылались), либо синк не записал состояние;",
             "- MOVED → перезаписать состояние синка (файл на месте, запись устарела);",
+            "- CASE → повторить синк: с 1.17.2 он сам выправляет регистр папок;",
             "- COLLISION → страницы с именами, различающимися только регистром/гомоглифами:",
             "  переименовать зеркало и прогнать `kb_fix.py --links`.", ""]
     report = "\n".join(out)

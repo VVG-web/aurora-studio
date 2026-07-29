@@ -235,7 +235,7 @@ def load_state(out_dir: str) -> dict:
     return state
 
 
-def write_state(out_dir: str, rows: list) -> None:
+def write_state(out_dir: str, rows: list) -> dict:
     """Слить с прежним состоянием: прогон по узкому JQL не должен терять остальные задачи."""
     merged = {}
     path_state = os.path.join(out_dir, STATE)
@@ -254,6 +254,28 @@ def write_state(out_dir: str, rows: list) -> None:
     for key, updated, status, path in sorted(merged.values()):
         lines.append(f"| {key} | {updated} | {status} | {path} |")
     open(os.path.join(out_dir, STATE), "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    return merged
+
+
+# Служебные файлы синка — не задачи: промпты, шаблоны и правила прежнего синк-скилла.
+SERVICE_RE = re.compile(r"(update_log|sync_state|_prompt|_template|_example|-rules|_rules|README)",
+                        re.I)
+
+
+def stale(out_dir: str, state: dict) -> list:
+    """Файлы зеркала, за которыми нет задачи в состоянии синка.
+
+    Так в зеркале остаются следы прежних выгрузок: та же задача под старым именем
+    (`US-3.1.1.md` вместо `PRJ-327.md`) читается как живая, хотя давно не обновляется.
+    """
+    known = {row[3] for row in state.values()}
+    out = []
+    for f in sorted(os.listdir(out_dir)):
+        if not f.endswith(".md") or f == STATE or SERVICE_RE.search(f):
+            continue
+        if f not in known:
+            out.append(f)
+    return out
 
 
 def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
@@ -293,6 +315,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="ограничить число задач")
     ap.add_argument("--force", action="store_true", help="перечитать всё")
     ap.add_argument("--comments", action="store_true", help="выгружать комментарии")
+    ap.add_argument("--prune", action="store_true",
+                    help="удалить из зеркала задачи, которых нет в состоянии синка")
     ap.add_argument("--verify", action="store_true", help="гейт детерминизма: два прогона и сверка")
     a = ap.parse_args()
 
@@ -333,8 +357,27 @@ def main() -> int:
             return 0
 
     rows, written, skipped = run_export(cfg, auth, out_dir, jql, a.limit, a.force, a.comments)
-    write_state(out_dir, rows)
+    state = write_state(out_dir, rows)
     print(f"Задач: {len(rows)} · записано: {written} · без изменений: {skipped}")
+
+    extra = stale(out_dir, state)
+    if extra:
+        print(f"\nЛишние файлы в зеркале ({len(extra)}) — задачи с такими именами синк не выгружал:")
+        for s in extra[:20]:
+            print(f"  - {s}")
+        if len(extra) > 20:
+            print(f"  … ещё {len(extra) - 20}")
+        if a.prune and a.limit:
+            # прогон с --limit по определению неполный: «лишнее» здесь означает
+            # «не попало в выборку», а не «задачи больше нет»
+            print("Удаление пропущено: --prune не работает вместе с --limit — прогон неполный.")
+        elif a.prune:
+            for s in extra:
+                os.remove(os.path.join(out_dir, s))
+            print(f"Удалено: {len(extra)} (карточки с `source:` на них найдёт aurora_stats.py)")
+        else:
+            print("Убрать: повторите с --prune. Состояние копится между прогонами, поэтому "
+                  "узкий JQL сам по себе задачи из зеркала не выбрасывает.")
     print(f"Состояние: {os.path.join(out_dir, STATE)}")
     print("Дальше: `sync_audit.py` (целостность) → `sync:jira-status` (статусы в требования).")
     return 0

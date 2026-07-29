@@ -1330,6 +1330,44 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_sync_audit_case_only_paths_are_not_a_loss(tmp: Path):
+    """Регистр папки разошёлся с состоянием — это переименование, а не потеря страницы.
+
+    Файловая система macOS и Windows к регистру нечувствительна: страницу переименовали в
+    источнике, папка осталась под старым именем. Считать это одновременно MISSING и ORPHAN
+    значит поднимать тревогу там, где ничего не пропало.
+    """
+    root = make_project(tmp)
+    conf = root / "Sources/Confluence"
+    (conf / "Раздел/Основной_баланс").mkdir(parents=True, exist_ok=True)
+    (conf / "Раздел/Основной_баланс/index.md").write_text(
+        "---\npage_id: 111111\n---\n\nтекст", encoding="utf-8")
+    (conf / "sync_state.md").write_text(
+        "**Sync Date:** 2026-07-25\n\n| # | Page ID | Title | Local Path | Status |\n"
+        "|---|---|---|---|---|\n"
+        "| 1 | 111111 | Баланс | Раздел/Основной_Баланс/index.md | SYNCED |\n", encoding="utf-8")
+    cp = run("sync_audit.py", cwd=root, expect_rc=1)
+    assert "CASE: **1**" in cp.stdout, f"расхождение регистра не выделено: {cp.stdout[:500]}"
+    assert "MISSING: **0**" in cp.stdout, "страница объявлена потерянной, хотя она на месте"
+    assert "ORPHAN: **0**" in cp.stdout, "тот же файл посчитан лишним"
+
+
+@test
+def test_jira_prune_removes_only_unknown_files(tmp: Path):
+    """`--prune` убирает следы прежних выгрузок, но не служебные файлы и не свежие задачи."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import jira_export as je
+    root = make_project(tmp)
+    mirror = root / "Sources/JIRA"
+    mirror.mkdir(parents=True, exist_ok=True)
+    for name in ("PRJ-1.md", "US-3.1.1.md", "JIRA_prompt.md", "JIRA_issue_template.md"):
+        (mirror / name).write_text("текст", encoding="utf-8")
+    state = je.write_state(str(mirror), [("PRJ-1", "2026-07-30 10:00", "Готово", "PRJ-1.md")])
+    extra = je.stale(str(mirror), state)
+    assert extra == ["US-3.1.1.md"], f"лишним должен быть только след старой выгрузки: {extra}"
+
+
+@test
 def test_office_ingest_converts_and_is_idempotent(tmp: Path):
     root = make_project(tmp)
     docx = root / "Raw/customer/Документ.docx"

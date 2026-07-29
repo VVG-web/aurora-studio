@@ -333,6 +333,7 @@ class Exporter:
         self.space, self.force = space, force
         self.records: list = []       # (page_id, rel_path, title, статус)
         self.written = self.skipped = self.failed = 0
+        self.recased: list = []       # папки, которым выправили регистр
         self.prev = self._load_state()
 
     def _load_state(self) -> dict:
@@ -359,6 +360,7 @@ class Exporter:
         leaf = safe_name(title, page_id)
         rel = "/".join(parts + [leaf, "index.md"]) if children else "/".join(parts + [leaf + ".md"])
 
+        self.align_case(rel)
         known = self.prev.get(str(page_id))
         if known and not self.force and known[1] == version and os.path.isfile(os.path.join(self.out, rel)):
             self.records.append((str(page_id), rel, title, "SYNCED"))
@@ -400,19 +402,50 @@ class Exporter:
         with open(os.path.join(self.out, STATE), "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
+    def align_case(self, rel: str) -> None:
+        """Привести регистр папок зеркала к тому, что сейчас в заголовках страниц.
+
+        Страницу переименовали «Core_аналитический» → «Core_Аналитический». На macOS и
+        Windows файловая система к регистру нечувствительна: запись по новому пути молча
+        попадает в старую папку. Дальше состояние синка говорит одно, диск показывает
+        другое, аудит считает это потерей страницы, а `--prune` норовит удалить только что
+        записанный файл. Чиним в одном месте: перед записью выравниваем регистр
+        каталогов — переименование сработает и там, где регистр не различают.
+        """
+        cur = self.out
+        for part in os.path.dirname(rel).split("/"):
+            if not part:
+                continue
+            want = os.path.join(cur, part)
+            if not os.path.isdir(cur):
+                return
+            same = next((n for n in os.listdir(cur)
+                         if n != part and n.casefold() == part.casefold()), None)
+            if same:
+                try:
+                    os.rename(os.path.join(cur, same), want)
+                    self.recased.append(f"{same} → {part}")
+                except OSError as e:
+                    print(f"  ! регистр папки не поправить: {same} → {part}: {e}", file=sys.stderr)
+            cur = want
+
     def stale(self) -> list:
         """Файлы зеркала, за которыми нет страницы. Служебные файлы синка не трогаем:
         промпты, правила и шаблоны прежнего синк-скилла — это инструкции команды."""
         # macOS отдаёт имена в NFD, а записи синка — в NFC: без нормализации свежий
         # файл выглядит «страницей, которой нет», и --prune его удалит
         known = {unicodedata.normalize("NFC", rel) for _, rel, _, _ in self.records}
+        # различие только в регистре — это не «страницы больше нет»: удалить такой файл
+        # значит стереть свежую выгрузку
+        known_ci = {k.casefold() for k in known}
         out = []
         for dirpath, _, files in os.walk(self.out):
             for f in files:
                 if not f.endswith(".md") or f == STATE or SERVICE_RE.search(f):
                     continue
                 rel = os.path.relpath(os.path.join(dirpath, f), self.out).replace("\\", "/")
-                if unicodedata.normalize("NFC", rel) not in known:
+                nrel = unicodedata.normalize("NFC", rel)
+                if nrel not in known and nrel.casefold() not in known_ci:
                     out.append(rel)
         return sorted(out)
 
@@ -516,6 +549,10 @@ def main() -> int:
     exp.write_state()
     stale = exp.stale()
 
+    if exp.recased:
+        print(f"Выправлен регистр папок ({len(exp.recased)}) — страницы переименовали в источнике:")
+        for r in exp.recased[:10]:
+            print(f"  - {r}")
     print(f"Страниц: {len(exp.records)} · записано: {exp.written} · без изменений: {exp.skipped}"
           + (f" · ошибок: {exp.failed}" if exp.failed else ""))
     if stale:
