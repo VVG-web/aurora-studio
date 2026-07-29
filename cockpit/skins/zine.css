@@ -46,6 +46,8 @@ body::before{background-image:radial-gradient(var(--zine-dot) 1.3px, transparent
 .btn:hover{transform:translate(1px,1px);box-shadow:1px 1px 0 var(--zine-ink)}
 .btn:disabled{box-shadow:none;transform:none}
 .chip{border-radius:8px;font-weight:600;color:var(--text)}
+/* поля ввода носят класс кнопки — но капс в JQL или пути ломает само значение */
+input.btn,select.btn,.palette input,textarea{text-transform:none;letter-spacing:0;font-weight:400}
 
 /* заголовок виден с середины комнаты */
 h1{text-transform:uppercase;font-weight:900;letter-spacing:.01em;color:var(--gold);

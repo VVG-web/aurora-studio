@@ -161,6 +161,43 @@ def flag_help(impl: str) -> dict:
     return help_map
 
 
+def flag_args(impl: str) -> dict:
+    """Флаг → метапеременная, если он требует значения (`--jql JQL`), иначе пустая строка.
+
+    Без этого панель отправляла `--jql` голой галочкой, и argparse отвечал
+    «expected one argument». Берём то же место, что и пояснения, — левую колонку
+    объявления в `--help`: там argparse сам печатает метапеременную.
+    """
+    script = impl.split()[0]
+    path = os.path.join(HERE, script)
+    if not script.endswith(".py") or not os.path.isfile(path):
+        return {}
+    try:
+        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
+                             text=True, timeout=30).stdout
+    except Exception:
+        return {}
+    if "usage:" not in out:
+        # скрипт без argparse проверяет `"--x" in sys.argv` — такие флаги всегда без значения
+        return {f: "" for f in argv_flags(path, impl).split()}
+    body = re.split(r"^(?:options|optional arguments):", out, flags=re.M)
+    if len(body) < 2:
+        return {}
+    args = {}
+    for line in body[1].splitlines():
+        if not re.match(r"\s{1,4}-", line):
+            continue
+        decl = re.split(r"\s{2,}", line.strip(), maxsplit=1)[0]
+        flags = re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]*)", decl)
+        if not flags or flags[0] == "--help":
+            continue
+        # «--out OUT», «--roots [ROOTS ...]», «--to {2,3}»: метапеременная — это всё,
+        # что осталось в объявлении после самих флагов и запятых
+        rest = re.sub(r"(?<![\w-])-{1,2}[a-z][a-z0-9-]*", " ", decl).replace(",", " ")
+        args[flags[0]] = " ".join(rest.split())
+    return args
+
+
 def strip_option_groups(usage: str) -> str:
     """Убрать из usage группы опций (`[-h]`, `[--md [MD]]`), оставив позиционные.
 

@@ -196,6 +196,8 @@ def registry() -> list:
             "fixed_flags": impl.split()[1:],
             "flags": K.flags_of(impl).split() if script.endswith(".py") else [],
             "flag_help": K.flag_help(impl) if script.endswith(".py") else {},
+            # какие флаги требуют значения: без этого панель шлёт `--jql` голым
+            "flag_args": K.flag_args(impl) if script.endswith(".py") else {},
             "args": K.args_of(impl) if script.endswith(".py") else "",
             "runnable": script.endswith(".py"),
         })
