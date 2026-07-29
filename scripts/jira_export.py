@@ -258,8 +258,8 @@ def write_state(out_dir: str, rows: list) -> dict:
 
 
 # Служебные файлы синка — не задачи: промпты, шаблоны и правила прежнего синк-скилла.
-SERVICE_RE = re.compile(r"(update_log|sync_state|_prompt|_template|_example|-rules|_rules|README)",
-                        re.I)
+SERVICE_RE = re.compile(r"(update_log|sync_state|sync_report|SYNC_|_prompt|_template|_example|"
+                        r"-rules|_rules|README)", re.I)
 
 
 def stale(out_dir: str, state: dict) -> list:
@@ -276,6 +276,35 @@ def stale(out_dir: str, state: dict) -> list:
         if f not in known:
             out.append(f)
     return out
+
+
+def cited(root: str, names: list) -> set:
+    """Какие файлы зеркала упоминаются карточками базы.
+
+    `source:` — единственная нить от знания к доказательству. Удалить файл, на который
+    ссылается карточка, значит оборвать её провенанс, поэтому такие файлы `--prune`
+    не трогает, а называет: сначала перенацелить ссылки, потом убирать.
+    """
+    kb = os.path.join(os.path.dirname(root.rstrip("/")) or ".", "..", "AuroraKnowledgeDB")
+    kb = os.path.normpath(kb)
+    if not os.path.isdir(kb):
+        return set()
+    want = {n: n[:-3] for n in names}
+    hit = set()
+    for dirpath, _, files in os.walk(kb):
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            try:
+                text = open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore").read()
+            except OSError:
+                continue
+            for n, stem in want.items():
+                if n in hit:
+                    continue
+                if stem in text and "Sources/JIRA" in text:
+                    hit.add(n)
+    return hit
 
 
 def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
@@ -372,9 +401,16 @@ def main() -> int:
             # «не попало в выборку», а не «задачи больше нет»
             print("Удаление пропущено: --prune не работает вместе с --limit — прогон неполный.")
         elif a.prune:
+            keep = cited(out_dir, extra)
             for s in extra:
-                os.remove(os.path.join(out_dir, s))
-            print(f"Удалено: {len(extra)} (карточки с `source:` на них найдёт aurora_stats.py)")
+                if s not in keep:
+                    os.remove(os.path.join(out_dir, s))
+            print(f"Удалено: {len(extra) - len(keep)}")
+            if keep:
+                print(f"Оставлено (на них ссылаются карточки): {len(keep)}")
+                for s in sorted(keep)[:10]:
+                    print(f"  - {s}")
+                print("  Сначала перенацельте `source:` карточек, потом повторите --prune.")
         else:
             print("Убрать: повторите с --prune. Состояние копится между прогонами, поэтому "
                   "узкий JQL сам по себе задачи из зеркала не выбрасывает.")

@@ -1363,8 +1363,16 @@ def test_jira_prune_removes_only_unknown_files(tmp: Path):
     for name in ("PRJ-1.md", "US-3.1.1.md", "JIRA_prompt.md", "JIRA_issue_template.md"):
         (mirror / name).write_text("текст", encoding="utf-8")
     state = je.write_state(str(mirror), [("PRJ-1", "2026-07-30 10:00", "Готово", "PRJ-1.md")])
+    (mirror / "sync_report_2026-01-01.md").write_text("отчёт", encoding="utf-8")
     extra = je.stale(str(mirror), state)
     assert extra == ["US-3.1.1.md"], f"лишним должен быть только след старой выгрузки: {extra}"
+
+    # файл, на который ссылается карточка, удалять нельзя: это обрыв провенанса
+    card = root / "AuroraKnowledgeDB/Concepts/Приём.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("---\nsource: Sources/JIRA/US-3.1.1.md\n---\n\nтекст", encoding="utf-8")
+    assert je.cited(str(mirror), extra) == {"US-3.1.1.md"}, \
+        "файл, на который ссылается карточка, не защищён от удаления"
 
 
 @test
