@@ -1,0 +1,5 @@
+{
+  "name": "aurora-vault",
+  "description": "Operate the Aurora (Аврора) knowledge framework: Zettelkasten AuroraKnowledgeDB lifecycle, Decision Records, analyst artifacts. Project settings: aurora.config.yaml. Invoke as /aurora-vault <command>.",
+  "entrypoint": "SKILL.md"
+}

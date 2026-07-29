@@ -1,0 +1,55 @@
+# Aurora Studio — standard project folder skeleton (schema per VERSION).
+# `aurora.py update` ensures these exist in a project (idempotent, non-destructive:
+# only creates missing ones with a .gitkeep; never deletes or moves anything).
+# Adding a folder here = every project gets it on next update.
+
+Sources/Confluence
+Sources/JIRA
+
+Raw/laws
+Raw/contract
+Raw/customer
+Raw/project
+Raw/meetings
+Raw/examples
+
+AuroraKnowledgeDB/Concepts
+AuroraKnowledgeDB/Processes
+AuroraKnowledgeDB/Glossary
+AuroraKnowledgeDB/Systems
+AuroraKnowledgeDB/Roles
+AuroraKnowledgeDB/Statuses
+AuroraKnowledgeDB/Reference
+AuroraKnowledgeDB/Requirements
+AuroraKnowledgeDB/Specs
+AuroraKnowledgeDB/Questions
+AuroraKnowledgeDB/Decisions
+AuroraKnowledgeDB/MOC
+AuroraKnowledgeDB/_archive
+AuroraKnowledgeDB/_assets
+AuroraKnowledgeDB/_inbox
+AuroraKnowledgeDB/meta
+
+Artifacts/us
+Artifacts/ac
+Artifacts/algorithms
+Artifacts/dictionaries
+Artifacts/screens
+Artifacts/contracts
+Artifacts/mappings
+Artifacts/role-model
+Artifacts/diagrams
+Artifacts/acceptance
+Artifacts/reviews
+Artifacts/reports
+Artifacts/drafts
+Artifacts/meetings
+
+Deliverables/work
+Deliverables/work/spec-packs
+Deliverables/released
+
+Workspaces/_archive
+
+Templates
+Prompts

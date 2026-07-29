@@ -1,0 +1,7 @@
+# Atlassian MCP tool
+
+Project Atlassian settings: **`aurora.config.yaml`** (`atlassian.*`).
+
+- Confluence: `atlassian.confluence` (space, sync_roots)
+- Jira: `atlassian.jira` (project_key, default_jql)
+- Auth: your Cursor MCP login (`mcp_user`). Never commit tokens.

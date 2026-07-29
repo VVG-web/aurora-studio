@@ -1,0 +1,118 @@
+# {{PROJECT_NAME}} — Agent System Mandatories (Karpathy Guidelines)
+
+> These rules are ALWAYS active. They override any conflicting behavior patterns.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+- State assumptions explicitly. If uncertain, **ask** rather than guess.
+- If multiple interpretations exist, **present them** — don't pick silently.
+- If a simpler approach exists than what was requested, **say so and push back**.
+- If something is unclear, **stop** — name what's confusing and ask for clarification.
+
+## 2. Simplicity First
+
+**Minimum viable code. Nothing speculative.**
+
+| Allowed | Forbidden |
+| ------- | --------- |
+| Exactly what was asked | Features beyond the request |
+| Direct implementations | Abstractions for single-use code |
+| Real error paths | Error handling for impossible scenarios |
+| 50 lines for 50-line solution | 200 lines when 50 would do |
+
+**Test**: Would a senior engineer call this overcomplicated? If yes → simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+**Editing existing code:**
+- ❌ Don't "improve" adjacent code, comments, or formatting
+- ❌ Don't refactor things that aren't broken
+- ✅ Match existing style, even if you'd do it differently
+- ✅ If you notice unrelated dead code → **mention it, don't delete it**
+
+**Your own changes:**
+- ✅ Remove imports/variables/functions YOUR changes made unused
+- ❌ Don't remove pre-existing dead code unless asked
+
+**Verification**: Every changed line must trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define verifiable success criteria. Loop until verified.**
+
+Transform imperative tasks into declarative goals:
+
+| Instead of | Do |
+| ---------- | -- |
+| "Add validation" | "Write tests for invalid inputs, then make them pass" |
+| "Fix the bug" | "Write a test that reproduces it, then make it pass" |
+| "Refactor X" | "Ensure tests pass before and after" |
+
+> **Tradeoff**: These guidelines bias toward caution over speed. For trivial tasks (single-line fixes, obvious typos), use judgment — not every change needs full rigor.
+
+---
+
+# {{PROJECT_NAME}} Repository — Knowledge Framework «Аврора»
+
+Это **база знаний проекта {{PROJECT_NAME}}** для команды аналитиков: Obsidian-markdown в git, обслуживается фреймворком «Аврора». Единственный инструмент управления базой — skill **`/aurora-vault`** (`.opencode/skills/aurora-vault/SKILL.md` — прочти его первым, там карта папок, команды и инварианты).
+
+**Настройки проекта:** `aurora.config.yaml` (space, JQL, sync roots, recommended skills). Секреты — только в `.env.aurora.local` (не в git) или в личном Cursor MCP.
+
+Режим: **bootstrap** (пока verified < 20% — см. `references/retrieval.md`).
+
+## Слои доверия (кратко; полная таблица — в SKILL.md)
+
+| Папка | Семантика | Можно ли агенту писать |
+|---|---|---|
+| `Sources/` (Confluence/, JIRA/) | зеркала синка | ❌ только sync-скиллы |
+| `Raw/` | первоисточники (ТЗ, законы, протоколы) | ❌ (кроме `Raw/project/`, `Raw/examples/` — живые доки) |
+| `AuroraKnowledgeDB/` | карточки знаний со статусами доверия | ✅ через процедуры /aurora-vault |
+| `Artifacts/` | продукты ИИ+аналитика (us/, ac/, reviews/, reports/) | ✅ сюда идут результаты |
+| `Deliverables/` | поставляемые документы (work/ и неизменяемый released/) | ✅ work; ❌ released |
+| `Workspaces/` | рабочие пространства задач | ✅ |
+| `Templates/`, `Prompts/` | шаблоны и типовые промпты | ✅ по конвенциям |
+
+## Ключевые правила для любого агента
+
+> Полный список инвариантов — в `.opencode/skills/aurora-vault/SKILL.md` (раздел
+> «Invariants»). Ниже — то, что нужно помнить до открытия скилла; при расхождении
+> прав SKILL.md.
+
+1. **Статус карточки = уровень доверия.** `verified` — факты; `imported`/`draft` — не факты; `deprecated` — история. Легаси-карточки без `status` = `imported`.
+2. **Никогда не перезаписывай verified-карточки** — только человек. При расхождении с источником — рапортуй DRIFT.
+3. **Ничего не удаляй**: устаревшее → `supersede` (deprecated + `_archive/`). Decision Records неизменяемы.
+4. **Артефакт ≠ знание**: результаты генерации в `Artifacts/`, в базу — только через verify-гейт.
+5. **Именование** — `AuroraKnowledgeDB/meta/conventions.md` (слои PascalCase, категории lowercase, артефакты `YYYY-MM-DD_<тип>_<объект>.md`).
+6. **Структура папок фиксирована движком** (`.opencode/structure_dirs.txt`) и одинакова во всех проектах Авроры. Не создавай новых папок верхнего уровня, разделов `AuroraKnowledgeDB/` и типов `Artifacts/<тип>/`. Всё нестандартное — в `Workspaces/<задача>/`. Проверка: `python3 .opencode/scripts/aurora_doctor.py --structure`.
+7. **Массовую механику делай скриптом, не обходом базы:** `kb_lint.py` (найти) → `kb_fix.py` (починить) → `kb_queue.py` (что верифицировать) → `sync_audit.py` (целостность зеркал) → `aurora_stats.py` (числа). Модель интерпретирует отчёт и принимает решения, требующие суждения.
+8. **Sync:** Confluence — skill `confluence-sync-{{PROJECT_SLUG}}`; Jira — `jira-export-{{PROJECT_SLUG}}`; параметры — **`aurora.config.yaml`**; пишут только в `Sources/`.
+9. **Секреты:** не коммитить Atlassian token/password; каждый пользователь логинится в MCP своим аккаунтом.
+
+## Конфиденциальность (осторожный дефолт)
+
+1. Не класть в git: ПДн третьих лиц, коммерческие условия контракта, секреты/ключи (`.gitignore`).
+2. Транскрибации в `Raw/meetings/` — по возможности анонимизировать ФИО → роли, если нет согласия.
+3. Полные контракты с коммерческой тайной — во внешнем хранилище; в `Raw/contract/` — редакция без тайны или ссылка.
+4. Какие внешние LLM допустимы — решение ИБ организации (оформить DR).
+
+## Где что лежит (справочно)
+
+- Проектные настройки Atlassian/skills: `aurora.config.yaml`
+- Локальные секреты (не в git): `.env.aurora.local` ← `aurora.env.local.example`
+- Онбординг-проверка: `python3 .opencode/scripts/aurora_doctor.py`
+- Схема frontmatter карточек: `.opencode/skills/aurora-vault/references/frontmatter.md`
+- Процедуры команд (build, verify, diff, garden, spec, trace…): `references/workflows.md`
+- Механические процедуры (repair, dedupe, queue, sync-audit, stats): `references/maintenance.md`
+- Политика контекста для LLM: `references/retrieval.md` (+ лог употребления `meta/usage.log`)
+- Схема структуры папок (фиксирована): `.opencode/structure_dirs.txt`
+- Golden questions: `AuroraKnowledgeDB/meta/golden_questions.md`
+- Метрики: `AuroraKnowledgeDB/meta/metrics.md`
+- Релизы (`applies_to`): `AuroraKnowledgeDB/meta/releases.md`
+- HTML-гайды: `Artifacts/drafts/*_guide_kb-*.html`
+- Документация фреймворка: kit `docs/` + Confluence «Аврора БЗ: 0–6» (AN, parent pageId 642568785)
+
+_Этот файл генерируется из шаблона Aurora kit; при изменении структуры репозитория обнови оба (garden проверяет соответствие)._

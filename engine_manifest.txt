@@ -1,0 +1,82 @@
+# Aurora Studio — engine manifest.
+# Белый список инженерных файлов, которыми управляет kit. `aurora.py update`
+# перезаписывает В ПРОЕКТЕ только эти пути. Всё остальное (config, знания, Raw,
+# Sources, Deliverables, Artifacts, Workspaces, Templates/, Prompts/) не трогается.
+#
+# Формат строки:  <путь-в-kit>  =>  <путь-в-проекте>
+# Спец-правила (в скобках после →) обрабатываются update-скриптом:
+#   (sync)   — размножить по существующим sync-скиллам, сохранив slug в имени папки;
+#              существующее тело НЕ перезаписывается (проект дорабатывает его под
+#              свой контур) — новая версия ложится рядом как <файл>.new
+#   (agents) — регенерировать из шаблона, подставив имя/slug/ключи из aurora.config.yaml
+#   (seed)   — вариант (1): не перезаписывать; новую версию положить рядом как <файл>.new
+
+# --- скилл aurora-vault (полностью engine-managed) ---
+skills/aurora-vault/SKILL.md            => .opencode/skills/aurora-vault/SKILL.md
+skills/aurora-vault/skill.json          => .opencode/skills/aurora-vault/skill.json
+skills/aurora-vault/references/build.md        => .opencode/skills/aurora-vault/references/build.md
+skills/aurora-vault/references/frontmatter.md  => .opencode/skills/aurora-vault/references/frontmatter.md
+skills/aurora-vault/references/retrieval.md    => .opencode/skills/aurora-vault/references/retrieval.md
+skills/aurora-vault/references/workflows.md    => .opencode/skills/aurora-vault/references/workflows.md
+skills/aurora-vault/references/migration.md    => .opencode/skills/aurora-vault/references/migration.md
+
+skills/aurora-vault/references/maintenance.md  => .opencode/skills/aurora-vault/references/maintenance.md
+
+# --- скрипты движка ---
+# общий модуль примитивов: его импортируют остальные скрипты
+scripts/aurora_common.py => .opencode/scripts/aurora_common.py
+scripts/kb_lint.py       => .opencode/scripts/kb_lint.py
+scripts/kb_fix.py        => .opencode/scripts/kb_fix.py
+scripts/kb_queue.py      => .opencode/scripts/kb_queue.py
+scripts/kb_remap.py      => .opencode/scripts/kb_remap.py
+scripts/kb_classify.py   => .opencode/scripts/kb_classify.py
+scripts/build_plan.py    => .opencode/scripts/build_plan.py
+scripts/spec_pack.py     => .opencode/scripts/spec_pack.py
+scripts/kb_index.py      => .opencode/scripts/kb_index.py
+scripts/kb_scrub.py      => .opencode/scripts/kb_scrub.py
+scripts/kb_schema.py     => .opencode/scripts/kb_schema.py
+scripts/publish_doc.py   => .opencode/scripts/publish_doc.py
+scripts/kit_commands.py  => .opencode/scripts/kit_commands.py
+scripts/kb_verify.py     => .opencode/scripts/kb_verify.py
+scripts/kb_supersede.py  => .opencode/scripts/kb_supersede.py
+scripts/kb_impact.py     => .opencode/scripts/kb_impact.py
+scripts/ctx_pack.py      => .opencode/scripts/ctx_pack.py
+scripts/sync_audit.py    => .opencode/scripts/sync_audit.py
+scripts/sync_diff.py     => .opencode/scripts/sync_diff.py
+scripts/release_doc.py   => .opencode/scripts/release_doc.py
+scripts/aurora_stats.py  => .opencode/scripts/aurora_stats.py
+scripts/office_ingest.py => .opencode/scripts/office_ingest.py
+scripts/confluence_export.py => .opencode/scripts/confluence_export.py
+scripts/jira_export.py   => .opencode/scripts/jira_export.py
+scripts/jira_status.py   => .opencode/scripts/jira_status.py
+scripts/export_doc.py    => .opencode/scripts/export_doc.py
+scripts/aurora_hooks.py  => .opencode/scripts/aurora_hooks.py
+scripts/aurora_trace.py  => .opencode/scripts/aurora_trace.py
+scripts/aurora_setup.py  => .opencode/scripts/aurora_setup.py
+scripts/aurora_doctor.py => .opencode/scripts/aurora_doctor.py
+scripts/aurora_update.py => .opencode/scripts/aurora_update.py
+
+# --- схема структуры папок (фиксирована движком; doctor сверяет по ней факт) ---
+structure_dirs.txt       => .opencode/structure_dirs.txt
+
+# --- пусковые файлы в корне проекта (меню: doctor, stats, setup, панель) ---
+templates/launchers/start-aurora.command => (launcher) start-aurora.command
+templates/launchers/start-aurora.bat     => (launcher) start-aurora.bat
+
+# --- образец файла с личными доступами (сам .env.aurora.local движок не трогает) ---
+templates/aurora.env.local.example => aurora.env.local.example
+templates/aurora.env.local.example => .opencode/aurora.env.local.example
+
+# --- реестр команд (kit:list читает его; модификаторы берёт из самих скриптов) ---
+commands.txt             => .opencode/commands.txt
+
+# --- sync-скиллы (тело обновляется, slug в имени папки сохраняется) ---
+skills/confluence-sync-template/SKILL.md => (sync) confluence-sync
+skills/jira-export-template/SKILL.md     => (sync) jira-export
+
+# --- AGENTS.md (регенерация из шаблона с подстановкой полей проекта) ---
+templates/agents/AGENTS.md.template => (agents) AGENTS.md
+
+# --- шаблоны/промпты: вариант (1) — не перезаписывать, класть новое как .new ---
+scaffold/Templates => (seed) Templates
+scaffold/Prompts   => (seed) Prompts

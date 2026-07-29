@@ -1,0 +1,64 @@
+# Aurora project configuration (committed). Schema version 1.
+# Personal secrets: copy aurora.env.local.example → .env.aurora.local (gitignored).
+# Agents and sync skills MUST read project constants from this file — do not hardcode space/JQL in skill bodies.
+
+aurora:
+  version: 1
+
+project:
+  name: "{{PROJECT_NAME}}"
+  slug: "{{PROJECT_SLUG}}"
+
+skills:
+  required:
+    - name: aurora-vault
+      via: repo   # .opencode/skills/aurora-vault/
+  recommended:
+    - name: mcp-atlassian
+      via: cursor-mcp
+      note: "Authenticate in Cursor MCP with YOUR Atlassian account (never commit tokens)."
+    - name: "confluence-sync-{{PROJECT_SLUG}}"
+      via: repo
+    - name: "jira-export-{{PROJECT_SLUG}}"
+      via: repo
+
+atlassian:
+  confluence:
+    base_url: "https://confluence.example.com"
+    space: "{{CONFLUENCE_SPACE}}"
+    # Primary sync roots (page_id preferred). sync_paths.md may mirror these.
+    sync_roots: []
+    # Example:
+    # sync_roots:
+    #   - page_id: "123456"
+    #     title: "Root page"
+    #     url: "https://confluence.example.com/pages/viewpage.action?pageId=123456"
+  jira:
+    base_url: "https://jira.example.com"
+    project_key: "{{JIRA_KEY}}"
+    default_jql: "project = {{JIRA_KEY}} ORDER BY updated DESC"
+    # Статусы этого проекта, означающие «сделано» и «отменено» — для sync:jira-status.
+    # Всё, чего движок не знает, он считает открытым и печатает отдельным списком.
+    done_statuses: []        # например: [Готово, Закрыто, "Тестирование - готово"]
+    cancelled_statuses: []   # например: [Отменено, "Won't do"]
+  auth:
+    mode: mcp_user   # tokens never live in this file or in skills
+
+paths:
+  knowledge_db: AuroraKnowledgeDB
+  sources_confluence: Sources/Confluence
+  sources_jira: Sources/JIRA
+
+privacy:
+  # Режим kb:scrub. Зависит от контура, а не от вкусов: если репозиторий уезжает
+  # в закрытый git или on-prem, а те же тексты и так открыты команде в Confluence,
+  # маскировать нечего — и лишние маркеры только портят документы.
+  #   off    — не искать (одноразово посмотреть всё равно можно: --force)
+  #   report — искать и показывать, маскирование только руками (по умолчанию)
+  #   mask   — маскирование ожидается: kb:scrub --apply и проверка перед публикацией
+  scrub: report
+  mask_contacts: false   # почта в Reporter:/Assignee: — атрибуция, не ПДн
+  include_raw: false     # Raw/ и released/ — доказательства, правка ломает неизменяемость
+
+bootstrap:
+  verified_threshold_pct: 20
