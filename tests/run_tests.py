@@ -750,7 +750,7 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
 
     # --- скины: имя и описание из шапки файла, путь наружу не принимается
     sk = ck.skins()
-    assert any(s["id"] == "vault" for s in sk), "нет скина по умолчанию"
+    assert any(s["id"] == "zine" for s in sk), "нет скина по умолчанию"
     for s in sk:
         assert s["name"] and s["about"], f"скин {s['id']} без имени или описания"
         assert "--primary" in ck.skin_css(s["id"]), f"скин {s['id']} не задаёт токены"
