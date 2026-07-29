@@ -1,0 +1,30 @@
+/* name: Волт
+   about: Тёмная командная башня: полуночная синь, бирюзовое свечение приборов,
+          магента как след присутствия Авроры. Оформление по умолчанию. */
+
+:root{
+  --bg:#0A0F1E; --surface-1:#111A30; --surface-2:#17223D; --border:#263353;
+  --text:#EAF0FA; --text-muted:#93A0BC;
+  --primary:#2EE6C8; --accent:#FF4DA3; --gold:#F7C948;
+  --tier-imported:#8592A8; --tier-draft:#9DC0FF; --tier-inreview:#FFA62B;
+  --tier-verified:#2EE6C8; --tier-deprecated:#6E63C9;
+  --danger:#FF4D5E; --corruption:#B24BFF;
+  --glow:0 0 0 1px rgba(46,230,200,.35), 0 0 24px -6px rgba(46,230,200,.55);
+  --radius:14px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+  --aura-1:rgba(255,77,163,.10);   /* пятно света справа сверху */
+  --aura-2:rgba(46,230,200,.10);   /* пятно света слева сверху */
+  --console-bg:#060B17; --console-ink:#CFE9E3;
+}
+:root[data-theme="light"]{
+  --bg:#F5F7FC; --surface-1:#FFFFFF; --surface-2:#EEF2FA; --border:#D3DBEA;
+  --text:#131A2B; --text-muted:#5A6683;
+  --primary:#0FB89E; --accent:#D42C82; --gold:#B98A0E;
+  --tier-imported:#69748A; --tier-draft:#3D74C4; --tier-inreview:#B4680B;
+  --tier-verified:#0FB89E; --tier-deprecated:#5A50AE;
+  --danger:#D32436; --corruption:#8A2FD1;
+  --glow:0 0 0 1px rgba(15,184,158,.35), 0 0 20px -8px rgba(15,184,158,.5);
+  --aura-1:rgba(212,44,130,.07); --aura-2:rgba(15,184,158,.07);
+  --console-bg:#0B1220; --console-ink:#D8ECE8;
+}

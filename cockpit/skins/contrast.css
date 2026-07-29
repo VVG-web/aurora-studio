@@ -1,0 +1,30 @@
+/* name: Контраст
+   about: Максимальная разборчивость: чистый чёрный фон, крупные границы,
+          цвета только там, где несут смысл. Для проекторов и слабого зрения. */
+
+:root{
+  --bg:#000000; --surface-1:#0D0D0D; --surface-2:#1A1A1A; --border:#4D4D4D;
+  --text:#FFFFFF; --text-muted:#C7C7C7;
+  --primary:#00E5A0; --accent:#FF6FD8; --gold:#FFD400;
+  --tier-imported:#B0B0B0; --tier-draft:#8CB8FF; --tier-inreview:#FFB020;
+  --tier-verified:#00E5A0; --tier-deprecated:#B18BFF;
+  --danger:#FF5A5A; --corruption:#C77DFF;
+  --glow:0 0 0 2px #00E5A0;
+  --radius:6px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --aura-1:transparent; --aura-2:transparent;
+  --console-bg:#000000; --console-ink:#00E5A0;
+}
+:root[data-theme="light"]{
+  --bg:#FFFFFF; --surface-1:#FFFFFF; --surface-2:#F0F0F0; --border:#1A1A1A;
+  --text:#000000; --text-muted:#3D3D3D;
+  --primary:#006B4F; --accent:#A3006B; --gold:#7A5C00;
+  --tier-imported:#4D4D4D; --tier-draft:#00459E; --tier-inreview:#7A4B00;
+  --tier-verified:#006B4F; --tier-deprecated:#4B2E9E;
+  --danger:#A30000; --corruption:#6A00A3;
+  --glow:0 0 0 2px #006B4F;
+  --console-bg:#000000; --console-ink:#FFFFFF;
+}
+/* границы толще: скин про разборчивость, а не про изящество */
+.card,.btn,.chip{border-width:2px}

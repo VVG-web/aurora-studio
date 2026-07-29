@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.*
+.mcp.json
+__pycache__/
+*.pyc
+.ruff_cache/
+~$*
+*.log
+/tmp/
+
+# Приватный слой: имена проектов, контуры, живые числа. Наружу уходит только обезличенное.
+local/
+*.local.md
+*.local.txt

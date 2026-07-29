@@ -1,0 +1,27 @@
+/* name: Бумага
+   about: Спокойный светлый скин для длинного чтения справки и разбора отчётов:
+          тёплая бумага, сдержанный зелёный, никакого свечения. */
+
+:root{
+  --bg:#F4F1EA; --surface-1:#FCFAF5; --surface-2:#EDE8DE; --border:#D9D2C4;
+  --text:#232019; --text-muted:#6B6355;
+  --primary:#2F7D46; --accent:#9C4221; --gold:#A97400;
+  --tier-imported:#8A8272; --tier-draft:#3D6DA8; --tier-inreview:#B4680B;
+  --tier-verified:#2F7D46; --tier-deprecated:#6B5CA5;
+  --danger:#B3261E; --corruption:#7A3EA8;
+  --glow:0 0 0 1px rgba(47,125,70,.25);
+  --radius:10px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:Georgia,"Times New Roman",-apple-system,serif;
+  --aura-1:transparent; --aura-2:transparent;
+  --console-bg:#232019; --console-ink:#E8E3D8;
+}
+:root[data-theme="dark"]{
+  --bg:#1B1915; --surface-1:#232019; --surface-2:#2C2820; --border:#3D372C;
+  --text:#EDE8DE; --text-muted:#A99F8C;
+  --primary:#6FBF84; --accent:#D98B62; --gold:#D9B45B;
+  --tier-imported:#9A9182; --tier-draft:#7FA8DA; --tier-inreview:#D9A83E;
+  --tier-verified:#6FBF84; --tier-deprecated:#9E90D4;
+  --danger:#E0736B; --corruption:#B18BD9;
+  --console-bg:#141210; --console-ink:#EDE8DE;
+}

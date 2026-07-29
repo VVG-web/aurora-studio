@@ -1,0 +1,1501 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aurora Cockpit</title>
+<style id="skin"></style>
+<style>
+/* Оформление вынесено в скины: cockpit/skins/*.css. Здесь — запасной набор токенов
+   на случай, если скин не загрузился: панель должна остаться читаемой всегда. */
+:root{
+  --bg:#0A0F1E; --surface-1:#111A30; --surface-2:#17223D; --border:#263353;
+  --text:#EAF0FA; --text-muted:#93A0BC;
+  --primary:#2EE6C8; --accent:#FF4DA3; --gold:#F7C948;
+  --tier-imported:#8592A8; --tier-draft:#9DC0FF; --tier-inreview:#FFA62B;
+  --tier-verified:#2EE6C8; --tier-deprecated:#6E63C9;
+  --danger:#FF4D5E; --corruption:#B24BFF;
+  --glow:0 0 0 1px rgba(46,230,200,.35), 0 0 24px -6px rgba(46,230,200,.55);
+  --radius:14px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+  --aura-1:rgba(255,77,163,.10); --aura-2:rgba(46,230,200,.10);
+  --console-bg:#060B17; --console-ink:#CFE9E3;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.5 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(900px 500px at 78% -12%, var(--aura-1), transparent 60%),
+    radial-gradient(760px 460px at 8% 0%, var(--aura-2), transparent 62%);}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0}
+a{color:var(--primary)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px}
+
+/* ---------------- каркас ---------------- */
+#app{position:relative;z-index:1;display:grid;grid-template-columns:236px 1fr;
+  grid-template-rows:56px 1fr;height:100%}
+header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;
+  border-bottom:1px solid var(--border);background:rgba(17,26,48,.72);backdrop-filter:blur(10px)}
+:root[data-theme="light"] header{background:rgba(255,255,255,.8)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.14em;font-size:13px}
+.brand svg{filter:drop-shadow(0 0 6px rgba(46,230,200,.6))}
+.brand small{font-weight:600;letter-spacing:.02em;color:var(--text-muted);font-size:11px}
+.brand small.stale{color:var(--tier-inreview);border-bottom:1px dashed currentColor;cursor:help}
+/* Что бы ни делала половина экранов, они делают это с одним конкретным проектом —
+   и он должен быть виден всегда, а не только на Мостике. */
+.projbadge{display:flex;align-items:center;gap:8px;max-width:32ch;font-weight:600}
+.projbadge .dot{width:8px;height:8px;border-radius:50%;flex:none;
+  background:var(--aura,var(--text-muted));box-shadow:0 0 8px var(--aura,transparent)}
+.projbadge .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.projbadge.none{font-weight:500;color:var(--text-muted);border-style:dashed}
+.stalebar{border:1px solid color-mix(in oklab,var(--tier-inreview) 45%,var(--border));
+  background:color-mix(in oklab,var(--tier-inreview) 10%,transparent);border-radius:12px;
+  padding:12px 15px;font-size:13px;margin-bottom:18px}
+.spacer{flex:1}
+.kbd{font:11px var(--mono);border:1px solid var(--border);border-radius:6px;
+  padding:3px 7px;color:var(--text-muted);background:var(--surface-2)}
+nav{border-right:1px solid var(--border);padding:14px 10px;overflow:auto;background:rgba(17,26,48,.35)}
+:root[data-theme="light"] nav{background:rgba(255,255,255,.55)}
+nav .group{font-size:10px;letter-spacing:.16em;color:var(--text-muted);
+  text-transform:uppercase;margin:14px 8px 6px}
+nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  padding:9px 10px;border-radius:10px;color:var(--text-muted);font-size:14px;position:relative}
+nav button:hover{background:var(--surface-2);color:var(--text)}
+nav button[aria-current="true"]{background:var(--surface-2);color:var(--text);font-weight:600}
+nav button[aria-current="true"]::before{content:"";position:absolute;left:-10px;top:9px;bottom:9px;
+  width:3px;border-radius:0 3px 3px 0;background:var(--primary);box-shadow:0 0 12px var(--primary)}
+nav .count{margin-left:auto;font:11px var(--mono);padding:1px 6px;border-radius:20px;
+  background:var(--surface-1);border:1px solid var(--border)}
+nav .count:empty{display:none}
+nav .count.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
+main{overflow:auto;padding:22px 26px 60px;scroll-behavior:smooth}
+.view{display:none;animation:rise .22s ease}
+.view.on{display:block}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+h1{font-size:23px;font-weight:800;letter-spacing:-.01em;margin:0 0 4px}
+h2{font-size:15px;font-weight:700;margin:26px 0 12px;letter-spacing:.01em}
+.sub{color:var(--text-muted);font-size:13px;margin:0 0 18px;max-width:70ch}
+
+/* ---------------- элементы ---------------- */
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius)}
+.grid{display:grid;gap:14px}
+.tiles{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+.metrics{grid-template-columns:repeat(auto-fill,minmax(178px,1fr))}
+.metric{padding:14px 15px;position:relative;overflow:hidden;text-align:left;width:100%;
+  transition:transform .18s,border-color .18s,box-shadow .18s}
+.metric:hover{transform:translateY(-2px);border-color:color-mix(in oklab,var(--primary) 40%,var(--border))}
+.metric .val{font:700 27px/1.1 var(--mono);letter-spacing:-.02em}
+.metric .lbl{color:var(--text-muted);font-size:12px;margin-top:5px}
+.metric .hint{font-size:11px;color:var(--text-muted);margin-top:8px;opacity:.85}
+.metric.warn .val{color:var(--tier-inreview)} .metric.bad .val{color:var(--danger)}
+.metric.ok .val{color:var(--primary)} .metric.drift .val{color:var(--corruption)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 9px;
+  border-radius:999px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-muted)}
+.chip.tier{color:var(--text)}
+.chip .dot{width:7px;height:7px;border-radius:2px;transform:rotate(45deg)}
+.chip.ok{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 40%,var(--border))}
+.chip.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
+.chip.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
+.chip.gold{color:var(--gold);border-color:color-mix(in oklab,var(--gold) 45%,var(--border))}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:10px;
+  border:1px solid var(--border);background:var(--surface-2);font-size:13.5px;font-weight:600;
+  transition:.16s}
+.btn:hover{border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+.btn:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.btn.primary{background:color-mix(in oklab,var(--primary) 18%,var(--surface-2));
+  border-color:color-mix(in oklab,var(--primary) 55%,var(--border));color:var(--text)}
+.btn.primary:hover{box-shadow:var(--glow)}
+.btn.gold{background:color-mix(in oklab,var(--gold) 16%,var(--surface-2));
+  border-color:color-mix(in oklab,var(--gold) 55%,var(--border))}
+.btn.danger{border-color:color-mix(in oklab,var(--danger) 50%,var(--border));color:var(--danger)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+/* Несохранённые правки: кнопка меняет цвет на «золото» — тот же код, что у необратимых
+   действий, потому что смысл тот же: без нажатия работа пропадёт. */
+.btn.unsaved{background:color-mix(in oklab,var(--gold) 22%,var(--surface-2));
+  border-color:var(--gold);color:var(--text);animation:pulse 2.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in oklab,var(--gold) 40%,transparent)}
+  50%{box-shadow:0 0 0 6px transparent}}
+.unsaved-badge{color:var(--gold);font-size:12px;font-weight:600}
+.btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mono{font-family:var(--mono)}
+code.tick{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:5px;
+  color:var(--text)}
+.muted{color:var(--text-muted)}
+.sep{height:1px;background:var(--border);margin:18px 0}
+
+/* плитка проекта */
+.tower{padding:16px;text-align:left;position:relative;overflow:hidden;transition:.2s}
+.tower:hover{transform:translateY(-3px)}
+.tower::after{content:"";position:absolute;inset:-40% -30% auto auto;width:180px;height:180px;
+  border-radius:50%;filter:blur(38px);opacity:.55;background:var(--aura,var(--primary));
+  transition:opacity .25s}
+.tower:hover::after{opacity:.85}
+.tower .name{font-weight:700;font-size:15.5px;margin-bottom:2px}
+.tower .path{font:11px var(--mono);color:var(--text-muted);word-break:break-all;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tower .foot{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;position:relative}
+.ring{--p:0;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;
+  background:conic-gradient(var(--primary) calc(var(--p)*1%), var(--surface-2) 0);
+  position:relative;flex:none}
+.ring::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--surface-1)}
+.ring span{position:relative;z-index:1;font:700 12px var(--mono)}
+
+/* таблицы и списки */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-weight:600;color:var(--text-muted);font-size:11px;
+  text-transform:uppercase;letter-spacing:.1em;padding:8px 12px;border-bottom:1px solid var(--border)}
+td{padding:10px 12px;border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent);
+  vertical-align:top}
+tr:last-child td{border-bottom:0}
+.scroll-x{overflow-x:auto}
+.list-item{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;
+  border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent)}
+.list-item:last-child{border-bottom:0}
+
+/* консоль */
+.console{background:var(--console-bg);border:1px solid var(--border);border-radius:var(--radius);
+  font:12.5px/1.65 var(--mono);padding:14px 16px;min-height:220px;max-height:52vh;overflow:auto;
+  white-space:pre-wrap;word-break:break-word;color:var(--console-ink)}
+.console .err{color:var(--danger)} .console .ok{color:var(--primary)}
+.console .warn{color:var(--tier-inreview)} .console .dim{color:#6D7F98}
+
+/* модалка / палитра */
+.overlay{position:fixed;inset:0;background:rgba(4,8,18,.62);backdrop-filter:blur(3px);
+  display:none;align-items:flex-start;justify-content:center;padding-top:12vh;z-index:50}
+.overlay.on{display:flex}
+.palette{width:min(680px,92vw);background:var(--surface-1);border:1px solid var(--border);
+  border-radius:16px;box-shadow:0 30px 80px -20px rgba(0,0,0,.7);overflow:hidden}
+.palette input{width:100%;padding:16px 18px;background:transparent;border:0;
+  border-bottom:1px solid var(--border);font-size:16px;outline:0}
+.palette .results{max-height:52vh;overflow:auto}
+.palette .res{display:flex;gap:10px;align-items:center;width:100%;padding:11px 18px;text-align:left}
+.palette .res:hover,.palette .res.sel{background:var(--surface-2)}
+.palette .res .nm{font-weight:600;font-size:13.5px}
+.palette .res .ds{color:var(--text-muted);font-size:12px;flex:1;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.drawer{width:min(560px,94vw);max-height:80vh;overflow:auto;background:var(--surface-1);
+  border:1px solid var(--border);border-radius:16px;padding:22px 24px;
+  box-shadow:0 30px 80px -20px rgba(0,0,0,.7)}
+.flagline{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13.5px}
+.flagline input{accent-color:var(--primary)}
+.note{font-size:12.5px;line-height:1.45;color:var(--text-muted);
+  border-left:2px solid var(--border);padding:2px 0 2px 10px}
+.note.warn{border-color:var(--tier-inreview)}
+.warnbox{border:1px solid color-mix(in oklab,var(--gold) 45%,var(--border));
+  background:color-mix(in oklab,var(--gold) 10%,transparent);border-radius:12px;padding:12px 14px;
+  font-size:13px;margin:14px 0}
+.dangerbox{border-color:color-mix(in oklab,var(--danger) 45%,var(--border));
+  background:color-mix(in oklab,var(--danger) 10%,transparent)}
+
+/* тосты */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:10px;z-index:80}
+.toast{padding:11px 15px;border-radius:12px;border:1px solid var(--border);
+  background:var(--surface-1);font-size:13.5px;box-shadow:0 18px 40px -18px rgba(0,0,0,.8);
+  animation:rise .2s ease}
+.toast.ok{border-color:color-mix(in oklab,var(--primary) 50%,var(--border))}
+.toast.err{border-color:color-mix(in oklab,var(--danger) 50%,var(--border))}
+.toast.warn{border-color:color-mix(in oklab,var(--tier-inreview) 50%,var(--border))}
+
+/* документация */
+.doc{max-width:80ch;font-size:14.5px}
+.doc h1{font-size:22px;margin:22px 0 10px} .doc h2{font-size:17px;margin:24px 0 8px}
+.doc h3{font-size:15px;margin:18px 0 6px} .doc p{margin:10px 0}
+.doc code{font:12.5px var(--mono);background:var(--surface-2);padding:2px 5px;border-radius:5px}
+.doc pre{background:var(--console-bg);border:1px solid var(--border);border-radius:10px;
+  padding:12px 14px;overflow-x:auto}
+.doc pre code{background:none;padding:0;color:var(--console-ink)}
+.doc table{margin:12px 0} .doc li{margin:4px 0}
+.doc blockquote{border-left:3px solid var(--primary);margin:12px 0;padding:2px 14px;color:var(--text-muted)}
+
+.skel{background:linear-gradient(90deg,var(--surface-1),var(--surface-2),var(--surface-1));
+  background-size:200% 100%;animation:sh 1.2s infinite;border-radius:10px;height:74px}
+@keyframes sh{to{background-position:-200% 0}}
+.spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--primary);
+  border-radius:50%;display:inline-block;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media (max-width:860px){#app{grid-template-columns:64px 1fr}nav .label,nav .group,nav .count{display:none}
+  nav button{justify-content:center}main{padding:16px}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" stroke="var(--primary)" stroke-width="1.5"/>
+        <path d="M12 7 7.5 9.5v5L12 17l4.5-2.5v-5L12 7Z" stroke="var(--accent)" stroke-width="1.2"/>
+      </svg>
+      AURORA <small id="kitver">cockpit</small>
+    </div>
+    <button class="btn sm projbadge none" id="projBadge"><span class="dot"></span><span class="nm">Проект не выбран</span></button>
+    <div class="spacer"></div>
+    <button class="btn sm" id="paletteBtn">Команды <span class="kbd">⌘K</span></button>
+    <select class="btn sm" id="skinSel" title="Оформление" aria-label="Скин"
+            style="font-weight:400;padding:5px 8px"></select>
+    <button class="btn sm" id="themeBtn" title="Светлая или тёмная" aria-label="Переключить тему">◐</button>
+  </header>
+
+  <nav>
+    <div class="group">Машина</div>
+    <button data-view="overview" aria-current="true" aria-label="Мостик: все проекты"><span class="label">Мостик</span></button>
+    <button data-view="install" aria-label="Установка компонентов"><span class="label">Установка</span><span class="count" id="navInstall"></span></button>
+    <button data-view="setup" aria-label="Настройка проекта"><span class="label">Настройка</span></button>
+    <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
+    <button data-view="reference" aria-label="Справка"><span class="label">Справка</span></button>
+    <button data-view="about" aria-label="О проекте"><span class="label">О проекте</span></button>
+    <div class="group">Проект</div>
+    <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
+    <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
+    <button data-view="mirrors" aria-label="Зеркала"><span class="label">Зеркала</span><span class="count" id="navMirrors"></span></button>
+    <button data-view="version" aria-label="Версия и миграция"><span class="label">Версия</span><span class="count" id="navVersion"></span></button>
+    <button data-view="console" aria-label="Консоль"><span class="label">Консоль</span></button>
+  </nav>
+
+  <main>
+    <!-- ОБЗОР -->
+    <section class="view on" id="view-overview">
+      <h1>Мостик</h1>
+      <p class="sub">Все проекты на этой машине, работающие на движке Aurora. Цвет ауры —
+        тяжесть проблем: бирюза — порядок, янтарь — есть на что посмотреть, красный — блокеры.</p>
+      <div class="grid tiles" id="towers"></div>
+      <h2>Сводка по машине</h2>
+      <div class="grid metrics" id="globalMetrics"></div>
+    </section>
+
+    <!-- ЗДОРОВЬЕ -->
+    <section class="view" id="view-health">
+      <h1 id="healthTitle">Здоровье базы</h1>
+      <p class="sub">Числа считает движок (<span class="mono">stats --json</span>,
+        <span class="mono">lint</span>, <span class="mono">doctor</span>, <span class="mono">audit</span>),
+        панель только показывает. Любая плитка кликабельна: ведёт к команде, которая с этим работает.</p>
+      <div id="healthBody"></div>
+    </section>
+
+    <!-- КОМАНДЫ -->
+    <section class="view" id="view-commands">
+      <h1>Команды</h1>
+      <p class="sub">Реестр движка. <b>Скрипт</b> — детерминированная механика, её запускает панель.
+        <b>Модель</b> — работа со смыслом: панель показывает процедуру, выполняет ассистент.</p>
+      <div class="row" style="margin-bottom:14px">
+        <input id="cmdSearch" placeholder="Поиск по командам…" class="btn" style="flex:1;min-width:220px;font-weight:400">
+        <span class="chip" id="cmdCount"></span>
+      </div>
+      <div id="cmdList"></div>
+    </section>
+
+    <!-- ЗЕРКАЛА -->
+    <section class="view" id="view-mirrors">
+      <h1>Зеркала внешних систем</h1>
+      <p class="sub">Confluence и Jira выгружаются в <span class="mono">Sources/</span> детерминированными
+        скриптами. Зеркало — объект работы, а не знание: карточки ссылаются на него через <span class="mono">source:</span>.</p>
+      <div id="mirrorsBody"></div>
+    </section>
+
+    <!-- УСТАНОВКА -->
+    <section class="view" id="view-install">
+      <h1>Что доустановить</h1>
+      <p class="sub">Панель проверяет окружение машины и готовность проекта. У каждой строки сказано,
+        какие команды без неё не работают.</p>
+      <div id="installBody"></div>
+    </section>
+
+    <!-- ВЕРСИЯ -->
+    <section class="view" id="view-version">
+      <h1>Версия и миграция</h1>
+      <p class="sub">Движок в проекте обновляется из kit'а по белому списку
+        (<span class="mono">engine_manifest.txt</span>). Контент проекта не трогается никогда.</p>
+      <div id="versionBody"></div>
+    </section>
+
+    <!-- КОНСОЛЬ -->
+    <section class="view" id="view-console">
+      <h1>Консоль</h1>
+      <p class="sub" id="consoleSub">Здесь виден вывод запущенных команд.</p>
+      <div class="row" style="margin-bottom:12px">
+        <span class="chip mono" id="consoleCmd">—</span>
+        <span class="chip" id="consoleRc">не запускалось</span>
+        <div class="spacer"></div>
+        <button class="btn sm" id="clearConsole">Очистить</button>
+      </div>
+      <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
+      <h2>История</h2>
+      <div class="card" id="historyBox"><div class="list-item muted">Пока пусто.</div></div>
+    </section>
+
+    <!-- НАСТРОЙКА -->
+    <section class="view" id="view-setup">
+      <h1>Настройка</h1>
+      <p class="sub">Подключить новый проект и настроить текущий — не выходя в терминал.
+        Форма задаёт те же вопросы, что <span class="mono">setup</span> в терминале, и
+        записывает их тем же скриптом. Ниже — весь конфиг текстом, для того, чего в форме нет.</p>
+      <div id="setupBody"></div>
+    </section>
+
+    <!-- БЫСТРЫЙ СТАРТ -->
+    <section class="view" id="view-quickstart">
+      <h1>Быстрый старт</h1>
+      <p class="sub">Рутина по сценариям, а не по алфавиту: пройдите шаги сверху вниз.
+        Шаги со значком «человек» панель не запускает — это работа, которую делаете вы
+        или ассистент. Сценарии лежат в <span class="mono">cockpit/scenarios.txt</span>
+        и правятся как обычный текст.</p>
+      <div id="quickBody"></div>
+    </section>
+
+    <!-- О ПРОЕКТЕ -->
+    <section class="view" id="view-about">
+      <h1>О проекте</h1>
+      <div id="aboutBody"></div>
+    </section>
+
+    <!-- СПРАВКА -->
+    <section class="view" id="view-reference">
+      <h1>Справка</h1>
+      <p class="sub">Документация фреймворка. Слева — что открыть, справа — текст.</p>
+      <div class="row" style="align-items:flex-start;gap:18px">
+        <div class="card" style="width:250px;flex:none;overflow:hidden" id="docList"></div>
+        <div class="doc" id="docBody" style="flex:1;min-width:0">Выберите документ.</div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="overlay" id="paletteOverlay">
+  <div class="palette" role="dialog" aria-label="Палитра команд">
+    <input id="paletteInput" placeholder="Команда, раздел или проект…" autocomplete="off">
+    <div class="results" id="paletteResults"></div>
+  </div>
+</div>
+<div class="overlay" id="runOverlay"><div class="drawer" id="runDrawer" role="dialog"></div></div>
+<div id="toasts"></div>
+
+<script>
+const TOKEN = "__AURORA_TOKEN__";
+// Версия панели: под какую версию ядра она собрана. Ядро уходит вперёд быстрее, чем
+// интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
+// Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
+// честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
+const UI_VERSION = "1.16.2";
+const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
+
+const $ = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const el = (tag, attrs={}, ...kids)=>{
+  const n = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs)){
+    if (k === "class") n.className = v;
+    else if (k === "html") n.innerHTML = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined)
+    n.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return n;
+};
+const tick = s => esc(s).replace(/`([^`]+)`/g, '<code class="tick">$1</code>');
+const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const api = async (path, opts={}) => {
+  const sep = path.includes("?") ? "&" : "?";
+  const r = await fetch(path + sep + "t=" + encodeURIComponent(TOKEN),
+    {...opts, headers:{"Content-Type":"application/json", ...(opts.headers||{})}});
+  const d = await r.json();
+  if (d.error && !opts.quiet) toast(d.error, "err");
+  return d;
+};
+function toast(msg, kind="ok"){
+  const t = el("div",{class:"toast "+kind}, msg);
+  $("#toasts").append(t);
+  setTimeout(()=>{ t.style.opacity=0; setTimeout(()=>t.remove(),250); }, 4200);
+}
+
+/* ---------------- несохранённые правки ---------------- */
+// Ключ блока → его человекочитаемое имя. Нужны оба: по ключу подсвечиваем нужную кнопку,
+// именем объясняем человеку, что именно он потеряет, если уйдёт.
+const DIRTY = new Map();
+
+function setDirty(key, label, on){
+  if (on) DIRTY.set(key, label); else DIRTY.delete(key);
+  $$(`[data-save="${key}"]`).forEach(b => b.classList.toggle("unsaved", DIRTY.has(key)));
+  $$(`[data-badge="${key}"]`).forEach(n => n.style.display = DIRTY.has(key) ? "" : "none");
+}
+const watch = (node, key, label) => {
+  node.addEventListener("input", () => setDirty(key, label, true));
+  node.addEventListener("change", () => setDirty(key, label, true));
+  return node;
+};
+function saveButton(key, label, text, handler){
+  const badge = el("span",{class:"unsaved-badge","data-badge":key,style:"display:none"},
+    "не сохранено");
+  const btn = el("button",{class:"btn primary","data-save":key, onclick: async e=>{
+    await handler(e);
+  }}, text);
+  return el("div",{class:"row"}, btn, badge);
+}
+function confirmLeave(){
+  if (!DIRTY.size) return true;
+  const names = [...DIRTY.values()].join(", ");
+  const ok = confirm(`Есть несохранённые изменения: ${names}.\n\n` +
+                     "Если уйти со страницы, они потеряются. Всё равно уйти?");
+  if (ok) DIRTY.clear();
+  return ok;
+}
+addEventListener("beforeunload", e => {
+  if (!DIRTY.size) return;
+  e.preventDefault();          // браузер покажет свой диалог: текст задаём не мы
+  e.returnValue = "";
+});
+
+/* ---------------- навигация ---------------- */
+function show(view){
+  // уход из «Настройки» с незаписанными правками — единственное место, где панель
+  // может молча потерять введённое: всё остальное она либо пишет сразу, либо не пишет
+  if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;
+  S.view = view;
+  $$(".view").forEach(v=>v.classList.toggle("on", v.id === "view-"+view));
+  $$("nav button").forEach(b=>b.setAttribute("aria-current", String(b.dataset.view===view)));
+  if (view==="health") renderHealth();
+  if (view==="mirrors") renderMirrors();
+  if (view==="install") renderInstall();
+  if (view==="setup") renderSetup();
+  if (view==="version") renderVersion();
+  if (view==="commands") renderCommands();
+  if (view==="reference") renderReference();
+  if (view==="quickstart") renderQuick();
+  if (view==="about") renderAbout();
+  location.hash = view + (S.project ? "|" + S.project.slug : "");
+}
+$$("nav button").forEach(b=>b.onclick=()=>{
+  if (["health","commands","mirrors","version"].includes(b.dataset.view) && !S.project){
+    toast("Сначала выберите проект на Мостике","warn"); show("overview"); return;
+  }
+  show(b.dataset.view);
+});
+$("#themeBtn").onclick = ()=>{
+  const now = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = now;
+  localStorage.setItem("aurora-theme", now);
+};
+document.documentElement.dataset.theme = localStorage.getItem("aurora-theme") || "dark";
+
+/* ---------------- загрузка ---------------- */
+async function boot(){
+  $("#towers").innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
+  S.state = await api("/api/state");
+  const ui = S.state.ui || {};
+  $("#kitver").textContent = "cockpit " + UI_VERSION + " · kit " + S.state.kit.version;
+  if (ui.behind){
+    $("#kitver").classList.add("stale");
+    $("#kitver").title = "Панель собрана под ядро " + UI_VERSION + ", а установлено " +
+      S.state.kit.version + " — новых команд и метрик в ней может не быть.";
+    const bar = el("div",{class:"stalebar"},
+      el("b",{},"Панель отстала от ядра. "),
+      `Собрана под ${UI_VERSION}, установлено ${S.state.kit.version}. `,
+      "Новые команды в реестре видны, но экраны под них могли не появиться — ",
+      "обновите kit целиком (git pull) или сверьте cockpit/ui/index.html.");
+    $("main").prepend(bar);
+  }
+  $("#navCmds").textContent = S.state.commands.length;
+  const missing = S.state.env.items.filter(i=>!i.ok).length;
+  const ni = $("#navInstall");
+  ni.textContent = missing || "";
+  ni.classList.toggle("bad", missing>0);
+  renderOverview();
+  loadSkins();
+  prefetchHealth();
+  const [v, slug] = (location.hash.slice(1)||"").split("|");
+  if (slug){ const p = S.state.projects.find(p=>p.slug===slug); if (p) await pick(p, false); }
+  if (v) show(v);
+}
+
+/* ---------------- мостик ---------------- */
+async function prefetchHealth(){
+  // последовательно: stats на большой базе занимает секунды, параллель только мешает
+  for (const p of S.state.projects){
+    if (p.health) continue;
+    const h = await api("/api/health?project="+encodeURIComponent(p.path), {quiet:true});
+    if (h && h.stats){ p.health = h; if (S.project && S.project.path===p.path) S.health = h;
+      renderOverview(); renderProjBadge(); }
+  }
+  const total = S.state.projects.reduce((a,p)=>a + (p.health?.doctor.errors.length||0), 0);
+  const g = $("#globalMetrics");
+  if (g.firstChild) g.replaceChild(
+    metric(total, "блокеров во всех проектах", total?"Разбор — раздел «Здоровье»":"Всё чисто",
+      total?"bad":"ok"), g.children[0]);
+}
+function aura(p){
+  if (p.health && p.health.doctor.errors.length) return "var(--danger)";
+  if (p.behind || (p.health && p.health.lint.errors > (p.health.lint.baseline ?? 1e9))) return "var(--tier-inreview)";
+  return "var(--primary)";
+}
+function renderOverview(){
+  const box = $("#towers"); box.innerHTML = "";
+  if (!S.state.projects.length){
+    box.append(el("div",{class:"card",style:"padding:26px"},
+      el("b",{},"Проектов не найдено."),
+      el("p",{class:"muted",style:"margin:8px 0 0"},
+        "Панель ищет aurora.config.yaml рядом с kit'ом. Другие папки — ключ --roots при запуске.")));
+    return;
+  }
+  S.state.projects.forEach(p=>{
+    const h = p.health;
+    const pct = h ? (h.stats.pct_verified ?? 0) : null;
+    const errs = h ? h.doctor.errors.length : null;
+    const lintBad = h && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
+    const t = el("button",{class:"card tower", style:`--aura:${aura(p)}`,
+        "aria-label":`Проект ${p.name}, движок ${p.engine}`, onclick:()=>pick(p)},
+      el("div",{class:"row",style:"align-items:flex-start;gap:14px;position:relative"},
+        el("div",{style:"flex:1;min-width:0"},
+          el("div",{class:"name"}, p.name),
+          el("div",{class:"path"}, p.path)),
+        h ? el("div",{class:"ring",style:`--p:${Math.max(pct,1.5)}`}, el("span",{}, pct+"%"))
+          : el("span",{class:"spin",style:"margin-top:6px"})),
+      el("div",{class:"foot"},
+        el("span",{class:"chip"+(p.behind?" warn":"")}, "движок " + p.engine),
+        h ? el("span",{class:"chip "+(errs?"bad":"ok")},
+              errs ? errs + " блокер" + (errs>1?"ов":"") : "doctor чист") : null,
+        h ? el("span",{class:"chip "+(lintBad?"bad":"")},
+              h.lint.errors + " ошибок линтера") : null,
+        p.git_branch ? el("span",{class:"chip mono"}, p.git_branch) : null,
+        p.dirty ? el("span",{class:"chip warn"}, p.dirty + " не в git")
+                : el("span",{class:"chip ok"},"дерево чисто"),
+      ));
+    t.id = "tower-"+p.slug;
+    box.append(t);
+  });
+  const g = $("#globalMetrics"); g.innerHTML="";
+  g.append(
+    metric(S.state.projects.length, "проектов на движке", "", "ok"),
+    metric(S.state.projects.filter(p=>p.behind).length, "отстают от kit " + S.state.kit.version,
+      "Обновление — раздел «Версия»", S.state.projects.some(p=>p.behind)?"warn":"ok"),
+    metric(S.state.env.items.filter(i=>!i.ok).length, "компонентов не хватает",
+      "Раздел «Установка»", S.state.env.items.some(i=>!i.ok)?"warn":"ok"),
+    metric(S.state.commands.length, "команд в реестре", "⌘K — палитра", "ok"),
+  );
+}
+function metric(val, lbl, hint, cls, onclick){
+  return el("button",{class:"card metric "+(cls||""), onclick: onclick||null},
+    el("div",{class:"val"}, val), el("div",{class:"lbl"}, lbl),
+    hint ? el("div",{class:"hint"}, hint) : null);
+}
+
+function renderProjBadge(){
+  const b = $("#projBadge"), p = S.project;
+  b.classList.toggle("none", !p);
+  b.style.setProperty("--aura", p ? aura(p) : "");
+  $("#projBadge .nm").textContent = p ? p.name : "Проект не выбран";
+  b.title = p ? p.path + "\nдвижок " + p.engine + " · нажмите, чтобы сменить проект"
+              : "Команды, здоровье и зеркала работают с выбранным проектом. Нажмите, чтобы выбрать.";
+}
+$("#projBadge").onclick = ()=>show("overview");
+
+async function pick(p, go=true){
+  S.project = p;
+  $("#healthTitle").textContent = "Здоровье базы · " + p.name;
+  renderProjBadge();
+  if (go) show("health");
+  S.health = null; renderHealth();
+  const h = await api("/api/health?project=" + encodeURIComponent(p.path));
+  S.health = h; p.health = h;
+  renderHealth(); renderOverview(); renderProjBadge();
+  const errs = h.doctor.errors.length;
+  $("#navHealth").textContent = errs || "";
+  $("#navHealth").classList.toggle("bad", errs>0);
+  const mm = (h.mirrors.confluence?.missing||0)+(h.mirrors.jira?.missing||0)
+           + (h.mirrors.confluence?.orphan||0)+(h.mirrors.jira?.orphan||0);
+  $("#navMirrors").textContent = mm || "";
+  $("#navMirrors").classList.toggle("bad", mm>0);
+  $("#navVersion").textContent = p.behind ? "!" : "";
+  $("#navVersion").classList.toggle("bad", !!p.behind);
+}
+
+/* ---------------- здоровье ---------------- */
+function renderHealth(){
+  const box = $("#healthBody");
+  if (!S.project){ box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
+  if (!S.health){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(8)+'</div>'; return; }
+  const h = S.health, st = h.stats || {};
+  box.innerHTML = "";
+
+  const pct = st.pct_verified ?? 0;
+  const ring = el("div",{class:"card",style:"padding:16px;display:flex;gap:16px;align-items:center"},
+    el("div",{class:"ring",style:`--p:${Math.max(pct,1.5)}`}, el("span",{}, pct+"%")),
+    el("div",{},
+      el("div",{style:"font-weight:700"}, "Проверено человеком"),
+      el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"},
+        st.trusted + " из " + st.total + " карточек · порог " + (st.threshold ?? 20) + "%"),
+      st.bootstrap ? el("div",{class:"note warn",style:"margin-top:10px"},
+        "Режим bootstrap: пока доля проверенного ниже порога, непроверенные карточки " +
+        "допускаются в контекст — но каждая с пометкой «НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ».") : null));
+  const strip = el("div",{class:"card",style:"padding:16px"},
+    el("div",{style:"font-weight:700;margin-bottom:10px"},"Статусы карточек"),
+    statusBar(st.statuses||{}));
+  box.append(el("div",{class:"grid",style:"grid-template-columns:minmax(260px,1fr) 2fr;gap:14px"}, ring, strip));
+
+  const lintBad = h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
+  box.append(el("h2",{},"Механика базы"));
+  box.append(el("div",{class:"grid metrics"},
+    metric(h.lint.errors ?? "—", "ошибок линтера",
+      h.lint.baseline!==null ? "храповик: "+h.lint.baseline : "базовой линии нет",
+      lintBad?"bad":(h.lint.errors?"warn":"ok"), ()=>openRun("kb:lint")),
+    metric(st.orphans_count ?? "—","карточек-сирот","ни одной входящей ссылки","warn",()=>openRun("kb:queue")),
+    metric(st.missing_source_count ?? "—","битых источников","source: ведёт в никуда",
+      st.missing_source_count?"bad":"ok", ()=>openRun("kit:remap-sources")),
+    metric(st.expired_count ?? "—","протухших verified","review_by в прошлом",
+      st.expired_count?"warn":"ok", ()=>openRun("kb:verify")),
+    metric(st.no_owner_count ?? "—","verified без владельца","некому отвечать",
+      st.no_owner_count?"warn":"ok"),
+    metric(st.total ?? "—","карточек всего","", "ok", ()=>openRun("kb:index")),
+  ));
+
+  box.append(el("h2",{},"Требования и поставка"));
+  box.append(el("div",{class:"grid metrics"},
+    metric(st.req_total ?? 0,"требований","REQ в базе","ok",()=>openRun("ops:trace")),
+    metric(st.req_agreed_no_jira ?? 0,"согласованы без задач","трассировка не заведена",
+      st.req_agreed_no_jira?"warn":"ok", ()=>openRun("sync:jira-status")),
+    metric(st.questions_open ?? 0,"открытых вопросов",
+      (st.questions_overdue_count?st.questions_overdue_count+" просрочено":"к заказчику"),
+      st.questions_overdue_count?"bad":"warn"),
+    metric(st.specs?.total ?? 0,"спецификаций","бандл — make:spec-pack","ok",()=>openRun("make:spec-pack")),
+    metric(st.artifacts_with_based_on ?? 0,"артефактов с основаниями",
+      "из " + (st.artifacts_total ?? 0) + " всего","ok"),
+    metric((st.risky_deliverables||[]).length,"рискованных поставок",
+      "собраны на непроверенном",(st.risky_deliverables||[]).length?"bad":"ok"),
+  ));
+
+  if (h.doctor.errors.length || h.doctor.warns.length){
+    box.append(el("h2",{},"Готовность проекта"));
+    const c = el("div",{class:"card"});
+    h.doctor.errors.forEach(e=>c.append(el("div",{class:"list-item"},
+      el("span",{class:"chip bad"},"блокер"), el("div",{}, e))));
+    h.doctor.warns.forEach(w=>c.append(el("div",{class:"list-item"},
+      el("span",{class:"chip warn"},"замечание"), el("div",{}, w))));
+    box.append(c);
+  } else {
+    box.append(el("h2",{},"Готовность проекта"));
+    box.append(el("div",{class:"card",style:"padding:22px;display:flex;gap:12px;align-items:center"},
+      el("span",{class:"chip ok"},"✓ чисто"),
+      el("div",{}, "doctor не нашёл ни блокеров, ни замечаний.")));
+  }
+}
+function statusBar(statuses){
+  const order = ["verified","in-review","draft","imported","deprecated"];
+  const color = {verified:"--tier-verified","in-review":"--tier-inreview",draft:"--tier-draft",
+    imported:"--tier-imported",deprecated:"--tier-deprecated"};
+  const total = Object.values(statuses).reduce((a,b)=>a+b,0) || 1;
+  const bar = el("div",{style:"display:flex;height:12px;border-radius:8px;overflow:hidden;background:var(--surface-2)"});
+  const legend = el("div",{class:"row",style:"margin-top:12px"});
+  const keys = [...order.filter(k=>statuses[k]), ...Object.keys(statuses).filter(k=>!order.includes(k))];
+  keys.forEach(k=>{
+    const v = statuses[k]; if (!v) return;
+    const c = color[k] ? `var(${color[k]})` : "var(--tier-imported)";
+    bar.append(el("div",{style:`width:${v/total*100}%;background:${c}`,title:`${k}: ${v}`}));
+    legend.append(el("span",{class:"chip tier"},
+      el("span",{class:"dot",style:`background:${c}`}), `${k} · ${v}`));
+  });
+  return el("div",{}, bar, legend);
+}
+
+/* ---------------- зеркала ---------------- */
+function renderMirrors(){
+  const box = $("#mirrorsBody");
+  if (!S.project || !S.health){ box.innerHTML='<div class="card" style="padding:24px">Нет данных — выберите проект.</div>'; return; }
+  const m = S.health.mirrors, p = S.project;
+  box.innerHTML = "";
+  const card = (title, data, cmd, tokenOk, what) => {
+    const bad = data && (data.missing || data.orphan);
+    return el("div",{class:"card",style:"padding:18px"},
+      el("div",{class:"row"}, el("b",{},title),
+        el("span",{class:"chip "+(tokenOk?"ok":"warn")}, tokenOk?"токен есть":"токена нет")),
+      el("p",{class:"muted",style:"font-size:13px;margin:10px 0"}, what),
+      data ? el("div",{class:"row"},
+        el("span",{class:"chip "+(data.missing?"bad":"ok")}, "MISSING " + data.missing),
+        el("span",{class:"chip "+(data.orphan?"bad":"ok")}, "ORPHAN " + data.orphan))
+        : el("div",{class:"chip"},"зеркало пустое"),
+      el("div",{class:"row",style:"margin-top:14px"},
+        el("button",{class:"btn sm primary", disabled: tokenOk?null:"", onclick:()=>openRun(cmd)}, "Синхронизировать"),
+        el("button",{class:"btn sm", onclick:()=>openRun("sync:audit")}, "Проверить целостность"),
+        bad ? el("span",{class:"chip warn"},"есть расхождения — сначала аудит") : null));
+  };
+  box.append(el("div",{class:"grid",style:"grid-template-columns:repeat(auto-fit,minmax(320px,1fr))"},
+    card("Confluence · " + (p.space||"—"), m.confluence, "sync:confluence", p.confluence_token,
+      "Страницы пространства выгружаются в Sources/Confluence/ детерминированно: тот же текст даёт тот же файл."),
+    card("Jira · " + (p.jira_key||"—"), m.jira, "sync:jira", p.jira_token,
+      "Задачи проекта в Sources/JIRA/. Обратный поток статусов в требования — sync:jira-status.")));
+  box.append(el("h2",{},"Дальше по цепочке"));
+  box.append(el("div",{class:"card"},
+    ["sync:audit","sync:diff","sync:jira-status","kit:remap-sources"].map(c=>{
+      const row = S.state.commands.find(x=>x.cmd===c); if(!row) return null;
+      return el("div",{class:"list-item"},
+        el("span",{class:"chip mono"}, c),
+        el("div",{style:"flex:1",html:tick(row.what)}),
+        el("button",{class:"btn sm",onclick:()=>openRun(c)},"Запустить"));
+    })));
+  if (!p.has_env)
+    box.append(el("div",{class:"warnbox"},
+      "Файла .env.aurora.local нет — синк работать не будет. Образец: aurora.env.local.example, " +
+      "нужны CONFLUENCE_PERSONAL_TOKEN и JIRA_PERSONAL_TOKEN (те же, что в mcp-atlassian)."));
+}
+
+/* ---------------- установка ---------------- */
+function renderInstall(){
+  const box = $("#installBody"); box.innerHTML = "";
+  const e = S.state.env;
+  box.append(el("div",{class:"row",style:"margin-bottom:14px"},
+    el("span",{class:"chip ok"},"Python " + e.python),
+    el("span",{class:"chip"},"kit " + S.state.kit.version),
+    el("span",{class:"chip mono"}, S.state.kit.path)));
+  const c = el("div",{class:"card"});
+  e.items.forEach(i=>{
+    c.append(el("div",{class:"list-item"},
+      el("span",{class:"chip "+(i.ok?"ok":"warn"),style:"flex:none"}, i.ok?"✓ есть":"нет"),
+      el("div",{style:"flex:1;min-width:0"},
+        el("div",{style:"font-weight:600"}, i.name),
+        el("div",{class:"muted",style:"font-size:12.5px;margin-top:2px"}, "Включает: " + i.enables),
+        i.ok?null:el("div",{class:"mono",style:"font-size:12px;margin-top:6px;color:var(--text-muted)"}, i.install))));
+  });
+  box.append(c);
+
+  if (S.project){
+    box.append(el("h2",{},"Готовность проекта · " + S.project.name));
+    const p = S.project, pc = el("div",{class:"card"});
+    const line = (ok, name, what, cmd) => el("div",{class:"list-item"},
+      el("span",{class:"chip "+(ok?"ok":"warn"),style:"flex:none"}, ok?"✓":"нет"),
+      el("div",{style:"flex:1"}, el("div",{style:"font-weight:600"},name),
+        el("div",{class:"muted",style:"font-size:12.5px"},what)),
+      cmd ? el("button",{class:"btn sm",onclick:()=>openRun(cmd)},"Починить") : null);
+    pc.append(line(p.has_env, "Файл доступов .env.aurora.local",
+      "Токены Confluence/Jira для скриптов синка. Панель видит только «заполнено/пусто»."));
+    pc.append(line(p.confluence_token, "Токен Confluence", "sync:confluence, ship:publish"));
+    pc.append(line(p.jira_token, "Токен Jira", "sync:jira, sync:jira-status"));
+    pc.append(line(!p.behind, "Движок актуален", "в проекте " + p.engine + ", в kit " + p.kit, "kit:update"));
+    if (S.health){
+      pc.append(line(S.health.lint.baseline !== null, "Храповик линтера",
+        "git-хук не даёт числу ошибок расти", "kit:hooks"));
+      pc.append(line(!S.health.doctor.errors.length, "Структура и конфиг",
+        S.health.doctor.errors[0] || "схема папок совпадает с движком", "kit:structure"));
+    }
+    box.append(pc);
+  }
+}
+
+/* ---------------- версия ---------------- */
+function renderVersion(){
+  const box = $("#versionBody"); box.innerHTML="";
+  const p = S.project;
+  if (!p){ box.innerHTML='<div class="card" style="padding:24px">Выберите проект.</div>'; return; }
+  box.append(el("div",{class:"card",style:"padding:20px"},
+    el("div",{class:"row"},
+      el("div",{}, el("div",{class:"muted",style:"font-size:12px"},"В проекте"),
+        el("div",{class:"mono",style:"font-size:24px;font-weight:700"}, p.engine)),
+      el("div",{style:"font-size:22px;color:var(--text-muted)"},"→"),
+      el("div",{}, el("div",{class:"muted",style:"font-size:12px"},"В kit"),
+        el("div",{class:"mono",style:"font-size:24px;font-weight:700;color:var(--gold)"}, p.kit)),
+      el("div",{class:"spacer"}),
+      p.behind ? el("span",{class:"chip warn"},"отстаёт") : el("span",{class:"chip ok"},"актуально")),
+    el("div",{class:"row",style:"margin-top:18px"},
+      el("button",{class:"btn primary",onclick:()=>openRun("kit:update")},"Предпросмотр обновления"),
+      el("button",{class:"btn sm",onclick:()=>openDoc("CHANGELOG.md")},"Что нового"))));
+  box.append(el("div",{class:"warnbox"},
+    "Обновление переписывает только файлы из engine_manifest.txt: скилл, скрипты, схему папок. " +
+    "Ваши шаблоны и промпты не трогаются — новая версия кладётся рядом как .new. " +
+    "После применения сделайте коммит: так видно, что именно поменял движок."));
+  box.append(el("h2",{},"Миграция чужого проекта"));
+  box.append(el("div",{class:"card"},
+    el("div",{class:"list-item"}, el("span",{class:"chip mono"},"kit:update --structure-only"),
+      el("div",{style:"flex:1"},"Создать недостающие папки схемы, не трогая движок"),
+      el("button",{class:"btn sm",onclick:()=>openRun("kit:update",["--structure-only"])},"Открыть")),
+    el("div",{class:"list-item"}, el("span",{class:"chip mono"},"kit:structure"),
+      el("div",{style:"flex:1"},"Показать папки вне схемы: их содержимое переносится в Workspaces/"),
+      el("button",{class:"btn sm",onclick:()=>openRun("kit:structure")},"Открыть")),
+    el("div",{class:"list-item"}, el("span",{class:"chip mono"},"kb:retire"),
+      el("div",{style:"flex:1"},"Убрать поля, выведенные из схемы (audience, confirmed_by)"),
+      el("button",{class:"btn sm",onclick:()=>openRun("kb:retire")},"Открыть"))));
+}
+
+/* ---------------- команды ---------------- */
+function kindChip(kind){
+  if (kind==="скрипт") return el("span",{class:"chip ok"},"скрипт");
+  if (kind==="модель") return el("span",{class:"chip"},"модель");
+  return el("span",{class:"chip warn"},"скрипт+модель");
+}
+function renderCommands(){
+  const q = ($("#cmdSearch").value||"").toLowerCase().trim();
+  const rows = S.state.commands.filter(r=>!q ||
+    (r.cmd+" "+r.alias+" "+r.what+" "+r.impl).toLowerCase().includes(q));
+  $("#cmdCount").textContent = rows.length + " из " + S.state.commands.length;
+  const box = $("#cmdList"); box.innerHTML="";
+  const groups = {};
+  rows.forEach(r=>(groups[r.ns] ||= []).push(r));
+  const titles = {kit:"kit: движок и проект", sync:"sync: зеркала внешних систем",
+    kb:"kb: извлечение и жизнь знания", ctx:"ctx: использование знаний",
+    make:"make: производство артефактов", ship:"ship: наружу", ops:"ops: управление и отчётность"};
+  Object.entries(groups).forEach(([ns, list])=>{
+    box.append(el("h2",{}, titles[ns]||ns));
+    const c = el("div",{class:"card"});
+    list.forEach(r=>{
+      const writes = r.flags.includes("--apply");
+      const outward = ["sync:confluence","sync:jira","ship:publish","ship:export"].includes(r.cmd);
+      c.append(el("div",{class:"list-item"},
+        el("div",{style:"flex:1;min-width:0"},
+          el("div",{class:"row",style:"gap:8px"},
+            el("span",{class:"mono",style:"font-weight:700"}, r.cmd),
+            r.alias?el("span",{class:"muted",style:"font-size:12px"},"("+r.alias+")"):null,
+            kindChip(r.kind),
+            writes?el("span",{class:"chip warn"},"пишет"):null,
+            outward?el("span",{class:"chip gold"},"наружу"):null,
+            el("span",{class:"chip"},"с "+r.since)),
+          el("div",{class:"muted",style:"font-size:13px;margin-top:5px",html:tick(r.what)}),
+          r.flags.length?el("div",{class:"mono",style:"font-size:11.5px;color:var(--text-muted);margin-top:6px"},
+            r.flags.join(" ")):null),
+        r.runnable
+          ? el("button",{class:"btn sm primary",onclick:()=>openRun(r.cmd)},"Запустить")
+          : el("button",{class:"btn sm",onclick:()=>openDoc("skills/aurora-vault/references/"+r.impl)},"Процедура")));
+    });
+    box.append(c);
+  });
+}
+$("#cmdSearch").addEventListener("input", renderCommands);
+
+/* ---------------- запуск ---------------- */
+// Пояснения к флагам приходят из --help скриптов. Здесь только то, чего в --help
+// нет и быть не должно: предупреждение о последствиях.
+const DANGER_FLAGS = {
+  "--apply": "запишет изменения в файлы проекта — они попадут в git diff",
+  "--allow-dirty": "снимает защиту: при незакоммиченных правках откат станет невозможен",
+  "--force": "перезапишет то, что движок обычно не трогает",
+  "--link": "проставит найденные связи в карточки требований",
+  "--include-raw": "тронет доказательства (Raw/, released/) — они считаются неизменяемыми",
+  "--merge": "сольёт две карточки в одну: вторая уедет в архив",
+  "--prune": "удалит из зеркала файлы, которых больше нет в источнике",
+};
+// Что подставлять в аргумент: короткий пример вместо абстрактного имени переменной.
+const ARG_HINTS = {
+  "ctx:context": "тема, например «Заявка»",
+  "make:spec-pack": "идентификатор спеки, например SPEC-012",
+  "ops:impact": "имя карточки, например Шина-обмена",
+  "kb:verify": "раздел базы, например Glossary",
+  "kb:supersede": "старая карточка и новая через пробел",
+  "ship:release": "путь к документу в Deliverables/work/",
+  "ship:publish": "путь к артефакту в Artifacts/",
+  "ship:export": "путь к markdown-файлу",
+  "kb:scrub": "папка или файл (по умолчанию — вся база)",
+  "kit:list": "неймспейс: kit, sync, kb, ctx, make, ship, ops",
+};
+
+let RUN = null;
+function openRun(cmdName, preFlags=[]){
+  if (!S.project){ toast("Сначала выберите проект","warn"); show("overview"); return; }
+  const r = S.state.commands.find(x=>x.cmd===cmdName);
+  if (!r) return toast("Команда не найдена","err");
+  if (!r.runnable){ openDoc("skills/aurora-vault/references/"+r.impl); return; }
+  RUN = {row:r, flags:new Set(preFlags), args:"", previewed:false};
+  drawRun();
+  $("#runOverlay").classList.add("on");
+  setTimeout(()=>$("#runDrawer").querySelector("button,input")?.focus(),40);
+}
+function drawRun(){
+  const r = RUN.row, d = $("#runDrawer");
+  const writes = r.flags.includes("--apply");
+  const outward = ["sync:confluence","sync:jira","ship:publish","ship:export"].includes(r.cmd);
+  d.innerHTML="";
+  d.append(
+    el("div",{class:"row"}, el("span",{class:"mono",style:"font-size:17px;font-weight:800"}, r.cmd),
+      kindChip(r.kind), writes?el("span",{class:"chip warn"},"пишет в файлы"):null,
+      outward?el("span",{class:"chip gold"},"меняет внешнюю систему"):null),
+    el("p",{class:"muted",style:"font-size:13.5px;margin:10px 0 4px",html:tick(r.what)}),
+    el("div",{class:"mono",style:"font-size:12px;color:var(--text-muted)"},
+      ".opencode/scripts/" + r.impl + (r.args? " " + r.args : "")));
+  if (r.args){
+    const opt = r.args.trim().startsWith("[");
+    d.append(el("div",{style:"margin-top:14px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:6px"},
+        (opt ? "Аргумент (необязательный): " : "Аргумент (обязательный): ") + r.args +
+        (ARG_HINTS[r.cmd] ? " — " + ARG_HINTS[r.cmd] : "")),
+      el("input",{class:"btn",style:"width:100%;font-weight:400",
+        placeholder: ARG_HINTS[r.cmd] || r.args,
+        oninput:e=>RUN.args=e.target.value})));
+  }
+  const flags = r.flags.filter(f=>f!=="--apply");
+  if (flags.length){
+    const help = r.flag_help || {};
+    d.append(el("div",{style:"margin-top:16px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
+        "Модификаторы — по умолчанию выключены, команда работает в базовом режиме"),
+      ...flags.map(f=>el("label",{class:"flagline"},
+        el("input",{type:"checkbox", onchange:e=>e.target.checked?RUN.flags.add(f):RUN.flags.delete(f),
+          checked: RUN.flags.has(f)?"":null}),
+        el("span",{},
+          el("span",{class:"mono",style:"font-weight:600"}, f),
+          help[f] ? el("span",{class:"muted",style:"font-size:12.5px"}, " — " + help[f]) : null,
+          DANGER_FLAGS[f] ? el("div",{class:"muted",style:"font-size:11.5px;color:var(--tier-inreview)"},
+            DANGER_FLAGS[f]) : null)))));
+  }
+  if (writes){
+    d.append(el("div",{class:"warnbox"+(RUN.previewed?"":" ")},
+      RUN.previewed
+        ? "Предпросмотр выполнен. «Применить» запишет изменения в файлы проекта — они попадут в git diff."
+        : "Команда умеет писать. Сначала предпросмотр без --apply: он ничего не меняет и показывает, что произойдёт."));
+  }
+  if (outward){
+    const tok = r.cmd.startsWith("sync:jira") ? S.project.jira_token : S.project.confluence_token;
+    if (!tok) d.append(el("div",{class:"warnbox dangerbox"},
+      "Нет токена для этой системы в .env.aurora.local — запуск завершится ошибкой доступа. " +
+      "Раздел «Установка» подскажет, что положить в файл."));
+  }
+  d.append(el("div",{class:"row",style:"margin-top:20px"},
+    el("button",{class:"btn primary",onclick:()=>fire(false)}, writes?"Предпросмотр":"Запустить"),
+    writes?el("button",{class:"btn gold",disabled:RUN.previewed?null:"",onclick:()=>{
+      if (confirm(`Записать изменения в проект «${S.project.name}»?\n\n${RUN.row.cmd} --apply\n\nОтменить можно через git.`)) fire(true);
+    }},"Применить"):null,
+    el("div",{class:"spacer"}),
+    el("button",{class:"btn sm",onclick:closeRun},"Закрыть")));
+}
+function closeRun(){ $("#runOverlay").classList.remove("on"); }
+$("#runOverlay").onclick = e => { if (e.target.id==="runOverlay") closeRun(); };
+
+async function fire(apply){
+  const r = RUN.row;
+  const args = [];
+  if (RUN.args.trim()) args.push(...RUN.args.trim().split(/\s+/));
+  RUN.flags.forEach(f=>args.push(f));
+  if (apply) args.push("--apply");
+  closeRun(); show("console");
+  const out = $("#consoleOut"); out.innerHTML="";
+  $("#consoleCmd").textContent = r.cmd + " " + args.join(" ");
+  $("#consoleRc").textContent = "выполняется…";
+  $("#consoleRc").className = "chip";
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, cmd:r.cmd, args})});
+  if (!res.job) return;
+  if (!apply) RUN.previewed = true;
+  poll(res.job, 0, r.cmd + " " + args.join(" "));
+}
+async function poll(id, since, label){
+  const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
+  const out = $("#consoleOut");
+  (d.lines||[]).forEach(l=>{
+    const cls = /ERROR|❌|ошибк|не найден|отказ/i.test(l) ? "err"
+      : /✅|OK:|готово|подтверждён/i.test(l) ? "ok"
+      : /WARN|⚠️|внимание/i.test(l) ? "warn"
+      : /^\s*(#|—|\.\.\.)/.test(l) ? "dim" : "";
+    out.append(el("div",{class:cls}, l));
+  });
+  out.scrollTop = out.scrollHeight;
+  if (!d.done) return setTimeout(()=>poll(id, d.next, label), 450);
+  const rc = d.rc;
+  const badge = $("#consoleRc");
+  badge.textContent = rc===0 ? "успех · код 0" : "код возврата " + rc;
+  badge.className = "chip " + (rc===0 ? "ok" : "bad");
+  toast(rc===0 ? "Готово: " + label : "Команда вернула код " + rc, rc===0?"ok":"err");
+  S.history.unshift({label, rc, at:new Date().toLocaleTimeString("ru-RU")});
+  renderHistory();
+  if (S.project) { const p = S.project;
+    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
+      if (S.view==="health") renderHealth(); renderOverview();}); }
+}
+function renderHistory(){
+  const box = $("#historyBox"); box.innerHTML="";
+  if (!S.history.length){ box.append(el("div",{class:"list-item muted"},"Пока пусто.")); return; }
+  S.history.slice(0,12).forEach(h=>box.append(el("div",{class:"list-item"},
+    el("span",{class:"chip "+(h.rc===0?"ok":"bad")}, h.rc===0?"ok":"rc "+h.rc),
+    el("span",{class:"mono",style:"flex:1"}, h.label),
+    el("span",{class:"muted",style:"font-size:12px"}, h.at))));
+}
+$("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; };
+
+/* ---------------- настройка ---------------- */
+async function renderSetup(){
+  const box = $("#setupBody"); box.innerHTML = "";
+  DIRTY.clear();     // раздел перерисован заново — значения в полях снова совпадают с файлом
+
+  // 1. новый проект
+  const nf = {};
+  const field = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:10px"},
+    el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, label +
+      (hint ? " · " + hint : "")),
+    watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
+      oninput:e=>nf[key]=e.target.value}), "new", "«Подключить новый проект»"));
+  const roots = await api("/api/roots");
+  const newBox = el("div",{class:"card",style:"padding:20px"},
+    el("b",{},"Подключить новый проект"),
+    el("p",{class:"muted",style:"font-size:13px;margin:8px 0 14px"},
+      "Развернёт структуру и движок в указанной папке. Путь должен быть внутри корней, " +
+      "по которым панель ищет проекты: " + (roots.roots||[]).join(", ")),
+    field("path","Путь к папке","" + ((roots.roots||[""])[0] || "") + "/my-project"),
+    field("name","Название проекта","Northwind","человекочитаемое"),
+    field("slug","Slug","Northwind","латиницей, попадёт в имена sync-скиллов"),
+    field("space","Пространство Confluence","NW","можно позже"),
+    field("jira","Ключ проекта Jira","NW","можно позже"),
+    el("div",{class:"row",style:"margin-top:6px"},
+      saveButton("new","«Подключить новый проект»","Развернуть", async e=>{
+        e.target.disabled = true; e.target.textContent = "Разворачиваю…";
+        const r = await api("/api/project/new",{method:"POST",body:JSON.stringify(nf)});
+        e.target.disabled = false; e.target.textContent = "Развернуть";
+        if (r.ok){
+          toast("Проект развёрнут: " + r.path);
+          setDirty("new","«Подключить новый проект»",false);
+          S.state = await api("/api/state");
+          renderOverview(); renderSetup();
+        }
+      }),
+      el("span",{class:"muted",style:"font-size:12px"},
+        "git init и первый коммит сделайте сами — фреймворк живёт в git")));
+  box.append(newBox);
+
+  if (!S.project){
+    box.append(el("h2",{},"Настройки проекта"),
+      el("div",{class:"card",style:"padding:22px"},"Выберите проект на Мостике — и здесь появятся его настройки."));
+    return;
+  }
+
+  // 2. настройка проекта формой — те же вопросы, что задаёт setup в терминале
+  box.append(el("h2",{},"Настройки проекта · " + S.project.name));
+  const cfgRaw = await api("/api/config?project=" + encodeURIComponent(S.project.path));
+  const get = (k, d="") => {
+    const m = cfgRaw.text && cfgRaw.text.match(new RegExp("^\\s*"+k+"\\s*:\\s*\"?([^\"\n#]+?)\"?\\s*$","m"));
+    return m ? m[1].trim() : d;
+  };
+  const A = {
+    name: get("name"), slug: get("slug"),
+    conf_url: get("base_url"), conf_space: get("space"),
+    jira_url: (cfgRaw.text.split("jira:")[1]||"").match(/base_url:\s*"?([^"\n]+)/)?.[1]?.trim() || "",
+    jira_key: get("project_key"), jira_jql: get("default_jql"),
+    scrub: get("scrub","report"), threshold: get("verified_threshold_pct","20"),
+    // важно принимать не только цифры: корень, который не удалось разрешить, всё равно
+    // должен показаться в форме — иначе «сохранено», а строки нет, и человек в тупике
+    sync_roots: [...(cfgRaw.text.matchAll(/page_id:\s*"?([^"\n]+?)"?\s*\n\s*title:\s*"?([^"\n]+?)"?\s*$/gm))]
+      .map(m=>({page_id:m[1], title:m[2]})),
+  };
+  const inp = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:12px"},
+    el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
+      label + (hint ? " · " + hint : "")),
+    watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
+      value:A[key]||"", oninput:e=>A[key]=e.target.value}), "form", "«Настройки проекта»"));
+
+  const rootsBox = el("div",{});
+  const drawRoots = () => {
+    rootsBox.innerHTML = "";
+    A.sync_roots.forEach((r, i) => rootsBox.append(el("div",{class:"row",style:"margin-bottom:8px"},
+      watch(el("input",{class:"btn mono",style:"width:190px;font-weight:400",
+        placeholder:"page_id или ссылка", value:r.page_id,
+        oninput:e=>r.page_id=e.target.value}), "form", "«Настройки проекта»"),
+      watch(el("input",{class:"btn",style:"flex:1;min-width:160px;font-weight:400",
+        placeholder:"название раздела", value:r.title,
+        oninput:e=>r.title=e.target.value}), "form", "«Настройки проекта»"),
+      el("button",{class:"btn sm danger",title:"убрать",
+        onclick:()=>{A.sync_roots.splice(i,1); drawRoots();
+                     setDirty("form","«Настройки проекта»",true);}},"✕"))));
+    rootsBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
+      onclick:()=>{A.sync_roots.push({page_id:"",title:""}); drawRoots();
+                   setDirty("form","«Настройки проекта»",true);}},
+      "+ добавить корневую страницу"));
+  };
+  drawRoots();
+
+  box.append(el("div",{class:"card",style:"padding:20px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},
+      "Те же вопросы, что задаёт setup в терминале. Записывает их сам setup — панель " +
+      "только собирает ответы, поэтому конфиг всегда получается одинаковым."),
+    inp("name","Название проекта","My Project"),
+    inp("slug","Slug","MyProject","латиницей, попадёт в имена sync-скиллов"),
+    el("div",{class:"sep"}),
+    inp("conf_url","Confluence: адрес","https://confluence.example.com"),
+    inp("conf_space","Confluence: пространство","SPACE"),
+    el("div",{class:"muted",style:"font-size:12px;margin:14px 0 6px"},
+      "Корневые страницы синка · тянется страница со всем поддеревом, поэтому их обычно несколько"),
+    rootsBox,
+    el("div",{class:"sep"}),
+    inp("jira_url","Jira: адрес","https://jira.example.com"),
+    inp("jira_key","Jira: ключ проекта","PROJ"),
+    inp("jira_jql","Jira: JQL по умолчанию","project = PROJ ORDER BY updated DESC"),
+    el("div",{class:"sep"}),
+    el("label",{style:"display:block;margin-bottom:12px"},
+      el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
+        "Приватность (kb:scrub) · off — закрытый контур, report — показывать, mask — маскировать"),
+      watch(el("select",{class:"btn",style:"width:100%;font-weight:400",
+        onchange:e=>A.scrub=e.target.value},
+        ...["report","off","mask"].map(v=>el("option",{value:v, selected:A.scrub===v?"":null}, v))),
+        "form", "«Настройки проекта»")),
+    inp("threshold","Порог bootstrap, % verified","20","ниже порога непроверенное допускается в контекст"),
+    el("div",{class:"row",style:"margin-top:8px"},
+      saveButton("form","«Настройки проекта»","Сохранить настройки", async e=>{
+        e.target.disabled = true;
+        // ссылка вида …/display/ПРОСТРАНСТВО/Заголовок номера не содержит — спрашиваем
+        // его у Confluence, пока человек ещё на странице и может поправить адрес
+        const unresolved = A.sync_roots.filter(r => (r.page_id||"").trim() &&
+          !/^\d+$/.test(r.page_id.trim()) && !/pageId=\d+/.test(r.page_id));
+        if (unresolved.length){
+          e.target.textContent = "Разрешаю ссылки…";
+          const res = await api("/api/confluence/resolve",{method:"POST",
+            body:JSON.stringify({project:S.project.path, refs: unresolved.map(r=>r.page_id)})});
+          (res.refs||[]).forEach(item=>{
+            const row = A.sync_roots.find(r=>r.page_id === item.raw);
+            if (!row) return;
+            if (item.page_id){
+              row.page_id = item.page_id;
+              if (item.title && !row.title.trim()) row.title = item.title;
+            } else if (item.error){
+              toast(`${item.raw}: ${item.error}`, "err");
+            }
+          });
+          e.target.textContent = "Сохранить настройки";
+          drawRoots();
+          if ((res.refs||[]).some(i=>!i.page_id)){
+            e.target.disabled = false;
+            return;      // не пишем заведомо нерабочий корень
+          }
+        }
+        const r = await api("/api/setup",{method:"POST",
+          body:JSON.stringify({project:S.project.path, ...A})});
+        e.target.disabled = false;
+        if (r.ok){
+          toast("Настройки записаны");
+          setDirty("form","«Настройки проекта»",false);
+          S.state = await api("/api/state");
+          S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
+          renderOverview(); renderSetup();
+        }
+      }),
+      el("span",{class:"muted",style:"font-size:12px"},
+        "переименование slug переименует и папки sync-скиллов"))));
+
+  // 3. доступы
+  box.append(el("h2",{},"Доступы · " + S.project.name));
+  const tk = {};
+  const tokenField = (key, label, filled) => el("label",{style:"display:block;margin-bottom:12px"},
+    el("div",{class:"row",style:"gap:8px;margin-bottom:4px"},
+      el("span",{class:"muted",style:"font-size:12px"}, label),
+      el("span",{class:"chip "+(filled?"ok":"warn")}, filled?"заполнен":"пусто")),
+    watch(el("input",{class:"btn",type:"password",autocomplete:"off",
+      style:"width:100%;font-weight:400",placeholder: filled?"••••••  (ввод заменит)":"вставьте токен",
+      oninput:e=>tk[key]=e.target.value}), "tokens", "«Доступы»"));
+  box.append(el("div",{class:"card",style:"padding:20px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},
+      "Персональные токены Confluence и Jira — те же, что в mcp-atlassian. Пишутся в " +
+      ".env.aurora.local (закрыт .gitignore, права 600). Обратно панель их не показывает " +
+      "никогда: знает только «заполнен» или «пусто»."),
+    tokenField("CONFLUENCE_PERSONAL_TOKEN","Confluence", S.project.confluence_token),
+    tokenField("JIRA_PERSONAL_TOKEN","Jira", S.project.jira_token),
+    saveButton("tokens","«Доступы»","Сохранить доступы", async ()=>{
+      if (!Object.values(tk).some(v=>(v||"").trim())) return toast("Нечего сохранять","warn");
+      const r = await api("/api/tokens",{method:"POST",
+        body:JSON.stringify({project:S.project.path, ...tk})});
+      if (r.ok){ toast("Токены записаны"); setDirty("tokens","«Доступы»",false);
+        S.state = await api("/api/state");
+        S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
+        renderSetup(); }
+    })));
+
+  // 4. конфиг как текст — для того, чего нет в форме
+  box.append(el("h2",{},"aurora.config.yaml · полный текст"));
+  const cfg = await api("/api/config?project=" + encodeURIComponent(S.project.path));
+  const ta = watch(el("textarea",{class:"mono",spellcheck:"false",
+    style:"width:100%;min-height:340px;background:var(--console-bg);color:var(--console-ink);"+
+          "border:1px solid var(--border);"+
+          "border-radius:12px;padding:14px 16px;font-size:12.5px;line-height:1.6;resize:vertical"},
+    cfg.text || ""), "yaml", "«aurora.config.yaml»");
+  box.append(el("div",{class:"card",style:"padding:18px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 12px"},
+      "Форма выше покрывает обычные поля. Здесь — весь файл целиком: списки статусов Jira " +
+      "(done_statuses, cancelled_statuses), рекомендованные скиллы, пути. Перед записью " +
+      "прежняя версия сохраняется рядом как .bak."),
+    ta,
+    el("div",{class:"row",style:"margin-top:12px"},
+      saveButton("yaml","«aurora.config.yaml»","Сохранить", async ()=>{
+        const r = await api("/api/config",{method:"POST",
+          body:JSON.stringify({project:S.project.path, text: ta.value})});
+        if (r.ok){ toast("Сохранено · резервная копия " + r.backup);
+          setDirty("yaml","«aurora.config.yaml»",false);
+          S.state = await api("/api/state");
+          S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
+          renderOverview(); }
+      }),
+      el("button",{class:"btn sm",onclick:()=>{ if (confirmLeave()) renderSetup(); }},"Перечитать"),
+      el("span",{class:"muted",style:"font-size:12px"},
+        "пример блока sync_roots есть в самом файле, в комментарии"))));
+}
+
+/* ---------------- скины ---------------- */
+// Оформление живёт в отдельных файлах: свой .css в cockpit/skins/ появляется в списке сам.
+async function loadSkins(){
+  const sel = $("#skinSel");
+  const d = await api("/api/skins", {quiet:true});
+  const list = (d && d.skins) || [];
+  // по умолчанию «Волт» — фирменное оформление; список отсортирован по алфавиту,
+  // и брать из него первый попавшийся значило бы менять облик от появления нового файла
+  const has = id => list.some(s => s.id === id);
+  const saved = localStorage.getItem("aurora-skin");
+  const chosen = (saved && has(saved)) ? saved
+               : (has("vault") ? "vault" : (list[0] && list[0].id) || "vault");
+  sel.innerHTML = "";
+  list.forEach(s => sel.append(el("option",{value:s.id, title:s.about,
+    selected: s.id===chosen ? "" : null}, s.name)));
+  await applySkin(chosen);
+  sel.onchange = async () => {
+    await applySkin(sel.value);
+    const s = list.find(x=>x.id===sel.value);
+    if (s && s.about) toast(s.name + " — " + s.about.slice(0,110), "ok");
+  };
+}
+async function applySkin(id){
+  try{
+    const r = await fetch(`/api/skin?id=${encodeURIComponent(id)}&t=${encodeURIComponent(TOKEN)}`);
+    if (!r.ok) throw new Error("нет такого скина");
+    $("#skin").textContent = await r.text();
+    localStorage.setItem("aurora-skin", id);
+  }catch(e){
+    // запасные токены остались в разметке — панель читается даже без скина
+    toast("Скин не загрузился, остались базовые цвета", "warn");
+  }
+}
+
+/* ---------------- быстрый старт ---------------- */
+async function renderQuick(){
+  const box = $("#quickBody");
+  if (box.dataset.ready) return;
+  const d = await api("/api/scenarios");
+  box.innerHTML = "";
+  (d.scenarios||[]).forEach(sc => {
+    const card = el("div",{class:"card",style:"padding:20px;margin-bottom:16px"},
+      el("div",{class:"row"}, el("b",{style:"font-size:15px"}, sc.title),
+        sc.when ? el("span",{class:"chip"}, sc.when) : null,
+        el("span",{class:"chip"}, sc.steps.length + " шагов")));
+    sc.steps.forEach((st, i) => {
+      const num = el("span",{class:"chip mono",style:"flex:none;width:26px;justify-content:center"},
+        String(i+1));
+      if (st.manual){
+        card.append(el("div",{class:"list-item"}, num,
+          el("div",{style:"flex:1"},
+            el("div",{style:"font-weight:600"}, st.title,
+              el("span",{class:"chip",style:"margin-left:8px"},"человек")),
+            el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"}, st.why)),
+          el("span",{class:"muted",style:"font-size:12px"},"панель не запускает")));
+        return;
+      }
+      const row = S.state.commands.find(c=>c.cmd===st.cmd);
+      card.append(el("div",{class:"list-item"}, num,
+        el("div",{style:"flex:1;min-width:0"},
+          el("div",{class:"row",style:"gap:8px"},
+            el("span",{class:"mono",style:"font-weight:700"}, st.cmd),
+            row && row.flags.includes("--apply") ? el("span",{class:"chip warn"},"пишет") : null,
+            st.flags && st.flags.length ? el("span",{class:"chip mono"}, st.flags.join(" ")) : null),
+          el("div",{class:"muted",style:"font-size:13px;margin-top:4px"}, st.why)),
+        row && row.runnable
+          ? el("button",{class:"btn sm primary",onclick:()=>openRun(st.cmd, st.flags||[])},"Запустить")
+          : el("span",{class:"chip"},"нет такой команды")));
+    });
+    box.append(card);
+  });
+  box.dataset.ready = "1";
+}
+
+/* ---------------- о проекте ---------------- */
+async function renderAbout(){
+  const box = $("#aboutBody"); box.innerHTML = '<span class="spin"></span>';
+  const a = await api("/api/about");
+  box.innerHTML = "";
+  box.append(el("p",{class:"sub"},
+    "Aurora Studio — git-native фреймворк работы со знаниями для аналитиков. " +
+    "База знаний на markdown-карточках со статусами доверия, зеркала Confluence и Jira, " +
+    "производство артефактов из проверенного знания, трассировка требований до приёмки. " +
+    "Движок без внешних зависимостей: только стандартная библиотека Python."));
+
+  const facts = el("div",{class:"grid metrics"},
+    metric(a.kit, "версия kit", "панель " + a.ui, "ok"),
+    metric(a.commands, "команд в реестре", "kit:list — справочник", "ok"),
+    metric(a.commit || "—", "коммит", a.commit_date || "", "ok"),
+    metric(a.license, "лицензия", "свободное использование", "ok"));
+  box.append(facts);
+
+  box.append(el("h2",{},"Репозиторий"));
+  const repo = el("div",{class:"card"},
+    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"адрес"),
+      a.repo ? el("a",{href:a.repo,target:"_blank",rel:"noreferrer",style:"flex:1"}, a.repo)
+             : el("span",{class:"muted",style:"flex:1"},"удалённого репозитория нет")),
+    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"ветка"),
+      el("span",{class:"mono",style:"flex:1"}, a.branch || "—")),
+    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"автор"),
+      el("span",{style:"flex:1"}, a.author)),
+    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"на диске"),
+      el("span",{class:"mono",style:"flex:1;word-break:break-all"}, a.path)));
+  box.append(repo);
+
+  box.append(el("h2",{},"Обновление kit из репозитория"));
+  const upd = el("div",{class:"card",style:"padding:20px"});
+  upd.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 12px"},
+    "Панель умеет подтянуть новую версию самого фреймворка. Только перемотка вперёд: " +
+    "слияние с чужими правками кнопкой в браузере — не то, что стоит делать вслепую. " +
+    "После обновления панель надо перезапустить: сервер работает со старого кода."));
+  const status = el("div",{class:"row",style:"margin-bottom:12px"},
+    el("span",{class:"muted",style:"font-size:13px"},"состояние не проверено"));
+  const incoming = el("div",{});
+  upd.append(status, incoming, el("div",{class:"row"},
+    el("button",{class:"btn primary",onclick:async e=>{
+      e.target.disabled = true; e.target.textContent = "Проверяю…";
+      const st = await api("/api/kit/status");
+      e.target.disabled = false; e.target.textContent = "Проверить обновления";
+      status.innerHTML = ""; incoming.innerHTML = "";
+      if (st.error) return status.append(el("span",{class:"chip bad"}, st.error));
+      status.append(
+        el("span",{class:"chip"}, "ветка " + st.branch),
+        el("span",{class:"chip "+(st.behind?"warn":"ok")},
+          st.behind ? `отстаёт на ${st.behind}` : "актуально"),
+        st.dirty ? el("span",{class:"chip bad"}, `${st.dirty} незакоммичено`) : null,
+        st.ahead ? el("span",{class:"chip"}, `свои коммиты: ${st.ahead}`) : null);
+      if (st.incoming && st.incoming.length){
+        incoming.append(el("div",{class:"muted",style:"font-size:12px;margin:10px 0 4px"},
+          "что приедет:"));
+        st.incoming.forEach(l => incoming.append(
+          el("div",{class:"mono",style:"font-size:12px;color:var(--text-muted)"}, l)));
+      }
+      $("#kitPull").disabled = !st.behind || !!st.dirty;
+    }},"Проверить обновления"),
+    el("button",{class:"btn gold",id:"kitPull",disabled:"",onclick:async e=>{
+      if (!confirm("Обновить kit из репозитория?\n\nПосле обновления панель нужно " +
+                   "перезапустить, чтобы сервер подхватил новый код.")) return;
+      e.target.disabled = true; e.target.textContent = "Обновляю…";
+      const r = await api("/api/kit/update",{method:"POST",body:"{}"});
+      e.target.textContent = "Обновить kit";
+      if (r.ok){
+        toast(r.already ? "Уже актуально" : "Обновлено до " + r.version, "ok");
+        renderAbout();
+      }
+    }},"Обновить kit")));
+  box.append(upd);
+
+  if (a.releases && a.releases.length){
+    box.append(el("h2",{},"Последние версии"));
+    const c = el("div",{class:"card"});
+    a.releases.forEach(r => c.append(el("div",{class:"list-item"},
+      el("span",{class:"mono",style:"font-weight:600;flex:none;width:70px"}, r.split(" ")[0]),
+      el("div",{style:"flex:1"}, r.split(" ").slice(1).join(" ").replace(/^—\s*/,"")))));
+    c.append(el("div",{class:"list-item"},
+      el("button",{class:"btn sm",onclick:()=>openDoc("CHANGELOG.md")},"Вся история изменений")));
+    box.append(c);
+  }
+}
+
+/* ---------------- справка ---------------- */
+const DOCS = [
+  ["docs/readme/README.md","Документация: с чего начать"],
+  ["docs/readme/01-overview.md","1. Обзор фреймворка"],
+  ["docs/readme/02-quickstart.md","2. Лёгкий старт"],
+  ["docs/readme/03-team-rules.md","3. Регламент команды"],
+  ["docs/readme/04-practice.md","4. Практика: команды и промпты"],
+  ["docs/readme/05-gardening.md","5. Уход за базой"],
+  ["docs/readme/06-sdd.md","6. Spec-Driven Development"],
+  ["skills/aurora-vault/SKILL.md","Скилл: команды и инварианты"],
+  ["docs/commands.md","Справочник всех команд"],
+  ["docs/roadmap.md","Концепция и дорожная карта"],
+  ["skills/aurora-vault/references/workflows.md","Рабочие процедуры"],
+  ["skills/aurora-vault/references/maintenance.md","Обслуживание базы"],
+  ["skills/aurora-vault/references/frontmatter.md","Схема карточки"],
+  ["skills/aurora-vault/references/retrieval.md","Сборка контекста"],
+  ["skills/aurora-vault/references/build.md","Извлечение знаний"],
+  ["skills/aurora-vault/references/migration.md","Миграция проекта"],
+  ["docs/control-panel-ui-requirements.md","Требования к этой панели"],
+  ["CHANGELOG.md","История версий kit"],
+];
+function renderReference(){
+  const list = $("#docList");
+  if (list.children.length) return;
+  DOCS.forEach(([path,title])=>list.append(
+    el("button",{class:"list-item",style:"width:100%;text-align:left",onclick:()=>openDoc(path)},
+      el("div",{}, el("div",{style:"font-weight:600;font-size:13.5px"},title),
+        el("div",{class:"mono",style:"font-size:11px;color:var(--text-muted);overflow:hidden;"+
+          "text-overflow:ellipsis;white-space:nowrap"},path)))));
+}
+async function openDoc(path){
+  show("reference"); renderReference();
+  const body = $("#docBody");
+  body.innerHTML = '<span class="spin"></span>';
+  const d = await api("/api/doc?path="+encodeURIComponent(path));
+  body.innerHTML = d.text ? md(d.text) : "Не удалось открыть " + esc(path);
+  body.scrollIntoView({block:"start"});
+}
+function md(src){
+  if (src.startsWith("---")){            // YAML-шапка документа читателю не нужна
+    const end = src.indexOf("\n---", 3);
+    if (end !== -1) src = src.slice(src.indexOf("\n", end + 1) + 1);
+  }
+  const lines = src.split("\n"); let out=[], inCode=false, inTable=false;
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g,"<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g,"$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="#" onclick="return false">$1</a>');
+  for (let i=0;i<lines.length;i++){
+    const l = lines[i];
+    if (l.startsWith("```")){ out.push(inCode?"</code></pre>":"<pre><code>"); inCode=!inCode; continue; }
+    if (inCode){ out.push(esc(l)); continue; }
+    if (/^\s*\|.*\|\s*$/.test(l)){
+      const cells = l.trim().replace(/^\||\|$/g,"").split("|").map(c=>c.trim());
+      if (cells.every(c=>/^:?-{2,}:?$/.test(c))) continue;
+      if (!inTable){ out.push('<div class="scroll-x"><table>'); inTable=true;
+        out.push("<tr>"+cells.map(c=>`<th>${inline(c)}</th>`).join("")+"</tr>"); continue; }
+      out.push("<tr>"+cells.map(c=>`<td>${inline(c)}</td>`).join("")+"</tr>"); continue;
+    } else if (inTable){ out.push("</table></div>"); inTable=false; }
+    const h = l.match(/^(#{1,4})\s+(.*)$/);
+    if (h){ out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+    if (/^>\s?/.test(l)){ out.push("<blockquote>"+inline(l.replace(/^>\s?/,""))+"</blockquote>"); continue; }
+    if (/^\s*[-*]\s+/.test(l)){ out.push("<li>"+inline(l.replace(/^\s*[-*]\s+/,""))+"</li>"); continue; }
+    if (/^\s*\d+[.)]\s+/.test(l)){ out.push("<li>"+inline(l.replace(/^\s*\d+[.)]\s+/,""))+"</li>"); continue; }
+    if (!l.trim()){ out.push(""); continue; }
+    out.push("<p>"+inline(l)+"</p>");
+  }
+  if (inTable) out.push("</table></div>");
+  return out.join("\n").replace(/(<li>[\s\S]*?<\/li>\n?)+/g, m=>"<ul>"+m+"</ul>");
+}
+
+/* ---------------- палитра ⌘K ---------------- */
+let PAL = {items:[], sel:0};
+function openPalette(){
+  PAL.items = [
+    ...[["Мостик","overview"],["Здоровье","health"],["Команды","commands"],["Зеркала","mirrors"],
+        ["Установка","install"],["Настройка проекта","setup"],["Подключить новый проект","setup"],
+        ["Быстрый старт","quickstart"],["О проекте","about"],["Обновить kit","about"],
+        ["Версия","version"],["Консоль","console"],["Справка","reference"]]
+      .map(([n,v])=>({nm:n, ds:"раздел панели", go:()=>show(v)})),
+    ...S.state.projects.map(p=>({nm:p.name, ds:"проект · "+p.path, go:()=>pick(p)})),
+    ...S.state.commands.map(c=>({nm:c.cmd, ds:c.what, go:()=>openRun(c.cmd)})),
+  ];
+  $("#paletteOverlay").classList.add("on");
+  const inp = $("#paletteInput"); inp.value=""; inp.focus(); drawPalette("");
+}
+function drawPalette(q){
+  q = q.toLowerCase();
+  const hits = PAL.items.filter(i=>(i.nm+" "+i.ds).toLowerCase().includes(q)).slice(0,40);
+  PAL.hits = hits; PAL.sel = 0;
+  const box = $("#paletteResults"); box.innerHTML="";
+  hits.forEach((h,idx)=>box.append(el("button",{class:"res"+(idx===0?" sel":""),
+    onclick:()=>{ $("#paletteOverlay").classList.remove("on"); h.go(); }},
+    el("span",{class:"nm mono"}, h.nm), el("span",{class:"ds",html:tick(h.ds)}))));
+}
+$("#paletteInput").addEventListener("input", e=>drawPalette(e.target.value));
+$("#paletteInput").addEventListener("keydown", e=>{
+  const items = $$("#paletteResults .res");
+  if (e.key==="ArrowDown" || e.key==="ArrowUp"){
+    e.preventDefault();
+    PAL.sel = Math.max(0, Math.min(items.length-1, PAL.sel + (e.key==="ArrowDown"?1:-1)));
+    items.forEach((n,i)=>n.classList.toggle("sel", i===PAL.sel));
+    items[PAL.sel]?.scrollIntoView({block:"nearest"});
+  }
+  if (e.key==="Enter"){ items[PAL.sel]?.click(); }
+  if (e.key==="Escape"){ $("#paletteOverlay").classList.remove("on"); }
+});
+$("#paletteBtn").onclick = openPalette;
+$("#paletteOverlay").onclick = e => { if (e.target.id==="paletteOverlay") e.currentTarget.classList.remove("on"); };
+document.addEventListener("keydown", e=>{
+  if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); openPalette(); }
+  if (e.key==="Escape"){ closeRun(); $("#paletteOverlay").classList.remove("on"); }
+});
+
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+project:
+  name: "Golden Corpus"
+  slug: Corpus
+
+atlassian:
+  confluence:
+    base_url: "https://confluence.example"
+    space: CORPUS
+  jira:
+    base_url: "https://jira.example"
+    project_key: PRJ
+    done_statuses: [Закрыто, Готово]
+    cancelled_statuses: [Отменено]
+
+privacy:
+  scrub: report
+
+bootstrap:
+  verified_threshold_pct: 20

@@ -1,0 +1,65 @@
+# Aurora Studio — реестр команд. Единственный источник правды о том, что вообще есть.
+# `kit:list` (scripts/kit_commands.py) читает этот файл, а модификаторы берёт живьём из
+# самих скриптов (`--help`) — чтобы список флагов не расходился с кодом.
+#
+# Формат:  неймспейс | команда | алиасы | исполнитель | реализация | с версии | что делает
+# Исполнитель: скрипт — детерминированная механика; модель — работа со смыслом;
+#              скрипт+модель — скрипт готовит и считает, решение принимает человек/модель.
+# Реализация: имя файла в .opencode/scripts/ (можно с фиксированными флагами) либо
+#              файл справки в .opencode/skills/aurora-vault/references/.
+
+kit | kit:doctor | doctor | скрипт | aurora_doctor.py | 1.0.0 | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок
+kit | kit:structure | — | скрипт | aurora_doctor.py --structure | 1.3.0 | сверить фактические папки со схемой движка (structure_dirs.txt); gitignore-папки допустимы
+kit | kit:hooks | — | скрипт | aurora_hooks.py | 1.3.0 | git pre-commit с линтером и храповиком: число ошибок не должно расти
+kit | kit:remap-sources | remap | скрипт | kb_remap.py | 1.7.0 | перенацелить `source:` карточек после переезда зеркала (по page_id)
+kit | kit:update | — | скрипт | aurora_update.py | 1.3.0 | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы
+kit | kit:list | — | скрипт | kit_commands.py | 1.9.8 | этот справочник: команды, модификаторы, чем исполняются, с какой версии
+
+sync | sync:confluence | — | скрипт | confluence_export.py | 1.6.0 | детерминированное зеркало Confluence → Sources/Confluence/
+sync | sync:jira | — | скрипт | jira_export.py | 1.9.0 | детерминированное зеркало Jira → Sources/JIRA/
+sync | sync:audit | audit | скрипт | sync_audit.py | 1.3.0 | целостность зеркала: missing / orphan / collision / протухшее состояние
+sync | sync:diff | diff | скрипт | sync_diff.py | 1.9.1 | дрейф: источник изменился после того, как знание проверили
+sync | sync:jira-status | — | скрипт | jira_status.py | 1.9.9 | обратный поток: статусы задач → кандидаты в `req_status`, задачи без требований, связи по упоминаниям
+
+kb | kb:build | build | скрипт+модель | build_plan.py | 1.0.0 | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью
+kb | kb:ingest-office | — | скрипт | office_ingest.py | 1.5.0 | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом
+kb | kb:ingest-raw | ingest-raw | модель | workflows.md | 1.0.0 | документ из Raw/ → карточки-кандидаты со ссылкой на первоисточник
+kb | kb:ingest-meeting | ingest-meeting | модель | workflows.md | 1.4.0 | транскрипт встречи → резюме, решения (DR), требования (REQ), факты
+kb | kb:ingest-tz | ingest-tz | модель | workflows.md | 1.4.0 | ТЗ по пунктам → REQ-карточки с `tz_ref`
+kb | kb:queue | queue | скрипт | kb_queue.py | 1.3.0 | очередь верификации: употребление × связи × протухание
+kb | kb:verify | verify, promote | скрипт+модель | kb_verify.py | 1.8.0 | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы
+kb | kb:repair | fix | скрипт | kb_fix.py --all | 1.3.0 | ремонт: битые ссылки, гомоглифы, легаси-frontmatter
+kb | kb:retire | — | скрипт | kb_fix.py --retire | 1.10.0 | убрать из карточек поля, выведенные из схемы (audience, confirmed_by; статус canonical → verified)
+kb | kb:dedupe | — | скрипт | kb_fix.py --dupes | 1.3.0 | двойники: поиск и слияние (`--merge`) — тот же скрипт, другой режим
+kb | kb:index | index | скрипт | kb_index.py | 1.9.4 | регенерация `_index.md` разделов; рукотворные оглавления не трогает
+kb | kb:scrub | scrub | скрипт | kb_scrub.py | 1.9.6 | персональные данные: найти и закрыть маркерами; режим — `privacy.scrub`
+kb | kb:schema | — | скрипт | kb_schema.py | 1.12.0 | версия схемы карточек (`schema_version`) и перевод базы между версиями по объявленной цепочке
+kb | kb:classify | classify | скрипт | kb_classify.py | 1.7.1 | артефакты, попавшие в знания (US/AC/Epic/задачи), и типы карточек
+kb | kb:supersede | supersede | скрипт | kb_supersede.py | 1.8.0 | заменить знание с историей: deprecated → `_archive`, ссылки переписываются
+kb | kb:lint | lint | скрипт | kb_lint.py | 1.0.0 | механические ошибки базы: ссылки, frontmatter, секреты
+kb | kb:question | — | модель | workflows.md | 1.4.0 | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок
+kb | kb:answer | — | модель | workflows.md | 1.4.0 | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR
+kb | kb:decide | decide | модель | workflows.md | 1.0.0 | оформить Decision Record (+supersede старой DR)
+kb | kb:garden | garden | скрипт+модель | workflows.md | 1.0.0 | еженедельная гигиена: чеклист из четырёх скриптов, разбор — человеком
+
+ctx | ctx:context | context | скрипт | ctx_pack.py | 1.8.0 | context pack: отбор, фильтр статусов, шапки доверия, запись в `usage.log`
+ctx | ctx:ask | ask | модель | workflows.md | 1.0.0 | ответ по базе с цитатами; «почему не X» — включая отклонённые DR
+ctx | ctx:eval | eval | модель | workflows.md | 1.0.0 | регрессионный прогон golden questions после синков и миграций
+ctx | ctx:retro | retro | модель | workflows.md | 1.0.0 | выученные уроки: чего база не знала, когда мы ошиблись
+
+make | make:create | create | модель | workflows.md | 1.1.0 | артефакт в `Artifacts/<тип>/` — только стандартный тип из conventions.md
+make | make:review | review | модель | workflows.md | 1.0.0 | проверка качества артефакта против базы знаний
+make | make:spec | spec | модель | workflows.md | 1.0.0 | спецификация фичи из REQ и verified-знаний (SDD)
+make | make:spec-pack | spec-pack | скрипт | spec_pack.py | 1.9.4 | бандл спеки: основания, DR, аббревиатуры, DoR-риски — самодостаточный файл
+make | make:validate | validate | модель | workflows.md | 1.0.0 | сверить реализацию и тесты подрядчика со сценариями спеки
+make | make:assemble | assemble | модель | workflows.md | 1.0.0 | собрать поставляемый документ (ОПЗ/ПМИ/РП) из базы по шаблону
+
+ship | ship:publish | publish | скрипт | publish_doc.py | 1.9.6 | артефакт → generated-страница Confluence; карточки знаний наружу не идут
+ship | ship:export | export | скрипт | export_doc.py | 1.5.0 | поставляемый документ → docx/pdf (pandoc, фирменный шаблон)
+ship | ship:release | release | скрипт | release_doc.py | 1.9.1 | заморозить переданную версию: снапшот, коммит базы, дата
+ship | ship:acceptance | — | модель | workflows.md | 1.4.0 | результаты приёмки и разбор замечаний заказчика
+
+ops | ops:stats | status, stats | скрипт | aurora_stats.py | 1.3.0 | дашборд здоровья базы: статусы, риски, метрики
+ops | ops:impact | impact | скрипт | kb_impact.py | 1.8.0 | что зависит от карточки; `--explain` — на чём собран документ
+ops | ops:trace | trace | скрипт | aurora_trace.py | 1.0.0 | трассировка: пункт ТЗ → REQ → SPEC → Jira → AC → ПМИ → приёмка
+ops | ops:questions | — | скрипт+модель | workflows.md | 1.4.0 | реестр вопросов: открытые, просроченные, что блокируют
