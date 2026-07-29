@@ -756,6 +756,16 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
         assert "--primary" in ck.skin_css(s["id"]), f"скин {s['id']} не задаёт токены"
     assert ck.skin_css("../../VERSION") == "", "скин читается по пути вне папки скинов"
 
+    # --- флаги со значением: панель обязана знать, что --jql требует аргумента
+    reg = {r["cmd"]: r for r in ck.registry()}
+    jira = reg.get("sync:jira")
+    assert jira and jira["flag_args"].get("--jql") == "JQL", \
+        "панель не знает, что --jql принимает значение — отправит его голым"
+    assert jira["flag_args"].get("--force") == "", "--force значения не принимает"
+    for row in reg.values():
+        for f in row["flags"]:
+            assert f in row["flag_args"], f"{row['cmd']}: у флага {f} неизвестно, нужен ли аргумент"
+
     # --- о проекте
     a = ck.about()
     assert a["kit"] == (KIT / "VERSION").read_text(encoding="utf-8").strip()

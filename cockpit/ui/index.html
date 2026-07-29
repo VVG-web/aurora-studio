@@ -380,7 +380,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.17.0";
+const UI_VERSION = "1.17.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -893,10 +893,42 @@ function openRun(cmdName, preFlags=[]){
   const r = S.state.commands.find(x=>x.cmd===cmdName);
   if (!r) return toast("Команда не найдена","err");
   if (!r.runnable){ openDoc("skills/aurora-vault/references/"+r.impl); return; }
-  RUN = {row:r, flags:new Set(preFlags), args:"", previewed:false};
+  RUN = {row:r, flags:new Set(preFlags), args:"", vals:{}, previewed:false};
   drawRun();
   $("#runOverlay").classList.add("on");
   setTimeout(()=>$("#runDrawer").querySelector("button,input")?.focus(),40);
+}
+// Флаг со значением (`--jql JQL`, `--format {docx,pdf}`) без поля ввода превращался
+// в «expected one argument»: панель отправляла его голым. Поле появляется вместе с галкой.
+function flagLine(f, hint, meta){
+  const choices = meta.startsWith("{") ? meta.slice(1,-1).split(/[\s,]+/).filter(Boolean) : null;
+  let field = null;
+  if (meta){
+    if (choices){
+      if (!RUN.vals[f]) RUN.vals[f] = choices[0];
+      field = el("select",{class:"btn sm",style:"font-weight:400",
+        onchange:e=>RUN.vals[f]=e.target.value},
+        ...choices.map(c=>el("option",{value:c, selected:RUN.vals[f]===c?"":null}, c)));
+    } else {
+      field = el("input",{class:"btn sm",style:"width:100%;font-weight:400",
+        placeholder: meta + (meta.includes("...") ? " — через пробел" : ""),
+        value: RUN.vals[f] || "", oninput:e=>RUN.vals[f]=e.target.value});
+    }
+    field = el("div",{style:"margin:2px 0 8px 26px;display:"+(RUN.flags.has(f)?"block":"none")}, field);
+  }
+  const cb = el("input",{type:"checkbox", checked: RUN.flags.has(f)?"":null,
+    onchange:e=>{
+      e.target.checked ? RUN.flags.add(f) : RUN.flags.delete(f);
+      if (field) field.style.display = e.target.checked ? "block" : "none";
+    }});
+  return el("div",{},
+    el("label",{class:"flagline"}, cb,
+      el("span",{},
+        el("span",{class:"mono",style:"font-weight:600"}, f + (meta ? " " + meta : "")),
+        hint ? el("span",{class:"muted",style:"font-size:12.5px"}, " — " + hint) : null,
+        DANGER_FLAGS[f] ? el("div",{class:"muted",style:"font-size:11.5px;color:var(--tier-inreview)"},
+          DANGER_FLAGS[f]) : null)),
+    field);
 }
 function drawRun(){
   const r = RUN.row, d = $("#runDrawer");
@@ -922,18 +954,11 @@ function drawRun(){
   }
   const flags = r.flags.filter(f=>f!=="--apply");
   if (flags.length){
-    const help = r.flag_help || {};
+    const help = r.flag_help || {}, meta = r.flag_args || {};
     d.append(el("div",{style:"margin-top:16px"},
       el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
         "Модификаторы — по умолчанию выключены, команда работает в базовом режиме"),
-      ...flags.map(f=>el("label",{class:"flagline"},
-        el("input",{type:"checkbox", onchange:e=>e.target.checked?RUN.flags.add(f):RUN.flags.delete(f),
-          checked: RUN.flags.has(f)?"":null}),
-        el("span",{},
-          el("span",{class:"mono",style:"font-weight:600"}, f),
-          help[f] ? el("span",{class:"muted",style:"font-size:12.5px"}, " — " + help[f]) : null,
-          DANGER_FLAGS[f] ? el("div",{class:"muted",style:"font-size:11.5px;color:var(--tier-inreview)"},
-            DANGER_FLAGS[f]) : null)))));
+      ...flags.map(f=>flagLine(f, help[f], meta[f] || ""))));
   }
   if (writes){
     d.append(el("div",{class:"warnbox"+(RUN.previewed?"":" ")},
@@ -961,8 +986,17 @@ $("#runOverlay").onclick = e => { if (e.target.id==="runOverlay") closeRun(); };
 async function fire(apply){
   const r = RUN.row;
   const args = [];
+  const meta = r.flag_args || {};
   if (RUN.args.trim()) args.push(...RUN.args.trim().split(/\s+/));
-  RUN.flags.forEach(f=>args.push(f));
+  for (const f of RUN.flags){
+    const m = meta[f] || "", v = (RUN.vals[f] || "").trim();
+    if (m && !v && !m.startsWith("[")){
+      // отправить флаг без значения — значит получить «expected one argument» уже в консоли
+      toast(`Флагу ${f} нужно значение: ${m}`, "warn"); return;
+    }
+    args.push(f);
+    if (v) m.includes("...") ? args.push(...v.split(/\s+/)) : args.push(v);
+  }
   if (apply) args.push("--apply");
   closeRun(); show("console");
   const out = $("#consoleOut"); out.innerHTML="";
