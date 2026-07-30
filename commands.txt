@@ -36,6 +36,7 @@ kb | kb:scrub | scrub | скрипт | kb_scrub.py | 1.9.6 | персональ�
 kb | kb:schema | — | скрипт | kb_schema.py | 1.12.0 | версия схемы карточек (`schema_version`) и перевод базы между версиями по объявленной цепочке
 kb | kb:classify | classify | скрипт | kb_classify.py | 1.7.1 | артефакты, попавшие в знания (US/AC/Epic/задачи), и типы карточек
 kb | kb:supersede | supersede | скрипт | kb_supersede.py | 1.8.0 | заменить знание с историей: deprecated → `_archive`, ссылки переписываются
+kb | kb:links | links, graph | скрипт | kb_graph.py | 1.19.0 | граф связей: ключи Requirement Yogi и номера историй (AC → US ← Jira, дети по RY)
 kb | kb:lint | lint | скрипт | kb_lint.py | 1.0.0 | механические ошибки базы: ссылки, frontmatter, секреты
 kb | kb:question | — | модель | workflows.md | 1.4.0 | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок
 kb | kb:answer | — | модель | workflows.md | 1.4.0 | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR

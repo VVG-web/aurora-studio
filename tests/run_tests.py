@@ -1330,6 +1330,55 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_kb_graph_builds_links_by_ry_and_story_number(tmp: Path):
+    """Связи собираются по объявленным правилам, а не по догадкам.
+
+    Ключ RY объявлен один раз — он и есть адрес; номер истории связывает критерии,
+    задачу и саму историю. Всё, на что история ссылается по ключам, — её дети.
+    """
+    root = make_project(tmp)
+    conf = root / "Sources/Confluence"
+    jira = root / "Sources/JIRA"
+    (conf / "Истории").mkdir(parents=True, exist_ok=True)
+    (jira).mkdir(parents=True, exist_ok=True)
+
+    def page(rel, title, defines=(), links=()):
+        f = conf / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        head = [f'title: "{title}"', "page_id: 1", "space: SP"]
+        if defines:
+            head.append("ry_defines: [" + ", ".join(defines) + "]")
+        if links:
+            head.append("ry_links: [" + ", ".join(links) + "]")
+        f.write_text("---\n" + "\n".join(head) + "\n---\n\nтекст\n", encoding="utf-8")
+
+    page("Алгоритмы/ALG-026.md", "ALG-026 Сохранение данных", defines=["RU.PRJ.ALG-026"])
+    page("Справочники/SPR-032.md", "SPR-032 Типы корректировок", defines=["RU.PRJ.SPR-032"])
+    page("Истории/US-4.4.2.md", "US-4.4.2. Приём корректировки",
+         links=["RU.PRJ.ALG-026", "RU.PRJ.SPR-032", "RU.PRJ.NO-001"])
+    page("Критерии/AC-4.4.2.md", "AC-4.4.2. Приём корректировки")
+    (jira / "PRJ-1895.md").write_text(
+        "# PRJ-1895: US-4.4.2. Приём корректировки\n\n"
+        "| Field | Value |\n| --- | --- |\n| **Key** | PRJ-1895 |\n"
+        "| **Summary** | US-4.4.2. Приём корректировки |\n", encoding="utf-8")
+
+    cp = run("kb_graph.py", cwd=root)
+    assert "ключей RY объявлено: **2**" in cp.stdout, cp.stdout[:500]
+    assert "связей по ключам: **2**" in cp.stdout, "ребро строится только на объявленный ключ"
+    assert "висячих ключей (ссылка есть, объявления нет): **1**" in cp.stdout, cp.stdout[:600]
+
+    one = run("kb_graph.py", "--story", "4.4.2", cwd=root).stdout
+    assert "AC-4.4.2" in one and "PRJ-1895" in one, f"предки истории не собраны:\n{one}"
+    assert "ALG · `RU.PRJ.ALG-026`" in one and "SPR · `RU.PRJ.SPR-032`" in one, \
+        f"дети истории не собраны или тип не распознан:\n{one}"
+
+    # MOC генерируется целиком: ручных правок в нём не держат
+    run("kb_graph.py", "--write", cwd=root)
+    moc = (root / "AuroraKnowledgeDB/MOC/Связи.md").read_text(encoding="utf-8")
+    assert "ФАЙЛ ГЕНЕРИРУЕТСЯ" in moc and "type: moc" in moc, moc[:300]
+
+
+@test
 def test_confluence_export_keeps_requirement_yogi_keys(tmp: Path):
     """Ключи Requirement Yogi и ссылки на них остаются в зеркале.
 
