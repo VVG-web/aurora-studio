@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.15.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.18.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -26,7 +26,7 @@
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
 | `sync:confluence` | детерминированное зеркало Confluence → Sources/Confluence/ | скрипт | `confluence_export.py` | `--roots --out --force --prune --verify` | 1.6.0 |
-| `sync:jira` | детерминированное зеркало Jira → Sources/JIRA/ | скрипт | `jira_export.py` | `--jql --out --limit --force --comments --verify` | 1.9.0 |
+| `sync:jira` | детерминированное зеркало Jira → Sources/JIRA/ | скрипт | `jira_export.py` | `--jql --out --limit --force --comments --prune --verify` | 1.9.0 |
 | `sync:audit` (`audit`) | целостность зеркала: missing / orphan / collision / протухшее состояние | скрипт | `sync_audit.py` | `--stale-days --report --confluence-only --jira-only` | 1.3.0 |
 | `sync:diff` (`diff`) | дрейф: источник изменился после того, как знание проверили | скрипт | `sync_diff.py` | `--all --stamp --apply --allow-dirty --report` | 1.9.1 |
 | `sync:jira-status` | обратный поток: статусы задач → кандидаты в `req_status`, задачи без требований, связи по упоминаниям | скрипт | `jira_status.py` | `--apply --link --allow-dirty --report` | 1.9.9 |
@@ -50,6 +50,7 @@
 | `kb:schema` | версия схемы карточек (`schema_version`) и перевод базы между версиями по объявленной цепочке | скрипт | `kb_schema.py` | `--to --apply --allow-dirty --root` | 1.12.0 |
 | `kb:classify` (`classify`) | артефакты, попавшие в знания (US/AC/Epic/задачи), и типы карточек | скрипт | `kb_classify.py` | `--fix-type --apply --report --limit` | 1.7.1 |
 | `kb:supersede` (`supersede`) | заменить знание с историей: deprecated → `_archive`, ссылки переписываются | скрипт | `kb_supersede.py` `old new` | `--dr --reason --apply` | 1.8.0 |
+| `kb:links` (`links, graph`) | граф связей: ключи Requirement Yogi и номера историй (AC → US ← Jira, дети по RY) | скрипт | `kb_graph.py` | `--story --write --json --report --conf --jira` | 1.19.0 |
 | `kb:lint` (`lint`) | механические ошибки базы: ссылки, frontmatter, секреты | скрипт | `kb_lint.py` | `--summary` | 1.0.0 |
 | `kb:question` | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок | модель | `workflows.md` | — | 1.4.0 |
 | `kb:answer` | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR | модель | `workflows.md` | — | 1.4.0 |

@@ -193,7 +193,7 @@ def preprocess(soup, base_url: str, space: str):
             # требования, и всю трассировку между документами.
             params = {(p.get("ac:name") or ""): p.get_text(strip=True)
                       for p in tag.find_all(re.compile(r"^ac:parameter$"))}
-            key = params.get("key", "").strip()
+            key = ry_key(params.get("key"))
             if not key:
                 tag.decompose()
                 continue
@@ -340,6 +340,24 @@ RY_MACRO_RE = re.compile(
 RY_PARAM_RE = re.compile(r'<ac:parameter ac:name="([^"]*)"[^>]*>([^<]*)</ac:parameter>')
 
 
+def ry_key(raw: str) -> str:
+    """Ключ из макроса: RY хранит его как есть, включая процентное кодирование."""
+    raw = (raw or "").strip()
+    return urllib.parse.unquote(raw) if re.search(r"%[0-9A-Fa-f]{2}", raw) else raw
+
+
+def is_ry_key(key: str) -> bool:
+    """Ключ требования или ссылка на свойство внутри него.
+
+    Ключи RY выглядят как `RU.PRJ.ALG-026` или `ER.AS.Dop.Id`: латиница, цифры, точки и
+    дефисы. Ссылки на свойства требования приходят тем же макросом, но в ключе оказывается
+    человеческий текст с пробелами и кириллицей («Режим корректировки»). В шапку такие не
+    идут: они ничего не адресуют, и трассировка от них не строится. В тексте страницы они
+    остаются — там ничего терять нельзя.
+    """
+    return bool(key) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-]*", key))
+
+
 def ry_keys(storage_html: str) -> tuple:
     """(объявленные на странице ключи RY, ключи, на которые страница ссылается).
 
@@ -349,8 +367,8 @@ def ry_keys(storage_html: str) -> tuple:
     defines, links = set(), set()
     for m in RY_MACRO_RE.finditer(storage_html or ""):
         params = dict(RY_PARAM_RE.findall(m.group(1)))
-        key = (params.get("key") or "").strip()
-        if not key:
+        key = ry_key(params.get("key"))
+        if not is_ry_key(key):
             continue
         (defines if (params.get("type") or "").strip().upper() == "DEFINITION"
          else links).add(key)
