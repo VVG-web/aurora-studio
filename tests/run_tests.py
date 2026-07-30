@@ -1330,6 +1330,44 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_confluence_export_keeps_requirement_yogi_keys(tmp: Path):
+    """Ключи Requirement Yogi и ссылки на них остаются в зеркале.
+
+    Макрос RY не имеет тела, и общая ветка выбрасывала его вместе с ключом: в проекте,
+    где трассировка между документами идёт через RY, зеркало теряло все связи разом.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import confluence_export as ce
+    storage = (
+        '<table><tbody><tr><th>ID</th><td><p>'
+        '<ac:structured-macro ac:name="requirement" ac:schema-version="1" ac:macro-id="a">'
+        '<ac:parameter ac:name="type">DEFINITION</ac:parameter>'
+        '<ac:parameter ac:name="key">KB.ENS.URZ-251</ac:parameter>'
+        '<ac:parameter ac:name="" /></ac:structured-macro></p></td></tr>'
+        '<tr><th>Связано</th><td><p>'
+        '<ac:structured-macro ac:name="requirement" ac:schema-version="1" ac:macro-id="b">'
+        '<ac:parameter ac:name="freetext">Link</ac:parameter>'
+        '<ac:parameter ac:name="type">LINK</ac:parameter>'
+        '<ac:parameter ac:name="key">RU.PRJ.UI-012</ac:parameter></ac:structured-macro>'
+        '</p></td></tr></tbody></table>')
+    md = ce.to_markdown(storage, "https://c.example.com", "SP")
+    assert "**RY:KB.ENS.URZ-251**" in md, f"объявление ключа потеряно:\n{md}"
+    assert "RY:RU.PRJ.UI-012" in md, f"ссылка на ключ потеряна:\n{md}"
+    assert md == ce.to_markdown(storage, "https://c.example.com", "SP"), "конвертация недетерминирована"
+
+    defines, links = ce.ry_keys(storage)
+    assert defines == ["KB.ENS.URZ-251"] and links == ["RU.PRJ.UI-012"], (defines, links)
+    head = ce.render_front_matter({"id": "1", "title": "Стр", "space": "SP", "version": 1,
+                                   "updated": "2026-07-30", "url": "https://c.example.com/x",
+                                   "breadcrumbs": "Стр", "hash": "0" * 16,
+                                   "ry_defines": defines, "ry_links": links})
+    assert "ry_defines: [KB.ENS.URZ-251]" in head and "ry_links: [RU.PRJ.UI-012]" in head, head
+    # ключ, объявленный на странице, не дублируется в списке ссылок
+    both = storage + storage.replace("DEFINITION", "LINK")
+    assert ce.ry_keys(both)[1] == ["RU.PRJ.UI-012"], "объявленный ключ попал в ссылки"
+
+
+@test
 def test_sync_audit_case_only_paths_are_not_a_loss(tmp: Path):
     """Регистр папки разошёлся с состоянием — это переименование, а не потеря страницы.
 
