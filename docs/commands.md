@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.18.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.19.2**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -17,7 +17,7 @@
 | `kit:doctor` (`doctor`) | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок | скрипт | `aurora_doctor.py` | `--structure` | 1.0.0 |
 | `kit:structure` | сверить фактические папки со схемой движка (structure_dirs.txt); gitignore-папки допустимы | скрипт | `aurora_doctor.py --structure` | — | 1.3.0 |
 | `kit:hooks` | git pre-commit с линтером и храповиком: число ошибок не должно расти | скрипт | `aurora_hooks.py` | `--install --uninstall --status --mode --force` | 1.3.0 |
-| `kit:remap-sources` (`remap`) | перенацелить `source:` карточек после переезда зеркала (по page_id) | скрипт | `kb_remap.py` | `--mirror --snapshot --from-git --apply --report` | 1.7.0 |
+| `kit:remap-sources` (`remap`) | перенацелить `source:` карточек после переезда зеркала (Confluence — по page_id, Jira — по ключу задачи) | скрипт | `kb_remap.py` | `--mirror --snapshot --from-git --apply --report` | 1.7.0 |
 | `kit:update` | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы | скрипт | `aurora_update.py` `[target]` | `--apply --structure-only` | 1.3.0 |
 | `kit:list` | этот справочник: команды, модификаторы, чем исполняются, с какой версии | скрипт | `kit_commands.py` `[namespace]` | `--search --md --check` | 1.9.8 |
 
