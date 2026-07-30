@@ -26,7 +26,8 @@ while true; do
   echo "  2) Здоровье базы знаний (stats)"
   echo "  3) Настроить проект (Confluence, Jira, приватность)"
   echo "  4) Панель управления в браузере (cockpit)"
-  echo "  5) Справочник команд"
+  echo "  5) Перезапустить панель (после обновления kit)"
+  echo "  6) Справочник команд"
   echo "  0) Выход"
   printf "Выбор: "; read -r choice
   case "$choice" in
@@ -35,7 +36,9 @@ while true; do
     3) "$PY" .opencode/scripts/aurora_setup.py ;;
     4) if [ -n "$KIT" ]; then "$PY" "$KIT/aurora.py" cockpit --roots "$(dirname "$PWD")"
        else echo "Не нашёл kit. Укажите путь: PY=\$(which python3); \$PY /путь/к/aurora-studio/aurora.py cockpit"; fi ;;
-    5) "$PY" .opencode/scripts/kit_commands.py ;;
+    5) if [ -n "$KIT" ]; then "$PY" "$KIT/aurora.py" cockpit --restart --roots "$(dirname "$PWD")"
+       else echo "Не нашёл kit рядом с проектом."; fi ;;
+    6) "$PY" .opencode/scripts/kit_commands.py ;;
     0) exit 0 ;;
     *) echo "Не понял выбор." ;;
   esac

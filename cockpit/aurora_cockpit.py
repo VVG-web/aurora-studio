@@ -24,10 +24,12 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -182,9 +184,17 @@ def kit_pull() -> dict:
 # --------------------------------------------------------------- реестр команд
 
 def registry() -> list:
-    """Команды из `commands.txt`; модификаторы — из `--help` самих скриптов."""
-    if "registry" in CACHE:
+    """Команды из `commands.txt`; модификаторы — из `--help` самих скриптов.
+
+    Kit могли обновить, пока панель работает: тогда в реестре появляются новые команды и
+    флаги, а панель показывает вчерашний список. Сторожим по времени правки VERSION —
+    дешевле, чем перечитывать `--help` полусотни скриптов на каждый запрос.
+    """
+    stamp = os.path.getmtime(os.path.join(KIT, "VERSION")) if os.path.isfile(
+        os.path.join(KIT, "VERSION")) else 0
+    if "registry" in CACHE and CACHE.get("registry_stamp") == stamp:
         return CACHE["registry"]
+    CACHE["registry_stamp"] = stamp
     import kit_commands as K
     rows = []
     for r in K.read_registry():
@@ -510,7 +520,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.guarded(q):
             return
-        if u.path == "/api/state":
+        if u.path == "/api/ping":
+            # по этому ответу второй запуск узнаёт свою же панель, а не чужую программу
+            self.send_json({"app": "aurora-cockpit", "kit": kit_version(),
+                            "pid": os.getpid()})
+        elif u.path == "/api/state":
             self.send_json({
                 "kit": {"version": kit_version(), "path": KIT},
                 "ui": {"version": ui_version(),
@@ -766,15 +780,82 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
 
+SESSION = os.path.join(KIT, "cockpit", ".session.json")
+
+
+def write_session(port: int, url: str) -> None:
+    """Куда стучаться, если панель уже работает.
+
+    Адрес одноразовый и содержит токен, поэтому второй процесс сам его не придумает:
+    без этого файла «открой уже запущенную панель» невозможно — только убить и поднять
+    заново, потеряв то, что человек в ней открыл.
+    """
+    try:
+        with open(SESSION, "w", encoding="utf-8") as f:
+            json.dump({"port": port, "url": url, "pid": os.getpid(),
+                       "kit": kit_version()}, f)
+        os.chmod(SESSION, 0o600)
+    except OSError:
+        pass
+
+
+def read_session() -> dict:
+    try:
+        with open(SESSION, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def alive(url: str) -> bool:
+    """Отвечает ли по этому адресу именно панель, а не чужая программа на том же порту."""
+    try:
+        with urllib.request.urlopen(url.replace("/?t=", "/api/ping?t="), timeout=2) as r:
+            return json.load(r).get("app") == "aurora-cockpit"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Панель управления Aurora")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--roots", nargs="*", default=[os.path.dirname(KIT)],
                     help="где искать проекты (по умолчанию — папка рядом с kit'ом)")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--restart", action="store_true",
+                    help="остановить уже работающую панель и поднять заново")
     a = ap.parse_args()
 
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    prev = read_session()
+    if a.restart and prev.get("pid") and alive(prev.get("url", "")):
+        try:
+            os.kill(prev["pid"], signal.SIGTERM)
+            for _ in range(20):
+                if not alive(prev["url"]):
+                    break
+                time.sleep(0.25)
+            print(f"Прежняя панель остановлена (pid {prev['pid']}).")
+        except OSError as e:
+            print(f"Не удалось остановить прежнюю панель: {e}", file=sys.stderr)
+
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    except OSError as e:
+        if e.errno not in (48, 98, 10048):        # EADDRINUSE на macOS, Linux, Windows
+            raise
+        url = prev.get("url", "")
+        if url and alive(url):
+            print(f"Панель уже работает на порту {prev.get('port', a.port)} — открываю её.")
+            print(f"\n  {url}\n")
+            print("Перезапустить (например, после обновления kit): "
+                  "aurora.py cockpit --restart")
+            if not a.no_browser:
+                webbrowser.open(url)
+            return 0
+        print(f"Порт {a.port} занят другой программой.\n"
+              f"  Свободный порт:  aurora.py cockpit --port {a.port + 1}\n"
+              f"  Или перезапуск:  aurora.py cockpit --restart", file=sys.stderr)
+        return 1
     srv.roots = a.roots
     url = f"http://127.0.0.1:{a.port}/?t={TOKEN}"
     print(f"Aurora Cockpit · kit {kit_version()}")
@@ -782,12 +863,20 @@ def main() -> int:
     print(f"\n  {url}\n")
     print("Адрес одноразовый: токен живёт в памяти процесса, при перезапуске меняется.")
     print("Остановить — Ctrl+C.")
+    write_session(a.port, url)
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         srv.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         print("\nОстановлено.")
+    finally:
+        if read_session().get("pid") == os.getpid():
+            try:
+                os.remove(SESSION)
+            except OSError:
+                pass
     return 0
 
 

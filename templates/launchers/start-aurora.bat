@@ -21,7 +21,8 @@ echo   1) Проверить готовность проекта (doctor)
 echo   2) Здоровье базы знаний (stats)
 echo   3) Настроить проект (Confluence, Jira, приватность)
 echo   4) Панель управления в браузере (cockpit)
-echo   5) Справочник команд
+echo   5) Перезапустить панель (после обновления kit)
+echo   6) Справочник команд
 echo   0) Выход
 set /p choice=Выбор: 
 if "%choice%"=="1" %PY% .opencode\scripts\aurora_doctor.py
@@ -30,7 +31,10 @@ if "%choice%"=="3" %PY% .opencode\scripts\aurora_setup.py
 if "%choice%"=="4" (
   if defined KIT (%PY% "%KIT%\aurora.py" cockpit) else (echo Не нашёл kit рядом. Запустите панель из папки aurora-studio: python aurora.py cockpit)
 )
-if "%choice%"=="5" %PY% .opencode\scripts\kit_commands.py
+if "%choice%"=="5" (
+  if defined KIT (%PY% "%KIT%\aurora.py" cockpit --restart) else (echo Не нашёл kit рядом с проектом.)
+)
+if "%choice%"=="6" %PY% .opencode\scripts\kit_commands.py
 if "%choice%"=="0" exit /b 0
 echo.
 pause

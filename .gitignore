@@ -13,3 +13,6 @@ __pycache__/
 local/
 *.local.md
 *.local.txt
+
+# Отпечаток работающей панели: адрес с токеном сессии
+cockpit/.session.json
