@@ -1345,6 +1345,22 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
+    """`--partition N` отдаёт готовое задание: список файлов и правила, а не намёк на них."""
+    root = make_project(tmp)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        (root / f"Raw/project/Док-{i}.md").write_text("текст " * 200, encoding="utf-8")
+    out = run("build_plan.py", "--partition", "1", cwd=root).stdout
+    assert "ЗАДАНИЕ АССИСТЕНТУ" in out, out[:400]
+    assert "Раздели" not in out and "Разбери партию 1" in out, "нет самой формулировки задачи"
+    assert "Док-0.md" in out, "в задании нет списка файлов партии"
+    assert "status: imported" in out and "build_plan.py --done" in out, \
+        "в задании нет правил жизненного цикла или шага завершения"
+    assert "aurora-vault" in out, "не сказано, по какому скиллу работать"
+
+
+@test
 def test_kb_graph_writes_links_into_cards(tmp: Path):
     """Связь живёт в зеркале, а работать должна в базе: `related:` выводится из графа."""
     root = make_project(tmp, git=True)
