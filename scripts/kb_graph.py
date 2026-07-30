@@ -27,6 +27,13 @@
   python3 .opencode/scripts/kb_graph.py --write         # + MOC/Связи.md в базе знаний
   python3 .opencode/scripts/kb_graph.py --json links.json
   python3 .opencode/scripts/kb_graph.py --story 4.4.2   # одна история целиком
+  python3 .opencode/scripts/kb_graph.py --cards         # что добавится в related: карточек
+  python3 .opencode/scripts/kb_graph.py --cards --apply # записать связи в карточки
+
+Связи живут в зеркале, а работают в базе: карточка знает свой `source:`, страница знает
+свои ключи — значит связь между карточками выводится, а не выдумывается. `--cards`
+переносит рёбра графа в поле `related:` карточек, ничего не удаляя: только добавляет то,
+чего там нет.
 """
 from __future__ import annotations
 
@@ -38,7 +45,7 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter  # noqa: E402
+from aurora_common import frontmatter, git_guard  # noqa: E402
 
 CONF_DIR = "Sources/Confluence"
 JIRA_DIR = "Sources/JIRA"
@@ -163,6 +170,99 @@ class Graph:
         return hubs
 
 
+# ------------------------------------------------------------- связи в карточках
+
+KB_DIR = "AuroraKnowledgeDB"
+SKIP_DIRS = ("meta", "_archive", "MOC")
+REL_RE = re.compile(r"^related:\s*(.*)$", re.M)
+
+
+def cards_by_source(conf_root: str, jira_root: str) -> dict:
+    """{путь файла зеркала → [карточки]}: чем подтверждается знание, тем и связывается."""
+    out: dict = {}
+    for dirpath, dirs, files in os.walk(KB_DIR):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for f in sorted(files):
+            if not f.endswith(".md") or f.startswith("_"):
+                continue
+            path = os.path.join(dirpath, f)
+            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
+            src = (fm.get("source") or "").strip().strip('"')
+            if src:
+                out.setdefault(src.replace("\\", "/"), []).append(path)
+    return out
+
+
+def card_links(g: Graph, hubs: dict, conf_root: str, jira_root: str) -> dict:
+    """{карточка → множество карточек, с которыми её связывает граф}."""
+    by_src = cards_by_source(conf_root, jira_root)
+    def cards_of_page(rel):
+        return by_src.get(f"{conf_root}/{rel}", [])
+    def cards_of_issue(key):
+        return by_src.get(f"{jira_root}/{key}.md", [])
+
+    pairs: dict = {}
+    def link(a_path, b_path):
+        if a_path != b_path:
+            pairs.setdefault(a_path, set()).add(b_path)
+            pairs.setdefault(b_path, set()).add(a_path)
+
+    for src, dst, _rule, _w in g.edges():                 # правило RY
+        for a in cards_of_page(src):
+            for b in cards_of_page(dst):
+                link(a, b)
+    for num, hub in hubs.items():                          # правило номера истории
+        around = [c for rel in hub["us"] for c in cards_of_page(rel)]
+        kin = ([c for rel in hub["ac"] for c in cards_of_page(rel)]
+               + [c for key in hub["issues"] for c in cards_of_issue(key)])
+        for a in around:
+            for b in kin:
+                link(a, b)
+    return pairs
+
+
+def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
+    """Дописать `related:` карточкам. Ничего не удаляем: чужие связи — не наши.
+
+    Связей у иной карточки набирается больше сотни: страница вроде общей модели данных
+    упоминается отовсюду, и список «связано с» превращается в шум. Поэтому при переполнении
+    оставляем связи с редкими соседями: ссылка на страницу, которую цитируют все, говорит
+    меньше, чем ссылка на ту, которую цитируют трое.
+    """
+    stats = {"карточек затронуто": 0, "связей добавлено": 0, "уже было": 0, "не влезло": 0}
+    degree = {k: len(v) for k, v in pairs.items()}
+    for path, others in sorted(pairs.items()):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        head, rest = text.split("\n---\n", 1) if text.startswith("---\n") else (None, None)
+        if head is None:
+            continue
+        picked = sorted(others, key=lambda o: (degree.get(o, 0), o))[:cap]
+        stats["не влезло"] += max(0, len(others) - len(picked))
+        want = sorted({os.path.splitext(os.path.basename(o))[0] for o in picked})
+        have = set(re.findall(r"\[([^\]]+)\]\([^)]*\)", REL_BLOCK_RE.search(head).group(0)
+                              if REL_BLOCK_RE.search(head) else ""))
+        add = [n for n in want if n not in have]
+        stats["уже было"] += len(want) - len(add)
+        if not add:
+            continue
+        stats["карточек затронуто"] += 1
+        stats["связей добавлено"] += len(add)
+        if not apply:
+            continue
+        block = "related:\n" + "".join(f'  - "[{n}]({n}.md)"\n' for n in sorted(have | set(add)))
+        m = REL_BLOCK_RE.search(head)
+        new_head = (head[:m.start()] + block.rstrip("\n") + head[m.end():]) if m \
+            else head.rstrip("\n") + "\n" + block.rstrip("\n")
+        if apply:
+            open(path, "w", encoding="utf-8").write(new_head + "\n---\n" + rest)
+    return stats
+
+
+# `related:` бывает пустым (`related: []`), однострочным и блоком со списком — забираем
+# его целиком, чтобы не оставить в шапке два поля с одним именем.
+REL_BLOCK_RE = re.compile(r"^related:.*(?:\n[ \t]+-.*)*", re.M)
+
+
 # --------------------------------------------------------------------- отчёт
 
 def report(g: Graph, edges: list, hubs: dict, story: str | None) -> list:
@@ -243,6 +343,12 @@ def main() -> int:
     ap.add_argument("--write", action="store_true",
                     help=f"записать {OUT_MOC} (файл генерируется, правки затрутся)")
     ap.add_argument("--json", dest="json_path", help="выгрузить граф машинночитаемо")
+    ap.add_argument("--cards", action="store_true",
+                    help="перенести связи графа в поле related: карточек базы")
+    ap.add_argument("--apply", action="store_true",
+                    help="записать (иначе dry-run); работает вместе с --cards")
+    ap.add_argument("--max-related", type=int, default=30, metavar="N",
+                    help="сколько связей писать в одну карточку (по умолчанию 30)")
     ap.add_argument("--report", dest="report_path", help="сохранить отчёт в файл")
     ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR})")
     ap.add_argument("--jira", default=JIRA_DIR, help=f"зеркало Jira ({JIRA_DIR})")
@@ -261,6 +367,23 @@ def main() -> int:
               file=sys.stderr)
     edges = g.edges()
     hubs = g.stories()
+
+    if a.cards:
+        if not os.path.isdir(KB_DIR):
+            print(f"kb_graph: нет {KB_DIR}/ — связывать нечего", file=sys.stderr)
+            return 1
+        pairs = card_links(g, hubs, a.conf, a.jira)
+        if a.apply and not git_guard(KB_DIR, False, "перенос связей в карточки"):
+            return 1
+        st = apply_card_links(pairs, a.apply, a.max_related)
+        print(f"# Связи в карточках — {TODAY}\n")
+        print(f"- карточек в графе: {len(pairs)}")
+        for k, v in st.items():
+            print(f"- {k}: {v}")
+        if not a.apply:
+            print("\n(dry-run) Ничего не записано. Применить: --cards --apply")
+        return 0
+
     text = "\n".join(report(g, edges, hubs, a.story)) + "\n"
     print(text)
 

@@ -1345,6 +1345,72 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_kb_graph_writes_links_into_cards(tmp: Path):
+    """Связь живёт в зеркале, а работать должна в базе: `related:` выводится из графа."""
+    root = make_project(tmp, git=True)
+    conf = root / "Sources/Confluence/Раздел"
+    conf.mkdir(parents=True, exist_ok=True)
+    (conf / "ALG.md").write_text(
+        '---\ntitle: "ALG-1"\npage_id: 1\nry_defines: [RU.P.ALG-1]\n---\n\nтекст\n',
+        encoding="utf-8")
+    (conf / "US.md").write_text(
+        '---\ntitle: "US-1.1"\npage_id: 2\nry_links: [RU.P.ALG-1]\n---\n\nтекст\n',
+        encoding="utf-8")
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    cards.mkdir(parents=True, exist_ok=True)
+    (cards / "Алгоритм.md").write_text(
+        '---\ntitle: "Алгоритм"\nsource: "Sources/Confluence/Раздел/ALG.md"\n'
+        "status: imported\nrelated: []\n---\n\n# Алгоритм\n", encoding="utf-8")
+    (cards / "История.md").write_text(
+        '---\ntitle: "История"\nsource: "Sources/Confluence/Раздел/US.md"\n'
+        "status: imported\n---\n\n# История\n", encoding="utf-8")
+
+    dry = run("kb_graph.py", "--cards", cwd=root)
+    assert "связей добавлено: 2" in dry.stdout, dry.stdout[:400]
+    assert "related: []" in (cards / "Алгоритм.md").read_text(encoding="utf-8"), \
+        "dry-run не должен писать в карточки"
+
+    run("kb_graph.py", "--cards", "--apply", cwd=root)
+    a = (cards / "Алгоритм.md").read_text(encoding="utf-8")
+    b = (cards / "История.md").read_text(encoding="utf-8")
+    assert '- "[История](История.md)"' in a and '- "[Алгоритм](Алгоритм.md)"' in b, a + b
+    assert a.count("related:") == 1, f"поле related задвоилось:\n{a}"
+    assert "# Алгоритм" in a, "тело карточки пострадало"
+
+    second = run("kb_graph.py", "--cards", "--apply", cwd=root)
+    assert "связей добавлено: 0" in second.stdout, "повторный прогон дублирует связи"
+
+
+@test
+def test_verify_by_source_age_records_its_basis(tmp: Path):
+    """Пакетная приёмка по возрасту источника пишет в карточку, на чём основано доверие."""
+    root = make_project(tmp, git=True)
+    conf = root / "Sources/Confluence"
+    conf.mkdir(parents=True, exist_ok=True)
+    (conf / "Старая.md").write_text(
+        '---\ntitle: "Старая"\npage_id: 1\nupdated: 2019-03-01\n---\n\nтекст\n',
+        encoding="utf-8")
+    (conf / "Свежая.md").write_text(
+        f'---\ntitle: "Свежая"\npage_id: 2\nupdated: {__import__("datetime").date.today().isoformat()}\n---\n\nтекст\n',
+        encoding="utf-8")
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    cards.mkdir(parents=True, exist_ok=True)
+    for name, src in (("Устоявшееся", "Старая"), ("Свежее", "Свежая")):
+        (cards / f"{name}.md").write_text(
+            f'---\ntitle: "{name}"\nsource: "Sources/Confluence/{src}.md"\n'
+            "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
+
+    cp = run("kb_verify.py", "Concepts", "--owner", "@vadim",
+             "--source-older-than", "24", "--apply", cwd=root)
+    old = (cards / "Устоявшееся.md").read_text(encoding="utf-8")
+    fresh = (cards / "Свежее.md").read_text(encoding="utf-8")
+    assert "status: verified" in old, f"старое не принято:\n{cp.stdout[:600]}"
+    assert "verified_basis:" in old and "2019-03-01" in old, \
+        f"основание доверия не записано:\n{old}"
+    assert "status: imported" in fresh, "свежая страница принята вслепую"
+
+
+@test
 def test_remap_jira_moves_sources_to_issue_keys(tmp: Path):
     """Ссылки карточек переезжают со старых имён файлов Jira на ключи задач.
 
