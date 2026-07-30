@@ -50,6 +50,10 @@ STATE = "sync_state.md"
 TODAY = date.today().isoformat()
 FORBIDDEN = r'<>:"/\|?*'
 # Служебные файлы синка (промпты, правила, шаблоны прежнего скилла) — не страницы.
+# Метка ключа Requirement Yogi в тексте зеркала: по ней ключ находится грепом и не
+# путается с обычным текстом.
+RY_MARK = "RY:"
+
 SERVICE_RE = re.compile(r"(sync_state|sync_paths|update_log|_prompt|_template|-rules|_rules|"
                         r"SYNC_|FINAL_SYNC|README)", re.I)
 
@@ -183,6 +187,26 @@ def preprocess(soup, base_url: str, space: str):
 
     for tag in soup.find_all(re.compile(r"^ac:structured-macro$")):
         name = _macro_name(tag)
+        if name == "requirement":
+            # Requirement Yogi: ключ требования и ссылки на чужие ключи. Макрос без тела,
+            # поэтому общая ветка его просто выбрасывала — и зеркало теряло и объявление
+            # требования, и всю трассировку между документами.
+            params = {(p.get("ac:name") or ""): p.get_text(strip=True)
+                      for p in tag.find_all(re.compile(r"^ac:parameter$"))}
+            key = params.get("key", "").strip()
+            if not key:
+                tag.decompose()
+                continue
+            kind = (params.get("type") or "").strip().upper()
+            free = params.get("freetext", "").strip()
+            if kind == "DEFINITION":
+                marker = f"**{RY_MARK}{key}**"
+            else:
+                marker = f"{RY_MARK}{key}"
+                if free and free.lower() not in ("link", "ссылка"):
+                    marker += f" ({free})"
+            tag.replace_with(NavigableString(marker))
+            continue
         if name in ("toc", "children", "pagetree", "recently-updated", "livesearch"):
             tag.decompose()
             continue
@@ -311,6 +335,28 @@ def safe_name(title: str, page_id: str = "") -> str:
     return name
 
 
+RY_MACRO_RE = re.compile(
+    r'<ac:structured-macro[^>]*ac:name="requirement"[^>]*>([\s\S]*?)</ac:structured-macro>')
+RY_PARAM_RE = re.compile(r'<ac:parameter ac:name="([^"]*)"[^>]*>([^<]*)</ac:parameter>')
+
+
+def ry_keys(storage_html: str) -> tuple:
+    """(объявленные на странице ключи RY, ключи, на которые страница ссылается).
+
+    Читаем из storage напрямую: шапка зеркала должна отдавать трассировку машине, а не
+    заставлять её разбирать текст. Сортировка и уникальность — ради детерминизма.
+    """
+    defines, links = set(), set()
+    for m in RY_MACRO_RE.finditer(storage_html or ""):
+        params = dict(RY_PARAM_RE.findall(m.group(1)))
+        key = (params.get("key") or "").strip()
+        if not key:
+            continue
+        (defines if (params.get("type") or "").strip().upper() == "DEFINITION"
+         else links).add(key)
+    return sorted(defines), sorted(links - defines)
+
+
 def render_front_matter(meta: dict) -> str:
     """Только поля, зависящие от содержимого: даты экспорта здесь нет намеренно."""
     return ("---\n"
@@ -322,7 +368,9 @@ def render_front_matter(meta: dict) -> str:
             f"url: {meta['url']}\n"
             f"breadcrumbs: \"{meta['breadcrumbs']}\"\n"
             f"content_hash: {meta['hash']}\n"
-            "---\n\n")
+            + (f"ry_defines: [{', '.join(meta['ry_defines'])}]\n" if meta.get("ry_defines") else "")
+            + (f"ry_links: [{', '.join(meta['ry_links'])}]\n" if meta.get("ry_links") else "")
+            + "---\n\n")
 
 
 # -------------------------------------------------------------------- обход
@@ -334,6 +382,7 @@ class Exporter:
         self.records: list = []       # (page_id, rel_path, title, статус)
         self.written = self.skipped = self.failed = 0
         self.recased: list = []       # папки, которым выправили регистр
+        self.ry_defines = self.ry_links = 0
         self.prev = self._load_state()
 
     def _load_state(self) -> dict:
@@ -361,6 +410,11 @@ class Exporter:
         rel = "/".join(parts + [leaf, "index.md"]) if children else "/".join(parts + [leaf + ".md"])
 
         self.align_case(rel)
+        # ключи RY считаем всегда, даже когда страница не переписывается: иначе итог
+        # зависел бы от того, что изменилось со вчера, а не от того, что есть в источнике
+        defines, links = ry_keys(data.get("body", {}).get("storage", {}).get("value", ""))
+        self.ry_defines += len(defines)
+        self.ry_links += len(links)
         known = self.prev.get(str(page_id))
         if known and not self.force and known[1] == version and os.path.isfile(os.path.join(self.out, rel)):
             self.records.append((str(page_id), rel, title, "SYNCED"))
@@ -369,6 +423,7 @@ class Exporter:
             body = data.get("body", {}).get("storage", {}).get("value", "")
             md = to_markdown(body, self.base_url, self.space)
             meta = {"id": page_id, "title": title, "space": data["space"]["key"],
+                    "ry_defines": defines, "ry_links": links,
                     "version": version,
                     "updated": (data.get("version", {}).get("when") or "")[:10],
                     "url": self.base_url + data["_links"]["webui"],
@@ -553,6 +608,9 @@ def main() -> int:
         print(f"Выправлен регистр папок ({len(exp.recased)}) — страницы переименовали в источнике:")
         for r in exp.recased[:10]:
             print(f"  - {r}")
+    if exp.ry_defines or exp.ry_links:
+        print(f"Requirement Yogi: объявлено ключей {exp.ry_defines}, "
+              f"ссылок на чужие ключи {exp.ry_links}")
     print(f"Страниц: {len(exp.records)} · записано: {exp.written} · без изменений: {exp.skipped}"
           + (f" · ошибок: {exp.failed}" if exp.failed else ""))
     if stale:
