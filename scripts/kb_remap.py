@@ -179,7 +179,7 @@ def remap_jira(mirror: str, apply: bool) -> dict:
                     stats["переписано"] += 1
                     dirty = True
                 elif not os.path.isfile(os.path.join(mirror, stem + ".md")):
-                    num = re.fullmatch(r"\D*(\d+(?:[-.]\d+)+)", stem)
+                    num = re.match(r"\D*(\d+(?:[-.]\d+)+)", stem)   # хвост после номера не мешает
                     key = by_story.get(num.group(1).replace("-", ".")) if num else None
                     if key:
                         new_text = new_text.replace(f"Sources/JIRA/{stem}.md",
