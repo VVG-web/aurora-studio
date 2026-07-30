@@ -35,6 +35,7 @@ scripts/spec_pack.py     => .opencode/scripts/spec_pack.py
 scripts/kb_index.py      => .opencode/scripts/kb_index.py
 scripts/kb_scrub.py      => .opencode/scripts/kb_scrub.py
 scripts/kb_schema.py     => .opencode/scripts/kb_schema.py
+scripts/kb_graph.py      => .opencode/scripts/kb_graph.py
 scripts/publish_doc.py   => .opencode/scripts/publish_doc.py
 scripts/kit_commands.py  => .opencode/scripts/kit_commands.py
 scripts/kb_verify.py     => .opencode/scripts/kb_verify.py
