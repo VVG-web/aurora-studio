@@ -42,6 +42,8 @@ STATE = "sync_state.md"
 TODAY = date.today().isoformat()
 
 ID_RE = re.compile(r"^\s*(?:page_id:\s*|-\s*\*\*ID:\*\*\s*)(\d{4,})\s*$", re.M)
+JIRA_KEY_RE = re.compile(r"\*\*Key\*\*\s*\|\s*([A-Z][A-Z0-9]+-\d+)"
+                         r"|^#\s*([A-Z][A-Z0-9]+-\d+)\s*:", re.M)
 SRC_RE = re.compile(r'^(source:\s*)"?([^"\n]+?)"?\s*$', re.M)
 STATE_ROW_RE = re.compile(r"^\|\s*\d+\s*\|\s*(\d{4,})\s*\|\s*(.+?)\s*\|\s*([^|]+?)\s*\|")
 
@@ -107,6 +109,59 @@ def load_state(mirror: str) -> tuple:
             by_id[pid] = rel
             by_title.setdefault(fold(title), []).append(rel)
     return by_id, by_title
+
+
+def jira_map(mirror: str) -> dict:
+    """{имя файла без .md → ключ задачи} для копий под старыми именами.
+
+    Прежний синк называл файлы по номеру истории (`US-3.1.1.md`), нынешний — по ключу
+    задачи (`PRJ-327.md`). Пока карточки ссылаются на старое имя, `--prune` не имеет права
+    его удалить: `source:` — нить к доказательству. Ключ лежит в самом файле, поэтому
+    карта строится по содержимому, а не по догадке об именах.
+    """
+    out = {}
+    if not os.path.isdir(mirror):
+        return out
+    names = {f[:-3] for f in os.listdir(mirror) if f.endswith(".md")}
+    for stem in sorted(names):
+        head = open(os.path.join(mirror, stem + ".md"), encoding="utf-8",
+                    errors="ignore").read(2000)
+        m = JIRA_KEY_RE.search(head)
+        key = (m.group(1) or m.group(2)) if m else None
+        if key and key != stem and key in names:
+            out[stem] = key
+    return out
+
+
+def remap_jira(mirror: str, apply: bool) -> dict:
+    """Перевести ссылки карточек со старых имён файлов Jira на ключи задач."""
+    pairs = jira_map(mirror)
+    stats = {"переписано": 0, "_touched": 0, "_unmapped": [], "_pairs": pairs}
+    if not pairs:
+        return stats
+    ref_re = re.compile(r"Sources/JIRA/([^\s\"\'\)\]]+)\.md")
+    for dirpath, _, files in os.walk(KB):
+        if os.path.basename(dirpath) == "meta":      # генерируемые файлы правит их автор
+            continue
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            path = os.path.join(dirpath, f)
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            new_text, dirty = text, False
+            for stem in sorted(set(ref_re.findall(text))):
+                if stem in pairs:
+                    new_text = new_text.replace(f"Sources/JIRA/{stem}.md",
+                                                f"Sources/JIRA/{pairs[stem]}.md")
+                    stats["переписано"] += 1
+                    dirty = True
+                elif not os.path.isfile(os.path.join(mirror, stem + ".md")):
+                    stats["_unmapped"].append(f"{path}: Sources/JIRA/{stem}.md")
+            if dirty:
+                stats["_touched"] += 1
+                if apply:
+                    open(path, "w", encoding="utf-8").write(new_text)
+    return stats
 
 
 # -------------------------------------------------------------------- правка
@@ -184,6 +239,35 @@ def main() -> int:
     if not os.path.isdir(KB):
         print(f"kb_remap: нет {KB}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
+
+    # Зеркало Jira адресуется ключом задачи, а не page_id: карта строится по содержимому
+    # файлов, снимок и ревизия git для неё не нужны.
+    if os.path.isfile(os.path.join(a.mirror, "update_log.md")):
+        st = remap_jira(a.mirror, a.apply)
+        lines = [f"# Перенацеливание source: на ключи задач — {TODAY}", "",
+                 f"Копий под старыми именами в зеркале: {len(st['_pairs'])}",
+                 f"- ссылок переписано: {st['переписано']}",
+                 f"- карточек к правке: {st['_touched']}"]
+        for stem, key in sorted(st["_pairs"].items())[:20]:
+            lines.append(f"  - `{stem}.md` → `{key}.md`")
+        if len(st["_pairs"]) > 20:
+            lines.append(f"  - … ещё {len(st['_pairs']) - 20}")
+        if st["_unmapped"]:
+            lines += ["", f"## Ссылки в никуда ({len(st['_unmapped'])})", "",
+                      "Файла нет в зеркале ни под старым именем, ни под ключом: задача вне "
+                      "текущего JQL или ссылку писали руками. Решает человек.", ""]
+            lines += [f"- {u}" for u in st["_unmapped"][:50]]
+            if len(st["_unmapped"]) > 50:
+                lines.append(f"- … ещё {len(st['_unmapped']) - 50}")
+        if not a.apply:
+            lines += ["", "(dry-run) Ничего не записано. Применить: --apply,",
+                      "затем `sync:jira --prune` уберёт освободившиеся копии."]
+        text = "\n".join(lines)
+        print(text)
+        if a.report:
+            os.makedirs(os.path.dirname(a.report) or ".", exist_ok=True)
+            open(a.report, "w", encoding="utf-8").write(text + "\n")
+        return 0
 
     if a.snapshot:
         m = scan_disk(a.mirror)

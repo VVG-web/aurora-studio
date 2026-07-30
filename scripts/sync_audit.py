@@ -33,9 +33,11 @@ JIRA_DIR = "Sources/JIRA"
 TODAY = date.today()
 
 # Служебные файлы синка — не страницы.
+# Тот же список, что у синка: иначе аудит числит служебный файл задачей, а `--prune`
+# его не трогает — и расхождение не сходится никогда.
 SERVICE_RE = re.compile(
-    r"(sync_state|update_log|sync_paths|_prompt|_template|-rules|_rules|SYNC_|FINAL_SYNC|README)",
-    re.I)
+    r"(sync_state|update_log|sync_paths|sync_report|_prompt|_template|_example|"
+    r"-rules|_rules|SYNC_|FINAL_SYNC|README)", re.I)
 ROW_RE = re.compile(r"^\|\s*[^|]*\|\s*(\d{4,})\s*\|([^|]*)\|\s*([^|]+?)\s*\|\s*([A-Z_]+)?\s*\|")
 JIRA_ROW_RE = re.compile(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|([^|]*)\|\s*([^|]+?)\s*\|")
 # page_id пишется в шапке зеркала (`page_id: 12345`); `- **ID:** 12345` — формат
@@ -268,6 +270,36 @@ def audit_confluence(root: str, stale_days: int, out: list) -> int:
     return problems
 
 
+def cited_by_cards(rels: list) -> set:
+    """Какие файлы зеркала упоминают карточки базы.
+
+    Сирота, на которую ссылается карточка, и сирота, о которой все забыли, — разные
+    случаи: первую нельзя просто удалить, и отчёт обязан это различать, иначе человек
+    гадает, почему `--prune` отработал, а расхождение осталось.
+    """
+    kb = "AuroraKnowledgeDB"
+    if not os.path.isdir(kb) or not rels:
+        return set()
+    want = {rel: os.path.splitext(os.path.basename(rel))[0] for rel in rels}
+    hit = set()
+    for dirpath, _, files in os.walk(kb):
+        if os.path.basename(dirpath) == "meta":
+            continue
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            try:
+                text = open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore").read()
+            except OSError:
+                continue
+            if "Sources/JIRA" not in text:
+                continue
+            for rel, stem in want.items():
+                if rel not in hit and f"Sources/JIRA/{stem}.md" in text:
+                    hit.add(rel)
+    return hit
+
+
 def audit_jira(root: str, stale_days: int, out: list) -> int:
     if not os.path.isdir(root):
         out.append(f"- зеркала Jira нет ({root}/) — пропущено\n")
@@ -291,6 +323,12 @@ def audit_jira(root: str, stale_days: int, out: list) -> int:
     out.append(f"- в логе задач: {len(logged)} · файлов на диске: {len(files)}")
     out.append(f"- последний синк: {latest or '—'}" + (f" ({age} дн. назад)" if age is not None else ""))
     out.append(f"- MISSING: **{len(missing)}** · ORPHAN: **{len(orphans)}**\n")
+    cited = cited_by_cards([keys_on_disk[k] for k in orphans])
+    if cited:
+        out.append(f"- из них на **{len(cited)}** ссылаются карточки (`source:`) — поэтому "
+                   "`sync:jira --prune` их и не удалил: это оборвало бы провенанс.")
+        out.append("  Сначала перенацелить ссылки: `kb:remap-sources --mirror "
+                   f"{root}`, потом повторить prune.\n")
     problems = len(missing) + len(orphans)
     if age is not None and age > stale_days:
         out.append(f"⚠️ STALE: лог синка старше {stale_days} дней — запустите `sync:jira`.\n")

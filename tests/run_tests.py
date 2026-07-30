@@ -1345,6 +1345,44 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_remap_jira_moves_sources_to_issue_keys(tmp: Path):
+    """Ссылки карточек переезжают со старых имён файлов Jira на ключи задач.
+
+    Пока карточка ссылается на копию под старым именем, `--prune` не имеет права её
+    удалить — это оборвало бы провенанс. Значит, сначала переезд ссылок, потом чистка.
+    """
+    root = make_project(tmp)
+    mirror = root / "Sources/JIRA"
+    mirror.mkdir(parents=True, exist_ok=True)
+    (mirror / "update_log.md").write_text("| Issue Key | Updated | Status | Local Path |\n",
+                                          encoding="utf-8")
+    (mirror / "PRJ-327.md").write_text(
+        "# PRJ-327: US-3.1.1. Приём\n\n| **Key** | PRJ-327 |\n", encoding="utf-8")
+    (mirror / "US-3.1.1.md").write_text(
+        "# PRJ-327: US-3.1.1. Приём\n\n| **Key** | PRJ-327 |\n", encoding="utf-8")
+    card = root / "AuroraKnowledgeDB/Concepts/Приём.md"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text("---\nsource: Sources/JIRA/US-3.1.1.md\n---\n\nтекст\n", encoding="utf-8")
+    gone = root / "AuroraKnowledgeDB/Concepts/Потеряшка.md"
+    gone.write_text("---\nsource: Sources/JIRA/3-1-9.md\n---\n\nтекст\n", encoding="utf-8")
+
+    dry = run("kb_remap.py", "--mirror", "Sources/JIRA", cwd=root)
+    assert "`US-3.1.1.md` → `PRJ-327.md`" in dry.stdout, dry.stdout[:600]
+    assert "Ссылки в никуда (1)" in dry.stdout, "ссылка на несуществующий файл не отмечена"
+    assert "source: Sources/JIRA/US-3.1.1.md" in card.read_text(encoding="utf-8"), \
+        "dry-run не должен писать в карточки"
+
+    run("kb_remap.py", "--mirror", "Sources/JIRA", "--apply", cwd=root)
+    assert "source: Sources/JIRA/PRJ-327.md" in card.read_text(encoding="utf-8"), \
+        "ссылка не перенацелена на ключ задачи"
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    import jira_export as je
+    assert je.cited(str(mirror), ["US-3.1.1.md"]) == set(), \
+        "после переезда копия свободна и prune может её убрать"
+
+
+@test
 def test_kb_graph_builds_links_by_ry_and_story_number(tmp: Path):
     """Связи собираются по объявленным правилам, а не по догадкам.
 
