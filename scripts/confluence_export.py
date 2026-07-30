@@ -50,9 +50,13 @@ STATE = "sync_state.md"
 TODAY = date.today().isoformat()
 FORBIDDEN = r'<>:"/\|?*'
 # Служебные файлы синка (промпты, правила, шаблоны прежнего скилла) — не страницы.
-# Метка ключа Requirement Yogi в тексте зеркала: по ней ключ находится грепом и не
-# путается с обычным текстом.
-RY_MARK = "RY:"
+# Метки Requirement Yogi в тексте зеркала. Вид связи виден прямо в метке, иначе объявление
+# ключа и ссылку на него не различить ни глазом, ни грепом:
+#   RYk — ключ объявлен здесь (definition), ровно один раз на весь проект
+#   RYl — ссылка на чужой ключ (link)
+#   RYo — свойство требования (requirement-property): заголовок, статус и прочие поля
+#   RYr — отчёт по требованиям (requirement-report): таблица, которую собирает сам плагин
+RY_MARK = {"key": "RYk:", "link": "RYl:", "prop": "RYo:", "report": "RYr"}
 
 SERVICE_RE = re.compile(r"(sync_state|sync_paths|update_log|_prompt|_template|-rules|_rules|"
                         r"SYNC_|FINAL_SYNC|README)", re.I)
@@ -200,12 +204,26 @@ def preprocess(soup, base_url: str, space: str):
             kind = (params.get("type") or "").strip().upper()
             free = params.get("freetext", "").strip()
             if kind == "DEFINITION":
-                marker = f"**{RY_MARK}{key}**"
+                marker = f"**{RY_MARK['key']}{key}**"
             else:
-                marker = f"{RY_MARK}{key}"
+                marker = f"{RY_MARK['link']}{key}"
                 if free and free.lower() not in ("link", "ссылка"):
                     marker += f" ({free})"
             tag.replace_with(NavigableString(marker))
+            continue
+        if name == "requirement-property":
+            # Свойство требования: макрос помечает ячейку, в которой лежит заголовок,
+            # статус или иное поле. Текст ячейки остаётся, метка говорит, чей он.
+            params = {(p.get("ac:name") or ""): p.get_text(strip=True)
+                      for p in tag.find_all(re.compile(r"^ac:parameter$"))}
+            prop = next((k for k, v in sorted(params.items())
+                         if k and v.lower() in ("true", "")), "") or params.get("name", "")
+            tag.replace_with(NavigableString(f"{RY_MARK['prop']}{prop or 'свойство'}"))
+            continue
+        if name in ("requirement-report", "requirements", "requirement-table"):
+            # Отчёт плагин собирает сам при показе страницы; в storage его содержимого нет,
+            # и выдумывать его нельзя — фиксируем факт, что здесь стоит отчёт.
+            tag.replace_with(NavigableString(RY_MARK["report"]))
             continue
         if name in ("toc", "children", "pagetree", "recently-updated", "livesearch"):
             tag.decompose()

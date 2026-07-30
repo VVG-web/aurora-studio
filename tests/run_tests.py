@@ -1453,9 +1453,18 @@ def test_confluence_export_keeps_requirement_yogi_keys(tmp: Path):
         '<ac:parameter ac:name="key">RU.PRJ.UI-012</ac:parameter></ac:structured-macro>'
         '</p></td></tr></tbody></table>')
     md = ce.to_markdown(storage, "https://c.example.com", "SP")
-    assert "**RY:KB.ENS.URZ-251**" in md, f"объявление ключа потеряно:\n{md}"
-    assert "RY:RU.PRJ.UI-012" in md, f"ссылка на ключ потеряна:\n{md}"
+    assert "**RYk:KB.ENS.URZ-251**" in md, f"объявление ключа потеряно:\n{md}"
+    assert "RYl:RU.PRJ.UI-012" in md, f"ссылка на ключ потеряна:\n{md}"
+    assert "RYk:RU.PRJ.UI-012" not in md, "ссылка помечена как объявление ключа"
     assert md == ce.to_markdown(storage, "https://c.example.com", "SP"), "конвертация недетерминирована"
+
+    # свойство требования и отчёт: свои метки, чтобы вид связи читался прямо в тексте
+    extra = ('<p><ac:structured-macro ac:name="requirement-property">'
+             '<ac:parameter ac:name="title">true</ac:parameter></ac:structured-macro>'
+             '<ac:structured-macro ac:name="requirement-report">'
+             '<ac:parameter ac:name="query">x</ac:parameter></ac:structured-macro></p>')
+    md2 = ce.to_markdown(extra, "https://c.example.com", "SP")
+    assert "RYo:title" in md2 and "RYr" in md2, f"свойство или отчёт потеряны:\n{md2}"
 
     defines, links = ce.ry_keys(storage)
     assert defines == ["KB.ENS.URZ-251"] and links == ["RU.PRJ.UI-012"], (defines, links)
@@ -1506,6 +1515,12 @@ def test_jira_prune_removes_only_unknown_files(tmp: Path):
     (mirror / "sync_report_2026-01-01.md").write_text("отчёт", encoding="utf-8")
     extra = je.stale(str(mirror), state)
     assert extra == ["US-3.1.1.md"], f"лишним должен быть только след старой выгрузки: {extra}"
+
+    # упоминание номера в тексте — не ссылка на файл: иначе защита не даст удалить ничего
+    (root / "AuroraKnowledgeDB/Concepts/Упоминание.md").write_text(
+        "---\nsource: Sources/JIRA/PRJ-1.md\n---\n\nСделано в US-3.1.1\n", encoding="utf-8")
+    assert je.cited(str(mirror), extra) == set(), \
+        "совпадение по подстроке принято за ссылку на файл"
 
     # файл, на который ссылается карточка, удалять нельзя: это обрыв провенанса
     card = root / "AuroraKnowledgeDB/Concepts/Приём.md"

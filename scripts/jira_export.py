@@ -289,7 +289,9 @@ def cited(root: str, names: list) -> set:
     kb = os.path.normpath(kb)
     if not os.path.isdir(kb):
         return set()
-    want = {n: n[:-3] for n in names}
+    # Сверяем ровно путь, а не подстроку: карточка, где просто упомянут номер истории,
+    # ссылкой на файл не является — иначе защита не даёт удалить вообще ничего.
+    want = {n: f"Sources/JIRA/{n}" for n in names}
     hit = set()
     for dirpath, _, files in os.walk(kb):
         for f in files:
@@ -299,10 +301,10 @@ def cited(root: str, names: list) -> set:
                 text = open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore").read()
             except OSError:
                 continue
-            for n, stem in want.items():
-                if n in hit:
-                    continue
-                if stem in text and "Sources/JIRA" in text:
+            if "Sources/JIRA" not in text:
+                continue
+            for n, ref in want.items():
+                if n not in hit and ref in text:
                     hit.add(n)
     return hit
 
