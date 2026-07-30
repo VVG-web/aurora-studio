@@ -72,10 +72,20 @@ def source_updated(src: str) -> date | None:
 
 
 def targets(selector: str) -> list:
-    """Файл, папка или раздел базы → список карточек."""
+    """Файл, папка или раздел базы → список карточек.
+
+    Отбор не выходит за пределы базы знаний: `.` — это вся база, а не весь проект.
+    Иначе в выборку попадают README из node_modules движка, и отчёт тонет в мусоре.
+    """
     if os.path.isfile(selector):
         return [selector]
+    if selector in (".", "", ROOT, ROOT + "/"):
+        selector = ROOT
     for base in (selector, os.path.join(ROOT, selector)):
+        if os.path.isdir(base) and os.path.relpath(base, ROOT).startswith(".."):
+            print(f"kb_verify: «{selector}» вне {ROOT}/ — верифицируются только карточки базы",
+                  file=sys.stderr)
+            return []
         if os.path.isdir(base):
             return sorted(os.path.join(dp, f).replace("\\", "/")
                           for dp, _, fs in os.walk(base) for f in fs
@@ -85,7 +95,8 @@ def targets(selector: str) -> list:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Пакетная верификация карточек базы знаний")
-    ap.add_argument("selector", help="файл, папка или раздел базы (например Glossary)")
+    ap.add_argument("selector", nargs="?", default=ROOT,
+                    help="файл, папка или раздел базы (по умолчанию вся база)")
     ap.add_argument("--owner", required=True, help="владелец карточек (@имя)")
     ap.add_argument("--months", type=int, default=3, help="срок годности, месяцев (по умолчанию 3)")
     ap.add_argument("--status", default="verified", choices=["verified"],
