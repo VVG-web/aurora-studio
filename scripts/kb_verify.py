@@ -16,6 +16,12 @@
   • статус уже `verified` (повторно — только с `--refresh`);
   • статус `deprecated` — это история.
 
+Пакетная приёмка по возрасту источника (`--source-older-than 24`) отбирает карточки,
+чья страница в источнике не менялась дольше N месяцев: устоявшееся знание не обязано
+перечитываться по одной карточке. Возраст — не доказательство правильности, поэтому
+основание записывается в саму карточку (`verified_basis`), и отвечает за решение тот, кто
+запустил команду. Ошиблись — `git revert`, основание видно в каждой карточке.
+
 `verified` — верхний статус базы. Ступени «canonical со вторым человеком» больше нет:
 она была размечена в схеме, но за всё время не использована ни разу ни в одном проекте
 (1.10.0). Кто проверил и когда — видно из `owner` и `verified`.
@@ -51,6 +57,20 @@ def all_names(root: str) -> set:
     return names
 
 
+def source_updated(src: str) -> date | None:
+    """Дата последней правки страницы-источника — из шапки зеркала (`updated:`).
+
+    Для Confluence это дата версии страницы в самом Confluence, а не дата выгрузки:
+    выгрузка говорит, когда мы посмотрели, источник — когда его меняли в последний раз.
+    """
+    if not src or not os.path.isfile(src):
+        return None
+    fm = frontmatter(open(src, encoding="utf-8", errors="ignore").read(4000))
+    raw = (fm.get("updated") or "").strip().strip('"')
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    return date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
 def targets(selector: str) -> list:
     """Файл, папка или раздел базы → список карточек."""
     if os.path.isfile(selector):
@@ -70,6 +90,8 @@ def main() -> int:
     ap.add_argument("--months", type=int, default=3, help="срок годности, месяцев (по умолчанию 3)")
     ap.add_argument("--status", default="verified", choices=["verified"],
                     help="верхний статус базы; других ступеней нет")
+    ap.add_argument("--source-older-than", type=int, metavar="MONTHS", dest="older",
+                    help="только карточки, чей источник не менялся дольше N месяцев")
     ap.add_argument("--refresh", action="store_true", help="обновить уже проверенные (продлить срок)")
     ap.add_argument("--apply", action="store_true",
                     help="записать изменения (иначе dry-run)")
@@ -87,6 +109,12 @@ def main() -> int:
         return 1
     names = all_names(ROOT)
     review_by = (TODAY + timedelta(days=30 * a.months)).isoformat()
+
+    basis = ""
+    if a.older:
+        cutoff = TODAY - timedelta(days=30 * a.older)
+        basis = f"источник не менялся дольше {a.older} мес (пакетная приёмка)"
+        print(f"Отбор по возрасту источника: страницы, не менявшиеся с {cutoff.isoformat()}\n")
 
     ready, skipped = [], []
     for path in files:
@@ -114,12 +142,26 @@ def main() -> int:
         if broken:
             skipped.append((path, f"битые ссылки: {', '.join(broken[:3])}"))
             continue
+        src_date = None
+        if a.older:
+            src_date = source_updated((fm.get("source") or "").strip().strip('"'))
+            if not src_date:
+                skipped.append((path, "дата источника неизвестна — возраст не проверить"))
+                continue
+            if src_date > cutoff:
+                skipped.append((path, f"источник менялся {src_date.isoformat()} — свежее порога"))
+                continue
 
         new_head = set_field(head, "status", a.status)
         new_head = set_field(new_head, "owner", f'"{a.owner}"')
         new_head = set_field(new_head, "verified", TODAY.isoformat())
         new_head = set_field(new_head, "review_by", review_by)
         new_head = set_field(new_head, "updated", TODAY.isoformat())
+        if basis:
+            # основание доверия записывается в карточку: через полгода никто не вспомнит,
+            # почему полторы тысячи карточек стали verified в один день
+            new_head = set_field(new_head, "verified_basis",
+                                 f'"{basis}; правка источника {src_date.isoformat()}"')
         ready.append((path, "---" + new_head + rest))
 
     print(f"# Verify — {TODAY.isoformat()}\n")
