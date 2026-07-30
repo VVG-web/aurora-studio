@@ -133,11 +133,34 @@ def jira_map(mirror: str) -> dict:
     return out
 
 
+def jira_by_story(mirror: str) -> dict:
+    """{номер истории → ключ задачи} по summary задач зеркала.
+
+    Ссылки старше формата имён вида `Sources/JIRA/3-6-14.md` не сопоставляются по
+    содержимому — такого файла давно нет. Но номер истории в имени тот же, что в summary
+    задачи, и если задача с этим номером ровно одна, адрес восстанавливается однозначно.
+    Если их несколько — не угадываем, отправляем человеку.
+    """
+    seen: dict = {}
+    for f in sorted(os.listdir(mirror)) if os.path.isdir(mirror) else []:
+        if not f.endswith(".md") or f == "update_log.md":
+            continue
+        head = open(os.path.join(mirror, f), encoding="utf-8", errors="ignore").read(2000)
+        m = JIRA_KEY_RE.search(head)
+        key = (m.group(1) or m.group(2)) if m else None
+        s = re.search(r"\bUS[ ._-]?(\d+(?:\.\d+)+)", head, re.I)
+        if key and s and f[:-3] == key:
+            seen.setdefault(s.group(1), []).append(key)
+    return {num: keys[0] for num, keys in seen.items() if len(keys) == 1}
+
+
 def remap_jira(mirror: str, apply: bool) -> dict:
     """Перевести ссылки карточек со старых имён файлов Jira на ключи задач."""
     pairs = jira_map(mirror)
-    stats = {"переписано": 0, "_touched": 0, "_unmapped": [], "_pairs": pairs}
-    if not pairs:
+    by_story = jira_by_story(mirror)
+    stats = {"переписано": 0, "по номеру истории": 0, "_touched": 0, "_unmapped": [],
+             "_pairs": pairs}
+    if not pairs and not by_story:
         return stats
     ref_re = re.compile(r"Sources/JIRA/([^\s\"\'\)\]]+)\.md")
     for dirpath, _, files in os.walk(KB):
@@ -156,7 +179,15 @@ def remap_jira(mirror: str, apply: bool) -> dict:
                     stats["переписано"] += 1
                     dirty = True
                 elif not os.path.isfile(os.path.join(mirror, stem + ".md")):
-                    stats["_unmapped"].append(f"{path}: Sources/JIRA/{stem}.md")
+                    num = re.fullmatch(r"\D*(\d+(?:[-.]\d+)+)", stem)
+                    key = by_story.get(num.group(1).replace("-", ".")) if num else None
+                    if key:
+                        new_text = new_text.replace(f"Sources/JIRA/{stem}.md",
+                                                    f"Sources/JIRA/{key}.md")
+                        stats["по номеру истории"] += 1
+                        dirty = True
+                    else:
+                        stats["_unmapped"].append(f"{path}: Sources/JIRA/{stem}.md")
             if dirty:
                 stats["_touched"] += 1
                 if apply:
@@ -246,7 +277,8 @@ def main() -> int:
         st = remap_jira(a.mirror, a.apply)
         lines = [f"# Перенацеливание source: на ключи задач — {TODAY}", "",
                  f"Копий под старыми именами в зеркале: {len(st['_pairs'])}",
-                 f"- ссылок переписано: {st['переписано']}",
+                 f"- ссылок переписано по ключу в файле: {st['переписано']}",
+                 f"- ссылок восстановлено по номеру истории: {st['по номеру истории']}",
                  f"- карточек к правке: {st['_touched']}"]
         for stem, key in sorted(st["_pairs"].items())[:20]:
             lines.append(f"  - `{stem}.md` → `{key}.md`")
