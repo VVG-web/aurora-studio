@@ -321,6 +321,7 @@ tr:last-child td{border-bottom:0}
         <span class="chip mono" id="consoleCmd">—</span>
         <span class="chip" id="consoleRc">не запускалось</span>
         <div class="spacer"></div>
+        <span id="consoleApply"></span>
         <button class="btn sm" id="clearConsole">Очистить</button>
       </div>
       <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
@@ -380,7 +381,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.24.1";
+const UI_VERSION = "1.26.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -872,7 +873,6 @@ const DANGER_FLAGS = {
   "--include-raw": "тронет доказательства (Raw/, released/) — они считаются неизменяемыми",
   "--merge": "сольёт две карточки в одну: вторая уедет в архив",
   "--prune": "удалит из зеркала файлы, которых больше нет в источнике",
-  "--all": "снесёт и рукотворное: журнал решений, вопросы заказчику, справочники",
   "--backup": "снять копию базы перед удалением — обязательно для проекта без git",
   "--refresh": "продлит срок годности уже проверенным карточкам",
   "--cards": "запишет связи в поле related: карточек базы",
@@ -881,9 +881,11 @@ const DANGER_FLAGS = {
 // Команды, которые не правят файлы, а удаляют их. Формулировка подтверждения «изменения
 // попадут в git diff» для них — неправда: восстанавливать придётся из git, а не читать diff.
 const DESTRUCTIVE = {
-  "kb:reset": "Из базы знаний будут удалены карточки, собранные из источников. " +
-    "Источники (Sources/, Raw/) не тронутся. Останутся журнал решений, вопросы и " +
-    "рукотворные справочники — если не выбран --all.",
+  "kb:reset": "Будет удалено всё содержимое AuroraKnowledgeDB/ — карточки, журнал решений, " +
+    "вопросы, справочники, оглавления, meta. За пределами базы не тронется ничего: " +
+    "Sources/, Raw/, Artifacts/, Deliverables/, Workspaces/, Templates/, Prompts/ на месте. " +
+    "Журнал решений, вопросы и правила базы из источников не восстановятся — только из git; " +
+    "оставить их вместе со справочниками — --keep-handmade.",
 };
 // Что подставлять в аргумент: короткий пример вместо абстрактного имени переменной.
 const ARG_HINTS = {
@@ -905,7 +907,10 @@ function openRun(cmdName, preFlags=[]){
   const r = S.state.commands.find(x=>x.cmd===cmdName);
   if (!r) return toast("Команда не найдена","err");
   if (!r.runnable){ openDoc("skills/aurora-vault/references/"+r.impl); return; }
-  RUN = {row:r, flags:new Set(preFlags), args:"", vals:{}, previewed:false};
+  RUN = {row:r, flags:new Set(preFlags), args:"", vals:{}};
+  // Кнопка в консоли применяет ровно тот набор флагов, который был у предпросмотра.
+  // Открыли другую команду — набор сменился, старой кнопке верить нельзя.
+  PENDING_APPLY = null; $("#consoleApply").innerHTML = "";
   drawRun();
   $("#runOverlay").classList.add("on");
   setTimeout(()=>$("#runDrawer").querySelector("button,input")?.focus(),40);
@@ -954,6 +959,15 @@ function drawRun(){
     el("p",{class:"muted",style:"font-size:13.5px;margin:10px 0 4px",html:tick(r.what)}),
     el("div",{class:"mono",style:"font-size:12px;color:var(--text-muted)"},
       ".opencode/scripts/" + r.impl + (r.args? " " + r.args : "")));
+  // Список флагов панель читает из kit'а, а запускает копию скрипта из движка проекта.
+  // Пока движок не обновлён, новый флаг существует только на экране: скрипт ответит
+  // «unrecognized argument» и кодом 2, и выглядит это как поломка панели.
+  if (S.project.behind && !r.from_kit){
+    d.append(el("div",{class:"warnbox"},
+      `Движок проекта ${S.project.engine}, kit ${S.project.kit}. Флаги ниже — из kit'а, ` +
+      "а запускается .opencode/scripts проекта: новых он может не принять и вернуть код 2. " +
+      "Обновить — в разделе «Версия и миграция»."));
+  }
   if (r.args){
     const opt = r.args.trim().startsWith("[");
     d.append(el("div",{style:"margin-top:14px"},
@@ -975,12 +989,10 @@ function drawRun(){
   if (writes){
     const kill = DESTRUCTIVE[r.cmd];
     d.append(el("div",{class:"warnbox" + (kill ? " dangerbox" : "")},
-      kill ? kill + (RUN.previewed
-              ? " Предпросмотр выполнен: список выше. «Применить» удалит файлы, вернуть их можно только через git."
-              : " Сначала предпросмотр без --apply — он покажет, что именно уйдёт.")
-           : (RUN.previewed
-              ? "Предпросмотр выполнен. «Применить» запишет изменения в файлы проекта — они попадут в git diff."
-              : "Команда умеет писать. Сначала предпросмотр без --apply: он ничего не меняет и показывает, что произойдёт.")));
+      (kill ? kill + " Сначала предпросмотр без --apply — он покажет, что именно уйдёт."
+            : "Команда умеет писать. Сначала предпросмотр без --apply: он ничего не меняет " +
+              "и показывает, что произойдёт.") +
+      " Кнопка «Применить» появится в консоли под выводом предпросмотра — с теми же флагами."));
   }
   if (outward){
     const tok = r.cmd.startsWith("sync:jira") ? S.project.jira_token : S.project.confluence_token;
@@ -990,18 +1002,24 @@ function drawRun(){
   }
   d.append(el("div",{class:"row",style:"margin-top:20px"},
     el("button",{class:"btn primary",onclick:()=>fire(false)}, writes?"Предпросмотр":"Запустить"),
-    writes?el("button",{class:"btn gold",disabled:RUN.previewed?null:"",onclick:()=>{
-      const kill = DESTRUCTIVE[RUN.row.cmd];
-      const ask = kill
-        ? `Удалить файлы в проекте «${S.project.name}»?\n\n${RUN.row.cmd} --apply\n\n${kill}\n\nВосстановление — только через git.`
-        : `Записать изменения в проект «${S.project.name}»?\n\n${RUN.row.cmd} --apply\n\nОтменить можно через git.`;
-      if (confirm(ask)) fire(true);
-    }},"Применить"):null,
     el("div",{class:"spacer"}),
     el("button",{class:"btn sm",onclick:closeRun},"Закрыть")));
 }
+// Флаги меняют то, что именно уйдёт (`--keep-handmade` у kb:reset), поэтому в вопросе
+// стоит вся строка запуска, а не одно имя команды.
+function applyAsk(line){
+  const kill = DESTRUCTIVE[line.split(" ")[0]];
+  return kill
+    ? `Удалить файлы в проекте «${S.project.name}»?\n\n${line} --apply\n\n${kill}\n\nВосстановление — только через git.`
+    : `Записать изменения в проект «${S.project.name}»?\n\n${line} --apply\n\nОтменить можно через git.`;
+}
 function closeRun(){ $("#runOverlay").classList.remove("on"); }
 $("#runOverlay").onclick = e => { if (e.target.id==="runOverlay") closeRun(); };
+
+// Предпросмотр закрывает ящик команды, а открыть его заново — значит собрать флаги
+// с нуля. Поэтому «Применить» живёт в консоли: там виден вывод предпросмотра, и
+// применяется ровно та же строка запуска плюс --apply.
+let PENDING_APPLY = null;
 
 async function fire(apply){
   const r = RUN.row;
@@ -1019,6 +1037,7 @@ async function fire(apply){
   }
   if (apply) args.push("--apply");
   closeRun(); show("console");
+  PENDING_APPLY = null; $("#consoleApply").innerHTML = "";
   const out = $("#consoleOut"); out.innerHTML="";
   $("#consoleCmd").textContent = r.cmd + " " + args.join(" ");
   $("#consoleRc").textContent = "выполняется…";
@@ -1026,7 +1045,8 @@ async function fire(apply){
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
     {project:S.project.path, cmd:r.cmd, args})});
   if (!res.job) return;
-  if (!apply) RUN.previewed = true;
+  if (!apply && r.flags.includes("--apply"))
+    PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
   poll(res.job, 0, r.cmd + " " + args.join(" "));
 }
 async function poll(id, since, label){
@@ -1046,6 +1066,12 @@ async function poll(id, since, label){
   badge.textContent = rc===0 ? "успех · код 0" : "код возврата " + rc;
   badge.className = "chip " + (rc===0 ? "ok" : "bad");
   toast(rc===0 ? "Готово: " + label : "Команда вернула код " + rc, rc===0?"ok":"err");
+  if (rc===0 && PENDING_APPLY && PENDING_APPLY.job===id){
+    const line = PENDING_APPLY.line;
+    $("#consoleApply").append(el("button",{class:"btn sm gold",
+      onclick:()=>{ if (confirm(applyAsk(line))) fire(true); }},
+      "Применить: " + line + " --apply"));
+  }
   S.history.unshift({label, rc, at:new Date().toLocaleTimeString("ru-RU")});
   renderHistory();
   if (S.project) { const p = S.project;

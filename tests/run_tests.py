@@ -1165,6 +1165,29 @@ def test_cockpit_ui_version_tracks_kit(tmp: Path):
 
 
 @test
+def test_cockpit_apply_is_reachable(tmp: Path):
+    """Пишущую команду нужно уметь применить: панель без «Применить» умеет только dry-run."""
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="consoleApply"' in ui, "в консоли нет места для кнопки «Применить»"
+    assert "PENDING_APPLY" in ui, "панель не помнит предпросмотр — применять нечего"
+    # признак жил в RUN, а RUN пересоздаётся при каждом открытии ящика: кнопка на нём
+    # включалась только пока ящик закрыт
+    assert "RUN.previewed" not in ui, \
+        "«Применить» снова зависит от признака, который сбрасывается при открытии команды"
+
+
+@test
+def test_cockpit_warns_when_project_engine_lags(tmp: Path):
+    """Флаги панель берёт из kit'а, а запускает движок проекта — расхождение нужно назвать."""
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "S.project.behind && !r.from_kit" in ui, \
+        "ящик команды не предупреждает, что флаги из kit'а, а движок проекта другой"
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"from_kit": script in KIT_SIDE' in srv, \
+        "панель не различает скрипты, которые и так запускаются из kit'а"
+
+
+@test
 def test_commands_registry_matches_engine(tmp: Path):
     """Справочник команд не должен расходиться ни с движком, ни с флагами скриптов."""
     root = make_project(tmp)
@@ -1354,41 +1377,89 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
-def test_kb_reset_keeps_what_sources_cannot_restore(tmp: Path):
-    """Сброс сносит выводимое из источников и не трогает то, что писали люди.
+def test_kb_reset_empties_the_base_and_nothing_else(tmp: Path):
+    """Сброс обнуляет `AuroraKnowledgeDB/` целиком и не выходит за её пределы.
 
-    Журнал решений, вопросы заказчику и рукотворные справочники заново не выведутся
-    ниоткуда: удалить их вместе с карточками значит стереть память проекта.
+    «Обнулить» значит обнулить: журнал решений и справочники уходят вместе с карточками,
+    откат — из git. Но два файла внутри базы знанием не являются: настройки Obsidian и
+    отметка версии движка, по которой панель и `doctor` понимают, что установлено.
     """
     root = make_project(tmp, git=True)
     kb = root / "AuroraKnowledgeDB"
-    for section in ("Concepts", "Decisions", "Questions", "Reference", "MOC", "meta"):
+    for section in ("Concepts", "Decisions", "Questions", "Reference", "MOC",
+                    "_archive", "meta", ".obsidian"):
         (kb / section).mkdir(parents=True, exist_ok=True)
     (kb / "Concepts/Карточка.md").write_text(
         '---\ntitle: "К"\nsource: "Sources/Confluence/a.md"\nstatus: verified\n---\nтекст\n',
         encoding="utf-8")
     (kb / "MOC/Связи.md").write_text("сгенерировано\n", encoding="utf-8")
+    (kb / "_archive/Старая.md").write_text("вытесненная карточка\n", encoding="utf-8")
     (kb / "meta/manifest.json").write_text('{"sources": {}}', encoding="utf-8")
     (kb / "meta/golden_questions.md").write_text("# эталоны\n", encoding="utf-8")
+    (kb / "meta/aurora_version.txt").write_text("1.0.0\n", encoding="utf-8")
+    (kb / ".obsidian/workspace.json").write_text('{"main": {}}', encoding="utf-8")
     (kb / "Decisions/DR-001.md").write_text("почему выбрали так\n", encoding="utf-8")
     (kb / "Questions/Q-001.md").write_text("вопрос заказчику\n", encoding="utf-8")
     (kb / "Reference/abbr.md").write_text("аббревиатуры\n", encoding="utf-8")
-    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
-    (root / "Sources/Confluence/a.md").write_text("страница\n", encoding="utf-8")
+    for outside in ("Sources/Confluence/a.md", "Raw/project/тз.md", "Artifacts/us/US-1.md",
+                    "Deliverables/work/док.md", "Workspaces/задача/черновик.md",
+                    "Templates/us_template.md", "Prompts/p.md"):
+        (root / outside).parent.mkdir(parents=True, exist_ok=True)
+        (root / outside).write_text("содержимое\n", encoding="utf-8")
 
     dry = run("kb_reset.py", cwd=root)
     assert "verified: 1" in dry.stdout and "работа человека" in dry.stdout, \
         f"не предупреждает, что удаляет проверенное человеком:\n{dry.stdout[:600]}"
+    assert "заново из источников не выведется" in dry.stdout, \
+        "не назвал разделы, которых нет ни в одном источнике"
     assert (kb / "Concepts/Карточка.md").exists(), "dry-run удалил файлы"
 
     run("kb_reset.py", "--apply", cwd=root)
-    assert not (kb / "Concepts/Карточка.md").exists(), "карточка из источника не удалена"
-    assert not (kb / "meta/manifest.json").exists(), "учёт извлечения не сброшен"
-    assert not (kb / "MOC/Связи.md").exists(), "сгенерированная карта не удалена"
+    for gone in ("Concepts/Карточка.md", "MOC/Связи.md", "_archive/Старая.md",
+                 "meta/manifest.json", "meta/golden_questions.md", "Decisions/DR-001.md",
+                 "Questions/Q-001.md", "Reference/abbr.md"):
+        assert not (kb / gone).exists(), f"база не обнулена: остался {gone}"
+    assert (kb / "meta/aurora_version.txt").exists(), \
+        "снесена отметка версии движка — панель и doctor перестанут её видеть"
+    assert (kb / ".obsidian/workspace.json").exists(), \
+        "снесены настройки хранилища Obsidian — это не знание и из источников не вернётся"
+    assert (kb / "Concepts").is_dir(), "исчезла папка раздела: структура принадлежит движку"
+    for outside in ("Sources/Confluence/a.md", "Raw/project/тз.md", "Artifacts/us/US-1.md",
+                    "Deliverables/work/док.md", "Workspaces/задача/черновик.md",
+                    "Templates/us_template.md", "Prompts/p.md"):
+        assert (root / outside).exists(), f"сброс вышел за пределы базы: {outside}"
+
+
+@test
+def test_kb_reset_keep_handmade_spares_what_has_no_source(tmp: Path):
+    """`--keep-handmade` оставляет то, чего нет ни в одном источнике.
+
+    Смена способа извлечения — не повод стирать память проекта: журнал решений, вопросы,
+    рукотворные справочники и правила базы `kb:build` не вернёт. Учёт извлечения уходит
+    и здесь, иначе план сборки выйдет пустым.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    for section in ("Concepts", "Decisions", "Questions", "Reference", "meta"):
+        (kb / section).mkdir(parents=True, exist_ok=True)
+    (kb / "Concepts/Карточка.md").write_text(
+        '---\ntitle: "К"\nstatus: imported\n---\nтекст\n', encoding="utf-8")
+    (kb / "Decisions/DR-001.md").write_text("почему выбрали так\n", encoding="utf-8")
+    (kb / "Questions/Q-001.md").write_text("вопрос заказчику\n", encoding="utf-8")
+    (kb / "Reference/abbr.md").write_text("аббревиатуры\n", encoding="utf-8")
+    (kb / "meta/conventions.md").write_text("# правила\n", encoding="utf-8")
+    (kb / "meta/golden_questions.md").write_text("# эталоны\n", encoding="utf-8")
+    (kb / "meta/manifest.json").write_text('{"sources": {}}', encoding="utf-8")
+    (kb / "meta/links.json").write_text("{}", encoding="utf-8")
+
+    run("kb_reset.py", "--keep-handmade", "--apply", cwd=root)
     for keep in ("Decisions/DR-001.md", "Questions/Q-001.md", "Reference/abbr.md",
-                 "meta/golden_questions.md"):
-        assert (kb / keep).exists(), f"удалено рукотворное: {keep}"
-    assert (root / "Sources/Confluence/a.md").exists(), "тронут источник"
+                 "meta/conventions.md", "meta/golden_questions.md"):
+        assert (kb / keep).exists(), f"--keep-handmade удалил рукотворное: {keep}"
+    assert not (kb / "Concepts/Карточка.md").exists(), "карточки должны уйти в обоих режимах"
+    assert not (kb / "meta/manifest.json").exists(), \
+        "учёт извлечения остался — kb:build сочтёт источники разобранными и план выйдет пустым"
+    assert not (kb / "meta/links.json").exists(), "сгенерированный граф связей не удалён"
 
     # --all сносит и рукотворное, но только по явному ключу
     run("kb_reset.py", "--all", "--apply", "--allow-dirty", cwd=root)
