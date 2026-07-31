@@ -92,13 +92,14 @@ needed for the requested command (progressive disclosure, keep context small).
 
 | Command | What it does | Reference |
 |---|---|---|
-| `kb:build` (`build`) | извлечь карточки: план и учёт — `build_plan.py`, само извлечение — модель | `references/build.md` |
+| `kb:build` (`build`) | извлечь карточки: план и учёт — `build_plan.py`, само извлечение — модель. `--partition N` печатает готовое задание на партию: список файлов и правила | `references/build.md` |
 | `kb:ingest-office [path]` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | `references/maintenance.md` |
 | `kb:ingest-raw <path>` (`ingest-raw`) | обработать документ из Raw/ в карточки-кандидаты | `references/workflows.md` |
 | `kb:ingest-meeting <транскрипт>` (`ingest-meeting`) | транскрипт → резюме, решения (DR), требования (REQ), факты | `references/workflows.md` |
 | `kb:ingest-tz <ТЗ>` (`ingest-tz`) | разобрать ТЗ по пунктам в REQ-карточки с tz_ref | `references/workflows.md` |
+| `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
 | `kb:queue` | очередь верификации: что верифицировать первым (употребление × связи × протухание) | `references/maintenance.md` |
-| `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `verified` — верхний статус базы | `references/maintenance.md` |
+| `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять то, что давно не менялось в источнике (основание пишется в карточку) | `references/maintenance.md` |
 | `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter (`kb_fix.py --all`) | `references/maintenance.md` |
 | `kb:retire` | убрать поля, выведенные из схемы (`kb_fix.py --retire`); `canonical` → `verified` | `references/maintenance.md` |
 | `kb:dedupe` | двойники: поиск и слияние (`kb_fix.py --dupes` / `--merge`) — тот же скрипт, другой режим | `references/maintenance.md` |

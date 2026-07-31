@@ -105,8 +105,11 @@ def scenarios() -> list:
             continue
         parts = [x.strip() for x in line.split("|")]
         if parts[0].startswith("-"):
+            # третье поле — команда скилла для ассистента: панель её не запускает,
+            # но человек должен видеть, что именно сказать модели
             cur["steps"].append({"manual": True, "title": parts[0].lstrip("- ").strip(),
-                                 "why": parts[1] if len(parts) > 1 else ""})
+                                 "why": parts[1] if len(parts) > 1 else "",
+                                 "skill": parts[2] if len(parts) > 2 else ""})
         else:
             cur["steps"].append({"manual": False, "cmd": parts[0],
                                  "why": parts[1] if len(parts) > 1 else "",

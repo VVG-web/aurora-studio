@@ -380,7 +380,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.22.0";
+const UI_VERSION = "1.23.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1304,14 +1304,30 @@ async function renderQuick(){
         String(i+1));
       if (st.manual){
         card.append(el("div",{class:"list-item"}, num,
-          el("div",{style:"flex:1"},
+          el("div",{style:"flex:1;min-width:0"},
             el("div",{style:"font-weight:600"}, st.title,
-              el("span",{class:"chip",style:"margin-left:8px"},"человек")),
-            el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"}, st.why)),
-          el("span",{class:"muted",style:"font-size:12px"},"панель не запускает")));
+              el("span",{class:"chip",style:"margin-left:8px"},"ассистент")),
+            el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"}, st.why),
+            st.skill ? skillLine(st.skill) : null),
+          st.skill ? copyButton(st.skill) : el("span",{class:"muted",style:"font-size:12px"},
+            "панель не запускает")));
         return;
       }
       const row = S.state.commands.find(c=>c.cmd===st.cmd);
+      // Команда есть в реестре, но исполняет её модель, а не скрипт: панель показывает,
+      // что сказать ассистенту, вместо кнопки, которая всё равно ничего не запустит.
+      if (row && !row.runnable){
+        const say = "/aurora-vault " + st.cmd;
+        card.append(el("div",{class:"list-item"}, num,
+          el("div",{style:"flex:1;min-width:0"},
+            el("div",{class:"row",style:"gap:8px"},
+              el("span",{class:"mono",style:"font-weight:700"}, st.cmd),
+              el("span",{class:"chip"},"ассистент")),
+            el("div",{class:"muted",style:"font-size:13px;margin-top:4px"}, st.why),
+            skillLine(say)),
+          copyButton(say)));
+        return;
+      }
       card.append(el("div",{class:"list-item"}, num,
         el("div",{style:"flex:1;min-width:0"},
           el("div",{class:"row",style:"gap:8px"},
@@ -1326,6 +1342,21 @@ async function renderQuick(){
     box.append(card);
   });
   box.dataset.ready = "1";
+}
+
+// Шаг без кнопки запуска бесполезен без ответа на вопрос «а что мне тогда сделать».
+// Ответ один и тот же: сказать это ассистенту проекта — скилл лежит в самом проекте.
+function skillLine(text){
+  return el("div",{class:"row",style:"gap:8px;margin-top:6px"},
+    el("span",{class:"muted",style:"font-size:12px"},"в чат с ассистентом:"),
+    el("code",{class:"tick",style:"font-size:12.5px"}, text));
+}
+function copyButton(text){
+  const b = el("button",{class:"btn sm",onclick:async()=>{
+    try { await navigator.clipboard.writeText(text); toast("Скопировано: " + text, "ok"); }
+    catch(e){ toast("Скопируйте вручную: " + text, "warn"); }
+  }},"Скопировать");
+  return b;
 }
 
 /* ---------------- о проекте ---------------- */
