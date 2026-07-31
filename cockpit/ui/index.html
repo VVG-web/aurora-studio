@@ -380,7 +380,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.24.0";
+const UI_VERSION = "1.24.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -872,6 +872,18 @@ const DANGER_FLAGS = {
   "--include-raw": "тронет доказательства (Raw/, released/) — они считаются неизменяемыми",
   "--merge": "сольёт две карточки в одну: вторая уедет в архив",
   "--prune": "удалит из зеркала файлы, которых больше нет в источнике",
+  "--all": "снесёт и рукотворное: журнал решений, вопросы заказчику, справочники",
+  "--backup": "снять копию базы перед удалением — обязательно для проекта без git",
+  "--refresh": "продлит срок годности уже проверенным карточкам",
+  "--cards": "запишет связи в поле related: карточек базы",
+  "--source-older-than": "пакетная приёмка по возрасту источника — отвечает тот, кто запускает",
+};
+// Команды, которые не правят файлы, а удаляют их. Формулировка подтверждения «изменения
+// попадут в git diff» для них — неправда: восстанавливать придётся из git, а не читать diff.
+const DESTRUCTIVE = {
+  "kb:reset": "Из базы знаний будут удалены карточки, собранные из источников. " +
+    "Источники (Sources/, Raw/) не тронутся. Останутся журнал решений, вопросы и " +
+    "рукотворные справочники — если не выбран --all.",
 };
 // Что подставлять в аргумент: короткий пример вместо абстрактного имени переменной.
 const ARG_HINTS = {
@@ -961,10 +973,14 @@ function drawRun(){
       ...flags.map(f=>flagLine(f, help[f], meta[f] || ""))));
   }
   if (writes){
-    d.append(el("div",{class:"warnbox"+(RUN.previewed?"":" ")},
-      RUN.previewed
-        ? "Предпросмотр выполнен. «Применить» запишет изменения в файлы проекта — они попадут в git diff."
-        : "Команда умеет писать. Сначала предпросмотр без --apply: он ничего не меняет и показывает, что произойдёт."));
+    const kill = DESTRUCTIVE[r.cmd];
+    d.append(el("div",{class:"warnbox" + (kill ? " dangerbox" : "")},
+      kill ? kill + (RUN.previewed
+              ? " Предпросмотр выполнен: список выше. «Применить» удалит файлы, вернуть их можно только через git."
+              : " Сначала предпросмотр без --apply — он покажет, что именно уйдёт.")
+           : (RUN.previewed
+              ? "Предпросмотр выполнен. «Применить» запишет изменения в файлы проекта — они попадут в git diff."
+              : "Команда умеет писать. Сначала предпросмотр без --apply: он ничего не меняет и показывает, что произойдёт.")));
   }
   if (outward){
     const tok = r.cmd.startsWith("sync:jira") ? S.project.jira_token : S.project.confluence_token;
@@ -975,7 +991,11 @@ function drawRun(){
   d.append(el("div",{class:"row",style:"margin-top:20px"},
     el("button",{class:"btn primary",onclick:()=>fire(false)}, writes?"Предпросмотр":"Запустить"),
     writes?el("button",{class:"btn gold",disabled:RUN.previewed?null:"",onclick:()=>{
-      if (confirm(`Записать изменения в проект «${S.project.name}»?\n\n${RUN.row.cmd} --apply\n\nОтменить можно через git.`)) fire(true);
+      const kill = DESTRUCTIVE[RUN.row.cmd];
+      const ask = kill
+        ? `Удалить файлы в проекте «${S.project.name}»?\n\n${RUN.row.cmd} --apply\n\n${kill}\n\nВосстановление — только через git.`
+        : `Записать изменения в проект «${S.project.name}»?\n\n${RUN.row.cmd} --apply\n\nОтменить можно через git.`;
+      if (confirm(ask)) fire(true);
     }},"Применить"):null,
     el("div",{class:"spacer"}),
     el("button",{class:"btn sm",onclick:closeRun},"Закрыть")));
