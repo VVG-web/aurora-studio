@@ -2,30 +2,34 @@
 """kb_reset.py — обнулить базу знаний и собрать её заново (фреймворк «Аврора»).
 
 Иногда база расходится с реальностью настолько, что чинить дороже, чем построить заново:
-пятьсот карточек с чужой разметкой, сотни двойников, половина без типа. Источники при этом
-целы — зеркала Confluence и Jira, документы в `Raw/`, — значит знание восстановимо.
+пятьсот карточек с чужой разметкой, сотни двойников, половина без типа.
 
   python3 .opencode/scripts/kb_reset.py            # что будет удалено (dry-run)
-  python3 .opencode/scripts/kb_reset.py --apply    # удалить восстановимое
-  python3 .opencode/scripts/kb_reset.py --all --apply     # вместе с рукотворным
+  python3 .opencode/scripts/kb_reset.py --apply    # обнулить базу
+  python3 .opencode/scripts/kb_reset.py --keep-handmade --apply   # кроме рукотворного
 
-**Что удаляется по умолчанию:** карточки, извлечённые из источников (`source:` ведёт в
-`Sources/` или `Raw/`), сгенерированные оглавления и карты, `meta/manifest.json` — учёт
-извлечения, чтобы `kb:build` пошёл с начала.
+**Что удаляется:** всё содержимое `AuroraKnowledgeDB/` — карточки всех разделов, журнал
+решений, вопросы, рукотворные справочники, оглавления, архив, `meta/`. Пустые папки
+разделов остаются: структура папок — часть движка, а не содержимое базы.
 
-**Что остаётся:** то, чего в источниках нет и заново не выведется —
+**Чего скрипт не касается:** всего, что лежит за пределами `AuroraKnowledgeDB/` —
+`Sources/`, `Raw/`, `Artifacts/`, `Deliverables/`, `Workspaces/`, `Templates/`, `Prompts/`
+остаются как были. Внутри базы уцелеют два файла, которые знанием не являются:
 
-  Decisions/   журнал решений: почему выбрали так. Источник этого знания — люди,
-               а не Confluence; удалить его значит стереть память проекта.
-  Questions/   вопросы заказчику и ответы на них.
-  Reference/   справочники, которые ведутся руками (аббревиатуры, роли, коды).
-  meta/golden_questions.md, meta/conventions.md — правила и регрессионные проверки базы.
+  .obsidian/                настройки хранилища: вид, плагины, открытые вкладки
+  meta/aurora_version.txt   отметка версии движка — по ней панель, `doctor` и `update`
+                            понимают, что в проекте установлено
 
-Снести и это — `--all`. Ключ отдельный намеренно: «обнулить базу» и «стереть работу
-команды за полгода» — разные намерения, и путать их нельзя.
+Заново из источников выведется не всё. `kb:build` читает `Reference/`, `Raw/project`,
+`Raw/customer`, `Raw/contract`, `Sources/Confluence`, `Sources/JIRA` — значит `Decisions/`
+(почему выбрали именно так), `Questions/` и правила базы в `meta/` не вернутся ниоткуда,
+а `Reference/` — первая группа плана сборки, терминология для всех остальных источников.
+Полный сброс сносит и это; `--keep-handmade` оставляет ровно эти четыре вещи, а карточки,
+оглавления и учёт извлечения (`meta/manifest.json`) уходят в обоих режимах.
 
-Откат — через git: скрипт не работает по незакоммиченному дереву, поэтому после ошибки
-достаточно `git checkout -- AuroraKnowledgeDB`. Проект без git обязан указать `--backup`.
+**Восстановление — только из git**: скрипт не работает по незакоммиченному дереву, после
+ошибки достаточно `git checkout -- AuroraKnowledgeDB`. Проект без git обязан указать
+`--backup`.
 """
 from __future__ import annotations
 
@@ -41,43 +45,47 @@ from aurora_common import frontmatter, git_guard, is_service  # noqa: E402
 ROOT = "AuroraKnowledgeDB"
 TODAY = datetime.now().strftime("%Y-%m-%d_%H%M")
 
-# Разделы, которые не выводятся из источников: их пишут люди.
-HANDMADE_DIRS = ("Decisions", "Questions", "Reference")
-HANDMADE_META = ("golden_questions.md", "conventions.md", "aurora_version.txt",
-                 "lint_baseline.txt")
-# Учёт извлечения: без его сброса `kb:build` считает источники разобранными.
-MANIFEST = os.path.join(ROOT, "meta", "manifest.json")
+# Не знание, а обвязка базы: из источников не выводится, но и содержимым базы не является.
+# Версию движка отсюда читают панель, `doctor` и `update`.
+KEEP = ("meta/aurora_version.txt",)
+# Разделы, которых нет ни в одном источнике: `kb:build` их не вернёт.
+NO_SOURCE = ("Decisions", "Questions", "Reference", "meta")
+# Что оставляет `--keep-handmade`. Внутри `meta/` — только правила: `manifest.json` уходит
+# всегда, иначе `kb:build` считает источники разобранными и план выйдет пустым.
+HANDMADE_DIRS = {"Decisions": "журнал решений: почему выбрали так",
+                 "Questions": "вопросы заказчику и ответы",
+                 "Reference": "справочники, которые ведут руками"}
+HANDMADE_META = ("conventions.md", "golden_questions.md", "lint_baseline.txt")
 
 
-def classify(path: str, wipe_all: bool) -> str:
-    """Что делать с файлом: `удалить` или почему он остаётся."""
-    rel = os.path.relpath(path, ROOT).replace("\\", "/")
+def survives(rel: str, keep_handmade: bool) -> str:
+    """Почему файл остаётся; пустая строка — не остаётся."""
+    if rel in KEEP:
+        return "обвязка базы: отметка версии движка"
+    if not keep_handmade:
+        return ""
     top = rel.split("/")[0]
-    if top == "meta":
-        name = os.path.basename(rel)
-        if name == "manifest.json":
-            return "удалить"
-        if not wipe_all and name in HANDMADE_META:
-            return "правила и проверки базы"
-        return "удалить" if wipe_all or name.endswith((".json", ".md", ".log")) else "оставить"
-    if not wipe_all and top in HANDMADE_DIRS:
-        return {"Decisions": "журнал решений: почему выбрали так",
-                "Questions": "вопросы заказчику и ответы",
-                "Reference": "справочники, которые ведут руками"}[top]
-    return "удалить"
+    if top in HANDMADE_DIRS:
+        return HANDMADE_DIRS[top]
+    if top == "meta" and os.path.basename(rel) in HANDMADE_META:
+        return "правила и проверки базы"
+    return ""
 
 
-def scan(wipe_all: bool) -> tuple:
-    """(что удалить, что оставить с причиной, статистика по статусам удаляемого)."""
+def scan(keep_handmade: bool) -> tuple:
+    """(что удалить, что оставить с причиной, статистика по статусам удаляемых карточек)."""
     drop, keep, statuses = [], [], {}
-    for dirpath, _dirs, files in os.walk(ROOT):
+    for dirpath, dirs, files in os.walk(ROOT):
+        # `.obsidian/` — настройки редактора, а не знание; точечные файлы (`.gitkeep`)
+        # держат в git пустые папки разделов, которые остаются после сброса
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in sorted(files):
             if f.startswith("."):
                 continue
             path = os.path.join(dirpath, f).replace("\\", "/")
-            verdict = classify(path, wipe_all)
-            if verdict != "удалить":
-                keep.append((path, verdict))
+            why = survives(os.path.relpath(path, ROOT).replace("\\", "/"), keep_handmade)
+            if why:
+                keep.append((path, why))
                 continue
             drop.append(path)
             if f.endswith(".md") and not is_service(path):
@@ -89,9 +97,10 @@ def scan(wipe_all: bool) -> tuple:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Обнулить базу знаний и собрать заново")
-    ap.add_argument("--all", action="store_true",
-                    help="снести и рукотворное: Decisions, Questions, Reference, правила базы")
     ap.add_argument("--apply", action="store_true", help="удалить (иначе dry-run)")
+    ap.add_argument("--keep-handmade", action="store_true",
+                    help="оставить то, чего нет в источниках: Decisions/, Questions/, "
+                         "Reference/, правила базы в meta/")
     ap.add_argument("--backup", metavar="DIR",
                     help="сначала скопировать базу целиком в эту папку")
     ap.add_argument("--allow-dirty", action="store_true",
@@ -102,31 +111,51 @@ def main() -> int:
         print(f"kb_reset: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
-    drop, keep, statuses = scan(a.all)
+    drop, keep, statuses = scan(a.keep_handmade)
     cards = [p for p in drop if p.endswith(".md")]
     print(f"# Сброс базы знаний — {TODAY}\n")
-    print(f"Режим: {'всё, включая рукотворное' if a.all else 'только восстановимое из источников'}")
-    print(f"К удалению: {len(drop)} файлов (карточек {len(cards)}) · остаётся: {len(keep)}\n")
+    print(f"Режим: {'всё, кроме рукотворного' if a.keep_handmade else 'полный'}")
+    print(f"К удалению: {len(drop)} файлов (карточек {len(cards)}) · остаётся: {len(keep)}")
+    print("Не тронутся: .obsidian/ (настройки хранилища) и meta/aurora_version.txt, "
+          "а за пределами базы — ничего: Sources/, Raw/, Artifacts/, Deliverables/, "
+          "Workspaces/, Templates/, Prompts/.\n")
     if statuses:
         print("Среди удаляемых карточек:")
         for st, n in sorted(statuses.items(), key=lambda x: -x[1]):
             mark = "  ⚠️ это работа человека" if st == "verified" else ""
             print(f"  {st}: {n}{mark}")
         print()
-    if keep:
-        print("Остаётся (заново из источников не выведется):")
-        seen = {}
-        for _path, why in keep:
-            seen[why] = seen.get(why, 0) + 1
-        for why, n in sorted(seen.items()):
-            print(f"  {why}: {n} файлов")
+    if drop:
+        by_dir = {}
+        for path in drop:
+            top = os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
+            by_dir[top] = by_dir.get(top, 0) + 1
+        print("По разделам:")
+        for top, n in sorted(by_dir.items(), key=lambda x: -x[1]):
+            mark = ("  ⚠️ заново из источников не выведется"
+                    if top in NO_SOURCE and not a.keep_handmade else "")
+            print(f"  {top}: {n}{mark}")
         print()
+    if a.keep_handmade:
+        # обвязку базы уже назвали выше — здесь только рукотворное
+        seen = {}
+        for path, why in keep:
+            if os.path.relpath(path, ROOT).replace("\\", "/") not in KEEP:
+                seen[why] = seen.get(why, 0) + 1
+        if seen:
+            print("Остаётся (заново из источников не выведется):")
+            for why, n in sorted(seen.items()):
+                print(f"  {why}: {n}")
+            print()
     if not drop:
         print("✅ Удалять нечего — база уже пуста.")
         return 0
 
     if not a.apply:
         print("(dry-run) Ничего не удалено. Обнулить: --apply")
+        if not a.keep_handmade:
+            print("Сохранить то, чего нет в источниках (Decisions/, Questions/, Reference/, "
+                  "правила базы): --keep-handmade")
         print("\nПосле сброса: `kb:build` → задание ассистенту на партию → `kb:links --cards`.")
         return 0
 
@@ -150,9 +179,13 @@ def main() -> int:
                 os.rmdir(dirpath)
             except OSError:
                 pass
-    print(f"\n✅ Удалено файлов: {len(drop)}. Источники не тронуты: Sources/, Raw/, "
-          "Artifacts/, Deliverables/, Workspaces/ на месте.")
+    print(f"\n✅ База обнулена: удалено файлов {len(drop)}. За пределами {ROOT}/ не тронуто "
+          "ничего — Sources/, Raw/, Artifacts/, Deliverables/, Workspaces/, Templates/, "
+          "Prompts/ на месте.")
     print("Дальше:")
+    if not a.keep_handmade:
+        print("  0. правила базы (meta/conventions.md, meta/golden_questions.md) из источников")
+        print("     не вернутся — возьмите их из git или из шаблонов kit'а")
     print("  1. python3 .opencode/scripts/build_plan.py            # план: партии и порядок")
     print("  2. python3 .opencode/scripts/build_plan.py --partition 1   # задание ассистенту")
     print("  3. python3 .opencode/scripts/kb_graph.py --cards --apply   # связи между карточками")

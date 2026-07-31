@@ -213,6 +213,8 @@ def registry() -> list:
             "flag_args": K.flag_args(impl) if script.endswith(".py") else {},
             "args": K.args_of(impl) if script.endswith(".py") else "",
             "runnable": script.endswith(".py"),
+            # флаги всегда читаются из kit'а, а запускается движок проекта — кроме этих
+            "from_kit": script in KIT_SIDE,
         })
     CACHE["registry"] = rows
     return rows

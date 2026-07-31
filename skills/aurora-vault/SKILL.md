@@ -97,7 +97,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:ingest-raw <path>` (`ingest-raw`) | обработать документ из Raw/ в карточки-кандидаты | `references/workflows.md` |
 | `kb:ingest-meeting <транскрипт>` (`ingest-meeting`) | транскрипт → резюме, решения (DR), требования (REQ), факты | `references/workflows.md` |
 | `kb:ingest-tz <ТЗ>` (`ingest-tz`) | разобрать ТЗ по пунктам в REQ-карточки с tz_ref | `references/workflows.md` |
-| `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит восстановимое из источников, рукотворное (DR, вопросы, справочники) оставляет; `--all` — вместе с ним (`kb_reset.py`) | `references/maintenance.md` |
+| `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит всё содержимое `AuroraKnowledgeDB/` (включая DR, вопросы, справочники), за её пределами не трогает ничего; `--keep-handmade` — оставить то, чего нет в источниках; откат — из git (`kb_reset.py`) | `references/maintenance.md` |
 | `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
 | `kb:queue` | очередь верификации: что верифицировать первым (употребление × связи × протухание) | `references/maintenance.md` |
 | `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять то, что давно не менялось в источнике (основание пишется в карточку) | `references/maintenance.md` |
