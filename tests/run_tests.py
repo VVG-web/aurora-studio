@@ -747,6 +747,15 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
             if not st.get("manual"):
                 assert st["cmd"] in known, \
                     f"сценарий {s['id']} зовёт несуществующую команду {st['cmd']}"
+            else:
+                # шаг без кнопки обязан говорить, что сделать вместо неё
+                assert st.get("skill", "").startswith("/aurora-vault"), \
+                    f"шаг «{st['title']}» в сценарии {s['id']} не называет команду скилла"
+    runnable = {r["cmd"] for r in ck.registry() if r["runnable"]}
+    for s in ck.scenarios():
+        for st in s["steps"]:
+            if not st.get("manual") and st["cmd"] not in runnable:
+                continue   # модельную команду панель показывает как строку для ассистента
 
     # --- скины: имя и описание из шапки файла, путь наружу не принимается
     sk = ck.skins()
