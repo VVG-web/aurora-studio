@@ -1354,6 +1354,48 @@ def test_sync_audit_finds_orphans_and_missing(tmp: Path):
 
 
 @test
+def test_kb_reset_keeps_what_sources_cannot_restore(tmp: Path):
+    """Сброс сносит выводимое из источников и не трогает то, что писали люди.
+
+    Журнал решений, вопросы заказчику и рукотворные справочники заново не выведутся
+    ниоткуда: удалить их вместе с карточками значит стереть память проекта.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    for section in ("Concepts", "Decisions", "Questions", "Reference", "MOC", "meta"):
+        (kb / section).mkdir(parents=True, exist_ok=True)
+    (kb / "Concepts/Карточка.md").write_text(
+        '---\ntitle: "К"\nsource: "Sources/Confluence/a.md"\nstatus: verified\n---\nтекст\n',
+        encoding="utf-8")
+    (kb / "MOC/Связи.md").write_text("сгенерировано\n", encoding="utf-8")
+    (kb / "meta/manifest.json").write_text('{"sources": {}}', encoding="utf-8")
+    (kb / "meta/golden_questions.md").write_text("# эталоны\n", encoding="utf-8")
+    (kb / "Decisions/DR-001.md").write_text("почему выбрали так\n", encoding="utf-8")
+    (kb / "Questions/Q-001.md").write_text("вопрос заказчику\n", encoding="utf-8")
+    (kb / "Reference/abbr.md").write_text("аббревиатуры\n", encoding="utf-8")
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/a.md").write_text("страница\n", encoding="utf-8")
+
+    dry = run("kb_reset.py", cwd=root)
+    assert "verified: 1" in dry.stdout and "работа человека" in dry.stdout, \
+        f"не предупреждает, что удаляет проверенное человеком:\n{dry.stdout[:600]}"
+    assert (kb / "Concepts/Карточка.md").exists(), "dry-run удалил файлы"
+
+    run("kb_reset.py", "--apply", cwd=root)
+    assert not (kb / "Concepts/Карточка.md").exists(), "карточка из источника не удалена"
+    assert not (kb / "meta/manifest.json").exists(), "учёт извлечения не сброшен"
+    assert not (kb / "MOC/Связи.md").exists(), "сгенерированная карта не удалена"
+    for keep in ("Decisions/DR-001.md", "Questions/Q-001.md", "Reference/abbr.md",
+                 "meta/golden_questions.md"):
+        assert (kb / keep).exists(), f"удалено рукотворное: {keep}"
+    assert (root / "Sources/Confluence/a.md").exists(), "тронут источник"
+
+    # --all сносит и рукотворное, но только по явному ключу
+    run("kb_reset.py", "--all", "--apply", "--allow-dirty", cwd=root)
+    assert not (kb / "Decisions/DR-001.md").exists(), "--all не снёс журнал решений"
+
+
+@test
 def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
     """`--partition N` отдаёт готовое задание: список файлов и правила, а не намёк на них."""
     root = make_project(tmp)

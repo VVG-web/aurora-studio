@@ -37,6 +37,7 @@ kb | kb:schema | — | скрипт | kb_schema.py | 1.12.0 | версия сх�
 kb | kb:classify | classify | скрипт | kb_classify.py | 1.7.1 | артефакты, попавшие в знания (US/AC/Epic/задачи), и типы карточек
 kb | kb:supersede | supersede | скрипт | kb_supersede.py | 1.8.0 | заменить знание с историей: deprecated → `_archive`, ссылки переписываются
 kb | kb:links | links, graph | скрипт | kb_graph.py | 1.19.0 | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек
+kb | kb:reset | reset | скрипт | kb_reset.py | 1.24.0 | обнулить базу и собрать заново: сносит восстановимое из источников, рукотворное (DR, вопросы, справочники) оставляет
 kb | kb:lint | lint | скрипт | kb_lint.py | 1.0.0 | механические ошибки базы: ссылки, frontmatter, секреты
 kb | kb:question | — | модель | workflows.md | 1.4.0 | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок
 kb | kb:answer | — | модель | workflows.md | 1.4.0 | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR
