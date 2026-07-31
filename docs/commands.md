@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.21.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.24.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -41,7 +41,7 @@
 | `kb:ingest-meeting` (`ingest-meeting`) | транскрипт встречи → резюме, решения (DR), требования (REQ), факты | модель | `workflows.md` | — | 1.4.0 |
 | `kb:ingest-tz` (`ingest-tz`) | ТЗ по пунктам → REQ-карточки с `tz_ref` | модель | `workflows.md` | — | 1.4.0 |
 | `kb:queue` (`queue`) | очередь верификации: употребление × связи × протухание | скрипт | `kb_queue.py` | `--limit --theme --report --root` | 1.3.0 |
-| `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `OWNER selector` | `--owner --months --status --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
+| `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `OWNER [selector]` | `--owner --months --status --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
 | `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --dupes --merge --apply --allow-dirty --report --root` | 1.3.0 |
 | `kb:retire` | убрать из карточек поля, выведенные из схемы (audience, confirmed_by; статус canonical → verified) | скрипт | `kb_fix.py --retire` | `--links --homoglyphs --frontmatter --dupes --all --merge --apply --allow-dirty --report --root` | 1.10.0 |
 | `kb:dedupe` | двойники: поиск и слияние (`--merge`) — тот же скрипт, другой режим | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --all --merge --apply --allow-dirty --report --root` | 1.3.0 |
@@ -51,6 +51,7 @@
 | `kb:classify` (`classify`) | артефакты, попавшие в знания (US/AC/Epic/задачи), и типы карточек | скрипт | `kb_classify.py` | `--fix-type --apply --report --limit` | 1.7.1 |
 | `kb:supersede` (`supersede`) | заменить знание с историей: deprecated → `_archive`, ссылки переписываются | скрипт | `kb_supersede.py` `old new` | `--dr --reason --apply` | 1.8.0 |
 | `kb:links` (`links, graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек | скрипт | `kb_graph.py` | `--story --write --json --cards --apply --max-related --report --conf --jira` | 1.19.0 |
+| `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит восстановимое из источников, рукотворное (DR, вопросы, справочники) оставляет | скрипт | `kb_reset.py` | `--all --apply --backup --allow-dirty` | 1.24.0 |
 | `kb:lint` (`lint`) | механические ошибки базы: ссылки, frontmatter, секреты | скрипт | `kb_lint.py` | `--summary` | 1.0.0 |
 | `kb:question` | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок | модель | `workflows.md` | — | 1.4.0 |
 | `kb:answer` | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR | модель | `workflows.md` | — | 1.4.0 |
