@@ -23,7 +23,7 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 иначе update предлагает одни и те же .new на каждом запуске.
 """
 from __future__ import annotations
-import argparse, difflib, re, shutil, sys
+import argparse, difflib, json, re, shutil, sys
 from pathlib import Path
 from datetime import date
 
@@ -52,16 +52,23 @@ STRUCTURE = KIT / "structure_dirs.txt"
 VERSION_FILE = KIT / "VERSION"
 
 
-def missing_dirs(target: Path):
-    """Стандартные папки схемы, которых нет в проекте (создаются идемпотентно)."""
-    if not STRUCTURE.is_file():
+def mirror_dirs(target: Path):
+    """Папки зеркал подключённых модулей: их нет в схеме, их заявляет реестр."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        import sources_registry as R
+    except ImportError:
         return []
-    out = []
-    for line in STRUCTURE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and not (target / line).is_dir():
-            out.append(line)
-    return out
+    return [i["path"] for i in R.instances(str(target)) if i["path"]]
+
+
+def missing_dirs(target: Path):
+    """Стандартные папки схемы и зеркал, которых нет в проекте (создаются идемпотентно)."""
+    schema = []
+    if STRUCTURE.is_file():
+        schema = [l.strip() for l in STRUCTURE.read_text(encoding="utf-8").splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+    return [d for d in schema + mirror_dirs(target) if not (target / d).is_dir()]
 
 
 # ---------- чтение конфига проекта (нужно для (sync)/(agents)) ----------
@@ -169,19 +176,35 @@ def plan(target: Path, f: dict):
             changes.append(Change("seed-new" if seed else "write", rel_dst, new_text, "новый файл", ext))
 
     for src, dst in parse_manifest():
-        sm = re.match(r"\((\w+)\)\s+(.*)", dst)
+        sm = re.match(r"\((\w+)\)\s*(.*)", dst)   # у правила может не быть аргумента
         if not sm:  # обычная перезапись
             diff_or_new(dst, (KIT / src).read_text(encoding="utf-8"))
             continue
         rule, arg = sm.group(1), sm.group(2).strip()
-        if rule == "sync":
-            # Тело sync-скилла проект часто дорабатывает под свой контур (правила синка,
-            # батчи, ссылки на файлы правил). Поэтому НЕ перезаписываем: если файл уже
-            # есть и отличается — кладём kit-версию рядом как .new (как для Templates).
-            body = (KIT / src).read_text(encoding="utf-8")
-            for folder in sorted((target / ".opencode/skills").glob(f"{arg}-*")):
-                if folder.is_dir():
-                    diff_or_new(f".opencode/skills/{folder.name}/SKILL.md", fill(body, f), seed=True)
+        if rule == "connectors":
+            for man in sorted((KIT / src).glob("*/connector.json")):
+                m = json.loads(man.read_text(encoding="utf-8"))
+                diff_or_new(f".opencode/connectors/{m['id']}.json",
+                            man.read_text(encoding="utf-8"))
+                script = m.get("run", {}).get("script", "")
+                if script:
+                    # скрипт модуля может лежать рядом с манифестом (доустановленный
+                    # модуль) или в scripts/ kit'а (встроенный — его же импортируют
+                    # панель и publish_doc)
+                    body = man.parent / script
+                    body = body if body.is_file() else KIT / "scripts" / script
+                    if body.is_file():
+                        diff_or_new(f".opencode/scripts/{script}",
+                                    body.read_text(encoding="utf-8"))
+                skill, tpl = m.get("run", {}).get("skill", ""), man.parent / "SKILL.md"
+                # Тело sync-скилла проект часто дорабатывает под свой контур (правила
+                # синка, батчи, ссылки на файлы правил). Поэтому НЕ перезаписываем: если
+                # файл есть и отличается — кладём kit-версию рядом как .new.
+                if skill and tpl.is_file():
+                    for folder in sorted((target / ".opencode/skills").glob(f"{skill}-*")):
+                        if folder.is_dir():
+                            diff_or_new(f".opencode/skills/{folder.name}/SKILL.md",
+                                        fill(tpl.read_text(encoding="utf-8"), f), seed=True)
         elif rule == "launcher":
             # путь к kit'у подставляем при раскладке: у каждой машины он свой
             body = (KIT / src).read_text(encoding="utf-8").replace("{{KIT_PATH}}", str(KIT))

@@ -107,6 +107,21 @@ ENGINE_DIRS_TOP = {".git", ".opencode", ".cursor", ".claude"}
 MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables")
 
 
+def mirror_owners() -> dict:
+    """{папка зеркала: модуль} — что в `Sources/` заявлено подключёнными модулями.
+
+    Схема папок фиксирована движком, но зеркала в неё не входят: их набор зависит от
+    того, чем команда пользуется. Поэтому легитимность папки в `Sources/` определяет
+    реестр модулей, а не список в файле схемы.
+    """
+    sys.path.insert(0, str(ROOT / ".opencode" / "scripts"))
+    try:
+        import sources_registry as R
+    except ImportError:
+        return {}
+    return R.mirror_paths(str(ROOT))
+
+
 def read_structure() -> list[str]:
     if not STRUCTURE_FILE.is_file():
         return []
@@ -215,9 +230,14 @@ def check_structure(verbose: bool = False):
                      "обновите: python3 <kit>/aurora.py update <проект> --apply")
         return errors, warns, lines
 
-    known = set(schema)
-    known_tops = {p.split("/")[0] for p in schema}
+    mirrors = mirror_owners()
+    known = set(schema) | set(mirrors)
+    known_tops = {p.split("/")[0] for p in known}
     missing = [d for d in schema if not (ROOT / d).is_dir()]
+    for path, module in sorted(mirrors.items()):
+        if not (ROOT / path).is_dir():
+            warns.append(f"модуль {module} заявил зеркало {path}/, а папки нет "
+                         "(создать: aurora.py update <проект> --structure-only --apply)")
     if missing:
         warns.append(f"не хватает {len(missing)} стандартных папок "
                      f"(создать: aurora.py update <проект> --structure-only --apply)")
@@ -234,7 +254,7 @@ def check_structure(verbose: bool = False):
     stale = sorted(set(git_ignored(probes, rules_only=True)) - set(ignored))
     extra_top = [n for n in candidates if n not in ignored and n not in stale]
     allowed_by_ignore = [n for n in candidates if n in ignored]
-    extra_sub = []
+    extra_sub, unclaimed = [], []
     for root_name in MANAGED_ROOTS:
         root_dir = ROOT / root_name
         if not root_dir.is_dir():
@@ -245,8 +265,11 @@ def check_structure(verbose: bool = False):
             rel = f"{root_name}/{p.name}"
             if rel in known:
                 continue
-            # третий уровень внутри Sources/ принадлежит синку, не схеме
+            # Папку в Sources/ заводит модуль источника, а не схема. Ничья папка —
+            # замечание, а не блокер: так выглядит и ручная выгрузка, и зеркало,
+            # модуль которого ещё не подключили. Сборку это не ломает.
             if root_name == "Sources":
+                unclaimed.append(rel)
                 continue
             extra_sub.append(rel)
 
@@ -269,6 +292,10 @@ def check_structure(verbose: bool = False):
     if extra_sub:
         errors.append(f"структурные папки вне схемы движка: {', '.join(extra_sub)} "
                       "→ либо стандартный тип, либо Workspaces/<задача>/; новый тип — только релизом kit'а")
+    if unclaimed:
+        warns.append(f"зеркала без модуля: {', '.join(unclaimed)} → подключите модуль "
+                     "в aurora.config.yaml (sources:) или перенесите выгрузку в Raw/; "
+                     "что установлено — sources_registry.py")
     if verbose:
         lines.append(f"    схема: {len(schema)} папок, факт: не хватает {len(missing)}, "
                      f"лишних {len(extra_top) + len(extra_sub)}")

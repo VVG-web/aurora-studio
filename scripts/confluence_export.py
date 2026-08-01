@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""confluence_export.py — детерминированное зеркало Confluence → Sources/Confluence/.
+"""confluence_export.py — модуль источника: Confluence → зеркало вида wiki.
 
-Зачем: когда markdown пишет LLM, один и тот же текст выгружается по-разному, и git видит
-правку там, где её нет. Здесь конвертация — код: одна и та же страница даёт байт-в-байт
-один и тот же файл. Ничего на сервер Confluence не ставится — это чистый REST-клиент
-(работает с Confluence Server/Data Center и с Cloud).
+Продуктовая половина синка Confluence: REST-клиент, разбор storage-формата и макросов,
+раскладка дерева страниц. Общая половина — в `sources_core.py`: файл состояния,
+поиск лишнего, `--prune`, гейт детерминизма. Ничего на сервер Confluence не ставится
+(работает с Server/Data Center и с Cloud).
+
+Зачем детерминизм: когда markdown пишет LLM, один и тот же текст выгружается по-разному,
+и git видит правку там, где её нет. Здесь конвертация — код: одна и та же страница даёт
+байт-в-байт один и тот же файл.
 
   python3 .opencode/scripts/confluence_export.py                 # выгрузить корни из aurora.config.yaml
   python3 .opencode/scripts/confluence_export.py --roots 642568785
   python3 .opencode/scripts/confluence_export.py --verify        # прогнать дважды и сверить (гейт детерминизма)
-  python3 .opencode/scripts/confluence_export.py --force         # перечитать всё, игнорируя версии
+  python3 .opencode/scripts/confluence_export.py --force         # переписать зеркало целиком
   python3 .opencode/scripts/confluence_export.py --prune         # убрать зеркала удалённых страниц
 
 Что важно для git-зеркала (и чем это отличается от RAG-выгрузок):
@@ -29,27 +33,19 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import filecmp
 import hashlib
-import json
 import os
 import re
-import unicodedata
-import shutil
 import sys
-import tempfile
 import urllib.parse
-import urllib.request
-from datetime import date
 
-CONFIG = "aurora.config.yaml"
-ENV_LOCAL = ".env.aurora.local"
+from sources_core import (RestApi, WikiMirror, block, config_text, no_access,
+                          report_stale, scalar, verify)
+from sources_core import read_secret as core_secret
+
 DEFAULT_OUT = "Sources/Confluence"
-STATE = "sync_state.md"
-TODAY = date.today().isoformat()
+STATE = WikiMirror.state_name
 FORBIDDEN = r'<>:"/\|?*'
-# Служебные файлы синка (промпты, правила, шаблоны прежнего скилла) — не страницы.
 # Метки Requirement Yogi в тексте зеркала. Вид связи виден прямо в метке, иначе объявление
 # ключа и ссылку на него не различить ни глазом, ни грепом:
 #   RYk — ключ объявлен здесь (definition), ровно один раз на весь проект
@@ -58,49 +54,26 @@ FORBIDDEN = r'<>:"/\|?*'
 #   RYr — отчёт по требованиям (requirement-report): таблица, которую собирает сам плагин
 RY_MARK = {"key": "RYk:", "link": "RYl:", "prop": "RYo:", "report": "RYr"}
 
-SERVICE_RE = re.compile(r"(sync_state|sync_paths|update_log|_prompt|_template|-rules|_rules|"
-                        r"SYNC_|FINAL_SYNC|README)", re.I)
-
 
 # ------------------------------------------------------------------ конфиг
 
 def read_config() -> dict:
     """base_url и корни синка — из aurora.config.yaml (единственный источник правды)."""
     cfg = {"base_url": "", "space": "", "roots": [], "out": DEFAULT_OUT}
-    if not os.path.isfile(CONFIG):
+    text = config_text()
+    if not text:
         return cfg
-    text = open(CONFIG, encoding="utf-8").read()
-    conf_block = text.split("confluence:", 1)[-1].split("jira:", 1)[0] if "confluence:" in text else ""
-    m = re.search(r'^\s*base_url:\s*"?([^"\n#]+?)"?\s*$', conf_block, re.M)
-    if m:
-        cfg["base_url"] = m.group(1).strip().rstrip("/")
-    m = re.search(r'^\s*space:\s*"?([^"\n#]+?)"?\s*$', conf_block, re.M)
-    if m:
-        cfg["space"] = m.group(1).strip()
-    cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf_block, re.M)
-    m = re.search(r'^\s*sources_confluence:\s*(\S+)\s*$', text, re.M)
-    if m:
-        cfg["out"] = m.group(1).strip().strip('"')
+    conf = block(text, "confluence:", "jira:")
+    cfg["base_url"] = scalar(conf, "base_url").rstrip("/")
+    cfg["space"] = scalar(conf, "space")
+    cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf, re.M)
+    cfg["out"] = scalar(text, "sources_confluence", DEFAULT_OUT)
     return cfg
 
 
 def read_secret() -> tuple:
     """→ (заголовок Authorization, как назвали способ). Секрет наружу не печатается."""
-    env = dict(os.environ)
-    if os.path.isfile(ENV_LOCAL):
-        for line in open(ENV_LOCAL, encoding="utf-8", errors="ignore"):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    pat = env.get("CONFLUENCE_PAT") or env.get("CONFLUENCE_PERSONAL_TOKEN")
-    if pat:
-        return f"Bearer {pat}", "PAT"
-    user, pwd = env.get("CONFLUENCE_USER"), env.get("CONFLUENCE_PASSWORD")
-    if user and pwd:
-        token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
-        return f"Basic {token}", "basic"
-    return "", ""
+    return core_secret("CONFLUENCE")
 
 
 # --------------------------------------------------------------------- API
@@ -143,17 +116,8 @@ def resolve_ref(api, raw: str, default_space: str = "") -> tuple:
                         "проверьте адрес или права доступа")
     return str(page.get("id", "")), page.get("title", title), ""
 
-class Api:
-    def __init__(self, base: str, auth: str):
-        self.base, self.auth = base.rstrip("/"), auth
-
-    def get(self, path: str) -> dict:
-        url = path if path.startswith("http") else self.base + path
-        req = urllib.request.Request(url, headers={
-            "Authorization": self.auth, "Accept": "application/json",
-            "User-Agent": "aurora-confluence-export/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
+class Api(RestApi):
+    agent = "aurora-confluence-export/1.0"
 
     def page(self, page_id: str) -> dict:
         return self.get(f"/rest/api/content/{page_id}"
@@ -411,25 +375,17 @@ def render_front_matter(meta: dict) -> str:
 
 # -------------------------------------------------------------------- обход
 
-class Exporter:
-    def __init__(self, api: Api, out: str, base_url: str, space: str, force: bool):
-        self.api, self.out, self.base_url = api, out.rstrip("/"), base_url
-        self.space, self.force = space, force
-        self.records: list = []       # (page_id, rel_path, title, статус)
-        self.written = self.skipped = self.failed = 0
-        self.recased: list = []       # папки, которым выправили регистр
-        self.ry_defines = self.ry_links = 0
-        self.prev = self._load_state()
+class Exporter(WikiMirror):
+    """Обход дерева страниц. Раскладку и состояние ведёт WikiMirror, здесь — Confluence."""
 
-    def _load_state(self) -> dict:
-        path = os.path.join(self.out, STATE)
-        prev = {}
-        if os.path.isfile(path):
-            for line in open(path, encoding="utf-8", errors="ignore"):
-                m = re.match(r"^\|\s*\d+\s*\|\s*(\d{4,})\s*\|[^|]*\|\s*([^|]+?)\s*\|\s*(\d+)\s*\|", line)
-                if m:
-                    prev[m.group(1)] = (m.group(2), int(m.group(3)))
-        return prev
+    banner = "Confluence sync state — генерируется confluence_export.py, не править руками"
+
+    def __init__(self, api: Api, out: str, base_url: str, space: str, force: bool):
+        super().__init__(out)
+        self.api, self.base_url = api, base_url
+        self.space, self.force = space, force
+        self.written = self.skipped = self.failed = 0
+        self.ry_defines = self.ry_links = 0
 
     def walk(self, page_id: str, ancestors: list) -> None:
         try:
@@ -451,94 +407,37 @@ class Exporter:
         defines, links = ry_keys(data.get("body", {}).get("storage", {}).get("value", ""))
         self.ry_defines += len(defines)
         self.ry_links += len(links)
-        known = self.prev.get(str(page_id))
-        if known and not self.force and known[1] == version and os.path.isfile(os.path.join(self.out, rel)):
-            self.records.append((str(page_id), rel, title, "SYNCED"))
-            self.skipped += 1
+        body = data.get("body", {}).get("storage", {}).get("value", "")
+        md = to_markdown(body, self.base_url, self.space)
+        meta = {"id": page_id, "title": title, "space": data["space"]["key"],
+                "ry_defines": defines, "ry_links": links,
+                "version": version,
+                "updated": (data.get("version", {}).get("when") or "")[:10],
+                "url": self.base_url + data["_links"]["webui"],
+                "breadcrumbs": " / ".join(ancestors + [title]).replace('"', "'"),
+                "hash": hashlib.md5(md.encode("utf-8")).hexdigest()[:16]}
+        text = render_front_matter(meta) + f"# {title}\n\n" + md + "\n"
+        full = os.path.join(self.out, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        # сверка с тем, что уже лежит: страница без правок не должна давать дифф в git,
+        # а `--force` эту сверку пропускает и переписывает зеркало целиком
+        exists = os.path.isfile(full)
+        old = open(full, encoding="utf-8").read() if exists and not self.force else None
+        if old != text:
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.written += 1
+            self.records.append((str(page_id), rel, title, "UPDATED" if exists else "NEW"))
         else:
-            body = data.get("body", {}).get("storage", {}).get("value", "")
-            md = to_markdown(body, self.base_url, self.space)
-            meta = {"id": page_id, "title": title, "space": data["space"]["key"],
-                    "ry_defines": defines, "ry_links": links,
-                    "version": version,
-                    "updated": (data.get("version", {}).get("when") or "")[:10],
-                    "url": self.base_url + data["_links"]["webui"],
-                    "breadcrumbs": " / ".join(ancestors + [title]).replace('"', "'"),
-                    "hash": hashlib.md5(md.encode("utf-8")).hexdigest()[:16]}
-            text = render_front_matter(meta) + f"# {title}\n\n" + md + "\n"
-            full = os.path.join(self.out, rel)
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            old = open(full, encoding="utf-8").read() if os.path.isfile(full) else None
-            if old != text:
-                with open(full, "w", encoding="utf-8") as f:
-                    f.write(text)
-                self.written += 1
-                self.records.append((str(page_id), rel, title, "UPDATED" if old else "NEW"))
-            else:
-                self.skipped += 1
-                self.records.append((str(page_id), rel, title, "SYNCED"))
+            self.skipped += 1
+            self.records.append((str(page_id), rel, title, "SYNCED"))
 
         for child in sorted(children, key=lambda c: (c["title"], c["id"])):
             self.walk(child["id"], ancestors + [title])
 
-    def write_state(self) -> None:
-        lines = ["<!-- Confluence sync state — генерируется confluence_export.py, не править руками -->",
-                 f"**Sync Date:** {TODAY}",
-                 f"**Pages:** {len(self.records)}",
-                 "", "| # | Page ID | Title | Local Path | Status |", "|---|---|---|---|---|"]
-        for i, (pid, rel, title, status) in enumerate(sorted(self.records, key=lambda r: r[1]), 1):
-            lines.append(f"| {i} | {pid} | {title.replace('|', '/')} | {rel} | {status} |")
-        lines.append("")
-        os.makedirs(self.out, exist_ok=True)
-        with open(os.path.join(self.out, STATE), "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-
-    def align_case(self, rel: str) -> None:
-        """Привести регистр папок зеркала к тому, что сейчас в заголовках страниц.
-
-        Страницу переименовали «Core_аналитический» → «Core_Аналитический». На macOS и
-        Windows файловая система к регистру нечувствительна: запись по новому пути молча
-        попадает в старую папку. Дальше состояние синка говорит одно, диск показывает
-        другое, аудит считает это потерей страницы, а `--prune` норовит удалить только что
-        записанный файл. Чиним в одном месте: перед записью выравниваем регистр
-        каталогов — переименование сработает и там, где регистр не различают.
-        """
-        cur = self.out
-        for part in os.path.dirname(rel).split("/"):
-            if not part:
-                continue
-            want = os.path.join(cur, part)
-            if not os.path.isdir(cur):
-                return
-            same = next((n for n in os.listdir(cur)
-                         if n != part and n.casefold() == part.casefold()), None)
-            if same:
-                try:
-                    os.rename(os.path.join(cur, same), want)
-                    self.recased.append(f"{same} → {part}")
-                except OSError as e:
-                    print(f"  ! регистр папки не поправить: {same} → {part}: {e}", file=sys.stderr)
-            cur = want
-
     def stale(self) -> list:
-        """Файлы зеркала, за которыми нет страницы. Служебные файлы синка не трогаем:
-        промпты, правила и шаблоны прежнего синк-скилла — это инструкции команды."""
-        # macOS отдаёт имена в NFD, а записи синка — в NFC: без нормализации свежий
-        # файл выглядит «страницей, которой нет», и --prune его удалит
-        known = {unicodedata.normalize("NFC", rel) for _, rel, _, _ in self.records}
-        # различие только в регистре — это не «страницы больше нет»: удалить такой файл
-        # значит стереть свежую выгрузку
-        known_ci = {k.casefold() for k in known}
-        out = []
-        for dirpath, _, files in os.walk(self.out):
-            for f in files:
-                if not f.endswith(".md") or f == STATE or SERVICE_RE.search(f):
-                    continue
-                rel = os.path.relpath(os.path.join(dirpath, f), self.out).replace("\\", "/")
-                nrel = unicodedata.normalize("NFC", rel)
-                if nrel not in known and nrel.casefold() not in known_ci:
-                    out.append(rel)
-        return sorted(out)
+        """Файлы зеркала, за которыми нет страницы."""
+        return self.extra_files(rel for _, rel, _, _ in self.records)
 
 
 # ---------------------------------------------------------------------- main
@@ -581,7 +480,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированное зеркало Confluence → Sources/Confluence/")
     ap.add_argument("--roots", nargs="*", help="page_id корней (по умолчанию — из aurora.config.yaml)")
     ap.add_argument("--out", help=f"куда писать (по умолчанию {DEFAULT_OUT})")
-    ap.add_argument("--force", action="store_true", help="перечитать всё, игнорируя версии")
+    ap.add_argument("--force", action="store_true",
+                    help="переписать зеркало целиком, не сверяясь с тем, что уже лежит")
     ap.add_argument("--prune", action="store_true", help="удалить зеркала страниц, которых больше нет")
     ap.add_argument("--verify", action="store_true",
                     help="гейт детерминизма: выгрузить дважды во временные папки и сверить")
@@ -596,9 +496,7 @@ def main() -> int:
               file=sys.stderr)
         return 1
     if not auth:
-        print("confluence_export: нет доступа. Положите в .env.aurora.local (он в .gitignore):\n"
-              "  CONFLUENCE_PAT=<персональный токен>\n"
-              "либо CONFLUENCE_USER= и CONFLUENCE_PASSWORD=", file=sys.stderr)
+        print(no_access("confluence_export", "CONFLUENCE"), file=sys.stderr)
         return 1
     if not roots:
         print("confluence_export: не заданы корни синка — добавьте sync_roots в aurora.config.yaml "
@@ -614,27 +512,7 @@ def main() -> int:
     print(f"Confluence → {out}  ({cfg['base_url']}, доступ: {kind}, корней: {len(roots)})\n")
 
     if a.verify:
-        with tempfile.TemporaryDirectory() as td:
-            one, two = os.path.join(td, "a"), os.path.join(td, "b")
-            run_export(cfg, roots, one, auth, True)
-            run_export(cfg, roots, two, auth, True)
-            diff = []
-            for dirpath, _, files in os.walk(one):
-                for f in files:
-                    if f == STATE:
-                        continue
-                    p1 = os.path.join(dirpath, f)
-                    p2 = os.path.join(two, os.path.relpath(p1, one))
-                    if not os.path.isfile(p2) or not filecmp.cmp(p1, p2, shallow=False):
-                        diff.append(os.path.relpath(p1, one))
-            n = sum(len(f) for _, _, f in os.walk(one))
-            if diff:
-                print(f"❌ Детерминизм нарушен: {len(diff)} из {n} файлов различаются между прогонами")
-                for d in diff[:10]:
-                    print("   ", d)
-                return 1
-            print(f"✅ Детерминизм подтверждён: {n} файлов, два прогона совпали побайтово")
-            return 0
+        return verify(lambda into: run_export(cfg, roots, into, auth, True), skip=(STATE,))
 
     exp = run_export(cfg, roots, out, auth, a.force)
     exp.write_state()
@@ -650,15 +528,10 @@ def main() -> int:
     print(f"Страниц: {len(exp.records)} · записано: {exp.written} · без изменений: {exp.skipped}"
           + (f" · ошибок: {exp.failed}" if exp.failed else ""))
     if stale:
-        print(f"\nЛишние файлы в зеркале ({len(stale)}) — страниц больше нет или они переехали:")
-        for s in stale[:20]:
-            print(f"  - {s}")
-        if len(stale) > 20:
-            print(f"  … ещё {len(stale) - 20}")
+        report_stale("страниц больше нет или они переехали", stale, out)
         if a.prune:
-            for s in stale:
-                os.remove(os.path.join(out, s))
-            print(f"Удалено: {len(stale)} (карточки с `source:` на них найдёт aurora_stats.py)")
+            gone = exp.prune(stale)
+            print(f"Удалено: {gone} (карточки с `source:` на них найдёт aurora_stats.py)")
         else:
             print("Убрать: повторите с --prune")
     print(f"\nСостояние: {os.path.join(out, STATE)}")

@@ -37,7 +37,7 @@ needed for the requested command (progressive disclosure, keep context small).
 
 | Folder | Role | Trust |
 |---|---|---|
-| `Sources/` (`Confluence/`, `JIRA/`) | зеркала синка, read-only | объект работы, не знание |
+| `Sources/<Зеркало>/` | зеркала синка, read-only; набор папок задают подключённые модули (`sync:sources`) | объект работы, не знание |
 | `Raw/` | первоисточники, положенные руками: `laws/`, `contract/` (ТЗ), `customer/`, `project/` (концепт-документы), `examples/` | доказательства, цитируются |
 | `Raw/meetings/` | транскрибации встреч и согласованные протоколы — неизменяемы | доказательства, цитируются |
 | `Raw/contract/` | госконтракт, ТЗ, календарный план, допсоглашения — неизменяемы | высшая доказательная база; пункты ТЗ парсятся в REQ |
@@ -82,10 +82,11 @@ needed for the requested command (progressive disclosure, keep context small).
 
 | Command | What it does | Reference |
 |---|---|---|
-| `sync:confluence` | зеркало Confluence → `Sources/Confluence/` (детерминированный скрипт) | `references/maintenance.md` |
-| `sync:jira` | зеркало Jira → `Sources/JIRA/` (детерминированный скрипт) | `references/maintenance.md` |
+| `sync:sources` | какие модули источников установлены и какие зеркала подключены (`sources_registry.py`) | `references/maintenance.md` |
+| `sync:confluence` | зеркало Confluence → `Sources/Confluence/` (модуль `confluence-dc`) | `references/maintenance.md` |
+| `sync:jira` | зеркало Jira → `Sources/JIRA/` (модуль `jira-dc`) | `references/maintenance.md` |
 | `sync:jira-status` | обратный поток: статусы задач → кандидаты в `req_status`, работа без требований (`jira_status.py`) | `references/maintenance.md` |
-| `sync:audit` | целостность зеркала: missing / orphan / collision / протухшее состояние | `references/maintenance.md` |
+| `sync:audit` | целостность зеркал: missing / orphan / collision / протухшее состояние; обходит все подключённые модули | `references/maintenance.md` |
 | `sync:diff` (`diff`) | дрейф: источник изменился после сверки (сравнение хешей, скрипт) | `references/maintenance.md` |
 
 ### `kb:` — извлечение и жизнь знания

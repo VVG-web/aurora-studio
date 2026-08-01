@@ -260,7 +260,13 @@ tr:last-child td{border-bottom:0}
   <main>
     <!-- ОБЗОР -->
     <section class="view on" id="view-overview">
-      <h1>Мостик</h1>
+      <div class="row">
+        <h1>Мостик</h1>
+        <div class="spacer"></div>
+        <span class="chip" id="overviewStamp" hidden></span>
+        <button class="btn sm" id="refreshOverview"
+          title="Пересчитать показатели всех проектов">↻ Обновить</button>
+      </div>
       <p class="sub">Все проекты на этой машине, работающие на движке Aurora. Цвет ауры —
         тяжесть проблем: бирюза — порядок, янтарь — есть на что посмотреть, красный — блокеры.</p>
       <div class="grid tiles" id="towers"></div>
@@ -270,7 +276,13 @@ tr:last-child td{border-bottom:0}
 
     <!-- ЗДОРОВЬЕ -->
     <section class="view" id="view-health">
-      <h1 id="healthTitle">Здоровье базы</h1>
+      <div class="row">
+        <h1 id="healthTitle">Здоровье базы</h1>
+        <div class="spacer"></div>
+        <span class="chip" id="healthStamp" hidden></span>
+        <button class="btn sm" id="refreshHealth"
+          title="Пересчитать показатели проекта">↻ Обновить</button>
+      </div>
       <p class="sub">Числа считает движок (<span class="mono">stats --json</span>,
         <span class="mono">lint</span>, <span class="mono">doctor</span>, <span class="mono">audit</span>),
         панель только показывает. Любая плитка кликабельна: ведёт к команде, которая с этим работает.</p>
@@ -381,7 +393,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.26.0";
+const UI_VERSION = "1.28.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -527,6 +539,7 @@ async function prefetchHealth(){
   if (g.firstChild) g.replaceChild(
     metric(total, "блокеров во всех проектах", total?"Разбор — раздел «Здоровье»":"Всё чисто",
       total?"bad":"ok"), g.children[0]);
+  stamp("#overviewStamp");
 }
 function aura(p){
   if (p.health && p.health.doctor.errors.length) return "var(--danger)";
@@ -603,16 +616,66 @@ async function pick(p, go=true){
   const h = await api("/api/health?project=" + encodeURIComponent(p.path));
   S.health = h; p.health = h;
   renderHealth(); renderOverview(); renderProjBadge();
+  navBadges(p, h);
+  stamp("#healthStamp");
+}
+function navBadges(p, h){
   const errs = h.doctor.errors.length;
   $("#navHealth").textContent = errs || "";
   $("#navHealth").classList.toggle("bad", errs>0);
-  const mm = (h.mirrors.confluence?.missing||0)+(h.mirrors.jira?.missing||0)
-           + (h.mirrors.confluence?.orphan||0)+(h.mirrors.jira?.orphan||0);
+  const mm = Object.values(h.mirrors||{}).reduce(
+    (n, x)=> n + (x.no_state ? 1 : (x.missing||0) + (x.orphan||0)), 0);
   $("#navMirrors").textContent = mm || "";
   $("#navMirrors").classList.toggle("bad", mm>0);
   $("#navVersion").textContent = p.behind ? "!" : "";
   $("#navVersion").classList.toggle("bad", !!p.behind);
 }
+
+/* ---------------- пересчёт показателей ---------------- */
+// Числа движок считает на каждый запрос, панель их не кэширует. Но работу в базе делает
+// не только панель: ассистент обогатил базу, человек принял карточки в редакторе — на
+// экране всё ещё вчерашние цифры, и понять «что изменилось» не по чему. Отсюда кнопка
+// и отметка времени: видно не только число, но и на какой момент оно посчитано.
+function stamp(id){
+  const s = $(id);
+  s.textContent = "обновлено " + new Date().toLocaleTimeString("ru-RU",
+    {hour:"2-digit", minute:"2-digit"});
+  s.hidden = false;
+}
+async function busy(btn, fn){
+  const was = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = ""; btn.append(el("span",{class:"spin"}), " Считаю…");
+  try { await fn(); } finally { btn.disabled = false; btn.innerHTML = was; }
+}
+$("#refreshHealth").onclick = ()=>{
+  if (!S.project){ toast("Сначала выберите проект на Мостике","warn"); return; }
+  busy($("#refreshHealth"), async ()=>{
+    const p = S.project;
+    const h = await api("/api/health?project=" + encodeURIComponent(p.path));
+    if (!h || !h.stats) return;
+    S.health = h; p.health = h;
+    renderHealth(); renderOverview(); renderProjBadge(); navBadges(p, h);
+    stamp("#healthStamp");
+    toast("Показатели пересчитаны: " + p.name, "ok");
+  });
+};
+$("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
+  // перечитываем и карточки проектов: ветка, незакоммиченное и версия движка меняются
+  // ровно от той же работы, что и числа базы
+  const path = S.project && S.project.path;
+  const st = await api("/api/state");
+  if (!st || !st.projects) return;
+  S.state = st;
+  S.project = path ? (st.projects.find(x=>x.path===path) || null) : null;
+  S.health = null;
+  renderOverview(); renderProjBadge();
+  await prefetchHealth();
+  if (S.project && S.project.health){ navBadges(S.project, S.project.health); stamp("#healthStamp"); }
+  if (S.view==="health") renderHealth();
+  stamp("#overviewStamp");
+  toast("Показатели пересчитаны: проектов " + st.projects.length, "ok");
+});
 
 /* ---------------- здоровье ---------------- */
 function renderHealth(){
@@ -705,28 +768,46 @@ function statusBar(statuses){
 function renderMirrors(){
   const box = $("#mirrorsBody");
   if (!S.project || !S.health){ box.innerHTML='<div class="card" style="padding:24px">Нет данных — выберите проект.</div>'; return; }
-  const m = S.health.mirrors, p = S.project;
+  const m = S.health.mirrors || {}, p = S.project;
+  const src = S.health.sources || {installed:[], instances:[]};
   box.innerHTML = "";
-  const card = (title, data, cmd, tokenOk, what) => {
-    const bad = data && (data.missing || data.orphan);
+  // Что за зеркала есть, панель не решает: список даёт реестр подключённых модулей
+  const card = (inst) => {
+    // до 1.28 аудит называл разделы по продукту («Jira»), а не по id зеркала («JIRA»)
+    const key = Object.keys(m).find(k=>k.toLowerCase()===inst.id.toLowerCase());
+    const data = m[key], man = src.installed.find(x=>x.id===inst.module) || {};
+    const tokenOk = !inst.env_prefix || (p.tokens||[]).includes(inst.env_prefix);
+    const bad = data && (data.no_state || data.missing || data.orphan);
+    // зеркало без файла состояния сверить не с чем: показываем это прямо, а не нулями
+    const numbers = data && data.no_state
+      ? el("div",{class:"row"},
+          el("span",{class:"chip bad"},"состояние синка не ведётся"),
+          el("span",{class:"chip"}, data.files + " файлов на диске"))
+      : data ? el("div",{class:"row"},
+          el("span",{class:"chip "+(data.missing?"bad":"ok")}, "MISSING " + data.missing),
+          el("span",{class:"chip "+(data.orphan?"bad":"ok")}, "ORPHAN " + data.orphan),
+          data.age_days!=null ? el("span",{class:"chip"},"синк " + data.age_days + " дн. назад") : null)
+      : el("div",{class:"chip"},"зеркало пустое");
     return el("div",{class:"card",style:"padding:18px"},
-      el("div",{class:"row"}, el("b",{},title),
+      el("div",{class:"row"}, el("b",{}, inst.id + " · " + (inst.title||inst.module)),
         el("span",{class:"chip "+(tokenOk?"ok":"warn")}, tokenOk?"токен есть":"токена нет")),
-      el("p",{class:"muted",style:"font-size:13px;margin:10px 0"}, what),
-      data ? el("div",{class:"row"},
-        el("span",{class:"chip "+(data.missing?"bad":"ok")}, "MISSING " + data.missing),
-        el("span",{class:"chip "+(data.orphan?"bad":"ok")}, "ORPHAN " + data.orphan))
-        : el("div",{class:"chip"},"зеркало пустое"),
+      el("p",{class:"muted",style:"font-size:13px;margin:10px 0"},
+        (man.what||"") + " Папка: " + inst.path + "."),
+      numbers,
       el("div",{class:"row",style:"margin-top:14px"},
-        el("button",{class:"btn sm primary", disabled: tokenOk?null:"", onclick:()=>openRun(cmd)}, "Синхронизировать"),
+        inst.command ? el("button",{class:"btn sm primary", disabled: tokenOk?null:"",
+          onclick:()=>openRun(inst.command)}, "Синхронизировать") : null,
         el("button",{class:"btn sm", onclick:()=>openRun("sync:audit")}, "Проверить целостность"),
-        bad ? el("span",{class:"chip warn"},"есть расхождения — сначала аудит") : null));
+        bad ? el("span",{class:"chip warn"},"есть расхождения — сначала аудит") : null,
+        inst.kind ? null : el("span",{class:"chip bad"},"модуль не установлен")));
   };
-  box.append(el("div",{class:"grid",style:"grid-template-columns:repeat(auto-fit,minmax(320px,1fr))"},
-    card("Confluence · " + (p.space||"—"), m.confluence, "sync:confluence", p.confluence_token,
-      "Страницы пространства выгружаются в Sources/Confluence/ детерминированно: тот же текст даёт тот же файл."),
-    card("Jira · " + (p.jira_key||"—"), m.jira, "sync:jira", p.jira_token,
-      "Задачи проекта в Sources/JIRA/. Обратный поток статусов в требования — sync:jira-status.")));
+  if (!src.instances.length)
+    box.append(el("div",{class:"warnbox"},
+      "Подключённых зеркал нет. Выберите модули ниже — они появятся в Sources/."));
+  else
+    box.append(el("div",{class:"grid",style:"grid-template-columns:repeat(auto-fit,minmax(320px,1fr))"},
+      src.instances.map(card)));
+  box.append(renderSourceModules(src));
   box.append(el("h2",{},"Дальше по цепочке"));
   box.append(el("div",{class:"card"},
     ["sync:audit","sync:diff","sync:jira-status","kit:remap-sources"].map(c=>{
@@ -740,6 +821,41 @@ function renderMirrors(){
     box.append(el("div",{class:"warnbox"},
       "Файла .env.aurora.local нет — синк работать не будет. Образец: aurora.env.local.example, " +
       "нужны CONFLUENCE_PERSONAL_TOKEN и JIRA_PERSONAL_TOKEN (те же, что в mcp-atlassian)."));
+}
+
+/* Выбор модулей источников: что из установленного подключено к проекту. */
+function renderSourceModules(src){
+  const on = new Set(src.instances.map(i=>i.module));
+  const rows = src.installed.map(man=>{
+    const box = el("input",{type:"checkbox", checked: on.has(man.id)?"":null});
+    box.dataset.module = man.id;
+    return el("label",{class:"list-item",style:"cursor:pointer"}, box,
+      el("div",{style:"flex:1"},
+        el("b",{}, man.title||man.id),
+        el("div",{class:"muted",style:"font-size:12px"},
+          `${man.kind} · ${man.mirror.default_path} · ${man.what||""}`)),
+      el("span",{class:"chip mono"}, man.id));
+  });
+  const wrap = el("div",{class:"card"}, ...rows);
+  const save = el("button",{class:"btn sm primary"},"Сохранить выбор");
+  save.onclick = async ()=>{
+    const picked = [...wrap.querySelectorAll("input[type=checkbox]")]
+      .filter(b=>b.checked).map(b=>b.dataset.module);
+    const r = await api("/api/sources", {method:"POST", body: JSON.stringify(
+      {project:S.project.path, modules:picked})});
+    if (!r || r.error) return;
+    toast("Список зеркал сохранён в aurora.config.yaml", "ok");
+    const h = await api("/api/health?project=" + encodeURIComponent(S.project.path));
+    if (h && h.stats){ S.health = h; S.project.health = h; navBadges(S.project, h); }
+    renderMirrors();
+  };
+  return el("div",{},
+    el("h2",{},"Модули источников"),
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
+      "Отмеченные модули наливают свои папки в Sources/. Снять отметку — папка останется " +
+      "на диске (данные панель не удаляет), но станет ничьей: doctor об этом скажет. " +
+      "Папку нового зеркала заведёт обновление движка."),
+    wrap, el("div",{class:"row",style:"margin-top:12px"}, save));
 }
 
 /* ---------------- установка ---------------- */
@@ -995,7 +1111,11 @@ function drawRun(){
       " Кнопка «Применить» появится в консоли под выводом предпросмотра — с теми же флагами."));
   }
   if (outward){
-    const tok = r.cmd.startsWith("sync:jira") ? S.project.jira_token : S.project.confluence_token;
+    // какой токен нужен команде, знает модуль источника, а не панель
+    const inst = ((S.health && S.health.sources || {}).instances || [])
+      .find(i=>i.command && r.cmd.startsWith(i.command));
+    const tok = inst ? (S.project.tokens||[]).includes(inst.env_prefix)
+                     : S.project.confluence_token;
     if (!tok) d.append(el("div",{class:"warnbox dangerbox"},
       "Нет токена для этой системы в .env.aurora.local — запуск завершится ошибкой доступа. " +
       "Раздел «Установка» подскажет, что положить в файл."));
@@ -1076,7 +1196,7 @@ async function poll(id, since, label){
   renderHistory();
   if (S.project) { const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
-      if (S.view==="health") renderHealth(); renderOverview();}); }
+      if (S.view==="health") renderHealth(); renderOverview(); stamp("#healthStamp");}); }
 }
 function renderHistory(){
   const box = $("#historyBox"); box.innerHTML="";

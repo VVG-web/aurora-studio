@@ -62,6 +62,31 @@ def read_config(path: Path) -> dict:
     return cfg
 
 
+def source_sections(target: Path, slug: str) -> tuple:
+    """(секция sources:, строки sync-скиллов для skills.recommended).
+
+    Читаем реестр, а не список из головы: сколько модулей подключено, столько строк
+    и появится. При первой настройке реестр отдаёт исторические два зеркала.
+    """
+    try:
+        import sources_registry as R
+    except ImportError:                       # конфиг настраивают из проекта без реестра
+        return "", ""
+    items = R.instances(str(target))
+    if not items:
+        return "", ""
+    src = ["\n# Подключённые модули источников. Манифесты — в .opencode/connectors/,",
+           "# что установлено и что подключено — `python3 .opencode/scripts/sources_registry.py`.",
+           "sources:"]
+    skills = []
+    for i in items:
+        src.append(f'  - id: {i["id"]}\n    module: {i["module"]}\n    path: {i["path"]}')
+        skill = ((i.get("manifest") or {}).get("run") or {}).get("skill", "")
+        if skill:
+            skills.append(f'    - name: "{skill}-{slug}"\n      via: repo')
+    return "\n".join(src) + "\n", "\n".join(skills)
+
+
 def write_config(path: Path, c: dict):
     roots = "[]"
     if c["sync_roots"]:
@@ -74,6 +99,7 @@ def write_config(path: Path, c: dict):
             lines.append(f'      - page_id: "{pid}"\n        title: "{title}"'
                          + (f'\n        url: "{url}"' if url else ""))
         roots = "\n" + "\n".join(lines)
+    sources, sync_skills = source_sections(path.parent, c["slug"])
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .opencode/scripts/aurora_setup.py
 # Секреты (токены) сюда НЕ класть — они в .env.aurora.local (gitignored).
@@ -94,11 +120,8 @@ skills:
     - name: mcp-atlassian
       via: cursor-mcp
       note: "Authenticate in Cursor MCP with YOUR Atlassian account (never commit tokens)."
-    - name: "confluence-sync-{c['slug']}"
-      via: repo
-    - name: "jira-export-{c['slug']}"
-      via: repo
-
+{sync_skills}
+{sources}
 atlassian:
   confluence:
     base_url: "{c['conf_url']}"
@@ -138,6 +161,16 @@ def slugify(name: str) -> str:
     return "".join(p[:1].upper() + p[1:] for p in parts) or "Project"
 
 
+def skill_prefixes(target: Path) -> list:
+    """Префиксы имён sync-скиллов — из манифестов модулей, а не из списка в коде."""
+    try:
+        import sources_registry as R
+    except ImportError:
+        return []
+    return sorted({(m.get("run") or {}).get("skill", "")
+                   for m in R.installed(str(target)).values()} - {""})
+
+
 def reconcile_sync_skills(target: Path, slug: str):
     """Привести имена папок sync-скиллов к текущему slug (переименовать при расхождении).
 
@@ -147,7 +180,7 @@ def reconcile_sync_skills(target: Path, slug: str):
     skdir = target / ".opencode/skills"
     if not skdir.is_dir():
         return
-    for kind in ("confluence-sync", "jira-export"):
+    for kind in skill_prefixes(target):
         want = skdir / f"{kind}-{slug}"
         existing = [d for d in skdir.glob(f"{kind}-*") if d.is_dir() and d != want]
         if want.exists():

@@ -15,15 +15,18 @@ Aurora/
 │   ├── kb_lint.py           # найти механические ошибки
 │   ├── kb_fix.py            # починить: ссылки, гомоглифы, frontmatter, слияние двойников
 │   ├── kb_queue.py          # очередь верификации по реальной ценности карточек
-│   ├── sync_audit.py        # целостность зеркал Sources/
+│   ├── sources_core.py      # общая часть синка: состояние зеркала, prune, детерминизм
+│   ├── sources_registry.py  # какие модули источников установлены и что подключено
+│   ├── sync_audit.py        # целостность зеркал Sources/ (обходит подключённые модули)
 │   ├── aurora_stats.py      # дашборд здоровья + месячные метрики
 │   ├── aurora_hooks.py      # git pre-commit (храповик по числу ошибок)
 │   ├── aurora_trace.py      # генератор трассировки требований
 │   └── aurora_doctor.py     # готовность проекта + сверка структуры
 ├── skills/
-│   ├── aurora-vault/
-│   ├── confluence-sync-template/
-│   └── jira-export-template/
+│   └── aurora-vault/
+├── connectors/              # подключаемые модули источников (идут в комплекте с kit)
+│   ├── confluence-dc/       # connector.json (манифест) + SKILL.md (шаблон sync-скилла)
+│   └── jira-dc/
 ├── templates/
 │   ├── agents/AGENTS.md.template
 │   ├── aurora.config.yaml.template   # project settings (committed in targets)

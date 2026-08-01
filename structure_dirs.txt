@@ -3,8 +3,9 @@
 # only creates missing ones with a .gitkeep; never deletes or moves anything).
 # Adding a folder here = every project gets it on next update.
 
-Sources/Confluence
-Sources/JIRA
+# Папки зеркал внутри Sources/ здесь НЕ перечисляются: их заявляют подключённые
+# модули источников (.opencode/connectors/), и заводит их update по реестру.
+Sources
 
 Raw/laws
 Raw/contract

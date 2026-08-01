@@ -282,6 +282,11 @@ def project_card(path: str) -> dict:
         "jira_key": config_value(cfg, "project_key"),
         "privacy": config_value(cfg, "scrub", "report"),
         "has_env": os.path.isfile(env),
+        # Каким модулям есть чем авторизоваться. Имена переменных модуль объявляет
+        # префиксом (CONFLUENCE_PAT, NOTION_PAT…), поэтому список читаем из самого
+        # файла доступов, а не держим в панели перечень известных продуктов.
+        "tokens": sorted({m.group(1) for m in re.finditer(
+            r"^([A-Z][A-Z0-9_]*?)_(?:PAT|PERSONAL_TOKEN|PASSWORD)[ \t]*=[ \t]*\S", env_text, re.M)}),
         "confluence_token": filled("CONFLUENCE_PERSONAL_TOKEN") or filled("CONFLUENCE_PAT"),
         "jira_token": filled("JIRA_PERSONAL_TOKEN") or filled("JIRA_PAT"),
         "git_branch": git_branch(path),
@@ -377,14 +382,32 @@ def health(project: str) -> dict:
         "privacy": (re.search(r"privacy\.scrub = (\w+)", doc) or [None, "report"])[1],
     }
 
-    rc_a, aud = run_capture(project, "sync_audit.py", [])
-    nums = re.findall(r"MISSING: \*\*(\d+)\*\*.*?ORPHAN: \*\*(\d+)\*\*", aud)
-    mirrors = {
-        "confluence": {"missing": int(nums[0][0]), "orphan": int(nums[0][1])} if len(nums) > 0 else None,
-        "jira": {"missing": int(nums[1][0]), "orphan": int(nums[1][1])} if len(nums) > 1 else None,
-        "stale": bool(re.search(r"(\d+) дн\. назад", aud)),
-    }
-    return {"stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors}
+    # Аудит отдаёт итог по каждому зеркалу сам: разбирать его текст позиционно
+    # («первое MISSING — Confluence, второе — Jira») нельзя, зеркал бывает сколько угодно.
+    rc_a, aud = run_capture(project, "sync_audit.py", ["--json"])
+    try:
+        mirrors = json.loads(aud[aud.index("{"):aud.rindex("}") + 1]).get("mirrors", {})
+    except Exception:
+        # движок проекта старее 1.28 и про --json не знает: читаем обычный отчёт,
+        # но по заголовкам разделов, а не по порядку чисел
+        rc_a, aud = run_capture(project, "sync_audit.py", [])
+        mirrors = {}
+        for chunk in re.split(r"^## ", aud, flags=re.M)[1:]:
+            name = chunk.split("(", 1)[0].strip()
+            nums = re.search(r"MISSING: \*\*(\d+)\*\*.*?ORPHAN: \*\*(\d+)\*\*", chunk, re.S)
+            if name and nums:
+                mirrors[name] = {"missing": int(nums.group(1)), "orphan": int(nums.group(2))}
+    return {"stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
+            "sources": sources(project)}
+
+
+def sources(project: str) -> dict:
+    """Что за модули источников установлены и что подключено — спрашиваем реестр проекта."""
+    rc, out = run_capture(project, "sources_registry.py", ["--json"])
+    try:
+        return json.loads(out[out.index("{"):out.rindex("}") + 1])
+    except Exception:
+        return {"installed": [], "instances": [], "error": out.strip()[:300]}
 
 
 def environment() -> dict:
@@ -624,6 +647,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(self._run_setup(project, payload))
             return
+        if u.path == "/api/sources":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(self._write_sources(project, payload.get("modules") or []))
+            return
         if u.path == "/api/tokens":
             project = payload.get("project", "")
             if not self._known(project):
@@ -698,6 +727,43 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"error": f"не удалось записать: {e}"}
         return {"ok": True}
+
+    def _write_sources(self, project: str, modules: list) -> dict:
+        """Переписать секцию `sources:` конфига — подключение и отключение модулей.
+
+        Отключение не трогает саму папку зеркала: выгрузка — это данные, а данные
+        панель не удаляет. После отключения doctor назовёт папку ничьей — это и есть
+        приглашение решить её судьбу руками.
+        """
+        known = {m["id"]: m for m in sources(project).get("installed", [])}
+        bad = [m for m in modules if m not in known]
+        if bad:
+            return {"error": "не установлены модули: " + ", ".join(bad)}
+        cfg = os.path.join(project, "aurora.config.yaml")
+        text = read_text(cfg)
+        if not text:
+            return {"error": "нет aurora.config.yaml"}
+        block = ["# Подключённые модули источников: id — он же имя папки в Sources/.",
+                 "# Что установлено: `python3 .opencode/scripts/sources_registry.py`.",
+                 "sources:"]
+        for mid in modules:
+            path = known[mid]["mirror"]["default_path"].rstrip("/")
+            block.append(f"  - id: {os.path.basename(path)}\n"
+                         f"    module: {mid}\n    path: {path}")
+        body = "\n".join(block) + "\n"
+        if re.search(r"^sources:\s*$", text, re.M):
+            new = re.sub(r"(^#[^\n]*\n)*^sources:\s*$.*?(?=^\S|\Z)", body, text,
+                         count=1, flags=re.M | re.S)
+        else:
+            new = re.sub(r"^atlassian:", body + "\natlassian:", text, count=1, flags=re.M)
+            if new == text:
+                new = text.rstrip("\n") + "\n\n" + body
+        try:
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(new)
+        except OSError as e:
+            return {"error": f"конфиг не записан: {e}"}
+        return {"ok": True, "modules": modules}
 
     def _resolve_refs(self, project: str, refs: list) -> dict:
         """Ссылки вида …/display/ПРОСТРАНСТВО/Заголовок → номер страницы.

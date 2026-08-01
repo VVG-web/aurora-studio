@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """sync_audit.py — целостность зеркал Sources/ (фреймворк «Аврора»).
 
-Синк пишет состояние (`Sources/Confluence/sync_state.md`, `Sources/JIRA/update_log.md`),
-но никто не сверяет состояние с диском — и зеркало тихо расходится с реальностью.
-Скрипт делает эту сверку машинно (на крупной базе ручной аудит показал 216 «пропавших» и 526
+Синк пишет состояние (`sync_state.md` у wiki, `update_log.md` у доски), но никто не
+сверяет состояние с диском — и зеркало тихо расходится с реальностью. Скрипт делает
+эту сверку машинно (на крупной базе ручной аудит показал 216 «пропавших» и 526
 незарегистрированных файлов).
+
+Что проверять, скрипт не знает заранее: список зеркал даёт реестр подключённых модулей
+(`sources_registry.py`), а правила сверки — вид хранилища, объявленный модулем:
+wiki (дерево страниц с номерами) или board (плоский список задач с ключами).
 
 Что проверяется:
   MISSING     — страница/задача есть в состоянии синка, файла на диске нет
@@ -15,59 +19,32 @@
 
 Запуск из корня проекта:
   python3 .opencode/scripts/sync_audit.py
+  python3 .opencode/scripts/sync_audit.py --source Confluence
   python3 .opencode/scripts/sync_audit.py --stale-days 7 --report Artifacts/reports/2026-07-26_sync_audit.md
+  python3 .opencode/scripts/sync_audit.py --json      # для панели
 
 Ничего не меняет. Выход: 0 — расхождений нет; 1 — есть (нужен досинк или чистка).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
-import unicodedata
 import sys
 from datetime import date, datetime
 
-CONF_DIR = "Sources/Confluence"
-JIRA_DIR = "Sources/JIRA"
+import sources_registry as R
+from sources_core import SERVICE_RE, cited_by_cards, nfc
+
 TODAY = date.today()
 
-# Служебные файлы синка — не страницы.
-# Тот же список, что у синка: иначе аудит числит служебный файл задачей, а `--prune`
-# его не трогает — и расхождение не сходится никогда.
-SERVICE_RE = re.compile(
-    r"(sync_state|update_log|sync_paths|sync_report|_prompt|_template|_example|"
-    r"-rules|_rules|SYNC_|FINAL_SYNC|README)", re.I)
 ROW_RE = re.compile(r"^\|\s*[^|]*\|\s*(\d{4,})\s*\|([^|]*)\|\s*([^|]+?)\s*\|\s*([A-Z_]+)?\s*\|")
 JIRA_ROW_RE = re.compile(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|([^|]*)\|\s*([^|]+?)\s*\|")
 # page_id пишется в шапке зеркала (`page_id: 12345`); `- **ID:** 12345` — формат
 # прежнего синк-скилла, он ещё встречается в старых проектах
 ID_IN_FILE_RE = re.compile(r"^\s*(?:page_id:\s*|-\s*\*\*ID:\*\*\s*)(\d{4,})", re.M)
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
-
-
-def read_config_paths() -> tuple:
-    conf, jira = CONF_DIR, JIRA_DIR
-    cfg = "aurora.config.yaml"
-    if os.path.isfile(cfg):
-        text = open(cfg, encoding="utf-8", errors="ignore").read()
-        m = re.search(r"^\s*sources_confluence:\s*(\S+)\s*$", text, re.M)
-        if m:
-            conf = m.group(1).strip('"\'')
-        m = re.search(r"^\s*sources_jira:\s*(\S+)\s*$", text, re.M)
-        if m:
-            jira = m.group(1).strip('"\'')
-    return conf, jira
-
-
-def nfc(path: str) -> str:
-    """Пути в единую нормализацию Unicode.
-
-    macOS отдаёт имена файлов в NFD («и» + диакритика раздельно), а состояние синка
-    писалось откуда придётся — та же самая страница выглядит и как MISSING, и как ORPHAN
-    одновременно. Сравнивать пути без нормализации на macOS нельзя.
-    """
-    return unicodedata.normalize("NFC", path)
 
 
 def disk_files(root: str) -> dict:
@@ -82,13 +59,13 @@ def disk_files(root: str) -> dict:
     return out
 
 
-def parse_confluence_state(root: str):
+def parse_wiki_state(root: str, state_name: str):
     """→ (записи с полным путём, записи только с page_id (путь обрезан), дата, нечитаемые строки).
 
     Синк иногда пишет путь сокращённо («.../Имя.md») — такая запись всё ещё пригодна:
     страницу можно найти на диске по page_id из тела файла.
     """
-    state = os.path.join(root, "sync_state.md")
+    state = os.path.join(root, state_name)
     if not os.path.isfile(state):
         return [], [], None, 0
     rows, truncated, bad = [], [], 0
@@ -114,8 +91,8 @@ def parse_confluence_state(root: str):
     return rows, truncated, state_date, bad
 
 
-def parse_jira_log(root: str):
-    log = os.path.join(root, "update_log.md")
+def parse_board_state(root: str, state_name: str):
+    log = os.path.join(root, state_name)
     if not os.path.isfile(log):
         return [], None
     rows, latest = [], None
@@ -141,19 +118,23 @@ def days_since(iso: str | None) -> int | None:
         return None
 
 
-def audit_confluence(root: str, stale_days: int, out: list) -> int:
+def audit_wiki(src: dict, stale_days: int, out: list, stats: dict) -> int:
+    """Дерево страниц: путь и номер страницы должны сходиться с состоянием синка."""
+    root, state_name = src["path"], src["state"]
     if not os.path.isdir(root):
-        out.append(f"- зеркала Confluence нет ({root}/) — пропущено\n")
+        out.append(f"- зеркала {src['id']} нет ({root}/) — пропущено\n")
         return 0
-    rows, truncated, state_date, bad = parse_confluence_state(root)
+    rows, truncated, state_date, bad = parse_wiki_state(root, state_name)
     files = disk_files(root)
-    out.append(f"## Confluence ({root})\n")
+    out.append(f"## {src['id']} ({root})\n")
     if not rows and not truncated:
         if not files:
             out.append("- зеркало пустое, синк ещё не запускался — проверять нечего\n")
             return 0
-        out.append(f"- **нет sync_state.md** или он не разбирается: файлов на диске {len(files)}, "
+        out.append(f"- **нет {state_name}** или он не разбирается: файлов на диске {len(files)}, "
                    "состояние синка неизвестно → аудит невозможен, зафиксируйте состояние синком.\n")
+        stats[src["id"]] = {"kind": "wiki", "path": root, "no_state": True,
+                            "files": len(files)}
         return 1
 
     by_path, by_id = {}, {}
@@ -227,6 +208,10 @@ def audit_confluence(root: str, stale_days: int, out: list) -> int:
                    "проверяемость; синк-скилл должен писать полный путь от корня зеркала")
     out.append(f"- MISSING: **{len(missing)}** · MOVED: **{len(moved)}** · ORPHAN: **{len(orphans)}** "
                f"· CASE: **{len(recase)}** · COLLISION: **{len(collisions)}**\n")
+    stats[src["id"]] = {"kind": "wiki", "path": root, "missing": len(missing),
+                        "orphan": len(orphans), "moved": len(moved), "case": len(recase),
+                        "collision": len(collisions), "state_date": state_date,
+                        "age_days": days_since(state_date)}
 
     problems = len(missing) + len(orphans) + len(collisions) + len(moved) + len(recase) + bad
     if recase:
@@ -239,7 +224,8 @@ def audit_confluence(root: str, stale_days: int, out: list) -> int:
             out.append(f"- … ещё {len(recase) - 20}")
         out.append("")
     if age is not None and age > stale_days:
-        out.append(f"⚠️ STALE: состояние синка старше {stale_days} дней — запустите `sync:confluence`.\n")
+        out.append(f"⚠️ STALE: состояние синка старше {stale_days} дней — "
+                   f"запустите `{src['command'] or 'синк'}`.\n")
         problems += 1
     if missing:
         out.append(f"### MISSING — в состоянии есть, на диске нет ({len(missing)})\n")
@@ -270,50 +256,24 @@ def audit_confluence(root: str, stale_days: int, out: list) -> int:
     return problems
 
 
-def cited_by_cards(rels: list) -> set:
-    """Какие файлы зеркала упоминают карточки базы.
-
-    Сирота, на которую ссылается карточка, и сирота, о которой все забыли, — разные
-    случаи: первую нельзя просто удалить, и отчёт обязан это различать, иначе человек
-    гадает, почему `--prune` отработал, а расхождение осталось.
-    """
-    kb = "AuroraKnowledgeDB"
-    if not os.path.isdir(kb) or not rels:
-        return set()
-    want = {rel: os.path.splitext(os.path.basename(rel))[0] for rel in rels}
-    hit = set()
-    for dirpath, _, files in os.walk(kb):
-        if os.path.basename(dirpath) == "meta":
-            continue
-        for f in files:
-            if not f.endswith(".md"):
-                continue
-            try:
-                text = open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore").read()
-            except OSError:
-                continue
-            if "Sources/JIRA" not in text:
-                continue
-            for rel, stem in want.items():
-                if rel not in hit and f"Sources/JIRA/{stem}.md" in text:
-                    hit.add(rel)
-    return hit
-
-
-def audit_jira(root: str, stale_days: int, out: list) -> int:
+def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
+    """Плоская доска: ключ задачи — имя файла, состояние — список ключей."""
+    root, state_name = src["path"], src["state"]
     if not os.path.isdir(root):
-        out.append(f"- зеркала Jira нет ({root}/) — пропущено\n")
+        out.append(f"- зеркала {src['id']} нет ({root}/) — пропущено\n")
         return 0
-    rows, latest = parse_jira_log(root)
+    rows, latest = parse_board_state(root, state_name)
     files = disk_files(root)
     keys_on_disk = {os.path.splitext(os.path.basename(rel))[0].upper(): rel for rel in files}
-    out.append(f"## Jira ({root})\n")
+    out.append(f"## {src['id']} ({root})\n")
     if not rows:
         if not files:
             out.append("- зеркало пустое, экспорт ещё не запускался — проверять нечего\n")
             return 0
-        out.append(f"- **нет update_log.md** или он пуст: файлов на диске {len(files)} — "
+        out.append(f"- **нет {state_name}** или он пуст: файлов на диске {len(files)} — "
                    "состояние синка не ведётся.\n")
+        stats[src["id"]] = {"kind": "board", "path": root, "no_state": True,
+                            "files": len(files)}
         return 1
 
     logged = {k.upper(): d for k, d in rows}
@@ -323,15 +283,22 @@ def audit_jira(root: str, stale_days: int, out: list) -> int:
     out.append(f"- в логе задач: {len(logged)} · файлов на диске: {len(files)}")
     out.append(f"- последний синк: {latest or '—'}" + (f" ({age} дн. назад)" if age is not None else ""))
     out.append(f"- MISSING: **{len(missing)}** · ORPHAN: **{len(orphans)}**\n")
-    cited = cited_by_cards([keys_on_disk[k] for k in orphans])
+    stats[src["id"]] = {"kind": "board", "path": root, "missing": len(missing),
+                        "orphan": len(orphans), "state_date": latest,
+                        "age_days": age}
+    # Сирота, на которую ссылается карточка, и сирота, о которой все забыли, — разные
+    # случаи: первую нельзя просто удалить, и отчёт обязан это различать, иначе человек
+    # гадает, почему `--prune` отработал, а расхождение осталось.
+    cited = cited_by_cards(root, [keys_on_disk[k] for k in orphans])
     if cited:
         out.append(f"- из них на **{len(cited)}** ссылаются карточки (`source:`) — поэтому "
-                   "`sync:jira --prune` их и не удалил: это оборвало бы провенанс.")
+                   f"`{src['command'] or 'синк'} --prune` их и не удалил: это оборвало бы провенанс.")
         out.append("  Сначала перенацелить ссылки: `kb:remap-sources --mirror "
                    f"{root}`, потом повторить prune.\n")
     problems = len(missing) + len(orphans)
     if age is not None and age > stale_days:
-        out.append(f"⚠️ STALE: лог синка старше {stale_days} дней — запустите `sync:jira`.\n")
+        out.append(f"⚠️ STALE: лог синка старше {stale_days} дней — "
+                   f"запустите `{src['command'] or 'синк'}`.\n")
         problems += 1
     if missing:
         out.append(f"### MISSING ({len(missing)})\n" + ", ".join(missing[:60]) + "\n")
@@ -340,27 +307,49 @@ def audit_jira(root: str, stale_days: int, out: list) -> int:
     return problems
 
 
+AUDITORS = {"wiki": audit_wiki, "board": audit_board}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Аудит целостности зеркал Sources/")
     ap.add_argument("--stale-days", type=int, default=14, help="через сколько дней синк считается протухшим")
     ap.add_argument("--report", metavar="PATH", help="сохранить отчёт в файл")
+    ap.add_argument("--source", metavar="ID", action="append",
+                    help="проверять только это зеркало (id из aurora.config.yaml → sources)")
+    ap.add_argument("--json", action="store_true", help="машиночитаемый итог (для панели)")
     ap.add_argument("--confluence-only", action="store_true",
-                    help="проверять только зеркало Confluence")
+                    help="то же, что --source Confluence (оставлено для совместимости)")
     ap.add_argument("--jira-only", action="store_true",
-                    help="проверять только зеркало Jira")
+                    help="то же, что --source JIRA (оставлено для совместимости)")
     a = ap.parse_args()
 
-    conf_dir, jira_dir = read_config_paths()
     if not os.path.isdir("Sources"):
         print("sync_audit: нет папки Sources/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
+    only = list(a.source or [])
+    only += ["Confluence"] if a.confluence_only else []
+    only += ["JIRA"] if a.jira_only else []
+    sources = [s for s in R.instances() if not only or s["id"] in only]
+
     out = [f"# Аудит зеркал Sources/ — {TODAY.isoformat()}", ""]
-    problems = 0
-    if not a.jira_only:
-        problems += audit_confluence(conf_dir, a.stale_days, out)
-    if not a.confluence_only:
-        problems += audit_jira(jira_dir, a.stale_days, out)
+    problems, stats = 0, {}
+    if not sources:
+        out.append("- подключённых зеркал нет: секция `sources:` в aurora.config.yaml пуста "
+                   "или модули не установлены (`sources_registry.py`)\n")
+    for src in sources:
+        auditor = AUDITORS.get(src["kind"])
+        if not auditor:
+            out.append(f"## {src['id']} ({src['path']})\n")
+            out.append(f"- модуль `{src['module']}` не установлен — правила проверки неизвестны, "
+                       "зеркало пропущено\n")
+            problems += 1
+            continue
+        problems += auditor(src, a.stale_days, out, stats)
+
+    if a.json:
+        print(json.dumps({"problems": problems, "mirrors": stats}, ensure_ascii=False))
+        return 1 if problems else 0
 
     out += ["## Что делать", "",
             "- MISSING → досинхронизировать страницы/задачи (синк по page_id/ключу);",

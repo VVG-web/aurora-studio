@@ -1,0 +1,28 @@
+{
+  "id": "confluence-dc",
+  "title": "Confluence (Server / Data Center / Cloud)",
+  "kind": "wiki",
+  "since": "1.28.0",
+  "what": "Дерево страниц пространства Confluence: иерархия — папками, страница с детьми — папка и index.md. Читает REST-ом, на сервер ничего не ставит.",
+  "mirror": {
+    "default_path": "Sources/Confluence",
+    "state": "sync_state.md",
+    "legacy_path_key": "sources_confluence"
+  },
+  "run": {
+    "script": "confluence_export.py",
+    "command": "sync:confluence",
+    "skill": "confluence-sync"
+  },
+  "auth": {
+    "env_prefix": "CONFLUENCE",
+    "what": "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD"
+  },
+  "settings_block": "atlassian.confluence",
+  "settings": [
+    {"key": "base_url", "what": "адрес сервера Confluence", "required": true},
+    {"key": "space", "what": "ключ пространства"},
+    {"key": "sync_roots", "what": "корни синка: page_id страниц, от которых идёт обход"}
+  ],
+  "requires": {"python": ["beautifulsoup4", "markdownify"]}
+}
