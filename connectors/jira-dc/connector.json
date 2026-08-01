@@ -1,0 +1,28 @@
+{
+  "id": "jira-dc",
+  "title": "Jira (Server / Data Center)",
+  "kind": "board",
+  "since": "1.28.0",
+  "what": "Задачи по JQL: файл на задачу, имя — ключ. Состояние копится между прогонами, поэтому узкий запрос не выбрасывает остальное из зеркала.",
+  "mirror": {
+    "default_path": "Sources/JIRA",
+    "state": "update_log.md",
+    "legacy_path_key": "sources_jira"
+  },
+  "run": {
+    "script": "jira_export.py",
+    "command": "sync:jira",
+    "skill": "jira-export"
+  },
+  "auth": {
+    "env_prefix": "JIRA",
+    "what": "персональный токен Jira (JIRA_PAT) либо JIRA_USER + JIRA_PASSWORD"
+  },
+  "settings_block": "atlassian.jira",
+  "settings": [
+    {"key": "base_url", "what": "адрес сервера Jira", "required": true},
+    {"key": "project_key", "what": "ключ проекта"},
+    {"key": "default_jql", "what": "запрос по умолчанию"}
+  ],
+  "requires": {"python": []}
+}

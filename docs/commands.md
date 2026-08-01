@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.24.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.28.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -25,9 +25,10 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `sync:confluence` | детерминированное зеркало Confluence → Sources/Confluence/ | скрипт | `confluence_export.py` | `--roots --out --force --prune --verify` | 1.6.0 |
-| `sync:jira` | детерминированное зеркало Jira → Sources/JIRA/ | скрипт | `jira_export.py` | `--jql --out --limit --force --comments --prune --verify` | 1.9.0 |
-| `sync:audit` (`audit`) | целостность зеркала: missing / orphan / collision / протухшее состояние | скрипт | `sync_audit.py` | `--stale-days --report --confluence-only --jira-only` | 1.3.0 |
+| `sync:sources` (`sources`) | модули источников: что установлено и какие зеркала подключены к проекту | скрипт | `sources_registry.py` | `--json` | 1.28.0 |
+| `sync:confluence` | детерминированное зеркало Confluence → Sources/Confluence/ (модуль confluence-dc) | скрипт | `confluence_export.py` | `--roots --out --force --prune --verify` | 1.6.0 |
+| `sync:jira` | детерминированное зеркало Jira → Sources/JIRA/ (модуль jira-dc) | скрипт | `jira_export.py` | `--jql --out --limit --force --comments --prune --verify` | 1.9.0 |
+| `sync:audit` (`audit`) | целостность зеркал: missing / orphan / collision / протухшее состояние; обходит все подключённые модули | скрипт | `sync_audit.py` | `--stale-days --report --source --json --confluence-only --jira-only` | 1.3.0 |
 | `sync:diff` (`diff`) | дрейф: источник изменился после того, как знание проверили | скрипт | `sync_diff.py` | `--all --stamp --apply --allow-dirty --report` | 1.9.1 |
 | `sync:jira-status` | обратный поток: статусы задач → кандидаты в `req_status`, задачи без требований, связи по упоминаниям | скрипт | `jira_status.py` | `--apply --link --allow-dirty --report` | 1.9.9 |
 

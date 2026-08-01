@@ -22,6 +22,17 @@ skills:
     - name: "jira-export-{{PROJECT_SLUG}}"
       via: repo
 
+# Подключённые модули источников: id — он же имя папки в Sources/.
+# Что установлено: `python3 .opencode/scripts/sources_registry.py`.
+# Секции нет — работают модули, встроенные в kit (Confluence и Jira).
+sources:
+  - id: Confluence
+    module: confluence-dc
+    path: Sources/Confluence
+  - id: JIRA
+    module: jira-dc
+    path: Sources/JIRA
+
 atlassian:
   confluence:
     base_url: "https://confluence.example.com"

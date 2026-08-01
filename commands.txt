@@ -15,9 +15,10 @@ kit | kit:remap-sources | remap | скрипт | kb_remap.py | 1.7.0 | пере�
 kit | kit:update | — | скрипт | aurora_update.py | 1.3.0 | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы
 kit | kit:list | — | скрипт | kit_commands.py | 1.9.8 | этот справочник: команды, модификаторы, чем исполняются, с какой версии
 
-sync | sync:confluence | — | скрипт | confluence_export.py | 1.6.0 | детерминированное зеркало Confluence → Sources/Confluence/
-sync | sync:jira | — | скрипт | jira_export.py | 1.9.0 | детерминированное зеркало Jira → Sources/JIRA/
-sync | sync:audit | audit | скрипт | sync_audit.py | 1.3.0 | целостность зеркала: missing / orphan / collision / протухшее состояние
+sync | sync:sources | sources | скрипт | sources_registry.py | 1.28.0 | модули источников: что установлено и какие зеркала подключены к проекту
+sync | sync:confluence | — | скрипт | confluence_export.py | 1.6.0 | детерминированное зеркало Confluence → Sources/Confluence/ (модуль confluence-dc)
+sync | sync:jira | — | скрипт | jira_export.py | 1.9.0 | детерминированное зеркало Jira → Sources/JIRA/ (модуль jira-dc)
+sync | sync:audit | audit | скрипт | sync_audit.py | 1.3.0 | целостность зеркал: missing / orphan / collision / протухшее состояние; обходит все подключённые модули
 sync | sync:diff | diff | скрипт | sync_diff.py | 1.9.1 | дрейф: источник изменился после того, как знание проверили
 sync | sync:jira-status | — | скрипт | jira_status.py | 1.9.9 | обратный поток: статусы задач → кандидаты в `req_status`, задачи без требований, связи по упоминаниям
 

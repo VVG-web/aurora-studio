@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""jira_export.py — детерминированное зеркало Jira → Sources/JIRA/ (фреймворк «Аврора»).
+"""jira_export.py — модуль источника: Jira → зеркало вида board (фреймворк «Аврора»).
 
-Последний недетерминированный синк. Пока задачи выгружала модель, тот же текст каждый раз
-рендерился чуть иначе — git показывал правки там, где их нет, а `sync_audit` не мог
-проверить состояние. Здесь конвертация — код: одна и та же задача даёт байт-в-байт
-один и тот же файл. Чистый REST-клиент, на сервер Jira ничего не ставится.
+Продуктовая половина синка Jira: REST-клиент, JQL, вики-разметка задач и маппинг полей.
+Общая половина — в `sources_core.py`: файл состояния, поиск лишнего, `--prune`,
+гейт детерминизма. На сервер Jira ничего не ставится.
+
+Зачем детерминизм: пока задачи выгружала модель, тот же текст каждый раз рендерился
+чуть иначе — git показывал правки там, где их нет, а `sync_audit` не мог проверить
+состояние. Здесь конвертация — код: одна и та же задача даёт байт-в-байт один файл.
 
   python3 .opencode/scripts/jira_export.py                     # по default_jql из конфига
   python3 .opencode/scripts/jira_export.py --jql "project = X AND updated >= -7d"
@@ -21,72 +24,50 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import filecmp
-import json
 import os
 import re
 import sys
-import tempfile
 import urllib.parse
-import urllib.request
-from datetime import date
 
-CONFIG = "aurora.config.yaml"
-ENV_LOCAL = ".env.aurora.local"
+from sources_core import (BoardMirror, RestApi, block, cited_by_cards, config_text,
+                          no_access, report_stale, scalar, verify)
+from sources_core import read_secret as core_secret
+
 DEFAULT_OUT = "Sources/JIRA"
-STATE = "update_log.md"
-TODAY = date.today().isoformat()
 FIELDS = ("summary,issuetype,status,priority,resolution,created,updated,resolutiondate,"
           "assignee,reporter,labels,components,fixVersions,parent,description")
+
+
+class Mirror(BoardMirror):
+    """Зеркало задач Jira: раскладку и состояние ведёт BoardMirror."""
+
+    banner = "Jira sync state — генерируется jira_export.py, не править руками"
+
+
+STATE = Mirror.state_name
 
 
 # ------------------------------------------------------------------ настройки
 
 def read_config() -> dict:
     cfg = {"base_url": "", "project_key": "", "jql": "", "out": DEFAULT_OUT}
-    if not os.path.isfile(CONFIG):
+    text = config_text()
+    if not text:
         return cfg
-    text = open(CONFIG, encoding="utf-8").read()
-    block = text.split("jira:", 1)[-1].split("auth:", 1)[0] if "jira:" in text else ""
+    jira = block(text, "jira:", "auth:")
     for key, dst in (("base_url", "base_url"), ("project_key", "project_key"),
                      ("default_jql", "jql")):
-        m = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$', block, re.M)
-        if m:
-            cfg[dst] = m.group(1).strip().rstrip("/")
-    m = re.search(r'^\s*sources_jira:\s*(\S+)\s*$', text, re.M)
-    if m:
-        cfg["out"] = m.group(1).strip().strip('"')
+        cfg[dst] = scalar(jira, key, cfg[dst]).rstrip("/")
+    cfg["out"] = scalar(text, "sources_jira", DEFAULT_OUT)
     return cfg
 
 
 def read_secret() -> tuple:
-    env = dict(os.environ)
-    if os.path.isfile(ENV_LOCAL):
-        for line in open(ENV_LOCAL, encoding="utf-8", errors="ignore"):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    pat = env.get("JIRA_PAT") or env.get("JIRA_PERSONAL_TOKEN")
-    if pat:
-        return f"Bearer {pat}", "PAT"
-    user, pwd = env.get("JIRA_USER"), env.get("JIRA_PASSWORD")
-    if user and pwd:
-        return "Basic " + base64.b64encode(f"{user}:{pwd}".encode()).decode(), "basic"
-    return "", ""
+    return core_secret("JIRA")
 
 
-class Api:
-    def __init__(self, base: str, auth: str):
-        self.base, self.auth = base.rstrip("/"), auth
-
-    def get(self, path: str) -> dict:
-        req = urllib.request.Request(self.base + path, headers={
-            "Authorization": self.auth, "Accept": "application/json",
-            "User-Agent": "aurora-jira-export/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
+class Api(RestApi):
+    agent = "aurora-jira-export/1.0"
 
     def search(self, jql: str, fields: str, limit: int = 0) -> list:
         out, start = [], 0
@@ -226,87 +207,25 @@ def render(issue: dict, base_url: str, epic_field: str, comments: list) -> str:
 # --------------------------------------------------------------------- синк
 
 def load_state(out_dir: str) -> dict:
-    state, path = {}, os.path.join(out_dir, STATE)
-    if os.path.isfile(path):
-        for line in open(path, encoding="utf-8", errors="ignore"):
-            m = re.match(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|\s*([^|]+?)\s*\|", line)
-            if m:
-                state[m.group(1)] = m.group(2).strip()
-    return state
+    """{ключ задачи: когда обновлена} из прошлого прогона — основа инкрементальности."""
+    return {key: row[1] for key, row in Mirror(out_dir).previous().items()}
 
 
 def write_state(out_dir: str, rows: list) -> dict:
     """Слить с прежним состоянием: прогон по узкому JQL не должен терять остальные задачи."""
-    merged = {}
-    path_state = os.path.join(out_dir, STATE)
-    if os.path.isfile(path_state):
-        for line in open(path_state, encoding="utf-8", errors="ignore"):
-            m = re.match(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|", line)
-            if m:
-                merged[m.group(1)] = (m.group(1), m.group(2), m.group(3), m.group(4))
-    for key, updated, status, rel in rows:
-        merged[key] = (key, updated, status, rel)
-    # осиротевшие записи (файла нет) в состоянии не держим
-    merged = {k: v for k, v in merged.items() if os.path.isfile(os.path.join(out_dir, v[3]))}
-    lines = ["<!-- Jira sync state — генерируется jira_export.py, не править руками -->",
-             f"**Sync Date:** {TODAY}", f"**Issues:** {len(merged)}", "",
-             "| Issue Key | Updated | Status | Local Path |", "|---|---|---|---|"]
-    for key, updated, status, path in sorted(merged.values()):
-        lines.append(f"| {key} | {updated} | {status} | {path} |")
-    open(os.path.join(out_dir, STATE), "w", encoding="utf-8").write("\n".join(lines) + "\n")
-    return merged
-
-
-# Служебные файлы синка — не задачи: промпты, шаблоны и правила прежнего синк-скилла.
-SERVICE_RE = re.compile(r"(update_log|sync_state|sync_report|SYNC_|_prompt|_template|_example|"
-                        r"-rules|_rules|README)", re.I)
+    mirror = Mirror(out_dir)
+    mirror.rows = rows
+    return mirror.write_state()
 
 
 def stale(out_dir: str, state: dict) -> list:
-    """Файлы зеркала, за которыми нет задачи в состоянии синка.
-
-    Так в зеркале остаются следы прежних выгрузок: та же задача под старым именем
-    (`US-3.1.1.md` вместо `PRJ-327.md`) читается как живая, хотя давно не обновляется.
-    """
-    known = {row[3] for row in state.values()}
-    out = []
-    for f in sorted(os.listdir(out_dir)):
-        if not f.endswith(".md") or f == STATE or SERVICE_RE.search(f):
-            continue
-        if f not in known:
-            out.append(f)
-    return out
+    """Файлы зеркала, за которыми нет задачи в состоянии синка."""
+    return Mirror(out_dir).extra_files(row[3] for row in state.values())
 
 
 def cited(root: str, names: list) -> set:
-    """Какие файлы зеркала упоминаются карточками базы.
-
-    `source:` — единственная нить от знания к доказательству. Удалить файл, на который
-    ссылается карточка, значит оборвать её провенанс, поэтому такие файлы `--prune`
-    не трогает, а называет: сначала перенацелить ссылки, потом убирать.
-    """
-    kb = os.path.join(os.path.dirname(root.rstrip("/")) or ".", "..", "AuroraKnowledgeDB")
-    kb = os.path.normpath(kb)
-    if not os.path.isdir(kb):
-        return set()
-    # Сверяем ровно путь, а не подстроку: карточка, где просто упомянут номер истории,
-    # ссылкой на файл не является — иначе защита не даёт удалить вообще ничего.
-    want = {n: f"Sources/JIRA/{n}" for n in names}
-    hit = set()
-    for dirpath, _, files in os.walk(kb):
-        for f in files:
-            if not f.endswith(".md"):
-                continue
-            try:
-                text = open(os.path.join(dirpath, f), encoding="utf-8", errors="ignore").read()
-            except OSError:
-                continue
-            if "Sources/JIRA" not in text:
-                continue
-            for n, ref in want.items():
-                if n not in hit and ref in text:
-                    hit.add(n)
-    return hit
+    """Какие файлы зеркала упоминаются карточками базы через `source:`."""
+    return cited_by_cards(root, names)
 
 
 def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
@@ -360,8 +279,7 @@ def main() -> int:
         print("jira_export: нет atlassian.jira.base_url в aurora.config.yaml", file=sys.stderr)
         return 1
     if not auth:
-        print("jira_export: нет доступа. Положите в .env.aurora.local (он в .gitignore):\n"
-              "  JIRA_PAT=<персональный токен>\nлибо JIRA_USER= и JIRA_PASSWORD=", file=sys.stderr)
+        print(no_access("jira_export", "JIRA"), file=sys.stderr)
         return 1
     if not jql:
         print("jira_export: не задан JQL и нет project_key в конфиге", file=sys.stderr)
@@ -371,21 +289,9 @@ def main() -> int:
     print(f"JQL: {jql}\n")
 
     if a.verify:
-        with tempfile.TemporaryDirectory() as td:
-            one, two = os.path.join(td, "a"), os.path.join(td, "b")
-            limit = a.limit or 25
-            run_export(cfg, auth, one, jql, limit, True, a.comments)
-            run_export(cfg, auth, two, jql, limit, True, a.comments)
-            diff = [f for f in os.listdir(one)
-                    if not filecmp.cmp(os.path.join(one, f), os.path.join(two, f), shallow=False)]
-            if diff:
-                print(f"❌ Детерминизм нарушен: различаются {len(diff)} из {len(os.listdir(one))}")
-                for d in diff[:10]:
-                    print("   ", d)
-                return 1
-            print(f"✅ Детерминизм подтверждён: {len(os.listdir(one))} задач, "
-                  "два прогона совпали побайтово")
-            return 0
+        limit = a.limit or 25
+        return verify(lambda into: run_export(cfg, auth, into, jql, limit, True, a.comments),
+                      skip=(STATE,))
 
     rows, written, skipped = run_export(cfg, auth, out_dir, jql, a.limit, a.force, a.comments)
     state = write_state(out_dir, rows)
@@ -393,21 +299,14 @@ def main() -> int:
 
     extra = stale(out_dir, state)
     if extra:
-        print(f"\nЛишние файлы в зеркале ({len(extra)}) — задачи с такими именами синк не выгружал:")
-        for s in extra[:20]:
-            print(f"  - {s}")
-        if len(extra) > 20:
-            print(f"  … ещё {len(extra) - 20}")
+        report_stale("задачи с такими именами синк не выгружал", extra, out_dir)
         if a.prune and a.limit:
             # прогон с --limit по определению неполный: «лишнее» здесь означает
             # «не попало в выборку», а не «задачи больше нет»
             print("Удаление пропущено: --prune не работает вместе с --limit — прогон неполный.")
         elif a.prune:
             keep = cited(out_dir, extra)
-            for s in extra:
-                if s not in keep:
-                    os.remove(os.path.join(out_dir, s))
-            print(f"Удалено: {len(extra) - len(keep)}")
+            print(f"Удалено: {Mirror(out_dir).prune(extra, keep)}")
             if keep:
                 print(f"Оставлено (на них ссылаются карточки): {len(keep)}")
                 for s in sorted(keep)[:10]:

@@ -55,6 +55,12 @@ def make_project(tmp: Path, git: bool = False) -> Path:
     shutil.copy(KIT / "structure_dirs.txt", root / ".opencode" / "structure_dirs.txt")
     for s in SCRIPTS.glob("*.py"):
         shutil.copy(s, root / ".opencode" / "scripts" / s.name)
+    # модули источников: манифесты и папки их зеркал (в проекте это делает install/update)
+    (root / ".opencode" / "connectors").mkdir(parents=True, exist_ok=True)
+    for man in (KIT / "connectors").glob("*/connector.json"):
+        m = json.loads(man.read_text(encoding="utf-8"))
+        shutil.copy(man, root / ".opencode" / "connectors" / f"{m['id']}.json")
+        (root / m["mirror"]["default_path"]).mkdir(parents=True, exist_ok=True)
     (root / ".opencode" / "skills" / "aurora-vault").mkdir(parents=True, exist_ok=True)
     (root / ".opencode" / "skills" / "aurora-vault" / "SKILL.md").write_text("stub", encoding="utf-8")
     (root / "aurora.config.yaml").write_text(
@@ -1177,6 +1183,17 @@ def test_cockpit_apply_is_reachable(tmp: Path):
 
 
 @test
+def test_cockpit_can_recount_metrics(tmp: Path):
+    """Базу правят не только команды панели — числа нужно уметь пересчитать и вручную."""
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for btn, page in (("refreshHealth", "«Здоровье»"), ("refreshOverview", "«Мостик»")):
+        assert f'id="{btn}"' in ui, f"на странице {page} нет кнопки пересчёта"
+        assert f'$("#{btn}").onclick' in ui, f"кнопка пересчёта на {page} ничего не делает"
+    assert 'stamp("#healthStamp")' in ui and 'stamp("#overviewStamp")' in ui, \
+        "нет отметки времени: по числам не понять, до работы они посчитаны или после"
+
+
+@test
 def test_cockpit_warns_when_project_engine_lags(tmp: Path):
     """Флаги панель берёт из kit'а, а запускает движок проекта — расхождение нужно назвать."""
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
@@ -1703,6 +1720,70 @@ def test_sync_audit_case_only_paths_are_not_a_loss(tmp: Path):
     assert "CASE: **1**" in cp.stdout, f"расхождение регистра не выделено: {cp.stdout[:500]}"
     assert "MISSING: **0**" in cp.stdout, "страница объявлена потерянной, хотя она на месте"
     assert "ORPHAN: **0**" in cp.stdout, "тот же файл посчитан лишним"
+
+
+@test
+def test_registry_drives_mirrors_and_audit(tmp: Path):
+    """Зеркала объявляют модули: движок не должен знать про Confluence и Jira по именам.
+
+    Проверяем всю цепочку на выдуманном модуле: реестр видит его, аудит выбирает правила
+    по объявленному виду хранилища, а `--source` сужает проверку до одного зеркала.
+    """
+    root = make_project(tmp)
+    (root / ".opencode/connectors/demo-board.json").write_text(json.dumps({
+        "id": "demo-board", "title": "Демо-доска", "kind": "board",
+        "what": "выдуманный источник для теста",
+        "mirror": {"default_path": "Sources/Demo", "state": "update_log.md"},
+        "run": {"script": "demo_export.py", "command": "sync:demo", "skill": "demo-sync"},
+        "auth": {"env_prefix": "DEMO"},
+    }, ensure_ascii=False), encoding="utf-8")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8") +
+                   "\nsources:\n  - id: Demo\n    module: demo-board\n    path: Sources/Demo\n",
+                   encoding="utf-8")
+
+    out = run("sources_registry.py", cwd=root).stdout
+    assert "demo-board" in out and "Sources/Demo" in out, f"модуль не в реестре:\n{out}"
+
+    # зеркала нет на диске — doctor зовёт завести папку, но схему это не ломает
+    doc = run("aurora_doctor.py", "--structure", cwd=root)
+    assert "Sources/Demo" in doc.stdout, "doctor молчит про заявленное зеркало"
+    assert doc.returncode == 0, "заявленное зеркало не должно быть ошибкой схемы"
+
+    mirror = root / "Sources/Demo"
+    mirror.mkdir(parents=True, exist_ok=True)
+    (mirror / "DEMO-1.md").write_text("задача", encoding="utf-8")
+    (mirror / "update_log.md").write_text(
+        "**Sync Date:** 2026-07-30\n\n| Issue Key | Updated | Status | Local Path |\n"
+        "|---|---|---|---|\n| DEMO-2 | 2026-07-30 10:00 | Готово | DEMO-2.md |\n",
+        encoding="utf-8")
+    cp = run("sync_audit.py", cwd=root, expect_rc=1)
+    assert "## Demo (Sources/Demo)" in cp.stdout, f"зеркало модуля не проверено:\n{cp.stdout}"
+    assert "MISSING: **1**" in cp.stdout and "ORPHAN: **1**" in cp.stdout, \
+        f"правила board-зеркала не применились:\n{cp.stdout}"
+    assert "Confluence" not in cp.stdout, \
+        "проверено зеркало, которого нет в sources: — список берётся не из реестра"
+
+    one = run("sync_audit.py", "--source", "Demo", cwd=root, expect_rc=1).stdout
+    assert "## Demo" in one, "--source отсеял то, что просили"
+
+    js = json.loads(run("sync_audit.py", "--json", cwd=root, expect_rc=1).stdout)
+    assert js["mirrors"]["Demo"]["kind"] == "board", f"машинный итог без вида зеркала: {js}"
+    assert js["mirrors"]["Demo"]["missing"] == 1, f"числа не сошлись: {js}"
+
+    # зеркало без состояния сверять не с чем — но молчать о нём нельзя: панель покажет
+    # «пусто» там, где на диске лежат данные, которые никто не проверяет
+    (mirror / "update_log.md").unlink()
+    js = json.loads(run("sync_audit.py", "--json", cwd=root, expect_rc=1).stdout)
+    assert js["mirrors"]["Demo"]["no_state"] and js["mirrors"]["Demo"]["files"] == 1, \
+        f"зеркало без состояния пропало из машинного итога: {js}"
+
+    # папка без модуля — замечание, а не блокер: данные удалять нельзя
+    (root / "Sources/Ничья").mkdir(parents=True, exist_ok=True)
+    doc = run("aurora_doctor.py", "--structure", cwd=root)
+    assert "зеркала без модуля" in doc.stdout and "Sources/Ничья" in doc.stdout, \
+        f"ничья папка в Sources/ не названа:\n{doc.stdout}"
+    assert doc.returncode == 0, "ничья папка не должна валить проверку структуры"
 
 
 @test

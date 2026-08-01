@@ -111,20 +111,23 @@ class Installer:
                 rel = f"{dest_rel}/{src.relative_to(src_dir).as_posix()}"
                 self.copy_file(src, rel)
 
+    def ensure_dir(self, rel: str):
+        path = self.target / rel
+        if path.exists():
+            self.log(f"  exists: {rel}/")
+            return
+        if self.dry_run:
+            self.log(f"  would mkdir: {rel}/")
+            return
+        path.mkdir(parents=True, exist_ok=True)
+        # gitkeep only for truly empty leaf folders
+        (path / ".gitkeep").touch()
+        self.log(f"  mkdir: {rel}/")
+
     def ensure_dirs(self):
         self.log("== folders ==")
         for d in TRUST_DIRS:
-            path = self.target / d
-            if path.exists():
-                self.log(f"  exists: {d}/")
-                continue
-            if self.dry_run:
-                self.log(f"  would mkdir: {d}/")
-                continue
-            path.mkdir(parents=True, exist_ok=True)
-            # gitkeep only for truly empty leaf folders
-            (path / ".gitkeep").touch()
-            self.log(f"  mkdir: {d}/")
+            self.ensure_dir(d)
 
     def install_skill(self):
         self.log("== aurora-vault skill ==")
@@ -135,10 +138,11 @@ class Installer:
         # skill.json берём из kit'а, а не пишем свой: два источника одного файла
         # означают, что update будет вечно предлагать перезапись сразу после установки
         self.copy_file(skill_src / "skill.json", ".opencode/skills/aurora-vault/skill.json")
-        for script in ("aurora_common.py", "kb_lint.py", "kb_fix.py", "kb_queue.py", "kb_remap.py", "kb_classify.py", "build_plan.py", "spec_pack.py", "kb_index.py", "kb_scrub.py", "kb_schema.py", "publish_doc.py", "kit_commands.py", "kb_verify.py",
+        for script in ("aurora_common.py", "sources_core.py", "sources_registry.py",
+                       "kb_lint.py", "kb_fix.py", "kb_queue.py", "kb_remap.py", "kb_classify.py", "build_plan.py", "spec_pack.py", "kb_index.py", "kb_scrub.py", "kb_schema.py", "publish_doc.py", "kit_commands.py", "kb_verify.py",
                        "kb_supersede.py", "kb_impact.py", "ctx_pack.py", "sync_audit.py", "sync_diff.py", "release_doc.py",
                        "aurora_stats.py", "aurora_hooks.py", "aurora_doctor.py",
-                       "office_ingest.py", "export_doc.py", "confluence_export.py", "jira_export.py", "jira_status.py",
+                       "office_ingest.py", "export_doc.py", "jira_status.py",
                        "aurora_trace.py",
                        # setup/update копируются в проект, чтобы их можно было запускать оттуда
                        "aurora_setup.py", "aurora_update.py"):
@@ -388,77 +392,42 @@ _Мета-вопросы:_
                    "Процедуры, по которым работает ассистент, лежат в проекте:\n"
                    "`.opencode/skills/aurora-vault/`.\n")
 
-    def install_sync_skills(self):
-        self.log("== sync skills ==")
-        # Confluence
-        conf_name = f"confluence-sync-{self.slug}"
-        conf_skill = (KIT_ROOT / "skills/confluence-sync-template/SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        conf_skill = (
-            conf_skill.replace("{{PROJECT_SLUG}}", self.slug)
-            .replace("{{CONFLUENCE_SPACE}}", self.confluence)
-            .replace("{{PROJECT_NAME}}", self.name)
-        )
-        self.write(f".opencode/skills/{conf_name}/SKILL.md", conf_skill)
-        self.write(
-            f".opencode/skills/{conf_name}/skill.json",
-            json.dumps(
-                {
-                    "name": conf_name,
-                    "description": f"Sync Confluence space {self.confluence} into Sources/Confluence/",
-                    "entrypoint": "SKILL.md",
-                },
-                indent=2,
-            )
-            + "\n",
-        )
-        self.write(
-            "Sources/Confluence/sync_paths.md",
-            f"# Sync roots — {self.name}\n\n"
-            f"Space: **{self.confluence}**\n\n"
-            "Source of truth: `aurora.config.yaml` → `atlassian.confluence.sync_roots`.\n"
-            "Mirror human-readable roots here; on conflict **yaml wins**.\n\n"
-            "1. _(добавьте pageId корневых страниц)_\n",
-        )
-        self.write(
-            "Sources/Confluence/Confluence_prompt.md",
-            f"# Confluence sync prompt — {self.name}\n\n"
-            f"Read `aurora.config.yaml` (`atlassian.confluence`).\n"
-            f"Output: `Sources/Confluence/`.\n"
-            f"Use skill `{conf_name}`.\n",
-        )
+    def install_connectors(self):
+        """Модули источников: манифест, скрипт запуска, папка зеркала и sync-скилл.
 
-        # Jira
-        jira_name = f"jira-export-{self.slug}"
-        jira_skill = (KIT_ROOT / "skills/jira-export-template/SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        jira_skill = (
-            jira_skill.replace("{{PROJECT_SLUG}}", self.slug)
-            .replace("{{JIRA_KEY}}", self.jira)
-            .replace("{{PROJECT_NAME}}", self.name)
-        )
-        self.write(f".opencode/skills/{jira_name}/SKILL.md", jira_skill)
-        self.write(
-            f".opencode/skills/{jira_name}/skill.json",
-            json.dumps(
-                {
-                    "name": jira_name,
-                    "description": f"Export Jira project {self.jira} into Sources/JIRA/",
-                    "entrypoint": "SKILL.md",
-                },
-                indent=2,
+        Поимённо здесь ничего не перечислено: сколько модулей лежит в `connectors/`,
+        столько и встанет. Так доустановленный модуль приезжает в проект сам.
+        """
+        self.log("== модули источников ==")
+        for man in sorted((KIT_ROOT / "connectors").glob("*/connector.json")):
+            m = json.loads(man.read_text(encoding="utf-8"))
+            self.copy_file(man, f".opencode/connectors/{m['id']}.json")
+            script = (m.get("run") or {}).get("script", "")
+            if script:
+                # скрипт может лежать рядом с манифестом (доустановленный модуль) или
+                # в scripts/ kit'а (встроенный — его же импортируют панель и publish_doc)
+                src = man.parent / script
+                self.copy_file(src if src.is_file() else KIT_ROOT / "scripts" / script,
+                               f".opencode/scripts/{script}")
+            mirror = (m.get("mirror") or {}).get("default_path", "")
+            if mirror:
+                self.ensure_dir(mirror)
+            skill, tpl = (m.get("run") or {}).get("skill", ""), man.parent / "SKILL.md"
+            if not (skill and tpl.is_file()):
+                continue
+            name = f"{skill}-{self.slug}"
+            body = (tpl.read_text(encoding="utf-8")
+                    .replace("{{PROJECT_SLUG}}", self.slug)
+                    .replace("{{PROJECT_NAME}}", self.name)
+                    .replace("{{CONFLUENCE_SPACE}}", self.confluence)
+                    .replace("{{JIRA_KEY}}", self.jira))
+            self.write(f".opencode/skills/{name}/SKILL.md", body)
+            self.write(
+                f".opencode/skills/{name}/skill.json",
+                json.dumps({"name": name,
+                            "description": f"{m.get('title', m['id'])} → {mirror}",
+                            "entrypoint": "SKILL.md"}, indent=2, ensure_ascii=False) + "\n",
             )
-            + "\n",
-        )
-        self.write(
-            "Sources/JIRA/JIRA_prompt.md",
-            f"# Jira sync prompt — {self.name}\n\n"
-            f"Read `aurora.config.yaml` (`atlassian.jira.project_key`, `default_jql`).\n"
-            f"Output: `Sources/JIRA/`.\n"
-            f"Use skill `{jira_name}`.\n",
-        )
 
     def install_cursor_rules(self):
         self.log("== .cursor/rules ==")
@@ -578,7 +547,7 @@ created: {TODAY}
         self.install_templates_prompts()
         self.install_launchers()
         self.install_docs()
-        self.install_sync_skills()
+        self.install_connectors()
         self.install_cursor_rules()
         self.install_gitignore()
         self.write_report()

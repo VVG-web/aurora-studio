@@ -103,10 +103,24 @@ Acceptance Criteria, эпики и задачи. Они попадают в cont
 `YYYY-MM-DD<TAB>команда<TAB>имя-карточки`. Без лога очередь работает на связях и
 продуктах, но теряет главный сигнал — что реально спрашивают.
 
+## `sync:sources` — какие зеркала вообще есть
+
+`python3 .opencode/scripts/sources_registry.py` — что установлено и что подключено к
+проекту. Зеркала наливают **подключаемые модули**: движок знает не про Confluence и Jira,
+а про два вида хранилищ — `wiki` (дерево страниц) и `board` (плоский список задач).
+Confluence и Jira Data Center идут в комплекте; остальные добавляются папкой в
+`connectors/` (см. `docs/connectors.md` в kit'е).
+
+Подключение — секция `sources:` в `aurora.config.yaml` (или отметка в панели, раздел
+«Зеркала»). Папку зеркала заводит `kit:update`. Папка в `Sources/`, за которой не стоит
+подключённый модуль, — замечание `kit:doctor`, а не ошибка: данные не удаляются, судьбу
+папки решает человек.
+
 ## `sync:confluence` — детерминированное зеркало
 
-Скрипт: `python3 .opencode/scripts/confluence_export.py`. Чистый REST-клиент: на сервер
-Confluence ничего не ставится, работает с Data Center/Server и Cloud.
+Скрипт: `python3 .opencode/scripts/confluence_export.py` (модуль `confluence-dc`, вид
+`wiki`). Чистый REST-клиент: на сервер Confluence ничего не ставится, работает с
+Data Center/Server и Cloud.
 
 **Почему скриптом, а не моделью.** Когда markdown пишет LLM, одна и та же страница
 выгружается каждый раз чуть иначе — git показывает правку там, где её нет, и синк
@@ -116,8 +130,9 @@ Confluence ничего не ставится, работает с Data Center/S
    `CONFLUENCE_PAT` в `.env.aurora.local` (Data Center 7.9+; иначе `CONFLUENCE_USER` +
    `CONFLUENCE_PASSWORD`). Секреты в git не кладутся никогда.
 2. Прогон: `confluence_export.py` — обходит корни рекурсивно (пагинация по 50),
-   пишет только изменившиеся страницы (сверка по номеру версии), состояние — в
-   `Sources/Confluence/sync_state.md` с **полными путями**.
+   переписывает только те файлы, содержимое которых изменилось, состояние — в
+   `Sources/Confluence/sync_state.md` с **полными путями**. `--force` пропускает эту
+   сверку и переписывает зеркало целиком.
 3. Гейт детерминизма: `--verify` выгружает дважды во временные папки и сравнивает
    побайтово. Прогонять после обновления зависимостей (bs4/markdownify) — их новая
    версия может изменить формат и дать разом ложный дифф на всё зеркало.
@@ -139,7 +154,8 @@ fenced-блоки, info/note/warning — в цитаты, ссылки `ac:link`
 
 ## `sync:jira` — детерминированное зеркало задач
 
-`python3 .opencode/scripts/jira_export.py [--jql "…"] [--comments] [--verify]`.
+`python3 .opencode/scripts/jira_export.py [--jql "…"] [--comments] [--verify]`
+(модуль `jira-dc`, вид `board`).
 
 Тот же принцип, что у Confluence: конвертация кодом, а не моделью. Вики-разметка Jira
 (`h2.`, `*жирный*`, `{code}`, таблицы `||…||`) переводится в markdown детерминированно;
@@ -184,6 +200,8 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 ## `sync:audit` — целостность зеркал
 
 Запускать после каждого синка и перед `build` (иначе base строится на дырявом зеркале).
+Проверяются все подключённые зеркала: список даёт реестр модулей, правила сверки —
+вид хранилища. Одно зеркало — `--source <id>`, машинный итог для панели — `--json`.
 
 1. `python3 .opencode/scripts/sync_audit.py` → MISSING / MOVED / ORPHAN / COLLISION / STALE.
 2. Разбор:
