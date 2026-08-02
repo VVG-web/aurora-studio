@@ -101,7 +101,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит всё содержимое `AuroraKnowledgeDB/` (включая DR, вопросы, справочники), за её пределами не трогает ничего; `--keep-handmade` — оставить то, чего нет в источниках; откат — из git (`kb_reset.py`) | `references/maintenance.md` |
 | `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
 | `kb:queue` | очередь верификации: что верифицировать первым (употребление × связи × протухание) | `references/maintenance.md` |
-| `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять то, что давно не менялось в источнике (основание пишется в карточку) | `references/maintenance.md` |
+| `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять давно не менявшееся; `--by-jira` — решение по статусу связанной задачи (списки статусов — в конфиге проекта) | `references/maintenance.md` |
 | `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter (`kb_fix.py --all`) | `references/maintenance.md` |
 | `kb:retire` | убрать поля, выведенные из схемы (`kb_fix.py --retire`); `canonical` → `verified` | `references/maintenance.md` |
 | `kb:dedupe` | двойники: поиск и слияние (`kb_fix.py --dupes` / `--merge`) — тот же скрипт, другой режим | `references/maintenance.md` |

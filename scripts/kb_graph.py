@@ -118,12 +118,24 @@ class Graph:
             if not f.endswith(".md") or SERVICE_RE.search(f):
                 continue
             head = open(os.path.join(root, f), encoding="utf-8", errors="ignore").read(2000)
-            m = SUMMARY_RE.search(head)
-            summary = m.group(1).strip() if m else head.splitlines()[0].lstrip("# ").strip()
+            # Заголовок задачи: сначала шапка зеркала (`title:`), потом строка таблицы
+            # прежнего синк-скилла, потом первый заголовок markdown. Первая строка файла —
+            # это «---», и брать её за summary значит потерять номер истории целиком.
+            fm_head = frontmatter(head)
+            summary = (fm_head.get("title") or "").strip().strip('"')
+            if not summary:
+                m = SUMMARY_RE.search(head)
+                summary = (m.group(1).strip() if m else
+                           next((l.lstrip("# ").strip() for l in head.splitlines()
+                                 if l.startswith("#")), ""))
             key = f[:-3]
             kind, story = story_of(summary)
+            status = (fm_head.get("status") or "").strip().strip('"')
+            if not status:      # прежний формат зеркала держал статус строкой таблицы
+                sm = re.search(r"\*\*Status\*\*\s*\|\s*([^|]+)\|", head)
+                status = sm.group(1).strip() if sm else ""
             self.issues[key] = {"summary": summary, "story": story if kind == "US" else None,
-                                "file": f}
+                                "status": status, "file": f}
 
     # ------------------------------------------------------------ рёбра
     def edges(self) -> list:
