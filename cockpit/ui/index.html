@@ -334,6 +334,7 @@ tr:last-child td{border-bottom:0}
         <span class="chip" id="consoleRc">не запускалось</span>
         <div class="spacer"></div>
         <span id="consoleApply"></span>
+        <span id="consoleTask"></span>
         <button class="btn sm" id="clearConsole">Очистить</button>
       </div>
       <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
@@ -397,7 +398,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.35.1";
+const UI_VERSION = "1.35.2";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -483,7 +484,7 @@ function show(view){
   if (view==="commands") renderCommands();
   if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
-  if (view==="console") renderHistory();   // журнал показываем на входе, а не только после запуска
+  if (view==="console"){ renderHistory(); drawTaskButton(); }   // и журнал, и кнопка задания — на входе
   if (view==="about") renderAbout();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
 }
@@ -1038,7 +1039,8 @@ function openRun(cmdName, preFlags=[]){
   RUN = {row:r, flags:new Set(preFlags), args:"", vals:{}};
   // Кнопка в консоли применяет ровно тот набор флагов, который был у предпросмотра.
   // Открыли другую команду — набор сменился, старой кнопке верить нельзя.
-  PENDING_APPLY = null; $("#consoleApply").innerHTML = "";
+  PENDING_APPLY = null; LAST_TASK = ""; drawTaskButton();
+  $("#consoleApply").innerHTML = "";
   drawRun();
   $("#runOverlay").classList.add("on");
   setTimeout(()=>$("#runDrawer").querySelector("button,input")?.focus(),40);
@@ -1169,7 +1171,8 @@ async function fire(apply){
   }
   if (apply) args.push("--apply");
   closeRun(); show("console");
-  PENDING_APPLY = null; $("#consoleApply").innerHTML = "";
+  PENDING_APPLY = null; LAST_TASK = ""; drawTaskButton();
+  $("#consoleApply").innerHTML = "";
   const out = $("#consoleOut"); out.innerHTML="";
   $("#consoleCmd").textContent = r.cmd + " " + args.join(" ");
   $("#consoleRc").textContent = "выполняется…";
@@ -1204,14 +1207,8 @@ async function poll(id, since, label){
         rc===0 ? "ok" : rc===1 ? "warn" : "err");
   // Задание ассистенту команда печатает сама; из прокручиваемой консоли его неудобно
   // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
-  const task = assistantTask(CONSOLE_LINES);
-  if (task){
-    $("#consoleApply").append(el("button",{class:"btn sm primary",onclick:async()=>{
-      try { await navigator.clipboard.writeText(task);
-            toast("Задание скопировано — вставьте в чат с ассистентом проекта","ok"); }
-      catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
-    }},"Скопировать задание ассистенту"));
-  }
+  LAST_TASK = assistantTask(CONSOLE_LINES);
+  drawTaskButton();
   if (rc===0 && PENDING_APPLY && PENDING_APPLY.job===id){
     const line = PENDING_APPLY.line;
     $("#consoleApply").append(el("button",{class:"btn sm gold",
@@ -1234,12 +1231,29 @@ const TASK_EDGE = "─────";
 function assistantTask(lines){
   const start = lines.findIndex(l => l.includes("ЗАДАНИЕ АССИСТЕНТУ"));
   if (start < 0) return "";
-  let from = start, to = lines.length;
+  // Блок обрамлён линейками, и внутри него есть ещё одна — под заголовком. Резать по
+  // ближайшей значит скопировать один заголовок: берём от первой линейки до последней.
+  let from = start;
   while (from > 0 && !lines[from-1].startsWith(TASK_EDGE)) from--;
-  for (let i = start + 1; i < lines.length; i++){
-    if (lines[i].startsWith(TASK_EDGE)){ to = i; break; }
+  if (from > 0) from--;
+  let to = lines.length;
+  for (let i = lines.length - 1; i > start; i--){
+    if (lines[i].startsWith(TASK_EDGE)){ to = i + 1; break; }
   }
   return lines.slice(from, to).join("\n").trim();
+}
+let LAST_TASK = "";          // задание из последнего прогона: переживает уход с вкладки
+function drawTaskButton(){
+  const box = $("#consoleTask");
+  box.innerHTML = "";
+  if (!LAST_TASK) return;
+  box.append(el("button",{class:"btn sm primary",onclick:async()=>{
+    try { await navigator.clipboard.writeText(LAST_TASK);
+          toast("Задание скопировано — вставьте в чат с ассистентом проекта","ok"); }
+    catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
+  }},"Скопировать задание ассистенту"),
+    el("span",{class:"muted",style:"font-size:12px;margin-left:8px"},
+      "строк: " + LAST_TASK.split("\n").length));
 }
 function rcMark(rc){
   return rc === 0 ? {cls:"ok", what:"успех"}
