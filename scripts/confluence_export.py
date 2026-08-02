@@ -40,7 +40,7 @@ import sys
 import urllib.parse
 
 from sources_core import (RestApi, WikiMirror, block, config_text, no_access,
-                          report_stale, scalar, verify)
+                          drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 
 DEFAULT_OUT = "Sources/Confluence"
@@ -68,6 +68,7 @@ def read_config() -> dict:
     cfg["space"] = scalar(conf, "space")
     cfg["roots"] = re.findall(r'^\s*-?\s*page_id:\s*"?(\d+)"?', conf, re.M)
     cfg["out"] = scalar(text, "sources_confluence", DEFAULT_OUT)
+    cfg["jira_url"] = scalar(block(text, "jira:", None), "base_url").rstrip("/")
     return cfg
 
 
@@ -129,6 +130,23 @@ class Api(RestApi):
         hits = data.get("results", [])
         return hits[0] if hits else {}
 
+    def attachments(self, page_id: str) -> dict:
+        """{имя файла: адрес скачивания} — вложения страницы.
+
+        В них живут схемы плагинов: draw.io кладёт рядом `<имя>.drawio`, mermaid —
+        исходник диаграммы. В storage от них остаётся только имя в параметрах макроса.
+        """
+        out, path = {}, f"/rest/api/content/{page_id}/child/attachment?limit=100"
+        while path:
+            data = self.get(path)
+            for r in data.get("results", []):
+                link = (r.get("_links") or {}).get("download", "")
+                if r.get("title") and link:
+                    out[r["title"]] = link
+            nxt = (data.get("_links") or {}).get("next")
+            path = nxt if nxt else None
+        return out
+
     def children(self, page_id: str) -> list:
         out, path = [], f"/rest/api/content/{page_id}/child/page?limit=50"
         while path:
@@ -145,7 +163,11 @@ def _macro_name(tag) -> str:
     return (tag.get("ac:name") or tag.get("data-macro-name") or "").lower()
 
 
-def preprocess(soup, base_url: str, space: str):
+MERMAID_MACROS = ("mermaid", "mermaid-cloud", "macro-mermaid", "mermaidcloud", "mermaid-diagram")
+DRAWIO_MACROS = ("drawio", "drawio-diagram", "drawio-board")
+
+
+def preprocess(soup, base_url: str, space: str, jira_base: str = "", assets: list = None):
     """Макросы и ссылки Confluence → стабильный markdown-совместимый вид.
 
     Всё, что зависит от окружения (id ревизии, время рендера, порядок атрибутов),
@@ -189,11 +211,89 @@ def preprocess(soup, base_url: str, space: str):
             # и выдумывать его нельзя — фиксируем факт, что здесь стоит отчёт.
             tag.replace_with(NavigableString(RY_MARK["report"]))
             continue
+        if name in MERMAID_MACROS:
+            # Диаграмма плагина: исходник лежит в теле макроса, а не в тексте страницы.
+            # Общая ветка выбрасывала макрос целиком — от схемы не оставалось ничего.
+            body = tag.find(re.compile(r"^ac:plain-text-body$"))
+            params = {(p.get("ac:name") or ""): p.get_text(strip=True)
+                      for p in tag.find_all(re.compile(r"^ac:parameter$"))}
+            code = (body.get_text() if body else "").strip()
+            if not code:
+                # облачный вариант держит исходник во вложении — просим его у экспортёра
+                fname = params.get("filename") or params.get("attachment") or ""
+                if fname and assets is not None:
+                    assets.append(fname)
+                code = ""
+            tag.replace_with(NavigableString(
+                f"\n```mermaid\n{code}\n```\n" if code
+                else f"[mermaid: {params.get('filename') or 'диаграмма во вложении'}]"))
+            continue
+        if name in DRAWIO_MACROS:
+            # draw.io держит схему во вложении страницы; в storage — только её имя.
+            # Скачиваем сам XML: картинка без исходника не редактируется и не читается.
+            params = {(p.get("ac:name") or ""): p.get_text(strip=True)
+                      for p in tag.find_all(re.compile(r"^ac:parameter$"))}
+            dname = (params.get("diagramName") or params.get("diagramDisplayName")
+                     or params.get("name") or "")
+            if not dname:
+                tag.decompose()
+                continue
+            if assets is not None:
+                assets.append(dname)
+            tag.replace_with(NavigableString(f"[draw.io: {dname}]"))
+            continue
+        if name == "excerpt":
+            # Врезка, которую цитируют другие страницы: текст остаётся здесь, но пометка
+            # нужна — иначе непонятно, что этот кусок живёт ещё где-то.
+            body = tag.find(re.compile(r"^ac:rich-text-body$"))
+            block = soup.new_tag("blockquote")
+            b = soup.new_tag("strong")
+            b.string = "Врезка (excerpt) — этот текст включают другие страницы:"
+            block.append(b)
+            if body:
+                for child in list(body.children):
+                    block.append(child.extract())
+            tag.replace_with(block)
+            continue
+        if name in ("jira", "jiraissues"):
+            # Ссылка на задачу: в storage лежит только ключ, адрес — в конфиге проекта.
+            # Без обработчика макрос уходил в общую ветку и терялся вместе с ключом.
+            params = {(p.get("ac:name") or ""): p.get_text(strip=True)
+                      for p in tag.find_all(re.compile(r"^ac:parameter$"))}
+            key = params.get("key") or params.get("jqlQuery") or ""
+            if not key:
+                tag.decompose()
+                continue
+            if jira_base and re.fullmatch(r"[A-Z][A-Z0-9]+-\d+", key):
+                a = soup.new_tag("a", href=f"{jira_base}/browse/{key}")
+                a.string = key
+                tag.replace_with(a)
+            else:
+                tag.replace_with(NavigableString(f"JIRA:{key}"))
+            continue
+        if name in ("excerpt-include", "include"):
+            # Врезка чужой страницы: сам текст живёт там, здесь — ссылка на него.
+            # Раньше исчезала целиком, и раздел вроде «Acceptance criteria» оставался пустым.
+            ref = tag.find(re.compile(r"^ri:page$"))
+            title = ref.get("ri:content-title", "") if ref is not None else ""
+            if not title:
+                tag.decompose()
+                continue
+            sp = (ref.get("ri:space-key") or space) if ref is not None else space
+            a = soup.new_tag("a", href=f"{base_url}/display/{urllib.parse.quote(sp)}/"
+                                       f"{urllib.parse.quote(title.replace(' ', '+'), safe='+')}")
+            a.string = title
+            wrap = soup.new_tag("p")
+            wrap.append(NavigableString("Включено со страницы: "))
+            wrap.append(a)
+            tag.replace_with(wrap)
+            continue
         if name in ("toc", "children", "pagetree", "recently-updated", "livesearch"):
             tag.decompose()
             continue
-        if name == "status":
-            title = tag.find(attrs={"ac:name": "title"})
+        if name in ("status", "status-handy"):
+            title = (tag.find(attrs={"ac:name": "title"})
+                     or tag.find(attrs={"ac:name": "Status"}))
             tag.replace_with(NavigableString(f"[Статус: {title.get_text(strip=True)}]"
                                              if title else "[Статус]"))
             continue
@@ -201,9 +301,10 @@ def preprocess(soup, base_url: str, space: str):
             lang = tag.find(attrs={"ac:name": "language"})
             body = tag.find(re.compile(r"^ac:plain-text-body$"))
             code = body.get_text() if body else tag.get_text()
-            pre = soup.new_tag("pre")
-            pre.string = f"```{lang.get_text(strip=True) if lang else ''}\n{code.strip()}\n```"
-            tag.replace_with(pre)
+            # markdownify сам оборачивает <pre> в ограду — своя ограда внутри давала
+            # двойную, и подсветка языка ломалась. Отдаём готовый блок текстом.
+            tag.replace_with(NavigableString(
+                f"\n```{lang.get_text(strip=True) if lang else ''}\n{code.strip()}\n```\n"))
             continue
         if name in ("info", "note", "warning", "tip", "panel", "expand"):
             body = tag.find(re.compile(r"^ac:rich-text-body$"))
@@ -224,19 +325,31 @@ def preprocess(soup, base_url: str, space: str):
         else:
             tag.decompose()
 
-    # ссылки на страницы и вложения
+    # Дата (шорткат «//») хранится атрибутом, а таблицы отдаются очищенным HTML — все
+    # атрибуты там снимаются, и от даты остаётся пустой <time></time>. Разворачиваем в текст.
+    for tm in soup.find_all("time"):
+        tm.replace_with(NavigableString(tm.get("datetime", "") or tm.get_text(strip=True)))
+
+    # ссылки на страницы, вложения и людей
     for link in soup.find_all(re.compile(r"^ac:link$")):
         page = link.find(re.compile(r"^ri:page$"))
         att = link.find(re.compile(r"^ri:attachment$"))
+        user = link.find(re.compile(r"^ri:user$"))
         text_tag = link.find(re.compile(r"^ac:(plain-text-link-body|link-body)$"))
         label = text_tag.get_text(strip=True) if text_tag else ""
         if page is not None:
             title = page.get("ri:content-title", "")
             sp = page.get("ri:space-key", space) or space
             a = soup.new_tag("a", href=f"{base_url}/display/{urllib.parse.quote(sp)}/"
-                                       f"{urllib.parse.quote(title.replace(' ', '+'))}")
+                                       f"{urllib.parse.quote(title.replace(' ', '+'), safe='+')}")
             a.string = label or title
             link.replace_with(a)
+        elif user is not None:
+            # Упоминание (шорткат «@»): в storage только логин или ключ — имени тут нет,
+            # и выдумывать его нельзя. Без обработчика ячейка «Автор изменений» пустела.
+            who = (user.get("ri:username") or user.get("ri:account-id")
+                   or user.get("ri:userkey") or "")
+            link.replace_with(NavigableString(label or (f"@{who}" if who else "@")))
         elif att is not None:
             link.replace_with(NavigableString(label or att.get("ri:filename", "вложение")))
         else:
@@ -293,9 +406,11 @@ def build_converter():
     return AuroraConverter(heading_style="ATX", bullets="-", strip=["script", "style"])
 
 
-def to_markdown(storage_html: str, base_url: str, space: str) -> str:
+def to_markdown(storage_html: str, base_url: str, space: str, jira_base: str = "",
+                assets: list = None) -> str:
     from bs4 import BeautifulSoup
-    soup = preprocess(BeautifulSoup(storage_html, "html.parser"), base_url, space)
+    soup = preprocess(BeautifulSoup(storage_html, "html.parser"), base_url, space,
+                      jira_base, assets)
     md = build_converter().convert(str(soup))
     md = md.replace("\r\n", "\n").replace("\r", "\n")
     md = re.sub(r"[ \t]+\n", "\n", md)
@@ -380,12 +495,51 @@ class Exporter(WikiMirror):
 
     banner = "Confluence sync state — генерируется confluence_export.py, не править руками"
 
-    def __init__(self, api: Api, out: str, base_url: str, space: str, force: bool):
+    def __init__(self, api: Api, out: str, base_url: str, space: str, force: bool,
+                 jira_base: str = ""):
         super().__init__(out)
         self.api, self.base_url = api, base_url
-        self.space, self.force = space, force
+        self.space, self.force, self.jira_base = space, force, jira_base
         self.written = self.skipped = self.failed = 0
-        self.ry_defines = self.ry_links = 0
+        self.ry_defines = self.ry_links = self.assets_saved = 0
+
+    def save_assets(self, page_id: str, rel: str, names: list) -> str:
+        """Скачать вложения схем рядом со страницей и вернуть ссылки на них.
+
+        Картинку схемы Confluence отдаёт при показе, а в зеркале от неё остаётся имя.
+        Исходник (`.drawio`, `.mmd`) — единственное, что можно прочитать и поправить
+        без самого Confluence, поэтому кладём именно его: `<страница>_assets/<имя>`.
+        """
+        try:
+            have = self.api.attachments(page_id)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ! вложения {page_id}: {e}", file=sys.stderr)
+            return ""
+        base = os.path.splitext(os.path.basename(rel))[0]
+        folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
+        lines, saved = [], 0
+        for name in sorted(set(names)):
+            # плагин пишет имя схемы, файл лежит с расширением: пробуем то и другое
+            hit = next((h for h in (name, name + ".drawio", name + ".xml", name + ".mmd")
+                        if h in have), None)
+            if not hit:
+                lines.append(f"- схема `{name}` — вложения с таким именем на странице нет")
+                continue
+            try:
+                blob = self.api.fetch(have[hit])
+            except Exception as e:  # noqa: BLE001
+                print(f"  ! {hit}: {e}", file=sys.stderr)
+                continue
+            dest = os.path.join(self.out, folder, hit)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(blob)
+            self.assets_saved += 1
+            saved += 1
+            lines.append(f"- [{hit}]({base}_assets/{urllib.parse.quote(hit)})")
+        if not lines:
+            return ""
+        return "## Схемы страницы\n\n" + "\n".join(lines)
 
     def walk(self, page_id: str, ancestors: list) -> None:
         try:
@@ -408,7 +562,10 @@ class Exporter(WikiMirror):
         self.ry_defines += len(defines)
         self.ry_links += len(links)
         body = data.get("body", {}).get("storage", {}).get("value", "")
-        md = to_markdown(body, self.base_url, self.space)
+        assets: list = []
+        md = to_markdown(body, self.base_url, self.space, self.jira_base, assets)
+        if assets:
+            md += "\n\n" + self.save_assets(page_id, rel, assets)
         meta = {"id": page_id, "title": title, "space": data["space"]["key"],
                 "ry_defines": defines, "ry_links": links,
                 "version": version,
@@ -470,7 +627,7 @@ def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Expo
     for r, parent in dropped:
         print(f"  ⚠️  корень {r} уже входит в корень {parent} — пропущен, "
               "иначе страница легла бы вторым файлом в корень зеркала")
-    exp = Exporter(api, out, cfg["base_url"], cfg["space"], force)
+    exp = Exporter(api, out, cfg["base_url"], cfg["space"], force, cfg.get("jira_url", ""))
     for root in roots:
         exp.walk(root, [])
     return exp
@@ -522,6 +679,8 @@ def main() -> int:
         print(f"Выправлен регистр папок ({len(exp.recased)}) — страницы переименовали в источнике:")
         for r in exp.recased[:10]:
             print(f"  - {r}")
+    if exp.assets_saved:
+        print(f"Схемы плагинов сохранены рядом со страницами: {exp.assets_saved}")
     if exp.ry_defines or exp.ry_links:
         print(f"Requirement Yogi: объявлено ключей {exp.ry_defines}, "
               f"ссылок на чужие ключи {exp.ry_links}")
@@ -531,7 +690,9 @@ def main() -> int:
         report_stale("страниц больше нет или они переехали", stale, out)
         if a.prune:
             gone = exp.prune(stale)
-            print(f"Удалено: {gone} (карточки с `source:` на них найдёт aurora_stats.py)")
+            empty = drop_empty_dirs(out)
+            print(f"Удалено: {gone} (карточки с `source:` на них найдёт aurora_stats.py)"
+                  + (f" · убрано опустевших папок: {empty}" if empty else ""))
         else:
             print("Убрать: повторите с --prune")
     print(f"\nСостояние: {os.path.join(out, STATE)}")

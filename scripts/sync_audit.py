@@ -59,6 +59,22 @@ def disk_files(root: str) -> dict:
     return out
 
 
+def foreign_files(root: str) -> list:
+    """Файлы зеркала, которые не страницы и не служебное: `.md_COLLISION`, `.bak`, копии.
+
+    Зеркало — машинная выгрузка, и всё, что в нём не выгружено синком, — след прежних
+    инструментов. Пока аудит смотрел только на `.md`, такой файл был невидим, а папка с
+    ним читалась человеком как дубль каталога, переживший `--force --prune`.
+    """
+    out = []
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            if f.startswith(".") or f.endswith(".md") or SERVICE_RE.search(f):
+                continue
+            out.append(nfc(os.path.relpath(os.path.join(dirpath, f), root).replace("\\", "/")))
+    return sorted(out)
+
+
 def parse_wiki_state(root: str, state_name: str):
     """→ (записи с полным путём, записи только с page_id (путь обрезан), дата, нечитаемые строки).
 
@@ -206,14 +222,27 @@ def audit_wiki(src: dict, stale_days: int, out: list, stats: dict) -> int:
     if truncated:
         out.append(f"- ⚠️ синк пишет обрезанные пути ({len(truncated)} строк) — состояние теряет "
                    "проверяемость; синк-скилл должен писать полный путь от корня зеркала")
+    foreign = foreign_files(root)
     out.append(f"- MISSING: **{len(missing)}** · MOVED: **{len(moved)}** · ORPHAN: **{len(orphans)}** "
-               f"· CASE: **{len(recase)}** · COLLISION: **{len(collisions)}**\n")
+               f"· CASE: **{len(recase)}** · COLLISION: **{len(collisions)}** "
+               f"· ПОСТОРОННИЕ: **{len(foreign)}**\n")
     stats[src["id"]] = {"kind": "wiki", "path": root, "missing": len(missing),
                         "orphan": len(orphans), "moved": len(moved), "case": len(recase),
-                        "collision": len(collisions), "state_date": state_date,
-                        "age_days": days_since(state_date)}
+                        "collision": len(collisions), "foreign": len(foreign),
+                        "state_date": state_date, "age_days": days_since(state_date)}
 
-    problems = len(missing) + len(orphans) + len(collisions) + len(moved) + len(recase) + bad
+    problems = (len(missing) + len(orphans) + len(collisions) + len(moved) + len(recase)
+                + len(foreign) + bad)
+    if foreign:
+        out.append(f"### ПОСТОРОННИЕ — файлы, которых синк не выгружал ({len(foreign)})\n")
+        out.append("Следы прежних инструментов: `.md_COLLISION`, `.bak`, копии. Зеркало — "
+                   "машинная выгрузка, такому в нём не место; папка с ними читается как "
+                   "дубль каталога. Убрать: `sync:confluence --prune`.\n")
+        for f in foreign[:20]:
+            out.append(f"- `{f}`")
+        if len(foreign) > 20:
+            out.append(f"- … ещё {len(foreign) - 20}")
+        out.append("")
     if recase:
         out.append(f"### CASE — путь отличается только регистром ({len(recase)})\n")
         out.append("Страницу переименовали в источнике, а файловая система оставила папку "

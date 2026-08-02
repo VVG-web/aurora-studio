@@ -1724,6 +1724,101 @@ def test_kb_graph_builds_links_by_ry_and_story_number(tmp: Path):
 
 
 @test
+def test_confluence_export_keeps_macro_content(tmp: Path):
+    """Данные из макросов доезжают до зеркала: дата, автор, задача, врезка.
+
+    Все четыре лежат не в тексте, а в атрибутах и параметрах, и общая ветка выбрасывала
+    их вместе с макросом. На живой странице это выглядело как «поля пустые»: дата
+    изменения, автор, ссылка на задачу и целый раздел Acceptance criteria.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import confluence_export as ce
+    storage = (
+        '<table><tbody>'
+        '<tr><th><p>Дата</p></th><td><p><time datetime="2026-01-15"/></p></td></tr>'
+        '<tr><th><p>Автор</p></th><td><p>'
+        '<ac:link><ri:user ri:username="v.petrov"/></ac:link></p></td></tr>'
+        '<tr><th><p>Задача</p></th><td><p>'
+        '<ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">PRJ-1895</ac:parameter>'
+        '</ac:structured-macro></p></td></tr></tbody></table>'
+        '<h1>Acceptance criteria</h1>'
+        '<ac:structured-macro ac:name="excerpt-include"><ac:parameter ac:name="">'
+        '<ac:link><ri:page ri:content-title="AC-1.1 Приём"/></ac:link>'
+        '</ac:parameter></ac:structured-macro>'
+        '<p><ac:structured-macro ac:name="status-handy">'
+        '<ac:parameter ac:name="Status">Утверждена</ac:parameter></ac:structured-macro></p>')
+    md = ce.to_markdown(storage, "https://c.example.com", "SP", "https://jira.example.com")
+    assert "2026-01-15" in md, f"дата из макроса потеряна:\n{md}"
+    assert "@v.petrov" in md, f"упоминание пользователя потеряно:\n{md}"
+    assert "PRJ-1895" in md, f"ссылка на задачу потеряна:\n{md}"
+    assert "AC-1.1 Приём" in md and "Включено со страницы" in md, \
+        f"врезка чужой страницы потеряна — раздел остаётся пустым:\n{md}"
+    assert "[Статус: Утверждена]" in md, f"статус потерян:\n{md}"
+    assert md == ce.to_markdown(storage, "https://c.example.com", "SP",
+                                "https://jira.example.com"), "конвертация недетерминирована"
+    # пробел в заголовке страницы кодируется плюсом, а не %2B: иначе ссылка ведёт в никуда
+    assert "%2B" not in md, f"ссылка на страницу перекодирована:\n{md}"
+
+
+@test
+def test_confluence_export_keeps_plugin_diagrams(tmp: Path):
+    """Диаграммы плагинов доезжают: mermaid — текстом, draw.io — исходником во вложении."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import confluence_export as ce
+    st = ('<ac:structured-macro ac:name="mermaid"><ac:plain-text-body>'
+          'graph TD; A--&gt;B;</ac:plain-text-body></ac:structured-macro>'
+          '<ac:structured-macro ac:name="drawio">'
+          '<ac:parameter ac:name="diagramName">Схема-входа</ac:parameter>'
+          '</ac:structured-macro>'
+          '<ac:structured-macro ac:name="excerpt"><ac:rich-text-body>'
+          '<p>Печатная форма</p></ac:rich-text-body></ac:structured-macro>')
+    assets = []
+    md = ce.to_markdown(st, "https://c.example.com", "SP", "", assets)
+    assert "```mermaid" in md and "graph TD" in md, f"диаграмма mermaid потеряна:\n{md}"
+    assert md.count("```") == 2, f"ограда кода задвоилась:\n{md}"
+    assert assets == ["Схема-входа"], f"исходник draw.io не запрошен: {assets}"
+    assert "Врезка (excerpt)" in md and "Печатная форма" in md, \
+        f"врезка потеряна или не помечена:\n{md}"
+
+    # блок кода не должен обрастать второй оградой — это ломало подсветку в зеркале
+    code = ('<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql'
+            '</ac:parameter><ac:plain-text-body>SELECT 1;</ac:plain-text-body>'
+            '</ac:structured-macro>')
+    assert ce.to_markdown(code, "https://c.example.com", "SP").strip() == \
+        "```sql\nSELECT 1;\n```"
+
+
+@test
+def test_mirror_cleanup_sees_foreign_files(tmp: Path):
+    """Чистка зеркала видит не только `.md`.
+
+    Файлы вроде `Имя.md_COLLISION` от прежних синк-скиллов пережили и `--force`, и
+    `--prune`, потому что чистка смотрела на расширение. Папка с ними читалась человеком
+    как дубль каталога, а аудит молчал: зеркало «чистое».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import sources_core as sc
+    import sync_audit as sa
+    root = tmp / "mirror"
+    (root / "Раздел").mkdir(parents=True)
+    (root / "Раздел/Стр.md").write_text("---\npage_id: 1\n---\nтекст", encoding="utf-8")
+    (root / "Раздел/Стр.md_COLLISION").write_text("мусор", encoding="utf-8")
+    (root / "Раздел/.DS_Store").write_text("", encoding="utf-8")
+    (root / "sync_state.md").write_text("состояние", encoding="utf-8")
+
+    m = sc.WikiMirror(str(root))
+    extra = m.extra_files(["Раздел/Стр.md"])
+    assert extra == ["Раздел/Стр.md_COLLISION"], f"мусор невидим для чистки: {extra}"
+    assert sa.foreign_files(str(root)) == ["Раздел/Стр.md_COLLISION"], "аудит его не показывает"
+
+    # после чистки опустевший каталог уходит: пустая папка читается как дубль
+    (root / "Пусто/Вложено").mkdir(parents=True)
+    (root / "Пусто/Вложено/.DS_Store").write_text("", encoding="utf-8")
+    assert sc.drop_empty_dirs(str(root)) == 2, "опустевшие каталоги остались"
+    assert not (root / "Пусто").exists() and (root / "Раздел").exists()
+
+
+@test
 def test_confluence_export_keeps_requirement_yogi_keys(tmp: Path):
     """Ключи Requirement Yogi и ссылки на них остаются в зеркале.
 
