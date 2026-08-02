@@ -1218,8 +1218,8 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     assert "runs" in ck.health(str(root)), "журнал не попадает в /api/health"
 
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    assert "function assistantTask" in ui and "Скопировать задание ассистенту" in ui, \
-        "задание ассистенту из консоли нечем забрать в буфер"
+    assert "function assistantTasks" in ui and "Партия " in ui, \
+        "задания ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
     assert 'if (view==="console"){ renderHistory(); drawTaskButton(); }' in ui, \
         "на входе в «Консоль» не восстанавливаются журнал и кнопка задания"
@@ -1575,10 +1575,15 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
     # задание печатается и без --partition: за планом идут ровно за ним
     plain = run("build_plan.py", cwd=root).stdout
     assert "ЗАДАНИЕ АССИСТЕНТУ" in plain, f"план без задания:\n{plain[-600:]}"
-    assert "задание на следующую партию" in plain, "не сказано, на какую партию задание"
+    assert "ПАРТИЯ 1" in plain, "не сказано, на какую партию задание"
+    assert "🆕 — движок его ещё не разбирал" in plain, "значки в плане не подписаны"
+
+    # заданий печатается несколько — по одному на ближайшие партии
+    assert plain.count("ЗАДАНИЕ АССИСТЕНТУ") >= 1, "заданий нет вовсе"
 
     out = run("build_plan.py", "--partition", "1", cwd=root).stdout
     assert "ЗАДАНИЕ АССИСТЕНТУ" in out, out[:400]
+    assert out.count("ЗАДАНИЕ АССИСТЕНТУ") == 1, "с --partition печатается лишнее"
     assert "Раздели" not in out and "Разбери партию 1" in out, "нет самой формулировки задачи"
     assert "Док-0.md" in out, "в задании нет списка файлов партии"
     assert "status: imported" in out and "build_plan.py --done" in out, \
