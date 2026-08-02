@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -56,8 +57,13 @@ SKINS_DIR = os.path.join(KIT, "cockpit", "skins")
 def skins() -> list:
     """Оформление вынесено в файлы: положил свой .css в cockpit/skins/ — он в списке.
 
-    Имя и описание берутся из шапки самого файла (`/* name: … about: … */`), чтобы
-    добавление скина не требовало править ни сервер, ни панель.
+    Имя, описание и версия берутся из шапки самого файла (`/* name: … for: … about: … */`),
+    чтобы добавление скина не требовало править ни сервер, ни панель.
+
+    `for:` — версия ядра, под которую скин собран. Скин красит то, чего в панели могло
+    ещё не быть: новый элемент выйдет в цветах по умолчанию, и понять это по внешнему
+    виду нельзя. Если версия не объявлена, считаем скин сегодняшним — так ведут себя
+    все скины, написанные до появления поля.
     """
     out = []
     if not os.path.isdir(SKINS_DIR):
@@ -69,7 +75,9 @@ def skins() -> list:
         name = (re.search(r"name:\s*(.+)", head) or [None, f[:-4]])[1].strip()
         about = (re.search(r"about:\s*([\s\S]*?)\*/", head) or [None, ""])[1]
         about = " ".join(x.strip() for x in about.splitlines() if x.strip())
-        out.append({"id": f[:-4], "name": name, "about": about})
+        ver = (re.search(r"for:\s*([0-9][0-9.]*)", head) or [None, kit_version()])[1].strip()
+        out.append({"id": f[:-4], "name": name, "about": about, "for": ver,
+                    "behind": minor(ver) != minor(kit_version())})
     return out
 
 
@@ -398,7 +406,71 @@ def health(project: str) -> dict:
             if name and nums:
                 mirrors[name] = {"missing": int(nums.group(1)), "orphan": int(nums.group(2))}
     return {"stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
-            "sources": sources(project)}
+            "sources": sources(project), "runs": read_runlog(project)}
+
+
+# ------------------------------------------------------- журнал запусков проекта
+
+RUNLOG = os.path.join(".opencode", "run_log.md")
+RUNLOG_HEAD = """# Журнал запусков
+
+Кто и когда последний раз запускал команду Авроры в этом проекте. Файл лежит в git
+рядом с движком, поэтому ответ на «когда обновляли зеркала» есть у всей команды, а не
+только у того, у кого открыта вкладка панели.
+
+Пишет панель (Cockpit) после каждого запуска — по строке на команду, последний прогон.
+Запуски из терминала сюда не попадают: у них нет общей точки, через которую проходят все
+команды. Код возврата: 0 — сделано, 1 — команда отработала и нашла, что чинить,
+2 и выше — не отработала.
+
+| Команда | Когда (UTC) | Код | Ядро | Кто | Строка запуска |
+|---|---|---|---|---|---|
+"""
+
+
+def read_runlog(project: str) -> dict:
+    """Журнал → {команда: запись}. Пустой файл, чужие правки и мусор — просто нет записи."""
+    runs = {}
+    for line in read_text(os.path.join(project, RUNLOG), limit=200_000).splitlines():
+        c = [x.strip() for x in line.strip().strip("|").split("|")] if line.startswith("|") else []
+        if len(c) != 6 or not c[0] or c[0] in ("Команда", "---") or set(c[0]) == {"-"}:
+            continue
+        runs[c[0]] = {"at": c[1], "rc": int(c[2]) if c[2].lstrip("-").isdigit() else None,
+                      "kit": c[3], "who": c[4], "line": c[5]}
+    return runs
+
+
+def who(project: str) -> str:
+    """Имя из git этого проекта — тем же, кем подписаны коммиты рядом."""
+    try:
+        p = subprocess.run(["git", "config", "user.name"], cwd=project,
+                           capture_output=True, text=True, timeout=5)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    except Exception:
+        pass
+    return getpass.getuser()
+
+
+def write_runlog(project: str, cmd: str, rc: int, line: str) -> None:
+    """Обновить строку команды. Порядок — по имени команды: так дифф остаётся коротким.
+
+    Пишем последний запуск, а не всю хронологию: файл в git, и журнал, растущий на строку
+    от каждого прогона, превратится в источник конфликтов при слиянии веток.
+    """
+    runs = read_runlog(project)
+    runs[cmd] = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rc": rc,
+                 "kit": kit_version(), "who": who(project), "line": line}
+    body = "".join(
+        f"| {c} | {r['at']} | {r['rc']} | {r['kit']} | {r['who']} | {r['line']} |\n"
+        for c, r in sorted(runs.items()))
+    path = os.path.join(project, RUNLOG)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(RUNLOG_HEAD + body)
+    except OSError:
+        pass    # журнал — удобство, а не результат работы: не записался, так не записался
 
 
 def sources(project: str) -> dict:
@@ -493,10 +565,11 @@ def start_job(project: str, cmd: str, extra: list) -> str:
             job["rc"] = p.returncode
         except Exception as e:
             job["out"].append(f"cockpit: {e}")
-            job["rc"] = 1
+            job["rc"] = 2       # команда не отработала вовсе — это не «нашла, что чинить»
         finally:
             job["done"] = True
             job["finished"] = time.time()
+            write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip())
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id

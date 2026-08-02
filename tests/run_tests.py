@@ -1183,6 +1183,77 @@ def test_cockpit_apply_is_reachable(tmp: Path):
 
 
 @test
+def test_cockpit_runlog_lives_in_the_project(tmp: Path):
+    """Журнал запусков — файл проекта, а не память вкладки.
+
+    «Когда последний раз обновляли зеркала» спрашивает вся команда, а ответ, лежащий в
+    localStorage одного браузера, отвечает только одному человеку. Поэтому: файл в
+    `.opencode/`, версия ядра и автор в записи, и чтение его панелью обратно.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+    root = make_project(tmp)
+    ck.write_runlog(str(root), "sync:jira", 0, "sync:jira --force")
+    ck.write_runlog(str(root), "kit:doctor", 1, "kit:doctor")
+    log = (root / ".opencode/run_log.md")
+    assert log.is_file(), "журнал не лёг в проект — команда его не увидит"
+    runs = ck.read_runlog(str(root))
+    assert set(runs) == {"sync:jira", "kit:doctor"}, runs
+    assert runs["kit:doctor"]["rc"] == 1, "код возврата потерян"
+    assert runs["sync:jira"]["kit"] == ck.kit_version(), \
+        "в записи нет версии ядра — непонятно, на чём команда отработала"
+    assert runs["sync:jira"]["who"], "непонятно, кто запускал"
+
+    # повторный запуск заменяет строку, а не копит их: файл едет в git и не должен
+    # превращаться в источник конфликтов при слиянии веток
+    ck.write_runlog(str(root), "sync:jira", 2, "sync:jira")
+    assert ck.read_runlog(str(root))["sync:jira"]["rc"] == 2
+    rows = [l for l in log.read_text(encoding="utf-8").splitlines()
+            if l.startswith("| sync:jira |")]
+    assert len(rows) == 1, f"журнал копит дубли вместо строки на команду: {rows}"
+
+    # панель отдаёт журнал вместе со здоровьем — иначе отметкам у команд неоткуда взяться
+    assert "runs" in ck.health(str(root)), "журнал не попадает в /api/health"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
+    assert 'if (view==="console") renderHistory();' in ui, \
+        "журнал рисуется только после запуска: открыть раздел и увидеть его нельзя"
+    assert ui.count("lastRun(") >= 3, \
+        "отметка последнего запуска стоит не везде: команды, сценарии, журнал"
+
+
+@test
+def test_cockpit_skins_declare_supported_core(tmp: Path):
+    """Скин красит то, чего в панели могло ещё не быть — значит, обязан назвать версию."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+    for s in ck.skins():
+        head = ck.skin_css(s["id"])[:400]
+        assert "for:" in head, f"скин {s['id']} не объявляет версию ядра"
+        assert s["for"], f"скин {s['id']}: версия не разобралась"
+        assert not s["behind"], \
+            f"скин {s['id']} собран под {s['for']}, а ядро {ck.kit_version()}"
+
+
+@test
+def test_cockpit_marks_command_outcome(tmp: Path):
+    """Код 1 — это «нашла, что чинить», а не «сломалась»: красить их одинаково — врать.
+
+    doctor с ошибками и аудит с расхождениями отрабатывают штатно и возвращают 1;
+    не пустивший git-гейт возвращает 2. Отметка у команды должна их различать.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    m = re.search(r"function rcMark\(rc\)\{(.*?)\n\}", ui, re.S)
+    assert m, "нет единой трактовки кода возврата — цвета разъедутся по экранам"
+    body = m.group(1)
+    assert '"ok"' in body and '"warn"' in body and '"bad"' in body, \
+        "исходов по-прежнему два: «успех» и «всё плохо»"
+    assert "rc === 1" in body, "код 1 не отделён от настоящего сбоя"
+    assert "lastRun(r.cmd)" in ui, "в списке команд не видно итога последнего запуска"
+
+
+@test
 def test_cockpit_can_recount_metrics(tmp: Path):
     """Базу правят не только команды панели — числа нужно уметь пересчитать и вручную."""
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
