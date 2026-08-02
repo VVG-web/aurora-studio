@@ -1571,6 +1571,60 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
 
 
 @test
+def test_kb_moc_gives_every_card_a_way_in(tmp: Path):
+    """Карта содержания существует ради того, чтобы вход был у каждой карточки.
+
+    Карточка, на которую ниоткуда нет ссылки, знанием не работает: её не найдут ни по
+    связям, ни глазами. Поэтому: группы из объявленных правил, «Разное» для не попавших
+    никуда и отдельная карта брошенных.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    for section in ("Glossary", "Concepts", "Roles", "MOC"):
+        (kb / section).mkdir(parents=True, exist_ok=True)
+    def card(section, name, **fm):
+        head = "".join(f"{k}: {v}\n" for k, v in fm.items())
+        (kb / section / f"{name}.md").write_text(
+            f'---\ntitle: "{name}"\n{head}status: imported\n---\n\nтекст\n', encoding="utf-8")
+    card("Glossary", "ДОП", type="glossary")
+    card("Concepts", "Приём", type="concept")
+    card("Roles", "Аналитик", type="role")
+    (kb / "Ничьё.md").write_text(          # ни типа, ни раздела с правилом
+        '---\ntitle: "Ничьё"\nstatus: imported\n---\n\nтекст\n', encoding="utf-8")
+    (kb / "Concepts/Приём.md").write_text(
+        '---\ntitle: "Приём"\ntype: concept\nstatus: imported\n---\n\nсм. [[ДОП]]\n',
+        encoding="utf-8")
+
+    dry = run("kb_moc.py", cwd=root)
+    assert "Термины и определения | 1" in dry.stdout, dry.stdout[:600]
+    assert "Роли | 1" in dry.stdout, "группа ролей не собралась"
+    assert "Разное | 1" in dry.stdout, "карточка без типа и раздела не попала в «Разное»"
+    assert not list((kb / "MOC").glob("*.md")), "dry-run записал карты"
+
+    run("kb_moc.py", "--apply", cwd=root)
+    terms = (kb / "MOC/Термины-и-определения.md").read_text(encoding="utf-8")
+    assert "[[ДОП|ДОП]]" in terms and "ФАЙЛ ГЕНЕРИРУЕТСЯ" in terms, terms[:400]
+    lost = (kb / "MOC/Брошенные.md").read_text(encoding="utf-8")
+    assert "Ничьё" in lost and "Аналитик" in lost, "брошенные не собраны"
+    assert "[[ДОП|ДОП]]" not in lost, "на ДОП ссылается «Приём» — она не брошенная"
+
+    # поиск кандидатов: скопление по метке и узел, на который все ссылаются
+    for i in range(9):
+        (kb / "Concepts" / f"Норма-{i}.md").write_text(
+            f'---\ntitle: "Норма-{i}"\ntype: concept\ntags: [regulation]\n'
+            "status: imported\n---\n\nсм. [[ДОП]]\n", encoding="utf-8")
+    ideas = run("kb_moc.py", "--suggest", cwd=root).stdout
+    assert "метка: regulation (9)" in ideas, f"скопление по метке не найдено:\n{ideas}"
+    assert "tag:regulation" in ideas, "нет готовой строки для moc_groups.txt"
+
+    # рукотворную карту генератор не трогает: у неё нет шапки «ФАЙЛ ГЕНЕРИРУЕТСЯ»
+    (kb / "MOC/Роли.md").write_text("# Роли\n\nсобрано руками\n", encoding="utf-8")
+    out = run("kb_moc.py", "--apply", "--allow-dirty", cwd=root).stdout
+    assert "написан руками" in out, out[-400:]
+    assert "собрано руками" in (kb / "MOC/Роли.md").read_text(encoding="utf-8")
+
+
+@test
 def test_kb_graph_writes_links_into_cards(tmp: Path):
     """Связь живёт в зеркале, а работать должна в базе: `related:` выводится из графа."""
     root = make_project(tmp, git=True)

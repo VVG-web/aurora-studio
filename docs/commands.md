@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.28.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.31.1**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -46,6 +46,7 @@
 | `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --dupes --merge --apply --allow-dirty --report --root` | 1.3.0 |
 | `kb:retire` | убрать из карточек поля, выведенные из схемы (audience, confirmed_by; статус canonical → verified) | скрипт | `kb_fix.py --retire` | `--links --homoglyphs --frontmatter --dupes --all --merge --apply --allow-dirty --report --root` | 1.10.0 |
 | `kb:dedupe` | двойники: поиск и слияние (`--merge`) — тот же скрипт, другой режим | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --all --merge --apply --allow-dirty --report --root` | 1.3.0 |
+| `kb:moc` (`moc`) | карты содержания по группировкам (термины, понятия, роли, данные…) и список брошенных карточек | скрипт | `kb_moc.py` | `--apply --suggest --orphans --allow-dirty` | 1.32.0 |
 | `kb:index` (`index`) | регенерация `_index.md` разделов; рукотворные оглавления не трогает | скрипт | `kb_index.py` | `--section --root-index --apply --force` | 1.9.4 |
 | `kb:scrub` (`scrub`) | персональные данные: найти и закрыть маркерами; режим — `privacy.scrub` | скрипт | `kb_scrub.py` `[path]` | `--include-raw --force --mask-contacts --apply --allow-dirty` | 1.9.6 |
 | `kb:schema` | версия схемы карточек (`schema_version`) и перевод базы между версиями по объявленной цепочке | скрипт | `kb_schema.py` | `--to --apply --allow-dirty --root` | 1.12.0 |
