@@ -22,6 +22,13 @@
 основание записывается в саму карточку (`verified_basis`), и отвечает за решение тот, кто
 запустил команду. Ошиблись — `git revert`, основание видно в каждой карточке.
 
+Приёмка по статусу задачи (`--by-jira`) опирается на то, как устроена работа: страница
+истории привязана к задаче Jira макросом или номером в заголовке, а задача, дошедшая до
+разработки и тестирования, уже прошла разбор аналитика и приёмку постановки. Если у
+страницы **ровно одна** задача — её статус и есть основание: `trust_statuses` из конфига
+дают `verified`, `assumption_statuses` — `draft` с пометкой «это ещё предположение».
+Две задачи на страницу — не основание ни для чего: непонятно, по какой судить.
+
 `verified` — верхний статус базы. Ступени «canonical со вторым человеком» больше нет:
 она была размечена в схеме, но за всё время не использована ни разу ни в одном проекте
 (1.10.0). Кто проверил и когда — видно из `owner` и `verified`.
@@ -55,6 +62,46 @@ def all_names(root: str) -> set:
                         if re.search(r"aliases:.*", text) else []:
                     names.add(a)
     return names
+
+
+def config_statuses(key: str) -> set:
+    """Списки статусов из `aurora.config.yaml` (`atlassian.jira.<key>`)."""
+    cfg = "aurora.config.yaml"
+    if not os.path.isfile(cfg):
+        return set()
+    m = re.search(rf"^\s*{key}\s*:\s*\[([^\]]*)\]",
+                  open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
+    return {x.strip().strip("\"'").casefold() for x in m.group(1).split(",")
+            if x.strip()} if m else set()
+
+
+def jira_verdicts(conf_root: str, jira_root: str) -> dict:
+    """{путь страницы Confluence: (вердикт, ключ задачи, статус)}.
+
+    Вердикт берётся только там, где у истории ровно одна задача: две задачи на одну
+    страницу — это не «две причины верить», а неопределённость.
+    """
+    trust = config_statuses("trust_statuses")
+    guess = config_statuses("assumption_statuses")
+    if not trust and not guess:
+        return {}
+    import kb_graph as G
+    g = G.Graph()
+    g.read_confluence(conf_root)
+    g.read_jira(jira_root)
+    out = {}
+    for _num, hub in g.stories().items():
+        if len(hub["issues"]) != 1 or not hub["us"]:
+            continue
+        key = hub["issues"][0]
+        status = (g.issues[key]["status"] or "").strip()
+        low = status.casefold()
+        verdict = "verified" if low in trust else "draft" if low in guess else ""
+        if not verdict:
+            continue
+        for rel in hub["us"]:
+            out[f"{conf_root}/{rel}"] = (verdict, key, status)
+    return out
 
 
 def source_updated(src: str) -> date | None:
@@ -101,6 +148,8 @@ def main() -> int:
     ap.add_argument("--months", type=int, default=3, help="срок годности, месяцев (по умолчанию 3)")
     ap.add_argument("--status", default="verified", choices=["verified"],
                     help="верхний статус базы; других ступеней нет")
+    ap.add_argument("--by-jira", action="store_true",
+                    help="решение по статусу связанной задачи (списки — в конфиге проекта)")
     ap.add_argument("--source-older-than", type=int, metavar="MONTHS", dest="older",
                     help="только карточки, чей источник не менялся дольше N месяцев")
     ap.add_argument("--refresh", action="store_true", help="обновить уже проверенные (продлить срок)")
@@ -120,6 +169,16 @@ def main() -> int:
         return 1
     names = all_names(ROOT)
     review_by = (TODAY + timedelta(days=30 * a.months)).isoformat()
+
+    verdicts = {}
+    if a.by_jira:
+        verdicts = jira_verdicts("Sources/Confluence", "Sources/JIRA")
+        if not verdicts:
+            print("kb_verify: нечего решать по Jira. Проверьте, что в aurora.config.yaml "
+                  "заданы atlassian.jira.trust_statuses / assumption_statuses и что зеркала "
+                  "выгружены.", file=sys.stderr)
+            return 1
+        print(f"Историй с ровно одной задачей и известным статусом: {len(verdicts)}\n")
 
     basis = ""
     if a.older:
@@ -143,7 +202,7 @@ def main() -> int:
         if status == "deprecated":
             skipped.append((path, "deprecated — это история"))
             continue
-        if status in TRUSTED and not a.refresh:
+        if status in TRUSTED and not a.refresh and not a.by_jira:
             skipped.append((path, f"уже {status} (продлить: --refresh)"))
             continue
         if not (fm.get("source") or "").strip():
@@ -153,6 +212,26 @@ def main() -> int:
         if broken:
             skipped.append((path, f"битые ссылки: {', '.join(broken[:3])}"))
             continue
+        verdict = ""
+        if a.by_jira:
+            src = (fm.get("source") or "").strip().strip('"')
+            hit = verdicts.get(src.replace("\\", "/"))
+            if not hit:
+                skipped.append((path, "нет истории с ровно одной задачей за этим источником"))
+                continue
+            verdict, jkey, jstatus = hit
+            if verdict == "draft":
+                # Не знание, а предположение: работа по задаче ещё не начиналась.
+                # Понижаем доверие явно, чтобы карточка не выглядела проверенной.
+                new_head = set_field(head, "status", "draft")
+                new_head = set_field(new_head, "trust", "low")
+                new_head = set_field(new_head, "verified_basis",
+                                     f'"задача {jkey} в статусе {jstatus} — это ещё '
+                                     f'предположение, а не знание"')
+                new_head = set_field(new_head, "updated", TODAY.isoformat())
+                ready.append((path, "---" + new_head + rest))
+                continue
+
         src_date = None
         if a.older:
             src_date = source_updated((fm.get("source") or "").strip().strip('"'))
@@ -168,6 +247,11 @@ def main() -> int:
         new_head = set_field(new_head, "verified", TODAY.isoformat())
         new_head = set_field(new_head, "review_by", review_by)
         new_head = set_field(new_head, "updated", TODAY.isoformat())
+        if verdict == "verified":
+            new_head = set_field(new_head, "trust", "high")
+            new_head = set_field(new_head, "verified_basis",
+                                 f'"задача {jkey} в статусе {jstatus}: постановка прошла '
+                                 f'разбор и приёмку"')
         if basis:
             # основание доверия записывается в карточку: через полгода никто не вспомнит,
             # почему полторы тысячи карточек стали verified в один день

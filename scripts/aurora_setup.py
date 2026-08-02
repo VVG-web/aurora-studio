@@ -31,6 +31,7 @@ def read_config(path: Path) -> dict:
         "name": "", "slug": "",
         "conf_url": "", "conf_space": "", "sync_roots": [],
         "jira_url": "", "jira_key": "", "jira_jql": "",
+        "trust_statuses": "", "assumption_statuses": "",
         "threshold": "20",
     }
     if not path.is_file():
@@ -57,6 +58,10 @@ def read_config(path: Path) -> dict:
     cfg["jira_url"] = (re.search(r'base_url:\s*"?([^"\n]+)', jblock) or [None, ""])[1].strip() if jblock else ""
     cfg["jira_key"] = (re.search(r'project_key:\s*"?([^"\n]+)', jblock) or [None, ""])[1].strip() if jblock else ""
     cfg["jira_jql"] = (re.search(r'default_jql:\s*"?([^"\n]+?)"?\s*$', jblock, re.M) or [None, ""])[1].strip() if jblock else ""
+    for key in ("trust_statuses", "assumption_statuses"):
+        # список читаем как есть, вместе с кавычками: статусы бывают с дефисом и пробелом
+        m = re.search(rf'{key}:\s*\[([^\]]*)\]', jblock, re.M) if jblock else None
+        cfg[key] = m.group(1).strip() if m else ""
     cfg["threshold"] = scalar("verified_threshold_pct", "20")
     cfg["scrub"] = scalar("scrub", "report")
     return cfg
@@ -131,6 +136,8 @@ atlassian:
     base_url: "{c['jira_url']}"
     project_key: "{c['jira_key']}"
     default_jql: "{c['jira_jql']}"
+    trust_statuses: [{c['trust_statuses']}]
+    assumption_statuses: [{c['assumption_statuses']}]
   auth:
     mode: mcp_user
 
@@ -207,7 +214,7 @@ def run_answers(target: Path, answers: dict) -> int:
     cfg_path = target / "aurora.config.yaml"
     c = read_config(cfg_path)
     for key in ("name", "slug", "conf_url", "conf_space", "jira_url", "jira_key",
-                "jira_jql", "scrub", "threshold"):
+                "jira_jql", "scrub", "threshold", "trust_statuses", "assumption_statuses"):
         if key in answers and str(answers[key]).strip():
             c[key] = str(answers[key]).strip()
     if "sync_roots" in answers:

@@ -1669,6 +1669,51 @@ def test_kb_graph_writes_links_into_cards(tmp: Path):
 
 
 @test
+def test_verify_by_jira_status(tmp: Path):
+    """Статус задачи как основание доверия — и только при одной задаче на историю.
+
+    История, дошедшая до разработки, прошла разбор аналитика и приёмку постановки: это
+    основание. Две задачи на одну страницу — не «две причины верить», а неопределённость.
+    """
+    root = make_project(tmp, git=True)
+    (root / "aurora.config.yaml").write_text(
+        "project:\n  name: T\natlassian:\n  jira:\n"
+        '    trust_statuses: [Закрыто, "Тестирование - готово"]\n'
+        "    assumption_statuses: [Бэклог, Аналитика]\n", encoding="utf-8")
+    conf, jira = root / "Sources/Confluence", root / "Sources/JIRA"
+    conf.mkdir(parents=True, exist_ok=True); jira.mkdir(parents=True, exist_ok=True)
+    for num in ("1.1", "1.2", "1.3"):
+        (conf / f"US-{num}.md").write_text(
+            f'---\ntitle: "US-{num}. История"\npage_id: {num.replace(".", "")}\n---\n\nтекст\n',
+            encoding="utf-8")
+    def issue(key, story, status):
+        (jira / f"{key}.md").write_text(
+            f'---\nkey: "{key}"\ntitle: "US-{story}. История"\nstatus: "{status}"\n---\n\nтекст\n',
+            encoding="utf-8")
+    issue("PRJ-1", "1.1", "Закрыто")          # доверяем
+    issue("PRJ-2", "1.2", "Бэклог")           # ещё предположение
+    issue("PRJ-3", "1.3", "Закрыто")          # две задачи на историю — не судим
+    issue("PRJ-4", "1.3", "Аналитика")
+
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    cards.mkdir(parents=True, exist_ok=True)
+    for name, num in (("Готовое", "1.1"), ("Гипотеза", "1.2"), ("Спорное", "1.3")):
+        (cards / f"{name}.md").write_text(
+            f'---\ntitle: "{name}"\nsource: "Sources/Confluence/US-{num}.md"\n'
+            "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
+
+    cp = run("kb_verify.py", "Concepts", "--owner", "@vadim", "--by-jira", "--apply", cwd=root)
+    good = (cards / "Готовое.md").read_text(encoding="utf-8")
+    guess = (cards / "Гипотеза.md").read_text(encoding="utf-8")
+    argued = (cards / "Спорное.md").read_text(encoding="utf-8")
+    assert "status: verified" in good and "PRJ-1" in good, f"не принято по статусу:\n{cp.stdout[:500]}"
+    assert "status: draft" in guess and "trust: low" in guess, \
+        f"предположение не понижено:\n{guess}"
+    assert "предположение" in guess, "в карточке нет основания решения"
+    assert "status: imported" in argued, "карточка с двумя задачами тронута"
+
+
+@test
 def test_verify_by_source_age_records_its_basis(tmp: Path):
     """Пакетная приёмка по возрасту источника пишет в карточку, на чём основано доверие."""
     root = make_project(tmp, git=True)
