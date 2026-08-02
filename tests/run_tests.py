@@ -1780,6 +1780,29 @@ def test_confluence_export_keeps_plugin_diagrams(tmp: Path):
     assert "Врезка (excerpt)" in md and "Печатная форма" in md, \
         f"врезка потеряна или не помечена:\n{md}"
 
+    # врезка таблицы, внешний макет и история правок — три макроса из живых страниц
+    more = ('<ac:structured-macro ac:name="table-excerpt-include">'
+            '<ac:parameter ac:name="name">RU_ALL</ac:parameter>'
+            '<ac:parameter ac:name="page"><ac:link>'
+            '<ri:page ri:content-title="MAP-037 Маппинг"/></ac:link></ac:parameter>'
+            '</ac:structured-macro>'
+            '<ac:structured-macro ac:name="widget"><ac:parameter ac:name="url">'
+            '<ri:url ri:value="https://figma.example.com/design/x"/></ac:parameter>'
+            '</ac:structured-macro>'
+            '<ac:structured-macro ac:name="change-history"/>')
+    md2 = ce.to_markdown(more, "https://c.example.com", "SP")
+    assert "MAP-037 Маппинг" in md2 and "RU\\_ALL" in md2, f"врезка таблицы потеряна:\n{md2}"
+    assert "figma.example.com" in md2, f"ссылка на внешний макет потеряна:\n{md2}"
+
+    # ограда внутри цитаты: expand/info становятся blockquote, и «> » ломает диаграмму
+    quoted = ('<ac:structured-macro ac:name="expand"><ac:rich-text-body>'
+              '<ac:structured-macro ac:name="mermaid"><ac:plain-text-body>'
+              'flowchart TD\n  A --&gt; B</ac:plain-text-body></ac:structured-macro>'
+              '</ac:rich-text-body></ac:structured-macro>')
+    md3 = ce.to_markdown(quoted, "https://c.example.com", "SP")
+    body = md3.split("```")[1]
+    assert ">" not in body.replace("-->", ""), f"строки диаграммы в цитате:\n{md3}"
+
     # блок кода не должен обрастать второй оградой — это ломало подсветку в зеркале
     code = ('<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">sql'
             '</ac:parameter><ac:plain-text-body>SELECT 1;</ac:plain-text-body>'
