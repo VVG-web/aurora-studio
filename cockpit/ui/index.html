@@ -328,7 +328,11 @@ tr:last-child td{border-bottom:0}
     <!-- КОНСОЛЬ -->
     <section class="view" id="view-console">
       <h1>Консоль</h1>
-      <p class="sub" id="consoleSub">Здесь виден вывод запущенных команд.</p>
+      <p class="sub" id="consoleSub">Здесь виден вывод запущенных команд. Цвет строки —
+        от самого движка: <span style="color:var(--danger)">красная</span> — сбой,
+        <span style="color:var(--tier-inreview)">жёлтая</span> — предупреждение,
+        <span style="color:var(--primary)">зелёная</span> — успешный шаг. Списки файлов
+        не окрашиваются: имя файла ни о чём не сообщает.</p>
       <div class="row" style="margin-bottom:12px">
         <span class="chip mono" id="consoleCmd">—</span>
         <span class="chip" id="consoleRc">не запускалось</span>
@@ -398,7 +402,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.36.0";
+const UI_VERSION = "1.37.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1039,7 +1043,7 @@ function openRun(cmdName, preFlags=[]){
   RUN = {row:r, flags:new Set(preFlags), args:"", vals:{}};
   // Кнопка в консоли применяет ровно тот набор флагов, который был у предпросмотра.
   // Открыли другую команду — набор сменился, старой кнопке верить нельзя.
-  PENDING_APPLY = null; LAST_TASK = ""; drawTaskButton();
+  PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   $("#consoleApply").innerHTML = "";
   drawRun();
   $("#runOverlay").classList.add("on");
@@ -1171,7 +1175,7 @@ async function fire(apply){
   }
   if (apply) args.push("--apply");
   closeRun(); show("console");
-  PENDING_APPLY = null; LAST_TASK = ""; drawTaskButton();
+  PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   $("#consoleApply").innerHTML = "";
   const out = $("#consoleOut"); out.innerHTML="";
   $("#consoleCmd").textContent = r.cmd + " " + args.join(" ");
@@ -1191,9 +1195,14 @@ async function poll(id, since, label){
   if (!since) CONSOLE_LINES = [];
   (d.lines||[]).forEach(l=>{
     CONSOLE_LINES.push(l);
-    const cls = /ERROR|❌|ошибк|не найден|отказ/i.test(l) ? "err"
-      : /✅|OK:|готово|подтверждён/i.test(l) ? "ok"
-      : /WARN|⚠️|внимание/i.test(l) ? "warn"
+    /* Красили по вхождению слова: путь к файлу, в имени которого есть «ошибки»,
+       становился красным, хотя ничего не сломалось. Красим только сообщения самого
+       движка — те, что начинаются с маркера или знака, — и никогда пункты списка. */
+    const listItem = /^\s*(\d+\.|[-•])\s/.test(l);
+    const cls = listItem ? ""
+      : /^\s*(❌|ERROR\b|FAIL\b)|^\s*[a-z_]+: (ошибка|не найден|отказ)/i.test(l) ? "err"
+      : /^\s*(✅|OK:)|детерминизм подтверждён/i.test(l) ? "ok"
+      : /^\s*(⚠️|WARN\b)/i.test(l) ? "warn"
       : /^\s*(#|—|\.\.\.)/.test(l) ? "dim" : "";
     out.append(el("div",{class:cls}, l));
   });
@@ -1207,7 +1216,7 @@ async function poll(id, since, label){
         rc===0 ? "ok" : rc===1 ? "warn" : "err");
   // Задание ассистенту команда печатает сама; из прокручиваемой консоли его неудобно
   // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
-  LAST_TASK = assistantTask(CONSOLE_LINES);
+  LAST_TASKS = assistantTasks(CONSOLE_LINES);
   drawTaskButton();
   if (rc===0 && PENDING_APPLY && PENDING_APPLY.job===id){
     const line = PENDING_APPLY.line;
@@ -1228,32 +1237,47 @@ async function poll(id, since, label){
 /* Блок задания печатают команды, у которых дальше работа модели (`kb:build`). Он обрамлён
    линейками — по ним и находим, чтобы не тащить в буфер весь вывод. */
 const TASK_EDGE = "─────";
-function assistantTask(lines){
-  const start = lines.findIndex(l => l.includes("ЗАДАНИЕ АССИСТЕНТУ"));
-  if (start < 0) return "";
-  // Блок обрамлён линейками, и внутри него есть ещё одна — под заголовком. Резать по
-  // ближайшей значит скопировать один заголовок: берём от первой линейки до последней.
-  let from = start;
-  while (from > 0 && !lines[from-1].startsWith(TASK_EDGE)) from--;
-  if (from > 0) from--;
-  let to = lines.length;
-  for (let i = lines.length - 1; i > start; i--){
-    if (lines[i].startsWith(TASK_EDGE)){ to = i + 1; break; }
-  }
-  return lines.slice(from, to).join("\n").trim();
+function assistantTasks(lines){
+  /* Заданий в выводе несколько — по одному на партию. Каждое обрамлено линейками, и
+     внутри есть ещё одна, под заголовком: резать по ближайшей значит взять заголовок.
+     Границей блока считаем следующий заголовок задания или конец вывода. */
+  const heads = [];
+  lines.forEach((l, i) => { if (l.includes("ЗАДАНИЕ АССИСТЕНТУ")) heads.push(i); });
+  return heads.map((start, k) => {
+    let from = start;
+    while (from > 0 && !lines[from-1].startsWith(TASK_EDGE)) from--;
+    if (from > 0) from--;
+    const limit = k + 1 < heads.length ? heads[k+1] : lines.length;
+    let to = limit;
+    for (let i = limit - 1; i > start; i--){
+      if (lines[i].startsWith(TASK_EDGE)){ to = i + 1; break; }
+    }
+    const num = (lines[start].match(/ПАРТИЯ\s+(\d+)/) || [])[1] || String(k + 1);
+    return {num, text: lines.slice(from, to).join("\n").trim()};
+  }).filter(t => t.text.split("\n").length > 3);
 }
-let LAST_TASK = "";          // задание из последнего прогона: переживает уход с вкладки
+let LAST_TASKS = [];         // задания из последнего прогона: переживают уход с вкладки
+const TASK_SLOTS = 5;        // столько партий показываем кнопками: дальше идут по плану
 function drawTaskButton(){
   const box = $("#consoleTask");
   box.innerHTML = "";
-  if (!LAST_TASK) return;
-  box.append(el("button",{class:"btn sm primary",onclick:async()=>{
-    try { await navigator.clipboard.writeText(LAST_TASK);
-          toast("Задание скопировано — вставьте в чат с ассистентом проекта","ok"); }
-    catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
-  }},"Скопировать задание ассистенту"),
-    el("span",{class:"muted",style:"font-size:12px;margin-left:8px"},
-      "строк: " + LAST_TASK.split("\n").length));
+  if (!LAST_TASKS.length) return;
+  box.append(el("span",{class:"muted",style:"font-size:12px;margin-right:6px"},
+    "Задание ассистенту:"));
+  // Пустые слоты показываем неактивными: видно, что партий меньше, а не что кнопка пропала
+  for (let i = 0; i < TASK_SLOTS; i++){
+    const task = LAST_TASKS[i];
+    box.append(el("button",{class:"btn sm" + (task ? " primary" : ""),
+      disabled: task ? null : "",
+      title: task ? `Партия ${task.num}: ${task.text.split("\n").length} строк в буфер`
+                  : "Такой партии в плане нет",
+      onclick: task ? async()=>{
+        try { await navigator.clipboard.writeText(task.text);
+              toast("Партия " + task.num + " скопирована — вставьте в чат с ассистентом","ok"); }
+        catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
+      } : null},
+      "Партия " + (task ? task.num : i + 1)));
+  }
 }
 function rcMark(rc){
   return rc === 0 ? {cls:"ok", what:"успех"}

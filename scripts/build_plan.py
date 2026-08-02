@@ -109,7 +109,7 @@ def state(manifest: dict, path: str, size: int) -> tuple:
     return "обработан", int(rec.get("cards", 0))
 
 
-def task_prompt(num: int, part: list) -> str:
+def task_prompt(num: int, part: list, total: int = 0) -> str:
     """Готовое задание ассистенту — то, что человек копирует в чат.
 
     Короткая фраза «разбери партию 2» ассистенту мало о чём говорит: он не знает ни списка
@@ -119,7 +119,7 @@ def task_prompt(num: int, part: list) -> str:
     files = "\n".join(f"{i}. {p}" for i, (_g, p, _s, _st, _c) in enumerate(part, 1))
     return f"""
 ─────────────────────────────────────────────────────────────────────
-ЗАДАНИЕ АССИСТЕНТУ — скопируйте блок целиком в чат с ассистентом проекта
+ЗАДАНИЕ АССИСТЕНТУ · ПАРТИЯ {num}{f" из {total}" if total else ""} — скопируйте блок целиком в чат
 ─────────────────────────────────────────────────────────────────────
 /aurora-vault kb:build
 
@@ -157,6 +157,8 @@ def main() -> int:
     ap.add_argument("--max-files", type=int, default=40,
                     help="сколько источников максимум в одной партии (по умолчанию 40)")
     ap.add_argument("--partition", type=int, help="показать только эту партию")
+    ap.add_argument("--tasks", type=int, default=5, metavar="N",
+                    help="на сколько ближайших партий печатать задание (по умолчанию 5)")
     ap.add_argument("--done", metavar="FILE", help="отметить источник обработанным")
     ap.add_argument("--cards", type=int, default=0, help="сколько карточек извлечено (для --done)")
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
@@ -229,6 +231,8 @@ def main() -> int:
         print(f"Из них {len(big)} — один файл на партию: он крупнее бюджета целиком "
               "(делить источник нельзя, карточки потеряют контекст)")
     print()
+    print("Значки у источника: 🆕 — движок его ещё не разбирал; "
+          "♻️ — разбирал, но файл с тех пор изменился и нужен повторный проход.\n")
     for i, part in enumerate(partitions, 1):
         if a.partition and i != a.partition:
             continue
@@ -248,12 +252,19 @@ def main() -> int:
     # Задание печатается всегда: за планом человек идёт ровно затем, чтобы отдать
     # ассистенту следующую партию. Отдельный запуск с `--partition N` ради этого — лишний
     # шаг, а в панели ещё и лишний поиск команды.
-    num = a.partition if (a.partition and a.partition <= len(partitions)) else 1
     if partitions:
-        if not a.partition:
-            print(f"\nНиже — задание на следующую партию (№{num} из {len(partitions)}). "
-                  f"Другая партия: `--partition N`.")
-        print(task_prompt(num, partitions[num - 1]))
+        if a.partition:
+            nums = [a.partition] if a.partition <= len(partitions) else []
+            if not nums:
+                print(f"\nПартии {a.partition} нет: всего их {len(partitions)}.")
+        else:
+            # Печатаем задания на несколько ближайших партий сразу: ходить за каждой
+            # отдельной командой человек не обязан, а панель разложит их по кнопкам.
+            nums = list(range(1, min(a.tasks, len(partitions)) + 1))
+            print(f"\nНиже — задания на ближайшие партии ({len(nums)} из {len(partitions)}). "
+                  "Каждый блок самодостаточен: копируется целиком и отдаётся ассистенту.")
+        for num in nums:
+            print(task_prompt(num, partitions[num - 1], len(partitions)))
     return 0
 
 
