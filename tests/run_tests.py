@@ -1888,6 +1888,28 @@ def test_confluence_export_keeps_macro_content(tmp: Path):
 
 
 @test
+def test_force_rereads_but_writes_only_changes(tmp: Path):
+    """`--force` перечитывает источник, но переписывает только изменившееся.
+
+    Иначе счётчик «записано» означает объём выгрузки, а не объём изменений: 877 записей
+    там, где не поменялось ничего, — и понять по нему, что произошло, нельзя. У зеркала
+    задач сверка стояла всегда, у зеркала страниц её отменял `--force`.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import confluence_export as ce
+    src = ("scripts/confluence_export.py", "scripts/jira_export.py")
+    for rel in src:
+        code = (KIT / rel).read_text(encoding="utf-8")
+        assert "if exists else None" in code or "if os.path.isfile(full) else None" in code, \
+            f"{rel}: содержимое на диске не читается для сверки"
+        assert "not self.force else None" not in code, \
+            f"{rel}: --force снова отменяет сверку с диском"
+    # обе ветки счётчиков живы: записанное и пропущенное считаются раздельно
+    code = (KIT / "scripts/confluence_export.py").read_text(encoding="utf-8")
+    assert "self.written += 1" in code and "self.skipped += 1" in code
+
+
+@test
 def test_confluence_export_keeps_plugin_diagrams(tmp: Path):
     """Диаграммы плагинов доезжают: mermaid — текстом, draw.io — исходником во вложении."""
     sys.path.insert(0, str(KIT / "scripts"))
