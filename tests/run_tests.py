@@ -1561,6 +1561,13 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
     (root / "Raw/project").mkdir(parents=True, exist_ok=True)
     for i in range(3):
         (root / f"Raw/project/Док-{i}.md").write_text("текст " * 200, encoding="utf-8")
+    # отложенное в `_outdated`/`_archive` в план не берём: устаревшая копия договора
+    # даёт карточки, противоречащие карточкам из действующей редакции
+    (root / "Raw/project/_outdated").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/_outdated/Старый.md").write_text("текст " * 200, encoding="utf-8")
+    plan = run("build_plan.py", cwd=root).stdout
+    assert "_outdated" not in plan, f"в план попала отложенная копия:\n{plan[:600]}"
+
     out = run("build_plan.py", "--partition", "1", cwd=root).stdout
     assert "ЗАДАНИЕ АССИСТЕНТУ" in out, out[:400]
     assert "Раздели" not in out and "Разбери партию 1" in out, "нет самой формулировки задачи"
