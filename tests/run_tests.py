@@ -1910,6 +1910,45 @@ def test_force_rereads_but_writes_only_changes(tmp: Path):
 
 
 @test
+def test_tables_stay_markdown_unless_impossible(tmp: Path):
+    """HTML в зеркале — только там, где markdown не выражает содержимое.
+
+    Прежнее правило отправляло в HTML таблицу с любым списком или вторым абзацем в
+    ячейке — на живой базе это 388 таблиц из 807, то есть почти половина знания приезжала
+    разметкой, которую ни прочитать глазами, ни разобрать поиском.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import confluence_export as ce
+    ok = ('<table><tbody>'
+          '<tr><th>Поле</th><th>Значение</th></tr>'
+          '<tr><td><ul><li>раз</li><li>два</li></ul></td>'
+          '<td><p>абзац</p><p>ещё абзац</p></td></tr>'
+          '<tr><td><a href="https://jira.example.com/browse/PRJ-1">PRJ-1</a></td>'
+          '<td><strong>жирным</strong></td></tr></tbody></table>')
+    md = ce.to_markdown(ok, "https://c.example.com", "SP")
+    assert "<table" not in md, f"таблица со списком ушла в HTML:\n{md}"
+    assert "- раз<br>- два" in md, f"список в ячейке потерян:\n{md}"
+    assert "абзац<br>ещё абзац" in md, f"второй абзац потерян:\n{md}"
+    assert "[PRJ-1](https://jira.example.com/browse/PRJ-1)" in md, \
+        f"ссылка в ячейке потеряна — раньше ячейка бралась голым текстом:\n{md}"
+    assert "**жирным**" in md, "выделение в ячейке потеряно"
+    assert md == ce.to_markdown(ok, "https://c.example.com", "SP"), "конвертация недетерминирована"
+
+    # объединённые ячейки markdown не выражает — остаётся HTML, и признак не теряется
+    merged = ('<table class="wrapped"><tbody><tr><td colspan="2" class="x">на две</td></tr>'
+              "<tr><td>а</td><td>б</td></tr></tbody></table>")
+    out = ce.to_markdown(merged, "https://c.example.com", "SP")
+    assert "<table" in out and 'colspan="2"' in out, f"объединение потеряно:\n{out}"
+    assert 'class=' not in out, "в HTML остались шумовые атрибуты"
+
+    # вложенная таблица и многострочный код — тоже не выражаются
+    nested = "<table><tbody><tr><td><table><tbody><tr><td>вложено</td></tr></tbody></table></td></tr></tbody></table>"
+    assert "<table" in ce.to_markdown(nested, "https://c.example.com", "SP")
+    code = "<table><tbody><tr><td><pre>строка1\nстрока2</pre></td></tr></tbody></table>"
+    assert "<table" in ce.to_markdown(code, "https://c.example.com", "SP")
+
+
+@test
 def test_confluence_export_keeps_plugin_diagrams(tmp: Path):
     """Диаграммы плагинов доезжают: mermaid — текстом, draw.io — исходником во вложении."""
     sys.path.insert(0, str(KIT / "scripts"))

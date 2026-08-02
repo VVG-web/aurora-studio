@@ -213,7 +213,12 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
             kind = (params.get("type") or "").strip().upper()
             free = params.get("freetext", "").strip()
             if kind == "DEFINITION":
-                marker = f"**{RY_MARK['key']}{key}**"
+                # Жирный ставим тегом, а не звёздочками: звёздочки в тексте ячейки
+                # конвертер экранирует, и метка ключа превращается в «\*\*RYk:…».
+                b = soup.new_tag("strong")
+                b.string = f"{RY_MARK['key']}{key}"
+                tag.replace_with(b)
+                continue
             else:
                 marker = f"{RY_MARK['link']}{key}"
                 if free and free.lower() not in ("link", "ссылка"):
@@ -442,24 +447,51 @@ def build_converter():
     class AuroraConverter(MarkdownConverter):
         """Таблицы: простые → markdown; со списками/абзацами внутри — очищенный HTML."""
 
+        def cell_md(self, cell) -> str:
+            """Ячейка → одна строка markdown.
+
+            Внутренности гоним через тот же конвертер, а не берём голым текстом: иначе из
+            ячейки пропадают ссылки, выделение и метки RY. Переносы строк и абзацы
+            схлопываем в `<br>` — Obsidian их в таблице показывает, а многострочная
+            ячейка ломает саму таблицу.
+            """
+            inner = "".join(str(x) for x in cell.children)
+            md = self.convert(inner).strip() if inner.strip() else ""
+            md = re.sub(r"\n{2,}", "<br>", md)
+            md = md.replace("\n", "<br>").replace("|", "\\|")
+            return " ".join(md.split())
+
         def convert_table(self, el, text, **kwargs):
             rows = el.find_all("tr")
             if not rows:
                 return ""
-            complex_cell = any(c.find(["ul", "ol", "table", "pre", "blockquote"])
-                               or len(c.find_all("p")) > 1
-                               for r in rows for c in r.find_all(["td", "th"]))
-            if complex_cell:
-                for t in el.find_all(True):
-                    t.attrs = {}
+            cells = [c for r in rows for c in r.find_all(["td", "th"])]
+
+            def merged(c) -> bool:
+                return any(str(c.get(a, "1")).strip().isdigit() and int(c.get(a, 1)) > 1
+                           for a in ("colspan", "rowspan"))
+
+            # HTML — только там, где markdown не выражает содержимое: вложенная таблица,
+            # объединённые ячейки и многострочный блок кода. Список и несколько абзацев
+            # выражаются: `<br>` и маркеры внутри ячейки Obsidian показывает.
+            hard = any(c.find("table") or merged(c)
+                       or any("\n" in pre.get_text() for pre in c.find_all("pre"))
+                       for c in cells)
+            if hard:
+                # Атрибуты чистим, но `colspan`/`rowspan` оставляем: именно они и есть
+                # причина, по которой таблица осталась HTML — снести их значит потерять
+                # то, ради чего мы её сохранили.
+                for tag in el.find_all(True):
+                    tag.attrs = {k: v for k, v in tag.attrs.items()
+                                 if k in ("colspan", "rowspan")}
                 el.attrs = {}
                 return f"\n\n{el}\n\n"
+
             grid = []
             for r in rows:
-                cells = [" ".join(c.get_text(" ", strip=True).split()).replace("|", "\\|")
-                         for c in r.find_all(["td", "th"])]
-                if cells:
-                    grid.append(cells)
+                line = [self.cell_md(c) for c in r.find_all(["td", "th"])]
+                if line:
+                    grid.append(line)
             if not grid:
                 return ""
             width = max(len(r) for r in grid)
