@@ -1692,8 +1692,9 @@ def test_verify_by_jira_status(tmp: Path):
             encoding="utf-8")
     issue("PRJ-1", "1.1", "Закрыто")          # доверяем
     issue("PRJ-2", "1.2", "Бэклог")           # ещё предположение
-    issue("PRJ-3", "1.3", "Закрыто")          # две задачи на историю — не судим
+    issue("PRJ-3", "1.3", "Закрыто")          # спор: закрыто против бэклога — не судим
     issue("PRJ-4", "1.3", "Аналитика")
+    issue("PRJ-5", "1.1", "Тестирование - готово")   # согласны с PRJ-1 — решение остаётся
 
     cards = root / "AuroraKnowledgeDB/Concepts"
     cards.mkdir(parents=True, exist_ok=True)
@@ -1707,10 +1708,22 @@ def test_verify_by_jira_status(tmp: Path):
     guess = (cards / "Гипотеза.md").read_text(encoding="utf-8")
     argued = (cards / "Спорное.md").read_text(encoding="utf-8")
     assert "status: verified" in good and "PRJ-1" in good, f"не принято по статусу:\n{cp.stdout[:500]}"
+    assert "PRJ-5" in good, "вторая задача с тем же решением не попала в основание"
     assert "status: draft" in guess and "trust: low" in guess, \
         f"предположение не понижено:\n{guess}"
     assert "предположение" in guess, "в карточке нет основания решения"
-    assert "status: imported" in argued, "карточка с двумя задачами тронута"
+    assert "status: imported" in argued, "карточка со спорящими задачами тронута"
+
+    # задача со статусом вне обоих списков голоса не имеет и решению не мешает
+    issue("PRJ-6", "1.2", "Согласование у заказчика")
+    (cards / "Гипотеза.md").write_text(
+        '---\ntitle: "Гипотеза"\nsource: "Sources/Confluence/US-1.2.md"\n'
+        "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
+    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--by-jira", "--apply",
+        "--allow-dirty", cwd=root)
+    guess2 = (cards / "Гипотеза.md").read_text(encoding="utf-8")
+    assert "status: draft" in guess2, "молчащая задача сорвала решение"
+    assert "без голоса: PRJ-6" in guess2, "не сказано, что у задачи статус вне списков"
 
 
 @test

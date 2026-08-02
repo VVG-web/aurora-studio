@@ -23,11 +23,15 @@
 запустил команду. Ошиблись — `git revert`, основание видно в каждой карточке.
 
 Приёмка по статусу задачи (`--by-jira`) опирается на то, как устроена работа: страница
-истории привязана к задаче Jira макросом или номером в заголовке, а задача, дошедшая до
-разработки и тестирования, уже прошла разбор аналитика и приёмку постановки. Если у
-страницы **ровно одна** задача — её статус и есть основание: `trust_statuses` из конфига
-дают `verified`, `assumption_statuses` — `draft` с пометкой «это ещё предположение».
-Две задачи на страницу — не основание ни для чего: непонятно, по какой судить.
+истории привязана к задачам Jira макросом или номером в заголовке, а задача, дошедшая до
+разработки и тестирования, уже прошла разбор аналитика и приёмку постановки.
+`trust_statuses` из конфига дают `verified`, `assumption_statuses` — `draft` с пометкой
+«это ещё предположение».
+
+Задач у истории может быть несколько, и это не помеха: решение выносится, когда все они
+говорят одно и то же. Спор — единственное, что останавливает: одна задача закрыта, другая
+лежит в бэклоге, и какая из них описывает состояние знания, машине неизвестно. Задача со
+статусом вне обоих списков голоса не имеет — она и не «за», и не «против».
 
 `verified` — верхний статус базы. Ступени «canonical со вторым человеком» больше нет:
 она была размечена в схеме, но за всё время не использована ни разу ни в одном проекте
@@ -76,10 +80,12 @@ def config_statuses(key: str) -> set:
 
 
 def jira_verdicts(conf_root: str, jira_root: str) -> dict:
-    """{путь страницы Confluence: (вердикт, ключ задачи, статус)}.
+    """{путь страницы Confluence: (вердикт, [ключи с этим вердиктом], [статусы], [без голоса])}.
 
-    Вердикт берётся только там, где у истории ровно одна задача: две задачи на одну
-    страницу — это не «две причины верить», а неопределённость.
+    Задач у истории бывает несколько. Пока они говорят одно и то же, число их значения не
+    имеет: три закрытые задачи — то же основание, что одна. Останавливает только спор —
+    одна закрыта, другая в бэклоге: какая описывает состояние знания, машине неизвестно.
+    Задача со статусом вне обоих списков голоса не имеет и решению не мешает.
     """
     trust = config_statuses("trust_statuses")
     guess = config_statuses("assumption_statuses")
@@ -91,16 +97,24 @@ def jira_verdicts(conf_root: str, jira_root: str) -> dict:
     g.read_jira(jira_root)
     out = {}
     for _num, hub in g.stories().items():
-        if len(hub["issues"]) != 1 or not hub["us"]:
+        if not hub["issues"] or not hub["us"]:
             continue
-        key = hub["issues"][0]
-        status = (g.issues[key]["status"] or "").strip()
-        low = status.casefold()
-        verdict = "verified" if low in trust else "draft" if low in guess else ""
-        if not verdict:
-            continue
+        votes: dict = {}
+        mute = []
+        for key in hub["issues"]:
+            status = (g.issues[key]["status"] or "").strip()
+            low = status.casefold()
+            verdict = "verified" if low in trust else "draft" if low in guess else ""
+            if verdict:
+                votes.setdefault(verdict, []).append((key, status))
+            else:
+                mute.append(f"{key} ({status or 'статус неизвестен'})")
+        if len(votes) != 1:
+            continue                     # ноль голосов или спор — решает человек
+        verdict, pairs = next(iter(votes.items()))
         for rel in hub["us"]:
-            out[f"{conf_root}/{rel}"] = (verdict, key, status)
+            out[f"{conf_root}/{rel}"] = (verdict, [k for k, _s in pairs],
+                                         [s for _k, s in pairs], mute)
     return out
 
 
@@ -178,7 +192,7 @@ def main() -> int:
                   "заданы atlassian.jira.trust_statuses / assumption_statuses и что зеркала "
                   "выгружены.", file=sys.stderr)
             return 1
-        print(f"Историй с ровно одной задачей и известным статусом: {len(verdicts)}\n")
+        print(f"Страниц историй, где задачи говорят одно и то же: {len(verdicts)}\n")
 
     basis = ""
     if a.older:
@@ -217,17 +231,19 @@ def main() -> int:
             src = (fm.get("source") or "").strip().strip('"')
             hit = verdicts.get(src.replace("\\", "/"))
             if not hit:
-                skipped.append((path, "нет истории с ровно одной задачей за этим источником"))
+                skipped.append((path, "за источником нет истории, чьи задачи говорят "
+                                      "одно и то же"))
                 continue
-            verdict, jkey, jstatus = hit
+            verdict, jkeys, jstatuses, jmute = hit
+            said = ", ".join(f"{k} ({s})" for k, s in zip(jkeys, jstatuses))
+            aside = f"; без голоса: {', '.join(jmute)}" if jmute else ""
             if verdict == "draft":
                 # Не знание, а предположение: работа по задаче ещё не начиналась.
                 # Понижаем доверие явно, чтобы карточка не выглядела проверенной.
                 new_head = set_field(head, "status", "draft")
                 new_head = set_field(new_head, "trust", "low")
                 new_head = set_field(new_head, "verified_basis",
-                                     f'"задача {jkey} в статусе {jstatus} — это ещё '
-                                     f'предположение, а не знание"')
+                                     f'"{said} — это ещё предположение, а не знание{aside}"')
                 new_head = set_field(new_head, "updated", TODAY.isoformat())
                 ready.append((path, "---" + new_head + rest))
                 continue
@@ -250,8 +266,7 @@ def main() -> int:
         if verdict == "verified":
             new_head = set_field(new_head, "trust", "high")
             new_head = set_field(new_head, "verified_basis",
-                                 f'"задача {jkey} в статусе {jstatus}: постановка прошла '
-                                 f'разбор и приёмку"')
+                                 f'"{said}: постановка прошла разбор и приёмку{aside}"')
         if basis:
             # основание доверия записывается в карточку: через полгода никто не вспомнит,
             # почему полторы тысячи карточек стали verified в один день
