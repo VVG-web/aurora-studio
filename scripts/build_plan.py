@@ -76,7 +76,11 @@ def sources() -> list:
     for group, root in GROUPS:
         if not os.path.isdir(root):
             continue
-        for dirpath, _, files in os.walk(root):
+        for dirpath, dirs, files in os.walk(root):
+            # Папка с подчёркиванием — отложенное: `_outdated`, `_archive`, `_black`.
+            # Разбирать устаревшую копию договора наравне с действующей значит заводить
+            # карточки, противоречащие друг другу, и тратить на это партию целиком.
+            dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
             # В Reference источник — сам справочник (список аббревиатур, кодов, ролей),
             # а не атомарные карточки, извлечённые из него прошлым build'ом.
             if group == "Reference" and os.path.abspath(dirpath) != os.path.abspath(root):
@@ -217,7 +221,12 @@ def main() -> int:
     if cur:
         partitions.append(cur)
 
-    print(f"\nПартий: {len(partitions)} (бюджет {a.budget // 1024} КБ и не больше {a.max_files} файлов на заход)\n")
+    print(f"\nПартий: {len(partitions)} (бюджет {a.budget // 1024} КБ и не больше {a.max_files} файлов на заход)")
+    big = [r for r in rows if r[2] > a.budget]
+    if big:
+        print(f"Из них {len(big)} — один файл на партию: он крупнее бюджета целиком "
+              "(делить источник нельзя, карточки потеряют контекст)")
+    print()
     for i, part in enumerate(partitions, 1):
         if a.partition and i != a.partition:
             continue
