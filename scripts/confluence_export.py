@@ -666,10 +666,12 @@ class Exporter(WikiMirror):
         text = render_front_matter(meta) + f"# {title}\n\n" + md + "\n"
         full = os.path.join(self.out, rel)
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        # сверка с тем, что уже лежит: страница без правок не должна давать дифф в git,
-        # а `--force` эту сверку пропускает и переписывает зеркало целиком
+        # Сверка с тем, что уже лежит: страница без правок не должна давать дифф в git.
+        # `--force` отменяет пропуск по версии (страницу перечитываем и пересобираем
+        # заново), но не саму сверку: писать байт в байт то же самое незачем, а счётчик
+        # «записано» после такой записи означал бы объём выгрузки, а не объём изменений.
         exists = os.path.isfile(full)
-        old = open(full, encoding="utf-8").read() if exists and not self.force else None
+        old = open(full, encoding="utf-8").read() if exists else None
         if old != text:
             with open(full, "w", encoding="utf-8") as f:
                 f.write(text)
