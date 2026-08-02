@@ -35,7 +35,7 @@ import sys
 from datetime import date, datetime
 
 import sources_registry as R
-from sources_core import SERVICE_RE, cited_by_cards, nfc
+from sources_core import ASSET_DIR_RE, SERVICE_RE, cited_by_cards, nfc
 
 TODAY = date.today()
 
@@ -71,7 +71,10 @@ def foreign_files(root: str) -> list:
         for f in files:
             if f.startswith(".") or f.endswith(".md") or SERVICE_RE.search(f):
                 continue
-            out.append(nfc(os.path.relpath(os.path.join(dirpath, f), root).replace("\\", "/")))
+            rel = nfc(os.path.relpath(os.path.join(dirpath, f), root).replace("\\", "/"))
+            if ASSET_DIR_RE.search(rel):
+                continue      # схемы страницы — содержимое зеркала, а не чужой файл
+            out.append(rel)
     return sorted(out)
 
 

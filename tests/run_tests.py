@@ -1829,9 +1829,14 @@ def test_mirror_cleanup_sees_foreign_files(tmp: Path):
     (root / "Раздел/.DS_Store").write_text("", encoding="utf-8")
     (root / "sync_state.md").write_text("состояние", encoding="utf-8")
 
+    # схемы страницы лежат рядом с ней и принадлежат зеркалу, хотя в состоянии их нет
+    (root / "Раздел/Стр_assets").mkdir()
+    (root / "Раздел/Стр_assets/Схема.drawio").write_text("<mxfile/>", encoding="utf-8")
+
     m = sc.WikiMirror(str(root))
     extra = m.extra_files(["Раздел/Стр.md"])
-    assert extra == ["Раздел/Стр.md_COLLISION"], f"мусор невидим для чистки: {extra}"
+    assert extra == ["Раздел/Стр.md_COLLISION"], \
+        f"чистка сносит схемы страницы или не видит мусор: {extra}"
     assert sa.foreign_files(str(root)) == ["Раздел/Стр.md_COLLISION"], "аудит его не показывает"
 
     # после чистки опустевший каталог уходит: пустая папка читается как дубль

@@ -126,6 +126,11 @@ class RestApi:
 
 # ------------------------------------------------------------------ зеркало
 
+# Папка со схемами страницы: `<имя страницы>_assets/…` — содержимое зеркала, но не запись
+# состояния. Совпадает и в корне, и на любой глубине.
+ASSET_DIR_RE = re.compile(r"(^|/)[^/]+_assets/")
+
+
 def nfc(path: str) -> str:
     """Пути в единую нормализацию Unicode.
 
@@ -224,6 +229,11 @@ class Mirror:
         known_ci = {k.casefold() for k in known_n}
         out = []
         for rel in self.disk_rels(only_md=False):
+            # Схемы страницы лежат рядом с ней в `<страница>_assets/`. В состоянии синка
+            # их нет — там страницы, — но зеркалу они принадлежат: без этого правила
+            # чистка сносила ровно то, что синк только что скачал.
+            if ASSET_DIR_RE.search(rel):
+                continue
             n = nfc(rel)
             if n not in known_n and n.casefold() not in known_ci:
                 out.append(rel)
