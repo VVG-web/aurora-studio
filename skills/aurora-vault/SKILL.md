@@ -105,6 +105,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter (`kb_fix.py --all`) | `references/maintenance.md` |
 | `kb:retire` | убрать поля, выведенные из схемы (`kb_fix.py --retire`); `canonical` → `verified` | `references/maintenance.md` |
 | `kb:dedupe` | двойники: поиск и слияние (`kb_fix.py --dupes` / `--merge`) — тот же скрипт, другой режим | `references/maintenance.md` |
+| `kb:moc` (`moc`) | карты содержания по группировкам из `moc_groups.txt` + список брошенных карточек (`kb_moc.py`) | `references/build.md` |
 | `kb:index` | регенерация `_index.md` разделов (рукотворные не трогает) | `references/maintenance.md` |
 | `kb:scrub` | персональные данные: найти и закрыть маркерами (`kb_scrub.py`); режим — `privacy.scrub` в конфиге; доказательства не правит | `references/maintenance.md` |
 | `kb:schema` | версия схемы карточек и миграция между версиями (`kb_schema.py`) | `references/frontmatter.md` |
