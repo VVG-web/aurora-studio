@@ -121,6 +121,8 @@ def task_prompt(num: int, part: list) -> str:
 ─────────────────────────────────────────────────────────────────────
 ЗАДАНИЕ АССИСТЕНТУ — скопируйте блок целиком в чат с ассистентом проекта
 ─────────────────────────────────────────────────────────────────────
+/aurora-vault kb:build
+
 Работай по скиллу aurora-vault, раздел build
 (.opencode/skills/aurora-vault/references/build.md и frontmatter.md).
 

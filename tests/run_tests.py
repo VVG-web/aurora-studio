@@ -1221,8 +1221,8 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     assert "function assistantTask" in ui and "Скопировать задание ассистенту" in ui, \
         "задание ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
-    assert 'if (view==="console") renderHistory();' in ui, \
-        "журнал рисуется только после запуска: открыть раздел и увидеть его нельзя"
+    assert 'if (view==="console"){ renderHistory(); drawTaskButton(); }' in ui, \
+        "на входе в «Консоль» не восстанавливаются журнал и кнопка задания"
     assert ui.count("lastRun(") >= 3, \
         "отметка последнего запуска стоит не везде: команды, сценарии, журнал"
 
