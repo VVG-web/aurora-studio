@@ -397,7 +397,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.33.1";
+const UI_VERSION = "1.34.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1181,10 +1181,13 @@ async function fire(apply){
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
   poll(res.job, 0, (r.cmd + " " + args.join(" ")).trim());
 }
+let CONSOLE_LINES = [];      // строки текущего прогона: из них собирается задание
 async function poll(id, since, label){
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
   const out = $("#consoleOut");
+  if (!since) CONSOLE_LINES = [];
   (d.lines||[]).forEach(l=>{
+    CONSOLE_LINES.push(l);
     const cls = /ERROR|❌|ошибк|не найден|отказ/i.test(l) ? "err"
       : /✅|OK:|готово|подтверждён/i.test(l) ? "ok"
       : /WARN|⚠️|внимание/i.test(l) ? "warn"
@@ -1199,6 +1202,16 @@ async function poll(id, since, label){
   badge.className = "chip " + mark.cls;
   toast(rc===0 ? "Готово: " + label : mark.what + ": " + label + " (код " + rc + ")",
         rc===0 ? "ok" : rc===1 ? "warn" : "err");
+  // Задание ассистенту команда печатает сама; из прокручиваемой консоли его неудобно
+  // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
+  const task = assistantTask(CONSOLE_LINES);
+  if (task){
+    $("#consoleApply").append(el("button",{class:"btn sm primary",onclick:async()=>{
+      try { await navigator.clipboard.writeText(task);
+            toast("Задание скопировано — вставьте в чат с ассистентом проекта","ok"); }
+      catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
+    }},"Скопировать задание ассистенту"));
+  }
   if (rc===0 && PENDING_APPLY && PENDING_APPLY.job===id){
     const line = PENDING_APPLY.line;
     $("#consoleApply").append(el("button",{class:"btn sm gold",
@@ -1215,6 +1228,19 @@ async function poll(id, since, label){
    0 — сделано; 1 — команда отработала и нашла, что чинить (doctor с ошибками, аудит с
    расхождениями); 2 и выше — не отработала вовсе: не пустил git-гейт, не найден kit,
    не разобраны аргументы. Первое зелёное, второе жёлтое, третье красное. */
+/* Блок задания печатают команды, у которых дальше работа модели (`kb:build`). Он обрамлён
+   линейками — по ним и находим, чтобы не тащить в буфер весь вывод. */
+const TASK_EDGE = "─────";
+function assistantTask(lines){
+  const start = lines.findIndex(l => l.includes("ЗАДАНИЕ АССИСТЕНТУ"));
+  if (start < 0) return "";
+  let from = start, to = lines.length;
+  while (from > 0 && !lines[from-1].startsWith(TASK_EDGE)) from--;
+  for (let i = start + 1; i < lines.length; i++){
+    if (lines[i].startsWith(TASK_EDGE)){ to = i; break; }
+  }
+  return lines.slice(from, to).join("\n").trim();
+}
 function rcMark(rc){
   return rc === 0 ? {cls:"ok", what:"успех"}
     : rc === 1 ? {cls:"warn", what:"есть что поправить"}

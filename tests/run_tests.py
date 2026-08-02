@@ -1216,6 +1216,8 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     assert "runs" in ck.health(str(root)), "журнал не попадает в /api/health"
 
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "function assistantTask" in ui and "Скопировать задание ассистенту" in ui, \
+        "задание ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
     assert 'if (view==="console") renderHistory();' in ui, \
         "журнал рисуется только после запуска: открыть раздел и увидеть его нельзя"
@@ -1567,6 +1569,11 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
     (root / "Raw/project/_outdated/Старый.md").write_text("текст " * 200, encoding="utf-8")
     plan = run("build_plan.py", cwd=root).stdout
     assert "_outdated" not in plan, f"в план попала отложенная копия:\n{plan[:600]}"
+
+    # задание печатается и без --partition: за планом идут ровно за ним
+    plain = run("build_plan.py", cwd=root).stdout
+    assert "ЗАДАНИЕ АССИСТЕНТУ" in plain, f"план без задания:\n{plain[-600:]}"
+    assert "задание на следующую партию" in plain, "не сказано, на какую партию задание"
 
     out = run("build_plan.py", "--partition", "1", cwd=root).stdout
     assert "ЗАДАНИЕ АССИСТЕНТУ" in out, out[:400]
