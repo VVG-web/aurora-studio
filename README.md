@@ -23,6 +23,34 @@ This repository is the **distributable Studio**: deploy it into any new or exist
 | `docs/readme/` | Документация для людей: обзор, лёгкий старт, регламент, практика, уход за базой, спецификации |
 | `cockpit/` | Панель управления: все проекты машины, здоровье баз, запуск команд, справка |
 
+## The cycle
+
+One turn: source → mirror → knowledge → trust → artifact → outward → feedback. Every arrow
+is an engine command, not a wish. Diagram (renders on GitHub) — [docs/lifecycle.md](docs/lifecycle.md);
+visual style for the banner — [docs/aurora-comix-style.md](docs/aurora-comix-style.md).
+
+```mermaid
+flowchart LR
+  SRC["Источники\nConfluence · Jira · Raw/"] -->|"sync:*"| MIR["Зеркала\nSources/"]
+  MIR -->|"kb:build + ассистент"| IMP["imported\nмашина принесла"]
+  IMP -->|"kb:links --cards · kb:moc"| MOC["Связи и карты"]
+  IMP -->|"kb:queue → человек → kb:verify"| VER["verified\nчеловек проверил"]
+  VER -->|"ctx:context"| ART["Артефакты\nUS · AC · спеки"]
+  ART -->|"ship:export · publish · release"| OUT["Наружу\nDeliverables/released/"]
+  OUT -.->|"sync:diff — дрейф\nsync:jira-status — статусы"| SRC
+
+  classDef a fill:#E7DCC5,stroke:#16150F,stroke-width:2px,color:#16150F
+  classDef b fill:#8A8272,stroke:#16150F,stroke-width:2px,color:#FFFFFF
+  classDef c fill:#1E8A46,stroke:#16150F,stroke-width:2px,color:#FFFFFF
+  classDef d fill:#2E6FC8,stroke:#16150F,stroke-width:2px,color:#FFFFFF
+  classDef e fill:#D98A00,stroke:#16150F,stroke-width:2px,color:#16150F
+  class SRC,MIR a
+  class IMP b
+  class VER c
+  class MOC d
+  class ART,OUT e
+```
+
 ## Quick start — deploy Aurora into a project
 
 ```bash
