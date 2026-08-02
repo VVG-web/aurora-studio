@@ -273,7 +273,7 @@ def render(src: str, text: str, converter: str, digest: str) -> str:
     return (f"---\ntitle: \"{title}\"\n"
             f"converted_from: \"{src.replace(chr(92), '/')}\"\n"
             f"converter: {converter}\nconverted: {TODAY}\nsource_hash: {digest}\n"
-            f"status: imported\ntrust: medium\n---\n\n"
+            f"status: imported\n---\n\n"
             f"> ⚙️ **Машинная конвертация.** Истина — оригинал "
             f"`{os.path.basename(src)}`; здесь возможны потери разметки, колонтитулов и "
             f"картинок. Цитировать при верификации следует оригинал.\n\n"

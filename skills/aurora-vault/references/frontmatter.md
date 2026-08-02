@@ -1,8 +1,8 @@
-# Frontmatter schema v2 — lifecycle & trust
+# Frontmatter schema v4 — lifecycle
 
 Every card in `AuroraKnowledgeDB/` carries these fields. Legacy cards (only
 `title/aliases/tags/created/updated/source/related`) are valid but are treated as
-`status: imported, trust: medium` until upgraded. Upgrade lazily: whenever any workflow
+`status: imported` until upgraded. Upgrade lazily: whenever any workflow
 touches a legacy card, add the missing fields.
 
 ## Full schema
@@ -16,7 +16,6 @@ type: process             # concept | process | glossary | system | role | statu
                           # reference | decision | spec | moc
 schema_version: 3         # версия схемы карточки; проставляет kb:schema
 status: verified          # imported → draft → in-review → verified → deprecated
-trust: high               # high | medium | low
 owner: "@vadim"           # кто отвечает за актуальность (git-имя или @handle)
 created: 2026-05-17
 updated: 2026-07-05
@@ -64,6 +63,7 @@ the card body under `## История`.
 |---|---|---|
 | 1 | шапка без гарантий: часто только `title` | до 1.3.0 |
 | 2 | обязательные `status`, `trust`, `type` по разделу | 1.3.0 |
+| 4 | поле `trust` выведено: доверие выражает `status` | 1.35.0 |
 | 3 | убраны ступень `canonical` и поле `audience` | 1.10.0 |
 
 ```bash
@@ -75,7 +75,7 @@ python3 .opencode/scripts/kb_schema.py --apply
 
 Requirement cards live in `AuroraKnowledgeDB/Requirements/`, named `REQ-NNN-<кратко-суть>.md`
 (NNN — next free number in `Requirements/_index.md`). Card `status` tracks knowledge
-trust as usual; the requirement's own lifecycle is separate:
+status as usual; the requirement's own lifecycle is separate:
 
 ```yaml
 type: requirement

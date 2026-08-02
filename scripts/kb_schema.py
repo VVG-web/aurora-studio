@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, RETIRED_FIELDS, RETIRED_STATUS, frontmatter, git_guard,
                            is_service, set_field, split_frontmatter, walk_md)
 
-CURRENT = 3
+CURRENT = 4
 TODAY = date.today().isoformat()
 
 # Разделы базы → тип карточки: та же таблица, по которой достраивает тип `kb:repair`.
@@ -44,7 +44,12 @@ def drop_fields(head: str, fields: tuple) -> str:
 
 
 def m2(head: str, section: str) -> tuple:
-    """1 → 2: у карточки появились статус доверия, владелец и тип раздела."""
+    """1 → 2: у карточки появились статус доверия, владелец и тип раздела.
+
+    Ступень историческая: `trust` здесь проставляется, а на четвёртой — убирается.
+    Переписывать прошлое нельзя: база, стоящая на версии 1, должна пройти тот же путь,
+    что прошли остальные.
+    """
     changed = []
     fm = frontmatter("---" + head + "\n---\n")
     if not fm.get("status"):
@@ -59,13 +64,31 @@ def m2(head: str, section: str) -> tuple:
     return head, changed
 
 
+def m4(head: str, section: str) -> tuple:
+    """3 → 4: поле `trust` выведено из схемы (1.35.0).
+
+    Уровень доверия в базе один и выражается статусом: `imported` — машина принесла,
+    `verified` — человек сверил и отвечает. Второе поле писали шесть скриптов, не читал
+    ни один, и оно разъезжалось со статусом: `verified` с `trust: medium` — что это значит,
+    ответить было нельзя.
+    """
+    before = head
+    head = drop_fields(head, ("trust",))
+    return head, (["убрано trust"] if head != before else [])
+
+
+# Что убрала каждая ступень — записано здесь навсегда. Брать живой список выведенных
+# полей нельзя: он растёт, и прошлая ступень начинает делать не то, что делала.
+V3_DROPPED = ("audience", "confirmed_by")
+
+
 def m3(head: str, section: str) -> tuple:
     """2 → 3: ступень `canonical` и поле `audience` выведены из схемы (1.10.0)."""
     changed = []
     before = head
-    head = drop_fields(head, RETIRED_FIELDS)
+    head = drop_fields(head, V3_DROPPED)
     if head != before:
-        changed.append("убраны " + ", ".join(RETIRED_FIELDS))
+        changed.append("убраны " + ", ".join(V3_DROPPED))
     m = re.search(r"^status:\s*\"?(\w[\w-]*)", head, re.M)
     if m and m.group(1) in RETIRED_STATUS:
         head = re.sub(r"^status:.*$", f"status: {RETIRED_STATUS[m.group(1)]}", head,
@@ -78,6 +101,7 @@ def m3(head: str, section: str) -> tuple:
 MIGRATIONS = {
     2: ("статус доверия, trust и тип раздела в каждой карточке", m2),
     3: ("удалены ступень canonical и поле audience", m3),
+    4: ("удалено поле trust: доверие выражает status", m4),
 }
 
 

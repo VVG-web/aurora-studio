@@ -137,7 +137,7 @@ def incoming(cards: dict) -> dict:
 
 def render(name: str, note: str, items: list, kind: str = "moc") -> str:
     """Карта содержания: шапка карточки, пояснение, список ссылок по алфавиту."""
-    head = (f"---\ntitle: \"{name}\"\ntype: moc\nstatus: imported\ntrust: medium\n"
+    head = (f"---\ntitle: \"{name}\"\ntype: moc\nstatus: imported\n"
             f"schema_version: 3\nupdated: {TODAY}\ntags: [moc]\n---\n\n{GENERATED}\n\n")
     body = [f"# {name}", ""]
     if note:

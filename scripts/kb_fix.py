@@ -10,7 +10,7 @@
                  старое написание в aliases карточки-цели (чтобы больше не ломалось).
   --homoglyphs   имена файлов со смешанной кириллицей/латиницей (AИС → АИС): переименовать,
                  старое имя — в aliases, входящие ссылки переписать.
-  --frontmatter  легаси-карточки без status: проставить status: imported, trust: medium
+  --frontmatter  легаси-карточки без status: проставить status: imported
                  (правило build.md №3); при полном отсутствии frontmatter — создать.
   --dupes        отчёт по карточкам-двойникам (одно имя после свёртки регистра/гомоглифов,
                  общие aliases, одинаковый title). Слияние — отдельной командой:
@@ -265,15 +265,13 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
         if m:
             title = m.group(1).strip()
         fm = (f'---\ntitle: "{title}"\naliases: []\ntags: []\n'
-              f"status: imported\ntrust: medium\ncreated: {TODAY}\nupdated: {TODAY}\n---\n\n")
+              f"status: imported\ncreated: {TODAY}\nupdated: {TODAY}\n---\n\n")
         return fm + card.text.lstrip("\n")
     head, rest = card.text[:card.fm_end], card.text[card.fm_end:]
     head = drop_retired(head)
     add = ""
     if not card.fm.get("status"):
         add += "status: imported\n"
-    if not card.fm.get("trust"):
-        add += "trust: medium\n"
     if not card.fm.get("type") and SECTION_TYPE.get(section):
         add += f"type: {SECTION_TYPE[section]}\n"
     if not add:
@@ -559,7 +557,7 @@ def main() -> int:
     ap.add_argument("--retire", action="store_true",
                     help="убрать поля, выведенные из схемы (audience, confirmed_by; "
                          "легаси-статус canonical → verified)")
-    ap.add_argument("--frontmatter", action="store_true", help="проставить status/trust легаси-карточкам")
+    ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
     ap.add_argument("--all", action="store_true", help="всё вышеперечисленное")
     ap.add_argument("--merge", nargs=2, metavar=("KEEP", "DROP"), help="слить DROP в KEEP")

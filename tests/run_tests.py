@@ -1080,15 +1080,17 @@ def test_schema_version_migrates_by_chain(tmp: Path):
         encoding="utf-8")
 
     cp = run("kb_schema.py", cwd=root)
-    assert "v1: 1" in cp.stdout and "К переводу: 2" in cp.stdout, \
+    assert "v1: 1" in cp.stdout and "К переводу: 3" in cp.stdout, \
         f"версии карточек посчитаны неверно:\n{cp.stdout}"
     assert "v3: убраны audience" in cp.stdout, "не сказано, что именно сделает ступень"
+    assert "v4: убрано trust" in cp.stdout, "ступень с выводом trust не объявлена"
 
     run("kb_schema.py", "--apply", "--allow-dirty", cwd=root)
     legacy = (root / "AuroraKnowledgeDB/Глоссарий" if False else
               root / "AuroraKnowledgeDB/Glossary/Легаси.md").read_text(encoding="utf-8")
     assert "status: imported" in legacy and "type: glossary" in legacy, "ступень v2 не отработала"
-    assert "schema_version: 3" in legacy, "версия схемы не проставлена"
+    assert "schema_version: 4" in legacy, "версия схемы не проставлена"
+    assert "trust:" not in legacy, "поле trust осталось после миграции"
     old = (root / "AuroraKnowledgeDB/Systems/Старая.md").read_text(encoding="utf-8")
     assert "audience" not in old and "status: verified" in old, "ступень v3 не отработала"
     assert "тело" in old, "тело карточки пострадало при миграции"
@@ -1716,8 +1718,7 @@ def test_verify_by_jira_status(tmp: Path):
     argued = (cards / "Спорное.md").read_text(encoding="utf-8")
     assert "status: verified" in good and "PRJ-1" in good, f"не принято по статусу:\n{cp.stdout[:500]}"
     assert "PRJ-5" in good, "вторая задача с тем же решением не попала в основание"
-    assert "status: draft" in guess and "trust: low" in guess, \
-        f"предположение не понижено:\n{guess}"
+    assert "status: draft" in guess, f"предположение не понижено:\n{guess}"
     assert "предположение" in guess, "в карточке нет основания решения"
     assert "status: imported" in argued, "карточка со спорящими задачами тронута"
 

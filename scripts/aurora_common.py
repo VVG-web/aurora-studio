@@ -26,7 +26,9 @@ TRUSTED = ("verified", "canonical")
 
 # Поля и статусы, выведенные из схемы. Живут здесь, а не в одном скрипте: их должны
 # одинаково понимать и ремонт (`kb:retire`), и проверка готовности (`kit:doctor`).
-RETIRED_FIELDS = ("audience", "confirmed_by")
+# `trust` выведено в 1.35.0: за всё время его писали шесть скриптов и не читал
+# ни один — доверие в базе выражает `status`, второе поле только путало.
+RETIRED_FIELDS = ("audience", "confirmed_by", "trust")
 RETIRED_STATUS = {"canonical": "verified"}
 
 # Ссылка Obsidian: [[цель#якорь|подпись]], возможно с ! для встраивания.

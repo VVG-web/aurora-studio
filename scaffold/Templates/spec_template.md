@@ -5,7 +5,6 @@ tags: [spec]
 type: spec
 spec_id: SPEC-{{NNN}}
 status: draft             # draft → in-review → verified (согласована); передача в разработку — spec-pack
-trust: medium
 owner:
 created: {{YYYY-MM-DD}}
 updated: {{YYYY-MM-DD}}
