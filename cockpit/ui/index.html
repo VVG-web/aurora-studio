@@ -337,7 +337,11 @@ tr:last-child td{border-bottom:0}
         <button class="btn sm" id="clearConsole">Очистить</button>
       </div>
       <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
-      <h2>История</h2>
+      <h2>Журнал запусков</h2>
+      <p class="sub" style="margin-top:0">Лежит в проекте
+        (<span class="mono">.opencode/run_log.md</span>) и ездит по git: по строке на команду —
+        последний прогон, его итог, версия ядра и кто запускал. Запуски из терминала сюда
+        не попадают.</p>
       <div class="card" id="historyBox"><div class="list-item muted">Пока пусто.</div></div>
     </section>
 
@@ -393,8 +397,8 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.28.0";
-const S = { state:null, project:null, health:null, view:"overview", job:null, history:[], docs:[] };
+const UI_VERSION = "1.29.0";
+const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
@@ -479,6 +483,7 @@ function show(view){
   if (view==="commands") renderCommands();
   if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
+  if (view==="console") renderHistory();   // журнал показываем на входе, а не только после запуска
   if (view==="about") renderAbout();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
 }
@@ -518,6 +523,7 @@ async function boot(){
   ni.textContent = missing || "";
   ni.classList.toggle("bad", missing>0);
   renderOverview();
+  renderHistory();
   loadSkins();
   prefetchHealth();
   const [v, slug] = (location.hash.slice(1)||"").split("|");
@@ -616,6 +622,8 @@ async function pick(p, go=true){
   const h = await api("/api/health?project=" + encodeURIComponent(p.path));
   S.health = h; p.health = h;
   renderHealth(); renderOverview(); renderProjBadge();
+  // журнал запусков — свой у каждого проекта; его отметки стоят и в командах, и в сценариях
+  renderCommands(); renderHistory(); renderQuick();
   navBadges(p, h);
   stamp("#healthStamp");
 }
@@ -957,6 +965,7 @@ function renderCommands(){
     list.forEach(r=>{
       const writes = r.flags.includes("--apply");
       const outward = ["sync:confluence","sync:jira","ship:publish","ship:export"].includes(r.cmd);
+      const last = lastRun(r.cmd), mark = last ? rcMark(last.rc) : null;
       c.append(el("div",{class:"list-item"},
         el("div",{style:"flex:1;min-width:0"},
           el("div",{class:"row",style:"gap:8px"},
@@ -965,7 +974,10 @@ function renderCommands(){
             kindChip(r.kind),
             writes?el("span",{class:"chip warn"},"пишет"):null,
             outward?el("span",{class:"chip gold"},"наружу"):null,
-            el("span",{class:"chip"},"с "+r.since)),
+            el("span",{class:"chip"},"с "+r.since),
+            mark ? el("span",{class:"chip "+mark.cls, title:
+              `последний запуск: ${last.label} — ${mark.what}, код ${last.rc}, ядро ${last.kit||"?"}`},
+              mark.what + " · " + histWhen(last.at)) : null),
           el("div",{class:"muted",style:"font-size:13px;margin-top:5px",html:tick(r.what)}),
           r.flags.length?el("div",{class:"mono",style:"font-size:11.5px;color:var(--text-muted);margin-top:6px"},
             r.flags.join(" ")):null),
@@ -1167,7 +1179,7 @@ async function fire(apply){
   if (!res.job) return;
   if (!apply && r.flags.includes("--apply"))
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
-  poll(res.job, 0, r.cmd + " " + args.join(" "));
+  poll(res.job, 0, (r.cmd + " " + args.join(" ")).trim());
 }
 async function poll(id, since, label){
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
@@ -1181,30 +1193,64 @@ async function poll(id, since, label){
   });
   out.scrollTop = out.scrollHeight;
   if (!d.done) return setTimeout(()=>poll(id, d.next, label), 450);
-  const rc = d.rc;
+  const rc = d.rc, mark = rcMark(rc);
   const badge = $("#consoleRc");
-  badge.textContent = rc===0 ? "успех · код 0" : "код возврата " + rc;
-  badge.className = "chip " + (rc===0 ? "ok" : "bad");
-  toast(rc===0 ? "Готово: " + label : "Команда вернула код " + rc, rc===0?"ok":"err");
+  badge.textContent = mark.what + " · код " + rc;
+  badge.className = "chip " + mark.cls;
+  toast(rc===0 ? "Готово: " + label : mark.what + ": " + label + " (код " + rc + ")",
+        rc===0 ? "ok" : rc===1 ? "warn" : "err");
   if (rc===0 && PENDING_APPLY && PENDING_APPLY.job===id){
     const line = PENDING_APPLY.line;
     $("#consoleApply").append(el("button",{class:"btn sm gold",
       onclick:()=>{ if (confirm(applyAsk(line))) fire(true); }},
       "Применить: " + line + " --apply"));
   }
-  S.history.unshift({label, rc, at:new Date().toLocaleTimeString("ru-RU")});
-  renderHistory();
+  // журнал пишет сервер — перечитываем его вместе со здоровьем, а не ведём копию в вкладке
   if (S.project) { const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
-      if (S.view==="health") renderHealth(); renderOverview(); stamp("#healthStamp");}); }
+      if (S.view==="health") renderHealth(); renderOverview(); stamp("#healthStamp");
+      renderHistory(); renderCommands(); renderQuick();}); }
+}
+/* Код возврата в Авроре означает три разных вещи, и красить их одинаково — врать.
+   0 — сделано; 1 — команда отработала и нашла, что чинить (doctor с ошибками, аудит с
+   расхождениями); 2 и выше — не отработала вовсе: не пустил git-гейт, не найден kit,
+   не разобраны аргументы. Первое зелёное, второе жёлтое, третье красное. */
+function rcMark(rc){
+  return rc === 0 ? {cls:"ok", what:"успех"}
+    : rc === 1 ? {cls:"warn", what:"есть что поправить"}
+    : {cls:"bad", what:"не сработала"};
+}
+/* Журнал запусков живёт в проекте (`.opencode/run_log.md`) и ездит по git вместе с ним:
+   «когда последний раз обновляли зеркала» — вопрос ко всей команде, а не к одному
+   браузеру. Панель его только показывает; пишет сервер после каждого запуска. */
+function runs(){ return (S.health && S.health.runs) || {}; }
+function lastRun(cmd){ return runs()[cmd]; }
+
+/* Список переживает сессии, поэтому одного времени мало: без даты «14:20» назавтра
+   означает что угодно. Сегодняшнее показываем часами, вчерашнее — с датой. */
+function histWhen(iso){
+  const d = new Date(iso);
+  if (isNaN(d)) return iso || "";
+  const hm = d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  return d.toDateString()===new Date().toDateString() ? hm
+    : d.toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"}) + " " + hm;
 }
 function renderHistory(){
   const box = $("#historyBox"); box.innerHTML="";
-  if (!S.history.length){ box.append(el("div",{class:"list-item muted"},"Пока пусто.")); return; }
-  S.history.slice(0,12).forEach(h=>box.append(el("div",{class:"list-item"},
-    el("span",{class:"chip "+(h.rc===0?"ok":"bad")}, h.rc===0?"ok":"rc "+h.rc),
-    el("span",{class:"mono",style:"flex:1"}, h.label),
-    el("span",{class:"muted",style:"font-size:12px"}, h.at))));
+  if (!S.project){ box.append(el("div",{class:"list-item muted"},"Выберите проект.")); return; }
+  const rows = Object.entries(runs()).map(([cmd, r])=>({cmd, ...r}))
+    .sort((a, b)=> String(b.at).localeCompare(String(a.at)));
+  if (!rows.length){
+    box.append(el("div",{class:"list-item muted"},
+      "Пока пусто: журнал заполняется по мере запусков из панели.")); return; }
+  rows.slice(0,20).forEach(h=>box.append(el("div",{class:"list-item"},
+    el("span",{class:"chip "+rcMark(h.rc).cls, title:rcMark(h.rc).what},
+      h.rc===0 ? "ok" : "код " + h.rc),
+    el("span",{class:"mono",style:"flex:1",title:h.line}, h.cmd),
+    h.who ? el("span",{class:"chip"}, h.who) : null,
+    h.kit ? el("span",{class:"chip mono",title:"версия ядра, на которой команда отработала"},
+      "kit " + h.kit) : null,
+    el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
 }
 $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; };
 
@@ -1433,13 +1479,22 @@ async function loadSkins(){
   const chosen = (saved && has(saved)) ? saved
                : (has("zine") ? "zine" : (list[0] && list[0].id) || "zine");
   sel.innerHTML = "";
-  list.forEach(s => sel.append(el("option",{value:s.id, title:s.about,
-    selected: s.id===chosen ? "" : null}, s.name)));
+  // Скин красит и то, чего в панели ещё не было, когда его писали: новый элемент выйдет
+  // в цветах по умолчанию, и по виду это не отличить от задуманного. Поэтому у отставшего
+  // скина версия стоит прямо в списке.
+  list.forEach(s => sel.append(el("option",{value:s.id,
+    title: s.about + " · собран под ядро " + s["for"],
+    selected: s.id===chosen ? "" : null}, s.name + (s.behind ? " · под " + s["for"] : ""))));
   await applySkin(chosen);
+  const stale = s => s && s.behind &&
+    toast(`Скин «${s.name}» собран под ядро ${s["for"]}, установлено ${S.state.kit.version} — ` +
+          "новые элементы могут быть в цветах по умолчанию.", "warn");
+  stale(list.find(x=>x.id===chosen));
   sel.onchange = async () => {
     await applySkin(sel.value);
     const s = list.find(x=>x.id===sel.value);
     if (s && s.about) toast(s.name + " — " + s.about.slice(0,110), "ok");
+    stale(s);
   };
 }
 async function applySkin(id){
@@ -1457,8 +1512,9 @@ async function applySkin(id){
 /* ---------------- быстрый старт ---------------- */
 async function renderQuick(){
   const box = $("#quickBody");
-  if (box.dataset.ready) return;
-  const d = await api("/api/scenarios");
+  // Сценарии читаем один раз, а рисуем каждый раз: отметки последнего запуска меняются
+  // от прогонов и от смены проекта, поэтому кэшировать саму разметку нельзя.
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
   box.innerHTML = "";
   (d.scenarios||[]).forEach(sc => {
     const card = el("div",{class:"card",style:"padding:20px;margin-bottom:16px"},
@@ -1494,12 +1550,17 @@ async function renderQuick(){
           copyButton(say)));
         return;
       }
+      const last = lastRun(st.cmd), mark = last ? rcMark(last.rc) : null;
       card.append(el("div",{class:"list-item"}, num,
         el("div",{style:"flex:1;min-width:0"},
           el("div",{class:"row",style:"gap:8px"},
             el("span",{class:"mono",style:"font-weight:700"}, st.cmd),
             row && row.flags.includes("--apply") ? el("span",{class:"chip warn"},"пишет") : null,
-            st.flags && st.flags.length ? el("span",{class:"chip mono"}, st.flags.join(" ")) : null),
+            st.flags && st.flags.length ? el("span",{class:"chip mono"}, st.flags.join(" ")) : null,
+            mark ? el("span",{class:"chip "+mark.cls, title:
+              `последний запуск: ${mark.what}, код ${last.rc}, ядро ${last.kit||"?"}`
+              + (last.who ? ", запускал " + last.who : "")},
+              mark.what + " · " + histWhen(last.at)) : null),
           el("div",{class:"muted",style:"font-size:13px;margin-top:4px"}, st.why)),
         row && row.runnable
           ? el("button",{class:"btn sm primary",onclick:()=>openRun(st.cmd, st.flags||[])},"Запустить")
@@ -1507,7 +1568,6 @@ async function renderQuick(){
     });
     box.append(card);
   });
-  box.dataset.ready = "1";
 }
 
 // Шаг без кнопки запуска бесполезен без ответа на вопрос «а что мне тогда сделать».
