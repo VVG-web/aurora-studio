@@ -7,7 +7,6 @@ req_id: REQ-{{NNN}}
 req_status: stated        # stated → agreed → implemented | rejected
 stated: {{YYYY-MM-DD}}
 status: imported          # статус доверия карточки: imported → ... → verified
-trust: medium
 owner:
 created: {{YYYY-MM-DD}}
 updated: {{YYYY-MM-DD}}

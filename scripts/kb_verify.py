@@ -241,7 +241,6 @@ def main() -> int:
                 # Не знание, а предположение: работа по задаче ещё не начиналась.
                 # Понижаем доверие явно, чтобы карточка не выглядела проверенной.
                 new_head = set_field(head, "status", "draft")
-                new_head = set_field(new_head, "trust", "low")
                 new_head = set_field(new_head, "verified_basis",
                                      f'"{said} — это ещё предположение, а не знание{aside}"')
                 new_head = set_field(new_head, "updated", TODAY.isoformat())
@@ -264,7 +263,6 @@ def main() -> int:
         new_head = set_field(new_head, "review_by", review_by)
         new_head = set_field(new_head, "updated", TODAY.isoformat())
         if verdict == "verified":
-            new_head = set_field(new_head, "trust", "high")
             new_head = set_field(new_head, "verified_basis",
                                  f'"{said}: постановка прошла разбор и приёмку{aside}"')
         if basis:
