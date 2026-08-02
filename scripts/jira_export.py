@@ -69,6 +69,10 @@ def read_secret() -> tuple:
 class Api(RestApi):
     agent = "aurora-jira-export/1.0"
 
+    def __init__(self, base: str, auth: str):
+        super().__init__(base, auth)
+        self._titles: dict = {}
+
     def search(self, jql: str, fields: str, limit: int = 0) -> list:
         out, start = [], 0
         while True:
@@ -86,6 +90,18 @@ class Api(RestApi):
             return self.get(f"/rest/api/2/issue/{key}/comment?maxResults=100").get("comments", [])
         except Exception:
             return []
+
+    def issue_title(self, key: str) -> str:
+        """Заголовок задачи по ключу — с памятью: один запрос на эпик, а не на историю."""
+        if key in self._titles:
+            return self._titles[key]
+        try:
+            data = self.get(f"/rest/api/2/issue/{urllib.parse.quote(key)}?fields=summary")
+            title = ((data.get("fields") or {}).get("summary") or "").replace('"', "'")
+        except Exception:  # noqa: BLE001
+            title = ""
+        self._titles[key] = title
+        return title
 
     def epic_field(self) -> str:
         """id поля «Epic Link» — в Jira Server это custom field с плавающим номером."""
@@ -168,7 +184,8 @@ def names(values) -> str:
     return ", ".join(v.get("name", "") for v in values if isinstance(v, dict))
 
 
-def render(issue: dict, base_url: str, epic_field: str, comments: list) -> str:
+def render(issue: dict, base_url: str, epic_field: str, comments: list,
+           epic_titles: dict = None) -> str:
     f = issue["fields"]
     def person(key):
         p = f.get(key) or {}
@@ -184,7 +201,11 @@ def render(issue: dict, base_url: str, epic_field: str, comments: list) -> str:
         "reporter": person("reporter"),
         "created": (f.get("created") or "")[:10],
         "updated": (f.get("updated") or "")[:19].replace("T", " "),
+        # Ключ эпика без названия не отвечает на вопрос «что это за эпик»: за ответом
+        # приходилось идти в Jira. Название кладём рядом, одним запросом на эпик.
         "epic": f.get(epic_field) or "" if epic_field else "",
+        "epic_title": ((epic_titles or {}).get(f.get(epic_field) or "", "")
+                       if epic_field else ""),
         "parent": (f.get("parent") or {}).get("key", ""),
         "labels": ", ".join(f.get("labels") or []),
         "components": names(f.get("components")),
@@ -234,6 +255,7 @@ def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
     epic_field = api.epic_field()
     issues = api.search(jql, FIELDS + (f",{epic_field}" if epic_field else ""), limit)
     state = {} if force else load_state(out_dir)
+    epic_titles: dict = {}      # ключ эпика → название: спрашиваем один раз за прогон
     os.makedirs(out_dir, exist_ok=True)
     written = skipped = 0
     rows = []
@@ -247,8 +269,11 @@ def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
         if not force and state.get(key) == updated and os.path.isfile(full):
             skipped += 1
             continue
+        epic_key = (issue["fields"].get(epic_field) or "") if epic_field else ""
+        if epic_key and epic_key not in epic_titles:
+            epic_titles[epic_key] = api.issue_title(epic_key)
         text = render(issue, cfg["base_url"], epic_field,
-                      api.comments(key) if with_comments else [])
+                      api.comments(key) if with_comments else [], epic_titles)
         old = open(full, encoding="utf-8").read() if os.path.isfile(full) else None
         if old == text:
             skipped += 1

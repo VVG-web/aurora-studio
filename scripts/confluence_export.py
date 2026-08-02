@@ -120,6 +120,10 @@ def resolve_ref(api, raw: str, default_space: str = "") -> tuple:
 class Api(RestApi):
     agent = "aurora-confluence-export/1.0"
 
+    def __init__(self, base: str, auth: str):
+        super().__init__(base, auth)
+        self._users: dict = {}      # ключ → имя: один запрос на человека, а не на страницу
+
     def page(self, page_id: str) -> dict:
         return self.get(f"/rest/api/content/{page_id}"
                         "?expand=body.storage,version,space,ancestors")
@@ -129,6 +133,24 @@ class Api(RestApi):
         data = self.get(f"/rest/api/content?spaceKey={space}&title={q}&limit=5")
         hits = data.get("results", [])
         return hits[0] if hits else {}
+
+    def user_name(self, key: str) -> str:
+        """Ключ пользователя → отображаемое имя. В storage лежит только ключ, а в
+        зеркале нужен человек: «@8a7aa58b…» не отвечает на вопрос, кто автор правки."""
+        if key in self._users:
+            return self._users[key]
+        name = ""
+        for q in (f"/rest/api/user?key={urllib.parse.quote(key)}",
+                  f"/rest/api/user?username={urllib.parse.quote(key)}",
+                  f"/rest/api/user?accountId={urllib.parse.quote(key)}"):
+            try:
+                name = (self.get(q) or {}).get("displayName", "") or ""
+            except Exception:  # noqa: BLE001
+                name = ""
+            if name:
+                break
+        self._users[key] = name
+        return name
 
     def attachments(self, page_id: str) -> dict:
         """{имя файла: адрес скачивания} — вложения страницы.
@@ -167,7 +189,8 @@ MERMAID_MACROS = ("mermaid", "mermaid-cloud", "macro-mermaid", "mermaidcloud", "
 DRAWIO_MACROS = ("drawio", "drawio-diagram", "drawio-board")
 
 
-def preprocess(soup, base_url: str, space: str, jira_base: str = "", assets: list = None):
+def preprocess(soup, base_url: str, space: str, jira_base: str = "",
+               assets: list = None, users: list = None):
     """Макросы и ссылки Confluence → стабильный markdown-совместимый вид.
 
     Всё, что зависит от окружения (id ревизии, время рендера, порядок атрибутов),
@@ -271,6 +294,46 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "", assets: lis
             else:
                 tag.replace_with(NavigableString(f"JIRA:{key}"))
             continue
+        if name in ("table-excerpt-include", "table-excerpt"):
+            # Врезка таблицы с другой страницы: сама таблица живёт там, здесь — ссылка.
+            # Без обработчика раздел приезжал пустым, как и в случае excerpt-include.
+            ref = tag.find(re.compile(r"^ri:page$"))
+            params = {(p.get("ac:name") or ""): p.get_text(strip=True)
+                      for p in tag.find_all(re.compile(r"^ac:parameter$"))}
+            title = ref.get("ri:content-title", "") if ref is not None else ""
+            named = params.get("name", "")
+            body = tag.find(re.compile(r"^ac:rich-text-body$"))
+            if body is not None and title == "":
+                tag.replace_with(body)          # это исходная врезка, а не включение
+                continue
+            if not title:
+                tag.decompose()
+                continue
+            sp = (ref.get("ri:space-key") or space) if ref is not None else space
+            a = soup.new_tag("a", href=f"{base_url}/display/{urllib.parse.quote(sp)}/"
+                                       f"{urllib.parse.quote(title.replace(' ', '+'), safe='+')}")
+            a.string = title
+            wrap = soup.new_tag("p")
+            wrap.append(NavigableString(
+                f"Таблица «{named}» включена со страницы: " if named
+                else "Таблица включена со страницы: "))
+            wrap.append(a)
+            tag.replace_with(wrap)
+            continue
+        if name == "widget":
+            # Внешний ресурс (макет в Figma и подобное): адрес лежит в ri:url, а не в тексте.
+            url = tag.find(re.compile(r"^ri:url$"))
+            href = url.get("ri:value", "") if url is not None else ""
+            if not href:
+                tag.decompose()
+                continue
+            a = soup.new_tag("a", href=href)
+            a.string = href
+            tag.replace_with(a)
+            continue
+        if name == "change-history":
+            tag.decompose()          # историю правок ведёт сам Confluence, в зеркале её нет
+            continue
         if name in ("excerpt-include", "include"):
             # Врезка чужой страницы: сам текст живёт там, здесь — ссылка на него.
             # Раньше исчезала целиком, и раздел вроде «Acceptance criteria» оставался пустым.
@@ -349,6 +412,8 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "", assets: lis
             # и выдумывать его нельзя. Без обработчика ячейка «Автор изменений» пустела.
             who = (user.get("ri:username") or user.get("ri:account-id")
                    or user.get("ri:userkey") or "")
+            if who and users is not None:
+                users.append(who)     # имя спросим у сервера: в storage лежит только ключ
             link.replace_with(NavigableString(label or (f"@{who}" if who else "@")))
         elif att is not None:
             link.replace_with(NavigableString(label or att.get("ri:filename", "вложение")))
@@ -406,13 +471,33 @@ def build_converter():
     return AuroraConverter(heading_style="ATX", bullets="-", strip=["script", "style"])
 
 
+def unquote_fences(md: str) -> str:
+    """Убрать «> » внутри ограждённых блоков.
+
+    Макрос кода или диаграммы часто стоит внутри `expand`/`info`, а те становятся цитатой —
+    markdownify префиксует каждую строку. Внутри ограды это уже не оформление: mermaid с
+    «> » в начале строк не разбирается, а код перестаёт быть кодом.
+    """
+    out, fence = [], False
+    for line in md.split("\n"):
+        bare = line.lstrip("> ").rstrip() if line.lstrip().startswith(">") else line
+        if bare.startswith("```"):
+            out.append(bare if fence or line.lstrip().startswith(">") else line)
+            fence = not fence
+            continue
+        out.append((line[2:] if line.startswith("> ") else line.lstrip("> ")
+                    if line.lstrip().startswith(">") else line) if fence else line)
+    return "\n".join(out)
+
+
 def to_markdown(storage_html: str, base_url: str, space: str, jira_base: str = "",
-                assets: list = None) -> str:
+                assets: list = None, users: list = None) -> str:
     from bs4 import BeautifulSoup
     soup = preprocess(BeautifulSoup(storage_html, "html.parser"), base_url, space,
-                      jira_base, assets)
+                      jira_base, assets, users)
     md = build_converter().convert(str(soup))
     md = md.replace("\r\n", "\n").replace("\r", "\n")
+    md = unquote_fences(md)
     md = re.sub(r"[ \t]+\n", "\n", md)
     md = re.sub(r"\n{3,}", "\n\n", md)
     return md.strip()
@@ -563,7 +648,12 @@ class Exporter(WikiMirror):
         self.ry_links += len(links)
         body = data.get("body", {}).get("storage", {}).get("value", "")
         assets: list = []
-        md = to_markdown(body, self.base_url, self.space, self.jira_base, assets)
+        users: list = []
+        md = to_markdown(body, self.base_url, self.space, self.jira_base, assets, users)
+        for key in sorted(set(users)):
+            name = self.api.user_name(key)
+            if name:
+                md = md.replace("@" + key, "@" + name)
         if assets:
             md += "\n\n" + self.save_assets(page_id, rel, assets)
         meta = {"id": page_id, "title": title, "space": data["space"]["key"],
