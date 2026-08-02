@@ -115,6 +115,14 @@ class RestApi:
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.load(r)
 
+    def fetch(self, url: str) -> bytes:
+        """Сырое тело по адресу: вложения (схемы, диаграммы) — не JSON."""
+        req = urllib.request.Request(url if url.startswith("http") else self.base + url,
+                                     headers={"Authorization": self.auth,
+                                              "User-Agent": self.agent})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.read()
+
 
 # ------------------------------------------------------------------ зеркало
 
@@ -178,8 +186,14 @@ class Mirror:
                 out.append(cells)
         return out
 
-    def disk_rels(self) -> list:
-        """Файлы зеркала (кроме служебных) относительными путями."""
+    def disk_rels(self, only_md: bool = True) -> list:
+        """Файлы зеркала (кроме служебных) относительными путями.
+
+        `only_md=False` возвращает и всё прочее: `.md_COLLISION`, `.bak`, копии от прежних
+        синк-скиллов. Зеркало — машинная выгрузка, и файл в нём, за которым не стоит
+        страница, — мусор по определению. Пока чистка смотрела только на `.md`, такой
+        мусор был невидим и для `--prune`, и для аудита: папка с шестью `.md_COLLISION`
+        пережила и `--force`, и `--prune`, и читалась человеком как дубль каталога."""
         out = []
         if not os.path.isdir(self.out):
             return out
@@ -193,7 +207,9 @@ class Mirror:
                     rel = os.path.relpath(os.path.join(dirpath, f), self.out).replace("\\", "/")
                     pairs.append((f, rel))
         for name, rel in pairs:
-            if name.endswith(".md") and name != self.state_name and not SERVICE_RE.search(name):
+            if name.startswith(".") or name == self.state_name or SERVICE_RE.search(name):
+                continue      # служебное синка и точечные файлы ОС трогать не наше дело
+            if name.endswith(".md") or not only_md:
                 out.append(rel)
         return sorted(out)
 
@@ -207,7 +223,7 @@ class Mirror:
         known_n = {nfc(k) for k in known}
         known_ci = {k.casefold() for k in known_n}
         out = []
-        for rel in self.disk_rels():
+        for rel in self.disk_rels(only_md=False):
             n = nfc(rel)
             if n not in known_n and n.casefold() not in known_ci:
                 out.append(rel)
@@ -391,6 +407,36 @@ def verify(run, skip=()) -> int:
 
 
 # ------------------------------------------------------------------ вывод
+
+def drop_empty_dirs(root: str) -> int:
+    """Убрать каталоги, в которых после чистки не осталось ничего, кроме мусора ОС.
+
+    Пустая папка от переименованной страницы выглядит дублем каталога и читается человеком
+    как «синк развалился». Удаляем снизу вверх; `.DS_Store` и подобное — не содержимое.
+    """
+    gone = 0
+    for dirpath, _dirs, _files in os.walk(root, topdown=False):
+        if os.path.abspath(dirpath) == os.path.abspath(root):
+            continue
+        # список из os.walk снят до удаления вложенных: спрашиваем файловую систему
+        try:
+            here = os.listdir(dirpath)
+        except OSError:
+            continue
+        if [n for n in here if not n.startswith(".")]:
+            continue
+        for junk in here:
+            try:
+                os.remove(os.path.join(dirpath, junk))
+            except OSError:
+                pass
+        try:
+            os.rmdir(dirpath)
+            gone += 1
+        except OSError:
+            pass
+    return gone
+
 
 def report_stale(kind: str, extra: list, out_dir: str) -> None:
     """Одинаковый рассказ про лишние файлы: их всегда сначала показывают, потом удаляют."""
