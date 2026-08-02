@@ -240,13 +240,18 @@ def main() -> int:
             print(f"… ещё {len(partitions) - 3} партий — покажет `--partition N`\n")
             break
 
-    if a.partition and a.partition <= len(partitions):
-        print(task_prompt(a.partition, partitions[a.partition - 1]))
-    else:
-        print("Порядок обхода — из `build.md`: терминология раньше того, что на неё ссылается.")
-        print("После обработки источника: `build_plan.py --done <файл> --cards N` —")
-        print("так партия возобновляется с места остановки, а не начинается заново.")
-        print("\nЗадание ассистенту на конкретную партию: `build_plan.py --partition N`.")
+    print("Порядок обхода — из `build.md`: терминология раньше того, что на неё ссылается.")
+    print("После обработки источника: `build_plan.py --done <файл> --cards N` —")
+    print("так партия возобновляется с места остановки, а не начинается заново.")
+    # Задание печатается всегда: за планом человек идёт ровно затем, чтобы отдать
+    # ассистенту следующую партию. Отдельный запуск с `--partition N` ради этого — лишний
+    # шаг, а в панели ещё и лишний поиск команды.
+    num = a.partition if (a.partition and a.partition <= len(partitions)) else 1
+    if partitions:
+        if not a.partition:
+            print(f"\nНиже — задание на следующую партию (№{num} из {len(partitions)}). "
+                  f"Другая партия: `--partition N`.")
+        print(task_prompt(num, partitions[num - 1]))
     return 0
 
 
