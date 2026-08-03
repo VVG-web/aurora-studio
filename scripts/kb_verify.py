@@ -45,8 +45,8 @@ import re
 import sys
 from datetime import date, timedelta
 
-from aurora_common import (TRUSTED, frontmatter, git_guard, link_targets, set_field,
-                           split_frontmatter)
+from aurora_common import (TRUSTED, body_hash, card_body, frontmatter, git_guard,
+                           link_targets, set_field, split_frontmatter)
 
 ROOT = "AuroraKnowledgeDB"
 TODAY = date.today()
@@ -262,6 +262,10 @@ def main() -> int:
         new_head = set_field(new_head, "verified", TODAY.isoformat())
         new_head = set_field(new_head, "review_by", review_by)
         new_head = set_field(new_head, "updated", TODAY.isoformat())
+        # Отпечаток тела на момент приёмки. Карточку правят и после неё — это Zettelkasten,
+        # а не архив, — но тогда `verified` относится уже не к тому тексту. По отпечатку
+        # линтер отличает «дописали» от «подтверждено как есть».
+        new_head = set_field(new_head, "verified_hash", body_hash(card_body(text)))
         if verdict == "verified":
             new_head = set_field(new_head, "verified_basis",
                                  f'"{said}: постановка прошла разбор и приёмку{aside}"')

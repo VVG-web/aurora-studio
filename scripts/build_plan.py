@@ -158,7 +158,9 @@ def main() -> int:
                     help="сколько источников максимум в одной партии (по умолчанию 40)")
     ap.add_argument("--partition", type=int, help="показать только эту партию")
     ap.add_argument("--tasks", type=int, default=5, metavar="N",
-                    help="на сколько ближайших партий печатать задание (по умолчанию 5)")
+                    help="на сколько партий печатать задание (по умолчанию 5)")
+    ap.add_argument("--from", type=int, default=1, metavar="N", dest="start",
+                    help="с какой партии начинать печать заданий (по умолчанию с первой)")
     ap.add_argument("--done", metavar="FILE", help="отметить источник обработанным")
     ap.add_argument("--cards", type=int, default=0, help="сколько карточек извлечено (для --done)")
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
@@ -258,11 +260,20 @@ def main() -> int:
             if not nums:
                 print(f"\nПартии {a.partition} нет: всего их {len(partitions)}.")
         else:
-            # Печатаем задания на несколько ближайших партий сразу: ходить за каждой
-            # отдельной командой человек не обязан, а панель разложит их по кнопкам.
-            nums = list(range(1, min(a.tasks, len(partitions)) + 1))
-            print(f"\nНиже — задания на ближайшие партии ({len(nums)} из {len(partitions)}). "
-                  "Каждый блок самодостаточен: копируется целиком и отдаётся ассистенту.")
+            # Печатаем задания на несколько партий сразу: ходить за каждой отдельной
+            # командой человек не обязан, а панель разложит их по кнопкам. Партий бывает
+            # три десятка — `--from N` берёт следующую пятёрку, не листая предыдущие.
+            start = max(1, a.start)
+            nums = list(range(start, min(start + a.tasks - 1, len(partitions)) + 1))
+            if not nums:
+                print(f"\nПартии {start} нет: всего их {len(partitions)}.")
+            else:
+                print(f"\nНиже — задания на партии {nums[0]}–{nums[-1]} "
+                      f"(всего партий {len(partitions)}). Каждый блок самодостаточен: "
+                      "копируется целиком и отдаётся ассистенту.")
+                if nums[-1] < len(partitions):
+                    print(f"Следующие: `kb:build --from {nums[-1] + 1}` — "
+                          f"партии {nums[-1] + 1}–{min(nums[-1] + a.tasks, len(partitions))}.")
         for num in nums:
             print(task_prompt(num, partitions[num - 1], len(partitions)))
     return 0

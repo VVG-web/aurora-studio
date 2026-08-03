@@ -30,6 +30,15 @@ Turns project documentation into a living knowledge base of atomic, interconnect
 1. **Every note created or updated by `build` gets `status: imported`** in frontmatter
    (plus `source_synced: <today>`). Human review promotes it later (see `workflows.md`).
 2. **Never silently overwrite a note whose `status` is `verified` or `deprecated`.**
+   Правка проверенной карточки человеком — норма: картотека живёт, и запрещать
+   дописывать её значило бы превратить базу в архив. Запрещено другое — **молча
+   переписать машиной то, что человек читал и подтвердил**. Отсюда правило: тело
+   `verified`-карточки машина не трогает, новое из источника кладёт отдельной секцией
+   `## Из источника (не проверено)` и пишет `DRIFT` в отчёт. Человек либо принимает
+   дописанное (`kb:verify --refresh`), либо разводит знание по карточкам.
+   Статус относится к **тексту**, а не к файлу: если тело изменилось после приёмки,
+   отпечаток `verified_hash` расходится, и `kb:lint` это показывает — не запрещая правку,
+   но и не давая `verified` тихо соврать.
    If the source changed and the extracted content differs from such a note:
    - do NOT modify the note body;
    - refresh `source_synced` and append the conflict to the run report:

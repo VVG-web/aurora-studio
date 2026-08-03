@@ -14,7 +14,7 @@
 """
 import os, re, sys, collections
 
-from aurora_common import aliases, frontmatter, link_refs
+from aurora_common import aliases, body_hash, card_body, frontmatter, link_refs
 
 ROOT = "AuroraKnowledgeDB"
 
@@ -71,6 +71,14 @@ def main():
                 errors.append(f"{rel}: verified без owner")
             if not fm.get("review_by"):
                 errors.append(f"{rel}: verified без review_by")
+            # Карточку правят и после приёмки — картотека живёт, это нормально. Но
+            # `verified` относится к тексту, который человек читал: если текст с тех пор
+            # другой, статус говорит неправду, и это надо увидеть, а не запретить правку.
+            stamp = (fm.get("verified_hash") or "").strip().strip('"')
+            if stamp and stamp != body_hash(card_body(text)):
+                errors.append(f"{rel}: правили после приёмки — тело не то, что подтверждали. "
+                              "Подтвердить заново: kb:verify --refresh; "
+                              "или понизить статус до draft")
         if status == "deprecated" and not fm.get("superseded_by"):
             errors.append(f"{rel}: deprecated без superseded_by")
 
