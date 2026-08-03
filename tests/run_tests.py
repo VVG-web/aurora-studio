@@ -1616,6 +1616,39 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
 
 
 @test
+def test_repair_frees_alias_taken_twice(tmp: Path):
+    """Один alias у двух карточек — ссылка по нему не ведёт никуда.
+
+    Извлечение раздаёт синонимы щедро, и после сборки с нуля таких имён набираются
+    десятки. Alias остаётся у той карточки, чьё имя с ним совпадает.
+    """
+    root = make_project(tmp, git=True)
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    cards.mkdir(parents=True, exist_ok=True)
+    (cards / "Обеспечение-ДОП.md").write_text(
+        '---\ntitle: "Обеспечение ДОП"\naliases: ["Обеспечение ДОП", "Платёж"]\n'
+        "status: imported\n---\n\nтело\n", encoding="utf-8")
+    (cards / "Этап-3.md").write_text(
+        '---\ntitle: "Этап 3"\naliases: ["Обеспечение ДОП", "Этап-3"]\n'
+        "status: imported\n---\n\nтело\n", encoding="utf-8")
+
+    dry = run("kb_fix.py", "--aliases", cwd=root)
+    assert "Одинаковые alias: снято 1" in dry.stdout, dry.stdout[:600]
+    assert "остаётся у Обеспечение-ДОП.md" in dry.stdout, "alias оставлен не той карточке"
+
+    run("kb_fix.py", "--aliases", "--apply", cwd=root)
+    keeper = (cards / "Обеспечение-ДОП.md").read_text(encoding="utf-8")
+    loser = (cards / "Этап-3.md").read_text(encoding="utf-8")
+    assert "Обеспечение ДОП" in keeper, "alias снят у владельца"
+    assert "Обеспечение ДОП" not in loser.split("---")[1], f"alias остался у чужой:\n{loser}"
+    assert "Этап-3" in loser, "снесли все alias вместо одного"
+
+    # линтер группирует беды по видам: сотня строк подряд не читается
+    out = run("kb_lint.py", cwd=root).stdout
+    assert "kb_lint: карточек" in out
+
+
+@test
 def test_kb_moc_gives_every_card_a_way_in(tmp: Path):
     """Карта содержания существует ради того, чтобы вход был у каждой карточки.
 
