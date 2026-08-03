@@ -937,6 +937,30 @@ def test_update_works_from_project_copy(tmp: Path):
 
 
 @test
+def test_kit_ships_no_project_data(tmp: Path):
+    """В поставку не уезжают папки проекта.
+
+    Команды движка рассчитаны на проект и заводят его папки там, откуда их запустили —
+    в том числе внутри самого кита. Так в git попали пустая трассировка и целый
+    `scripts/AuroraKnowledgeDB/`. Кит — не проект: кроме синтетического корпуса тестов,
+    ни базы знаний, ни зеркал, ни артефактов в нём быть не должно.
+    """
+    # -z: пути через NUL и без экранирования — иначе кириллица приезжает в кавычках
+    # и проверка «начинается с tests/corpus/» промахивается на каждом втором файле
+    tracked = [p for p in subprocess.run(["git", "ls-files", "-z"], cwd=str(KIT),
+                                         capture_output=True, text=True).stdout.split("\0") if p]
+    project_dirs = ("AuroraKnowledgeDB/", "Sources/", "Raw/", "Artifacts/",
+                    "Deliverables/", "Workspaces/", ".opencode/")
+    stray = [p for p in tracked
+             if not p.startswith(("tests/corpus/", "scaffold/", "templates/", "examples/"))
+             and any(d in p for d in project_dirs)]
+    assert not stray, ("в поставку попали файлы проекта:\n    " + "\n    ".join(stray[:10])
+                       + "\n  Кит — не проект: уберите из git (`git rm --cached`)")
+    assert not (KIT / "aurora.config.yaml").exists(), \
+        "в ките лежит конфиг проекта — команды будут считать кит проектом"
+
+
+@test
 def test_no_private_terms_in_tracked_files(tmp: Path):
     """Наружу уходит только обезличенное.
 
