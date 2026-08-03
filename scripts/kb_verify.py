@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 from datetime import date, timedelta
 
@@ -66,6 +67,22 @@ def all_names(root: str) -> set:
                         if re.search(r"aliases:.*", text) else []:
                     names.add(a)
     return names
+
+
+def default_owner() -> str:
+    """Кто принимает решение — тот, кто запустил команду.
+
+    Требовать `--owner` у каждого запуска незачем: имя уже записано в git проекта, тем же
+    подписаны коммиты рядом. Флаг остаётся для случая «принимаю за коллегу».
+    """
+    try:
+        p = subprocess.run(["git", "config", "user.name"], capture_output=True,
+                           text=True, timeout=5)
+        if p.returncode == 0 and p.stdout.strip():
+            return p.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("USER") or ""
 
 
 def config_statuses(key: str) -> set:
@@ -158,7 +175,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Пакетная верификация карточек базы знаний")
     ap.add_argument("selector", nargs="?", default=ROOT,
                     help="файл, папка или раздел базы (по умолчанию вся база)")
-    ap.add_argument("--owner", required=True, help="владелец карточек (@имя)")
+    ap.add_argument("--owner", default="", help="владелец карточек (@имя); по умолчанию — "
+                                                "имя из git этого проекта")
     ap.add_argument("--months", type=int, default=3, help="срок годности, месяцев (по умолчанию 3)")
     ap.add_argument("--status", default="verified", choices=["verified"],
                     help="верхний статус базы; других ступеней нет")
@@ -176,6 +194,12 @@ def main() -> int:
     if not os.path.isdir(ROOT):
         print(f"kb_verify: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
+    owner = a.owner.strip() or default_owner()
+    if not owner:
+        print("kb_verify: не удалось определить владельца. Укажите: --owner @имя",
+              file=sys.stderr)
+        return 2
+    a.owner = owner if owner.startswith("@") else "@" + owner
 
     files = targets(a.selector)
     if not files:

@@ -402,7 +402,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.38.0";
+const UI_VERSION = "1.38.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1051,7 +1051,7 @@ function openRun(cmdName, preFlags=[]){
 }
 // Флаг со значением (`--jql JQL`, `--format {docx,pdf}`) без поля ввода превращался
 // в «expected one argument»: панель отправляла его голым. Поле появляется вместе с галкой.
-function flagLine(f, hint, meta){
+function flagLine(f, hint, meta, required){
   const choices = meta.startsWith("{") ? meta.slice(1,-1).split(/[\s,]+/).filter(Boolean) : null;
   let field = null;
   if (meta){
@@ -1068,6 +1068,7 @@ function flagLine(f, hint, meta){
     field = el("div",{style:"margin:2px 0 8px 26px;display:"+(RUN.flags.has(f)?"block":"none")}, field);
   }
   const cb = el("input",{type:"checkbox", checked: RUN.flags.has(f)?"":null,
+    disabled: required ? "" : null,
     onchange:e=>{
       e.target.checked ? RUN.flags.add(f) : RUN.flags.delete(f);
       if (field) field.style.display = e.target.checked ? "block" : "none";
@@ -1076,6 +1077,7 @@ function flagLine(f, hint, meta){
     el("label",{class:"flagline"}, cb,
       el("span",{},
         el("span",{class:"mono",style:"font-weight:600"}, f + (meta ? " " + meta : "")),
+        required ? el("span",{class:"chip warn",style:"margin-left:6px"},"обязательный") : null,
         hint ? el("span",{class:"muted",style:"font-size:12.5px"}, " — " + hint) : null,
         DANGER_FLAGS[f] ? el("div",{class:"muted",style:"font-size:11.5px;color:var(--tier-inreview)"},
           DANGER_FLAGS[f]) : null)),
@@ -1115,10 +1117,12 @@ function drawRun(){
   const flags = r.flags.filter(f=>f!=="--apply");
   if (flags.length){
     const help = r.flag_help || {}, meta = r.flag_args || {};
+    const req = r.flag_required || [];
+    req.forEach(f => RUN.flags.add(f));      // обязательное включено заранее
     d.append(el("div",{style:"margin-top:16px"},
       el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
         "Модификаторы — по умолчанию выключены, команда работает в базовом режиме"),
-      ...flags.map(f=>flagLine(f, help[f], meta[f] || ""))));
+      ...flags.map(f=>flagLine(f, help[f], meta[f] || "", req.includes(f)))));
   }
   if (writes){
     const kill = DESTRUCTIVE[r.cmd];
