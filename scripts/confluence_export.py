@@ -635,6 +635,10 @@ class Exporter(WikiMirror):
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
         ext = {"drawio": ".drawio", "mermaid": ".mmd"}
+        # Точка в имени ещё не расширение: вложение зовут «Стр4.Свод.Итог», и `splitext`
+        # честно возвращает «.Итог». Сверяем с известными расширениями, а не с точкой.
+        known = (".drawio", ".xml", ".mmd", ".png", ".svg", ".jpg", ".jpeg", ".pdf",
+                 ".puml", ".json", ".txt")
         lines, kept = [], set()
         for kind, name in sorted(set(names)):
             # плагин пишет имя схемы, вложение лежит и с расширением, и без
@@ -645,7 +649,7 @@ class Exporter(WikiMirror):
                 continue
             # Имя вложения у draw.io — это имя диаграммы, без расширения. Файл без него
             # не открывается ни редактором, ни просмотрщиком: подставляем по виду схемы.
-            fname = hit if os.path.splitext(hit)[1] else hit + ext.get(kind, ".xml")
+            fname = hit if hit.lower().endswith(known) else hit + ext.get(kind, ".xml")
             try:
                 blob = self.api.fetch(have[hit])
             except Exception as e:  # noqa: BLE001
