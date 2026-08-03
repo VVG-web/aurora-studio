@@ -37,7 +37,7 @@ import sys
 import unicodedata
 
 from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, fix_mixed_script, fold,
-                           git_guard, is_service, rewrite_links, set_field)
+                           git_guard, is_service, rewrite_links, set_field, link_refs)
 from datetime import date
 from difflib import get_close_matches
 
@@ -397,8 +397,59 @@ def plan_retire(cards: dict, plan: Plan):
     return touched
 
 
-def plan_aliases(cards: dict, plan: Plan):
+def plan_stubs(cards: dict, idx, plan: Plan, root: str):
+    """Завести карточку-заготовку под каждую ссылку, которой не на что указывать.
+
+    Так работает картотека: ссылка появляется раньше знания. `[[УТС]]` в тексте — это уже
+    решение «такому понятию быть», и правильный ответ на него — пустая карточка, которая
+    ждёт наполнения, а не удаление ссылки. Когда придут данные, они лягут в готовую
+    карточку, и переписывать ссылки не придётся.
+
+    Заготовка честно говорит, что она заготовка: `status: draft`, метка `заготовка` и
+    список тех, кто на неё ссылается, — по нему видно, в каком контексте её ждут.
+    """
+    wanted: dict = {}
+    for path, c in sorted(cards.items()):
+        if is_service(path):
+            continue
+        for target in link_refs(c.text):
+            base = target.split("#")[0].strip()
+            if not base or base.startswith("http"):
+                continue
+            leaf = os.path.splitext(os.path.basename(base))[0]
+            if idx.resolve(leaf)[0]:
+                continue
+            if not re.match(r"^[\w][\w \-.,()«»/]{0,80}$", leaf):
+                continue          # не имя карточки, а кусок текста в скобках
+            wanted.setdefault(leaf, []).append(c.stem)
+
+    created = []
+    for name, refs in sorted(wanted.items()):
+        safe = re.sub(r"[\\/:*?\"<>|]", "-", name).strip()
+        # короткая заглавная строка — это термин, ему место в глоссарии
+        section = "Glossary" if (len(safe) <= 12 and safe.upper() == safe) else "Concepts"
+        path = os.path.join(root, section, safe + ".md").replace("\\", "/")
+        if path in cards or os.path.exists(path):
+            continue
+        mentions = "\n".join(f"- [[{r}]]" for r in sorted(set(refs))[:20])
+        plan.write(path,
+                   f"---\ntitle: \"{name}\"\naliases: []\nstatus: draft\n"
+                   f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
+                   f"related: []\n---\n\n# {name}\n\n"
+                   "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n"
+                   "_Наполните её при следующем разборе источника — ссылки переписывать "
+                   "не придётся._\n\n## Упоминается в\n\n" + mentions + "\n")
+        created.append((name, section, len(set(refs))))
+    return created
+
+
+def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
     """Один alias у нескольких карточек — ссылка по нему неоднозначна.
+
+    По умолчанию только показываем конфликт: снять синоним у «проигравшей» карточки —
+    значит потерять имя, под которым её знают. Правильный ответ — **уточнить** синонимы,
+    чтобы каждый отражал свою карточку, а это работа со смыслом, не механика. Ключ
+    `--drop-alias` оставлен для случая, когда синоним просто продублирован по ошибке.
 
     Извлечение раздаёт синонимы щедро: одно и то же название достаётся и этапу процесса,
     и эпику. Дальше ссылка по такому имени не ведёт никуда: движок не выбирает за
@@ -423,6 +474,8 @@ def plan_aliases(cards: dict, plan: Plan):
             return fold(alias) in (fold(c.stem), fold((c.fm.get("title") or "").strip('"')))
         winner = next((p for p in paths if fits(p)), paths[0])
         kept.append((alias, winner, [p for p in paths if p != winner]))
+        if not drop:
+            continue
         for path in paths:
             if path == winner:
                 continue
@@ -432,6 +485,35 @@ def plan_aliases(cards: dict, plan: Plan):
                 plan.file_writes[path] = new_text
                 dropped += 1
     return dropped, kept
+
+
+def alias_task(kept: list) -> str:
+    """Готовое задание ассистенту: уточнить синонимы, а не снять их."""
+    rows = "\n".join(
+        f"{i}. «{alias}» занят карточками: "
+        + ", ".join(os.path.basename(x)[:-3] for x in [winner] + losers)
+        for i, (alias, winner, losers) in enumerate(kept[:40], 1))
+    return f"""─────────────────────────────────────────────────────────────────────
+ЗАДАНИЕ АССИСТЕНТУ · УТОЧНИТЬ СИНОНИМЫ — скопируйте блок целиком в чат
+─────────────────────────────────────────────────────────────────────
+/aurora-vault kb:repair
+
+Одно и то же имя стоит в `aliases` у нескольких карточек — ссылка по нему неразрешима.
+Снимать синоним нельзя: под ним карточку знают. Уточни так, чтобы каждый синоним
+отражал свою карточку.
+
+{rows}
+
+Правила:
+- прочитай обе карточки: чем они отличаются по смыслу, тем и должны отличаться синонимы;
+- уточняй добавлением различающего слова, а не удалением: одно и то же «Обеспечение» →
+  «Обеспечение (этап процесса)» и «Обеспечение (эпик разработки)»;
+- если карточки об одном и том же — это не спор синонимов, а двойники: скажи об этом,
+  сливать их будет `kb:dedupe --merge`;
+- `aliases` — это другие имена ЭТОЙ карточки, а не тема, к которой она относится.
+
+Покажи в конце: какие синонимы уточнил и где заподозрил двойников.
+─────────────────────────────────────────────────────────────────────"""
 
 
 def drop_alias(card: Card, alias: str) -> str:
@@ -613,8 +695,13 @@ def main() -> int:
                     help="убрать поля, выведенные из схемы (audience, confirmed_by; "
                          "легаси-статус canonical → verified)")
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
+    ap.add_argument("--stubs", action="store_true",
+                    help="завести карточки-заготовки под ссылки, которым не на что указывать")
     ap.add_argument("--aliases", action="store_true",
-                    help="снять alias там, где одно имя занято несколькими карточками")
+                    help="разобрать одинаковые alias у разных карточек (по умолчанию отчёт)")
+    ap.add_argument("--drop-alias", action="store_true",
+                    help="и снять их механически: alias останется у карточки, чьё имя "
+                         "совпадает. Без ключа — только отчёт и задание ассистенту")
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
     ap.add_argument("--all", action="store_true", help="всё вышеперечисленное")
     ap.add_argument("--merge", nargs=2, metavar=("KEEP", "DROP"), help="слить DROP в KEEP")
@@ -631,7 +718,7 @@ def main() -> int:
     if a.all:
         a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.aliases = True
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases,
-                a.merge)):
+                a.stubs, a.merge)):
         ap.print_help()
         return 0
 
@@ -660,14 +747,33 @@ def main() -> int:
         if a.retire:
             n = plan_retire(cards, plan)
             head.append(f"## Поля вне схемы: убраны в {n} карточках")
+        if a.stubs:
+            created = plan_stubs(cards, idx, plan, a.root)
+            head.append(f"## Заготовки под ссылки: {len(created)} новых карточек")
+            for name, section, refs in created[:15]:
+                head.append(f"- {section}/{name}.md — ждут {refs} ссылок")
+            if len(created) > 15:
+                head.append(f"- … ещё {len(created) - 15}")
         if a.aliases:
-            dropped, kept = plan_aliases(cards, plan)
-            head.append(f"## Одинаковые alias: снято {dropped} у {len(kept)} имён")
-            for alias, winner, losers in kept[:15]:
-                head.append(f"- «{alias}» остаётся у {os.path.basename(winner)}, "
-                            f"снят у {', '.join(os.path.basename(x) for x in losers)}")
-            if len(kept) > 15:
-                head.append(f"- … ещё {len(kept) - 15}")
+            dropped, kept = plan_aliases(cards, plan, drop=a.drop_alias)
+            if a.drop_alias:
+                head.append(f"## Одинаковые alias: снято {dropped} у {len(kept)} имён")
+                for alias, winner, losers in kept[:15]:
+                    head.append(f"- «{alias}» остаётся у {os.path.basename(winner)}, "
+                                f"снят у {', '.join(os.path.basename(x) for x in losers)}")
+            else:
+                head.append(f"## Одинаковые alias: {len(kept)} имён заняты дважды")
+                head.append("Снимать синоним нельзя: под ним карточку знают. Уточните "
+                            "синонимы так, чтобы каждый отражал свою карточку — задание "
+                            "ассистенту ниже. Механически снять: `--aliases --drop-alias`.")
+                for alias, winner, losers in kept[:15]:
+                    names = ", ".join(os.path.basename(x)[:-3] for x in [winner] + losers)
+                    head.append(f"- «{alias}» → {names}")
+                if len(kept) > 15:
+                    head.append(f"- … ещё {len(kept) - 15}")
+                if kept:
+                    head.append("")
+                    head.append(alias_task(kept))
         if a.frontmatter:
             created, patched = plan_frontmatter(cards, plan)
             head.append(f"## Frontmatter: создан у {created}, дополнен (status/trust) у {patched}")

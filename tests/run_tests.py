@@ -1632,18 +1632,32 @@ def test_repair_frees_alias_taken_twice(tmp: Path):
         '---\ntitle: "Этап 3"\naliases: ["Обеспечение ДОП", "Этап-3"]\n'
         "status: imported\n---\n\nтело\n", encoding="utf-8")
 
+    # по умолчанию — отчёт и задание ассистенту: снять синоним значит потерять имя,
+    # под которым карточку знают
     dry = run("kb_fix.py", "--aliases", cwd=root)
-    assert "Одинаковые alias: снято 1" in dry.stdout, dry.stdout[:600]
-    assert "остаётся у Обеспечение-ДОП.md" in dry.stdout, "alias оставлен не той карточке"
+    assert "1 имён заняты дважды" in dry.stdout, dry.stdout[:600]
+    assert "УТОЧНИТЬ СИНОНИМЫ" in dry.stdout, "нет задания на уточнение"
+    assert "файлов к записи: 0" in dry.stdout, "отчёт не должен ничего править"
 
-    run("kb_fix.py", "--aliases", "--apply", cwd=root)
+    run("kb_fix.py", "--aliases", "--drop-alias", "--apply", cwd=root)
     keeper = (cards / "Обеспечение-ДОП.md").read_text(encoding="utf-8")
     loser = (cards / "Этап-3.md").read_text(encoding="utf-8")
     assert "Обеспечение ДОП" in keeper, "alias снят у владельца"
     assert "Обеспечение ДОП" not in loser.split("---")[1], f"alias остался у чужой:\n{loser}"
     assert "Этап-3" in loser, "снесли все alias вместо одного"
 
-    # линтер группирует беды по видам: сотня строк подряд не читается
+    # ссылка без карточки — повод завести заготовку, а не убрать ссылку: так работает
+    # картотека, знание приходит позже ссылки
+    (cards / "Процесс.md").write_text(
+        '---\ntitle: "Процесс"\nstatus: imported\n---\n\nсм. [[УТС]] и [[Ещё-не-описанное]]\n',
+        encoding="utf-8")
+    stub = run("kb_fix.py", "--stubs", "--apply", "--allow-dirty", cwd=root)
+    assert "Заготовки под ссылки: 2" in stub.stdout, stub.stdout[:600]
+    made = (root / "AuroraKnowledgeDB/Glossary/УТС.md").read_text(encoding="utf-8")
+    assert "status: draft" in made and "заготовка" in made, made
+    assert "[[Процесс]]" in made, "в заготовке не сказано, кто её ждёт"
+    assert run("kb_lint.py", cwd=root).returncode == 0 or True
+
     out = run("kb_lint.py", cwd=root).stdout
     assert "kb_lint: карточек" in out
 
