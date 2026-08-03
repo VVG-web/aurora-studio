@@ -163,13 +163,47 @@ def main():
                 break
 
     n = len(cards)
-    if summary:
-        print(f"kb_lint: карточек {n}, ошибок {len(errors)}")
-    else:
-        print(f"kb_lint: карточек {n}, ошибок {len(errors)}")
-        for e in errors:
-            print(f"  {e}")
-    return 1 if errors else 0
+    print(f"kb_lint: карточек {n}, ошибок {len(errors)}")
+    if summary or not errors:
+        return 1 if errors else 0
+
+    # Список из сотен строк подряд читать нечем: одинаковые беды идут вперемешку, и
+    # непонятно, это одна причина или двести разных. Группируем по виду и говорим,
+    # чем каждый вид лечится.
+    kinds = [
+        ("битая ссылка", "битые ссылки",
+         "цели нет в базе. `kb:repair --links` чинит то, что находится по алиасу или "
+         "регистру; остальное — либо завести карточку на термин, либо снять ссылку"),
+        ("дубликат alias", "одинаковые alias у разных карточек",
+         "ссылка по такому имени неоднозначна. `kb:repair --aliases` оставит alias там, "
+         "где он совпадает с названием, и снимет у остальных"),
+        ("правили после приёмки", "правка после приёмки",
+         "текст изменился после verified: `kb:verify --refresh` или понизить до draft"),
+        ("verified без", "verified без обязательных полей",
+         "приёмка без владельца или срока годности — запустите `kb:verify` заново"),
+        ("нет frontmatter", "карточки без шапки",
+         "`kb:repair --frontmatter` проставит статус и дату"),
+    ]
+    shown, rest = set(), []
+    for needle, title, cure in kinds:
+        hits = [e for e in errors if needle in e]
+        if not hits:
+            continue
+        shown.update(id(e) for e in hits)
+        print(f"\n## {title}: {len(hits)}")
+        print(f"   {cure}")
+        for e in hits[:8]:
+            print(f"   - {e}")
+        if len(hits) > 8:
+            print(f"   … ещё {len(hits) - 8}")
+    rest = [e for e in errors if id(e) not in shown]
+    if rest:
+        print(f"\n## прочее: {len(rest)}")
+        for e in rest[:20]:
+            print(f"   - {e}")
+        if len(rest) > 20:
+            print(f"   … ещё {len(rest) - 20}")
+    return 1
 
 
 if __name__ == "__main__":

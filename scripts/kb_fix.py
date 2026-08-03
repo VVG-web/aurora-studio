@@ -397,6 +397,61 @@ def plan_retire(cards: dict, plan: Plan):
     return touched
 
 
+def plan_aliases(cards: dict, plan: Plan):
+    """Один alias у нескольких карточек — ссылка по нему неоднозначна.
+
+    Извлечение раздаёт синонимы щедро: одно и то же название достаётся и этапу процесса,
+    и эпику. Дальше ссылка по такому имени не ведёт никуда: движок не выбирает за
+    человека, какая из двух карточек имелась в виду.
+
+    Правило: alias остаётся у той карточки, чьё имя или заголовок с ним совпадает после
+    свёртки регистра и разделителей. Если совпадения нет ни у кого — снимаем у всех, кроме
+    первой по алфавиту: пусть ведёт хоть куда-то, а разберётся человек по отчёту.
+    """
+    owners: dict = {}
+    for path, c in sorted(cards.items()):
+        if is_service(path):
+            continue
+        for a in c.aliases:
+            owners.setdefault(a, []).append(path)
+    dropped, kept = 0, []
+    for alias, paths in sorted(owners.items()):
+        if len(paths) < 2:
+            continue
+        def fits(p):
+            c = cards[p]
+            return fold(alias) in (fold(c.stem), fold((c.fm.get("title") or "").strip('"')))
+        winner = next((p for p in paths if fits(p)), paths[0])
+        kept.append((alias, winner, [p for p in paths if p != winner]))
+        for path in paths:
+            if path == winner:
+                continue
+            base = plan.file_writes.get(path, cards[path].text)
+            new_text = drop_alias(Card(path, base), alias)
+            if new_text != base:
+                plan.file_writes[path] = new_text
+                dropped += 1
+    return dropped, kept
+
+
+def drop_alias(card: Card, alias: str) -> str:
+    """Убрать один alias из шапки, сохранив форму списка."""
+    head, rest = card.text[:card.fm_end], card.text[card.fm_end:]
+    inline = re.search(r"^aliases:\s*\[([^\]]*)\]\s*$", head, re.M)
+    if inline:
+        items = [x.strip() for x in inline.group(1).split(",") if x.strip()]
+        items = [x for x in items if x.strip('"\'') != alias]
+        line = "aliases: [" + ", ".join(items) + "]" if items else "aliases: []"
+        return head[:inline.start()] + line + head[inline.end():] + rest
+    out, drop_next = [], False
+    for line in head.split("\n"):
+        m = re.match(r"^\s*-\s*\"?([^\"]+)\"?\s*$", line)
+        if m and m.group(1).strip() == alias:
+            continue
+        out.append(line)
+    return "\n".join(out) + rest
+
+
 def plan_frontmatter(cards: dict, plan: Plan):
     created = patched = 0
     for path, c in cards.items():
@@ -558,6 +613,8 @@ def main() -> int:
                     help="убрать поля, выведенные из схемы (audience, confirmed_by; "
                          "легаси-статус canonical → verified)")
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
+    ap.add_argument("--aliases", action="store_true",
+                    help="снять alias там, где одно имя занято несколькими карточками")
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
     ap.add_argument("--all", action="store_true", help="всё вышеперечисленное")
     ap.add_argument("--merge", nargs=2, metavar=("KEEP", "DROP"), help="слить DROP в KEEP")
@@ -572,8 +629,9 @@ def main() -> int:
         print(f"kb_fix: нет папки {a.root}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     if a.all:
-        a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = True
-    if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.merge)):
+        a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.aliases = True
+    if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases,
+                a.merge)):
         ap.print_help()
         return 0
 
@@ -602,6 +660,14 @@ def main() -> int:
         if a.retire:
             n = plan_retire(cards, plan)
             head.append(f"## Поля вне схемы: убраны в {n} карточках")
+        if a.aliases:
+            dropped, kept = plan_aliases(cards, plan)
+            head.append(f"## Одинаковые alias: снято {dropped} у {len(kept)} имён")
+            for alias, winner, losers in kept[:15]:
+                head.append(f"- «{alias}» остаётся у {os.path.basename(winner)}, "
+                            f"снят у {', '.join(os.path.basename(x) for x in losers)}")
+            if len(kept) > 15:
+                head.append(f"- … ещё {len(kept) - 15}")
         if a.frontmatter:
             created, patched = plan_frontmatter(cards, plan)
             head.append(f"## Frontmatter: создан у {created}, дополнен (status/trust) у {patched}")
