@@ -257,3 +257,24 @@ def config_value(key: str, default: str = "") -> str:
     m = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$',
                   open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
     return m.group(1).strip() if m else default
+
+
+
+def card_body(text: str) -> str:
+    """Тело карточки без шапки. Один разбор на всех: приёмка ставит отпечаток, линтер
+    его сверяет, и расходиться в том, что считать телом, им нельзя."""
+    head, rest = split_frontmatter(text)
+    body = text if head is None else rest
+    return body.lstrip("-\n") if head is not None else body
+
+
+def body_hash(body: str) -> str:
+    """Отпечаток тела карточки — без шапки и без пустых строк по краям.
+
+    Нужен там, где важно «текст тот же или уже другой»: приёмка относится к конкретному
+    тексту, а не к имени файла. Пробелы в конце строк и переносы не считаем: они меняются
+    от редактора и о содержании ничего не говорят.
+    """
+    import hashlib
+    norm = "\n".join(line.rstrip() for line in (body or "").strip().splitlines())
+    return hashlib.md5(norm.encode("utf-8")).hexdigest()[:12]

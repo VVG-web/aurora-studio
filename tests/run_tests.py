@@ -1707,6 +1707,38 @@ def test_kb_graph_writes_links_into_cards(tmp: Path):
 
 
 @test
+def test_verified_card_may_be_edited_but_says_so(tmp: Path):
+    """Проверенную карточку можно дописывать — но статус не должен врать про текст.
+
+    Запрет на правку превратил бы картотеку в архив, а Zettelkasten держится на
+    дописывании. Поэтому правку не блокируем: отпечаток тела на момент приёмки
+    расходится, и линтер называет карточку.
+    """
+    root = make_project(tmp, git=True)
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    cards.mkdir(parents=True, exist_ok=True)
+    (root / "Raw").mkdir(exist_ok=True)
+    (root / "Raw/док.md").write_text("источник", encoding="utf-8")
+    card = cards / "Понятие.md"
+    card.write_text('---\ntitle: "Понятие"\nstatus: imported\nsource: "Raw/док.md"\n'
+                    "---\n\nпервая редакция\n", encoding="utf-8")
+
+    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--apply", cwd=root)
+    text = card.read_text(encoding="utf-8")
+    assert "status: verified" in text and "verified_hash:" in text, text
+    assert run("kb_lint.py", cwd=root).returncode == 0, "линтер ругается сразу после приёмки"
+
+    card.write_text(text + "\nдописали позже\n", encoding="utf-8")
+    out = run("kb_lint.py", cwd=root, expect_rc=1).stdout
+    assert "правили после приёмки" in out, f"правка проверенного прошла молча:\n{out}"
+
+    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--refresh", "--apply",
+        "--allow-dirty", cwd=root)
+    assert run("kb_lint.py", cwd=root).returncode == 0, \
+        "повторное подтверждение не снимает замечание"
+
+
+@test
 def test_verify_by_jira_status(tmp: Path):
     """Статус задачи как основание доверия — и только при одной задаче на историю.
 
