@@ -250,7 +250,7 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
                 # облачный вариант держит исходник во вложении — просим его у экспортёра
                 fname = params.get("filename") or params.get("attachment") or ""
                 if fname and assets is not None:
-                    assets.append(fname)
+                    assets.append(("mermaid", fname))
                 code = ""
             tag.replace_with(NavigableString(
                 f"\n```mermaid\n{code}\n```\n" if code
@@ -267,7 +267,7 @@ def preprocess(soup, base_url: str, space: str, jira_base: str = "",
                 tag.decompose()
                 continue
             if assets is not None:
-                assets.append(dname)
+                assets.append(("drawio", dname))
             tag.replace_with(NavigableString(f"[draw.io: {dname}]"))
             continue
         if name == "excerpt":
@@ -618,7 +618,7 @@ class Exporter(WikiMirror):
         self.api, self.base_url = api, base_url
         self.space, self.force, self.jira_base = space, force, jira_base
         self.written = self.skipped = self.failed = 0
-        self.ry_defines = self.ry_links = self.assets_saved = 0
+        self.ry_defines = self.ry_links = self.assets_saved = self.assets_dropped = 0
 
     def save_assets(self, page_id: str, rel: str, names: list) -> str:
         """Скачать вложения схем рядом со страницей и вернуть ссылки на них.
@@ -634,26 +634,44 @@ class Exporter(WikiMirror):
             return ""
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
-        lines, saved = [], 0
-        for name in sorted(set(names)):
-            # плагин пишет имя схемы, файл лежит с расширением: пробуем то и другое
+        ext = {"drawio": ".drawio", "mermaid": ".mmd"}
+        lines, kept = [], set()
+        for kind, name in sorted(set(names)):
+            # плагин пишет имя схемы, вложение лежит и с расширением, и без
             hit = next((h for h in (name, name + ".drawio", name + ".xml", name + ".mmd")
                         if h in have), None)
             if not hit:
                 lines.append(f"- схема `{name}` — вложения с таким именем на странице нет")
                 continue
+            # Имя вложения у draw.io — это имя диаграммы, без расширения. Файл без него
+            # не открывается ни редактором, ни просмотрщиком: подставляем по виду схемы.
+            fname = hit if os.path.splitext(hit)[1] else hit + ext.get(kind, ".xml")
             try:
                 blob = self.api.fetch(have[hit])
             except Exception as e:  # noqa: BLE001
                 print(f"  ! {hit}: {e}", file=sys.stderr)
                 continue
-            dest = os.path.join(self.out, folder, hit)
+            dest = os.path.join(self.out, folder, fname)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as f:
                 f.write(blob)
             self.assets_saved += 1
-            saved += 1
-            lines.append(f"- [{hit}]({base}_assets/{urllib.parse.quote(hit)})")
+            kept.add(fname)
+            lines.append(f"- [{fname}]({base}_assets/{urllib.parse.quote(fname)})")
+
+        # Папка схем принадлежит странице: файл, которого в этом прогоне не получилось, —
+        # след прежнего имени (та же схема без расширения). Иначе он останется навсегда:
+        # `--prune` внутрь папок со схемами не заходит.
+        full_folder = os.path.join(self.out, folder)
+        if kept and os.path.isdir(full_folder):
+            for old in sorted(os.listdir(full_folder)):
+                if old.startswith(".") or old in kept:
+                    continue
+                try:
+                    os.remove(os.path.join(full_folder, old))
+                    self.assets_dropped += 1
+                except OSError:
+                    pass
         if not lines:
             return ""
         return "## Схемы страницы\n\n" + "\n".join(lines)
@@ -804,7 +822,9 @@ def main() -> int:
         for r in exp.recased[:10]:
             print(f"  - {r}")
     if exp.assets_saved:
-        print(f"Схемы плагинов сохранены рядом со страницами: {exp.assets_saved}")
+        print(f"Схемы плагинов сохранены рядом со страницами: {exp.assets_saved}"
+              + (f" · убрано под прежними именами: {exp.assets_dropped}"
+                 if exp.assets_dropped else ""))
     if exp.ry_defines or exp.ry_links:
         print(f"Requirement Yogi: объявлено ключей {exp.ry_defines}, "
               f"ссылок на чужие ключи {exp.ry_links}")
