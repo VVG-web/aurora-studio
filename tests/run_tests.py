@@ -1991,6 +1991,39 @@ def test_kb_graph_builds_links_by_ry_and_story_number(tmp: Path):
 
 
 @test
+def test_drawio_asset_gets_extension(tmp: Path):
+    """Вложение draw.io называется именем диаграммы — без расширения его нечем открыть.
+
+    Confluence хранит схему под именем «Диаграмма без названия-1779…», и файл с таким
+    именем не откроется ни редактором, ни просмотрщиком. Расширение подставляем по виду
+    схемы, а файл под прежним именем убираем: `--prune` внутрь папок со схемами не ходит.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import confluence_export as ce
+
+    class FakeApi:
+        def attachments(self, page_id):
+            return {"Диаграмма-1": "/download/Диаграмма-1"}
+        def fetch(self, url):
+            return b"<mxfile/>"
+
+    out = tmp / "mirror"
+    (out / "Раздел").mkdir(parents=True)
+    exp = ce.Exporter.__new__(ce.Exporter)
+    exp.api, exp.out = FakeApi(), str(out)
+    exp.assets_saved = exp.assets_dropped = 0
+    stale = out / "Раздел/Стр_assets"
+    stale.mkdir()
+    (stale / "Диаграмма-1").write_text("старое имя без расширения", encoding="utf-8")
+
+    md = exp.save_assets("1", "Раздел/Стр.md", [("drawio", "Диаграмма-1")])
+    assert (stale / "Диаграмма-1.drawio").is_file(), "схема сохранена без расширения"
+    assert not (stale / "Диаграмма-1").exists(), "файл под прежним именем остался"
+    assert "Диаграмма-1.drawio" in md, f"ссылка ведёт на старое имя:\n{md}"
+    assert exp.assets_dropped == 1
+
+
+@test
 def test_confluence_export_keeps_macro_content(tmp: Path):
     """Данные из макросов доезжают до зеркала: дата, автор, задача, врезка.
 
@@ -2104,7 +2137,7 @@ def test_confluence_export_keeps_plugin_diagrams(tmp: Path):
     md = ce.to_markdown(st, "https://c.example.com", "SP", "", assets)
     assert "```mermaid" in md and "graph TD" in md, f"диаграмма mermaid потеряна:\n{md}"
     assert md.count("```") == 2, f"ограда кода задвоилась:\n{md}"
-    assert assets == ["Схема-входа"], f"исходник draw.io не запрошен: {assets}"
+    assert assets == [("drawio", "Схема-входа")], f"исходник draw.io не запрошен: {assets}"
     assert "Врезка (excerpt)" in md and "Печатная форма" in md, \
         f"врезка потеряна или не помечена:\n{md}"
 
