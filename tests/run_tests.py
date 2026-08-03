@@ -2003,7 +2003,9 @@ def test_drawio_asset_gets_extension(tmp: Path):
 
     class FakeApi:
         def attachments(self, page_id):
-            return {"Диаграмма-1": "/download/Диаграмма-1"}
+            # второе имя — с точками внутри: «.Кол[доменный термин убран]» не расширение, а часть названия
+            return {"Диаграмма-1": "/download/1", "Стр4.НО.Кол": "/download/2",
+                    "Готовая.drawio": "/download/3"}
         def fetch(self, url):
             return b"<mxfile/>"
 
@@ -2016,8 +2018,14 @@ def test_drawio_asset_gets_extension(tmp: Path):
     stale.mkdir()
     (stale / "Диаграмма-1").write_text("старое имя без расширения", encoding="utf-8")
 
-    md = exp.save_assets("1", "Раздел/Стр.md", [("drawio", "Диаграмма-1")])
+    md = exp.save_assets("1", "Раздел/Стр.md",
+                         [("drawio", "Диаграмма-1"), ("drawio", "Стр4.НО.Кол"),
+                          ("drawio", "Готовая.drawio")])
     assert (stale / "Диаграмма-1.drawio").is_file(), "схема сохранена без расширения"
+    assert (stale / "Стр4.НО.Кол.drawio").is_file(), \
+        "точка в названии принята за расширение — файл остался нечитаемым"
+    assert (stale / "Готовая.drawio").is_file() and not (stale / "Готовая.drawio.drawio").exists(), \
+        "расширение задвоилось у вложения, где оно уже было"
     assert not (stale / "Диаграмма-1").exists(), "файл под прежним именем остался"
     assert "Диаграмма-1.drawio" in md, f"ссылка ведёт на старое имя:\n{md}"
     assert exp.assets_dropped == 1
