@@ -2003,8 +2003,8 @@ def test_drawio_asset_gets_extension(tmp: Path):
 
     class FakeApi:
         def attachments(self, page_id):
-            # второе имя — с точками внутри: «.КолДОПП» не расширение, а часть названия
-            return {"Диаграмма-1": "/download/1", "Стр4.НО.Кол": "/download/2",
+            # второе имя — с точками внутри: «.Кол» не расширение, а часть названия
+            return {"Диаграмма-1": "/download/1", "Стр4.Свод.Итог": "/download/2",
                     "Готовая.drawio": "/download/3"}
         def fetch(self, url):
             return b"<mxfile/>"
@@ -2019,10 +2019,10 @@ def test_drawio_asset_gets_extension(tmp: Path):
     (stale / "Диаграмма-1").write_text("старое имя без расширения", encoding="utf-8")
 
     md = exp.save_assets("1", "Раздел/Стр.md",
-                         [("drawio", "Диаграмма-1"), ("drawio", "Стр4.НО.Кол"),
+                         [("drawio", "Диаграмма-1"), ("drawio", "Стр4.Свод.Итог"),
                           ("drawio", "Готовая.drawio")])
     assert (stale / "Диаграмма-1.drawio").is_file(), "схема сохранена без расширения"
-    assert (stale / "Стр4.НО.Кол.drawio").is_file(), \
+    assert (stale / "Стр4.Свод.Итог.drawio").is_file(), \
         "точка в названии принята за расширение — файл остался нечитаемым"
     assert (stale / "Готовая.drawio").is_file() and not (stale / "Готовая.drawio.drawio").exists(), \
         "расширение задвоилось у вложения, где оно уже было"
