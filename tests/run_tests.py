@@ -1739,6 +1739,38 @@ def test_verified_card_may_be_edited_but_says_so(tmp: Path):
 
 
 @test
+def test_verify_needs_no_owner_flag(tmp: Path):
+    """Владелец берётся из git проекта: требовать флаг у каждого запуска незачем.
+
+    В панели модификаторы выключены по умолчанию — «команда работает в базовом режиме».
+    Обязательный флаг в этот рассказ не укладывается: человек жмёт «Запустить» и получает
+    `error: the following arguments are required: --owner`.
+    """
+    root = make_project(tmp, git=True)
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    cards.mkdir(parents=True, exist_ok=True)
+    (root / "Raw").mkdir(exist_ok=True)
+    (root / "Raw/док.md").write_text("источник", encoding="utf-8")
+    (cards / "Понятие.md").write_text(
+        '---\ntitle: "Понятие"\nstatus: imported\nsource: "Raw/док.md"\n---\n\nтело\n',
+        encoding="utf-8")
+
+    cp = run("kb_verify.py", "Concepts", cwd=root)
+    assert "владелец @" in cp.stdout, f"владелец не определился сам:\n{cp.stdout[:400]}"
+    cp = run("kb_verify.py", "Concepts", "--owner", "коллега", cwd=root)
+    assert "владелец @коллега" in cp.stdout, "явный владелец не принят"
+
+    # реестр знает, каких флагов не хватает для запуска — панель включит их заранее
+    sys.path.insert(0, str(KIT / "scripts"))
+    import kit_commands as K
+    assert K.required_flags("kb_verify.py") == [], \
+        "у приёмки снова обязательный флаг — панель об этом узнает только из ошибки"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "обязательный" in ui and "flag_required" in ui, \
+        "панель не показывает обязательные флаги"
+
+
+@test
 def test_verify_by_jira_status(tmp: Path):
     """Статус задачи как основание доверия — и только при одной задаче на историю.
 

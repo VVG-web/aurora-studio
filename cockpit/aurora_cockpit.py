@@ -219,6 +219,8 @@ def registry() -> list:
             "flag_help": K.flag_help(impl) if script.endswith(".py") else {},
             # какие флаги требуют значения: без этого панель шлёт `--jql` голым
             "flag_args": K.flag_args(impl) if script.endswith(".py") else {},
+            # без них команда не запустится: панель включает их сразу, а не после ошибки
+            "flag_required": K.required_flags(impl) if script.endswith(".py") else [],
             "args": K.args_of(impl) if script.endswith(".py") else "",
             "runnable": script.endswith(".py"),
             # флаги всегда читаются из kit'а, а запускается движок проекта — кроме этих

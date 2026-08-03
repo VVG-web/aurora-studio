@@ -161,6 +161,29 @@ def flag_help(impl: str) -> dict:
     return help_map
 
 
+def required_flags(impl: str) -> list:
+    """Флаги, без которых команда не запускается: в `usage:` они стоят без скобок.
+
+    Панель показывает модификаторы выключенными — «по умолчанию команда работает в базовом
+    режиме». Обязательный флаг в этот рассказ не укладывается: человек жмёт «Запустить» и
+    получает `error: the following arguments are required`. Пусть панель знает заранее.
+    """
+    script = impl.split()[0]
+    path = os.path.join(HERE, script)
+    if not script.endswith(".py") or not os.path.isfile(path):
+        return []
+    try:
+        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
+                             text=True, timeout=30).stdout
+    except Exception:  # noqa: BLE001
+        return []
+    m = re.search(r"usage:[\s\S]*?\n\n", out)
+    if not m:
+        return []
+    usage = re.sub(r"\[[^\]]*\]", "", " ".join(m.group(0).split()))
+    return sorted(set(re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]*)", usage)))
+
+
 def flag_args(impl: str) -> dict:
     """Флаг → метапеременная, если он требует значения (`--jql JQL`), иначе пустая строка.
 
