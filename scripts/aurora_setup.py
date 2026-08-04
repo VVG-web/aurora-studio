@@ -32,6 +32,7 @@ def read_config(path: Path) -> dict:
         "conf_url": "", "conf_space": "", "sync_roots": [],
         "jira_url": "", "jira_key": "", "jira_jql": "",
         "trust_statuses": "", "assumption_statuses": "",
+        "trusted_sources": "", "trusted_sections": "",
         "threshold": "20",
     }
     if not path.is_file():
@@ -61,6 +62,11 @@ def read_config(path: Path) -> dict:
     for key in ("trust_statuses", "assumption_statuses"):
         # список читаем как есть, вместе с кавычками: статусы бывают с дефисом и пробелом
         m = re.search(rf'{key}:\s*\[([^\]]*)\]', jblock, re.M) if jblock else None
+        cfg[key] = m.group(1).strip() if m else ""
+    vm = re.search(r"\nverify:(.*?)(?:\n[a-z_]+:|\Z)", text, re.S)
+    vblock = vm.group(1) if vm else ""
+    for key in ("trusted_sources", "trusted_sections"):
+        m = re.search(rf'{key}:\s*\[([^\]]*)\]', vblock, re.M) if vblock else None
         cfg[key] = m.group(1).strip() if m else ""
     cfg["threshold"] = scalar("verified_threshold_pct", "20")
     cfg["scrub"] = scalar("scrub", "report")
@@ -146,6 +152,13 @@ paths:
   sources_confluence: Sources/Confluence
   sources_jira: Sources/JIRA
 
+verify:
+  # Доверие по происхождению (`kb:verify --by-source`): что собрано из договора, ТЗ или
+  # материалов заказчика, пересказывает уже подписанный документ; словарь и справочники —
+  # не выводы, а именование. Что считать таким источником, решает проект.
+  trusted_sources: [{c['trusted_sources']}]
+  trusted_sections: [{c['trusted_sections']}]
+
 privacy:
   # Режим kb:scrub — свойство контура, а не вкуса.
   #   off    — репозиторий в закрытом git, те же тексты открыты команде: искать нечего
@@ -214,7 +227,8 @@ def run_answers(target: Path, answers: dict) -> int:
     cfg_path = target / "aurora.config.yaml"
     c = read_config(cfg_path)
     for key in ("name", "slug", "conf_url", "conf_space", "jira_url", "jira_key",
-                "jira_jql", "scrub", "threshold", "trust_statuses", "assumption_statuses"):
+                "jira_jql", "scrub", "threshold", "trust_statuses", "assumption_statuses",
+                "trusted_sources", "trusted_sections"):
         if key in answers and str(answers[key]).strip():
             c[key] = str(answers[key]).strip()
     if "sync_roots" in answers:

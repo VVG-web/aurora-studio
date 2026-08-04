@@ -65,6 +65,14 @@ paths:
   sources_confluence: Sources/Confluence
   sources_jira: Sources/JIRA
 
+verify:
+  # Доверие по происхождению (`kb:verify --by-source`). Карточка, собранная из договора,
+  # ТЗ или материалов заказчика, пересказывает документ, который уже подписан, — решать
+  # по ней нечего. То же со словарём: термин и справочник не выводы, а именование.
+  # Списки проектные: что у одного заказчика доказательство, у другого черновик.
+  trusted_sources: []      # например: [Raw/contract, Raw/customer, Raw/project]
+  trusted_sections: []     # например: [Glossary, Reference, Statuses]
+
 privacy:
   # Режим kb:scrub. Зависит от контура, а не от вкусов: если репозиторий уезжает
   # в закрытый git или on-prem, а те же тексты и так открыты команде в Confluence,

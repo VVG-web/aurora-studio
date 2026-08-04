@@ -33,6 +33,20 @@
 лежит в бэклоге, и какая из них описывает состояние знания, машине неизвестно. Задача со
 статусом вне обоих списков голоса не имеет — она и не «за», и не «против».
 
+Приёмка по задаче достаёт только то, что висит на истории с Jira, — а решения не требует
+куда больше. Карточка из подписанного договора или из ТЗ пересказывает уже принятый
+документ; словарь и справочник — не выводы, а именование; алгоритм, на который ссылаются
+только принятые истории, описывает принятую постановку. Отсюда ещё три режима:
+
+  --by-source   доверие по происхождению: `verify.trusted_sources` (префиксы пути
+                источника) и `verify.trusted_sections` (разделы базы) из конфига проекта
+  --by-links    карточка, на которую ссылаются только принятые истории; применяется по
+                кругу, пока прибавляется
+  --auto        все правила разом: по задаче, по происхождению, по связям
+
+Заготовки (`kb:repair --stubs`) не проходят ни по одному правилу: у них нет ни источника,
+ни содержания. Основание в любом режиме пишется словами в `verified_basis`.
+
 `verified` — верхний статус базы. Ступени «canonical со вторым человеком» больше нет:
 она была размечена в схеме, но за всё время не использована ни разу ни в одном проекте
 (1.10.0). Кто проверил и когда — видно из `owner` и `verified`.
@@ -83,6 +97,67 @@ def default_owner() -> str:
     except Exception:  # noqa: BLE001
         pass
     return os.environ.get("USER") or ""
+
+
+def config_list(key: str) -> list:
+    """Список путей/разделов из `aurora.config.yaml`, секция `verify:`."""
+    cfg = "aurora.config.yaml"
+    if not os.path.isfile(cfg):
+        return []
+    m = re.search(rf"^\s*{key}\s*:\s*\[([^\]]*)\]",
+                  open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
+    return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
+
+
+def source_verdicts(files: list, heads: dict) -> dict:
+    """{карточка: основание} — доверие по происхождению.
+
+    Договор, ТЗ и материалы заказчика — доказательная база проекта: карточка, собранная
+    оттуда, пересказывает документ, который уже подписан. Термины и справочники — то же
+    самое с другой стороны: это не выводы, а словарь. Что считать таким источником,
+    решает проект: списки лежат в `aurora.config.yaml`, секция `verify:`.
+    """
+    roots = config_list("trusted_sources")
+    sections = config_list("trusted_sections")
+    if not roots and not sections:
+        return {}
+    out = {}
+    for path in files:
+        src = heads[path][1]
+        section = os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
+        hit = next((r for r in roots if src.startswith(r)), "")
+        if hit:
+            out[path] = f"источник {hit} объявлен доверенным в конфиге проекта"
+        elif section in sections:
+            out[path] = f"раздел {section} объявлен доверенным в конфиге проекта"
+    return out
+
+
+def link_verdicts(files: list, verified: set) -> dict:
+    """{карточка: основание} — доверие по связям с историями.
+
+    Алгоритм, экранная форма или справочник, на которые ссылаются только принятые истории,
+    описывают уже принятую постановку. Хотя бы одна ссылающаяся история должна быть, и все
+    они — принятыми: одна непринятая означает, что содержание ещё может поменяться.
+    """
+    stems = {os.path.splitext(os.path.basename(p))[0]: p for p in files}
+    refs: dict = {}
+    for path in files:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if not re.match(r"^(US|AC)[-_. ]?\d", stem, re.I):
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        for link in set(link_targets(text)):
+            target = stems.get(link)
+            if target and target != path:
+                refs.setdefault(target, []).append(path)
+    out = {}
+    for target, sources in refs.items():
+        if sources and all(s in verified for s in sources):
+            names = ", ".join(sorted(os.path.splitext(os.path.basename(s))[0]
+                                     for s in sources)[:5])
+            out[target] = f"ссылаются только принятые истории: {names}"
+    return out
 
 
 def config_statuses(key: str) -> set:
@@ -180,6 +255,13 @@ def main() -> int:
     ap.add_argument("--months", type=int, default=3, help="срок годности, месяцев (по умолчанию 3)")
     ap.add_argument("--status", default="verified", choices=["verified"],
                     help="верхний статус базы; других ступеней нет")
+    ap.add_argument("--by-source", action="store_true",
+                    help="доверие по происхождению: списки verify.trusted_sources / "
+                         "trusted_sections в конфиге проекта")
+    ap.add_argument("--by-links", action="store_true",
+                    help="принять то, на что ссылаются только принятые истории")
+    ap.add_argument("--auto", action="store_true",
+                    help="всё автоматическое разом: по задаче, по происхождению, по связям")
     ap.add_argument("--by-jira", action="store_true",
                     help="решение по статусу связанной задачи (списки — в конфиге проекта)")
     ap.add_argument("--source-older-than", type=int, metavar="MONTHS", dest="older",
@@ -208,15 +290,57 @@ def main() -> int:
     names = all_names(ROOT)
     review_by = (TODAY + timedelta(days=30 * a.months)).isoformat()
 
+    if a.auto:
+        a.by_jira = a.by_source = a.by_links = True
+    rules = a.by_jira or a.by_source or a.by_links
+
+    heads = {}               # карточка → (frontmatter, source) — читаем один раз
+    for path in files:
+        fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+        src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
+        heads[path] = (fm, src)
+
     verdicts = {}
+    auto: dict = {}          # карточка → основание (правила поверх «по задаче»)
     if a.by_jira:
         verdicts = jira_verdicts("Sources/Confluence", "Sources/JIRA")
-        if not verdicts:
+        if not verdicts and not a.auto:
             print("kb_verify: нечего решать по Jira. Проверьте, что в aurora.config.yaml "
                   "заданы atlassian.jira.trust_statuses / assumption_statuses и что зеркала "
                   "выгружены.", file=sys.stderr)
             return 1
-        print(f"Страниц историй, где задачи говорят одно и то же: {len(verdicts)}\n")
+        print(f"Страниц историй, где задачи говорят одно и то же: {len(verdicts)}")
+
+    if a.by_source:
+        got = source_verdicts(files, heads)
+        auto.update(got)
+        print(f"Карточек из доверенных источников и разделов: {len(got)}")
+        if not got:
+            print("  (списки verify.trusted_sources / trusted_sections в конфиге пусты)")
+
+    if a.by_links:
+        # Считаем принятым и то, что примем этим же прогоном: алгоритм под принятой
+        # историей должен пройти вместе с ней, а не ждать следующего запуска.
+        trusted_now = {p for p, (fm, _) in heads.items()
+                       if (fm.get("status") or "").strip() in TRUSTED}
+        trusted_now |= set(auto)
+        trusted_now |= {p for p, (_, src) in heads.items()
+                        if (verdicts.get(src) or ("",))[0] == "verified"}
+        # Повторяем, пока прибавляется: принятая по связям история сама может быть
+        # ссылкой для следующей карточки. Обычно хватает двух кругов, предел — на случай
+        # закольцованных ссылок.
+        got: dict = {}
+        for _ in range(5):
+            more = {k: v for k, v in link_verdicts(files, trusted_now).items()
+                    if k not in got and k not in auto}
+            if not more:
+                break
+            got.update(more)
+            trusted_now |= set(more)
+        auto.update(got)
+        print(f"Карточек, на которые ссылаются только принятые истории: {len(got)}")
+    if rules:
+        print()
 
     basis = ""
     if a.older:
@@ -237,26 +361,30 @@ def main() -> int:
             skipped.append((path, "нет frontmatter"))
             continue
         status = (fm.get("status") or "").strip()
+        src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
+        hit = verdicts.get(src) if a.by_jira else None
+        auto_basis = auto.get(path, "")
         if status == "deprecated":
             skipped.append((path, "deprecated — это история"))
             continue
-        if status in TRUSTED and not a.refresh and not a.by_jira:
-            skipped.append((path, f"уже {status} (продлить: --refresh)"))
-            continue
-        if not (fm.get("source") or "").strip():
+        if status in TRUSTED and not a.refresh:
+            # Уже принятую карточку пересматриваем только ради понижения: если задачи
+            # говорят, что это ещё предположение, статус должен об этом сказать.
+            if not (hit and hit[0] == "draft"):
+                skipped.append((path, f"уже {status} — продлить срок можно через --refresh"))
+                continue
+        if not src:
             skipped.append((path, "нет source — происхождение не подтверждено"))
             continue
         broken = [t for t in link_targets(text) if t not in names]
         if broken:
             skipped.append((path, f"битые ссылки: {', '.join(broken[:3])}"))
             continue
-        verdict = ""
-        if a.by_jira:
-            src = (fm.get("source") or "").strip().strip('"')
-            hit = verdicts.get(src.replace("\\", "/"))
+        verdict = "verified" if auto_basis else ""
+        said = aside = ""
+        if rules and not auto_basis:
             if not hit:
-                skipped.append((path, "за источником нет истории, чьи задачи говорят "
-                                      "одно и то же"))
+                skipped.append((path, "не подошло ни под одно правило приёмки"))
                 continue
             verdict, jkeys, jstatuses, jmute = hit
             said = ", ".join(f"{k} ({s})" for k, s in zip(jkeys, jstatuses))
@@ -273,7 +401,7 @@ def main() -> int:
 
         src_date = None
         if a.older:
-            src_date = source_updated((fm.get("source") or "").strip().strip('"'))
+            src_date = source_updated(src)
             if not src_date:
                 skipped.append((path, "дата источника неизвестна — возраст не проверить"))
                 continue
@@ -290,7 +418,9 @@ def main() -> int:
         # а не архив, — но тогда `verified` относится уже не к тому тексту. По отпечатку
         # линтер отличает «дописали» от «подтверждено как есть».
         new_head = set_field(new_head, "verified_hash", body_hash(card_body(text)))
-        if verdict == "verified":
+        if auto_basis:
+            new_head = set_field(new_head, "verified_basis", f'"{auto_basis}"')
+        elif verdict == "verified":
             new_head = set_field(new_head, "verified_basis",
                                  f'"{said}: постановка прошла разбор и приёмку{aside}"')
         if basis:
@@ -302,14 +432,21 @@ def main() -> int:
 
     print(f"# Verify — {TODAY.isoformat()}\n")
     print(f"Отобрано: {len(files)} · к верификации: {len(ready)} · пропущено: {len(skipped)}")
-    print(f"Статус: {a.status} · владелец {a.owner} · годно до {review_by}"
-)
+    print(f"Статус: {a.status} · владелец {a.owner} · годно до {review_by}")
     if skipped:
+        # Списком в четыреста строк никто не пользуется. Сначала — почему пропущено и
+        # сколько таких, потом по три примера: причина подсказывает, что делать дальше.
+        groups: dict = {}
+        for path, why in skipped:
+            kind = re.sub(r":.*", "", why).strip()
+            groups.setdefault(kind, []).append(path)
         print("\n## Пропущены (нужен человек)\n")
-        for path, why in skipped[:40]:
-            print(f"- {path}: {why}")
-        if len(skipped) > 40:
-            print(f"- … ещё {len(skipped) - 40}")
+        for kind, paths in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            print(f"- {kind} — {len(paths)}")
+            for path in paths[:3]:
+                print(f"    {path}")
+            if len(paths) > 3:
+                print(f"    … ещё {len(paths) - 3}")
     if ready:
         print("\n## К верификации\n")
         for path, _ in ready[:40]:

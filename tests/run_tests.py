@@ -1943,6 +1943,58 @@ def test_verify_by_source_age_records_its_basis(tmp: Path):
 
 
 @test
+def test_verify_by_source_and_links(tmp: Path):
+    """Приёмка шире одной истории: происхождение, раздел базы и связи с принятыми историями.
+
+    Договор и словарь решения не требуют, а алгоритм под принятой историей принят вместе с
+    ней. Останавливает одно: хотя бы одна ссылающаяся история ещё не принята — значит
+    содержание может поменяться. Заготовка не проходит никогда: у неё нет источника.
+    """
+    root = make_project(tmp, git=True)
+    (root / "aurora.config.yaml").write_text(
+        "project:\n  name: T\nverify:\n"
+        "  trusted_sources: [Raw/contract]\n"
+        "  trusted_sections: [Glossary]\n", encoding="utf-8")
+    cards = root / "AuroraKnowledgeDB/Concepts"
+    glossary = root / "AuroraKnowledgeDB/Glossary"
+    cards.mkdir(parents=True, exist_ok=True); glossary.mkdir(parents=True, exist_ok=True)
+
+    def card(where, name, source, body="текст", status="imported"):
+        (where / f"{name}.md").write_text(
+            f'---\ntitle: "{name}"\nsource: "{source}"\nstatus: {status}\n---\n\n{body}\n',
+            encoding="utf-8")
+
+    card(cards, "Из-договора", "Raw/contract/Приложение-1.md")
+    card(cards, "Из-переписки", "Raw/mail/письмо.md")
+    card(glossary, "Термин", "Sources/Confluence/Словарь.md")
+    card(cards, "US-1", "Sources/Confluence/US-1.md", "см. [[Алгоритм-приёма]]", "verified")
+    card(cards, "US-2", "Sources/Confluence/US-2.md", "см. [[Спорный-алгоритм]]")
+    card(cards, "Алгоритм-приёма", "Sources/Confluence/ALG-1.md")
+    card(cards, "Спорный-алгоритм", "Sources/Confluence/ALG-2.md")
+    (cards / "US-3.md").write_text(
+        '---\ntitle: "US-3"\nsource: "Sources/Confluence/US-3.md"\nstatus: verified\n'
+        "---\n\nсм. [[Спорный-алгоритм]]\n", encoding="utf-8")
+    (cards / "Заготовка.md").write_text(
+        '---\ntitle: "Заготовка"\nstatus: draft\ntags: [заготовка]\n---\n\nпусто\n',
+        encoding="utf-8")
+
+    cp = run("kb_verify.py", "--owner", "@vadim", "--auto", "--apply", cwd=root)
+    got = {f.stem: f.read_text(encoding="utf-8")
+           for f in list(cards.glob("*.md")) + list(glossary.glob("*.md"))}
+    assert "status: verified" in got["Из-договора"], f"договор не принят:\n{cp.stdout[:600]}"
+    assert "Raw/contract" in got["Из-договора"], "в основании не назван доверенный источник"
+    assert "status: verified" in got["Термин"], "доверенный раздел базы не принят"
+    assert "status: imported" in got["Из-переписки"], "принято то, чего нет в списках"
+    assert "status: verified" in got["Алгоритм-приёма"], \
+        f"алгоритм под принятой историей не принят:\n{cp.stdout[:600]}"
+    assert "US-1" in got["Алгоритм-приёма"], "в основании не названа история"
+    assert "status: imported" in got["Спорный-алгоритм"], \
+        "принято при том, что одна из ссылающихся историй не принята"
+    assert "status: draft" in got["Заготовка"], "заготовка без источника принята"
+    assert "не подошло ни под одно правило" in cp.stdout, "не сказано, что осталось человеку"
+
+
+@test
 def test_remap_jira_moves_sources_to_issue_keys(tmp: Path):
     """Ссылки карточек переезжают со старых имён файлов Jira на ключи задач.
 
