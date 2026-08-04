@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import importlib.util
 import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -43,6 +45,7 @@ TOKEN = secrets.token_urlsafe(24)
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 CACHE: dict = {}
+REGISTRY_CACHE = os.path.join(KIT, "cockpit", ".registry-cache.json")
 
 # Документы, которые панель имеет право показать. Всё остальное читать нельзя:
 # сервер живёт в репозитории с рабочими данными.
@@ -206,9 +209,30 @@ def registry() -> list:
     if "registry" in CACHE and CACHE.get("registry_stamp") == stamp:
         return CACHE["registry"]
     CACHE["registry_stamp"] = stamp
+    # Кэш на диске: сборка реестра запускает `--help` у полусотни скриптов, и это секунды
+    # на КАЖДОМ старте панели — а меняется он только вместе с версией ядра и реестром
+    # команд. Ключ — обе метки; не сошлись, значит пересобираем.
+    key = f"{kit_version()}|{stamp}|{os.path.getmtime(os.path.join(KIT, 'commands.txt'))}"
+    cached = read_text(REGISTRY_CACHE, limit=4_000_000)
+    if cached:
+        try:
+            data = json.loads(cached)
+            if data.get("key") == key:
+                CACHE["registry"] = data["rows"]
+                return data["rows"]
+        except (ValueError, KeyError):
+            pass
     import kit_commands as K
+    from concurrent.futures import ThreadPoolExecutor
+    entries = K.read_registry()
+    # `--help` каждого скрипта — отдельный процесс: полсотни команд по очереди дают
+    # секунды ожидания на первом открытии панели, и она выглядит зависшей. Процессы ждут
+    # ввода-вывода, поэтому греем кэш параллельно, а разбор идёт уже по готовому тексту.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pool.map(K.help_text, [r["impl"] for r in entries
+                               if r["impl"].split()[0].endswith(".py")])
     rows = []
-    for r in K.read_registry():
+    for r in entries:
         impl = r["impl"]
         script = impl.split()[0]
         rows.append({
@@ -227,6 +251,11 @@ def registry() -> list:
             "from_kit": script in KIT_SIDE,
         })
     CACHE["registry"] = rows
+    try:
+        with open(REGISTRY_CACHE, "w", encoding="utf-8") as f:
+            json.dump({"key": key, "rows": rows}, f, ensure_ascii=False)
+    except OSError:
+        pass        # кэш — ускорение, а не результат работы: не записался, так не записался
     return rows
 
 
@@ -485,16 +514,24 @@ def sources(project: str) -> dict:
 
 
 def environment() -> dict:
-    """Что установлено на машине и какие команды от этого зависят."""
+    """Что установлено на машине и какие команды от этого зависят.
+
+    Наличие модуля проверяем поиском, а не импортом: `import markitdown` тянет за собой
+    половину экосистемы и занимал секунды на каждом открытии панели — а панели нужно
+    знать только «есть или нет». Результат держим до перезапуска: список установленного
+    за сессию не меняется, а если поставили пакет — панель перезапускают.
+    """
+    if "env" in CACHE:
+        return CACHE["env"]
+
     def has_module(name):
         try:
-            __import__(name)
-            return True
-        except Exception:
+            return importlib.util.find_spec(name) is not None
+        except Exception:  # noqa: BLE001
             return False
 
     def has_bin(name):
-        return subprocess.run(["which", name], capture_output=True).returncode == 0
+        return shutil.which(name) is not None
 
     mcp = os.path.expanduser("~/.cursor/mcp.json")
     mcp_ok = False
@@ -505,7 +542,7 @@ def environment() -> dict:
             mcp_ok = any("atlas" in k.lower() for k in srv)
         except Exception:
             mcp_ok = False
-    return {
+    out = {
         "python": sys.version.split()[0],
         "items": [
             {"name": "git", "ok": has_bin("git"), "kind": "bin",
@@ -530,6 +567,8 @@ def environment() -> dict:
              "install": "Cursor → Settings → MCP → mcp-atlassian"},
         ],
     }
+    CACHE["env"] = out
+    return out
 
 
 # ----------------------------------------------------------------- выполнение

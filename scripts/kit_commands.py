@@ -54,6 +54,31 @@ def read_registry() -> list:
     return rows
 
 
+_HELP: dict = {}
+
+
+def help_text(impl: str) -> str:
+    """`--help` скрипта — один раз за прогон.
+
+    Из этого текста берутся и список флагов, и пояснения, и метапеременные, и то, какие
+    флаги обязательны. Раньше каждый разбор запускал свой процесс: на полусотне команд
+    это четыре сотни запусков Python и двадцать секунд ожидания при открытии панели.
+    """
+    script = impl.split()[0]
+    if script in _HELP:
+        return _HELP[script]
+    path = os.path.join(HERE, script)
+    out = ""
+    if script.endswith(".py") and os.path.isfile(path):
+        try:
+            out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
+                                 text=True, timeout=30).stdout
+        except Exception:  # noqa: BLE001
+            out = ""
+    _HELP[script] = out
+    return out
+
+
 def argv_flags(path: str, impl: str) -> str:
     """Флаги скриптов без argparse: они проверяют `"--x" in sys.argv` — оттуда и берём."""
     try:
@@ -96,11 +121,7 @@ def flags_of(impl: str) -> str:
     path = os.path.join(HERE, script)
     if not os.path.isfile(path):
         return ""
-    try:
-        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
-                             text=True, timeout=30).stdout
-    except Exception:
-        return ""
+    out = help_text(impl)
     if "usage:" not in out:
         return argv_flags(path, impl)   # скрипт без argparse — читаем флаги из кода
     body = re.split(r"^(?:options|optional arguments):", out, flags=re.M)
@@ -133,11 +154,7 @@ def flag_help(impl: str) -> dict:
     path = os.path.join(HERE, script)
     if not script.endswith(".py") or not os.path.isfile(path):
         return {}
-    try:
-        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
-                             text=True, timeout=30).stdout
-    except Exception:
-        return {}
+    out = help_text(impl)
     if "usage:" not in out:
         return argv_flag_help(path)
     body = re.split(r"^(?:options|optional arguments):", out, flags=re.M)
@@ -172,12 +189,7 @@ def required_flags(impl: str) -> list:
     path = os.path.join(HERE, script)
     if not script.endswith(".py") or not os.path.isfile(path):
         return []
-    try:
-        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
-                             text=True, timeout=30).stdout
-    except Exception:  # noqa: BLE001
-        return []
-    m = re.search(r"usage:[\s\S]*?\n\n", out)
+    m = re.search(r"usage:[\s\S]*?\n\n", help_text(impl))
     if not m:
         return []
     usage = re.sub(r"\[[^\]]*\]", "", " ".join(m.group(0).split()))
@@ -195,11 +207,7 @@ def flag_args(impl: str) -> dict:
     path = os.path.join(HERE, script)
     if not script.endswith(".py") or not os.path.isfile(path):
         return {}
-    try:
-        out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
-                             text=True, timeout=30).stdout
-    except Exception:
-        return {}
+    out = help_text(impl)
     if "usage:" not in out:
         # скрипт без argparse проверяет `"--x" in sys.argv` — такие флаги всегда без значения
         return {f: "" for f in argv_flags(path, impl).split()}
