@@ -1209,6 +1209,45 @@ def test_cockpit_apply_is_reachable(tmp: Path):
 
 
 @test
+def test_panel_opens_without_waiting(tmp: Path):
+    """Панель не должна выглядеть зависшей на старте.
+
+    Реестр собирается из `--help` полусотни скриптов, а проверка окружения импортировала
+    тяжёлые модули — на каждое открытие уходили секунды, и панель казалась мёртвой.
+    `--help` теперь спрашивается один раз на скрипт, реестр кэшируется на диске, наличие
+    модуля проверяется поиском, а не импортом.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import kit_commands as K
+    import aurora_cockpit as ck
+
+    K._HELP.clear()
+    calls = {"n": 0}
+    real = K.help_text
+
+    def counted(impl):
+        if impl.split()[0] not in K._HELP:
+            calls["n"] += 1
+        return real(impl)
+
+    K.help_text = counted
+    try:
+        impl = "kb_lint.py"
+        for fn in (K.flags_of, K.flag_help, K.flag_args, K.required_flags):
+            fn(impl)
+        assert calls["n"] == 1, f"`--help` запускается {calls['n']} раза на одну команду"
+    finally:
+        K.help_text = real
+
+    assert "importlib.util.find_spec" in (KIT / "cockpit/aurora_cockpit.py").read_text(
+        encoding="utf-8"), "наличие модуля снова проверяется импортом"
+    ck.CACHE.clear()
+    first = ck.environment()
+    assert ck.environment() is first, "окружение пересчитывается на каждый запрос"
+
+
+@test
 def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     """Журнал запусков — файл проекта, а не память вкладки.
 
