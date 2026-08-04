@@ -402,7 +402,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.41.0";
+const UI_VERSION = "1.41.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1256,8 +1256,13 @@ function assistantTasks(lines){
     for (let i = limit - 1; i > start; i--){
       if (lines[i].startsWith(TASK_EDGE)){ to = i + 1; break; }
     }
-    const num = (lines[start].match(/ПАРТИЯ\s+(\d+)/) || [])[1] || String(k + 1);
-    return {num, text: lines.slice(from, to).join("\n").trim()};
+    // Заданий бывает два вида: партия разбора и разовая работа («уточнить синонимы»).
+    // Подпись берём из заголовка, иначе кнопка врёт про партию там, где партий нет.
+    const head = lines[start];
+    const num = (head.match(/ПАРТИЯ\s+(\d+)/) || [])[1] || "";
+    const label = num ? "Партия " + num
+      : ((head.match(/ЗАДАНИЕ АССИСТЕНТУ\s*·\s*([^—]+)/) || [])[1] || "Задание").trim();
+    return {num, label, text: lines.slice(from, to).join("\n").trim()};
   }).filter(t => t.text.split("\n").length > 3);
 }
 let LAST_TASKS = [];         // задания из последнего прогона: переживают уход с вкладки
@@ -1273,14 +1278,14 @@ function drawTaskButton(){
     const task = LAST_TASKS[i];
     box.append(el("button",{class:"btn sm" + (task ? " primary" : ""),
       disabled: task ? null : "",
-      title: task ? `Партия ${task.num}: ${task.text.split("\n").length} строк в буфер`
+      title: task ? `${task.label}: ${task.text.split("\n").length} строк в буфер`
                   : "Такой партии в плане нет",
       onclick: task ? async()=>{
         try { await navigator.clipboard.writeText(task.text);
               toast("Партия " + task.num + " скопирована — вставьте в чат с ассистентом","ok"); }
         catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
       } : null},
-      "Партия " + (task ? task.num : i + 1)));
+      task ? task.label : "Партия " + (i + 1)));
   }
 }
 function rcMark(rc){
