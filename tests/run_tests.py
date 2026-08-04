@@ -1281,7 +1281,7 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     assert "runs" in ck.health(str(root)), "журнал не попадает в /api/health"
 
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    assert "function assistantTasks" in ui and "Партия " in ui, \
+    assert "function assistantTasks" in ui and "task.label" in ui, \
         "задания ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
     assert 'if (view==="console"){ renderHistory(); drawTaskButton(); }' in ui, \

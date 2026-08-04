@@ -487,11 +487,21 @@ def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
     return dropped, kept
 
 
+def short(path: str) -> str:
+    """`Concepts/Имя` — раздел и имя без расширения.
+
+    Голое имя вводит в заблуждение: одноимённые карточки в разных разделах выглядят в
+    отчёте как одна и та же, и строка читается как «занят карточками: X, X».
+    """
+    rel = os.path.relpath(path, ROOT).replace("\\", "/")
+    return os.path.splitext(rel)[0]
+
+
 def alias_task(kept: list) -> str:
     """Готовое задание ассистенту: уточнить синонимы, а не снять их."""
     rows = "\n".join(
         f"{i}. «{alias}» занят карточками: "
-        + ", ".join(os.path.basename(x)[:-3] for x in [winner] + losers)
+        + ", ".join(short(x) for x in [winner] + losers)
         for i, (alias, winner, losers) in enumerate(kept[:40], 1))
     return f"""─────────────────────────────────────────────────────────────────────
 ЗАДАНИЕ АССИСТЕНТУ · УТОЧНИТЬ СИНОНИМЫ — скопируйте блок целиком в чат
@@ -759,15 +769,15 @@ def main() -> int:
             if a.drop_alias:
                 head.append(f"## Одинаковые alias: снято {dropped} у {len(kept)} имён")
                 for alias, winner, losers in kept[:15]:
-                    head.append(f"- «{alias}» остаётся у {os.path.basename(winner)}, "
-                                f"снят у {', '.join(os.path.basename(x) for x in losers)}")
+                    head.append(f"- «{alias}» остаётся у {short(winner)}, "
+                                f"снят у {', '.join(short(x) for x in losers)}")
             else:
                 head.append(f"## Одинаковые alias: {len(kept)} имён заняты дважды")
                 head.append("Снимать синоним нельзя: под ним карточку знают. Уточните "
                             "синонимы так, чтобы каждый отражал свою карточку — задание "
                             "ассистенту ниже. Механически снять: `--aliases --drop-alias`.")
                 for alias, winner, losers in kept[:15]:
-                    names = ", ".join(os.path.basename(x)[:-3] for x in [winner] + losers)
+                    names = ", ".join(short(x) for x in [winner] + losers)
                     head.append(f"- «{alias}» → {names}")
                 if len(kept) > 15:
                     head.append(f"- … ещё {len(kept) - 15}")
