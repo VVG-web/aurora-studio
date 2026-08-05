@@ -42,10 +42,17 @@
                 источника) и `verify.trusted_sections` (разделы базы) из конфига проекта
   --by-links    карточка, на которую ссылаются только принятые истории; применяется по
                 кругу, пока прибавляется
-  --auto        все правила разом: по задаче, по происхождению, по связям
+  --stubs       заготовки (`kb:repair --stubs`): утверждений в них нет — не верить нечему
+  --auto        все правила разом
 
-Заготовки (`kb:repair --stubs`) не проходят ни по одному правилу: у них нет ни источника,
-ни содержания. Основание в любом режиме пишется словами в `verified_basis`.
+Заготовка не содержит знания, но и не лжёт: она говорит ровно одно — «такое имя в базе
+есть, его ждут вот эти карточки». Держать её непроверенной незачем, она только раздувала
+очередь. Не проходит одно: заготовка, на которую никто не ссылается, — своё же
+утверждение и опровергает. Наполнят заготовку — `verified_hash` разойдётся с телом, и
+линтер попросит перепроверить. В контекст-паки заготовки не идут, а в отчёте о здоровье
+базы считаются отдельной строкой: доля verified не должна льстить.
+
+Основание в любом режиме пишется словами в `verified_basis`.
 
 `verified` — верхний статус базы. Ступени «canonical со вторым человеком» больше нет:
 она была размечена в схеме, но за всё время не использована ни разу ни в одном проекте
@@ -160,6 +167,49 @@ def link_verdicts(files: list, verified: set) -> dict:
     return out
 
 
+def is_stub(fm: dict, text: str) -> bool:
+    """Заготовка — карточка, заведённая под ссылку: имя есть, знания пока нет."""
+    return "заготовка" in (fm.get("tags") or "") or "_Заготовка:" in text
+
+
+def stub_verdicts(files: list, heads: dict) -> dict:
+    """{заготовка: основание} — заготовкам верят по построению.
+
+    Заготовка ничего не утверждает: она говорит ровно одно — «такое имя в базе есть,
+    его ждут вот эти карточки». Не верить тут нечему, поэтому держать её непроверенной
+    незачем: она только раздувала очередь верификации и занижала долю принятого.
+
+    Единственное, что проверяется, — что имя действительно откуда-то пришло. Заготовка,
+    на которую никто не ссылается, свой же смысл опровергает: это либо остаток от
+    удалённой ссылки, либо плейсхолдер из шаблона. Такую решает человек.
+
+    Когда заготовку наполнят, `verified_hash` разойдётся с телом, и линтер скажет
+    «правили после приёмки» — то есть «карточка ожила, перепроверьте её».
+    """
+    stems = {os.path.splitext(os.path.basename(p))[0]: p for p in files}
+    back: dict = {}
+    for path in files:
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        for link in set(link_targets(text)):
+            target = stems.get(link)
+            if target and target != path:
+                back.setdefault(target, []).append(path)
+    out = {}
+    for path in files:
+        fm, _ = heads[path]
+        text = open(path, encoding="utf-8", errors="ignore").read(4000)
+        if not is_stub(fm, text):
+            continue
+        refs = back.get(path) or []
+        if not refs:
+            continue
+        names = ", ".join(sorted(os.path.splitext(os.path.basename(r))[0]
+                                 for r in refs)[:5])
+        out[path] = ("заготовка: имя пришло из карточек " + names +
+                     " — утверждений в ней нет, наполнение потребует новой приёмки")
+    return out
+
+
 def config_statuses(key: str) -> set:
     """Списки статусов из `aurora.config.yaml` (`atlassian.jira.<key>`)."""
     cfg = "aurora.config.yaml"
@@ -258,6 +308,8 @@ def main() -> int:
     ap.add_argument("--by-source", action="store_true",
                     help="доверие по происхождению: списки verify.trusted_sources / "
                          "trusted_sections в конфиге проекта")
+    ap.add_argument("--stubs", action="store_true",
+                    help="принять заготовки: имя из живой ссылки, утверждений в них нет")
     ap.add_argument("--by-links", action="store_true",
                     help="принять то, на что ссылаются только принятые истории")
     ap.add_argument("--auto", action="store_true",
@@ -291,8 +343,8 @@ def main() -> int:
     review_by = (TODAY + timedelta(days=30 * a.months)).isoformat()
 
     if a.auto:
-        a.by_jira = a.by_source = a.by_links = True
-    rules = a.by_jira or a.by_source or a.by_links
+        a.by_jira = a.by_source = a.by_links = a.stubs = True
+    rules = a.by_jira or a.by_source or a.by_links or a.stubs
 
     heads = {}               # карточка → (frontmatter, source) — читаем один раз
     for path in files:
@@ -317,6 +369,11 @@ def main() -> int:
         print(f"Карточек из доверенных источников и разделов: {len(got)}")
         if not got:
             print("  (списки verify.trusted_sources / trusted_sections в конфиге пусты)")
+
+    if a.stubs:
+        got = stub_verdicts(files, heads)
+        auto.update({k: v for k, v in got.items() if k not in auto})
+        print(f"Заготовок, на которые ссылаются живые карточки: {len(got)}")
 
     if a.by_links:
         # Считаем принятым и то, что примем этим же прогоном: алгоритм под принятой
@@ -373,7 +430,7 @@ def main() -> int:
             if not (hit and hit[0] == "draft"):
                 skipped.append((path, f"уже {status} — продлить срок можно через --refresh"))
                 continue
-        if not src:
+        if not src and not (auto_basis and auto_basis.startswith("заготовка")):
             skipped.append((path, "нет source — происхождение не подтверждено"))
             continue
         broken = [t for t in link_targets(text) if t not in names]

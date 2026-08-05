@@ -1975,7 +1975,14 @@ def test_verify_by_source_and_links(tmp: Path):
         '---\ntitle: "US-3"\nsource: "Sources/Confluence/US-3.md"\nstatus: verified\n'
         "---\n\nсм. [[Спорный-алгоритм]]\n", encoding="utf-8")
     (cards / "Заготовка.md").write_text(
-        '---\ntitle: "Заготовка"\nstatus: draft\ntags: [заготовка]\n---\n\nпусто\n',
+        '---\ntitle: "Заготовка"\nstatus: draft\ntags: [заготовка]\n---\n\n'
+        "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n", encoding="utf-8")
+    (cards / "Сирота.md").write_text(
+        '---\ntitle: "Сирота"\nstatus: draft\ntags: [заготовка]\n---\n\n'
+        "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n", encoding="utf-8")
+    # ссылка на заготовку из живой карточки — то единственное, что заготовка утверждает
+    (cards / "Из-договора.md").write_text(
+        (cards / "Из-договора.md").read_text(encoding="utf-8") + "\nсм. [[Заготовка]]\n",
         encoding="utf-8")
 
     cp = run("kb_verify.py", "--owner", "@vadim", "--auto", "--apply", cwd=root)
@@ -1990,7 +1997,11 @@ def test_verify_by_source_and_links(tmp: Path):
     assert "US-1" in got["Алгоритм-приёма"], "в основании не названа история"
     assert "status: imported" in got["Спорный-алгоритм"], \
         "принято при том, что одна из ссылающихся историй не принята"
-    assert "status: draft" in got["Заготовка"], "заготовка без источника принята"
+    assert "status: verified" in got["Заготовка"], \
+        f"заготовка со ссылкой не принята — утверждений в ней нет:\n{cp.stdout[:600]}"
+    assert "заготовка:" in got["Заготовка"], "в основании не сказано, что это заготовка"
+    assert "status: draft" in got["Сирота"], \
+        "принята заготовка, на которую никто не ссылается — имя взялось из ниоткуда"
     assert "не подошло ни под одно правило" in cp.stdout, "не сказано, что осталось человеку"
 
 
