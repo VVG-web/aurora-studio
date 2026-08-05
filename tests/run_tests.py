@@ -1867,7 +1867,9 @@ def test_verify_by_jira_status(tmp: Path):
     (root / "aurora.config.yaml").write_text(
         "project:\n  name: T\natlassian:\n  jira:\n"
         '    trust_statuses: [Закрыто, "Тестирование - готово"]\n'
-        "    assumption_statuses: [Бэклог, Аналитика]\n", encoding="utf-8")
+        "    assumption_statuses: [Бэклог, Аналитика]\n"
+        # ветка объявлена доверенной целиком — но задача сильнее: страница ещё пишется
+        "verify:\n  trusted_sources: [Sources/Confluence]\n", encoding="utf-8")
     conf, jira = root / "Sources/Confluence", root / "Sources/JIRA"
     conf.mkdir(parents=True, exist_ok=True); jira.mkdir(parents=True, exist_ok=True)
     for num in ("1.1", "1.2", "1.3"):
@@ -1891,7 +1893,7 @@ def test_verify_by_jira_status(tmp: Path):
             f'---\ntitle: "{name}"\nsource: "Sources/Confluence/US-{num}.md"\n'
             "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
 
-    cp = run("kb_verify.py", "Concepts", "--owner", "@vadim", "--by-jira", "--apply", cwd=root)
+    cp = run("kb_verify.py", "Concepts", "--owner", "@vadim", "--auto", "--apply", cwd=root)
     good = (cards / "Готовое.md").read_text(encoding="utf-8")
     guess = (cards / "Гипотеза.md").read_text(encoding="utf-8")
     argued = (cards / "Спорное.md").read_text(encoding="utf-8")
@@ -1899,14 +1901,15 @@ def test_verify_by_jira_status(tmp: Path):
     assert "PRJ-5" in good, "вторая задача с тем же решением не попала в основание"
     assert "status: draft" in guess, f"предположение не понижено:\n{guess}"
     assert "предположение" in guess, "в карточке нет основания решения"
-    assert "status: imported" in argued, "карточка со спорящими задачами тронута"
+    assert "status: verified" in argued, \
+        "спор в задачах решается доверенной веткой источника — карточка осталась ни с чем"
 
     # задача со статусом вне обоих списков голоса не имеет и решению не мешает
     issue("PRJ-6", "1.2", "Согласование у заказчика")
     (cards / "Гипотеза.md").write_text(
         '---\ntitle: "Гипотеза"\nsource: "Sources/Confluence/US-1.2.md"\n'
         "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
-    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--by-jira", "--apply",
+    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--auto", "--apply",
         "--allow-dirty", cwd=root)
     guess2 = (cards / "Гипотеза.md").read_text(encoding="utf-8")
     assert "status: draft" in guess2, "молчащая задача сорвала решение"
