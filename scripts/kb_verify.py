@@ -439,6 +439,11 @@ def main() -> int:
             continue
         verdict = "verified" if auto_basis else ""
         said = aside = ""
+        # Задача сильнее ветки зеркала — и когда подтверждает, и когда возражает. Раздел
+        # объявляют доверенным целиком, но конкретная страница в нём может ещё писаться, а
+        # ключ задачи в основании точнее названия папки.
+        if hit:
+            auto_basis = ""
         if rules and not auto_basis:
             if not hit:
                 skipped.append((path, "не подошло ни под одно правило приёмки"))
