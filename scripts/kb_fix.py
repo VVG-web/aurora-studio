@@ -421,6 +421,8 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
                 continue
             if not re.match(r"^[\w][\w \-.,()«»/]{0,80}$", leaf):
                 continue          # не имя карточки, а кусок текста в скобках
+            if re.search(r"(NNNN|XXXX?|\.\.\.|-N$|<[^>]+>)", leaf):
+                continue          # образец имени из шаблона (DR-NNNN, SPEC-…), не понятие
             wanted.setdefault(leaf, []).append(c.stem)
 
     created = []

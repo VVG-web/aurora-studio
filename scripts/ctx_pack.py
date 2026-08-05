@@ -147,6 +147,10 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             release: str, max_cards: int) -> tuple:
     """Seed по теме → один переход по ссылкам. Возвращает (карточки, исключено по релизу)."""
     def allowed(c: Card) -> bool:
+        # Заготовка проходит приёмку (утверждений в ней нет — не верить нечему), но в
+        # контексте она пустое место: имя без содержания только съедает бюджет пака.
+        if "заготовка" in c.tags or "_Заготовка:" in c.text:
+            return False
         if c.status in statuses:
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")

@@ -50,7 +50,7 @@ def threshold() -> int:
 
 def collect() -> dict:
     cards, statuses, sections = {}, Counter(), Counter()
-    expired, no_owner, missing_source = [], [], []
+    expired, no_owner, missing_source, stubs = [], [], [], []
     for path in walk_md(ROOT):
         base = os.path.basename(path)
         if base.startswith("_") or base == "index.md" or "/meta/" in path:
@@ -66,6 +66,8 @@ def collect() -> dict:
         cards[path] = {"stem": stem, "fm": fm, "text": text, "section": section, "archived": archived}
         status = (fm.get("status") or "").strip() or "(нет status)"
         statuses[status] += 1
+        if "заготовка" in (fm.get("tags") or "") or "_Заготовка:" in text:
+            stubs.append(stem)
         sections[section] += 1
         if status in TRUSTED:
             rb = (fm.get("review_by") or "").strip()
@@ -162,6 +164,7 @@ def collect() -> dict:
 
     return {
         "date": TODAY, "total": total, "trusted": trusted, "pct_verified": pct,
+        "stubs": len(stubs),
         "threshold": threshold(), "bootstrap": pct < threshold(),
         "statuses": dict(statuses.most_common()), "sections": dict(sections.most_common()),
         "expired": sorted(expired)[:20], "expired_count": len(expired),
@@ -184,7 +187,12 @@ def render(s: dict) -> str:
     mode = ("BOOTSTRAP (непроверенные карточки допускаются в контекст с пометкой)"
             if s["bootstrap"] else "строгий ретрив (только verified)")
     L += [f"**Карточек:** {s['total']} · **verified:** {s['trusted']} "
-          f"({s['pct_verified']} %, порог {s['threshold']} %) · **режим:** {mode}", ""]
+          f"({s['pct_verified']} %, порог {s['threshold']} %) · **режим:** {mode}"]
+    if s.get("stubs"):
+        # Заготовка принимается, но знанием не является: без этой строки доля льстит
+        L += [f"Заготовок в базе (имя есть, содержания нет): **{s['stubs']}** — "
+              f"ждут наполнения при следующем разборе источника"]
+    L += [""]
     L += ["| Статус | Карточек |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in s["statuses"].items()]
     L += ["", "| Раздел | Карточек |", "|---|---|"]
