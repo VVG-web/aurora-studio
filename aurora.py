@@ -94,6 +94,7 @@ TOOLS = {
     "lint": "kb_lint.py",
     "fix": "kb_fix.py",
     "queue": "aurora_stats.py --queue",
+    "structure": "aurora_doctor.py --structure",
     "remap": "kb_remap.py",
     "build-plan": "build_plan.py",
     "spec-pack": "spec_pack.py",

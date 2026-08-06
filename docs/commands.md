@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.44.2**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.45.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -14,8 +14,7 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `kit:doctor` (`doctor`) | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок | скрипт | `aurora_doctor.py` | `--structure` | 1.0.0 |
-| `kit:structure` | сверить фактические папки со схемой движка (structure_dirs.txt); gitignore-папки допустимы | скрипт | `aurora_doctor.py --structure` | — | 1.3.0 |
+| `kit:doctor` (`doctor`) | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок; `--structure` — подробно по папкам вне схемы | скрипт | `aurora_doctor.py` | `--structure` | 1.0.0 |
 | `kit:hooks` | git pre-commit с линтером и храповиком: число ошибок не должно расти | скрипт | `aurora_hooks.py` | `--install --uninstall --status --mode --force` | 1.3.0 |
 | `kit:remap-sources` (`remap`) | перенацелить `source:` карточек после переезда зеркала (Confluence — по page_id, Jira — по ключу задачи) | скрипт | `kb_remap.py` | `--mirror --snapshot --from-git --apply --report` | 1.7.0 |
 | `kit:update` | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы | скрипт | `aurora_update.py` `[target]` | `--apply --structure-only` | 1.3.0 |
@@ -38,13 +37,10 @@
 |---|---|---|---|---|---|
 | `kb:build` (`build`) | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью | скрипт+модель | `build_plan.py` | `--budget --max-files --partition --tasks --from --done --cards --status` | 1.0.0 |
 | `kb:ingest-office` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | скрипт | `office_ingest.py` `[paths ...]` | `--root --converter --force --dry-run` | 1.5.0 |
-| `kb:ingest-raw` (`ingest-raw`) | документ из Raw/ → карточки-кандидаты со ссылкой на первоисточник | модель | `workflows.md` | — | 1.0.0 |
-| `kb:ingest-meeting` (`ingest-meeting`) | транскрипт встречи → резюме, решения (DR), требования (REQ), факты | модель | `workflows.md` | — | 1.4.0 |
-| `kb:ingest-tz` (`ingest-tz`) | ТЗ по пунктам → REQ-карточки с `tz_ref` | модель | `workflows.md` | — | 1.4.0 |
+| `kb:ingest` (`ingest, ingest-raw, ingest-meeting, ingest-tz`) | документ из Raw/ → карточки со ссылкой на первоисточник; вид входа определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты | модель | `workflows.md` | — | 1.0.0 |
 | `kb:queue` (`queue`) | очередь верификации: что проверять первым по связям и попаданию в артефакты | скрипт | `aurora_stats.py --queue` | `--limit --theme --json --append-metrics --report` | 1.3.0 |
 | `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `[selector]` | `--owner --months --by-source --stubs --by-links --auto --by-jira --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
-| `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --drop-alias --dupes --merge --apply --allow-dirty --report --root` | 1.3.0 |
-| `kb:retire` | убрать из карточек поля, выведенные из схемы (audience, confirmed_by; статус canonical → verified) | скрипт | `kb_fix.py --retire` | `--links --homoglyphs --frontmatter --stubs --aliases --drop-alias --dupes --all --merge --apply --allow-dirty --report --root` | 1.10.0 |
+| `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --drop-alias --dupes --merge --apply --allow-dirty --report --root` | 1.3.0 |
 | `kb:dedupe` | двойники: поиск и слияние (`--merge`) — тот же скрипт, другой режим | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --drop-alias --all --merge --apply --allow-dirty --report --root` | 1.3.0 |
 | `kb:moc` (`moc`) | карты содержания по группировкам (термины, понятия, роли, данные…) и список брошенных карточек | скрипт | `kb_moc.py` | `--apply --suggest --orphans --allow-dirty` | 1.32.0 |
 | `kb:index` (`index`) | регенерация `_index.md` разделов; рукотворные оглавления не трогает | скрипт | `kb_index.py` | `--section --root-index --apply --force` | 1.9.4 |

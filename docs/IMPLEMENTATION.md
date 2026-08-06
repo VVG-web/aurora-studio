@@ -33,7 +33,7 @@ Put real materials only:
 
 ### Phase 2 — First cards (bootstrap)
 
-- Extract candidates via `/aurora-vault build` or `ingest-raw` / `ingest-meeting` / `ingest-tz`
+- Extract candidates via `/aurora-vault build` or `ingest <path>`
 - Default status: `imported` or `draft`
 - Bootstrap mode: agents may use imported cautiously until verified ≥ ~20% (see `retrieval.md`)
 - Add 5–10 **golden questions** once you have verified facts

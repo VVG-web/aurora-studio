@@ -68,8 +68,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | Command | What it does | Reference |
 |---|---|---|
 | `kit:list` | справочник всех команд: модификаторы, чем исполняется, с какой версии (`kit_commands.py`) | `docs/commands.md` |
-| `kit:doctor` (`doctor`) | онбординг: config, skills, секреты в git, версия движка | `.opencode/scripts/aurora_doctor.py` |
-| `kit:structure` | сверить фактические папки с фиксированной схемой движка | `aurora_doctor.py --structure` |
+| `kit:doctor` (`doctor`) | онбординг: config, skills, секреты в git, версия движка, структура папок (`--structure` — подробно) | `.opencode/scripts/aurora_doctor.py` |
 | `kit:hooks` | поставить git pre-commit с `kb_lint` (чтобы ошибки не копились) | `.opencode/scripts/aurora_hooks.py` |
 | `kit:remap-sources` | перенацелить `source:` карточек после переезда зеркала (по page_id) | `references/migration.md` |
 
@@ -95,15 +94,12 @@ needed for the requested command (progressive disclosure, keep context small).
 |---|---|---|
 | `kb:build` (`build`) | извлечь карточки: план и учёт — `build_plan.py`, само извлечение — модель. `--partition N` печатает готовое задание на партию: список файлов и правила | `references/build.md` |
 | `kb:ingest-office [path]` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | `references/maintenance.md` |
-| `kb:ingest-raw <path>` (`ingest-raw`) | обработать документ из Raw/ в карточки-кандидаты | `references/workflows.md` |
-| `kb:ingest-meeting <транскрипт>` (`ingest-meeting`) | транскрипт → резюме, решения (DR), требования (REQ), факты | `references/workflows.md` |
-| `kb:ingest-tz <ТЗ>` (`ingest-tz`) | разобрать ТЗ по пунктам в REQ-карточки с tz_ref | `references/workflows.md` |
+| `kb:ingest <path>` (`ingest`, `ingest-raw`, `ingest-meeting`, `ingest-tz`) | документ из Raw/ → карточки; ветка определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты, прочее → атомарные карточки | `references/workflows.md` |
 | `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит всё содержимое `AuroraKnowledgeDB/` (включая DR, вопросы, справочники), за её пределами не трогает ничего; `--keep-handmade` — оставить то, чего нет в источниках; откат — из git (`kb_reset.py`) | `references/maintenance.md` |
 | `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
 | `kb:queue` | очередь верификации: что проверять первым по связям и попаданию в артефакты (`aurora_stats.py --queue`) | `references/maintenance.md` |
 | `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять давно не менявшееся; `--by-jira` — решение по статусу связанной задачи; `--by-source` — доверие по происхождению (договор, ТЗ, словарь); `--by-links` — то, на что ссылаются только принятые истории; `--stubs` — заготовки; `--auto` — всё это разом (списки — в конфиге проекта, секция `verify:`) | `references/maintenance.md` |
-| `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter (`kb_fix.py --all`) | `references/maintenance.md` |
-| `kb:retire` | убрать поля, выведенные из схемы (`kb_fix.py --retire`); `canonical` → `verified` | `references/maintenance.md` |
+| `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки (`kb_fix.py --all`); режимы по отдельности — флагами | `references/maintenance.md` |
 | `kb:dedupe` | двойники: поиск и слияние (`kb_fix.py --dupes` / `--merge`) — тот же скрипт, другой режим | `references/maintenance.md` |
 | `kb:moc` (`moc`) | карты содержания по группировкам из `moc_groups.txt` + список брошенных карточек (`kb_moc.py`) | `references/build.md` |
 | `kb:index` | регенерация `_index.md` разделов (рукотворные не трогает) | `references/maintenance.md` |
