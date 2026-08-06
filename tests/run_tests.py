@@ -2023,6 +2023,33 @@ def test_verify_by_source_and_links(tmp: Path):
 
 
 @test
+def test_links_and_stubs_respect_separators_and_dots(tmp: Path):
+    """Имя — это имя, а не «текст до последней точки», и разделители в нём не значимы.
+
+    `[[ALG-3.14 Учёт операции]]` разрешалось в карточку `ALG-3` — совсем другое знание,
+    молча. А ссылка `[[ER BaR FID]]` на существующую `ER-BaR-FID` считалась битой, и под
+    неё заводилась вторая пустая карточка: знание раскалывалось надвое.
+    """
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/ALG-3.md", "короткий алгоритм")
+    card(root, "Concepts/ALG-3.14-Учёт-операции-из-смежной-системы.md", "длинный алгоритм")
+    card(root, "Concepts/ER-BaR-FID.md", "справочник")
+    card(root, "Concepts/Ссылающаяся.md",
+         "см. [[ALG-3.14 Учёт операции из смежной системы]], [[ER BaR FID]] и [[Неизвестное]]")
+
+    fixed = run("kb_fix.py", "--links", "--apply", "--allow-dirty", cwd=root)
+    text = (root / "AuroraKnowledgeDB/Concepts/Ссылающаяся.md").read_text(encoding="utf-8")
+    assert "[[ALG-3]]" not in text, f"ссылка с точкой ушла не в ту карточку:\n{fixed.stdout[:600]}"
+
+    stubs = run("kb_fix.py", "--stubs", "--apply", "--allow-dirty", cwd=root)
+    made = {p.stem for p in (root / "AuroraKnowledgeDB").rglob("*.md")}
+    assert "Неизвестное" in made, f"заготовка под настоящую дыру не заведена:\n{stubs.stdout[:600]}"
+    assert "ER BaR FID" not in made, "заведён двойник карточки, набранной с другими разделителями"
+    stub = next(p for p in (root / "AuroraKnowledgeDB").rglob("Неизвестное.md"))
+    assert "type:" in stub.read_text(encoding="utf-8"), "заготовка без type: — линтер сразу ругнётся"
+
+
+@test
 def test_update_removes_retired_engine_files(tmp: Path):
     """Слитые скрипты уезжают из проекта, а не остаются рядом работать по-своему.
 
