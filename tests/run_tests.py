@@ -2023,6 +2023,34 @@ def test_verify_by_source_and_links(tmp: Path):
 
 
 @test
+def test_update_removes_retired_engine_files(tmp: Path):
+    """Слитые скрипты уезжают из проекта, а не остаются рядом работать по-своему.
+
+    После слияния команда исполняется другим файлом, но прежняя копия в `.opencode/scripts`
+    продолжала запускаться руками и расходиться с kit'ом. Список выведенных ведётся в
+    манифесте (строки `- путь`) — угадывать «наш файл или проектный» обновление не вправе.
+    """
+    root = make_project(tmp)
+    scripts = root / ".opencode/scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "kb_queue.py").write_text("# старая копия\n", encoding="utf-8")
+    (scripts / "мой_скрипт.py").write_text("# проектный\n", encoding="utf-8")
+    (root / "aurora.config.yaml").write_text('project:\n  name: "T"\n  slug: "T"\n',
+                                             encoding="utf-8")
+
+    dry = subprocess.run([sys.executable, str(KIT / "scripts/aurora_update.py"), str(root)],
+                         capture_output=True, text=True)
+    assert "kb_queue.py" in dry.stdout and "Выведены из движка" in dry.stdout, dry.stdout[:800]
+    assert (scripts / "kb_queue.py").is_file(), "dry-run удалил файл"
+
+    subprocess.run([sys.executable, str(KIT / "scripts/aurora_update.py"), str(root), "--apply"],
+                   capture_output=True, text=True)
+    assert not (scripts / "kb_queue.py").exists(), "выведенный скрипт остался в проекте"
+    assert (scripts / "мой_скрипт.py").is_file(), "обновление удалило чужой файл"
+    assert (scripts / "kb_trace.py").is_file(), "новый скрипт не разложен"
+
+
+@test
 def test_remap_jira_moves_sources_to_issue_keys(tmp: Path):
     """Ссылки карточек переезжают со старых имён файлов Jira на ключи задач.
 

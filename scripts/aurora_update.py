@@ -109,6 +109,21 @@ def parse_manifest():
     return rows
 
 
+def retired_paths() -> list:
+    """Файлы движка, выведенные из состава: строки `- <путь>` в манифесте.
+
+    Слияние скриптов оставляло в проектах их прежние копии: команда уже исполняется другим
+    файлом, а старый лежит рядом, работает по-своему и расходится с kit'ом. Список ведётся
+    руками — угадывать «чужое это или наше» обновление не имеет права.
+    """
+    out = []
+    for line in MANIFEST.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if line.startswith("- ") and "=>" not in line:
+            out.append(line[2:].strip())
+    return out
+
+
 # ---------- планирование изменений ----------
 
 class Change:
@@ -287,8 +302,9 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     changes = plan(target, f)
     writes = [c for c in changes if c.kind == "write"]
     seeds = [c for c in changes if c.kind == "seed-new"]
+    retired = [r for r in retired_paths() if (target / r).is_file()]
 
-    if not changes and not new_dirs:
+    if not changes and not new_dirs and not retired:
         print("✅ Движок и структура уже актуальны — изменений нет.")
         if apply and pv != kv:
             stamp_version(target, kv)
@@ -312,6 +328,10 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         print(f"\nШаблоны/промпты (вариант 1 — рядом как .new, руками сравнить): {len(seeds)}")
         for c in seeds:
             print(f"  + {c.path}   [{c.note}]")
+    if retired:
+        print(f"\nВыведены из движка — будут удалены: {len(retired)}")
+        for r in retired:
+            print(f"  − {r}")
 
     if not apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply, чтобы применить.")
@@ -327,10 +347,13 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         dst.write_text(c.new_text, encoding="utf-8")
         if dst.suffix in (".command", ".sh"):
             dst.chmod(0o755)     # без бита исполнения двойной щелчок не сработает
+    for r in retired:
+        (target / r).unlink()
     (target / ".opencode").mkdir(parents=True, exist_ok=True)
     (target / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
     stamp_version(target, kv)
-    print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, {len(seeds)} .new-файлов. Версия → {kv}")
+    print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
+          f"{len(seeds)} .new-файлов, {len(retired)} удалено. Версия → {kv}")
     print("   Проверьте: python3 .opencode/scripts/aurora_doctor.py && git diff")
     if seeds:
         print("   Не забудьте сравнить *.new с вашими Templates/Prompts и удалить .new.")
