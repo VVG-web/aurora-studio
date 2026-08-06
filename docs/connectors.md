@@ -56,7 +56,7 @@ connectors/<id>/
 
 - `kind` — `wiki` или `board`; движок по нему выбирает и раскладку, и правила аудита;
 - `mirror.default_path` — папка зеркала; она же становится легитимной в `Sources/`
-  (`kit:structure` перестаёт считать её ничьей);
+  (`kit:doctor --structure` перестаёт считать её ничьей);
 - `auth.env_prefix` — из него выводятся имена переменных: `NOTION_PAT`,
   `NOTION_PERSONAL_TOKEN`, `NOTION_USER` + `NOTION_PASSWORD`;
 - `settings_block` — где в `aurora.config.yaml` модуль ищет свои настройки. Реестр их

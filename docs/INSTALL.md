@@ -115,7 +115,7 @@ Deploying into a repo that already has documents? Run the maintenance chain once
 4. [ ] Optional: `cp aurora.env.local.example .env.aurora.local` (personal tokens for CLI only)
 5. [ ] Drop evidence into `Raw/` (contract, ТЗ, meeting transcripts)
 6. [ ] Open HTML guides under `Artifacts/drafts/`
-7. [ ] Run `/aurora-vault build` or `ingest-raw` via your AI agent
+7. [ ] Run `/aurora-vault build` or `ingest <path>` via your AI agent
 8. [ ] Commit the scaffold (never commit `.env.aurora.local`)
 
 ## 5. Existing projects with an accumulated pile of docs

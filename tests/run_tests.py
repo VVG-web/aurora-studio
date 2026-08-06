@@ -1364,8 +1364,8 @@ def test_commands_registry_matches_engine(tmp: Path):
 
     cp = run("kit_commands.py", "kb", cwd=root)
     assert "kb:repair" in cp.stdout and "kb:scrub" in cp.stdout
-    # блок ровно одной команды: следом в реестре идёт kb:retire — у неё свой набор флагов
-    block = cp.stdout.split("kb:repair", 1)[1].split("kb:retire")[0]
+    # блок ровно одной команды: следом в реестре идёт kb:dedupe — у неё свой набор флагов
+    block = cp.stdout.split("kb:repair", 1)[1].split("kb:dedupe")[0]
     mods = [l.strip() for l in block.splitlines() if l.strip().startswith("--")]
     assert any(l.startswith("--merge") for l in mods), \
         "модификаторы берутся не из --help — иначе список разойдётся с кодом"

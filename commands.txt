@@ -8,8 +8,7 @@
 # Реализация: имя файла в .opencode/scripts/ (можно с фиксированными флагами) либо
 #              файл справки в .opencode/skills/aurora-vault/references/.
 
-kit | kit:doctor | doctor | скрипт | aurora_doctor.py | 1.0.0 | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок
-kit | kit:structure | — | скрипт | aurora_doctor.py --structure | 1.3.0 | сверить фактические папки со схемой движка (structure_dirs.txt); gitignore-папки допустимы
+kit | kit:doctor | doctor | скрипт | aurora_doctor.py | 1.0.0 | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок; `--structure` — подробно по папкам вне схемы
 kit | kit:hooks | — | скрипт | aurora_hooks.py | 1.3.0 | git pre-commit с линтером и храповиком: число ошибок не должно расти
 kit | kit:remap-sources | remap | скрипт | kb_remap.py | 1.7.0 | перенацелить `source:` карточек после переезда зеркала (Confluence — по page_id, Jira — по ключу задачи)
 kit | kit:update | — | скрипт | aurora_update.py | 1.3.0 | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы
@@ -24,13 +23,10 @@ sync | sync:jira-status | — | скрипт | jira_status.py | 1.9.9 | обра
 
 kb | kb:build | build | скрипт+модель | build_plan.py | 1.0.0 | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью
 kb | kb:ingest-office | — | скрипт | office_ingest.py | 1.5.0 | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом
-kb | kb:ingest-raw | ingest-raw | модель | workflows.md | 1.0.0 | документ из Raw/ → карточки-кандидаты со ссылкой на первоисточник
-kb | kb:ingest-meeting | ingest-meeting | модель | workflows.md | 1.4.0 | транскрипт встречи → резюме, решения (DR), требования (REQ), факты
-kb | kb:ingest-tz | ingest-tz | модель | workflows.md | 1.4.0 | ТЗ по пунктам → REQ-карточки с `tz_ref`
+kb | kb:ingest | ingest, ingest-raw, ingest-meeting, ingest-tz | модель | workflows.md | 1.0.0 | документ из Raw/ → карточки со ссылкой на первоисточник; вид входа определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты
 kb | kb:queue | queue | скрипт | aurora_stats.py --queue | 1.3.0 | очередь верификации: что проверять первым по связям и попаданию в артефакты
 kb | kb:verify | verify, promote | скрипт+модель | kb_verify.py | 1.8.0 | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы
-kb | kb:repair | fix | скрипт | kb_fix.py --all | 1.3.0 | ремонт: битые ссылки, гомоглифы, легаси-frontmatter
-kb | kb:retire | — | скрипт | kb_fix.py --retire | 1.10.0 | убрать из карточек поля, выведенные из схемы (audience, confirmed_by; статус canonical → verified)
+kb | kb:repair | fix | скрипт | kb_fix.py --all | 1.3.0 | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки
 kb | kb:dedupe | — | скрипт | kb_fix.py --dupes | 1.3.0 | двойники: поиск и слияние (`--merge`) — тот же скрипт, другой режим
 kb | kb:moc | moc | скрипт | kb_moc.py | 1.32.0 | карты содержания по группировкам (термины, понятия, роли, данные…) и список брошенных карточек
 kb | kb:index | index | скрипт | kb_index.py | 1.9.4 | регенерация `_index.md` разделов; рукотворные оглавления не трогает

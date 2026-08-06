@@ -13,6 +13,8 @@ Exit 0 if OK / warnings only; 1 if blocking errors.
 """
 from __future__ import annotations
 
+import argparse
+
 import os
 import re
 import sys
@@ -299,9 +301,13 @@ def check_structure(verbose: bool = False):
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description="Готовность проекта Aurora к работе")
+    ap.add_argument("--structure", action="store_true",
+                    help="подробно по структуре папок: что вне схемы движка")
+    structure_verbose = ap.parse_args().structure
+
     errors: list[str] = []
     warns: list[str] = []
-    structure_verbose = "--structure" in sys.argv   # подробно о папках вне схемы
 
     if not CONFIG.exists():
         errors.append("нет aurora.config.yaml — скопируйте из Aurora kit templates/")

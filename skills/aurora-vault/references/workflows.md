@@ -7,49 +7,53 @@ naming/aliases/links per `build.md`. All generated documents go to `Artifacts/`
 
 ---
 
-## ingest-raw <path> — первоисточник → карточки
+## ingest <path> — документ из Raw/ → карточки
 
-Input: file(s) in `Raw/` (закон, регламент, словарь, XSD — то, что НЕ приходит синком).
-1. Read the document; extract atomic topics using the rules in `build.md`
-   (tables → glossary/statuses, definitions → glossary, procedures → processes).
-   Для терминов/сокращений можно делегировать skill `glossary-extractor`, если доступен.
-2. Create cards with `status: imported`, `source: Raw/<path>`, `trust: medium`.
-3. Never modify or delete the raw file itself — it is permanent citation evidence.
-4. Report: created cards + list of candidate duplicates found via alias search.
+Один вход на любой первоисточник: вид документа виден по нему самому, и спрашивать у
+человека, какую из трёх команд звать, незачем. Прежние имена (`ingest-raw`,
+`ingest-meeting`, `ingest-tz`) остались синонимами.
 
-## ingest-meeting <транскрипт> — встреча с заказчиком → знания
+Общее для всех веток: файл в `Raw/` — доказательство, его не правят и не удаляют; у
+каждой карточки `source` указывает на него; статус создаваемых карточек — `imported`.
 
-Input: transcript file (text/markdown). Steps:
-1. Store the transcript at `Raw/meetings/YYYY-MM-DD_<тема>/transcript.md` (if not
-   already there). Transcripts are immutable evidence — never edit or summarize in place.
-2. Generate a summary draft from `Templates/meeting_summary_template.md` →
-   `Artifacts/meetings/YYYY-MM-DD_<тема>_summary.md`: участники, повестка, договорённости,
-   разногласия, action items, quotes with speaker attribution for every key claim.
-3. Extract candidates (each cites the transcript/protocol as `source`):
-   - decisions agreed at the meeting → DR drafts (`status: proposed`) via the `decide` flow;
-   - customer requirements (new or changed) → `AuroraKnowledgeDB/Requirements/REQ-NNN-*`
-     cards, `status: imported`, `req_status: stated`; if an existing REQ changed —
-     flag it, don't silently rewrite;
-   - facts about domain/systems → ordinary cards, `status: imported`.
-   - **ответы на открытые вопросы**: сверить встречу с реестром `Questions/`
-     (`q_status: open|asked`) — на что ответили, закрыть через `answer <Q-NNN>`;
-     новые неизвестные, всплывшие на встрече → новые карточки `Questions/`.
-4. After the customer agrees on the summary, the analyst saves the agreed version as
-   `Raw/meetings/YYYY-MM-DD_<тема>/protocol.md` (immutable; supersedes the draft as
-   the citation target) and re-points `source` of extracted cards to the protocol.
-5. Run `trace` if any requirement was touched. Report: summary path + candidates by type.
-
-## ingest-tz <ТЗ> — разбор ТЗ в требования (разовая операция на редакцию ТЗ)
-
-Input: ТЗ (или новая редакция) in `Raw/contract/`.
-1. Walk the document по пунктам. Каждый пункт с обязательством исполнителя →
-   REQ-карточка: `tz_ref: "п. X.Y.Z"`, формулировка словами ТЗ, `source: Raw/contract/...`,
-   `req_status: agreed` (ТЗ подписано — требование согласовано по определению),
-   `status: imported` до ревью аналитиком.
+**Ветка «ТЗ или договор»** (`Raw/contract/`, документ с пунктами и обязательствами):
+1. Идти по пунктам. Каждый пункт с обязательством исполнителя → REQ-карточка:
+   `tz_ref: "п. X.Y.Z"`, формулировка словами ТЗ, `req_status: agreed` (ТЗ подписано —
+   требование согласовано по определению), `status: imported` до ревью аналитиком.
 2. Новая редакция ТЗ: НЕ пересоздавать REQ. Diff по `tz_ref`: изменённые пункты →
    запись в «Уточнениях» карточки + пометка на перепроверку; исчезнувшие пункты →
    `req_status: rejected` с причиной «исключён редакцией N»; новые пункты → новые REQ.
-3. Run `trace`. Report: created/changed/removed по пунктам.
+3. Запустить `ops:trace`. Отчёт: создано/изменено/снято по пунктам.
+
+**Ветка «встреча»** (транскрипт, запись разговора):
+1. Положить транскрипт в `Raw/meetings/YYYY-MM-DD_<тема>/transcript.md`, если он ещё не
+   там. Транскрипт неизменяем — не редактировать и не сокращать по месту.
+2. Черновик резюме из `Templates/meeting_summary_template.md` →
+   `Artifacts/meetings/YYYY-MM-DD_<тема>_summary.md`: участники, повестка, договорённости,
+   разногласия, action items, цитаты с указанием говорящего под каждым ключевым тезисом.
+3. Кандидаты в знание (каждый ссылается на транскрипт/протокол как `source`):
+   - решения, принятые на встрече → черновики DR (`status: proposed`) через `kb:decide`;
+   - требования заказчика (новые или изменённые) → `Requirements/REQ-NNN-*`,
+     `req_status: stated`; если изменилось существующее REQ — пометить, а не переписать
+     молча;
+   - факты о домене и системах → обычные карточки.
+   - **ответы на открытые вопросы**: сверить встречу с реестром `Questions/`
+     (`q_status: open|asked`) — на что ответили, закрыть через `kb:answer <Q-NNN>`;
+     новые неизвестные, всплывшие на встрече → новые карточки `Questions/`.
+4. После согласования резюме с заказчиком аналитик сохраняет согласованную версию как
+   `Raw/meetings/YYYY-MM-DD_<тема>/protocol.md` (неизменяем; он и становится целью
+   цитирования) и перенацеливает `source` извлечённых карточек на протокол.
+5. Запустить `ops:trace`, если задето хоть одно требование.
+
+**Ветка «прочий первоисточник»** (закон, регламент, словарь, XSD — то, что не приходит
+синком):
+1. Прочитать документ, выделить атомарные темы по правилам `build.md` (таблицы →
+   глоссарий и модели статусов, определения → глоссарий, процедуры → процессы).
+   Для терминов и сокращений можно делегировать skill `glossary-extractor`, если он есть.
+2. Отчёт: созданные карточки + возможные двойники, найденные поиском по алиасам.
+
+Офисные форматы (docx/pdf/xlsx/pptx) сначала прогоняются через `kb:ingest-office` — он
+делает markdown-транскрипт рядом с оригиналом, и разбирается уже транскрипт.
 
 ## trace — таблица трассировки требований заказчика
 
