@@ -83,3 +83,14 @@ templates/agents/AGENTS.md.template => (agents) AGENTS.md
 # --- шаблоны/промпты: вариант (1) — не перезаписывать, класть новое как .new ---
 scaffold/Templates => (seed) Templates
 scaffold/Prompts   => (seed) Prompts
+
+# --- выведено из состава движка: обновление удаляет эти файлы в проекте ---
+# Формат: «- <путь в проекте>». Список ведётся руками: угадывать, наш это файл или
+# проектный, обновление права не имеет.
+- .opencode/scripts/kb_queue.py       # 1.44.0 → aurora_stats.py --queue
+- .opencode/scripts/kb_classify.py    # 1.44.0 → kb_lint.py
+- .opencode/scripts/kb_impact.py      # 1.44.0 → kb_trace.py --impact
+- .opencode/scripts/aurora_trace.py   # 1.44.0 → kb_trace.py --requirements
+- .opencode/scripts/sync_diff.py      # 1.44.0 → sync_audit.py --drift
+- .opencode/scripts/export_doc.py     # 1.44.0 → ship_doc.py --export
+- .opencode/scripts/release_doc.py    # 1.44.0 → ship_doc.py --release
