@@ -37,7 +37,8 @@ import sys
 import unicodedata
 
 from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, Card as BaseCard,
-                           aliases as card_aliases, fix_mixed_script, fold, git_guard,
+                           aliases as card_aliases, fix_mixed_script, fold, fold_hard,
+                           fold_hard, git_guard, leaf_name,
                            is_service, link_refs, rewrite_links, set_field)
 from datetime import date
 from difflib import get_close_matches
@@ -132,19 +133,22 @@ class Index:
 
     def __init__(self, cards: dict):
         self.by_stem, self.by_fold, self.by_alias = {}, {}, {}
+        self.by_hard: dict = {}
         for path, c in cards.items():
             self.by_stem[c.stem] = path
             self.by_fold.setdefault(fold(c.stem), []).append(path)
+            self.by_hard.setdefault(fold_hard(c.stem), []).append(path)
             for a in c.aliases:
                 self.by_alias.setdefault(a, path)
                 self.by_alias.setdefault(fold(a), path)
+                self.by_hard.setdefault(fold_hard(a), []).append(path)
 
     def resolve(self, target: str):
         """→ (имя-файла-цели, как-нашли) либо (None, причина)."""
         base = target.split("#")[0].strip()
         if not base:
             return None, "пусто"
-        leaf = os.path.splitext(os.path.basename(base))[0]
+        leaf = leaf_name(base)
         if leaf in self.by_stem:
             return leaf, "ok"
         if leaf in self.by_alias:
@@ -164,6 +168,12 @@ class Index:
             return os.path.splitext(os.path.basename(norm_hits[0]))[0], "нормализация+регистр"
         if fold(leaf) in self.by_alias:
             return os.path.splitext(os.path.basename(self.by_alias[fold(leaf)]))[0], "alias/регистр"
+        # последнее: та же строка, набранная с другими разделителями
+        hard = {p for p in self.by_hard.get(fold_hard(leaf), [])}
+        if len(hard) == 1:
+            return os.path.splitext(os.path.basename(hard.pop()))[0], "разделители"
+        if len(hard) > 1:
+            return None, "неоднозначно (двойники — см. --dupes)"
         return None, "не найдено"
 
 
@@ -277,7 +287,7 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
             target = m.group(2).strip()
             if target.startswith("http"):
                 continue
-            leaf = os.path.splitext(os.path.basename(target.split("#")[0].strip()))[0]
+            leaf = leaf_name(target)
             if not leaf or leaf in idx.by_stem or leaf in idx.by_alias:
                 continue
             new, how = idx.resolve(target)
@@ -384,6 +394,10 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     список тех, кто на неё ссылается, — по нему видно, в каком контексте её ждут.
     """
     wanted: dict = {}
+    # Имена, уже занятые карточками, — с точностью до разделителей: «ER BaR FID» и
+    # «ER-BaR-FID» это одно понятие, и заводить под второе написание пустую карточку
+    # значит расколоть знание надвое.
+    taken = {fold_hard(c.stem) for c in cards.values()}
     for path, c in sorted(cards.items()):
         if is_service(path):
             continue
@@ -391,13 +405,15 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
             base = target.split("#")[0].strip()
             if not base or base.startswith("http"):
                 continue
-            leaf = os.path.splitext(os.path.basename(base))[0]
+            leaf = leaf_name(base)
             if idx.resolve(leaf)[0]:
                 continue
             if not re.match(r"^[\w][\w \-.,()«»/]{0,80}$", leaf):
                 continue          # не имя карточки, а кусок текста в скобках
             if re.search(r"(NNNN|XXXX?|\.\.\.|-N$|<[^>]+>)", leaf):
                 continue          # образец имени из шаблона (DR-NNNN, SPEC-…), не понятие
+            if fold_hard(leaf) in taken:
+                continue          # та же карточка, набранная с другими разделителями
             wanted.setdefault(leaf, []).append(c.stem)
 
     created = []
@@ -409,8 +425,10 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
         if path in cards or os.path.exists(path):
             continue
         mentions = "\n".join(f"- [[{r}]]" for r in sorted(set(refs))[:20])
+        taken.add(fold_hard(safe))
         plan.write(path,
                    f"---\ntitle: \"{name}\"\naliases: []\nstatus: draft\n"
+                   f"type: {SECTION_TYPE.get(section, 'concept')}\n"
                    f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
                    f"related: []\n---\n\n# {name}\n\n"
                    "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n"

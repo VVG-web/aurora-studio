@@ -126,6 +126,16 @@ def fold(name: str) -> str:
     return "".join(CYR2LAT.get(ch, ch) for ch in name).lower()
 
 
+def fold_hard(name: str) -> str:
+    """Ключ сравнения имён без разделителей: «ALG-014. Подготовка» == «ALG-014-Подготовка».
+
+    Одно и то же понятие в источниках пишут по-разному: точка после кода, пробелы вместо
+    дефисов, подчёркивания из экспорта. Ссылка на такое имя не битая — она просто набрана
+    иначе, и заводить под неё пустую карточку значит расколоть знание надвое.
+    """
+    return re.sub(r"[\s\-_.,·:;]+", "", fold(name))
+
+
 def fix_mixed_script(name: str) -> str:
     """Починить буквенные группы со смешанной кириллицей/латиницей.
 
@@ -187,6 +197,23 @@ def walk_md(root: str, skip_service: bool = False, skip_archive: bool = False):
             yield full
 
 
+# Расширения, которые в имени карточки или вложения действительно расширения. Всё
+# остальное после точки — часть названия: «ALG-3.14 Учёт операции», «Спецификация 1.2».
+KNOWN_EXT = (".md", ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".drawio", ".xml", ".mmd",
+             ".puml", ".json", ".txt", ".docx", ".xlsx", ".pptx", ".csv")
+
+
+def leaf_name(target: str) -> str:
+    """Имя цели ссылки без пути, якоря и НАСТОЯЩЕГО расширения.
+
+    `os.path.splitext` считал расширением всё после последней точки, и ссылка
+    `[[ALG-3.14 Учёт операции]]` разрешалась в карточку `ALG-3` — совсем другое знание.
+    """
+    base = os.path.basename(target.split("#")[0].strip())
+    root, ext = os.path.splitext(base)
+    return root if ext.lower() in KNOWN_EXT else base
+
+
 def link_targets(text: str) -> list:
     """Имена целей всех wiki-ссылок в тексте (без якорей, подписей и путей)."""
     out = []
@@ -194,7 +221,7 @@ def link_targets(text: str) -> list:
         target = m.group(2).strip()
         if target.startswith("http"):
             continue
-        leaf = os.path.splitext(os.path.basename(target.split("#")[0].strip()))[0]
+        leaf = leaf_name(target)
         if leaf:
             out.append(leaf)
     return out
