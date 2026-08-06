@@ -100,7 +100,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:ingest-tz <ТЗ>` (`ingest-tz`) | разобрать ТЗ по пунктам в REQ-карточки с tz_ref | `references/workflows.md` |
 | `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит всё содержимое `AuroraKnowledgeDB/` (включая DR, вопросы, справочники), за её пределами не трогает ничего; `--keep-handmade` — оставить то, чего нет в источниках; откат — из git (`kb_reset.py`) | `references/maintenance.md` |
 | `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
-| `kb:queue` | очередь верификации: что верифицировать первым (употребление × связи × протухание) | `references/maintenance.md` |
+| `kb:queue` | очередь верификации: что проверять первым по связям и попаданию в артефакты (`aurora_stats.py --queue`) | `references/maintenance.md` |
 | `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять давно не менявшееся; `--by-jira` — решение по статусу связанной задачи; `--by-source` — доверие по происхождению (договор, ТЗ, словарь); `--by-links` — то, на что ссылаются только принятые истории; `--stubs` — заготовки; `--auto` — всё это разом (списки — в конфиге проекта, секция `verify:`) | `references/maintenance.md` |
 | `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter (`kb_fix.py --all`) | `references/maintenance.md` |
 | `kb:retire` | убрать поля, выведенные из схемы (`kb_fix.py --retire`); `canonical` → `verified` | `references/maintenance.md` |
@@ -109,7 +109,6 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:index` | регенерация `_index.md` разделов (рукотворные не трогает) | `references/maintenance.md` |
 | `kb:scrub` | персональные данные: найти и закрыть маркерами (`kb_scrub.py`); режим — `privacy.scrub` в конфиге; доказательства не правит | `references/maintenance.md` |
 | `kb:schema` | версия схемы карточек и миграция между версиями (`kb_schema.py`) | `references/frontmatter.md` |
-| `kb:classify` | артефакты, попавшие в знания (US/AC/Epic/задачи); типы карточек | `references/maintenance.md` |
 | `kb:question <суть>` | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок | `references/workflows.md` |
 | `kb:answer <Q-NNN>` | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR | `references/workflows.md` |
 | `kb:decide <тема>` (`decide`) | оформить Decision Record (+supersede старой DR) | `references/workflows.md` |
@@ -143,7 +142,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `ship:publish <артефакт>` | артефакт → generated-страница Confluence (`publish_doc.py`); карточки знаний наружу не идут | `references/workflows.md` |
 | `ship:export <документ>` | поставляемый документ → docx/pdf (pandoc, фирменный шаблон) | `references/workflows.md` |
 | `ship:acceptance <объект>` | зафиксировать результаты приёмки/испытаний и разобрать замечания заказчика | `references/workflows.md` |
-| `ship:release <документ>` (`release`) | заморозить переданную версию: снапшот + коммит базы + дата (`release_doc.py`) | `references/maintenance.md` |
+| `ship:release <документ>` (`release`) | заморозить переданную версию: снапшот + коммит базы + дата (`ship_doc.py --release`) | `references/maintenance.md` |
 
 ### `ops:` — управление и отчётность
 
@@ -170,23 +169,23 @@ Context assembly for ALL prompt-enrichment: `references/retrieval.md`.
 | проверка базы | `kb_lint.py` | интерпретация ошибок |
 | ремонт ссылок/имён | `kb_fix.py` | решение по неоднозначным случаям |
 | дубли | `kb_fix.py --dupes` | выбор победителя и слияние тел |
-| очередь верификации | `kb_queue.py` | сама верификация карточек |
+| очередь верификации | `aurora_stats.py --queue` | сама верификация карточек |
 | переезд зеркала | `kb_remap.py` | разбор несопоставленных источников |
-| маршрутизация карточек | `kb_classify.py` | решение «артефакт или знание» по каждой находке |
+| маршрутизация карточек | `kb_lint.py` | решение «артефакт или знание» по каждой находке |
 | сборка context pack | `ctx_pack.py` | сам ответ по паку |
 | простановка verified | `kb_verify.py` | решение, каким карточкам верить |
 | замена знания | `kb_supersede.py` | решение «это устарело» и текст преемника |
-| обратная трассировка | `kb_impact.py` | что делать с затронутыми документами |
+| обратная трассировка | `kb_trace.py --impact` | что делать с затронутыми документами |
 | зеркало Confluence | `confluence_export.py` | разбор новых и изменившихся страниц |
 | зеркало Jira | `jira_export.py` | разбор новых и изменившихся задач |
-| дрейф источников | `sync_diff.py` | что делать с изменившимся знанием |
-| фиксация переданного | `release_doc.py` | что сдаём и с каким риском |
+| дрейф источников | `sync_audit.py --drift` | что делать с изменившимся знанием |
+| фиксация переданного | `ship_doc.py --release` | что сдаём и с каким риском |
 | целостность зеркал | `sync_audit.py` | что досинхронизировать |
 | метрики и дашборд | `aurora_stats.py` | комментарий к динамике |
 | план извлечения | `build_plan.py` | само извлечение карточек из источника |
 | офисные первоисточники | `office_ingest.py` | извлечение карточек из транскрипта |
-| экспорт документа | `export_doc.py` | вычитка результата перед передачей |
-| трассировка | `aurora_trace.py` | разбор разрывов |
+| экспорт документа | `ship_doc.py --export` | вычитка результата перед передачей |
+| трассировка | `kb_trace.py --requirements` | разбор разрывов |
 | готовность проекта | `aurora_doctor.py` | починка конфига |
 
 ## Invariants (never violate, any command)

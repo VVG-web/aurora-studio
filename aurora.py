@@ -93,9 +93,8 @@ TOOLS = {
     "stats": "aurora_stats.py",
     "lint": "kb_lint.py",
     "fix": "kb_fix.py",
-    "queue": "kb_queue.py",
+    "queue": "aurora_stats.py --queue",
     "remap": "kb_remap.py",
-    "classify": "kb_classify.py",
     "build-plan": "build_plan.py",
     "spec-pack": "spec_pack.py",
     "index": "kb_index.py",
@@ -104,28 +103,31 @@ TOOLS = {
     "publish": "publish_doc.py",
     "verify": "kb_verify.py",
     "supersede": "kb_supersede.py",
-    "impact": "kb_impact.py",
+    "impact": "kb_trace.py --impact",
     "context": "ctx_pack.py",
     "audit": "sync_audit.py",
-    "diff": "sync_diff.py",
-    "release": "release_doc.py",
+    "diff": "sync_audit.py --drift",
+    "release": "ship_doc.py --release",
     "hooks": "aurora_hooks.py",
     "ingest-office": "office_ingest.py",
-    "export": "export_doc.py",
+    "export": "ship_doc.py --export docx",
     "sync-confluence": "confluence_export.py",
     "sync-jira": "jira_export.py",
     "jira-status": "jira_status.py",
-    "trace": "aurora_trace.py",
+    "trace": "kb_trace.py --requirements",
     "list": "kit_commands.py",
 }
 
 
 def cmd_tool(name: str, target: str, extra: list[str]) -> int:
     tgt = Path(target).expanduser().resolve()
-    script = tgt / ".opencode/scripts" / TOOLS[name]
+    # В реестре у команды может стоять фиксированный флаг («queue» — это
+    # `aurora_stats.py --queue`): один скрипт, несколько именованных входов.
+    file, *fixed = TOOLS[name].split()
+    script = tgt / ".opencode/scripts" / file
     if not script.is_file():
-        script = SCRIPTS / TOOLS[name]
-    return subprocess.call([sys.executable, str(script), *extra], cwd=str(tgt))
+        script = SCRIPTS / file
+    return subprocess.call([sys.executable, str(script), *fixed, *extra], cwd=str(tgt))
 
 
 def cmd_update(target: str, extra: list[str]) -> int:

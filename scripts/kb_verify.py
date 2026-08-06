@@ -67,8 +67,8 @@ import subprocess
 import sys
 from datetime import date, timedelta
 
-from aurora_common import (TRUSTED, body_hash, card_body, frontmatter, git_guard,
-                           link_targets, set_field, split_frontmatter)
+from aurora_common import (TRUSTED, body_hash, card_body, config_list, frontmatter,
+                           git_guard, link_targets, set_field, split_frontmatter)
 
 ROOT = "AuroraKnowledgeDB"
 TODAY = date.today()
@@ -104,16 +104,6 @@ def default_owner() -> str:
     except Exception:  # noqa: BLE001
         pass
     return os.environ.get("USER") or ""
-
-
-def config_list(key: str) -> list:
-    """Список путей/разделов из `aurora.config.yaml`, секция `verify:`."""
-    cfg = "aurora.config.yaml"
-    if not os.path.isfile(cfg):
-        return []
-    m = re.search(rf"^\s*{key}\s*:\s*\[([^\]]*)\]",
-                  open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
-    return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
 
 
 def source_verdicts(files: list, heads: dict) -> dict:
@@ -211,14 +201,8 @@ def stub_verdicts(files: list, heads: dict) -> dict:
 
 
 def config_statuses(key: str) -> set:
-    """Списки статусов из `aurora.config.yaml` (`atlassian.jira.<key>`)."""
-    cfg = "aurora.config.yaml"
-    if not os.path.isfile(cfg):
-        return set()
-    m = re.search(rf"^\s*{key}\s*:\s*\[([^\]]*)\]",
-                  open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
-    return {x.strip().strip("\"'").casefold() for x in m.group(1).split(",")
-            if x.strip()} if m else set()
+    """Статусы задач из конфига — свёрнутые по регистру: в Jira он не значим."""
+    return {x.casefold() for x in config_list(key)}
 
 
 def jira_verdicts(conf_root: str, jira_root: str) -> dict:
@@ -303,8 +287,6 @@ def main() -> int:
     ap.add_argument("--owner", default="", help="владелец карточек (@имя); по умолчанию — "
                                                 "имя из git этого проекта")
     ap.add_argument("--months", type=int, default=3, help="срок годности, месяцев (по умолчанию 3)")
-    ap.add_argument("--status", default="verified", choices=["verified"],
-                    help="верхний статус базы; других ступеней нет")
     ap.add_argument("--by-source", action="store_true",
                     help="доверие по происхождению: списки verify.trusted_sources / "
                          "trusted_sections в конфиге проекта")
@@ -471,7 +453,7 @@ def main() -> int:
                 skipped.append((path, f"источник менялся {src_date.isoformat()} — свежее порога"))
                 continue
 
-        new_head = set_field(head, "status", a.status)
+        new_head = set_field(head, "status", "verified")
         new_head = set_field(new_head, "owner", f'"{a.owner}"')
         new_head = set_field(new_head, "verified", TODAY.isoformat())
         new_head = set_field(new_head, "review_by", review_by)
@@ -494,7 +476,7 @@ def main() -> int:
 
     print(f"# Verify — {TODAY.isoformat()}\n")
     print(f"Отобрано: {len(files)} · к верификации: {len(ready)} · пропущено: {len(skipped)}")
-    print(f"Статус: {a.status} · владелец {a.owner} · годно до {review_by}")
+    print(f"Статус: verified · владелец {a.owner} · годно до {review_by}")
     if skipped:
         # Списком в четыреста строк никто не пользуется. Сначала — почему пропущено и
         # сколько таких, потом по три примера: причина подсказывает, что делать дальше.

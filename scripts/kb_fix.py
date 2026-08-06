@@ -36,8 +36,9 @@ import subprocess
 import sys
 import unicodedata
 
-from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, fix_mixed_script, fold,
-                           git_guard, is_service, rewrite_links, set_field, link_refs)
+from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, Card as BaseCard,
+                           aliases as card_aliases, fix_mixed_script, fold, git_guard,
+                           is_service, link_refs, rewrite_links, set_field)
 from datetime import date
 from difflib import get_close_matches
 
@@ -89,43 +90,17 @@ def normalize_title(title: str) -> str:
 
 # ------------------------------------------------------------------ карточки
 
-class Card:
-    def __init__(self, path: str, text: str):
-        self.path = path.replace("\\", "/")
-        self.text = text
-        self.stem = os.path.splitext(os.path.basename(self.path))[0]
-        self.fm_end = -1
-        self.fm: dict = {}
-        self.aliases: list = []
-        self._parse()
+class Card(BaseCard):
+    """Карточка под правку: к общей шапке добавлена граница frontmatter.
 
-    def _parse(self):
-        if not self.text.startswith("---"):
-            return
-        end = self.text.find("\n---", 3)
-        if end == -1:
-            return
-        self.fm_end = end
-        block = self.text[3:end]
-        for line in block.splitlines():
-            m = re.match(r"^([\w_]+)\s*:(.*)$", line)
-            if m:
-                self.fm[m.group(1)] = m.group(2).strip().strip('"').strip("'")
-        m = re.search(r"^aliases:\s*\[(.*)\]", block, re.M)
-        if m:
-            self.aliases = [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
-        else:
-            in_al = False
-            for line in block.splitlines():
-                if line.startswith("aliases:"):
-                    in_al = True
-                    continue
-                if in_al:
-                    am = re.match(r'^\s+-\s*["\']?(.+?)["\']?\s*$', line)
-                    if am:
-                        self.aliases.append(am.group(1))
-                    else:
-                        in_al = False
+    Ремонт правит текст по месту (`text[:fm_end]`), поэтому позиция нужна, а разбор шапки
+    и синонимов — общий с остальной базой (`aurora_common`).
+    """
+
+    def __init__(self, path: str, text: str):
+        super().__init__(path, text, ROOT)
+        self.fm_end = text.find("\n---", 3) if text.startswith("---") else -1
+        self.aliases = card_aliases(text)
 
     @property
     def has_frontmatter(self) -> bool:

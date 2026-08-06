@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sync_audit.py — целостность зеркал Sources/ (фреймворк «Аврора»).
+"""sync_audit.py — зеркала Sources/: целостность и дрейф (фреймворк «Аврора»).
 
 Синк пишет состояние (`sync_state.md` у wiki, `update_log.md` у доски), но никто не
 сверяет состояние с диском — и зеркало тихо расходится с реальностью. Скрипт делает
@@ -28,6 +28,7 @@ wiki (дерево страниц с номерами) или board (плоск�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -35,6 +36,8 @@ import sys
 from datetime import date, datetime
 
 import sources_registry as R
+from aurora_common import (KB_ROOT, TRUSTED, frontmatter, git_guard, set_field,
+                           split_frontmatter, walk_md)
 from sources_core import ASSET_DIR_RE, SERVICE_RE, cited_by_cards, nfc
 
 TODAY = date.today()
@@ -342,6 +345,101 @@ def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
 AUDITORS = {"wiki": audit_wiki, "board": audit_board}
 
 
+def file_hash(path: str) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def drift_collect(only_trusted: bool) -> tuple:
+    """→ (дрейф, без хеша, битые источники, всего проверено)."""
+    drift, unstamped, broken, total = [], [], [], 0
+    for path in walk_md(KB_ROOT, skip_service=True, skip_archive=True):
+        try:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+        except Exception:
+            continue
+        fm = frontmatter(text)
+        src = (fm.get("source") or "").strip()
+        status = (fm.get("status") or "").strip()
+        if not src or src.startswith("http") or "/" not in src:
+            continue
+        if only_trusted and status not in TRUSTED:
+            continue
+        total += 1
+        if not os.path.isfile(src):
+            broken.append((path, src, status))
+            continue
+        actual = file_hash(src)
+        recorded = (fm.get("source_hash") or "").strip()
+        if not recorded:
+            unstamped.append((path, src, actual, status))
+        elif recorded != actual:
+            drift.append((path, src, status, fm.get("owner", "—"), fm.get("verified", "—")))
+    return drift, unstamped, broken, total
+
+
+def stamp(unstamped: list, apply: bool) -> int:
+    done = 0
+    for path, _src, actual, _status in unstamped:
+        text = open(path, encoding="utf-8").read()
+        head, rest = split_frontmatter(text)
+        if head is None:
+            continue
+        new = "---" + set_field(set_field(head, "source_hash", actual),
+                                "source_synced", TODAY.isoformat()) + rest
+        done += 1
+        if apply:
+            open(path, "w", encoding="utf-8").write(new)
+    return done
+
+
+
+
+def drift_report(a) -> tuple:
+    """Дрейф: источник изменился после того, как знание проверили.
+
+    Инвариант 3: синк не перезаписывает проверенное — значит после каждого синка
+    остаётся вопрос, какие `verified` карточки построены на страницах, которые с тех
+    пор изменились. Сравнение хеша — механика; решение «перепроверить, заменить,
+    признать несущественным» — человека.
+    """
+    drift, unstamped, broken, total = drift_collect(not a.all)
+    scope = "все карточки" if a.all else "только verified"
+    L = [f"# Дрейф источников — {TODAY.isoformat()}", "",
+         f"Проверено карточек с источником: {total} ({scope})", "",
+         f"- **дрейф** (источник изменился после сверки): **{len(drift)}**",
+         f"- без `source_hash` (сравнивать не с чем): {len(unstamped)}",
+         f"- битый `source` (файла нет): {len(broken)}", ""]
+
+    if drift:
+        L += ["## Дрейф — перепроверить\n",
+              "Источник изменился, карточка осталась прежней. Решает владелец: перепроверить"
+              " и обновить `verified`, заменить знание через `kb:supersede` или признать"
+              " изменение несущественным (тогда `--stamp`).", "",
+              "| Карточка | Статус | Владелец | Проверено | Источник |", "|---|---|---|---|---|"]
+        for path, src, status, owner, ver in sorted(drift, key=lambda x: x[3]):
+            L.append(f"| {os.path.basename(path)[:-3]} | {status} | {owner} | {ver} | {src[:70]} |")
+        L.append("")
+    if broken:
+        L += [f"## Битые источники ({len(broken)})\n",
+              "Страницы больше нет в зеркале: удалена, переименована или вне синкаемых корней.",
+              "Перенацелить — `kit:remap-sources`; если исчезла совсем — деприкейтнуть карточку.", ""]
+        for path, src, status in broken[:30]:
+            L.append(f"- {os.path.basename(path)[:-3]} ({status}) → `{src}`")
+        if len(broken) > 30:
+            L.append(f"- … ещё {len(broken) - 30}")
+        L.append("")
+    if unstamped and not a.stamp:
+        L += [f"## Без `source_hash` ({len(unstamped)})\n",
+              "Дрейф у них не обнаружить. Зафиксировать текущее состояние: "
+              "`sync:diff --stamp --apply` — но только после того, как карточки проверены.", ""]
+
+    return "\n".join(L), drift, unstamped
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Аудит целостности зеркал Sources/")
     ap.add_argument("--stale-days", type=int, default=14, help="через сколько дней синк считается протухшим")
@@ -349,11 +447,39 @@ def main() -> int:
     ap.add_argument("--source", metavar="ID", action="append",
                     help="проверять только это зеркало (id из aurora.config.yaml → sources)")
     ap.add_argument("--json", action="store_true", help="машиночитаемый итог (для панели)")
+    ap.add_argument("--drift", action="store_true",
+                    help="дрейф: источник изменился после того, как знание проверили")
+    ap.add_argument("--all", action="store_true",
+                    help="дрейф по всем карточкам, а не только verified")
+    ap.add_argument("--stamp", action="store_true",
+                    help="проставить source_hash там, где его нет (с --apply)")
+    ap.add_argument("--apply", action="store_true", help="записать (для --stamp)")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="писать по незакоммиченному дереву (откат станет невозможным)")
     ap.add_argument("--confluence-only", action="store_true",
                     help="то же, что --source Confluence (оставлено для совместимости)")
     ap.add_argument("--jira-only", action="store_true",
                     help="то же, что --source JIRA (оставлено для совместимости)")
     a = ap.parse_args()
+
+    if a.drift or a.stamp:
+        if not os.path.isdir(KB_ROOT):
+            print(f"sync_audit: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
+            return 1
+        text, drift, unstamped = drift_report(a)
+        print(text)
+        if a.report:
+            os.makedirs(os.path.dirname(a.report) or ".", exist_ok=True)
+            open(a.report, "w", encoding="utf-8").write(text + "\n")
+            print(f"\nОтчёт: {a.report}")
+        if a.stamp:
+            if a.apply and not git_guard(KB_ROOT, a.allow_dirty, "простановка source_hash"):
+                return 2
+            n = stamp(unstamped, a.apply)
+            print(f"\n{'✅ Проставлено' if a.apply else '(dry-run) К простановке'}: {n} карточек")
+            if not a.apply:
+                print("Повторите с --apply.")
+        return 1 if drift else 0
 
     if not os.path.isdir("Sources"):
         print("sync_audit: нет папки Sources/ — запускайте из корня проекта", file=sys.stderr)

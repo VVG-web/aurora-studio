@@ -48,15 +48,8 @@ def load_yaml_lite(path: Path) -> dict:
     if not path.exists():
         return {}
     text = path.read_text(encoding="utf-8")
-    # Prefer PyYAML if available
-    try:
-        import yaml  # type: ignore
-
-        data = yaml.safe_load(text) or {}
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    # Fallback: presence-only checks via regex
+    # Разбор без PyYAML: конфиг у нас фиксированной формы, и вся кодовая база
+    # читает его одинаково — второй путь разбора расходился бы молча.
     out: dict = {"_raw": True}
     if re.search(r"(?m)^project:\s*$", text):
         out["project"] = True

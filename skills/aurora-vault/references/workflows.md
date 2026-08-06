@@ -175,7 +175,7 @@ Confluence быть не должно.
 
 ## export <документ> — офисный формат для передачи
 
-Скрипт: `python3 .opencode/scripts/export_doc.py <файл> [--format docx|pdf] [--reference <шаблон.docx>]`.
+Скрипт: `python3 .opencode/scripts/ship_doc.py <файл> --export docx|pdf [--reference <шаблон.docx>]`.
 Убирает frontmatter, разрезолвливает wiki-ссылки, конвертирует pandoc'ом, кладёт результат
 рядом. Требует pandoc. Экспорт — производная копия: правки вносятся в markdown и документ
 экспортируется заново; правка docx «на месте» разрывает связь с базой. Факт передачи
@@ -342,7 +342,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 kb_lint.py            # что сломано
 kb_fix.py --all       # починить механическое (сначала dry-run)
 aurora_stats.py       # числа: статусы, протухшее, сироты, битые источники, риски поставки
-kb_queue.py           # что верифицировать первым
+aurora_stats.py --queue           # что верифицировать первым
 ```
 
 Модели остаётся то, что скрипты не решают, — и только это:

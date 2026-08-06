@@ -260,6 +260,89 @@ def config_value(key: str, default: str = "") -> str:
 
 
 
+def config_list(key: str) -> list:
+    """Список из `aurora.config.yaml` (`ключ: [a, b, "c d"]`) — без PyYAML.
+
+    Списков в конфиге ровно четыре вида (доверенные статусы, источники, разделы), и до
+    1.44.0 каждый скрипт разбирал их своим regex — четыре почти одинаковые функции.
+    """
+    cfg = "aurora.config.yaml"
+    if not os.path.isfile(cfg):
+        return []
+    m = re.search(rf"^\s*{key}\s*:\s*\[([^\]]*)\]",
+                  open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
+    return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
+
+
+def inbound_counts(root: str) -> dict:
+    """{имя карточки: сколько на неё ссылок из базы}.
+
+    Считаем по ВСЕМ файлам, включая навигационные (`_index.md`, MOC): присутствие в
+    индексе — тоже связность, иначе «сиротами» станет вся база. Один счёт на всех, кто
+    спрашивает про сирот и про вес карточки.
+    """
+    stems = {os.path.splitext(os.path.basename(p))[0] for p in walk_md(root)}
+    counts: dict = {}
+    for path in walk_md(root):
+        self_stem = os.path.splitext(os.path.basename(path))[0]
+        try:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+        except Exception:  # noqa: BLE001
+            continue
+        for leaf in link_targets(text):
+            if leaf in stems and leaf != self_stem:
+                counts[leaf] = counts.get(leaf, 0) + 1
+    return counts
+
+
+class Card:
+    """Карточка базы: путь, имя, шапка, тело, раздел.
+
+    Одна на всех, кто читает базу целиком. Раньше у `ctx_pack` и `kb_fix` были свои
+    классы с одинаковой шапкой, а `kb_queue` и `aurora_stats` собирали то же самое
+    словарями — четыре способа назвать одно и то же.
+    """
+
+    def __init__(self, path: str, text: str, root: str = KB_ROOT):
+        self.path = path.replace("\\", "/")
+        self.text = text
+        self.stem = os.path.splitext(os.path.basename(self.path))[0]
+        self.fm = frontmatter(text)
+        self.section = os.path.relpath(os.path.dirname(self.path), root).split(os.sep)[0]
+
+    @property
+    def status(self) -> str:
+        return (self.fm.get("status") or "").strip()
+
+    @property
+    def source(self) -> str:
+        return (self.fm.get("source") or "").strip().strip('"').replace("\\", "/")
+
+    @property
+    def tags(self) -> str:
+        return self.fm.get("tags") or ""
+
+    @property
+    def is_stub(self) -> bool:
+        """Заготовка: имя есть, знания пока нет (`kb:repair --stubs`)."""
+        return "заготовка" in self.tags or "_Заготовка:" in self.text
+
+    def links(self) -> list:
+        return link_targets(self.text)
+
+
+def load_cards(root: str = KB_ROOT, skip_service: bool = True,
+               skip_archive: bool = True) -> dict:
+    """{путь: Card} — вся база одним вызовом."""
+    out = {}
+    for path in walk_md(root, skip_service=skip_service, skip_archive=skip_archive):
+        try:
+            out[path] = Card(path, open(path, encoding="utf-8", errors="ignore").read(), root)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def card_body(text: str) -> str:
     """Тело карточки без шапки. Один разбор на всех: приёмка ставит отпечаток, линтер
     его сверяет, и расходиться в том, что считать телом, им нельзя."""
