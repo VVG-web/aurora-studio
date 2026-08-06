@@ -7,16 +7,61 @@
   3. deprecated без superseded_by.
   4. Бинарники в _assets/ без карточки-обёртки (нет входящих ![[...]] / [[...]]).
   5. Дубликаты aliases (один alias у двух карточек).
+  6. Артефакты, осевшие в знаниях (US, AC, Epic, задачи Jira), и `type:` не по разделу —
+     с 1.44.0 здесь, а не в отдельном `kb:classify`: проверка карточек живёт в одном месте.
 
 Легаси-карточки без status валидны (= imported) и не флагуются за отсутствие полей.
 Запуск из корня репозитория: python3 .opencode/scripts/kb_lint.py [--summary]
 Выход: код 0 если ошибок нет, 1 если есть (пригодно для pre-commit/CI).
 """
+import argparse
 import os, re, sys, collections
 
-from aurora_common import aliases, body_hash, card_body, frontmatter, link_refs
+from aurora_common import (aliases, body_hash, card_body, config_value, frontmatter,
+                           link_refs)
 
 ROOT = "AuroraKnowledgeDB"
+
+
+# Раздел базы → тип карточки (по frontmatter.md)
+SECTION_TYPE = {
+    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
+    "Systems": "system", "Roles": "role", "Statuses": "status-model",
+    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
+    "Decisions": "decision", "Questions": "question", "MOC": "moc",
+}
+
+# Признак артефакта — обозначение В НАЧАЛЕ имени (возможен префикс проекта «RU.PRJ.»).
+# Упоминание «US-3.1.11» в середине заголовка — это ссылка, а не сам артефакт;
+# коды предметной области (ALG-095, BP-005, SPR-018) артефактами не являются.
+_PREFIX = r"^(?:[A-Z]{2,4}[.\-_][A-Z]{2,6}[.\-_])?"
+ARTIFACT_PATTERNS = [
+    (re.compile(_PREFIX + r"US[-_. ]?\d", re.I | re.U), "User Story"),
+    (re.compile(_PREFIX + r"AC[-_. ]?\d", re.I | re.U), "Acceptance Criteria"),
+    (re.compile(_PREFIX + r"Epic[-_. ]?\d", re.I | re.U), "Epic"),
+    (re.compile(r"(?i)^User\s+Story\b", re.U), "User Story"),
+]
+
+
+
+
+def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str:
+    """«Это артефакт, а не знание» — US, AC, Epic или задача Jira, осевшая в базе.
+
+    Инвариант 1: артефакт ≠ знание. Нарушается молча — извлечение тянет страницы историй
+    подряд, и они попадают в контекст как факты. Переносить карточку скрипт не берётся:
+    иногда US в базе действительно нужен. Механика — только увидеть и назвать.
+    """
+    if section in ("Requirements", "Specs", "Decisions", "Questions"):
+        return ""      # законные жители базы, даже если ссылаются на историю
+    for rx, label in ARTIFACT_PATTERNS:
+        if rx.search(stem) or rx.search(title):
+            return label
+    if src.startswith("Sources/JIRA/"):
+        return "задача Jira"
+    if jira_re and (jira_re.match(stem) or jira_re.match(title)):
+        return "задача Jira"
+    return ""
 
 
 def load_releases() -> set:
@@ -32,7 +77,10 @@ def load_releases() -> set:
 
 
 def main():
-    summary = "--summary" in sys.argv   # только итоговая строка: карточек и ошибок
+    ap = argparse.ArgumentParser(description="Механический линтер базы знаний")
+    ap.add_argument("--summary", action="store_true",
+                    help="только итоговая строка: карточек и ошибок")
+    summary = ap.parse_args().summary
     releases = load_releases()
     names, alias_owner, cards = set(), {}, {}
     dup_aliases, errors = [], []
@@ -63,9 +111,30 @@ def main():
                     alias_owner[a] = rel
 
     resolvable = names | set(alias_owner.keys())
+    key = config_value("project_key")
+    jira_re = re.compile(rf"(?i)^{re.escape(key)}-\d+") if key else None
+    known_types = set(SECTION_TYPE.values())
 
     for rel, (fm, text) in cards.items():
         status = fm.get("status", "")
+        stem = os.path.splitext(os.path.basename(rel))[0]
+        section = os.path.relpath(os.path.dirname(rel), ROOT).split(os.sep)[0]
+        if not (stem.startswith("_") or section in ("meta", ".") or section.startswith("_")):
+            kind = artifact_kind(stem, fm.get("title", stem),
+                                 (fm.get("source") or "").strip().strip('"'), section, jira_re)
+            if kind:
+                errors.append(f"{rel}: артефакт в знаниях — это {kind}, "
+                              f"а не дистиллированное знание")
+            else:
+                actual, expected = (fm.get("type") or "").strip(), SECTION_TYPE.get(section)
+                if not actual:
+                    errors.append(f"{rel}: нет type: — раздел {section} ждёт "
+                                  f"`{expected or "тип из frontmatter.md"}`")
+                elif actual not in known_types:
+                    errors.append(f"{rel}: тип `{actual}` вне схемы (frontmatter.md)")
+                elif expected and actual != expected:
+                    errors.append(f"{rel}: тип `{actual}` в разделе {section} — "
+                                  f"ожидается `{expected}`")
         if status == "verified":
             if not fm.get("owner"):
                 errors.append(f"{rel}: verified без owner")
@@ -183,6 +252,14 @@ def main():
          "приёмка без владельца или срока годности — запустите `kb:verify` заново"),
         ("нет frontmatter", "карточки без шапки",
          "`kb:repair --frontmatter` проставит статус и дату"),
+        ("артефакт в знаниях", "артефакты, попавшие в базу знаний",
+         "US, AC, Epic и задачи — продукты работы, их место в `Artifacts/`. "
+         "Перенос — решение человека: иногда история нужна в базе как требование"),
+        ("нет type:", "карточки без типа",
+         "`kb:repair --frontmatter` проставит тип по разделу"),
+        ("тип `", "тип не по разделу",
+         "либо карточка лежит не в своём разделе, либо тип написан от руки: "
+         "список типов — в `references/frontmatter.md`"),
     ]
     shown, rest = set(), []
     for needle, title, cure in kinds:

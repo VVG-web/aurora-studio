@@ -30,7 +30,7 @@ import re
 import sys
 from datetime import date
 
-from aurora_common import TRUSTED, body, frontmatter, link_targets, walk_md
+from aurora_common import TRUSTED, Card as BaseCard, body, frontmatter, link_targets, walk_md
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
@@ -57,19 +57,15 @@ PREAMBLE = (
 
 
 
-class Card:
+class Card(BaseCard):
+    """Карточка в паке: общая шапка из aurora_common плюс то, что нужно ретриву."""
+
     def __init__(self, path: str, text: str):
-        self.path = path.replace("\\", "/")
-        self.stem = os.path.splitext(os.path.basename(path))[0]
-        self.fm = frontmatter(text)
-        self.text = text
-        self.section = os.path.relpath(os.path.dirname(self.path), ROOT).split(os.sep)[0]
-        self.status = (self.fm.get("status") or "").strip()
+        super().__init__(path, text, ROOT)
         self.title = self.fm.get("title", self.stem)
         self.aliases = re.findall(r'"([^"]+)"', self.fm.get("aliases", "")) or []
-        self.tags = self.fm.get("tags", "")
-        self.links = link_targets(text)
-        self.applies_to = [x.strip().strip('"[]') for x in self.fm.get("applies_to", "").split(",") if x.strip()]
+        self.applies_to = [x.strip().strip('"[]') for x in self.fm.get("applies_to", "").split(",")
+                           if x.strip()]
 
     @property
     def expired(self) -> bool:
@@ -171,7 +167,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
 
     # один переход по связям — так пак получает термины и соседей темы
     for c in list(chosen):
-        for link in c.links:
+        for link in c.links():
             if len(chosen) >= max_cards:
                 break
             nb = cards.get(link)

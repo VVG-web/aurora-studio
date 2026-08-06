@@ -74,9 +74,20 @@ def make_project(tmp: Path, git: bool = False) -> Path:
     return root
 
 
+# Раздел → тип карточки: тот же список, что в kb_lint. Фикстура без `type:` — это
+# карточка, на которую линтер справедливо ругается, а не «обычная карточка».
+SECTION_TYPE = {
+    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
+    "Systems": "system", "Roles": "role", "Statuses": "status-model",
+    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
+    "Decisions": "decision", "Questions": "question", "MOC": "moc",
+}
+
+
 def card(root: Path, rel: str, body: str = "", **fm) -> Path:
     p = root / "AuroraKnowledgeDB" / rel
     p.parent.mkdir(parents=True, exist_ok=True)
+    fm.setdefault("type", SECTION_TYPE.get(rel.split("/")[0], "concept"))
     head = "".join(f"{k}: {v}\n" for k, v in fm.items())
     p.write_text(f"---\ntitle: \"{p.stem}\"\n{head}---\n\n# {p.stem}\n\n{body}\n", encoding="utf-8")
     return p
@@ -207,7 +218,7 @@ def test_queue_ranks_by_value_and_skips_useless(tmp: Path):
     card(root, "Concepts/Ненужный.md", status="imported")
     for i in range(3):
         card(root, f"Concepts/Ссылка{i}.md", "[[Важный]]")
-    cp = run("kb_queue.py", "--limit", "10", cwd=root)
+    cp = run("aurora_stats.py", "--queue", "--limit", "10", cwd=root)
     assert "Важный" in cp.stdout, "востребованная карточка не попала в очередь"
     body = cp.stdout.split("## Пакетами")[0]
     assert "Ненужный" not in body, "карточка с нулевой ценностью попала в очередь"
@@ -330,7 +341,7 @@ def test_remap_repoints_sources_after_mirror_move(tmp: Path):
 
 
 @test
-def test_classify_finds_artifacts_but_not_domain_codes(tmp: Path):
+def test_lint_finds_artifacts_but_not_domain_codes(tmp: Path):
     """US/AC/Epic в знаниях — находка; ALG-095 и REQ — законные жители базы."""
     root = make_project(tmp)
     (root / "aurora.config.yaml").write_text(
@@ -343,14 +354,15 @@ def test_classify_finds_artifacts_but_not_domain_codes(tmp: Path):
     card(root, "Requirements/REQ-042-Обмен-с-смежная система.md", "", type="requirement")
     card(root, "Glossary/Заявка.md", "")                      # без type — механическая починка
 
-    cp = run("kb_classify.py", "--limit", "20", cwd=root, expect_rc=1)
-    assert "ALG-095" not in cp.stdout, "код алгоритма ошибочно принят за артефакт"
-    assert "REQ-042" not in cp.stdout, "требование ошибочно принято за артефакт"
+    cp = run("kb_lint.py", cwd=root, expect_rc=1)
+    arts = [l for l in cp.stdout.splitlines() if "артефакт в знаниях" in l]
+    assert not any("ALG-095" in l for l in arts), "код алгоритма ошибочно принят за артефакт"
+    assert not any("REQ-042" in l for l in arts), "требование ошибочно принято за артефакт"
     for name in ("US-3.1.11", "AC-4.2.12", "PROJ-1234"):
-        assert name in cp.stdout, f"артефакт {name} не найден"
-    assert "артефактов в знаниях: **3**" in cp.stdout, cp.stdout.splitlines()[2]
+        assert any(name in l for l in arts), f"артефакт {name} не найден"
+    assert "артефакты, попавшие в базу знаний: 3" in cp.stdout, cp.stdout[:800]
 
-    run("kb_classify.py", "--fix-type", "--apply", cwd=root)
+    run("kb_fix.py", "--frontmatter", "--apply", cwd=root)
     glossary = (root / "AuroraKnowledgeDB/Glossary/Заявка.md").read_text(encoding="utf-8")
     assert "type: glossary" in glossary, "type не проставлен по разделу"
 
@@ -397,10 +409,11 @@ def test_verify_batch_checks_before_promoting(tmp: Path):
         assert "status: imported" in text, f"{bad} не должна была пройти гейт"
     assert "нет source" in cp.stdout and "битые ссылки" in cp.stdout, "причины пропуска не названы"
 
-    # `canonical` из схемы убран (1.10.0): верхний статус базы — verified
+    # `canonical` из схемы убран (1.10.0), а с 1.44.0 нет и самого флага: верхний статус
+    # базы один — verified, выбирать не из чего
     rc = run("kb_verify.py", "Glossary", "--owner", "@v", "--status", "canonical",
              cwd=root, expect_rc=2)
-    assert "canonical" in rc.stderr and "invalid choice" in rc.stderr, \
+    assert "unrecognized arguments: --status" in rc.stderr, \
         "ступень canonical должна быть недоступна"
 
 
@@ -437,11 +450,11 @@ def test_impact_finds_released_documents(tmp: Path):
     (root / "Deliverables/released/ОПЗ_v1_2026-01-01.md").write_text(
         '---\ntype: deliverable\nbased_on: ["[[Шина]]"]\n---\n\n# ОПЗ\n', encoding="utf-8")
 
-    cp = run("kb_impact.py", "Шина", cwd=root)
+    cp = run("kb_trace.py", "--impact", "Шина", cwd=root)
     assert "Сданные заказчику документы" in cp.stdout, "сданный документ не выделен"
     assert "ОПЗ_v1_2026-01-01" in cp.stdout, "документ не найден по based_on"
 
-    cp2 = run("kb_impact.py", "--explain",
+    cp2 = run("kb_trace.py", "--explain",
               "Deliverables/released/ОПЗ_v1_2026-01-01.md", cwd=root)
     assert "Шина" in cp2.stdout and "verified" in cp2.stdout, "основания документа не показаны"
 
@@ -483,18 +496,18 @@ def test_sync_diff_finds_changed_sources(tmp: Path):
     card(root, "Concepts/Знание.md", "тело", status="verified", owner='"@v"',
          verified="2026-01-01", review_by="2030-01-01", source='"Raw/project/док.md"')
 
-    cp = run("sync_diff.py", "--stamp", "--apply", cwd=root)
+    cp = run("sync_audit.py", "--drift", "--stamp", "--apply", cwd=root)
     assert "Проставлено: 1" in cp.stdout, f"хеш источника не зафиксирован:\n{cp.stdout}"
-    cp = run("sync_diff.py", cwd=root, expect_rc=0)
+    cp = run("sync_audit.py", "--drift", cwd=root, expect_rc=0)
     assert "**дрейф**" in cp.stdout and "дрейф» (источник" not in cp.stdout
 
     src.write_text("источник изменился", encoding="utf-8")
-    cp = run("sync_diff.py", cwd=root, expect_rc=1)
+    cp = run("sync_audit.py", "--drift", cwd=root, expect_rc=1)
     assert "Дрейф — перепроверить" in cp.stdout, "изменение источника не поймано"
     assert "Знание" in cp.stdout, "карточка не названа"
 
     src.unlink()
-    cp = run("sync_diff.py", cwd=root)
+    cp = run("sync_audit.py", "--drift", cwd=root)
     assert "Битые источники" in cp.stdout, "исчезнувший источник не пойман"
 
 
@@ -509,7 +522,7 @@ def test_release_freezes_snapshot_once(tmp: Path):
     work.write_text('---\ndoc: ОПЗ\nversion: "2.1"\ntype: deliverable\n'
                     'based_on: ["[[Шина]]", "[[Черновик]]"]\n---\n\n# ОПЗ\n', encoding="utf-8")
 
-    cp = run("release_doc.py", "Deliverables/work/ОПЗ_v2.1.md", "--date", "2026-05-05",
+    cp = run("ship_doc.py", "--release", "Deliverables/work/ОПЗ_v2.1.md", "--date", "2026-05-05",
              "--apply", cwd=root)
     snap = root / "Deliverables/released/ОПЗ_v2.1_2026-05-05.md"
     assert snap.is_file(), f"снапшот не создан:\n{cp.stdout}"
@@ -517,7 +530,7 @@ def test_release_freezes_snapshot_once(tmp: Path):
     assert "released: 2026-05-05" in work.read_text(encoding="utf-8"), "рабочая копия не помечена"
     assert "Ниже verified: 1" in cp.stdout, "риск непроверенного основания не назван"
 
-    cp2 = run("release_doc.py", "Deliverables/work/ОПЗ_v2.1.md", "--date", "2026-05-05",
+    cp2 = run("ship_doc.py", "--release", "Deliverables/work/ОПЗ_v2.1.md", "--date", "2026-05-05",
               cwd=root, expect_rc=1)
     assert "уже существует" in cp2.stderr, "перезапись сданного должна блокироваться"
 
@@ -625,13 +638,13 @@ def test_index_regenerates_but_respects_handmade(tmp: Path):
 def test_trace_links_only_to_existing_registry(tmp: Path):
     """Ссылка на реестр договорных документов ставится, только если он есть в базе."""
     root = make_project(tmp)
-    run("aurora_trace.py", cwd=root)
+    run("kb_trace.py", "--requirements", cwd=root)
     out = (root / "AuroraKnowledgeDB/MOC/Трассировка-требований.md").read_text(encoding="utf-8")
     assert "[[contract_documents]]" not in out, \
         "генератор ставит ссылку на карточку, которой в проекте нет — линтер ловит битую"
 
     card(root, "Reference/contract_documents.md", "реестр", status="imported")
-    run("aurora_trace.py", cwd=root)
+    run("kb_trace.py", "--requirements", cwd=root)
     out = (root / "AuroraKnowledgeDB/MOC/Трассировка-требований.md").read_text(encoding="utf-8")
     assert "[[contract_documents]]" in out, "реестр есть, а ссылки на него нет"
 
@@ -665,7 +678,8 @@ def test_fix_drops_retired_schema_fields(tmp: Path):
          audience="[SA, Dev]", confirmed_by='"@кто-то"')
     card(root, "Glossary/Живой.md", "тело", status="verified", type="concept")
 
-    card(root, "Glossary/Без-типа.md", "тело", status="imported")
+    (root / "AuroraKnowledgeDB/Glossary/Без-типа.md").write_text(
+        '---\ntitle: "Без-типа"\nstatus: imported\n---\n\nтело\n', encoding="utf-8")
 
     run("kb_fix.py", "--retire", "--apply", "--allow-dirty", cwd=root)
     got = (root / "AuroraKnowledgeDB/Glossary/Термин.md").read_text(encoding="utf-8")
@@ -1067,9 +1081,9 @@ def test_golden_corpus_numbers_hold(tmp: Path):
     scr = run("kb_scrub.py", cwd=root).stdout
     got["ПДн: находок"] = num(scr, r"находок (\d+)")
     got["ПДн: рабочих контактов"] = num(scr, r"рабочий контакт: (\d+)")
-    cl = run("kb_classify.py", cwd=root).stdout
-    got["артефактов в знаниях"] = num(cl, r"артефактов в знаниях: \*\*(\d+)\*\*")
-    got["без типа"] = num(cl, r"без типа: \*\*(\d+)\*\*")
+    cl = run("kb_lint.py", cwd=root, expect_rc=None).stdout
+    got["артефактов в знаниях"] = num(cl, r"артефакты, попавшие в базу знаний: (\d+)")
+    got["без типа"] = num(cl, r"карточки без типа: (\d+)")
     au = run("sync_audit.py", cwd=root).stdout
     got["зеркало: missing"] = num(au, r"MISSING: \*\*(\d+)\*\*")
     got["зеркало: orphan"] = num(au, r"ORPHAN: \*\*(\d+)\*\*")
@@ -1806,8 +1820,8 @@ def test_verified_card_may_be_edited_but_says_so(tmp: Path):
     (root / "Raw").mkdir(exist_ok=True)
     (root / "Raw/док.md").write_text("источник", encoding="utf-8")
     card = cards / "Понятие.md"
-    card.write_text('---\ntitle: "Понятие"\nstatus: imported\nsource: "Raw/док.md"\n'
-                    "---\n\nпервая редакция\n", encoding="utf-8")
+    card.write_text('---\ntitle: "Понятие"\ntype: concept\nstatus: imported\n'
+                    'source: "Raw/док.md"\n---\n\nпервая редакция\n', encoding="utf-8")
 
     run("kb_verify.py", "Concepts", "--owner", "@vadim", "--apply", cwd=root)
     text = card.read_text(encoding="utf-8")

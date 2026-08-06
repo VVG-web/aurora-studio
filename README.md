@@ -14,9 +14,9 @@ This repository is the **distributable Studio**: deploy it into any new or exist
 | `scripts/aurora_setup.py` | **Interactive, re-runnable** project setup (Confluence roots, Jira JQL, …) |
 | `scripts/install_aurora.py` | Scaffolder: lays out the trust-layer folders and engine |
 | `skills/aurora-vault/` | Full skill + procedures (build, verify, garden, spec, trace, repair, queue, …) |
-| `scripts/kb_lint.py`, `kb_fix.py`, `kb_queue.py` | Find / repair / prioritise: linter, deterministic repair (links, homoglyphs, dupes), verification queue by real usage |
+| `scripts/kb_lint.py`, `kb_fix.py`, `aurora_stats.py --queue` | Find / repair / prioritise: linter, deterministic repair (links, homoglyphs, dupes), verification queue by real usage |
 | `scripts/sync_audit.py`, `aurora_stats.py`, `aurora_hooks.py` | Mirror integrity, health dashboard & metrics, ratchet pre-commit hook |
-| `scripts/aurora_trace.py`, `scripts/aurora_doctor.py` | Traceability generator, readiness + fixed-structure check |
+| `scripts/kb_trace.py`, `scripts/aurora_doctor.py` | Traceability generator, readiness + fixed-structure check |
 | `structure_dirs.txt` | **Fixed folder schema** — identical in every Aurora project; deployed into projects and enforced by `doctor --structure` |
 | `templates/`, `scaffold/` | Config/AGENTS templates, US/AC/DR/spec/meeting recipes |
 | `skills/*-sync-template/` | Confluence / Jira sync skill scaffolds (config-driven) |
@@ -95,7 +95,7 @@ instead of walking thousands of files itself:
 ```bash
 python3 .opencode/scripts/aurora_stats.py        # health dashboard (statuses, risks, metrics)
 python3 .opencode/scripts/kb_fix.py --all        # repair links / homoglyph names / legacy frontmatter (dry-run)
-python3 .opencode/scripts/kb_queue.py            # what to verify first, ranked by real usage
+python3 .opencode/scripts/aurora_stats.py --queue            # what to verify first, ranked by real usage
 python3 .opencode/scripts/sync_audit.py          # mirror integrity: missing / orphan / collision
 python3 .opencode/scripts/aurora_hooks.py --install   # pre-commit ratchet: error count may only go down
 ```

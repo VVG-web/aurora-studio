@@ -22,7 +22,8 @@ import sys
 from collections import Counter
 from datetime import date
 
-from aurora_common import TRUSTED, frontmatter, link_targets, walk_md
+from aurora_common import (TRUSTED, config_value, frontmatter, inbound_counts,
+                           link_targets, load_cards, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
 METRICS = os.path.join(ROOT, "meta", "metrics.md")
@@ -31,21 +32,9 @@ MONTH = TODAY[:7]
 
 
 
-
-def walk_md(root: str):
-    for dirpath, _, files in os.walk(root):
-        for f in files:
-            if f.endswith(".md"):
-                yield os.path.join(dirpath, f).replace("\\", "/")
-
-
 def threshold() -> int:
-    cfg = "aurora.config.yaml"
-    if os.path.isfile(cfg):
-        m = re.search(r"verified_threshold_pct:\s*(\d+)", open(cfg, encoding="utf-8", errors="ignore").read())
-        if m:
-            return int(m.group(1))
-    return 20
+    raw = config_value("verified_threshold_pct", "20")
+    return int(raw) if raw.strip().isdigit() else 20
 
 
 def collect() -> dict:
@@ -81,19 +70,7 @@ def collect() -> dict:
             if probe.startswith(("Raw/", "Sources/", "Deliverables/")) and not os.path.exists(probe):
                 missing_source.append((stem, probe))
 
-    # Входящие ссылки считаем по ВСЕМ файлам базы, включая навигационные (_index.md, MOC):
-    # присутствие в индексе — это тоже связность, иначе «сиротами» станет вся база.
-    stems = {c["stem"] for c in cards.values()}
-    inbound = Counter()
-    for path in walk_md(ROOT):
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception:
-            continue
-        self_stem = os.path.basename(path)[:-3]
-        for leaf in link_targets(text):
-            if leaf in stems and leaf != self_stem:
-                inbound[leaf] += 1
+    inbound = inbound_counts(ROOT)
     orphans = [c["stem"] for c in cards.values()
                if not c["archived"] and inbound.get(c["stem"], 0) == 0]
 
@@ -267,8 +244,76 @@ def append_metrics(s: dict) -> None:
     print(f"metrics.md: добавлена строка за {MONTH}.")
 
 
+PRODUCT_DIRS = ["Artifacts", "Deliverables", os.path.join(ROOT, "Specs")]
+W_INBOUND, W_PRODUCT, W_REFERENCE = 2, 4, 2
+
+
+def queue_report(limit: int, theme: str) -> str:
+    """Очередь верификации: что проверять первым.
+
+    Ценность карточки — не в том, как давно она лежит, а в том, на чём она работает:
+    сколько раз на неё сослались в базе (×2) и сколько раз она попала в артефакт или
+    поставляемый документ (×4). Термины и справочники получают надбавку: на них стоит
+    остальная база. Ничего не пишет — это отбор для `kb:verify`.
+    """
+    cards = load_cards(ROOT)
+    inbound = inbound_counts(ROOT)
+    stems = {c.stem for c in cards.values()}
+    in_products: Counter = Counter()
+    for d in PRODUCT_DIRS:
+        if not os.path.isdir(d):
+            continue
+        for path in walk_md(d):
+            try:
+                text = open(path, encoding="utf-8", errors="ignore").read()
+            except Exception:  # noqa: BLE001
+                continue
+            for leaf in link_targets(text):
+                if leaf in stems:
+                    in_products[leaf] += 1
+
+    scored = []
+    for c in cards.values():
+        # Карты содержания генерируются (`kb:moc`) и знанием не являются: они собирают
+        # входящие ссылки пачками и иначе занимали бы весь верх очереди.
+        if c.section == "MOC" or c.status in TRUSTED or c.status == "deprecated" or c.is_stub:
+            continue
+        score = (W_INBOUND * inbound.get(c.stem, 0) + W_PRODUCT * in_products.get(c.stem, 0)
+                 + (W_REFERENCE if c.section in ("Reference", "Glossary") else 0))
+        if score <= 0:
+            continue
+        if theme and theme.lower() not in (c.section + " " + c.stem).lower():
+            continue
+        scored.append((score, c, inbound.get(c.stem, 0), in_products.get(c.stem, 0)))
+    scored.sort(key=lambda x: (-x[0], x[1].path))
+
+    twins = Counter(c.stem for c in cards.values())
+    L = [f"# Очередь верификации — {TODAY}", "",
+         f"Непроверенных с ненулевой ценностью: {len(scored)} · показано: "
+         f"{min(limit, len(scored))}", "",
+         "| # | Карточка | Раздел | Статус | Вес | ссылки | продукты |",
+         "|---|---|---|---|---|---|---|"]
+    for i, (score, c, inb, prod) in enumerate(scored[:limit], 1):
+        twin = " ⚠️двойник" if twins[c.stem] > 1 else ""
+        L.append(f"| {i} | [[{c.stem}]]{twin} | {c.section} | {c.status or '(нет)'} | "
+                 f"{score} | {inb} | {prod} |")
+    groups = Counter(c.section for _, c, _, _ in scored[:limit])
+    if groups:
+        L += ["", "## Пакетами (одна тема — один заход)", ""]
+        L += [f"- `{sec}` — {n}: `/aurora-vault kb:verify {sec}`"
+              for sec, n in groups.most_common()]
+    if any(twins[c.stem] > 1 for _, c, _, _ in scored[:limit]):
+        L += ["", "> ⚠️двойник — карточка с таким именем есть в нескольких разделах. "
+              "Сначала слейте (`kb:dedupe`), потом верифицируйте — иначе проверите не ту."]
+    return "\n".join(L)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Дашборд здоровья базы знаний")
+    ap.add_argument("--queue", action="store_true",
+                    help="очередь верификации: что проверять первым по связям и продуктам")
+    ap.add_argument("--limit", type=int, default=30, help="строк в очереди (по умолчанию 30)")
+    ap.add_argument("--theme", help="фильтр очереди по разделу или подстроке имени")
     ap.add_argument("--json", action="store_true", help="машинный вывод")
     ap.add_argument("--append-metrics", action="store_true", help="дописать строку в meta/metrics.md")
     ap.add_argument("--report", metavar="PATH", help="сохранить отчёт в файл")
@@ -277,15 +322,18 @@ def main() -> int:
     if not os.path.isdir(ROOT):
         print(f"aurora_stats: нет папки {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
-    s = collect()
-    text = json.dumps(s, ensure_ascii=False, indent=2) if a.json else render(s)
+    if a.queue:
+        text = queue_report(a.limit, a.theme or "")
+    else:
+        s = collect()
+        text = json.dumps(s, ensure_ascii=False, indent=2) if a.json else render(s)
     print(text)
     if a.report:
         os.makedirs(os.path.dirname(a.report) or ".", exist_ok=True)
         with open(a.report, "w", encoding="utf-8") as f:
             f.write(text + "\n")
         print(f"\nОтчёт: {a.report}")
-    if a.append_metrics:
+    if a.append_metrics and not a.queue:
         append_metrics(s)
     return 0
 

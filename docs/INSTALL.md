@@ -68,11 +68,10 @@ aurora.env.local.example     # copy → .env.aurora.local (gitignored)
   scripts/aurora_setup.py     # re-runnable interactive setup
   scripts/kb_lint.py          # find mechanical errors
   scripts/kb_fix.py           # repair: links, homoglyph names, frontmatter, merge dupes
-  scripts/kb_queue.py         # verification queue by real card value
   scripts/sync_audit.py       # Sources/ mirror integrity
   scripts/aurora_stats.py     # health dashboard + monthly metrics
   scripts/aurora_hooks.py     # pre-commit ratchet
-  scripts/aurora_trace.py     # traceability table generator
+  scripts/kb_trace.py        # impact, provenance and the traceability table
   scripts/aurora_doctor.py
   structure_dirs.txt          # fixed folder schema (enforced by doctor --structure)
   update_ignore.txt           # optional: paths the project keeps its own (globs)
@@ -105,7 +104,7 @@ records the current error count as a baseline that may only go down.
 
 Deploying into a repo that already has documents? Run the maintenance chain once:
 `sync_audit.py` → `kb_fix.py --all` (dry-run, разобрать нерешаемое) → `kb_fix.py --all
---apply` → `kb_fix.py --dupes` + `--merge` → `kb_queue.py`. Procedure:
+--apply` → `kb_fix.py --dupes` + `--merge` → `aurora_stats.py --queue`. Procedure:
 `.opencode/skills/aurora-vault/references/maintenance.md`.
 
 ## 4. First week checklist

@@ -29,6 +29,25 @@ from pathlib import Path
 KIT_ROOT = Path(__file__).resolve().parents[1]
 TODAY = date.today().isoformat()
 
+def manifest_pairs() -> list:
+    """[(файл в kit, путь в проекте)] из engine_manifest.txt — тот же список, по которому
+    работает `kit:update`. Спец-правила (connectors/agents/seed) установка не трогает:
+    их раскладывает update, а коннекторы — install_connectors ниже."""
+    man = KIT_ROOT / "engine_manifest.txt"
+    out = []
+    if not man.is_file():
+        return out
+    for line in man.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if "=>" not in line:
+            continue
+        src, dst = (x.strip() for x in line.split("=>", 1))
+        if "(" in dst:            # спец-правило — не наше дело
+            continue
+        out.append((KIT_ROOT / src, dst))
+    return out
+
+
 def _schema_dirs() -> list[str]:
     """Структура проекта — из structure_dirs.txt (единственный источник правды).
 
@@ -138,15 +157,12 @@ class Installer:
         # skill.json берём из kit'а, а не пишем свой: два источника одного файла
         # означают, что update будет вечно предлагать перезапись сразу после установки
         self.copy_file(skill_src / "skill.json", ".opencode/skills/aurora-vault/skill.json")
-        for script in ("aurora_common.py", "sources_core.py", "sources_registry.py",
-                       "kb_lint.py", "kb_fix.py", "kb_queue.py", "kb_remap.py", "kb_classify.py", "build_plan.py", "spec_pack.py", "kb_index.py", "kb_scrub.py", "kb_schema.py", "publish_doc.py", "kit_commands.py", "kb_verify.py",
-                       "kb_supersede.py", "kb_impact.py", "ctx_pack.py", "sync_audit.py", "sync_diff.py", "release_doc.py",
-                       "aurora_stats.py", "aurora_hooks.py", "aurora_doctor.py",
-                       "office_ingest.py", "export_doc.py", "jira_status.py",
-                       "aurora_trace.py",
-                       # setup/update копируются в проект, чтобы их можно было запускать оттуда
-                       "aurora_setup.py", "aurora_update.py"):
-            self.copy_file(KIT_ROOT / "scripts" / script, f".opencode/scripts/{script}")
+        # Список инженерных файлов — один на весь kit: `engine_manifest.txt`. Свой
+        # хардкод здесь уже расходился с манифестом (три скрипта новый проект не получал
+        # до первого `kit:update`), поэтому раскладку ведёт манифест, а не память.
+        for src, dst in manifest_pairs():
+            if src.name.endswith(".py") and src.parent.name == "scripts":
+                self.copy_file(src, dst)
         # схема структуры папок: движок сверяет по ней факт (doctor --structure)
         self.copy_file(KIT_ROOT / "structure_dirs.txt", ".opencode/structure_dirs.txt")
         # реестр команд: справочник kit:list собирается из него
