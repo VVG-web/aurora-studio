@@ -554,6 +554,9 @@ def test_build_plan_partitions_and_resumes(tmp: Path):
         "нарушен порядок обхода build.md (терминология → проект → Confluence)"
     assert "Партий: 2" in cp.stdout, f"бюджет партии не соблюдён:\n{cp.stdout}"  # 900+900 ≤ 2000 < 2700
 
+    # отметка ставится по факту: карточки с этим source должны существовать
+    for i in range(7):
+        card(root, f"Concepts/Из-обзора-{i}.md", "тело", source='"Raw/project/обзор.md"')
     run("build_plan.py", "--done", "Raw/project/обзор.md", "--cards", "7", cwd=root)
     cp2 = run("build_plan.py", cwd=root)
     assert "обработано: 1 (7 карточек)" in cp2.stdout, "прогресс не учтён"
@@ -749,6 +752,40 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_done_is_a_fact_not_a_claim(tmp: Path):
+    """Отметка «разобрано» ставится по базе, а не по слову ассистента.
+
+    Раньше `--done` записывался на слово вместе с числом карточек, которое ассистент
+    называл сам: на живой базе так набралось 356 отметок с нулём карточек — источники
+    выпали из плана, не дав знания. Законный ноль объявляется явно и с причиной.
+    """
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Стр.md").write_text(
+        '---\ntitle: "Стр"\npage_id: 1\n---\n\n' + "текст " * 200, encoding="utf-8")
+
+    refused = run("build_plan.py", "--done", "Sources/Confluence/Стр.md", "--cards", "5",
+                  cwd=root, expect_rc=1)
+    assert "отметка не поставлена" in refused.stderr, refused.stderr[:300]
+    assert "--empty" in refused.stderr, "не подсказано, как отметить законно пустой источник"
+
+    card(root, "Concepts/Понятие.md", "тело", source='"Sources/Confluence/Стр.md"')
+    ok = run("build_plan.py", "--done", "Sources/Confluence/Стр.md", "--cards", "5",
+             cwd=root, expect_rc=0)
+    assert "карточек 1" in ok.stdout and "называли 5" in ok.stdout, \
+        f"число карточек должно браться из базы, а не из флага:\n{ok.stdout}"
+
+    (root / "Sources/Confluence/Оглавление.md").write_text(
+        '---\ntitle: "Оглавление"\npage_id: 2\n---\n\n' + "ссылки " * 100, encoding="utf-8")
+    run("build_plan.py", "--done", "Sources/Confluence/Оглавление.md",
+        "--empty", "страница-оглавление", cwd=root)
+    man = json.loads((root / "AuroraKnowledgeDB/meta/manifest.json").read_text(encoding="utf-8"))
+    rec = man["sources"]["Sources/Confluence/Оглавление.md"]
+    assert rec["cards"] == 0 and rec["empty_reason"] == "страница-оглавление", \
+        f"причина пустоты не записана: {rec}"
+
+
+@test
 def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
     """Отметку «обработан» ставит ассистент, и она врёт в обе стороны.
 
@@ -764,9 +801,13 @@ def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
     card(root, "Concepts/Из-полезной.md", "знание",
          source='"Sources/Confluence/Полезная.md"')
 
-    for name, cards_n in (("Пустая", 0), ("Полезная", 3)):
-        run("build_plan.py", "--done", f"Sources/Confluence/{name}.md",
-            "--cards", str(cards_n), cwd=root)
+    run("build_plan.py", "--done", "Sources/Confluence/Полезная.md", "--cards", "3", cwd=root)
+    # отметка «сделано» без единой карточки больше не проходит на слово
+    refused = run("build_plan.py", "--done", "Sources/Confluence/Пустая.md",
+                  cwd=root, expect_rc=1)
+    assert "отметка не поставлена" in refused.stderr, refused.stderr[:300]
+    run("build_plan.py", "--done", "Sources/Confluence/Пустая.md",
+        "--empty", "проверка правила", cwd=root)
     assert "осталось: 0" in run("build_plan.py", "--status", cwd=root).stdout, \
         "оба источника должны считаться обработанными"
 
