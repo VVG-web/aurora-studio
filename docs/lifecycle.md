@@ -61,13 +61,13 @@ flowchart LR
 
 ```mermaid
 stateDiagram-v2
-  [*] --> imported: kb:build — извлёк ассистент
+  [*] --> imported: kb#58;build — извлёк ассистент
   imported --> draft: человек начал править
   draft --> in_review: отдал на проверку
-  in_review --> verified: kb:verify — сверено с источником
-  imported --> verified: kb:verify --source-older-than\n(пакетно, основание в карточке)
-  verified --> imported: sync:diff — источник изменился
-  verified --> deprecated: kb:supersede — знание заменено
+  in_review --> verified: kb#58;verify — сверено с источником
+  imported --> verified: kb#58;verify --source-older-than\n(пакетно, основание в карточке)
+  verified --> imported: sync#58;diff — источник изменился
+  verified --> deprecated: kb#58;supersede — знание заменено
   deprecated --> [*]: _archive/ — только история
 
   note right of verified
