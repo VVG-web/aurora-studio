@@ -752,6 +752,34 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_mermaid_blocks_render_on_github(tmp: Path):
+    """Диаграммы в документации обязаны рендериться у GitHub, а не только у нас.
+
+    GitHub рендерит mermaid версией 10, где двоеточие в подписи перехода
+    `stateDiagram-v2` роняет парсер: `a --> b: kb:build` — ошибка «Unable to render rich
+    display». А имена команд Авроры сплошь с двоеточиями. Пишем их как `kb#58;build`:
+    и читается, и лексер не падает.
+    """
+    import re as _re
+    bad = []
+    for md in sorted(KIT.rglob("*.md")):
+        if any(part in (".git", "node_modules", "examples") for part in md.parts):
+            continue
+        text = md.read_text(encoding="utf-8", errors="ignore")
+        for block in _re.findall(r"```mermaid\n(.*?)```", text, _re.S):
+            first = next((l.strip() for l in block.splitlines() if l.strip()), "")
+            if not first.startswith("stateDiagram"):
+                continue
+            for line in block.splitlines():
+                m = _re.match(r"^\s*\S+\s*-->\s*\S+:\s*(.*)$", line)
+                if m and ":" in m.group(1):
+                    bad.append(f"{md.relative_to(KIT)}: {line.strip()[:70]}")
+    assert not bad, ("двоеточие в подписи перехода stateDiagram — GitHub не отрисует "
+                     "диаграмму:\n    " + "\n    ".join(bad[:5]) +
+                     "\n  Пишите `kb#58;build` вместо `kb:build`")
+
+
+@test
 def test_done_is_a_fact_not_a_claim(tmp: Path):
     """Отметка «разобрано» ставится по базе, а не по слову ассистента.
 
