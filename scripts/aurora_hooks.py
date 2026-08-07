@@ -26,6 +26,8 @@ import sys
 from pathlib import Path
 
 MARKER = "# aurora-hook v1"
+MSG_MARKER = "# aurora-hook msg v1"
+TERMS = "local/private_terms.txt"
 BASELINE = Path("AuroraKnowledgeDB/meta/lint_baseline.txt")
 
 HOOK = '''#!/bin/sh
@@ -73,6 +75,32 @@ case "$MODE" in
 esac
 exit 0
 '''
+
+
+# Сообщение коммита уходит в историю навсегда и обычным линтером не проверяется: он
+# смотрит файлы. На живой работе этого хватило, чтобы внутренние названия попали в текст
+# коммита при правке файла со списком этих же названий.
+MSG_HOOK = """#!/bin/sh
+{marker} — commit-msg: внутренние названия не уходят в историю
+# Обойти: git commit --no-verify
+
+TERMS="{terms}"
+[ -f "$TERMS" ] || exit 0
+MSG=$(cat "$1")
+
+HIT=$(grep -v '^#' "$TERMS" | grep -v '^[[:space:]]*$' | while IFS= read -r term; do
+  printf '%s' "$MSG" | grep -qi -- "$term" && printf '%s ' "$term"
+done)
+
+if [ -n "$HIT" ]; then
+  echo "aurora: в сообщении коммита внутренние названия — коммит остановлен." >&2
+  echo "        найдено: $HIT" >&2
+  echo "        Сообщение уходит в историю навсегда и не чинится линтером." >&2
+  echo "        Перепишите текст либо: git commit --no-verify" >&2
+  exit 1
+fi
+exit 0
+"""
 
 
 def git_dir() -> Path | None:
@@ -123,6 +151,12 @@ def main() -> int:
             print(f"pre-commit: {'хук Авроры' if mine else 'ЧУЖОЙ хук'} · режим: {mode if mine else '—'}")
         else:
             print("pre-commit: не установлен")
+        msg_hook = gd / "hooks" / "commit-msg"
+        if msg_hook.is_file() and MSG_MARKER in msg_hook.read_text(encoding="utf-8", errors="ignore"):
+            print(f"commit-msg: хук Авроры · список названий: {TERMS}"
+                  f"{'' if Path(TERMS).is_file() else ' (файла нет — проверка спит)'}")
+        else:
+            print("commit-msg: не установлен")
         if BASELINE.is_file():
             print(f"базовая линия ошибок: {BASELINE.read_text().strip()}")
         errs = current_errors()
@@ -133,11 +167,13 @@ def main() -> int:
         return 0
 
     if a.uninstall:
-        if hook.is_file() and MARKER in hook.read_text(encoding="utf-8", errors="ignore"):
-            hook.unlink()
-            print("Хук Авроры удалён.")
-        else:
-            print("Хука Авроры нет — ничего не сделано.")
+        gone = []
+        for h, mark in ((hook, MARKER), (gd / "hooks" / "commit-msg", MSG_MARKER)):
+            if h.is_file() and mark in h.read_text(encoding="utf-8", errors="ignore"):
+                h.unlink()
+                gone.append(h.name)
+        print(f"Хуки Авроры удалены: {', '.join(gone)}" if gone
+              else "Хуков Авроры нет — ничего не сделано.")
         return 0
 
     if hook.is_file():
@@ -154,6 +190,23 @@ def main() -> int:
     hook.write_text(HOOK.format(marker=MARKER, mode=a.mode), encoding="utf-8")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     print(f"Установлен pre-commit (режим {a.mode}): {hook}")
+
+    msg_hook = gd / "hooks" / "commit-msg"
+    if msg_hook.is_file() and MSG_MARKER not in msg_hook.read_text(encoding="utf-8", errors="ignore"):
+        if not a.force:
+            print("В репозитории есть свой commit-msg — проверка сообщений не поставлена "
+                  "(перезаписать: --force)", file=sys.stderr)
+        else:
+            msg_hook.with_suffix(".bak").write_text(
+                msg_hook.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+            msg_hook.write_text(MSG_HOOK.format(marker=MSG_MARKER, terms=TERMS), encoding="utf-8")
+            msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR)
+            print(f"Установлен commit-msg (старый сохранён как commit-msg.bak): {msg_hook}")
+    else:
+        msg_hook.write_text(MSG_HOOK.format(marker=MSG_MARKER, terms=TERMS), encoding="utf-8")
+        msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        note = "" if Path(TERMS).is_file() else f" — но {TERMS} нет, проверка спит до его появления"
+        print(f"Установлен commit-msg: сообщения проверяются по {TERMS}{note}")
 
     if a.mode == "ratchet":
         errs = current_errors()
