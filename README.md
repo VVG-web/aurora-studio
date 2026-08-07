@@ -27,7 +27,9 @@ This repository is the **distributable Studio**: deploy it into any new or exist
 
 One turn: source → mirror → knowledge → trust → artifact → outward → feedback. Every arrow
 is an engine command, not a wish. Diagram (renders on GitHub) — [docs/lifecycle.md](docs/lifecycle.md);
-visual style for the banner — [docs/aurora-comix-style.md](docs/aurora-comix-style.md).
+the full path of a single card, step by step, with the condition for each next step —
+[docs/card-path.md](docs/card-path.md); visual style for the banner —
+[docs/aurora-comix-style.md](docs/aurora-comix-style.md).
 
 ```mermaid
 flowchart LR
