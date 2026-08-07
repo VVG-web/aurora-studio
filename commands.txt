@@ -9,7 +9,7 @@
 #              файл справки в .opencode/skills/aurora-vault/references/.
 
 kit | kit:doctor | doctor | скрипт | aurora_doctor.py | 1.0.0 | готовность проекта: config, скиллы, секреты в git, версия движка, структура папок; `--structure` — подробно по папкам вне схемы
-kit | kit:hooks | — | скрипт | aurora_hooks.py | 1.3.0 | git pre-commit с линтером и храповиком: число ошибок не должно расти
+kit | kit:hooks | — | скрипт | aurora_hooks.py | 1.3.0 | git-хуки: pre-commit с линтером и храповиком (ошибки не растут) и commit-msg — внутренние названия не уходят в историю
 kit | kit:remap-sources | remap | скрипт | kb_remap.py | 1.7.0 | перенацелить `source:` карточек после переезда зеркала (Confluence — по page_id, Jira — по ключу задачи)
 kit | kit:update | — | скрипт | aurora_update.py | 1.3.0 | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы
 kit | kit:list | — | скрипт | kit_commands.py | 1.9.8 | этот справочник: команды, модификаторы, чем исполняются, с какой версии

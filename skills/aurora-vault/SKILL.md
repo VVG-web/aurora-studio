@@ -69,7 +69,7 @@ needed for the requested command (progressive disclosure, keep context small).
 |---|---|---|
 | `kit:list` | справочник всех команд: модификаторы, чем исполняется, с какой версии (`kit_commands.py`) | `docs/commands.md` |
 | `kit:doctor` (`doctor`) | онбординг: config, skills, секреты в git, версия движка, структура папок (`--structure` — подробно) | `.opencode/scripts/aurora_doctor.py` |
-| `kit:hooks` | поставить git pre-commit с `kb_lint` (чтобы ошибки не копились) | `.opencode/scripts/aurora_hooks.py` |
+| `kit:hooks` | git-хуки: pre-commit с `kb_lint` (ошибки не копятся) и commit-msg (внутренние названия не уходят в историю) | `.opencode/scripts/aurora_hooks.py` |
 | `kit:remap-sources` | перенацелить `source:` карточек после переезда зеркала (по page_id) | `references/migration.md` |
 
 Развёртывание и обновление движка выполняются из kit'а, не из скилла:
