@@ -402,7 +402,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.48.3";
+const UI_VERSION = "1.48.4";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1242,19 +1242,20 @@ async function poll(id, since, label){
    линейками — по ним и находим, чтобы не тащить в буфер весь вывод. */
 const TASK_EDGE = "─────";
 function assistantTasks(lines){
-  /* Заданий в выводе несколько — по одному на партию. Каждое обрамлено линейками, и
-     внутри есть ещё одна, под заголовком: резать по ближайшей значит взять заголовок.
-     Границей блока считаем следующий заголовок задания или конец вывода. */
+  /* Задание оформлено для человека: линейки-рамки, заголовок «ЗАДАНИЕ АССИСТЕНТУ · … —
+     скопируйте блок целиком в чат». Ассистенту всё это не нужно и только сбивает его с
+     толку: он получает указание «скопируйте блок», адресованное не ему. В буфер идёт
+     тело — от строки после второй рамки до рамки, которая тело закрывает. */
   const heads = [];
   lines.forEach((l, i) => { if (l.includes("ЗАДАНИЕ АССИСТЕНТУ")) heads.push(i); });
   return heads.map((start, k) => {
-    let from = start;
-    while (from > 0 && !lines[from-1].startsWith(TASK_EDGE)) from--;
-    if (from > 0) from--;
+    let from = start + 1;
+    while (from < lines.length && !lines[from].startsWith(TASK_EDGE)) from++;
+    from++;                                   // первая строка тела — обычно /aurora-vault
     const limit = k + 1 < heads.length ? heads[k+1] : lines.length;
     let to = limit;
-    for (let i = limit - 1; i > start; i--){
-      if (lines[i].startsWith(TASK_EDGE)){ to = i + 1; break; }
+    for (let i = from; i < limit; i++){
+      if (lines[i].startsWith(TASK_EDGE)){ to = i; break; }   // рамка в тело не идёт
     }
     // Заданий бывает два вида: партия разбора и разовая работа («уточнить синонимы»).
     // Подпись берём из заголовка, иначе кнопка врёт про партию там, где партий нет.
@@ -1282,7 +1283,7 @@ function drawTaskButton(){
                   : "Такой партии в плане нет",
       onclick: task ? async()=>{
         try { await navigator.clipboard.writeText(task.text);
-              toast("Партия " + task.num + " скопирована — вставьте в чат с ассистентом","ok"); }
+              toast(task.label + " — скопировано, вставьте в чат с ассистентом","ok"); }
         catch(e){ toast("Не удалось скопировать — выделите блок в консоли","warn"); }
       } : null},
       task ? task.label : "Партия " + (i + 1)));
