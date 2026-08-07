@@ -402,7 +402,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.45.0";
+const UI_VERSION = "1.46.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1340,11 +1340,40 @@ async function renderSetup(){
     watch(el("input",{class:"btn",style:"width:100%;font-weight:400",placeholder:ph,
       oninput:e=>nf[key]=e.target.value}), "new", "«Подключить новый проект»"));
   const roots = await api("/api/roots");
+  const rootsBox2 = el("div",{style:"margin-top:6px"});
+  const drawSearchRoots = (list) => {
+    rootsBox2.innerHTML = "";
+    (list||[]).forEach(r => rootsBox2.append(el("div",{class:"row",style:"gap:8px;margin-bottom:6px"},
+      el("code",{class:"mono",style:"font-size:12px;flex:1;overflow-wrap:anywhere"}, r),
+      el("button",{class:"btn sm danger",title:"убрать из поиска",
+        onclick:async()=>{ const rr = await api("/api/roots",{method:"POST",
+          body:JSON.stringify({drop:r})}); if (rr.ok){ drawSearchRoots(rr.roots);
+          S.state = await api("/api/state"); renderOverview(); } }},"✕"))));
+    const inp2 = el("input",{class:"btn mono",style:"flex:1;font-weight:400",
+      placeholder:"/Users/me/Documents/GitProjects"});
+    rootsBox2.append(el("div",{class:"row",style:"gap:8px;margin-top:4px"}, inp2,
+      el("button",{class:"btn sm",onclick:async()=>{
+        if (!inp2.value.trim()) return;
+        const rr = await api("/api/roots",{method:"POST",body:JSON.stringify({add:inp2.value})});
+        if (rr.ok){ inp2.value=""; drawSearchRoots(rr.roots);
+          S.state = await api("/api/state"); renderOverview(); toast("Папка добавлена в поиск"); }
+      }},"+ добавить папку")));
+  };
+  drawSearchRoots(roots.roots);
+  box.append(el("h2",{},"Где панель ищет проекты"),
+    el("div",{class:"card",style:"padding:20px;margin-bottom:18px"},
+      el("p",{class:"muted",style:"font-size:13px;margin:0 0 12px"},
+        "Kit и проекты не обязаны лежать рядом: держите их где удобно, а панели скажите, " +
+        "где смотреть. Список сохраняется между запусками (" +
+        (roots.file || "~/.aurora/cockpit-roots.txt") + ")."),
+      rootsBox2));
+
   const newBox = el("div",{class:"card",style:"padding:20px"},
     el("b",{},"Подключить новый проект"),
     el("p",{class:"muted",style:"font-size:13px;margin:8px 0 14px"},
-      "Развернёт структуру и движок в указанной папке. Путь должен быть внутри корней, " +
-      "по которым панель ищет проекты: " + (roots.roots||[]).join(", ")),
+      "Развернёт структуру и движок в указанной папке — в любой, кроме системных. " +
+      "Если папка вне списка поиска, её родитель добавится туда сам, иначе проект " +
+      "пропал бы из списка сразу после создания."),
     field("path","Путь к папке","" + ((roots.roots||[""])[0] || "") + "/my-project"),
     field("name","Название проекта","Northwind","человекочитаемое"),
     field("slug","Slug","Northwind","латиницей, попадёт в имена sync-скиллов"),
@@ -1356,7 +1385,8 @@ async function renderSetup(){
         const r = await api("/api/project/new",{method:"POST",body:JSON.stringify(nf)});
         e.target.disabled = false; e.target.textContent = "Развернуть";
         if (r.ok){
-          toast("Проект развёрнут: " + r.path);
+          toast("Проект развёрнут: " + r.path +
+                (r.added_root ? " · в поиск добавлена папка " + r.added_root : ""));
           setDirty("new","«Подключить новый проект»",false);
           S.state = await api("/api/state");
           renderOverview(); renderSetup();

@@ -749,6 +749,48 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_cockpit_roots_are_not_fixed_to_kit_neighbours(tmp: Path):
+    """Проект можно развернуть где угодно, а не только в папке рядом с kit'ом.
+
+    Корни поиска — пользовательская настройка, а не свойство движка: kit кладут куда
+    угодно и переносят, проекты держат где удобно. Список живёт в домашней папке, папка
+    нового проекта попадает в него сама — иначе проект пропал бы из панели сразу после
+    создания. Ограничение осталось одно: системные деревья.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    home = tmp / "home"
+    (home / "Documents/GitProjects").mkdir(parents=True)
+    old_home = os.environ.get("HOME", "")
+    os.environ["HOME"] = str(home)
+    try:
+        importlib.reload(ck)
+        assert str(home) in ck.ROOTS_FILE, "список корней должен жить в домашней папке"
+        assert ck.load_roots() == [ck.norm(os.path.dirname(str(KIT)))], \
+            "при первом запуске корень — папка рядом с kit'ом"
+
+        far = str(home / "Documents/GitProjects/TAXKG")
+        assert ck.writable_target(far) == "", "папку вне корней запрещать нельзя"
+        assert ck.writable_target("/etc/aurora"), "системное дерево должно отвергаться"
+        assert ck.writable_target(str(home)), "разворачивать проект прямо в ~ нельзя"
+
+        ck.save_roots([str(home / "Documents/GitProjects"), str(home / "work")])
+        assert ck.load_roots() == [ck.norm(str(home / "Documents/GitProjects")),
+                                   ck.norm(str(home / "work"))], "список не сохранился"
+        assert ck.load_roots(["~/elsewhere"]) == [ck.norm("~/elsewhere")], \
+            "--roots должен перекрывать сохранённое на один запуск"
+    finally:
+        os.environ["HOME"] = old_home
+        importlib.reload(ck)
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "Где панель ищет проекты" in ui and "/api/roots" in ui, \
+        "корни должны правиться из панели, а не только флагом при запуске"
+
+
+@test
 def test_cockpit_scenarios_skins_and_about(tmp: Path):
     """Быстрый старт, скины и «О проекте»: данные лежат в файлах, а не в коде панели."""
     sys.path.insert(0, str(KIT / "cockpit"))
