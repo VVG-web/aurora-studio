@@ -29,7 +29,7 @@ import os
 import sys
 from datetime import date
 
-from aurora_common import KB_ROOT
+from aurora_common import KB_ROOT, frontmatter, walk_md
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 TODAY = date.today().isoformat()
@@ -154,6 +154,61 @@ def task_prompt(num: int, part: list, total: int = 0) -> str:
 `kb:queue` (что верифицировать первым)."""
 
 
+def card_sources() -> set:
+    """Пути источников, на которые ссылается хоть одна карточка базы."""
+    out = set()
+    for path in walk_md(KB_ROOT, skip_service=True):
+        try:
+            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+        except Exception:  # noqa: BLE001
+            continue
+        src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
+        if src:
+            out.add(src.split("#")[0].strip())
+    return out
+
+
+def reopen(manifest: dict, group: str, apply: bool) -> int:
+    """Снять отметку с источников, которые ничего не дали базе.
+
+    Отметку «обработан» ставит ассистент (`--done`), а не сам разбор, — и она врёт в обе
+    стороны: файл разобран, но не отмечен (попадёт в план второй раз), либо отмечен, но
+    карточек не появилось (выпал из плана навсегда). Второе тише и опаснее: прогресс
+    растёт, знание — нет.
+
+    Ноль карточек — не всегда ошибка: задача Jira или готовый справочник в `Reference/`
+    честно не порождают новых карточек. Поэтому сверяемся не со счётчиком в манифесте, а с
+    базой: есть ли хоть одна карточка с таким `source`.
+    """
+    known = card_sources()
+    victims = []
+    for path in sorted(manifest.get("sources") or {}):
+        if group and not path.startswith(group):
+            continue
+        if path in known or not os.path.isfile(path):
+            continue
+        victims.append(path)
+
+    by_group: dict = {}
+    for p in victims:
+        top = "/".join(p.split("/")[:2])
+        by_group[top] = by_group.get(top, 0) + 1
+    print(f"# Переоткрыть источники — {TODAY}\n")
+    print(f"Отмечено обработанными, но ни одной карточки не дали: {len(victims)}\n")
+    for g, n in sorted(by_group.items(), key=lambda kv: -kv[1]):
+        print(f"- {g}: {n}")
+    print("\nЗадачи Jira и готовые справочники Reference/ часто дают ноль законно — "
+          "сузьте разбор группой: --reopen --group Sources/Confluence")
+    if not apply:
+        print("\n(dry-run) Ничего не записано. Повторите с --apply.")
+        return 0
+    for p in victims:
+        manifest["sources"].pop(p, None)
+    save_manifest(manifest)
+    print(f"\n✅ Возвращено в план: {len(victims)}. Проверьте: build_plan.py --status")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="План извлечения карточек из источников")
     ap.add_argument("--budget", type=int, default=250_000,
@@ -168,6 +223,12 @@ def main() -> int:
     ap.add_argument("--done", metavar="FILE", help="отметить источник обработанным")
     ap.add_argument("--cards", type=int, default=0, help="сколько карточек извлечено (для --done)")
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
+    ap.add_argument("--reopen", action="store_true",
+                    help="вернуть в план источники, отмеченные обработанными, но не давшие "
+                         "ни одной карточки")
+    ap.add_argument("--group", metavar="NAME",
+                    help="ограничить --reopen группой (Confluence, JIRA, Raw/project, …)")
+    ap.add_argument("--apply", action="store_true", help="записать (для --reopen)")
     a = ap.parse_args()
 
     if not os.path.isdir(KB_ROOT):
@@ -187,6 +248,9 @@ def main() -> int:
         save_manifest(manifest)
         print(f"✅ {path}: обработан, карточек {a.cards}")
         return 0
+
+    if a.reopen:
+        return reopen(manifest, a.group or "", a.apply)
 
     items = sources()
     rows = [(g, p, s, *state(manifest, p, s)) for g, p, s in items]
