@@ -749,6 +749,42 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
+    """Отметку «обработан» ставит ассистент, и она врёт в обе стороны.
+
+    Файл, отмеченный сделанным, но не давший ни одной карточки, выпадает из плана
+    навсегда: прогресс растёт, знание — нет. Проверяем по базе, а не по счётчику в
+    манифесте: ноль карточек у задачи Jira или готового справочника бывает законным.
+    """
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    for name in ("Пустая", "Полезная"):
+        (root / f"Sources/Confluence/{name}.md").write_text(
+            f'---\ntitle: "{name}"\npage_id: 1\n---\n\n' + "текст " * 60, encoding="utf-8")
+    card(root, "Concepts/Из-полезной.md", "знание",
+         source='"Sources/Confluence/Полезная.md"')
+
+    for name, cards_n in (("Пустая", 0), ("Полезная", 3)):
+        run("build_plan.py", "--done", f"Sources/Confluence/{name}.md",
+            "--cards", str(cards_n), cwd=root)
+    assert "осталось: 0" in run("build_plan.py", "--status", cwd=root).stdout, \
+        "оба источника должны считаться обработанными"
+
+    dry = run("build_plan.py", "--reopen", cwd=root)
+    assert "Пустая" not in dry.stdout or "не дали: 1" in dry.stdout, dry.stdout[:400]
+    assert "не дали: 1" in dry.stdout, f"переоткрывать нечего:\n{dry.stdout[:400]}"
+    assert "осталось: 0" in run("build_plan.py", "--status", cwd=root).stdout, \
+        "dry-run не должен править манифест"
+
+    run("build_plan.py", "--reopen", "--apply", cwd=root)
+    status = run("build_plan.py", "--status", cwd=root).stdout
+    assert "осталось: 1" in status, f"источник без карточек не вернулся в план:\n{status}"
+    plan = run("build_plan.py", cwd=root).stdout
+    assert "Пустая" in plan and "Полезная" not in plan, \
+        "в план должен вернуться только тот, что ничего не дал"
+
+
+@test
 def test_cockpit_roots_are_not_fixed_to_kit_neighbours(tmp: Path):
     """Проект можно развернуть где угодно, а не только в папке рядом с kit'ом.
 
