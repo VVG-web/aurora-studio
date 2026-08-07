@@ -30,7 +30,8 @@ import re
 import sys
 from datetime import date
 
-from aurora_common import KB_ROOT, frontmatter, walk_md
+from aurora_common import (KB_ROOT, card_filename, frontmatter, split_frontmatter,
+                           walk_md)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 TODAY = date.today().isoformat()
@@ -45,6 +46,14 @@ GROUPS = [
     ("JIRA", os.path.join("Sources", "JIRA")),
 ]
 SKIP = ("sync_state.md", "update_log.md", "manifest.json", "_index.md", "index.md")
+
+# Раздел базы → тип карточки (тот же список, что в kb_lint и kb_fix).
+SECTION_TYPE = {
+    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
+    "Systems": "system", "Roles": "role", "Statuses": "status-model",
+    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
+    "Decisions": "decision", "Questions": "question", "MOC": "moc",
+}
 
 
 def file_hash(path: str) -> str:
@@ -113,11 +122,13 @@ def state(manifest: dict, path: str, size: int) -> tuple:
 def task_prompt(num: int, part: list, total: int = 0) -> str:
     """Готовое задание ассистенту — то, что человек копирует в чат.
 
-    Короткая фраза «разбери партию 2» ассистенту мало о чём говорит: он не знает ни списка
-    файлов, ни правил шапки, ни того, чем заканчивать. Список и правила и так известны
-    скрипту — значит, задание должен собирать он, а не человек по памяти.
+    Задание строится вокруг раскадровки: тело карточки переносит скрипт, модель решает
+    только границы тем и их имена. До 1.48.0 модель переписывала текст источника своими
+    токенами — на живой базе это 5,6 МБ вывода и несколько суток работы там, где
+    осмысленных решений на пару часов.
     """
     files = "\n".join(f"{i}. {p}" for i, (_g, p, _s, _st, _c) in enumerate(part, 1))
+    first = part[0][1] if part else "<источник>"
     return f"""
 ─────────────────────────────────────────────────────────────────────
 ЗАДАНИЕ АССИСТЕНТУ · ПАРТИЯ {num}{f" из {total}" if total else ""} — скопируйте блок целиком в чат
@@ -131,33 +142,167 @@ def task_prompt(num: int, part: list, total: int = 0) -> str:
 
 {files}
 
+ПОРЯДОК РАБОТЫ. Текст карточек ты не пишешь — его переносит скрипт. Для каждого
+источника по очереди:
+
+1. Раскадровка — какие в источнике секции:
+     python3 .opencode/scripts/build_plan.py --slice {first}
+
+2. По списку секций реши, где границы тем и как они называются. На каждую карточку:
+     python3 .opencode/scripts/build_plan.py --card "Имя карточки" \\
+         --source {first} --sections 1,2 --to Concepts --apply
+
+   • --sections — номера из раскадровки, подряд идущие пишутся как 3-5
+   • --to — раздел: Concepts, Processes, Glossary, Systems, Roles, Statuses,
+     Reference, Requirements
+   • оглавления, «Историю изменений» и служебные таблицы просто не упоминай
+   • если структуры нет (раскадровка пуста) — разбирай чтением и создавай карточки
+     руками по правилам build.md
+
+3. Отметь источник разобранным:
+     python3 .opencode/scripts/build_plan.py --done {first}
+
+   Отметка проверяется по базе: без карточек она не поставится. Источник, из которого
+   знания не выходит, отмечай явно: --done <файл> --empty "<почему пусто>"
+
 Правила, которые нельзя нарушать:
 - одна карточка — одна атомарная тема; пересказ файла целиком карточкой не является;
 - ничего не выдумывай: в карточке только то, что есть в источнике;
-- у каждой новой карточки `status: imported`, `source:` — путь к файлу
-  выше, `source_synced:` — сегодняшняя дата;
-- карточку со статусом `verified` или `deprecated` не переписывай: источник изменился —
-  обнови `source_synced` и напиши в отчёт строку `DRIFT: <карточка> — <источник>`;
-- связи ставь ссылками `[[Имя-карточки]]` в тексте и в поле `related:` — **только на
-  карточки, которые уже есть или которые создаёшь в этой же партии**; на остальное пиши
-  обычным текстом, иначе база наберёт сотни ссылок в никуда;
-- alias давай только там, где это действительно другое имя ЭТОЙ карточки: один синоним у
-  двух карточек делает ссылку по нему неоднозначной;
-- термин из глоссария — отдельная карточка в Glossary, а не абзац внутри другой.
+- имя карточки — по смыслу темы, а не по номеру секции;
+- связи и синонимы не расставляй руками: после партии это делают `kb:links --cards`
+  и `kb:repair --aliases`;
+- термин из глоссария — отдельная карточка в Glossary (--to Glossary), а не абзац
+  внутри другой.
 
-Отмечай файл сделанным сразу после того, как разобрал его ЦЕЛИКОМ (не пачкой в конце):
-  python3 .opencode/scripts/build_plan.py --done <путь к файлу> --cards <сколько карточек>
-
-Отметка проверяется по базе: если карточек с `source: <файл>` нет, скрипт её не поставит.
-Источник, из которого знание действительно не выходит (служебная страница, задача без
-постановки), отмечай явно:
-  python3 .opencode/scripts/build_plan.py --done <файл> --empty "<почему пусто>"
-
-Закончив партию, покажи: сколько карточек создано, сколько обновлено, что осталось
-неясным (кандидаты в вопросы заказчику) и какие DRIFT-строки набрались.
+Закончив партию, покажи: сколько карточек создано, какие источники отмечены пустыми и
+что осталось неясным (кандидаты в вопросы заказчику).
 ─────────────────────────────────────────────────────────────────────
 После партии в проекте: `kb:links --cards` (связи), `kb:lint` (механика),
 `kb:queue` (что верифицировать первым)."""
+
+
+# ---------------------------------------------------------------- раскадровка
+
+HEAD_RE = re.compile(r"^(#{1,4})\s+(\S.*?)\s*$")
+BOLD_RE = re.compile(r"^\*\*([^*\n]{4,120}?)[:.]?\*\*\s*$")   # псевдозаголовок из docx
+MIN_SECTION = 200          # короче — подпись под картинкой, а не тема
+
+
+def sections(text: str) -> list:
+    """[(заголовок, тело)] — источник, разрезанный по его собственной структуре.
+
+    Резать текст умеет скрипт: границы тем в документе уже расставлены заголовками, а
+    после конвертации из docx — строками, выделенными жирным целиком. Модели остаётся то,
+    чего механика не знает: как тему назвать и стоит ли объединить соседние секции.
+    """
+    head, rest = split_frontmatter(text)
+    body = rest if head is not None else text
+    lines = body.splitlines()
+    levels = [len(m.group(1)) for m in (HEAD_RE.match(l) for l in lines) if m]
+    use_bold = len(levels) < 3
+    top = min(levels) if levels else 0
+
+    out, title, buf = [], None, []
+    for line in lines:
+        m = HEAD_RE.match(line)
+        b = BOLD_RE.match(line) if use_bold else None
+        if (m and len(m.group(1)) <= top + 1) or b:
+            if title:
+                out.append((title, "\n".join(buf).strip()))
+            title, buf = (m.group(2) if m else b.group(1)), []
+        else:
+            buf.append(line)
+    if title:
+        out.append((title, "\n".join(buf).strip()))
+    return [(t, b) for t, b in out if len(b) >= MIN_SECTION]
+
+
+def slice_report(path: str) -> int:
+    """Раскадровка источника: что в нём есть и какими кусками это можно взять."""
+    if not os.path.isfile(path):
+        print(f"build_plan: нет файла {path}", file=sys.stderr)
+        return 1
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    secs = sections(text)
+    print(f"# Раскадровка — {path}\n")
+    print(f"Символов: {len(text)} · секций: {len(secs)}\n")
+    if not secs:
+        print("Структуры не видно: ни заголовков, ни выделенных строк. Такой источник "
+              "разбирается чтением — раскадровка не поможет.")
+        return 0
+    for i, (title, body) in enumerate(secs, 1):
+        preview = " ".join(body.split())[:110]
+        print(f"{i:3}. {title[:80]}\n     {len(body)} симв. · {preview}…")
+    print(f"""
+─────────────────────────────────────────────────────────────────────
+ЗАДАНИЕ АССИСТЕНТУ · РАСКАДРОВКА — скопируйте блок целиком в чат
+─────────────────────────────────────────────────────────────────────
+/aurora-vault kb:build
+
+Выше — секции источника {path}. Тело карточек переносит скрипт, тебе не нужно
+переписывать текст. Реши только две вещи: где границы темы и как она называется.
+
+На каждую карточку дай одну команду:
+  python3 .opencode/scripts/build_plan.py --card "Имя карточки" \\
+      --source {path} --sections 1,2 --to Concepts --apply
+
+  • --sections    номера из списка выше; подряд идущие можно писать как 3-5
+  • --to          раздел базы: Concepts, Processes, Glossary, Systems, Roles,
+                  Statuses, Reference, Requirements
+  • секции, которые знанием не являются (оглавления, история изменений,
+    служебные таблицы), просто не упоминай
+
+Закончив, отметь источник: build_plan.py --done {path}""")
+    return 0
+
+
+def build_card(title: str, source: str, spec: str, into: str, apply: bool) -> int:
+    """Собрать карточку из указанных секций источника: текст переносится дословно."""
+    if not os.path.isfile(source):
+        print(f"build_plan: нет файла {source}", file=sys.stderr)
+        return 1
+    secs = sections(open(source, encoding="utf-8", errors="ignore").read())
+    picked: list = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            rng = range(int(a), int(b) + 1)
+        else:
+            rng = [int(part)]
+        for n in rng:
+            if not 1 <= n <= len(secs):
+                print(f"build_plan: секции {n} нет — в источнике их {len(secs)}",
+                      file=sys.stderr)
+                return 1
+            picked.append(secs[n - 1])
+    if not picked:
+        print("build_plan: не указано ни одной секции (--sections 1,3-5)", file=sys.stderr)
+        return 1
+
+    body = "\n\n".join(f"## {t}\n\n{b}" if len(picked) > 1 else b for t, b in picked)
+    safe = card_filename(title)
+    path = os.path.join(KB_ROOT, into, safe + ".md")
+    if os.path.exists(path):
+        print(f"build_plan: карточка уже есть — {path}\n"
+              "Имя должно быть уникальным: допишите уточнение или дополните существующую.",
+              file=sys.stderr)
+        return 1
+    card = (f'---\ntitle: "{title}"\naliases: []\nstatus: imported\n'
+            f'type: {SECTION_TYPE.get(into, "concept")}\nsource: "{source}"\n'
+            f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
+            f"related: []\n---\n\n# {title}\n\n{body}\n")
+    print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
+          f"{len(body)} симв.")
+    if not apply:
+        print("Повторите с --apply, чтобы записать.")
+        return 0
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(card)
+    return 0
 
 
 def card_sources() -> set:
@@ -348,6 +493,15 @@ def main() -> int:
     ap.add_argument("--empty", metavar="ПРИЧИНА",
                     help="отметить источник, из которого знания не вышло, назвав причину")
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
+    ap.add_argument("--slice", metavar="FILE",
+                    help="раскадровка источника: его секции с размерами и превью")
+    ap.add_argument("--card", metavar="TITLE",
+                    help="собрать карточку из секций источника (--from, --sections)")
+    ap.add_argument("--source", metavar="FILE", dest="src", help="источник для --card")
+    ap.add_argument("--sections", metavar="N,M-K", default="",
+                    help="номера секций из раскадровки (для --card)")
+    ap.add_argument("--to", metavar="SECTION", default="Concepts",
+                    help="раздел базы для --card (по умолчанию Concepts)")
     ap.add_argument("--thin", action="store_true",
                     help="источники, разобранные подозрительно тонко: карточка есть, но "
                          "объём и структура исходника говорят, что разбор не дошёл до конца")
@@ -369,6 +523,13 @@ def main() -> int:
     if a.done:
         return mark_done(manifest, a.done, a.cards, a.empty)
 
+    if a.slice:
+        return slice_report(a.slice)
+    if a.card:
+        if not a.src:
+            print("build_plan: для --card нужен --source <источник>", file=sys.stderr)
+            return 1
+        return build_card(a.card, a.src, a.sections, a.to, a.apply)
     if a.thin or (a.reopen and a.thin):
         return thin_report(manifest, a.group or "", a.reopen and a.apply)
     if a.reopen:

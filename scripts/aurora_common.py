@@ -173,6 +173,26 @@ def fix_mixed_script(name: str) -> str:
     return "".join(out)
 
 
+def card_filename(title: str) -> str:
+    """Заголовок → имя файла карточки по правилу из build.md.
+
+    Одно правило на всех: и ремонт ссылок, и сборка карточки должны получать одно и то же
+    имя из одного заголовка, иначе `[[Ссылка]]` перестаёт вести в карточку.
+    """
+    s = title.strip()
+    for q in "«»“”\"'":
+        s = s.replace(q, "")
+    s = s.strip()
+    if s.startswith("(") and s.endswith(")"):
+        s = s[1:-1]
+    s = s.replace("(", "-").replace(")", "")
+    s = s.replace("№", "No")
+    for sep in (" ", ".", ":", "/", "\\", "—", "–", ",", ";"):
+        s = s.replace(sep, "-")
+    s = re.sub(r"-{2,}", "-", s)
+    return s.strip("-")
+
+
 def is_service(path: str) -> bool:
     """Служебный файл базы (индексы, манифесты, meta) — не карточка знаний."""
     base = os.path.basename(path)
