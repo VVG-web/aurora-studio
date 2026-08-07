@@ -783,6 +783,22 @@ def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
     assert "Пустая" in plan and "Полезная" not in plan, \
         "в план должен вернуться только тот, что ничего не дал"
 
+    # вторая сторона той же беды: карточка есть, но разбор оборвался на середине
+    big = root / "Sources/Confluence/Толстая.md"
+    big.write_text('---\ntitle: "Толстая"\npage_id: 9\n---\n\n' +
+                   "".join(f"## Раздел {i}\n\n" + "текст " * 400 + "\n\n" for i in range(12)),
+                   encoding="utf-8")
+    card(root, "Concepts/Одна-из-толстой.md", "знание", source='"Sources/Confluence/Толстая.md"')
+    run("build_plan.py", "--done", "Sources/Confluence/Толстая.md", "--cards", "1", cwd=root)
+    thin = run("build_plan.py", "--thin", cwd=root)
+    assert "Толстая.md" in thin.stdout, f"тонкий разбор не найден:\n{thin.stdout[:500]}"
+    assert "Полезная" not in thin.stdout, "нормально разобранный источник попал в подозрения"
+    assert "осталось: 1" in run("build_plan.py", "--status", cwd=root).stdout, \
+        "--thin без --reopen не должен править манифест"
+    run("build_plan.py", "--thin", "--reopen", "--apply", cwd=root)
+    assert "осталось: 2" in run("build_plan.py", "--status", cwd=root).stdout, \
+        "источник с неполным разбором не вернулся в план"
+
 
 @test
 def test_cockpit_roots_are_not_fixed_to_kit_neighbours(tmp: Path):

@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import date
 
@@ -168,6 +169,52 @@ def card_sources() -> set:
     return out
 
 
+# Пороги «разобрано слишком тонко». Числа не из головы: на живой базе в 427 разобранных
+# источников медиана — 3,6 КБ исходника на карточку, 90-й перцентиль — 7,8. Пятнадцать
+# оставляют запас на пересказы и служебные страницы, но ловят «59 КБ → одна карточка».
+THIN_KB_PER_CARD = 15
+THIN_HEAD_RATIO = 3          # заголовков втрое больше, чем карточек, — темы остались
+
+
+def card_counts() -> dict:
+    """{источник: сколько карточек базы на него ссылаются}."""
+    out: dict = {}
+    for path in walk_md(KB_ROOT, skip_service=True):
+        try:
+            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+        except Exception:  # noqa: BLE001
+            continue
+        src = (fm.get("source") or "").strip().strip('"').replace("\\", "/").split("#")[0].strip()
+        if src:
+            out[src] = out.get(src, 0) + 1
+    return out
+
+
+def thin_sources(manifest: dict, group: str) -> list:
+    """[(источник, КБ, заголовков, карточек)] — разобранные подозрительно тонко.
+
+    Карточка есть, значит `--reopen` такой источник не тронет, — а разобран он мог быть
+    до середины: модель прочла первые разделы и остановилась. Признаков два, и оба видны
+    без модели: объём исходника на одну карточку и число структурных заголовков против
+    числа карточек. Это подозрение, а не приговор: пересказ на сорок страниц законно
+    даёт одну карточку.
+    """
+    counts = card_counts()
+    out = []
+    for path in sorted(manifest.get("sources") or {}):
+        if group and not path.startswith(group):
+            continue
+        n = counts.get(path, 0)
+        if n == 0 or not os.path.isfile(path):
+            continue
+        size = os.path.getsize(path)
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        heads = len(re.findall(r"^#{2,3} ", text, re.M))
+        if size / 1024 / n >= THIN_KB_PER_CARD or (heads >= 6 and n * THIN_HEAD_RATIO < heads):
+            out.append((path, size // 1024, heads, n))
+    return sorted(out, key=lambda r: -r[1])
+
+
 def reopen(manifest: dict, group: str, apply: bool) -> int:
     """Снять отметку с источников, которые ничего не дали базе.
 
@@ -209,6 +256,28 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     return 0
 
 
+def thin_report(manifest: dict, group: str, apply: bool) -> int:
+    rows = thin_sources(manifest, group)
+    print(f"# Разобрано тонко — {TODAY}\n")
+    print(f"Источников с подозрением на неполный разбор: {len(rows)}")
+    print(f"Порог: {THIN_KB_PER_CARD} КБ исходника на карточку либо заголовков "
+          f"втрое больше, чем карточек\n")
+    for path, kb, heads, n in rows[:30]:
+        print(f"- {path}\n    {kb} КБ · заголовков {heads} · карточек {n}")
+    if len(rows) > 30:
+        print(f"- … ещё {len(rows) - 30}")
+    print("\nПересказ на сорок страниц законно даёт одну карточку — это подозрение, а не "
+          "приговор.\nВернуть в план: --thin --reopen --apply (можно сузить --group).")
+    if not apply:
+        print("\n(dry-run) Ничего не записано.")
+        return 0
+    for path, *_ in rows:
+        manifest["sources"].pop(path, None)
+    save_manifest(manifest)
+    print(f"\n✅ Возвращено в план: {len(rows)}. Проверьте: build_plan.py --status")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="План извлечения карточек из источников")
     ap.add_argument("--budget", type=int, default=250_000,
@@ -223,6 +292,9 @@ def main() -> int:
     ap.add_argument("--done", metavar="FILE", help="отметить источник обработанным")
     ap.add_argument("--cards", type=int, default=0, help="сколько карточек извлечено (для --done)")
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
+    ap.add_argument("--thin", action="store_true",
+                    help="источники, разобранные подозрительно тонко: карточка есть, но "
+                         "объём и структура исходника говорят, что разбор не дошёл до конца")
     ap.add_argument("--reopen", action="store_true",
                     help="вернуть в план источники, отмеченные обработанными, но не давшие "
                          "ни одной карточки")
@@ -249,6 +321,8 @@ def main() -> int:
         print(f"✅ {path}: обработан, карточек {a.cards}")
         return 0
 
+    if a.thin or (a.reopen and a.thin):
+        return thin_report(manifest, a.group or "", a.reopen and a.apply)
     if a.reopen:
         return reopen(manifest, a.group or "", a.apply)
 
