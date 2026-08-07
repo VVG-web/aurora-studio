@@ -1241,6 +1241,71 @@ def test_no_private_terms_in_tracked_files(tmp: Path):
 
 
 @test
+def test_no_private_terms_in_commit_messages(tmp: Path):
+    """Сообщение коммита — тоже поставка, и оно не чинится линтером.
+
+    Файлы можно переписать и закоммитить заново, а текст коммита уходит в историю
+    навсегда: чтобы его убрать, нужно переписывать ветку и делать force-push. На живой
+    работе внутренние названия попали в сообщение ровно при правке файла с этими
+    названиями — проверка файлов такое не ловит по определению.
+    """
+    terms_file = KIT / "local/private_terms.txt"
+    if not terms_file.is_file():
+        return
+    terms = [l.strip() for l in terms_file.read_text(encoding="utf-8").splitlines()
+             if l.strip() and not l.startswith("#")]
+    if not terms:
+        return
+    log = subprocess.run(["git", "log", "--format=%H%x00%B%x01"], cwd=str(KIT),
+                         capture_output=True, text=True).stdout
+    rx = re.compile("|".join(re.escape(t) for t in terms), re.I)
+    hits = []
+    for entry in log.split("\x01"):
+        if "\x00" not in entry:
+            continue
+        sha, body = entry.split("\x00", 1)
+        m = rx.search(body)
+        if m:
+            hits.append(f"{sha.strip()[:8]} — «{m.group(0)}»")
+    assert not hits, ("внутренние названия в сообщениях коммитов:\n    "
+                      + "\n    ".join(hits[:10])
+                      + "\n  Историю придётся переписывать: git rebase -i / filter-branch."
+                      + "\n  Чтобы это не повторялось: kit:hooks --install (хук commit-msg)")
+
+
+@test
+def test_hooks_guard_commit_messages(tmp: Path):
+    """`kit:hooks` ставит и проверку сообщений, а не только линтер файлов."""
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "."], cwd=str(root), check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(root), check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=str(root), check=True)
+    (root / "local/private_terms.txt").write_text("ВНУТРЕННЕЕИМЯ\n", encoding="utf-8")
+
+    out = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--install"],
+                         cwd=str(root), capture_output=True, text=True)
+    assert "commit-msg" in out.stdout, f"хук сообщений не поставлен:\n{out.stdout}"
+    assert (root / ".git/hooks/commit-msg").is_file()
+
+    (root / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=str(root), check=True)
+    ok = subprocess.run(["git", "commit", "-m", "обычная правка"], cwd=str(root),
+                        capture_output=True, text=True)
+    assert ok.returncode == 0, f"чистое сообщение не прошло:\n{ok.stderr}"
+
+    (root / "f.txt").write_text("y", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=str(root), check=True)
+    bad = subprocess.run(["git", "commit", "-m", "правка про ВНУТРЕННЕЕИМЯ"], cwd=str(root),
+                         capture_output=True, text=True)
+    assert bad.returncode != 0, "коммит с внутренним названием в сообщении прошёл"
+    assert "внутренние названия" in bad.stderr, bad.stderr[:300]
+    n = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=str(root),
+                       capture_output=True, text=True).stdout.strip()
+    assert n == "1", f"коммит всё-таки создан (их {n})"
+
+
+@test
 def test_only_neutral_hosts_in_tracked_files(tmp: Path):
     """Адреса и почта в поставке — только заведомо ничейные.
 
