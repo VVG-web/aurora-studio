@@ -752,6 +752,24 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_copy_button_takes_the_task_without_its_frame(tmp: Path):
+    """В буфер уходит тело задания, а не оформление вокруг него.
+
+    Задание обрамлено линейками и заголовком «…— скопируйте блок целиком в чат». Эта
+    строка адресована человеку у панели; попав в чат, она даёт ассистенту указание,
+    которое к нему не относится, а линейки просто съедают контекст.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    fn = ui[ui.index("function assistantTasks(lines){"):ui.index("let LAST_TASKS = [];")]
+    assert "рамка в тело не идёт" in fn, "границы блока снова режутся по старому правилу"
+    # тело начинается после ВТОРОЙ линейки — той, что под заголовком
+    assert "while (from < lines.length && !lines[from].startsWith(TASK_EDGE)) from++;" in fn, \
+        "начало тела ищется не от заголовка вниз"
+    assert 'toast(task.label + " — скопировано' in ui, \
+        "подпись в уведомлении врёт про партию там, где партий нет"
+
+
+@test
 def test_build_skill_does_not_ask_model_to_scan_the_base(tmp: Path):
     """Инструкция не должна поручать модели работу, которая стоит обхода всей базы.
 
@@ -1282,6 +1300,8 @@ def test_hooks_guard_commit_messages(tmp: Path):
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(root), check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=str(root), check=True)
     (root / "local/private_terms.txt").write_text("ВНУТРЕННЕЕИМЯ\n", encoding="utf-8")
+    # признак кита: манифест движка в корне и никакого конфига проекта
+    (root / "engine_manifest.txt").write_text("# manifest\n", encoding="utf-8")
 
     out = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--install"],
                          cwd=str(root), capture_output=True, text=True)
@@ -1303,6 +1323,40 @@ def test_hooks_guard_commit_messages(tmp: Path):
     n = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=str(root),
                        capture_output=True, text=True).stdout.strip()
     assert n == "1", f"коммит всё-таки создан (их {n})"
+
+
+@test
+def test_privacy_hook_is_kit_only(tmp: Path):
+    """Проверка приватности защищает публикацию движка и не лезет в проекты.
+
+    Кит уезжает в открытый git — там внутреннее название утечка. В проекте те же слова
+    и есть предметная область, ради которой он заведён: останавливать такой коммит не за
+    что. Признак кита однозначен — манифест движка в корне и никакого конфига проекта.
+    """
+    root = tmp / "project"
+    (root / "local").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "."], cwd=str(root), check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(root), check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=str(root), check=True)
+    (root / "aurora.config.yaml").write_text('project:\n  name: "T"\n', encoding="utf-8")
+    # список внутренних названий есть даже здесь — и всё равно не должен ничего блокировать
+    (root / "local/private_terms.txt").write_text("ВНУТРЕННЕЕИМЯ\n", encoding="utf-8")
+
+    out = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--install"],
+                         cwd=str(root), capture_output=True, text=True)
+    assert "pre-commit" in out.stdout, f"линтер-хук не поставлен:\n{out.stdout}"
+    assert not (root / ".git/hooks/commit-msg").exists(), \
+        "в проект поставлен хук приватности — он про публикацию кита, а не про работу"
+
+    (root / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=str(root), check=True)
+    cp = subprocess.run(["git", "commit", "-m", "правка про ВНУТРЕННЕЕИМЯ"], cwd=str(root),
+                        capture_output=True, text=True)
+    assert cp.returncode == 0, f"коммит в проекте остановлен зря:\n{cp.stderr}"
+
+    st = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--status"],
+                        cwd=str(root), capture_output=True, text=True).stdout
+    assert "это проект, а не кит" in st, f"статус не объясняет, почему хука нет:\n{st}"
 
 
 @test

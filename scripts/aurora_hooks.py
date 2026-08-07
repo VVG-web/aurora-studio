@@ -103,6 +103,17 @@ exit 0
 """
 
 
+def is_kit() -> bool:
+    """Мы в самом ките, а не в проекте на его основе.
+
+    Проверка приватности защищает **публикацию движка**: kit уезжает в открытый git, и
+    внутренние названия в нём — утечка. В проекте те же слова — предметная область, ради
+    которой он и заведён; там эта проверка была бы вредной. Признак кита однозначен:
+    манифест движка в корне, а конфига проекта нет.
+    """
+    return Path("engine_manifest.txt").is_file() and not Path("aurora.config.yaml").is_file()
+
+
 def git_dir() -> Path | None:
     try:
         out = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, check=True)
@@ -155,8 +166,11 @@ def main() -> int:
         if msg_hook.is_file() and MSG_MARKER in msg_hook.read_text(encoding="utf-8", errors="ignore"):
             print(f"commit-msg: хук Авроры · список названий: {TERMS}"
                   f"{'' if Path(TERMS).is_file() else ' (файла нет — проверка спит)'}")
-        else:
+        elif is_kit():
             print("commit-msg: не установлен")
+        else:
+            print("commit-msg: не нужен — это проект, а не кит "
+                  "(проверка приватности защищает публикацию движка)")
         if BASELINE.is_file():
             print(f"базовая линия ошибок: {BASELINE.read_text().strip()}")
         errs = current_errors()
@@ -191,22 +205,24 @@ def main() -> int:
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     print(f"Установлен pre-commit (режим {a.mode}): {hook}")
 
-    msg_hook = gd / "hooks" / "commit-msg"
-    if msg_hook.is_file() and MSG_MARKER not in msg_hook.read_text(encoding="utf-8", errors="ignore"):
-        if not a.force:
+    # Хук сообщений — только в ките: он про публикацию движка в открытый git. В проекте
+    # внутренние названия законны, и коммит с ними останавливать не за что.
+    if is_kit():
+        msg_hook = gd / "hooks" / "commit-msg"
+        foreign = (msg_hook.is_file()
+                   and MSG_MARKER not in msg_hook.read_text(encoding="utf-8", errors="ignore"))
+        if foreign and not a.force:
             print("В репозитории есть свой commit-msg — проверка сообщений не поставлена "
                   "(перезаписать: --force)", file=sys.stderr)
         else:
-            msg_hook.with_suffix(".bak").write_text(
-                msg_hook.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+            if foreign:
+                msg_hook.with_suffix(".bak").write_text(
+                    msg_hook.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+                print("Старый commit-msg сохранён как commit-msg.bak")
             msg_hook.write_text(MSG_HOOK.format(marker=MSG_MARKER, terms=TERMS), encoding="utf-8")
-            msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR)
-            print(f"Установлен commit-msg (старый сохранён как commit-msg.bak): {msg_hook}")
-    else:
-        msg_hook.write_text(MSG_HOOK.format(marker=MSG_MARKER, terms=TERMS), encoding="utf-8")
-        msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        note = "" if Path(TERMS).is_file() else f" — но {TERMS} нет, проверка спит до его появления"
-        print(f"Установлен commit-msg: сообщения проверяются по {TERMS}{note}")
+            msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            note = "" if Path(TERMS).is_file() else f" — но {TERMS} нет, проверка спит"
+            print(f"Установлен commit-msg: сообщения проверяются по {TERMS}{note}")
 
     if a.mode == "ratchet":
         errs = current_errors()
