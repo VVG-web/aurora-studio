@@ -752,6 +752,29 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_build_skill_does_not_ask_model_to_scan_the_base(tmp: Path):
+    """Инструкция не должна поручать модели работу, которая стоит обхода всей базы.
+
+    До 1.48.1 в build.md было четыре таких места: «Verify file exists BEFORE writing the
+    link», «search all existing notes by aliases», Pre-Write Validation на каждую карточку
+    и обязательные шесть-семь синонимов. Каждое — перебор тысячи файлов на карточку;
+    отсюда сутки на партию и полсотни конфликтующих синонимов в живой базе.
+    """
+    text = (KIT / "skills/aurora-vault/references/build.md").read_text(encoding="utf-8")
+    forbidden = [
+        ("Verify file exists", "проверка существования цели ссылки — это kb:lint"),
+        ("search all existing notes", "поиск по всей базе — это резолвер kb:repair --links"),
+        ("MANDATORY — Every Note", "обязательные синонимы на каждую карточку рождают конфликты"),
+        ("Pre-Write Validation", "чек-лист на каждую карточку — это kb:lint после партии"),
+    ]
+    hits = [f"«{needle}» — {why}" for needle, why in forbidden if needle in text]
+    assert not hits, "инструкция снова просит модель обходить базу:\n    " + "\n    ".join(hits)
+
+    for must in ("kb:repair --links", "kb:repair --stubs", "kb:links --cards", "kb:index"):
+        assert must in text, f"не сказано, что {must} делает эту работу за модель"
+
+
+@test
 def test_build_slices_source_and_assembles_card(tmp: Path):
     """Текст карточки переносит скрипт: модель решает границы тем, а не перепечатывает.
 

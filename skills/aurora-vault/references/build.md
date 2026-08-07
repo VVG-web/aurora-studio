@@ -11,7 +11,14 @@
 
 Человек запускает `build_plan.py --partition N` и приносит напечатанный блок «ЗАДАНИЕ
 АССИСТЕНТУ»: там список файлов партии по порядку и правила жизненного цикла. Список брать
-оттуда, а не выбирать самому — порядок обхода не случаен. Если блока нет, спросите номер
+оттуда, а не выбирать самому — порядок обхода не случаен.
+
+**Граница ответственности.** Разбор — это чтение источника и решения о темах: где кончается
+одна тема, как она называется, в какой раздел ложится. Перенос текста, шапка, имя файла,
+поиск целей для ссылок, синонимы, индексы, связи — работа движка, и он делает её один раз
+на всю базу. Если по ходу разбора вы открываете чужие карточки, ищете похожие имена или
+проверяете существование цели ссылки — вы выполняете работу скрипта вручную, и партия из
+сорока источников растягивается на часы вместо минут. Если блока нет, спросите номер
 партии и напечатайте план сами: `python3 .opencode/scripts/build_plan.py --partition N`.
 
 Закончив партию, запустите `kb:links --cards`: связи между карточками выводятся из ключей
@@ -172,24 +179,35 @@ For each source file, identify **atomic topics** — one concept per note.
 | A heading with no unique content | Skip (not atomic) |
 | A link to external doc | Skip (not a topic) |
 
-### Step 4: Create or Update Notes
+### Step 4: Create Notes
 
-For each extracted topic:
+Одна команда на тему — файл пишет движок:
 
-1. **Generate filename**: Slug from Russian title (e.g., "Заявка. Статус: Черновик" → `zayavka-status-chernovik.md`)
-2. **Check if exists**: Read existing note if filename matches
-3. **Compare content**: If topic content unchanged (key facts same), skip
-4. **Write note**: Create/update with full template
-5. **Resolve links**: Scan for wiki-links that should point to existing notes
-6. **Update manifest**: Record source→notes mapping
+```
+build_plan.py --card "Имя карточки" --source <файл> --sections 1,3-5 --to Concepts --apply
+```
 
-### Step 5: Update Indices
+Она сама даёт имя файла по алгоритму нормализации, заполняет шапку (`status`, `type`,
+`source`, `source_synced`, даты) и переносит текст секций. **Не пишите файл руками и не
+перепечатывайте текст источника.**
 
-After processing a source file:
+### Step 5: После партии это делает движок, а не вы
 
-1. Add new notes to appropriate `_index.md`
-2. Update `index.md` if new domains appeared
-3. Keep indices sorted and with short descriptions
+Ничего из списка ниже не делайте вручную: на каждой карточке это превращается в обход всей
+базы, а на партии — в часы. Скрипты выполняют ту же работу один раз и за секунды.
+
+| Работа | Команда | Почему не модели |
+|---|---|---|
+| проверить, что цель ссылки существует | `kb:lint` | модель смотрит по одному файлу, скрипт — всю базу разом |
+| найти карточку по синониму, регистру, разделителям | `kb:repair --links` | резолвер знает свёртку регистра, гомоглифы и разделители |
+| завести карточки под ссылки в никуда | `kb:repair --stubs` | ссылка появляется раньше знания — это нормально |
+| расставить `related:` | `kb:links --cards` | связи выводятся из ключей и номеров историй |
+| развести конфликтующие синонимы | `kb:repair --aliases` | конфликт виден только на всей базе |
+| обновить `_index.md` | `kb:index` | индекс — производная от файлов |
+| дописать недостающие поля шапки | `kb:repair --frontmatter` | правило одно на всю базу |
+
+Значит: **поставили `[[ссылку]]` — и дальше.** Не проверяйте, есть ли цель, не ищите
+похожие карточки, не открывайте индексы.
 
 ## Source File Handling
 
@@ -260,102 +278,34 @@ Given any title from an external source (Confluence, JIRA, dictionary):
 | `заявки Статус: Зарегистрирован` | `заявки-Статус-Зарегистрирован` | spaces, colon → - |
 | `Заполнение признака "Не показывать больше приветственную страницу"` | `Заполнение-признака-Не-показывать-больше-приветственную-страницу` | quotes, spaces → - |
 
-### Alias Registration (MANDATORY — Every Note)
+### Синонимы: один, а не семь
 
-Every note frontmatter MUST include `aliases:` with ALL name variants that could link to this note:
+Раньше здесь требовалось перечислять у каждой карточки все варианты написания — с
+кавычками, без кавычек, с точками, короткий код. Это давало по шесть-семь строк на
+карточку и, что хуже, **один синоним у разных карточек**: на живой базе так набралось
+полсотни конфликтов, после которых ссылка по имени не ведёт никуда.
 
-```yaml
-title: "ALG-043 Расчет Сумма (акциз адв.)"
-aliases:
-  - "ALG-043 Расчет «Сумма (акциз адв.)»"     # Original with smart quotes
-  - "ALG-043 Расчет "Сумма (акциз адв.)""   # Original with straight quotes
-  - "ALG-043 Расчет Сумма акциз адв"          # Stripped quotes and parens
-  - "ALG-043"                                  # Short code prefix
-  - "акциз адв"                                # Key phrase
-tags: [process.algorithm, prj.calculation]
-created: 2026-05-17
-updated: 2026-05-17
-source: Sources/Confluence/SM - Алгоритмы/.../ALG-043 Расчет Сумма (акциз адв.).md
-```
+- `aliases:` заполняйте, только если карточку **действительно знают под другим именем**:
+  код `ALG-043`, аббревиатура, официальное название из договора;
+- варианты написания одного имени (кавычки, точки, регистр) не нужны — резолвер
+  сворачивает их сам;
+- если синоним занят, `kb:repair --aliases` покажет конфликт.
 
-Alias categories to always include:
+### Ссылки
 
-| Variant | When | Example |
-| --- | --- | --- |
-| Original source title | Always, with original quotes/punctuation | `"ALG-043 «Сумма (акциз адв.)»"` |
-| Source filename stem | Always, exact basename without .md | `"RU.PRJ.ALG-035 Выбор данных из НСИ для поля Курс"` |
-| Without special chars | If original has quotes/parens | `"Заполнение признака Не показывать больше..."` |
-| Short code / prefix | If identifiable | `"RU.PRJ.ALG-035"`, `"ALG-043"` |
-| Colon/space from source | If source uses colons/spaces | `"заявки Статус: Зарегистрирован"` |
-| Dot-separated variant | If source used dots | `"RU.PRJ.ALG-035 Выбор..."` |
-| Plus variant | If source has + | `"логин+пароль"` |
+1. Ставьте `[[Имя-карточки]]` там, где нужна связь по смыслу.
+2. Имя — по алгоритму нормализации выше. Не совпало с существующим файлом — не страшно:
+   `kb:repair --links` найдёт цель, `kb:repair --stubs` заведёт заготовку под то, чего нет.
+3. **Не проверяйте существование цели перед записью** — это обход базы на каждую ссылку.
+4. В `_index.md` ничего не правьте: индексы генерируются.
 
-### Link Creation Rules
+## Упоминание понятия в тексте
 
-When creating any wiki-link from any context:
+Поставьте `[[ссылку]]` и продолжайте. Существует ли такая карточка, в каком она разделе,
+знают ли её под другим именем — выясняет движок после партии, за один проход.
 
-1. Apply normalization to source title → get target filename
-2. `[[target]]` must match EXACTLY an existing `.md` filename (without extension)
-3. If target differs from display, use `[[filename|Display Name]]`
-4. Verify file exists BEFORE writing the link
-5. Add original source name as `alias:` to the target note
-6. In `_index.md` files, use normalized filename form ONLY
-
-### External Source Import — Name Resolution Flow
-
-```
-1. Get raw title from source (Confluence, JIRA, dictionary)
-2. normalize_to_filename(raw_title) → target_filename
-3. Does AuroraKnowledgeDB/target_filename.md exist?
-   YES → link to it, add any new aliases to note frontmatter
-   NO  → search all existing notes by aliases for partial match
-            FOUND → link to existing note, add new aliases
-            NOT FOUND → create new note with ALL source variants as aliases
-```
-
-### Pre-Write Validation (Every Note)
-
-Before creating/updating ANY note:
-
-- [ ] Filename passes normalization algorithm
-- [ ] Frontmatter `aliases:` includes original source title (exact match)
-- [ ] Frontmatter `aliases:` includes source filename stem (without .md)
-- [ ] Frontmatter `aliases:` includes short-form / code prefix
-- [ ] Frontmatter `source:` records exact source file path
-- [ ] All `[[links]]` in body point to EXISTING filenames (case-sensitive)
-- [ ] Case of all Cyrillic letters matches existing filename exactly (ГОСТу ≠ ГОСту)
-
-## Link Resolution
-
-When a note mentions a concept that exists in the AuroraKnowledgeDB:
-
-1. Search existing notes (check `Glossary/`, `Concepts/`, `Statuses/` indices)
-2. If found, replace the mention with `[[Note Title]]`
-3. Add the note to the `related:` frontmatter if not already there
-
-**Common link targets to check:**
-- заявки statuses (Черновик, Зарегистрирован, etc.)
-- System acronyms (сокращения смежных систем и подсистем)
-- Document types (заявки, ДПП, ТК, УКЭП)
-- Roles (актёры и роли вашего домена)
-
-## Index File Format
-
-Each `_index.md` in a domain folder:
-
-```markdown
-# Concepts
-
-| Note | Description |
-|------|-------------|
-| [[заявки]] | Документ оплаты публичного платежа — основной документ системы |
-| [[Смежная-система]] | внешняя система, принимающая заявки |
-| [[УКЭП]] | Усиленная квалифицированная электронная подпись |
-```
-
-Root `index.md`:
-```markdown
-# Project Knowledge Base
+Ручной поиск «а есть ли уже такая карточка» — самая дорогая ошибка разбора: он превращает
+работу с одним источником в обход тысячи файлов.
 
 ## Domains
 - [[Concepts Index]] — Domain concepts and terminology
