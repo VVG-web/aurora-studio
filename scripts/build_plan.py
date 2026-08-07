@@ -145,8 +145,13 @@ def task_prompt(num: int, part: list, total: int = 0) -> str:
   двух карточек делает ссылку по нему неоднозначной;
 - термин из глоссария — отдельная карточка в Glossary, а не абзац внутри другой.
 
-После каждого разобранного файла отмечай его сделанным:
+Отмечай файл сделанным сразу после того, как разобрал его ЦЕЛИКОМ (не пачкой в конце):
   python3 .opencode/scripts/build_plan.py --done <путь к файлу> --cards <сколько карточек>
+
+Отметка проверяется по базе: если карточек с `source: <файл>` нет, скрипт её не поставит.
+Источник, из которого знание действительно не выходит (служебная страница, задача без
+постановки), отмечай явно:
+  python3 .opencode/scripts/build_plan.py --done <файл> --empty "<почему пусто>"
 
 Закончив партию, покажи: сколько карточек создано, сколько обновлено, что осталось
 неясным (кандидаты в вопросы заказчику) и какие DRIFT-строки набрались.
@@ -256,6 +261,54 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     return 0
 
 
+def mark_done(manifest: dict, target: str, claimed: int, empty: str) -> int:
+    """Отметить источник разобранным — но только если разбор виден в базе.
+
+    Отметку ставит ассистент, и до 1.47.0 она означала «сказал, что разобрал»: скрипт
+    записывал её на слово, вместе с числом карточек, которое ассистент называл сам. На
+    живой базе так набралось 356 отметок с нулём карточек — источники выпали из плана,
+    не дав знания.
+
+    Теперь отметка — следствие факта: карточки с таким `source` либо есть в базе, либо
+    отметки нет. Число берём из базы, а не из флага. Законный ноль (задача Jira без
+    знания, служебная страница-оглавление) объявляется явно: `--empty "<причина>"`.
+    """
+    if not os.path.isfile(target):
+        print(f"build_plan: нет файла {target}", file=sys.stderr)
+        return 1
+    path = target.replace("\\", "/")
+    found = card_counts().get(path, 0)
+
+    if found == 0 and not empty:
+        print(f"build_plan: карточек с `source: {path}` в базе нет — отметка не поставлена.\n"
+              "Разбор считается сделанным по факту, а не по слову: создайте карточки и "
+              "повторите.\n"
+              f'Если источник действительно ничего не даёт: --done {path} --empty "причина"',
+              file=sys.stderr)
+        return 1
+
+    rec = {"hash": file_hash(path), "processed": TODAY, "cards": found}
+    if found == 0:
+        rec["empty_reason"] = empty
+    manifest["sources"][path] = rec
+    save_manifest(manifest)
+
+    if found == 0:
+        print(f"✅ {path}: отмечен пустым — {empty}")
+        return 0
+    note = ""
+    if claimed and claimed != found:
+        note = f" (называли {claimed} — записано то, что нашлось в базе)"
+    print(f"✅ {path}: обработан, карточек {found}{note}")
+    kb = os.path.getsize(path) / 1024 / found
+    heads = len(re.findall(r"^#{2,3} ", open(path, encoding="utf-8", errors="ignore").read(), re.M))
+    if kb >= THIN_KB_PER_CARD or (heads >= 6 and found * THIN_HEAD_RATIO < heads):
+        print(f"⚠️  на карточку приходится {kb:.0f} КБ исходника"
+              f"{f', заголовков {heads}' if heads else ''} — похоже, разобрана только часть. "
+              "Проверьте, не осталось ли тем.")
+    return 0
+
+
 def thin_report(manifest: dict, group: str, apply: bool) -> int:
     rows = thin_sources(manifest, group)
     print(f"# Разобрано тонко — {TODAY}\n")
@@ -290,7 +343,10 @@ def main() -> int:
     ap.add_argument("--from", type=int, default=1, metavar="N", dest="start",
                     help="с какой партии начинать печать заданий (по умолчанию с первой)")
     ap.add_argument("--done", metavar="FILE", help="отметить источник обработанным")
-    ap.add_argument("--cards", type=int, default=0, help="сколько карточек извлечено (для --done)")
+    ap.add_argument("--cards", type=int, default=0,
+                    help="сколько карточек извлечено — сверяется с базой (для --done)")
+    ap.add_argument("--empty", metavar="ПРИЧИНА",
+                    help="отметить источник, из которого знания не вышло, назвав причину")
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
     ap.add_argument("--thin", action="store_true",
                     help="источники, разобранные подозрительно тонко: карточка есть, но "
@@ -311,15 +367,7 @@ def main() -> int:
     manifest.setdefault("sources", {})
 
     if a.done:
-        if not os.path.isfile(a.done):
-            print(f"build_plan: нет файла {a.done}", file=sys.stderr)
-            return 1
-        path = a.done.replace("\\", "/")
-        manifest["sources"][path] = {"hash": file_hash(path), "processed": TODAY,
-                                     "cards": a.cards}
-        save_manifest(manifest)
-        print(f"✅ {path}: обработан, карточек {a.cards}")
-        return 0
+        return mark_done(manifest, a.done, a.cards, a.empty)
 
     if a.thin or (a.reopen and a.thin):
         return thin_report(manifest, a.group or "", a.reopen and a.apply)
