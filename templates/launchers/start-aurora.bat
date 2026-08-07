@@ -29,10 +29,10 @@ if "%choice%"=="1" %PY% .opencode\scripts\aurora_doctor.py
 if "%choice%"=="2" %PY% .opencode\scripts\aurora_stats.py
 if "%choice%"=="3" %PY% .opencode\scripts\aurora_setup.py
 if "%choice%"=="4" (
-  if defined KIT (%PY% "%KIT%\aurora.py" cockpit) else (echo Не нашёл kit рядом. Запустите панель из папки aurora-studio: python aurora.py cockpit)
+  if defined KIT (%PY% "%KIT%\aurora.py" cockpit --add-root "%CD%\..") else (echo Не нашёл kit рядом. Запустите панель из папки aurora-studio: python aurora.py cockpit)
 )
 if "%choice%"=="5" (
-  if defined KIT (%PY% "%KIT%\aurora.py" cockpit --restart) else (echo Не нашёл kit рядом с проектом.)
+  if defined KIT (%PY% "%KIT%\aurora.py" cockpit --restart --add-root "%CD%\..") else (echo Не нашёл kit рядом с проектом.)
 )
 if "%choice%"=="6" %PY% .opencode\scripts\kit_commands.py
 if "%choice%"=="0" exit /b 0

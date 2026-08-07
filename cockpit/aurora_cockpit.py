@@ -29,6 +29,7 @@ import secrets
 import shutil
 import signal
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -261,6 +262,62 @@ def registry() -> list:
 
 def command_by_name(name: str) -> dict | None:
     return next((r for r in registry() if r["cmd"] == name), None)
+
+
+# ------------------------------------------------------------------- корни поиска
+
+# Где панель ищет проекты. Список пользовательский, а не свойство kit'а: kit кладут куда
+# угодно, проекты держат где угодно, и «папка рядом с kit'ом» верна только в первый день.
+# Поэтому он живёт в домашней папке — переживает и переезд kit'а, и его переустановку.
+ROOTS_FILE = os.path.join(os.path.expanduser("~"), ".aurora", "cockpit-roots.txt")
+
+# Где панели вообще разрешено разворачивать проект. Список разрешённого, а не запретного:
+# перечислить все системные деревья трёх ОС нельзя, а места, где живут рабочие папки,
+# наперечёт — домашняя папка, чужие домашние, примонтированные диски, временный каталог.
+def allowed_bases() -> tuple:
+    home = os.path.expanduser("~")
+    return tuple(os.path.realpath(b) for b in
+                 (home, "/Users", "/home", "/Volumes", "/mnt", "/media", "/srv",
+                  tempfile.gettempdir()))
+
+
+def norm(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path.strip()))
+
+
+def load_roots(cli: list | None = None) -> list:
+    """Корни поиска: из --roots, иначе из файла, иначе папка рядом с kit'ом.
+
+    Значение из `--roots` не записывается: это разовый запуск «посмотреть вон те папки»,
+    а не смена настройки.
+    """
+    if cli:
+        return [norm(r) for r in cli]
+    saved = []
+    if os.path.isfile(ROOTS_FILE):
+        saved = [norm(l) for l in open(ROOTS_FILE, encoding="utf-8").read().splitlines()
+                 if l.strip() and not l.startswith("#")]
+    return saved or [norm(os.path.dirname(KIT))]
+
+
+def save_roots(roots: list) -> None:
+    os.makedirs(os.path.dirname(ROOTS_FILE), exist_ok=True)
+    uniq = list(dict.fromkeys(norm(r) for r in roots))
+    with open(ROOTS_FILE, "w", encoding="utf-8") as f:
+        f.write("# Где панель Авроры ищет проекты — по одному пути в строке.\n")
+        f.write("\n".join(uniq) + "\n")
+
+
+def writable_target(target: str) -> str:
+    """→ причина отказа, либо пустая строка."""
+    home = os.path.expanduser("~")
+    if target in (home, os.sep):
+        return "нельзя разворачивать проект прямо в домашней или корневой папке"
+    real = os.path.realpath(target)
+    if any(real == b or real.startswith(b + os.sep) for b in allowed_bases()):
+        return ""
+    return (f"{target} — за пределами домашней папки и примонтированных дисков. "
+            "Проекту место рядом с вашими рабочими файлами, а не в системных деревьях.")
 
 
 # ------------------------------------------------------------------- проекты
@@ -687,8 +744,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"text": read_text(os.path.join(project, "aurora.config.yaml")),
                             "path": "aurora.config.yaml"})
         elif u.path == "/api/roots":
-            self.send_json({"roots": [os.path.abspath(os.path.expanduser(r))
-                                      for r in self.server.roots]})
+            self.send_json({"roots": [norm(r) for r in self.server.roots],
+                            "file": ROOTS_FILE})
         elif u.path == "/api/about":
             self.send_json(about())
         elif u.path == "/api/scenarios":
@@ -775,6 +832,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/project/new":
             self.send_json(self._create_project(payload))
+            return
+        if u.path == "/api/roots":
+            self.send_json(self._edit_roots(payload))
             return
         if u.path == "/api/run":
             project = payload.get("project", "")
@@ -924,20 +984,47 @@ class Handler(BaseHTTPRequestHandler):
             return {"error": (p.stderr or p.stdout)[-500:]}
         return {"ok": True, "log": (p.stdout or "").splitlines()[-8:]}
 
+    def _edit_roots(self, payload: dict) -> dict:
+        """Добавить или убрать корень поиска. Список сохраняется между запусками."""
+        add, drop = (payload.get("add") or "").strip(), (payload.get("drop") or "").strip()
+        roots = [norm(r) for r in self.server.roots]
+        if add:
+            target = norm(add)
+            if not os.path.isdir(target):
+                return {"error": f"нет такой папки: {target}"}
+            if target not in roots:
+                roots.append(target)
+        if drop:
+            roots = [r for r in roots if r != norm(drop)]
+        if not roots:
+            return {"error": "хотя бы один корень нужен — иначе панель не найдёт проекты"}
+        save_roots(roots)
+        self.server.roots = roots
+        return {"ok": True, "roots": roots}
+
     def _create_project(self, payload: dict) -> dict:
         """Развернуть Аврору в новую папку — из панели, без терминала.
 
-        Путь разрешён только внутри корней, по которым панель и так ищет проекты:
-        произвольное место на диске из браузера не создаётся.
+        Папка проекта выбирается человеком и лежать может где угодно: kit и проекты не
+        обязаны быть соседями. Если путь вне корней поиска — панель не отказывает, а
+        добавляет его родителя в корни, иначе только что созданный проект сам же и
+        пропал бы из списка. Не разрешены только системные деревья.
         """
         raw = (payload.get("path") or "").strip()
         name = (payload.get("name") or "").strip()
         if not raw or not name:
             return {"error": "нужны путь и название проекта"}
-        target = os.path.abspath(os.path.expanduser(raw))
-        roots = [os.path.abspath(os.path.expanduser(r)) for r in self.server.roots]
+        target = norm(raw)
+        bad = writable_target(target)
+        if bad:
+            return {"error": bad}
+        roots = [norm(r) for r in self.server.roots]
+        added = ""
         if not any(target == r or target.startswith(r + os.sep) for r in roots):
-            return {"error": "путь вне корней поиска панели: " + ", ".join(roots)}
+            added = os.path.dirname(target) or target
+            roots.append(added)
+            save_roots(roots)
+            self.server.roots = roots
         if os.path.isfile(os.path.join(target, "aurora.config.yaml")):
             return {"error": "здесь уже есть проект Авроры"}
         args = [os.path.join(KIT, "scripts", "install_aurora.py"),
@@ -954,7 +1041,10 @@ class Handler(BaseHTTPRequestHandler):
             return {"error": str(e)}
         if p.returncode != 0:
             return {"error": (p.stderr or p.stdout)[-500:]}
-        return {"ok": True, "path": target, "log": (p.stdout or "").splitlines()[-12:]}
+        out = {"ok": True, "path": target, "log": (p.stdout or "").splitlines()[-12:]}
+        if added:
+            out["added_root"] = added
+        return out
 
     def _known(self, project: str) -> bool:
         """Путь — только из списка обнаруженных проектов, не произвольная строка."""
@@ -1004,8 +1094,11 @@ def alive(url: str) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Панель управления Aurora")
     ap.add_argument("--port", type=int, default=8787)
-    ap.add_argument("--roots", nargs="*", default=[os.path.dirname(KIT)],
-                    help="где искать проекты (по умолчанию — папка рядом с kit'ом)")
+    ap.add_argument("--roots", nargs="*", default=None,
+                    help="где искать проекты на этот запуск; без него — сохранённый список "
+                         f"({ROOTS_FILE}), а при первом старте папка рядом с kit'ом")
+    ap.add_argument("--add-root", metavar="PATH", action="append",
+                    help="добавить папку в сохранённый список поиска и запуститься")
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--restart", action="store_true",
                     help="остановить уже работающую панель и поднять заново")
@@ -1041,10 +1134,19 @@ def main() -> int:
               f"  Свободный порт:  aurora.py cockpit --port {a.port + 1}\n"
               f"  Или перезапуск:  aurora.py cockpit --restart", file=sys.stderr)
         return 1
-    srv.roots = a.roots
+    roots = load_roots(a.roots)
+    # Лаунчер проекта зовёт панель со своей папкой: она должна пополнять список, а не
+    # подменять его — иначе панель, запущенная из проекта, перестаёт видеть остальные.
+    for extra in (a.add_root or []):
+        extra = norm(extra)
+        if os.path.isdir(extra) and extra not in roots:
+            roots.append(extra)
+            if not a.roots:
+                save_roots(roots)
+    srv.roots = roots
     url = f"http://127.0.0.1:{a.port}/?t={TOKEN}"
     print(f"Aurora Cockpit · kit {kit_version()}")
-    print(f"Проекты ищу в: {', '.join(a.roots)}")
+    print(f"Проекты ищу в: {', '.join(srv.roots)}")
     print(f"\n  {url}\n")
     print("Адрес одноразовый: токен живёт в памяти процесса, при перезапуске меняется.")
     print("Остановить — Ctrl+C.")
