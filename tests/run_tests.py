@@ -1899,6 +1899,11 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
     assert "--slice" in out and "--card" in out, \
         "в задании нет порядка работы через раскадровку"
     assert "build_plan.py --done" in out, "в задании нет шага завершения"
+    # собранная карточка — черновик: доводка обязательна, но точное не пересказывают
+    assert "Оставить дословно" in out and "Сократить и переписать" in out, \
+        "в задании нет шага доводки с границей «что не трогать»"
+    assert "таблицы" in out and "коды и ключи" in out, \
+        "не названо то, что переписывать нельзя"
     assert "aurora-vault" in out, "не сказано, по какому скиллу работать"
 
 
