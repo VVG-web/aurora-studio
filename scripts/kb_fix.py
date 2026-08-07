@@ -37,7 +37,8 @@ import sys
 import unicodedata
 
 from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, Card as BaseCard,
-                           aliases as card_aliases, fix_mixed_script, fold, fold_hard,
+                           aliases as card_aliases, card_filename as normalize_title,
+                           fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
                            is_service, link_refs, rewrite_links, set_field)
 from datetime import date
@@ -71,22 +72,6 @@ def _is_lat(ch: str) -> bool:
 
 
 
-
-
-def normalize_title(title: str) -> str:
-    """Алгоритм нормализации имени файла из build.md (заголовок → имя файла)."""
-    s = title.strip()
-    for q in "«»“”\"'":
-        s = s.replace(q, "")
-    s = s.strip()
-    if s.startswith("(") and s.endswith(")"):
-        s = s[1:-1]
-    s = s.replace("(", "-").replace(")", "")
-    s = s.replace("№", "No")
-    for sep in (" ", ".", ":", "/", "\\", "—", "–", ",", ";"):
-        s = s.replace(sep, "-")
-    s = re.sub(r"-{2,}", "-", s)
-    return s.strip("-")
 
 
 # ------------------------------------------------------------------ карточки

@@ -752,6 +752,51 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_build_slices_source_and_assembles_card(tmp: Path):
+    """Текст карточки переносит скрипт: модель решает границы тем, а не перепечатывает.
+
+    Раньше задание требовало от ассистента создать карточки, то есть заново набрать текст
+    источника своими токенами. На живой базе это 5,6 МБ вывода — несколько суток работы
+    там, где решений на пару часов. Теперь модель называет тему и указывает номера секций.
+    """
+    root = make_project(tmp)
+    src = root / "Sources/Confluence/Страница.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        '---\ntitle: "Страница"\npage_id: 1\n---\n\n'
+        "## Входящие данные\n\n" + "поля запроса и их смысл. " * 20 + "\n\n"
+        "## Алгоритм\n\n" + "шаг за шагом, что делает система. " * 20 + "\n\n"
+        "## История изменений\n\n" + "версии страницы и кто правил. " * 20 + "\n\n"
+        "## Подпись\n\nкоротко\n", encoding="utf-8")
+
+    sl = run("build_plan.py", "--slice", "Sources/Confluence/Страница.md", cwd=root)
+    assert "секций: 3" in sl.stdout, f"нарезка не по заголовкам:\n{sl.stdout[:600]}"
+    assert "Подпись" not in sl.stdout, "секция короче порога попала в раскадровку"
+    assert "--card" in sl.stdout, "в задании нет команды сборки карточки"
+
+    dry = run("build_plan.py", "--card", "Алгоритм приёма", "--source",
+              "Sources/Confluence/Страница.md", "--sections", "1,2", "--to", "Processes",
+              cwd=root)
+    assert "(dry-run)" in dry.stdout, "без --apply карточка не должна записываться"
+    assert not list((root / "AuroraKnowledgeDB/Processes").glob("Алгоритм*.md"))
+
+    run("build_plan.py", "--card", "Алгоритм приёма", "--source",
+        "Sources/Confluence/Страница.md", "--sections", "1,2", "--to", "Processes",
+        "--apply", cwd=root)
+    made = root / "AuroraKnowledgeDB/Processes/Алгоритм-приёма.md"
+    assert made.is_file(), "имя файла собрано не по правилу build.md"
+    text = made.read_text(encoding="utf-8")
+    assert "type: process" in text and 'source: "Sources/Confluence/Страница.md"' in text, text[:300]
+    assert "поля запроса" in text and "шаг за шагом" in text, "тело секций не перенесено"
+    assert "версии страницы" not in text, "перенесена секция, которую не просили"
+
+    again = run("build_plan.py", "--card", "Алгоритм приёма", "--source",
+                "Sources/Confluence/Страница.md", "--sections", "1", "--to", "Processes",
+                "--apply", cwd=root, expect_rc=1)
+    assert "уже есть" in again.stderr, "двойник имени должен отвергаться"
+
+
+@test
 def test_mermaid_blocks_render_on_github(tmp: Path):
     """Диаграммы в документации обязаны рендериться у GitHub, а не только у нас.
 
@@ -1826,8 +1871,11 @@ def test_build_plan_prints_ready_task_for_assistant(tmp: Path):
     assert out.count("ЗАДАНИЕ АССИСТЕНТУ") == 1, "с --partition печатается лишнее"
     assert "Раздели" not in out and "Разбери партию 1" in out, "нет самой формулировки задачи"
     assert "Док-0.md" in out, "в задании нет списка файлов партии"
-    assert "status: imported" in out and "build_plan.py --done" in out, \
-        "в задании нет правил жизненного цикла или шага завершения"
+    # шапку карточки с 1.48.0 пишет скрипт, поэтому в задании не правила frontmatter,
+    # а порядок работы: раскадровка → сборка карточки из секций → отметка
+    assert "--slice" in out and "--card" in out, \
+        "в задании нет порядка работы через раскадровку"
+    assert "build_plan.py --done" in out, "в задании нет шага завершения"
     assert "aurora-vault" in out, "не сказано, по какому скиллу работать"
 
 
