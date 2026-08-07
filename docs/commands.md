@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.47.1**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.48.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -35,7 +35,7 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `kb:build` (`build`) | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью; `--reopen` вернёт в план источники, не давшие ни одной карточки, `--thin` покажет разобранные до середины | скрипт+модель | `build_plan.py` | `--budget --max-files --partition --tasks --from --done --cards --empty --status --thin --reopen --group --apply` | 1.0.0 |
+| `kb:build` (`build`) | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью; `--slice` режет источник на секции, `--card` собирает карточку из них (текст переносит скрипт), `--reopen` и `--thin` возвращают в план недоразобранное | скрипт+модель | `build_plan.py` | `--budget --max-files --partition --tasks --from --done --cards --empty --status --slice --card --source --sections --to --thin --reopen --group --apply` | 1.0.0 |
 | `kb:ingest-office` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | скрипт | `office_ingest.py` `[paths ...]` | `--root --converter --force --dry-run` | 1.5.0 |
 | `kb:ingest` (`ingest, ingest-raw, ingest-meeting, ingest-tz`) | документ из Raw/ → карточки со ссылкой на первоисточник; вид входа определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты | модель | `workflows.md` | — | 1.0.0 |
 | `kb:queue` (`queue`) | очередь верификации: что проверять первым по связям и попаданию в артефакты | скрипт | `aurora_stats.py --queue` | `--limit --theme --json --append-metrics --report` | 1.3.0 |
