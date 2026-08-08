@@ -752,6 +752,44 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_repair_converges_instead_of_repeating_itself(tmp: Path):
+    """Повторный ремонт должен сходиться, а не показывать тот же список.
+
+    Три источника вечного шума, каждый — не работа для человека:
+    самоповтор синонима внутри одной карточки выглядел спором двух карточек;
+    ссылки-образцы в шаблонах (`[[...]]`, `[[{{кто-то}}]]`) чинить нечем;
+    служебные файлы (`_index.md`, `meta/`) генерируются или ссылаются на будущее знание.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    (kb / "Roles").mkdir(parents=True, exist_ok=True)
+    (kb / "Roles/Заявитель.md").write_text(
+        '---\ntitle: "Заявитель"\ntype: role\nstatus: imported\n'
+        'aliases: ["Заявитель", "Заявитель", "Податель"]\n---\n\nроль\n', encoding="utf-8")
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/образец.md").write_text(
+        '---\ntitle: "Образец"\n---\n\nсм. [[...]] и [[{{протокол}}]]\n', encoding="utf-8")
+    (kb / "meta").mkdir(exist_ok=True)
+    (kb / "meta/golden_questions.md").write_text(
+        "# Вопросы\n\n- [[Знание-которого-пока-нет]]\n", encoding="utf-8")
+
+    first = run("kb_fix.py", "--all", "--apply", "--allow-dirty", cwd=root)
+    assert "повторяющих имя своей же карточки" in first.stdout, \
+        f"самоповтор синонима не снят:\n{first.stdout[:700]}"
+    for junk in ("[[...]]", "{{протокол}}", "Знание-которого-пока-нет"):
+        assert junk not in first.stdout, f"в отчёт попало нерешаемое: {junk}"
+
+    text = (kb / "Roles/Заявитель.md").read_text(encoding="utf-8")
+    assert text.count("Заявитель\"") <= 1 or "Податель" in text, "синонимы карточки испорчены"
+
+    second = run("kb_fix.py", "--all", "--apply", "--allow-dirty", cwd=root)
+    assert "Одинаковые alias: 0" in second.stdout or "Одинаковые alias" not in second.stdout, \
+        f"второй прогон нашёл те же конфликты:\n{second.stdout[:700]}"
+    assert "повторяющих имя своей же карточки" not in second.stdout, \
+        "самоповторы возвращаются на каждом прогоне — ремонт не сходится"
+
+
+@test
 def test_dedupe_merges_a_batch_by_a_stated_rule(tmp: Path):
     """Двойники сливаются пачкой по объявленному правилу, спорное остаётся человеку.
 
