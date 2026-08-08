@@ -1854,6 +1854,46 @@ def test_cockpit_warns_when_project_engine_lags(tmp: Path):
 
 
 @test
+def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
+    """QA-контур разработки: реестр сходится, документы заводятся из шаблона.
+
+    Кейс, который не входит ни в один сценарий и не закрыт автотестом, не гоняется
+    никогда — и создаёт видимость покрытия. Ссылка сценария на несуществующий кейс делает
+    то же самое. Обе беды тихие: файлы на месте, всё выглядит правильно.
+    """
+    out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--check"],
+                         cwd=str(KIT), capture_output=True, text=True)
+    assert out.returncode == 0, f"реестр QA кита разошёлся:\n{out.stdout}"
+
+    lst = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--list"],
+                         cwd=str(KIT), capture_output=True, text=True).stdout
+    assert "Кейсов:" in lst and "TS-001" in lst, lst[:400]
+    assert "Ни в один сценарий не входят" not in lst, \
+        f"есть кейсы, которые не гоняются ни разу:\n{lst[-400:]}"
+
+    # шаблоны — часть поставки: без них нечем заводить новые проверки
+    for tpl in ("test-case.md", "test-scenario.md"):
+        assert (KIT / "skills/aurora-dev/references" / tpl).is_file(), \
+            f"нет шаблона {tpl} — dev:qa-new не сможет завести документ"
+
+    # в проекте контур разработки не работает и не показывается
+    proj = tmp / "project"
+    (proj / ".opencode/scripts").mkdir(parents=True)
+    (proj / "aurora.config.yaml").write_text('project:\n  name: "T"\n', encoding="utf-8")
+    (proj / ".opencode/scripts/dev_qa.py").write_text(
+        (KIT / "scripts/dev_qa.py").read_text(encoding="utf-8"), encoding="utf-8")
+    r = subprocess.run([sys.executable, ".opencode/scripts/dev_qa.py", "--list"],
+                       cwd=str(proj), capture_output=True, text=True)
+    assert r.returncode != 0 and "не кит" in r.stderr, \
+        f"QA-контур запустился в проекте:\n{r.stdout}{r.stderr}"
+
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "dev | dev:qa-run" in reg, "команды разработки не заведены в реестре"
+    assert "dev_qa.py" not in (KIT / "engine_manifest.txt").read_text(encoding="utf-8"), \
+        "контур разработки уезжает в проекты — там его нечем и незачем запускать"
+
+
+@test
 def test_commands_registry_matches_engine(tmp: Path):
     """Справочник команд не должен расходиться ни с движком, ни с флагами скриптов."""
     root = make_project(tmp)

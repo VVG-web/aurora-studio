@@ -37,7 +37,15 @@ NS_TITLE = {
     "make": "make: — производство артефактов",
     "ship": "ship: — наружу",
     "ops": "ops: — управление и отчётность",
+    # Разработка самого движка. В проекте на основе Авроры этих команд нет: их исполнитель
+    # не входит в engine_manifest.txt, и показывать их аналитику значит врать про состав.
+    "dev": "dev: — разработка движка (только в ките)",
 }
+
+
+def in_kit() -> bool:
+    """Мы в самом ките, а не в проекте: dev-команды показываются только здесь."""
+    return os.path.isfile("engine_manifest.txt") and not os.path.isfile("aurora.config.yaml")
 
 
 def read_registry() -> list:
@@ -53,6 +61,8 @@ def read_registry() -> list:
             print(f"kit:list: строка реестра не по формату: {line[:60]}…", file=sys.stderr)
             continue
         ns, cmd, alias, kind, impl, since, what = parts
+        if ns == "dev" and not in_kit():
+            continue        # в проекте разрабатывать движок нечем — и незачем показывать
         rows.append({"ns": ns, "cmd": cmd, "alias": "" if alias == "—" else alias,
                      "kind": kind, "impl": impl, "since": since, "what": what})
     return rows

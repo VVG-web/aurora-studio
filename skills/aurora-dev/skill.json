@@ -1,0 +1,5 @@
+{
+  "name": "aurora-dev",
+  "description": "Develop the Aurora Studio engine itself: run test scenarios with a recorded journal, cover new functionality with autotests or QA cases. Kit only — not for projects built on Aurora. Invoke as /aurora-dev <command>.",
+  "entrypoint": "SKILL.md"
+}
