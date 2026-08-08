@@ -268,14 +268,33 @@ class Plan:
         self.file_writes[path] = text
 
 
+PLACEHOLDER_RE = re.compile(r"\.\.\.|\{\{|<[^>]*>")
+
+
+def is_placeholder(target: str) -> bool:
+    """Образец имени в шаблоне: `[[...]]`, `[[{{протокол}}]]`, `[[Statuses/...]]`.
+
+    Такая ссылка не битая, а показательная: она объясняет автору карточки, что сюда надо
+    подставить. Чинить нечем, и каждый прогон ремонта она возвращалась в «осталось
+    человеку» — от этого работа выглядела несходящейся.
+    """
+    return bool(PLACEHOLDER_RE.search(target))
+
+
 def plan_links(cards: dict, idx: Index, plan: Plan):
     fixed = alias_added = 0
     reported = set()
     for path, c in cards.items():
+        # Шаблоны и промпты — не карточки: ссылки в них показывают автору, что подставить.
+        # Служебные файлы базы — тоже: `_index.md` перегенерирует `kb:index`, а
+        # `meta/golden_questions.md` нарочно ссылается на знание, которого может ещё не
+        # быть. Требовать от них целостности значит вечно держать нерешаемое в отчёте.
+        if not path.replace("\\", "/").startswith(ROOT + "/") or is_service(path):
+            continue
         mapping, aliases_for = {}, {}
         for m in LINK_RE.finditer(c.text):
             target = m.group(2).strip()
-            if target.startswith("http"):
+            if target.startswith("http") or is_placeholder(target):
                 continue
             leaf = leaf_name(target)
             if not leaf or leaf in idx.by_stem or leaf in idx.by_alias:
@@ -448,10 +467,14 @@ def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
     for path, c in sorted(cards.items()):
         if is_service(path):
             continue
+        # Синоним, в точности повторяющий имя файла, спором не является: карточка одна.
+        # Сам мусор убирает чистка шапки (`--frontmatter`), здесь он просто не считается.
         for a in c.aliases:
-            owners.setdefault(a, []).append(path)
+            if a != c.stem:
+                owners.setdefault(a, []).append(path)
     dropped, kept = 0, []
     for alias, paths in sorted(owners.items()):
+        paths = list(dict.fromkeys(paths))       # одна карточка — не спор с самой собой
         if len(paths) < 2:
             continue
         def fits(p):
@@ -534,12 +557,22 @@ def drop_alias(card: Card, alias: str) -> str:
 
 
 def plan_frontmatter(cards: dict, plan: Plan):
-    created = patched = 0
+    created = patched = selfsame = 0
     for path, c in cards.items():
         if is_service(path):
             continue
         base = plan.file_writes.get(path, c.text)
         probe = Card(path, base)
+        # Синоним, в точности повторяющий имя файла, ничего не даёт: ссылка по нему и так
+        # ведёт куда надо. А в отчёте о синонимах он выглядел «именем, занятым дважды» —
+        # хотя карточка одна, и уточнять человеку было нечего. Отсюда ощущение, что ремонт
+        # не сходится: список повторялся из прогона в прогон.
+        if probe.stem in probe.aliases:
+            fixed = drop_alias(probe, probe.stem)
+            if fixed != base:
+                plan.file_writes[path] = fixed
+                base, probe = fixed, Card(path, fixed)
+                selfsame += 1
         section = os.path.relpath(os.path.dirname(path), ROOT).split(os.sep)[0]
         new_text = ensure_frontmatter(probe, section)
         if new_text == base:
@@ -550,6 +583,8 @@ def plan_frontmatter(cards: dict, plan: Plan):
         else:
             created += 1
             plan.notes.append(f"  создан frontmatter: {path}")
+    if selfsame:
+        plan.notes.append(f"  снято синонимов, повторяющих имя своей же карточки: {selfsame}")
     return created, patched
 
 
