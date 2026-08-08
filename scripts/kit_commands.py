@@ -11,6 +11,10 @@
   python3 .opencode/scripts/kit_commands.py --search зеркал   # поиск по описанию
   python3 .opencode/scripts/kit_commands.py --md docs/commands.md
   python3 .opencode/scripts/kit_commands.py --check           # реестр против движка
+
+Панель: `kit:list`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 

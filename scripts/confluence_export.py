@@ -29,6 +29,10 @@
 
 Зависимости: beautifulsoup4 + markdownify (`pip install beautifulsoup4 markdownify`
 или запуск через `uvx --with beautifulsoup4 --with markdownify python ...`).
+
+Панель: `sync:confluence`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 

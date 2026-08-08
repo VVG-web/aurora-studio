@@ -30,6 +30,10 @@
 **Восстановление — только из git**: скрипт не работает по незакоммиченному дереву, после
 ошибки достаточно `git checkout -- AuroraKnowledgeDB`. Проект без git обязан указать
 `--backup`.
+
+Панель: `kb:reset`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 
@@ -186,10 +190,10 @@ def main() -> int:
     if not a.keep_handmade:
         print("  0. правила базы (meta/conventions.md, meta/golden_questions.md) из источников")
         print("     не вернутся — возьмите их из git или из шаблонов kit'а")
-    print("  1. python3 .opencode/scripts/build_plan.py            # план: партии и порядок")
-    print("  2. python3 .opencode/scripts/build_plan.py --partition 1   # задание ассистенту")
-    print("  3. python3 .opencode/scripts/kb_graph.py --cards --apply   # связи между карточками")
-    print("  4. python3 .opencode/scripts/kb_index.py                   # оглавления разделов")
+    print("  1. `kb:build`                    — план: партии и готовое задание ассистенту")
+    print("  2. кнопка «Партия 1» под консолью — задание уходит в буфер, вставьте его в чат")
+    print("  3. `kb:links` с флагами --cards --apply — связи между карточками")
+    print("  4. `kb:index`                    — оглавления разделов")
     return 0
 
 

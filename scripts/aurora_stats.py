@@ -11,6 +11,10 @@
   python3 .opencode/scripts/aurora_stats.py --append-metrics   # + строка в meta/metrics.md
 
 Ничего не меняет (кроме --append-metrics, который дописывает одну строку в журнал замеров).
+
+Панель: `kb:queue` (флаги --queue) · `ops:stats`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 

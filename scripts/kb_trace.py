@@ -15,6 +15,10 @@
   python3 .opencode/scripts/kb_trace.py --impact Основной-объект
   python3 .opencode/scripts/kb_trace.py --explain Deliverables/work/ОПЗ_v1.md
   python3 .opencode/scripts/kb_trace.py --requirements
+
+Панель: `ops:impact` (флаги --impact) · `ops:trace` (флаги --requirements)
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 

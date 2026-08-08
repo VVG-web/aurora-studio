@@ -10,6 +10,10 @@ Run from project root:
 артефактов и свои разделы базы не заводятся — для всего нестандартного есть `Workspaces/`).
 
 Exit 0 if OK / warnings only; 1 if blocking errors.
+
+Панель: `kit:doctor`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 
