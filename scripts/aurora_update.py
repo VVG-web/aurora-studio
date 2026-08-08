@@ -21,6 +21,10 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 Проект может отказаться от обновлений отдельных путей — `.opencode/update_ignore.txt`
 (glob-шаблоны, по одному в строке). Полезно для шаблонов, локализованных под проект:
 иначе update предлагает одни и те же .new на каждом запуске.
+
+Панель: `kit:update`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 import argparse, difflib, json, re, shutil, sys
@@ -354,7 +358,7 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     stamp_version(target, kv)
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено. Версия → {kv}")
-    print("   Проверьте: python3 .opencode/scripts/aurora_doctor.py && git diff")
+    print("   Проверьте: в панели `kit:doctor`, затем git diff")
     if seeds:
         print("   Не забудьте сравнить *.new с вашими Templates/Prompts и удалить .new.")
     return 0

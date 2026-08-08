@@ -752,6 +752,42 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_scripts_name_their_cockpit_command(tmp: Path):
+    """У каждого скрипта в шапке написано, как его работа называется в панели.
+
+    Человек нажимает кнопку `kb:dedupe`, а не набирает путь к файлу. Модель, читающая
+    код, обязана видеть это имя — иначе в отчёте появляется «запустите kb_dedupe.py»,
+    то есть файл, которого нет. Строка `Панель:` сверяется с реестром: разойдись они —
+    подсказка станет врать.
+    """
+    import collections
+    reg = collections.defaultdict(list)
+    for line in (KIT / "commands.txt").read_text(encoding="utf-8").splitlines():
+        if "|" not in line or line.startswith("#"):
+            continue
+        p = [x.strip() for x in line.split("|")]
+        if len(p) < 5 or ".py" not in p[4]:
+            continue
+        reg[p[4].split()[0]].append(p[1])
+
+    missing, stale = [], []
+    for script, cmds in sorted(reg.items()):
+        path = KIT / "scripts" / script
+        if not path.is_file():
+            continue
+        head = path.read_text(encoding="utf-8").split('"""')[1]
+        line = next((l for l in head.splitlines() if l.startswith("Панель:")), "")
+        if not line:
+            missing.append(script)
+            continue
+        for cmd in cmds:
+            if f"`{cmd}`" not in line:
+                stale.append(f"{script}: в шапке нет {cmd}")
+    assert not missing, "скрипты не называют свою команду панели: " + ", ".join(missing)
+    assert not stale, "шапка разошлась с реестром:\n    " + "\n    ".join(stale)
+
+
+@test
 def test_copy_button_takes_the_task_without_its_frame(tmp: Path):
     """В буфер уходит тело задания, а не оформление вокруг него.
 
