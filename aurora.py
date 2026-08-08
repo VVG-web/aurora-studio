@@ -62,20 +62,32 @@ def sh(args: list[str]) -> int:
 
 def cmd_new(target: str, extra: list[str]) -> int:
     tgt = Path(target).expanduser().resolve()
+    # Диалог настройки требует терминала. Когда его нет — запуск из скрипта, из панели,
+    # из ассистента — вопросы задавать некому, и раньше команда падала на первом же
+    # `input()` с EOFError, оставляя развёрнутую, но ненастроенную папку.
+    quiet = "--non-interactive" in extra or not sys.stdin.isatty()
+    extra = [x for x in extra if x != "--non-interactive"]
+
     print(f"→ Разворачиваю Aurora в {tgt}\n", flush=True)
     # 1. scaffold (флаги --name/--jira-key/--confluence-space опциональны — setup их уточнит)
     rc = sh([str(SCRIPTS / "install_aurora.py"), "--target", str(tgt),
              "--name", _guess_name(tgt), *extra])
     if rc != 0:
         return rc
-    # 2. интерактивная настройка
-    print("\n→ Интерактивная настройка проекта\n", flush=True)
-    rc = sh([str(tgt / ".opencode/scripts/aurora_setup.py"), "--target", str(tgt)])
+    # 2. настройка проекта
+    print("\n→ Настройка проекта" + (" (без вопросов: нет терминала)" if quiet else "")
+          + "\n", flush=True)
+    rc = sh([str(tgt / ".opencode/scripts/aurora_setup.py"), "--target", str(tgt)]
+            + (["--non-interactive"] if quiet else []))
     if rc != 0:
         return rc
     # 3. привести AGENTS.md / тела sync-скиллов к финальному конфигу + проставить версию
     print("\n→ Приведение движка к настройкам\n", flush=True)
-    return sh([str(SCRIPTS / "aurora_update.py"), str(tgt), "--apply"])
+    rc = sh([str(SCRIPTS / "aurora_update.py"), str(tgt), "--apply"])
+    if rc == 0 and quiet:
+        print(f"\nНастройка пропущена — вопросы задавать было некому. Заполните конфиг "
+              f"позже: python3 aurora.py setup {tgt}")
+    return rc
 
 
 def cmd_setup(target: str, extra: list[str]) -> int:

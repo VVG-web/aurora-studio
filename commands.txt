@@ -27,7 +27,7 @@ kb | kb:ingest | ingest, ingest-raw, ingest-meeting, ingest-tz | модель | 
 kb | kb:queue | queue | скрипт | aurora_stats.py --queue | 1.3.0 | очередь верификации: что проверять первым по связям и попаданию в артефакты
 kb | kb:verify | verify, promote | скрипт+модель | kb_verify.py | 1.8.0 | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы
 kb | kb:repair | fix | скрипт | kb_fix.py --all | 1.3.0 | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки
-kb | kb:dedupe | — | скрипт | kb_fix.py --dupes | 1.3.0 | двойники: поиск и слияние (`--merge`) — тот же скрипт, другой режим
+kb | kb:dedupe | — | скрипт | kb_fix.py --dupes | 1.3.0 | двойники: поиск, пакетное слияние по правилу (`--merge-all`) и разбор одной пары (`--merge` «оставить» «убрать»)
 kb | kb:moc | moc | скрипт | kb_moc.py | 1.32.0 | карты содержания по группировкам (термины, понятия, роли, данные…) и список брошенных карточек
 kb | kb:index | index | скрипт | kb_index.py | 1.9.4 | регенерация `_index.md` разделов; рукотворные оглавления не трогает
 kb | kb:scrub | scrub | скрипт | kb_scrub.py | 1.9.6 | персональные данные: найти и закрыть маркерами; режим — `privacy.scrub`
