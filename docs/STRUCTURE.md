@@ -40,5 +40,10 @@ Aurora/
 └── examples/
 ```
 
+Кухня разработчика движка лежит в `Development/` и закрыта `.gitignore`: в поставку
+уходит инструмент, а не то, как мы его проверяем. Сейчас внутри `QA/` — шаблоны
+тест-кейса и тест-сценария, сами кейсы, сценарии и журналы прогонов. Папки нет в свежем
+клоне; заводится по надобности, структура описана в `Development/QA/README.md`.
+
 Target project after install gets `aurora.config.yaml` + trust-layer tree from `skills/aurora-vault/SKILL.md`.
 Atlassian space/JQL/skills come from config — not hard-coded in skill bodies.
