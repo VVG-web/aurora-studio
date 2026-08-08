@@ -78,7 +78,8 @@ def aliases(text: str) -> list:
         return []
     m = re.search(r"^aliases:\s*\[(.*)\]", head, re.M)
     if m:
-        return [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
+        inline = [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
+        return list(dict.fromkeys(inline))
     out, inside = [], False
     for line in head.splitlines():
         if line.startswith("aliases:"):
@@ -90,7 +91,10 @@ def aliases(text: str) -> list:
                 out.append(am.group(1))
             else:
                 inside = False
-    return out
+    # Повтор синонима внутри одной карточки — не конфликт с другой карточкой,
+    # а мусор извлечения. Пока он не снимался, ремонт видел «имя занято дважды»
+    # и требовал разбирать спор, которого нет: карточка-то одна.
+    return list(dict.fromkeys(out))
 
 
 def body(text: str) -> str:
