@@ -20,6 +20,10 @@
 
 Доступ: `JIRA_PAT` (он же `JIRA_PERSONAL_TOKEN`) в `.env.aurora.local`, либо
 `JIRA_USER` + `JIRA_PASSWORD`. Токены в git не кладём.
+
+Панель: `sync:jira`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 

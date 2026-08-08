@@ -351,7 +351,7 @@ def run(target: Path, interactive: bool):
     print(f"\n✅ Записано: {cfg_path}")
     print(f"   Confluence space {c['conf_space']} · {len(c['sync_roots'])} корневых страниц · Jira {c['jira_key']}")
     print("\nДальше:")
-    print("  • проверка:  python3 .opencode/scripts/aurora_doctor.py")
+    print("  • проверка:  в панели `kit:doctor`")
     print(f"  • синк:      /confluence-sync-{c['slug']} · /jira-export-{c['slug']}")
     print("  • сборка:    /aurora-vault build")
     print("  • изменить настройки позже — просто запустите этот скрипт снова.")

@@ -15,6 +15,10 @@
   python3 .opencode/scripts/aurora_hooks.py --status | --uninstall
 
 Обойти хук в экстренном случае: `git commit --no-verify`.
+
+Панель: `kit:hooks`
+В отчётах и рекомендациях называйте эту команду так, как она называется в панели
+и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
 
@@ -177,7 +181,7 @@ def main() -> int:
         if errs is not None:
             print(f"сейчас ошибок kb_lint: {errs}")
         if not (a.install or a.uninstall):
-            print("\nПоставить: python3 .opencode/scripts/aurora_hooks.py --install")
+            print("\nПоставить: в панели `kit:hooks` с флагом --install")
         return 0
 
     if a.uninstall:
