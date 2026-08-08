@@ -49,6 +49,7 @@ from datetime import date
 from difflib import get_close_matches
 
 ROOT = "AuroraKnowledgeDB"
+MERGE_REPORT: list = []      # (слитые, отказы) — для отчёта после прогона
 ARCHIVE = os.path.join(ROOT, "_archive")
 TODAY = date.today().isoformat()
 
@@ -582,13 +583,118 @@ def find_dupes(cards: dict):
     return groups
 
 
-def plan_merge(cards: dict, keep_stem: str, drop_stem: str, plan: Plan) -> int:
+# Раздел, где карточка обязана лежать по своему имени. Двойник «Concepts vs Processes»
+# почти всегда означает, что источник разбирали дважды по разным правилам раскладки, и
+# правильный ответ виден по коду в имени, а не по содержимому.
+HOME_SECTION = (
+    (re.compile(r"^(RU\.[A-Z]+\.)?ALG[-_. ]", re.I), "Processes"),
+    (re.compile(r"^(RU\.[A-Z]+\.)?BP[-_. ]", re.I), "Processes"),
+    (re.compile(r"^(RU\.[A-Z]+\.)?(REQ|AC|US)[-_. ]", re.I), "Requirements"),
+    (re.compile(r"^(RU\.[A-Z]+\.)?SPR[-_. ]", re.I), "Reference"),
+    (re.compile(r"(?i)статус", re.U), "Statuses"),
+)
+STATUS_RANK = {"verified": 4, "canonical": 4, "in-review": 3, "draft": 2, "imported": 1, "": 0}
+
+
+def section_of(path: str) -> str:
+    return os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
+
+
+def pick_winner(cards: dict, paths: list, inbound: dict) -> tuple:
+    """→ (победитель, проигравшие, причина) либо (None, [], причина отказа).
+
+    Правило объявлено и проверяемо, решение по нему воспроизводимо:
+
+    1. **Раздел по имени.** `ALG-…` живёт в `Processes/`, `REQ/AC/US-…` — в
+       `Requirements/`, `SPR-…` — в `Reference/`, «…статус…» — в `Statuses/`. Ровно одна
+       карточка группы лежит там, где положено, — она и остаётся.
+    2. **Статус.** Принятое знание старше черновика: verified > in-review > draft > imported.
+    3. **Входящие ссылки.** На чём стоит база, то и остаётся.
+    4. **Объём тела.** Из двух одинаковых по всему прочему остаётся более полная.
+
+    Ничья после всех четырёх — отказ: две карточки одинаково хороши, и выбор между ними
+    знаниевый, а не механический. Такие остаются человеку.
+    """
+    live = [p for p in paths if p in cards]
+    if len(live) < 2:
+        return None, [], "в группе меньше двух живых карточек"
+
+    stem = cards[live[0]].stem
+    for rx, home in HOME_SECTION:
+        if not rx.search(stem):
+            continue
+        at_home = [p for p in live if section_of(p) == home]
+        if len(at_home) == 1:
+            return at_home[0], [p for p in live if p != at_home[0]], f"раздел по имени: {home}"
+        break
+
+    def rank(path):
+        c = cards[path]
+        return (STATUS_RANK.get((c.fm.get("status") or "").strip(), 0),
+                inbound.get(c.stem, 0),
+                len(c.body().strip()))
+
+    ranked = sorted(live, key=rank, reverse=True)
+    top, second = rank(ranked[0]), rank(ranked[1])
+    if top == second:
+        return None, [], "карточки равны по статусу, ссылкам и объёму"
+    why = ("статус" if top[0] != second[0] else
+           "входящие ссылки" if top[1] != second[1] else "объём тела")
+    return ranked[0], ranked[1:], why
+
+
+def plan_merge_all(cards: dict, plan: Plan) -> tuple:
+    """Слить все группы двойников, где победитель определяется правилом. → (сделано, отказы)."""
+    inbound = {}
+    for path, c in cards.items():
+        for leaf in link_refs(c.text):
+            leaf = leaf.split("#")[0].strip()
+            inbound[leaf] = inbound.get(leaf, 0) + 1
+
+    done, refused, merged_paths = [], [], set()
+    for kind, paths in find_dupes(cards):
+        live = [p for p in paths if p not in merged_paths]
+        if len(live) < 2:
+            continue
+        # Общий синоним — не признак двойника: этап процесса и понятие, которому щедро
+        # раздали то же имя, остаются разными карточками.
+        # Такие не сливаем: это работа `kb:repair --aliases`, там уточняют синоним.
+        if kind == "общий alias":
+            refused.append((kind, live, "общий синоним — это не обязательно один предмет"))
+            continue
+        keep, drops, why = pick_winner(cards, live, inbound)
+        if not keep:
+            refused.append((kind, live, why))
+            continue
+        for drop in drops:
+            rc = merge_paths(cards, keep, drop, plan)
+            if rc == 0:
+                merged_paths.add(drop)
+                done.append((keep, drop, why))
+    return done, refused
+
+
+def plan_merge(cards: dict, keep_stem: str, drop_stem: str, plan: Plan,
+               quiet: bool = False) -> int:
+    """Слияние по именам карточек — для ручного вызова `--merge KEEP DROP`."""
     idx = Index(cards)
     kpath, dpath = idx.by_stem.get(keep_stem), idx.by_stem.get(drop_stem)
     if not kpath or not dpath:
         print(f"kb_fix: не найдено — keep={keep_stem!r}:{bool(kpath)} drop={drop_stem!r}:{bool(dpath)}",
               file=sys.stderr)
         return 1
+    if kpath == dpath:
+        # Самый частый двойник — одно имя в двух разделах, и по имени их не различить.
+        # Указывать такую пару приходится путями: `--merge Processes/X Concepts/X`.
+        print(f"kb_fix: {keep_stem!r} и {drop_stem!r} — одна и та же карточка ({kpath}).\n"
+              "Двойников с одинаковым именем указывайте путями от корня базы: "
+              "--merge Processes/Имя Concepts/Имя", file=sys.stderr)
+        return 1
+    return merge_paths(cards, kpath, dpath, plan)
+
+
+def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
+    """Слияние по путям: единственный способ развести двойников с одинаковым именем."""
     keep, drop = cards[kpath], cards[dpath]
 
     text = keep.text
@@ -703,6 +809,9 @@ def main() -> int:
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
     ap.add_argument("--all", action="store_true", help="всё вышеперечисленное")
     ap.add_argument("--merge", nargs=2, metavar=("KEEP", "DROP"), help="слить DROP в KEEP")
+    ap.add_argument("--merge-all", action="store_true",
+                    help="слить все группы двойников, где победитель выводится правилом; "
+                         "спорные останутся в отчёте")
     ap.add_argument("--apply", action="store_true", help="записать изменения (иначе dry-run)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="разрешить запись, когда в базе есть незакоммиченные правки")
@@ -716,7 +825,7 @@ def main() -> int:
     if a.all:
         a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.aliases = True
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases,
-                a.stubs, a.merge)):
+                a.stubs, a.merge, a.merge_all)):
         ap.print_help()
         return 0
 
@@ -731,8 +840,26 @@ def main() -> int:
         idx = Index(cards)
         plan = Plan()
         head: list = []
+        if a.merge_all:
+            done, refused = plan_merge_all(cards, plan)
+            plan.notes.append(f"  двойников слито правилом: {len(done)}, "
+                              f"оставлено человеку: {len(refused)}")
+            MERGE_REPORT.extend([done, refused])
         if a.merge:
-            rc = plan_merge(cards, a.merge[0], a.merge[1], plan)
+            # Аргументом может быть и имя карточки, и путь от корня базы: у двойников
+            # с одинаковым именем разойтись можно только путём.
+            def resolve(arg: str):
+                probe = arg[:-3] if arg.endswith(".md") else arg
+                for candidate in (os.path.join(a.root, probe + ".md").replace("\\", "/"),
+                                  probe + ".md", probe):
+                    if candidate in cards:
+                        return candidate
+                return None
+            kp, dp = resolve(a.merge[0]), resolve(a.merge[1])
+            if kp and dp and kp != dp:
+                rc = merge_paths(cards, kp, dp, plan)
+            else:
+                rc = plan_merge(cards, a.merge[0], a.merge[1], plan)
             if rc:
                 return None, None, rc
         if a.homoglyphs:
@@ -803,6 +930,29 @@ def main() -> int:
             plan, passes = next_plan, passes + 1
             out += [""] + [f"(проход {passes}) " + h for h in next_head]
 
+    if a.merge_all and MERGE_REPORT:
+        done, refused = MERGE_REPORT[0], MERGE_REPORT[1]
+        out.append(f"## Слияние двойников: {len(done)} пар правилом, "
+                   f"{len(refused)} остаётся человеку")
+        by_why: dict = {}
+        for keep, drop, why in done:
+            by_why.setdefault(why, []).append((keep, drop))
+        for why, pairs in sorted(by_why.items(), key=lambda kv: -len(kv[1])):
+            out.append(f"- {why} — {len(pairs)}")
+            for keep, drop in pairs[:6]:
+                out.append(f"    {short(drop)} → {short(keep)}")
+            if len(pairs) > 6:
+                out.append(f"    … ещё {len(pairs) - 6}")
+        if refused:
+            out.append("")
+            out.append("Не слито — выбор знаниевый, а не механический:")
+            for kind, paths, why in refused[:15]:
+                out.append(f"- {why}: " + ", ".join(short(p) for p in paths))
+            if len(refused) > 15:
+                out.append(f"- … ещё {len(refused) - 15}")
+            out.append("Решите сами: `kb:dedupe` с флагом --merge «оставить» «убрать».")
+        out.append("")
+
     if a.dupes:
         groups = find_dupes(cards)
         out.append(f"## Двойники: групп {len(groups)}")
@@ -813,7 +963,9 @@ def main() -> int:
         if len(groups) > 200:
             out.append(f"  … ещё {len(groups) - 200} групп")
         out.append("")
-        out.append("Слияние: `python3 .opencode/scripts/kb_fix.py --merge <KEEP> <DROP> --apply`")
+        out.append("Слить всё, что решается правилом: `kb:dedupe` с флагом --merge-all "
+                   "(предпросмотр) и затем --apply.")
+        out.append("Одну пару вручную: `kb:dedupe` с флагом --merge «оставить» «убрать».")
 
     if plan.notes:
         out += ["", "## Детали", ""] + plan.notes[:400]

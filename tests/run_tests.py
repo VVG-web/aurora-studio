@@ -752,6 +752,51 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
 
 
 @test
+def test_dedupe_merges_a_batch_by_a_stated_rule(tmp: Path):
+    """Двойники сливаются пачкой по объявленному правилу, спорное остаётся человеку.
+
+    Пар в живой базе под сотню, и разбирать их по одной командой на пару — работа ради
+    работы: в большинстве случаев ответ виден механически. Но не во всех: общий синоним
+    у двух карточек не означает, что это один предмет.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+
+    # 1. раздел по имени: алгоритм живёт в Processes
+    card(root, "Concepts/ALG-052-Проверка.md", "короткая версия")
+    card(root, "Processes/ALG-052-Проверка.md", "полная версия алгоритма " * 10)
+    # 2. статус: принятое старше черновика
+    card(root, "Concepts/Термин-А.md", "черновик", status="imported")
+    card(root, "Glossary/Термин-А.md", "принято", status="verified",
+         owner='"@v"', verified="2026-01-01", review_by="2030-01-01")
+    # 3. общий синоним — не повод сливать
+    (kb / "Processes/Этап-контроля.md").write_text(
+        '---\ntitle: "Этап контроля"\ntype: process\nstatus: imported\n'
+        'aliases: ["Контроль на границе"]\n---\n\nэтап процесса\n', encoding="utf-8")
+    (kb / "Concepts/Контроль-на-границе.md").write_text(
+        '---\ntitle: "Контроль на границе"\ntype: concept\nstatus: imported\n'
+        'aliases: ["Контроль на границе"]\n---\n\nдругое понятие\n', encoding="utf-8")
+
+    dry = run("kb_fix.py", "--merge-all", cwd=root)
+    assert "Слияние двойников" in dry.stdout, dry.stdout[:600]
+    assert "раздел по имени: Processes" in dry.stdout, "правило раздела не сработало"
+    assert "общий синоним" in dry.stdout, "пара с общим синонимом слита автоматически"
+    assert (kb / "Concepts/ALG-052-Проверка.md").is_file(), "dry-run уже что-то удалил"
+
+    run("kb_fix.py", "--merge-all", "--apply", "--allow-dirty", cwd=root)
+    winner = (kb / "Processes/ALG-052-Проверка.md").read_text(encoding="utf-8")
+    assert "короткая версия" in winner, "тело донора не присоединено"
+    loser = (kb / "_archive/ALG-052-Проверка.md")
+    assert loser.is_file(), "донор не уехал в _archive"
+    assert "status: deprecated" in loser.read_text(encoding="utf-8"), "донор не деприкейтнут"
+    assert (kb / "Glossary/Термин-А.md").is_file() and \
+        not (kb / "Concepts/Термин-А.md").exists(), "победил черновик, а не принятое"
+    assert (kb / "Processes/Этап-контроля.md").is_file() and \
+        (kb / "Concepts/Контроль-на-границе.md").is_file(), \
+        "карточки с общим синонимом должны остаться обе"
+
+
+@test
 def test_scripts_name_their_cockpit_command(tmp: Path):
     """У каждого скрипта в шапке написано, как его работа называется в панели.
 
@@ -1205,6 +1250,34 @@ def test_cockpit_reads_token_state_and_writes_config(tmp: Path):
     assert card_["confluence_token"] is True, "заполненный токен не распознан"
     assert card_["jira_token"] is False, \
         "пустой токен показан как заполненный — панель успокаивает вместо предупреждения"
+
+
+@test
+def test_new_project_works_without_a_terminal(tmp: Path):
+    """`aurora.py new` не требует человека у клавиатуры.
+
+    Настройка спрашивает ответы через `input()`, и при запуске из скрипта, панели или
+    ассистента команда падала на первом же вопросе с `EOFError`, оставляя развёрнутую, но
+    ненастроенную папку. Найдено прогоном сценария регрессии.
+    """
+    target = tmp / "auto-project"
+    cp = subprocess.run([sys.executable, str(KIT / "aurora.py"), "new", str(target),
+                         "--name", "Auto", "--slug", "Auto"],
+                        capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert cp.returncode == 0, f"new упал без терминала:\n{cp.stdout[-800:]}\n{cp.stderr[-400:]}"
+    assert "EOFError" not in cp.stderr, cp.stderr[-300:]
+    assert (target / "aurora.config.yaml").is_file(), "конфиг не создан"
+    assert (target / "AuroraKnowledgeDB").is_dir(), "структура не развёрнута"
+    assert (target / ".opencode/scripts/kb_lint.py").is_file(), "движок не разложен"
+    assert "aurora.py setup" in cp.stdout, \
+        "не сказано, как довести настройку до конца"
+
+    # проект пригоден к работе сразу: команды не падают на пустой базе
+    for args in (["kb_lint.py", "--summary"], ["build_plan.py", "--status"],
+                 ["aurora_stats.py", "--queue"], ["kb_verify.py", "--auto"]):
+        r = subprocess.run([sys.executable, str(target / ".opencode/scripts" / args[0]),
+                            *args[1:]], cwd=str(target), capture_output=True, text=True)
+        assert r.returncode == 0, f"{args[0]} на свежем проекте: rc={r.returncode}\n{r.stderr[:300]}"
 
 
 @test
