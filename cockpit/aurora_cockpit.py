@@ -226,6 +226,8 @@ def registry() -> list:
     import kit_commands as K
     from concurrent.futures import ThreadPoolExecutor
     entries = K.read_registry()
+    if not kit_is_source():
+        entries = [r for r in entries if r["ns"] != "dev"]
     # `--help` каждого скрипта — отдельный процесс: полсотни команд по очереди дают
     # секунды ожидания на первом открытии панели, и она выглядит зависшей. Процессы ждут
     # ввода-вывода, поэтому греем кэш параллельно, а разбор идёт уже по готовому тексту.
@@ -431,6 +433,16 @@ def git_dirty_count(path: str) -> int:
 # `aurora_setup.py` тоже отсюда: у проекта лежит копия времён его установки, и режим
 # формы (--json) в ней может отсутствовать — панель всегда работает с текущей версией.
 KIT_SIDE = ("aurora_update.py", "install_aurora.py", "kit_commands.py", "aurora_setup.py")
+
+
+def kit_is_source() -> bool:
+    """Панель поднята из самого кита, а не из копии движка внутри проекта.
+
+    Команды `dev:` разрабатывают движок и выполняются в его дереве: тест-кейсы, автотесты
+    и `Development/` живут там. В проекте их нет — и показывать их аналитику незачем.
+    """
+    return (os.path.isfile(os.path.join(KIT, "engine_manifest.txt"))
+            and not os.path.isfile(os.path.join(KIT, "aurora.config.yaml")))
 
 
 def script_path(project: str, script: str) -> str:
@@ -731,6 +743,8 @@ class Handler(BaseHTTPRequestHandler):
                 "projects": find_projects(self.server.roots),
                 "env": environment(),
                 "commands": registry(),
+                # пасхалка «Разработка» открывается только там, где есть что разрабатывать
+                "dev_available": kit_is_source(),
             })
         elif u.path == "/api/health":
             project = q.get("project", [""])[0]
@@ -838,7 +852,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/run":
             project = payload.get("project", "")
-            if not self._known(project):
+            row = command_by_name(payload.get("cmd", ""))
+            if row and row.get("ns") == "dev":
+                # Контур разработки живёт в ките: и автотесты, и Development/QA лежат там,
+                # а выбранный на Мостике проект к этому отношения не имеет.
+                if not kit_is_source():
+                    self.send_json({"error": "панель поднята не из кита — "
+                                             "разрабатывать движок отсюда нечем"}, 400)
+                    return
+                project = KIT
+            elif not self._known(project):
                 return
             try:
                 job_id = start_job(project, payload.get("cmd", ""),
