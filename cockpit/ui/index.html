@@ -255,6 +255,8 @@ tr:last-child td{border-bottom:0}
     <button data-view="mirrors" aria-label="Зеркала"><span class="label">Зеркала</span><span class="count" id="navMirrors"></span></button>
     <button data-view="version" aria-label="Версия и миграция"><span class="label">Версия</span><span class="count" id="navVersion"></span></button>
     <button data-view="console" aria-label="Консоль"><span class="label">Консоль</span></button>
+    <div class="group" id="devGroup" hidden>Движок</div>
+    <button data-view="dev" id="devNav" hidden aria-label="Разработка движка"><span class="label">Разработка</span></button>
   </nav>
 
   <main>
@@ -370,6 +372,11 @@ tr:last-child td{border-bottom:0}
     </section>
 
     <!-- О ПРОЕКТЕ -->
+    <section class="view" id="view-dev">
+      <h1>Разработка</h1>
+      <div id="devBody"></div>
+    </section>
+
     <section class="view" id="view-about">
       <h1>О проекте</h1>
       <div id="aboutBody"></div>
@@ -402,7 +409,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.51.0";
+const UI_VERSION = "1.52.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -490,9 +497,40 @@ function show(view){
   if (view==="quickstart") renderQuick();
   if (view==="console"){ renderHistory(); drawTaskButton(); }   // и журнал, и кнопка задания — на входе
   if (view==="about") renderAbout();
+  if (view==="dev") renderDev();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
 }
+let ABOUT_TAPS = 0, ABOUT_TIMER = null;
+const DEV_TAPS = 7;                       // столько же, сколько в Android до «Для разработчиков»
+
+function devOn(){ return localStorage.getItem("aurora-dev") === "1"; }
+
+function showDevNav(){
+  const on = devOn() && S.state && S.state.dev_available;
+  $("#devNav").hidden = !on;
+  $("#devGroup").hidden = !on;
+}
+
+function tapAbout(){
+  if (devOn()) return;                    // уже открыт — считать нечего
+  if (!(S.state && S.state.dev_available)){
+    return;                               // панель поднята не из кита: разрабатывать нечем
+  }
+  ABOUT_TAPS++;
+  clearTimeout(ABOUT_TIMER);
+  ABOUT_TIMER = setTimeout(()=>{ ABOUT_TAPS = 0; }, 3000);   // пауза сбрасывает счёт
+  const left = DEV_TAPS - ABOUT_TAPS;
+  if (left > 0 && ABOUT_TAPS >= 3) toast(`Ещё ${left} — и откроется раздел разработки`);
+  if (left <= 0){
+    localStorage.setItem("aurora-dev", "1");
+    ABOUT_TAPS = 0;
+    showDevNav();
+    toast("Раздел «Разработка» открыт. Убрать — кнопкой в самом разделе.", "ok");
+  }
+}
+
 $$("nav button").forEach(b=>b.onclick=()=>{
+  if (b.dataset.view === "about") tapAbout();
   if (["health","commands","mirrors","version"].includes(b.dataset.view) && !S.project){
     toast("Сначала выберите проект на Мостике","warn"); show("overview"); return;
   }
@@ -509,6 +547,7 @@ document.documentElement.dataset.theme = localStorage.getItem("aurora-theme") ||
 async function boot(){
   $("#towers").innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
   S.state = await api("/api/state");
+  showDevNav();          // раздел разработки, если его уже открывали на этой машине
   const ui = S.state.ui || {};
   $("#kitver").textContent = "cockpit " + UI_VERSION + " · kit " + S.state.kit.version;
   if (ui.behind){
@@ -1036,7 +1075,13 @@ const ARG_HINTS = {
 
 let RUN = null;
 function openRun(cmdName, preFlags=[]){
-  if (!S.project){ toast("Сначала выберите проект","warn"); show("overview"); return; }
+  // Команду разработки открывают объектом из раздела «Разработка»: ей проект не нужен,
+  // она работает в дереве кита.
+  const byObj = typeof cmdName === "object" ? cmdName : null;
+  if (byObj) cmdName = byObj.cmd;
+  const dev = byObj ? byObj.ns === "dev"
+                    : (S.state.commands.find(x=>x.cmd===cmdName) || {}).ns === "dev";
+  if (!dev && !S.project){ toast("Сначала выберите проект","warn"); show("overview"); return; }
   const r = S.state.commands.find(x=>x.cmd===cmdName);
   if (!r) return toast("Команда не найдена","err");
   if (!r.runnable){ openDoc("skills/aurora-vault/references/"+r.impl); return; }
@@ -1098,7 +1143,7 @@ function drawRun(){
   // Список флагов панель читает из kit'а, а запускает копию скрипта из движка проекта.
   // Пока движок не обновлён, новый флаг существует только на экране: скрипт ответит
   // «unrecognized argument» и кодом 2, и выглядит это как поломка панели.
-  if (S.project.behind && !r.from_kit){
+  if (S.project && S.project.behind && !r.from_kit){
     d.append(el("div",{class:"warnbox"},
       `Движок проекта ${S.project.engine}, kit ${S.project.kit}. Флаги ниже — из kit'а, ` +
       "а запускается .opencode/scripts проекта: новых он может не принять и вернуть код 2. " +
@@ -1151,6 +1196,7 @@ function drawRun(){
 // стоит вся строка запуска, а не одно имя команды.
 function applyAsk(line){
   const kill = DESTRUCTIVE[line.split(" ")[0]];
+  if (!S.project) return `Выполнить?\n\n${line} --apply`;   // команда движка, не проекта
   return kill
     ? `Удалить файлы в проекте «${S.project.name}»?\n\n${line} --apply\n\n${kill}\n\nВосстановление — только через git.`
     : `Записать изменения в проект «${S.project.name}»?\n\n${line} --apply\n\nОтменить можно через git.`;
@@ -1186,7 +1232,7 @@ async function fire(apply){
   $("#consoleRc").textContent = "выполняется…";
   $("#consoleRc").className = "chip";
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-    {project:S.project.path, cmd:r.cmd, args})});
+    {project: (r.ns === "dev" ? "" : S.project.path), cmd:r.cmd, args})});
   if (!res.job) return;
   if (!apply && r.flags.includes("--apply"))
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
@@ -1702,6 +1748,55 @@ function copyButton(text){
     catch(e){ toast("Скопируйте вручную: " + text, "warn"); }
   }},"Скопировать");
   return b;
+}
+
+/* ---------------- разработка движка ---------------- */
+/* Раздел открывается семью нажатиями на «О проекте» — как «Для разработчиков» в Android.
+   Прятать его нужно не ради секретности, а ради честности интерфейса: команды `dev:`
+   относятся к самому движку, аналитику они ничего не дают и только шумят в меню. */
+async function renderDev(){
+  const box = $("#devBody"); box.innerHTML = "";
+  const cmds = (S.state.commands || []).filter(c => c.ns === "dev");
+
+  box.append(el("div",{class:"card",style:"padding:20px;margin-bottom:18px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
+      "Контур разработки самого движка: прогон сценариев, покрытие изменений, заведение " +
+      "тест-кейсов. Команды выполняются в дереве кита — выбранный на Мостике проект к " +
+      "ним отношения не имеет."),
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},
+      "Кейсы и сценарии лежат в Development/QA — папке, закрытой .gitignore. Регламент " +
+      "работы — в скилле aurora-dev."),
+    el("div",{class:"row"},
+      el("button",{class:"btn sm danger", onclick:()=>{
+        localStorage.removeItem("aurora-dev");
+        showDevNav(); show("about");
+        toast("Раздел скрыт. Вернуть — снова семь нажатий на «О проекте».");
+      }},"Скрыть раздел"))));
+
+  if (!cmds.length){
+    box.append(el("div",{class:"card",style:"padding:20px"},
+      "Команд разработки нет: панель поднята не из кита."));
+    return;
+  }
+
+  // порядок по частоте использования, а не по алфавиту: прогон — то, ради чего заходят
+  const order = ["dev:qa-run", "dev:qa-gap", "dev:qa-list", "dev:qa-check", "dev:qa-new"];
+  const rank = c => { const i = order.indexOf(c.cmd); return i < 0 ? 99 : i; };
+  cmds.sort((a, b) => rank(a) - rank(b));
+
+  for (const c of cmds){
+    const row = el("div",{class:"card",style:"padding:16px 20px;margin-bottom:10px"},
+      el("div",{class:"row",style:"justify-content:space-between;gap:12px"},
+        el("div",{},
+          el("b",{class:"mono"}, c.cmd),
+          el("div",{class:"muted",style:"font-size:13px;margin-top:4px"}, c.what)),
+        el("button",{class:"btn sm", onclick:()=>openRun(c)}, "Запустить")));
+    box.append(row);
+  }
+
+  box.append(el("p",{class:"muted",style:"font-size:12px;margin-top:14px"},
+    "Прогон сценария начинается с автотестов и останавливается на первом падении: " +
+    "гонять сценарии по сломанной сборке незачем."));
 }
 
 /* ---------------- о проекте ---------------- */

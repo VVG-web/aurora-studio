@@ -8,7 +8,7 @@ priority: P1
 status: draft
 covers: [TC-001, TC-004, TC-007]  # кейсы, входящие в маршрут
 duration: ~15 мин
-version: 1.51.0
+version: 1.52.0
 updated: 2026-08-07
 ---
 

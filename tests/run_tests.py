@@ -1854,6 +1854,44 @@ def test_cockpit_warns_when_project_engine_lags(tmp: Path):
 
 
 @test
+def test_dev_section_hides_behind_seven_taps(tmp: Path):
+    """Раздел разработки открывается семью нажатиями и живёт только в ките.
+
+    Прятать его нужно не ради секретности — панель локальная, — а ради честности меню:
+    команды `dev:` относятся к самому движку и аналитику не дают ничего. Открытый по
+    умолчанию раздел был бы шумом в интерфейсе у всех, кроме одного человека.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "DEV_TAPS = 7" in ui, "число нажатий должно быть названо константой"
+    assert 'localStorage.setItem("aurora-dev"' in ui, "выбор не переживёт перезагрузку"
+    assert 'id="devNav"' in ui and "hidden" in ui, "пункт меню должен быть скрыт по умолчанию"
+    assert "Скрыть раздел" in ui, "раздел нельзя закрыть обратно"
+    assert "renderDev" in ui and 'id="view-dev"' in ui, "нет самого раздела"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    assert ck.kit_is_source(), "kit не опознан как источник — раздел не откроется нигде"
+    dev = [r for r in ck.registry() if r["ns"] == "dev"]
+    assert dev, "команд разработки нет в реестре панели"
+
+    # у команды прогона значение необязательно: панель жмёт кнопку без аргумента,
+    # и требовать его значило бы падать кодом 2 на первом же нажатии
+    run = next(r for r in dev if r["cmd"] == "dev:qa-run")
+    out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"),
+                          *run["fixed_flags"], "TS-000-нет-такого"],
+                         cwd=str(KIT), capture_output=True, text=True,
+                         env={**os.environ, "AURORA_QA_RUNNING": "1"})
+    assert out.returncode != 2, f"кнопка «Запустить» уронит команду:\n{out.stderr[:300]}"
+    assert "нет" in out.stderr, "неизвестный сценарий должен называться по имени"
+
+    # прогон запускает автотесты, автотест — прогон: круг разрывается меткой в окружении
+    src = (KIT / "scripts/dev_qa.py").read_text(encoding="utf-8")
+    assert "AURORA_QA_RUNNING" in src, "нет защиты от рекурсии прогона и автотестов"
+
+
+@test
 def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
     """QA-контур разработки: реестр сходится, документы заводятся из шаблона.
 
