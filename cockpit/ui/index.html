@@ -409,7 +409,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.55.0";
+const UI_VERSION = "1.56.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1009,7 +1009,8 @@ function renderCommands(){
   rows.forEach(r=>(groups[r.ns] ||= []).push(r));
   const titles = {kit:"kit: движок и проект", sync:"sync: зеркала внешних систем",
     kb:"kb: извлечение и жизнь знания", ctx:"ctx: использование знаний",
-    make:"make: производство артефактов", ship:"ship: наружу", ops:"ops: управление и отчётность"};
+    make:"make: производство артефактов", ship:"ship: наружу", ops:"ops: управление и отчётность",
+    agent:"agent: встроенный агент"};
   Object.entries(groups).forEach(([ns, list])=>{
     box.append(el("h2",{}, titles[ns]||ns));
     const c = el("div",{class:"card"});
@@ -1384,6 +1385,8 @@ $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; };
 async function renderSetup(){
   const box = $("#setupBody"); box.innerHTML = "";
   DIRTY.clear();     // раздел перерисован заново — значения в полях снова совпадают с файлом
+
+  await renderAgentCard(box);
 
   // 1. новый проект
   const nf = {};
@@ -1804,6 +1807,97 @@ async function renderDev(){
   box.append(el("p",{class:"muted",style:"font-size:12px;margin-top:14px"},
     "Прогон сценария начинается с автотестов и останавливается на первом падении: " +
     "гонять сценарии по сломанной сборке незачем."));
+}
+
+/* ---------------- встроенный агент ---------------- */
+/* Раздел виден и без проекта: без выбранного пишем в кит (общая настройка всех
+   проектов), с выбранным — в его .env.aurora.local. Цель записи названа явно — это
+   было отдельным требованием: человек должен видеть, КУДА сохраняет. */
+async function renderAgentCard(box){
+  const q = S.project ? "?project=" + encodeURIComponent(S.project.path) : "";
+  const a = await api("/api/agent" + q);
+  if (a.error){ box.append(el("div",{class:"card",style:"padding:16px"}, a.error)); return; }
+  const AGV = {};                                    // копятся только правки, не всё подряд
+  const touch = (k, v) => { AGV[k] = v; setDirty("agent","«Агент»",true); };
+
+  const fld = (key, label, val, ph, type) => el("label",{style:"display:block;margin-bottom:8px"},
+    el("div",{class:"muted",style:"font-size:12px;margin-bottom:3px"}, label),
+    el("input",{class:"btn",type:type||"text",style:"width:100%;font-weight:400",
+      value: val||"", placeholder: ph||"", oninput:e=>touch(key, e.target.value)}));
+
+  const backendBlock = (n) => {
+    const b = (a.backends||[]).find(x=>x.n===n) || {url:"",key_set:false,model:"",models:{}};
+    const pre = `AURORA_AGENT_BACKEND_${n}_`;
+    return el("div",{style:"border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px"},
+      el("div",{class:"row",style:"justify-content:space-between;margin-bottom:6px"},
+        el("b",{},"Бэкенд №" + n + (n===1?" — первый в кольце":"")),
+        b.url?el("span",{class:"chip ok"},"настроен"):el("span",{class:"chip"},"пусто")),
+      fld(pre+"URL","Адрес (OpenAI-совместимый, …/v1)", b.url, "https://llm.example.com/v1"),
+      fld(pre+"KEY","Ключ" + (b.key_set?" · сохранён, ввод заменит":" · пусто, если не нужен"),
+          "", b.key_set?"••••••":"", "password"),
+      fld(pre+"MODEL","Модель на все роли (если ролевые не заданы)", b.model),
+      el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
+        ...["worker","planner","critic","qa"].map(r =>
+          el("label",{style:"flex:1;min-width:130px"},
+            el("div",{class:"muted",style:"font-size:11px"}, r),
+            el("input",{class:"btn",style:"width:100%;font-weight:400;font-size:12px",
+              value:(b.models||{})[r]||"",
+              oninput:e=>touch(pre+"MODEL_"+r.toUpperCase(), e.target.value)})))));
+  };
+
+  const pingBox = el("div",{});
+  const card = el("div",{class:"card",style:"padding:20px;margin-bottom:18px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 8px"},
+      "Цепочка LLM-бэкендов для встроенного агента. Кольцо: каждый вызов идёт с первого; " +
+      "недоступный или занятый пропускается, восстановившийся подхватывается сам."),
+    el("div",{class:"warnbox",style:"margin-bottom:12px"},
+      "Сохраняется: ", el("b",{}, a.target_label), el("br",{}),
+      el("span",{class:"mono",style:"font-size:11.5px"}, a.target)),
+    backendBlock(1), backendBlock(2), backendBlock(3),
+    el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;margin:6px 0 12px"},
+      el("label",{class:"row",style:"gap:6px"},
+        el("input",{type:"checkbox", checked:a.thinking?"":null,
+          onchange:e=>touch("AURORA_AGENT_THINKING", e.target.checked?"1":"0")}),
+        "рассуждения (thinking)"),
+      el("label",{},"шагов ≤ ", el("input",{class:"btn",style:"width:64px",value:a.max_steps,
+        oninput:e=>touch("AURORA_AGENT_MAX_STEPS", e.target.value)})),
+      el("label",{},"бюджет, мин ", el("input",{class:"btn",style:"width:64px",value:a.budget_min,
+        oninput:e=>touch("AURORA_AGENT_BUDGET_MIN", e.target.value)})),
+      el("label",{},"адаптер ", el("select",{class:"btn",
+          onchange:e=>touch("AURORA_AGENT_ADAPTER", e.target.value)},
+        ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,
+            selected:a.adapter===v?"":null}, v))))),
+    el("div",{class:"row",style:"gap:10px"},
+      saveButton("agent","«Агент»","Сохранить", async e=>{
+        if (!Object.keys(AGV).length) return toast("Нечего сохранять","warn");
+        const r = await api("/api/agent/env",{method:"POST",
+          body:JSON.stringify({project:S.project?S.project.path:"", vars:AGV})});
+        if (r.ok){ toast("Записано: " + r.target); setDirty("agent","«Агент»",false); renderSetup(); }
+      }),
+      el("button",{class:"btn sm",onclick:async e=>{
+        e.target.disabled = true; e.target.textContent = "Проверяю…";
+        pingBox.innerHTML = "";
+        const r = await api("/api/agent/ping",{method:"POST",
+          body:JSON.stringify({project:S.project?S.project.path:""})});
+        e.target.disabled = false; e.target.textContent = "Проверить соединение";
+        (r.backends||[]).forEach(b=>pingBox.append(el("div",{class:"mono",
+          style:"font-size:12.5px;margin-top:4px"},
+          (b.ok?"✅ ":"✗ ") + "№" + b.n + " " + b.url + " · " + (b.model||"—") + " · " +
+          (b.ok ? b.seconds + " с · «" + b.answer + "»" : b.status))));
+        if (r.error) pingBox.append(el("div",{class:"warnbox"}, r.error));
+      }},"Проверить соединение"),
+      el("span",{class:"muted",style:"font-size:12px"},
+        a.venv.ok ? "Pydantic AI " + a.venv.version + " ✓" : "Pydantic AI не установлен — работает stdlib-фолбэк"),
+      el("button",{class:"btn sm",onclick:async e=>{
+        e.target.disabled = true; e.target.textContent = "Ставится… (пара минут)";
+        const r = await api("/api/agent/venv",{method:"POST",body:"{}"});
+        e.target.disabled = false; e.target.textContent = "Установить / Обновить Pydantic AI";
+        toast(r.ok ? "Pydantic AI установлен" : (r.error || "не получилось"), r.ok?"ok":"err");
+        if (r.ok) renderSetup();
+      }}, a.venv.ok ? "Обновить Pydantic AI" : "Установить Pydantic AI")),
+    pingBox);
+
+  box.append(el("h2",{},"Агент" + (S.project ? " · " + S.project.name : " · вся машина")), card);
 }
 
 /* ---------------- о проекте ---------------- */
