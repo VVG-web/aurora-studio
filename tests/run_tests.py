@@ -2006,6 +2006,43 @@ def test_set_alias_is_a_scalpel(tmp: Path):
 
 
 @test
+def test_agent_sees_every_conflict_not_just_printed(tmp: Path):
+    """Агент получает все конфликты, а не первые 15 из отчёта для человека.
+
+    Отчёт `kb:repair --aliases` режет список: читать восемнадцатую строку человеку незачем.
+    Агент, читавший тот же текст, разбирал 15 из 19 и честно докладывал «каждый конфликт
+    разобран» — оракул подтверждал успех, не зная о четырёх невидимых. Обрезка для глаз
+    не должна становиться обрезкой для машины, а оракул обязан ловить неполный список.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp, git=True)
+    for i in range(18):
+        card(root, f"Processes/Процесс-{i}.md", "Процесс.", aliases=f'["Имя-{i}"]',
+             type="process")
+        card(root, f"Systems/Система-{i}.md", "Система.", aliases=f'["Имя-{i}"]',
+             type="system")
+
+    conflicts = R.read_conflicts(str(root))
+    assert len(conflicts) == 18, f"агент увидел {len(conflicts)} конфликтов из 18"
+    assert all(len(cards) == 2 for _alias, cards in conflicts), "карточки конфликта потеряны"
+
+    # оракул не принимает прогон, где список пришёл короче, чем видит линтер
+    blind = {"steps": [{"alias": "Имя-0", "status": "уточнено", "note": "", "backends": [],
+                        "degraded": False}],
+             "before": {"conflicts": 18, "errors": 18}, "after": {"conflicts": 17, "errors": 18},
+             "total_conflicts": 1, "limited": False, "seconds": 1.0}
+    ok, why = R.verdict(blind, apply=True)
+    assert not ok and "неполным" in why, f"оракул принял прогон со слепым пятном: {why}"
+
+    # с явным --limit это осознанная проба, а не слепота
+    ok, _why = R.verdict({**blind, "limited": True}, apply=True)
+    assert ok, "оракул не принял пробу по --limit"
+
+
+@test
 def test_agent_runner_oracle_and_checkpoint(tmp: Path):
     """Цикл агента: два исхода на конфликт, оракул по факту, откат одной строкой.
 
