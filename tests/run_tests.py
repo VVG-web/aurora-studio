@@ -1854,6 +1854,54 @@ def test_cockpit_warns_when_project_engine_lags(tmp: Path):
 
 
 @test
+def test_every_command_is_reachable_in_the_panel(tmp: Path):
+    """У каждой команды реестра есть ровно один путь в панели.
+
+    Реестр растёт, панель — нет: команда появляется в `commands.txt`, а нажать её негде.
+    Обратная беда тише: команда показана в двух местах, и при правке расходятся оба.
+    Разделение простое — движковые (`dev:` и `kit:skills`) живут в скрытом разделе
+    «Разработка», остальные в «Командах».
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    rows = ck.registry()
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    assert "ENGINE_CMDS" in ui and "isEngineCmd" in ui, \
+        "в панели нет правила, что считать движковой командой"
+    engine = [r for r in rows if r["ns"] == "dev" or r["cmd"] == "kit:skills"]
+    assert engine, "движковые команды пропали из реестра панели"
+
+    # «Команды» показывают всё, кроме движковых, — и не требуют исключений по одной
+    assert "S.state.commands.filter(r => !isEngineCmd(r))" in ui, \
+        "общий список команд фильтруется не по общему правилу"
+    # «Разработка» показывает ровно движковые
+    assert "(S.state.commands || []).filter(isEngineCmd)" in ui, \
+        "раздел разработки собирается не по тому же правилу"
+
+    # ни одна команда не потерялась и не показана дважды
+    titles = {"kit", "sync", "kb", "ctx", "make", "ship", "ops", "dev"}
+    lost = [r["cmd"] for r in rows if r["ns"] not in titles]
+    assert not lost, f"команды вне известных групп — в панели им нет места: {lost}"
+
+    # у каждой запускаемой команды есть исполнитель на диске
+    for r in rows:
+        if r["runnable"]:
+            assert (KIT / "scripts" / r["script"]).is_file(), \
+                f"{r['cmd']}: панель предложит запуск, а файла нет — {r['script']}"
+
+    # порядок в разделе разработки перечисляет реальные команды, а не выдуманные
+    dev_block = ui[ui.index("async function renderDev"):]
+    order = re.search(r"const order = \[(.*?)\];", dev_block, re.S).group(1)
+    named = re.findall(r'"([\w:-]+)"', order)
+    known = {r["cmd"] for r in rows}
+    assert all(n in known for n in named), \
+        f"в порядке раздела названы несуществующие команды: {[n for n in named if n not in known]}"
+
+
+@test
 def test_skills_land_in_one_shared_folder(tmp: Path):
     """Скиллы ставятся в один каталог агента и не расходятся копиями.
 

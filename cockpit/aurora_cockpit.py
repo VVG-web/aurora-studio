@@ -853,7 +853,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/run":
             project = payload.get("project", "")
             row = command_by_name(payload.get("cmd", ""))
-            if row and row.get("ns") == "dev":
+            # Движковые команды выполняются в дереве кита: `dev:` целиком и `kit:skills`,
+            # которая кладёт скиллы в общий каталог агента, а не в проект.
+            if row and (row.get("ns") == "dev" or row.get("cmd") == "kit:skills"):
                 # Контур разработки живёт в ките: и автотесты, и Development/QA лежат там,
                 # а выбранный на Мостике проект к этому отношения не имеет.
                 if not kit_is_source():
