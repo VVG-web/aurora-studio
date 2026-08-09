@@ -31,6 +31,7 @@ import signal
 import subprocess
 import tempfile
 import sys
+from pathlib import Path
 import threading
 import time
 import urllib.request
@@ -582,6 +583,14 @@ def sources(project: str) -> dict:
         return {"installed": [], "instances": [], "error": out.strip()[:300]}
 
 
+def _agent_venv_ok() -> bool:
+    try:
+        import agent_core as AG
+        return AG.venv_status()[0]
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def environment() -> dict:
     """Что установлено на машине и какие команды от этого зависят.
 
@@ -631,6 +640,10 @@ def environment() -> dict:
              "enables": "kb:ingest-office — xlsx", "install": "pip3 install openpyxl"},
             {"name": "pypdf", "ok": has_module("pypdf") or has_module("fitz"), "kind": "py",
              "enables": "kb:ingest-office — pdf", "install": "pip3 install pypdf"},
+            {"name": "Pydantic AI (встроенный агент)", "ok": _agent_venv_ok(), "kind": "py",
+             "enables": "agent:* — адаптер по умолчанию; без него агент работает на "
+                        "stdlib-фолбэке",
+             "install": "кнопка «Установить / Обновить» в «Настройка» → «Агент»"},
             {"name": "Atlassian MCP в Cursor", "ok": mcp_ok, "kind": "mcp",
              "enables": "работа ассистента с Confluence/Jira из редактора",
              "install": "Cursor → Settings → MCP → mcp-atlassian"},
@@ -638,6 +651,87 @@ def environment() -> dict:
     }
     CACHE["env"] = out
     return out
+
+
+# ----------------------------------------------------------------- встроенный агент
+
+def agent_state(project: str) -> dict:
+    """Конфигурация агента глазами панели: ключи маской, цель записи названа явно.
+
+    Слои те же, что у самого агента: кит < проект. Панель не изобретает свой разбор —
+    импортирует agent_core, чтобы форма и движок никогда не разошлись в прочтении.
+    """
+    import agent_core as AG
+    env = dict(AG.load_env(Path(KIT) / ".env.aurora.local"))
+    if project:
+        env.update(AG.load_env(Path(project) / ".env.aurora.local"))
+    cfg = AG.parse_config(env)
+    venv_ok, venv_ver = AG.venv_status()
+    target = (os.path.join(project, ".env.aurora.local") if project
+              else os.path.join(KIT, ".env.aurora.local"))
+    return {
+        "target": target,
+        "target_label": (f"проект «{os.path.basename(project)}»" if project
+                         else "глобально (кит) — общая настройка всех проектов"),
+        "adapter": cfg["adapter"], "thinking": cfg["thinking"],
+        "max_steps": cfg["max_steps"], "budget_min": cfg["budget_min"],
+        "request_timeout": cfg["request_timeout"],
+        "backends": [{"n": b["n"], "url": b["url"], "key_set": bool(b["key"]),
+                      "model": b["model"], "models": b["models"]} for b in cfg["backends"]],
+        "venv": {"ok": venv_ok, "version": venv_ver, "path": str(AG.VENV)},
+    }
+
+
+def agent_write_env(project: str, vars: dict) -> dict:
+    """Дописать/заменить AURORA_AGENT_* в целевом .env, не трогая остальные строки.
+
+    Пустое значение удаляет переменную. Ключи вне AURORA_AGENT_ не принимаются: эта
+    ручка настраивает агента, а не редактирует произвольные секреты.
+    """
+    bad = [k for k in vars if not k.startswith("AURORA_AGENT_")]
+    if bad:
+        return {"error": "не агентские переменные: " + ", ".join(bad[:3])}
+    target = Path(project or KIT) / ".env.aurora.local"
+    lines = target.read_text(encoding="utf-8").splitlines() if target.is_file() else []
+    for key, value in vars.items():
+        value = (value or "").strip()
+        hit = next((i for i, l in enumerate(lines)
+                    if l.split("=")[0].strip() == key), None)
+        if value:
+            if hit is None:
+                lines.append(f"{key}={value}")
+            else:
+                lines[hit] = f"{key}={value}"
+        elif hit is not None:
+            del lines[hit]
+    target.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return {"ok": True, "target": str(target), "written": len(vars)}
+
+
+def agent_ping(project: str) -> dict:
+    """Живой прогон цепочки. Подпроцессом и с cwd проекта: наслоение .env — как у агента."""
+    script = script_path(project or KIT, "agent_core.py")
+    try:
+        p = subprocess.run([sys.executable, script, "--ping", "--json"],
+                           cwd=project or KIT, capture_output=True, text=True, timeout=180)
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"ping не выполнен: {type(e).__name__}: {e}"}
+
+
+def agent_venv_install() -> dict:
+    """Поставить/обновить Pydantic AI. Синхронно: локальная панель, пользователь ждёт."""
+    try:
+        p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "agent_core.py"),
+                            "--venv-install"], capture_output=True, text=True, timeout=900)
+        CACHE.pop("env", None)      # строка в «Установке» обязана обновиться
+        return {"ok": p.returncode == 0, "log": (p.stdout + p.stderr).strip()[-600:]}
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"установка не выполнена: {type(e).__name__}: {e}"}
 
 
 # ----------------------------------------------------------------- выполнение
@@ -760,6 +854,8 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/roots":
             self.send_json({"roots": [norm(r) for r in self.server.roots],
                             "file": ROOTS_FILE})
+        elif u.path == "/api/agent":
+            self.send_json(agent_state(q.get("project", [""])[0]))
         elif u.path == "/api/about":
             self.send_json(about())
         elif u.path == "/api/scenarios":
@@ -849,6 +945,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/roots":
             self.send_json(self._edit_roots(payload))
+            return
+        if u.path == "/api/agent/env":
+            project = payload.get("project", "")
+            if project and not self._known(project):
+                return
+            self.send_json(agent_write_env(project, payload.get("vars") or {}))
+            return
+        if u.path == "/api/agent/ping":
+            project = payload.get("project", "")
+            if project and not self._known(project):
+                return
+            self.send_json(agent_ping(project))
+            return
+        if u.path == "/api/agent/venv":
+            self.send_json(agent_venv_install())
             return
         if u.path == "/api/run":
             project = payload.get("project", "")
