@@ -1854,6 +1854,39 @@ def test_cockpit_warns_when_project_engine_lags(tmp: Path):
 
 
 @test
+def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
+    """Скилл разработчика находится в новом диалоге, а `--cover` даёт готовое задание.
+
+    Скилл лежит в репозитории кита, а агент ищет скиллы в домашней папке: без установки
+    `/aurora-dev` в другом диалоге просто не найдётся, и весь контур останется бумажным.
+    Задание же нужно потому, что модель, дорабатывавшая код, знает про свои изменения —
+    но не знает правил этого контура.
+    """
+    out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--install-skill"],
+                         cwd=str(KIT), capture_output=True, text=True)
+    assert out.returncode == 0 and "(dry-run)" in out.stdout, \
+        f"установка должна показывать, куда ляжет, до записи:\n{out.stdout}"
+    assert "skills/aurora-dev" in out.stdout, "не названо место установки"
+
+    cov = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--cover"],
+                         cwd=str(KIT), capture_output=True, text=True)
+    assert cov.returncode == 0, cov.stderr[:300]
+    task = cov.stdout
+    assert "ЗАДАНИЕ АССИСТЕНТУ" in task, "нет блока для копирования в другой диалог"
+    for must in ("автотест", "тест-кейс QA", "сценарий", "--check", "--list", "covers"):
+        assert must in task, f"в задании не сказано про «{must}»"
+    assert "предпочтительный вариант ВСЕГДА" in task, \
+        "не задан приоритет автотеста над кейсом — модель заведёт кейс на всё подряд"
+    assert "--new case" in task and "--new scenario" in task, \
+        "модель не узнает, чем заводить документы"
+
+    skill = (KIT / "skills/aurora-dev/SKILL.md").read_text(encoding="utf-8")
+    assert "Если вас позвали после разработки фичи" in skill, \
+        "в скилле нет рецепта для самого частого случая"
+    assert "install-skill" in skill, "не сказано, что скилл нужно установить"
+
+
+@test
 def test_dev_section_hides_behind_seven_taps(tmp: Path):
     """Раздел разработки открывается семью нажатиями и живёт только в ките.
 
@@ -1927,6 +1960,7 @@ def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
 
     reg = (KIT / "commands.txt").read_text(encoding="utf-8")
     assert "dev | dev:qa-run" in reg, "команды разработки не заведены в реестре"
+    assert "dev | dev:qa-cover" in reg, "нет точки входа «покрыть сделанное»"
     assert "dev_qa.py" not in (KIT / "engine_manifest.txt").read_text(encoding="utf-8"), \
         "контур разработки уезжает в проекты — там его нечем и незачем запускать"
 
