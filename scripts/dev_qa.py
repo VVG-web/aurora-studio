@@ -13,12 +13,11 @@
   python3 scripts/dev_qa.py --cover                # задание ассистенту: покрыть новое
   python3 scripts/dev_qa.py --new case "название"  # завести TC-NNN из шаблона
   python3 scripts/dev_qa.py --new scenario "имя"   # завести TS-NNN из шаблона
-  python3 scripts/dev_qa.py --install-skill        # положить скилл туда, где его найдёт агент
 
 Работает только в самом ките: в проекте на основе Авроры проверять нечего — там пользуются
 движком, а не разрабатывают его.
 
-Панель: `dev:qa-list`, `dev:qa-check`, `dev:qa-gap`, `dev:qa-cover`, `dev:qa-run`, `dev:qa-new`, `dev:install-skill`
+Панель: `dev:qa-list`, `dev:qa-check`, `dev:qa-gap`, `dev:qa-cover`, `dev:qa-run`, `dev:qa-new`
 """
 from __future__ import annotations
 
@@ -247,42 +246,6 @@ tests/run_tests.py.""")
     return rc
 
 
-def cmd_install_skill(apply: bool) -> int:
-    """Разложить скилл разработчика туда, где его найдёт агент в любом диалоге.
-
-    Скилл лежит в репозитории кита, а агент ищет их в домашней папке: в другом диалоге
-    `/aurora-dev` просто не находится. Копируем, а не символьная ссылка — так же, как это
-    сделано с `aurora-vault`, и по той же причине: ссылку на переехавший kit агент не
-    развернёт.
-    """
-    src = KIT / "skills" / "aurora-dev"
-    targets = [Path.home() / ".claude" / "skills" / "aurora-dev",
-               Path.home() / ".config" / "opencode" / "skills" / "aurora-dev"]
-    targets = [t for t in targets if t.parent.parent.is_dir()]
-    if not targets:
-        print("dev_qa: не нашёл, куда класть скиллы (~/.claude или ~/.config/opencode).",
-              file=sys.stderr)
-        return 1
-
-    print(f"# Установка скилла разработчика — {TODAY}\n")
-    for dst in targets:
-        state = "обновится" if dst.is_dir() else "будет создан"
-        print(f"- {dst} — {state}")
-    if not apply:
-        print("\n(dry-run) Ничего не скопировано. Повторите с --apply.")
-        return 0
-
-    import shutil
-    for dst in targets:
-        if dst.is_dir():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        print(f"✅ {dst}")
-    print("\nТеперь в любом диалоге, открытом в папке кита, работает `/aurora-dev`.\n"
-          "После правок скилла установку надо повторить: это копия, а не ссылка.")
-    return 0
-
-
 def cmd_run(what: str, apply_record: bool) -> int:
     scen = docs(SCEN)
     chosen = [(p, fm) for p, fm in scen
@@ -423,8 +386,6 @@ def main() -> int:
     ap.add_argument("--gap", action="store_true", help="что изменено в коде и чем покрыто")
     ap.add_argument("--cover", action="store_true",
                     help="то же плюс готовое задание ассистенту: покрыть сделанное")
-    ap.add_argument("--install-skill", action="store_true", dest="install",
-                    help="положить скилл разработчика туда, где его найдёт агент")
     ap.add_argument("--base", default="HEAD", metavar="REF",
                     help="база сравнения для --gap (по умолчанию HEAD)")
     # Значение необязательно: «прогнать» без уточнения означает «прогнать всё». Панель
@@ -433,7 +394,7 @@ def main() -> int:
     ap.add_argument("--run", nargs="?", const="all", metavar="ID",
                     help="прогон сценария; без значения — все подряд")
     ap.add_argument("--apply", action="store_true",
-                    help="записать (для --install-skill): по умолчанию только показ")
+                    help="записать изменения (иначе только показ)")
     ap.add_argument("--record", action="store_true",
                     help="завести журнал прогона в runs/ (для --run)")
     ap.add_argument("--new", nargs=2, metavar=("KIND", "TITLE"),
@@ -460,8 +421,6 @@ def main() -> int:
         return cmd_check()
     if a.cover:
         return cmd_cover(a.base)
-    if a.install:
-        return cmd_install_skill(a.apply)
     if a.gap:
         return cmd_gap(a.base)
     if a.run:

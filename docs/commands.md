@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.53.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.54.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -18,6 +18,7 @@
 | `kit:hooks` | git-хуки: pre-commit с линтером и храповиком (ошибки не растут) и commit-msg — внутренние названия не уходят в историю | скрипт | `aurora_hooks.py` | `--install --uninstall --status --mode --force` | 1.3.0 |
 | `kit:remap-sources` (`remap`) | перенацелить `source:` карточек после переезда зеркала (Confluence — по page_id, Jira — по ключу задачи) | скрипт | `kb_remap.py` | `--mirror --snapshot --from-git --apply --report` | 1.7.0 |
 | `kit:update` | обновить движок в проекте до версии kit; `--structure-only` — только папки схемы | скрипт | `aurora_update.py` `[target]` | `--apply --structure-only` | 1.3.0 |
+| `kit:skills` | скиллы Авроры в общий каталог агента (~/.claude/skills): без этого /aurora-vault и /aurora-dev не находятся ни в одном диалоге | скрипт | `install_skills.py` | `--status --apply` | 1.54.0 |
 | `kit:list` | этот справочник: команды, модификаторы, чем исполняются, с какой версии | скрипт | `kit_commands.py` `[namespace]` | `--search --md --check` | 1.9.8 |
 
 ## `sync: — зеркала внешних систем`
@@ -97,13 +98,12 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `dev:qa-list` | QA движка: какие есть кейсы и сценарии, что закрыто автотестом, какие кейсы не гоняются ни разу | скрипт | `dev_qa.py --list` | `--check --gap --cover --install-skill --base --run --apply --record --new` | 1.51.0 |
-| `dev:qa-check` | целостность реестра QA: дубли номеров, ссылки на несуществующие кейсы, отставшие версии | скрипт | `dev_qa.py --check` | `--list --gap --cover --install-skill --base --run --apply --record --new` | 1.51.0 |
-| `dev:qa-gap` | что изменено в коде и чем покрыто; решение «автотест или кейс» принимает модель | скрипт+модель | `dev_qa.py --gap` | `--list --check --cover --install-skill --base --run --apply --record --new` | 1.51.0 |
-| `dev:qa-cover` | покрыть сделанное: таблица покрытия и готовое задание ассистенту — дополнить автотесты, кейсы и сценарии | скрипт+модель | `dev_qa.py --cover` | `--list --check --gap --install-skill --base --run --apply --record --new` | 1.53.0 |
-| `dev:install-skill` | положить скилл разработчика туда, где его найдёт агент в любом диалоге | скрипт | `dev_qa.py --install-skill` | `--list --check --gap --cover --base --run --apply --record --new` | 1.53.0 |
-| `dev:qa-run` | прогон сценария с записью журнала: автотесты, чек-лист шагов, отчёт в Development/QA/runs/ | скрипт+модель | `dev_qa.py --run` | `--list --check --gap --cover --install-skill --base --apply --record --new` | 1.51.0 |
-| `dev:qa-new` | завести тест-кейс или сценарий из шаблона со следующим свободным номером | скрипт | `dev_qa.py --new` | `--list --check --gap --cover --install-skill --base --run --apply --record` | 1.51.0 |
+| `dev:qa-list` | QA движка: какие есть кейсы и сценарии, что закрыто автотестом, какие кейсы не гоняются ни разу | скрипт | `dev_qa.py --list` | `--check --gap --cover --base --run --apply --record --new` | 1.51.0 |
+| `dev:qa-check` | целостность реестра QA: дубли номеров, ссылки на несуществующие кейсы, отставшие версии | скрипт | `dev_qa.py --check` | `--list --gap --cover --base --run --apply --record --new` | 1.51.0 |
+| `dev:qa-gap` | что изменено в коде и чем покрыто; решение «автотест или кейс» принимает модель | скрипт+модель | `dev_qa.py --gap` | `--list --check --cover --base --run --apply --record --new` | 1.51.0 |
+| `dev:qa-cover` | покрыть сделанное: таблица покрытия и готовое задание ассистенту — дополнить автотесты, кейсы и сценарии | скрипт+модель | `dev_qa.py --cover` | `--list --check --gap --base --run --apply --record --new` | 1.53.0 |
+| `dev:qa-run` | прогон сценария с записью журнала: автотесты, чек-лист шагов, отчёт в Development/QA/runs/ | скрипт+модель | `dev_qa.py --run` | `--list --check --gap --cover --base --apply --record --new` | 1.51.0 |
+| `dev:qa-new` | завести тест-кейс или сценарий из шаблона со следующим свободным номером | скрипт | `dev_qa.py --new` | `--list --check --gap --cover --base --run --apply --record` | 1.51.0 |
 
 ## Развёртывание (из клона kit'а, не из проекта)
 

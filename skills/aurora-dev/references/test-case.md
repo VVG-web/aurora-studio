@@ -7,7 +7,7 @@ priority: P2                    # P1 — ломает работу; P2 — ме�
 status: draft                   # draft | ready | blocked | deprecated
 automated: no                   # no | tests/run_tests.py::имя_теста — если закрыт автотестом
 requires: []                    # id других TC, без которых этот не имеет смысла
-version: 1.53.0                 # версия движка, на которой кейс написан
+version: 1.54.0                 # версия движка, на которой кейс написан
 updated: 2026-08-07
 ---
 
