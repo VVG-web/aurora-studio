@@ -104,12 +104,20 @@ CONFLICT_RE = re.compile(r"^- «([^»]+)» → (.+)$", re.M)
 
 
 def read_conflicts(cwd: str) -> list:
-    """[(синоним, [карточки])] — из отчёта kb_fix --aliases. Читает движок, не модель."""
-    r = run_command(cwd, "kb_fix.py", ["--aliases"])
-    out = []
-    for alias, cards in CONFLICT_RE.findall(r["out"]):
-        out.append((alias, [c.strip() for c in cards.split(",") if c.strip()]))
-    return out
+    """[(синоним, [карточки])] — из движка, не от модели.
+
+    Берём машинный список: человеческий отчёт режется до 15 строк, и агент, читая его,
+    отчитывался бы обо всех увиденных, не зная, что остальные ему не показали.
+    """
+    r = run_command(cwd, "kb_fix.py", ["--aliases", "--json"])
+    try:
+        data = json.loads(r["out"].strip() or "[]")
+        return [(d["alias"], d["cards"]) for d in data]
+    except (ValueError, KeyError, TypeError):
+        out = []                                   # старый движок в проекте — читаем текст
+        for alias, cards in CONFLICT_RE.findall(r["out"]):
+            out.append((alias, [c.strip() for c in cards.split(",") if c.strip()]))
+        return out
 
 
 def lint_conflicts(cwd: str) -> int:
@@ -252,7 +260,7 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
                         note=f"команда не выполнила правку: {res['out'][-160:]}")
             return step
         done.append(f"{item['card']} → «{item['new']}»")
-    step.update(status="уточнено" if apply else "уточнил бы", note="; ".join(done)[:200])
+    step.update(status="уточнено" if apply else "уточнил бы", note="; ".join(done))
     return step
 
 
@@ -300,7 +308,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     return {"steps": steps, "seconds": round(time.time() - started, 1),
             "before": {"conflicts": before_conflicts, "errors": before_errors},
             "after": {"conflicts": after_conflicts, "errors": after_errors},
-            "total_conflicts": len(conflicts)}
+            "total_conflicts": len(conflicts), "limited": bool(limit)}
 
 
 def verdict(res: dict, apply: bool) -> tuple:
@@ -315,8 +323,15 @@ def verdict(res: dict, apply: bool) -> tuple:
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком", "стоп",
                                                       "не начат")]
     grew = apply and res["after"]["errors"] > res["before"]["errors"]
-    ok = not bad and not grew and (len(done) + len(dup)) == res["total_conflicts"]
+    # Сколько конфликтов агенту вообще показали. Если меньше, чем видит линтер, — это не
+    # успех, а слепое пятно: отчёт «каждый разобран» о неполном списке хуже, чем провал.
+    blind = 0 if res.get("limited") else max(0, res["before"]["conflicts"] - res["total_conflicts"])
+    ok = (not bad and not grew and not blind
+          and (len(done) + len(dup)) == res["total_conflicts"])
     why = []
+    if blind:
+        why.append(f"агент увидел {res['total_conflicts']} конфликтов из "
+                   f"{res['before']['conflicts']} по линтеру — список пришёл неполным")
     if bad:
         why.append(f"не разобрано: {len(bad)}")
     if grew:
@@ -339,9 +354,16 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
     else:
         L += [f"⚠️ Чекпойнта нет: {cp.get('why', 'причина неизвестна')}", ""]
 
-    L += ["| Синоним | Итог | Подробности |", "|---|---|---|"]
+    L += ["| Синоним | Итог |", "|---|---|"]
     for s in res["steps"]:
-        L.append(f"| {s['alias'][:40]} | {s['status']} | {s['note'][:90]} |")
+        L.append(f"| {s['alias'][:60]} | {s['status']} |")
+
+    clarified = [s for s in res["steps"] if s["status"] in ("уточнено", "уточнил бы")]
+    if clarified:
+        # Дословно и без обрезки: именно эти формулировки человек и проверяет — по ним
+        # видно, разобралась модель в карточках или замаскировала конфликт названием папки.
+        L += ["", "## Что предложено — дословно", ""]
+        L += [f"- «{s['alias']}» → {s['note']}" for s in clarified]
 
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
           f"Конфликтов по линтеру: {res['before']['conflicts']} → {res['after']['conflicts']} · "
