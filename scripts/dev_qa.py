@@ -10,13 +10,15 @@
   python3 scripts/dev_qa.py --gap                  # что изменено в коде и чем это покрыто
   python3 scripts/dev_qa.py --run TS-001           # прогон: автотесты + чек-лист + журнал
   python3 scripts/dev_qa.py --run all              # все сценарии подряд
+  python3 scripts/dev_qa.py --cover                # задание ассистенту: покрыть новое
   python3 scripts/dev_qa.py --new case "название"  # завести TC-NNN из шаблона
   python3 scripts/dev_qa.py --new scenario "имя"   # завести TS-NNN из шаблона
+  python3 scripts/dev_qa.py --install-skill        # положить скилл туда, где его найдёт агент
 
 Работает только в самом ките: в проекте на основе Авроры проверять нечего — там пользуются
 движком, а не разрабатывают его.
 
-Панель: `dev:qa-list`, `dev:qa-check`, `dev:qa-gap`, `dev:qa-run`, `dev:qa-new`
+Панель: `dev:qa-list`, `dev:qa-check`, `dev:qa-gap`, `dev:qa-cover`, `dev:qa-run`, `dev:qa-new`, `dev:install-skill`
 """
 from __future__ import annotations
 
@@ -191,6 +193,96 @@ def cmd_gap(base: str) -> int:
 
 # ------------------------------------------------------------------ прогон
 
+def cmd_cover(base: str) -> int:
+    """Задание ассистенту: дополнить QA под то, что разработано.
+
+    Отдельная точка входа, а не флаг у `--gap`: её копируют в **другой диалог**, где модель
+    только что писала код и знает, что именно делала. Таблица покрытия там же — чтобы не
+    заставлять её собирать контекст заново.
+    """
+    rc = cmd_gap(base)
+    cases, scen = docs(CASES), docs(SCEN)
+    ids = ", ".join(fm.get("id", "") for _, fm in scen)
+    print(f"""
+─────────────────────────────────────────────────────────────────────
+ЗАДАНИЕ АССИСТЕНТУ · ПОКРЫТЬ НОВОЕ — скопируйте блок целиком в чат
+─────────────────────────────────────────────────────────────────────
+/aurora-dev dev:qa-cover
+
+Ты только что дорабатывал движок Авроры. Дополни QA-контур под сделанное.
+
+Порядок — строго такой:
+
+1. Перечисли, что изменилось по существу: не файлы, а поведение. «Команда X теперь
+   отказывается делать Y, если Z» — это проверяемое утверждение, «поправил build_plan» нет.
+
+2. По каждому утверждению реши, чем оно закрывается:
+   • **автотест** — если поведение воспроизводится за секунды на временной папке.
+     Это предпочтительный вариант ВСЕГДА. Допиши тест в tests/run_tests.py рядом с
+     соседями по теме, прогони весь набор, добейся зелёного.
+   • **тест-кейс QA** — только если автотестом нельзя: нужен живой Confluence или Jira,
+     браузер, база в тысячу карточек, замер времени, оценка читаемости вывода.
+     Заводится командой: python3 scripts/dev_qa.py --new case "что проверяем"
+   • **сценарий** — если проверяется стык между командами, а не одна команда.
+     Заводится командой: python3 scripts/dev_qa.py --new scenario "какой маршрут"
+
+3. Заполни заведённые документы по-настоящему: шаблон копируется целиком, включая
+   пояснения — их надо ЗАМЕНИТЬ содержанием. Кейс с текстом из шаблона хуже отсутствующего:
+   он создаёт видимость покрытия. Требования — в skills/aurora-dev/references/.
+
+4. Новый кейс включи в подходящий сценарий (поле covers): {ids}.
+   Кейс вне сценария и без автотеста не гоняется никогда.
+
+5. Если правка сделала существующий кейс неверным — не удаляй его: поправь ожидания и
+   обнови version. Если проверять стало нечего — status: deprecated с причиной, номер
+   остаётся за ним навсегда.
+
+6. Проверь себя: python3 scripts/dev_qa.py --check  (должно быть «расхождений нет»)
+                 python3 scripts/dev_qa.py --list   (не должно остаться кейсов-сирот)
+
+7. Отчитайся: что закрыл автотестом, что кейсом и почему кейсом, а не тестом.
+
+Сейчас в контуре: кейсов {len(cases)}, сценариев {len(scen)}, автотестов — см. вывод
+tests/run_tests.py.""")
+    return rc
+
+
+def cmd_install_skill(apply: bool) -> int:
+    """Разложить скилл разработчика туда, где его найдёт агент в любом диалоге.
+
+    Скилл лежит в репозитории кита, а агент ищет их в домашней папке: в другом диалоге
+    `/aurora-dev` просто не находится. Копируем, а не символьная ссылка — так же, как это
+    сделано с `aurora-vault`, и по той же причине: ссылку на переехавший kit агент не
+    развернёт.
+    """
+    src = KIT / "skills" / "aurora-dev"
+    targets = [Path.home() / ".claude" / "skills" / "aurora-dev",
+               Path.home() / ".config" / "opencode" / "skills" / "aurora-dev"]
+    targets = [t for t in targets if t.parent.parent.is_dir()]
+    if not targets:
+        print("dev_qa: не нашёл, куда класть скиллы (~/.claude или ~/.config/opencode).",
+              file=sys.stderr)
+        return 1
+
+    print(f"# Установка скилла разработчика — {TODAY}\n")
+    for dst in targets:
+        state = "обновится" if dst.is_dir() else "будет создан"
+        print(f"- {dst} — {state}")
+    if not apply:
+        print("\n(dry-run) Ничего не скопировано. Повторите с --apply.")
+        return 0
+
+    import shutil
+    for dst in targets:
+        if dst.is_dir():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        print(f"✅ {dst}")
+    print("\nТеперь в любом диалоге, открытом в папке кита, работает `/aurora-dev`.\n"
+          "После правок скилла установку надо повторить: это копия, а не ссылка.")
+    return 0
+
+
 def cmd_run(what: str, apply_record: bool) -> int:
     scen = docs(SCEN)
     chosen = [(p, fm) for p, fm in scen
@@ -329,6 +421,10 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="кейсы, сценарии и покрытие")
     ap.add_argument("--check", action="store_true", help="целостность реестра QA")
     ap.add_argument("--gap", action="store_true", help="что изменено в коде и чем покрыто")
+    ap.add_argument("--cover", action="store_true",
+                    help="то же плюс готовое задание ассистенту: покрыть сделанное")
+    ap.add_argument("--install-skill", action="store_true", dest="install",
+                    help="положить скилл разработчика туда, где его найдёт агент")
     ap.add_argument("--base", default="HEAD", metavar="REF",
                     help="база сравнения для --gap (по умолчанию HEAD)")
     # Значение необязательно: «прогнать» без уточнения означает «прогнать всё». Панель
@@ -336,6 +432,8 @@ def main() -> int:
     # первом же нажатии кнопки.
     ap.add_argument("--run", nargs="?", const="all", metavar="ID",
                     help="прогон сценария; без значения — все подряд")
+    ap.add_argument("--apply", action="store_true",
+                    help="записать (для --install-skill): по умолчанию только показ")
     ap.add_argument("--record", action="store_true",
                     help="завести журнал прогона в runs/ (для --run)")
     ap.add_argument("--new", nargs=2, metavar=("KIND", "TITLE"),
@@ -360,6 +458,10 @@ def main() -> int:
         return cmd_new(kind, a.new[1])
     if a.check:
         return cmd_check()
+    if a.cover:
+        return cmd_cover(a.base)
+    if a.install:
+        return cmd_install_skill(a.apply)
     if a.gap:
         return cmd_gap(a.base)
     if a.run:
