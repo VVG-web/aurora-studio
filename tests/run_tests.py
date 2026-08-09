@@ -1882,9 +1882,10 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
         "раздел разработки собирается не по тому же правилу"
 
     # ни одна команда не потерялась и не показана дважды
-    titles = {"kit", "sync", "kb", "ctx", "make", "ship", "ops", "dev"}
+    titles = {"kit", "sync", "kb", "ctx", "make", "ship", "ops", "dev", "agent"}
     lost = [r["cmd"] for r in rows if r["ns"] not in titles]
     assert not lost, f"команды вне известных групп — в панели им нет места: {lost}"
+    assert "agent:" in ui and 'agent:"' in ui, "группа agent не подписана в «Командах»"
 
     # у каждой запускаемой команды есть исполнитель на диске
     for r in rows:
@@ -1961,6 +1962,102 @@ def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
     assert "Если вас позвали после разработки фичи" in skill, \
         "в скилле нет рецепта для самого частого случая"
     assert "kit:skills" in skill, "не сказано, чем ставится скилл"
+
+
+@test
+def test_agent_ring_config_and_whitelist(tmp: Path):
+    """Встроенный агент: кольцо бэкендов, слои конфига, белый список записи.
+
+    Кольцо — не лестница: каждый вызов обходит список с первого бэкенда, поэтому
+    восстановившийся корпоративный шлюз подхватывается сразу. Пустой ответ с кодом 200 —
+    отказ (живой бэкенд так отвечал из-за chat-шаблона). Писать в проект агент может
+    только через белый список команд; kb:verify закрыт наглухо — доверие присваивает
+    человек, и это конструкция, а не настройка.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+
+    env = {"AURORA_AGENT_BACKEND_1_URL": "https://one.example.com/v1/",
+           "AURORA_AGENT_BACKEND_1_KEY": "k1",
+           "AURORA_AGENT_BACKEND_1_MODEL_WORKER": "big",
+           "AURORA_AGENT_BACKEND_2_URL": "http://two.example.com/v1",
+           "AURORA_AGENT_BACKEND_2_MODEL": "small",
+           "AURORA_AGENT_THINKING": "0"}
+    cfg = A.parse_config(env)
+    assert len(cfg["backends"]) == 2 and cfg["backends"][0]["url"].endswith("/v1"), \
+        "хвостовой слэш URL должен сниматься"
+    assert A.role_model(cfg["backends"][1], "critic") == "small", \
+        "нет ролевой модели — берётся общая"
+    assert not cfg["thinking"], "THINKING=0 должен выключать рассуждения"
+
+    ok_body = {"choices": [{"message": {"content": "готово"}, "finish_reason": "stop"}]}
+    empty = {"choices": [{"message": {"content": "", "reasoning": "думал"},
+                          "finish_reason": "length"}]}
+
+    # первый пуст (сломанный шаблон), второй занят, но на втором круге первый ожил
+    calls = {"n": 0}
+    def transport(kind, b, payload, timeout):
+        calls["n"] += 1
+        if kind == "slots":
+            return (200, [{"is_processing": b["n"] == 2}], "", 0.0) if b["n"] == 2 \
+                   else (404, None, "нет /slots", 0.0)
+        if b["n"] == 1:
+            return (200, ok_body, "", 0.1) if calls["n"] > 3 else (200, empty, "", 0.1)
+        return (200, ok_body, "", 0.1)
+
+    slept = []
+    r = A.call_role(cfg, "worker", [{"role": "user", "content": "x"}],
+                    transport=transport, deadline=__import__("time").time() + 120,
+                    sleep=slept.append)
+    assert r["ok"] and r["backend"] == 1 and r["ring"] == 2, \
+        f"кольцо не вернулось к ожившему первому: {r}"
+    assert slept == [A.RING_PAUSE], "между кругами должна быть одна пауза"
+    assert any("пустой ответ" in l or "рассуждения съели" in l for l in r["log"]), \
+        "причина отказа первого круга не названа"
+
+    # все мертвы → честный отказ по дедлайну
+    dead = lambda kind, b, payload, timeout: (None, None, "Connection refused", 0.0)
+    r2 = A.call_role(cfg, "worker", [], transport=dead,
+                     deadline=__import__("time").time() + 1, sleep=lambda s: None)
+    assert not r2["ok"] and any("дедлайн" in l for l in r2["log"])
+
+    # белый список
+    assert A.write_allowed("build_plan.py", ["--card", "X", "--apply"])[0]
+    assert A.write_allowed("kb_fix.py", ["--set-alias", "--apply"])[0]
+    assert not A.write_allowed("kb_verify.py", ["--auto", "--apply"])[0], \
+        "приёмка отдана агенту — это запрещено конструкцией"
+    assert not A.write_allowed("kb_reset.py", ["--apply"])[0]
+    assert not A.write_allowed("git", ["push"])[0]
+    assert not A.write_allowed("kb_fix.py", ["--aliases", "--drop-alias", "--apply"])[0], \
+        "у kb_fix агенту разрешены только --stubs и --set-alias"
+    assert A.write_allowed("kb_lint.py", ["--summary"])[0], "чтение должно быть свободным"
+
+
+@test
+def test_agent_wired_into_engine(tmp: Path):
+    """Агент встроен в движок, а не приложен сбоку: реестр, манифест, doctor, панель."""
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "agent | agent:ping" in reg, "нет команды agent:ping в реестре"
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "scripts/agent_core.py" in man, "агент не едет в проекты с обновлением движка"
+    tpl = (KIT / "templates/aurora.env.local.example").read_text(encoding="utf-8")
+    assert "AURORA_AGENT_BACKEND_1_URL" in tpl, "шаблон .env не документирует агента"
+    assert "example.com" in tpl, "в шаблоне должны быть плейсхолдеры, а не живые адреса"
+    assert not re.search(r"^#?\s*AURORA_AGENT_\w*KEY=[A-Za-z0-9_\-]{16,}", tpl, re.M), \
+        "в шаблон попал похожий на настоящий ключ"
+
+    ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    for route in ("/api/agent", "/api/agent/env", "/api/agent/ping", "/api/agent/venv"):
+        assert route in ck, f"в панели нет ручки {route}"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "renderAgentCard" in ui and "Проверить соединение" in ui, \
+        "в Настройке нет раздела «Агент»"
+    assert "target_label" in ui, "цель записи (кит или проект) не показывается человеку"
+    assert "Pydantic AI" in ui, "нет установки Pydantic AI из панели"
+
+    doc = (KIT / "scripts/aurora_doctor.py").read_text(encoding="utf-8")
+    assert "agent_core" in doc and "agent:ping" in doc, "doctor молчит про агента"
 
 
 @test

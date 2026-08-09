@@ -373,6 +373,21 @@ def main() -> int:
     print("Aurora doctor —", ROOT)
     if engine_ver:
         print(f"движок: {engine_ver}  (сверка с kit: `aurora.py update .` — dry-run)")
+    # Встроенный агент — справка, не проверка: без него всё работает, но человек должен
+    # видеть при онбординге, настроен ли контур LLM и чем он исполняется.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import agent_core as _ag
+        _cfg = _ag.parse_config(_ag.raw_config())
+        if _cfg["backends"]:
+            _ok, _v = _ag.venv_status()
+            print(f"агент: бэкендов {len(_cfg['backends'])} · адаптер {_cfg['adapter']}"
+                  + (f" ({_v})" if _ok else " — venv не установлен, stdlib-фолбэк")
+                  + " · проверить: agent:ping")
+        else:
+            print("агент: не настроен (это не ошибка) — панель: «Настройка» → «Агент»")
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        pass
     # режим приватности — свойство контура, человек должен видеть его при онбординге
     print(f"приватность: privacy.scrub = {privacy_mode()}"
           + {"off": " (контур закрытый, ПДн не ищем)",

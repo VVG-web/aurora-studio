@@ -37,6 +37,7 @@ scripts/build_plan.py    => .opencode/scripts/build_plan.py
 scripts/spec_pack.py     => .opencode/scripts/spec_pack.py
 scripts/kb_index.py      => .opencode/scripts/kb_index.py
 scripts/kb_trace.py      => .opencode/scripts/kb_trace.py
+scripts/agent_core.py    => .opencode/scripts/agent_core.py
 scripts/ship_doc.py      => .opencode/scripts/ship_doc.py
 scripts/kb_scrub.py      => .opencode/scripts/kb_scrub.py
 scripts/kb_schema.py     => .opencode/scripts/kb_schema.py
