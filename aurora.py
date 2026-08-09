@@ -84,6 +84,11 @@ def cmd_new(target: str, extra: list[str]) -> int:
     # 3. привести AGENTS.md / тела sync-скиллов к финальному конфигу + проставить версию
     print("\n→ Приведение движка к настройкам\n", flush=True)
     rc = sh([str(SCRIPTS / "aurora_update.py"), str(tgt), "--apply"])
+    # Скиллы кладутся в общий каталог агента: пока копии там нет, `/aurora-vault` не
+    # находится ни в одном диалоге — а проект без скилла это папки без инструкции.
+    if rc == 0:
+        print("\n→ Скиллы в общий каталог агента\n", flush=True)
+        sh([str(SCRIPTS / "install_skills.py"), "--apply"])
     if rc == 0 and quiet:
         print(f"\nНастройка пропущена — вопросы задавать было некому. Заполните конфиг "
               f"позже: python3 aurora.py setup {tgt}")
@@ -129,6 +134,7 @@ TOOLS = {
     "jira-status": "jira_status.py",
     "trace": "kb_trace.py --requirements",
     "list": "kit_commands.py",
+    "skills": "install_skills.py",
 }
 
 
@@ -145,7 +151,13 @@ def cmd_tool(name: str, target: str, extra: list[str]) -> int:
 
 def cmd_update(target: str, extra: list[str]) -> int:
     tgt = Path(target).expanduser().resolve()
-    return sh([str(SCRIPTS / "aurora_update.py"), str(tgt), *extra])
+    rc = sh([str(SCRIPTS / "aurora_update.py"), str(tgt), *extra])
+    # Скиллы обновляются вместе с движком и только при записи: без `--apply` обновление
+    # ничего не меняет, и трогать домашний каталог было бы неожиданностью.
+    if rc == 0 and "--apply" in extra:
+        print("\n→ Скиллы в общем каталоге агента\n", flush=True)
+        sh([str(SCRIPTS / "install_skills.py"), "--apply"])
+    return rc
 
 
 def _guess_name(tgt: Path) -> str:
