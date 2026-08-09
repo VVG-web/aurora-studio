@@ -1854,6 +1854,41 @@ def test_cockpit_warns_when_project_engine_lags(tmp: Path):
 
 
 @test
+def test_skills_land_in_one_shared_folder(tmp: Path):
+    """Скиллы ставятся в один каталог агента и не расходятся копиями.
+
+    Скиллы лежат в репозитории кита, а агент ищет их в `~/.claude/skills`: без копии
+    `/aurora-vault` не находится ни в одном диалоге. Каталог именно один — две копии
+    одного скилла расходятся на первой правке, и потом не понять, какая отвечала.
+    """
+    src = KIT / "scripts/install_skills.py"
+    assert src.is_file(), "нет команды установки скиллов"
+    body = src.read_text(encoding="utf-8")
+    assert '.claude" / "skills"' in body, "общий каталог должен быть ~/.claude/skills"
+    assert "symlink_to" in body, "остальные harness должны получать ссылку, а не копию"
+
+    out = subprocess.run([sys.executable, str(src), "--status"],
+                         cwd=str(KIT), capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[:300]
+    for name in ("aurora-vault", "aurora-dev"):
+        assert name in out.stdout, f"скилл {name} не попал в установку"
+
+    dry = subprocess.run([sys.executable, str(src)], cwd=str(KIT),
+                         capture_output=True, text=True).stdout
+    assert "--apply" in dry or "делать нечего" in dry, \
+        "без --apply установка обязана только показывать"
+
+    # установка встроена в жизненный цикл: иначе про неё забудут
+    entry = (KIT / "aurora.py").read_text(encoding="utf-8")
+    assert entry.count("install_skills.py") >= 2, \
+        "скиллы должны ставиться и при создании проекта, и при обновлении движка"
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "kit:skills" in reg, "нет команды kit:skills в реестре"
+    assert "dev:install-skill" not in reg, \
+        "частная установка одного скилла осталась рядом с общей — два пути к одному"
+
+
+@test
 def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
     """Скилл разработчика находится в новом диалоге, а `--cover` даёт готовое задание.
 
@@ -1862,12 +1897,6 @@ def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
     Задание же нужно потому, что модель, дорабатывавшая код, знает про свои изменения —
     но не знает правил этого контура.
     """
-    out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--install-skill"],
-                         cwd=str(KIT), capture_output=True, text=True)
-    assert out.returncode == 0 and "(dry-run)" in out.stdout, \
-        f"установка должна показывать, куда ляжет, до записи:\n{out.stdout}"
-    assert "skills/aurora-dev" in out.stdout, "не названо место установки"
-
     cov = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--cover"],
                          cwd=str(KIT), capture_output=True, text=True)
     assert cov.returncode == 0, cov.stderr[:300]
@@ -1883,7 +1912,7 @@ def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
     skill = (KIT / "skills/aurora-dev/SKILL.md").read_text(encoding="utf-8")
     assert "Если вас позвали после разработки фичи" in skill, \
         "в скилле нет рецепта для самого частого случая"
-    assert "install-skill" in skill, "не сказано, что скилл нужно установить"
+    assert "kit:skills" in skill, "не сказано, чем ставится скилл"
 
 
 @test
