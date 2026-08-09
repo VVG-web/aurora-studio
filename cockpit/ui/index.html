@@ -409,7 +409,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.54.0";
+const UI_VERSION = "1.55.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -992,11 +992,18 @@ function kindChip(kind){
   if (kind==="модель") return el("span",{class:"chip"},"модель");
   return el("span",{class:"chip warn"},"скрипт+модель");
 }
+// Команды движка живут в скрытом разделе «Разработка»: в общем списке они были бы
+// шумом — аналитик их не запускает, а показать одно и то же в двух местах значит
+// разойтись при первой же правке.
+const ENGINE_CMDS = ["kit:skills"];
+const isEngineCmd = r => r.ns === "dev" || ENGINE_CMDS.includes(r.cmd);
+
 function renderCommands(){
   const q = ($("#cmdSearch").value||"").toLowerCase().trim();
-  const rows = S.state.commands.filter(r=>!q ||
+  const all = S.state.commands.filter(r => !isEngineCmd(r));
+  const rows = all.filter(r=>!q ||
     (r.cmd+" "+r.alias+" "+r.what+" "+r.impl).toLowerCase().includes(q));
-  $("#cmdCount").textContent = rows.length + " из " + S.state.commands.length;
+  $("#cmdCount").textContent = rows.length + " из " + all.length;
   const box = $("#cmdList"); box.innerHTML="";
   const groups = {};
   rows.forEach(r=>(groups[r.ns] ||= []).push(r));
@@ -1079,8 +1086,7 @@ function openRun(cmdName, preFlags=[]){
   // она работает в дереве кита.
   const byObj = typeof cmdName === "object" ? cmdName : null;
   if (byObj) cmdName = byObj.cmd;
-  const dev = byObj ? byObj.ns === "dev"
-                    : (S.state.commands.find(x=>x.cmd===cmdName) || {}).ns === "dev";
+  const dev = isEngineCmd(byObj || S.state.commands.find(x=>x.cmd===cmdName) || {});
   if (!dev && !S.project){ toast("Сначала выберите проект","warn"); show("overview"); return; }
   const r = S.state.commands.find(x=>x.cmd===cmdName);
   if (!r) return toast("Команда не найдена","err");
@@ -1232,7 +1238,7 @@ async function fire(apply){
   $("#consoleRc").textContent = "выполняется…";
   $("#consoleRc").className = "chip";
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-    {project: (r.ns === "dev" ? "" : S.project.path), cmd:r.cmd, args})});
+    {project: (isEngineCmd(r) ? "" : S.project.path), cmd:r.cmd, args})});
   if (!res.job) return;
   if (!apply && r.flags.includes("--apply"))
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
@@ -1756,7 +1762,7 @@ function copyButton(text){
    относятся к самому движку, аналитику они ничего не дают и только шумят в меню. */
 async function renderDev(){
   const box = $("#devBody"); box.innerHTML = "";
-  const cmds = (S.state.commands || []).filter(c => c.ns === "dev");
+  const cmds = (S.state.commands || []).filter(isEngineCmd);
 
   box.append(el("div",{class:"card",style:"padding:20px;margin-bottom:18px"},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
@@ -1781,7 +1787,7 @@ async function renderDev(){
 
   // порядок по частоте использования, а не по алфавиту: прогон — то, ради чего заходят
   const order = ["dev:qa-run", "dev:qa-cover", "dev:qa-gap", "dev:qa-list", "dev:qa-check",
-                 "dev:qa-new", "dev:install-skill"];
+                 "dev:qa-new", "kit:skills"];
   const rank = c => { const i = order.indexOf(c.cmd); return i < 0 ? 99 : i; };
   cmds.sort((a, b) => rank(a) - rank(b));
 
