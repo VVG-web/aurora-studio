@@ -268,6 +268,10 @@ class Plan:
         self.file_writes[path] = text
 
 
+# Несделанная работа --set-alias: вызывающему (агенту) она обязана прийти кодом возврата,
+# а не строкой в отчёте, которую легко счесть успехом.
+SET_ALIAS_FAILED: list = []
+
 PLACEHOLDER_RE = re.compile(r"\.\.\.|\{\{|<[^>]*>")
 
 
@@ -556,6 +560,57 @@ def drop_alias(card: Card, alias: str) -> str:
     return "\n".join(out) + rest
 
 
+def set_alias(card: Card, old: str, new: str) -> str:
+    """Заменить один синоним другим, не трогая ничего вокруг.
+
+    Скальпель для агента: он решает, каким синоним должен стать, а резать по живой шапке
+    ему нельзя — модель умеет только перегенерировать файл целиком, и вместе с одной
+    строкой переписывает поля, теги и тело. Здесь меняется ровно одна запись списка,
+    форма списка (инлайн или столбиком) сохраняется, остальное остаётся байт в байт.
+
+    Идемпотентно: старого синонима нет, а новый уже на месте — файл не меняется.
+    """
+    if old == new:
+        return card.text
+    if old not in card.aliases:
+        # уже заменён — не считаем ошибкой, но и не дублируем новый
+        return card.text if new in card.aliases else add_alias(card, new)
+    dropped = drop_alias(card, old)
+    return add_alias(Card(card.path, dropped), new)
+
+
+def plan_set_alias(cards: dict, plan: Plan, target: str, old: str, new: str) -> tuple:
+    """→ (строка отчёта, сделано ли). Второе — сигнал вызывающему: «не найдено» это не
+    заметка в отчёте, а несделанная работа, и агент обязан её увидеть кодом возврата.
+
+    Карточку ищем так, как её назовёт человек или модель, читая отчёт о конфликтах: по
+    имени файла, по заголовку, а если точного совпадения нет — по хвосту имени
+    («Получение-курсов-валют» при файле «ALG-309-Получение-курсов-валют»). Хвост
+    принимается только при единственном совпадении: угадывать за человека нельзя.
+    """
+    def norm(s):
+        return re.sub(r"[\s_]+", "-", s.strip()).strip("-").casefold()
+
+    exact = [p for p, c in cards.items()
+             if c.stem == target or (c.fm.get("title") or "").strip() == target]
+    hits = exact or [p for p, c in cards.items()
+                     if norm(c.stem).endswith(norm(target)) or norm(target).endswith(norm(c.stem))]
+    if not hits:
+        return f"карточка «{target}» не найдена — синоним не тронут", False
+    if len(hits) > 1:
+        return (f"имя «{target}» носят {len(hits)} карточки — уточните: "
+                + ", ".join(short(h) for h in hits[:3])), False
+    path = hits[0]
+    card = Card(path, plan.file_writes.get(path, cards[path].text))
+    if old not in card.aliases and new in card.aliases:
+        return f"{short(path)}: «{new}» уже стоит — ничего не меняю", True
+    fixed = set_alias(card, old, new)
+    if fixed == card.text:
+        return f"{short(path)}: «{old}» не найден среди синонимов — нечего менять", False
+    plan.write(path, fixed)
+    return f"{short(path)}: «{old}» → «{new}»", True
+
+
 def plan_frontmatter(cards: dict, plan: Plan):
     created = patched = selfsame = 0
     for path, c in cards.items():
@@ -838,6 +893,10 @@ def main() -> int:
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
     ap.add_argument("--aliases", action="store_true",
                     help="разобрать одинаковые alias у разных карточек (по умолчанию отчёт)")
+    ap.add_argument("--set-alias", metavar="КАРТОЧКА",
+                    help="заменить один синоним у карточки: --set-alias <имя> --old X --new Y")
+    ap.add_argument("--old", metavar="СИНОНИМ", default="", help="какой синоним заменить")
+    ap.add_argument("--new", metavar="СИНОНИМ", default="", help="на какой заменить")
     ap.add_argument("--drop-alias", action="store_true",
                     help="и снять их механически: alias останется у карточки, чьё имя "
                          "совпадает. Без ключа — только отчёт и задание ассистенту")
@@ -859,8 +918,11 @@ def main() -> int:
         return 1
     if a.all:
         a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.aliases = True
+    if a.set_alias and not (a.old and a.new):
+        print("kb_fix: для --set-alias нужны и --old, и --new", file=sys.stderr)
+        return 1
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases,
-                a.stubs, a.merge, a.merge_all)):
+                a.stubs, a.merge, a.merge_all, a.set_alias)):
         ap.print_help()
         return 0
 
@@ -897,6 +959,11 @@ def main() -> int:
                 rc = plan_merge(cards, a.merge[0], a.merge[1], plan)
             if rc:
                 return None, None, rc
+        if a.set_alias:
+            note, done = plan_set_alias(cards, plan, a.set_alias, a.old, a.new)
+            head.append(f"## Синоним карточки\n  {note}")
+            if not done:
+                SET_ALIAS_FAILED.append(note)
         if a.homoglyphs:
             n = plan_homoglyphs(cards, idx, plan)
             head.append(f"## Имена со смешанным скриптом: {n} переименований")
@@ -1031,6 +1098,11 @@ def main() -> int:
             f.write(report + "\n")
         print(f"\nОтчёт: {a.report}")
 
+    if SET_ALIAS_FAILED:
+        # Точечная правка не состоялась: карточка не найдена или синонима у неё нет.
+        # Для агента это ошибка шага, а не примечание — иначе он засчитает работу сделанной.
+        print(f"\nkb_fix: --set-alias не выполнен — {SET_ALIAS_FAILED[0]}", file=sys.stderr)
+        return 1
     if not applied:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0

@@ -48,6 +48,10 @@ ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 RING_PAUSE = 10              # пауза между полными кругами по цепочке
 VENV = Path.home() / ".aurora" / "venv"
+# Какой адаптер выбран и почему пришлось откатиться: заполняется при разборе конфига,
+# читается отчётом прогона. Глобальное состояние здесь честнее, чем протаскивать флаг
+# через каждый вызов транспорта.
+ADAPTER: dict = {"name": "openai_compat", "fallback_why": ""}
 
 
 # ------------------------------------------------------------------ конфигурация
@@ -108,8 +112,10 @@ def parse_config(env: dict) -> dict:
             "models": models,
         })
         n += 1
+    ADAPTER["name"] = env.get("AURORA_AGENT_ADAPTER", "pydantic_ai")
+    ADAPTER["fallback_why"] = ""
     return {
-        "adapter": env.get("AURORA_AGENT_ADAPTER", "pydantic_ai"),
+        "adapter": ADAPTER["name"],
         "thinking": env.get("AURORA_AGENT_THINKING", "1") not in ("0", "false", "no"),
         "max_steps": int(env.get("AURORA_AGENT_MAX_STEPS", "15") or 15),
         "budget_min": int(env.get("AURORA_AGENT_BUDGET_MIN", "20") or 20),
@@ -181,11 +187,71 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
         return None, None, f"{type(e).__name__}: {e}", time.time() - t0
 
 
+def adapter_process():
+    """Долгоживущий процесс адаптера: старт venv с импортом фреймворка стоит секунд восемь.
+
+    Платить их на каждом шаге агента значило бы минуты пустого ожидания за прогон, поэтому
+    процесс поднимается один раз и обслуживает все вызовы построчно.
+    """
+    proc = ADAPTER.get("proc")
+    if proc is not None and proc.poll() is None:
+        return proc
+    vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    adapter = Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
+    if not vpy.is_file() or not adapter.is_file():
+        return None
+    proc = subprocess.Popen([str(vpy), str(adapter)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            text=True, bufsize=1)
+    ADAPTER["proc"] = proc
+    return proc
+
+
+def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
+    """Тот же контракт, что у прямого вызова, но через Pydantic AI в отдельном venv.
+
+    Подпроцессом, а не импортом: зависимости фреймворка живут в `~/.aurora/venv` и в
+    питон движка не попадают. Сломался venv — вызывающий откатится на stdlib-транспорт,
+    и работа не встанет.
+    """
+    proc = adapter_process()
+    if proc is None:
+        return None, None, "venv с pydantic-ai не установлен", 0.0
+    task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
+            "messages": payload["messages"], "timeout": timeout,
+            "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
+    t0 = time.time()
+    try:
+        proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
+        proc.stdin.flush()
+        line = proc.stdout.readline()
+        if not line:
+            ADAPTER["proc"] = None      # процесс умер — следующий вызов поднимет заново
+            return None, None, "адаптер закрылся", time.time() - t0
+        out = json.loads(line)
+    except Exception as e:  # noqa: BLE001
+        ADAPTER["proc"] = None
+        return None, None, f"адаптер не ответил: {type(e).__name__}", time.time() - t0
+    if not out.get("ok"):
+        return None, None, out.get("error", "адаптер вернул ошибку"), time.time() - t0
+    body = {"choices": [{"message": {"content": out["text"],
+                                     "reasoning": out.get("reasoning", "")},
+                         "finish_reason": "stop"}]}
+    return 200, body, "", time.time() - t0
+
+
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
     """kind: 'slots' | 'chat'. Отделён от логики кольца, чтобы тесты подменяли его целиком."""
     if kind == "slots":
         root = backend["url"].rsplit("/v1", 1)[0]
         return http_json(root + "/slots", None, backend["key"], CONNECT_TIMEOUT)
+    if ADAPTER.get("name") == "pydantic_ai":
+        st, body, err, dt = pydantic_transport(backend, payload, timeout)
+        if st == 200:
+            return st, body, err, dt
+        # Фолбэк не молчаливый: причина уходит в журнал шага, и в отчёте видно, что
+        # работали не тем адаптером, который выбран в конфиге.
+        ADAPTER["fallback_why"] = err
     return http_json(backend["url"] + "/chat/completions", payload, backend["key"], timeout)
 
 

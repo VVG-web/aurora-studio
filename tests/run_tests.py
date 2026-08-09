@@ -1965,6 +1965,118 @@ def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
 
 
 @test
+def test_set_alias_is_a_scalpel(tmp: Path):
+    """Точечная замена синонима: одна строка списка, остальное байт в байт.
+
+    Агент решает, каким должен стать синоним, но резать по живой шапке ему нельзя: модель
+    умеет только перегенерировать файл целиком и вместе с одной строкой переписывает поля,
+    теги и тело. «Не найдено» обязано быть кодом возврата, а не строкой в отчёте, — иначе
+    агент засчитает несделанную работу.
+    """
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/ALG-309-Получение-курсов.md", "Тело, которое нельзя трогать.",
+         aliases='["Курс валют", "ALG-309"]', type="concept")
+    before = (root / "AuroraKnowledgeDB/Concepts/ALG-309-Получение-курсов.md").read_text(
+        encoding="utf-8")
+
+    run("kb_fix.py", "--set-alias", "ALG-309-Получение-курсов", "--old", "Курс валют",
+        "--new", "Курсы валют (алгоритм)", "--apply", "--allow-dirty", cwd=root)
+    after = (root / "AuroraKnowledgeDB/Concepts/ALG-309-Получение-курсов.md").read_text(
+        encoding="utf-8")
+    assert "Курсы валют (алгоритм)" in after and "ALG-309" in after, after[:300]
+    assert "Тело, которое нельзя трогать." in after, "тело карточки пострадало"
+    assert before.count("\n") == after.count("\n"), "изменилось число строк — правка не точечная"
+
+    # идемпотентность: повтор ничего не портит и не дублирует
+    run("kb_fix.py", "--set-alias", "ALG-309-Получение-курсов", "--old", "Курс валют",
+        "--new", "Курсы валют (алгоритм)", "--apply", "--allow-dirty", cwd=root)
+    twice = (root / "AuroraKnowledgeDB/Concepts/ALG-309-Получение-курсов.md").read_text(
+        encoding="utf-8")
+    assert twice == after, "повторный вызов изменил файл"
+
+    # неточное имя резолвится по хвосту — модель называет карточку как видит
+    run("kb_fix.py", "--set-alias", "Получение-курсов", "--old", "ALG-309",
+        "--new", "ALG-309 (алгоритм)", "--apply", "--allow-dirty", cwd=root)
+    assert "ALG-309 (алгоритм)" in (root / "AuroraKnowledgeDB/Concepts/ALG-309-Получение-курсов.md").read_text(encoding="utf-8")
+
+    # несделанная работа — ненулевой код возврата
+    miss = run("kb_fix.py", "--set-alias", "Нет-такой-карточки", "--old", "X", "--new", "Y",
+               "--apply", "--allow-dirty", cwd=root, expect_rc=1)
+    assert "не найдена" in miss.stdout + miss.stderr
+
+
+@test
+def test_agent_runner_oracle_and_checkpoint(tmp: Path):
+    """Цикл агента: два исхода на конфликт, оракул по факту, откат одной строкой.
+
+    Оракул «ноль конфликтов любой ценой» толкал бы агента выдумывать различия там, где
+    карточки надо сливать, — в базе появлялись бы замаскированные дубли. Поэтому успех:
+    каждый конфликт разобран (уточнён или честно отложен человеку), а ошибок в базе не
+    прибавилось.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp, git=True)
+    card(root, "Processes/ALG-1-Получение-курсов.md", "Алгоритм.",
+         aliases='["Курс валют"]', type="process")
+    card(root, "Systems/Сервис-курсов.md", "Внешняя система.",
+         aliases='["Курс валют"]', type="system")
+    card(root, "Statuses/SPR-7-Статусы.md", "Справочник статусов.",
+         aliases='["SPR-7"]', type="status-model")
+    card(root, "Glossary/SPR-7-Statusy.md", "Справочник статусов.",
+         aliases='["SPR-7"]', type="glossary")
+    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+    subprocess.run(["git", "commit", "-qm", "фикстура"], cwd=str(root), check=True)
+
+    conflicts = R.read_conflicts(str(root))
+    assert len(conflicts) == 2, f"конфликты не прочитаны из отчёта движка: {conflicts}"
+
+    # модель подменяется: тест проверяет цикл и оракул, а не качество формулировок
+    def fake_call(cfg, role, messages, **kw):
+        text = messages[0]["content"]
+        if "SPR-7" in text:
+            answer = '{"verdict": "duplicate", "reason": "один справочник дважды"}'
+        else:
+            answer = ('{"verdict": "distinct", "renames": ['
+                      '{"card": "ALG-1-Получение-курсов", "new": "Курсы валют (алгоритм)"},'
+                      '{"card": "Сервис-курсов", "new": "Курсы валют (сервис)"}]}')
+        if role == "critic":
+            answer = '{"ok": true}'
+        return {"ok": True, "text": answer, "reasoning": "", "backend": 1,
+                "model": "test", "seconds": 0.1, "waited": 0, "ring": 1, "log": []}
+
+    cfg = R.AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                             "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    cp = R.checkpoint(str(root), "agent:aliases", True)
+    assert cp["ok"] and cp["sha"], "чекпойнт не создан"
+
+    res = R.run_aliases(cfg, str(root), apply=True, use_critic=True, limit=0, call=fake_call)
+    ok, why = R.verdict(res, apply=True)
+    assert ok, f"оракул не принял корректный прогон: {why}"
+    statuses = sorted(s["status"] for s in res["steps"])
+    assert statuses == ["дубль — человеку", "уточнено"], statuses
+    assert res["after"]["conflicts"] < res["before"]["conflicts"], "конфликтов не убавилось"
+
+    # дубль остался нетронутым: агент не имеет права сливать карточки
+    dup = (root / "AuroraKnowledgeDB/Statuses/SPR-7-Статусы.md").read_text(encoding="utf-8")
+    assert '"SPR-7"' in dup, "агент тронул синоним дубля вместо того, чтобы отложить"
+
+    # откат одной строкой возвращает базу к состоянию до агента
+    subprocess.run(["git", "reset", "--hard", cp["sha"]], cwd=str(root),
+                   capture_output=True, check=True)
+    back = (root / "AuroraKnowledgeDB/Processes/ALG-1-Получение-курсов.md").read_text(
+        encoding="utf-8")
+    assert "Курс валют" in back and "(алгоритм)" not in back, "откат не вернул исходное"
+
+    # отчёт называет и оракул, и путь отката
+    text = R.report(res, cp, apply=True, use_critic=True, cfg=cfg)
+    assert "Оракул:" in text and "git reset --hard" in text
+    assert "Отложено человеку" in text, "дубли не выделены в отчёте отдельно"
+
+
+@test
 def test_agent_ring_config_and_whitelist(tmp: Path):
     """Встроенный агент: кольцо бэкендов, слои конфига, белый список записи.
 
