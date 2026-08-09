@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -49,6 +50,7 @@ from datetime import date
 from difflib import get_close_matches
 
 ROOT = "AuroraKnowledgeDB"
+JSON_ONLY = -7               # сигнал main: машинный вывод напечатан, отчёт не собираем
 MERGE_REPORT: list = []      # (слитые, отказы) — для отчёта после прогона
 ARCHIVE = os.path.join(ROOT, "_archive")
 TODAY = date.today().isoformat()
@@ -909,6 +911,8 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="записать изменения (иначе dry-run)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="разрешить запись, когда в базе есть незакоммиченные правки")
+    ap.add_argument("--json", action="store_true",
+                    help="машинный список конфликтов синонимов (полный, без обрезки)")
     ap.add_argument("--report", metavar="PATH", help="сохранить отчёт в файл")
     ap.add_argument("--root", default=ROOT, help=f"корень базы (по умолчанию {ROOT})")
     a = ap.parse_args()
@@ -983,6 +987,13 @@ def main() -> int:
                 head.append(f"- … ещё {len(created) - 15}")
         if a.aliases:
             dropped, kept = plan_aliases(cards, plan, drop=a.drop_alias)
+            if a.json:
+                # Человеку список режется до 15 строк — читать длиннее незачем. Тому, кто
+                # разбирает конфликты машинно, обрезка врёт: он честно отчитается о всех
+                # увиденных, не зная, что четыре не показали.
+                print(json.dumps([{"alias": al, "cards": [short(x) for x in [w] + ls]}
+                                  for al, w, ls in kept], ensure_ascii=False))
+                return None, None, JSON_ONLY
             if a.drop_alias:
                 head.append(f"## Одинаковые alias: снято {dropped} у {len(kept)} имён")
                 for alias, winner, losers in kept[:15]:
@@ -1007,6 +1018,8 @@ def main() -> int:
         return cards, (plan, head), 0
 
     cards, packed, rc = build_plan()
+    if rc == JSON_ONLY:
+        return 0                       # машинный вывод уже напечатан, отчёт человеку не нужен
     if rc:
         return rc
     plan, head = packed
