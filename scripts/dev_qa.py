@@ -202,17 +202,25 @@ def cmd_run(what: str, apply_record: bool) -> int:
 
     print(f"# Прогон QA — {TODAY}\n")
     print("## Шаг 0 · автотесты (общий для всех сценариев)\n")
-    cp = subprocess.run([sys.executable, str(KIT / "tests/run_tests.py")],
-                        cwd=str(KIT), capture_output=True, text=True)
-    tail = [l for l in cp.stdout.splitlines() if l.strip()][-1:]
-    print(f"    {tail[0] if tail else 'нет вывода'}")
-    green = cp.returncode == 0
-    print(f"    результат: {'зелёные' if green else 'ЕСТЬ ПАДЕНИЯ — сценарии не гоняем'}\n")
-    if not green:
-        for line in cp.stdout.splitlines():
-            if line.startswith("—") or "❌" in line:
-                print(f"    {line}")
-        return 1
+    # Прогон запускает автотесты, а автотест может запустить прогон — и это бесконечность.
+    # Метка в окружении разрывает круг: вложенный вызов пропускает шаг, а не повторяет его.
+    if os.environ.get("AURORA_QA_RUNNING"):
+        print("    пропущены: прогон уже идёт внутри автотестов\n")
+        cp = None
+    else:
+        cp = subprocess.run([sys.executable, str(KIT / "tests/run_tests.py")],
+                            cwd=str(KIT), capture_output=True, text=True,
+                            env={**os.environ, "AURORA_QA_RUNNING": "1"})
+    if cp is not None:
+        tail = [l for l in cp.stdout.splitlines() if l.strip()][-1:]
+        print(f"    {tail[0] if tail else 'нет вывода'}")
+        green = cp.returncode == 0
+        print(f"    результат: {'зелёные' if green else 'ЕСТЬ ПАДЕНИЯ — сценарии не гоняем'}\n")
+        if not green:
+            for line in cp.stdout.splitlines():
+                if line.startswith("—") or "❌" in line:
+                    print(f"    {line}")
+            return 1
 
     for path, fm in chosen:
         print(f"\n## {fm.get('id')} · {fm.get('title')}\n")
@@ -323,7 +331,11 @@ def main() -> int:
     ap.add_argument("--gap", action="store_true", help="что изменено в коде и чем покрыто")
     ap.add_argument("--base", default="HEAD", metavar="REF",
                     help="база сравнения для --gap (по умолчанию HEAD)")
-    ap.add_argument("--run", metavar="ID", help="прогон сценария (или all)")
+    # Значение необязательно: «прогнать» без уточнения означает «прогнать всё». Панель
+    # запускает команду без аргумента, и требовать его значило бы падать кодом 2 на
+    # первом же нажатии кнопки.
+    ap.add_argument("--run", nargs="?", const="all", metavar="ID",
+                    help="прогон сценария; без значения — все подряд")
     ap.add_argument("--record", action="store_true",
                     help="завести журнал прогона в runs/ (для --run)")
     ap.add_argument("--new", nargs=2, metavar=("KIND", "TITLE"),
