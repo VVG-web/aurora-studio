@@ -2033,6 +2033,15 @@ def test_agent_work_rolls_back_whole(tmp: Path):
         "новая карточка пережила откат — обещание «одной строкой» не выполнено"
     assert (root / "AuroraKnowledgeDB/Concepts/Старая.md").exists(), "откат снёс лишнее"
 
+    # правка человека, сделанная пока агент работал, агенту не принадлежит
+    card(root, "Concepts/Ещё-одна.md", "Собрана агентом.", type="concept")
+    (root / "Artifacts").mkdir(exist_ok=True)
+    (root / "Artifacts" / "human-edit.md").write_text("правил человек", encoding="utf-8")
+    R.commit_result(str(root), "agent:build", "источников разобрано: 1", True)
+    left = subprocess.run(["git", "status", "--porcelain", "-uall"], cwd=str(root),
+                          capture_output=True, text=True).stdout
+    assert "human-edit" in left, "коммит агента забрал чужую работу вне базы знаний"
+
 
 @test
 def test_agent_build_refuses_cards_from_same_sections(tmp: Path):
@@ -2052,6 +2061,11 @@ def test_agent_build_refuses_cards_from_same_sections(tmp: Path):
     assert not R.check_cards([{"title": "А", "sections": "1"},
                               {"title": "Б", "sections": "2-3"}], secs), "честный разбор отклонён"
     assert "которых нет" in R.check_cards([{"title": "А", "sections": "7"}], secs)
+
+    # служебные секции — постоянный список, а не предмет спора двух моделей
+    with_service = secs + [(4, "История изменений", 200, "")]
+    assert "служебная секция" in R.check_cards([{"title": "А", "sections": "1,4"}], with_service)
+    assert not R.check_cards([{"title": "А", "sections": "1"}], with_service)
     assert "не разобраны номера" in R.check_cards([{"title": "А", "sections": "ага"}], secs)
 
 
