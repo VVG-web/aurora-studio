@@ -2077,6 +2077,173 @@ def test_build_card_refuses_section_outside_schema(tmp: Path):
 
 
 @test
+def test_build_plan_keeps_its_own_output_out_of_the_plan(tmp: Path):
+    """Карточка, собранная в Reference, не возвращается в план новым источником.
+
+    В справочниках источник — сам справочник, который вели руками. Извлечённая из него
+    карточка ложится рядом, и план начинал расти от собственной работы: разобрал
+    источник — получил источник. На живом проекте так набралось 54 фантомных источника.
+    Отличаем по `source:` в шапке.
+    """
+    root = make_project(tmp)
+    ref = root / "AuroraKnowledgeDB" / "Reference"
+    ref.mkdir(parents=True, exist_ok=True)
+    (ref / "Справочник-кодов.md").write_text(
+        "---\ntitle: \"Справочник кодов\"\ntype: reference\n---\n\n# Коды\n\n"
+        + "| Код | Значение |\n|---|---|\n" + "| A | значение |\n" * 30, encoding="utf-8")
+    (ref / "Извлечённая-тема.md").write_text(
+        "---\ntitle: \"Извлечённая тема\"\ntype: reference\n"
+        "source: \"AuroraKnowledgeDB/Reference/Справочник-кодов.md\"\n---\n\n"
+        + "# Тема\n\n" + "текст. " * 60, encoding="utf-8")
+
+    out = run("build_plan.py", "--tasks", "0", cwd=root).stdout
+    assert "Справочник-кодов.md" in out, "рукописный справочник пропал из плана"
+    assert "Извлечённая-тема.md" not in out, \
+        "карточка, собранная движком, вернулась в план новым источником"
+
+
+@test
+def test_slice_shows_agent_more_than_a_person(tmp: Path):
+    """`--slice-chars` управляет длиной превью секции.
+
+    Человек смотрит в сам источник, ему хватает строки. Агент источника не открывает и
+    судит только по этому тексту: на коротком превью он объявил пустым нормальный
+    справочник — «содержимого не видно», — и источник ушёл бы из плана навсегда.
+    """
+    root = make_project(tmp)
+    src = root / "Raw" / "project" / "источник.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Тема\n\n" + "буквы " * 400, encoding="utf-8")
+
+    short = run("build_plan.py", "--slice", "Raw/project/источник.md", cwd=root).stdout
+    long = run("build_plan.py", "--slice", "Raw/project/источник.md",
+               "--slice-chars", "900", cwd=root).stdout
+    head = lambda s: s.split("ЗАДАНИЕ", 1)[0]
+    assert len(head(long)) > len(head(short)) + 500, \
+        "длинное превью не длиннее короткого — агент по-прежнему судит вслепую"
+
+
+@test
+def test_agent_build_judges_sources_without_structure(tmp: Path):
+    """Источник без секций: пусто (отметить) или человеку — но не «всё человеку».
+
+    В живом плане сотнями лежат страницы-оглавления: заголовок и ссылка. Сваливать их
+    человеку — значит не разобрать план никогда. Отметку «пусто» подтверждает второе
+    мнение: она убирает источник из плана навсегда, и потерянное знание само не всплывёт.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp, git=True)
+    src = root / "Raw" / "project" / "оглавление.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Оглавление\n\n[ссылка](http://example.org)\n" + "\u00a0 " * 120,
+                   encoding="utf-8")
+    cfg = R.AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                             "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def answer(text):
+        return lambda c, role, msgs, **kw: {"ok": True, "text": text, "reasoning": "",
+                                            "backend": 1, "model": "test", "seconds": 0.1,
+                                            "waited": 0, "ring": 1, "log": []}
+
+    both_empty = R.solve_source(cfg, str(root), "Raw/project", "Raw/project/оглавление.md",
+                                False, True, call=answer('{"empty": "только ссылка"}'))
+    assert both_empty["status"] == "отметил бы пустым", both_empty
+
+    # мнения разошлись — источник остаётся человеку, а не уходит из плана
+    calls = iter(['{"empty": "только ссылка"}', '{"keep": "тут есть правило"}'])
+    split = R.solve_source(cfg, str(root), "Raw/project", "Raw/project/оглавление.md",
+                           False, True,
+                           call=lambda c, role, msgs, **kw: answer(next(calls))(c, role, msgs))
+    assert split["status"] == "без секций — человеку", split
+    assert "разошлись" in split["note"], split["note"]
+
+
+@test
+def test_agent_build_oracle_counts_processed_not_left(tmp: Path):
+    """Оракул сборки считает по «обработано»: «осталось» умеет расти само.
+
+    Правка источника возвращает его в план значком ♻️ — и прогон, сделавший всё верно,
+    выглядел сбойным. На живом прогоне так и вышло: «план сдвинулся на 41, а агент
+    объявил разобранными 42», причём 42 действительно ушли из плана.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    steps = [{"alias": "и", "status": "разобран", "note": "", "backends": [], "degraded": False},
+             {"alias": "т", "status": "разобран", "note": "", "backends": [], "degraded": False}]
+
+    # рядом правили источник: осталось не убавилось, но обработано выросло на два
+    grew = {"steps": steps, "total": 2, "left": 0, "stopped": "", "limited": False,
+            "before": {"left": 100, "done": 10, "errors": 5},
+            "after": {"left": 100, "done": 12, "errors": 5}}
+    ok, why = R.verdict_build(grew, apply=True)
+    assert ok, f"честный прогон признан сбойным: {why}"
+
+    # а вот объявил больше, чем засчитал движок, — это уже расхождение
+    lied = {**grew, "after": {"left": 99, "done": 11, "errors": 5}}
+    ok2, why2 = R.verdict_build(lied, apply=True)
+    assert not ok2 and "движок засчитал" in why2, why2
+
+
+@test
+def test_health_shows_where_we_are_in_building(tmp: Path):
+    """Дашборд знает, сколько источников ждут разбора и чем кончился прогон агента.
+
+    Панель показывала здоровье уже собранного и молчала о том, сколько собрать осталось:
+    главное число всей работы человек узнавал, только запустив сборку.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    root = make_project(tmp)
+    src = root / "Raw" / "project" / "источник.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Тема\n\n" + "текст. " * 60, encoding="utf-8")
+    runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "2026-08-10_1200_build.md").write_text(
+        "# Агент · сборка базы\n\n**Оракул:** ✗ не разобрано: 2\n\n"
+        "## Осталось на следующий прогон: 7\n", encoding="utf-8")
+
+    b = ck.build_progress(str(root))
+    assert b["total"] >= 1 and b["left"] >= 1, b
+    a = ck.last_agent_run(str(root))
+    assert a["task"] == "build" and a["ok"] is False and a["left"] == 7, a
+    assert "не разобрано" in a["why"], a
+
+
+@test
+def test_agent_build_walks_the_plan_not_one_partition(tmp: Path):
+    """Без --partition агент идёт по плану подряд, а не по одной партии.
+
+    Партии придуманы под контекст модели, которой человек отдаёт задание целиком. Агент
+    берёт по одному источнику: партия, где осталось лишь неподъёмное, заставляла каждый
+    следующий прогон брать то же самое и отчитываться «разобрано 0».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    seen = {}
+
+    def fake(cwd, script, args, timeout=300):
+        seen["args"] = args
+        return {"ok": True, "rc": 0, "out": "", "refused": ""}
+
+    orig, R.run_command = R.run_command, fake
+    try:
+        R.read_partition("/tmp", 0)
+        assert seen["args"] == ["--tasks", "0"], seen["args"]
+        R.read_partition("/tmp", 3)
+        assert seen["args"] == ["--partition", "3"], seen["args"]
+    finally:
+        R.run_command = orig
+
+
+@test
 def test_agent_build_refuses_cards_from_same_sections(tmp: Path):
     """Две карточки из одних секций — одно тело под двумя именами. Считается, не спрашивается.
 
