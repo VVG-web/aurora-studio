@@ -2053,6 +2053,68 @@ def test_agent_work_rolls_back_whole(tmp: Path):
 
 
 @test
+def test_context_pack_finds_by_words_not_by_phrase(tmp: Path):
+    """Пак ищет по словам запроса, а не по фразе целиком.
+
+    Живой запрос аналитика — предложение: «вернуть обеспечительный платёж после
+    аннулирования». Такой строки в базе нет никогда, и пак собирался из трёх случайных
+    карточек. Слова из неё есть на каждой второй странице, а словоформы («платежа» —
+    «платёж») должны сходиться, иначе половина базы невидима.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    C = importlib.import_module("ctx_pack")
+
+    assert C.norm("обеспечительного") == C.norm("обеспечительный"), "словоформы разошлись"
+    assert C.norm("платежа") == C.norm("платёж"), "ё и словоформа разводят пару"
+    assert "как" not in C.words("как вернуть платёж"), "стоп-слово попало в запрос"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Возврат-обеспечительного-платежа.md",
+         "Заявитель возвращает обеспечительный платёж после аннулирования документа.",
+         status="verified", type="concept")
+    card(root, "Concepts/Погода-в-городе.md", "Про погоду и ничего больше.",
+         status="verified", type="concept")
+
+    out = run("ctx_pack.py", "вернуть обеспечительный платёж после аннулирования",
+              "--no-log", cwd=root).stdout
+    assert "Возврат-обеспечительного-платежа" in out or "Возврат обеспечительного платежа" in out, \
+        "карточка по теме не найдена по свободной формулировке"
+    assert "Погода" not in out, "в пак попала карточка, не имеющая отношения к запросу"
+
+
+@test
+def test_auto_verify_skips_machine_built_cards(tmp: Path):
+    """Автоприёмка не присваивает доверие машинной нарезке.
+
+    Правило «источник доверенный» задумано под карточку, которую человек собрал из
+    договора или ТЗ. Когда карточки штампует агент, тем же правилом за один прогон
+    verified получили 224 карточки со свежей машинной нарезкой и вёрсткой исходника в
+    теле. Источник отвечает за факты, а не за то, что тема выделена верно.
+    """
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8")
+                   + "\nverify:\n  trusted_sources: [Raw/contract]\n", encoding="utf-8")
+    src = root / "Raw" / "contract" / "договор.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Договор\n\n" + "пункт. " * 60, encoding="utf-8")
+
+    card(root, "Concepts/Рукописная.md", "Человек писал сам.", type="concept",
+         status="imported", source='"Raw/contract/договор.md"')
+    run("build_plan.py", "--card", "Машинная", "--source", "Raw/contract/договор.md",
+        "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
+    machine = root / "AuroraKnowledgeDB/Concepts/Машинная.md"
+    assert "built: machine" in machine.read_text(encoding="utf-8"), "нет метки машинной сборки"
+
+    run("kb_verify.py", "--by-source", "--apply", "--allow-dirty", cwd=root)
+    assert "status: verified" in (root / "AuroraKnowledgeDB/Concepts/Рукописная.md").read_text(
+        encoding="utf-8"), "рукописная карточка из доверенного источника не принята"
+    assert "status: imported" in machine.read_text(encoding="utf-8"), \
+        "машинная нарезка получила доверие автоматически — verified перестало что-то значить"
+
+
+@test
 def test_build_card_refuses_section_outside_schema(tmp: Path):
     """`--to` принимает только разделы схемы: иначе карточка ложится в новую папку.
 

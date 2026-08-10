@@ -124,7 +124,12 @@ def source_verdicts(files: list, heads: dict) -> dict:
         return {}
     out = {}
     for path in files:
-        src = heads[path][1]
+        fm, src = heads[path]
+        # Машинная нарезка: текст перенесён дословно, но границы темы и имя выбрала
+        # модель, а вёрстка исходника осталась в теле. Доверенный источник отвечает за
+        # факты — не за то, что тема выделена верно. Такую карточку принимает человек.
+        if (fm.get("built") or "").strip().strip('"') == "machine":
+            continue
         section = os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
         hit = next((r for r in roots if src.startswith(r)), "")
         if hit:
