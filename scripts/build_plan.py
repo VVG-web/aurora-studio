@@ -349,10 +349,14 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool) -> in
               "Имя должно быть уникальным: допишите уточнение или дополните существующую.",
               file=sys.stderr)
         return 1
+    # `built: machine` — метка машинной нарезки. Текст перенесён из источника дословно,
+    # но границы темы и имя выбрала модель, а вёрстка исходника осталась в теле. Пока
+    # человек не довёл карточку, автоматическая приёмка её не берёт: доверенный источник
+    # отвечает за факты, а не за то, что тема выделена правильно.
     card = (f'---\ntitle: "{title}"\naliases: []\nstatus: imported\n'
             f'type: {SECTION_TYPE.get(into, "concept")}\nsource: "{source}"\n'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
-            f"related: []\n---\n\n# {title}\n\n{body}\n")
+            f"built: machine\nrelated: []\n---\n\n# {title}\n\n{body}\n")
     print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
           f"{len(body)} симв.")
     if not apply:
