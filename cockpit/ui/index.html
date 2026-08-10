@@ -1364,7 +1364,18 @@ async function runRoute(sc, write){
   ROUTE = null;
   if (S.project){ const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
-      renderOverview(); renderHistory(); renderCommands(); renderQuick();}); }
+      renderOverview(); renderHistory(); renderCommands(); renderQuick();});
+    // Шаги маршрута пишут в базу, но коммитит только агент — и только своё. Остальное
+    // остаётся незафиксированным, и следующий прогон смешает свою работу с этой.
+    // Панель git-операций не делает: это решение человека. Но молчать о них нечестно.
+    if (write) api("/api/projects").then(st=>{
+      const me = (st.projects||[]).find(x=>x.path===p.path);
+      if (me && me.dirty) out.append(el("div",{class:"warn",style:"margin-top:8px"},
+        `■ В проекте ${me.dirty} незакоммиченных файлов — это результат маршрута. `
+        + "Зафиксируйте его отдельным коммитом, иначе следующий прогон смешает свою "
+        + "работу с этой."));
+    });
+  }
   toast(bad ? "Маршрут остановлен на " + bad : "Маршрут пройден: " + sc.title,
         bad ? "err" : "ok");
 }
