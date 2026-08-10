@@ -409,7 +409,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.58.1";
+const UI_VERSION = "1.59.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1291,6 +1291,84 @@ async function fire(apply){
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
   poll(res.job, 0, (r.cmd + " " + args.join(" ")).trim());
 }
+/* ---------------- маршрут: сценарий одной кнопкой ----------------
+
+   Цикл обновления базы — четырнадцать команд, и почти каждая сначала показывает
+   план, а потом просит нажать ещё раз с --apply. Работы там пятнадцать секунд, а
+   кликов — под тридцать, и порядок всегда один и тот же. Панель знает и шаги, и
+   флаги: пусть проходит их сама, а человек смотрит и вмешивается, когда надо.
+
+   Код возврата 1 — это «команда отработала и нашла, что чинить», он маршрут не
+   останавливает. Останавливает 2 и выше: команда не отработала, и следующие шаги
+   пойдут по неверному состоянию. */
+let ROUTE = null;
+
+async function runStep(cmd, args){
+  const r = S.state.commands.find(x=>x.cmd===cmd);
+  if (!r || !r.runnable) return {rc:0, skipped:true};
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project: (isEngineCmd(r) ? "" : S.project.path), cmd, args})});
+  if (!res.job) return {rc:2};
+  const out = $("#consoleOut");
+  let since = 0;
+  for (;;){
+    const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
+    (d.lines||[]).forEach(l=>out.append(el("div",{class:"dim"}, l)));
+    out.scrollTop = out.scrollHeight;
+    since = d.next;
+    if (d.done) return {rc:d.rc};
+    await new Promise(ok=>setTimeout(ok, 450));
+  }
+}
+
+async function runRoute(sc, write){
+  if (!S.project) return toast("Сначала выберите проект","warn");
+  const steps = sc.steps.filter(st=>!st.manual)
+    .map(st=>({cmd:st.cmd, why:st.why,
+               args:(st.flags||[]).filter(f=>write || f!=="--apply")}))
+    .filter(st=>{ const r = S.state.commands.find(x=>x.cmd===st.cmd); return r && r.runnable; });
+  const writes = steps.filter(st=>st.args.includes("--apply"));
+  if (write && writes.length && !confirm(
+      `Маршрут «${sc.title}» — ${steps.length} шагов, из них пишут в проект ${writes.length}:\n\n`
+      + writes.map(s=>"  " + s.cmd + " " + s.args.join(" ")).join("\n")
+      + "\n\nВсё, что они сделают, видно в git: `git diff` покажет, `git reset --hard` вернёт.\n"
+      + "Пройти маршрут?")) return;
+
+  show("console");
+  const out = $("#consoleOut"); out.innerHTML = "";
+  $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
+  ROUTE = {title:sc.title, done:0, total:steps.length, failed:null};
+  const summary = [];
+  for (const st of steps){
+    ROUTE.done++;
+    $("#consoleCmd").textContent = `${sc.title} · шаг ${ROUTE.done} из ${ROUTE.total}: `
+      + st.cmd + " " + st.args.join(" ");
+    $("#consoleRc").textContent = "выполняется…"; $("#consoleRc").className = "chip";
+    out.append(el("div",{class:"ok",style:"margin-top:10px"},
+      `▸ шаг ${ROUTE.done}/${ROUTE.total} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
+    const {rc, skipped} = await runStep(st.cmd, st.args);
+    summary.push({cmd:st.cmd, rc, skipped});
+    if (rc >= 2){ ROUTE.failed = st.cmd; break; }
+  }
+  const bad = ROUTE.failed;
+  $("#consoleCmd").textContent = `${sc.title} — ${bad ? "остановлен" : "пройден"}`;
+  $("#consoleRc").textContent = bad ? "остановлен на " + bad : "пройден: шагов " + ROUTE.done;
+  $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
+  out.append(el("div",{class:bad?"err":"ok",style:"margin-top:12px"},
+    bad ? `■ Маршрут остановлен на «${bad}»: команда не отработала (код 2 и выше). `
+        + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
+        + "без вреда."
+        : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
+  summary.filter(s=>s.rc===1).forEach(s=>out.append(el("div",{class:"warn"},
+    `  ${s.cmd} — код 1: отработала и нашла, что чинить (это не ошибка маршрута)`)));
+  ROUTE = null;
+  if (S.project){ const p = S.project;
+    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
+      renderOverview(); renderHistory(); renderCommands(); renderQuick();}); }
+  toast(bad ? "Маршрут остановлен на " + bad : "Маршрут пройден: " + sc.title,
+        bad ? "err" : "ok");
+}
+
 let CONSOLE_LINES = [];      // строки текущего прогона: из них собирается задание
 async function poll(id, since, label){
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
@@ -1737,10 +1815,17 @@ async function renderQuick(){
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
   box.innerHTML = "";
   (d.scenarios||[]).forEach(sc => {
+    const auto = sc.steps.filter(s=>!s.manual).length;
     const card = el("div",{class:"card",style:"padding:20px;margin-bottom:16px"},
       el("div",{class:"row"}, el("b",{style:"font-size:15px"}, sc.title),
         sc.when ? el("span",{class:"chip"}, sc.when) : null,
-        el("span",{class:"chip"}, sc.steps.length + " шагов")));
+        el("span",{class:"chip"}, sc.steps.length + " шагов"),
+        el("div",{style:"flex:1"}),
+        // Порядок шагов один и тот же всегда, флаги известны — нажимать их по одному
+        // человеку незачем. Слева «посмотреть» (те же шаги без записи), справа проход.
+        auto ? el("button",{class:"btn sm",onclick:()=>runRoute(sc,false)},"Посмотреть") : null,
+        auto ? el("button",{class:"btn sm primary",onclick:()=>runRoute(sc,true)},
+                 "Пройти маршрут") : null));
     sc.steps.forEach((st, i) => {
       const num = el("span",{class:"chip mono",style:"flex:none;width:26px;justify-content:center"},
         String(i+1));

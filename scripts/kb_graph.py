@@ -363,6 +363,9 @@ def main() -> int:
                     help="перенести связи графа в поле related: карточек базы")
     ap.add_argument("--apply", action="store_true",
                     help="записать (иначе dry-run); работает вместе с --cards")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="писать по грязному дереву (маршрут «Быстрого старта» уже "
+                         "зафиксировал состояние до себя)")
     ap.add_argument("--max-related", type=int, default=30, metavar="N",
                     help="сколько связей писать в одну карточку (по умолчанию 30)")
     ap.add_argument("--report", dest="report_path", help="сохранить отчёт в файл")
@@ -389,7 +392,7 @@ def main() -> int:
             print(f"kb_graph: нет {KB_DIR}/ — связывать нечего", file=sys.stderr)
             return 1
         pairs = card_links(g, hubs, a.conf, a.jira)
-        if a.apply and not git_guard(KB_DIR, False, "перенос связей в карточки"):
+        if a.apply and not git_guard(KB_DIR, a.allow_dirty, "перенос связей в карточки"):
             return 1
         st = apply_card_links(pairs, a.apply, a.max_related)
         print(f"# Связи в карточках — {TODAY}\n")

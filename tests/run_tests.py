@@ -1135,6 +1135,15 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
             if not st.get("manual"):
                 assert st["cmd"] in known, \
                     f"сценарий {s['id']} зовёт несуществующую команду {st['cmd']}"
+                # Маршрут проходится одной кнопкой: панель подставляет флаги из файла,
+                # не спрашивая человека. Флаг, которого у команды нет, — это остановка
+                # маршрута на середине с «unrecognized arguments», причём в проекте,
+                # где предыдущие шаги уже записали половину работы.
+                row = {r["cmd"]: r for r in ck.registry()}[st["cmd"]]
+                for flag in st.get("flags", []):
+                    if flag.startswith("--"):
+                        assert flag in row.get("flags", []), (
+                            f"сценарий {s['id']}: у {st['cmd']} нет флага {flag}")
             else:
                 # шаг без кнопки обязан говорить, что сделать вместо неё
                 assert st.get("skill", "").startswith("/aurora-vault"), \
@@ -2041,6 +2050,30 @@ def test_agent_work_rolls_back_whole(tmp: Path):
     left = subprocess.run(["git", "status", "--porcelain", "-uall"], cwd=str(root),
                           capture_output=True, text=True).stdout
     assert "human-edit" in left, "коммит агента забрал чужую работу вне базы знаний"
+
+
+@test
+def test_build_card_refuses_section_outside_schema(tmp: Path):
+    """`--to` принимает только разделы схемы: иначе карточка ложится в новую папку.
+
+    На живом прогоне агент завёл `Models`, `Модель данных` и `Требования` — движок
+    послушно создал папки, а doctor нашёл их блокером уже после того, как карточки
+    туда легли. Схему базы расширяют релизом кита, а не значением флага.
+    """
+    root = make_project(tmp)
+    src = root / "Raw" / "project" / "источник.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Тема\n\n" + "текст. " * 60, encoding="utf-8")
+
+    bad = run("build_plan.py", "--card", "Карточка", "--source", "Raw/project/источник.md",
+              "--sections", "1", "--to", "Модель данных", "--apply", cwd=root, expect_rc=1)
+    assert "нет в схеме" in bad.stdout + bad.stderr
+    assert not (root / "AuroraKnowledgeDB" / "Модель данных").exists(), \
+        "папка вне схемы всё равно создалась"
+
+    run("build_plan.py", "--card", "Карточка", "--source", "Raw/project/источник.md",
+        "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
+    assert (root / "AuroraKnowledgeDB/Concepts/Карточка.md").exists()
 
 
 @test
