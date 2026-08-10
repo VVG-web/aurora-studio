@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.57.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.58.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -36,13 +36,13 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `kb:build` (`build`) | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью; `--slice` режет источник на секции, `--card` собирает карточку из них (текст переносит скрипт), `--reopen` и `--thin` возвращают в план недоразобранное | скрипт+модель | `build_plan.py` | `--budget --max-files --partition --tasks --from --done --cards --empty --status --slice --card --source --sections --to --thin --reopen --group --apply` | 1.0.0 |
+| `kb:build` (`build`) | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью; `--slice` режет источник на секции, `--card` собирает карточку из них (текст переносит скрипт), `--reopen` и `--thin` возвращают в план недоразобранное | скрипт+модель | `build_plan.py` | `--budget --max-files --partition --tasks --from --done --cards --empty --status --slice --slice-chars --card --source --sections --to --thin --reopen --group --apply` | 1.0.0 |
 | `kb:ingest-office` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | скрипт | `office_ingest.py` `[paths ...]` | `--root --converter --force --dry-run` | 1.5.0 |
 | `kb:ingest` (`ingest, ingest-raw, ingest-meeting, ingest-tz`) | документ из Raw/ → карточки со ссылкой на первоисточник; вид входа определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты | модель | `workflows.md` | — | 1.0.0 |
 | `kb:queue` (`queue`) | очередь верификации: что проверять первым по связям и попаданию в артефакты | скрипт | `aurora_stats.py --queue` | `--limit --theme --json --append-metrics --report` | 1.3.0 |
 | `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `[selector]` | `--owner --months --by-source --stubs --by-links --auto --by-jira --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
-| `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --set-alias --old --new --drop-alias --dupes --merge --merge-all --apply --allow-dirty --report --root` | 1.3.0 |
-| `kb:dedupe` | двойники: поиск, пакетное слияние по правилу (`--merge-all`) и разбор одной пары (`--merge` «оставить» «убрать») | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --set-alias --old --new --drop-alias --all --merge --merge-all --apply --allow-dirty --report --root` | 1.3.0 |
+| `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --set-alias --old --new --drop-alias --dupes --merge --merge-all --apply --allow-dirty --json --report --root` | 1.3.0 |
+| `kb:dedupe` | двойники: поиск, пакетное слияние по правилу (`--merge-all`) и разбор одной пары (`--merge` «оставить» «убрать») | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --set-alias --old --new --drop-alias --all --merge --merge-all --apply --allow-dirty --json --report --root` | 1.3.0 |
 | `kb:moc` (`moc`) | карты содержания по группировкам (термины, понятия, роли, данные…) и список брошенных карточек | скрипт | `kb_moc.py` | `--apply --suggest --orphans --allow-dirty` | 1.32.0 |
 | `kb:index` (`index`) | регенерация `_index.md` разделов; рукотворные оглавления не трогает | скрипт | `kb_index.py` | `--section --root-index --apply --force` | 1.9.4 |
 | `kb:scrub` (`scrub`) | персональные данные: найти и закрыть маркерами; режим — `privacy.scrub` | скрипт | `kb_scrub.py` `[path]` | `--include-raw --force --mask-contacts --apply --allow-dirty` | 1.9.6 |
@@ -98,7 +98,8 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `agent:aliases` | агент разбирает конфликты синонимов: уточняет там, где карточки разные, и откладывает человеку дубли; правит только через команды движка | скрипт+модель | `agent_runner.py --task aliases` | `--apply --critic --limit --no-checkpoint` | 1.57.0 |
+| `agent:aliases` | агент разбирает конфликты синонимов: уточняет там, где карточки разные, и откладывает человеку дубли; правит только через команды движка | скрипт+модель | `agent_runner.py --task aliases` | `--apply --critic --limit --partition --no-checkpoint` | 1.57.0 |
+| `agent:build` | агент разбирает партию источников на карточки: раскадровка, границы тем, имена, отметка о разборе; тело карточек переносит движок, а не модель | скрипт+модель | `agent_runner.py --task build` | `--apply --critic --limit --partition --no-checkpoint` | 1.58.0 |
 | `agent:ping` | встроенный агент: проверить цепочку моделей — каждый бэкенд живым запросом, пустой ответ считается отказом | скрипт | `agent_core.py --ping` | `--show --venv-status --venv-install --json` | 1.56.0 |
 
 ## `dev: — разработка движка (только в ките)`

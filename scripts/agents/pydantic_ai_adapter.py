@@ -54,6 +54,11 @@ def main() -> int:
             # thinking у шлюза включается нестандартным полем шаблона — прокидываем как есть
             settings = {"extra_body": {"chat_template_kwargs":
                                        {"enable_thinking": bool(task.get("thinking"))}}}
+            # Таймаут считает движок (у него дедлайн шага и бюджет прогона). Без передачи
+            # действовал внутренний по умолчанию — и рассуждающая модель на 122b упиралась
+            # в него, а прогон уходил на stdlib-фолбэк, теряя валидацию ответа.
+            if task.get("timeout"):
+                settings["timeout"] = float(task["timeout"])
             result = agents[key].run_sync(
                 "\n\n".join(m["content"] for m in task["messages"]),
                 model_settings=settings)

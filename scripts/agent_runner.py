@@ -7,7 +7,12 @@
 
   python3 .opencode/scripts/agent_runner.py --task aliases          # что будет сделано
   python3 .opencode/scripts/agent_runner.py --task aliases --apply  # с записью в базу
-  python3 .opencode/scripts/agent_runner.py --task aliases --apply --critic
+  python3 .opencode/scripts/agent_runner.py --task build --partition 1 --apply --critic
+
+Две задачи, устроенные одинаково:
+
+    aliases  разобрать конфликты синонимов — уточнить или отложить дубль человеку
+    build    разобрать партию источников на карточки: раскадровка, границы тем, имена
 
 Устройство цикла — три роли и никакой веры в самооценку модели:
 
@@ -25,7 +30,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 и всё, что сделает агент, откатывается одной строкой. Без этого правки агента смешались
 бы с незакоммиченной работой (в живом проекте её бывают сотни файлов).
 
-Панель: `agent:aliases`
+Панель: `agent:aliases` · `agent:build`
 """
 from __future__ import annotations
 
@@ -80,6 +85,25 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
     sha = git("rev-parse", "HEAD", cwd=cwd)[1]
     return {"ok": True, "sha": sha, "committed": len(dirty.splitlines()),
             "why": "работа человека зафиксирована" if dirty else "дерево было чистым"}
+
+
+def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
+    """Зафиксировать работу агента отдельным коммитом — иначе откат остаётся обещанием.
+
+    `git reset --hard <чекпойнт>` не трогает файлы, которых git ещё не видел, а сборка
+    карточек создаёт именно новые файлы. На живом прогоне это вышло боком дважды: откат
+    оставил карточки в базе, а следующий чекпойнт закоммитил их как работу человека.
+    Работа агента, лежащая отдельным коммитом поверх чекпойнта, снимается честно и целиком.
+    """
+    if not enabled:
+        return {"ok": False, "why": "коммит результата выключен вместе с чекпойнтом"}
+    if not git("status", "--porcelain", cwd=cwd)[1]:
+        return {"ok": True, "sha": "", "why": "агент ничего не изменил"}
+    git("add", "-A", cwd=cwd)
+    rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", cwd=cwd)
+    if rc != 0:
+        return {"ok": False, "why": f"коммит результата не сделан: {err[:200]}"}
+    return {"ok": True, "sha": git("rev-parse", "HEAD", cwd=cwd)[1], "why": "работа агента зафиксирована"}
 
 
 # ------------------------------------------------------------------ вызов команд
@@ -138,15 +162,21 @@ PROMPT_WORKER = """Ты разбираешь конфликт синонимов
 Синоним «{alias}» принадлежит сразу нескольким карточкам, поэтому ссылка по нему
 неоднозначна — движок не может выбрать, какая карточка имелась в виду.
 
-Карточки (в скобках — точное имя, которым её надо называть в ответе):
+Карточки — имя, тип и начало тела (в скобках — точное имя для ответа):
 {cards}
+
+Суди по СОДЕРЖАНИЮ карточек, а не по их именам: имена похожи именно потому, что кто-то
+не смог их различить.
 
 Твоё решение — одно из двух, и это главный выбор:
 
 1. РАЗНЫЕ сущности (например, алгоритм и система, требование и экранная форма). Тогда
    уточни синоним у каждой карточки так, чтобы он отражал именно её. Уточнение должно
    быть осмысленным: «Курс валют ЦБ (сервис)» — годится, «SPR-001 (Statuses)» — нет,
-   это маскировка названием папки, а не смысл.
+   это маскировка названием папки, а не смысл. Различать кодом карточки («… (код 005)»,
+   «… (REJ_007)») запрещено: код ничего не говорит человеку, который ищет знание.
+   Уточнение должно называть то, ЧЕМ карточки отличаются по существу: этап процесса,
+   вид нарушения, роль в системе.
 
 2. ОДНА И ТА ЖЕ сущность, записанная дважды (одно определение, один справочник, один
    процесс — просто в разных разделах или на разных языках). Тогда НЕ выдумывай
@@ -197,6 +227,23 @@ def parse_json(text: str) -> dict | None:
         return None
 
 
+def card_excerpt(cwd: str, rel: str, chars: int = 700) -> str:
+    """Тип, заголовок и начало тела карточки — то, по чему только и можно судить о смысле."""
+    path = Path(cwd) / "AuroraKnowledgeDB" / f"{rel}.md"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    kind = re.search(r"^type:\s*(.+)$", text, re.M)
+    body = text.split("\n---", 2)[-1] if text.startswith("---") else text
+    body = re.sub(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]", r"\1", body)      # ссылки мешают читать
+    body = "\n".join(l for l in body.splitlines() if l.strip())[:chars]
+    return (f"  тип: {kind.group(1).strip()}\n" if kind else "") + \
+           "\n".join("  " + l for l in body.splitlines())
+
+
 def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
                    use_critic: bool, call=None, deadline: float | None = None) -> dict:
     """Разобрать один конфликт. → {status, note, backend, model, degraded}."""
@@ -204,7 +251,12 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
     # Модель называет карточку так, как увидела её в списке, — поэтому точное имя даём
     # отдельно и просим копировать дословно: «Получение-курсов-валют» вместо
     # «ALG-309-Получение-курсов-валют» стоило одного молча несделанного шага.
-    listing = "\n".join(f"- {c}  (точное имя: {c.rsplit('/', 1)[-1]})" for c in cards)
+    #
+    # И главное — тело карточки. По одним именам файлов различить смысл нельзя, и первый
+    # живой прогон это показал: получались «(код 005)» и «(код 007)» — различение
+    # техническим кодом вместо смысла, то есть ровно тот ai-slop, которого мы избегаем.
+    listing = "\n".join(f"- {c}  (точное имя: {c.rsplit('/', 1)[-1]})\n{card_excerpt(cwd, c)}"
+                        for c in cards)
     step = {"alias": alias, "cards": cards, "status": "", "note": "",
             "backends": [], "degraded": False}
 
@@ -231,7 +283,7 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
             verdict = parse_json(c["text"]) or {}
             if verdict.get("ok") is False:
                 step.update(status="отклонено критиком",
-                            note=(verdict.get("why") or "критик не согласен")[:160])
+                            note=(verdict.get("why") or "критик не согласен"))
                 return step
 
     if proposal["verdict"] == "duplicate":
@@ -264,6 +316,292 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
     return step
 
 
+# ------------------------------------------------------------------ задача: сборка
+
+SOURCE_RE = re.compile(r"^- (?:🆕|♻️)\s*\[([^\]]+)\]\s*(.+?)\s*\((\d+) КБ\)\s*$", re.M)
+SECTION_RE = re.compile(r"^\s{2}(\d+)\.\s+(.+?)\n\s+(\d+) симв\.\s*·\s*(.*)$", re.M)
+
+
+def read_partition(cwd: str, partition: int) -> list:
+    """[(группа, путь, КБ)] — партия источников из плана движка."""
+    r = run_command(cwd, "build_plan.py", ["--partition", str(partition)])
+    return [(g, path, int(kb)) for g, path, kb in SOURCE_RE.findall(r["out"])]
+
+
+def read_sections(cwd: str, source: str) -> list:
+    """Раскадровка источника: [(номер, заголовок, символов, превью)]."""
+    # Агент не открывает источник — он судит только по этому тексту. На коротком превью
+    # первый же прогон объявил пустым нормальный справочник: «содержимого не видно».
+    r = run_command(cwd, "build_plan.py", ["--slice", source, "--slice-chars", "900"])
+    head = r["out"].split("ЗАДАНИЕ АССИСТЕНТУ", 1)[0]
+    return [(int(n), title.strip(), int(size), prev.strip())
+            for n, title, size, prev in SECTION_RE.findall(head)]
+
+
+def build_left(cwd: str) -> int:
+    """Оракул сборки: сколько источников ещё не разобрано — по счёту движка."""
+    r = run_command(cwd, "build_plan.py", ["--status"])
+    m = re.search(r"осталось:\s*(\d+)", r["out"])
+    return int(m.group(1)) if m else -1
+
+
+PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
+
+Источник: {source}
+Ниже — его секции (номер, заголовок, размер, начало текста):
+
+{sections}
+
+Тело карточек переносит скрипт — писать текст не нужно. Реши ровно две вещи:
+**где границы темы** и **как она называется**.
+
+Правила, по которым тебя будут проверять:
+- одна карточка — одна атомарная тема. Пересказ файла целиком карточкой не является;
+- каждая секция попадает максимум в ОДНУ карточку. Две карточки из одних и тех же
+  секций — это одно тело под двумя именами, разбор с таким пересечением отклоняется;
+- имя карточки — то, что человек будет искать: суть темы, а не заголовок секции и не
+  имя файла. Никаких «Часть 1», «Раздел 3», «Таблица 2»;
+- секции, которые знанием не являются (оглавление, история изменений, служебные
+  таблицы, ссылки «см. рисунок»), просто не включай ни в одну карточку;
+- раздел базы выбирай по существу: Concepts — понятия и правила, Processes — этапы
+  и процедуры, Glossary — термины, Systems — системы и интеграции, Roles — роли,
+  Statuses — статусы и их переходы, Reference — справочники и таблицы значений,
+  Requirements — требования.
+
+Ответь строго одним JSON-объектом, без пояснений вокруг:
+
+{{"cards": [{{"title": "<имя карточки>", "sections": "1,3-5", "to": "<раздел>"}}]}}
+
+Отмечать источник пустым можно ТОЛЬКО если в секциях действительно нет знания:
+пустая страница, одно оглавление, только служебная информация. Текст секций показан
+не целиком — обрыв на «…» это не отсутствие содержимого, а показ по первым символам.
+Если тема видна — собирай карточку.
+
+{{"empty": "<почему знания не вышло, одна фраза>"}}"""
+
+PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источника на карточки ДО записи в базу.
+
+Источник: {source}
+Секции:
+{sections}
+
+Предложенный разбор:
+{proposal}
+
+Проверь:
+1. Нет ли карточки, которая просто пересказывает файл целиком (все секции в одной
+   карточке при разных темах — это она).
+2. Осмысленны ли имена: по имени должно быть понятно, какое знание внутри. «Таблица 1»,
+   «Раздел 2», имя файла — не годятся.
+3. Не попали ли в карточки служебные секции (оглавление, история изменений).
+4. Подходит ли раздел базы каждой карточке.
+
+Ответь строго JSON: {{"ok": true}} или {{"ok": false, "why": "<что не так, одна фраза>"}}"""
+
+
+def section_set(spec: str) -> set:
+    """«1,3-5» → {1,3,4,5}. Мусор молча пропускаем: его поймает проверка на пустоту."""
+    out = set()
+    for part in str(spec).replace(" ", "").split(","):
+        if "-" in part:
+            a, _, b = part.partition("-")
+            if a.isdigit() and b.isdigit():
+                out.update(range(int(a), int(b) + 1))
+        elif part.isdigit():
+            out.add(int(part))
+    return out
+
+
+def check_cards(cards: list, sections: list) -> str:
+    """Проверить разбор арифметикой, а не мнением модели. → причина отказа или пусто.
+
+    Первый живой прогон собрал две карточки из одних и тех же секций 3,4: разные имена,
+    дословно одинаковое тело. Критик этого не заметил — и не должен был: пересечение
+    множеств проверяется счётом, спрашивать об этом модель незачем.
+    """
+    known = {n for n, _t, _s, _p in sections}
+    seen: dict = {}
+    for c in cards:
+        nums = section_set(c.get("sections", ""))
+        if not nums:
+            return f"у карточки «{c.get('title')}» не разобраны номера секций"
+        unknown = nums - known
+        if unknown:
+            return (f"карточка «{c.get('title')}» ссылается на секции, которых нет: "
+                    + ", ".join(str(n) for n in sorted(unknown)))
+        for n in nums:
+            if n in seen:
+                return (f"секция {n} попала и в «{seen[n]}», и в «{c.get('title')}» — "
+                        "это две карточки с одним телом, а не две темы")
+            seen[n] = c.get("title")
+    return ""
+
+
+def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
+                 use_critic: bool, call=None, deadline: float | None = None) -> dict:
+    """Разобрать один источник на карточки. → шаг для отчёта."""
+    call = call or AG.call_role
+    step = {"alias": source.rsplit("/", 1)[-1], "source": source, "group": group,
+            "status": "", "note": "", "backends": [], "degraded": False}
+    sections = read_sections(cwd, source)
+    if not sections:
+        # Источник без структуры разбирают чтением и пишут карточку руками — а писать
+        # тела карточек агенту запрещено. Честно отдаём человеку, а не имитируем разбор.
+        step.update(status="без секций — человеку",
+                    note="раскадровка пуста: карточку надо писать руками")
+        return step
+    listing = "\n".join(f"  {n}. {title} ({size} симв.)\n     {prev}"
+                        for n, title, size, prev in sections)
+
+    prompt = PROMPT_BUILD.format(source=source, sections=listing)
+    attempt, note_back = 0, ""
+    while True:
+        attempt += 1
+        r = call(cfg, "worker", [{"role": "user", "content": prompt + note_back}],
+                 deadline=deadline)
+        if not r["ok"]:
+            step.update(status="сбой", note="; ".join(r["log"][-2:]))
+            return step
+        step["backends"].append((r["backend"], r["model"]))
+        step["degraded"] = step["degraded"] or r["backend"] != 1
+        plan = parse_json(r["text"])
+        if not plan or not (plan.get("cards") or plan.get("empty")):
+            step.update(status="сбой", note="ответ модели не разобран как JSON")
+            return step
+        if plan.get("empty"):
+            break
+        cards = [c for c in plan["cards"] if c.get("title") and c.get("sections")]
+        if not cards:
+            step.update(status="сбой", note="карточки предложены без имени или секций")
+            return step
+        why = check_cards(cards, sections)
+        if not why and use_critic:
+            c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
+                source=source, sections=listing,
+                proposal=json.dumps(cards, ensure_ascii=False))}], deadline=deadline)
+            if c["ok"]:
+                step["backends"].append((c["backend"], c["model"]))
+                step["degraded"] = step["degraded"] or c["backend"] != 1
+                v = parse_json(c["text"]) or {}
+                if v.get("ok") is False:
+                    why = v.get("why") or "критик не согласен"
+        if not why:
+            break
+        # Замечание — это не приговор, а обратная связь: разбор бывает верным по сути и
+        # неудачным по нарезке. Вторая попытка идёт с текстом замечания, третья не идёт:
+        # если модель не услышала конкретное указание дважды, слушать её дальше незачем.
+        if attempt >= 2:
+            step.update(status="отклонено проверкой" if "секц" in why else "отклонено критиком",
+                        note=why)
+            return step
+        note_back = ("\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА. Замечание: " + why +
+                     "\nИсправь именно это и ответь заново тем же JSON.")
+
+    if plan.get("empty"):
+        note = str(plan["empty"])[:200]
+        if apply:
+            res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
+            if not res["ok"]:
+                step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-160:]}")
+                return step
+        step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
+        return step
+
+    made = []
+    for card in cards:
+        args = ["--card", str(card["title"]), "--source", source,
+                "--sections", str(card["sections"]), "--to", str(card.get("to") or "Concepts")]
+        if apply:
+            args.append("--apply")
+        res = run_command(cwd, "build_plan.py", args)
+        if res.get("refused"):
+            step.update(status="сбой", note="команда отклонена: " + res["refused"])
+            return step
+        if not res["ok"]:
+            step.update(status="сбой", note=f"карточка не собрана: {res['out'][-200:]}")
+            return step
+        made.append(f"«{card['title']}» ← секции {card['sections']} → {card.get('to') or 'Concepts'}")
+
+    if apply:
+        res = run_command(cwd, "build_plan.py", ["--done", source, "--cards", str(len(made))])
+        if not res["ok"]:
+            # Отметка проверяется по базе: не поставилась — карточек в базе нет,
+            # и считать источник разобранным нельзя.
+            step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-200:]}")
+            return step
+    step.update(status="разобран" if apply else "разобрал бы", note="; ".join(made))
+    return step
+
+
+def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
+              partition: int = 1, call=None) -> dict:
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    before_left, before_errors = build_left(cwd), lint_errors(cwd)
+    sources = read_partition(cwd, partition)
+    if limit:
+        sources = sources[:limit]
+
+    steps, fails, stopped = [], {}, ""
+    for group, source, _kb in sources:
+        if time.time() > budget:
+            stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
+            break
+        if len(steps) >= cfg["max_steps"]:
+            stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
+            break
+        step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
+                            deadline=min(budget, time.time() + cfg["request_timeout"]))
+        steps.append(step)
+        if step["status"] == "сбой":
+            key = step["note"][:60]
+            fails[key] = fails.get(key, 0) + 1
+            if fails[key] >= SAME_FAIL_LIMIT:
+                steps.append({"alias": "—", "status": "стоп", "backends": [], "degraded": False,
+                              "note": f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"})
+                break
+            if cfg["debug"]:
+                steps.append({"alias": "—", "status": "стоп", "backends": [], "degraded": False,
+                              "note": "AURORA_AGENT_DEBUG=1: стоп на первой ошибке"})
+                break
+
+    return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build",
+            "before": {"left": before_left, "errors": before_errors},
+            "after": {"left": build_left(cwd) if apply else before_left,
+                      "errors": lint_errors(cwd) if apply else before_errors},
+            "total": len(sources), "partition": partition, "limited": bool(limit),
+            "stopped": stopped,
+            "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
+
+
+def verdict_build(res: dict, apply: bool) -> tuple:
+    """Оракул сборки: разобранное посчитал движок, а не модель.
+
+    Успех — не «агент отчитался», а «источников в плане стало меньше ровно на столько,
+    сколько он объявил разобранными, и ошибок в базе не прибавилось».
+    """
+    done = [s for s in res["steps"] if s["status"] in ("разобран", "разобрал бы",
+                                                       "пусто — отмечено", "отметил бы пустым")]
+    human = [s for s in res["steps"] if s["status"] == "без секций — человеку"]
+    bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком",
+                                                      "отклонено проверкой", "стоп")]
+    grew = apply and res["after"]["errors"] > res["before"]["errors"]
+    moved = res["before"]["left"] - res["after"]["left"]
+    lied = apply and moved != len(done)
+    ok = not bad and not grew and not lied
+    why = []
+    if lied:
+        why.append(f"план сдвинулся на {moved}, а агент объявил разобранными {len(done)}")
+    if grew:
+        why.append(f"ошибок в базе стало больше: {res['before']['errors']} → "
+                   f"{res['after']['errors']}")
+    if bad:
+        why.append(f"не разобрано: {len(bad)}")
+    if res.get("left") and res.get("stopped"):
+        why.append(f"разобрано {len(done) + len(human)} из {res['total']}, {res['stopped']}")
+    return ok, "; ".join(why) or f"источников разобрано: {len(done)}, ошибок не прибавилось"
+
+
 # ------------------------------------------------------------------ прогон
 
 def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
@@ -275,16 +613,13 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     if limit:
         conflicts = conflicts[:limit]
 
-    steps, fails = [], {}
+    steps, fails, stopped = [], {}, ""
     for alias, cards in conflicts:
         if time.time() > budget:
-            steps.append({"alias": alias, "status": "не начат", "note": "бюджет исчерпан",
-                          "backends": [], "degraded": False})
+            stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
             break
         if len(steps) >= cfg["max_steps"]:
-            steps.append({"alias": alias, "status": "не начат",
-                          "note": f"лимит шагов {cfg['max_steps']}", "backends": [],
-                          "degraded": False})
+            stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
             break
         step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
                               deadline=min(budget, time.time() + cfg["request_timeout"]))
@@ -308,7 +643,9 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     return {"steps": steps, "seconds": round(time.time() - started, 1),
             "before": {"conflicts": before_conflicts, "errors": before_errors},
             "after": {"conflicts": after_conflicts, "errors": after_errors},
-            "total_conflicts": len(conflicts), "limited": bool(limit)}
+            "total_conflicts": len(conflicts), "limited": bool(limit),
+            "stopped": stopped, "left": len(conflicts) - len(
+                [s for s in steps if s["status"] != "стоп"])}
 
 
 def verdict(res: dict, apply: bool) -> tuple:
@@ -319,6 +656,18 @@ def verdict(res: dict, apply: bool) -> tuple:
     «каждый конфликт разобран»: уточнён или честно отложен человеку.
     """
     done = [s for s in res["steps"] if s["status"] in ("уточнено", "уточнил бы")]
+    rej = [s for s in res["steps"] if s["status"] == "отклонено критиком"]
+    if rej:
+        L += ["", "## Не записано: критик не согласился", "",
+              "Критик проверяет предложение ДО записи — эти конфликты остались как были. "
+              "Повторный прогон возьмётся за них заново; если критик отклоняет их и дальше, "
+              "разбирайтесь глазами: обычно это дубль, который worker не признал.", ""]
+        L += [f"- «{s['alias']}»: {s['note']}" for s in rej]
+    if res.get("left"):
+        L += ["", f"## Осталось на следующий прогон: {res['left']}", "",
+              f"Прогон остановился — {res['stopped']}. Это не ошибка: конфликты "
+              "независимы, и агент разбирает их по одному. Запустите `agent:aliases` "
+              "ещё раз — он продолжит с оставшихся."]
     dup = [s for s in res["steps"] if s["status"] == "дубль — человеку"]
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком", "стоп",
                                                       "не начат")]
@@ -326,9 +675,13 @@ def verdict(res: dict, apply: bool) -> tuple:
     # Сколько конфликтов агенту вообще показали. Если меньше, чем видит линтер, — это не
     # успех, а слепое пятно: отчёт «каждый разобран» о неполном списке хуже, чем провал.
     blind = 0 if res.get("limited") else max(0, res["before"]["conflicts"] - res["total_conflicts"])
+    left = res.get("left", 0)
     ok = (not bad and not grew and not blind
-          and (len(done) + len(dup)) == res["total_conflicts"])
+          and (len(done) + len(dup)) == res["total_conflicts"] - left)
     why = []
+    if left and res.get("stopped"):
+        why.append(f"разобрано {len(done) + len(dup)} из {res['total_conflicts']}, "
+                   f"{res['stopped']}")
     if blind:
         why.append(f"агент увидел {res['total_conflicts']} конфликтов из "
                    f"{res['before']['conflicts']} по линтеру — список пришёл неполным")
@@ -340,19 +693,100 @@ def verdict(res: dict, apply: bool) -> tuple:
     return ok, "; ".join(why) or "каждый конфликт разобран, ошибок не прибавилось"
 
 
+def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str:
+    ok, why = verdict_build(res, apply)
+    L = [f"# Агент · сборка базы — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
+         f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
+         f"Партия {res['partition']} · источников в работе: {res['total']} · "
+         f"время: {res['seconds']} с", ""]
+    L += checkpoint_lines(cp)
+    L += ["| Источник | Итог |", "|---|---|"]
+    for s in res["steps"]:
+        L.append(f"| {s['alias'][:70]} | {s['status']} |")
+
+    made = [s for s in res["steps"] if s["status"] in ("разобран", "разобрал бы")]
+    if made:
+        L += ["", "## Какие карточки собраны", ""]
+        L += [f"- {s['alias']}: {s['note']}" for s in made]
+    empty = [s for s in res["steps"] if s["status"] in ("пусто — отмечено", "отметил бы пустым")]
+    if empty:
+        L += ["", "## Источники без знания", "",
+              "Отмечены пустыми с причиной — они больше не будут возвращаться в план.", ""]
+        L += [f"- {s['alias']}: {s['note']}" for s in empty]
+    rej = [s for s in res["steps"] if s["status"] in ("отклонено критиком",
+                                                      "отклонено проверкой")]
+    if rej:
+        L += ["", "## Не записано: разбор не прошёл проверку", "",
+              "Эти источники остались неразобранными. «Отклонено проверкой» — арифметика "
+              "движка (секции пересекаются или их нет), «отклонено критиком» — вторая "
+              "модель. Повторный прогон возьмётся за них заново.", ""]
+        L += [f"- {s['alias']} — {s['status']}: {s['note']}" for s in rej]
+    fail = [s for s in res["steps"] if s["status"] == "сбой"]
+    if fail:
+        L += ["", "## Сбои", ""]
+        L += [f"- {s['alias']}: {s['note']}" for s in fail]
+    human = [s for s in res["steps"] if s["status"] == "без секций — человеку"]
+    if human:
+        L += ["", "## Отложено человеку: источники без структуры", "",
+              "Раскадровка пуста — карточку из таких источников пишут чтением, а тела "
+              "карточек агент писать не имеет права. Разберите их в `kb:build` руками "
+              "или ассистентом.", ""]
+        L += [f"- {s['alias']}" for s in human]
+
+    L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
+          f"Источников в плане: {res['before']['left']} → {res['after']['left']} · "
+          f"ошибок базы: {res['before']['errors']} → {res['after']['errors']}"]
+    if made:
+        # Честная граница работы: агент решает, где границы темы и как она называется.
+        # Довести тело до вида знания (убрать вёрстку исходника, «см. рисунок ниже»,
+        # повторы) он не может — правка тел карточек моделью запрещена конструкцией.
+        L += ["", "## Что осталось человеку", "",
+              f"Карточки собраны механически и лежат со статусом `imported`: агент выбрал "
+              f"границы тем и имена, тело перенёс движок дословно. Вёрстка исходника, "
+              f"«см. рисунок ниже» и повторы остались в тексте — доводка это работа "
+              f"человека или ассистента (`kb:build`, шаг 3). После доводки — `kb:verify`."]
+    L += adapter_lines(cfg, res)
+    if res.get("left"):
+        L += ["", f"## Осталось в партии: {res['left']}", "",
+              f"Прогон остановился — {res['stopped']}. Запустите `agent:build` ещё раз — "
+              "он продолжит с оставшихся источников партии."]
+    if not apply:
+        L += ["", "(предпросмотр) В базу ничего не записано. Повторите с `--apply`."]
+    return "\n".join(L)
+
+
+def checkpoint_lines(cp: dict) -> list:
+    if cp.get("sha"):
+        return [f"Чекпойнт: `{cp['sha'][:8]}` — {cp['why']}"
+                + (f", зафиксировано файлов: {cp['committed']}" if cp.get("committed") else ""),
+                f"Откат всей работы агента: `git reset --hard {cp['sha'][:8]}`",
+                "Работа агента ложится отдельным коммитом поверх чекпойнта — откат снимает "
+                "её целиком, вместе с новыми карточками.", ""]
+    return [f"⚠️ Чекпойнта нет: {cp.get('why', 'причина неизвестна')}", ""]
+
+
+def adapter_lines(cfg: dict, res: dict) -> list:
+    L = []
+    if AG.ADAPTER.get("fallback_why"):
+        L += ["", f"⚠️ Адаптер `{cfg['adapter']}` не сработал ({AG.ADAPTER['fallback_why']}) — "
+              "работали на stdlib-транспорте. Проверьте venv: «Настройка» → «Агент»."]
+    degraded = [s for s in res["steps"] if s.get("degraded")]
+    if degraded:
+        L += ["", f"⚠️ **Частично на резервных моделях**: шагов {len(degraded)}. "
+              "Их результат стоит перепроверить глазами — качество резервной модели ниже.",
+              *[f"  - {s['alias']}: " + ", ".join(f"№{n} {m}" for n, m in s["backends"])
+                for s in degraded]]
+    return L
+
+
 def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str:
     ok, why = verdict(res, apply)
-    degraded = [s for s in res["steps"] if s.get("degraded")]
     L = [f"# Агент · синонимы — {datetime.now():%Y-%m-%d %H:%M}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
          f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
          f"Конфликтов в работе: {res['total_conflicts']} · время: {res['seconds']} с", ""]
-    if cp.get("sha"):
-        L += [f"Чекпойнт: `{cp['sha'][:8]}` — {cp['why']}"
-              + (f", зафиксировано файлов: {cp['committed']}" if cp.get("committed") else ""),
-              f"Откат всей работы агента: `git reset --hard {cp['sha'][:8]}`", ""]
-    else:
-        L += [f"⚠️ Чекпойнта нет: {cp.get('why', 'причина неизвестна')}", ""]
+    L += checkpoint_lines(cp)
 
     L += ["| Синоним | Итог |", "|---|---|"]
     for s in res["steps"]:
@@ -368,14 +802,7 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
           f"Конфликтов по линтеру: {res['before']['conflicts']} → {res['after']['conflicts']} · "
           f"ошибок базы: {res['before']['errors']} → {res['after']['errors']}"]
-    if AG.ADAPTER.get("fallback_why"):
-        L += ["", f"⚠️ Адаптер `{cfg['adapter']}` не сработал ({AG.ADAPTER['fallback_why']}) — "
-              "работали на stdlib-транспорте. Проверьте venv: «Настройка» → «Агент»."]
-    if degraded:
-        L += ["", f"⚠️ **Частично на резервных моделях**: шагов {len(degraded)}. "
-              "Их результат стоит перепроверить глазами — качество резервной модели ниже.",
-              *[f"  - {s['alias']}: " + ", ".join(f"№{n} {m}" for n, m in s["backends"])
-                for s in degraded]]
+    L += adapter_lines(cfg, res)
     dup = [s for s in res["steps"] if s["status"] == "дубль — человеку"]
     if dup:
         L += ["", "## Отложено человеку: дубли карточек", "",
@@ -389,13 +816,16 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
-    ap.add_argument("--task", default="aliases", choices=["aliases"],
-                    help="что делать (пока одна задача — пилот)")
+    ap.add_argument("--task", default="aliases", choices=["aliases", "build"],
+                    help="aliases — разобрать конфликты синонимов; "
+                         "build — разобрать партию источников на карточки")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
     ap.add_argument("--critic", action="store_true",
                     help="проверять решение второй моделью до записи (для прода — обязательно)")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
-                    help="взять только первые N конфликтов (для пробы)")
+                    help="взять только первые N конфликтов/источников (для пробы)")
+    ap.add_argument("--partition", type=int, default=1, metavar="N",
+                    help="какую партию источников разбирать (для --task build)")
     ap.add_argument("--no-checkpoint", action="store_true",
                     help="не делать git-коммит перед прогоном (откат станет ручным)")
     a = ap.parse_args()
@@ -417,8 +847,12 @@ def main() -> int:
               "закоммитьте работу или запустите без --apply.", file=sys.stderr)
         return 1
 
-    res = run_aliases(cfg, cwd, a.apply, a.critic, a.limit)
-    text = report(res, cp, a.apply, a.critic, cfg)
+    if a.task == "build":
+        res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
+        text = report_build(res, cp, a.apply, a.critic, cfg)
+    else:
+        res = run_aliases(cfg, cwd, a.apply, a.critic, a.limit)
+        text = report(res, cp, a.apply, a.critic, cfg)
     print(text)
 
     runs = Path(cwd) / RUNS_DIR
@@ -426,7 +860,14 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
-    return 0 if verdict(res, a.apply)[0] else 1
+
+    if a.apply:
+        ok, why = (verdict_build if a.task == "build" else verdict)(res, True)
+        done = commit_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint)
+        print(f"Результат агента: {done.get('why')}"
+              + (f" ({done['sha'][:8]})" if done.get("sha") else ""))
+    ok = (verdict_build if a.task == "build" else verdict)(res, a.apply)[0]
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
