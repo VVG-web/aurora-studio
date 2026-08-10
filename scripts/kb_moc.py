@@ -122,6 +122,7 @@ def read_cards() -> dict:
                 "type": (fm.get("type") or "").strip(),
                 "status": (fm.get("status") or "").strip(),
                 "tags": tags, "text": text,
+                "source": (fm.get("source") or "").strip().strip('"'),
             }
     return cards
 
@@ -216,6 +217,9 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="записать MOC/*.md (иначе dry-run)")
     ap.add_argument("--suggest", action="store_true",
                     help="показать, что ещё просится в отдельную карту (ничего не пишет)")
+    ap.add_argument("--by-source", action="store_true",
+                    help="карта на каждый разобранный документ: куда разошлись его "
+                         "карточки (принадлежность документу после атомизации)")
     ap.add_argument("--orphans", action="store_true",
                     help="показать только карточки, на которые никто не ссылается")
     ap.add_argument("--allow-dirty", action="store_true",
@@ -251,6 +255,47 @@ def main() -> int:
             print()
         print("Добавили строку в `moc_groups.txt` — соберите карты: `kb:moc --apply`.")
         return 0
+    if a.by_source:
+        # Атомарная карточка теряет то, частью чего она была. Ссылка `source:` это
+        # помнит, но по ней не пройтись: она в шапке каждой карточки по отдельности.
+        # Карта на документ собирает их обратно — читателю виден весь разбор целиком,
+        # а карточки остаются атомарными.
+        by_src: dict = {}
+        for c in cards.values():
+            if c["source"]:
+                by_src.setdefault(c["source"], []).append(c)
+        big = {k: v for k, v in by_src.items() if len(v) > 1}
+        print(f"# Карты по документам — {TODAY}\n")
+        print(f"Разобранных документов, давших больше одной карточки: **{len(big)}** "
+              f"(всего карточек в них {sum(len(v) for v in big.values())})\n")
+        print("| Документ | Карточек | Файл карты |")
+        print("|---|---|---|")
+        written = 0
+        for src in sorted(big):
+            items = sorted(big[src], key=lambda c: c["title"].lower())
+            name = "Документ · " + os.path.basename(src).removesuffix(".md")
+            fname = re.sub(r"[^\w\- ]", "", name).strip().replace(" ", "-") + ".md"
+            print(f"| {os.path.basename(src)} | {len(items)} | MOC/{fname} |")
+            if not a.apply:
+                continue
+            path = os.path.join(MOC_DIR, fname)
+            if os.path.isfile(path):
+                head = open(path, encoding="utf-8", errors="ignore").read(400)
+                if GENERATED not in head:
+                    print(f"  ⚠️  {path} написан руками — не трогаю")
+                    continue
+            os.makedirs(MOC_DIR, exist_ok=True)
+            note = (f"Карточки, извлечённые из одного документа: `{src}`. Каждая "
+                    "атомарна и читается сама по себе; эта карта показывает, как они "
+                    "складываются обратно в исходный документ.")
+            open(path, "w", encoding="utf-8").write(render(name, note, items))
+            written += 1
+        if a.apply:
+            print(f"\n✅ Карт по документам записано: {written}")
+        else:
+            print("\n(dry-run) Ничего не записано. Собрать карты: `--by-source --apply`")
+        return 0
+
     orphans = sorted((c for s, c in cards.items() if links[s] == 0),
                      key=lambda x: (x["section"], x["title"].lower()))
     if a.orphans:
