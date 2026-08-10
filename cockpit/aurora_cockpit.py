@@ -476,9 +476,14 @@ def health(project: str) -> dict:
     except Exception:
         stats = {"error": out.strip()[:400]}
 
-    rc_l, lint = run_capture(project, "kb_lint.py", ["--summary"])
+    # Полный линт вместо --summary: он стоит те же полсекунды, но заодно отдаёт разбивку
+    # по видам ошибок — из неё дашборд показывает то, что человек чинит отдельными
+    # командами (конфликты синонимов, двойники), а не только общее число.
+    rc_l, lint = run_capture(project, "kb_lint.py", [])
     m = re.search(r"карточек (\d+), ошибок (\d+)", lint)
     lint_info = {"cards": int(m.group(1)), "errors": int(m.group(2))} if m else {"raw": lint[:300]}
+    lint_info["kinds"] = {k.strip(): int(n)
+                          for k, n in re.findall(r"^## (.+?):\s*(\d+)\s*$", lint, re.M)}
     baseline = read_text(os.path.join(project, "AuroraKnowledgeDB", "meta", "lint_baseline.txt")).strip()
     lint_info["baseline"] = int(baseline) if baseline.isdigit() else None
 
@@ -507,7 +512,41 @@ def health(project: str) -> dict:
             if name and nums:
                 mirrors[name] = {"missing": int(nums.group(1)), "orphan": int(nums.group(2))}
     return {"stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
+            "build": build_progress(project), "agent": last_agent_run(project),
             "sources": sources(project), "runs": read_runlog(project)}
+
+
+def build_progress(project: str) -> dict:
+    """Где мы в сборке базы из источников — главное число всей работы.
+
+    Дашборд показывал здоровье уже собранного и молчал о том, сколько осталось собрать:
+    человек, который ведёт базу, узнавал это только запустив `kb:build`.
+    """
+    rc, out = run_capture(project, "build_plan.py", ["--status"])
+    m = re.search(r"Источников:\s*(\d+)\s*·\s*обработано:\s*(\d+)\s*\((\d+) карточ\w*\)"
+                  r"\s*·\s*осталось:\s*(\d+)", out)
+    if not m:
+        return {}
+    total, done, cards, left = (int(m.group(i)) for i in range(1, 5))
+    return {"total": total, "done": done, "cards": cards, "left": left,
+            "pct": round(done * 100 / total, 1) if total else 0.0}
+
+
+def last_agent_run(project: str) -> dict:
+    """Последний прогон встроенного агента: когда, что сделал, чем кончился оракул."""
+    d = os.path.join(project, "AuroraKnowledgeDB", "meta", "agent-runs")
+    try:
+        files = sorted(f for f in os.listdir(d) if f.endswith(".md"))
+    except OSError:
+        return {}
+    if not files:
+        return {}
+    text = read_text(os.path.join(d, files[-1]), limit=200_000)
+    ok = "**Оракул:** ✅" in text
+    why = (re.search(r"\*\*Оракул:\*\*\s*[✅✗]\s*(.+)", text) or [None, ""])[1]
+    left = (re.search(r"## Осталось на следующий прогон:\s*(\d+)", text) or [None, "0"])[1]
+    return {"file": files[-1], "ok": ok, "why": why.strip(),
+            "left": int(left), "task": files[-1].rsplit("_", 1)[-1][:-3]}
 
 
 # ------------------------------------------------------- журнал запусков проекта
@@ -1228,6 +1267,13 @@ def alive(url: str) -> bool:
 
 
 def main() -> int:
+    # Адрес панели одноразовый: без токена её не открыть. Когда вывод перенаправлен —
+    # запуск из IDE, из скрипта, из ассистента — буфер stdout держит адрес у себя, и
+    # человек видит молчащую команду вместо ссылки.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser(description="Панель управления Aurora")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--roots", nargs="*", default=None,
