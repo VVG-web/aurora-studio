@@ -796,7 +796,11 @@ def start_job(project: str, cmd: str, extra: list) -> str:
 
     def worker():
         try:
-            p = subprocess.Popen([sys.executable, path, *args], cwd=project,
+            # Python буферизует stdout, когда на том конце не терминал: длинная команда
+            # (синк на семьсот страниц, прогон агента) молчала минутами, а потом
+            # вываливала всё разом. Человек в это время не знает, работает она или висит.
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
             for line in p.stdout:
