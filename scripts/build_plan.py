@@ -313,6 +313,13 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool) -> in
     if not os.path.isfile(source):
         print(f"build_plan: нет файла {source}", file=sys.stderr)
         return 1
+    # Раздел базы — закрытый список, а не свободная строка: `--to «Модель данных»`
+    # молча заводил папку вне схемы, и doctor находил её блокером уже после того,
+    # как карточки туда легли. Схему расширяют релизом кита, а не опечаткой в флаге.
+    if into not in SECTION_TYPE:
+        print(f"build_plan: раздела «{into}» нет в схеме базы. Разделы: "
+              + ", ".join(sorted(SECTION_TYPE)), file=sys.stderr)
+        return 1
     secs = sections(open(source, encoding="utf-8", errors="ignore").read())
     picked: list = []
     for part in spec.split(","):
