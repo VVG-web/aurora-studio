@@ -97,9 +97,12 @@ def commit_result(cwd: str, task: str, headline: str, enabled: bool) -> dict:
     """
     if not enabled:
         return {"ok": False, "why": "коммит результата выключен вместе с чекпойнтом"}
-    if not git("status", "--porcelain", cwd=cwd)[1]:
+    # Только база знаний: `add -A` присвоил бы агенту и правки человека, сделанные пока
+    # он работал. Чекпойнт фиксирует всё дерево — это работа человека; коммит результата
+    # обязан содержать ровно то, что менял агент.
+    if not git("status", "--porcelain", "--", "AuroraKnowledgeDB", cwd=cwd)[1]:
         return {"ok": True, "sha": "", "why": "агент ничего не изменил"}
-    git("add", "-A", cwd=cwd)
+    git("add", "--", "AuroraKnowledgeDB", cwd=cwd)
     rc, _o, err = git("commit", "--no-verify", "-m", f"agent: {task} — {headline}", cwd=cwd)
     if rc != 0:
         return {"ok": False, "why": f"коммит результата не сделан: {err[:200]}"}
@@ -345,11 +348,17 @@ def read_sections(cwd: str, source: str) -> list:
             for n, title, size, prev in SECTION_RE.findall(head)]
 
 
-def build_left(cwd: str) -> int:
-    """Оракул сборки: сколько источников ещё не разобрано — по счёту движка."""
+def build_left(cwd: str) -> tuple:
+    """(осталось, обработано) по счёту движка.
+
+    Оракул считает по «обработано»: «осталось» умеет расти само — правка источника
+    возвращает его в план значком ♻️, и прогон, сделавший всё правильно, выглядел бы
+    сбойным просто потому, что рядом кто-то поправил файл.
+    """
     r = run_command(cwd, "build_plan.py", ["--status"])
-    m = re.search(r"осталось:\s*(\d+)", r["out"])
-    return int(m.group(1)) if m else -1
+    left = re.search(r"осталось:\s*(\d+)", r["out"])
+    done = re.search(r"обработано:\s*(\d+)", r["out"])
+    return (int(left.group(1)) if left else -1, int(done.group(1)) if done else -1)
 
 
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
@@ -417,15 +426,37 @@ PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источник
 Предложенный разбор:
 {proposal}
 
-Проверь:
+Ты проверяешь ТОЛЬКО две вещи — границы тем и имена:
+
 1. Нет ли карточки, которая просто пересказывает файл целиком (все секции в одной
    карточке при разных темах — это она).
 2. Осмысленны ли имена: по имени должно быть понятно, какое знание внутри. «Таблица 1»,
    «Раздел 2», имя файла — не годятся.
-3. Не попали ли в карточки служебные секции (оглавление, история изменений).
-4. Подходит ли раздел базы каждой карточке.
+3. Подходит ли раздел базы каждой карточке.
+
+Чего проверять НЕ надо, и за что отклонять нельзя:
+
+- служебный текст ВНУТРИ секции — история изменений, метаданные страницы, инструкции по
+  правке, «см. рисунок ниже». Секции переносятся целиком, вырезать куски из тела на этом
+  шаге нельзя; лишнее убирает человек при доводке. Отклонять из-за этого — значит
+  требовать невозможного, источник просто останется неразобранным;
+- стиль, формулировки и полнота текста: тело не пишется, оно переносится;
+- секции, целиком служебные, уже отсеяны движком до тебя.
 
 Ответь строго JSON: {{"ok": true}} или {{"ok": false, "why": "<что не так, одна фраза>"}}"""
+
+
+# Секции, которые знанием не являются никогда: так устроен экспорт Confluence. Обе
+# модели спорили о них каждый второй источник — worker включал, критик отклонял. Спор
+# о постоянном списке — работа для кода, а не для двух моделей.
+SERVICE_SECTION = ("истори", "changelog", "журнал изменений", "версии страницы",
+                   "оглавлени", "содержание", "инструкц", "мета-данные", "метаданные",
+                   "комментари", "правила ведения", "как заполнять")
+
+
+def is_service_section(title: str) -> bool:
+    low = title.strip().lower()
+    return any(mark in low for mark in SERVICE_SECTION)
 
 
 def section_set(spec: str) -> set:
@@ -449,6 +480,7 @@ def check_cards(cards: list, sections: list) -> str:
     множеств проверяется счётом, спрашивать об этом модель незачем.
     """
     known = {n for n, _t, _s, _p in sections}
+    service = {n: title for n, title, _s, _p in sections if is_service_section(title)}
     seen: dict = {}
     for c in cards:
         nums = section_set(c.get("sections", ""))
@@ -458,6 +490,10 @@ def check_cards(cards: list, sections: list) -> str:
         if unknown:
             return (f"карточка «{c.get('title')}» ссылается на секции, которых нет: "
                     + ", ".join(str(n) for n in sorted(unknown)))
+        hit = sorted(nums & set(service))
+        if hit:
+            return (f"в карточку «{c.get('title')}» попала служебная секция "
+                    f"{hit[0]} «{service[hit[0]]}» — это не знание")
         for n in nums:
             if n in seen:
                 return (f"секция {n} попала и в «{seen[n]}», и в «{c.get('title')}» — "
@@ -479,8 +515,11 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         # Единственный вопрос, который тут стоит: есть ли здесь знание вообще. Написать
         # карточку чтением агент не может — тела карточек он не пишет.
         return judge_empty(cfg, cwd, source, step, apply, use_critic, call, deadline)
-    listing = "\n".join(f"  {n}. {title} ({size} симв.)\n     {prev}"
-                        for n, title, size, prev in sections)
+    listing = "\n".join(
+        f"  {n}. {title} ({size} симв.)"
+        + ("  ← СЛУЖЕБНАЯ, не включай в карточки" if is_service_section(title) else "")
+        + f"\n     {prev}"
+        for n, title, size, prev in sections)
 
     prompt = PROMPT_BUILD.format(source=source, sections=listing)
     attempt, note_back = 0, ""
@@ -503,8 +542,9 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if not cards:
             step.update(status="сбой", note="карточки предложены без имени или секций")
             return step
-        why = check_cards(cards, sections)
+        why, from_check = check_cards(cards, sections), True
         if not why and use_critic:
+            from_check = False
             c = call(cfg, "critic", [{"role": "user", "content": PROMPT_BUILD_CRITIC.format(
                 source=source, sections=listing,
                 proposal=json.dumps(cards, ensure_ascii=False))}], deadline=deadline)
@@ -520,7 +560,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         # неудачным по нарезке. Вторая попытка идёт с текстом замечания, третья не идёт:
         # если модель не услышала конкретное указание дважды, слушать её дальше незачем.
         if attempt >= 2:
-            step.update(status="отклонено проверкой" if "секц" in why else "отклонено критиком",
+            step.update(status="отклонено проверкой" if from_check else "отклонено критиком",
                         note=why)
             return step
         note_back = ("\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА. Замечание: " + why +
@@ -612,7 +652,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
               partition: int = 1, call=None) -> dict:
     started = time.time()
     budget = started + cfg["budget_min"] * 60
-    before_left, before_errors = build_left(cwd), lint_errors(cwd)
+    (before_left, before_done), before_errors = build_left(cwd), lint_errors(cwd)
     sources = read_partition(cwd, partition)
     if limit:
         sources = sources[:limit]
@@ -640,9 +680,10 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                               "note": "AURORA_AGENT_DEBUG=1: стоп на первой ошибке"})
                 break
 
+    after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
     return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build",
-            "before": {"left": before_left, "errors": before_errors},
-            "after": {"left": build_left(cwd) if apply else before_left,
+            "before": {"left": before_left, "done": before_done, "errors": before_errors},
+            "after": {"left": after_left, "done": after_done,
                       "errors": lint_errors(cwd) if apply else before_errors},
             "total": len(sources), "partition": partition, "limited": bool(limit),
             "stopped": stopped,
@@ -661,12 +702,12 @@ def verdict_build(res: dict, apply: bool) -> tuple:
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком",
                                                       "отклонено проверкой", "стоп")]
     grew = apply and res["after"]["errors"] > res["before"]["errors"]
-    moved = res["before"]["left"] - res["after"]["left"]
+    moved = res["after"]["done"] - res["before"]["done"]
     lied = apply and moved != len(done)
     ok = not bad and not grew and not lied
     why = []
     if lied:
-        why.append(f"план сдвинулся на {moved}, а агент объявил разобранными {len(done)}")
+        why.append(f"движок засчитал разобранными {moved}, а агент объявил {len(done)}")
     if grew:
         why.append(f"ошибок в базе стало больше: {res['before']['errors']} → "
                    f"{res['after']['errors']}")
