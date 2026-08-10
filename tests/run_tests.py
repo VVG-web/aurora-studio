@@ -2006,6 +2006,56 @@ def test_set_alias_is_a_scalpel(tmp: Path):
 
 
 @test
+def test_agent_work_rolls_back_whole(tmp: Path):
+    """Откат снимает и новые файлы: иначе обещание в отчёте — неправда.
+
+    `git reset --hard <чекпойнт>` не трогает то, чего git ещё не видел, а сборка карточек
+    создаёт именно новые файлы. На живом прогоне откат оставил карточки в базе, а
+    следующий чекпойнт закоммитил их как работу человека.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Старая.md", "Была до агента.", type="concept")
+    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+    subprocess.run(["git", "commit", "-qm", "до агента"], cwd=str(root), check=True)
+
+    cp = R.checkpoint(str(root), "agent:build", True)
+    card(root, "Concepts/Новая-от-агента.md", "Собрана агентом.", type="concept")
+    done = R.commit_result(str(root), "agent:build", "источников разобрано: 1", True)
+    assert done["ok"] and done["sha"], done
+
+    subprocess.run(["git", "reset", "--hard", cp["sha"]], cwd=str(root),
+                   capture_output=True, check=True)
+    assert not (root / "AuroraKnowledgeDB/Concepts/Новая-от-агента.md").exists(), \
+        "новая карточка пережила откат — обещание «одной строкой» не выполнено"
+    assert (root / "AuroraKnowledgeDB/Concepts/Старая.md").exists(), "откат снёс лишнее"
+
+
+@test
+def test_agent_build_refuses_cards_from_same_sections(tmp: Path):
+    """Две карточки из одних секций — одно тело под двумя именами. Считается, не спрашивается.
+
+    Живой прогон собрал две карточки с разными именами из одних и тех же секций 3,4:
+    тела вышли дословно одинаковыми. Критик пропустил — и правильно, что мы на него не
+    рассчитываем: пересечение множеств проверяется счётом, а не мнением модели.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    secs = [(1, "Первая", 500, ""), (2, "Вторая", 500, ""), (3, "Третья", 500, "")]
+
+    why = R.check_cards([{"title": "А", "sections": "1,2"}, {"title": "Б", "sections": "2,3"}], secs)
+    assert "секция 2" in why and "одним телом" in why, why
+    assert not R.check_cards([{"title": "А", "sections": "1"},
+                              {"title": "Б", "sections": "2-3"}], secs), "честный разбор отклонён"
+    assert "которых нет" in R.check_cards([{"title": "А", "sections": "7"}], secs)
+    assert "не разобраны номера" in R.check_cards([{"title": "А", "sections": "ага"}], secs)
+
+
+@test
 def test_agent_sees_every_conflict_not_just_printed(tmp: Path):
     """Агент получает все конфликты, а не первые 15 из отчёта для человека.
 

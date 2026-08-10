@@ -103,6 +103,12 @@ def sources() -> list:
                 if not f.endswith(".md") or f in SKIP or f.startswith("~"):
                     continue
                 path = os.path.join(dirpath, f).replace("\\", "/")
+                # Карточка, собранная из справочника, ложится рядом с ним — и попадала
+                # в план новым источником. План рос от собственной работы: разобрал
+                # источник — получил источник. Отличаем по `source:`: у справочника,
+                # который вели руками, его нет, у извлечённой карточки он есть.
+                if group == "Reference" and derived_card(path):
+                    continue
                 try:
                     size = os.path.getsize(path)
                 except OSError:
@@ -243,8 +249,27 @@ def sections(text: str) -> list:
     return [(t, b) for t, b in out if len(b) >= MIN_SECTION]
 
 
-def slice_report(path: str) -> int:
-    """Раскадровка источника: что в нём есть и какими кусками это можно взять."""
+def derived_card(path: str) -> bool:
+    """Карточка, извлечённая движком из другого источника (в шапке есть `source:`)."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            head = f.read(1500)
+    except OSError:
+        return False
+    if not head.startswith("---"):
+        return False
+    fm = head.split("\n---", 1)[0]
+    return bool(re.search(r"^source:\s*\S", fm, re.M))
+
+
+def slice_report(path: str, chars: int = 110) -> int:
+    """Раскадровка источника: что в нём есть и какими кусками это можно взять.
+
+    `chars` — сколько текста показывать на секцию. Человеку хватает строки-превью:
+    он смотрит в сам источник. Агент источника не открывает и судит по этому тексту,
+    поэтому ему нужен куда более длинный кусок — иначе он объявит пустым источник,
+    у которого просто не увидел содержимого.
+    """
     if not os.path.isfile(path):
         print(f"build_plan: нет файла {path}", file=sys.stderr)
         return 1
@@ -257,8 +282,9 @@ def slice_report(path: str) -> int:
               "разбирается чтением — раскадровка не поможет.")
         return 0
     for i, (title, body) in enumerate(secs, 1):
-        preview = " ".join(body.split())[:110]
-        print(f"{i:3}. {title[:80]}\n     {len(body)} симв. · {preview}…")
+        preview = " ".join(body.split())[:chars]
+        print(f"{i:3}. {title[:80]}\n     {len(body)} симв. · {preview}"
+              + ("…" if len(" ".join(body.split())) > chars else ""))
     print(f"""
 ─────────────────────────────────────────────────────────────────────
 ЗАДАНИЕ АССИСТЕНТУ · РАСКАДРОВКА — скопируйте блок целиком в чат
@@ -521,6 +547,8 @@ def main() -> int:
     ap.add_argument("--status", action="store_true", help="прогресс по манифесту")
     ap.add_argument("--slice", metavar="FILE",
                     help="раскадровка источника: его секции с размерами и превью")
+    ap.add_argument("--slice-chars", type=int, default=110, metavar="N",
+                    help="сколько текста секции показывать (агенту нужно больше человека)")
     ap.add_argument("--card", metavar="TITLE",
                     help="собрать карточку из секций источника (--from, --sections)")
     ap.add_argument("--source", metavar="FILE", dest="src", help="источник для --card")
@@ -550,7 +578,7 @@ def main() -> int:
         return mark_done(manifest, a.done, a.cards, a.empty)
 
     if a.slice:
-        return slice_report(a.slice)
+        return slice_report(a.slice, a.slice_chars)
     if a.card:
         if not a.src:
             print("build_plan: для --card нужен --source <источник>", file=sys.stderr)
