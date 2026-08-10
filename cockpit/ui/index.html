@@ -671,6 +671,10 @@ async function pick(p, go=true){
   const h = await api("/api/health?project=" + encodeURIComponent(p.path));
   S.health = h; p.health = h;
   renderHealth(); renderOverview(); renderProjBadge();
+  // Зеркала рисуются из того же здоровья. Пока оно считалось, вкладка показывала
+  // «выберите проект» — и оставалась такой навсегда: перерисовать её было некому,
+  // человек видел пустоту при выбранном проекте и уходил искать поломку.
+  renderMirrors();
   // журнал запусков — свой у каждого проекта; его отметки стоят и в командах, и в сценариях
   renderCommands(); renderHistory(); renderQuick();
   navBadges(p, h);
@@ -860,7 +864,9 @@ function statusBar(statuses){
 /* ---------------- зеркала ---------------- */
 function renderMirrors(){
   const box = $("#mirrorsBody");
-  if (!S.project || !S.health){ box.innerHTML='<div class="card" style="padding:24px">Нет данных — выберите проект.</div>'; return; }
+  if (!S.project){ box.innerHTML='<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
+  // Считается несколько секунд: сказать «нет данных» при выбранном проекте — соврать.
+  if (!S.health){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(2)+'</div>'; return; }
   const m = S.health.mirrors || {}, p = S.project;
   const src = S.health.sources || {installed:[], instances:[]};
   box.innerHTML = "";
