@@ -323,8 +323,15 @@ SECTION_RE = re.compile(r"^\s{2}(\d+)\.\s+(.+?)\n\s+(\d+) симв\.\s*·\s*(.*)
 
 
 def read_partition(cwd: str, partition: int) -> list:
-    """[(группа, путь, КБ)] — партия источников из плана движка."""
-    r = run_command(cwd, "build_plan.py", ["--partition", str(partition)])
+    """[(группа, путь, КБ)] — что разбирать: весь план по порядку или одна партия.
+
+    Партии придуманы под контекст модели, которой человек отдаёт задание целиком. Агент
+    берёт по одному источнику, и деление ему только мешает: партия кончалась, в ней
+    оставалось два источника без структуры, и каждый следующий прогон брал те же два и
+    отчитывался «разобрано 0». Поэтому по умолчанию агент идёт по плану подряд.
+    """
+    args = ["--partition", str(partition)] if partition else ["--tasks", "0"]
+    r = run_command(cwd, "build_plan.py", args)
     return [(g, path, int(kb)) for g, path, kb in SOURCE_RE.findall(r["out"])]
 
 
@@ -378,6 +385,28 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
 Если тема видна — собирай карточку.
 
 {{"empty": "<почему знания не вышло, одна фраза>"}}"""
+
+PROMPT_NO_SECTIONS = """Ты решаешь судьбу источника, у которого нет структуры.
+
+Источник: {source}
+Его текст целиком (или начало, если он длинный):
+
+{text}
+
+Заголовков и секций в нём движок не нашёл, поэтому нарезать его на карточки нельзя.
+Ответь на один вопрос: есть ли здесь знание, ради которого стоит завести карточку?
+
+Знанием НЕ является: страница-оглавление со ссылками, пустая заготовка, служебная
+шапка без содержимого, «страница в разработке», один заголовок без текста.
+
+Знание ЕСТЬ, если в тексте описан факт, правило, процедура, определение или данные —
+даже коротко.
+
+Ответь строго одним JSON-объектом:
+
+{{"empty": "<почему знания нет, одна фраза>"}}
+или
+{{"keep": "<что за знание здесь есть, одна фраза>"}}"""
 
 PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источника на карточки ДО записи в базу.
 
@@ -445,11 +474,11 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             "status": "", "note": "", "backends": [], "degraded": False}
     sections = read_sections(cwd, source)
     if not sections:
-        # Источник без структуры разбирают чтением и пишут карточку руками — а писать
-        # тела карточек агенту запрещено. Честно отдаём человеку, а не имитируем разбор.
-        step.update(status="без секций — человеку",
-                    note="раскадровка пуста: карточку надо писать руками")
-        return step
+        # Нарезать нечего, но и отдавать всё человеку неверно: в живом плане такими
+        # оказались сотни страниц-оглавлений Confluence — ссылка и заголовок, знания нет.
+        # Единственный вопрос, который тут стоит: есть ли здесь знание вообще. Написать
+        # карточку чтением агент не может — тела карточек он не пишет.
+        return judge_empty(cfg, cwd, source, step, apply, use_critic, call, deadline)
     listing = "\n".join(f"  {n}. {title} ({size} симв.)\n     {prev}"
                         for n, title, size, prev in sections)
 
@@ -530,6 +559,52 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-200:]}")
             return step
     step.update(status="разобран" if apply else "разобрал бы", note="; ".join(made))
+    return step
+
+
+def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
+                use_critic: bool, call, deadline) -> dict:
+    """Источник без структуры: пусто (отметить) или человеку (написать чтением)."""
+    path = Path(cwd) / source
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")[:6000]
+    except OSError:
+        step.update(status="сбой", note="источник не читается")
+        return step
+    r = call(cfg, "worker", [{"role": "user", "content": PROMPT_NO_SECTIONS.format(
+        source=source, text=text)}], deadline=deadline)
+    if not r["ok"]:
+        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        return step
+    step["backends"].append((r["backend"], r["model"]))
+    step["degraded"] = r["backend"] != 1
+    ans = parse_json(r["text"]) or {}
+    if not ans.get("empty"):
+        step.update(status="без секций — человеку",
+                    note=str(ans.get("keep") or "структуры нет, карточку писать чтением"))
+        return step
+
+    note = str(ans["empty"])[:200]
+    if use_critic:
+        # Отметка «пусто» необратима по смыслу: источник уходит из плана. Второе мнение
+        # здесь дороже лишней минуты — потерянное знание не всплывёт само.
+        c = call(cfg, "critic", [{"role": "user", "content": PROMPT_NO_SECTIONS.format(
+            source=source, text=text)}], deadline=deadline)
+        if c["ok"]:
+            step["backends"].append((c["backend"], c["model"]))
+            step["degraded"] = step["degraded"] or c["backend"] != 1
+            second = parse_json(c["text"]) or {}
+            if not second.get("empty"):
+                step.update(status="без секций — человеку",
+                            note="мнения разошлись: worker счёл пустым, критик — нет ("
+                                 + str(second.get("keep") or "знание есть")[:120] + ")")
+                return step
+    if apply:
+        res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
+        if not res["ok"]:
+            step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-160:]}")
+            return step
+    step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
     return step
 
 
@@ -698,8 +773,8 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
     L = [f"# Агент · сборка базы — {datetime.now():%Y-%m-%d %H:%M}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
          f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
-         f"Партия {res['partition']} · источников в работе: {res['total']} · "
-         f"время: {res['seconds']} с", ""]
+         (f"Партия {res['partition']}" if res["partition"] else "По плану подряд")
+         + f" · источников в работе: {res['total']} · время: {res['seconds']} с", ""]
     L += checkpoint_lines(cp)
     L += ["| Источник | Итог |", "|---|---|"]
     for s in res["steps"]:
@@ -750,7 +825,7 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
     if res.get("left"):
         L += ["", f"## Осталось в партии: {res['left']}", "",
               f"Прогон остановился — {res['stopped']}. Запустите `agent:build` ещё раз — "
-              "он продолжит с оставшихся источников партии."]
+              "он продолжит со следующих источников плана."]
     if not apply:
         L += ["", "(предпросмотр) В базу ничего не записано. Повторите с `--apply`."]
     return "\n".join(L)
@@ -824,8 +899,8 @@ def main() -> int:
                     help="проверять решение второй моделью до записи (для прода — обязательно)")
     ap.add_argument("--limit", type=int, default=0, metavar="N",
                     help="взять только первые N конфликтов/источников (для пробы)")
-    ap.add_argument("--partition", type=int, default=1, metavar="N",
-                    help="какую партию источников разбирать (для --task build)")
+    ap.add_argument("--partition", type=int, default=0, metavar="N",
+                    help="разбирать только партию N (по умолчанию — по плану подряд)")
     ap.add_argument("--no-checkpoint", action="store_true",
                     help="не делать git-коммит перед прогоном (откат станет ручным)")
     a = ap.parse_args()
