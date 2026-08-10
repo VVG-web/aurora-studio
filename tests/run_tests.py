@@ -2053,6 +2053,30 @@ def test_agent_work_rolls_back_whole(tmp: Path):
 
 
 @test
+def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
+    """Оглавление: строка на карточку, чтобы модель увидела базу целиком.
+
+    Выборка находит то, что человек назвал словами. Оглавление решает другую задачу —
+    показать, чего он не назвал. Поэтому строка предельно скупа: раздел даёт
+    группировка, суть берётся из `summary`, а пока его нет — из первой содержательной
+    строки тела, минуя заголовки и разметку таблиц.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Курс-валюты.md",
+         "# Заголовок\n\n> **История изменений**\n\n| a | b |\n\nКурс ЦБ берётся на дату подачи.",
+         status="verified", type="concept")
+    card(root, "Glossary/Термин.md", "Пояснение термина.", status="verified",
+         type="glossary", summary='"Одна фраза про термин"')
+
+    out = run("ctx_pack.py", "любая тема", "--index", "--no-log", cwd=root).stdout
+    assert "## Concepts (1)" in out and "## Glossary (1)" in out, out[:400]
+    assert "Одна фраза про термин" in out, "summary из шапки не попал в оглавление"
+    assert "Курс ЦБ берётся на дату подачи" in out, \
+        "вместо сути в оглавление попала разметка источника"
+    assert "История изменений" not in out, "служебная цитата принята за суть карточки"
+
+
+@test
 def test_context_pack_finds_by_words_not_by_phrase(tmp: Path):
     """Пак ищет по словам запроса, а не по фразе целиком.
 

@@ -308,7 +308,8 @@ def slice_report(path: str, chars: int = 110) -> int:
     return 0
 
 
-def build_card(title: str, source: str, spec: str, into: str, apply: bool) -> int:
+def build_card(title: str, source: str, spec: str, into: str, apply: bool,
+               summary: str = "") -> int:
     """Собрать карточку из указанных секций источника: текст переносится дословно."""
     if not os.path.isfile(source):
         print(f"build_plan: нет файла {source}", file=sys.stderr)
@@ -353,8 +354,12 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool) -> in
     # но границы темы и имя выбрала модель, а вёрстка исходника осталась в теле. Пока
     # человек не довёл карточку, автоматическая приёмка её не берёт: доверенный источник
     # отвечает за факты, а не за то, что тема выделена правильно.
+    # `summary` — одна фраза о сути. Она нужна не человеку (он видит заголовок), а
+    # выборке: по ней модель понимает, о чём карточка, не читая её целиком, и вся база
+    # умещается в оглавление на пару десятков тысяч токенов.
+    head_summary = f'summary: "{summary.strip()}"\n' if summary.strip() else ""
     card = (f'---\ntitle: "{title}"\naliases: []\nstatus: imported\n'
-            f'type: {SECTION_TYPE.get(into, "concept")}\nsource: "{source}"\n'
+            f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}source: "{source}"\n'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
             f"built: machine\nrelated: []\n---\n\n# {title}\n\n{body}\n")
     print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
@@ -563,6 +568,9 @@ def main() -> int:
     ap.add_argument("--card", metavar="TITLE",
                     help="собрать карточку из секций источника (--from, --sections)")
     ap.add_argument("--source", metavar="FILE", dest="src", help="источник для --card")
+    ap.add_argument("--summary", metavar="ФРАЗА", default="",
+                    help="одна фраза о сути карточки: по ней идёт выборка и строится "
+                         "оглавление базы для модели")
     ap.add_argument("--sections", metavar="N,M-K", default="",
                     help="номера секций из раскадровки (для --card)")
     ap.add_argument("--to", metavar="SECTION", default="Concepts",
@@ -594,7 +602,7 @@ def main() -> int:
         if not a.src:
             print("build_plan: для --card нужен --source <источник>", file=sys.stderr)
             return 1
-        return build_card(a.card, a.src, a.sections, a.to, a.apply)
+        return build_card(a.card, a.src, a.sections, a.to, a.apply, a.summary)
     if a.thin or (a.reopen and a.thin):
         return thin_report(manifest, a.group or "", a.reopen and a.apply)
     if a.reopen:
