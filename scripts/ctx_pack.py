@@ -70,6 +70,7 @@ class Card(BaseCard):
         self.aliases = re.findall(r'"([^"]+)"', self.fm.get("aliases", "")) or []
         self.applies_to = [x.strip().strip('"[]') for x in self.fm.get("applies_to", "").split(",")
                            if x.strip()]
+        self.summary = (self.fm.get("summary") or "").strip().strip('"')
 
     @property
     def expired(self) -> bool:
@@ -91,6 +92,21 @@ class Card(BaseCard):
         if self.section == "Reference":
             return "[reference | справочник домена]"
         return f"[{st} | НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ | не считать фактом]"
+
+
+def first_sentence(text: str) -> str:
+    """Первая содержательная строка тела — заменитель `summary`, пока его нет.
+
+    Заголовки, цитаты «История изменений» и разметку таблиц пропускаем: в оглавлении
+    нужна фраза о сути, а не то, с чего начинается разметка страницы источника.
+    """
+    for line in body(text).splitlines():
+        line = line.strip()
+        if (not line or line.startswith(("#", ">", "|", "-", "*", "```", "!["))
+                or line.startswith("_")):
+            continue
+        return " ".join(line.split())[:90]
+    return ""
 
 
 def load_cards() -> dict:
@@ -177,7 +193,10 @@ def score(card: Card, topic: str) -> int:
     ask = words(topic)
     if not ask:
         return 0
+    # Одна фраза о сути весит почти как заголовок: она написана про смысл карточки,
+    # а не про то, как её назвали в источнике.
     head = set(words(card.stem) + words(card.title))
+    brief = set(words(card.summary))
     alias = {w for a in card.aliases for w in words(a)}
     tag = set(words(card.tags))
     body = words(card.text)
@@ -190,6 +209,8 @@ def score(card: Card, topic: str) -> int:
         got = False
         if w in head:
             s += 10; got = True
+        if w in brief:
+            s += 8; got = True
         if w in alias:
             s += 6; got = True
         if w in tag:
@@ -281,6 +302,9 @@ def main() -> int:
     ap.add_argument("--release", help="релиз задачи (по умолчанию current из meta/releases.md)")
     ap.add_argument("--save", action="store_true", help="сохранить пак в Artifacts/drafts/")
     ap.add_argument("--no-log", action="store_true", help="не писать в meta/usage.log")
+    ap.add_argument("--index", action="store_true",
+                    help="оглавление базы вместо пака: строка на карточку "
+                         "(имя · тип · статус · суть · путь) — модель выбирает сама")
     a = ap.parse_args()
 
     if not os.path.isdir(ROOT):
@@ -290,6 +314,31 @@ def main() -> int:
     if not cards:
         print("ctx_pack: в базе нет карточек", file=sys.stderr)
         return 1
+
+    if a.index:
+        # Оглавление вместо пака: вся база по строке на карточку. Выборка по словам
+        # находит то, что человек назвал; оглавление решает другую задачу — показать
+        # модели базу целиком, чтобы она увидела и то, чего в запросе не было.
+        # Поэтому строка предельно скупа: раздел даёт группировка, путь выводится из
+        # имени. Полная выкладка с путями и типами стоила бы 107k токенов — дороже,
+        # чем весь остальной контекст вместе взятый.
+        groups: dict = {}
+        for c in cards.values():
+            # Ключ словаря — имя карточки, а не путь: раздел берём у самой карточки.
+            if "заготовка" in c.tags or c.status not in MODE_STATUSES[a.mode]:
+                continue
+            rel = os.path.relpath(c.path, ROOT).replace("\\", "/")
+            section = rel.split("/")[0] if "/" in rel else "—"
+            brief = c.summary or first_sentence(c.text)
+            groups.setdefault(section, []).append(f"- {c.title[:60]} — {brief[:90]}")
+        total = sum(len(v) for v in groups.values())
+        print(f"# Оглавление базы знаний — {TODAY}\n")
+        print(f"Карточек: {total}, режим {a.mode}. Строка на карточку: имя и суть.")
+        print("Нашли нужное — возьмите полные тексты: `ctx:context <тема>`.\n")
+        for section in sorted(groups):
+            print(f"\n## {section} ({len(groups[section])})\n")
+            print("\n".join(sorted(groups[section])))
+        return 0
 
     trusted = sum(1 for c in cards.values() if c.status in TRUSTED)
     pct = trusted / len(cards) * 100
