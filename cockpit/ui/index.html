@@ -448,7 +448,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.66.0";
+const UI_VERSION = "1.67.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2130,6 +2130,24 @@ async function renderAgentCard(box){
       "Сохраняется: ", el("b",{}, a.target_label), el("br",{}),
       el("span",{class:"mono",style:"font-size:11.5px"}, a.target)),
     backendBlock(1), backendBlock(2), backendBlock(3),
+    // Вектора часто живут отдельным сервисом: своя модель, свой адрес, иногда без
+    // ключа. Пусто — берётся кольцо агента; в инфраструктуре с одним шлюзом настраивать
+    // нечего, а при переезде не приходится править файлы руками.
+    el("div",{style:"border-top:1px solid var(--line);margin:14px 0 10px;padding-top:12px"},
+      el("div",{style:"font-weight:700;margin-bottom:4px"},"Эмбеддинги — поиск по смыслу"),
+      el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
+        "Адрес пуст — вектора считает то же кольцо, что и чат. Заполните, если модель "
+        + "векторов поднята отдельным сервисом. Проверка: agent:ping, индекс: kb:embed."),
+      el("div",{class:"row",style:"gap:10px;flex-wrap:wrap"},
+        el("label",{},"модель ", el("input",{class:"btn mono",style:"width:150px",
+          value:(a.embed&&a.embed.model)||"", placeholder:"bge-m3",
+          oninput:e=>touch("AURORA_EMBED_MODEL", e.target.value)})),
+        el("label",{},"адрес ", el("input",{class:"btn mono",style:"width:260px",
+          value:(a.embed&&a.embed.url)||"", placeholder:"как у агента",
+          oninput:e=>touch("AURORA_EMBED_URL", e.target.value)})),
+        el("label",{},"ключ ", el("input",{class:"btn mono",style:"width:150px",
+          type:"password", placeholder:(a.embed&&a.embed.key_set)?"задан — оставьте пустым":"нет",
+          oninput:e=>touch("AURORA_EMBED_KEY", e.target.value)})))),
     el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;margin:6px 0 12px"},
       el("label",{class:"row",style:"gap:6px"},
         el("input",{type:"checkbox", checked:a.thinking?"":null,

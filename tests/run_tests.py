@@ -2219,6 +2219,41 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_embeddings_are_configured_separately(tmp: Path):
+    """Свой сервис векторов: адрес, ключ и модель настраиваются отдельно от чата.
+
+    Кит поднимают в разных контурах. Где-то эмбеддинги на том же шлюзе, где-то — своим
+    сервисом с другим адресом и без ключа. Пустой адрес обязан означать «как у чата»,
+    иначе переезд превращается в правку файлов руками.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    AG = importlib.import_module("agent_core")
+    E = importlib.import_module("kb_embed")
+
+    same = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://gateway/v1",
+                            "AURORA_AGENT_BACKEND_1_KEY": "k"})
+    assert same["embed"] == {"url": "", "key": "", "model": "bge-m3"}, same["embed"]
+    assert E.endpoints(same)[0]["url"] == "http://gateway/v1", "не взято кольцо агента"
+
+    own = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://gateway/v1",
+                           "AURORA_EMBED_URL": "http://vectors.example.com/v1/",
+                           "AURORA_EMBED_MODEL": "e5-large", "AURORA_EMBED_KEY": "e"})
+    assert own["embed"]["model"] == "e5-large" and own["embed"]["key"] == "e"
+    ends = E.endpoints(own)
+    assert len(ends) == 1 and ends[0]["url"] == "http://vectors.example.com/v1", ends
+    assert "gateway" not in json.dumps(ends), "чат-бэкенды подмешались к своему сервису"
+
+    # панель настраивает те же переменные и не выпускает ключ наружу
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    assert "не агентские" in (ck.agent_write_env("", {"PATH": "/tmp"}).get("error") or ""), \
+        "панель приняла постороннюю переменную"
+    assert not (ck.agent_write_env(str(tmp), {"AURORA_EMBED_MODEL": "e5-large"}).get("error")), \
+        "панель не приняла настройку эмбеддингов"
+
+
+@test
 def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
     """MCP отдаёт базу ассистенту и только читает; stdout занят протоколом.
 

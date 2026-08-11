@@ -723,6 +723,9 @@ def agent_state(project: str) -> dict:
         "request_timeout": cfg["request_timeout"],
         "backends": [{"n": b["n"], "url": b["url"], "key_set": bool(b["key"]),
                       "model": b["model"], "models": b["models"]} for b in cfg["backends"]],
+        # Ключ наружу не отдаём никогда — только «заполнен или нет», как и у бэкендов.
+        "embed": {"url": cfg["embed"]["url"], "model": cfg["embed"]["model"],
+                  "key_set": bool(cfg["embed"]["key"])},
         "venv": {"ok": venv_ok, "version": venv_ver, "path": str(AG.VENV)},
     }
 
@@ -733,7 +736,9 @@ def agent_write_env(project: str, vars: dict) -> dict:
     Пустое значение удаляет переменную. Ключи вне AURORA_AGENT_ не принимаются: эта
     ручка настраивает агента, а не редактирует произвольные секреты.
     """
-    bad = [k for k in vars if not k.startswith("AURORA_AGENT_")]
+    # AURORA_EMBED_* — тот же контур агента: свой сервис векторов у него бывает
+    # отдельным (свой адрес, свой ключ, своя модель), но настраивается он здесь же.
+    bad = [k for k in vars if not k.startswith(("AURORA_AGENT_", "AURORA_EMBED_"))]
     if bad:
         return {"error": "не агентские переменные: " + ", ".join(bad[:3])}
     target = Path(project or KIT) / ".env.aurora.local"
