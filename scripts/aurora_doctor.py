@@ -106,6 +106,28 @@ ENGINE_DIRS_TOP = {".git", ".opencode", ".cursor", ".claude"}
 MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables")
 
 
+def artifact_dirs() -> dict:
+    """{папка: вид документа} — куда проект складывает свои артефакты.
+
+    Схему папок задаёт движок, но виды документов объявляет проект: у одного заказчика
+    проектное решение, у другого регламент, и папка результата у каждого своя. Реестр
+    в `aurora.config.yaml` — такое же основание для папки, как реестр модулей для
+    зеркала. Иначе выходит ловушка: человек объявил папку в панели, движок её создал,
+    а doctor тут же назвал её нарушением схемы.
+    """
+    sys.path.insert(0, str(ROOT / ".opencode" / "scripts"))
+    try:
+        import make_kinds as MK
+    except ImportError:
+        return {}
+    out = {}
+    for kind, rec in (MK.read_kinds(str(ROOT)) or {}).items():
+        path = (rec.get("out") or "").strip().strip('"').rstrip("/")
+        if path and not os.path.isabs(path):
+            out[path] = kind
+    return out
+
+
 def mirror_owners() -> dict:
     """{папка зеркала: модуль} — что в `Sources/` заявлено подключёнными модулями.
 
@@ -230,7 +252,8 @@ def check_structure(verbose: bool = False):
         return errors, warns, lines
 
     mirrors = mirror_owners()
-    known = set(schema) | set(mirrors)
+    artifacts = artifact_dirs()
+    known = set(schema) | set(mirrors) | set(artifacts)
     known_tops = {p.split("/")[0] for p in known}
     missing = [d for d in schema if not (ROOT / d).is_dir()]
     for path, module in sorted(mirrors.items()):
