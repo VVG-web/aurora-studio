@@ -569,8 +569,8 @@ RUNLOG_HEAD = """# Журнал запусков
 команды. Код возврата: 0 — сделано, 1 — команда отработала и нашла, что чинить,
 2 и выше — не отработала.
 
-| Команда | Когда (UTC) | Код | Ядро | Кто | Строка запуска |
-|---|---|---|---|---|---|
+| Команда | Когда (UTC) | Код | Ядро | Кто | Строка запуска | Секунд |
+|---|---|---|---|---|---|---|
 """
 
 
@@ -579,10 +579,12 @@ def read_runlog(project: str) -> dict:
     runs = {}
     for line in read_text(os.path.join(project, RUNLOG), limit=200_000).splitlines():
         c = [x.strip() for x in line.strip().strip("|").split("|")] if line.startswith("|") else []
-        if len(c) != 6 or not c[0] or c[0] in ("Команда", "---") or set(c[0]) == {"-"}:
+        # Колонка «Секунд» появилась в 1.71.0: строки старого журнала читаются как были.
+        if len(c) not in (6, 7) or not c[0] or c[0] in ("Команда", "---") or set(c[0]) == {"-"}:
             continue
         runs[c[0]] = {"at": c[1], "rc": int(c[2]) if c[2].lstrip("-").isdigit() else None,
-                      "kit": c[3], "who": c[4], "line": c[5]}
+                      "kit": c[3], "who": c[4], "line": c[5],
+                      "secs": int(c[6]) if len(c) == 7 and c[6].isdigit() else 0}
     return runs
 
 
@@ -598,7 +600,7 @@ def who(project: str) -> str:
     return getpass.getuser()
 
 
-def write_runlog(project: str, cmd: str, rc: int, line: str) -> None:
+def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> None:
     """Обновить строку команды. Порядок — по имени команды: так дифф остаётся коротким.
 
     Пишем последний запуск, а не всю хронологию: файл в git, и журнал, растущий на строку
@@ -606,9 +608,13 @@ def write_runlog(project: str, cmd: str, rc: int, line: str) -> None:
     """
     runs = read_runlog(project)
     runs[cmd] = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rc": rc,
-                 "kit": kit_version(), "who": who(project), "line": line}
+                 "kit": kit_version(), "who": who(project), "line": line,
+                 # Сколько заняло в прошлый раз — единственный честный ответ на вопрос
+                 # «это повисло или так и надо»: у команд разброс от секунды до часа.
+                 "secs": int(secs) or (runs.get(cmd, {}).get("secs") or 0)}
     body = "".join(
-        f"| {c} | {r['at']} | {r['rc']} | {r['kit']} | {r['who']} | {r['line']} |\n"
+        f"| {c} | {r['at']} | {r['rc']} | {r['kit']} | {r['who']} | {r['line']} "
+        f"| {r.get('secs') or ''} |\n"
         for c, r in sorted(runs.items()))
     path = os.path.join(project, RUNLOG)
     try:
@@ -875,7 +881,8 @@ def start_job(project: str, cmd: str, extra: list) -> str:
         finally:
             job["done"] = True
             job["finished"] = time.time()
-            write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip())
+            write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
+                         int(job["finished"] - job["started"]))
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id

@@ -48,6 +48,41 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
+
+
+def human_time(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 60}м {s % 60:02d}с" if s >= 60 else f"{s}с"
+
+
+def progress(done: int, total: int, started: float) -> str:
+    """`[3/15] ████░░░░ 20% · 2м14с · осталось ~9м`.
+
+    Оценка строится на среднем времени уже пройденных шагов — другого источника у нас
+    нет: шаги неравны, и обещать точную минуту нечестно. Но порядок величины отвечает
+    на единственный вопрос человека у экрана: это работает или это повисло.
+    """
+    width = 16
+    filled = int(width * done / total) if total else 0
+    bar = "█" * filled + "░" * (width - filled)
+    spent = time.time() - started
+    tail = ""
+    if done and done < total:
+        left = spent / done * (total - done)
+        tail = f" · осталось ~{human_time(left)}"
+    return f"[{done}/{total}] {bar} {int(100 * done / total) if total else 0}% · " \
+           f"{human_time(spent)}{tail}"
+
+
+def say(line: str) -> None:
+    """Строка прогресса — в stderr, сразу.
+
+    Отчёт печатается в конце, и до него агент молчал: на живом прогоне это двадцать
+    минут пустой консоли, по которой невозможно отличить работу от зависшего процесса.
+    Прогресс идёт в stderr, чтобы не мешаться тем, кто читает stdout как результат
+    (MCP берёт stdout), а панель показывает оба потока вместе.
+    """
+    print(line, file=sys.stderr, flush=True)
 SAME_FAIL_LIMIT = 3      # одна и та же команда с теми же аргументами: долбёжка в стену
 
 
@@ -664,6 +699,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         sources = sources[:limit]
 
     steps, fails, stopped = [], {}, ""
+    say(f"Источников в работе: {len(sources)} · лимит шагов {cfg['max_steps']} · "
+        f"бюджет {cfg['budget_min']} мин")
     for group, source, _kb in sources:
         if time.time() > budget:
             stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
@@ -671,9 +708,13 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         if len(steps) >= cfg["max_steps"]:
             stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
             break
+        total = min(len(sources), cfg["max_steps"])
+        say(f"  {progress(len(steps), total, started)} · {source.rsplit('/', 1)[-1][:60]} …")
         step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
                             deadline=min(budget, time.time() + cfg["request_timeout"]))
         steps.append(step)
+        say(f"      → {step['status']}"
+            + (f": {step['note'][:110]}" if step["note"] else ""))
         if step["status"] == "сбой":
             key = step["note"][:60]
             fails[key] = fails.get(key, 0) + 1
@@ -818,6 +859,8 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         conflicts = conflicts[:limit]
 
     steps, fails, stopped = [], {}, ""
+    say(f"Конфликтов в работе: {len(conflicts)} · лимит шагов {cfg['max_steps']} · "
+        f"бюджет {cfg['budget_min']} мин")
     for alias, cards in conflicts:
         if time.time() > budget:
             stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
@@ -825,9 +868,13 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         if len(steps) >= cfg["max_steps"]:
             stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
             break
+        total = min(len(conflicts), cfg["max_steps"])
+        say(f"  {progress(len(steps), total, started)} · «{alias[:50]}» …")
         step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
                               deadline=min(budget, time.time() + cfg["request_timeout"]))
         steps.append(step)
+        say(f"      → {step['status']}"
+            + (f": {step['note'][:110]}" if step["note"] else ""))
         if step["status"] == "сбой":
             key = step["note"][:60]
             fails[key] = fails.get(key, 0) + 1
@@ -903,7 +950,9 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
          f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
          f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
          (f"Партия {res['partition']}" if res["partition"] else "По плану подряд")
-         + f" · источников в работе: {res['total']} · время: {res['seconds']} с", ""]
+         + f" · источников в работе: {res['total']} · время: {res['seconds']} с"
+         + (f" (~{res['seconds'] / len(res['steps']):.0f} с на источник)"
+            if res["steps"] else ""), ""]
     L += checkpoint_lines(cp)
     L += ["| Источник | Итог |", "|---|---|"]
     for s in res["steps"]:
@@ -989,7 +1038,9 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
     L = [f"# Агент · синонимы — {datetime.now():%Y-%m-%d %H:%M}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
          f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
-         f"Конфликтов в работе: {res['total_conflicts']} · время: {res['seconds']} с", ""]
+         f"Конфликтов в работе: {res['total_conflicts']} · время: {res['seconds']} с"
+         + (f" (~{res['seconds'] / len(res['steps']):.0f} с на конфликт)"
+            if res["steps"] else ""), ""]
     L += checkpoint_lines(cp)
 
     L += ["| Синоним | Итог |", "|---|---|"]
