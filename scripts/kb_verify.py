@@ -142,7 +142,7 @@ def machine_built(files: list, heads: dict) -> list:
     return out
 
 
-def source_verdicts(files: list, heads: dict) -> dict:
+def source_verdicts(files: list, heads: dict, jira: dict | None = None) -> dict:
     """{карточка: основание} — доверие по происхождению.
 
     Договор, ТЗ и материалы заказчика — доказательная база проекта: карточка, собранная
@@ -154,6 +154,10 @@ def source_verdicts(files: list, heads: dict) -> dict:
     sections = config_list("trusted_sections")
     if not roots and not sections:
         return {}
+    # Страница истории в зеркале — не всегда истина: пока задача в разработке, текст на
+    # ней ещё поменяется. Голос задачи Jira сильнее происхождения: доверенный источник
+    # говорит «это писал заказчик», а статус задачи — «это уже решено».
+    jira = jira or {}
     out = {}
     for path in files:
         fm, src = heads[path]
@@ -161,6 +165,9 @@ def source_verdicts(files: list, heads: dict) -> dict:
         # модель, а вёрстка исходника осталась в теле. Доверенный источник отвечает за
         # факты — не за то, что тема выделена верно. Такую карточку принимает человек.
         if (fm.get("built") or "").strip().strip('"') == "machine":
+            continue
+        said = (jira.get(src) or ("",))[0]
+        if said == "draft":
             continue
         section = os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
         hit = next((r for r in roots if src.startswith(r)), "")
@@ -423,7 +430,10 @@ def main() -> int:
         print(f"Страниц историй, где задачи говорят одно и то же: {len(verdicts)}")
 
     if a.by_source:
-        got = source_verdicts(files, heads)
+        # Голос задачи нужен и здесь: без него доверенный источник принимал страницу
+        # истории, которая ещё в разработке. Если --by-jira не запрашивали, считаем сами.
+        got = source_verdicts(files, heads,
+                              verdicts or jira_verdicts("Sources/Confluence", "Sources/JIRA"))
         auto.update(got)
         print(f"Карточек из доверенных источников и разделов: {len(got)}")
         if not got:

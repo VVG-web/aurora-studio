@@ -2053,6 +2053,43 @@ def test_agent_work_rolls_back_whole(tmp: Path):
 
 
 @test
+def test_trusted_source_yields_to_the_issue_status(tmp: Path):
+    """Страница истории в зеркале — не истина, пока задача в разработке.
+
+    В Confluence лежат и утверждённые страницы, и черновики историй: текст на них ещё
+    поменяется. Отличить их можно только по связанной задаче. Доверенный источник
+    говорит «это писал заказчик», статус задачи — «это уже решено»; второе сильнее.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    V = importlib.import_module("kb_verify")
+
+    heads = {
+        "AuroraKnowledgeDB/Concepts/Готовое.md": ({"source": "Sources/Confluence/Готовая.md"},
+                                                  "Sources/Confluence/Готовая.md"),
+        "AuroraKnowledgeDB/Concepts/Черновик.md": ({"source": "Sources/Confluence/Сырая.md"},
+                                                   "Sources/Confluence/Сырая.md"),
+    }
+    jira = {"Sources/Confluence/Сырая.md": ("draft", ["PRJ-1"], ["Аналитика"], []),
+            "Sources/Confluence/Готовая.md": ("verified", ["PRJ-2"], ["Закрыто"], [])}
+
+    import os as _os
+    cwd = _os.getcwd()
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8")
+                   + "\nverify:\n  trusted_sources: [Sources/Confluence]\n", encoding="utf-8")
+    try:
+        _os.chdir(root)
+        got = V.source_verdicts(list(heads), heads, jira)
+    finally:
+        _os.chdir(cwd)
+    assert "AuroraKnowledgeDB/Concepts/Готовое.md" in got, got
+    assert "AuroraKnowledgeDB/Concepts/Черновик.md" not in got, \
+        "карточка со страницы, чья задача ещё в аналитике, принята как истина"
+
+
+@test
 def test_demote_machine_returns_trust_to_the_human(tmp: Path):
     """Уборка после автоприёмки: машинная нарезка возвращается в imported.
 
