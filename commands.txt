@@ -51,6 +51,7 @@ ctx | ctx:ask | ask | модель | workflows.md | 1.0.0 | ответ по ба
 ctx | ctx:eval | eval | модель | workflows.md | 1.0.0 | регрессионный прогон golden questions после синков и миграций
 ctx | ctx:retro | retro | модель | workflows.md | 1.0.0 | выученные уроки: чего база не знала, когда мы ошиблись
 
+make | make:kinds | kinds | скрипт | make_kinds.py | 1.69.0 | реестр артефактов проекта: какой шаблон брать и куда класть результат; объявляется в aurora.config.yaml, читается ассистентом через MCP
 make | make:create | create | модель | workflows.md | 1.1.0 | артефакт в `Artifacts/<тип>/` — только стандартный тип из conventions.md
 make | make:review | review | модель | workflows.md | 1.0.0 | проверка качества артефакта против базы знаний
 make | make:spec | spec | модель | workflows.md | 1.0.0 | спецификация фичи из REQ и verified-знаний (SDD)
