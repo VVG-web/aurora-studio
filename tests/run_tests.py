@@ -2279,13 +2279,33 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
     lines = [l for l in proc.stdout.splitlines() if l.strip()]
     got = [json.loads(l) for l in lines]          # падает, если в канал попал чужой текст
     assert len(got) == 4, [l[:80] for l in lines]
-    assert got[0]["result"]["serverInfo"]["name"] == "aurora", got[0]
+    assert got[0]["result"]["serverInfo"]["name"].startswith("aurora-"), got[0]
     names = {t["name"] for t in got[1]["result"]["tools"]}
     assert {"kb_search", "kb_card", "kb_context", "kb_index", "kb_ask"} == names, names
     assert "Обеспечение" in got[2]["result"]["content"][0]["text"]
     assert "Правила обеспечения" in got[3]["result"]["content"][0]["text"]
     assert sorted(p.name for p in (root / "AuroraKnowledgeDB").rglob("*.md")) == before, \
         "чтение базы через MCP изменило файлы"
+
+    # Проектов у аналитика несколько, и подключены они одновременно. Сервер обязан
+    # называть свой: одинаковые имена карточек в двух базах модель не различит, а знание
+    # одного заказчика не должно попасть в артефакт другого.
+    assert got[0]["result"]["serverInfo"]["name"].startswith("aurora-"), \
+        got[0]["result"]["serverInfo"]
+    assert all("База проекта" in tool["description"] for tool in got[1]["result"]["tools"]), \
+        "инструмент не называет базу, к которой обращается"
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    M = importlib.import_module("aurora_mcp")
+    block = M.config_block([str(root), "/tmp/другой-проект"])["mcpServers"]
+    assert len(block) == 2 and all(k.startswith("aurora-") for k in block), block
+    # у каждого сервера свой путь, и он передан явно: перепутать базы нельзя
+    paths = set()
+    for rec in block.values():
+        assert "--project" in rec["args"], rec
+        paths.add(rec["args"][rec["args"].index("--project") + 1])
+    assert len(paths) == 2, paths
 
 
 @test
