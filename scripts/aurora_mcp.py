@@ -10,11 +10,22 @@ MCP убирает посредника — ассистент сам ищет �
   python3 .opencode/scripts/aurora_mcp.py --project PATH  # явный проект
   python3 .opencode/scripts/aurora_mcp.py --selftest      # проверить без ассистента
 
-Подключение (Claude Code, OpenCode, Cursor — формат один):
+Один сервер — одна база. Проектов у аналитика несколько, и смешивать их базы в одном
+инструменте нельзя: знание одного заказчика не должно попасть в артефакт другого, а
+модель, увидев две карточки с одинаковым именем из разных проектов, не различит их.
+Поэтому проект задаётся при запуске, а не спрашивается у модели в каждом вызове.
 
-    {"mcpServers": {"aurora": {
-        "command": "python3",
-        "args": ["<проект>/.opencode/scripts/aurora_mcp.py", "--project", "<проект>"]}}}
+Подключение (Claude Code, OpenCode, Cursor — формат один). Готовые записи на все проекты
+машины печатает `kit:mcp`; вручную это выглядит так:
+
+    {"mcpServers": {
+       "aurora-alpha": {"command": "python3", "args": ["<путь>/aurora_mcp.py",
+                        "--project", "<корень первого проекта>"]},
+       "aurora-beta":  {"command": "python3", "args": ["<путь>/aurora_mcp.py",
+                        "--project", "<корень второго проекта>"]}}}
+
+Имя сервера ассистент показывает рядом с инструментом, поэтому в нём стоит слаг проекта:
+`aurora-alpha.kb_search` не спутать с `aurora-beta.kb_search`.
 
 Инструменты, которые видит ассистент:
 
@@ -186,9 +197,15 @@ def serve(project: str) -> int:
         if method == "initialize":
             reply(msg_id, {"protocolVersion": PROTOCOL,
                            "capabilities": {"tools": {}},
-                           "serverInfo": {"name": "aurora", "version": version(project)}})
+                           "serverInfo": {"name": "aurora-" + slug(project),
+                                          "version": version(project)}})
         elif method == "tools/list":
-            reply(msg_id, {"tools": TOOLS})
+            # Имя проекта в описании каждого инструмента: у ассистента их может быть
+            # подключено несколько, и «найти карточки» без указания базы — это приглашение
+            # перепутать заказчиков.
+            named = [{**tool, "description": tool["description"]
+                      + f" База проекта «{os.path.basename(project)}»."} for tool in TOOLS]
+            reply(msg_id, {"tools": named})
         elif method == "tools/call":
             params = msg.get("params") or {}
             text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
@@ -199,6 +216,19 @@ def serve(project: str) -> int:
             reply(msg_id, error={"code": -32601, "message": f"нет метода {method}"})
         # уведомления (notifications/*) ответа не требуют — молчим
     return 0
+
+
+def slug(project: str) -> str:
+    """Короткое имя проекта для имени сервера: его ассистент показывает у инструмента."""
+    name = os.path.basename(os.path.abspath(project)) or "aurora"
+    cfg = os.path.join(project, "aurora.config.yaml")
+    if os.path.isfile(cfg):
+        import re as _re
+        text = open(cfg, encoding="utf-8", errors="ignore").read(4000)
+        m = _re.search(r'^\s*slug\s*:\s*"?([^"\n#]+?)"?\s*$', text, _re.M)
+        if m:
+            name = m.group(1).strip()
+    return "".join(c if c.isalnum() or c in "-_" else "-" for c in name).strip("-").lower()
 
 
 def version(project: str = "") -> str:
@@ -214,14 +244,48 @@ def version(project: str = "") -> str:
     return "0"
 
 
+def known_projects(here: str) -> list:
+    """Проекты Авроры, известные панели, плюс текущий. Для готовой строки подключения."""
+    roots, found = [], []
+    saved = Path.home() / ".aurora" / "cockpit-roots.txt"
+    if saved.is_file():
+        roots = [l.strip() for l in saved.read_text(encoding="utf-8").splitlines()
+                 if l.strip() and not l.startswith("#")]
+    roots = roots or [str(Path(here).parent)]
+    for root in roots:
+        base = Path(os.path.expanduser(root))
+        if not base.is_dir():
+            continue
+        for cfg in sorted(base.glob("*/aurora.config.yaml")):
+            found.append(str(cfg.parent))
+    if here not in found:
+        found.insert(0, here)
+    return found
+
+
+def config_block(projects: list) -> dict:
+    """{mcpServers: …} на все проекты сразу: по серверу на базу, имя со слагом."""
+    servers = {}
+    for path in projects:
+        servers["aurora-" + slug(path)] = {
+            "command": sys.executable,
+            "args": [os.path.join(path, ".opencode", "scripts", "aurora_mcp.py"),
+                     "--project", path]}
+    return {"mcpServers": servers}
+
+
 def selftest(project: str) -> int:
     """Проверка без ассистента: те же вызовы, что сделает он."""
     print(f"# MCP-сервер Авроры {version(project)} · проект {project}\n")
-    print("Подключение к ассистенту (Claude Code, OpenCode, Cursor):\n")
-    print(json.dumps({"mcpServers": {"aurora": {"command": sys.executable, "args": [
-        os.path.join(project, ".opencode", "scripts", "aurora_mcp.py"),
-        "--project", project]}}}, ensure_ascii=False, indent=2))
-    print()
+    others = known_projects(project)
+    print("## Подключение\n")
+    print("Один сервер — одна база. Проекты не смешиваются: знание одного заказчика не")
+    print("должно попасть в артефакт другого, а одинаковые имена карточек в двух базах")
+    print("модель не различит. Ниже — записи на все проекты этой машины; вставьте нужные")
+    print("в конфиг ассистента (Claude Code, OpenCode, Cursor — формат один).\n")
+    print(json.dumps(config_block(others), ensure_ascii=False, indent=2))
+    print(f"\nНайдено проектов: {len(others)}. Имя сервера ассистент показывает рядом с")
+    print("инструментом: `aurora-alpha.kb_search` не спутать с `aurora-beta.kb_search`.\n")
     print("Инструменты:", ", ".join(t["name"] for t in TOOLS))
     ok = os.path.isdir(os.path.join(project, "AuroraKnowledgeDB"))
     print(f"База знаний: {'найдена' if ok else 'НЕ найдена — это не проект Авроры'}")
