@@ -41,6 +41,7 @@ Artifacts/mappings
 Artifacts/role-model
 Artifacts/diagrams
 Artifacts/acceptance
+Artifacts/tests
 Artifacts/reviews
 Artifacts/reports
 Artifacts/drafts
