@@ -488,6 +488,11 @@ __pycache__/
 .opencode/node_modules/
 node_modules/
 .venv/
+# Браузерные MCP-инструменты сбрасывают логи консоли и слепки страниц в текущую
+# рабочую папку. Открыли дашборд, стоя в корне проекта, — получили блокер doctor и
+# слепок чужой страницы в истории git.
+.playwright-mcp/
+.puppeteer/
 """
         gi = self.target / ".gitignore"
         if self.dry_run:
