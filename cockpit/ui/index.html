@@ -246,11 +246,14 @@ tr:last-child td{border-bottom:0}
     <button data-view="overview" aria-current="true" aria-label="Мостик: все проекты"><span class="label">Мостик</span></button>
     <button data-view="install" aria-label="Установка компонентов"><span class="label">Установка</span><span class="count" id="navInstall"></span></button>
     <button data-view="setup" aria-label="Настройка проекта"><span class="label">Настройка</span></button>
-    <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
-    <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="reference" aria-label="Справка"><span class="label">Справка</span></button>
     <button data-view="about" aria-label="О проекте"><span class="label">О проекте</span></button>
     <div class="group">Проект</div>
+    <!-- Маршруты и работа по базе живут здесь, а не в «Машине»: каждый их шаг —
+         команда в выбранном проекте. В группе машины они выглядели общесистемными,
+         и человек открывал их, не выбрав проект. -->
+    <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
+    <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
     <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
     <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
@@ -445,7 +448,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.64.0";
+const UI_VERSION = "1.64.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1932,6 +1935,15 @@ async function renderQuick(group="база"){
   // от прогонов и от смены проекта, поэтому кэшировать саму разметку нельзя.
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
   box.innerHTML = "";
+  // Каждый шаг маршрута — команда в проекте. Без выбранного проекта список кнопок
+  // выглядит рабочим, но первая же из них скажет «сначала выберите проект».
+  if (!S.project){
+    box.append(el("div",{class:"card",style:"padding:24px"},
+      el("div",{}, "Выберите проект на Мостике — маршруты работают с его базой."),
+      el("button",{class:"btn sm primary",style:"margin-top:12px",
+                   onclick:()=>show("overview")}, "На Мостик")));
+    return;
+  }
   (d.scenarios||[]).filter(sc => (sc.group||"база") === group).forEach(sc => {
     const auto = sc.steps.filter(s=>!s.manual).length;
     const open = OPEN_ROUTES.has(sc.id);
