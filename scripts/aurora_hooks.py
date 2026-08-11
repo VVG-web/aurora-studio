@@ -93,7 +93,10 @@ TERMS="{terms}"
 MSG=$(cat "$1")
 
 HIT=$(grep -v '^#' "$TERMS" | grep -v '^[[:space:]]*$' | while IFS= read -r term; do
-  printf '%s' "$MSG" | grep -qi -- "$term" && printf '%s ' "$term"
+  # По границам слова: короткое название часто оказывается началом обычного слова,
+  # и хук, ловящий подстроку, блокирует живое сообщение вместо утечки.
+  printf '%s' "$MSG" | grep -qiE "(^|[^0-9A-Za-zА-Яа-яЁё])$term([^0-9A-Za-zА-Яа-яЁё]|$)" \
+    && printf '%s ' "$term"
 done)
 
 if [ -n "$HIT" ]; then
