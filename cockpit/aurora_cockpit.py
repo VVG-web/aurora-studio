@@ -110,8 +110,14 @@ def scenarios() -> list:
             continue
         m = re.match(r"\[([\w-]+)\]\s*([^|]+?)\s*(?:\|\s*(.*))?$", line.strip())
         if m:
+            # Третье поле заголовка — вкладка. Обслуживание базы и продуктивность это
+            # разные занятия и разные дни: держать их в одном списке значит заставлять
+            # искать нужное среди чужого.
+            tail = [x.strip() for x in (m.group(3) or "").split("|")]
             cur = {"id": m.group(1), "title": m.group(2).strip(),
-                   "when": (m.group(3) or "").strip(), "steps": []}
+                   "when": tail[0] if tail else "",
+                   "group": (tail[1] if len(tail) > 1 else "") or "база",
+                   "steps": []}
             out.append(cur)
             continue
         if cur is None:
