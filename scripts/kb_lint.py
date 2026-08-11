@@ -88,9 +88,12 @@ def load_releases() -> set:
 
 def main():
     ap = argparse.ArgumentParser(description="Механический линтер базы знаний")
+    ap.add_argument("--full", action="store_true",
+                    help="перечислить все находки, а не первые примеры (для очереди приёмки)")
     ap.add_argument("--summary", action="store_true",
                     help="только итоговая строка: карточек и ошибок")
-    summary = ap.parse_args().summary
+    args = ap.parse_args()
+    summary, full = args.summary, args.full
     releases = load_releases()
     names, alias_owner, cards = set(), {}, {}
     dup_aliases, errors = [], []
@@ -286,10 +289,13 @@ def main():
         shown.update(id(e) for e in hits)
         print(f"\n## {title}: {len(hits)}")
         print(f"   {cure}")
-        for e in hits[:8]:
+        # Человеку хватает восьми примеров: остальное он смотрит в очереди приёмки.
+        # Ей же нужен полный список — иначе очередь молча теряет хвост.
+        limit = len(hits) if full else 8
+        for e in hits[:limit]:
             print(f"   - {e}")
-        if len(hits) > 8:
-            print(f"   … ещё {len(hits) - 8}")
+        if len(hits) > limit:
+            print(f"   … ещё {len(hits) - limit}")
     rest = [e for e in errors if id(e) not in shown]
     if rest:
         print(f"\n## прочее: {len(rest)}")
