@@ -950,10 +950,19 @@ def test_build_slices_source_and_assembles_card(tmp: Path):
     assert "поля запроса" in text and "шаг за шагом" in text, "тело секций не перенесено"
     assert "версии страницы" not in text, "перенесена секция, которую не просили"
 
+    # Повтор из того же источника — не конфликт, а второй проход по обновлённой
+    # странице: отказ здесь ронял бы разбор при каждой правке источника.
     again = run("build_plan.py", "--card", "Алгоритм приёма", "--source",
                 "Sources/Confluence/Страница.md", "--sections", "1", "--to", "Processes",
+                "--apply", cwd=root)
+    assert "уже собрана" in again.stdout, again.stdout[-200:]
+
+    other = root / "Sources" / "Confluence" / "Другая.md"
+    other.write_text("# Другая\n\n" + "текст. " * 60, encoding="utf-8")
+    clash = run("build_plan.py", "--card", "Алгоритм приёма", "--source",
+                "Sources/Confluence/Другая.md", "--sections", "1", "--to", "Processes",
                 "--apply", cwd=root, expect_rc=1)
-    assert "уже есть" in again.stderr, "двойник имени должен отвергаться"
+    assert "уже есть" in clash.stderr, "двойник имени из чужого источника должен отвергаться"
 
 
 @test
@@ -2281,7 +2290,8 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
     assert len(got) == 4, [l[:80] for l in lines]
     assert got[0]["result"]["serverInfo"]["name"].startswith("aurora-"), got[0]
     names = {t["name"] for t in got[1]["result"]["tools"]}
-    assert {"kb_search", "kb_card", "kb_context", "kb_index", "kb_ask"} == names, names
+    assert {"kb_search", "kb_card", "kb_context", "kb_index", "kb_ask",
+            "artifact_spec"} == names, names
     assert "Обеспечение" in got[2]["result"]["content"][0]["text"]
     assert "Правила обеспечения" in got[3]["result"]["content"][0]["text"]
     assert sorted(p.name for p in (root / "AuroraKnowledgeDB").rglob("*.md")) == before, \
@@ -2445,6 +2455,31 @@ def test_auto_verify_skips_machine_built_cards(tmp: Path):
         encoding="utf-8"), "рукописная карточка из доверенного источника не принята"
     assert "status: imported" in machine.read_text(encoding="utf-8"), \
         "машинная нарезка получила доверие автоматически — verified перестало что-то значить"
+
+
+@test
+def test_build_card_is_idempotent_for_the_same_source(tmp: Path):
+    """Повторный разбор того же источника не падает, а конфликт имён — падает.
+
+    Источник правят и разбирают снова: на живом прогоне обновлённая страница уронила
+    агента отказом «карточка уже есть». Та же карточка из того же источника — это
+    повторный проход. Чужое имя из другого источника — настоящий конфликт.
+    """
+    root = make_project(tmp)
+    for name in ("первый", "второй"):
+        src = root / "Raw" / "project" / f"{name}.md"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text(f"# Тема\n\n" + "текст. " * 60, encoding="utf-8")
+
+    run("build_plan.py", "--card", "Общая тема", "--source", "Raw/project/первый.md",
+        "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
+    again = run("build_plan.py", "--card", "Общая тема", "--source", "Raw/project/первый.md",
+                "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
+    assert "уже собрана" in again.stdout, again.stdout[-200:]
+
+    clash = run("build_plan.py", "--card", "Общая тема", "--source", "Raw/project/второй.md",
+                "--sections", "1", "--to", "Concepts", "--apply", cwd=root, expect_rc=1)
+    assert "из другого источника" in clash.stdout + clash.stderr
 
 
 @test

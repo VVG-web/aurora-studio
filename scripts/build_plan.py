@@ -346,7 +346,16 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     safe = card_filename(title)
     path = os.path.join(KB_ROOT, into, safe + ".md")
     if os.path.exists(path):
+        # Та же карточка из того же источника — это повторный проход, а не конфликт:
+        # источник правят и разбирают снова. Отказывать здесь значит ронять разбор на
+        # каждом обновлении страницы. Чужое имя из другого источника — другое дело.
+        head = open(path, encoding="utf-8", errors="ignore").read(1500)
+        was = (frontmatter(head).get("source") or "").strip().strip('"')
+        if was == source:
+            print(f"(уже собрана из этого же источника) {path}")
+            return 0
         print(f"build_plan: карточка уже есть — {path}\n"
+              f"   и собрана из другого источника: {was or '—'}\n"
               "Имя должно быть уникальным: допишите уточнение или дополните существующую.",
               file=sys.stderr)
         return 1
