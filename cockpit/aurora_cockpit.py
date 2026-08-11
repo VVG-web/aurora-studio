@@ -251,6 +251,9 @@ def registry() -> list:
             "fixed_flags": impl.split()[1:],
             "flags": K.flags_of(impl).split() if script.endswith(".py") else [],
             "flag_help": K.flag_help(impl) if script.endswith(".py") else {},
+            # Каким флагам нужно значение: без этого шаг маршрута с голым «--months»
+            # роняет весь маршрут сообщением argparse.
+            "flags_value": K.flags_with_value(impl) if script.endswith(".py") else [],
             # какие флаги требуют значения: без этого панель шлёт `--jql` голым
             "flag_args": K.flag_args(impl) if script.endswith(".py") else {},
             # без них команда не запустится: панель включает их сразу, а не после ошибки

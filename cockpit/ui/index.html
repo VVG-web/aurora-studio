@@ -448,7 +448,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.71.0";
+const UI_VERSION = "1.72.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -633,9 +633,26 @@ async function prefetchHealth(){
   stamp("#overviewStamp");
 }
 function aura(p){
-  if (p.health && p.health.doctor.errors.length) return "var(--danger)";
-  if (p.behind || (p.health && p.health.lint.errors > (p.health.lint.baseline ?? 1e9))) return "var(--tier-inreview)";
-  return "var(--primary)";
+  return {red:"var(--danger)", amber:"var(--tier-inreview)", green:"var(--primary)"}[auraWhy(p).color];
+}
+
+// Цвет карточки — обещание: «зелёный» должен быть достижимой целью, а не догадкой.
+// Поэтому правило считается в одном месте и объясняется человеку теми же словами.
+function auraWhy(p){
+  const h = p.health, todo = [];
+  const errs = h ? h.doctor.errors.length : 0;
+  const lint = h ? h.lint.errors : 0, base = h ? (h.lint.baseline ?? null) : null;
+  if (errs) todo.push({bad:true, text:`блокеры doctor: ${errs} — их чинят первыми`});
+  else todo.push({bad:false, text:"блокеров doctor нет"});
+  if (p.behind) todo.push({bad:true, text:`движок ${p.engine} отстаёт от kit — раздел «Версия»`});
+  else todo.push({bad:false, text:"движок не отстаёт от kit"});
+  if (base !== null && lint > base)
+    todo.push({bad:true, text:`ошибок линтера ${lint} против храповика ${base}: `
+      + `база стала хуже на ${lint - base} — почините (kb:repair) или объясните рост`});
+  else todo.push({bad:false, text:`ошибок линтера ${lint}`
+    + (base !== null ? ` при храповике ${base} — база не деградирует` : "")});
+  const color = errs ? "red" : (todo.some(x=>x.bad) ? "amber" : "green");
+  return {color, todo};
 }
 function renderOverview(){
   const box = $("#towers"); box.innerHTML = "";
@@ -651,7 +668,10 @@ function renderOverview(){
     const pct = h ? (h.stats.pct_verified ?? 0) : null;
     const errs = h ? h.doctor.errors.length : null;
     const lintBad = h && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
+    const why = auraWhy(p);
     const t = el("button",{class:"card tower", style:`--aura:${aura(p)}`,
+        title: (why.color === "green" ? "Зелёный: " : "До зелёного: ")
+               + why.todo.map(x=>(x.bad ? "✗ " : "✓ ") + x.text).join(" · "),
         "aria-label":`Проект ${p.name}, движок ${p.engine}`, onclick:()=>pick(p)},
       el("div",{class:"row",style:"align-items:flex-start;gap:14px;position:relative"},
         el("div",{style:"flex:1;min-width:0"},
@@ -790,6 +810,23 @@ function renderHealth(){
   if (!S.health){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(8)+'</div>'; return; }
   const h = S.health, st = h.stats || {};
   box.innerHTML = "";
+
+  // Что мешает зелёному — прямо в «Здоровье», а не только подсказкой на Мостике:
+  // человек приходит сюда именно с вопросом «я всё сделал, почему не зелёное».
+  const why = auraWhy(S.project);
+  box.append(el("div",{class:"card",style:"padding:16px;margin-bottom:14px"},
+    el("div",{class:"row"},
+      el("span",{class:"chip " + (why.color === "green" ? "ok" : why.color === "red" ? "bad" : "warn")},
+        why.color === "green" ? "зелёный" : why.color === "red" ? "красный" : "янтарный"),
+      el("b",{}, why.color === "green"
+        ? "Проект в порядке — все условия выполнены"
+        : "До зелёного осталось")),
+    ...why.todo.map(x=>el("div",{class:"list-item"},
+      el("span",{class:"chip " + (x.bad ? "bad" : "ok")}, x.bad ? "✗" : "✓"),
+      el("div",{}, x.text))),
+    el("div",{class:"muted",style:"font-size:12.5px;margin-top:8px"},
+      "Ошибки линтера не обязаны быть нулевыми: храповик держит планку на достигнутом. "
+      + "Зелёный означает «не стало хуже», а не «идеально».")));
 
   const pct = st.pct_verified ?? 0;
   const ring = el("div",{class:"card",style:"padding:16px;display:flex;gap:16px;align-items:center"},

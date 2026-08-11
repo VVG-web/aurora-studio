@@ -157,6 +157,29 @@ def flags_of(impl: str) -> str:
     return " ".join(f for f in flags if f not in fixed)
 
 
+def flags_with_value(impl: str) -> list:
+    """Флаги, которым argparse требует значение: `--months N`, а не просто `--months`.
+
+    Панель это уже учитывает (рисует поле ввода), а маршрут «Быстрого старта» — нет:
+    голый `--source-older-than` в сценарии останавливал весь маршрут на пятом шаге
+    сообщением argparse. Различаем по метавару в `--help`: у флага-переключателя после
+    имени пусто, у флага со значением стоит `MONTHS`, `PATH`, `{docx,pdf}`.
+    """
+    out = help_text(impl)
+    body = re.split(r"^(?:options|optional arguments):", out, flags=re.M)
+    need = []
+    for line in (body[1] if len(body) > 1 else "").splitlines():
+        m = re.match(r"\s{1,4}(-[^\s].*?)(?:\s{2,}|$)", line)
+        if not m:
+            continue
+        chunk = m.group(1)
+        for flag in re.findall(r"(?<![\w-])(--[a-z][a-z0-9-]*)(\s+[^\s,]+)?", chunk):
+            name, tail = flag
+            if name != "--help" and tail.strip():
+                need.append(name)
+    return sorted(set(need))
+
+
 def flag_help(impl: str) -> dict:
     """Флаг → его пояснение из `--help`.
 
