@@ -78,6 +78,15 @@ TOOLS = [
      "description": "Оглавление базы: строка на карточку, сгруппировано по разделам. "
                     "Нужно, когда неясно, что вообще есть в базе по теме.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "artifact_spec",
+     "description": "Чем и куда делать артефакт этого проекта: путь шаблона и папка "
+                    "результата. Вызывайте ПЕРЕД тем, как писать US, AC, алгоритм, ОПЗ, "
+                    "РП, тест-кейс или ревью: шаблоны у проектов разные, и писать «как "
+                    "умею» значит сдать документ не по форме заказчика.",
+     "inputSchema": {"type": "object", "properties": {
+         "kind": {"type": "string",
+                  "description": "тип: ac, us, algorithm, opz, rp, test-case, "
+                                 "test-scenario, us-review. Без него — весь реестр"}}}},
     {"name": "kb_ask",
      "description": "Спросить базу знаний. Отвечает модель проекта, строго по карточкам "
                     "и со ссылкой на каждое утверждение. Медленно (десятки секунд), "
@@ -128,6 +137,9 @@ def call_tool(project: str, name: str, args: dict) -> str:
                    [str(args.get("topic", "")), "--mode", mode, "--no-log"])
     if name == "kb_index":
         return run(project, "ctx_pack.py", ["оглавление", "--index", "--no-log"])
+    if name == "artifact_spec":
+        kind = str(args.get("kind") or "").strip()
+        return run(project, "make_kinds.py", ["--kind", kind] if kind else [])
     if name == "kb_ask":
         return run(project, "agent_runner.py",
                    ["--task", "ask", "--question", str(args.get("question", ""))])
