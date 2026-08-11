@@ -448,7 +448,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.70.2";
+const UI_VERSION = "1.71.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2025,6 +2025,12 @@ async function renderQuick(group="база"){
         el("span",{class:"chip"}, auto === sc.steps.length
           ? sc.steps.length + " шагов"
           : auto + " из " + sc.steps.length + " автоматически"),
+        (()=>{ const known = sc.steps.filter(s=>!s.manual)
+                 .map(s=>(lastRun(s.cmd)||{}).secs||0);
+               const sum = known.reduce((a,b)=>a+b,0);
+               return sum ? el("span",{class:"chip",
+                 title:"сумма прошлых прогонов; шаги, которые ещё не запускали, не учтены"},
+                 "≈" + howLong(sum)) : null; })(),
         el("div",{style:"flex:1"}),
         // Порядок шагов один и тот же всегда, флаги известны — нажимать их по одному
         // человеку незачем. Слева «посмотреть» (те же шаги без записи), справа проход.
@@ -2077,7 +2083,11 @@ async function renderQuick(group="база"){
             mark ? el("span",{class:"chip "+mark.cls, title:
               `последний запуск: ${mark.what}, код ${last.rc}, ядро ${last.kit||"?"}`
               + (last.who ? ", запускал " + last.who : "")},
-              mark.what + " · " + histWhen(last.at)) : null),
+              mark.what + " · " + histWhen(last.at)) : null,
+            // Сколько заняло в прошлый раз: у команд разброс от секунды до получаса,
+            // и без этого числа «идёт» неотличимо от «повисло».
+            last && last.secs ? el("span",{class:"chip",title:"столько заняло в прошлый раз"},
+              "~" + howLong(last.secs)) : null),
           el("div",{class:"muted",style:"font-size:13px;margin-top:4px"}, st.why)),
         row && row.runnable
           ? el("button",{class:"btn sm primary",onclick:()=>openRun(st.cmd, st.flags||[])},"Запустить")
@@ -2090,6 +2100,12 @@ async function renderQuick(group="база"){
 
 // Шаг без кнопки запуска бесполезен без ответа на вопрос «а что мне тогда сделать».
 // Ответ один и тот же: сказать это ассистенту проекта — скилл лежит в самом проекте.
+function howLong(secs){
+  if (secs < 60) return secs + " с";
+  const m = Math.round(secs / 60);
+  return m < 60 ? m + " мин" : Math.floor(m / 60) + " ч " + (m % 60) + " мин";
+}
+
 function skillLine(text){
   return el("div",{class:"row",style:"gap:8px;margin-top:6px"},
     el("span",{class:"muted",style:"font-size:12px"},"в чат с ассистентом:"),
