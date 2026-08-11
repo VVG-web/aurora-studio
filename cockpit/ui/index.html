@@ -247,6 +247,7 @@ tr:last-child td{border-bottom:0}
     <button data-view="install" aria-label="Установка компонентов"><span class="label">Установка</span><span class="count" id="navInstall"></span></button>
     <button data-view="setup" aria-label="Настройка проекта"><span class="label">Настройка</span></button>
     <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
+    <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="reference" aria-label="Справка"><span class="label">Справка</span></button>
     <button data-view="about" aria-label="О проекте"><span class="label">О проекте</span></button>
     <div class="group">Проект</div>
@@ -397,6 +398,15 @@ tr:last-child td{border-bottom:0}
       <div id="quickBody"></div>
     </section>
 
+    <!-- ПРОДУКТИВНОСТЬ -->
+    <section class="view" id="view-work">
+      <h1>Продуктивность</h1>
+      <p class="sub">Работа, ради которой база и нужна: написать артефакт, проверить чужую
+        историю, собрать закрывающий документ и передать его наружу. Обслуживание самой
+        базы — на вкладке «Быстрый старт».</p>
+      <div id="workBody"></div>
+    </section>
+
     <!-- О ПРОЕКТЕ -->
     <section class="view" id="view-dev">
       <h1>Разработка</h1>
@@ -435,7 +445,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.63.0";
+const UI_VERSION = "1.64.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -521,6 +531,7 @@ function show(view){
   if (view==="commands") renderCommands();
   if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
+  if (view==="work") renderQuick("продуктивность");
   if (view==="ask") $("#askText")?.focus();
   if (view==="console"){ renderHistory(); drawTaskButton(); }   // и журнал, и кнопка задания — на входе
   if (view==="about") renderAbout();
@@ -707,7 +718,7 @@ async function pick(p, go=true){
   // человек видел пустоту при выбранном проекте и уходил искать поломку.
   renderMirrors();
   // журнал запусков — свой у каждого проекта; его отметки стоят и в командах, и в сценариях
-  renderCommands(); renderHistory(); renderQuick();
+  renderCommands(); renderHistory(); renderQuick(); renderQuick("продуктивность");
   navBadges(p, h);
   stamp("#healthStamp");
 }
@@ -1455,7 +1466,7 @@ async function runRoute(sc, write){
   ROUTE = null;
   if (S.project){ const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
-      renderOverview(); renderHistory(); renderCommands(); renderQuick();});
+      renderOverview(); renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность");});
     // Шаги маршрута пишут в базу, но коммитит только агент — и только своё. Остальное
     // остаётся незафиксированным, и следующий прогон смешает свою работу с этой.
     // Панель git-операций не делает: это решение человека. Но молчать о них нечестно.
@@ -1511,7 +1522,7 @@ async function poll(id, since, label){
   if (S.project) { const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
       if (S.view==="health") renderHealth(); renderOverview(); stamp("#healthStamp");
-      renderHistory(); renderCommands(); renderQuick();}); }
+      renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность");}); }
 }
 /* Код возврата в Авроре означает три разных вещи, и красить их одинаково — врать.
    0 — сделано; 1 — команда отработала и нашла, что чинить (doctor с ошибками, аудит с
@@ -1910,29 +1921,48 @@ async function applySkin(id){
 }
 
 /* ---------------- быстрый старт ---------------- */
-async function renderQuick(){
-  const box = $("#quickBody");
+// Какие маршруты человек развернул: решение принимает он, и оно должно пережить
+// перерисовку от прихода здоровья или прогона команды.
+const OPEN_ROUTES = new Set();
+
+async function renderQuick(group="база"){
+  const box = $(group === "база" ? "#quickBody" : "#workBody");
+  if (!box) return;
   // Сценарии читаем один раз, а рисуем каждый раз: отметки последнего запуска меняются
   // от прогонов и от смены проекта, поэтому кэшировать саму разметку нельзя.
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
   box.innerHTML = "";
-  (d.scenarios||[]).forEach(sc => {
+  (d.scenarios||[]).filter(sc => (sc.group||"база") === group).forEach(sc => {
     const auto = sc.steps.filter(s=>!s.manual).length;
+    const open = OPEN_ROUTES.has(sc.id);
+    // Свёрнуто по умолчанию: человеку нужна кнопка, а не список из четырнадцати команд.
+    // Разворачивает он сам, когда решил посмотреть, из чего маршрут состоит.
+    const toggle = el("button",{class:"btn sm mono", title:"показать шаги маршрута",
+      style:"flex:none;width:30px;justify-content:center"}, open ? "−" : "+");
     const card = el("div",{class:"card",style:"padding:20px;margin-bottom:16px"},
-      el("div",{class:"row"}, el("b",{style:"font-size:15px"}, sc.title),
+      el("div",{class:"row"}, toggle, el("b",{style:"font-size:15px"}, sc.title),
         sc.when ? el("span",{class:"chip"}, sc.when) : null,
-        el("span",{class:"chip"}, sc.steps.length + " шагов"),
+        el("span",{class:"chip"}, auto === sc.steps.length
+          ? sc.steps.length + " шагов"
+          : auto + " из " + sc.steps.length + " автоматически"),
         el("div",{style:"flex:1"}),
         // Порядок шагов один и тот же всегда, флаги известны — нажимать их по одному
         // человеку незачем. Слева «посмотреть» (те же шаги без записи), справа проход.
         auto ? el("button",{class:"btn sm",onclick:()=>runRoute(sc,false)},"Посмотреть") : null,
         auto ? el("button",{class:"btn sm primary",onclick:()=>runRoute(sc,true)},
                  "Пройти маршрут") : null));
+    const steps = el("div",{}); steps.hidden = !open;
+    toggle.onclick = ()=>{
+      const now = !steps.hidden;
+      steps.hidden = now;
+      toggle.textContent = now ? "+" : "−";
+      if (now) OPEN_ROUTES.delete(sc.id); else OPEN_ROUTES.add(sc.id);
+    };
     sc.steps.forEach((st, i) => {
       const num = el("span",{class:"chip mono",style:"flex:none;width:26px;justify-content:center"},
         String(i+1));
       if (st.manual){
-        card.append(el("div",{class:"list-item"}, num,
+        steps.append(el("div",{class:"list-item"}, num,
           el("div",{style:"flex:1;min-width:0"},
             el("div",{style:"font-weight:600"}, st.title,
               el("span",{class:"chip",style:"margin-left:8px"},"ассистент")),
@@ -1947,7 +1977,7 @@ async function renderQuick(){
       // что сказать ассистенту, вместо кнопки, которая всё равно ничего не запустит.
       if (row && !row.runnable){
         const say = "/aurora-vault " + st.cmd;
-        card.append(el("div",{class:"list-item"}, num,
+        steps.append(el("div",{class:"list-item"}, num,
           el("div",{style:"flex:1;min-width:0"},
             el("div",{class:"row",style:"gap:8px"},
               el("span",{class:"mono",style:"font-weight:700"}, st.cmd),
@@ -1958,7 +1988,7 @@ async function renderQuick(){
         return;
       }
       const last = lastRun(st.cmd), mark = last ? rcMark(last.rc) : null;
-      card.append(el("div",{class:"list-item"}, num,
+      steps.append(el("div",{class:"list-item"}, num,
         el("div",{style:"flex:1;min-width:0"},
           el("div",{class:"row",style:"gap:8px"},
             el("span",{class:"mono",style:"font-weight:700"}, st.cmd),
@@ -1973,6 +2003,7 @@ async function renderQuick(){
           ? el("button",{class:"btn sm primary",onclick:()=>openRun(st.cmd, st.flags||[])},"Запустить")
           : el("span",{class:"chip"},"нет такой команды")));
     });
+    card.append(steps);
     box.append(card);
   });
 }
