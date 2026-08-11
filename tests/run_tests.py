@@ -2228,6 +2228,50 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_artifact_kinds_are_declared_and_editable(tmp: Path):
+    """Виды документов объявляет проект, а не движок, и правятся они из панели.
+
+    Формы у заказчиков разные: ОПЗ, проектное решение, руководство — у каждого свой
+    шаблон и своя папка. Движок не может знать их наперёд, поэтому реестр открытый и
+    живёт в конфиге проекта: в git, виден любой IDE и ассистенту через MCP.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    MK = importlib.import_module("make_kinds")
+    ck = importlib.import_module("aurora_cockpit")
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates" / "pr.md").write_text("шаблон", encoding="utf-8")
+
+    r = ck.kinds_write(str(root), {
+        "pr": {"title": "Проектное решение", "template": "Templates/pr.md",
+               "out": "Deliverables/drafts"}})
+    assert r.get("ok"), r
+    assert (root / "Deliverables" / "drafts").is_dir(), \
+        "папка результата не создана — объявили и не найдём в момент записи"
+
+    kinds = MK.read_kinds(str(root))
+    assert kinds["pr"]["template"] == "Templates/pr.md", kinds
+    assert not MK.check(str(root), kinds), MK.check(str(root), kinds)
+
+    # несуществующий шаблон объявить можно, но команда об этом скажет
+    ck.kinds_write(str(root), {"pr": {"title": "П", "template": "Templates/нет.md",
+                                      "out": "Deliverables/drafts"}})
+    bad = MK.check(str(root), MK.read_kinds(str(root)))
+    assert bad and "шаблона нет" in bad[0][1], bad
+
+    # имя типа — не произвольная строка: по нему зовут инструмент и создают папку
+    assert "error" in ck.kinds_write(str(root), {"ПР ": {"title": "x"}}), \
+        "принято недопустимое имя типа"
+
+    # правка реестра не портит остальной конфиг
+    cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
+    assert "project:" in cfg and "atlassian:" in cfg, "перезапись секции задела чужие"
+
+
+@test
 def test_embeddings_are_configured_separately(tmp: Path):
     """Свой сервис векторов: адрес, ключ и модель настраиваются отдельно от чата.
 

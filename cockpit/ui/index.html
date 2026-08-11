@@ -448,7 +448,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.69.0";
+const UI_VERSION = "1.70.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1342,6 +1342,74 @@ async function fire(apply){
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
   poll(res.job, 0, (r.cmd + " " + args.join(" ")).trim());
 }
+/* ---------------- артефакты проекта ----------------
+
+   Шаблоны у проектов разные, и знание «чем и куда» до сих пор жило в голове аналитика.
+   Реестр лежит в aurora.config.yaml проекта — в git, виден любой IDE и ассистенту через
+   MCP; панель здесь только удобный ввод, а не второе хранилище. Виды документов заводит
+   человек: движок не знает наперёд, какие формы потребует заказчик. */
+let KINDS = null;
+
+async function renderKinds(box){
+  if (!S.project) return;
+  const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path));
+  if (d.error) return;
+  KINDS = JSON.parse(JSON.stringify(d.kinds || {}));
+  const card = el("div",{class:"card",style:"padding:20px"});
+  const draw = () => {
+    card.innerHTML = "";
+    card.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
+      "Какой шаблон брать и куда класть результат — по каждому виду документа. "
+      + "Хранится в aurora.config.yaml проекта, читается ассистентом (artifact_spec) "
+      + "и любой IDE. Новые виды заводите здесь же."));
+    (d.problems||[]).forEach(p=>card.append(el("div",{class:"warnbox",style:"margin-bottom:8px"},
+      `${p.kind}: ${p.why}`)));
+    const rows = el("div",{});
+    Object.keys(KINDS).sort().forEach(kind=>{
+      const rec = KINDS[kind];
+      const field = (key, ph, width) => el("input",{class:"btn mono",
+        style:`width:${width};font-size:12px`, value:rec[key]||"", placeholder:ph,
+        oninput:e=>{ rec[key] = e.target.value; setDirty("kinds","«Артефакты»",true); }});
+      rows.append(el("div",{class:"list-item",style:"gap:8px;flex-wrap:wrap"},
+        el("span",{class:"chip mono",style:"flex:none"}, kind),
+        field("title","название для человека","190px"),
+        field("template","Templates/…","210px"),
+        field("out","куда класть","150px"),
+        el("button",{class:"btn sm",title:"убрать вид документа",
+          onclick:()=>{ delete KINDS[kind]; setDirty("kinds","«Артефакты»",true); draw(); }},"×")));
+    });
+    card.append(rows);
+    const name = el("input",{class:"btn mono",style:"width:150px",
+      placeholder:"новый тип, напр. pr"});
+    card.append(el("div",{class:"row",style:"gap:10px;margin-top:12px;flex-wrap:wrap"},
+      name,
+      el("button",{class:"btn sm",onclick:()=>{
+        const key = (name.value||"").trim().toLowerCase();
+        if (!/^[a-z][a-z0-9-]{1,30}$/.test(key))
+          return toast("Имя типа — латиница, цифры и дефис","warn");
+        if (KINDS[key]) return toast("Такой тип уже есть","warn");
+        KINDS[key] = {title:"", template:"", out:"Artifacts/" + key};
+        name.value = ""; setDirty("kinds","«Артефакты»",true); draw();
+      }},"Добавить вид"),
+      saveButton("kinds","«Артефакты»","Сохранить", async ()=>{
+        const r = await api("/api/kinds",{method:"POST",
+          body:JSON.stringify({project:S.project.path, kinds:KINDS})});
+        if (r.ok){ toast("Записано в " + r.target.split("/").pop()
+                         + ": видов " + r.kinds); setDirty("kinds","«Артефакты»",false);
+                   renderSetup(); }
+        else toast(r.error || "не записано","err");
+      }),
+      el("span",{class:"muted",style:"font-size:12px"},
+        "папка результата создаётся при сохранении")));
+    if ((d.templates||[]).length)
+      card.append(el("div",{class:"muted",style:"font-size:12px;margin-top:10px"},
+        "Шаблоны проекта: " + d.templates.slice(0,12).join(", ")
+        + (d.templates.length > 12 ? ` … всего ${d.templates.length}` : "")));
+  };
+  draw();
+  box.append(el("h2",{},"Артефакты · " + S.project.name), card);
+}
+
 /* ---------------- спросить базу ----------------
 
    Диалог с базой на месте: раньше человек шёл в чужой чат, а туда надо было ещё
@@ -2192,6 +2260,7 @@ async function renderAgentCard(box){
     pingBox);
 
   box.append(el("h2",{},"Агент" + (S.project ? " · " + S.project.name : " · вся машина")), card);
+  renderKinds(box);
 }
 
 /* ---------------- о проекте ---------------- */
