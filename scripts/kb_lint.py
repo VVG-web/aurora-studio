@@ -115,7 +115,14 @@ def main():
             fm = frontmatter(text)
             cards[rel] = (fm, text)
             for a in aliases(text):
-                if a in alias_owner and alias_owner[a] != rel:
+                # Архив выведен из базы: ссылка по имени туда не ведёт, и «конфликт»
+                # живой карточки с её же донором, уехавшим в _archive после слияния, —
+                # не спор имён, а след штатной прополки.
+                if "/_archive/" in rel or rel.startswith("_archive/"):
+                    continue
+                if a in alias_owner and alias_owner[a] != rel \
+                        and "/_archive/" not in alias_owner[a] \
+                        and not alias_owner[a].startswith("_archive/"):
                     dup_aliases.append((a, alias_owner[a], rel))
                 else:
                     alias_owner[a] = rel
