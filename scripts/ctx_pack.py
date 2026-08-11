@@ -182,7 +182,26 @@ def words(text: str) -> list:
     return out
 
 
-def score(card: Card, topic: str) -> int:
+def semantic(topic: str, limit: int) -> dict:
+    """{имя карточки: близость} по смыслу. Пусто — индекса нет, и это нормально.
+
+    Слова находят то, что человек назвал; вектора — то, что он имел в виду. Вместе они
+    работают лучше, чем поодиночке, поэтому это не замена словам, а добавка к ним.
+    Индекса нет, сеть недоступна, модель сменилась — пак просто собирается по словам.
+    """
+    try:
+        import agent_core as AG
+        import kb_embed as E
+        cfg = AG.parse_config(AG.raw_config())
+        if not cfg["backends"]:
+            return {}
+        model = AG.raw_config().get("AURORA_AGENT_EMBED_MODEL") or "bge-m3"
+        return {name: sim for name, sim in E.search(topic, cfg, model, limit)}
+    except Exception:            # noqa: BLE001 — выборка не имеет права падать из-за сети
+        return {}
+
+
+def score(card: Card, topic: str, close: dict | None = None) -> int:
     """Насколько карточка отвечает теме: заголовок > алиас > теги > тело.
 
     Считаем по СЛОВАМ, а не по фразе целиком. Пока сравнивалась вся строка, живой
@@ -223,11 +242,17 @@ def score(card: Card, topic: str) -> int:
         s += 8
     elif hits * 2 < len(ask):
         s = s // 2          # половину запроса не нашли — это скорее шум
+    # Близость по смыслу добавляется к словам, а не заменяет их: ниже 0.35 совпадение
+    # случайно, выше — весит примерно как попадание в заголовок.
+    if close:
+        sim = close.get(card.stem, 0.0)
+        if sim > 0.35:
+            s += int((sim - 0.35) * 60)
     return s
 
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
-            release: str, max_cards: int) -> tuple:
+            release: str, max_cards: int, close: dict | None = None) -> tuple:
     """Seed по теме → один переход по ссылкам. Возвращает (карточки, исключено по релизу)."""
     def allowed(c: Card) -> bool:
         # Заготовка проходит приёмку (утверждений в ней нет — не верить нечему), но в
@@ -238,8 +263,8 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")
 
-    seeds = sorted(((score(c, topic), c) for c in cards.values() if score(c, topic) > 0),
-                   key=lambda x: (-x[0], x[1].stem))
+    ranked = ((score(c, topic, close), c) for c in cards.values())
+    seeds = sorted(((s, c) for s, c in ranked if s > 0), key=lambda x: (-x[0], x[1].stem))
     chosen, seen, dropped = [], set(), []
     for _, c in seeds:
         if len(chosen) >= max_cards:
@@ -302,6 +327,8 @@ def main() -> int:
     ap.add_argument("--release", help="релиз задачи (по умолчанию current из meta/releases.md)")
     ap.add_argument("--save", action="store_true", help="сохранить пак в Artifacts/drafts/")
     ap.add_argument("--no-log", action="store_true", help="не писать в meta/usage.log")
+    ap.add_argument("--no-semantic", action="store_true",
+                    help="только слова: не спрашивать семантический индекс (kb:embed)")
     ap.add_argument("--index", action="store_true",
                     help="оглавление базы вместо пака: строка на карточку "
                          "(имя · тип · статус · суть · путь) — модель выбирает сама")
@@ -344,7 +371,9 @@ def main() -> int:
     pct = trusted / len(cards) * 100
     bootstrap = pct < threshold()
     release = a.release if a.release is not None else current_release()
-    chosen, dropped = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap, release, a.max_cards)
+    close = {} if a.no_semantic else semantic(a.topic, a.max_cards * 2)
+    chosen, dropped = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap, release,
+                              a.max_cards, close)
     if not chosen:
         print(f"ctx_pack: по теме «{a.topic}» ничего не найдено. "
               "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",
@@ -354,6 +383,7 @@ def main() -> int:
 
     out = [f"# Context pack: {a.topic}", "",
            f"_Собран {TODAY} · режим {a.mode} · карточек {len(chosen)}"
+           + (" · поиск по словам и смыслу" if close else " · поиск по словам")
            + (f" · релиз {release}" if release else "")
            + f" · verified в базе {pct:.1f}%_", "", PREAMBLE]
     if bootstrap:
