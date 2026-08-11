@@ -2228,6 +2228,40 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_long_step_reports_progress_and_duration(tmp: Path):
+    """Долгий шаг показывает, что идёт, а журнал помнит, сколько он занял.
+
+    Агент печатал отчёт только в конце: на живом прогоне это двадцать минут пустой
+    консоли, по которой невозможно отличить работу от повисшего процесса. Второй
+    источник ответа — прошлый прогон: у команд разброс от секунды до получаса.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    ck = importlib.import_module("aurora_cockpit")
+
+    import time as _t
+    line = R.progress(3, 15, _t.time() - 120)
+    assert "[3/15]" in line and "20%" in line, line
+    assert "осталось ~" in line, "нет оценки остатка — главного, что нужно у экрана"
+    assert "осталось" not in R.progress(15, 15, _t.time() - 120), \
+        "на последнем шаге обещать остаток нечестно"
+
+    root = make_project(tmp)
+    ck.write_runlog(str(root), "agent:build", 0, "agent:build --apply", 754)
+    again = ck.read_runlog(str(root))
+    assert again["agent:build"]["secs"] == 754, again
+
+    # журнал старого формата (без колонки секунд) читается по-прежнему
+    path = root / ".opencode" / "run_log.md"
+    path.write_text(path.read_text(encoding="utf-8").replace(" | 754 |", " |"),
+                    encoding="utf-8")
+    old = ck.read_runlog(str(root))
+    assert old["agent:build"]["rc"] == 0 and old["agent:build"]["secs"] == 0, old
+
+
+@test
 def test_doctor_accepts_folders_declared_by_artifacts(tmp: Path):
     """Папка, объявленная в реестре артефактов, — законная, а не нарушение схемы.
 
