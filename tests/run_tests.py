@@ -2219,6 +2219,69 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
+    """MCP отдаёт базу ассистенту и только читает; stdout занят протоколом.
+
+    Любой print движка («посчитано 12 из 40») встанет посреди JSON-RPC и оборвёт сессию:
+    stdout здесь не место для сообщений, а канал. И ни один инструмент не пишет в базу —
+    чужой ассистент не участвует в приёмке знания и не проходит git-guard.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.",
+         status="verified", type="concept")
+    before = sorted(p.name for p in (root / "AuroraKnowledgeDB").rglob("*.md"))
+
+    calls = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+             {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+              "params": {"name": "kb_search", "arguments": {"query": "обеспечение"}}},
+             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+              "params": {"name": "kb_card", "arguments": {"name": "Обеспечение"}}}]
+    proc = subprocess.run(
+        [sys.executable, str(KIT / "scripts" / "aurora_mcp.py"), "--project", str(root)],
+        input="\n".join(json.dumps(c) for c in calls), capture_output=True, text=True,
+        timeout=180)
+    lines = [l for l in proc.stdout.splitlines() if l.strip()]
+    got = [json.loads(l) for l in lines]          # падает, если в канал попал чужой текст
+    assert len(got) == 4, [l[:80] for l in lines]
+    assert got[0]["result"]["serverInfo"]["name"] == "aurora", got[0]
+    names = {t["name"] for t in got[1]["result"]["tools"]}
+    assert {"kb_search", "kb_card", "kb_context", "kb_index", "kb_ask"} == names, names
+    assert "Обеспечение" in got[2]["result"]["content"][0]["text"]
+    assert "Правила обеспечения" in got[3]["result"]["content"][0]["text"]
+    assert sorted(p.name for p in (root / "AuroraKnowledgeDB").rglob("*.md")) == before, \
+        "чтение базы через MCP изменило файлы"
+
+
+@test
+def test_graph_insights_name_communities_bridges_islands(tmp: Path):
+    """Карта связей: сообщества, мосты и острова считаются, а не угадываются.
+
+    «73% карточек связаны» не отвечает на вопрос, который у человека есть: где знание
+    разорвано. Отвечают острова (сюда не дойти по ссылкам) и мосты (единственная связь
+    между темами: порвётся — темы разъедутся, и никто не заметит).
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    G = importlib.import_module("kb_graph")
+
+    # две плотные группы, один мост между ними и одинокая карточка
+    pairs = {}
+    def link(a, b):
+        pairs.setdefault(a, set()).add(b); pairs.setdefault(b, set()).add(a)
+    for a, b in (("a1","a2"),("a2","a3"),("a3","a1")): link(a, b)
+    for a, b in (("b1","b2"),("b2","b3"),("b3","b1")): link(a, b)
+    link("a1", "b1")                       # мост
+    pairs.setdefault("одиночка", set())
+
+    ins = G.insights(pairs, {})
+    assert ("a1", "b1") in ins["bridges"], ins["bridges"]
+    assert "одиночка" in ins["islands"], ins["islands"]
+    assert ins["label"]["a2"] == ins["label"]["a3"], "плотная группа не собралась"
+    assert len({ins["label"][x] for x in ("a2", "b2")}) == 2, "две группы слились в одну"
+
+
+@test
 def test_semantic_index_is_optional_and_hybrid(tmp: Path):
     """Смысл добавляется к словам, а не заменяет их — и выборка не падает без индекса.
 
