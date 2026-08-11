@@ -2228,6 +2228,34 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_doctor_accepts_folders_declared_by_artifacts(tmp: Path):
+    """Папка, объявленная в реестре артефактов, — законная, а не нарушение схемы.
+
+    Ловушка выглядела так: человек заводит вид документа в панели, движок создаёт под
+    него папку, а doctor тут же называет её папкой вне схемы. Реестр видов — такое же
+    основание для папки, как реестр модулей для зеркала в Sources/.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates" / "pr.md").write_text("шаблон", encoding="utf-8")
+    (root / "Своя-папка-вне-схемы").mkdir()
+
+    ck.kinds_write(str(root), {"pr": {"title": "ПР", "template": "Templates/pr.md",
+                                      "out": "Deliverables/drafts"}})
+    assert (root / "Deliverables" / "drafts").is_dir()
+
+    out = run("aurora_doctor.py", cwd=root, expect_rc=None).stdout
+    assert "Deliverables/drafts" not in out, \
+        "папка из реестра артефактов объявлена нарушением схемы"
+    assert "Своя-папка-вне-схемы" in out, \
+        "папка, которую никто не объявлял, перестала замечаться — проверка ослабла"
+
+
+@test
 def test_artifact_kinds_are_declared_and_editable(tmp: Path):
     """Виды документов объявляет проект, а не движок, и правятся они из панели.
 
