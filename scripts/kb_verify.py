@@ -342,6 +342,9 @@ def main() -> int:
                     help="принять заготовки: имя из живой ссылки, утверждений в них нет")
     ap.add_argument("--by-links", action="store_true",
                     help="принять то, на что ссылаются только принятые истории")
+    ap.add_argument("--demote", action="store_true",
+                    help="понизить выбранное до draft: доверие снимается, карточка "
+                         "возвращается в работу")
     ap.add_argument("--demote-machine", action="store_true",
                     help="вернуть в imported карточки, собранные агентом и принятые "
                          "автоматически (уборка после автоприёмки машинной нарезки)")
@@ -387,6 +390,35 @@ def main() -> int:
 
     verdicts = {}
     auto: dict = {}          # карточка → основание (правила поверх «по задаче»)
+    if a.demote:
+        # Обратная сторона приёмки. Без неё «понизить» делалось правкой шапки руками —
+        # и следы доверия (основание, срок, отпечаток) оставались висеть в карточке.
+        victims = [p for p in files
+                   if (heads[p][0].get("status") or "").strip() in TRUSTED]
+        print(f"# Понижение до draft — {TODAY.isoformat()}\n")
+        print(f"Отобрано: {len(files)} · принятых среди них: {len(victims)}")
+        for path in victims[:15]:
+            print(f"- {os.path.relpath(path, ROOT)}")
+        if len(victims) > 15:
+            print(f"- … ещё {len(victims) - 15}")
+        if not a.apply:
+            print("\n(dry-run) Ничего не записано. Повторите с --apply.")
+            return 0
+        if not git_guard(ROOT, a.allow_dirty, "понижение статуса"):
+            return 2
+        for path in victims:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            head, rest = split_frontmatter(text)
+            if head is None:
+                continue
+            head = set_field(head, "status", "draft")
+            head = set_field(head, "updated", TODAY.isoformat())
+            for gone in ("verified", "verified_hash", "verified_basis", "review_by"):
+                head = re.sub(rf"^{gone}:.*\n?", "", head, flags=re.M)
+            open(path, "w", encoding="utf-8").write("---" + head + rest)
+        print(f"\n✅ Понижено до draft: {len(victims)}.")
+        return 0
+
     if a.demote_machine:
         # Разовая, но воспроизводимая уборка: до 1.60.0 автоприёмка присваивала доверие
         # машинной нарезке. Такие карточки возвращаются в imported и метятся, чтобы
