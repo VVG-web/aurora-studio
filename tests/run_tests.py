@@ -1398,6 +1398,19 @@ def test_kit_ships_no_project_data(tmp: Path):
         "в ките лежит конфиг проекта — команды будут считать кит проектом"
 
 
+def term_regex(terms: list):
+    """Приватные названия — по границам слова, а не по подстроке.
+
+    Короткое внутреннее название нередко оказывается началом обычного русского слова —
+    и тогда защита ловит живую фразу вместо утечки. Ложное срабатывание хуже пропуска:
+    его обходят, переписывая нормальный текст, и защита превращается в помеху, которую
+    учатся игнорировать. Границей слова считаем букву или цифру, поэтому имя файла с
+    подчёркиванием или дефисом по-прежнему ловится.
+    """
+    body = "|".join(re.escape(t) for t in terms)
+    return re.compile(rf"(?<![0-9A-Za-zА-Яа-яЁё])(?:{body})(?![0-9A-Za-zА-Яа-яЁё])", re.I)
+
+
 @test
 def test_no_private_terms_in_tracked_files(tmp: Path):
     """Наружу уходит только обезличенное.
@@ -1415,7 +1428,7 @@ def test_no_private_terms_in_tracked_files(tmp: Path):
         return
     tracked = subprocess.run(["git", "ls-files"], cwd=str(KIT),
                              capture_output=True, text=True).stdout.split()
-    rx = re.compile("|".join(re.escape(t) for t in terms), re.I)
+    rx = term_regex(terms)
     hits = []
     for rel in tracked:
         path = KIT / rel
@@ -1451,7 +1464,7 @@ def test_no_private_terms_in_commit_messages(tmp: Path):
         return
     log = subprocess.run(["git", "log", "--format=%H%x00%B%x01"], cwd=str(KIT),
                          capture_output=True, text=True).stdout
-    rx = re.compile("|".join(re.escape(t) for t in terms), re.I)
+    rx = term_regex(terms)
     hits = []
     for entry in log.split("\x01"):
         if "\x00" not in entry:
