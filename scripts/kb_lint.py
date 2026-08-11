@@ -58,6 +58,12 @@ def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str
     """
     if section in ("Requirements", "Specs", "Decisions", "Questions"):
         return ""      # законные жители базы, даже если ссылаются на историю
+    # Выгруженное из Confluence — это то, что заказчик написал о проекте, и в базе оно
+    # законно, как бы ни называлась страница. Артефакт — то, что мы сгенерировали сами:
+    # у него нет источника в зеркале. Правило по одному имени объявляло чужой историей
+    # каждую страницу с «US-» в заголовке и давало сотни ложных срабатываний.
+    if src.startswith("Sources/") and not src.startswith("Sources/JIRA/"):
+        return ""
     for rx, label in ARTIFACT_PATTERNS:
         if rx.search(stem) or rx.search(title):
             return label

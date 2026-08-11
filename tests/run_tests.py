@@ -2053,6 +2053,111 @@ def test_agent_work_rolls_back_whole(tmp: Path):
 
 
 @test
+def test_demote_machine_returns_trust_to_the_human(tmp: Path):
+    """Уборка после автоприёмки: машинная нарезка возвращается в imported.
+
+    До 1.60.0 правило «источник доверенный» присваивало verified карточкам, которые
+    собрал агент. Метки `built: machine` у них ещё нет — их узнают по журналам прогонов
+    агента: каждый прогон записал, что именно собрал.
+    """
+    root = make_project(tmp)
+    runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "2026-08-10_1200_build.md").write_text(
+        "## Какие карточки собраны\n\n- источник.md: «Машинная тема» ← секции 1\n",
+        encoding="utf-8")
+    card(root, "Concepts/Машинная-тема.md", "Собрано агентом.", type="concept",
+         status="verified", title='"Машинная тема"', verified="2026-08-10",
+         verified_basis='"источник объявлен доверенным"')
+    card(root, "Concepts/Человек-писал.md", "Человек писал сам.", type="concept",
+         status="verified", verified="2026-08-10")
+
+    run("kb_verify.py", "--demote-machine", "--apply", "--allow-dirty", cwd=root)
+    machine = (root / "AuroraKnowledgeDB/Concepts/Машинная-тема.md").read_text(encoding="utf-8")
+    human = (root / "AuroraKnowledgeDB/Concepts/Человек-писал.md").read_text(encoding="utf-8")
+    assert "status: imported" in machine and "built: machine" in machine, machine[:200]
+    assert "verified_basis" not in machine, "основание доверия осталось у понижённой карточки"
+    assert "status: verified" in human, "понижение задело карточку, которую писал человек"
+
+
+@test
+def test_lint_spares_artifacts_that_came_from_sources(tmp: Path):
+    """Выгруженное из Confluence — законный житель базы, как бы оно ни называлось.
+
+    Правило смотрело только на имя и объявляло чужой историей каждую страницу с «US-»
+    в заголовке: на живой базе это 243 ложных срабатывания из 243. Артефакт — то, что
+    сгенерировано нами: у него нет источника в зеркале.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/US-3.1.1-Выгружено-из-вики.md", "Пришло из зеркала.",
+         type="concept", source='"Sources/Confluence/История.md"')
+    card(root, "Concepts/US-3.1.2-Сгенерировано-нами.md", "Родилось в проекте.",
+         type="concept")
+
+    out = run("kb_lint.py", cwd=root, expect_rc=1).stdout
+    assert "US-3.1.2-Сгенерировано-нами" in out, "сгенерированный артефакт перестали замечать"
+    assert "US-3.1.1-Выгружено-из-вики" not in out, \
+        "страница из зеркала объявлена чужим артефактом"
+
+
+@test
+def test_split_makes_atoms_and_keeps_the_document(tmp: Path):
+    """Раздутая карточка режется по своим заголовкам, а сама становится картой документа.
+
+    Атомарность — основа и поиска, и чтения: карточку на тридцать тысяч знаков не найти
+    выборкой и не прочитать в контексте. Границы тем в ней уже расставлены заголовками,
+    спрашивать о них модель незачем. Принадлежность документу при этом не теряется.
+    """
+    root = make_project(tmp)
+    big = "\n\n".join(f"## Часть {i}\n\n" + "текст. " * 80 for i in range(1, 4))
+    card(root, "Concepts/Большая.md", big, type="concept",
+         source='"Sources/Confluence/Документ.md"')
+
+    run("kb_fix.py", "--split", "Большая", "--apply", "--allow-dirty", cwd=root)
+    parts = list((root / "AuroraKnowledgeDB" / "Concepts").glob("Часть-*.md"))
+    assert len(parts) == 3, [p.name for p in parts]
+    first = parts[0].read_text(encoding="utf-8")
+    assert 'part_of: "[[Большая]]"' in first, "часть не помнит, откуда она"
+    assert "Sources/Confluence/Документ.md" in first, "часть потеряла источник"
+    kept = (root / "AuroraKnowledgeDB/Concepts/Большая.md").read_text(encoding="utf-8")
+    assert "[[Часть-1|Часть 1]]" in kept, "исходная карточка не стала картой документа"
+    assert "текст. текст." not in kept, "тело осталось в карте — резать было незачем"
+
+
+@test
+def test_graph_links_cards_to_their_terms(tmp: Path):
+    """Карточка ссылается на определение термина — и не наоборот.
+
+    Правила RY и номеров историй точны, но узки: на живой базе они покрывали 588 карточек
+    из 1692. Термин — третий способ, которым связи уже записаны в текстах. Обратная связь
+    запрещена намеренно: «Заявитель» упомянут почти везде, и определение превратилось бы
+    в свалку из девятисот ссылок.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    G = importlib.import_module("kb_graph")
+
+    root = make_project(tmp)
+    card(root, "Glossary/Обеспечительный-платёж.md", "Определение термина.", type="glossary")
+    card(root, "Concepts/Возврат-средств.md",
+         "При отказе обеспечительный платёж возвращается заявителю.", type="concept")
+    card(root, "Concepts/Погода.md", "Ничего общего.", type="concept")
+
+    import os as _os
+    cwd = _os.getcwd()
+    try:
+        _os.chdir(root)
+        pairs = G.glossary_links()
+    finally:
+        _os.chdir(cwd)
+    froms = {a.split("/")[-1] for a, _b in pairs}
+    tos = {b.split("/")[-1] for _a, b in pairs}
+    assert "Возврат-средств.md" in froms, "карточка не связалась с определением термина"
+    assert "Погода.md" not in froms, "связь возникла там, где термина нет"
+    assert tos == {"Обеспечительный-платёж.md"}, tos
+
+
+@test
 def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
     """Оглавление: строка на карточку, чтобы модель увидела базу целиком.
 
