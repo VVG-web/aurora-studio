@@ -448,7 +448,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.72.0";
+const UI_VERSION = "1.72.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1515,20 +1515,55 @@ let ROUTE = null;
 
 async function runStep(cmd, args){
   const r = S.state.commands.find(x=>x.cmd===cmd);
-  if (!r || !r.runnable) return {rc:0, skipped:true};
+  if (!r || !r.runnable) return {rc:0, skipped:true, lines:[]};
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
     {project: (isEngineCmd(r) ? "" : S.project.path), cmd, args})});
   if (!res.job) return {rc:2};
   const out = $("#consoleOut");
-  let since = 0;
+  let since = 0, lines = [];
   for (;;){
     const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
-    (d.lines||[]).forEach(l=>out.append(el("div",{class:"dim"}, l)));
+    (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
     out.scrollTop = out.scrollHeight;
     since = d.next;
-    if (d.done) return {rc:d.rc};
+    if (d.done) return {rc:d.rc, lines};
     await new Promise(ok=>setTimeout(ok, 450));
   }
+}
+
+// Что именно нашла команда и чем это чинят. «Отработала и нашла, что чинить» —
+// честно, но бесполезно: человек всё равно идёт листать консоль. Заголовки разделов
+// отчёта («## битые ссылки: 20») — это и есть находки, а лечение известно заранее.
+const FIX_HINT = {
+  "битые ссылки": "kb:repair --links",
+  "одинаковые alias": "agent:aliases (дубли отложит человеку)",
+  "правка после приёмки": "kb:verify --refresh либо понизить до draft",
+  "артефакты, попавшие в базу знаний": "перенести в Artifacts/ — решение человека",
+  "тип не по разделу": "поправить type: в шапке или перенести карточку в свой раздел",
+  "карточки-двойники": "kb:dedupe",
+  "ORPHAN": "страницы нет в источнике: повторить синк или убрать из зеркала",
+  "MISSING": "досинхронизировать: sync:confluence / sync:jira",
+  "COLLISION": "имена различаются только регистром — переименовать в источнике",
+};
+
+function findings(lines){
+  const out = [];
+  const add = (what, n) => {
+    if (!n || n === "0") return;
+    const hint = Object.keys(FIX_HINT).find(k=>what.toLowerCase().includes(k.toLowerCase()));
+    out.push({what: what.trim(), n, fix: hint ? FIX_HINT[hint] : ""});
+  };
+  lines.forEach(l=>{
+    const head = l.match(/^##+\s*(.+?):\s*\*{0,2}(\d+)\*{0,2}\s*$/);
+    if (head) return add(head[1], head[2]);
+    // Аудит зеркал печатает все счётчики одной строкой:
+    // «- MISSING: **0** · MOVED: **0** · ORPHAN: **27** · …». Разбираем каждый.
+    if (/^-\s*(MISSING|MOVED|ORPHAN|CASE|COLLISION|ПОСТОРОННИЕ)/.test(l))
+      [...l.matchAll(/([A-ZА-Я]{4,}):\s*\*\*(\d+)\*\*/g)].forEach(m=>add(m[1], m[2]));
+  });
+  // одна строка на находку: у аудита те же счётчики повторяются по каждому зеркалу
+  const seen = new Set();
+  return out.filter(x => !seen.has(x.what + x.n) && seen.add(x.what + x.n)).slice(0, 8);
 }
 
 async function runRoute(sc, write){
@@ -1556,8 +1591,8 @@ async function runRoute(sc, write){
     $("#consoleRc").textContent = "выполняется…"; $("#consoleRc").className = "chip";
     out.append(el("div",{class:"ok",style:"margin-top:10px"},
       `▸ шаг ${ROUTE.done}/${ROUTE.total} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
-    const {rc, skipped} = await runStep(st.cmd, st.args);
-    summary.push({cmd:st.cmd, rc, skipped});
+    const {rc, skipped, lines} = await runStep(st.cmd, st.args);
+    summary.push({cmd:st.cmd, rc, skipped, found: rc === 1 ? findings(lines||[]) : []});
     if (rc >= 2){ ROUTE.failed = st.cmd; break; }
   }
   const bad = ROUTE.failed;
@@ -1569,8 +1604,14 @@ async function runRoute(sc, write){
         + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
         + "без вреда."
         : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
-  summary.filter(s=>s.rc===1).forEach(s=>out.append(el("div",{class:"warn"},
-    `  ${s.cmd} — код 1: отработала и нашла, что чинить (это не ошибка маршрута)`)));
+  summary.filter(s=>s.rc===1).forEach(s=>{
+    out.append(el("div",{class:"warn"},
+      `  ${s.cmd} — нашла, что чинить (это не ошибка маршрута):`));
+    if (!s.found.length)
+      out.append(el("div",{class:"dim"}, "      подробности выше в выводе шага"));
+    s.found.forEach(f=>out.append(el("div",{class:"dim"},
+      `      ${f.what}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : ""))));
+  });
   ROUTE = null;
   if (S.project){ const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
