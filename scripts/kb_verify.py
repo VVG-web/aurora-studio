@@ -110,6 +110,38 @@ def default_owner() -> str:
     return os.environ.get("USER") or ""
 
 
+AGENT_RUNS = os.path.join(ROOT, "meta", "agent-runs")
+
+
+def machine_built(files: list, heads: dict) -> list:
+    """Карточки, собранные агентом: по метке в шапке и по журналам его прогонов.
+
+    Метка `built: machine` появилась в 1.60.0 — карточки, собранные до неё, её не имеют.
+    Но каждый прогон агента оставил журнал со списком того, что собрал: по нему машинную
+    работу видно задним числом. Это единственный честный способ отличить её от карточки,
+    которую человек писал сам, — дата и доверенный источник у них одинаковые.
+    """
+    named = set()
+    if os.path.isdir(AGENT_RUNS):
+        for name in sorted(os.listdir(AGENT_RUNS)):
+            if "build" not in name or not name.endswith(".md"):
+                continue
+            text = open(os.path.join(AGENT_RUNS, name), encoding="utf-8",
+                        errors="ignore").read()
+            block = text.split("## Какие карточки собраны", 1)
+            if len(block) > 1:
+                named |= set(re.findall(r"«([^»]+)»", block[1].split("\n## ", 1)[0]))
+    out = []
+    for path in files:
+        fm = heads[path][0]
+        title = (fm.get("title") or "").strip().strip('"')
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if (fm.get("built") or "").strip().strip('"') == "machine" or title in named \
+                or stem in named:
+            out.append(path)
+    return out
+
+
 def source_verdicts(files: list, heads: dict) -> dict:
     """{карточка: основание} — доверие по происхождению.
 
@@ -303,6 +335,9 @@ def main() -> int:
                     help="принять заготовки: имя из живой ссылки, утверждений в них нет")
     ap.add_argument("--by-links", action="store_true",
                     help="принять то, на что ссылаются только принятые истории")
+    ap.add_argument("--demote-machine", action="store_true",
+                    help="вернуть в imported карточки, собранные агентом и принятые "
+                         "автоматически (уборка после автоприёмки машинной нарезки)")
     ap.add_argument("--auto", action="store_true",
                     help="всё автоматическое разом: по задаче, по происхождению, по связям")
     ap.add_argument("--by-jira", action="store_true",
@@ -345,6 +380,39 @@ def main() -> int:
 
     verdicts = {}
     auto: dict = {}          # карточка → основание (правила поверх «по задаче»)
+    if a.demote_machine:
+        # Разовая, но воспроизводимая уборка: до 1.60.0 автоприёмка присваивала доверие
+        # машинной нарезке. Такие карточки возвращаются в imported и метятся, чтобы
+        # автоприёмка больше их не брала. Тела не трогаем: знание в них есть, не хватает
+        # человеческого взгляда на границы темы.
+        victims = [p for p in machine_built(files, heads)
+                   if (heads[p][0].get("status") or "").strip() in TRUSTED]
+        print(f"# Понижение машинной нарезки — {TODAY.isoformat()}\n")
+        print(f"Карточек, собранных агентом и стоящих как принятые: {len(victims)}")
+        if not a.apply:
+            for path in victims[:15]:
+                print(f"- {os.path.relpath(path, ROOT)}")
+            if len(victims) > 15:
+                print(f"- … ещё {len(victims) - 15}")
+            print("\n(dry-run) Ничего не записано. Повторите с --apply.")
+            return 0
+        if not git_guard(ROOT, a.allow_dirty, "понижение машинной нарезки"):
+            return 2
+        for path in victims:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            head, rest = split_frontmatter(text)
+            if head is None:
+                continue
+            head = set_field(head, "status", "imported")
+            head = set_field(head, "built", "machine")
+            head = set_field(head, "updated", TODAY.isoformat())
+            for gone in ("verified", "verified_hash", "verified_basis", "review_by", "owner"):
+                head = re.sub(rf"^{gone}:.*\n?", "", head, flags=re.M)
+            open(path, "w", encoding="utf-8").write("---" + head + rest)
+        print(f"\n✅ Понижено до imported: {len(victims)}. Принимает их человек: "
+              "`kb:verify <карточка>` после доводки текста.")
+        return 0
+
     if a.by_jira:
         verdicts = jira_verdicts("Sources/Confluence", "Sources/JIRA")
         if not verdicts and not a.auto:

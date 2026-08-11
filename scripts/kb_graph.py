@@ -227,6 +227,16 @@ def card_links(g: Graph, hubs: dict, conf_root: str, jira_root: str) -> dict:
         for a in cards_of_page(src):
             for b in cards_of_page(dst):
                 link(a, b)
+    # Правило термина: карточка упоминает термин, у которого есть своя карточка в
+    # Glossary. Правила RY и номера историй точны, но узки — они видят только то, что
+    # проставлено кодами в источниках, и покрывают треть базы. Термин — третий способ,
+    # которым связи уже записаны в текстах: он даёт модели путь «факт → определение».
+    # Односторонне: карточка ссылается на определение, но у самого определения не
+    # появляется девятисот связей. «Заявитель» упомянут почти везде — обратная связь
+    # превратила бы карточку термина в свалку и утопила бы её настоящих соседей.
+    for a_path, b_path in glossary_links():
+        if a_path != b_path:
+            pairs.setdefault(a_path, set()).add(b_path)
     for num, hub in hubs.items():                          # правило номера истории
         around = [c for rel in hub["us"] for c in cards_of_page(rel)]
         kin = ([c for rel in hub["ac"] for c in cards_of_page(rel)]
@@ -235,6 +245,44 @@ def card_links(g: Graph, hubs: dict, conf_root: str, jira_root: str) -> dict:
             for b in kin:
                 link(a, b)
     return pairs
+
+
+def glossary_links(root: str = KB_DIR) -> list:
+    """[(карточка, карточка-термин)] — упоминание термина, у которого есть определение.
+
+    Термин ищем по имени карточки глоссария и её синонимам, целым словом и без учёта
+    регистра. Слишком короткие имена (до четырёх букв) пропускаем: «ОП» встречается в
+    середине слов и связывает всё со всем.
+    """
+    terms: dict = {}
+    cards = []
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
+        for f in sorted(files):
+            if not f.endswith(".md") or f.startswith("_") or f == "index.md":
+                continue
+            path = os.path.join(dirpath, f).replace("\\", "/")
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            cards.append((path, text))
+            section = os.path.relpath(path, root).replace("\\", "/").split("/")[0]
+            if section != "Glossary":
+                continue
+            fm = frontmatter(text)
+            names = [f[:-3], (fm.get("title") or "").strip().strip('"')]
+            names += re.findall(r'"([^"]+)"', fm.get("aliases", "") or "")
+            for name in names:
+                clean = name.replace("-", " ").strip()
+                if len(clean) >= 4:
+                    terms.setdefault(clean.lower(), path)
+    out = []
+    for path, text in cards:
+        low = " ".join(text.split()).lower()
+        for term, target in terms.items():
+            if target == path:
+                continue
+            if re.search(r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", low):
+                out.append((path, target))
+    return out
 
 
 def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
@@ -366,7 +414,10 @@ def main() -> int:
     ap.add_argument("--allow-dirty", action="store_true",
                     help="писать по грязному дереву (маршрут «Быстрого старта» уже "
                          "зафиксировал состояние до себя)")
-    ap.add_argument("--max-related", type=int, default=30, metavar="N",
+    # Тридцать связей ставились, когда граф строился только по кодам. С правилом термина
+    # у узловых карточек их закономерно больше: обрезать до тридцати значит выбрасывать
+    # ровно те связи, ради которых правило и добавлено.
+    ap.add_argument("--max-related", type=int, default=60, metavar="N",
                     help="сколько связей писать в одну карточку (по умолчанию 30)")
     ap.add_argument("--report", dest="report_path", help="сохранить отчёт в файл")
     ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR})")

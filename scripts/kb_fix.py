@@ -26,7 +26,7 @@
 Ничего не удаляет: deprecated-карточки переезжают в _archive/, файлы только переименовываются.
 Выход: 0 — нечего чинить или всё применено; 1 — остались нерешаемые случаи (нужен человек).
 
-Панель: `kb:repair` (флаги --all) · `kb:dedupe` (флаги --dupes)
+Панель: `kb:repair` (флаги --all) · `kb:dedupe` (флаги --dupes) · `kb:split`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
@@ -43,6 +43,7 @@ import unicodedata
 
 from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, Card as BaseCard,
                            aliases as card_aliases, card_filename as normalize_title,
+                           frontmatter,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
                            is_service, link_refs, rewrite_links, set_field)
@@ -395,6 +396,68 @@ def plan_retire(cards: dict, plan: Plan):
         plan.file_writes[path] = new_head + rest
         touched += 1
     return touched
+
+
+SPLIT_HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$", re.M)
+
+
+def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
+    """Разрезать раздутую карточку по её же заголовкам. → (заметка, сделано ли).
+
+    Zettelkasten держится на атомарности: карточка на 30 тысяч знаков — это документ,
+    её не найти выборкой и не прочитать целиком в контексте. Границы тем в ней уже
+    расставлены — автор источника написал заголовки. Спрашивать о них модель незачем:
+    режем по ним, а старая карточка остаётся картой документа со ссылками на части.
+    Так атомарность и принадлежность документу сохраняются обе.
+    """
+    hit = next((c for p, c in cards.items()
+                if c.stem == target or c.stem.lower() == target.lower()
+                or p.endswith("/" + target + ".md")), None)
+    if hit is None:
+        return f"карточка «{target}» не найдена", False
+    text = hit.text
+    head, _sep, rest = text.partition("\n---\n") if text.startswith("---") else ("", "", text)
+    marks = list(SPLIT_HEAD_RE.finditer(rest))
+    if len(marks) < 2:
+        return f"«{hit.stem}»: заголовков в теле меньше двух — резать не по чему", False
+
+    section = os.path.relpath(hit.path, root).replace("\\", "/").split("/")[0]
+    src = (frontmatter(text).get("source") or "").strip()
+    parts, made = [], []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(rest)
+        chunk = rest[m.end():end].strip()
+        title = m.group(2).strip().strip("*_`")
+        if len(chunk) < min_chars or not title:
+            continue
+        parts.append((title, chunk))
+    if len(parts) < 2:
+        return (f"«{hit.stem}»: содержательных частей меньше двух "
+                f"(порог {min_chars} симв.) — резать нечего", False)
+
+    for title, chunk in parts:
+        name = normalize_title(title)[:90]
+        path = os.path.join(root, section, name + ".md")
+        if path in cards or os.path.exists(path):
+            continue
+        card = (f'---\ntitle: "{title}"\naliases: []\nstatus: imported\n'
+                f'type: {frontmatter(text).get("type") or "concept"}\n'
+                + (f'source: {src}\n' if src else "")
+                + f'part_of: "[[{hit.stem}]]"\ncreated: {TODAY}\nupdated: {TODAY}\n'
+                f"built: machine\nrelated: []\n---\n\n# {title}\n\n{chunk}\n")
+        plan.file_writes[path] = card
+        made.append((name, title))
+    if not made:
+        return f"«{hit.stem}»: все части уже вынесены отдельными карточками", False
+
+    # Старая карточка становится картой документа: тело уехало в части, вход остался.
+    keep = (f"# {frontmatter(text).get('title', hit.stem).strip(chr(34))}\n\n"
+            f"Карточка была разрезана на части: тело раздулось до {len(rest)} знаков, "
+            "а знание ищут атомарным. Ниже — части в исходном порядке.\n\n"
+            + "\n".join(f"- [[{n}|{ttl}]]" for n, ttl in made) + "\n")
+    plan.file_writes[hit.path] = (("---" + head[3:] if head.startswith("---") else head)
+                                  + "\n---\n\n" + keep)
+    return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа", True
 
 
 def plan_stubs(cards: dict, idx, plan: Plan, root: str):
@@ -895,6 +958,11 @@ def main() -> int:
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
     ap.add_argument("--aliases", action="store_true",
                     help="разобрать одинаковые alias у разных карточек (по умолчанию отчёт)")
+    ap.add_argument("--split", metavar="КАРТОЧКА",
+                    help="разрезать раздутую карточку по её заголовкам; сама она "
+                         "останется картой документа со ссылками на части")
+    ap.add_argument("--split-min", type=int, default=400, metavar="N",
+                    help="часть короче N символов отдельной карточкой не становится")
     ap.add_argument("--set-alias", metavar="КАРТОЧКА",
                     help="заменить один синоним у карточки: --set-alias <имя> --old X --new Y")
     ap.add_argument("--old", metavar="СИНОНИМ", default="", help="какой синоним заменить")
@@ -925,7 +993,7 @@ def main() -> int:
     if a.set_alias and not (a.old and a.new):
         print("kb_fix: для --set-alias нужны и --old, и --new", file=sys.stderr)
         return 1
-    if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases,
+    if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
                 a.stubs, a.merge, a.merge_all, a.set_alias)):
         ap.print_help()
         return 0
@@ -963,6 +1031,11 @@ def main() -> int:
                 rc = plan_merge(cards, a.merge[0], a.merge[1], plan)
             if rc:
                 return None, None, rc
+        if a.split:
+            note, done = plan_split(cards, plan, a.split, a.split_min, a.root)
+            head.append(f"## Разрез карточки\n  {note}")
+            if not done:
+                SET_ALIAS_FAILED.append(note)
         if a.set_alias:
             note, done = plan_set_alias(cards, plan, a.set_alias, a.old, a.new)
             head.append(f"## Синоним карточки\n  {note}")
