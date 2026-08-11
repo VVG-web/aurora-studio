@@ -730,6 +730,54 @@ def agent_state(project: str) -> dict:
     }
 
 
+def kinds_read(project: str) -> dict:
+    """Реестр артефактов проекта + что из объявленного не существует на диске."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import make_kinds as MK
+    import importlib
+    importlib.reload(MK)
+    kinds = MK.read_kinds(project)
+    return {"kinds": kinds, "known": MK.KNOWN,
+            "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
+            "templates": sorted(
+                f for f in os.listdir(os.path.join(project, "Templates"))
+                if f.endswith(".md")) if os.path.isdir(os.path.join(project, "Templates")) else []}
+
+
+def kinds_write(project: str, kinds: dict) -> dict:
+    """Переписать секцию `artifacts:` в aurora.config.yaml, не трогая остальной конфиг.
+
+    Реестр правится из панели, а живёт в файле проекта: он в git, его видит любая IDE и
+    ассистент через MCP. Панель здесь — удобный ввод, а не хранилище: разойтись им негде.
+    """
+    path = os.path.join(project, "aurora.config.yaml")
+    if not os.path.isfile(path):
+        return {"error": "в проекте нет aurora.config.yaml"}
+    bad = [k for k in kinds if not re.fullmatch(r"[a-z][a-z0-9\-]{1,30}", k)]
+    if bad:
+        return {"error": "имя типа — латиница, цифры и дефис: " + ", ".join(bad[:3])}
+    lines = ["artifacts:"]
+    for kind in sorted(kinds):
+        rec = kinds[kind] or {}
+        lines.append(f"  {kind}:")
+        for field in ("title", "template", "out"):
+            value = str(rec.get(field) or "").strip().strip('"')
+            lines.append(f'    {field}: "{value}"')
+        # Папку результата создаём сразу: объявить её и не найти — та же ловушка,
+        # что и с несуществующим шаблоном, только вскрывается в момент записи артефакта.
+        out = str(rec.get("out") or "").strip()
+        if out and not os.path.isabs(out):
+            os.makedirs(os.path.join(project, out), exist_ok=True)
+    text = read_text(path, limit=1_000_000)
+    block = re.search(r"^artifacts:\s*$[\s\S]*?(?=^\S|\Z)", text, re.M)
+    fresh = "\n".join(lines) + "\n"
+    text = (text[:block.start()] + fresh + text[block.end():]) if block \
+        else text.rstrip() + "\n\n" + fresh
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return {"ok": True, "kinds": len(kinds), "target": path}
+
+
 def agent_write_env(project: str, vars: dict) -> dict:
     """Дописать/заменить AURORA_AGENT_* в целевом .env, не трогая остальные строки.
 
@@ -908,6 +956,10 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/roots":
             self.send_json({"roots": [norm(r) for r in self.server.roots],
                             "file": ROOTS_FILE})
+        elif u.path == "/api/kinds":
+            project = (q.get("project") or [""])[0]
+            self.send_json(kinds_read(project) if project and self._known(project)
+                           else {"error": "проект не выбран"})
         elif u.path == "/api/agent":
             self.send_json(agent_state(q.get("project", [""])[0]))
         elif u.path == "/api/about":
@@ -999,6 +1051,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/roots":
             self.send_json(self._edit_roots(payload))
+            return
+        if u.path == "/api/kinds":
+            project = payload.get("project", "")
+            if not project or not self._known(project):
+                return self.send_json({"error": "проект не выбран"})
+            self.send_json(kinds_write(project, payload.get("kinds") or {}))
             return
         if u.path == "/api/agent/env":
             project = payload.get("project", "")
