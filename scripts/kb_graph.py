@@ -35,7 +35,7 @@
 переносит рёбра графа в поле `related:` карточек, ничего не удаляя: только добавляет то,
 чего там нет.
 
-Панель: `kb:links`
+Панель: `kb:links` · `kb:map`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
@@ -209,8 +209,14 @@ def cards_by_source(conf_root: str, jira_root: str) -> dict:
     return out
 
 
-def card_links(g: Graph, hubs: dict, conf_root: str, jira_root: str) -> dict:
-    """{карточка → множество карточек, с которыми её связывает граф}."""
+def card_links(g: Graph, hubs: dict, conf_root: str, jira_root: str,
+               terms: bool = True) -> dict:
+    """{карточка → множество карточек, с которыми её связывает граф}.
+
+    `terms=False` оставляет только сильные связи — коды RY и номера историй. Связь по
+    термину верна, но слаба: общий словарь есть почти у всех, и на разбиение по темам
+    она действует как туман — половина базы слипается в одно «сообщество».
+    """
     by_src = cards_by_source(conf_root, jira_root)
     def cards_of_page(rel):
         return by_src.get(f"{conf_root}/{rel}", [])
@@ -234,7 +240,7 @@ def card_links(g: Graph, hubs: dict, conf_root: str, jira_root: str) -> dict:
     # Односторонне: карточка ссылается на определение, но у самого определения не
     # появляется девятисот связей. «Заявитель» упомянут почти везде — обратная связь
     # превратила бы карточку термина в свалку и утопила бы её настоящих соседей.
-    for a_path, b_path in glossary_links():
+    for a_path, b_path in (glossary_links() if terms else []):
         if a_path != b_path:
             pairs.setdefault(a_path, set()).add(b_path)
     for num, hub in hubs.items():                          # правило номера истории
@@ -258,6 +264,11 @@ def glossary_links(root: str = KB_DIR) -> list:
     cards = []
     for dirpath, dirs, files in os.walk(root):
         dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
+        # meta/ — служебное: манифест, журналы прогонов агента, базовая линия линтера.
+        # Журнал прогона не карточка, а связывать по нему темы — значит рисовать граф
+        # собственной работы вместо графа знания.
+        if "/meta" in dirpath.replace("\\", "/"):
+            continue
         for f in sorted(files):
             if not f.endswith(".md") or f.startswith("_") or f == "index.md":
                 continue
@@ -283,6 +294,85 @@ def glossary_links(root: str = KB_DIR) -> list:
             if re.search(r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", low):
                 out.append((path, target))
     return out
+
+
+# ------------------------------------------------------------------ карта связей
+
+def bridges(pairs: dict) -> set:
+    """Рёбра, не лежащие ни в одном цикле, — единственные связи между темами.
+
+    Это точное определение моста, а не оценка: обход в глубину помнит, на какую глубину
+    можно вернуться из поддерева. Метка большинства, которую обычно берут для сообществ,
+    на таких рёбрах течёт — две плотные темы, соединённые ниточкой, слипаются в одну,
+    и человек видит «сообщество» из половины базы.
+    """
+    depth, low, out = {}, {}, set()
+    for root in sorted(pairs):
+        if root in depth:
+            continue
+        stack = [(root, None, iter(sorted(pairs[root])))]
+        depth[root] = low[root] = 0
+        while stack:
+            node, parent, kids = stack[-1]
+            nxt = next(kids, None)
+            if nxt is None:
+                stack.pop()
+                if parent is not None:
+                    low[parent] = min(low[parent], low[node])
+                    if low[node] > depth[parent]:
+                        out.add(tuple(sorted((parent, node))))
+                continue
+            if nxt == parent:
+                continue
+            if nxt in depth:
+                low[node] = min(low[node], depth[nxt])
+            else:
+                depth[nxt] = low[nxt] = depth[node] + 1
+                stack.append((nxt, node, iter(sorted(pairs.get(nxt, ())))))
+    return out
+
+
+def communities(pairs: dict, cut: set | None = None) -> dict:
+    """{карточка: номер сообщества} — компоненты связности без мостов.
+
+    Тема — это то, что держится не на одной ниточке. Убираем мосты и смотрим, что
+    осталось связным: разбиение получается объяснимым («вот эти карточки ссылаются друг
+    на друга по кругу»), а не результатом настроек алгоритма.
+    """
+    cut = cut or set()
+    label, group = {}, 0
+    for root in sorted(pairs):
+        if root in label:
+            continue
+        stack, group = [root], group + 1
+        label[root] = group
+        while stack:
+            node = stack.pop()
+            for other in sorted(pairs.get(node, ())):
+                if other in label or tuple(sorted((node, other))) in cut:
+                    continue
+                label[other] = group
+                stack.append(other)
+    return label
+
+
+def insights(pairs: dict, cards: dict) -> dict:
+    """Что говорит граф: острова, мосты, крупные сообщества без своей карты.
+
+    Числа связности («73% карточек связаны») не отвечают на вопрос, который у человека
+    на самом деле есть: где знание разорвано и чего не хватает. Отвечают на него три
+    вещи — острова (сюда никто не ходит), мосты (единственная связь между темами) и
+    сообщества, доросшие до собственной карты содержания.
+    """
+    cut = bridges(pairs)
+    label = communities(pairs, cut)
+    groups: dict = {}
+    for node, lab in label.items():
+        groups.setdefault(lab, []).append(node)
+    islands = sorted(n for n, links in pairs.items() if len(links) <= 1)
+    big = sorted(((len(v), k) for k, v in groups.items() if len(v) >= 12), reverse=True)
+    return {"groups": groups, "islands": islands, "bridges": sorted(cut),
+            "big": big, "label": label}
 
 
 def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
@@ -411,6 +501,8 @@ def main() -> int:
                     help="перенести связи графа в поле related: карточек базы")
     ap.add_argument("--apply", action="store_true",
                     help="записать (иначе dry-run); работает вместе с --cards")
+    ap.add_argument("--insights", action="store_true",
+                    help="что говорит граф: сообщества, мосты, острова — и чего не хватает")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="писать по грязному дереву (маршрут «Быстрого старта» уже "
                          "зафиксировал состояние до себя)")
@@ -437,6 +529,46 @@ def main() -> int:
               file=sys.stderr)
     edges = g.edges()
     hubs = g.stories()
+
+    if a.insights:
+        if not os.path.isdir(KB_DIR):
+            print(f"kb_graph: нет {KB_DIR}/ — разбирать нечего", file=sys.stderr)
+            return 1
+        pairs = card_links(g, hubs, a.conf, a.jira, terms=False)
+        names = {os.path.splitext(os.path.basename(p))[0]: p for p in pairs}
+        ins = insights(pairs, names)
+        print(f"# Карта связей — {TODAY}\n")
+        print(f"Карточек в графе: **{len(pairs)}** · сообществ: **{len(ins['groups'])}** "
+              f"· островов: **{len(ins['islands'])}** · мостов: **{len(ins['bridges'])}**\n")
+        print("## Сообщества, доросшие до своей карты\n")
+        if not ins["big"]:
+            print("Крупных сообществ нет: тем меньше двенадцати карточек, "
+                  "отдельная карта им пока не нужна.\n")
+        for size, lab in ins["big"][:12]:
+            members = sorted(os.path.splitext(os.path.basename(x))[0]
+                             for x in ins["groups"][lab])
+            print(f"- **{size} карточек** · ядро: " + ", ".join(members[:4])
+                  + (f" … ещё {size - 4}" if size > 4 else ""))
+        print("\n  Имя карты и то, чем она полезна, механикой не выводятся: "
+              "добавьте строку в `moc_groups.txt` и соберите карты (`kb:moc --apply`).")
+        print("\n## Мосты: единственная связь между темами\n")
+        if not ins["bridges"]:
+            print("Мостов нет — темы связаны не в одну ниточку.\n")
+        for a_path, b_path in ins["bridges"][:15]:
+            print(f"- {os.path.splitext(os.path.basename(a_path))[0]} ↔ "
+                  f"{os.path.splitext(os.path.basename(b_path))[0]}")
+        if ins["bridges"]:
+            print("\n  Порвётся такая связь — две темы разъедутся, и человек об этом "
+                  "не узнает. Проверьте, что мост настоящий, а не случайный.")
+        print("\n## Острова: одна связь или ни одной\n")
+        print(f"Таких карточек: {len(ins['islands'])}")
+        for path in ins["islands"][:15]:
+            print(f"- {os.path.splitext(os.path.basename(path))[0]}")
+        if len(ins["islands"]) > 15:
+            print(f"- … ещё {len(ins['islands']) - 15}")
+        print("\n  Их не найдут переходом по ссылкам. Свяжите (`kb:links --cards`) "
+              "или заведите им вход в карте содержания.")
+        return 0
 
     if a.cards:
         if not os.path.isdir(KB_DIR):
