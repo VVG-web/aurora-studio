@@ -2251,6 +2251,37 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_review_queue_lists_every_card_and_can_demote(tmp: Path):
+    """Очередь приёмки видит все находки, а не первые примеры, и умеет обе стороны.
+
+    Линтер печатает по восемь примеров на вид — человеку столько и нужно. Очереди
+    нужен полный список: та, что молча теряет хвост, хуже отсутствия очереди. И
+    решение бывает двух видов: подтвердить заново или снять доверие.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    root = make_project(tmp)
+    for i in range(12):
+        card(root, f"Concepts/Карточка-{i}.md", f"Ссылка на [[Нет-такой-{i}]].",
+             status="verified", type="concept")
+
+    got = ck.cards_to_review(str(root))
+    broken = next(k for k in got["kinds"] if "битые" in k["kind"])
+    assert broken["count"] == 12, f"очередь показала {broken['count']} из 12"
+
+    one = broken["cards"][0]["path"]
+    assert ck.card_text(str(root), one)["text"].startswith("---"), "карточка не читается"
+    assert "error" in ck.card_text(str(root), "../../etc/passwd"), \
+        "путь вне базы знаний принят"
+
+    run("kb_verify.py", one, "--demote", "--apply", "--allow-dirty", cwd=root)
+    text = (root / one).read_text(encoding="utf-8")
+    assert "status: draft" in text and "verified_hash" not in text, text[:200]
+
+
+@test
 def test_long_step_reports_progress_and_duration(tmp: Path):
     """Долгий шаг показывает, что идёт, а журнал помнит, сколько он занял.
 

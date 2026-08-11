@@ -739,6 +739,61 @@ def agent_state(project: str) -> dict:
     }
 
 
+# Категории линтера, по которым человек принимает решения о карточках. Всё остальное
+# чинится командой и в очередь на глаза не просится.
+REVIEW_KINDS = {
+    "правка после приёмки": "текст изменился после того, как его подтвердили",
+    "одинаковые alias у разных карточек": "по этому имени ссылка неоднозначна",
+    "битые ссылки": "ссылка ведёт в никуда",
+    "артефакты, попавшие в базу знаний": "продукт работы, а не дистиллированное знание",
+    "тип не по разделу": "тип в шапке не совпадает с разделом",
+}
+
+
+def cards_to_review(project: str, kind: str = "") -> dict:
+    """Карточки, которые ждут решения человека, — из отчёта линтера.
+
+    Список у линтера уже есть, но живёт он в тексте отчёта: чтобы пройти его, человек
+    копировал имена в редактор по одному. Здесь тот же список становится очередью с
+    кнопками — движок не научился новому, ему дали руки.
+    """
+    # Полный список: очередь, которая молча теряет хвост, хуже отсутствия очереди.
+    rc, out = run_capture(project, "kb_lint.py", ["--full"])
+    groups: dict = {}
+    current = ""
+    for line in out.splitlines():
+        head = re.match(r"^##+\s*(.+?):\s*(\d+)\s*$", line)
+        if head:
+            current = head.group(1).strip()
+            continue
+        item = re.match(r"^\s+-\s+(AuroraKnowledgeDB/[^:]+\.md):\s*(.*)$", line)
+        if item and current in REVIEW_KINDS:
+            groups.setdefault(current, []).append(
+                {"path": item.group(1), "why": item.group(2)[:160]})
+    if kind:
+        groups = {k: v for k, v in groups.items() if k == kind}
+    return {"kinds": [{"kind": k, "hint": REVIEW_KINDS[k], "count": len(v),
+                       "cards": v[:200]} for k, v in groups.items()]}
+
+
+def card_text(project: str, rel: str) -> dict:
+    """Текст карточки для просмотра. Путь принимается только внутрь базы знаний."""
+    rel = rel.replace("\\", "/").lstrip("/")
+    if not rel.startswith("AuroraKnowledgeDB/") or ".." in rel:
+        return {"error": "путь вне базы знаний"}
+    path = os.path.join(project, rel)
+    if not os.path.isfile(path):
+        return {"error": "карточки нет на диске"}
+    text = read_text(path, limit=200_000)
+    # Что изменилось с момента приёмки: по хэшу этого не показать, а git помнит.
+    diff = subprocess.run(["git", "-C", project, "diff", "-U2", "--", rel],
+                          capture_output=True, text=True, timeout=60).stdout
+    if not diff.strip():
+        diff = subprocess.run(["git", "-C", project, "diff", "-U2", "HEAD~1", "--", rel],
+                              capture_output=True, text=True, timeout=60).stdout
+    return {"path": rel, "text": text[:120_000], "diff": diff[:20_000]}
+
+
 def kinds_read(project: str) -> dict:
     """Реестр артефактов проекта + что из объявленного не существует на диске."""
     sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -966,6 +1021,14 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/roots":
             self.send_json({"roots": [norm(r) for r in self.server.roots],
                             "file": ROOTS_FILE})
+        elif u.path == "/api/review":
+            project = (q.get("project") or [""])[0]
+            self.send_json(cards_to_review(project, (q.get("kind") or [""])[0])
+                           if project and self._known(project) else {"error": "проект не выбран"})
+        elif u.path == "/api/card":
+            project = (q.get("project") or [""])[0]
+            self.send_json(card_text(project, (q.get("path") or [""])[0])
+                           if project and self._known(project) else {"error": "проект не выбран"})
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
             self.send_json(kinds_read(project) if project and self._known(project)
