@@ -251,6 +251,7 @@ tr:last-child td{border-bottom:0}
     <button data-view="about" aria-label="О проекте"><span class="label">О проекте</span></button>
     <div class="group">Проект</div>
     <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
+    <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
     <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
     <button data-view="mirrors" aria-label="Зеркала"><span class="label">Зеркала</span><span class="count" id="navMirrors"></span></button>
     <button data-view="version" aria-label="Версия и миграция"><span class="label">Версия</span><span class="count" id="navVersion"></span></button>
@@ -361,6 +362,31 @@ tr:last-child td{border-bottom:0}
       <div id="setupBody"></div>
     </section>
 
+    <!-- СПРОСИТЬ БАЗУ -->
+    <section class="view" id="view-ask">
+      <h1>Спросить базу</h1>
+      <p class="sub">Вопрос своими словами. Движок соберёт контекст из карточек, модель
+        ответит <b>только по ним</b> и поставит ссылку на каждое утверждение. Ничего не
+        пишется: это чтение базы, а не правка.</p>
+      <div class="card" style="padding:16px">
+        <div class="row" style="gap:10px;align-items:flex-start">
+          <textarea id="askText" rows="3" placeholder="Например: что происходит с обеспечением, если документ аннулирован до ввоза?"
+            style="flex:1;min-width:0;font:inherit;padding:10px;border-radius:10px"></textarea>
+          <button class="btn primary" id="askGo">Спросить</button>
+        </div>
+        <div class="row" style="gap:14px;margin-top:10px">
+          <label class="muted" style="font-size:13px">Контекст:
+            <select id="askMode" style="font:inherit;margin-left:6px">
+              <option value="generate">только проверенное</option>
+              <option value="evaluate">всё, включая черновики</option>
+              <option value="ask">проверенное + история решений</option>
+            </select></label>
+          <span class="muted" style="font-size:12.5px">Ctrl+Enter — спросить</span>
+        </div>
+      </div>
+      <div id="askBody"></div>
+    </section>
+
     <!-- БЫСТРЫЙ СТАРТ -->
     <section class="view" id="view-quickstart">
       <h1>Быстрый старт</h1>
@@ -409,7 +435,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.62.0";
+const UI_VERSION = "1.63.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -495,6 +521,7 @@ function show(view){
   if (view==="commands") renderCommands();
   if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
+  if (view==="ask") $("#askText")?.focus();
   if (view==="console"){ renderHistory(); drawTaskButton(); }   // и журнал, и кнопка задания — на входе
   if (view==="about") renderAbout();
   if (view==="dev") renderDev();
@@ -661,6 +688,10 @@ function renderProjBadge(){
               : "Команды, здоровье и зеркала работают с выбранным проектом. Нажмите, чтобы выбрать.";
 }
 $("#projBadge").onclick = ()=>show("overview");
+$("#askGo").onclick = askBase;
+$("#askText").addEventListener("keydown", e=>{
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") askBase();
+});
 
 async function pick(p, go=true){
   S.project = p;
@@ -1297,6 +1328,60 @@ async function fire(apply){
     PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
   poll(res.job, 0, (r.cmd + " " + args.join(" ")).trim());
 }
+/* ---------------- спросить базу ----------------
+
+   Диалог с базой на месте: раньше человек шёл в чужой чат, а туда надо было ещё
+   донести контекст. Контекст собирает движок (`ctx:context`), отвечает модель проекта.
+   История вопросов живёт в этой вкладке, пока панель открыта: разговор — это цепочка,
+   а не одиночные запросы. */
+let ASKING = false;
+
+async function askBase(){
+  if (ASKING) return;
+  if (!S.project) return toast("Сначала выберите проект","warn");
+  const q = $("#askText").value.trim();
+  if (!q) return $("#askText").focus();
+  const mode = $("#askMode").value;
+  const box = $("#askBody");
+  ASKING = true;
+  const item = el("div",{class:"card",style:"padding:18px;margin-top:14px"},
+    el("div",{style:"font-weight:700"}, q),
+    el("div",{class:"muted",style:"font-size:12.5px;margin-top:4px"},
+      "собираю контекст и спрашиваю модель…"));
+  box.prepend(item);
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, cmd:"agent:ask",
+     args:["--question", q, "--mode", mode]})});
+  if (!res.job){ ASKING = false; return; }
+  let since = 0, lines = [];
+  for (;;){
+    const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
+    lines = lines.concat(d.lines||[]); since = d.next;
+    if (d.done) break;
+    await new Promise(ok=>setTimeout(ok, 500));
+  }
+  ASKING = false;
+  // Первые строки — служебная шапка отчёта; человеку нужен сам ответ и подпись под ним.
+  const body = lines.filter(l=>!/^# Ответ базы|^\*\*Вопрос:/.test(l)).join("\n").trim();
+  item.innerHTML = "";
+  item.append(el("div",{style:"font-weight:700"}, q),
+    el("div",{class:"ansbody",style:"margin-top:10px;white-space:pre-wrap",
+              html: mdLite(body)}));
+  $("#askText").value = "";
+}
+
+// Ответ приходит markdown-ом: связей, заголовков и списков достаточно, тащить
+// библиотеку рендеринга ради трёх правил в панель без сборки незачем.
+function mdLite(s){
+  const esc = (x)=>x.replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  return esc(s)
+    .replace(/\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]/g,
+             (_m,a,b)=>`<span class="chip" title="карточка базы">${b||a}</span>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/_([^_]+)_/g, "<i>$1</i>")
+    .replace(/^---$/gm, "<hr>");
+}
+
 /* ---------------- маршрут: сценарий одной кнопкой ----------------
 
    Цикл обновления базы — четырнадцать команд, и почти каждая сначала показывает

@@ -30,7 +30,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 и всё, что сделает агент, откатывается одной строкой. Без этого правки агента смешались
 бы с незакоммиченной работой (в живом проекте её бывают сотни файлов).
 
-Панель: `agent:aliases` · `agent:build`
+Панель: `agent:aliases` · `agent:build` · `agent:ask`
 """
 from __future__ import annotations
 
@@ -724,6 +724,88 @@ def verdict_build(res: dict, apply: bool) -> tuple:
     return ok, "; ".join(why) or f"источников разобрано: {len(done)}, ошибок не прибавилось"
 
 
+# ------------------------------------------------------------------ задача: вопрос к базе
+
+PROMPT_ASK = """Ты отвечаешь на вопрос аналитика по базе знаний проекта.
+
+Ниже — карточки базы, отобранные по вопросу. Это всё, что тебе можно использовать:
+знания, которого в них нет, у тебя нет тоже.
+
+{pack}
+
+─────────────────────────────────────────────────────────────────────
+ВОПРОС: {question}
+─────────────────────────────────────────────────────────────────────
+
+Правила ответа, они же критерии проверки:
+
+1. Отвечай **только по карточкам**. Нечего процитировать — так и скажи: «в базе этого
+   нет», и назови, какого знания не хватает. Догадка, выданная за факт, дороже молчания:
+   по такому ответу пишут постановку, и ошибка уходит в разработку.
+2. После каждого утверждения — источник в квадратных скобках: [[Имя карточки]]. Без
+   ссылки утверждение считается выдуманным.
+3. Смотри на шапку доверия карточки. `verified` — факт. `imported`, `draft` — материал
+   для оценки, о них пиши «по непроверенной карточке …». `deprecated` — история, годится
+   только чтобы объяснить, как было раньше.
+4. Нашёл противоречие между двумя verified — не выбирай сам, назови обе карточки и
+   скажи, что это расхождение в базе.
+5. Пиши по-русски, коротко и по делу. Не пересказывай карточки целиком — отвечай на
+   заданный вопрос."""
+
+
+def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
+            call=None) -> dict:
+    """Вопрос к базе: пак собирает движок, отвечает модель, ссылки проверяются."""
+    call = call or AG.call_role
+    started = time.time()
+    args = [question, "--mode", mode, "--max-cards", str(max_cards), "--no-log"]
+    r = run_command(cwd, "ctx_pack.py", args)
+    if not r["ok"] or "## " not in r["out"]:
+        return {"ok": False, "answer": "", "cards": [], "seconds": 0.0,
+                "why": (r["out"] or "пак не собран")[-300:]}
+    pack = r["out"]
+    # В паке заголовки второго уровня есть и внутри тел карточек: считать их значит
+    # обещать человеку контекст втрое больше настоящего. Число даёт сам пак.
+    m = re.search(r"карточек (\d+)", pack)
+    total = int(m.group(1)) if m else 0
+    cards = re.findall(r"^## (.+)$", pack, re.M)
+
+    a = call(cfg, "worker", [{"role": "user", "content": PROMPT_ASK.format(
+        pack=pack, question=question)}], deadline=time.time() + cfg["request_timeout"])
+    if not a["ok"]:
+        return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
+                "why": "; ".join(a["log"][-2:])}
+    text = (a["text"] or "").strip()
+    # Ссылка на карточку, которой в паке не было, — выдумка: модель могла вспомнить имя
+    # из общих знаний. Проверяем механически, до того как человек поверит ответу.
+    named = set(re.findall(r"\[\[([^\]|#]+)", text))
+    known = {c.strip() for c in cards}
+    ghosts = sorted(n.strip() for n in named
+                    if n.strip() not in known
+                    and not any(n.strip().lower() in c.lower() for c in known))
+    return {"ok": True, "answer": text, "cards": cards, "total": total, "ghosts": ghosts,
+            "backend": a["backend"], "model": a["model"],
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_ask(res: dict, question: str, cfg: dict) -> str:
+    L = [f"# Ответ базы — {datetime.now():%Y-%m-%d %H:%M}", "", f"**Вопрос:** {question}", ""]
+    if not res["ok"]:
+        L += [f"✗ Ответа нет: {res.get('why', 'причина неизвестна')}", "",
+              "Если пак пуст — база про это не знает: заведите вопрос (`kb:question`) "
+              "или карточку."]
+        return "\n".join(L)
+    L += [res["answer"], "", "---", "",
+          f"_Карточек в контексте: {res.get('total') or len(res['cards'])} · "
+          f"модель: {res['model']} "
+          f"(бэкенд №{res['backend']}) · {res['seconds']} с_"]
+    if res.get("ghosts"):
+        L += ["", "⚠️ **Ссылки на карточки, которых в контексте не было** — проверьте их "
+              "особенно внимательно, модель могла назвать их по памяти:",
+              *[f"  - [[{g}]]" for g in res["ghosts"]]]
+    return "\n".join(L)
+
+
 # ------------------------------------------------------------------ прогон
 
 def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
@@ -938,9 +1020,15 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
-    ap.add_argument("--task", default="aliases", choices=["aliases", "build"],
+    ap.add_argument("--task", default="aliases", choices=["aliases", "build", "ask"],
                     help="aliases — разобрать конфликты синонимов; "
-                         "build — разобрать партию источников на карточки")
+                         "build — разобрать партию источников на карточки; "
+                         "ask — ответить на вопрос по базе (ничего не пишет)")
+    ap.add_argument("--question", metavar="ТЕКСТ", default="",
+                    help="вопрос к базе своими словами (для --task ask)")
+    ap.add_argument("--mode", default="generate",
+                    choices=["generate", "ask", "evaluate", "review"],
+                    help="какие карточки брать в контекст (для --task ask)")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
     ap.add_argument("--critic", action="store_true",
                     help="проверять решение второй моделью до записи (для прода — обязательно)")
@@ -962,6 +1050,15 @@ def main() -> int:
         print("agent_runner: агент не настроен — панель «Настройка» → «Агент», "
               "проверка: agent:ping", file=sys.stderr)
         return 1
+
+    if a.task == "ask":
+        # Вопрос ничего не пишет: ни чекпойнта, ни коммита, ни журнала прогонов.
+        if not a.question:
+            print("agent_runner: нужен --question «текст вопроса»", file=sys.stderr)
+            return 1
+        res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40)
+        print(report_ask(res, a.question, cfg))
+        return 0 if res["ok"] else 1
 
     cp = checkpoint(cwd, f"agent:{a.task}", a.apply and not a.no_checkpoint)
     if a.apply and not cp["ok"]:
