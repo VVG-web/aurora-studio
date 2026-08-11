@@ -1149,10 +1149,20 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
                 # маршрута на середине с «unrecognized arguments», причём в проекте,
                 # где предыдущие шаги уже записали половину работы.
                 row = {r["cmd"]: r for r in ck.registry()}[st["cmd"]]
-                for flag in st.get("flags", []):
-                    if flag.startswith("--"):
-                        assert flag in row.get("flags", []), (
-                            f"сценарий {s['id']}: у {st['cmd']} нет флага {flag}")
+                flags = st.get("flags", [])
+                for i, flag in enumerate(flags):
+                    if not flag.startswith("--"):
+                        continue
+                    assert flag in row.get("flags", []), (
+                        f"сценарий {s['id']}: у {st['cmd']} нет флага {flag}")
+                    # Флагу нужно значение — значит следующим в строке идёт оно, а не
+                    # другой флаг и не конец: голый «--source-older-than» останавливал
+                    # маршрут на пятом шаге сообщением argparse.
+                    if flag in row.get("flags_value", []):
+                        nxt = flags[i + 1] if i + 1 < len(flags) else ""
+                        assert nxt and not nxt.startswith("--"), (
+                            f"сценарий {s['id']}: флагу {flag} нужно значение "
+                            f"({st['cmd']}), а его нет")
             else:
                 # шаг без кнопки обязан говорить, что сделать вместо неё
                 assert st.get("skill", "").startswith("/aurora-vault"), \
