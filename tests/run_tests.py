@@ -2219,6 +2219,55 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_semantic_index_is_optional_and_hybrid(tmp: Path):
+    """Смысл добавляется к словам, а не заменяет их — и выборка не падает без индекса.
+
+    Вектора считает внешняя модель, а внешнее недоступно ровно тогда, когда нужнее
+    всего: нет сети, сменили модель, индекс не собран. Пак обязан в этом случае просто
+    собраться по словам, а не отказать.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    C = importlib.import_module("ctx_pack")
+    E = importlib.import_module("kb_embed")
+
+    root = make_project(tmp)
+    card(root, "Concepts/Возврат-обеспечения.md",
+         "Возврат обеспечения заявителю при отказе в выпуске.",
+         status="verified", type="concept")
+
+    # индекса нет — пак собирается словами и молчит про смысл
+    out = run("ctx_pack.py", "возврат обеспечения", "--no-log", cwd=root).stdout
+    assert "поиск по словам" in out and "и смыслу" not in out, out[:200]
+    assert "Возврат-обеспечения" in out or "Возврат обеспечения" in out
+
+    # индекс чужой модели не годится: молча считать его своим — врать о выборке
+    import os as _os, json as _json
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "embeddings.json").write_text(_json.dumps(
+        {"model": "другая-модель", "dim": 2, "built": "2026-01-01",
+         "cards": {"Возврат-обеспечения": {"hash": "x", "row": 0}}}), encoding="utf-8")
+    cwd = _os.getcwd()
+    try:
+        _os.chdir(root)
+        importlib.reload(E)
+        assert E.search("вопрос", {"backends": [], "request_timeout": 5}, "bge-m3") == [], \
+            "индекс, собранный другой моделью, принят за свой"
+    finally:
+        _os.chdir(cwd)
+
+    # близость по смыслу поднимает карточку, но только выше порога случайности
+    fake = type("C", (), {"stem": "Возврат-обеспечения", "title": "Возврат обеспечения",
+                          "aliases": [], "tags": "", "text": "текст", "summary": ""})()
+    base = C.score(fake, "деньги за поставку")
+    weak = C.score(fake, "деньги за поставку", {"Возврат-обеспечения": 0.30})
+    strong = C.score(fake, "деньги за поставку", {"Возврат-обеспечения": 0.75})
+    assert weak == base, "случайная близость 0.30 не должна ничего добавлять"
+    assert strong > base, "близость 0.75 не повлияла на отбор"
+
+
+@test
 def test_context_pack_finds_by_words_not_by_phrase(tmp: Path):
     """Пак ищет по словам запроса, а не по фразе целиком.
 
