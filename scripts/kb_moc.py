@@ -123,6 +123,7 @@ def read_cards() -> dict:
                 "status": (fm.get("status") or "").strip(),
                 "tags": tags, "text": text,
                 "source": (fm.get("source") or "").strip().strip('"'),
+                "summary": (fm.get("summary") or "").strip().strip('"'),
             }
     return cards
 
@@ -158,7 +159,11 @@ def render(name: str, note: str, items: list, kind: str = "moc") -> str:
             body.append("")
         for c in sorted(by_section[section], key=lambda x: x["title"].lower()):
             mark = "" if c["status"] in ("verified", "accepted") else " ·  не проверено"
-            body.append(f"- [[{c['stem']}|{c['title']}]]{mark}")
+            # Одна фраза о сути рядом со ссылкой: карта из полусотни имён не говорит
+            # ничего, пока не откроешь каждое. С фразой она читается как оглавление.
+            brief = c.get("summary") or ""
+            tail = f" — {brief}" if brief else ""
+            body.append(f"- [[{c['stem']}|{c['title']}]]{mark}{tail}")
         body.append("")
     return head + "\n".join(body).rstrip() + "\n"
 
