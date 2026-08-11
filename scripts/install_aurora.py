@@ -493,6 +493,10 @@ node_modules/
 # слепок чужой страницы в истории git.
 .playwright-mcp/
 .puppeteer/
+# Семантический индекс — производная от карточек: бинарь на мегабайты, меняется
+# целиком при смене модели и пересобирается за минуты (`kb:embed --apply`).
+AuroraKnowledgeDB/meta/embeddings.bin
+AuroraKnowledgeDB/meta/embeddings.json
 """
         gi = self.target / ".gitignore"
         if self.dry_run:
