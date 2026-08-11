@@ -100,13 +100,26 @@ def normalize(vec: list) -> list:
     return [x / s for x in vec] if s else vec
 
 
+def endpoints(cfg: dict) -> list:
+    """Куда ходить за векторами: свой сервис эмбеддингов либо кольцо бэкендов агента.
+
+    Отдельный адрес нужен там, где эмбеддинги подняты своим сервисом — он и модель знает
+    одну, и ключа может не требовать. Не задан — берём то же кольцо, что и чат: в
+    инфраструктуре с одним шлюзом настраивать нечего.
+    """
+    own = (cfg.get("embed") or {}).get("url")
+    if own:
+        return [{"url": own, "key": (cfg["embed"] or {}).get("key", ""), "n": 0}]
+    return cfg["backends"]
+
+
 def embed(texts: list, cfg: dict, model: str) -> list:
     """Вектора для списка текстов. Идём по кольцу бэкендов, как остальной агент."""
     out = []
     for i in range(0, len(texts), BATCH):
         chunk = texts[i:i + BATCH]
         got = None
-        for backend in cfg["backends"]:
+        for backend in endpoints(cfg):
             st, data, err, _dt = AG.http_json(backend["url"] + "/embeddings",
                                               {"model": model, "input": chunk},
                                               backend["key"], cfg["request_timeout"])
@@ -155,8 +168,7 @@ def main() -> int:
         print(f"kb_embed: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     cfg = AG.parse_config(AG.raw_config())
-    model = os.environ.get("AURORA_AGENT_EMBED_MODEL") or AG.raw_config().get(
-        "AURORA_AGENT_EMBED_MODEL") or "bge-m3"
+    model = cfg["embed"]["model"]
     texts = card_texts()
     idx = load_index()
     stale = [n for n, t in texts.items()
@@ -164,8 +176,11 @@ def main() -> int:
     gone = [n for n in idx["cards"] if n not in texts]
 
     print(f"# Семантический индекс — {TODAY}\n")
+    where = cfg["embed"]["url"] or (cfg["backends"][0]["url"] if cfg["backends"] else "—")
     print(f"Карточек в базе: {len(texts)} · в индексе: {len(idx['cards'])} "
           f"· модель: {idx.get('model') or '—'}")
+    print(f"Считает: {model} на {where}"
+          + ("" if cfg["embed"]["url"] else " (кольцо агента — своего адреса не задано)"))
     print(f"Пересчитать: {len(stale)} · выбыло: {len(gone)}")
 
     if a.query:
@@ -181,8 +196,9 @@ def main() -> int:
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Досчитать: `kb:embed --apply`")
         return 0
-    if not cfg["backends"]:
-        print("kb_embed: агент не настроен — панель «Настройка» → «Агент»", file=sys.stderr)
+    if not endpoints(cfg):
+        print("kb_embed: некуда идти за векторами. Задайте AURORA_EMBED_URL или настройте "
+              "бэкенды агента: панель «Настройка» → «Агент»", file=sys.stderr)
         return 1
     if not stale and not gone:
         print("\n✅ Индекс актуален.")

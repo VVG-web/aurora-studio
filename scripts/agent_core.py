@@ -112,9 +112,18 @@ def parse_config(env: dict) -> dict:
             "models": models,
         })
         n += 1
+    # Эмбеддинги живут своей жизнью: их часто держат отдельным сервисом (TEI, свой vLLM),
+    # у него другой адрес и другой ключ. По умолчанию — та же модель, что у чата: в
+    # инфраструктуре, где всё на одном шлюзе, настраивать нечего.
+    embed = {
+        "url": (env.get("AURORA_EMBED_URL") or "").rstrip("/"),
+        "key": env.get("AURORA_EMBED_KEY", ""),
+        "model": env.get("AURORA_EMBED_MODEL") or env.get("AURORA_AGENT_EMBED_MODEL") or "bge-m3",
+    }
     ADAPTER["name"] = env.get("AURORA_AGENT_ADAPTER", "pydantic_ai")
     ADAPTER["fallback_why"] = ""
     return {
+        "embed": embed,
         "adapter": ADAPTER["name"],
         "thinking": env.get("AURORA_AGENT_THINKING", "1") not in ("0", "false", "no"),
         "max_steps": int(env.get("AURORA_AGENT_MAX_STEPS", "15") or 15),
@@ -411,7 +420,34 @@ def cmd_ping(as_json: bool) -> int:
     print(f"\nЖивых бэкендов: {len(alive)} из {len(rows)}. "
           + ("Кольцо работает: первый живой в списке принимает запросы."
              if alive else "Агент работать не сможет — проверьте адреса, VPN и ключи."))
+    print("\n" + embed_probe(cfg))
     return 0 if alive else 1
+
+
+def embed_probe(cfg: dict) -> str:
+    """Живы ли эмбеддинги. Отдельной строкой: их часто держат отдельным сервисом.
+
+    Проверять их вместе с чатом нельзя — модель для векторов другая, и «шлюз отвечает»
+    ещё не значит «векторный поиск работает». Проверка не обязательна: без эмбеддингов
+    выборка идёт по словам, и это рабочее состояние, а не поломка.
+    """
+    e = cfg.get("embed") or {}
+    url = e.get("url") or (cfg["backends"][0]["url"] if cfg["backends"] else "")
+    if not url:
+        return "Эмбеддинги: адреса нет — поиск пойдёт по словам (это рабочий режим)."
+    st, body, err, dt = http_json(url + "/embeddings",
+                                  {"model": e.get("model"), "input": ["проверка связи"]},
+                                  e.get("key") or (cfg["backends"][0]["key"]
+                                                   if not e.get("url") and cfg["backends"] else ""),
+                                  20)
+    vec = ((body or {}).get("data") or [{}])[0].get("embedding") if st == 200 else None
+    where = url + (" (кольцо агента)" if not e.get("url") else "")
+    if vec:
+        return (f"✅ Эмбеддинги: {e.get('model')} на {where} · размерность {len(vec)} "
+                f"· {dt:.1f} с. Индекс: `kb:embed --apply`.")
+    return (f"✗ Эмбеддинги: {e.get('model')} на {where} — {err or 'пустой ответ'}.\n"
+            "   Поиск будет работать по словам. Свой сервис векторов задаётся "
+            "переменными AURORA_EMBED_URL / AURORA_EMBED_KEY / AURORA_EMBED_MODEL.")
 
 
 def venv_status() -> tuple:

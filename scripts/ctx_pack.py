@@ -193,10 +193,9 @@ def semantic(topic: str, limit: int) -> dict:
         import agent_core as AG
         import kb_embed as E
         cfg = AG.parse_config(AG.raw_config())
-        if not cfg["backends"]:
+        if not E.endpoints(cfg):
             return {}
-        model = AG.raw_config().get("AURORA_AGENT_EMBED_MODEL") or "bge-m3"
-        return {name: sim for name, sim in E.search(topic, cfg, model, limit)}
+        return {name: sim for name, sim in E.search(topic, cfg, cfg["embed"]["model"], limit)}
     except Exception:            # noqa: BLE001 — выборка не имеет права падать из-за сети
         return {}
 
