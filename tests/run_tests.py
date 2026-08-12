@@ -2251,6 +2251,27 @@ def test_context_index_shows_the_whole_base_cheaply(tmp: Path):
 
 
 @test
+def test_registry_cache_keeps_kit_and_project_apart(tmp: Path):
+    """Кэш реестра помнит, откуда поднята панель: из проекта команд `dev:` не видно.
+
+    Ключ без этого признака делал кэш общим: панель, запущенная в проекте, записывала
+    «реестр без dev» в файл кита — и раздел разработки исчезал из панели до следующей
+    смены версии. Нашлось это прогоном тестов: они и портили кэш.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    ck.CACHE.pop("registry", None)
+    rows = ck.registry()
+    assert any(r["cmd"].startswith("dev:") for r in rows), \
+        "из кита команды разработки не видны"
+
+    cache = json.loads((KIT / "cockpit" / ".registry-cache.json").read_text(encoding="utf-8"))
+    assert "src=" in cache["key"], cache["key"]
+
+
+@test
 def test_review_queue_lists_every_card_and_can_demote(tmp: Path):
     """Очередь приёмки видит все находки, а не первые примеры, и умеет обе стороны.
 
