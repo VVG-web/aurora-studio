@@ -322,8 +322,14 @@ def targets(selector: str) -> list:
                   file=sys.stderr)
             return []
         if os.path.isdir(base):
+            # `meta/` — механика базы: журналы прогонов агента, соглашения, контрольные
+            # вопросы, метрики. Утверждений о предметной области там нет, приёмке они не
+            # подлежат — а в отчёте занимали половину списка «пропущено, нужен человек»
+            # и создавали впечатление, что приёмка чего-то не смогла.
             return sorted(os.path.join(dp, f).replace("\\", "/")
-                          for dp, _, fs in os.walk(base) for f in fs
+                          for dp, _, fs in os.walk(base)
+                          if "/meta" not in dp.replace("\\", "/") + "/"
+                          for f in fs
                           if f.endswith(".md") and not f.startswith("_") and f != "index.md")
     return []
 
@@ -373,8 +379,12 @@ def main() -> int:
 
     files = targets(a.selector)
     if not files:
-        print(f"kb_verify: по «{a.selector}» карточек не найдено", file=sys.stderr)
-        return 1
+        # Пустая база — не ошибка приёмки: принимать пока нечего, знание ещё не собрано.
+        # Ошибка — это когда указали не туда; тогда селектор не совпадает со всей базой.
+        whole = a.selector in (".", "", ROOT, ROOT + "/")
+        print(f"kb_verify: {'в базе пока нет карточек — принимать нечего' if whole else 'по «' + a.selector + '» карточек не найдено'}",
+              file=sys.stdout if whole else sys.stderr)
+        return 0 if whole else 1
     names = all_names(ROOT)
     review_by = (TODAY + timedelta(days=30 * a.months)).isoformat()
 
@@ -518,6 +528,10 @@ def main() -> int:
         if head is None:
             skipped.append((path, "нет frontmatter"))
             continue
+        # Карта содержания собирается командой и перезаписывается целиком: подтверждать в
+        # ней нечего, а в очереди она стояла бы вечно — источника у неё нет по построению.
+        if "ГЕНЕРИРУЕТСЯ kb_moc.py" in text:
+            continue
         status = (fm.get("status") or "").strip()
         src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
         hit = verdicts.get(src) if a.by_jira else None
@@ -531,7 +545,12 @@ def main() -> int:
             if not (hit and hit[0] == "draft"):
                 skipped.append((path, f"уже {status} — продлить срок можно через --refresh"))
                 continue
-        if not src and not (auto_basis and auto_basis.startswith("заготовка")):
+        # Есть основания, которым `source:` не нужен по построению, и требовать его от них
+        # значит спорить с самим собой: команда печатала «раздел Glossary объявлен
+        # доверенным», а строкой ниже — «нет source, происхождение не подтверждено», и
+        # приёмка на таком проекте не принимала ничего. Раздел объявляет доверие по месту
+        # в базе, заготовка не утверждает ничего вовсе — обоим источник не нужен.
+        if not src and not auto_basis.startswith(("заготовка", "раздел ")):
             skipped.append((path, "нет source — происхождение не подтверждено"))
             continue
         broken = [t for t in link_targets(text) if t not in names]

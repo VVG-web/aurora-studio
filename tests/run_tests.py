@@ -1968,6 +1968,69 @@ def test_cockpit_marks_command_outcome(tmp: Path):
 
 
 @test
+def test_acceptance_does_not_argue_with_itself(tmp: Path):
+    """Приёмка не требует source там, где основание его не подразумевает.
+
+    Живой случай: человек несколько раз прошёл маршрут приёмки, а доверенных карточек в
+    базе не появилось ни одной. Команда печатала «раздел Glossary объявлен доверенным» и
+    строкой ниже — «нет source, происхождение не подтверждено». Раздел объявляет доверие
+    по месту в базе, заготовка не утверждает ничего — обоим источник не нужен.
+
+    Заодно: служебные файлы и карты содержания в очередь приёмки не идут. Они занимали
+    половину списка «пропущено, нужен человек» и создавали впечатление, что приёмка
+    чего-то не смогла.
+    """
+    root = make_project(tmp, git=True)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8")
+                   + "\nverify:\n  trusted_sources: [Raw/contract]\n"
+                     "  trusted_sections: [Glossary]\n", encoding="utf-8")
+    card(root, "Glossary/Накладная.md", "Документ о поставке товара.",
+         status="imported", type="glossary")          # source нет — и не нужен: раздел
+    (root / "AuroraKnowledgeDB/meta").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB/meta/conventions.md").write_text(
+        "# Соглашения\n\nслужебный файл базы\n", encoding="utf-8")
+    (root / "AuroraKnowledgeDB/MOC/Понятия.md").write_text(
+        '---\ntitle: "Понятия"\ntype: moc\nstatus: imported\n---\n\n'
+        "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_moc.py — ручные правки будут потеряны. -->\n",
+        encoding="utf-8")
+
+    cp = run("kb_verify.py", "--auto", cwd=root)
+    assert "к верификации: 1" in cp.stdout, \
+        f"карточка доверенного раздела не принята из-за отсутствия source:\n{cp.stdout}"
+    assert "conventions" not in cp.stdout, "служебный файл базы попал в приёмку"
+    assert "Понятия" not in cp.stdout, "карта содержания просит подтверждения у человека"
+
+    run("kb_verify.py", "--auto", "--apply", "--allow-dirty", cwd=root)
+    got = (root / "AuroraKnowledgeDB/Glossary/Накладная.md").read_text(encoding="utf-8")
+    assert "status: verified" in got and "раздел Glossary" in got, \
+        "основание приёмки не записано в карточку"
+
+
+@test
+def test_repair_drops_dead_backlinks_from_stubs(tmp: Path):
+    """Мёртвое «Упоминается в» у заготовки чинится командой, а не человеком.
+
+    Заготовка родилась из ссылки; карточку-источник переименовали — и справка о
+    происхождении стала битой ссылкой. Знания в ней нет, но приёмка вставала намертво:
+    правило «битые ссылки решает человек» держало такую заготовку непроверяемой вечно.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Живая.md", "текст со ссылкой [[Заготовка]]",
+         status="imported", type="concept")
+    (root / "AuroraKnowledgeDB/Glossary/Заготовка.md").write_text(
+        '---\ntitle: "Заготовка"\nstatus: draft\ntype: glossary\n'
+        "tags: [заготовка]\n---\n\n# Заготовка\n\n## Упоминается в\n\n"
+        "- [[Живая]]\n- [[Уехавшая]]\n- [[Тоже-уехавшая]]\n", encoding="utf-8")
+
+    run("kb_fix.py", "--links", "--apply", "--allow-dirty", cwd=root)
+    got = (root / "AuroraKnowledgeDB/Glossary/Заготовка.md").read_text(encoding="utf-8")
+    assert "[[Живая]]" in got, "живое упоминание убрано вместе с мёртвыми"
+    assert "Уехавшая" not in got and "Тоже-уехавшая" not in got, \
+        f"мёртвые упоминания остались — убрана только первая строка:\n{got}"
+
+
+@test
 def test_doctor_says_a_project_without_git_has_no_undo(tmp: Path):
     """Проект без git — проект без отката, и агент в нём писать откажется.
 
