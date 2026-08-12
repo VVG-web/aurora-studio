@@ -807,6 +807,35 @@ def card_text(project: str, rel: str) -> dict:
     return {"path": rel, "text": text[:120_000], "diff": diff[:20_000]}
 
 
+def ask_threads(project: str) -> dict:
+    """Разговоры с базой: список и, по запросу, один разговор целиком.
+
+    История вопросов лежит в базе проекта (`meta/ask/`) и уходит в git вместе с ней.
+    Это не удобство панели: вопрос, который аналитик задал базе, — такой же результат
+    работы, как карточка. Второй человек видит, что уже спрашивали, а разговор,
+    показавший пробел, становится основанием завести знание.
+    """
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import agent_runner as AR
+    import importlib
+    importlib.reload(AR)
+    return {"threads": AR.threads(project)}
+
+
+def ask_thread(project: str, tid: str) -> dict:
+    """Один разговор: пары вопрос-ответ по порядку."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import agent_runner as AR
+    import importlib
+    importlib.reload(AR)
+    path = AR.thread_path(project, tid)
+    turns = AR.read_thread(path)
+    if not turns:
+        return {"error": "разговора нет"}
+    return {"id": path.stem, "turns": turns,
+            "path": os.path.relpath(str(path), project).replace("\\", "/")}
+
+
 def kinds_read(project: str) -> dict:
     """Реестр артефактов проекта + что из объявленного не существует на диске."""
     sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -1045,6 +1074,15 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
             self.send_json(kinds_read(project) if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/ask/threads":
+            project = (q.get("project") or [""])[0]
+            self.send_json(ask_threads(project) if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/ask/thread":
+            project = (q.get("project") or [""])[0]
+            self.send_json(ask_thread(project, (q.get("id") or [""])[0])
+                           if project and self._known(project)
                            else {"error": "проект не выбран"})
         elif u.path == "/api/agent":
             self.send_json(agent_state(q.get("project", [""])[0]))
