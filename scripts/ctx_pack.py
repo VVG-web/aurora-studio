@@ -39,7 +39,12 @@ from aurora_common import TRUSTED, Card as BaseCard, body, frontmatter, link_tar
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
 RELEASES = os.path.join(ROOT, "meta", "releases.md")
+JIRA_MIRROR = os.path.join("Sources", "JIRA")
 TODAY = date.today().isoformat()
+# «US-4.7.2», «US 4.7.2», «4.7.2» в вопросе — номер истории; «PRJ-480» — ключ задачи
+STORY_NUM = re.compile(r"(?i)\b(?:US|AC|ALG)?[\s._-]?(\d+(?:\.\d+){1,3})\b")
+ISSUE_KEY = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
+JIRA_ROWS = 12            # больше — это уже не ответ на вопрос, а выгрузка бэклога
 MODE_STATUSES = {
     # canonical — легаси-синоним verified (убран из схемы в 1.10.0): старые базы
     # не должны разом потерять доверие к карточкам
@@ -298,6 +303,57 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
     return chosen, dropped
 
 
+def jira_state(topic: str, limit: int = JIRA_ROWS) -> list:
+    """Задачи зеркала Jira, о которых спрашивают: ключ, название, статус, эпик, дата.
+
+    Статус задачи — не знание, а состояние. В карточке он был бы неправдой на следующий
+    день после переноса задачи, поэтому по базе он не распыляется: карточки отвечают на
+    «как это устроено», а «докуда дошла разработка» читается из зеркала при сборке пака.
+
+    Без этого база честно отвечала «статуса US-4.7.2 у меня нет» — при том, что задача
+    лежала в зеркале рядом, со статусом «Бэклог». Знание было в проекте, но не на пути
+    к модели: пак собирается только из карточек.
+    """
+    if not os.path.isdir(JIRA_MIRROR):
+        return []
+    nums = {m.group(1) for m in STORY_NUM.finditer(topic)}
+    keys = {m.group(1) for m in ISSUE_KEY.finditer(topic)}
+    if not nums and not keys:
+        return []
+    out = []
+    for path in sorted(walk_md(JIRA_MIRROR)):
+        fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
+        unq = lambda v: (v or "").strip().strip('"\'')          # noqa: E731
+        key, title = unq(fm.get("key")), unq(fm.get("title"))
+        if not key:
+            continue
+        hit = key in keys or any(n in {x.group(1) for x in STORY_NUM.finditer(title)}
+                                 for n in nums)
+        if not hit:
+            continue
+        out.append({"key": key, "title": title, "status": unq(fm.get("status")) or "—",
+                    "type": unq(fm.get("type")) or "—",
+                    "epic": unq(fm.get("epic_title")) or "—",
+                    "updated": (unq(fm.get("updated")) or "—")[:10]})
+    return out[:limit]
+
+
+def jira_block(rows: list) -> list:
+    """Таблица состояния задач в пак. Отдельным разделом — чтобы не путать со знанием."""
+    if not rows:
+        return []
+    out = ["## Состояние разработки (зеркало Jira, не карточки базы)", "",
+           "| Задача | Название | Тип | Статус | Эпик | Обновлена |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        out.append(f"| {r['key']} | {r['title'][:70]} | {r['type']} | **{r['status']}** "
+                   f"| {r['epic'][:40]} | {r['updated']} |")
+    out += ["",
+            "> Это снимок внешней системы на момент последнего `sync:jira`, а не знание "
+            "базы. Ссылайтесь на ключ задачи (PRJ-000), а не на карточку. Задачи нет в "
+            "таблице — значит её нет и в зеркале.", ""]
+    return out
+
+
 def order(cards: list) -> list:
     rank = {"canonical": 1, "verified": 1}   # canonical — легаси-синоним
     return sorted(cards, key=lambda c: (c.expired, rank.get(c.status, 2), c.stem))
@@ -373,11 +429,21 @@ def main() -> int:
     close = {} if a.no_semantic else semantic(a.topic, a.max_cards * 2)
     chosen, dropped = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap, release,
                               a.max_cards, close)
-    if not chosen:
+    jira = jira_state(a.topic)
+    if not chosen and not jira:
         print(f"ctx_pack: по теме «{a.topic}» ничего не найдено. "
               "База не знает — не выдумывайте: заведите вопрос (kb:question) или карточку.",
               file=sys.stderr)
         return 1
+    if not chosen:
+        # Карточек нет, а задача в зеркале есть: «истории US-4.7.2 в базе нет, в Jira она
+        # в бэклоге» — это полноценный ответ, и он лучше, чем «ничего не найдено».
+        print(f"# Context pack: {a.topic}\n")
+        print(f"_Собран {TODAY} · карточек по теме нет · задач в зеркале {len(jira)}_\n")
+        print("\n".join(jira_block(jira)))
+        print("> Карточек по теме в базе нет: знание о задаче не описано. Так и ответьте — "
+              "и предложите завести карточку или вопрос (`kb:question`).")
+        return 0
     chosen = order(chosen)
 
     out = [f"# Context pack: {a.topic}", "",
@@ -391,6 +457,7 @@ def main() -> int:
     if dropped:
         out += [f"> Исключено по релизу {release}: {len(dropped)} карточек "
                 f"({', '.join(c.stem for c in dropped[:5])}…)\n"]
+    out += jira_block(jira)
 
     used, total = [], 0
     for c in chosen:
