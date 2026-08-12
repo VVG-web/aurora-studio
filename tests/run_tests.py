@@ -1968,6 +1968,36 @@ def test_cockpit_marks_command_outcome(tmp: Path):
 
 
 @test
+def test_build_can_run_the_whole_plan_overnight(tmp: Path):
+    """Первичная сборка идёт партиями сама, а не девяноста нажатиями кнопки.
+
+    Партия агента ограничена нарочно: обозримый прогон, обозримый откат. Но у проекта с
+    тремя годами истории источников полторы тысячи, и по пятнадцать за раз это девяносто
+    прогонов. Цикл делает то же самое сам — с чекпойнтом и коммитом на каждую партию,
+    с потолком по времени и остановкой, если план перестал двигаться.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+
+    assert "--until-done" in src and "--hours" in src, "нет режима сплошного разбора"
+    assert "left_after >= left_before" in src, \
+        "цикл не умеет останавливаться, когда план перестал двигаться, — это вечный прогон"
+    assert 'commit_result(cwd, "agent:build",\n                              f"партия' in src, \
+        "партии не коммитятся по отдельности — откатить можно будет только всё сразу"
+    assert "if a.apply and not (a.task == \"build\" and a.until_done):" in src, \
+        "результат коммитится дважды: и в цикле, и в конце"
+
+    # шаг есть в маршруте пересборки, и флаги существуют у команды
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    rebuild = scen.split("[rebuild]")[1].split("\n[")[0]
+    assert "--until-done" in rebuild, "маршрут пересборки не умеет разбирать проект целиком"
+    assert "на ночь" in rebuild, "шаг не предупреждает, что это часы работы"
+    assert hasattr(R, "build_left"), "счётчик плана переименован — цикл сломается молча"
+
+
+@test
 def test_acceptance_does_not_argue_with_itself(tmp: Path):
     """Приёмка не требует source там, где основание его не подразумевает.
 
