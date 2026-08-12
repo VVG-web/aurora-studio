@@ -1968,6 +1968,52 @@ def test_cockpit_marks_command_outcome(tmp: Path):
 
 
 @test
+def test_doctor_says_a_project_without_git_has_no_undo(tmp: Path):
+    """Проект без git — проект без отката, и агент в нём писать откажется.
+
+    Живой случай: doctor говорил «OK: config and onboarding look ready», а `agent:build`
+    возвращал 1 за ноль секунд — чекпойнт делать не во что. Понять по журналу, почему база
+    не растёт, было нельзя.
+    """
+    root = make_project(tmp)                       # без git: make_project(git=True) его заводит
+    cp = run("aurora_doctor.py", cwd=root)
+    assert "не под git" in cp.stdout, \
+        f"doctor молчит про отсутствие git — а без него агент не работает:\n{cp.stdout}"
+    assert "git init" in cp.stdout, "названа беда, но не названо лечение"
+    assert cp.returncode != 0, "проект без отката не может считаться готовым"
+
+    nest = tmp / "with-git"; nest.mkdir()
+    ok = make_project(nest, git=True)
+    assert "не под git" not in run("aurora_doctor.py", cwd=ok).stdout, \
+        "ложная тревога на проекте под git"
+
+
+@test
+def test_installer_marks_its_own_index_stubs(tmp: Path):
+    """Заготовки оглавлений пишет установщик — и помечает их как свои.
+
+    Без пометки `kb:index` считал их текстом человека и не трогал никогда: проект начинал
+    жизнь с одиннадцати «рукотворных» оглавлений, которых никто не писал, и с вечной
+    находкой, лечившейся только `--force`.
+    """
+    src = (KIT / "scripts/install_aurora.py").read_text(encoding="utf-8")
+    i = src.index("_index.md")
+    assert "generated: kb_index.py" in src[i - 400:i + 400], \
+        "установщик пишет заготовку оглавления без пометки генерации"
+
+    # и старые заготовки движок узнаёт по своей же строке — без --force
+    root = make_project(tmp)
+    card(root, "Concepts/Понятие.md", "тело", status="imported", type="concept")
+    (root / "AuroraKnowledgeDB/Concepts/_index.md").write_text(
+        "# Concepts\n\nИндекс раздела. Карточек: 0 (на 2026-01-01).\n", encoding="utf-8")
+    cp = run("kb_index.py", "--apply", cwd=root, expect_rc=0)
+    assert "Приняты под генерацию" in cp.stdout, \
+        f"заготовку установщика движок не узнал в лицо:\n{cp.stdout}"
+    assert "[[Понятие]]" in (root / "AuroraKnowledgeDB/Concepts/_index.md").read_text(
+        encoding="utf-8"), "оглавление не пересобрано"
+
+
+@test
 def test_hidden_really_hides_in_the_panel(tmp: Path):
     """Атрибут hidden обязан скрывать, даже когда у элемента задан свой display.
 
@@ -4673,7 +4719,7 @@ def test_registry_drives_mirrors_and_audit(tmp: Path):
     Проверяем всю цепочку на выдуманном модуле: реестр видит его, аудит выбирает правила
     по объявленному виду хранилища, а `--source` сужает проверку до одного зеркала.
     """
-    root = make_project(tmp)
+    root = make_project(tmp, git=True)   # doctor считает проект без git ошибкой: откатывать нечем
     (root / ".opencode/connectors/demo-board.json").write_text(json.dumps({
         "id": "demo-board", "title": "Демо-доска", "kind": "board",
         "what": "выдуманный источник для теста",
