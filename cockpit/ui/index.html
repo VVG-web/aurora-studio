@@ -469,7 +469,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.76.1";
+const UI_VERSION = "1.76.3";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -623,6 +623,16 @@ async function boot(){
       "Новые команды в реестре видны, но экраны под них могли не появиться — ",
       "обновите kit целиком (git pull) или сверьте cockpit/ui/index.html.");
     $("main").prepend(bar);
+  }
+  // Обновили kit, не перезапустив панель: файлы новые, процесс прежний. Страница при этом
+  // отдаётся свежая и начинает просить у старого сервера то, чего он не умеет, — человек
+  // получает «неизвестный маршрут» и ищет поломку там, где её нет.
+  if (S.state.ui && S.state.ui.stale_process){
+    $("main").prepend(el("div",{class:"stalebar"},
+      el("b",{},"Панель обновилась на диске, а работает прежним процессом. "),
+      "Страница уже новая, сервер — ещё старый: часть кнопок ответит ошибкой. ",
+      "Перезапустите панель: ",
+      el("span",{class:"mono"},"python3 aurora.py cockpit --restart")));
   }
   $("#navCmds").textContent = S.state.commands.length;
   const missing = S.state.env.items.filter(i=>!i.ok).length;
@@ -1787,6 +1797,11 @@ async function runStep(cmd, args){
   let since = 0, lines = [];
   for (;;){
     const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
+    if (!d || d.error){
+      out.append(el("div",{class:"err"}, "■ Задание шага потеряно (панель перезапускали) — "
+        + "маршрут дальше не идёт: следующие шаги пошли бы по неизвестному состоянию."));
+      return {rc:2, lines};      // код 2 — маршрут останавливается, и это правильно
+    }
     (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
     out.scrollTop = out.scrollHeight;
     since = d.next;
@@ -1798,6 +1813,32 @@ async function runStep(cmd, args){
 // Что именно нашла команда и чем это чинят. «Отработала и нашла, что чинить» —
 // честно, но бесполезно: человек всё равно идёт листать консоль. Заголовки разделов
 // отчёта («## битые ссылки: 20») — это и есть находки, а лечение известно заранее.
+// Лечение, которое панель умеет запустить сама. Подсказка словами («kb:repair --links»)
+// оставляет человека наедине с поиском: где эта команда, какие у неё галочки, что из
+// написанного — флаг. Здесь то же самое, но кнопкой. Всё, что требует суждения (перенести
+// карточку, слить двойников, отдать раздел движку с --force), кнопки не получает.
+const FIX_RUN = {
+  "битые ссылки": {cmd:"kb:repair", args:["--links", "--apply", "--allow-dirty"]},
+  "заготовки": {cmd:"kb:repair", args:["--stubs", "--apply", "--allow-dirty"]},
+  "оглавление отстало": {cmd:"kb:index", args:["--apply"]},
+  "MISSING": {cmd:"sync:confluence", args:[]},
+};
+
+function fixButton(what){
+  const key = Object.keys(FIX_RUN).find(k=>what.toLowerCase().includes(k.toLowerCase()));
+  if (!key) return null;
+  const fix = FIX_RUN[key];
+  const r = S.state.commands.find(x=>x.cmd===fix.cmd);
+  if (!r || !r.runnable) return null;
+  return el("button",{class:"btn sm", onclick:async ()=>{
+    if (!confirm(`Запустить ${fix.cmd} ${fix.args.join(" ")}?\n\n`
+        + "Всё, что команда сделает, видно в `git diff` и снимается `git reset --hard`.")) return;
+    if (await busyElsewhere(fix.cmd)) return;
+    const {rc} = await runStep(fix.cmd, fix.args);
+    toast(rc >= 2 ? `${fix.cmd}: не отработала (код ${rc})` : `${fix.cmd}: готово`,
+          rc >= 2 ? "err" : "ok");
+  }}, "Починить: " + fix.cmd);
+}
 const FIX_HINT = {
   "битые ссылки": "kb:repair --links",
   "одинаковые alias": "agent:aliases (дубли отложит человеку)",
@@ -1875,8 +1916,13 @@ async function runRoute(sc, write){
       `  ${s.cmd} — нашла, что чинить (это не ошибка маршрута):`));
     if (!s.found.length)
       out.append(el("div",{class:"dim"}, "      подробности выше в выводе шага"));
-    s.found.forEach(f=>out.append(el("div",{class:"dim"},
-      `      ${f.what}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : ""))));
+    s.found.forEach(f=>{
+      const btn = fixButton(f.what);
+      out.append(el("div",{class:"dim row",style:"gap:10px;align-items:center"},
+        el("span",{style:"flex:1"},
+          `      ${f.what}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : "")),
+        btn));
+    });
   });
   ROUTE = null;
   if (S.project){ const p = S.project;
@@ -1885,7 +1931,10 @@ async function runRoute(sc, write){
     // Шаги маршрута пишут в базу, но коммитит только агент — и только своё. Остальное
     // остаётся незафиксированным, и следующий прогон смешает свою работу с этой.
     // Панель git-операций не делает: это решение человека. Но молчать о них нечестно.
-    if (write) api("/api/projects").then(st=>{
+    // Эндпоинт с проектами один и тот же — `/api/state`. Здесь стоял `/api/projects`,
+    // которого у сервера нет: вместо предупреждения о незакоммиченной работе человек
+    // получал всплывающее «неизвестный маршрут» в конце каждого пишущего маршрута.
+    if (write) api("/api/state").then(st=>{
       const me = (st.projects||[]).find(x=>x.path===p.path);
       if (me && me.dirty) out.append(el("div",{class:"warn",style:"margin-top:8px"},
         `■ В проекте ${me.dirty} незакоммиченных файлов — это результат маршрута. `
@@ -1901,6 +1950,17 @@ let CONSOLE_LINES = [];      // строки текущего прогона: и
 async function poll(id, since, label){
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
   const out = $("#consoleOut");
+  // Задания нет: панель перезапускали, пока команда шла. Раньше цикл продолжал спрашивать
+  // про исчезнувшее задание и «выполняется…» стояло вечно — команда при этом могла давно
+  // отработать. Тишина здесь дороже ошибки: человек ждёт того, чего уже не случится.
+  if (!d || d.error){
+    out.append(el("div",{class:"err"}, "■ Задание потеряно: панель перезапускали, пока "
+      + "команда шла. Что она успела сделать — видно в журнале запусков и в `git diff`."));
+    $("#consoleRc").textContent = "задание потеряно";
+    $("#consoleRc").className = "chip bad";
+    drawLiveJobs();
+    return;
+  }
   if (!since) CONSOLE_LINES = [];
   (d.lines||[]).forEach(l=>{
     CONSOLE_LINES.push(l);
@@ -1927,7 +1987,10 @@ async function poll(id, since, label){
   // выделять мышью — даём кнопку, которая кладёт блок целиком в буфер.
   LAST_TASKS = assistantTasks(CONSOLE_LINES);
   drawTaskButton();
-  if (rc===0 && PENDING_APPLY && PENDING_APPLY.job===id){
+  // Код 1 — «отработала и нашла, что чинить», и записывать после него как раз и надо:
+  // это `kb:repair`, `kb:verify`, `kb:index`. Условие `rc===0` отбирало у них кнопку
+  // «Применить», и человек шёл искать флаг руками — которого в панели и нет.
+  if (rc<=1 && PENDING_APPLY && PENDING_APPLY.job===id){
     const line = PENDING_APPLY.line;
     $("#consoleApply").append(el("button",{class:"btn sm gold",
       onclick:()=>{ if (confirm(applyAsk(line))) fire(true); }},

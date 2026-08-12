@@ -44,6 +44,11 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 
 TOKEN = secrets.token_urlsafe(24)
+# Когда запустился этот процесс. Обновление кита правит файлы на диске, а работающая
+# панель продолжает жить прежним кодом: страница отдаётся свежая, а сервер — старый, и
+# новая страница начинает просить у него то, чего он ещё не умеет. Сравнить время старта
+# с временем правки своего же файла — единственный честный способ это заметить.
+STARTED = time.time()
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 CACHE: dict = {}
@@ -1043,6 +1048,8 @@ class Handler(BaseHTTPRequestHandler):
                 "kit": {"version": kit_version(), "path": KIT},
                 "ui": {"version": ui_version(),
                        "behind": minor(ui_version()) != minor(kit_version())},
+                # правили движок панели после её запуска — процесс работает старым кодом
+                "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED,
                 "projects": find_projects(self.server.roots),
                 "env": environment(),
                 "commands": registry(),

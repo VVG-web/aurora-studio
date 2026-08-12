@@ -1968,6 +1968,52 @@ def test_cockpit_marks_command_outcome(tmp: Path):
 
 
 @test
+def test_finding_carries_a_button_not_a_riddle(tmp: Path):
+    """Команда с кодом 1 не теряет «Применить», а находка получает кнопку лечения.
+
+    Живой случай: `kb:index` написала «повторите с --apply», а кнопки не было — условие
+    показа требовало кода 0, тогда как записывать надо как раз после кода 1 («отработала
+    и нашла, что чинить»). Человек ушёл искать флаг, которого в панели нет.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "if (rc<=1 && PENDING_APPLY" in ui, \
+        "команда, вернувшая 1, снова осталась без кнопки «Применить»"
+    assert "const FIX_RUN" in ui and "function fixButton" in ui, \
+        "находка объясняет лечение словами, но запустить его из панели нельзя"
+    assert "fixButton(f.what)" in ui, "кнопка лечения не доходит до итогов маршрута"
+    # Решение человека кнопкой не подменяется: --force затирает чужой текст
+    assert "--force" not in ui.split("const FIX_RUN")[1].split("};")[0], \
+        "в кнопку лечения попал --force: это решение человека, а не автоматика"
+
+    # Финальная строка отчёта не должна отправлять нажимать --apply впустую
+    src = (KIT / "scripts/kb_index.py").read_text(encoding="utf-8")
+    assert "if written and not a.apply:" in src, \
+        "«повторите с --apply» печатается даже когда записывать нечего"
+    assert "kb:index --force --apply" in src, \
+        "не сказано, что на самом деле поможет, когда оглавления рукотворные"
+
+
+@test
+def test_panel_asks_only_endpoints_the_server_has(tmp: Path):
+    """Каждый путь, который просит страница, у сервера существует.
+
+    Живой случай: в конце пишущего маршрута страница спрашивала `/api/projects`, которого
+    у сервера нет (проекты отдаёт `/api/state`). Вместо предупреждения о незакоммиченной
+    работе человек получал всплывающее «неизвестный маршрут» — и не понимал, что именно
+    в маршруте сломалось. Опечатка в пути не видна ни глазами, ни при запуске: страница
+    просто получает 404 и молчит либо пугает.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    known = set(re.findall(r'u\.path == "([^"]+)"', srv))
+    assert "/api/state" in known, "разбор путей сервера сломался — тест перестал что-то проверять"
+    asked = {m.group(1) for m in re.finditer(r'api\(\s*[`"\']([^`"\'?]+)', ui)
+             if m.group(1).startswith("/api")}
+    missing = sorted(asked - known)
+    assert not missing, f"страница просит пути, которых у сервера нет: {missing}"
+
+
+@test
 def test_running_command_survives_a_page_reload(tmp: Path):
     """Работающая команда видна после перезагрузки страницы, и второй запуск переспрашивают.
 
