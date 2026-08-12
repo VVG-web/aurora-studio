@@ -316,6 +316,22 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
                 sugg = get_close_matches(leaf, list(idx.by_stem), n=1, cutoff=0.85)
                 plan.unresolved.append(
                     f"  {path}: [[{target}]] — {how}" + (f"; похоже на [[{sugg[0]}]]" if sugg else ""))
+        # «Упоминается в» у заготовки — сгенерированная справка о том, откуда взялось имя.
+        # Карточку-источник могли переименовать или убрать, и тогда справка ссылается в
+        # никуда. Знания в ней нет, но приёмка на такой карточке встаёт намертво: правило
+        # «битые ссылки — решает человек» держит заготовку непроверяемой вечно. Чинить
+        # тут нечего — строку надо убрать, что и делает ремонт ссылок.
+        dead = [m.group(0) for m in re.finditer(r"^- \[\[([^\]|#]+)\]\][ \t]*$",
+                                               c.text, re.M)
+                if "заготовка" in (c.fm.get("tags") or "")
+                and leaf_name(m.group(1)) not in idx.by_stem
+                and leaf_name(m.group(1)) not in idx.by_alias]
+        if dead:
+            base = plan.file_writes.get(path, c.text)
+            for line in dead:
+                base = base.replace(line + "\n", "")
+            plan.file_writes[path] = base
+            plan.notes.append(f"  заготовка {path}: убрано мёртвых упоминаний {len(dead)}")
         if mapping:
             base = plan.file_writes.get(path, c.text)
             plan.file_writes[path] = rewrite_links(base, mapping)
@@ -488,7 +504,7 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
                 continue
             if not re.match(r"^[\w][\w \-.,()«»/]{0,80}$", leaf):
                 continue          # не имя карточки, а кусок текста в скобках
-            if re.search(r"(NNNN|XXXX?|\.\.\.|-N$|<[^>]+>)", leaf):
+            if re.search(r"(N{2,}|X{2,}|\.\.\.|-N$|<[^>]+>)", leaf):
                 continue          # образец имени из шаблона (DR-NNNN, SPEC-…), не понятие
             if fold_hard(leaf) in taken:
                 continue          # та же карточка, набранная с другими разделителями
