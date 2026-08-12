@@ -1968,6 +1968,26 @@ def test_cockpit_marks_command_outcome(tmp: Path):
 
 
 @test
+def test_hidden_really_hides_in_the_panel(tmp: Path):
+    """Атрибут hidden обязан скрывать, даже когда у элемента задан свой display.
+
+    Живой случай: «Скрыть раздел» в «Разработке» ставила `hidden` на кнопку навигации и
+    уводила на «О проекте», а сама кнопка оставалась на экране. Правило `[hidden]` живёт
+    в UA-стилях, и любой авторский `display` его перебивает — `nav button{display:flex}`
+    как раз такой. Панель прячет так семь элементов, поэтому проверяем правило, а не один
+    экран.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert re.search(r"\[hidden\]\{display:none ?!important\}", ui), \
+        "нет правила [hidden]{display:none !important} — сокрытие держится на UA-стилях"
+    # у элементов, которые панель прячет, свой display есть — значит правило не «на всякий»
+    assert "nav button{display:flex" in ui, \
+        "разметка навигации изменилась: проверьте, что правило [hidden] ещё нужно"
+    assert ui.index("[hidden]{display:none") > ui.index("<style"), \
+        "правило вне таблицы стилей"
+
+
+@test
 def test_finding_carries_a_button_not_a_riddle(tmp: Path):
     """Команда с кодом 1 не теряет «Применить», а находка получает кнопку лечения.
 
