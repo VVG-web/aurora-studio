@@ -380,8 +380,10 @@ tr:last-child td{border-bottom:0}
     <section class="view" id="view-ask">
       <h1>Спросить базу</h1>
       <p class="sub">Вопрос своими словами. Движок соберёт контекст из карточек, модель
-        ответит <b>только по ним</b> и поставит ссылку на каждое утверждение. Ничего не
-        пишется: это чтение базы, а не правка.</p>
+        ответит <b>только по ним</b> и поставит ссылку на каждое утверждение. Карточки не
+        правятся — но разговор сохраняется в базу проекта
+        (<span class="mono">meta/ask/</span>) и уходит в git вместе с ней: что спрашивала
+        команда и что база ответила, видно всем.</p>
       <div class="card" style="padding:16px">
         <div class="row" style="gap:10px;align-items:flex-start">
           <textarea id="askText" rows="3" placeholder="Например: что происходит с обеспечением, если документ аннулирован до ввоза?"
@@ -396,9 +398,17 @@ tr:last-child td{border-bottom:0}
               <option value="ask">проверенное + история решений</option>
             </select></label>
           <span class="muted" style="font-size:12.5px">Ctrl+Enter — спросить</span>
+          <span class="spacer"></span>
+          <button class="btn" id="askNew" hidden>Новый разговор</button>
         </div>
+        <div id="askThreadHint" class="muted" style="font-size:12.5px;margin-top:8px" hidden></div>
       </div>
       <div id="askBody"></div>
+      <h2 style="margin-top:22px">История вопросов</h2>
+      <p class="sub">Общая на всю команду: разговоры лежат в базе и приходят с
+        синхронизацией. Откройте разговор, чтобы прочитать его целиком и задать уточняющий
+        вопрос — модель увидит, о чём речь.</p>
+      <div id="askHistory"></div>
     </section>
 
     <!-- БЫСТРЫЙ СТАРТ -->
@@ -458,7 +468,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.74.0";
+const UI_VERSION = "1.75.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -545,7 +555,7 @@ function show(view){
   if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
   if (view==="work") renderQuick("продуктивность");
-  if (view==="ask") $("#askText")?.focus();
+  if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); }
   if (view==="review") renderReview();
   if (view==="console"){ renderHistory(); drawTaskButton(); }   // и журнал, и кнопка задания — на входе
   if (view==="about") renderAbout();
@@ -740,6 +750,8 @@ $("#askText").addEventListener("keydown", e=>{
 
 async function pick(p, go=true){
   S.project = p;
+  // Разговор с базой принадлежит проекту: открытым его нести в другой нельзя.
+  THREAD = null; $("#askBody").innerHTML = ""; drawThreadHint();
   $("#healthTitle").textContent = "Здоровье базы · " + p.name;
   renderProjBadge();
   if (go) show("health");
@@ -1544,9 +1556,18 @@ async function showCard(pane, path){
 
    Диалог с базой на месте: раньше человек шёл в чужой чат, а туда надо было ещё
    донести контекст. Контекст собирает движок (`ctx:context`), отвечает модель проекта.
-   История вопросов живёт в этой вкладке, пока панель открыта: разговор — это цепочка,
-   а не одиночные запросы. */
+
+   Разговор хранит не панель, а база: `meta/ask/<разговор>.md` в проекте, и он уходит в
+   git вместе с карточками. История вопросов, которая живёт до перезагрузки страницы, —
+   это не история: второй аналитик задаёт те же вопросы заново, а разговор, показавший
+   пробел в базе, теряется вместе с вкладкой. Здесь же он остаётся основанием завести
+   знание — и читается в Obsidian, как всё остальное.
+
+   Уточнение — тот же вопрос с контекстом разговора: «а если он ИП?» само по себе не
+   находит в базе ничего, тему держит предыдущий вопрос. Поэтому уточнения идут в тот же
+   файл, и движок собирает пак по всему разговору. */
 let ASKING = false;
+let THREAD = null;          // открытый разговор: id и число вопросов в нём
 
 async function askBase(){
   if (ASKING) return;
@@ -1556,14 +1577,16 @@ async function askBase(){
   const mode = $("#askMode").value;
   const box = $("#askBody");
   ASKING = true;
+  const args = ["--question", q, "--mode", mode];
+  if (THREAD) args.push("--thread", THREAD.id);
   const item = el("div",{class:"card",style:"padding:18px;margin-top:14px"},
-    el("div",{style:"font-weight:700"}, q),
+    el("div",{style:"font-weight:700"}, (THREAD ? "Уточнение: " : "") + q),
     el("div",{class:"muted",style:"font-size:12.5px;margin-top:4px"},
-      "собираю контекст и спрашиваю модель…"));
+      THREAD ? "перечитываю разговор, собираю контекст и спрашиваю модель…"
+             : "собираю контекст и спрашиваю модель…"));
   box.prepend(item);
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-    {project:S.project.path, cmd:"agent:ask",
-     args:["--question", q, "--mode", mode]})});
+    {project:S.project.path, cmd:"agent:ask", args})});
   if (!res.job){ ASKING = false; return; }
   let since = 0, lines = [];
   for (;;){
@@ -1574,12 +1597,80 @@ async function askBase(){
   }
   ASKING = false;
   // Первые строки — служебная шапка отчёта; человеку нужен сам ответ и подпись под ним.
-  const body = lines.filter(l=>!/^# Ответ базы|^\*\*Вопрос:/.test(l)).join("\n").trim();
+  // Строки про файл разговора — тоже служебные: сам файл панель показывает иначе.
+  const body = lines.filter(l=>!/^# Ответ базы|^\*\*Вопрос:|^Разговор: |^Уточнить, не/
+                               .test(l)).join("\n").trim();
+  // Куда лёг разговор, движок печатает сам: панель не угадывает имя файла, а читает его.
+  const said = (lines.find(l=>/^Разговор: /.test(l)) || "").match(/`([^`]+)`/);
+  if (said) THREAD = {id: said[1].split("/").pop().replace(/\.md$/, "")};
   item.innerHTML = "";
   item.append(el("div",{style:"font-weight:700"}, q),
     el("div",{class:"ansbody",style:"margin-top:10px;white-space:pre-wrap",
               html: mdLite(body)}));
   $("#askText").value = "";
+  drawThreadHint();
+  renderAskHistory();
+}
+
+// Уточняющий вопрос идёт в открытый разговор — и это должно быть видно до нажатия
+// кнопки: иначе человек не понимает, спрашивает он с контекстом или с чистого листа.
+function drawThreadHint(){
+  const hint = $("#askThreadHint"), btn = $("#askNew");
+  if (!THREAD){ hint.hidden = true; btn.hidden = true; $("#askGo").textContent = "Спросить";
+                $("#askText").placeholder = "Например: что происходит с обеспечением, если документ аннулирован до ввоза?";
+                return; }
+  hint.hidden = false; btn.hidden = false;
+  $("#askGo").textContent = "Уточнить";
+  $("#askText").placeholder = "Уточняющий вопрос — модель помнит, о чём разговор";
+  hint.innerHTML = "";
+  hint.append(el("span",{}, "Следующий вопрос уйдёт в разговор "),
+              el("span",{class:"mono"}, THREAD.id),
+              el("span",{}, " — модель увидит прошлые вопросы и ответы."));
+}
+$("#askNew").onclick = ()=>{ THREAD = null; $("#askBody").innerHTML = ""; drawThreadHint(); };
+
+async function renderAskHistory(){
+  const box = $("#askHistory");
+  if (!S.project) return box.replaceChildren(
+    el("div",{class:"muted"}, "Выберите проект на Мостике."));
+  const d = await api("/api/ask/threads?project=" + encodeURIComponent(S.project.path),
+                      {quiet:true});
+  const rows = (d && d.threads) || [];
+  box.replaceChildren();
+  if (!rows.length) return box.append(el("div",{class:"muted"},
+    "Разговоров пока нет. Первый появится после вопроса — и придёт всем, кто "
+    + "синхронизирует базу."));
+  rows.forEach(t=>{
+    const open = THREAD && THREAD.id === t.id;
+    box.append(el("div",{class:"card row",
+        style:"padding:12px 14px;margin-top:8px;gap:12px;align-items:center;cursor:pointer"
+              + (open ? ";outline:2px solid var(--primary)" : ""),
+        onclick:()=>openThread(t.id)},
+      el("div",{style:"flex:1;min-width:0"},
+        el("div",{style:"font-weight:600"}, t.title),
+        el("div",{class:"muted",style:"font-size:12px;margin-top:2px"},
+          `вопросов: ${t.turns} · последний: ${t.last || "—"} · ${t.path}`)),
+      el("button",{class:"btn"}, open ? "открыт" : "Открыть")));
+  });
+}
+
+async function openThread(id){
+  const d = await api(`/api/ask/thread?project=${encodeURIComponent(S.project.path)}`
+                      + `&id=${encodeURIComponent(id)}`);
+  if (!d || d.error) return toast(d && d.error || "разговор не прочитан", "warn");
+  THREAD = {id: d.id};
+  const box = $("#askBody"); box.replaceChildren();
+  // Свежий вопрос сверху — как в самой вкладке: последнее сказанное читают первым.
+  d.turns.slice().reverse().forEach(t=>{
+    box.append(el("div",{class:"card",style:"padding:18px;margin-top:14px"},
+      el("div",{style:"font-weight:700"}, t.q),
+      el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, t.at || ""),
+      el("div",{class:"ansbody",style:"margin-top:10px;white-space:pre-wrap",
+                html: mdLite(t.a)})));
+  });
+  drawThreadHint();
+  renderAskHistory();
+  $("#askText").focus();
 }
 
 // Ответ приходит markdown-ом: связей, заголовков и списков достаточно, тащить

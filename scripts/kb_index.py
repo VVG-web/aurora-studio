@@ -13,6 +13,14 @@
 Файл индекса помечается как генерируемый. Рукотворный `_index.md` без этой пометки
 скрипт не трогает — сначала скажет, что он не его: чужой текст не затирается молча.
 
+Пометку ставили не всегда: ранние версии команды её не писали, а до них оглавления
+собирала модель. Такие файлы защита держала годами — раздел вырастал с двух карточек до
+двухсот, а оглавление оставалось на состоянии первого прогона. Поэтому «чужое» теперь
+определяется не по одной пометке, а по составу файла: ссылки на карточки своего раздела
+и одна-две строки введения — это оглавление, и мы его пересобираем, сохранив заголовок и
+введение. Абзацы, разбор частных случаев, ссылки в другие разделы — это текст человека,
+и он остаётся нетронутым.
+
 Молчание тут дороже, чем кажется. Пока пропуск печатался строкой в середине отчёта, а
 команда возвращала ноль, маршрут честно писал «шаг пройден» — и человек проходил все
 сценарии подряд, а оглавления не обновлялись ни разу. Поэтому пропуск теперь считается
@@ -28,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from datetime import date
 
@@ -35,6 +44,8 @@ from aurora_common import KB_ROOT, frontmatter, walk_md
 
 TODAY = date.today().isoformat()
 MARK = "<!-- generated: kb_index.py — правки будут потеряны -->"
+WIKI = re.compile(r"\[\[([^\]|#]+)")
+ENTRY = ("|", "-", "*", "+")     # строка таблицы или списка: так выглядит запись оглавления
 SKIP_SECTIONS = {"meta", "_archive", "_assets", "_inbox"}
 # canonical — легаси-статус (убран в 1.10.0), сортируем как verified
 STATUS_ORDER = {"canonical": 1, "verified": 1, "in-review": 2, "draft": 3, "imported": 4}
@@ -67,27 +78,92 @@ def collect(section_dir: str) -> list:
             "status": (fm.get("status") or "").strip() or "—",
             "owner": fm.get("owner", "—"),
             "desc": first_sentence(body_start),
+            # Оглавление ссылается на карточку и по имени файла, и по синониму:
+            # `[[DR-0001]]` — это ссылка на `DR-0001-Единственный-источник…`.
+            "names": {stem} | {a.strip().strip('"\'') for a in
+                               (fm.get("aliases") or "").strip("[]").split(",") if a.strip()},
         })
     rows.sort(key=lambda r: (STATUS_ORDER.get(r["status"], 9), r["stem"]))
     return rows
 
 
+def links(old: str) -> list:
+    """Цели ссылок из строк-записей: таблица и список. Ссылка в абзаце — это текст."""
+    out = []
+    for line in old.splitlines():
+        s = line.strip()
+        if s.startswith(ENTRY):
+            out += [t.strip().split("/")[-1] for t in WIKI.findall(s)]
+    return out
+
+
 def missing(old: str, rows: list) -> list:
-    """Каких карточек раздела нет в рукотворном оглавлении.
+    """Каких карточек раздела нет в оглавлении.
 
     Пустой список — оглавление ведут руками и ведут честно, трогать его незачем.
     Непустой — навигация отстала от базы, и карточки из хвоста никто не найдёт.
     """
-    return [r["stem"] for r in rows
-            if f"[[{r['stem']}]]" not in old and f"[[{r['stem']}|" not in old]
+    seen = set(links(old))
+    return [r["stem"] for r in rows if not (r["names"] & seen)]
 
 
-def render(section: str, rows: list) -> str:
+def index_like(old: str, rows: list, elsewhere: set = frozenset()) -> bool:
+    """Оглавление, собранное машиной, — просто без пометки генерации.
+
+    Пометку ставят не всегда: ранние версии этой команды её не писали, а до неё
+    оглавления собирала модель по `build.md`. Защита «чужой текст не затираем»
+    держала такие файлы годами — база росла с двух карточек до двух сотен, а
+    оглавление оставалось на состоянии первого прогона, и никто этого не видел.
+
+    Отличить машинное от рукотворного можно по составу. Оглавление — это ссылки на
+    карточки своего раздела и почти ничего кроме: заголовок, строчка-другая введения,
+    таблица. Как только в файле появляются абзацы, разбор частных случаев или ссылки
+    в чужие разделы — это уже знание, и его не трогаем ни при каких порогах.
+
+    Ссылка в никуда против принятия не говорит: карточку переименовали или слили, а
+    оглавление осталось прежним — это ровно тот случай, ради которого мы и пришли.
+    """
+    names = set().union(*(r["names"] for r in rows)) if rows else set()
+    targets = links(old)
+    foreign = sum(1 for t in targets if t not in names and t in elsewhere)
+    prose = 0
+    for line in old.splitlines():
+        s = line.strip()
+        if not s or s.startswith(ENTRY) or s.startswith(("#", "<!--", "_", ">")):
+            continue
+        prose += 1
+    # три строки введения — это подпись раздела; дальше начинается текст, который писали
+    return len(targets) >= 2 and len(targets) - foreign >= 3 * foreign and prose <= 3
+
+
+def preamble(old: str) -> list:
+    """Заголовок и введение прежнего оглавления: их писал человек, и они переживают
+
+    регенерацию. «# Processes — бизнес-процессы» и «Описание бизнес-процессов и их
+    активностей» стоили кому-то минуты и говорят больше, чем голое «# Processes».
+    Строка статистики и всё, что ниже первой записи, — наше, собирается заново.
+    """
+    out = []
+    for line in old.splitlines():
+        s = line.strip()
+        if s.startswith(("<!--", "---")) or s.startswith("_Карточек:"):
+            continue
+        if s.startswith(ENTRY) or WIKI.search(s):
+            break
+        if s.startswith("#") and any(x.strip().startswith("#") for x in out):
+            break                     # второй заголовок — это уже структура прежнего файла
+        out.append(line.rstrip())
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def render(section: str, rows: list, intro: list = ()) -> str:
     counts = {}
     for r in rows:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
     stats = " · ".join(f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda x: -x[1]))
-    out = [MARK, f"# {section}", "",
+    out = [MARK] + (list(intro) or [f"# {section}"]) + ["",
            f"_Карточек: {len(rows)} · {stats} · обновлено {TODAY}_", "",
            "| Карточка | Статус | Владелец | О чём |", "|---|---|---|---|"]
     for r in rows:
@@ -119,19 +195,24 @@ def main() -> int:
             return 1
 
     print(f"# Индексы разделов — {TODAY}\n")
-    written, skipped, totals = 0, [], []
+    written, skipped, adopted, totals = 0, [], [], []
+    base = {s: collect(os.path.join(KB_ROOT, s)) for s in sections}
     for section in sections:
-        sec_dir = os.path.join(KB_ROOT, section)
-        rows = collect(sec_dir)
+        rows = base[section]
         if not rows:
             continue
-        target = os.path.join(sec_dir, "_index.md")
-        new = render(section, rows)
+        # имена карточек других разделов: ссылка туда — признак текста, а не оглавления
+        elsewhere = {n for s, rs in base.items() if s != section for r in rs for n in r["names"]}
+        target = os.path.join(KB_ROOT, section, "_index.md")
         old = open(target, encoding="utf-8", errors="ignore").read() if os.path.isfile(target) else None
         totals.append((section, len(rows)))
-        if old is not None and MARK not in old and not a.force:
-            skipped.append((section, missing(old, rows)))
-            continue
+        unmarked = old is not None and MARK not in old
+        if unmarked and not a.force:
+            if not index_like(old, rows, elsewhere):
+                skipped.append((section, missing(old, rows)))
+                continue
+            adopted.append((section, len(missing(old, rows))))
+        new = render(section, rows, preamble(old) if old else ())
         if old == new:
             continue
         written += 1
@@ -144,6 +225,11 @@ def main() -> int:
         print(f"| {section} | {n} |")
     print(f"\nИндексов к обновлению: {written}")
     stale = [(s, miss) for s, miss in skipped if miss]
+    if adopted:
+        print("\nПриняты под генерацию (собраны машиной, но без пометки — ранние версии "
+              "её не ставили):")
+        for section, n in adopted:
+            print(f"- {section} — не хватало карточек: {n}; заголовок и введение сохранены")
     if skipped:
         print(f"\nПропущены (рукотворные, без пометки генерации): "
               f"{', '.join(s for s, _ in skipped)}")

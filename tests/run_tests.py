@@ -646,6 +646,64 @@ def test_index_regenerates_but_respects_handmade(tmp: Path):
 
 
 @test
+def test_index_adopts_what_an_older_generator_left(tmp: Path):
+    """Оглавление без пометки, но с составом оглавления, — машинное: его пересобираем.
+
+    Пометку ставят не всегда: ранние версии команды её не писали, а до них оглавления
+    собирала модель. Защита «чужой текст не затираем» держала такие файлы годами — в
+    живом проекте раздел вырос с двух карточек до 218, а оглавление осталось прежним.
+    """
+    root = make_project(tmp)
+    for i in range(4):
+        card(root, f"Processes/ALG-00{i}-Процесс.md", f"Шаг {i}", status="imported")
+    (root / "AuroraKnowledgeDB/Processes/_index.md").write_text(
+        "# Processes — бизнес-процессы\n\n"
+        "Описание бизнес-процессов и их активностей.\n\n"
+        "| Карточка | Описание |\n|---|---|\n"
+        "| [[ALG-000-Процесс]] | первый |\n"
+        "| [[ALG-777-Уехавший]] | карточку переименовали, ссылка умерла |\n",
+        encoding="utf-8")
+
+    cp = run("kb_index.py", "--apply", cwd=root, expect_rc=0)
+    assert "Приняты под генерацию" in cp.stdout, \
+        f"старое машинное оглавление не опознано:\n{cp.stdout}"
+    idx = (root / "AuroraKnowledgeDB/Processes/_index.md").read_text(encoding="utf-8")
+    for i in range(4):
+        assert f"[[ALG-00{i}-Процесс]]" in idx, f"карточка ALG-00{i} не попала в оглавление"
+    assert "ALG-777" not in idx, "мёртвая запись пережила пересборку"
+    # заголовок и введение писал человек — они переживают регенерацию
+    assert "# Processes — бизнес-процессы" in idx, "потерян осмысленный заголовок раздела"
+    assert "Описание бизнес-процессов и их активностей." in idx, "потеряно введение раздела"
+
+    before = idx
+    run("kb_index.py", "--apply", cwd=root, expect_rc=0)
+    assert (root / "AuroraKnowledgeDB/Processes/_index.md").read_text(
+        encoding="utf-8") == before, "повторный прогон меняет файл — введение накапливается"
+
+
+@test
+def test_index_leaves_a_section_overview_written_by_a_human(tmp: Path):
+    """Раздел, где человек написал текст со ссылками, — не оглавление, а знание."""
+    root = make_project(tmp)
+    for i in range(3):
+        card(root, f"Reference/Справочник-{i}.md", f"строки {i}", status="imported")
+    hand = ("# Reference — как читать справочники\n\n"
+            "Справочники ведутся руками, у каждого свой владелец и срок годности.\n\n"
+            "Аббревиатуры подмешиваются в каждый пак автоматически, поэтому их\n"
+            "не нужно перечислять в постановке: модель увидит их и так.\n\n"
+            "Если справочник расходится с источником, правьте источник, а не карточку:\n"
+            "иначе следующий синк вернёт расхождение обратно.\n\n"
+            "- [[Справочник-0]] — пример\n- [[Справочник-1]] — пример\n")
+    (root / "AuroraKnowledgeDB/Reference/_index.md").write_text(hand, encoding="utf-8")
+
+    cp = run("kb_index.py", "--apply", cwd=root, expect_rc=1)
+    assert (root / "AuroraKnowledgeDB/Reference/_index.md").read_text(
+        encoding="utf-8") == hand, "текст человека затёрт: абзацы приняли за оглавление"
+    assert "оглавление отстало от базы: 1" in cp.stdout, \
+        f"отставание рукотворного оглавления не названо находкой:\n{cp.stdout}"
+
+
+@test
 def test_index_stays_quiet_when_handmade_is_current(tmp: Path):
     """Рукотворное оглавление, где все карточки на месте, не отстало — и молчит."""
     root = make_project(tmp)
@@ -2938,6 +2996,73 @@ def test_agent_sees_every_conflict_not_just_printed(tmp: Path):
     # с явным --limit это осознанная проба, а не слепота
     ok, _why = R.verdict({**blind, "limited": True}, apply=True)
     assert ok, "оракул не принял пробу по --limit"
+
+
+@test
+def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
+    """Разговор с базой хранится в базе, читается и продолжается уточнением.
+
+    История вопросов, живущая до перезагрузки страницы, — не история: второй аналитик
+    задаёт те же вопросы заново, а разговор, показавший пробел в базе, теряется вместе
+    с вкладкой. Поэтому журнал лежит в `meta/ask/` и уходит в git с карточками.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    path = R.thread_path(str(root), "2026-08-12_1700-обеспечение")
+    R.append_turn(path, "что с обеспечением, если заявка аннулирована?",
+                  "Возвращается заявителю [[Возврат-обеспечения]].",
+                  "модель qwen · карточек в контексте 43 · 12.0 с", "generate")
+    R.append_turn(path, "а если заявитель — ИП?", "Порядок тот же [[ИП]].",
+                  "модель qwen · карточек в контексте 21 · 9.0 с", "generate")
+
+    text = path.read_text(encoding="utf-8")
+    assert "type: ask-thread" in text and "### Вопрос ·" in text, \
+        "журнал не markdown с шапкой — его не прочитать ни в Obsidian, ни панелью"
+    turns = R.read_thread(path)
+    assert len(turns) == 2, f"прочитано пар {len(turns)}, а записано 2"
+    assert turns[0]["q"].startswith("что с обеспечением"), "вопрос потерян при чтении"
+    assert "[[ИП]]" in turns[1]["a"], "ответ потерян при чтении"
+
+    lst = R.threads(str(root))
+    assert len(lst) == 1 and lst[0]["turns"] == 2, f"список разговоров: {lst}"
+    assert lst[0]["title"].startswith("что с обеспечением"), \
+        "разговор назван не первым вопросом — в списке его не узнать"
+
+    # Уточнение без контекста ничего не значит: «а если он ИП?» само по себе не находит
+    # в базе ни одной карточки. Тему держит предыдущий вопрос — он и уходит в отбор.
+    seen = {}
+
+    def fake_pack(cwd, script, args):
+        seen["topic"] = args[0]
+        return {"ok": True, "out": "# Пак (карточек 2)\n\n## Возврат-обеспечения\nтекст"}
+
+    def fake_call(cfg, role, messages, deadline=None):
+        seen["prompt"] = messages[0]["content"]
+        return {"ok": True, "text": "Порядок тот же [[Возврат-обеспечения]].",
+                "backend": 1, "model": "qwen", "log": []}
+
+    real = R.run_command
+    R.run_command = fake_pack
+    try:
+        res = R.run_ask({"request_timeout": 60}, str(root), "а если заявитель — ИП?",
+                        "generate", 40, call=fake_call, history=turns)
+    finally:
+        R.run_command = real
+    assert res["ok"], f"уточнение не отработало: {res}"
+    assert "обеспечением" in seen["topic"], \
+        f"контекст собран по одной последней фразе — тема разговора потеряна: {seen['topic']}"
+    assert "РАНЬШЕ В ЭТОМ РАЗГОВОРЕ" in seen["prompt"], "модель не увидела прошлых ответов"
+    assert "заявка аннулирована" in seen["prompt"], "прошлый вопрос не дошёл до модели"
+
+    # Журнал — запись состоявшегося разговора, а не знание: линтер не требует от него
+    # живых ссылок, иначе переименование карточки создаёт долг в истории.
+    card(root, "Concepts/Тема.md", "Текст.", status="imported", type="concept")
+    cp = run("kb_lint.py", "--full", cwd=root)
+    assert "meta/ask" not in cp.stdout, \
+        f"журнал разговоров попал в находки линтера:\n{cp.stdout}"
 
 
 @test

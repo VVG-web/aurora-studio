@@ -198,6 +198,12 @@ def main():
             if qs == "asked" and not fm.get("asked"):
                 errors.append(f"{rel}: q_status asked без даты asked")
 
+        # Журнал диалогов с базой (meta/ask/) — запись состоявшегося разговора, а не
+        # знание. Он не переписывается: ссылка, которую модель поставила в тот день,
+        # остаётся такой, какой была. Переименовали карточку — это не долг журнала.
+        if "/meta/ask/" in rel or rel.startswith("meta/ask/"):
+            continue
+
         for target in link_refs(text):
             # ссылки с путём внутри (Concepts/_index) исторически не проверяются:
             # они указывают на служебные индексы, а не на карточки

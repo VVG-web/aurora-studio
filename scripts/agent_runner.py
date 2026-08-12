@@ -30,6 +30,19 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 и всё, что сделает агент, откатывается одной строкой. Без этого правки агента смешались
 бы с незакоммиченной работой (в живом проекте её бывают сотни файлов).
 
+Третья задача устроена иначе: `ask` ничего не решает, а отвечает на вопрос аналитика по
+карточкам базы. Разговор при этом сохраняется в саму базу — `meta/ask/<разговор>.md`, и
+уходит в git вместе с карточками:
+
+  --task ask --question «текст»                  новый разговор
+  --task ask --thread ID --question «а если…»    уточнение с контекстом прошлых ответов
+  --task ask --threads                           какие разговоры уже были
+
+История, живущая до перезагрузки страницы, — не история: второй аналитик задаёт те же
+вопросы заново, а разговор, показавший пробел в базе, теряется вместе с вкладкой. В
+уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
+ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
+
 Панель: `agent:aliases` · `agent:build` · `agent:ask`
 """
 from __future__ import annotations
@@ -48,6 +61,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
+ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
+ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
+ASK_ECHO = 700        # символов прошлого ответа: нужна суть, а не пересказ целиком
 
 
 def human_time(seconds: float) -> str:
@@ -794,12 +810,116 @@ PROMPT_ASK = """Ты отвечаешь на вопрос аналитика п�
    заданный вопрос."""
 
 
+PROMPT_ASK_TAIL = """
+─────────────────────────────────────────────────────────────────────
+РАНЬШЕ В ЭТОМ РАЗГОВОРЕ (для понимания, о чём спрашивают; факты — по-прежнему только
+из карточек выше):
+
+{history}
+─────────────────────────────────────────────────────────────────────
+Новый вопрос — уточнение к сказанному. «А если он ИП?» значит тот же вопрос, что и
+раньше, но про ИП: не начинай с нуля и не переспрашивай, о чём речь.
+"""
+
+
+# ------------------------------------------------------------------ журнал диалогов
+
+def slug(text: str, limit: int = 40) -> str:
+    """Имя файла из вопроса: человек ищет разговор глазами, а не по идентификатору."""
+    s = re.sub(r"[^\w\s-]", "", text.strip().lower(), flags=re.U)
+    return re.sub(r"[\s_]+", "-", s)[:limit].strip("-") or "вопрос"
+
+
+def thread_path(cwd: str, tid: str) -> Path:
+    """Путь к диалогу по его идентификатору. Идентификатор приходит извне — имя берём
+    только базовое: панель не должна уметь записать файл куда угодно."""
+    name = os.path.basename(tid.strip()).removesuffix(".md")
+    return Path(cwd) / ASK_DIR / (name + ".md")
+
+
+def read_thread(path: Path) -> list:
+    """[{'q','a','at'}] — пары вопрос-ответ разговора по порядку.
+
+    Формат файла — обычный markdown с заголовками третьего уровня, потому что этот файл
+    читают трое: панель, модель и человек в Obsidian. JSON прочитали бы двое.
+    """
+    if not path.is_file():
+        return []
+    turns, cur, where = [], {}, None
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        m = re.match(r"^### (Вопрос|Ответ)\b(?:\s*·\s*(.*))?$", line.strip())
+        if m:
+            if m.group(1) == "Вопрос":
+                if cur.get("q"):
+                    turns.append(cur)
+                cur, where = {"q": "", "a": "", "at": (m.group(2) or "").strip()}, "q"
+            else:
+                where = "a"
+            continue
+        if where:
+            cur[where] = (cur.get(where, "") + "\n" + line).strip()
+    if cur.get("q"):
+        turns.append(cur)
+    return turns
+
+
+def thread_history(turns: list) -> str:
+    """Хвост разговора для промпта: вопросы целиком, ответы — по сути."""
+    out = []
+    for t in turns[-ASK_TAIL:]:
+        answer = t["a"].split("\n---")[0].strip()[:ASK_ECHO]
+        out.append(f"Вопрос: {t['q']}\nОтвет: {answer}")
+    return "\n\n".join(out)
+
+
+def append_turn(path: Path, question: str, answer: str, note: str, mode: str) -> Path:
+    """Дописать пару в разговор. Новый разговор получает шапку и заголовок.
+
+    Журнал лежит в базе проекта и уходит в git вместе с ней: вопросы аналитиков — общее
+    знание команды. Второй человек видит, что уже спрашивали и что база ответила, и не
+    гоняет модель по второму кругу; а разговор, показавший пробел в базе, становится
+    основанием завести карточку.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    if not path.is_file():
+        head = ["---", "type: ask-thread", f'title: "{question[:80].replace(chr(34), "")}"',
+                f"created: {now:%Y-%m-%d %H:%M}", f"mode: {mode}", "---", "",
+                f"# Разговор с базой — {question[:80]}", "",
+                "_Журнал диалога: вопросы аналитика и ответы модели по карточкам базы. "
+                "Файл ведёт панель (`agent:ask`), править его руками незачем — но читать "
+                "можно и в Obsidian._", ""]
+        path.write_text("\n".join(head), encoding="utf-8")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"\n### Вопрос · {now:%Y-%m-%d %H:%M}\n\n{question}\n"
+                f"\n### Ответ · {note}\n\n{answer}\n")
+    return path
+
+
+def threads(cwd: str) -> list:
+    """Разговоры проекта, свежие сверху: чем спрашивали и сколько раз."""
+    out = []
+    for path in sorted((Path(cwd) / ASK_DIR).glob("*.md")):
+        turns = read_thread(path)
+        if not turns:
+            continue
+        out.append({"id": path.stem, "title": turns[0]["q"][:120],
+                    "turns": len(turns), "last": turns[-1]["at"],
+                    "path": str(path.relative_to(cwd))})
+    return sorted(out, key=lambda t: t["last"], reverse=True)
+
+
 def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
-            call=None) -> dict:
-    """Вопрос к базе: пак собирает движок, отвечает модель, ссылки проверяются."""
+            call=None, history: list = ()) -> dict:
+    """Вопрос к базе: пак собирает движок, отвечает модель, ссылки проверяются.
+
+    В уточнении контекст собирается по всему разговору, а не по последней фразе: «а если
+    он ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
+    """
     call = call or AG.call_role
     started = time.time()
-    args = [question, "--mode", mode, "--max-cards", str(max_cards), "--no-log"]
+    topic = " ".join([t["q"] for t in list(history)[-2:]] + [question]) if history else question
+    args = [topic, "--mode", mode, "--max-cards", str(max_cards), "--no-log"]
     r = run_command(cwd, "ctx_pack.py", args)
     if not r["ok"] or "## " not in r["out"]:
         return {"ok": False, "answer": "", "cards": [], "seconds": 0.0,
@@ -811,8 +931,11 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     total = int(m.group(1)) if m else 0
     cards = re.findall(r"^## (.+)$", pack, re.M)
 
-    a = call(cfg, "worker", [{"role": "user", "content": PROMPT_ASK.format(
-        pack=pack, question=question)}], deadline=time.time() + cfg["request_timeout"])
+    prompt = PROMPT_ASK.format(pack=pack, question=question)
+    if history:
+        prompt += PROMPT_ASK_TAIL.format(history=thread_history(list(history)))
+    a = call(cfg, "worker", [{"role": "user", "content": prompt}],
+             deadline=time.time() + cfg["request_timeout"])
     if not a["ok"]:
         return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
                 "why": "; ".join(a["log"][-2:])}
@@ -1080,6 +1203,13 @@ def main() -> int:
     ap.add_argument("--mode", default="generate",
                     choices=["generate", "ask", "evaluate", "review"],
                     help="какие карточки брать в контекст (для --task ask)")
+    ap.add_argument("--thread", metavar="ID", default="",
+                    help="продолжить разговор: уточняющий вопрос с контекстом прошлых "
+                         "ответов (id — имя файла в meta/ask/ без .md)")
+    ap.add_argument("--threads", action="store_true",
+                    help="перечислить разговоры проекта и выйти")
+    ap.add_argument("--no-journal", action="store_true",
+                    help="не записывать вопрос и ответ в журнал разговоров")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
     ap.add_argument("--critic", action="store_true",
                     help="проверять решение второй моделью до записи (для прода — обязательно)")
@@ -1096,6 +1226,20 @@ def main() -> int:
         print("agent_runner: нет AuroraKnowledgeDB/ — запускайте из корня проекта",
               file=sys.stderr)
         return 1
+    # Список разговоров — чтение файлов проекта: ни модели, ни настроенного агента для
+    # него не нужно, и требовать их значило бы прятать историю за настройкой шлюза.
+    if a.threads:
+        print(f"# Разговоры с базой — {datetime.now():%Y-%m-%d}\n")
+        rows = threads(cwd)
+        if not rows:
+            print("Разговоров пока нет. Первый появится после `agent:ask`.")
+            return 0
+        print("| Разговор | Вопросов | Последний | Файл |")
+        print("|---|---|---|---|")
+        for t in rows:
+            print(f"| {t['title']} | {t['turns']} | {t['last']} | `{t['path']}` |")
+        return 0
+
     cfg = AG.parse_config(AG.raw_config())
     if not cfg["backends"]:
         print("agent_runner: агент не настроен — панель «Настройка» → «Агент», "
@@ -1103,12 +1247,26 @@ def main() -> int:
         return 1
 
     if a.task == "ask":
-        # Вопрос ничего не пишет: ни чекпойнта, ни коммита, ни журнала прогонов.
+        # Вопрос не правит базу: ни чекпойнта, ни коммита, ни правки карточек. Пишется
+        # только журнал разговоров — он и есть общая память команды.
         if not a.question:
             print("agent_runner: нужен --question «текст вопроса»", file=sys.stderr)
             return 1
-        res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40)
-        print(report_ask(res, a.question, cfg))
+        path = thread_path(cwd, a.thread or f"{datetime.now():%Y-%m-%d_%H%M}-{slug(a.question)}")
+        history = read_thread(path) if a.thread else []
+        if a.thread and not history:
+            print(f"agent_runner: разговора «{a.thread}» нет — уточнять нечего. "
+                  "Список: --task ask --threads", file=sys.stderr)
+            return 1
+        res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history)
+        text = report_ask(res, a.question, cfg)
+        print(text)
+        if res["ok"] and not a.no_journal:
+            note = (f"модель {res['model']} · карточек в контексте "
+                    f"{res.get('total') or len(res['cards'])} · {res['seconds']} с")
+            p = append_turn(path, a.question, res["answer"], note, a.mode)
+            print(f"\nРазговор: `{p.relative_to(cwd)}` (вопросов в нём: {len(history) + 1})")
+            print("Уточнить, не теряя контекст: `agent:ask --thread " + p.stem + "`")
         return 0 if res["ok"] else 1
 
     cp = checkpoint(cwd, f"agent:{a.task}", a.apply and not a.no_checkpoint)
