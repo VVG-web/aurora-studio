@@ -1379,6 +1379,11 @@ def main() -> int:
                     help="взять только первые N конфликтов/источников (для пробы)")
     ap.add_argument("--partition", type=int, default=0, metavar="N",
                     help="разбирать только партию N (по умолчанию — по плану подряд)")
+    ap.add_argument("--until-done", action="store_true",
+                    help="разбирать план целиком, партия за партией, пока источники не "
+                         "кончатся (первичная сборка проекта: часы, можно на ночь)")
+    ap.add_argument("--hours", type=float, default=12.0, metavar="Ч",
+                    help="потолок времени для --until-done (по умолчанию 12)")
     ap.add_argument("--no-checkpoint", action="store_true",
                     help="не делать git-коммит перед прогоном (откат станет ручным)")
     a = ap.parse_args()
@@ -1443,7 +1448,41 @@ def main() -> int:
               "закоммитьте работу или запустите без --apply.", file=sys.stderr)
         return 1
 
-    if a.task == "build":
+    if a.task == "build" and a.until_done:
+        # Первичная сборка: три года проекта — это полторы тысячи источников, а партия
+        # агента ограничена нарочно (обозримый прогон, обозримый откат). Девяносто
+        # нажатий кнопки — не работа человека, поэтому здесь партии идут подряд сами.
+        # Каждая по-прежнему со своим чекпойнтом и своим коммитом: откатывается любая.
+        deadline = time.time() + a.hours * 3600
+        batch, texts = 0, []
+        while True:
+            batch += 1
+            left_before = build_left(cwd)[0]
+            say(f"\n=== партия {batch} · осталось источников: {left_before} · "
+                f"до конца окна {human_time(max(0, deadline - time.time()))}")
+            res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
+            texts.append(report_build(res, cp, a.apply, a.critic, cfg))
+            if a.apply:
+                commit_result(cwd, "agent:build",
+                              f"партия {batch}: " + verdict_build(res, True)[1][:100],
+                              not a.no_checkpoint)
+            left_after = build_left(cwd)[0]
+            if not left_after:
+                say(f"\n=== план разобран целиком: партий {batch}")
+                break
+            if left_after >= left_before:
+                # Партия не сдвинула счётчик: дальше будет то же самое, и цикл станет
+                # вечным. Останавливаемся и говорим об этом — это находка, а не финиш.
+                say(f"\n=== партия {batch} не сдвинула план ({left_before} → {left_after}): "
+                    "останавливаюсь, разбираться человеку")
+                break
+            if time.time() > deadline:
+                say(f"\n=== окно {a.hours} ч закрылось: партий {batch}, "
+                    f"осталось источников {left_after}")
+                break
+            cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
+        text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
+    elif a.task == "build":
         res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
         text = report_build(res, cp, a.apply, a.critic, cfg)
     else:
@@ -1457,7 +1496,7 @@ def main() -> int:
     (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
 
-    if a.apply:
+    if a.apply and not (a.task == "build" and a.until_done):
         ok, why = (verdict_build if a.task == "build" else verdict)(res, True)
         done = commit_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint)
         print(f"Результат агента: {done.get('why')}"
