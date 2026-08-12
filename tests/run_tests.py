@@ -625,7 +625,7 @@ def test_index_regenerates_but_respects_handmade(tmp: Path):
         "# Мой рукотворный индекс\n", encoding="utf-8")
     card(root, "Systems/Шина.md", "Kafka", status="imported")
 
-    run("kb_index.py", "--apply", cwd=root)
+    cp = run("kb_index.py", "--apply", cwd=root)
     idx = (root / "AuroraKnowledgeDB/Glossary/_index.md").read_text(encoding="utf-8")
     assert "[[Заявка]]" in idx and "[[ЕНС]]" in idx, "карточки не попали в индекс"
     assert idx.index("[[Заявка]]") < idx.index("[[ЕНС]]"), "verified должен идти раньше imported"
@@ -633,8 +633,31 @@ def test_index_regenerates_but_respects_handmade(tmp: Path):
 
     hand = (root / "AuroraKnowledgeDB/Systems/_index.md").read_text(encoding="utf-8")
     assert hand == "# Мой рукотворный индекс\n", "рукотворный индекс затёрт без спроса"
+    # Пропуск — это находка, а не тишина: иначе маршрут рапортует «шаг пройден», и
+    # человек проходит все сценарии подряд, а оглавления не обновляются ни разу.
+    assert cp.returncode == 1, \
+        f"отставшее рукотворное оглавление не объявлено находкой: rc={cp.returncode}"
+    assert "## оглавление отстало от базы: 1" in cp.stdout, \
+        f"находка не в формате отчёта — маршрут её не покажет:\n{cp.stdout}"
+    assert "Шина" in cp.stdout, "не названа карточка, которой нет в оглавлении"
+
     run("kb_index.py", "--apply", "--force", cwd=root)
     assert "[[Шина]]" in (root / "AuroraKnowledgeDB/Systems/_index.md").read_text(encoding="utf-8")
+
+
+@test
+def test_index_stays_quiet_when_handmade_is_current(tmp: Path):
+    """Рукотворное оглавление, где все карточки на месте, не отстало — и молчит."""
+    root = make_project(tmp)
+    card(root, "Systems/Шина.md", "Kafka", status="imported")
+    (root / "AuroraKnowledgeDB/Systems/_index.md").write_text(
+        "# Системы\n\n- [[Шина|шина данных]] — очередь событий\n", encoding="utf-8")
+
+    cp = run("kb_index.py", "--apply", cwd=root, expect_rc=0)
+    assert "оглавление отстало" not in cp.stdout, \
+        f"полное рукотворное оглавление объявлено отставшим — ложная находка:\n{cp.stdout}"
+    assert (root / "AuroraKnowledgeDB/Systems/_index.md").read_text(
+        encoding="utf-8").startswith("# Системы"), "рукотворный индекс затёрт"
 
 
 @test
