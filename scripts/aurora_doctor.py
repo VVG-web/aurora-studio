@@ -378,6 +378,21 @@ def main() -> int:
     for h in scan_secrets():
         errors.append(f"SECRET: {h}")
 
+    # Проект без git — это проект без отката. Агент такого не переживает: перед прогоном
+    # он делает чекпойнт, не может — отказывается писать вовсе. В живом проекте это
+    # выглядело как «agent:build отработал за ноль секунд и вернул 1», и понять, почему
+    # база не растёт, было нельзя. Всё остальное doctor при этом честно говорил «OK».
+    import subprocess                      # как в остальных проверках: git нужен не всегда
+    try:
+        rc = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
+                            capture_output=True, text=True, timeout=20).returncode
+    except Exception:
+        rc = 1
+    if rc != 0:
+        errors.append("проект не под git — отката нет, и агент писать в базу откажется "
+                      "(чекпойнт делать не во что). Завести: `git init`, затем первый "
+                      "коммит всей базы")
+
     vfile = ROOT / "AuroraKnowledgeDB" / "meta" / "aurora_version.txt"
     engine_ver = vfile.read_text(encoding="utf-8").strip() if vfile.exists() else None
     if not engine_ver:
