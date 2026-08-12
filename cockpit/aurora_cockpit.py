@@ -1112,6 +1112,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"нет файла {rel}"}, 404)
                 return
             self.send_json({"path": rel, "text": read_text(full)})
+        elif u.path == "/api/jobs":
+            # Что сейчас выполняется в этом проекте. Задание живёт в процессе панели, а
+            # консоль — в открытой странице: перезагрузили её, и работающая команда
+            # становится невидимой. Человек видит пустую консоль, решает, что всё
+            # оборвалось, и запускает второй маршрут поверх первого.
+            project = (q.get("project") or [""])[0]
+            with JOBS_LOCK:
+                live = [{"id": j["id"], "cmd": j["cmd"], "args": j["args"],
+                         "started": j["started"], "lines": len(j["out"])}
+                        for j in JOBS.values()
+                        if not j["done"] and (not project or j["project"] == project)]
+            self.send_json({"jobs": sorted(live, key=lambda j: j["started"])})
         elif u.path == "/api/job":
             job = JOBS.get(q.get("id", [""])[0])
             if not job:

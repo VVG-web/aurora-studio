@@ -349,6 +349,7 @@ tr:last-child td{border-bottom:0}
         <span id="consoleTask"></span>
         <button class="btn sm" id="clearConsole">Очистить</button>
       </div>
+      <div id="consoleLive"></div>
       <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
       <h2>Журнал запусков</h2>
       <p class="sub" style="margin-top:0">Лежит в проекте
@@ -468,7 +469,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.76.0";
+const UI_VERSION = "1.76.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -557,7 +558,7 @@ function show(view){
   if (view==="work") renderQuick("продуктивность");
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); }
   if (view==="review") renderReview();
-  if (view==="console"){ renderHistory(); drawTaskButton(); }   // и журнал, и кнопка задания — на входе
+  if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
   if (view==="about") renderAbout();
   if (view==="dev") renderDev();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
@@ -767,6 +768,11 @@ async function pick(p, go=true){
   renderCommands(); renderHistory(); renderQuick(); renderQuick("продуктивность");
   navBadges(p, h);
   stamp("#healthStamp");
+  // Пришли в проект, а в нём что-то уже идёт — сказать сразу. Молчание здесь стоило
+  // человеку второго маршрута поверх первого.
+  liveJobs().then(js=>{ if (js.length){ drawLiveJobs();
+    toast(`В проекте выполняется ${js.length === 1 ? "команда" : "команд: " + js.length}`
+          + `: ${js[0].cmd} — консоль покажет вывод`, "warn"); }});
 }
 function navBadges(p, h){
   const errs = h.doctor.errors.length;
@@ -1388,6 +1394,7 @@ async function fire(apply){
     if (v) m.includes("...") ? args.push(...v.split(/\s+/)) : args.push(v);
   }
   if (apply) args.push("--apply");
+  if (apply && await busyElsewhere(r.cmd)) return;
   closeRun(); show("console");
   PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   $("#consoleApply").innerHTML = "";
@@ -1697,6 +1704,79 @@ function mdLite(s){
    пойдут по неверному состоянию. */
 let ROUTE = null;
 
+/* ---------------- задания, которые идут прямо сейчас ----------------
+
+   Задание живёт в процессе панели, а консоль — в открытой странице. Перезагрузили её
+   (или обновили kit и открыли заново) — и работающая команда становится невидимой:
+   консоль пуста, будто ничего не запускалось. Человек делает единственный разумный
+   вывод — «оборвалось» — и запускает второй маршрут поверх первого.
+
+   Очереди у панели нет и не будет: каждый запуск — это отдельный процесс, они идут
+   параллельно. Два синка или два агента на одном проекте не встанут друг за другом,
+   они подерутся за git и за зеркало. Поэтому живые задания видно, к ним можно
+   подключиться, а второй запуск поверх первого панель переспрашивает. */
+
+async function liveJobs(){
+  if (!S.project) return [];
+  const d = await api("/api/jobs?project=" + encodeURIComponent(S.project.path),
+                      {quiet:true});
+  return (d && d.jobs) || [];
+}
+
+async function drawLiveJobs(){
+  const box = $("#consoleLive");
+  if (!box) return;
+  const jobs = await liveJobs();
+  box.replaceChildren();
+  jobs.forEach(j=>{
+    const mins = Math.round((Date.now()/1000 - j.started) / 60);
+    box.append(el("div",{class:"card row",
+        style:"padding:10px 12px;margin-bottom:10px;gap:12px;align-items:center"},
+      el("div",{style:"flex:1;min-width:0"},
+        el("div",{style:"font-weight:600"}, `Прямо сейчас выполняется: ${j.cmd} `
+          + (j.args||[]).join(" ")),
+        el("div",{class:"muted",style:"font-size:12px;margin-top:2px"},
+          `идёт ${mins} мин · строк вывода ${j.lines} · запущено этой панелью`)),
+      el("button",{class:"btn", onclick:()=>attachJob(j.id)}, "Показать вывод")));
+  });
+  if (jobs.length) box.append(el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
+    "Маршрут ведёт страница, а не сервер: если её перезагрузили посреди маршрута, "
+    + "текущий шаг доработает сам, а следующие уже не начнутся."));
+}
+
+async function attachJob(id){
+  show("console");
+  const out = $("#consoleOut"); out.innerHTML = "";
+  $("#consoleCmd").textContent = "подключено к заданию " + id;
+  let since = 0;
+  for (;;){
+    const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
+    if (!d || d.error) { $("#consoleRc").textContent = "задание не найдено"; return; }
+    (d.lines||[]).forEach(l=>out.append(el("div",{class:"dim"}, l)));
+    out.scrollTop = out.scrollHeight; since = d.next;
+    $("#consoleCmd").textContent = d.cmd + " " + (d.args||[]).join(" ");
+    if (d.done){
+      $("#consoleRc").textContent = "код " + d.rc;
+      $("#consoleRc").className = "chip " + (d.rc >= 2 ? "bad" : d.rc === 1 ? "warn" : "ok");
+      drawLiveJobs();
+      return;
+    }
+    $("#consoleRc").textContent = "выполняется…";
+    await new Promise(ok=>setTimeout(ok, 450));
+  }
+}
+
+// Второй запуск поверх работающего — не очередь, а гонка. Спрашиваем до, а не объясняем
+// после: два `agent:build` на одном проекте дерутся за git-чекпойнт и портят откат.
+async function busyElsewhere(what){
+  const jobs = await liveJobs();
+  if (!jobs.length) return false;
+  const list = jobs.map(j=>"  " + j.cmd + " " + (j.args||[]).join(" ")).join("\n");
+  return !confirm(`В этом проекте уже выполняется:\n\n${list}\n\n`
+    + "Панель не ставит задания в очередь — они пойдут одновременно и будут мешать друг "
+    + `другу (git, зеркала, план разбора).\n\nВсё равно запустить «${what}»?`);
+}
+
 async function runStep(cmd, args){
   const r = S.state.commands.find(x=>x.cmd===cmd);
   if (!r || !r.runnable) return {rc:0, skipped:true, lines:[]};
@@ -1753,6 +1833,7 @@ function findings(lines){
 
 async function runRoute(sc, write){
   if (!S.project) return toast("Сначала выберите проект","warn");
+  if (await busyElsewhere(sc.title)) return;
   const steps = sc.steps.filter(st=>!st.manual)
     .map(st=>({cmd:st.cmd, why:st.why,
                args:(st.flags||[]).filter(f=>write || f!=="--apply")}))

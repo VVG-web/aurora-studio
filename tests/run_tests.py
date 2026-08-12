@@ -1931,7 +1931,7 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     assert "function assistantTasks" in ui and "task.label" in ui, \
         "задания ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
-    assert 'if (view==="console"){ renderHistory(); drawTaskButton(); }' in ui, \
+    assert re.search(r'if \(view==="console"\)\{ renderHistory\(\); drawTaskButton\(\);', ui), \
         "на входе в «Консоль» не восстанавливаются журнал и кнопка задания"
     assert ui.count("lastRun(") >= 3, \
         "отметка последнего запуска стоит не везде: команды, сценарии, журнал"
@@ -1965,6 +1965,41 @@ def test_cockpit_marks_command_outcome(tmp: Path):
         "исходов по-прежнему два: «успех» и «всё плохо»"
     assert "rc === 1" in body, "код 1 не отделён от настоящего сбоя"
     assert "lastRun(r.cmd)" in ui, "в списке команд не видно итога последнего запуска"
+
+
+@test
+def test_running_command_survives_a_page_reload(tmp: Path):
+    """Работающая команда видна после перезагрузки страницы, и второй запуск переспрашивают.
+
+    Задание живёт в процессе панели, консоль — в открытой странице. Перезагрузили её
+    (обновили kit, открыли заново) — команда работает, а консоль пуста: человек делает
+    единственный разумный вывод «оборвалось» и запускает второй маршрут поверх первого.
+    Очереди у панели нет: два задания идут одновременно и дерутся за git и зеркала.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    ck.JOBS.clear()
+    ck.JOBS["a"] = {"id": "a", "cmd": "kb:lint", "args": [], "project": "/p/one",
+                    "out": ["строка"], "started": 100.0, "done": False, "rc": None}
+    ck.JOBS["b"] = {"id": "b", "cmd": "sync:jira", "args": [], "project": "/p/two",
+                    "out": [], "started": 90.0, "done": False, "rc": None}
+    ck.JOBS["c"] = {"id": "c", "cmd": "ops:stats", "args": [], "project": "/p/one",
+                    "out": [], "started": 80.0, "done": True, "rc": 0}
+    live = [j for j in ck.JOBS.values() if not j["done"] and j["project"] == "/p/one"]
+    assert [j["id"] for j in live] == ["a"], \
+        "живые задания проекта отбираются неверно: чужое или завершённое попало в список"
+    ck.JOBS.clear()
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "/api/jobs?project=" in ui, "панель не спрашивает, что выполняется прямо сейчас"
+    assert 'id="consoleLive"' in ui and "function attachJob" in ui, \
+        "к работающему заданию нельзя подключиться — его вывод потерян навсегда"
+    assert "busyElsewhere" in ui and "не ставит задания в очередь" in ui, \
+        "второй запуск поверх работающего идёт молча, а это гонка, а не очередь"
+    assert ui.index("await busyElsewhere(sc.title)") < ui.index("const steps"), \
+        "маршрут спрашивает про занятость после того, как начал"
 
 
 @test
