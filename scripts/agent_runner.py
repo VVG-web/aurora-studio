@@ -778,6 +778,13 @@ def verdict_build(res: dict, apply: bool) -> tuple:
         why.append(f"не разобрано: {len(bad)}")
     if res.get("left") and res.get("stopped"):
         why.append(f"разобрано {len(done) + len(human)} из {res['total']}, {res['stopped']}")
+        # Сколько таких прогонов ещё впереди. Без этой строки человек видит «разобрано 14»
+        # и не понимает, что за ней стоит: на базе в 1370 источников это девяносто нажатий
+        # кнопки. Число решает, что делать дальше, — поднять лимит или запастись временем.
+        made = len(done) + len(human)
+        if made and res["left"] > made:
+            why.append(f"при таком темпе прогонов ещё ~{-(-res['left'] // made)} "
+                       f"(лимит шага: AURORA_AGENT_MAX_STEPS, бюджет: AURORA_AGENT_BUDGET_MIN)")
     return ok, "; ".join(why) or f"источников разобрано: {len(done)}, ошибок не прибавилось"
 
 
