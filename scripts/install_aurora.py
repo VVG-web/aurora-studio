@@ -322,8 +322,12 @@ _Мета-вопросы:_
             "Concepts", "Processes", "Glossary", "Systems", "Roles", "Statuses",
             "Decisions", "Requirements", "Reference", "Specs", "MOC",
         ]:
+            # Пометка генерации — не украшение: без неё `kb:index` считает заготовку
+            # текстом человека и не трогает её никогда. Проект начинал жизнь с
+            # одиннадцати «рукотворных» оглавлений, которые никто не писал.
             self.write(
                 f"AuroraKnowledgeDB/{folder}/_index.md",
+                f"<!-- generated: kb_index.py — правки будут потеряны -->\n"
                 f"# {folder}\n\nИндекс раздела. Карточек: 0 (на {TODAY}).\n",
             )
 
