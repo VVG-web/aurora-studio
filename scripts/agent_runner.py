@@ -806,9 +806,53 @@ PROMPT_ASK = """Ты отвечаешь на вопрос аналитика п�
    только чтобы объяснить, как было раньше.
 4. Нашёл противоречие между двумя verified — не выбирай сам, назови обе карточки и
    скажи, что это расхождение в базе.
-5. Пиши по-русски, коротко и по делу. Не пересказывай карточки целиком — отвечай на
+5. Если в контексте есть раздел «Состояние разработки (зеркало Jira…)» — это снимок
+   внешней системы, а не карточка. Статус задачи берётся оттуда и только оттуда, а ключ
+   задачи пиши как есть — `PRJ-000`, без двойных скобок: это не карточка базы, и ссылка
+   на неё никуда не ведёт. На сам раздел тоже не ссылайся как на карточку. Скажи и дату
+   снимка: статус меняется.
+   Раздела нет — значит задачи нет в зеркале, так и ответь: «в зеркале Jira её нет».
+6. Пиши по-русски, коротко и по делу. Не пересказывай карточки целиком — отвечай на
    заданный вопрос."""
 
+
+PROMPT_MOMUS = """Ты Момус: проверяешь ответ на вопрос по базе знаний. Твоя работа — не
+улучшать текст и не быть вежливым, а найти в нём утверждения, которых контекст не
+подтверждает.
+
+КОНТЕКСТ (всё, на что опираться можно; больше ничего не существует):
+
+{pack}
+
+ВОПРОС: {question}
+
+ОТВЕТ НА ПРОВЕРКУ:
+
+{answer}
+
+Разбери ответ по утверждениям. На каждое — один вердикт:
+
+  ОПОРА <короткая цитата из контекста>   утверждение подтверждается дословно
+  НЕТ ОПОРЫ <утверждение>                в контексте этого нет — ни дословно, ни следствием
+  ПРОТИВОРЕЧИЕ <утверждение> ↔ <цитата>  контекст говорит иначе
+
+Правила проверки:
+
+1. «Похоже на правду» и «так обычно бывает» — это НЕТ ОПОРЫ. Ты проверяешь опору в
+   контексте, а не правдоподобие: по этому ответу пишут постановку.
+2. Пересказ своими словами — опора, если факт тот же. Новое число, новый срок, новое
+   условие, новая роль — не опора, даже если рядом стоит похожая фраза.
+3. Ссылка на карточку, которой в контексте нет, — НЕТ ОПОРЫ, даже если имя выглядит
+   настоящим.
+4. Оговорки «в базе этого нет», «требуется уточнение» проверять не нужно — это честность,
+   а не утверждение.
+
+Последняя строка — ровно одна из двух:
+
+ВЕРДИКТ: ЧИСТО
+ВЕРДИКТ: БЕЗ ОПОРЫ N
+
+где N — сколько утверждений без опоры или с противоречием."""
 
 PROMPT_ASK_TAIL = """
 ─────────────────────────────────────────────────────────────────────
@@ -910,11 +954,15 @@ def threads(cwd: str) -> list:
 
 
 def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
-            call=None, history: list = ()) -> dict:
-    """Вопрос к базе: пак собирает движок, отвечает модель, ссылки проверяются.
+            call=None, history: list = (), momus: bool = True) -> dict:
+    """Вопрос к базе: пак собирает движок, отвечает модель, ответ проверяется.
 
     В уточнении контекст собирается по всему разговору, а не по последней фразе: «а если
     он ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
+
+    Проверок две, и они разной природы. Механическая разбирает ссылки ответа по базе и
+    паку — она дешёвая и не спорит. Момус (`momus=False` отключает) читает ответ второй
+    моделью и ищет утверждения без опоры в контексте: те, у которых ссылки нет вовсе.
     """
     call = call or AG.call_role
     started = time.time()
@@ -931,7 +979,7 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     total = int(m.group(1)) if m else 0
     cards = re.findall(r"^## (.+)$", pack, re.M)
 
-    prompt = PROMPT_ASK.format(pack=pack, question=question)
+    prompt = PROMPT_ASK.format(pack=pack, question=question)  # noqa: F841 — см. ниже
     if history:
         prompt += PROMPT_ASK_TAIL.format(history=thread_history(list(history)))
     a = call(cfg, "worker", [{"role": "user", "content": prompt}],
@@ -940,16 +988,97 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
         return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
                 "why": "; ".join(a["log"][-2:])}
     text = (a["text"] or "").strip()
-    # Ссылка на карточку, которой в паке не было, — выдумка: модель могла вспомнить имя
-    # из общих знаний. Проверяем механически, до того как человек поверит ответу.
-    named = set(re.findall(r"\[\[([^\]|#]+)", text))
+    links = classify_links(text, cards, pack, cwd)
+    out = {"ok": True, "answer": text, "cards": cards, "total": total,
+           "ghosts": links["invented"], "mentioned": links["mentioned"],
+           "outside": links["outside"], "backend": a["backend"], "model": a["model"]}
+    if momus:
+        out["momus"] = run_momus(cfg, pack, question, text, call)
+    out["seconds"] = round(time.time() - started, 1)
+    return out
+
+
+def base_names(cwd: str) -> set:
+    """Имена и синонимы всех карточек базы — чтобы отличить «не в паке» от «выдумано».
+
+    Разница принципиальная. `AC-4.7.1` в ответе, когда карточка в базе есть, а в пак не
+    попала, — это промах отбора: имя модель взяла из таблицы внутри другой карточки, и
+    человеку надо не «проверять особенно внимательно», а спросить точнее. `CP-3.2.10`, у
+    которого карточки нет вообще, — заготовка, её завести. И только имя, которого нет
+    нигде, — выдумка по памяти.
+    """
+    root = Path(cwd) / "AuroraKnowledgeDB"
+    names = set()
+    if not root.is_dir():
+        return names
+    for path in root.rglob("*.md"):
+        if "/meta/" in path.as_posix() or path.name.startswith("_"):
+            continue
+        names.add(path.stem)
+        head = ""
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                head = f.read(600)
+        except OSError:
+            continue
+        m = re.search(r"^aliases:\s*\[(.*?)\]", head, re.M)
+        if m:
+            names |= {x.strip().strip('"\'') for x in m.group(1).split(",") if x.strip()}
+    return names
+
+
+def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
+    """Ссылки ответа по трём корзинам: не в паке, нет карточки, выдумано.
+
+    Раньше всё это называлось одним словом «модель могла назвать их по памяти», и в списке
+    рядом стояли карточка, которая в базе есть, идентификатор из таблицы внутри карточки и
+    настоящая выдумка. Предупреждение, которое одинаково пугает в трёх разных случаях,
+    перестают читать — а два из трёх случаев лечатся командой, а не вниманием.
+    """
+    named = {n.strip() for n in re.findall(r"\[\[([^\]|#]+)", text)}
     known = {c.strip() for c in cards}
-    ghosts = sorted(n.strip() for n in named
-                    if n.strip() not in known
-                    and not any(n.strip().lower() in c.lower() for c in known))
-    return {"ok": True, "answer": text, "cards": cards, "total": total, "ghosts": ghosts,
-            "backend": a["backend"], "model": a["model"],
-            "seconds": round(time.time() - started, 1)}
+    issues = set(re.findall(r"\b([A-Z][A-Z0-9]+-\d+)\b", pack))    # ключи задач из зеркала
+    base = base_names(cwd)
+    outside, mentioned, invented = [], [], []
+    for n in sorted(named):
+        if n in known or n in issues or any(n.lower() in c.lower() for c in known):
+            continue
+        if n in base or any(n.lower() in b.lower() for b in base):
+            outside.append(n)                 # карточка есть, но в контекст не попала
+        elif n.lower() in pack.lower():
+            mentioned.append(n)               # упомянута внутри карточки, своей карточки нет
+        else:
+            invented.append(n)                # ни в паке, ни в базе — по памяти
+    return {"outside": outside, "mentioned": mentioned, "invented": invented}
+
+
+def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None) -> dict:
+    """Момус: вторая модель разбирает ответ по утверждениям и ищет то, что без опоры.
+
+    Механическая проверка ловит только ссылки. Утверждение без ссылки — «возврат
+    занимает десять дней» — она пропустит, а именно такие фразы уходят в постановку и
+    оттуда в разработку. Поэтому у ответа появляется тот же критик, что у остальных задач
+    агента: роль `qa` (нет ролевой модели — общая), отдельный вызов, вердикт последней
+    строкой.
+
+    Момус не переписывает ответ и не голосует за него: он мнение, а не оракул. Его вывод
+    печатается рядом с ответом, и решение остаётся человеку.
+    """
+    call = call or AG.call_role
+    started = time.time()
+    v = call(cfg, "qa", [{"role": "user", "content": PROMPT_MOMUS.format(
+        pack=pack, question=question, answer=answer)}],
+        deadline=time.time() + cfg["request_timeout"])
+    if not v["ok"]:
+        return {"ok": False, "why": "; ".join(v["log"][-2:]), "seconds": 0.0}
+    text = (v["text"] or "").strip()
+    m = re.search(r"ВЕРДИКТ:\s*(ЧИСТО|БЕЗ ОПОРЫ\s*(\d+))", text, re.I)
+    unsupported = int(m.group(2)) if (m and m.group(2)) else 0
+    # Вердикта нет — считаем проверку не состоявшейся: молча выдавать «чисто» нельзя.
+    return {"ok": bool(m), "clean": bool(m) and not unsupported, "unsupported": unsupported,
+            "text": text, "model": v["model"], "backend": v["backend"],
+            "seconds": round(time.time() - started, 1),
+            "why": "" if m else "Момус не дал вердикта — проверка не состоялась"}
 
 
 def report_ask(res: dict, question: str, cfg: dict) -> str:
@@ -963,10 +1092,34 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
           f"_Карточек в контексте: {res.get('total') or len(res['cards'])} · "
           f"модель: {res['model']} "
           f"(бэкенд №{res['backend']}) · {res['seconds']} с_"]
+    mo = res.get("momus") or {}
+    if mo:
+        if not mo.get("ok"):
+            L += ["", f"⚠️ **Момус не проверил ответ**: {mo.get('why', 'причина неизвестна')}. "
+                  "Ответ ниже никем не сверен — читайте как черновик."]
+        elif mo.get("clean"):
+            L += ["", f"✅ **Момус: чисто** — каждое утверждение нашло опору в контексте "
+                  f"(проверил {mo['model']}, {mo['seconds']} с)."]
+        else:
+            # Без HTML-свёрток: этот текст читают и в панели, и в журнале разговоров в
+            # Obsidian, и в терминале. Разметка, которую понимает только один из трёх,
+            # превращается в мусор у остальных двух.
+            L += ["", f"⛔ **Момус: без опоры — {mo['unsupported']}**. Утверждения ниже "
+                  "контекст не подтверждает: их нельзя переносить в постановку.", "",
+                  "**Разбор Момуса:**", ""]
+            L += ["> " + line if line.strip() else ">" for line in mo["text"].splitlines()]
+    if res.get("outside"):
+        L += ["", "**Названы карточки, которых не было в контексте, но в базе они есть** — "
+              "промах отбора, а не выдумка: спросите точнее или откройте их сами:",
+              *[f"  - [[{g}]]" for g in res["outside"]]]
+    if res.get("mentioned"):
+        L += ["", "**Идентификаторы из таблиц внутри карточек** — своей карточки в базе нет, "
+              "знание не выделено. Завести заготовки: `kb:repair --stubs`:",
+              *[f"  - {g}" for g in res["mentioned"]]]
     if res.get("ghosts"):
-        L += ["", "⚠️ **Ссылки на карточки, которых в контексте не было** — проверьте их "
-              "особенно внимательно, модель могла назвать их по памяти:",
-              *[f"  - [[{g}]]" for g in res["ghosts"]]]
+        L += ["", "⛔ **Названо по памяти**: этих имён нет ни в контексте, ни в базе. "
+              "Утверждения с такой ссылкой считайте выдуманными:",
+              *[f"  - {g}" for g in res["ghosts"]]]
     return "\n".join(L)
 
 
@@ -1210,6 +1363,8 @@ def main() -> int:
                     help="перечислить разговоры проекта и выйти")
     ap.add_argument("--no-journal", action="store_true",
                     help="не записывать вопрос и ответ в журнал разговоров")
+    ap.add_argument("--no-momus", action="store_true",
+                    help="не проверять ответ второй моделью (быстрее, но никем не сверено)")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
     ap.add_argument("--critic", action="store_true",
                     help="проверять решение второй моделью до записи (для прода — обязательно)")
@@ -1258,12 +1413,18 @@ def main() -> int:
             print(f"agent_runner: разговора «{a.thread}» нет — уточнять нечего. "
                   "Список: --task ask --threads", file=sys.stderr)
             return 1
-        res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history)
+        res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history,
+                      momus=not a.no_momus)
         text = report_ask(res, a.question, cfg)
         print(text)
         if res["ok"] and not a.no_journal:
+            mo = res.get("momus") or {}
+            verdict = ("" if not mo else
+                       " · Момус: чисто" if mo.get("clean") else
+                       f" · Момус: без опоры {mo['unsupported']}" if mo.get("ok") else
+                       " · Момус не проверил")
             note = (f"модель {res['model']} · карточек в контексте "
-                    f"{res.get('total') or len(res['cards'])} · {res['seconds']} с")
+                    f"{res.get('total') or len(res['cards'])} · {res['seconds']} с{verdict}")
             p = append_turn(path, a.question, res["answer"], note, a.mode)
             print(f"\nРазговор: `{p.relative_to(cwd)}` (вопросов в нём: {len(history) + 1})")
             print("Уточнить, не теряя контекст: `agent:ask --thread " + p.stem + "`")

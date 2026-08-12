@@ -797,6 +797,16 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
     (mirror / "t6.md").write_text(
         "# t6: задача\n\n- **URL:** https://jira.example/browse/PRJ-6\n- **Type:** Task\n"
         "- **Status:** Done\n\nРеализует REQ-009 целиком.\n", encoding="utf-8")
+    # Нынешний формат зеркала: поля в frontmatter. Пока фикстура знала только старый вид,
+    # обратный поток на живом зеркале из 189 задач печатал «пустое зеркало» — и это
+    # выглядело как «расхождений нет». Оба формата обязаны читаться.
+    (mirror / "PRJ-7.md").write_text(
+        '---\nkey: "PRJ-7"\ntitle: "US-9.9.9. Свежий формат"\ntype: "История"\n'
+        'status: "Закрыто"\nepic_title: "Epic 9"\nupdated: "2026-06-10 15:06:39"\n'
+        'url: "https://jira.example/browse/PRJ-7"\n---\n\n# PRJ-7: US-9.9.9\n',
+        encoding="utf-8")
+    card(root, "Requirements/REQ-007-Frontmatter.md", "", type="requirement",
+         req_id="REQ-007", req_status="agreed", jira='["PRJ-7"]')
 
     card(root, "Requirements/REQ-001-Готово.md", "", type="requirement",
          req_id="REQ-001", req_status="agreed", jira='["PRJ-1", "PRJ-2"]')
@@ -819,6 +829,10 @@ def test_jira_status_reports_candidates_not_verdicts(tmp: Path):
     assert "В работе" not in out.split("не знает")[-1], \
         "обычная рабочая стадия названа незнакомым статусом"
     assert "REQ-009-По-упоминанию → PRJ-6" in out, "связь по упоминанию REQ-NNN не найдена"
+    assert "Задач в зеркале: 7" in out, \
+        f"зеркало в нынешнем формате не прочитано — задача из frontmatter потеряна:\n{out}"
+    assert "REQ-007" in out.split("## Кандидаты")[1].split("##")[0], \
+        "закрытая задача из frontmatter-зеркала не дала кандидата"
 
     before = (root / "AuroraKnowledgeDB/Requirements/REQ-001-Готово.md").read_text(encoding="utf-8")
     assert "implemented" not in before
@@ -2689,6 +2703,49 @@ def test_context_pack_finds_by_words_not_by_phrase(tmp: Path):
 
 
 @test
+def test_pack_answers_where_development_got_to(tmp: Path):
+    """Статус задачи приходит в пак из зеркала Jira, а не из карточек.
+
+    Живой случай: аналитик спросил статус истории US-4.7.2, база честно ответила «не
+    знаю» — а задача лежала в зеркале рядом, со статусом «Бэклог». Знание было в проекте,
+    но не на пути к модели: пак собирается только из карточек. Распылять статус по
+    карточкам нельзя — он неправда на следующий день после переноса задачи; значит его
+    надо читать из зеркала при каждой сборке пака.
+    """
+    root = make_project(tmp)
+    mirror = root / "Sources/JIRA"
+    mirror.mkdir(parents=True, exist_ok=True)
+    (mirror / "PRJ-480.md").write_text(
+        '---\nkey: "PRJ-480"\ntitle: "US-4.7.2. Центр уведомлений"\ntype: "История"\n'
+        'status: "Бэклог"\nepic_title: "Epic 4.7 Информационные разделы"\n'
+        'updated: "2026-06-10 15:06:39"\n---\n\n# PRJ-480\n', encoding="utf-8")
+    (mirror / "PRJ-999.md").write_text(
+        '---\nkey: "PRJ-999"\ntitle: "US-1.1.1. Чужая история"\nstatus: "Готово"\n---\n',
+        encoding="utf-8")
+    card(root, "Concepts/Центр-уведомлений.md",
+         "Центр уведомлений собирает сообщения заявителю в одном разделе.",
+         status="verified", type="concept")
+
+    out = run("ctx_pack.py", "какой статус у истории US-4.7.2 Центр уведомлений",
+              "--no-log", cwd=root).stdout
+    assert "Состояние разработки" in out, "раздела со статусами задач в паке нет"
+    assert "PRJ-480" in out and "Бэклог" in out, f"статус задачи не дошёл до модели:\n{out}"
+    assert "PRJ-999" not in out, "в пак попала задача, о которой не спрашивали"
+    assert "не карточки базы" in out, \
+        "снимок внешней системы не отделён от знания — модель сошлётся на него как на факт"
+
+    # Вопрос не про задачи — таблицы быть не должно: пак не место для выгрузки бэклога
+    plain = run("ctx_pack.py", "центр уведомлений заявителя", "--no-log", cwd=root).stdout
+    assert "Состояние разработки" not in plain, \
+        "статусы задач подмешиваются в каждый пак, хотя о них не спрашивали"
+
+    # Карточек по теме нет, а задача есть — это ответ, а не «ничего не найдено»
+    only = run("ctx_pack.py", "статус US-1.1.1", "--no-log", cwd=root, expect_rc=0).stdout
+    assert "PRJ-999" in only and "карточек по теме нет" in only, \
+        f"пак сдался там, где зеркало знает ответ:\n{only}"
+
+
+@test
 def test_auto_verify_skips_machine_built_cards(tmp: Path):
     """Автоприёмка не присваивает доверие машинной нарезке.
 
@@ -3040,7 +3097,7 @@ def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
         return {"ok": True, "out": "# Пак (карточек 2)\n\n## Возврат-обеспечения\nтекст"}
 
     def fake_call(cfg, role, messages, deadline=None):
-        seen["prompt"] = messages[0]["content"]
+        seen[role] = messages[0]["content"]
         return {"ok": True, "text": "Порядок тот же [[Возврат-обеспечения]].",
                 "backend": 1, "model": "qwen", "log": []}
 
@@ -3054,8 +3111,8 @@ def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
     assert res["ok"], f"уточнение не отработало: {res}"
     assert "обеспечением" in seen["topic"], \
         f"контекст собран по одной последней фразе — тема разговора потеряна: {seen['topic']}"
-    assert "РАНЬШЕ В ЭТОМ РАЗГОВОРЕ" in seen["prompt"], "модель не увидела прошлых ответов"
-    assert "заявка аннулирована" in seen["prompt"], "прошлый вопрос не дошёл до модели"
+    assert "РАНЬШЕ В ЭТОМ РАЗГОВОРЕ" in seen["worker"], "модель не увидела прошлых ответов"
+    assert "заявка аннулирована" in seen["worker"], "прошлый вопрос не дошёл до модели"
 
     # Журнал — запись состоявшегося разговора, а не знание: линтер не требует от него
     # живых ссылок, иначе переименование карточки создаёт долг в истории.
@@ -3063,6 +3120,92 @@ def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
     cp = run("kb_lint.py", "--full", cwd=root)
     assert "meta/ask" not in cp.stdout, \
         f"журнал разговоров попал в находки линтера:\n{cp.stdout}"
+
+
+@test
+def test_answer_names_are_sorted_by_where_they_came_from(tmp: Path):
+    """Ссылки ответа — три разные находки, а не одно «модель могла назвать по памяти».
+
+    Живой случай: предупреждение перечислило рядом AC-4.7.1 (карточка в базе есть, в пак
+    не попала), CP-3.2.10 (карточки нет, идентификатор упомянут в таблице внутри другой
+    карточки) и настоящую выдумку. Два случая из трёх лечатся командой, а не вниманием —
+    и человек, которого одинаково пугают трижды, перестаёт читать предупреждение вовсе.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    card(root, "Concepts/AC-4-7-1-Главная-страница.md", "Виджеты сводной информации.",
+         status="verified", type="concept", aliases='["AC-4.7.1"]')
+    card(root, "Concepts/Epic-4-7.md", "Разделы сервиса: | US-4.7.2 | [CP-3.2.10] |",
+         status="verified", type="concept")
+
+    pack = ("# Context pack: центр уведомлений\n\n## Epic-4-7\n\n"
+            "| US-4.7.2 | Центр уведомлений | [CP-3.2.10] |\n\n"
+            "## Состояние разработки (зеркало Jira, не карточки базы)\n\n| PRJ-480 |\n")
+    cards = ["Epic-4-7", "Состояние разработки (зеркало Jira, не карточки базы)"]
+    text = ("Статус [[PRJ-480]]. Связано с [[AC-4.7.1]] и [[CP-3.2.10]], "
+            "а также [[Регламент-обмена-с-казначейством]].")
+
+    got = R.classify_links(text, cards, pack, str(root))
+    assert got["outside"] == ["AC-4.7.1"], \
+        f"карточка, которая есть в базе, названа выдумкой: {got}"
+    assert got["mentioned"] == ["CP-3.2.10"], \
+        f"идентификатор из таблицы внутри карточки разобран неверно: {got}"
+    assert got["invented"] == ["Регламент-обмена-с-казначейством"], \
+        f"настоящая выдумка не отделена от остального: {got}"
+    assert "PRJ-480" not in sum(got.values(), []), \
+        "ключ задачи из зеркала объявлен выдумкой — он взят из пака"
+
+
+@test
+def test_momus_checks_the_answer_statement_by_statement(tmp: Path):
+    """Момус: вторая модель ищет утверждения без опоры в контексте.
+
+    Механическая проверка видит только ссылки. «Возврат занимает десять дней» без ссылки
+    она пропустит — а именно такая фраза уходит в постановку и оттуда в разработку.
+    Момус — мнение, а не оракул: он не переписывает ответ, его вердикт печатается рядом.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    seen = {}
+
+    def critic(cfg, role, messages, deadline=None):
+        seen["role"] = role
+        seen["prompt"] = messages[0]["content"]
+        return {"ok": True, "backend": 2, "model": "qa-model", "log": [],
+                "text": "1. ОПОРА «возврат по заявлению»\n"
+                        "2. НЕТ ОПОРЫ срок десять дней\n\nВЕРДИКТ: БЕЗ ОПОРЫ 1"}
+
+    mo = R.run_momus({"request_timeout": 60}, "## Карточка\n\nвозврат по заявлению",
+                     "как вернуть?", "Возврат по заявлению, срок десять дней.", call=critic)
+    assert seen["role"] == "qa", f"Момус занял чужую роль: {seen['role']}"
+    assert "ОТВЕТ НА ПРОВЕРКУ" in seen["prompt"] and "возврат по заявлению" in seen["prompt"], \
+        "Момус проверяет ответ, не видя ни ответа, ни контекста"
+    assert mo["ok"] and not mo["clean"] and mo["unsupported"] == 1, f"вердикт разобран неверно: {mo}"
+
+    clean = R.run_momus({"request_timeout": 60}, "## К\n\nтекст", "вопрос?", "ответ",
+                        call=lambda *a, **k: {"ok": True, "backend": 1, "model": "m",
+                                              "log": [], "text": "ВЕРДИКТ: ЧИСТО"})
+    assert clean["clean"] and clean["unsupported"] == 0, f"чистый вердикт не распознан: {clean}"
+
+    # Вердикта нет — проверка не состоялась. Молча выдать «чисто» значит соврать дважды.
+    mute = R.run_momus({"request_timeout": 60}, "## К\n\nтекст", "вопрос?", "ответ",
+                       call=lambda *a, **k: {"ok": True, "backend": 1, "model": "m",
+                                             "log": [], "text": "мне кажется всё хорошо"})
+    assert not mute["ok"] and not mute["clean"], \
+        f"болтовня вместо вердикта принята за проверку: {mute}"
+
+    report = R.report_ask({"ok": True, "answer": "ответ", "cards": ["К"], "total": 1,
+                           "seconds": 1.0, "model": "m", "backend": 1,
+                           "momus": mo}, "как вернуть?", {})
+    assert "без опоры — 1" in report and "Разбор Момуса" in report, \
+        f"вердикт Момуса не дошёл до человека:\n{report}"
+    assert "<details>" not in report, \
+        "HTML-свёртка: панель и Obsidian показали бы её как мусор"
 
 
 @test

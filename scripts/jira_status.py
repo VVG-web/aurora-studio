@@ -76,22 +76,38 @@ def field(text: str, name: str) -> str:
 
 
 def read_mirror() -> dict:
-    """Ключ задачи → её состояние. Ключ берём из URL: имена файлов в зеркале свои."""
+    """Ключ задачи → её состояние.
+
+    Зеркало пишет `sync:jira`, и с 1.19 поля задачи лежат в frontmatter (`key`, `status`,
+    `epic_title`). Раньше они были списком `- **Status:** …` в теле — этот формат читаем
+    как запасной: в проектах, синхронизированных давно, зеркало ещё старое.
+
+    Пока запасного пути не было, вся обратная связь молчала: `sync:jira-status` на живом
+    зеркале из 189 задач честно печатал «пустое зеркало», потому что искал поля там, где
+    их больше нет. Отчёт был пуст — и выглядел как «расхождений нет».
+    """
     out = {}
     if not os.path.isdir(MIRROR):
         return out
     for path in walk_md(MIRROR):
         text = open(path, encoding="utf-8", errors="ignore").read()
-        url = field(text, "URL")
-        key = (KEY_RE.search(url).group(1) if KEY_RE.search(url or "")
-               else field(text, "ID задачи"))
+        fm = frontmatter(text)
+        unq = lambda v: (v or "").strip().strip('"\'')          # noqa: E731
+        url = unq(fm.get("url")) or field(text, "URL")
+        key = (unq(fm.get("key")) or
+               (KEY_RE.search(url).group(1) if KEY_RE.search(url or "") else "") or
+               field(text, "ID задачи"))
         if not key:
             continue
-        title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), key)
-        out[key] = {"key": key, "path": path, "title": title,
-                    "status": field(text, "Status"), "type": field(text, "Type"),
-                    "resolution": field(text, "Resolution"),
-                    "updated": field(text, "Updated"), "text": text}
+        title = (unq(fm.get("title")) or
+                 next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), key))
+        out[key] = {"key": key, "path": path, "title": title, "url": url,
+                    "status": unq(fm.get("status")) or field(text, "Status"),
+                    "type": unq(fm.get("type")) or field(text, "Type"),
+                    "epic": unq(fm.get("epic_title")) or unq(fm.get("epic")),
+                    "resolution": unq(fm.get("resolution")) or field(text, "Resolution"),
+                    "updated": unq(fm.get("updated")) or field(text, "Updated"),
+                    "text": text}
     return out
 
 
