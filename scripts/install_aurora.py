@@ -178,6 +178,7 @@ class Installer:
             .replace("{{PROJECT_SLUG}}", self.slug)
             .replace("{{JIRA_KEY}}", self.jira)
             .replace("{{CONFLUENCE_SPACE}}", self.confluence)
+            .replace("{{YEAR}}", TODAY[:4])
         )
         self.write("aurora.config.yaml", content)
         self.copy_file(

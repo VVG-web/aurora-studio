@@ -399,6 +399,26 @@ def read_sections(cwd: str, source: str) -> list:
             for n, title, size, prev in SECTION_RE.findall(head)]
 
 
+def defer(cwd: str, source: str, step: dict, apply: bool) -> dict:
+    """Отложить источник человеку — и убрать его из очереди плана.
+
+    Раньше такой источник просто оставался в плане, и следующая партия бралась за него
+    снова. В проекте, где голова плана — полторы сотни справочников без заголовков, это
+    значило вечный цикл на первых пятнадцати: ночной прогон разбирал ноль карточек из
+    тысячи трёхсот и останавливался, объявляя тупик. Тупика нет — есть работа, которую
+    агент делать не вправе, и её надо отложить, а не упереться в неё.
+
+    Отметка честная: причина написана словами и начинается с «ОТЛОЖЕНО ЧЕЛОВЕКУ», так что
+    источник находится поиском по плану и возвращается в работу `kb:build --reopen`.
+    """
+    if apply:
+        run_command(cwd, "build_plan.py",
+                    ["--done", source, "--empty",
+                     "ОТЛОЖЕНО ЧЕЛОВЕКУ: заголовков нет, карточку пишут чтением — "
+                     + str(step.get("note", ""))[:120]])
+    return step
+
+
 def build_left(cwd: str) -> tuple:
     """(осталось, обработано) по счёту движка.
 
@@ -679,7 +699,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     if not ans.get("empty"):
         step.update(status="без секций — человеку",
                     note=str(ans.get("keep") or "структуры нет, карточку писать чтением"))
-        return step
+        return defer(cwd, source, step, apply)
 
     note = str(ans["empty"])[:200]
     if use_critic:
@@ -695,7 +715,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
                 step.update(status="без секций — человеку",
                             note="мнения разошлись: worker счёл пустым, критик — нет ("
                                  + str(second.get("keep") or "знание есть")[:120] + ")")
-                return step
+                return defer(cwd, source, step, apply)
     if apply:
         res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
         if not res["ok"]:
@@ -1457,7 +1477,7 @@ def main() -> int:
         batch, texts = 0, []
         while True:
             batch += 1
-            left_before = build_left(cwd)[0]
+            left_before, done_before = build_left(cwd)
             say(f"\n=== партия {batch} · осталось источников: {left_before} · "
                 f"до конца окна {human_time(max(0, deadline - time.time()))}")
             res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
@@ -1466,15 +1486,18 @@ def main() -> int:
                 commit_result(cwd, "agent:build",
                               f"партия {batch}: " + verdict_build(res, True)[1][:100],
                               not a.no_checkpoint)
-            left_after = build_left(cwd)[0]
+            left_after, done_after = build_left(cwd)
             if not left_after:
                 say(f"\n=== план разобран целиком: партий {batch}")
                 break
-            if left_after >= left_before:
-                # Партия не сдвинула счётчик: дальше будет то же самое, и цикл станет
-                # вечным. Останавливаемся и говорим об этом — это находка, а не финиш.
-                say(f"\n=== партия {batch} не сдвинула план ({left_before} → {left_after}): "
-                    "останавливаюсь, разбираться человеку")
+            # Мерить прогресс по «осталось» нельзя: источник без структуры агент
+            # откладывает человеку, счётчик не двигается — и ночной прогон вставал на
+            # первой же такой пачке, разобрав четырнадцать карточек из тысячи трёхсот.
+            # Двигаемся мы или нет, показывает число ПРОЙДЕННЫХ источников: пока агент
+            # берёт следующие, работа идёт, даже если часть уходит человеку.
+            if done_after <= done_before:
+                say(f"\n=== партия {batch} не прошла ни одного источника "
+                    f"(пройдено {done_after}): останавливаюсь, разбираться человеку")
                 break
             if time.time() > deadline:
                 say(f"\n=== окно {a.hours} ч закрылось: партий {batch}, "

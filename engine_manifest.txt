@@ -60,6 +60,28 @@ scripts/aurora_hooks.py  => .opencode/scripts/aurora_hooks.py
 scripts/aurora_setup.py  => .opencode/scripts/aurora_setup.py
 scripts/aurora_doctor.py => .opencode/scripts/aurora_doctor.py
 scripts/aurora_update.py => .opencode/scripts/aurora_update.py
+scripts/report_analyst.py => .opencode/scripts/report_analyst.py
+
+# --- отчёт «эффективность аналитиков» (ops:report) ---
+# Пакет целиком движковый: проектного в нём нет ничего, всё приходит из
+# aurora.config.yaml. Шаблоны ростера и событий кладутся вариантом (seed) —
+# заполненные человеком файлы обновление не трогает.
+reports/analyst/README.md                     => .opencode/reports/analyst/README.md
+reports/analyst/paths.py                      => .opencode/reports/analyst/paths.py
+reports/analyst/make_extended.py              => .opencode/reports/analyst/make_extended.py
+reports/analyst/make_analyst_metrics.py       => .opencode/reports/analyst/make_analyst_metrics.py
+reports/analyst/update_analyst_metrics.py     => .opencode/reports/analyst/update_analyst_metrics.py
+reports/analyst/verify_weekly_by_person.py    => .opencode/reports/analyst/verify_weekly_by_person.py
+reports/analyst/assignee_resolver.py          => .opencode/reports/analyst/assignee_resolver.py
+reports/analyst/process_confluence.py         => .opencode/reports/analyst/process_confluence.py
+reports/analyst/jira_api.py                   => .opencode/reports/analyst/jira_api.py
+reports/analyst/fetch_issues.py               => .opencode/reports/analyst/fetch_issues.py
+reports/analyst/fetch_full.py                 => .opencode/reports/analyst/fetch_full.py
+reports/analyst/fetch_subtasks.py             => .opencode/reports/analyst/fetch_subtasks.py
+reports/analyst/fetch_confluence_metadata.py  => .opencode/reports/analyst/fetch_confluence_metadata.py
+reports/analyst/serve_dashboard.py            => .opencode/reports/analyst/serve_dashboard.py
+reports/analyst/templates/roster.csv          => (seed) Settings/report-roster.csv
+reports/analyst/templates/events.csv          => (seed) Settings/report-events.csv
 
 # --- схема структуры папок (фиксирована движком; doctor сверяет по ней факт) ---
 structure_dirs.txt       => .opencode/structure_dirs.txt
