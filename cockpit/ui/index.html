@@ -264,6 +264,7 @@ tr:last-child td{border-bottom:0}
     <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
     <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
     <button data-view="review" aria-label="Приёмка карточек"><span class="label">Приёмка</span><span class="count" id="navReview"></span></button>
+    <button data-view="reports" aria-label="Отчёты"><span class="label">Отчёты</span></button>
     <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
     <button data-view="mirrors" aria-label="Зеркала"><span class="label">Зеркала</span><span class="count" id="navMirrors"></span></button>
     <button data-view="version" aria-label="Версия и миграция"><span class="label">Версия</span><span class="count" id="navVersion"></span></button>
@@ -384,6 +385,16 @@ tr:last-child td{border-bottom:0}
       <div id="reviewBody"></div>
     </section>
 
+    <!-- ОТЧЁТЫ -->
+    <section class="view" id="view-reports">
+      <h1>Отчёты</h1>
+      <p class="sub">Готовые дашборды по проекту. Собираются из выгрузок Jira и Confluence,
+        получаются одним самодостаточным HTML — его можно отдать кому угодно, он откроется
+        файлом. Что попадёт в отчёт, задаётся в секции <span class="mono">reports:</span>
+        конфига и в файлах настроек: ростер команды и календарь событий ведёт человек.</p>
+      <div id="reportsBody"></div>
+    </section>
+
     <!-- СПРОСИТЬ БАЗУ -->
     <section class="view" id="view-ask">
       <h1>Спросить базу</h1>
@@ -476,7 +487,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.77.0";
+const UI_VERSION = "1.80.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -565,6 +576,7 @@ function show(view){
   if (view==="work") renderQuick("продуктивность");
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); }
   if (view==="review") renderReview();
+  if (view==="reports") renderReports();
   if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
   if (view==="about") renderAbout();
   if (view==="dev") renderDev();
@@ -601,7 +613,7 @@ function tapAbout(){
 
 $$("nav button").forEach(b=>b.onclick=()=>{
   if (b.dataset.view === "about") tapAbout();
-  if (["health","commands","mirrors","version"].includes(b.dataset.view) && !S.project){
+  if (["health","commands","mirrors","version","reports"].includes(b.dataset.view) && !S.project){
     toast("Сначала выберите проект на Мостике","warn"); show("overview"); return;
   }
   show(b.dataset.view);
@@ -1500,6 +1512,97 @@ async function renderKinds(box){
    пройти его, человек копировал имена в редактор по одному. Здесь тот же список — с
    текстом карточки, диффом и двумя кнопками. Движок не научился новому: ему дали руки. */
 let REVIEW = {kind:"", card:null};
+
+/* ---------------- отчёты ----------------
+
+   Панель здесь не считает ничего сама: состояние берёт у движка (`/api/report`), а
+   сборку отдаёт обычному заданию (`ops:report`) — тому же, что запускается из
+   «Команд». Так консоль и журнал видят прогон отчёта наравне с остальными. */
+
+const ago = ts => {
+  if (!ts) return "—";
+  const m = Math.floor((Date.now()/1000 - ts) / 60);
+  if (m < 1) return "только что";
+  if (m < 60) return m + " мин назад";
+  const h = Math.floor(m/60);
+  if (h < 24) return h + " ч назад";
+  return new Date(ts*1000).toLocaleDateString("ru-RU");
+};
+const kb = b => b >= 1048576 ? (b/1048576).toFixed(1) + " МБ" : Math.round(b/1024) + " КБ";
+
+async function renderReports(){
+  const box = $("#reportsBody");
+  if (!S.project){
+    box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="grid metrics"><div class="skel"></div></div>';
+  const d = await api("/api/report?project=" + encodeURIComponent(S.project.path));
+  box.innerHTML = "";
+  if (d.error) return;
+  for (const r of (d.reports || [])) box.append(reportCard(r));
+}
+
+function reportCard(r){
+  const built = r.output.exists;
+  const card = el("div", {class:"card", style:"padding:18px"});
+  card.append(el("div", {class:"row", style:"justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"},
+    el("h2", {style:"font-size:16px"}, r.title),
+    el("span", {class:"chip"}, `${r.project} · ${r.year}`)));
+
+  card.append(el("div", {class:"muted", style:"font-size:13px;margin:6px 0 14px"},
+    built ? `Собран ${ago(r.output.mtime)} · ${kb(r.output.size)} · ${r.output.path}`
+          : "Ещё не собирался"));
+
+  // Чего не хватает — говорим до нажатия, а не ошибкой в консоли после.
+  const gaps = [];
+  if (!r.roster.exists)
+    gaps.push(`нет ростера ${r.roster.path} — роли в отчёте будут пустыми`);
+  if (!r.events.exists)
+    gaps.push(`нет календаря событий ${r.events.path} — полос на графике не будет`);
+  if (!r.cached)
+    gaps.push("выгрузок в кэше нет: первый сбор пойдёт в Jira и Confluence, "
+              + "для этого нужны токены в .env.aurora.local");
+  if (gaps.length)
+    card.append(el("ul", {class:"muted", style:"font-size:12.5px;margin:0 0 14px 18px"},
+      gaps.map(g => el("li", {}, g))));
+
+  const row = el("div", {class:"row", style:"gap:10px;flex-wrap:wrap"});
+  row.append(el("button", {class:"btn primary", onclick:()=>buildReport(r, false)},
+    built ? "Пересобрать" : "Собрать"));
+  // Пересчёт по уже выгруженному: правка ростера или событий не требует похода в Jira,
+  // а поход занимает минуты.
+  if (r.cached)
+    row.append(el("button", {class:"btn", onclick:()=>buildReport(r, true),
+      title:"Пересчитать по уже выгруженным данным, без обращения к Jira и Confluence"},
+      "Пересчитать без выгрузки"));
+  if (built)
+    row.append(el("a", {class:"btn", target:"_blank",
+      href:`/api/report/file?project=${encodeURIComponent(S.project.path)}`
+           + `&id=${encodeURIComponent(r.id)}&t=${encodeURIComponent(TOKEN)}`},
+      "Открыть"));
+  card.append(row);
+  return card;
+}
+
+async function buildReport(r, skipFetch){
+  if (await busyElsewhere(r.cmd)) return;
+  const args = skipFetch ? ["--skip-fetch"] : [];
+  const line = (r.cmd + " " + args.join(" ")).trim();
+  // Сборка идёт минутами (первая — с походом в Jira), и смотреть на неё человек будет
+  // в консоли: готовим её так же, как это делает запуск команды из «Команд».
+  show("console");
+  $("#consoleApply").innerHTML = "";
+  $("#consoleOut").innerHTML = "";
+  $("#consoleCmd").textContent = line;
+  $("#consoleRc").textContent = "выполняется…";
+  $("#consoleRc").className = "chip";
+  const res = await runStep(r.cmd, args);
+  $("#consoleRc").textContent = res.rc === 0 ? "готово" : "код " + res.rc;
+  $("#consoleRc").className = "chip " + (res.rc === 0 ? "ok" : "err");
+  if (res.rc === 0) toast("Отчёт собран", "ok");
+  renderReports();
+}
 
 async function renderReview(){
   const box = $("#reviewBody");

@@ -1982,8 +1982,12 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
     src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
 
     assert "--until-done" in src and "--hours" in src, "нет режима сплошного разбора"
-    assert "left_after >= left_before" in src, \
-        "цикл не умеет останавливаться, когда план перестал двигаться, — это вечный прогон"
+    # Прогресс меряется пройденными источниками, а не оставшимися: источник без
+    # структуры уходит человеку, «осталось» не меняется — и ночной прогон вставал на
+    # первой такой пачке, разобрав четырнадцать карточек из тысячи трёхсот.
+    assert "done_after <= done_before" in src, \
+        "цикл снова меряет прогресс по «осталось» — пачка отложенных его остановит"
+    assert "left_after >= left_before" not in src, "старая метрика прогресса вернулась"
     assert 'commit_result(cwd, "agent:build",\n                              f"партия' in src, \
         "партии не коммитятся по отдельности — откатить можно будет только всё сразу"
     assert "if a.apply and not (a.task == \"build\" and a.until_done):" in src, \
