@@ -97,7 +97,8 @@ def fill(text: str, f: dict) -> str:
                 .replace("{{PROJECT_SLUG}}", f["slug"])
                 .replace("{{JIRA_KEY}}", f["jira"])
                 .replace("{{CONFLUENCE_SPACE}}", f["space"])
-                .replace("{{DATE}}", date.today().isoformat()))
+                .replace("{{DATE}}", date.today().isoformat())
+                .replace("{{YEAR}}", str(date.today().year)))
 
 
 # ---------- разбор манифеста ----------
@@ -231,12 +232,17 @@ def plan(target: Path, f: dict):
         elif rule == "agents":
             diff_or_new(arg, fill((KIT / src).read_text(encoding="utf-8"), f))
         elif rule == "seed":
-            src_dir = KIT / src
-            if src_dir.is_dir():
-                for p in src_dir.rglob("*"):
+            src_path = KIT / src
+            if src_path.is_dir():
+                for p in src_path.rglob("*"):
                     if p.is_file():
-                        diff_or_new(f"{arg}/{p.relative_to(src_dir).as_posix()}",
+                        diff_or_new(f"{arg}/{p.relative_to(src_path).as_posix()}",
                                     p.read_text(encoding="utf-8"), seed=True)
+            elif src_path.is_file():
+                # Одиночный файл-заготовка (пустой ростер, пустой список событий).
+                # Правило умело только папки, и такая строка манифеста молча не делала
+                # ничего: заготовка не появлялась, а отчёт собирался без ролей.
+                diff_or_new(arg, src_path.read_text(encoding="utf-8"), seed=True)
     return changes
 
 

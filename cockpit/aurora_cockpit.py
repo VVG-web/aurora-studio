@@ -489,6 +489,59 @@ def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tu
         return 1, f"{script}: {e}"
 
 
+def report_state(project: str) -> dict:
+    """Что панель знает про отчёты проекта: собран ли, чем настроен, чего не хватает.
+
+    Читаем через тот же `paths.py`, что и сам отчёт: иначе панель и генератор
+    расходятся в том, где лежит ростер, и человек правит не тот файл.
+    """
+    pkg = os.path.join(project, ".opencode", "reports", "analyst")
+    if not os.path.isdir(pkg):
+        pkg = os.path.join(KIT, "reports", "analyst")
+    if not os.path.isdir(pkg):
+        return {"reports": [], "error": "пакет отчётов не установлен — обновите движок"}
+
+    # paths.py считает пути от текущего каталога, а панель работает сразу с несколькими
+    # проектами: спрашиваем отдельным процессом с нужным cwd, а не меняем свой.
+    probe = ("import json,sys; sys.path.insert(0, sys.argv[1]); import paths; "
+             "print(json.dumps({'project': paths.PROJECT_NAME, 'year': paths.YEAR, "
+             "'output': paths.OUTPUT_PATH, 'roster': paths.ROSTER_PATH, "
+             "'events': paths.EVENTS_PATH, 'data_dir': paths.DATA_DIR}))")
+    p = None
+    try:
+        p = subprocess.run([sys.executable, "-c", probe, pkg], cwd=project,
+                           capture_output=True, text=True, timeout=30)
+        cfg = json.loads(p.stdout[p.stdout.index("{"):p.stdout.rindex("}") + 1])
+    except Exception as e:
+        # Разбор чужого вывода без самого вывода — это «substring not found» и тупик:
+        # настоящая причина (нет модуля, битый конфиг) лежит в stderr.
+        tail = (p.stderr or "").strip().splitlines() if p else []
+        return {"reports": [],
+                "error": f"не удалось прочитать настройки отчёта: {tail[-1] if tail else e}"}
+
+    def entry(path: str) -> dict:
+        ok = os.path.isfile(path)
+        return {"path": os.path.relpath(path, project), "exists": ok,
+                "size": os.path.getsize(path) if ok else 0,
+                "mtime": os.path.getmtime(path) if ok else 0}
+
+    # Без этих выгрузок считать нечего, и «Собрать» без похода в Jira не сработает.
+    cache = {n: os.path.isfile(os.path.join(cfg["data_dir"], n))
+             for n in ("issues.json", "full_status.json", "confluence_raw_metadata.json")}
+    return {"reports": [{
+        "id": "analyst",
+        "title": "Эффективность аналитиков",
+        "cmd": "ops:report",
+        "project": cfg["project"],
+        "year": cfg["year"],
+        "output": entry(cfg["output"]),
+        "roster": entry(cfg["roster"]),
+        "events": entry(cfg["events"]),
+        "cached": all(cache.values()),
+        "missing_cache": [n for n, ok in cache.items() if not ok],
+    }]}
+
+
 def health(project: str) -> dict:
     rc, out = run_capture(project, "aurora_stats.py", ["--json"])
     try:
@@ -1067,6 +1120,31 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"text": read_text(os.path.join(project, "aurora.config.yaml")),
                             "path": "aurora.config.yaml"})
+        elif u.path == "/api/report":
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(report_state(project))
+        elif u.path == "/api/report/file":
+            # Собранный отчёт — обычный самодостаточный HTML: отдаём его как есть, чтобы
+            # открывался вкладкой рядом с панелью. Путь берём из состояния, а не из
+            # запроса: иначе параметром можно было бы вытащить любой файл проекта.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            wanted = q.get("id", ["analyst"])[0]
+            row = next((r for r in report_state(project).get("reports", [])
+                        if r["id"] == wanted), None)
+            if not row or not row["output"]["exists"]:
+                self.send_json({"error": "отчёт ещё не собран"}, 404)
+                return
+            body = read_text(os.path.join(project, row["output"]["path"]),
+                             limit=64_000_000).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif u.path == "/api/roots":
             self.send_json({"roots": [norm(r) for r in self.server.roots],
                             "file": ROOTS_FILE})
