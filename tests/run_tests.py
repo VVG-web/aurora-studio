@@ -2005,6 +2005,34 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
 
 
 @test
+def test_console_names_the_model_and_the_speed(tmp: Path):
+    """В консоли видно, кто отвечает и с какой скоростью.
+
+    Ночной прогон идёт часами и молча меняет исполнителя: первый бэкенд занят — работа
+    уходит на второй, тот отвечает вдвое медленнее, и человек видит только «стало долго».
+    Скорость берём из `usage` ответа сервера: не отдал — не показываем, выдумывать
+    ток/с по длине текста значит рисовать правдоподобную неправду.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    step = {"backends": [(2, "qwen3.6-35b")], "tps": 41.7}
+    line = R.where(step)
+    assert "qwen3.6-35b" in line and "бэкенд №2" in line and "41.7 ток/с" in line, line
+
+    assert "ток/с" not in R.where({"backends": [(1, "m")], "tps": 0}), \
+        "скорость показана там, где сервер её не отдал"
+    assert R.where({"backends": []}) == "", "пустой шаг рисует пустую скобку"
+    assert "+1 на проверке" in R.where({"backends": [(1, "worker-m"), (3, "critic-m")],
+                                        "tps": 0}), "участие критика не видно"
+
+    core = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    assert '"tps"' in core and "completion_tokens" in core, \
+        "скорость не считается по usage самого сервера"
+
+
+@test
 def test_night_run_waits_out_a_dropped_connection(tmp: Path):
     """Обрыв связи — повод подождать, а не бросить ночь.
 
