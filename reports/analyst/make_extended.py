@@ -535,6 +535,8 @@ td.max-val{color:#f87171;font-weight:600}
   </div>
 </div>
 
+<!-- Библиотека графиков с публичного CDN. В закрытом контуре её не будет: положите
+     chart.js рядом с отчётом и замените адрес на chart.js — остальное не изменится. -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 const DATA = __DATA__;
