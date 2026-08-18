@@ -2002,6 +2002,38 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
 
 
 @test
+def test_night_run_waits_out_a_dropped_connection(tmp: Path):
+    """Обрыв связи — повод подождать, а не бросить ночь.
+
+    Живой случай: в 24-й партии отвалился VPN. Три источника упали по таймауту, остались
+    в голове плана, каждая следующая партия бралась за них снова — и цикл остановился,
+    оставив 667 источников неразобранными. Сетевой сбой лечится ожиданием, как докачка
+    файла: связь вернулась — работа продолжается с того же места.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    net = {"steps": [{"status": "сбой", "note": "№3 gemma: TimeoutError: timed out; "
+                                                "ни один бэкенд не ответил осмысленно"}]}
+    assert R.looks_offline(net), "таймаут всех бэкендов не опознан как обрыв связи"
+
+    content = {"steps": [{"status": "сбой", "note": "карточка не собрана: имя должно быть "
+                                                    "уникальным"}]}
+    assert not R.looks_offline(content), \
+        "содержательный сбой принят за сетевой — прогон будет ждать связь, которая есть"
+    assert not R.looks_offline({"steps": [{"status": "разобран", "note": "timed out"}]}), \
+        "смотрим только на сбои: слово из успешного шага не должно включать ожидание"
+
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert "waits < OFFLINE_TRIES" in src and "time.sleep(OFFLINE_WAIT)" in src, \
+        "цикл не ждёт возвращения связи"
+    assert "waits = 0" in src, "счётчик ожиданий не сбрасывается после удачной партии"
+    assert "time.time() < deadline" in src, \
+        "ожидание не ограничено окном прогона — кнопка на ночь будет ждать вечно"
+
+
+@test
 def test_acceptance_does_not_argue_with_itself(tmp: Path):
     """Приёмка не требует source там, где основание его не подразумевает.
 
