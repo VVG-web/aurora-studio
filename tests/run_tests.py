@@ -2005,6 +2005,37 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
 
 
 @test
+def test_one_button_ends_with_what_is_left_to_the_human(tmp: Path):
+    """Маршрут «Привести базу в порядок» делает всё автоматизируемое и называет остаток.
+
+    Живая жалоба: «я сделал все прогоны, так какого хрена ошибки? Сделай одну кнопку, а
+    потом покажи, что конкретно осталось мне». Раньше остаток приходилось вычитывать из
+    трёх отчётов, а «ошибки линтера» звучали как поломка — хотя это работа, требующая
+    суждения: документ это или знание, слить двойников или оставить.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    route = next((s for s in ck.scenarios() if s["id"] == "all"), None)
+    assert route, "маршрута «Привести базу в порядок» нет"
+    cmds = [st["cmd"] for st in route["steps"]]
+    for need in ("sync:confluence", "agent:build", "kb:repair", "kb:verify", "ops:todo"):
+        assert need in cmds, f"в одной кнопке нет шага {need}"
+    assert cmds[-1] == "ops:todo", "маршрут не заканчивается списком того, что осталось"
+    assert not any(st.get("manual") for st in route["steps"]), \
+        "в одной кнопке есть шаг-человек — значит она не одна кнопка"
+    build = next(st for st in route["steps"] if st["cmd"] == "agent:build")
+    assert "--until-done" in build["flags"] and "--apply" in build["flags"], \
+        "разбор в одной кнопке не доходит до конца сам"
+
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Понятие.md", "тело", status="imported", type="concept")
+    out = run("aurora_todo.py", cwd=root).stdout
+    assert "Принять знание: 1 карточек" in out, f"остаток приёмки не назван:\n{out}"
+    assert "не чинится кнопкой" in out, "не сказано, почему остаток нельзя автоматизировать"
+
+
+@test
 def test_console_names_the_model_and_the_speed(tmp: Path):
     """В консоли видно, кто отвечает и с какой скоростью.
 

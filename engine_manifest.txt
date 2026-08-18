@@ -54,6 +54,7 @@ scripts/kb_supersede.py  => .opencode/scripts/kb_supersede.py
 scripts/ctx_pack.py      => .opencode/scripts/ctx_pack.py
 scripts/sync_audit.py    => .opencode/scripts/sync_audit.py
 scripts/aurora_stats.py  => .opencode/scripts/aurora_stats.py
+scripts/aurora_todo.py       => .opencode/scripts/aurora_todo.py
 scripts/office_ingest.py => .opencode/scripts/office_ingest.py
 scripts/jira_status.py   => .opencode/scripts/jira_status.py
 scripts/aurora_hooks.py  => .opencode/scripts/aurora_hooks.py
