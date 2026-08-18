@@ -321,6 +321,7 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
         step.update(status="сбой", note="; ".join(r["log"][-2:]))
         return step
     step["backends"].append((r["backend"], r["model"]))
+    step["tps"] = r.get("tps") or step.get("tps") or 0
     step["degraded"] = r["backend"] != 1
     proposal = parse_json(r["text"])
     if not proposal or "verdict" not in proposal:
@@ -442,6 +443,23 @@ def looks_offline(res: dict) -> bool:
     notes = " ".join(str(s.get("note", "")) for s in res.get("steps", [])
                      if s.get("status") == "сбой").lower()
     return bool(notes) and any(w in notes for w in OFFLINE_SIGNS)
+
+
+def where(step: dict) -> str:
+    """Кто и по какому маршруту это сделал: модель, номер бэкенда, скорость.
+
+    Ночной прогон идёт часами и молча меняет исполнителя: первый бэкенд занят — работа
+    уходит на второй, тот отвечает вдвое медленнее, и человек видит только, что «стало
+    долго». Строка отвечает на три вопроса сразу: какая модель, через какой бэкенд и с
+    какой скоростью. Скорость — из `usage` самого сервера; не отдал — не показываем.
+    """
+    used = step.get("backends") or []
+    if not used:
+        return ""
+    n, model = used[-1][0], used[-1][1]
+    tail = f" · {step['tps']} ток/с" if step.get("tps") else ""
+    rest = f" (+{len(used) - 1} на проверке)" if len(used) > 1 else ""
+    return f"  [{model} · бэкенд №{n}{tail}{rest}]"
 
 
 def build_left(cwd: str) -> tuple:
@@ -631,6 +649,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             step.update(status="сбой", note="; ".join(r["log"][-2:]))
             return step
         step["backends"].append((r["backend"], r["model"]))
+        step["tps"] = r.get("tps") or step.get("tps") or 0
         step["degraded"] = step["degraded"] or r["backend"] != 1
         plan = parse_json(r["text"])
         if not plan or not (plan.get("cards") or plan.get("empty")):
@@ -719,6 +738,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
         step.update(status="сбой", note="; ".join(r["log"][-2:]))
         return step
     step["backends"].append((r["backend"], r["model"]))
+    step["tps"] = r.get("tps") or step.get("tps") or 0
     step["degraded"] = r["backend"] != 1
     ans = parse_json(r["text"]) or {}
     if not ans.get("empty"):
@@ -775,7 +795,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                             deadline=min(budget, time.time() + cfg["request_timeout"]))
         steps.append(step)
         say(f"      → {step['status']}"
-            + (f": {step['note'][:110]}" if step["note"] else ""))
+            + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
         if step["status"] == "сбой":
             key = step["note"][:60]
             fails[key] = fails.get(key, 0) + 1
@@ -1202,7 +1222,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                               deadline=min(budget, time.time() + cfg["request_timeout"]))
         steps.append(step)
         say(f"      → {step['status']}"
-            + (f": {step['note'][:110]}" if step["note"] else ""))
+            + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
         if step["status"] == "сбой":
             key = step["note"][:60]
             fails[key] = fails.get(key, 0) + 1
