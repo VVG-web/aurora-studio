@@ -1652,9 +1652,12 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
     в текст просочился чей-то настоящий контур. Проверка работает без local/ —
     у стороннего разработчика она тоже сработает.
     """
+    # Публичная инфраструктура — не «чужой контур». Правило написано против адресов
+    # заказчика, утёкших в открытую поставку; CDN с библиотекой графиков и сайты
+    # стандартов таким адресом не являются. NEUTRAL-HOSTS-ALLOW
     allow = {"example.com", "example.ru", "example.org", "example", "localhost",
              "127.0.0.1", "github.com", "www.apache.org", "www.python.org",
-             "schemas.openxmlformats.org"}
+             "schemas.openxmlformats.org", "cdn.jsdelivr.net"}
     def ok(host: str) -> bool:
         h = host.lower().rstrip(".")
         if h in allow or any(h.endswith("." + a) for a in allow):
