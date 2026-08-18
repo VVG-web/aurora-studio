@@ -43,7 +43,9 @@ LINT=".opencode/scripts/kb_lint.py"
 
 OUT=$(python3 "$LINT" --summary 2>&1)
 ERRORS=$(printf '%s' "$OUT" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
+CARDS=$(printf '%s' "$OUT" | sed -n 's/.*карточек \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
 [ -z "$ERRORS" ] && exit 0
+[ -z "$CARDS" ] || [ "$CARDS" -eq 0 ] && CARDS=1
 
 BASE_FILE="AuroraKnowledgeDB/meta/lint_baseline.txt"
 MODE="{mode}"
@@ -64,8 +66,19 @@ case "$MODE" in
     BASE=0
     [ -f "$BASE_FILE" ] && BASE=$(cat "$BASE_FILE" 2>/dev/null | tr -dc '0-9')
     [ -z "$BASE" ] && BASE=0
-    if [ "$ERRORS" -gt "$BASE" ]; then
-      echo "aurora: ошибок стало больше ($BASE → $ERRORS). Коммит остановлен."
+    # Храповик считает ошибки НА СТО КАРТОЧЕК, а не штуками. База растёт партиями по
+    # тысяче: 280 ошибок на 1381 карточку и 308 на 1954 — это 20,3 и 15,8 на сотню,
+    # то есть база стала чище, а абсолютный счёт вырос. Абсолютный храповик в таком
+    # проекте запрещал коммит именно тогда, когда человек сделал больше всего работы,
+    # и предлагал починить — командой, которую без коммита не запустить. Это тупик,
+    # а не защита.
+    BASE_CARDS=1
+    [ -f "$BASE_FILE.cards" ] && BASE_CARDS=$(cat "$BASE_FILE.cards" 2>/dev/null | tr -dc '0-9')
+    [ -z "$BASE_CARDS" ] || [ "$BASE_CARDS" -eq 0 ] && BASE_CARDS=$CARDS
+    NOW_D=$(( ERRORS * 100 / CARDS ))
+    BASE_D=$(( BASE * 100 / BASE_CARDS ))
+    if [ "$ERRORS" -gt "$BASE" ] && [ "$NOW_D" -gt "$BASE_D" ]; then
+      echo "aurora: плотность ошибок выросла ($BASE_D → $NOW_D на 100 карточек)."
       echo "        Почините: python3 .opencode/scripts/kb_fix.py --all --apply"
       echo "        Осознанно пропустить: git commit --no-verify"
       exit 1
