@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.77.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.80.2**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -41,7 +41,7 @@
 | `kb:ingest-office` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | скрипт | `office_ingest.py` `[paths ...]` | `--root --converter --force --dry-run` | 1.5.0 |
 | `kb:ingest` (`ingest, ingest-raw, ingest-meeting, ingest-tz`) | документ из Raw/ → карточки со ссылкой на первоисточник; вид входа определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты | модель | `workflows.md` | — | 1.0.0 |
 | `kb:queue` (`queue`) | очередь верификации: что проверять первым по связям и попаданию в артефакты | скрипт | `aurora_stats.py --queue` | `--limit --theme --json --append-metrics --report` | 1.3.0 |
-| `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом; `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `[selector]` | `--owner --months --by-source --stubs --by-links --demote --demote-machine --auto --by-jira --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
+| `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом (итог: доля принятых растёт — это единственная команда, которая её двигает); `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `[selector]` | `--owner --months --by-source --stubs --by-links --demote --demote-machine --auto --by-jira --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
 | `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --split --split-min --set-alias --old --new --drop-alias --dupes --merge --merge-all --apply --allow-dirty --json --report --root` | 1.3.0 |
 | `kb:dedupe` | двойники: поиск, пакетное слияние по правилу (`--merge-all`) и разбор одной пары (`--merge` «оставить» «убрать») | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --split --split-min --set-alias --old --new --drop-alias --all --merge --merge-all --apply --allow-dirty --json --report --root` | 1.3.0 |
 | `kb:split` (`split`) | разрезать раздутую карточку по её заголовкам: части становятся атомарными карточками, а сама она — картой документа со ссылками на них | скрипт | `kb_fix.py --split` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --split-min --set-alias --old --new --drop-alias --dupes --all --merge --merge-all --apply --allow-dirty --json --report --root` | 1.62.0 |
@@ -98,13 +98,14 @@
 | `ops:impact` (`impact`) | что зависит от карточки; `--explain` — на чём собран документ | скрипт | `kb_trace.py --impact` `[target]` | `--explain --requirements` | 1.8.0 |
 | `ops:trace` (`trace`) | трассировка: пункт ТЗ → REQ → SPEC → Jira → AC → ПМИ → приёмка | скрипт | `kb_trace.py --requirements` `[target]` | `--impact --explain` | 1.0.0 |
 | `ops:questions` | реестр вопросов: открытые, просроченные, что блокируют | скрипт+модель | `workflows.md` | — | 1.4.0 |
+| `ops:report` (`report`) | дашборд эффективности аналитиков: недельная активность по Jira и Confluence, переходы задач; настройки — в секции reports: конфига | скрипт | `report_analyst.py` | `--skip-fetch --serve` | 1.78.0 |
 
 ## `agent: — встроенный агент`
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
 | `agent:aliases` | агент разбирает конфликты синонимов: уточняет там, где карточки разные, и откладывает человеку дубли; правит только через команды движка | скрипт+модель | `agent_runner.py --task aliases` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.57.0 |
-| `agent:build` | агент разбирает партию источников на карточки: раскадровка, границы тем, имена, отметка о разборе; тело карточек переносит движок, а не модель; `--until-done` разбирает план целиком партиями (первичная сборка, часы) | скрипт+модель | `agent_runner.py --task build` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.58.0 |
+| `agent:build` | агент разбирает партию источников на карточки (итог: новые карточки со статусом imported, доверие не присваивается): раскадровка, границы тем, имена, отметка о разборе; тело карточек переносит движок, а не модель; `--until-done` разбирает план целиком партиями (первичная сборка, часы) | скрипт+модель | `agent_runner.py --task build` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.58.0 |
 | `agent:ask` | спросить базу своими словами: движок собирает контекст, модель отвечает только по карточкам и ставит ссылку на каждое утверждение; ответ проверяет Момус (роль qa) и разбор ссылок по базе; разговор пишется в `meta/ask/` и уходит в git с базой, `--thread` продолжает его уточняющим вопросом | скрипт+модель | `agent_runner.py --task ask` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.63.0 |
 | `agent:ping` | встроенный агент: проверить цепочку моделей — каждый бэкенд живым запросом, пустой ответ считается отказом | скрипт | `agent_core.py --ping` | `--show --venv-status --venv-install --json` | 1.56.0 |
 
