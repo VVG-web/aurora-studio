@@ -329,9 +329,16 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                        "пустой ответ — вероятно, chat-шаблон на сервере")
                 log.append(f"№{b['n']} {model}: {why}")
                 continue
+            # Токены отдаёт сам сервер в `usage` — считать их своей меркой значит
+            # подгонять цифру. Нет поля — нет и скорости: пустое место честнее выдумки.
+            usage = body.get("usage") or {}
+            out_tokens = int(usage.get("completion_tokens") or 0)
             return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
                     "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
-                    "ring": ring, "log": log}
+                    "ring": ring, "log": log, "url": b["url"],
+                    "tokens_in": int(usage.get("prompt_tokens") or 0),
+                    "tokens_out": out_tokens,
+                    "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0}
         if time.time() + RING_PAUSE >= deadline:
             break
         log.append(f"круг {ring} неудачен — пауза {RING_PAUSE} с, снова с первого")
