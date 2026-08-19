@@ -20,9 +20,23 @@
   },
   "settings_block": "atlassian.jira",
   "settings": [
-    {"key": "base_url", "what": "адрес сервера Jira", "required": true},
-    {"key": "project_key", "what": "ключ проекта"},
-    {"key": "default_jql", "what": "запрос по умолчанию"}
+    {
+      "key": "base_url",
+      "what": "адрес сервера Jira",
+      "required": true
+    },
+    {
+      "key": "project_key",
+      "what": "ключ проекта"
+    },
+    {
+      "key": "default_jql",
+      "what": "запрос по умолчанию"
+    }
   ],
-  "requires": {"python": []}
+  "requires": {
+    "python": []
+  },
+  "role": "tasks",
+  "role_what": "задачи трекера: их статус решает, доверять ли артефакту"
 }
