@@ -1285,6 +1285,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(agent_write_env(project, payload.get("vars") or {}))
             return
+        if u.path == "/api/agent/retry-primary":
+            # Провайдер упал, агент ушёл на запасного и не трогает основного 15 минут.
+            # Кнопка снимает отметку сразу: флаг-файл видят оба процесса — панель кладёт,
+            # агент подбирает на следующем источнике и возвращается на быструю модель.
+            flag = os.path.join(os.path.expanduser("~"), ".aurora", "retry-primary")
+            os.makedirs(os.path.dirname(flag), exist_ok=True)
+            open(flag, "w").close()
+            self.send_json({"ok": True,
+                            "note": "основной провайдер будет проверен на следующем "
+                                    "источнике — переключение видно в консоли"})
+            return
         if u.path == "/api/agent/ping":
             project = payload.get("project", "")
             if project and not self._known(project):
