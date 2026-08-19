@@ -355,6 +355,7 @@ tr:last-child td{border-bottom:0}
         <div class="spacer"></div>
         <span id="consoleApply"></span>
         <span id="consoleTask"></span>
+        <button class="btn sm" id="retryPrimary" title="Снять отметку «не отвечает» с основного провайдера и проверить его на следующем источнике">Вернуться на основного</button>
         <button class="btn sm" id="clearConsole">Очистить</button>
       </div>
       <div id="consoleLive"></div>
@@ -490,7 +491,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.84.0";
+const UI_VERSION = "1.85.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1845,6 +1846,14 @@ async function liveJobs(){
                       {quiet:true});
   return (d && d.jobs) || [];
 }
+
+// Провайдер упал, агент ушёл на медленного запасного и держит основного «в дауне»
+// 15 минут — иначе каждый источник начинается с минуты ожидания мёртвого шлюза. Кнопка
+// говорит «он вернулся, проверь сейчас»: агент подхватит на следующем источнике.
+$("#retryPrimary").onclick = async ()=>{
+  const r = await api("/api/agent/retry-primary", {method:"POST", body:"{}"});
+  if (r && r.ok) toast(r.note || "Основной провайдер будет проверен заново", "ok");
+};
 
 async function drawLiveJobs(){
   const box = $("#consoleLive");

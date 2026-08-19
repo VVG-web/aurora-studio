@@ -2005,6 +2005,56 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
 
 
 @test
+def test_fallback_provider_gets_a_fair_chance(tmp: Path):
+    """Запасной провайдер получает своё время, а не пять секунд на исходе дедлайна.
+
+    Живой случай: основной шлюз молчал, агент писал «ни один бэкенд не ответил» — и не
+    переключался на локальную модель, хотя она была настроена. Дедлайн общий на вызов:
+    первый бэкенд съедал `request_timeout` целиком, второму доставалось `deadline - now`,
+    то есть пять секунд. Медленная локальная модель не отвечает за пять секунд никогда,
+    поэтому переключение существовало только на бумаге.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib, time as _t
+    AG = importlib.import_module("agent_core")
+    AG.DOWN.clear()
+
+    seen = []
+
+    def transport(kind, b, payload, timeout):
+        if kind == "slots":
+            return 200, {"slots_idle": 1}, "", 0.0
+        seen.append((b["n"], round(timeout)))
+        if b["n"] == 1:
+            _t.sleep(0.05)
+            return 0, {}, "TimeoutError: timed out", 0.05
+        return 200, {"choices": [{"message": {"content": "ответ"}}],
+                     "usage": {"completion_tokens": 10}}, "", 0.1
+
+    cfg = {"backends": [{"n": 1, "url": "http://a", "key": "", "model": "fast", "models": {}},
+                        {"n": 2, "url": "http://b", "key": "", "model": "slow", "models": {}}],
+           "request_timeout": 100, "thinking": False}
+    r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                     transport=transport, deadline=_t.time() + 0.2, sleep=lambda s: None)
+    assert r["ok"] and r["backend"] == 2, f"на запасного не переключились: {r}"
+    slow = [tm for n, tm in seen if n == 2]
+    assert slow and slow[0] >= 30, \
+        f"запасному дали {slow} с вместо честной доли таймаута — медленная модель не успеет"
+    assert AG.DOWN.get(1, 0) > _t.time(), "упавший провайдер не отмечен: его спросят снова"
+
+    # кнопка «Вернуться на основного» снимает отметку
+    AG.RETRY_FLAG.parent.mkdir(parents=True, exist_ok=True)
+    AG.RETRY_FLAG.write_text("", encoding="utf-8")
+    assert AG.retry_primary_asked() and not AG.DOWN, "кнопка не вернула основного в строй"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'id="retryPrimary"' in ui and "/api/agent/retry-primary" in ui, \
+        "кнопки «Вернуться на основного» нет в консоли"
+    assert "/api/agent/retry-primary" in srv, "сервер не знает такого пути"
+
+
+@test
 def test_one_button_ends_with_what_is_left_to_the_human(tmp: Path):
     """Маршрут «Привести базу в порядок» делает всё автоматизируемое и называет остаток.
 
