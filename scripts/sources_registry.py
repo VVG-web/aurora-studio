@@ -43,6 +43,16 @@ CONFIG = "aurora.config.yaml"
 PROJECT_DIR = ".opencode/connectors"    # манифесты, скопированные в проект
 KIT_DIR = "connectors"                  # манифесты в самом kit'е
 KINDS = ("wiki", "board")
+# Роль зеркала в доверии. `tasks` — трекер: статус задачи решает, доверять ли артефакту.
+# `artifacts` — документы, доверие которых вычисляется по связям с задачами. `raw` —
+# первоисточник (договор, ТЗ): правда по определению, доказывать нечего.
+#
+# Роль объявляется здесь, а не отдельным списком папок в конфиге: у зеркала уже есть
+# описание, и второй источник правды о том же самом разошёлся бы с первым на второй
+# неделе. Модуль без роли — `artifacts`: это безопасное умолчание, оно ничему не даёт
+# доверия само по себе.
+ROLES = ("tasks", "artifacts", "raw")
+DEFAULT_ROLE = "artifacts"
 
 
 def kit_root() -> str:
@@ -78,6 +88,11 @@ def load(path: str) -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"sources_registry: {path} не читается: {e}", file=sys.stderr)
         return {}
+    role = m.get("role", DEFAULT_ROLE)
+    if role not in ROLES:
+        print(f"sources_registry: {m['id']}: роль «{role}» движку неизвестна "
+              f"(есть: {', '.join(ROLES)})", file=sys.stderr)
+        return False
     for key in ("id", "kind", "mirror", "run"):
         if key not in m:
             print(f"sources_registry: в {path} нет поля {key} — модуль пропущен", file=sys.stderr)
@@ -156,6 +171,10 @@ def instances(root: str = "") -> list:
             "module": item["module"],
             "path": path,
             "kind": m["kind"] if m else "",
+            # Роль отдаём как есть: пусто — значит модуль её не объявил. Умолчание
+            # подставляет тот, кто читает, и делает это осознанно; тихая подстановка
+            # здесь превращает зеркало задач в зеркало артефактов.
+            "role": (m.get("role", "") if m else ""),
             "state": m["mirror"].get("state", "") if m else "",
             "command": m["run"].get("command", "") if m else "",
             "script": m["run"].get("script", "") if m else "",
@@ -163,6 +182,24 @@ def instances(root: str = "") -> list:
             "title": m.get("title", item["module"]) if m else item["module"],
             "manifest": m,
         })
+    return out
+
+
+def roles(root: str = "") -> dict:
+    """{путь зеркала: роль} — кто здесь задачи, кто артефакты, кто первоисточник.
+
+    Трассировка и извлечение спрашивают именно эту карту: она собрана из описаний
+    коннекторов, поэтому новое зеркало получает своё место в модели доверия сразу, без
+    правок в коде и без второго списка папок в конфиге проекта.
+    """
+    out = {}
+    for it in instances(root):
+        path = (it.get("path") or "").rstrip("/")
+        # Роль отдаём только объявленную. Умолчание здесь молчаливо превратило бы зеркало
+        # задач в зеркало артефактов — а на проекте со старым описанием коннектора это
+        # значит «связей с задачами нет», то есть вся база разом становится недоверенной.
+        if path and it.get("role"):
+            out[path] = it["role"]
     return out
 
 
@@ -185,7 +222,8 @@ def main() -> int:
 
     print(f"Установлено модулей: {len(mods)}")
     for m in mods.values():
-        print(f"  · {m['id']} — {m.get('title', '')} [{m['kind']}] → {m['mirror']['default_path']}")
+        print(f"  · {m['id']} — {m.get('title', '')} [{m['kind']} · "
+              f"{m.get('role', DEFAULT_ROLE)}] → {m['mirror']['default_path']}")
     print(f"\nПодключено в проекте: {len(inst)}"
           + ("" if declared() else "  (секции sources: нет — работают исторические зеркала)"))
     for i in inst:

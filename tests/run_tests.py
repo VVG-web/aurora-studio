@@ -2172,6 +2172,85 @@ def test_night_run_waits_out_a_dropped_connection(tmp: Path):
 
 
 @test
+def test_trace_table_proves_every_link(tmp: Path):
+    """Связь артефакта с задачей доказывается, а не утверждается.
+
+    Номер сравнивается по границе токена: `10.3.1` и `10.3.11` — разные истории, и
+    склеить их значит выдать чужое доверие. Косвенная связь идёт не дальше двух переходов:
+    через три в большой базе связано всё со всем, и класс перестаёт что-либо значить.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    T = importlib.import_module("kb_trace_table")
+
+    root = make_project(tmp)
+    jira, conf = root / "Sources/JIRA", root / "Sources/Confluence"
+    jira.mkdir(parents=True, exist_ok=True); conf.mkdir(parents=True, exist_ok=True)
+    (jira / "PRJ-1.md").write_text(
+        '---\nkey: "PRJ-1"\ntitle: "US-10.3.1. Оплата"\nstatus: "Закрыто"\n---\n',
+        encoding="utf-8")
+    (jira / "PRJ-2.md").write_text(
+        '---\nkey: "PRJ-2"\ntitle: "US-10.3.11. Возврат"\nstatus: "Закрыто"\n---\n',
+        encoding="utf-8")
+    (conf / "AC-10.3.1-Оплата.md").write_text(
+        '---\ntitle: "AC-10.3.1. Критерии оплаты"\n---\n\nсм. Алгоритм-оплаты\n',
+        encoding="utf-8")
+    (conf / "Алгоритм-оплаты.md").write_text(
+        '---\ntitle: "Алгоритм оплаты"\n---\n\nсм. Справочник-кодов\n', encoding="utf-8")
+    (conf / "Справочник-кодов.md").write_text(
+        '---\ntitle: "Справочник кодов"\n---\n\nтаблица\n', encoding="utf-8")
+    (conf / "Чужая-страница.md").write_text(
+        '---\ntitle: "Про погоду"\n---\n\nничего общего\n', encoding="utf-8")
+
+    t = T.build(str(root))
+    direct = {os.path.basename(k): [r["key"] for r in v] for k, v in t["direct"].items()}
+    assert direct.get("AC-10.3.1-Оплата.md") == ["PRJ-1"], \
+        f"номер сопоставлен неверно (10.3.11 — другая история): {direct}"
+    ind = {os.path.basename(k): v for k, v in t["indirect"].items()}
+    assert "Алгоритм-оплаты.md" in ind, "трассировка на один переход не найдена"
+    assert "Чужая-страница.md" not in ind and "Чужая-страница.md" not in direct, \
+        "страница без связей получила связь"
+    why = t["direct"]["Sources/Confluence/AC-10.3.1-Оплата.md"][0]["why"]
+    assert "10.3.1" in why, f"связь не объяснена словами: {why}"
+    assert all(r["depth"] <= 2 for rows in t["indirect"].values() for r in rows), \
+        "трассировка ушла глубже двух переходов"
+
+
+@test
+def test_trust_is_computed_from_task_status(tmp: Path):
+    """Класс доверия считается по статусам задач, а не назначается человеком.
+
+    Одна задача-черновик перевешивает десять готовых: содержание ещё поменяется. Нет
+    связей вовсе — не знание, а `draft`: подтвердить нечем, и молчаливо записать такую
+    карточку в знание значит обесценить класс ровно там, где он нужен.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    U = importlib.import_module("kb_trust")
+
+    table = {"direct": {"Sources/Confluence/A.md": [{"key": "PRJ-1", "why": "номер"}],
+                        "Sources/Confluence/B.md": [{"key": "PRJ-1", "why": "номер"},
+                                                    {"key": "PRJ-9", "why": "ключ"}]},
+             "indirect": {"Sources/Confluence/C.md": [{"key": "PRJ-1", "trail": ["C", "A"],
+                                                       "depth": 1}]}}
+    st = {"PRJ-1": "Закрыто", "PRJ-9": "Бэклог"}
+    trust, draft = {"закрыто"}, {"бэклог"}
+    cls, why = U.source_class("Sources/Confluence/A.md", table, st, trust, draft)
+    assert cls == "trusted" and "PRJ-1" in why, (cls, why)
+    cls, why = U.source_class("Sources/Confluence/B.md", table, st, trust, draft)
+    assert cls == "draft" and "PRJ-9" in why, f"черновая задача не перевесила: {cls} · {why}"
+    assert U.source_class("Sources/Confluence/C.md", table, st, trust, draft)[0] == "trusted"
+    assert U.source_class("Raw/contract/ГК.md", table, st, trust, draft)[0] == "raw"
+    assert U.source_class("Sources/Confluence/Z.md", table, st, trust, draft)[0] == "unknown"
+    assert U.wanted_status("unknown") == "draft", "недоказанное доверие стало знанием"
+    assert U.wanted_status("raw") == "knowledge" and U.wanted_status("trusted") == "knowledge"
+
+    # понижение не стирает знание, а записывает причину в подвал
+    got = U.note_downgrade("тело карточки\n", "knowledge", "draft", "задача вернулась")
+    assert "тело карточки" in got and "класс изменён" in got and U.FOOTER in got
+
+
+@test
 def test_acceptance_does_not_argue_with_itself(tmp: Path):
     """Приёмка не требует source там, где основание его не подразумевает.
 
