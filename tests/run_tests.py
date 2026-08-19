@@ -2005,6 +2005,32 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
 
 
 @test
+def test_ask_tab_names_the_model_and_lets_you_pick_it(tmp: Path):
+    """«Спросить» показывает, кто ответил, и даёт выбрать модель.
+
+    У основной и запасной модели разные скорость и качество. Пока вкладка молчала об
+    исполнителе, медленный ответ запасной выглядел как ответ основной — и человек делал
+    выводы о базе по ответу другой модели.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for need, why in (('id="askBackend"', "нет выбора модели"),
+                      ('id="askWho"', "не видно, кто ответил"),
+                      ('id="askPing"', "нельзя проверить основную модель"),
+                      ('id="askPrimary"', "нет возврата на основную")):
+        assert need in ui, why
+    assert 'args.push("--backend", pick)' in ui, "выбор модели не уходит в команду"
+    assert "(запасная)" in ui, "ответ запасной модели не отмечен как запасной"
+    assert "/api/agent/retry-primary" in ui and "/api/agent/ping" in ui, \
+        "кнопки не привязаны к серверу"
+
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert '"--backend"' in src and 'cfg = {**cfg, "backends": picked}' in src, \
+        "команда не умеет спрашивать конкретную модель"
+    assert 'бэкенда №{a.backend} нет в настройке' in src, \
+        "выбор несуществующей модели подменяется молча — человек выбирал сознательно"
+
+
+@test
 def test_fallback_provider_gets_a_fair_chance(tmp: Path):
     """Запасной провайдер получает своё время, а не пять секунд на исходе дедлайна.
 

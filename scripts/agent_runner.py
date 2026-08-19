@@ -1435,6 +1435,9 @@ def main() -> int:
                     help="перечислить разговоры проекта и выйти")
     ap.add_argument("--no-journal", action="store_true",
                     help="не записывать вопрос и ответ в журнал разговоров")
+    ap.add_argument("--backend", type=int, default=0, metavar="N",
+                    help="спросить конкретный бэкенд из списка (для --task ask): "
+                         "1 — основной, дальше по порядку настройки")
     ap.add_argument("--no-momus", action="store_true",
                     help="не проверять ответ второй моделью (быстрее, но никем не сверено)")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
@@ -1490,6 +1493,16 @@ def main() -> int:
             print(f"agent_runner: разговора «{a.thread}» нет — уточнять нечего. "
                   "Список: --task ask --threads", file=sys.stderr)
             return 1
+        if a.backend:
+            # Человек выбрал модель в панели: спрашиваем именно её и не уходим по кольцу.
+            # Молчаливая подмена здесь хуже отказа — он выбирал сознательно.
+            picked = [b for b in cfg["backends"] if b["n"] == a.backend]
+            if not picked:
+                print(f"agent_runner: бэкенда №{a.backend} нет в настройке "
+                      f"(есть: {', '.join(str(b['n']) for b in cfg['backends'])})",
+                      file=sys.stderr)
+                return 1
+            cfg = {**cfg, "backends": picked}
         res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history,
                       momus=not a.no_momus)
         text = report_ask(res, a.question, cfg)
