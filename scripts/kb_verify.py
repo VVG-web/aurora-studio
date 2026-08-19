@@ -71,7 +71,7 @@ import subprocess
 import sys
 from datetime import date, timedelta
 
-from aurora_common import (TRUSTED, body_hash, card_body, config_list, frontmatter,
+from aurora_common import (SERVICE_STATUS, related_targets, TRUSTED, body_hash, card_body, config_list, frontmatter,
                            git_guard, link_targets, set_field, split_frontmatter)
 
 ROOT = "AuroraKnowledgeDB"
@@ -178,27 +178,49 @@ def source_verdicts(files: list, heads: dict, jira: dict | None = None) -> dict:
     return out
 
 
-def link_verdicts(files: list, verified: set) -> dict:
+def status_of(fm: dict) -> str:
+    return (fm.get("status") or "").strip().strip('"')
+
+
+def link_verdicts(files: list, verified: set, judged: set = None) -> dict:
     """{карточка: основание} — доверие по связям с историями.
 
-    Алгоритм, экранная форма или справочник, на которые ссылаются только принятые истории,
-    описывают уже принятую постановку. Хотя бы одна ссылающаяся история должна быть, и все
+    Алгоритм, экранная форма или справочник, на которые ссылаются только принятые карточки,
+    описывают уже принятую постановку. Хотя бы одна ссылающаяся карточка должна быть, и все
     они — принятыми: одна непринятая означает, что содержание ещё может поменяться.
+
+    Ссылающейся считается **любая принятая карточка**, а не только та, чьё имя начинается
+    с `US-` или `AC-`. Имя перестало быть признаком в тот день, когда карточки начал
+    называть агент: он даёт им имя по теме — «Выгрузка списка расхождений в Excel», — и на
+    живом проекте карточек с именем вида `US-2.1.10` не оказалось **ни одной**. Правило
+    молчало не потому, что связей нет, а потому что искало их по внешнему виду имени.
+
+    Доверие при этом берётся не из имени и не из того, кто карточку писал, а из статуса
+    задачи в Jira: он и решает, устоялась постановка или ещё меняется.
     """
     stems = {os.path.splitext(os.path.basename(p))[0]: p for p in files}
     refs: dict = {}
     for path in files:
-        stem = os.path.splitext(os.path.basename(path))[0]
-        if not re.match(r"^(US|AC)[-_. ]?\d", stem, re.I):
-            continue
+        # Ссылающейся считается любая карточка, а не только та, чьё имя начинается с
+        # `US-`. Требование остаётся прежним и строгим: приняты должны быть ВСЕ, кто
+        # ссылается, — одна непринятая означает, что содержание ещё может поменяться.
         text = open(path, encoding="utf-8", errors="ignore").read()
-        for link in set(link_targets(text)):
+        # И вики-ссылки в теле, и связи из `related:`: граф пишет туда markdown-ссылками,
+        # и без второго читателя правило считало связанную базу несвязанной.
+        for link in set(link_targets(text)) | set(related_targets(text)):
             target = stems.get(link)
             if target and target != path:
                 refs.setdefault(target, []).append(path)
+    # Голос есть не у каждой ссылающейся карточки. Карточка, про которую задача Jira
+    # ничего не говорит, не подтверждает и не опровергает — она молчит, и вето у неё нет.
+    # Иначе на молодой базе, где три четверти карточек ещё `imported`, правило не может
+    # сработать никогда: у любой цели найдётся ссылающийся, о котором ничего не известно.
     out = {}
     for target, sources in refs.items():
-        if sources and all(s in verified for s in sources):
+        # Голосуют те, про кого Jira что-то сказала. Нет вердиктов вовсе (нет зеркала,
+        # не настроены статусы) — голосуют все ссылающиеся: правило остаётся прежним.
+        voters = [s for s in sources if s in judged] if judged else list(sources)
+        if voters and all(s in verified for s in voters):
             names = ", ".join(sorted(os.path.splitext(os.path.basename(s))[0]
                                      for s in sources)[:5])
             out[target] = f"ссылаются только принятые истории: {names}"
@@ -487,6 +509,9 @@ def main() -> int:
         print(f"Заготовок, на которые ссылаются живые карточки: {len(got)}")
 
     if a.by_links:
+        # Кто вообще имеет голос: карточка, чей источник — страница истории с вердиктом
+        # задачи. Про остальных Jira молчит, и молчание — не возражение.
+        judged = {p for p, (fm, src) in heads.items() if src in (verdicts or {})}
         # Считаем принятым и то, что примем этим же прогоном: алгоритм под принятой
         # историей должен пройти вместе с ней, а не ждать следующего запуска.
         trusted_now = {p for p, (fm, _) in heads.items()
@@ -499,7 +524,8 @@ def main() -> int:
         # закольцованных ссылок.
         got: dict = {}
         for _ in range(5):
-            more = {k: v for k, v in link_verdicts(files, trusted_now).items()
+            # Голосуют только те, про кого Jira что-то сказала: остальные молчат.
+            more = {k: v for k, v in link_verdicts(files, trusted_now, judged).items()
                     if k not in got and k not in auto}
             if not more:
                 break
@@ -530,7 +556,7 @@ def main() -> int:
             continue
         # Карта содержания собирается командой и перезаписывается целиком: подтверждать в
         # ней нечего, а в очереди она стояла бы вечно — источника у неё нет по построению.
-        if "ГЕНЕРИРУЕТСЯ kb_moc.py" in text:
+        if "ГЕНЕРИРУЕТСЯ kb_moc.py" in text or status_of(fm) == SERVICE_STATUS:
             continue
         status = (fm.get("status") or "").strip()
         src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")

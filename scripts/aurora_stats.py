@@ -27,7 +27,7 @@ from collections import Counter
 from datetime import date
 
 from aurora_common import (TRUSTED, config_value, frontmatter, inbound_counts,
-                           link_targets, load_cards, walk_md)
+                           SERVICE_STATUS, link_targets, load_cards, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
 METRICS = os.path.join(ROOT, "meta", "metrics.md")
@@ -58,6 +58,12 @@ def collect() -> dict:
         archived = "/_archive/" in path
         cards[path] = {"stem": stem, "fm": fm, "text": text, "section": section, "archived": archived}
         status = (fm.get("status") or "").strip() or "(нет status)"
+        # Служебный статус: карты содержания и оглавления собирает команда, они
+        # перезаписываются целиком. В доле принятого знания им не место — иначе доля
+        # занижена на файлы, которые никто и не должен подтверждать.
+        if status == SERVICE_STATUS or "ГЕНЕРИРУЕТСЯ kb_moc.py" in text:
+            cards.pop(path, None)
+            continue
         statuses[status] += 1
         if "заготовка" in (fm.get("tags") or "") or "_Заготовка:" in text:
             stubs.append(stem)
