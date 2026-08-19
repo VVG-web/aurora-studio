@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.83.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.86.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -105,9 +105,9 @@
 
 | Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
 |---|---|---|---|---|---|
-| `agent:aliases` | агент разбирает конфликты синонимов: уточняет там, где карточки разные, и откладывает человеку дубли; правит только через команды движка | скрипт+модель | `agent_runner.py --task aliases` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.57.0 |
-| `agent:build` | агент разбирает партию источников на карточки (итог: новые карточки со статусом imported, доверие не присваивается): раскадровка, границы тем, имена, отметка о разборе; тело карточек переносит движок, а не модель; `--until-done` разбирает план целиком партиями (первичная сборка, часы) | скрипт+модель | `agent_runner.py --task build` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.58.0 |
-| `agent:ask` | спросить базу своими словами: движок собирает контекст, модель отвечает только по карточкам и ставит ссылку на каждое утверждение; ответ проверяет Момус (роль qa) и разбор ссылок по базе; разговор пишется в `meta/ask/` и уходит в git с базой, `--thread` продолжает его уточняющим вопросом | скрипт+модель | `agent_runner.py --task ask` | `--question --mode --thread --threads --no-journal --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.63.0 |
+| `agent:aliases` | агент разбирает конфликты синонимов: уточняет там, где карточки разные, и откладывает человеку дубли; правит только через команды движка | скрипт+модель | `agent_runner.py --task aliases` | `--question --mode --thread --threads --no-journal --backend --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.57.0 |
+| `agent:build` | агент разбирает партию источников на карточки (итог: новые карточки со статусом imported, доверие не присваивается): раскадровка, границы тем, имена, отметка о разборе; тело карточек переносит движок, а не модель; `--until-done` разбирает план целиком партиями (первичная сборка, часы) | скрипт+модель | `agent_runner.py --task build` | `--question --mode --thread --threads --no-journal --backend --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.58.0 |
+| `agent:ask` | спросить базу своими словами: движок собирает контекст, модель отвечает только по карточкам и ставит ссылку на каждое утверждение; ответ проверяет Момус (роль qa) и разбор ссылок по базе; `--backend N` спрашивает конкретную модель из списка; разговор пишется в `meta/ask/` и уходит в git с базой, `--thread` продолжает его уточняющим вопросом | скрипт+модель | `agent_runner.py --task ask` | `--question --mode --thread --threads --no-journal --backend --no-momus --apply --critic --limit --partition --until-done --hours --no-checkpoint` | 1.63.0 |
 | `agent:ping` | встроенный агент: проверить цепочку моделей — каждый бэкенд живым запросом, пустой ответ считается отказом | скрипт | `agent_core.py --ping` | `--show --venv-status --venv-install --json` | 1.56.0 |
 
 ## `dev: — разработка движка (только в ките)`
