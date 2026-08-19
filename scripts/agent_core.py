@@ -281,6 +281,30 @@ def busy(backend: dict, transport) -> bool:
     return any(s.get("is_processing") for s in body if isinstance(s, dict))
 
 
+DOWN_FOR = 900        # столько не трогаем провайдера, который не ответил: 15 минут
+DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
+RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
+
+
+def retry_primary_asked() -> bool:
+    """Человек нажал «Вернуться на основного» — снять отметки и пробовать заново.
+
+    Флаг лежит файлом, потому что нажимают его в панели, а решение принимает процесс
+    агента: это два разных процесса, и общий у них только диск.
+    """
+    try:
+        if RETRY_FLAG.exists():
+            RETRY_FLAG.unlink()
+            DOWN.clear()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+FAIR_SHARE = 0.6      # долю своего таймаута запасной бэкенд получает даже на исходе окна
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None) -> dict:
@@ -294,6 +318,9 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     think = cfg["thinking"] if thinking is None else thinking
     deadline = deadline or (time.time() + cfg["request_timeout"])
     log, waited, ring = [], 0.0, 0
+    tried: set = set()          # кому уже давали честный шанс в этом вызове
+    if retry_primary_asked():
+        log.append("человек попросил вернуться на основного — отметки сняты")
 
     if not cfg["backends"]:
         return {"ok": False, "log": ["бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
@@ -305,6 +332,14 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             if not model:
                 log.append(f"№{b['n']}: нет модели для роли {role} — пропущен")
                 continue
+            # Провайдера, который только что не ответил, не спрашиваем на каждом
+            # источнике: это минута ожидания на каждом, а за ночь — часы в пустоту. Через
+            # 15 минут пробуем сами; кнопка «Вернуться на основного» снимает отметку сразу.
+            until = DOWN.get(b["n"], 0)
+            if until > time.time():
+                log.append(f"№{b['n']}: не отвечал, вернёмся через "
+                           f"{int(until - time.time())} с (кнопка снимает сразу)")
+                continue
             if busy(b, transport):
                 log.append(f"№{b['n']}: слот занят (/slots) — дальше по кольцу")
                 continue
@@ -312,13 +347,30 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                        "chat_template_kwargs": {"enable_thinking": think}}
             if max_tokens:
                 payload["max_tokens"] = max_tokens
+            # Дедлайн общий на весь вызов, и первый бэкенд его съедает целиком: пока
+            # он думает свои `request_timeout`, до запасного доходит `deadline - now`,
+            # то есть пять секунд. Локальная модель — медленная по определению, за пять
+            # секунд она не отвечает никогда, и переключение на неё существовало только
+            # на бумаге: в логе «ни один бэкенд не ответил осмысленно».
+            #
+            # Поэтому бэкенд, которого в этом вызове ещё не пробовали, получает свою долю
+            # времени: дедлайн сдвигается один раз на него. Худший случай — вызов длится
+            # `request_timeout × число бэкендов`, и это честная цена запасного пути.
             left = deadline - time.time()
-            st, body, err, dt = transport("chat", b, payload, max(5.0, left))
+            fair = cfg["request_timeout"] * FAIR_SHARE
+            if left < fair and b["n"] not in tried:
+                deadline += fair
+                left = deadline - time.time()
+                log.append(f"№{b['n']}: даю запасному свой срок ({int(fair)} с)")
+            tried.add(b["n"])
+            st, body, err, dt = transport("chat", b, payload,
+                                          max(5.0, min(left, cfg["request_timeout"])))
             if st == 400:
                 # бэкенд не знает chat_template_kwargs — повторяем без него
                 payload.pop("chat_template_kwargs", None)
                 st, body, err, dt = transport("chat", b, payload, max(5.0, deadline - time.time()))
             if st != 200 or not isinstance(body, dict):
+                DOWN[b["n"]] = time.time() + DOWN_FOR
                 log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
                 continue
             text, reasoning = answer_of(body)
@@ -331,6 +383,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 continue
             # Токены отдаёт сам сервер в `usage` — считать их своей меркой значит
             # подгонять цифру. Нет поля — нет и скорости: пустое место честнее выдумки.
+            DOWN.pop(b["n"], None)          # ответил — снова в строю
             usage = body.get("usage") or {}
             out_tokens = int(usage.get("completion_tokens") or 0)
             return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
