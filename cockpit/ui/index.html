@@ -128,6 +128,23 @@ h2{font-size:15px;font-weight:700;margin:26px 0 12px;letter-spacing:.01em}
 .unsaved-badge{color:var(--gold);font-size:12px;font-weight:600}
 .btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
 .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* Кнопки справа. `.spacer{flex:1}` работает, только пока строка НЕ перенеслась: стоит
+   заголовку команды стать длинным или окну — узким, как распорка остаётся на первой
+   строке, а кнопки уезжают на вторую и прижимаются влево. Группа с `margin-left:auto`
+   держится справа и на своей строке тоже. */
+.row-right{display:flex;align-items:center;gap:10px;margin-left:auto;flex-wrap:wrap;
+  justify-content:flex-end}
+/* Длинная команда не должна ломать строку целиком: она сжимается с многоточием. */
+#consoleCmd{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  max-width:min(60ch,42vw)}
+/* Маршрут, который включает в себя остальные, и маршрут, который сносит базу: первый
+   зовёт нажать, второй — подумать. Разной рамкой, а не только словами в подписи. */
+.card.route-all{border-color:color-mix(in oklab,var(--primary) 55%,var(--border));
+  box-shadow:0 0 0 1px color-mix(in oklab,var(--primary) 22%,transparent) inset}
+.card.route-danger{border-color:color-mix(in oklab,var(--danger) 50%,var(--border));
+  background:color-mix(in oklab,var(--danger) 5%,transparent)}
+.chip.accent{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+.chip.warn{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
 .mono{font-family:var(--mono)}
 code.tick{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:5px;
   color:var(--text)}
@@ -278,10 +295,11 @@ tr:last-child td{border-bottom:0}
     <section class="view on" id="view-overview">
       <div class="row">
         <h1>Мостик</h1>
-        <div class="spacer"></div>
-        <span class="chip" id="overviewStamp" hidden></span>
-        <button class="btn sm" id="refreshOverview"
-          title="Пересчитать показатели всех проектов">↻ Обновить</button>
+        <div class="row-right">
+          <span class="chip" id="overviewStamp" hidden></span>
+          <button class="btn sm" id="refreshOverview"
+            title="Пересчитать показатели всех проектов">↻ Обновить</button>
+        </div>
       </div>
       <p class="sub">Все проекты на этой машине, работающие на движке Aurora. Цвет ауры —
         тяжесть проблем: бирюза — порядок, янтарь — есть на что посмотреть, красный — блокеры.</p>
@@ -294,10 +312,11 @@ tr:last-child td{border-bottom:0}
     <section class="view" id="view-health">
       <div class="row">
         <h1 id="healthTitle">Здоровье базы</h1>
-        <div class="spacer"></div>
-        <span class="chip" id="healthStamp" hidden></span>
-        <button class="btn sm" id="refreshHealth"
-          title="Пересчитать показатели проекта">↻ Обновить</button>
+        <div class="row-right">
+          <span class="chip" id="healthStamp" hidden></span>
+          <button class="btn sm" id="refreshHealth"
+            title="Пересчитать показатели проекта">↻ Обновить</button>
+        </div>
       </div>
       <p class="sub">Числа считает движок (<span class="mono">stats --json</span>,
         <span class="mono">lint</span>, <span class="mono">doctor</span>, <span class="mono">audit</span>),
@@ -352,11 +371,12 @@ tr:last-child td{border-bottom:0}
       <div class="row" style="margin-bottom:12px">
         <span class="chip mono" id="consoleCmd">—</span>
         <span class="chip" id="consoleRc">не запускалось</span>
-        <div class="spacer"></div>
-        <span id="consoleApply"></span>
-        <span id="consoleTask"></span>
-        <button class="btn sm" id="retryPrimary" title="Снять отметку «не отвечает» с основного провайдера и проверить его на следующем источнике">Вернуться на основного</button>
-        <button class="btn sm" id="clearConsole">Очистить</button>
+        <div class="row-right">
+          <span id="consoleApply"></span>
+          <span id="consoleTask"></span>
+          <button class="btn sm" id="retryPrimary" title="Снять отметку «не отвечает» с основного провайдера и проверить его на следующем источнике">Вернуться на основного</button>
+          <button class="btn sm" id="clearConsole">Очистить</button>
+        </div>
       </div>
       <div id="consoleLive"></div>
       <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
@@ -419,8 +439,7 @@ tr:last-child td{border-bottom:0}
               <option value="ask">проверенное + история решений</option>
             </select></label>
           <span class="muted" style="font-size:12.5px">Ctrl+Enter — спросить</span>
-          <span class="spacer"></span>
-          <button class="btn" id="askNew" hidden>Новый разговор</button>
+          <span class="row-right"><button class="btn" id="askNew" hidden>Новый разговор</button></span>
         </div>
         <div id="askThreadHint" class="muted" style="font-size:12.5px;margin-top:8px" hidden></div>
       </div>
@@ -491,7 +510,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.85.1";
+const UI_VERSION = "1.86.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2548,7 +2567,10 @@ async function renderQuick(group="база"){
     // Разворачивает он сам, когда решил посмотреть, из чего маршрут состоит.
     const toggle = el("button",{class:"btn sm mono", title:"показать шаги маршрута",
       style:"flex:none;width:30px;justify-content:center"}, open ? "−" : "+");
-    const card = el("div",{class:"card",style:"padding:20px;margin-bottom:16px"},
+    // «Привести базу в порядок» включает в себя остальные маршруты — её и надо нажимать
+    // первой. «Пересобрать с нуля» сносит содержимое базы вместе с принятым доверием.
+    const kind = sc.id === "all" ? "route-all" : sc.id === "rebuild" ? "route-danger" : "";
+    const card = el("div",{class:"card " + kind, style:"padding:20px;margin-bottom:16px"},
       el("div",{class:"row"}, toggle, el("b",{style:"font-size:15px"}, sc.title),
         sc.when ? el("span",{class:"chip"}, sc.when) : null,
         el("span",{class:"chip"}, auto === sc.steps.length
@@ -2560,12 +2582,19 @@ async function renderQuick(group="база"){
                return sum ? el("span",{class:"chip",
                  title:"сумма прошлых прогонов; шаги, которые ещё не запускали, не учтены"},
                  "≈" + howLong(sum)) : null; })(),
-        el("div",{style:"flex:1"}),
+        kind === "route-all"
+          ? el("span",{class:"chip accent", title:"этот маршрут включает в себя остальные"},
+               "★ всё сразу") : null,
+        kind === "route-danger"
+          ? el("span",{class:"chip warn", title:"содержимое базы сносится и собирается заново"},
+               "⚠ сносит базу") : null,
         // Порядок шагов один и тот же всегда, флаги известны — нажимать их по одному
         // человеку незачем. Слева «посмотреть» (те же шаги без записи), справа проход.
-        auto ? el("button",{class:"btn sm",onclick:()=>runRoute(sc,false)},"Посмотреть") : null,
-        auto ? el("button",{class:"btn sm primary",onclick:()=>runRoute(sc,true)},
-                 "Пройти маршрут") : null));
+        // Группа справа, а не распорка: при переносе строки распорка кнопки не удержит.
+        el("div",{class:"row-right"},
+          auto ? el("button",{class:"btn sm",onclick:()=>runRoute(sc,false)},"Посмотреть") : null,
+          auto ? el("button",{class:"btn sm " + (kind === "route-danger" ? "danger" : "primary"),
+                              onclick:()=>runRoute(sc,true)}, "Пройти маршрут") : null)));
     const steps = el("div",{}); steps.hidden = !open;
     toggle.onclick = ()=>{
       const now = !steps.hidden;

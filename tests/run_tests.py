@@ -2255,6 +2255,45 @@ def test_installer_marks_its_own_index_stubs(tmp: Path):
 
 
 @test
+def test_buttons_stay_on_the_right_when_the_row_wraps(tmp: Path):
+    """Кнопки держатся справа и после переноса строки.
+
+    `.row` переносится, а `.spacer{flex:1}` живёт на первой строке: стоит имени команды
+    стать длинным или окну узким — кнопки уезжают вниз и прижимаются влево. Правая группа
+    с `margin-left:auto` держится справа на любой строке.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "flex-wrap:wrap" in ui, "разметка изменилась: перенос строк больше не включён"
+    assert "margin-left:auto" in ui and ".row-right{" in ui, \
+        "нет правой группы — при переносе кнопки окажутся слева внизу"
+    for anchor in ('id="clearConsole"', 'id="refreshHealth"', 'id="refreshOverview"'):
+        i = ui.index(anchor)
+        assert "row-right" in ui[max(0, i - 400):i], \
+            f"кнопка {anchor} не в правой группе"
+    assert "#consoleCmd{overflow:hidden" in ui, \
+        "длинная команда снова может ломать всю строку"
+
+
+@test
+def test_the_all_in_one_route_looks_different_from_the_dangerous_one(tmp: Path):
+    """Маршрут «всё сразу» зовёт нажать, «пересобрать с нуля» — подумать.
+
+    Оба выглядели одинаково: карточка и синяя кнопка «Пройти маршрут». Один включает в
+    себя остальные, второй сносит содержимое базы вместе с принятым доверием — и цена
+    ошибки у них разная на порядок.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert '.card.route-all{' in ui and '.card.route-danger{' in ui, \
+        "у маршрутов нет разного оформления"
+    assert 'sc.id === "all" ? "route-all"' in ui and '"rebuild" ? "route-danger"' in ui, \
+        "классы не привязаны к конкретным маршрутам"
+    assert "★ всё сразу" in ui and "⚠ сносит базу" in ui, \
+        "нет подписи, объясняющей, чем эти маршруты отличаются"
+    assert 'kind === "route-danger" ? "danger" : "primary"' in ui, \
+        "у опасного маршрута кнопка того же цвета, что у обычного"
+
+
+@test
 def test_hidden_really_hides_in_the_panel(tmp: Path):
     """Атрибут hidden обязан скрывать, даже когда у элемента задан свой display.
 
