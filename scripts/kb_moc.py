@@ -143,7 +143,11 @@ def incoming(cards: dict) -> dict:
 
 def render(name: str, note: str, items: list, kind: str = "moc") -> str:
     """Карта содержания: шапка карточки, пояснение, список ссылок по алфавиту."""
-    head = (f"---\ntitle: \"{name}\"\ntype: moc\nstatus: imported\n"
+    # `index` — служебный статус: файл собирается командой и перезаписывается целиком.
+    # Подтверждать в нём нечего, и в доле принятого знания ему не место: на живом проекте
+    # 296 карт содержания занижали её на четыре процентных пункта, изображая работу,
+    # которой не существует.
+    head = (f"---\ntitle: \"{name}\"\ntype: moc\nstatus: index\n"
             f"schema_version: 3\nupdated: {TODAY}\ntags: [moc]\n---\n\n{GENERATED}\n\n")
     body = [f"# {name}", ""]
     if note:
