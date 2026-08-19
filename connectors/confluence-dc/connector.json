@@ -20,9 +20,26 @@
   },
   "settings_block": "atlassian.confluence",
   "settings": [
-    {"key": "base_url", "what": "адрес сервера Confluence", "required": true},
-    {"key": "space", "what": "ключ пространства"},
-    {"key": "sync_roots", "what": "корни синка: page_id страниц, от которых идёт обход"}
+    {
+      "key": "base_url",
+      "what": "адрес сервера Confluence",
+      "required": true
+    },
+    {
+      "key": "space",
+      "what": "ключ пространства"
+    },
+    {
+      "key": "sync_roots",
+      "what": "корни синка: page_id страниц, от которых идёт обход"
+    }
   ],
-  "requires": {"python": ["beautifulsoup4", "markdownify"]}
+  "requires": {
+    "python": [
+      "beautifulsoup4",
+      "markdownify"
+    ]
+  },
+  "role": "artifacts",
+  "role_what": "страницы вики: артефакты, доверие которых берётся из связанных задач"
 }
