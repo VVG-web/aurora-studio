@@ -1301,24 +1301,52 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "
         f"бюджет {cfg['budget_min']} мин")
     steps, unsupported = [], 0
-    for i, path in enumerate(todo[:total]):
-        if time.time() > budget:
-            say(f"  бюджет {cfg['budget_min']} мин исчерпан")
-            break
-        say(f"  {progress(i, total, started)} · {os.path.basename(path)} …")
-        step = distill_card(cfg, path, call=call, momus=momus,
-                            deadline=min(budget, time.time() + cfg["request_timeout"]))
+    # Карточки независимы: тезис одной не зависит от тезиса другой, и каждая — это
+    # ожидание ответа шлюза, а не работа машины. Последовательный проход держит один
+    # запрос в воздухе, тогда как шлюз обслуживает несколько; на 1359 карточках разница
+    # между «одна за раз» и «восемь за раз» — это ночь против часа. Запись в файл идёт
+    # в главном потоке: два потока, пишущие в разные карточки, безопасны, но проверять
+    # это на живой базе мы не будем.
+    width = min(cfg.get("parallel", 1), total) or 1
+    done = 0
+
+    def one(path):
+        return path, distill_card(cfg, path, call=call, momus=momus,
+                                  deadline=min(budget, time.time() + cfg["request_timeout"]))
+
+    def finish(path, step):
+        nonlocal unsupported
         steps.append(step)
-        say(f"      → {step['status']}"
+        say(f"  {progress(done, total, started)} · {os.path.basename(path)}"
+            f" → {step['status']}"
             + (f": {step['note'][:100]}" if step["note"] else "") + where(step))
         if step.get("unsupported"):
             unsupported += step["unsupported"]
         if apply and step.get("head") is not None:
-            from aurora_common import set_field
-            head = set_field(step["head"], "distilled", TODAY_STR)
+            from aurora_common import with_fields
+            fields = {"distilled": TODAY_STR}
             if step.get("unsupported"):
-                head = set_field(head, "unsupported", str(step["unsupported"]))
-            open(path, "w", encoding="utf-8").write("---" + head + "\n---" + step["body"])
+                fields["unsupported"] = str(step["unsupported"])
+            text = "---" + step["head"] + "\n---" + step["body"]
+            open(path, "w", encoding="utf-8").write(with_fields(text, fields))
+
+    if width == 1:
+        for path in todo[:total]:
+            if time.time() > budget:
+                say(f"  бюджет {cfg['budget_min']} мин исчерпан")
+                break
+            done += 1
+            finish(*one(path))
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        say(f"  одновременно: {width} (AURORA_AGENT_PARALLEL)")
+        with ThreadPoolExecutor(max_workers=width) as pool:
+            for path, step in pool.map(one, todo[:total]):
+                done += 1
+                finish(path, step)
+                if time.time() > budget:
+                    say(f"  бюджет {cfg['budget_min']} мин исчерпан")
+                    break
     return {"steps": steps, "left": len(todo) - len(steps), "unsupported": unsupported,
             "seconds": round(time.time() - started, 1)}
 

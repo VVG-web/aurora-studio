@@ -516,7 +516,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.92.7";
+const UI_VERSION = "1.92.8";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2766,6 +2766,12 @@ async function renderAgentCard(box){
       fld(pre+"KEY","Ключ" + (b.key_set?" · сохранён, ввод заменит":" · пусто, если не нужен"),
           "", b.key_set?"••••••":"", "password"),
       fld(pre+"MODEL","Модель на все роли (если ролевые не заданы)", b.model),
+      // Окно контекста узнать из API нельзя, а порезано оно у каждого шлюза по-своему:
+      // одна и та же модель держит 252 000 у одного и 196 608 у другого. Пусто — движок
+      // не считает и не отказывает; объявлено — заведомо большой запрос уходит следующей
+      // модели в кольце вместо того, чтобы погасить эту ошибкой на 15 минут.
+      fld(pre+"CONTEXT","Окно контекста, токенов (пусто — не проверять)",
+          b.context ? String(b.context) : "", "например 196608", "number"),
       el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
         ...["worker","planner","critic","qa"].map(r =>
           el("label",{style:"flex:1;min-width:130px"},
@@ -2811,6 +2817,13 @@ async function renderAgentCard(box){
         oninput:e=>touch("AURORA_AGENT_MAX_STEPS", e.target.value)})),
       el("label",{},"бюджет, мин ", el("input",{class:"btn",style:"width:64px",value:a.budget_min,
         oninput:e=>touch("AURORA_AGENT_BUDGET_MIN", e.target.value)})),
+      // Разбор карточки — это ожидание ответа шлюза, а не работа машины: пока модель
+      // думает над одной, процессор простаивает. Ставить больше, чем шлюз держит
+      // параллельных запросов, бессмысленно — очередь просто переедет на его сторону.
+      el("label",{title:"Сколько карточек разбирать одновременно. 1 — как раньше, по "
+                        + "очереди. Больше — быстрее, пока шлюз выдерживает."},
+        "одновременно ", el("input",{class:"btn",style:"width:64px",value:a.parallel||1,
+        oninput:e=>touch("AURORA_AGENT_PARALLEL", e.target.value)})),
       el("label",{},"адаптер ", el("select",{class:"btn",
           onchange:e=>touch("AURORA_AGENT_ADAPTER", e.target.value)},
         ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,
