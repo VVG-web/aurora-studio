@@ -1244,6 +1244,9 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if head is None:
         step["note"] = "нет шапки"
         return step
+    # `rest` начинается с закрывающего «\n---» шапки — в тело он не входит. Без этого
+    # разделитель уезжает внутрь раздела «Источник», и в файле оказывается три «---».
+    body = body[4:] if body.startswith("\n---") else body
     source_part = body.split(QUOTES)[0] if QUOTES in body else body
     quotes = body.split(QUOTES, 1)[1] if QUOTES in body else source_part
     footer = ""
@@ -1268,9 +1271,13 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
             step["unsupported"] = mo["unsupported"]
-    new_body = ("\n" + thesis.strip() + "\n\n" + QUOTES + "\n" + quotes.rstrip()
+    new_body = ("\n\n" + thesis.strip() + "\n\n" + QUOTES + "\n" + quotes.rstrip()
                 + ("\n\n" + footer.strip() + "\n" if footer.strip() else "\n"))
-    step["new"] = head + new_body
+    # Файл собирается ровно из тех частей, на которые его разобрали: «---» + шапка + тело.
+    # Всё, что пишется в шапку, пишется здесь же, до сборки: попытка дописать поле в уже
+    # собранный текст промахивается мимо шапки и вклеивает его в тело — так `distilled`
+    # однажды оказался посреди раздела «Источник».
+    step["head"], step["body"] = head, new_body
     step.update(status="переписана", note=thesis.splitlines()[0][:110])
     return step
 
@@ -1306,16 +1313,12 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             + (f": {step['note'][:100]}" if step["note"] else "") + where(step))
         if step.get("unsupported"):
             unsupported += step["unsupported"]
-        if apply and step.get("new"):
+        if apply and step.get("head") is not None:
             from aurora_common import set_field
-            head, rest = step["new"].split("\n---\n", 1) if "\n---\n" in step["new"] else (None, None)
-            out = step["new"]
-            if head is not None:
-                head = set_field(head + "\n---\n", "distilled", TODAY_STR)
-                if step.get("unsupported"):
-                    head = set_field(head, "unsupported", str(step["unsupported"]))
-                out = head + rest
-            open(path, "w", encoding="utf-8").write(out)
+            head = set_field(step["head"], "distilled", TODAY_STR)
+            if step.get("unsupported"):
+                head = set_field(head, "unsupported", str(step["unsupported"]))
+            open(path, "w", encoding="utf-8").write("---" + head + "\n---" + step["body"])
     return {"steps": steps, "left": len(todo) - len(steps), "unsupported": unsupported,
             "seconds": round(time.time() - started, 1)}
 
