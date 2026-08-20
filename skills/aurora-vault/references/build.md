@@ -34,26 +34,25 @@ Turns project documentation into a living knowledge base of atomic, interconnect
 
 ## Lifecycle rules (override anything below that contradicts them)
 
-1. **Every note created or updated by `build` gets `status: imported`** in frontmatter
-   (plus `source_synced: <today>`). Human review promotes it later (see `workflows.md`).
-2. **Never silently overwrite a note whose `status` is `verified` or `deprecated`.**
-   Правка проверенной карточки человеком — норма: картотека живёт, и запрещать
-   дописывать её значило бы превратить базу в архив. Запрещено другое — **молча
-   переписать машиной то, что человек читал и подтвердил**. Отсюда правило: тело
-   `verified`-карточки машина не трогает, новое из источника кладёт отдельной секцией
-   `## Из источника (не проверено)` и пишет `DRIFT` в отчёт. Человек либо принимает
-   дописанное (`agent:distill` пересобирает тезис), либо разводит знание по карточкам.
-   Статус относится к **тексту**, а не к файлу: если тело изменилось после приёмки,
-   отпечаток `verified_hash` расходится, и `kb:lint` это показывает — не запрещая правку,
-   но и не давая `verified` тихо соврать.
+1. **Карточка, созданная разбором, получает `status: draft` и `built: machine`** (плюс
+   `source_synced: <сегодня>`). Доверие ей не присваивается: его посчитает `kb:trust` по
+   статусам связанных задач — см. `docs/knowledge-rules.md`.
+2. **Тело карточки со статусом `knowledge` или `deprecated` машина молча не переписывает.**
+   Правка доверенной карточки человеком — норма: картотека живёт. Запрещено другое —
+   молча переписать машиной то, на что уже сослались артефакты. Новое из источника
+   кладётся отдельной секцией `## Из источника (не проверено)`, в отчёт идёт `DRIFT`.
+   Человек либо принимает дописанное (`agent:distill` пересобирает тезис), либо разводит
+   знание по карточкам.
+   Отдельно от статуса действует **тип** (`kind`): `document` не переписывается никогда и
+   никем, `dictionary` переносится целиком, и только `knowledge` модель переосмысляет.
+   Тип сильнее статуса: доверенный словарь всё равно нельзя пересказывать.
    If the source changed and the extracted content differs from such a note:
    - do NOT modify the note body;
    - refresh `source_synced` and append the conflict to the run report:
      `⚠️ DRIFT: <note> — source changed since verification (<source path>)`;
-   - the owner re-verifies via the `diff`/`verify` workflow.
-   Notes with `status: imported`/`draft` (or legacy notes with no `status` field) may be
-   updated in place as before.
-3. Legacy notes without a `status` field are treated as `status: imported, trust: medium`.
+   - следующий `kb:trust` пересчитает доверие сам, если задачи сдвинулись.
+3. Карточки со статусом `draft` (и легаси без `status`) обновляются на месте как раньше.
+3. Легаси-карточка без `status` считается черновиком: `status: draft`, доверия нет.
    When touching such a note for any reason, add the missing lifecycle fields
    (see `frontmatter.md`).
 

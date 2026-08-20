@@ -2490,6 +2490,47 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_skills_describe_the_engine_as_it_is_now(tmp: Path):
+    """Скилл — это то, что читает модель вместо кода. Отстанет он — отстанет и работа.
+
+    Ревизия показала разрыв в полтора десятка команд: весь неймспейс `agent:` (пять
+    команд, включая ту, которой собирают базу) в скилле не упоминался вовсе, а
+    жизненный цикл был описан снятой шкалой `imported → in-review → verified` с приёмкой
+    человеком. Модель, читающая такой скилл, будет звать несуществующие команды и ставить
+    статусы, которых больше нет.
+
+    Проверяем механически: каждая команда реестра названа в своём скилле, и снятая
+    концепция не всплывает как действующая.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import kit_commands as K
+
+    vault = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
+    dev = (KIT / "skills/aurora-dev/SKILL.md").read_text(encoding="utf-8")
+    missing = [r["cmd"] for r in K.read_registry()
+               if r["cmd"] not in (dev if r["ns"] == "dev" else vault)]
+    assert not missing, f"команды есть в движке, но не в скиллах: {missing}"
+
+    # снятые команды не должны предлагаться как рабочие
+    for gone in ("kb:verify", "kb:queue"):
+        assert gone not in vault, f"скилл зовёт снятую команду {gone}"
+
+    # снятая шкала статусов: в скиллах она может быть только как «читаем легаси»
+    everywhere = "\n".join(f.read_text(encoding="utf-8")
+                           for f in (KIT / "skills").rglob("*.md"))
+    for line in everywhere.splitlines():
+        if "status: verified" in line or "status: in-review" in line:
+            assert False, f"скилл предписывает снятый статус: {line.strip()[:90]}"
+
+    # и наоборот: действующая модель знания должна быть названа
+    assert "docs/knowledge-rules.md" in vault, \
+        "скилл не отсылает к правилам базы — модель будет решать про статусы сама"
+    assert "Момус" in vault, "Момус не описан: проверка ответов выглядит необязательной"
+    assert "AURORA_AGENT_PARALLEL" in vault or "одновременно" in vault, \
+        "скилл не знает про параллельный разбор"
+
+
+@test
 def test_oversized_request_does_not_kill_the_provider(tmp: Path):
     """Запрос длиннее окна модели — не повод считать провайдера мёртвым.
 
