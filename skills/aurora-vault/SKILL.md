@@ -63,7 +63,7 @@ needed for the requested command (progressive disclosure, keep context small).
 Человек работает через панель управления: он нажимает кнопку с именем команды, а не
 набирает путь к скрипту. Поэтому в отчётах, сводках и рекомендациях **называйте команды
 так, как они называются в панели и в реестре** — `kb:dedupe`, `kb:repair --aliases`,
-`kb:verify --auto`. Путь к скрипту уместен только там, где вы запускаете его сами.
+`kb:trust`. Путь к скрипту уместен только там, где вы запускаете его сами.
 
 Имя команды всегда есть в шапке скрипта — строка `Панель:` в его docstring, и она
 сверяется с реестром тестом. Не выдумывайте файл по смыслу задачи: `kb_dedupe.py` не
@@ -108,8 +108,9 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:ingest <path>` (`ingest`, `ingest-raw`, `ingest-meeting`, `ingest-tz`) | документ из Raw/ → карточки; ветка определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты, прочее → атомарные карточки | `references/workflows.md` |
 | `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит всё содержимое `AuroraKnowledgeDB/` (включая DR, вопросы, справочники), за её пределами не трогает ничего; `--keep-handmade` — оставить то, чего нет в источниках; откат — из git (`kb_reset.py`) | `references/maintenance.md` |
 | `kb:links` (`links`, `graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек (`kb_graph.py`) | `references/build.md` |
-| `kb:queue` | очередь верификации: что проверять первым по связям и попаданию в артефакты (`aurora_stats.py --queue`) | `references/maintenance.md` |
-| `kb:verify` (`verify`, `promote`) | гейт: imported/draft → verified — отбор человеком, запись скриптом; `--source-older-than N` — пакетно принять давно не менявшееся; `--by-jira` — решение по статусу связанной задачи; `--by-source` — доверие по происхождению (договор, ТЗ, словарь); `--by-links` — то, на что ссылаются только принятые истории; `--stubs` — заготовки; `--auto` — всё это разом (списки — в конфиге проекта, секция `verify:`) | `references/maintenance.md` |
+| `kb:trust` (`trust`) | класс доверия карточек: считается по таблице трассировки и статусам связанных задач. Человек доверие не присваивает | `references/maintenance.md` |
+| `ops:trace-table` | таблица связей «артефакт ↔ задача»: прямые и через трассировку, с доказательством каждой | `references/maintenance.md` |
+| `kb:kind` (`kind`) | тип карточки: словарь, документ или знание — от него зависит, кому позволено править тело | `docs/knowledge-rules.md` |
 | `kb:repair` | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки (`kb_fix.py --all`); режимы по отдельности — флагами | `references/maintenance.md` |
 | `kb:dedupe` | двойники: поиск и слияние (`kb_fix.py --dupes` / `--merge`) — тот же скрипт, другой режим | `references/maintenance.md` |
 | `kb:moc` (`moc`) | карты содержания по группировкам из `moc_groups.txt` + список брошенных карточек (`kb_moc.py`) | `references/build.md` |
@@ -180,7 +181,7 @@ Context assembly for ALL prompt-enrichment: `references/retrieval.md`.
 | переезд зеркала | `kb_remap.py` | разбор несопоставленных источников |
 | маршрутизация карточек | `kb_lint.py` | решение «артефакт или знание» по каждой находке |
 | сборка context pack | `ctx_pack.py` | сам ответ по паку |
-| простановка verified | `kb_verify.py` | решение, каким карточкам верить |
+| класс доверия | `kb_trust.py` | считается по статусам задач: человек его не присваивает |
 | замена знания | `kb_supersede.py` | решение «это устарело» и текст преемника |
 | обратная трассировка | `kb_trace.py --impact` | что делать с затронутыми документами |
 | зеркало Confluence | `confluence_export.py` | разбор новых и изменившихся страниц |
