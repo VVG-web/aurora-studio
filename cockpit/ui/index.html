@@ -184,6 +184,8 @@ tr:last-child td{border-bottom:0}
 .console{background:var(--console-bg);border:1px solid var(--border);border-radius:var(--radius);
   font:12.5px/1.65 var(--mono);padding:14px 16px;min-height:220px;max-height:52vh;overflow:auto;
   white-space:pre-wrap;word-break:break-word;color:var(--console-ink)}
+.console-wrap{position:relative}
+.console-tail{position:absolute;right:14px;bottom:12px;z-index:2;box-shadow:0 2px 10px rgba(0,0,0,.35)}
 .console .err{color:var(--danger)} .console .ok{color:var(--primary)}
 .console .warn{color:var(--tier-inreview)} .console .dim{color:#6D7F98}
 
@@ -378,7 +380,11 @@ tr:last-child td{border-bottom:0}
         </div>
       </div>
       <div id="consoleLive"></div>
-      <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
+      <div class="console-wrap">
+        <div class="console" id="consoleOut">Выберите команду в разделе «Команды» или нажмите ⌘K.</div>
+        <button class="btn sm console-tail" id="consoleTail" hidden
+                title="Прокрутка остановлена, потому что вы отмотали вверх">↓ вывод продолжается</button>
+      </div>
       <h2>Журнал запусков</h2>
       <p class="sub" style="margin-top:0">Лежит в проекте
         (<span class="mono">.opencode/run_log.md</span>) и ездит по git: по строке на команду —
@@ -510,7 +516,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.92.4";
+const UI_VERSION = "1.92.5";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1877,7 +1883,7 @@ async function attachJob(id){
     const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
     if (!d || d.error) { $("#consoleRc").textContent = "задание не найдено"; return; }
     (d.lines||[]).forEach(l=>out.append(el("div",{class:"dim"}, l)));
-    out.scrollTop = out.scrollHeight; since = d.next;
+    watchScroll(out); stickToBottom(out); since = d.next;
     $("#consoleCmd").textContent = d.cmd + " " + (d.args||[]).join(" ");
     if (d.done){
       $("#consoleRc").textContent = "код " + d.rc;
@@ -1901,6 +1907,31 @@ async function busyElsewhere(what){
     + `другу (git, зеркала, план разбора).\n\nВсё равно запустить «${what}»?`);
 }
 
+// Консоль прокручивается сама, пока человек смотрит конец. Стоит ему отмотать вверх —
+// перестаёт: он читает, когда всё началось, или ищет, где кольцо переключилось на другую
+// модель, а страница каждые полсекунды возвращала его в конец. Возвращается к слежению
+// само, когда он домотает обратно вниз.
+const NEAR_BOTTOM = 40;   // px: «внизу» — не пиксель в пиксель, иначе слежение теряется
+function stickToBottom(box){
+  if (box.dataset.follow === "0") return;
+  box.scrollTop = box.scrollHeight;
+}
+function followAgain(box){
+  box.dataset.follow = "1";
+  box.scrollTop = box.scrollHeight;
+  const hint = $("#consoleTail"); if (hint) hint.hidden = true;
+}
+function watchScroll(box){
+  if (box.dataset.watched) return;
+  box.dataset.watched = "1"; box.dataset.follow = "1";
+  box.addEventListener("scroll", ()=>{
+    const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight <= NEAR_BOTTOM;
+    box.dataset.follow = atEnd ? "1" : "0";
+    const hint = $("#consoleTail");
+    if (hint) hint.hidden = atEnd;
+  });
+}
+
 async function runStep(cmd, args){
   const r = S.state.commands.find(x=>x.cmd===cmd);
   if (!r || !r.runnable) return {rc:0, skipped:true, lines:[]};
@@ -1922,7 +1953,7 @@ async function runStep(cmd, args){
       return {rc:2, lines};      // код 2 — маршрут останавливается, и это правильно
     }
     (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
-    out.scrollTop = out.scrollHeight;
+    watchScroll(out); stickToBottom(out);
     since = d.next;
     if (d.done) return {rc:d.rc, lines};
     await new Promise(ok=>setTimeout(ok, 450));
@@ -2094,7 +2125,7 @@ async function poll(id, since, label){
       : /^\s*(#|—|\.\.\.)/.test(l) ? "dim" : "";
     out.append(el("div",{class:cls}, l));
   });
-  out.scrollTop = out.scrollHeight;
+  watchScroll(out); stickToBottom(out);
   if (!d.done) return setTimeout(()=>poll(id, d.next, label), 450);
   const rc = d.rc, mark = rcMark(rc);
   const badge = $("#consoleRc");
@@ -2213,7 +2244,10 @@ function renderHistory(){
       "kit " + h.kit) : null,
     el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
 }
-$("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; };
+$("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; followAgain($("#consoleOut")); };
+// Очистка и кнопка «вывод продолжается» возвращают слежение: человек сам сказал, что
+// снова смотрит конец.
+$("#consoleTail").onclick = ()=> followAgain($("#consoleOut"));
 
 /* ---------------- настройка ---------------- */
 async function renderSetup(){
