@@ -119,7 +119,6 @@ TOOLS = {
     "scrub": "kb_scrub.py",
     "schema": "kb_schema.py",
     "publish": "publish_doc.py",
-    "verify": "kb_verify.py",
     "supersede": "kb_supersede.py",
     "impact": "kb_trace.py --impact",
     "context": "ctx_pack.py",

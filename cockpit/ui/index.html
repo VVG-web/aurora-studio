@@ -280,7 +280,6 @@ tr:last-child td{border-bottom:0}
     <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
     <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
-    <button data-view="review" aria-label="Приёмка карточек"><span class="label">Приёмка</span><span class="count" id="navReview"></span></button>
     <button data-view="reports" aria-label="Отчёты"><span class="label">Отчёты</span></button>
     <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
     <button data-view="mirrors" aria-label="Зеркала"><span class="label">Зеркала</span><span class="count" id="navMirrors"></span></button>
@@ -397,16 +396,6 @@ tr:last-child td{border-bottom:0}
       <div id="setupBody"></div>
     </section>
 
-    <!-- ПРИЁМКА КАРТОЧЕК -->
-    <section class="view" id="view-review">
-      <h1>Приёмка карточек</h1>
-      <p class="sub">Очередь того, что ждёт вашего решения: слева — карточки, справа —
-        текст и что в нём изменилось. Движок нашёл их сам, но принять или понизить может
-        только человек. Правит текст по-прежнему редактор — здесь вы читаете и решаете.</p>
-      <p class="sub"><b>В итоге:</b> карточки переходят <span class="mono">imported → verified</span> с записанным основанием и датой. Это единственное место, где растёт доля принятого знания — и единственное, откуда «Спросить» в строгом режиме берёт факты.</p>
-      <div id="reviewBody"></div>
-    </section>
-
     <!-- ОТЧЁТЫ -->
     <section class="view" id="view-reports">
       <h1>Отчёты</h1>
@@ -521,7 +510,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.89.0";
+const UI_VERSION = "1.90.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -609,7 +598,6 @@ function show(view){
   if (view==="quickstart") renderQuick();
   if (view==="work") renderQuick("продуктивность");
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
-  if (view==="review") renderReview();
   if (view==="reports") renderReports();
   if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
   if (view==="about") renderAbout();
@@ -1545,7 +1533,6 @@ async function renderKinds(box){
    Линтер и раньше называл эти карточки поимённо, но список жил в тексте отчёта: чтобы
    пройти его, человек копировал имена в редактор по одному. Здесь тот же список — с
    текстом карточки, диффом и двумя кнопками. Движок не научился новому: ему дали руки. */
-let REVIEW = {kind:"", card:null};
 
 /* ---------------- отчёты ----------------
 
@@ -1636,81 +1623,6 @@ async function buildReport(r, skipFetch){
   $("#consoleRc").className = "chip " + (res.rc === 0 ? "ok" : "err");
   if (res.rc === 0) toast("Отчёт собран", "ok");
   renderReports();
-}
-
-async function renderReview(){
-  const box = $("#reviewBody");
-  if (!S.project){
-    box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>';
-    return;
-  }
-  box.innerHTML = '<div class="grid metrics"><div class="skel"></div><div class="skel"></div></div>';
-  const d = await api("/api/review?project=" + encodeURIComponent(S.project.path));
-  if (d.error){ box.innerHTML = ""; return toast(d.error,"warn"); }
-  const kinds = d.kinds || [];
-  $("#navReview").textContent = kinds.reduce((a,k)=>a+k.count,0) || "";
-  box.innerHTML = "";
-  if (!kinds.length){
-    box.append(el("div",{class:"card",style:"padding:24px"},
-      el("b",{},"Решать нечего."),
-      el("p",{class:"muted",style:"margin:8px 0 0"},
-        "Линтер не нашёл карточек, требующих человека. Механику чинят команды "
-        + "«Быстрого старта», а сюда попадает только то, где нужно ваше суждение.")));
-    return;
-  }
-  REVIEW.kind = REVIEW.kind && kinds.some(k=>k.kind===REVIEW.kind) ? REVIEW.kind : kinds[0].kind;
-  box.append(el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;margin-bottom:12px"},
-    ...kinds.map(k=>el("button",{class:"btn sm" + (k.kind===REVIEW.kind ? " primary":""),
-      onclick:()=>{ REVIEW.kind = k.kind; REVIEW.card = null; renderReview(); }},
-      `${k.kind} · ${k.count}`))));
-  const cur = kinds.find(k=>k.kind===REVIEW.kind);
-  box.append(el("div",{class:"muted",style:"font-size:13px;margin-bottom:10px"}, cur.hint));
-
-  const list = el("div",{class:"card",style:"padding:8px;max-height:70vh;overflow:auto"});
-  cur.cards.forEach(c=>{
-    const name = c.path.split("/").pop().replace(/\.md$/,"");
-    list.append(el("div",{class:"list-item",style:"cursor:pointer"
-        + (REVIEW.card === c.path ? ";background:var(--surface-2)" : ""),
-      onclick:()=>{ REVIEW.card = c.path; renderReview(); }},
-      el("div",{style:"flex:1;min-width:0"},
-        el("div",{style:"font-weight:600;font-size:13px"}, name),
-        el("div",{class:"muted",style:"font-size:11.5px"}, c.path.split("/")[1]))));
-  });
-  const pane = el("div",{class:"card",style:"padding:16px;max-height:70vh;overflow:auto"},
-    el("div",{class:"muted"},"Выберите карточку слева."));
-  box.append(el("div",{class:"grid",style:"grid-template-columns:minmax(240px,1fr) 2fr;gap:14px;align-items:start"},
-    list, pane));
-  if (REVIEW.card) showCard(pane, REVIEW.card);
-}
-
-async function showCard(pane, path){
-  pane.innerHTML = "";
-  const d = await api("/api/card?project=" + encodeURIComponent(S.project.path)
-                      + "&path=" + encodeURIComponent(path));
-  if (d.error) return pane.append(el("div",{class:"warnbox"}, d.error));
-  const act = async (args, what) => {
-    if (!confirm(`${what}\n\n${path}\n\nПродолжить?`)) return;
-    const r = await api("/api/run", {method:"POST", body: JSON.stringify(
-      {project:S.project.path, cmd:"kb:verify", args:[path, ...args, "--apply", "--allow-dirty"]})});
-    if (r.job){ toast(what + " — смотрите консоль"); show("console"); poll(r.job, 0, "kb:verify"); }
-  };
-  pane.append(
-    el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;margin-bottom:10px"},
-      el("b",{style:"flex:1;min-width:0"}, path.split("/").pop().replace(/\.md$/,"")),
-      el("button",{class:"btn sm primary",onclick:()=>act(["--refresh"],
-        "Подтвердить заново: доверие относится к текущему тексту")},"Подтвердить"),
-      el("button",{class:"btn sm",onclick:()=>act(["--demote"],
-        "Понизить до draft: снять доверие, вернуть карточку в работу")},"Понизить"),
-      el("a",{class:"btn sm", href:"obsidian://open?path=" + encodeURIComponent(
-        S.project.path + "/" + path), title:"открыть в Obsidian"},"Править")),
-    d.diff ? el("div",{},
-      el("div",{class:"muted",style:"font-size:12.5px;margin:6px 0"},
-        "Что изменилось с последнего коммита:"),
-      el("pre",{class:"mono",style:"font-size:11.5px;white-space:pre-wrap;max-height:260px;"
-        + "overflow:auto;background:var(--surface-2);padding:10px;border-radius:8px"}, d.diff))
-      : el("div",{class:"muted",style:"font-size:12.5px"},"Незакоммиченных правок нет."),
-    el("div",{class:"muted",style:"font-size:12.5px;margin:12px 0 6px"},"Карточка целиком:"),
-    el("pre",{class:"mono",style:"font-size:11.5px;white-space:pre-wrap"}, d.text));
 }
 
 /* ---------------- спросить базу ----------------

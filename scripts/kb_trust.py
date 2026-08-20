@@ -126,22 +126,25 @@ def main() -> int:
         return 1
     tpath = os.path.join(root, TABLE)
     if not os.path.isfile(tpath):
-        print(f"kb_trust: нет таблицы трассировки ({TABLE}). Сначала `ops:trace-table --apply`",
-              file=sys.stderr)
-        return 1
+        # Считать нечего — это не сбой, а состояние: таблицу ещё не собирали. Код 2 здесь
+        # остановил бы маршрут на свежем проекте, где всё идёт по плану.
+        print(f"Таблицы трассировки нет ({TABLE}) — считать доверие не по чему.\n"
+              "Соберите её: `ops:trace-table --apply`, затем повторите.")
+        return 0
     table = json.loads(open(tpath, encoding="utf-8").read())
     statuses = task_status(root)
     trust = config_statuses("trust_statuses")
     draft = config_statuses("assumption_statuses")
     if not trust:
-        print("kb_trust: в конфиге пуст atlassian.jira.trust_statuses — доверять нечему",
-              file=sys.stderr)
-        return 1
+        print("В конфиге пуст `atlassian.jira.trust_statuses` — по какому статусу задачи "
+              "считать источник доверенным, движку неизвестно.\n"
+              "Заполните список в aurora.config.yaml, затем повторите.")
+        return 0
 
     counts, changes, moved = {}, [], 0
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
-        head, _rest = split_frontmatter(text)
+        head, rest = split_frontmatter(text)
         fm = frontmatter(text)
         was = (fm.get("status") or "").strip()
         if head is None or was in (SERVICE_STATUS, "deprecated"):
@@ -159,10 +162,10 @@ def main() -> int:
             new = set_field(new, "trust", cls)
             new = set_field(new, "trust_basis", f'"{why[:200]}"')
             new = set_field(new, "trust_checked", TODAY)
-            body = text[len(head):]
+            body = rest
             if was == "knowledge" and now == "draft":
                 body = note_downgrade(body, "knowledge", "draft", why)
-            open(path, "w", encoding="utf-8").write(new + body)
+            open(path, "w", encoding="utf-8").write("---" + new + body)
 
     print(f"# Класс доверия — {TODAY}\n")
     print("| Класс источника | Карточек |")

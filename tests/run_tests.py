@@ -381,7 +381,9 @@ def test_ctx_pack_filters_by_status_and_logs_usage(tmp: Path):
              owner='"@x"', verified="2026-01-01", review_by="2030-01-01")
 
     cp = run("ctx_pack.py", "Заявка", cwd=root)
-    assert "[verified | проверено 2026-01-01" in cp.stdout, "нет шапки доверия"
+    # Шапка теперь говорит о классе источника и основании, а не о том, кто и когда
+    # поставил отметку: доверие больше не чьё-то решение.
+    assert "[verified | доверенный источник" in cp.stdout, "нет шапки доверия"
     assert "Черновик-Заявка" not in cp.stdout, "draft попал в generate-пак"
     assert "Проверка-Заявка" in cp.stdout, "связанная карточка не подтянулась переходом"
     usage = (root / "AuroraKnowledgeDB/meta/usage.log").read_text(encoding="utf-8")
@@ -389,32 +391,8 @@ def test_ctx_pack_filters_by_status_and_logs_usage(tmp: Path):
 
     cp2 = run("ctx_pack.py", "Заявка", "--mode", "evaluate", "--no-log", cwd=root)
     assert "Черновик-Заявка" in cp2.stdout, "в evaluate черновик обязан быть"
-    assert "НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ" in cp2.stdout, "у черновика нет предупреждающей шапки"
+    assert "НЕ ФАКТ" in cp2.stdout, "у черновика нет предупреждающей шапки"
 
-
-@test
-def test_verify_batch_checks_before_promoting(tmp: Path):
-    root = make_project(tmp)
-    card(root, "Glossary/Годная.md", "текст", status="imported", source='"Raw/project/x.md"')
-    card(root, "Glossary/Без-источника.md", "текст", status="imported")
-    card(root, "Glossary/С-битой-ссылкой.md", "[[Нет-такой]]", status="imported",
-         source='"Raw/project/x.md"')
-
-    cp = run("kb_verify.py", "Glossary", "--owner", "@vadim", "--apply", cwd=root)
-    good = (root / "AuroraKnowledgeDB/Glossary/Годная.md").read_text(encoding="utf-8")
-    assert "status: verified" in good and 'owner: "@vadim"' in good, "карточка не верифицирована"
-    assert "review_by:" in good, "не проставлен срок годности"
-    for bad in ("Без-источника", "С-битой-ссылкой"):
-        text = (root / f"AuroraKnowledgeDB/Glossary/{bad}.md").read_text(encoding="utf-8")
-        assert "status: imported" in text, f"{bad} не должна была пройти гейт"
-    assert "нет source" in cp.stdout and "битые ссылки" in cp.stdout, "причины пропуска не названы"
-
-    # `canonical` из схемы убран (1.10.0), а с 1.44.0 нет и самого флага: верхний статус
-    # базы один — verified, выбирать не из чего
-    rc = run("kb_verify.py", "Glossary", "--owner", "@v", "--status", "canonical",
-             cwd=root, expect_rc=2)
-    assert "unrecognized arguments: --status" in rc.stderr, \
-        "ступень canonical должна быть недоступна"
 
 
 @test
@@ -1435,7 +1413,7 @@ def test_new_project_works_without_a_terminal(tmp: Path):
 
     # проект пригоден к работе сразу: команды не падают на пустой базе
     for args in (["kb_lint.py", "--summary"], ["build_plan.py", "--status"],
-                 ["aurora_stats.py", "--queue"], ["kb_verify.py", "--auto"]):
+                 ["aurora_stats.py"], ["kb_trust.py"]):
         r = subprocess.run([sys.executable, str(target / ".opencode/scripts" / args[0]),
                             *args[1:]], cwd=str(target), capture_output=True, text=True)
         assert r.returncode == 0, f"{args[0]} на свежем проекте: rc={r.returncode}\n{r.stderr[:300]}"
@@ -2095,7 +2073,7 @@ def test_one_button_ends_with_what_is_left_to_the_human(tmp: Path):
     route = next((s for s in ck.scenarios() if s["id"] == "all"), None)
     assert route, "маршрута «Привести базу в порядок» нет"
     cmds = [st["cmd"] for st in route["steps"]]
-    for need in ("sync:confluence", "agent:build", "kb:repair", "kb:verify", "ops:todo"):
+    for need in ("sync:confluence", "agent:build", "kb:repair", "kb:trust", "ops:todo"):
         assert need in cmds, f"в одной кнопке нет шага {need}"
     assert cmds[-1] == "ops:todo", "маршрут не заканчивается списком того, что осталось"
     assert not any(st.get("manual") for st in route["steps"]), \
@@ -2169,6 +2147,72 @@ def test_night_run_waits_out_a_dropped_connection(tmp: Path):
     assert "waits = 0" in src, "счётчик ожиданий не сбрасывается после удачной партии"
     assert "time.time() < deadline" in src, \
         "ожидание не ограничено окном прогона — кнопка на ночь будет ждать вечно"
+
+
+@test
+def test_card_kind_decides_who_may_rewrite_the_body(tmp: Path):
+    """Тип карточки определяется правилом, и выбор человека сильнее правила."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    K = importlib.import_module("kb_kind")
+
+    assert K.guess("AuroraKnowledgeDB/Concepts/Договор.md",
+                   {"source": '"Raw/contract/ГК-2026.md"'}, "текст")[0] == "document"
+    assert K.guess("AuroraKnowledgeDB/Glossary/Накладная.md",
+                   {"source": '"Sources/Confluence/x.md"'}, "определение")[0] == "dictionary"
+    table = "| код | имя |\n|---|---|\n| 1 | а |\n| 2 | б |\n| 3 | в |\n"
+    assert K.guess("AuroraKnowledgeDB/Concepts/Коды.md",
+                   {"source": '"Sources/Confluence/x.md"'}, table)[0] == "dictionary"
+    assert K.guess("AuroraKnowledgeDB/Processes/Расчёт.md",
+                   {"source": '"Sources/Confluence/x.md"'},
+                   "Абзац.\nВторой.\nТретий.\nЧетвёртый.")[0] == "knowledge"
+
+    root = make_project(tmp)
+    (root / "AuroraKnowledgeDB/Concepts/Своё.md").write_text(
+        '---\ntitle: "Своё"\nkind: document\nstatus: knowledge\n---\n\nдословный текст\n',
+        encoding="utf-8")
+    out = run("kb_kind.py", "--apply", cwd=root).stdout
+    assert "выбор человека сохранён: 1" in out, f"движок перетёр выбор человека:\n{out}"
+
+
+@test
+def test_writing_a_field_never_touches_the_body(tmp: Path):
+    """Проставление поля в шапке не должно задевать тело карточки.
+
+    `split_frontmatter` отдаёт шапку БЕЗ разделителей, а хвост — начиная с «\n---».
+    Команда, которая режет хвост по длине шапки, промахивается на три символа и вклеивает
+    поле в первую строку тела. На живом проекте это испортило 2033 карточки за прогон —
+    спас только git.
+    """
+    root = make_project(tmp, git=True)
+    body = "первая строка тела\nвторая строка\n\n## Раздел\n\nтекст\n"
+    (root / "AuroraKnowledgeDB/Concepts/Карточка.md").write_text(
+        '---\ntitle: "Карточка"\nstatus: draft\ntype: concept\n'
+        'source: "Sources/Confluence/x.md"\n---\n\n' + body, encoding="utf-8")
+    run("kb_kind.py", "--apply", cwd=root)
+    got = (root / "AuroraKnowledgeDB/Concepts/Карточка.md").read_text(encoding="utf-8")
+    assert got.startswith("---\n") and "kind: knowledge" in got
+    assert got.endswith(body), f"тело изменилось при записи поля:\n{got[-160:]}"
+    assert got.count("---") == 2, "разделители шапки задвоились"
+
+
+@test
+def test_acceptance_machinery_is_gone(tmp: Path):
+    """Приёмки больше нет: ни команды, ни вкладки, ни очереди.
+
+    Процедура, потерявшая смысл, опаснее отсутствующей: человек тратит на неё время и
+    считает, что делает работу. Доверие теперь вычисляется, и присваивать его некому.
+    """
+    assert not (KIT / "scripts/kb_verify.py").exists(), "скрипт приёмки на месте"
+    cmds = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "kb:verify" not in cmds and "kb:queue" not in cmds, "команды приёмки в реестре"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "renderReview" not in ui and 'id="view-review"' not in ui, "вкладка приёмки в панели"
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "/api/review" not in srv, "сервер всё ещё отдаёт очередь приёмки"
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    assert "kb:verify" not in scen, "маршрут зовёт снесённую команду"
+    assert "kb:trust" in scen, "пересчёт доверия не встал на её место"
 
 
 @test
@@ -2249,45 +2293,6 @@ def test_trust_is_computed_from_task_status(tmp: Path):
     got = U.note_downgrade("тело карточки\n", "knowledge", "draft", "задача вернулась")
     assert "тело карточки" in got and "класс изменён" in got and U.FOOTER in got
 
-
-@test
-def test_acceptance_does_not_argue_with_itself(tmp: Path):
-    """Приёмка не требует source там, где основание его не подразумевает.
-
-    Живой случай: человек несколько раз прошёл маршрут приёмки, а доверенных карточек в
-    базе не появилось ни одной. Команда печатала «раздел Glossary объявлен доверенным» и
-    строкой ниже — «нет source, происхождение не подтверждено». Раздел объявляет доверие
-    по месту в базе, заготовка не утверждает ничего — обоим источник не нужен.
-
-    Заодно: служебные файлы и карты содержания в очередь приёмки не идут. Они занимали
-    половину списка «пропущено, нужен человек» и создавали впечатление, что приёмка
-    чего-то не смогла.
-    """
-    root = make_project(tmp, git=True)
-    cfg = root / "aurora.config.yaml"
-    cfg.write_text(cfg.read_text(encoding="utf-8")
-                   + "\nverify:\n  trusted_sources: [Raw/contract]\n"
-                     "  trusted_sections: [Glossary]\n", encoding="utf-8")
-    card(root, "Glossary/Накладная.md", "Документ о поставке товара.",
-         status="imported", type="glossary")          # source нет — и не нужен: раздел
-    (root / "AuroraKnowledgeDB/meta").mkdir(parents=True, exist_ok=True)
-    (root / "AuroraKnowledgeDB/meta/conventions.md").write_text(
-        "# Соглашения\n\nслужебный файл базы\n", encoding="utf-8")
-    (root / "AuroraKnowledgeDB/MOC/Понятия.md").write_text(
-        '---\ntitle: "Понятия"\ntype: moc\nstatus: imported\n---\n\n'
-        "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_moc.py — ручные правки будут потеряны. -->\n",
-        encoding="utf-8")
-
-    cp = run("kb_verify.py", "--auto", cwd=root)
-    assert "к верификации: 1" in cp.stdout, \
-        f"карточка доверенного раздела не принята из-за отсутствия source:\n{cp.stdout}"
-    assert "conventions" not in cp.stdout, "служебный файл базы попал в приёмку"
-    assert "Понятия" not in cp.stdout, "карта содержания просит подтверждения у человека"
-
-    run("kb_verify.py", "--auto", "--apply", "--allow-dirty", cwd=root)
-    got = (root / "AuroraKnowledgeDB/Glossary/Накладная.md").read_text(encoding="utf-8")
-    assert "status: verified" in got and "раздел Glossary" in got, \
-        "основание приёмки не записано в карточку"
 
 
 @test
@@ -2711,70 +2716,6 @@ def test_agent_work_rolls_back_whole(tmp: Path):
     assert "human-edit" in left, "коммит агента забрал чужую работу вне базы знаний"
 
 
-@test
-def test_trusted_source_yields_to_the_issue_status(tmp: Path):
-    """Страница истории в зеркале — не истина, пока задача в разработке.
-
-    В Confluence лежат и утверждённые страницы, и черновики историй: текст на них ещё
-    поменяется. Отличить их можно только по связанной задаче. Доверенный источник
-    говорит «это писал заказчик», статус задачи — «это уже решено»; второе сильнее.
-    """
-    sys.path.insert(0, str(KIT / "scripts"))
-    import importlib
-    V = importlib.import_module("kb_verify")
-
-    heads = {
-        "AuroraKnowledgeDB/Concepts/Готовое.md": ({"source": "Sources/Confluence/Готовая.md"},
-                                                  "Sources/Confluence/Готовая.md"),
-        "AuroraKnowledgeDB/Concepts/Черновик.md": ({"source": "Sources/Confluence/Сырая.md"},
-                                                   "Sources/Confluence/Сырая.md"),
-    }
-    jira = {"Sources/Confluence/Сырая.md": ("draft", ["PRJ-1"], ["Аналитика"], []),
-            "Sources/Confluence/Готовая.md": ("verified", ["PRJ-2"], ["Закрыто"], [])}
-
-    import os as _os
-    cwd = _os.getcwd()
-    root = make_project(tmp)
-    cfg = root / "aurora.config.yaml"
-    cfg.write_text(cfg.read_text(encoding="utf-8")
-                   + "\nverify:\n  trusted_sources: [Sources/Confluence]\n", encoding="utf-8")
-    try:
-        _os.chdir(root)
-        got = V.source_verdicts(list(heads), heads, jira)
-    finally:
-        _os.chdir(cwd)
-    assert "AuroraKnowledgeDB/Concepts/Готовое.md" in got, got
-    assert "AuroraKnowledgeDB/Concepts/Черновик.md" not in got, \
-        "карточка со страницы, чья задача ещё в аналитике, принята как истина"
-
-
-@test
-def test_demote_machine_returns_trust_to_the_human(tmp: Path):
-    """Уборка после автоприёмки: машинная нарезка возвращается в imported.
-
-    До 1.60.0 правило «источник доверенный» присваивало verified карточкам, которые
-    собрал агент. Метки `built: machine` у них ещё нет — их узнают по журналам прогонов
-    агента: каждый прогон записал, что именно собрал.
-    """
-    root = make_project(tmp)
-    runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    (runs / "2026-08-10_1200_build.md").write_text(
-        "## Какие карточки собраны\n\n- источник.md: «Машинная тема» ← секции 1\n",
-        encoding="utf-8")
-    card(root, "Concepts/Машинная-тема.md", "Собрано агентом.", type="concept",
-         status="verified", title='"Машинная тема"', verified="2026-08-10",
-         verified_basis='"источник объявлен доверенным"')
-    card(root, "Concepts/Человек-писал.md", "Человек писал сам.", type="concept",
-         status="verified", verified="2026-08-10")
-
-    run("kb_verify.py", "--demote-machine", "--apply", "--allow-dirty", cwd=root)
-    machine = (root / "AuroraKnowledgeDB/Concepts/Машинная-тема.md").read_text(encoding="utf-8")
-    human = (root / "AuroraKnowledgeDB/Concepts/Человек-писал.md").read_text(encoding="utf-8")
-    assert "status: imported" in machine and "built: machine" in machine, machine[:200]
-    assert "verified_basis" not in machine, "основание доверия осталось у понижённой карточки"
-    assert "status: verified" in human, "понижение задело карточку, которую писал человек"
-
 
 @test
 def test_lint_spares_artifacts_that_came_from_sources(tmp: Path):
@@ -2897,36 +2838,6 @@ def test_registry_cache_keeps_kit_and_project_apart(tmp: Path):
     cache = json.loads((KIT / "cockpit" / ".registry-cache.json").read_text(encoding="utf-8"))
     assert "src=" in cache["key"], cache["key"]
 
-
-@test
-def test_review_queue_lists_every_card_and_can_demote(tmp: Path):
-    """Очередь приёмки видит все находки, а не первые примеры, и умеет обе стороны.
-
-    Линтер печатает по восемь примеров на вид — человеку столько и нужно. Очереди
-    нужен полный список: та, что молча теряет хвост, хуже отсутствия очереди. И
-    решение бывает двух видов: подтвердить заново или снять доверие.
-    """
-    sys.path.insert(0, str(KIT / "cockpit"))
-    import importlib
-    ck = importlib.import_module("aurora_cockpit")
-
-    root = make_project(tmp)
-    for i in range(12):
-        card(root, f"Concepts/Карточка-{i}.md", f"Ссылка на [[Нет-такой-{i}]].",
-             status="verified", type="concept")
-
-    got = ck.cards_to_review(str(root))
-    broken = next(k for k in got["kinds"] if "битые" in k["kind"])
-    assert broken["count"] == 12, f"очередь показала {broken['count']} из 12"
-
-    one = broken["cards"][0]["path"]
-    assert ck.card_text(str(root), one)["text"].startswith("---"), "карточка не читается"
-    assert "error" in ck.card_text(str(root), "../../etc/passwd"), \
-        "путь вне базы знаний принят"
-
-    run("kb_verify.py", one, "--demote", "--apply", "--allow-dirty", cwd=root)
-    text = (root / one).read_text(encoding="utf-8")
-    assert "status: draft" in text and "verified_hash" not in text, text[:200]
 
 
 @test
@@ -3276,36 +3187,6 @@ def test_pack_answers_where_development_got_to(tmp: Path):
     assert "PRJ-999" in only and "карточек по теме нет" in only, \
         f"пак сдался там, где зеркало знает ответ:\n{only}"
 
-
-@test
-def test_auto_verify_skips_machine_built_cards(tmp: Path):
-    """Автоприёмка не присваивает доверие машинной нарезке.
-
-    Правило «источник доверенный» задумано под карточку, которую человек собрал из
-    договора или ТЗ. Когда карточки штампует агент, тем же правилом за один прогон
-    verified получили 224 карточки со свежей машинной нарезкой и вёрсткой исходника в
-    теле. Источник отвечает за факты, а не за то, что тема выделена верно.
-    """
-    root = make_project(tmp)
-    cfg = root / "aurora.config.yaml"
-    cfg.write_text(cfg.read_text(encoding="utf-8")
-                   + "\nverify:\n  trusted_sources: [Raw/contract]\n", encoding="utf-8")
-    src = root / "Raw" / "contract" / "договор.md"
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("# Договор\n\n" + "пункт. " * 60, encoding="utf-8")
-
-    card(root, "Concepts/Рукописная.md", "Человек писал сам.", type="concept",
-         status="imported", source='"Raw/contract/договор.md"')
-    run("build_plan.py", "--card", "Машинная", "--source", "Raw/contract/договор.md",
-        "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
-    machine = root / "AuroraKnowledgeDB/Concepts/Машинная.md"
-    assert "built: machine" in machine.read_text(encoding="utf-8"), "нет метки машинной сборки"
-
-    run("kb_verify.py", "--by-source", "--apply", "--allow-dirty", cwd=root)
-    assert "status: verified" in (root / "AuroraKnowledgeDB/Concepts/Рукописная.md").read_text(
-        encoding="utf-8"), "рукописная карточка из доверенного источника не принята"
-    assert "status: imported" in machine.read_text(encoding="utf-8"), \
-        "машинная нарезка получила доверие автоматически — verified перестало что-то значить"
 
 
 @test
@@ -3872,7 +3753,7 @@ def test_agent_ring_config_and_whitelist(tmp: Path):
     # белый список
     assert A.write_allowed("build_plan.py", ["--card", "X", "--apply"])[0]
     assert A.write_allowed("kb_fix.py", ["--set-alias", "--apply"])[0]
-    assert not A.write_allowed("kb_verify.py", ["--auto", "--apply"])[0], \
+    assert not A.write_allowed("kb_trust.py", ["--apply"])[0], \
         "приёмка отдана агенту — это запрещено конструкцией"
     assert not A.write_allowed("kb_reset.py", ["--apply"])[0]
     assert not A.write_allowed("git", ["push"])[0]
@@ -4444,220 +4325,8 @@ def test_kb_graph_writes_links_into_cards(tmp: Path):
     assert "связей добавлено: 0" in second.stdout, "повторный прогон дублирует связи"
 
 
-@test
-def test_verified_card_may_be_edited_but_says_so(tmp: Path):
-    """Проверенную карточку можно дописывать — но статус не должен врать про текст.
-
-    Запрет на правку превратил бы картотеку в архив, а Zettelkasten держится на
-    дописывании. Поэтому правку не блокируем: отпечаток тела на момент приёмки
-    расходится, и линтер называет карточку.
-    """
-    root = make_project(tmp, git=True)
-    cards = root / "AuroraKnowledgeDB/Concepts"
-    cards.mkdir(parents=True, exist_ok=True)
-    (root / "Raw").mkdir(exist_ok=True)
-    (root / "Raw/док.md").write_text("источник", encoding="utf-8")
-    card = cards / "Понятие.md"
-    card.write_text('---\ntitle: "Понятие"\ntype: concept\nstatus: imported\n'
-                    'source: "Raw/док.md"\n---\n\nпервая редакция\n', encoding="utf-8")
-
-    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--apply", cwd=root)
-    text = card.read_text(encoding="utf-8")
-    assert "status: verified" in text and "verified_hash:" in text, text
-    assert run("kb_lint.py", cwd=root).returncode == 0, "линтер ругается сразу после приёмки"
-
-    card.write_text(text + "\nдописали позже\n", encoding="utf-8")
-    out = run("kb_lint.py", cwd=root, expect_rc=1).stdout
-    assert "правили после приёмки" in out, f"правка проверенного прошла молча:\n{out}"
-
-    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--refresh", "--apply",
-        "--allow-dirty", cwd=root)
-    assert run("kb_lint.py", cwd=root).returncode == 0, \
-        "повторное подтверждение не снимает замечание"
 
 
-@test
-def test_verify_needs_no_owner_flag(tmp: Path):
-    """Владелец берётся из git проекта: требовать флаг у каждого запуска незачем.
-
-    В панели модификаторы выключены по умолчанию — «команда работает в базовом режиме».
-    Обязательный флаг в этот рассказ не укладывается: человек жмёт «Запустить» и получает
-    `error: the following arguments are required: --owner`.
-    """
-    root = make_project(tmp, git=True)
-    cards = root / "AuroraKnowledgeDB/Concepts"
-    cards.mkdir(parents=True, exist_ok=True)
-    (root / "Raw").mkdir(exist_ok=True)
-    (root / "Raw/док.md").write_text("источник", encoding="utf-8")
-    (cards / "Понятие.md").write_text(
-        '---\ntitle: "Понятие"\nstatus: imported\nsource: "Raw/док.md"\n---\n\nтело\n',
-        encoding="utf-8")
-
-    cp = run("kb_verify.py", "Concepts", cwd=root)
-    assert "владелец @" in cp.stdout, f"владелец не определился сам:\n{cp.stdout[:400]}"
-    cp = run("kb_verify.py", "Concepts", "--owner", "коллега", cwd=root)
-    assert "владелец @коллега" in cp.stdout, "явный владелец не принят"
-
-    # реестр знает, каких флагов не хватает для запуска — панель включит их заранее
-    sys.path.insert(0, str(KIT / "scripts"))
-    import kit_commands as K
-    assert K.required_flags("kb_verify.py") == [], \
-        "у приёмки снова обязательный флаг — панель об этом узнает только из ошибки"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    assert "обязательный" in ui and "flag_required" in ui, \
-        "панель не показывает обязательные флаги"
-
-
-@test
-def test_verify_by_jira_status(tmp: Path):
-    """Статус задачи как основание доверия — и только при одной задаче на историю.
-
-    История, дошедшая до разработки, прошла разбор аналитика и приёмку постановки: это
-    основание. Две задачи на одну страницу — не «две причины верить», а неопределённость.
-    """
-    root = make_project(tmp, git=True)
-    (root / "aurora.config.yaml").write_text(
-        "project:\n  name: T\natlassian:\n  jira:\n"
-        '    trust_statuses: [Закрыто, "Тестирование - готово"]\n'
-        "    assumption_statuses: [Бэклог, Аналитика]\n"
-        # ветка объявлена доверенной целиком — но задача сильнее: страница ещё пишется
-        "verify:\n  trusted_sources: [Sources/Confluence]\n", encoding="utf-8")
-    conf, jira = root / "Sources/Confluence", root / "Sources/JIRA"
-    conf.mkdir(parents=True, exist_ok=True); jira.mkdir(parents=True, exist_ok=True)
-    for num in ("1.1", "1.2", "1.3"):
-        (conf / f"US-{num}.md").write_text(
-            f'---\ntitle: "US-{num}. История"\npage_id: {num.replace(".", "")}\n---\n\nтекст\n',
-            encoding="utf-8")
-    def issue(key, story, status):
-        (jira / f"{key}.md").write_text(
-            f'---\nkey: "{key}"\ntitle: "US-{story}. История"\nstatus: "{status}"\n---\n\nтекст\n',
-            encoding="utf-8")
-    issue("PRJ-1", "1.1", "Закрыто")          # доверяем
-    issue("PRJ-2", "1.2", "Бэклог")           # ещё предположение
-    issue("PRJ-3", "1.3", "Закрыто")          # спор: закрыто против бэклога — не судим
-    issue("PRJ-4", "1.3", "Аналитика")
-    issue("PRJ-5", "1.1", "Тестирование - готово")   # согласны с PRJ-1 — решение остаётся
-
-    cards = root / "AuroraKnowledgeDB/Concepts"
-    cards.mkdir(parents=True, exist_ok=True)
-    for name, num in (("Готовое", "1.1"), ("Гипотеза", "1.2"), ("Спорное", "1.3")):
-        (cards / f"{name}.md").write_text(
-            f'---\ntitle: "{name}"\nsource: "Sources/Confluence/US-{num}.md"\n'
-            "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
-
-    cp = run("kb_verify.py", "Concepts", "--owner", "@vadim", "--auto", "--apply", cwd=root)
-    good = (cards / "Готовое.md").read_text(encoding="utf-8")
-    guess = (cards / "Гипотеза.md").read_text(encoding="utf-8")
-    argued = (cards / "Спорное.md").read_text(encoding="utf-8")
-    assert "status: verified" in good and "PRJ-1" in good, f"не принято по статусу:\n{cp.stdout[:500]}"
-    assert "PRJ-5" in good, "вторая задача с тем же решением не попала в основание"
-    assert "status: draft" in guess, f"предположение не понижено:\n{guess}"
-    assert "предположение" in guess, "в карточке нет основания решения"
-    assert "status: verified" in argued, \
-        "спор в задачах решается доверенной веткой источника — карточка осталась ни с чем"
-
-    # задача со статусом вне обоих списков голоса не имеет и решению не мешает
-    issue("PRJ-6", "1.2", "Согласование у заказчика")
-    (cards / "Гипотеза.md").write_text(
-        '---\ntitle: "Гипотеза"\nsource: "Sources/Confluence/US-1.2.md"\n'
-        "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
-    run("kb_verify.py", "Concepts", "--owner", "@vadim", "--auto", "--apply",
-        "--allow-dirty", cwd=root)
-    guess2 = (cards / "Гипотеза.md").read_text(encoding="utf-8")
-    assert "status: draft" in guess2, "молчащая задача сорвала решение"
-    assert "без голоса: PRJ-6" in guess2, "не сказано, что у задачи статус вне списков"
-
-
-@test
-def test_verify_by_source_age_records_its_basis(tmp: Path):
-    """Пакетная приёмка по возрасту источника пишет в карточку, на чём основано доверие."""
-    root = make_project(tmp, git=True)
-    conf = root / "Sources/Confluence"
-    conf.mkdir(parents=True, exist_ok=True)
-    (conf / "Старая.md").write_text(
-        '---\ntitle: "Старая"\npage_id: 1\nupdated: 2019-03-01\n---\n\nтекст\n',
-        encoding="utf-8")
-    (conf / "Свежая.md").write_text(
-        f'---\ntitle: "Свежая"\npage_id: 2\nupdated: {__import__("datetime").date.today().isoformat()}\n---\n\nтекст\n',
-        encoding="utf-8")
-    cards = root / "AuroraKnowledgeDB/Concepts"
-    cards.mkdir(parents=True, exist_ok=True)
-    for name, src in (("Устоявшееся", "Старая"), ("Свежее", "Свежая")):
-        (cards / f"{name}.md").write_text(
-            f'---\ntitle: "{name}"\nsource: "Sources/Confluence/{src}.md"\n'
-            "status: imported\ntrust: medium\n---\n\nтекст\n", encoding="utf-8")
-
-    cp = run("kb_verify.py", "Concepts", "--owner", "@vadim",
-             "--source-older-than", "24", "--apply", cwd=root)
-    old = (cards / "Устоявшееся.md").read_text(encoding="utf-8")
-    fresh = (cards / "Свежее.md").read_text(encoding="utf-8")
-    assert "status: verified" in old, f"старое не принято:\n{cp.stdout[:600]}"
-    assert "verified_basis:" in old and "2019-03-01" in old, \
-        f"основание доверия не записано:\n{old}"
-    assert "status: imported" in fresh, "свежая страница принята вслепую"
-
-
-@test
-def test_verify_by_source_and_links(tmp: Path):
-    """Приёмка шире одной истории: происхождение, раздел базы и связи с принятыми историями.
-
-    Договор и словарь решения не требуют, а алгоритм под принятой историей принят вместе с
-    ней. Останавливает одно: хотя бы одна ссылающаяся история ещё не принята — значит
-    содержание может поменяться. Заготовка не проходит никогда: у неё нет источника.
-    """
-    root = make_project(tmp, git=True)
-    (root / "aurora.config.yaml").write_text(
-        "project:\n  name: T\nverify:\n"
-        "  trusted_sources: [Raw/contract]\n"
-        "  trusted_sections: [Glossary]\n", encoding="utf-8")
-    cards = root / "AuroraKnowledgeDB/Concepts"
-    glossary = root / "AuroraKnowledgeDB/Glossary"
-    cards.mkdir(parents=True, exist_ok=True); glossary.mkdir(parents=True, exist_ok=True)
-
-    def card(where, name, source, body="текст", status="imported"):
-        (where / f"{name}.md").write_text(
-            f'---\ntitle: "{name}"\nsource: "{source}"\nstatus: {status}\n---\n\n{body}\n',
-            encoding="utf-8")
-
-    card(cards, "Из-договора", "Raw/contract/Приложение-1.md")
-    card(cards, "Из-переписки", "Raw/mail/письмо.md")
-    card(glossary, "Термин", "Sources/Confluence/Словарь.md")
-    card(cards, "US-1", "Sources/Confluence/US-1.md", "см. [[Алгоритм-приёма]]", "verified")
-    card(cards, "US-2", "Sources/Confluence/US-2.md", "см. [[Спорный-алгоритм]]")
-    card(cards, "Алгоритм-приёма", "Sources/Confluence/ALG-1.md")
-    card(cards, "Спорный-алгоритм", "Sources/Confluence/ALG-2.md")
-    (cards / "US-3.md").write_text(
-        '---\ntitle: "US-3"\nsource: "Sources/Confluence/US-3.md"\nstatus: verified\n'
-        "---\n\nсм. [[Спорный-алгоритм]]\n", encoding="utf-8")
-    (cards / "Заготовка.md").write_text(
-        '---\ntitle: "Заготовка"\nstatus: draft\ntags: [заготовка]\n---\n\n'
-        "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n", encoding="utf-8")
-    (cards / "Сирота.md").write_text(
-        '---\ntitle: "Сирота"\nstatus: draft\ntags: [заготовка]\n---\n\n'
-        "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n", encoding="utf-8")
-    # ссылка на заготовку из живой карточки — то единственное, что заготовка утверждает
-    (cards / "Из-договора.md").write_text(
-        (cards / "Из-договора.md").read_text(encoding="utf-8") + "\nсм. [[Заготовка]]\n",
-        encoding="utf-8")
-
-    cp = run("kb_verify.py", "--owner", "@vadim", "--auto", "--apply", cwd=root)
-    got = {f.stem: f.read_text(encoding="utf-8")
-           for f in list(cards.glob("*.md")) + list(glossary.glob("*.md"))}
-    assert "status: verified" in got["Из-договора"], f"договор не принят:\n{cp.stdout[:600]}"
-    assert "Raw/contract" in got["Из-договора"], "в основании не назван доверенный источник"
-    assert "status: verified" in got["Термин"], "доверенный раздел базы не принят"
-    assert "status: imported" in got["Из-переписки"], "принято то, чего нет в списках"
-    assert "status: verified" in got["Алгоритм-приёма"], \
-        f"алгоритм под принятой историей не принят:\n{cp.stdout[:600]}"
-    assert "US-1" in got["Алгоритм-приёма"], "в основании не названа история"
-    assert "status: imported" in got["Спорный-алгоритм"], \
-        "принято при том, что одна из ссылающихся историй не принята"
-    assert "status: verified" in got["Заготовка"], \
-        f"заготовка со ссылкой не принята — утверждений в ней нет:\n{cp.stdout[:600]}"
-    assert "заготовка:" in got["Заготовка"], "в основании не сказано, что это заготовка"
-    assert "status: draft" in got["Сирота"], \
-        "принята заготовка, на которую никто не ссылается — имя взялось из ниоткуда"
-    assert "не подошло ни под одно правило" in cp.stdout, "не сказано, что осталось человеку"
 
 
 @test
