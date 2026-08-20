@@ -2150,6 +2150,43 @@ def test_night_run_waits_out_a_dropped_connection(tmp: Path):
 
 
 @test
+def test_distill_writes_a_thesis_and_keeps_the_source(tmp: Path):
+    """Тезис пишется, дословный источник остаётся под ним, шапка не задета.
+
+    Это третья за перестройку попытка собрать файл из разобранных частей — и первые две
+    вклеивали поле в тело: `split_frontmatter` отдаёт шапку без «---», и всякая сборка
+    «по длине» промахивается. Здесь проверяется результат целиком, а не намерение.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    card = root / "AuroraKnowledgeDB/Concepts/Расчёт.md"
+    card.write_text('---\ntitle: "Расчёт"\nkind: knowledge\nstatus: draft\n'
+                    'type: concept\n---\n\nИсходный текст страницы.\nВторая строка.\n',
+                    encoding="utf-8")
+
+    def fake(cfg, role, messages, deadline=None):
+        if role == "qa":
+            return {"ok": True, "backend": 1, "model": "qa", "log": [],
+                    "text": "ВЕРДИКТ: ЧИСТО"}
+        return {"ok": True, "backend": 1, "model": "w", "log": [], "tps": 10,
+                "text": "Расчёт — это способ получить сумму.\nВыполняется по расписанию."}
+
+    step = R.distill_card({"request_timeout": 60}, str(card), call=fake)
+    assert step["status"] == "переписана", step
+    out = "---" + step["head"] + "\n---" + step["body"]
+    head = out[3:out.find("\n---", 3)]
+    assert "kind: knowledge" in head and "title:" in head, "шапка потеряна"
+    assert "Расчёт — это способ" in out.split("\n---", 1)[1], "тезиса нет в теле"
+    assert R.QUOTES in out and "Исходный текст страницы." in out.split(R.QUOTES)[1], \
+        "дословный источник не сохранён под тезисом"
+    assert "Расчёт — это способ" not in head, "тезис попал в шапку"
+    assert out.count("---") == 2, f"разделители шапки задвоились:\n{out[:200]}"
+
+
+@test
 def test_card_kind_decides_who_may_rewrite_the_body(tmp: Path):
     """Тип карточки определяется правилом, и выбор человека сильнее правила."""
     sys.path.insert(0, str(KIT / "scripts"))
