@@ -2490,6 +2490,46 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_reset_warns_about_facts_not_folder_names(tmp: Path):
+    """«Заново не выведется» — про карточки без документа, а не про имя раздела.
+
+    Предупреждение висело на списке разделов: Reference, meta, Decisions. На живом
+    проекте это оказалось неправдой — все 105 карточек `Reference/` имели `source:` в
+    зеркале и вернулись бы сами. Человек читал «⚠️ заново не выведется» и понимал это
+    как «удалятся исходные документы», хотя за пределами базы не трогается ничего.
+
+    Считать надо факт: есть ли за карточкой файл, из которого её собрали. Карты и
+    оглавления исключение — их собирают из самой базы.
+    """
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("текст", encoding="utf-8")
+    card(root, "Reference/Из-зеркала.md", "тело", status="knowledge",
+         source="Sources/Confluence/Док.md")
+    card(root, "Reference/Ниоткуда.md", "тело", status="knowledge")
+    card(root, "Reference/Ссылка-в-никуда.md", "тело", status="knowledge",
+         source="Sources/Confluence/Пропал.md")
+    (root / "AuroraKnowledgeDB/MOC").mkdir(parents=True, exist_ok=True)
+    card(root, "MOC/Карта.md", "карта", status="index")
+
+    cp = run("kb_reset.py", cwd=root, expect_rc=0)
+    assert "Reference: 3  ⚠️ из них 2 не выведется" in cp.stdout, \
+        f"счёт невосстановимых считается не по факту:\n{cp.stdout}"
+    assert "MOC: 1" in cp.stdout and "MOC: 1  ⚠️" not in cp.stdout, \
+        "карты объявлены потерей — их собирает kb:moc из самой базы"
+    assert "Итого невосстановимых карточек: 2" in cp.stdout, "нет итоговой строки"
+    assert "Sources/, Raw/" in cp.stdout, "не сказано, что источники не трогаются"
+
+    # база, целиком выведенная из источников, не должна пугать вовсе
+    (root / "AuroraKnowledgeDB/Reference/Ниоткуда.md").unlink()
+    (root / "AuroraKnowledgeDB/Reference/Ссылка-в-никуда.md").unlink()
+    cp2 = run("kb_reset.py", cwd=root, expect_rc=0)
+    assert "Невосстановимых карточек нет" in cp2.stdout, \
+        "молчаливое отсутствие предупреждения читается как недосмотр — говорим прямо"
+    assert "⚠️ из них" not in cp2.stdout, "предупреждение осталось там, где терять нечего"
+
+
+@test
 def test_refusing_to_write_stops_the_route(tmp: Path):
     """Отказ писать — код 2, а не 1: маршрут обязан встать, а не идти дальше.
 
@@ -4315,8 +4355,12 @@ def test_kb_reset_empties_the_base_and_nothing_else(tmp: Path):
     dry = run("kb_reset.py", cwd=root)
     assert "verified: 1" in dry.stdout and "работа человека" in dry.stdout, \
         f"не предупреждает, что удаляет проверенное человеком:\n{dry.stdout[:600]}"
-    assert "заново из источников не выведется" in dry.stdout, \
-        "не назвал разделы, которых нет ни в одном источнике"
+    # с 1.92.4 счёт идёт по факту: у карточек этой фикстуры `source:` нет вовсе,
+    # значит после сноса они не вернутся — и это должно быть сказано числом
+    assert "не выведется заново: источника нет" in dry.stdout, \
+        "не назвал карточки, за которыми не стоит документа"
+    assert "Итого невосстановимых карточек:" in dry.stdout, \
+        "нет итоговой строки: человек читает разделы и не видит общего счёта"
     assert (kb / "Concepts/Карточка.md").exists(), "dry-run удалил файлы"
 
     run("kb_reset.py", "--apply", cwd=root)

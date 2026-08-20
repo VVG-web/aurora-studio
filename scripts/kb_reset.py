@@ -77,8 +77,13 @@ def survives(rel: str, keep_handmade: bool) -> str:
 
 
 def scan(keep_handmade: bool) -> tuple:
-    """(что удалить, что оставить с причиной, статистика по статусам удаляемых карточек)."""
-    drop, keep, statuses = [], [], {}
+    """(что удалить, что оставить с причиной, статистика по статусам, сироты по разделам).
+
+    Сирота здесь — карточка, за которой не стоит документа: `source:` пуст или указывает
+    на файл, которого нет. Только такие после сноса не вернутся, и только про них честно
+    предупреждать.
+    """
+    drop, keep, statuses, orphan = [], [], {}, {}
     for dirpath, dirs, files in os.walk(ROOT):
         # `.obsidian/` — настройки редактора, а не знание; точечные файлы (`.gitkeep`)
         # держат в git пустые папки разделов, которые остаются после сброса
@@ -96,7 +101,21 @@ def scan(keep_handmade: bool) -> tuple:
                 fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
                 st = (fm.get("status") or "без статуса").strip()
                 statuses[st] = statuses.get(st, 0) + 1
-    return sorted(drop), sorted(keep), statuses
+                # Восстановится ли карточка после сноса — решает не раздел, а наличие
+                # документа, из которого её собрали. Предупреждение по имени раздела
+                # пугало там, где терять нечего: на живом проекте все 105 карточек
+                # Reference/ имели `source:` в зеркале и вернулись бы сами.
+                src = (fm.get("source") or "").strip().strip('"')
+                # Карты и оглавления источника не имеют и не должны: их собирают из самой
+                # базы (`kb:moc`, `kb:index`). Считать их потерей — пугать на ровном месте.
+                rel_top = os.path.relpath(path, ROOT).replace("\\", "/")
+                if st == "index" or rel_top.startswith("MOC/") or f == "_index.md":
+                    continue   # статус index появился в 1.92 — старые базы узнаём по пути
+                if not (src and os.path.exists(os.path.join(os.path.dirname(ROOT) or ".",
+                                                            src))):
+                    top = os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
+                    orphan[top] = orphan.get(top, 0) + 1
+    return sorted(drop), sorted(keep), statuses, orphan
 
 
 def main() -> int:
@@ -135,7 +154,7 @@ def main() -> int:
         print(f"kb_reset: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
-    drop, keep, statuses = scan(a.keep_handmade)
+    drop, keep, statuses, orphan = scan(a.keep_handmade)
     cards = [p for p in drop if p.endswith(".md")]
     print(f"# Сброс базы знаний — {TODAY}\n")
     print(f"Режим: {'всё, кроме рукотворного' if a.keep_handmade else 'полный'}")
@@ -156,10 +175,20 @@ def main() -> int:
             by_dir[top] = by_dir.get(top, 0) + 1
         print("По разделам:")
         for top, n in sorted(by_dir.items(), key=lambda x: -x[1]):
-            mark = ("  ⚠️ заново из источников не выведется"
-                    if top in NO_SOURCE and not a.keep_handmade else "")
+            lost = orphan.get(top, 0) if not a.keep_handmade else 0
+            mark = (f"  ⚠️ из них {lost} не выведется заново: источника нет"
+                    if lost else "")
             print(f"  {top}: {n}{mark}")
         print()
+    lost = sum(orphan.values()) if not a.keep_handmade else 0
+    if lost:
+        print(f"Итого невосстановимых карточек: {lost} — за ними не стоит документа "
+              f"(`source:` пуст или указывает на файл, которого нет). Всё остальное "
+              f"соберётся заново из Sources/ и Raw/.")
+        print("Сохранить их: `--keep-handmade`. Вернуть после сноса: только из git.\n")
+    elif drop:
+        print("Невосстановимых карточек нет: за каждой стоит документ в Sources/ или "
+              "Raw/, и она соберётся заново.\n")
     if a.keep_handmade:
         # обвязку базы уже назвали выше — здесь только рукотворное
         seen = {}
