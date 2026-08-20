@@ -549,7 +549,10 @@ def test_build_plan_partitions_and_resumes(tmp: Path):
 def test_lint_checks_release_registry(tmp: Path):
     """applies_to без реестра релизов — мёртвая разметка: фильтр контекста молча выключен."""
     root = make_project(tmp)
-    card(root, "Systems/Шина-R2.md", "", status="imported", applies_to="[R2]")
+    # Связь у карточки должна быть: с 1.91 одиночка — отдельная ошибка линтера, и она
+    # заслонила бы то, ради чего написан этот кейс.
+    card(root, "Systems/Шина-R2.md", "см. [[Очередь]]", status="knowledge", applies_to="[R2]")
+    card(root, "Systems/Очередь.md", "см. [[Шина-R2]]", status="knowledge")
 
     cp = run("kb_lint.py", cwd=root, expect_rc=1)
     assert "нет AuroraKnowledgeDB/meta/releases.md" in cp.stdout, \
@@ -2770,7 +2773,10 @@ def test_lint_spares_artifacts_that_came_from_sources(tmp: Path):
 
     out = run("kb_lint.py", cwd=root, expect_rc=1).stdout
     assert "US-3.1.2-Сгенерировано-нами" in out, "сгенерированный артефакт перестали замечать"
-    assert "US-3.1.1-Выгружено-из-вики" not in out, \
+    # Смотрим именно категорию артефактов: с 1.91 линтер отдельно называет карточки без
+    # связей, и одиночная фикстура попадает туда по другому поводу.
+    arts = out.split("артефакты, попавшие в базу знаний")[1] if "артефакты, попавшие" in out else out
+    assert "US-3.1.1-Выгружено-из-вики" not in arts.split("## ")[0], \
         "страница из зеркала объявлена чужим артефактом"
 
 
