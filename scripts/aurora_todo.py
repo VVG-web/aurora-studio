@@ -72,6 +72,21 @@ def main() -> int:
         if n:
             todo.append((f"{n} {what}", how, ""))
 
+    no_kind = sum(1 for _ in ())
+    try:
+        import subprocess as _sp
+        r = _sp.run([sys.executable, os.path.join(HERE, "kb_kind.py")],
+                    capture_output=True, text=True, timeout=600)
+        m = re.search(r"Проставить: (\d+)", r.stdout or "")
+        no_kind = int(m.group(1)) if m else 0
+    except Exception:                                    # noqa: BLE001
+        no_kind = 0
+    if no_kind:
+        todo.append((f"Проставить тип {no_kind} карточкам",
+                     "Тип решает, кому можно править тело: словарь и документ модель не "
+                     "трогает, знание переосмысляет. Движок проставит по правилу — но "
+                     "спорные случаи стоит просмотреть.",
+                     "kb:kind --apply"))
     if left_src:
         todo.append((f"Разобрать источники: осталось {left_src}",
                      "Кнопка «Разобрать всё» доводит план до конца сама — это часы, "
