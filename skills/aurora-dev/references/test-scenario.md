@@ -2,7 +2,7 @@
 id: TS-000                      # TS-<номер>
 title: "Маршрут пользователя целиком, от состояния до состояния"
 goal: "Что человек получает, когда сценарий пройден"
-component: [kb:build, kb:verify, ctx:context]   # узлы, которые сценарий связывает
+component: [kb:build, kb:trust, ctx:context]   # узлы, которые сценарий связывает
 type: e2e                       # e2e | smoke | release | migration | recovery
 priority: P1
 status: draft
@@ -56,7 +56,7 @@ python3 .opencode/scripts/build_plan.py --done Sources/Confluence/<файл>
 ### Шаг 3 · Приёмка
 
 ```bash
-python3 .opencode/scripts/kb_verify.py --auto --apply
+python3 .opencode/scripts/kb_trust.py --apply
 ```
 
 Состояние после: у карточки `status: verified`, заполнены `verified_basis` и
@@ -70,7 +70,7 @@ python3 .opencode/scripts/kb_verify.py --auto --apply
 |---|---|---|
 | источник без структуры | `--slice` печатает «секций: 0» | разбирать чтением, шаг 2 вручную |
 | карточка не принята | в отчёте «не подошло ни под одно правило» | это норма для новых историй — не ошибка сценария |
-| битые ссылки | `kb:verify` пропускает карточку | `kb:repair --links --apply`, вернуться к шагу 3 |
+| битые ссылки | связь не доказана, класс останется `unknown` | `kb:repair --links --apply`, вернуться к шагу 3 |
 
 ## Критерий прохождения
 

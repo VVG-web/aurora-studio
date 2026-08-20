@@ -1,7 +1,7 @@
 ---
 id: TC-000                      # TC-<номер>, уникален и не переиспользуется
 title: "Короткое утверждение о поведении, а не название кнопки"
-component: kb:verify            # команда движка или узел: kb:build, cockpit, sync:confluence
+component: kb:trust             # команда движка или узел: kb:build, cockpit, sync:confluence
 type: functional                # functional | regression | negative | integration | ui | perf
 priority: P2                    # P1 — ломает работу; P2 — мешает; P3 — косметика
 status: draft                   # draft | ready | blocked | deprecated

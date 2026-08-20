@@ -21,8 +21,8 @@ flowchart LR
   end
 
   subgraph KB["3 · База знаний — AuroraKnowledgeDB/"]
-    IMP["imported\nмашина принесла"]
-    VER["verified\nчеловек проверил"]
+    IMP["draft\nмашина принесла"]
+    VER["knowledge\nчеловек проверил"]
     MOC["MOC\nкарты содержания"]
   end
 
@@ -38,7 +38,7 @@ flowchart LR
   MJIRA -->|"kb:build + ассистент"| IMP
   IMP -->|"kb:links --cards\nkb:moc"| MOC
   MOC -.->|"вход у каждой карточки"| IMP
-  IMP -->|"kb:queue → человек → kb:verify"| VER
+  IMP -->|"ops:trace-table → kb:trust"| VER
   VER -->|"ctx:context\nтолько проверенное"| ART
   ART -->|"make:review\nship:export · ship:publish"| DEL
   DEL -->|"ship:release"| CONF
@@ -63,19 +63,19 @@ flowchart LR
 
 ```mermaid
 stateDiagram-v2
-  [*] --> imported: kb#58;build — извлёк ассистент
-  imported --> draft: человек начал править
+  [*] --> draft: kb#58;build — извлёк ассистент
+  draft --> draft: человек начал править
   draft --> in_review: отдал на проверку
-  in_review --> verified: kb#58;verify — сверено с источником
-  imported --> verified: kb#58;verify --source-older-than\n(пакетно, основание в карточке)
-  verified --> imported: sync#58;diff — источник изменился
-  verified --> deprecated: kb#58;supersede — знание заменено
+  in_review --> knowledge: kb#58;verify — сверено с источником
+  draft --> knowledge: kb#58;verify --source-older-than\n(пакетно, основание в карточке)
+  knowledge --> draft: sync#58;diff — источник изменился
+  knowledge --> deprecated: kb#58;supersede — знание заменено
   deprecated --> [*]: _archive/ — только история
 
-  note right of verified
+  note right of knowledge
     Верхний статус базы.
     В ctx:context режимов generate и review
-    попадает только verified.
+    попадает только knowledge.
   end note
 ```
 
@@ -93,5 +93,5 @@ stateDiagram-v2
 
 Два правила, из которых вырастает всё остальное: **зеркало детерминировано** (один и тот
 же источник даёт один и тот же файл — иначе git-diff перестаёт быть уликой) и **доверие
-присваивает человек** (`verified` ставит тот, кто сверил карточку с источником и отвечает
+присваивает человек** (`knowledge` ставит тот, кто сверил карточку с источником и отвечает
 за это).

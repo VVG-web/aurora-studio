@@ -81,7 +81,7 @@ python3 scripts/dev_qa.py --run all --record
 | что угодно в движке | **TS-001** — обязателен всегда, 10 минут |
 | `confluence_export`, `jira_export`, `sources_core`, `sync_audit` | TS-002 |
 | `build_plan`, `kb_graph`, текст задания в `build.md` | TS-003 |
-| `kb_verify`, `ctx_pack`, списки доверия | TS-004 |
+| `kb_trust`, `kb_trace_table`, `kb_kind`, `ctx_pack` | TS-004 |
 | `kb_fix`, `kb_lint`, `kb_moc`, `kb_index` | TS-005 |
 | перед публикацией в открытый репозиторий | TS-006 |
 | `cockpit/`, `commands.txt`, флаги команд | TS-007 |
