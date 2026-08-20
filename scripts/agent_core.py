@@ -150,7 +150,7 @@ ALLOWED_WRITES = {
 }
 # Запрещено навсегда, при любых флагах: доверие присваивает человек, снос и поставка —
 # тоже человек. Это не настройка, а конструкция.
-FORBIDDEN = ("kb_verify.py", "kb_reset.py", "ship_doc.py", "publish_doc.py", "git")
+FORBIDDEN = ("kb_trust.py", "kb_reset.py", "ship_doc.py", "publish_doc.py", "git")
 
 
 def write_allowed(script: str, args: list) -> tuple:

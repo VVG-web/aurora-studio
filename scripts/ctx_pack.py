@@ -12,9 +12,9 @@
   python3 .opencode/scripts/ctx_pack.py "Заявка" --save          # + файл в Artifacts/drafts/
 
 Режимы (`--mode`) по таблице retrieval.md:
-  generate (по умолчанию), review — только verified
+  generate (по умолчанию), review — только knowledge (доверенный источник)
   ask                             — плюс deprecated и отклонённые/заменённые DR как история
-  evaluate                        — плюс draft/in-review/imported (оценка кандидатов)
+  evaluate                        — плюс draft: знание из недоказанных источников
 
 Bootstrap: пока verified меньше порога из `aurora.config.yaml`, непроверенные
 карточки допускаются с громкой шапкой — и пак об этом честно предупреждает.
@@ -46,19 +46,22 @@ STORY_NUM = re.compile(r"(?i)\b(?:US|AC|ALG)?[\s._-]?(\d+(?:\.\d+){1,3})\b")
 ISSUE_KEY = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 JIRA_ROWS = 12            # больше — это уже не ответ на вопрос, а выгрузка бэклога
 MODE_STATUSES = {
-    # canonical — легаси-синоним verified (убран из схемы в 1.10.0): старые базы
-    # не должны разом потерять доверие к карточкам
-    "generate": {"canonical", "verified"},
-    "review": {"canonical", "verified"},
-    "ask": {"canonical", "verified", "deprecated"},
-    "evaluate": {"canonical", "verified", "draft", "in-review", "imported", ""},
+    # Шкала после перехода на вычисляемое доверие: `knowledge` — знание из доверенного
+    # источника, `draft` — из недоверенного либо недоказанного. Легаси-статусы
+    # (`verified`, `imported`, `canonical`) читаются как прежде, пока проект не прошёл
+    # пересборку: база не должна ослепнуть на время перехода.
+    "generate": {"knowledge", "verified", "canonical"},
+    "review": {"knowledge", "verified", "canonical"},
+    "ask": {"knowledge", "verified", "canonical", "deprecated"},
+    "evaluate": {"knowledge", "draft", "verified", "canonical", "in-review", "imported", ""},
 }
 PREAMBLE = (
-    "Ниже — карточки базы знаний проекта. Уровень доверия указан в шапке каждой карточки.\n"
-    "verified — факты; imported/draft — материал для оценки, не факты;\n"
-    "deprecated — история, не применять. При противоречии верь карточке с более высоким\n"
-    "статусом и более свежей датой verified; противоречие verified-карточек — это ошибка,\n"
-    "о которой надо сообщить.\n"
+    "Ниже — карточки базы знаний проекта. Класс доверия указан в шапке каждой карточки и\n"
+    "вычислен движком по статусу связанных задач, а не проставлен человеком.\n"
+    "knowledge — знание из доверенного источника: постановка устоялась, на это можно\n"
+    "опираться. draft — источник недоверенный или связей с задачами нет: материал для\n"
+    "оценки, не факт. deprecated — история, не применять.\n"
+    "Противоречие двух knowledge-карточек — это ошибка базы, о которой надо сообщить.\n"
 )
 
 
@@ -84,19 +87,22 @@ class Card(BaseCard):
 
     def header(self) -> str:
         """Шапка доверия — инвариант 4: карточка не входит в промпт без неё."""
-        st, owner = self.status or "без статуса", self.fm.get("owner", "—")
+        st = self.status or "без статуса"
         if self.status == "deprecated":
             succ = self.fm.get("superseded_by", "—")
             return f"[deprecated | заменено: {succ} | только исторический контекст]"
+        # Основание словами вместо имени владельца: доверие больше не чьё-то решение, и
+        # спрашивать «кто принял» стало не у кого. Спрашивать надо «почему», а ответ на
+        # это пишет `kb:trust` — статус задачи и то, чем доказана связь.
+        why = (self.fm.get("trust_basis") or "").strip().strip('"')
         if self.status in TRUSTED:
             if self.expired:
-                return (f"[{st} | ПРОСРОЧЕНО: review_by {self.fm.get('review_by')} — "
-                        "возможно устарело, перепроверь]")
-            return (f"[{st} | проверено {self.fm.get('verified', '—')} | владелец {owner} | "
-                    f"годно до {self.fm.get('review_by', '—')}]")
+                return (f"[{st} | ПЕРЕСЧИТАТЬ: {self.fm.get('review_by')} прошло — "
+                        "статус задачи мог измениться]")
+            return f"[{st} | доверенный источник | {why or 'основание не записано'}]"
         if self.section == "Reference":
             return "[reference | справочник домена]"
-        return f"[{st} | НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ | не считать фактом]"
+        return f"[{st} | НЕ ФАКТ | {why or 'источник не подтверждён задачей'}]"
 
 
 def first_sentence(text: str) -> str:
