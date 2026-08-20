@@ -139,6 +139,8 @@ Full steps: [docs/INSTALL.md](docs/INSTALL.md) · Migration of an existing pile 
 
 ### Документация
 
+- [Правила базы знаний](docs/knowledge-rules.md) — доверие, типы карточек, устройство карточки и что делает человек
+
 Полный набор для людей — [`docs/readme/`](docs/readme/README.md):
 
 | Документ | О чём |
