@@ -51,7 +51,7 @@
 | `kb:supersede` (`supersede`) | заменить знание с историей: deprecated → `_archive`, ссылки переписываются | скрипт | `kb_supersede.py` `old new` | `--dr --reason --apply` | 1.8.0 |
 | `kb:links` (`links, graph`) | граф связей: ключи Requirement Yogi и номера историй; `--cards` переносит связи в `related:` карточек | скрипт | `kb_graph.py` | `--story --write --json --cards --apply --insights --allow-dirty --max-related --report --conf --jira` | 1.19.0 |
 | `kb:map` (`map`) | что говорит граф: сообщества, доросшие до своей карты, мосты между темами и острова, до которых не дойти по ссылкам | скрипт | `kb_graph.py --insights` | `--story --write --json --cards --apply --allow-dirty --max-related --report --conf --jira` | 1.66.0 |
-| `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит всё содержимое AuroraKnowledgeDB/, за её пределами не трогает ничего; `--keep-handmade` оставляет то, чего нет в источниках; откат — из git | скрипт | `kb_reset.py` | `--apply --keep-handmade --backup --allow-dirty` | 1.24.0 |
+| `kb:reset` (`reset`) | обнулить базу и собрать заново: сносит из AuroraKnowledgeDB/ то, что соберётся заново; карточки без документа остаются, `--drop-handmade` сносит и их; откат — из git | скрипт | `kb_reset.py` | `--apply --drop-handmade --backup --allow-dirty` | 1.24.0 |
 | `kb:lint` (`lint`) | механические ошибки базы: ссылки, frontmatter, типы карточек, артефакты в знаниях, секреты | скрипт | `kb_lint.py` | `--full --summary` | 1.0.0 |
 | `kb:question` | завести вопрос к заказчику (Q-NNN): кому, что блокирует, срок | модель | `workflows.md` | — | 1.4.0 |
 | `kb:answer` | зафиксировать ответ: закрыть вопрос и разнести знание в REQ/спеку/DR | модель | `workflows.md` | — | 1.4.0 |

@@ -52,36 +52,49 @@ TODAY = datetime.now().strftime("%Y-%m-%d_%H%M")
 # Не знание, а обвязка базы: из источников не выводится, но и содержимым базы не является.
 # Версию движка отсюда читают панель, `doctor` и `update`.
 KEEP = ("meta/aurora_version.txt",)
-# Разделы, которых нет ни в одном источнике: `kb:build` их не вернёт.
-NO_SOURCE = ("Decisions", "Questions", "Reference", "meta")
-# Что оставляет `--keep-handmade`. Внутри `meta/` — только правила: `manifest.json` уходит
-# всегда, иначе `kb:build` считает источники разобранными и план выйдет пустым.
-HANDMADE_DIRS = {"Decisions": "журнал решений: почему выбрали так",
-                 "Questions": "вопросы заказчику и ответы",
-                 "Reference": "справочники, которые ведут руками"}
+# Правила и проверки базы: их пишет человек, и `manifest.json` к ним не относится — он
+# уходит всегда, иначе `kb:build` считает источники разобранными и план выйдет пустым.
 HANDMADE_META = ("conventions.md", "golden_questions.md", "lint_baseline.txt")
+# Разделы, которые собираются из самой базы: `kb:moc` и `kb:index` вернут их целиком.
+GENERATED = ("MOC",)
 
 
-def survives(rel: str, keep_handmade: bool) -> str:
-    """Почему файл остаётся; пустая строка — не остаётся."""
+def regenerated(rel: str, status: str) -> bool:
+    """Карта или оглавление: источника не имеет и не должно — собирается из базы."""
+    return (status == "index" or rel.split("/")[0] in GENERATED
+            or os.path.basename(rel) == "_index.md")
+
+
+def survives(rel: str, source_alive: bool, status: str, drop_handmade: bool) -> str:
+    """Почему файл остаётся; пустая строка — не остаётся.
+
+    Решает **факт**, а не имя папки. Папка не может знать, кто написал карточку: база
+    разложена по предметам, чтобы работали карты, ссылки и поиск, — а авторство лежит
+    поперёк предметов. Замер на живом проекте (1955 карточек): в «рукотворных» разделах
+    `Decisions/`, `Questions/`, `Reference/` из 269 карточек невосстановимы всего **31**,
+    остальные 238 машина собрала из зеркал. А вне этих разделов невосстановимых
+    **451** — в четырнадцать раз больше, чем внутри. Папка ошибается в обе стороны.
+
+    Факт простой: за карточкой либо стоит документ, из которого её собрали, либо нет.
+    Нет — значит пересборка её не вернёт, и сносить её по умолчанию нельзя.
+    """
     if rel in KEEP:
         return "обвязка базы: отметка версии движка"
-    if not keep_handmade:
-        return ""
-    top = rel.split("/")[0]
-    if top in HANDMADE_DIRS:
-        return HANDMADE_DIRS[top]
-    if top == "meta" and os.path.basename(rel) in HANDMADE_META:
+    if drop_handmade:
+        return ""      # просили снести всё — значит и правила базы тоже
+    if rel.split("/")[0] == "meta" and os.path.basename(rel) in HANDMADE_META:
         return "правила и проверки базы"
-    return ""
+    if source_alive or regenerated(rel, status):
+        return ""
+    return "за карточкой нет документа: пересборка её не вернёт"
 
 
-def scan(keep_handmade: bool) -> tuple:
-    """(что удалить, что оставить с причиной, статистика по статусам, сироты по разделам).
+def scan(drop_handmade: bool) -> tuple:
+    """(что удалить, что оставить с причиной, статистика по статусам, потери по разделам).
 
-    Сирота здесь — карточка, за которой не стоит документа: `source:` пуст или указывает
-    на файл, которого нет. Только такие после сноса не вернутся, и только про них честно
-    предупреждать.
+    Потеря — карточка, за которой не стоит документа: `source:` пуст или указывает на
+    файл, которого нет. Только такие пересборка не вернёт. По умолчанию они и остаются;
+    `--drop-handmade` сносит вместе со всем остальным.
     """
     drop, keep, statuses, orphan = [], [], {}, {}
     for dirpath, dirs, files in os.walk(ROOT):
@@ -92,38 +105,34 @@ def scan(keep_handmade: bool) -> tuple:
             if f.startswith("."):
                 continue
             path = os.path.join(dirpath, f).replace("\\", "/")
-            why = survives(os.path.relpath(path, ROOT).replace("\\", "/"), keep_handmade)
+            rel = os.path.relpath(path, ROOT).replace("\\", "/")
+            st, source_alive = "", True
+            if f.endswith(".md") and not is_service(path):
+                fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+                st = (fm.get("status") or "без статуса").strip()
+                src = (fm.get("source") or "").strip().strip('"')
+                source_alive = bool(src and os.path.exists(
+                    os.path.join(os.path.dirname(ROOT) or ".", src)))
+            why = survives(rel, source_alive, st, drop_handmade)
             if why:
                 keep.append((path, why))
                 continue
             drop.append(path)
-            if f.endswith(".md") and not is_service(path):
-                fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
-                st = (fm.get("status") or "без статуса").strip()
+            if st:
                 statuses[st] = statuses.get(st, 0) + 1
-                # Восстановится ли карточка после сноса — решает не раздел, а наличие
-                # документа, из которого её собрали. Предупреждение по имени раздела
-                # пугало там, где терять нечего: на живом проекте все 105 карточек
-                # Reference/ имели `source:` в зеркале и вернулись бы сами.
-                src = (fm.get("source") or "").strip().strip('"')
-                # Карты и оглавления источника не имеют и не должны: их собирают из самой
-                # базы (`kb:moc`, `kb:index`). Считать их потерей — пугать на ровном месте.
-                rel_top = os.path.relpath(path, ROOT).replace("\\", "/")
-                if st == "index" or rel_top.startswith("MOC/") or f == "_index.md":
-                    continue   # статус index появился в 1.92 — старые базы узнаём по пути
-                if not (src and os.path.exists(os.path.join(os.path.dirname(ROOT) or ".",
-                                                            src))):
-                    top = os.path.relpath(path, ROOT).replace("\\", "/").split("/")[0]
-                    orphan[top] = orphan.get(top, 0) + 1
+                if not source_alive and not regenerated(rel, st):
+                    orphan[rel.split("/")[0]] = orphan.get(rel.split("/")[0], 0) + 1
     return sorted(drop), sorted(keep), statuses, orphan
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Обнулить базу знаний и собрать заново")
     ap.add_argument("--apply", action="store_true", help="удалить (иначе dry-run)")
+    ap.add_argument("--drop-handmade", action="store_true",
+                    help="снести и то, за чем не стоит документа: пересборка это не "
+                         "вернёт, только git")
     ap.add_argument("--keep-handmade", action="store_true",
-                    help="оставить то, чего нет в источниках: Decisions/, Questions/, "
-                         "Reference/, правила базы в meta/")
+                    help=argparse.SUPPRESS)   # с 1.93 это поведение по умолчанию
     ap.add_argument("--backup", metavar="DIR",
                     help="сначала скопировать базу целиком в эту папку")
     ap.add_argument("--allow-dirty", action="store_true",
@@ -154,10 +163,10 @@ def main() -> int:
         print(f"kb_reset: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
-    drop, keep, statuses, orphan = scan(a.keep_handmade)
+    drop, keep, statuses, orphan = scan(a.drop_handmade)
     cards = [p for p in drop if p.endswith(".md")]
     print(f"# Сброс базы знаний — {TODAY}\n")
-    print(f"Режим: {'всё, кроме рукотворного' if a.keep_handmade else 'полный'}")
+    print(f"Режим: {'полный, включая рукотворное' if a.drop_handmade else 'всё, что соберётся заново'}")
     print(f"К удалению: {len(drop)} файлов (карточек {len(cards)}) · остаётся: {len(keep)}")
     print("Не тронутся: .obsidian/ (настройки хранилища) и meta/aurora_version.txt, "
           "а за пределами базы — ничего: Sources/, Raw/, Artifacts/, Deliverables/, "
@@ -175,28 +184,24 @@ def main() -> int:
             by_dir[top] = by_dir.get(top, 0) + 1
         print("По разделам:")
         for top, n in sorted(by_dir.items(), key=lambda x: -x[1]):
-            lost = orphan.get(top, 0) if not a.keep_handmade else 0
+            lost = orphan.get(top, 0)
             mark = (f"  ⚠️ из них {lost} не выведется заново: источника нет"
                     if lost else "")
             print(f"  {top}: {n}{mark}")
         print()
-    lost = sum(orphan.values()) if not a.keep_handmade else 0
+    lost = sum(orphan.values())
     if lost:
-        print(f"Итого невосстановимых карточек: {lost} — за ними не стоит документа "
-              f"(`source:` пуст или указывает на файл, которого нет). Всё остальное "
-              f"соберётся заново из Sources/ и Raw/.")
-        print("Сохранить их: `--keep-handmade`. Вернуть после сноса: только из git.\n")
-    elif drop:
-        print("Невосстановимых карточек нет: за каждой стоит документ в Sources/ или "
-              "Raw/, и она соберётся заново.\n")
-    if a.keep_handmade:
+        print(f"⚠️  Идут под снос {lost} карточек, за которыми не стоит документа "
+              f"(`source:` пуст или указывает на файл, которого нет). Пересборка их не "
+              f"вернёт — только git. Вы попросили это флагом `--drop-handmade`.\n")
+    if not a.drop_handmade:
         # обвязку базы уже назвали выше — здесь только рукотворное
         seen = {}
         for path, why in keep:
             if os.path.relpath(path, ROOT).replace("\\", "/") not in KEEP:
                 seen[why] = seen.get(why, 0) + 1
         if seen:
-            print("Остаётся (заново из источников не выведется):")
+            print("Остаётся — пересборка это не вернёт:")
             for why, n in sorted(seen.items()):
                 print(f"  {why}: {n}")
             print()
@@ -206,9 +211,8 @@ def main() -> int:
 
     if not a.apply:
         print("(dry-run) Ничего не удалено. Обнулить: --apply")
-        if not a.keep_handmade:
-            print("Сохранить то, чего нет в источниках (Decisions/, Questions/, Reference/, "
-                  "правила базы): --keep-handmade")
+        if not a.drop_handmade:
+            print("Снести вообще всё, включая то, за чем нет документа: --drop-handmade")
         print("\nПосле сброса: `kb:build` → задание ассистенту на партию → `kb:links --cards`.")
         return 0
 
@@ -239,7 +243,7 @@ def main() -> int:
           "ничего — Sources/, Raw/, Artifacts/, Deliverables/, Workspaces/, Templates/, "
           "Prompts/ на месте.")
     print("Дальше:")
-    if not a.keep_handmade:
+    if a.drop_handmade:
         print("  0. правила базы (meta/conventions.md, meta/golden_questions.md) из источников")
         print("     не вернутся — возьмите их из git или из шаблонов kit'а")
     print("  1. `kb:build`                    — план: партии и готовое задание ассистенту")

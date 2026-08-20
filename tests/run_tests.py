@@ -2490,6 +2490,69 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_reset_spares_what_no_rebuild_can_return(tmp: Path):
+    """Карточку без документа сносить по умолчанию нельзя: её никто не вернёт.
+
+    Защита раньше висела на именах папок (`--keep-handmade`: Decisions, Questions,
+    Reference) — и промахивалась в обе стороны. Замер на живом проекте в 1955 карточек:
+    внутри «рукотворных» разделов невосстановимых **31** из 269, а снаружи — **451**.
+    Папка не может знать, кто написал карточку: база разложена по предметам, а авторство
+    лежит поперёк предметов.
+
+    Решает факт: стоит ли за карточкой документ. Флаг перевернулся — теперь нужен
+    `--drop-handmade`, чтобы снести и невосстановимое.
+    """
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Док.md").write_text("текст", encoding="utf-8")
+    card(root, "Concepts/Из-зеркала.md", "тело", status="knowledge",
+         source="Sources/Confluence/Док.md")
+    # рукотворное живёт в обычном предметном разделе, а не в особой папке
+    card(root, "Concepts/Написано-руками.md", "тело", status="knowledge")
+    card(root, "Decisions/DR-001.md", "почему выбрали так", status="knowledge")
+
+    cp = run("kb_reset.py", cwd=root, expect_rc=0)
+    assert "Из-зеркала" not in cp.stdout or "К удалению: 1" in cp.stdout, cp.stdout[:400]
+    assert "остаётся: 2" in cp.stdout or "остаётся: 3" in cp.stdout, \
+        f"рукотворное не защищено по умолчанию:\n{cp.stdout[:600]}"
+
+    run("kb_reset.py", "--apply", cwd=root, expect_rc=0)
+    assert not (root / "AuroraKnowledgeDB/Concepts/Из-зеркала.md").exists(), \
+        "карточка с живым источником пережила сброс — пересборка её продублирует"
+    assert (root / "AuroraKnowledgeDB/Concepts/Написано-руками.md").exists(), \
+        "снесено рукотворное в обычном разделе: именно этого папка и не ловила"
+    assert (root / "AuroraKnowledgeDB/Decisions/DR-001.md").exists(), "снесён журнал решений"
+
+    # полный снос по-прежнему возможен — но теперь его просят явно
+    cp2 = run("kb_reset.py", "--drop-handmade", "--apply", cwd=root, expect_rc=0)
+    assert "не стоит документа" in cp2.stdout, "полный снос не предупредил о потере"
+    assert not (root / "AuroraKnowledgeDB/Concepts/Написано-руками.md").exists(), \
+        "--drop-handmade не снёс то, ради чего его просят"
+
+
+@test
+def test_console_stops_chasing_the_bottom_when_you_scroll_up(tmp: Path):
+    """Отмотал вверх — консоль перестаёт прыгать в конец.
+
+    Живой случай, слово в слово: «не могу скролить вывод консоли, она каждую секунду
+    сама проматывается в конец». Вывод длинного прогона так не прочитать: человек ищет,
+    когда всё началось, или было ли переключение на запасную модель, — а страница каждые
+    450 мс возвращает его в конец. Слежение включается обратно само, когда он домотает
+    вниз, и кнопкой «↓ вывод продолжается».
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "function stickToBottom(" in ui and "function watchScroll(" in ui, \
+        "нет отдельной прокрутки со слежением"
+    assert 'box.dataset.follow === "0"' in ui, "прокрутка не спрашивает, смотрит ли человек конец"
+    assert ui.count("scrollTop = out.scrollHeight") == 0, \
+        "осталась безусловная прокрутка — она перебьёт слежение в одном из трёх мест"
+    assert ui.count("stickToBottom(out)") >= 3, \
+        "не все места вывода переведены на слежение: маршрут, шаг и обычная команда"
+    assert 'id="consoleTail"' in ui, "нет кнопки возврата в конец: слежение выключилось молча"
+    assert "followAgain(" in ui, "вернуться к слежению нечем"
+
+
+@test
 def test_reset_warns_about_facts_not_folder_names(tmp: Path):
     """«Заново не выведется» — про карточки без документа, а не про имя раздела.
 
@@ -2512,21 +2575,20 @@ def test_reset_warns_about_facts_not_folder_names(tmp: Path):
     (root / "AuroraKnowledgeDB/MOC").mkdir(parents=True, exist_ok=True)
     card(root, "MOC/Карта.md", "карта", status="index")
 
-    cp = run("kb_reset.py", cwd=root, expect_rc=0)
+    cp = run("kb_reset.py", "--drop-handmade", cwd=root, expect_rc=0)
     assert "Reference: 3  ⚠️ из них 2 не выведется" in cp.stdout, \
         f"счёт невосстановимых считается не по факту:\n{cp.stdout}"
     assert "MOC: 1" in cp.stdout and "MOC: 1  ⚠️" not in cp.stdout, \
         "карты объявлены потерей — их собирает kb:moc из самой базы"
-    assert "Итого невосстановимых карточек: 2" in cp.stdout, "нет итоговой строки"
+    assert "Идут под снос 2 карточек" in cp.stdout, "нет итоговой строки"
     assert "Sources/, Raw/" in cp.stdout, "не сказано, что источники не трогаются"
 
     # база, целиком выведенная из источников, не должна пугать вовсе
     (root / "AuroraKnowledgeDB/Reference/Ниоткуда.md").unlink()
     (root / "AuroraKnowledgeDB/Reference/Ссылка-в-никуда.md").unlink()
-    cp2 = run("kb_reset.py", cwd=root, expect_rc=0)
-    assert "Невосстановимых карточек нет" in cp2.stdout, \
-        "молчаливое отсутствие предупреждения читается как недосмотр — говорим прямо"
+    cp2 = run("kb_reset.py", "--drop-handmade", cwd=root, expect_rc=0)
     assert "⚠️ из них" not in cp2.stdout, "предупреждение осталось там, где терять нечего"
+    assert "Идут под снос" not in cp2.stdout, "предупреждение о потере без потери"
 
 
 @test
@@ -4352,18 +4414,17 @@ def test_kb_reset_empties_the_base_and_nothing_else(tmp: Path):
         (root / outside).parent.mkdir(parents=True, exist_ok=True)
         (root / outside).write_text("содержимое\n", encoding="utf-8")
 
-    dry = run("kb_reset.py", cwd=root)
+    # полный снос просят явно — и тогда движок называет числом, что теряется
+    dry = run("kb_reset.py", "--drop-handmade", cwd=root)
     assert "verified: 1" in dry.stdout and "работа человека" in dry.stdout, \
         f"не предупреждает, что удаляет проверенное человеком:\n{dry.stdout[:600]}"
-    # с 1.92.4 счёт идёт по факту: у карточек этой фикстуры `source:` нет вовсе,
-    # значит после сноса они не вернутся — и это должно быть сказано числом
     assert "не выведется заново: источника нет" in dry.stdout, \
         "не назвал карточки, за которыми не стоит документа"
-    assert "Итого невосстановимых карточек:" in dry.stdout, \
+    assert "Идут под снос" in dry.stdout, \
         "нет итоговой строки: человек читает разделы и не видит общего счёта"
     assert (kb / "Concepts/Карточка.md").exists(), "dry-run удалил файлы"
 
-    run("kb_reset.py", "--apply", cwd=root)
+    run("kb_reset.py", "--drop-handmade", "--apply", cwd=root)
     for gone in ("Concepts/Карточка.md", "MOC/Связи.md", "_archive/Старая.md",
                  "meta/manifest.json", "meta/golden_questions.md", "Decisions/DR-001.md",
                  "Questions/Q-001.md", "Reference/abbr.md"):
@@ -4381,18 +4442,23 @@ def test_kb_reset_empties_the_base_and_nothing_else(tmp: Path):
 
 @test
 def test_kb_reset_keep_handmade_spares_what_has_no_source(tmp: Path):
-    """`--keep-handmade` оставляет то, чего нет ни в одном источнике.
+    """Сброс по умолчанию оставляет то, чего нет ни в одном источнике.
 
     Смена способа извлечения — не повод стирать память проекта: журнал решений, вопросы,
-    рукотворные справочники и правила базы `kb:build` не вернёт. Учёт извлечения уходит
-    и здесь, иначе план сборки выйдет пустым.
+    рукотворные справочники и правила базы `kb:build` не вернёт. Раньше это включали
+    флагом `--keep-handmade`, и флаг надо было вспомнить ровно в тот момент, когда
+    запускаешь необратимую команду. Теперь наоборот: чтобы снести невосстановимое, есть
+    `--drop-handmade`. Учёт извлечения уходит в обоих режимах, иначе план выйдет пустым.
     """
     root = make_project(tmp, git=True)
     kb = root / "AuroraKnowledgeDB"
     for section in ("Concepts", "Decisions", "Questions", "Reference", "meta"):
         (kb / section).mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Стр.md").write_text("страница\n", encoding="utf-8")
     (kb / "Concepts/Карточка.md").write_text(
-        '---\ntitle: "К"\nstatus: imported\n---\nтекст\n', encoding="utf-8")
+        '---\ntitle: "К"\nstatus: imported\nsource: "Sources/Confluence/Стр.md"\n'
+        '---\nтекст\n', encoding="utf-8")
     (kb / "Decisions/DR-001.md").write_text("почему выбрали так\n", encoding="utf-8")
     (kb / "Questions/Q-001.md").write_text("вопрос заказчику\n", encoding="utf-8")
     (kb / "Reference/abbr.md").write_text("аббревиатуры\n", encoding="utf-8")
@@ -4401,18 +4467,21 @@ def test_kb_reset_keep_handmade_spares_what_has_no_source(tmp: Path):
     (kb / "meta/manifest.json").write_text('{"sources": {}}', encoding="utf-8")
     (kb / "meta/links.json").write_text("{}", encoding="utf-8")
 
-    run("kb_reset.py", "--keep-handmade", "--apply", cwd=root)
+    run("kb_reset.py", "--apply", cwd=root)
     for keep in ("Decisions/DR-001.md", "Questions/Q-001.md", "Reference/abbr.md",
                  "meta/conventions.md", "meta/golden_questions.md"):
-        assert (kb / keep).exists(), f"--keep-handmade удалил рукотворное: {keep}"
-    assert not (kb / "Concepts/Карточка.md").exists(), "карточки должны уйти в обоих режимах"
+        assert (kb / keep).exists(), f"сброс удалил невосстановимое без спроса: {keep}"
+    # карточка с источником уходит: пересборка соберёт её заново, и оставить её значит
+    # получить двойника
+    assert not (kb / "Concepts/Карточка.md").exists(), \
+        "карточка с живым источником пережила сброс — после пересборки будет двойник"
     assert not (kb / "meta/manifest.json").exists(), \
         "учёт извлечения остался — kb:build сочтёт источники разобранными и план выйдет пустым"
     assert not (kb / "meta/links.json").exists(), "сгенерированный граф связей не удалён"
 
-    # --all сносит и рукотворное, но только по явному ключу
-    run("kb_reset.py", "--all", "--apply", "--allow-dirty", cwd=root)
-    assert not (kb / "Decisions/DR-001.md").exists(), "--all не снёс журнал решений"
+    # снести и невосстановимое можно, но только по явному ключу
+    run("kb_reset.py", "--drop-handmade", "--apply", "--allow-dirty", cwd=root)
+    assert not (kb / "Decisions/DR-001.md").exists(), "--drop-handmade не снёс журнал решений"
 
 
 @test
