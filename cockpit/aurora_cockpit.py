@@ -247,6 +247,13 @@ def registry() -> list:
         except (ValueError, KeyError):
             pass
     import kit_commands as K
+    # Реестр читает `kit_commands`, а модуль в `sys.modules` может оказаться чужим: в
+    # одном процессе панель и тесты работают с несколькими деревьями, и первый импорт
+    # выигрывает. Тогда в файл кита ложится реестр ЧУЖОГО дерева под ключом кита —
+    # ровно так из панели пропадали шесть команд `dev:`. Сверяем, чей модуль в руках.
+    ours = os.path.samefile(os.path.dirname(os.path.abspath(K.__file__)),
+                            os.path.join(KIT, "scripts")) \
+        if os.path.isfile(getattr(K, "__file__", "") or "") else False
     from concurrent.futures import ThreadPoolExecutor
     entries = K.read_registry()
     if not kit_is_source():
@@ -280,6 +287,8 @@ def registry() -> list:
             "from_kit": script in KIT_SIDE,
         })
     CACHE["registry"] = rows
+    if not ours:
+        return rows        # чужое дерево: в память отдаём, на диск кита не пишем
     try:
         with open(REGISTRY_CACHE, "w", encoding="utf-8") as f:
             json.dump({"key": key, "rows": rows}, f, ensure_ascii=False)

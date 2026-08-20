@@ -3174,6 +3174,17 @@ def test_registry_cache_keeps_kit_and_project_apart(tmp: Path):
 
     cache = json.loads((KIT / "cockpit" / ".registry-cache.json").read_text(encoding="utf-8"))
     assert "src=" in cache["key"], cache["key"]
+    assert any(r["cmd"].startswith("dev:") for r in cache["rows"]), \
+        "в файле кита лежит реестр без dev: его записало чужое дерево"
+
+    # и обратное: реестр, собранный по ЧУЖОМУ kit_commands, в файл кита попасть не может.
+    # В одном процессе панель и тесты работают с несколькими деревьями, и первый импорт
+    # выигрывает — так шесть команд `dev:` и пропадали из панели до смены версии.
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "os.path.samefile(os.path.dirname(os.path.abspath(K.__file__))" in src, \
+        "движок не проверяет, чей kit_commands у него в руках"
+    assert "if not ours:" in src and "на диск кита не пишем" in src, \
+        "чужой реестр по-прежнему может лечь в файл кита"
 
 
 
