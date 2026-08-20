@@ -183,7 +183,7 @@ def main() -> int:
         print(f"\n(dry-run) Ничего не записано. Перевести {len(plan)} карточек: --apply")
         return 0
     if not git_guard(a.root, a.allow_dirty, "миграция схемы"):
-        return 1
+        return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
     for path, text, _steps in plan:
         open(path, "w", encoding="utf-8").write(text)
     print(f"\n✅ Переведено карточек: {len(plan)} → schema_version: {a.to}")

@@ -2490,6 +2490,68 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_refusing_to_write_stops_the_route(tmp: Path):
+    """Отказ писать — код 2, а не 1: маршрут обязан встать, а не идти дальше.
+
+    Живой случай: на пересборке базы `kb:reset` уперлась в git-guard (294 незакоммиченных
+    файла) и вернула 1. Единица в панели значит «команда отработала и нашла, что чинить»,
+    поэтому маршрут пошёл дальше — по НЕ сброшенной базе. `agent:build` увидел ноль
+    источников (разбирать нечего, всё на месте) и отрапортовал успехом, `kb:kind` тоже.
+    Четыре шага из четырнадцати объявили себя выполненными, не сделав ничего.
+
+    Разница смысловая: 1 — «работа сделана, есть замечания», 2 — «работа не сделана».
+    Отказ git-guard это всегда второе.
+    """
+    root = make_project(tmp)
+    card(root, "Systems/Одна.md", "тело см. [[Две]]", status="knowledge")
+    card(root, "Systems/Две.md", "тело см. [[Одна]]", status="knowledge")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "base"], cwd=root, check=True)
+    (root / "AuroraKnowledgeDB/Systems/Одна.md").write_text("грязь\n", encoding="utf-8")
+
+    cp = run("kb_reset.py", "--apply", cwd=root, expect_rc=2)
+    assert "git-guard" in cp.stdout + cp.stderr, "отказ не объяснён"
+    assert (root / "AuroraKnowledgeDB/Systems/Две.md").exists(), \
+        "guard отказал, а файлы всё равно удалены"
+
+    # правило общее: ни одна команда не отвечает единицей на отказ писать
+    for name in ("kb_reset.py", "kb_moc.py", "kb_graph.py", "kb_schema.py",
+                 "kb_scrub.py", "jira_status.py", "sync_audit.py"):
+        code = (KIT / "scripts" / name).read_text(encoding="utf-8")
+        for i, line in enumerate(code.splitlines()):
+            if "git_guard(" in line and "def " not in line:
+                tail = "\n".join(code.splitlines()[i:i + 4])
+                assert "return 1" not in tail, \
+                    f"{name}: отказ писать возвращает 1 — маршрут пойдёт дальше вхолостую"
+
+
+@test
+def test_a_route_will_not_run_on_two_engine_versions(tmp: Path):
+    """Маршрут не начинается, когда движок проекта отстал от кита.
+
+    Живой случай: панель кита 1.92 на проекте с движком 1.85. Скрипт, которого в проекте
+    нет, берётся из кита — так задумано, чтобы новая команда работала сразу. `kb:kind`
+    пришла из кита и отработала; `agent:distill` попала в `agent_runner.py` проекта, где
+    такой задачи нет, и маршрут развалился на пятом шаге, успев объявить четыре
+    предыдущих успешными. База осталась собранной наполовину одними правилами,
+    наполовину другими — и разобрать, где чьё, уже нельзя.
+
+    Отдельную команду так запускать можно: человек видит, что делает. Маршрут — нет.
+    """
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "def version_gap(" in src, "нет сверки версий движка"
+    run_block = src.split('if u.path == "/api/run"')[1][:1200]
+    assert "version_gap(" in run_block and 'payload.get("route")' in run_block, \
+        "проверка версии не стоит на запуске шага маршрута"
+    # страница обязана помечать шаги маршрута — иначе серверу нечего проверять
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    step = ui.split("async function runStep(")[1][:600]
+    assert "route:true" in step, "шаг маршрута не помечен как шаг маршрута"
+
+
+@test
 def test_writing_a_field_refuses_to_touch_the_body(tmp: Path):
     """`with_fields` сторожит себя сама — в любом проекте, на каждой записи.
 

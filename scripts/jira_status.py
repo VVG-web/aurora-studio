@@ -371,7 +371,7 @@ def main() -> int:
               "--link проставляет связи.")
         return 0
     if not git_guard(".", a.allow_dirty, "запись состояния задач"):
-        return 1
+        return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
 
     changed = 0
     for stem, req, line in candidates + risks + waiting:

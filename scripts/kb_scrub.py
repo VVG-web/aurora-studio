@@ -278,7 +278,7 @@ def main() -> int:
         return 1 if mode == "mask" else 0
 
     if not git_guard(".", a.allow_dirty, "маскирование ПДн"):
-        return 1
+        return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
     changed = 0
     for path, hits in sorted(fixable.items()):
         text = open(path, encoding="utf-8", errors="ignore").read()

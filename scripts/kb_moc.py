@@ -359,7 +359,7 @@ def main() -> int:
         print("\n(dry-run) Ничего не записано. Собрать карты: --apply")
         return 0
     if not git_guard(ROOT, a.allow_dirty, "сборка карт содержания"):
-        return 1
+        return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
     print(f"\n✅ Записано карт: {written} → {MOC_DIR}/")
     print("Дальше: `kb:index` (оглавления разделов) → `kb:links --cards` (связи карточек).")
     return 0
