@@ -111,6 +111,26 @@ def main() -> int:
                     help="работать по незакоммиченному дереву (откат станет невозможным)")
     a = ap.parse_args()
 
+    # Снимок «карточка → источник» перед сносом. Имена карточек агент выберет заново, и
+    # `based_on:` артефактов после пересборки указывал бы в никуда. Артефакт — сданный
+    # документ, и терять его провенанс нельзя даже ради качественной базы: по снимку
+    # `kit:remap-sources` находит новую карточку по источнику, а не по имени.
+    if a.apply:
+        import json
+        from aurora_common import frontmatter as _fm, walk_md as _walk
+        snap = {}
+        for path in _walk(ROOT, skip_service=True, skip_archive=True):
+            fm = _fm(open(path, encoding="utf-8", errors="ignore").read())
+            src = (fm.get("source") or "").strip().strip('"')
+            if src:
+                snap[os.path.splitext(os.path.basename(path))[0]] = src
+        out = os.path.join(ROOT, "meta", "trace")
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "rebuild-snapshot.json"), "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False, indent=1)
+        print(f"Снимок соответствий сохранён: карточек {len(snap)} "
+              f"→ {ROOT}/meta/trace/rebuild-snapshot.json\n")
+
     if not os.path.isdir(ROOT):
         print(f"kb_reset: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
