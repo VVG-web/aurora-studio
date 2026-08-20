@@ -119,8 +119,16 @@ def cmd_check() -> int:
                                 "а такого кейса нет")
 
     version = (KIT / "VERSION").read_text(encoding="utf-8").strip()
+
+    def minor(v: str) -> str:
+        """1.92.0 и 1.92.1 — одно и то же поведение, под которое писался кейс."""
+        return ".".join(v.split(".")[:2])
+
+    # Сверяем по минорной версии, а не по точной. Патч чинит поломку, а не меняет
+    # ожидания: требовать после него правки версии в сорока пяти файлах — значит учить
+    # заменять число не глядя, ровно против того, о чём говорит подсказка ниже.
     stale = [fm.get("id") for _, fm in cases + scen
-             if fm.get("version") and fm.get("version") != version]
+             if fm.get("version") and minor(fm["version"]) != minor(version)]
     if stale:
         problems.append(f"написаны под другую версию движка (сейчас {version}): "
                         f"{', '.join(sorted(x for x in stale if x))}")
