@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
+TODAY_STR = datetime.now().strftime("%Y-%m-%d")
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
 ASK_ECHO = 700        # символов прошлого ответа: нужна суть, а не пересказ целиком
@@ -855,6 +856,30 @@ def verdict_build(res: dict, apply: bool) -> tuple:
 
 # ------------------------------------------------------------------ задача: вопрос к базе
 
+PROMPT_DISTILL = """Ты превращаешь перенесённый текст источника в карточку знания.
+
+Карточка: {title}
+Ниже — то, что скрипт перенёс из источника дословно:
+
+{body}
+
+Напиши **тезис**: что это за сущность и что о ней известно. Не пересказ страницы, а
+определение, которым можно пользоваться, не открывая источник.
+
+Правила, они же критерии проверки:
+
+1. Только то, что есть в тексте выше. Ни одного факта из общих знаний: по этой карточке
+   будут писать требования, и додуманное уедет в разработку.
+2. Первая строка — определение одной фразой. Дальше — существенное: условия, границы,
+   исключения. Вёрстку исходника, «см. рисунок ниже», номера разделов и повторы выбрось.
+3. Числа, сроки, коды и названия систем переноси дословно. Округлять и пересказывать
+   своими словами их нельзя.
+4. Пиши по-русски, от 3 до 15 строк. Если в тексте знания нет вовсе (одна вёрстка,
+   пустая таблица) — верни ровно `ПУСТО`.
+5. Не выдумывай ссылки на другие карточки: связи расставляет движок.
+
+Верни только текст тезиса, без заголовков и пояснений."""
+
 PROMPT_ASK = """Ты отвечаешь на вопрос аналитика по базе знаний проекта.
 
 Ниже — карточки базы, отобранные по вопросу. Это всё, что тебе можно использовать:
@@ -1195,6 +1220,124 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
     return "\n".join(L)
 
 
+# --------------------------------------------------------------- задача: тезисы
+
+QUOTES = "## Источник (перенесено дословно)"
+FOOTER = "## История изменений"
+
+
+def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
+                 deadline: float = 0.0) -> dict:
+    """Переписать одну карточку `kind: knowledge` в тезис. → шаг для отчёта.
+
+    Дословный текст не пропадает: он уезжает в раздел «Источник» под тезисом. Это и есть
+    ответ на вопрос «а вдруг модель потеряла важное» — потерянное лежит строкой ниже, и
+    сверить его можно, не поднимая исходник.
+    """
+    call = call or AG.call_role
+    step = {"card": os.path.basename(path), "status": "пропущена", "note": "", "backends": []}
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    head, body = AG.split_frontmatter(text) if hasattr(AG, "split_frontmatter") else (None, None)
+    if head is None:
+        from aurora_common import split_frontmatter as _sf
+        head, body = _sf(text)
+    if head is None:
+        step["note"] = "нет шапки"
+        return step
+    source_part = body.split(QUOTES)[0] if QUOTES in body else body
+    quotes = body.split(QUOTES, 1)[1] if QUOTES in body else source_part
+    footer = ""
+    if FOOTER in quotes:
+        quotes, footer = quotes.split(FOOTER, 1)
+        footer = FOOTER + footer
+    title = os.path.splitext(os.path.basename(path))[0]
+    deadline = deadline or (time.time() + cfg["request_timeout"])
+    a = call(cfg, "worker", [{"role": "user", "content": PROMPT_DISTILL.format(
+        title=title, body=quotes.strip()[:12000])}], deadline=deadline)
+    if not a["ok"]:
+        step.update(status="сбой", note="; ".join(a["log"][-2:]))
+        return step
+    step["backends"].append((a["backend"], a["model"]))
+    step["tps"] = a.get("tps") or 0
+    thesis = (a["text"] or "").strip()
+    if not thesis or thesis.strip().upper().startswith("ПУСТО"):
+        step.update(status="знания нет", note="в тексте одна вёрстка — человеку")
+        return step
+    if momus:
+        mo = run_momus(cfg, quotes.strip()[:12000], f"Тезис карточки «{title}»", thesis, call)
+        step["momus"] = mo
+        if mo.get("ok") and not mo.get("clean"):
+            step["unsupported"] = mo["unsupported"]
+    new_body = ("\n" + thesis.strip() + "\n\n" + QUOTES + "\n" + quotes.rstrip()
+                + ("\n\n" + footer.strip() + "\n" if footer.strip() else "\n"))
+    step["new"] = head + new_body
+    step.update(status="переписана", note=thesis.splitlines()[0][:110])
+    return step
+
+
+def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True,
+                call=None) -> dict:
+    """Тезисы для карточек типа `knowledge`. Словари и документы не трогаем никогда."""
+    from aurora_common import frontmatter, walk_md
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    todo = []
+    for p in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
+                     skip_archive=True):
+        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
+        if (fm.get("kind") or "").strip().strip('"') != "knowledge":
+            continue
+        if (fm.get("distilled") or "").strip():
+            continue
+        todo.append(p)
+    total = min(len(todo), limit or cfg["max_steps"])
+    say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "
+        f"бюджет {cfg['budget_min']} мин")
+    steps, unsupported = [], 0
+    for i, path in enumerate(todo[:total]):
+        if time.time() > budget:
+            say(f"  бюджет {cfg['budget_min']} мин исчерпан")
+            break
+        say(f"  {progress(i, total, started)} · {os.path.basename(path)} …")
+        step = distill_card(cfg, path, call=call, momus=momus,
+                            deadline=min(budget, time.time() + cfg["request_timeout"]))
+        steps.append(step)
+        say(f"      → {step['status']}"
+            + (f": {step['note'][:100]}" if step["note"] else "") + where(step))
+        if step.get("unsupported"):
+            unsupported += step["unsupported"]
+        if apply and step.get("new"):
+            from aurora_common import set_field
+            head, rest = step["new"].split("\n---\n", 1) if "\n---\n" in step["new"] else (None, None)
+            out = step["new"]
+            if head is not None:
+                head = set_field(head + "\n---\n", "distilled", TODAY_STR)
+                if step.get("unsupported"):
+                    head = set_field(head, "unsupported", str(step["unsupported"]))
+                out = head + rest
+            open(path, "w", encoding="utf-8").write(out)
+    return {"steps": steps, "left": len(todo) - len(steps), "unsupported": unsupported,
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_distill(res: dict, apply: bool) -> str:
+    made = [s for s in res["steps"] if s["status"] == "переписана"]
+    empty = [s for s in res["steps"] if s["status"] == "знания нет"]
+    bad = [s for s in res["steps"] if s["status"] == "сбой"]
+    L = [f"# Агент · тезисы карточек — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Режим: {'запись' if apply else 'предпросмотр'} · переписано: {len(made)} · "
+         f"без знания: {len(empty)} · сбоев: {len(bad)} · осталось: {res['left']}", ""]
+    if res["unsupported"]:
+        L += [f"⚠️ Момус нашёл утверждений без опоры: {res['unsupported']}. Эти карточки "
+              "помечены `unsupported:` и ждут человека — это единственная работа, которую "
+              "новая схема ему оставляет.", ""]
+    for s in made[:15]:
+        L.append(f"- {s['card']}: {s['note']}")
+    if empty:
+        L += ["", "## Знания в источнике нет", ""] + [f"- {s['card']}" for s in empty[:10]]
+    return "\n".join(L)
+
+
 # ------------------------------------------------------------------ прогон
 
 def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
@@ -1419,7 +1562,8 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
-    ap.add_argument("--task", default="aliases", choices=["aliases", "build", "ask"],
+    ap.add_argument("--task", default="aliases",
+                    choices=["aliases", "build", "ask", "distill"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "ask — ответить на вопрос по базе (ничего не пишет)")
@@ -1575,6 +1719,9 @@ def main() -> int:
                 break
             cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
         text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
+    elif a.task == "distill":
+        res = run_distill(cfg, cwd, a.apply, a.limit, momus=not a.no_momus)
+        text = report_distill(res, a.apply)
     elif a.task == "build":
         res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
         text = report_build(res, cp, a.apply, a.critic, cfg)
@@ -1589,6 +1736,15 @@ def main() -> int:
     (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
 
+    if a.task == "distill":
+        # Свой вердикт: успех — переписанные карточки, находка — утверждения без опоры.
+        made = sum(1 for s in res["steps"] if s["status"] == "переписана")
+        if a.apply:
+            done = commit_result(cwd, "agent:distill",
+                                 f"тезисов: {made}, без опоры: {res['unsupported']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 0 if made and not res["unsupported"] else 1
     if a.apply and not (a.task == "build" and a.until_done):
         ok, why = (verdict_build if a.task == "build" else verdict)(res, True)
         done = commit_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint)

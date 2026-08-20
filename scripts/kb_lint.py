@@ -21,7 +21,7 @@
 import argparse
 import os, re, sys, collections
 
-from aurora_common import (aliases, body_hash, card_body, config_value, frontmatter,
+from aurora_common import (STATUSES, aliases, body_hash, card_body, config_value, frontmatter,
                            link_refs)
 
 ROOT = "AuroraKnowledgeDB"
@@ -155,6 +155,15 @@ def main():
                 elif expected and actual != expected:
                     errors.append(f"{rel}: тип `{actual}` в разделе {section} — "
                                   f"ожидается `{expected}`")
+        # Статус вне шкалы — это карточка, которую не пересчитал `kb:trust`, а не мнение
+        # автора: шкала закрытая, и всё, что вне её, движок в контекст не пустит.
+        if status and status not in STATUSES and status not in ("imported", "in-review",
+                                                                "verified", "canonical"):
+            errors.append(f"{rel}: статус «{status}» вне шкалы "
+                          f"({', '.join(STATUSES)}) — пересчитайте `kb:trust`")
+        if status in ("knowledge", "draft") and not (fm.get("kind") or "").strip():
+            errors.append(f"{rel}: нет kind — неизвестно, можно ли переписывать тело "
+                          f"(`kb:kind --apply`)")
         if status == "verified":
             if not fm.get("owner"):
                 errors.append(f"{rel}: verified без owner")

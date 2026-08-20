@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.88.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.89.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -40,8 +40,6 @@
 | `kb:build` (`build`) | извлечение карточек: план, партии и учёт — скриптом, само извлечение — моделью; `--slice` режет источник на секции, `--card` собирает карточку из них (текст переносит скрипт), `--reopen` и `--thin` возвращают в план недоразобранное | скрипт+модель | `build_plan.py` | `--budget --max-files --partition --tasks --from --done --cards --empty --status --slice --slice-chars --card --source --summary --sections --to --thin --reopen --group --apply` | 1.0.0 |
 | `kb:ingest-office` | docx/pdf/xlsx/pptx из Raw/ → markdown-транскрипты рядом с оригиналом | скрипт | `office_ingest.py` `[paths ...]` | `--root --converter --force --dry-run` | 1.5.0 |
 | `kb:ingest` (`ingest, ingest-raw, ingest-meeting, ingest-tz`) | документ из Raw/ → карточки со ссылкой на первоисточник; вид входа определяется по документу: ТЗ → REQ с `tz_ref`, транскрипт встречи → резюме, DR, REQ и факты | модель | `workflows.md` | — | 1.0.0 |
-| `kb:queue` (`queue`) | очередь верификации: что проверять первым по связям и попаданию в артефакты | скрипт | `aurora_stats.py --queue` | `--limit --theme --json --append-metrics --report` | 1.3.0 |
-| `kb:verify` (`verify, promote`) | гейт imported/draft → verified: отбор человеком, запись скриптом (итог: доля принятых растёт — это единственная команда, которая её двигает); `verified` — верхний статус базы | скрипт+модель | `kb_verify.py` `[selector]` | `--owner --months --by-source --stubs --by-links --demote --demote-machine --auto --by-jira --source-older-than --refresh --apply --allow-dirty` | 1.8.0 |
 | `kb:repair` (`fix`) | ремонт: битые ссылки, гомоглифы, легаси-frontmatter, поля вне схемы, заготовки под ссылки | скрипт | `kb_fix.py --all` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --split --split-min --set-alias --old --new --drop-alias --dupes --merge --merge-all --apply --allow-dirty --json --report --root` | 1.3.0 |
 | `kb:dedupe` | двойники: поиск, пакетное слияние по правилу (`--merge-all`) и разбор одной пары (`--merge` «оставить» «убрать») | скрипт | `kb_fix.py --dupes` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --split --split-min --set-alias --old --new --drop-alias --all --merge --merge-all --apply --allow-dirty --json --report --root` | 1.3.0 |
 | `kb:split` (`split`) | разрезать раздутую карточку по её заголовкам: части становятся атомарными карточками, а сама она — картой документа со ссылками на них | скрипт | `kb_fix.py --split` | `--links --homoglyphs --retire --frontmatter --stubs --aliases --split-min --set-alias --old --new --drop-alias --dupes --all --merge --merge-all --apply --allow-dirty --json --report --root` | 1.62.0 |
@@ -60,6 +58,7 @@
 | `kb:decide` (`decide`) | оформить Decision Record (+supersede старой DR) | модель | `workflows.md` | — | 1.0.0 |
 | `kb:garden` (`garden`) | еженедельная гигиена: чеклист из четырёх скриптов, разбор — человеком | скрипт+модель | `workflows.md` | — | 1.0.0 |
 | `kb:trust` (`trust`) | пересчитать класс доверия карточек по таблице трассировки и статусам задач (итог: статус knowledge/draft и основание словами; человек доверие не присваивает) | скрипт | `kb_trust.py` | `--apply --root` | 1.89.0 |
+| `kb:kind` (`kind`) | тип карточки: словарь, документ или знание — от него зависит, можно ли модели переписывать тело (итог: поле kind; выбор человека движок не перетирает) | скрипт | `kb_kind.py` | `--apply --root` | 1.90.0 |
 
 ## `ctx: — использование знаний`
 
