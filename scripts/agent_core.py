@@ -110,6 +110,11 @@ def parse_config(env: dict) -> dict:
             "key": env.get(prefix + "KEY", ""),
             "model": env.get(prefix + "MODEL", ""),
             "models": models,
+            # Сколько токенов держит модель НА ЭТОМ шлюзе. Одна и та же модель у разных
+            # провайдеров порезана по-разному: 252 000 у одного, 196 608 у другого, и
+            # узнать это из API нельзя — поле объявляет человек. 0 — не объявлено, тогда
+            # движок не считает и не отказывает, а показывает размер запроса как есть.
+            "context": int(env.get(prefix + "CONTEXT", "0") or 0),
         })
         n += 1
     # Эмбеддинги живут своей жизнью: их часто держат отдельным сервисом (TEI, свой vLLM),
@@ -129,6 +134,11 @@ def parse_config(env: dict) -> dict:
         "max_steps": int(env.get("AURORA_AGENT_MAX_STEPS", "15") or 15),
         "budget_min": int(env.get("AURORA_AGENT_BUDGET_MIN", "20") or 20),
         "request_timeout": int(env.get("AURORA_AGENT_REQUEST_TIMEOUT", "300") or 300),
+        # Сколько карточек разбирать одновременно. Каждый вызов — это ожидание ответа
+        # шлюза, а не работа процессора: пока модель думает над одной карточкой, машина
+        # простаивает. Умолчание 1 — прежнее поведение; ставить больше, чем шлюз держит
+        # параллельных запросов, бессмысленно: очередь просто переедет на его сторону.
+        "parallel": max(1, int(env.get("AURORA_AGENT_PARALLEL", "1") or 1)),
         "debug": env.get("AURORA_AGENT_DEBUG", "0") in ("1", "true", "yes"),
         "backends": backends,
     }
@@ -304,6 +314,49 @@ def retry_primary_asked() -> bool:
 
 FAIR_SHARE = 0.6      # долю своего таймаута запасной бэкенд получает даже на исходе окна
 
+# Токенов в запросе точно не знает никто: токенизатор у каждой модели свой, и ставить
+# ради оценки зависимость мы не будем. Берём осторожную мерку — на русском тексте с
+# разметкой один токен редко покрывает больше трёх символов. Мерка нужна не для отчёта,
+# а чтобы не отправлять заведомо непроходящий запрос: ошибка в меньшую сторону дешевле.
+CHARS_PER_TOKEN = 3.0
+# Место под ответ: контекст делится между запросом и ответом, и модель, которой некуда
+# отвечать, возвращает `finish_reason=length` с пустым текстом.
+ANSWER_ROOM = 2000
+
+
+def rough_tokens(messages: list) -> int:
+    """Осторожная оценка размера запроса в токенах. Именно оценка — так и называем."""
+    return int(sum(len(str(m.get("content") or "")) for m in messages) / CHARS_PER_TOKEN)
+
+
+def fits(backend: dict, messages: list, max_tokens: int | None) -> tuple:
+    """→ (влезет ли, объяснение). Контекст не объявлен — не мешаем работать.
+
+    Пропускать заведомо непроходящий запрос вредно вдвойне: шлюз ответит 400, движок
+    сочтёт бэкенд мёртвым на пятнадцать минут и уйдёт к следующему с тем же запросом —
+    и так по всей цепочке. Одна карточка «кладёт» всех провайдеров, а в журнале это
+    выглядит как «никто не отвечает».
+    """
+    limit = backend.get("context") or 0
+    if not limit:
+        return True, ""
+    need = rough_tokens(messages) + (max_tokens or ANSWER_ROOM)
+    if need <= limit:
+        return True, ""
+    return False, (f"запрос ≈{need} токенов при объявленном окне {limit} — "
+                   f"не отправляю, чтобы не гасить провайдера ошибкой")
+
+
+def looks_like_overflow(err: str, body) -> bool:
+    """Шлюз отказал из-за длины запроса, а не потому что провайдер лёг.
+
+    Формулировку каждый шлюз пишет свою; общее у них — слова про контекст и длину.
+    """
+    text = f"{err or ''} {body if isinstance(body, str) else (body or {})}".lower()
+    return any(s in text for s in ("context length", "context_length", "maximum context",
+                                   "too many tokens", "context window", "prompt is too long",
+                                   "reduce the length", "превышен контекст"))
+
 
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
@@ -343,6 +396,12 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             if busy(b, transport):
                 log.append(f"№{b['n']}: слот занят (/slots) — дальше по кольцу")
                 continue
+            ok_size, why_big = fits(b, messages, max_tokens)
+            if not ok_size:
+                # Не «мёртв», а «не по размеру»: в кольце может стоять модель с окном
+                # шире, и она этот же запрос возьмёт. Метку DOWN не ставим.
+                log.append(f"№{b['n']} {model}: {why_big}")
+                continue
             payload = {"model": model, "messages": messages,
                        "chat_template_kwargs": {"enable_thinking": think}}
             if max_tokens:
@@ -365,13 +424,21 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             tried.add(b["n"])
             st, body, err, dt = transport("chat", b, payload,
                                           max(5.0, min(left, cfg["request_timeout"])))
-            if st == 400:
+            if st == 400 and not looks_like_overflow(err, body):
                 # бэкенд не знает chat_template_kwargs — повторяем без него
                 payload.pop("chat_template_kwargs", None)
                 st, body, err, dt = transport("chat", b, payload, max(5.0, deadline - time.time()))
             if st != 200 or not isinstance(body, dict):
-                DOWN[b["n"]] = time.time() + DOWN_FOR
-                log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
+                if looks_like_overflow(err, body):
+                    # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
+                    # его на 15 минут — значит потерять рабочего провайдера из-за одной
+                    # большой карточки, а следом по той же причине и всех остальных.
+                    log.append(f"№{b['n']} {model}: запрос длиннее окна модели "
+                               f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — "
+                               f"движок не будет отправлять заведомо большие)")
+                else:
+                    DOWN[b["n"]] = time.time() + DOWN_FOR
+                    log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
                 continue
             text, reasoning = answer_of(body)
             finish = (body.get("choices") or [{}])[0].get("finish_reason")

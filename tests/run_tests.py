@@ -2490,6 +2490,94 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_oversized_request_does_not_kill_the_provider(tmp: Path):
+    """Запрос длиннее окна модели — не повод считать провайдера мёртвым.
+
+    Окно контекста узнать из API нельзя, а порезано оно у каждого шлюза по-своему: одна
+    и та же модель держит 252 000 у одного и 196 608 у другого. Движок про это не знал
+    вовсе, и большая карточка запускала цепную реакцию: шлюз отвечает 400, движок метит
+    провайдера мёртвым на 15 минут и идёт к следующему с ТЕМ ЖЕ запросом — и так по всему
+    кольцу. Одна карточка гасила всех провайдеров, а в журнале это выглядело как «никто
+    не отвечает».
+
+    Теперь окно объявляется человеком, заведомо большой запрос уходит следующей модели —
+    у которой окно может быть шире, — а 400 по длине не ставит метку «мёртв».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    cfg = A.parse_config({
+        "AURORA_AGENT_BACKEND_1_URL": "http://a/v1", "AURORA_AGENT_BACKEND_1_MODEL": "узкая",
+        "AURORA_AGENT_BACKEND_1_CONTEXT": "8000",
+        "AURORA_AGENT_BACKEND_2_URL": "http://b/v1", "AURORA_AGENT_BACKEND_2_MODEL": "широкая",
+        "AURORA_AGENT_BACKEND_2_CONTEXT": "200000"})
+    assert [b["context"] for b in cfg["backends"]] == [8000, 200000], \
+        "окно контекста не читается из настроек"
+
+    big = [{"role": "user", "content": "я" * 60000}]
+    ok1, why = A.fits(cfg["backends"][0], big, None)
+    assert not ok1 and "не отправляю" in why, "заведомо большой запрос всё равно уходит"
+    ok2, _ = A.fits(cfg["backends"][1], big, None)
+    assert ok2, "модель с широким окном пропущена — кольцо потеряло смысл"
+
+    # окно не объявлено — не мешаем работать: движок не выдумывает чужие ограничения
+    free = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                           "AURORA_AGENT_BACKEND_1_MODEL": "неизвестная"})
+    assert A.fits(free["backends"][0], big, None)[0], \
+        "без объявленного окна движок сам себе придумал предел"
+
+    assert A.looks_like_overflow("This model's maximum context length is 8192 tokens", None)
+    assert not A.looks_like_overflow("unknown field chat_template_kwargs", None), \
+        "обычная 400 принята за переполнение — повтор без chat_template_kwargs пропадёт"
+    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    place = src[src.index("if looks_like_overflow(err, body):"):][:400]
+    assert "DOWN[" not in place, "переполнение по-прежнему метит провайдера мёртвым"
+
+
+@test
+def test_cards_are_distilled_side_by_side(tmp: Path):
+    """Карточки разбираются одновременно: ожидание шлюза — не работа машины.
+
+    Разбор был строго последовательным: один запрос в воздухе, пока шлюз обслуживает
+    несколько. На 1359 карточках это ночь вместо часа. Замер на подставном вызове по
+    0.3 с: восемь карточек последовательно — 2.4 с, восемью потоками — 0.3 с.
+
+    Умолчание остаётся прежним (1): ставить ширину больше, чем держит шлюз, бессмысленно,
+    и решать это должен человек, знающий свой сервер.
+    """
+    import time
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    kb = tmp / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True)
+    for i in range(6):
+        (kb / f"К{i}.md").write_text(
+            f'---\nid: KB-{i}\ntitle: "К{i}"\nkind: knowledge\nstatus: knowledge\n'
+            f'---\n\nтело {i}\n', encoding="utf-8")
+
+    def slow(cfg, role, messages, **kw):
+        time.sleep(0.2)
+        return {"ok": True, "text": "ТЕЗИС: тезис\nОПОРА: цитата", "backend": 1,
+                "model": "тест", "seconds": 0.2, "tps": 10, "log": []}
+
+    def go(width):
+        cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                              "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                              "AURORA_AGENT_PARALLEL": str(width)})
+        assert cfg["parallel"] == width, "ширина не читается из настроек"
+        t0 = time.time()
+        res = R.run_distill(cfg, str(tmp), apply=False, limit=6, momus=False, call=slow)
+        return time.time() - t0, res
+
+    one, res1 = go(1)
+    many, res6 = go(6)
+    assert len(res1["steps"]) == len(res6["steps"]) == 6, "часть карточек потерялась"
+    assert many < one / 2, \
+        f"параллельный проход не быстрее последовательного: {many:.1f} с против {one:.1f} с"
+
+
+@test
 def test_reset_keeps_only_what_it_cannot_identify(tmp: Path):
     """«Нет источника» ≠ «писал человек». Оставляем только НЕОПОЗНАННОЕ — и говорим об этом.
 
