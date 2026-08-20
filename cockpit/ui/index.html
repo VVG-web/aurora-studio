@@ -510,7 +510,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.92.2";
+const UI_VERSION = "1.92.3";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1905,8 +1905,13 @@ async function runStep(cmd, args){
   const r = S.state.commands.find(x=>x.cmd===cmd);
   if (!r || !r.runnable) return {rc:0, skipped:true, lines:[]};
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-    {project: (isEngineCmd(r) ? "" : S.project.path), cmd, args})});
-  if (!res.job) return {rc:2};
+    {project: (isEngineCmd(r) ? "" : S.project.path), cmd, args, route:true})});
+  if (!res.job){
+    // Сервер отказал маршруту (например, движок проекта отстал от кита). Причина уже
+    // показана человеку; шагу остаётся вернуть код 2, чтобы маршрут встал здесь, а не
+    // прошёл половину пути по половине движка.
+    return {rc:2, lines:[]};
+  }
   const out = $("#consoleOut");
   let since = 0, lines = [];
   for (;;){
