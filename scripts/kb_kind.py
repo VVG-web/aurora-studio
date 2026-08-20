@@ -34,7 +34,7 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter, set_field, split_frontmatter, walk_md  # noqa: E402
+from aurora_common import frontmatter, split_frontmatter, walk_md, with_fields  # noqa: E402
 
 TODAY = date.today().isoformat()
 KB = "AuroraKnowledgeDB"
@@ -105,7 +105,7 @@ def main() -> int:
         counts[kind] = counts.get(kind, 0) + 1
         set_now.append((os.path.relpath(path, root), kind, why))
         if a.apply:
-            open(path, "w", encoding="utf-8").write("---" + set_field(head, "kind", kind) + rest)
+            open(path, "w", encoding="utf-8").write(with_fields(text, {"kind": kind}))
 
     print(f"# Тип карточек — {TODAY}\n")
     print("| Тип | Карточек | Что можно делать с телом |")

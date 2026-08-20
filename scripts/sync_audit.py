@@ -40,8 +40,8 @@ import sys
 from datetime import date, datetime
 
 import sources_registry as R
-from aurora_common import (KB_ROOT, TRUSTED, frontmatter, git_guard, set_field,
-                           split_frontmatter, walk_md)
+from aurora_common import (KB_ROOT, TRUSTED, frontmatter, git_guard,
+                           split_frontmatter, walk_md, with_fields)
 from sources_core import ASSET_DIR_RE, SERVICE_RE, cited_by_cards, nfc
 
 TODAY = date.today()
@@ -392,8 +392,8 @@ def stamp(unstamped: list, apply: bool) -> int:
         head, rest = split_frontmatter(text)
         if head is None:
             continue
-        new = "---" + set_field(set_field(head, "source_hash", actual),
-                                "source_synced", TODAY.isoformat()) + rest
+        new = with_fields(text, {"source_hash": actual,
+                                 "source_synced": TODAY.isoformat()})
         done += 1
         if apply:
             open(path, "w", encoding="utf-8").write(new)
