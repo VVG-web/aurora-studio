@@ -65,36 +65,50 @@ def regenerated(rel: str, status: str) -> bool:
             or os.path.basename(rel) == "_index.md")
 
 
-def survives(rel: str, source_alive: bool, status: str, drop_handmade: bool) -> str:
+def known_machine(fm: dict) -> bool:
+    """Карточку писала машина и сказала об этом сама.
+
+    Метку `built: machine` ставят все машинные пути: нарезка (`kb:build`), заготовки
+    (`kb:repair --stubs`), агент. Проверено на живой пересборке: 965 карточек из 965 —
+    с меткой. Метка появилась не сразу, поэтому на старых базах её может не быть — и
+    тогда происхождение именно **неизвестно**, а не «рукотворное».
+    """
+    return (fm.get("built") or "").strip().strip('"') == "machine"
+
+
+def survives(rel: str, source_alive: bool, machine: bool, status: str,
+             drop_unknown: bool) -> str:
     """Почему файл остаётся; пустая строка — не остаётся.
 
-    Решает **факт**, а не имя папки. Папка не может знать, кто написал карточку: база
-    разложена по предметам, чтобы работали карты, ссылки и поиск, — а авторство лежит
-    поперёк предметов. Замер на живом проекте (1955 карточек): в «рукотворных» разделах
-    `Decisions/`, `Questions/`, `Reference/` из 269 карточек невосстановимы всего **31**,
-    остальные 238 машина собрала из зеркал. А вне этих разделов невосстановимых
-    **451** — в четырнадцать раз больше, чем внутри. Папка ошибается в обе стороны.
+    Решает происхождение, а не имя папки: база разложена по предметам, а авторство лежит
+    поперёк предметов, и папка ошибается в обе стороны.
 
-    Факт простой: за карточкой либо стоит документ, из которого её собрали, либо нет.
-    Нет — значит пересборка её не вернёт, и сносить её по умолчанию нельзя.
+    Но «нет источника» тоже не значит «писал человек» — эту ошибку движок сделал ровно
+    в одном релизе. Замер на живом проекте: из 425 карточек без источника 137 создал
+    `kb:repair --stubs` заготовками, 64 пришли массовым коммитом, и лишь единицы —
+    журнал решений, написанный человеком. Беречь заготовки вредно вдвойне: пересборка
+    их не вернёт, а держать в базе пустышки незачем — их и так ловит линтер.
+
+    Отсюда три исхода, а не два: соберётся заново (сносим), сделала машина и сама это
+    подтвердила (сносим), происхождение неизвестно (оставляем и **называем**, чтобы
+    человек посмотрел, а не узнал случайно).
     """
     if rel in KEEP:
         return "обвязка базы: отметка версии движка"
-    if drop_handmade:
+    if drop_unknown:
         return ""      # просили снести всё — значит и правила базы тоже
     if rel.split("/")[0] == "meta" and os.path.basename(rel) in HANDMADE_META:
         return "правила и проверки базы"
-    if source_alive or regenerated(rel, status):
+    if source_alive or machine or regenerated(rel, status):
         return ""
-    return "за карточкой нет документа: пересборка её не вернёт"
+    return "происхождение неизвестно: ни источника, ни метки машины"
 
 
-def scan(drop_handmade: bool) -> tuple:
+def scan(drop_unknown: bool) -> tuple:
     """(что удалить, что оставить с причиной, статистика по статусам, потери по разделам).
 
-    Потеря — карточка, за которой не стоит документа: `source:` пуст или указывает на
-    файл, которого нет. Только такие пересборка не вернёт. По умолчанию они и остаются;
-    `--drop-handmade` сносит вместе со всем остальным.
+    Потеря — карточка, которую пересборка не вернёт: нет живого `source:` и нет метки
+    `built: machine`. По умолчанию такие остаются; `--drop-unknown` сносит и их.
     """
     drop, keep, statuses, orphan = [], [], {}, {}
     for dirpath, dirs, files in os.walk(ROOT):
@@ -106,21 +120,22 @@ def scan(drop_handmade: bool) -> tuple:
                 continue
             path = os.path.join(dirpath, f).replace("\\", "/")
             rel = os.path.relpath(path, ROOT).replace("\\", "/")
-            st, source_alive = "", True
+            st, source_alive, machine = "", True, True
             if f.endswith(".md") and not is_service(path):
                 fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
                 st = (fm.get("status") or "без статуса").strip()
                 src = (fm.get("source") or "").strip().strip('"')
                 source_alive = bool(src and os.path.exists(
                     os.path.join(os.path.dirname(ROOT) or ".", src)))
-            why = survives(rel, source_alive, st, drop_handmade)
+                machine = known_machine(fm)
+            why = survives(rel, source_alive, machine, st, drop_unknown)
             if why:
                 keep.append((path, why))
                 continue
             drop.append(path)
             if st:
                 statuses[st] = statuses.get(st, 0) + 1
-                if not source_alive and not regenerated(rel, st):
+                if not (source_alive or machine or regenerated(rel, st)):
                     orphan[rel.split("/")[0]] = orphan.get(rel.split("/")[0], 0) + 1
     return sorted(drop), sorted(keep), statuses, orphan
 
@@ -128,11 +143,13 @@ def scan(drop_handmade: bool) -> tuple:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Обнулить базу знаний и собрать заново")
     ap.add_argument("--apply", action="store_true", help="удалить (иначе dry-run)")
-    ap.add_argument("--drop-handmade", action="store_true",
-                    help="снести и то, за чем не стоит документа: пересборка это не "
-                         "вернёт, только git")
+    ap.add_argument("--drop-unknown", action="store_true",
+                    help="снести и карточки неизвестного происхождения: пересборка их "
+                         "не вернёт, только git")
     ap.add_argument("--keep-handmade", action="store_true",
-                    help=argparse.SUPPRESS)   # с 1.93 это поведение по умолчанию
+                    help=argparse.SUPPRESS)   # с 1.92.5 это поведение по умолчанию
+    ap.add_argument("--list-unknown", action="store_true",
+                    help="перечислить карточки неизвестного происхождения и выйти")
     ap.add_argument("--backup", metavar="DIR",
                     help="сначала скопировать базу целиком в эту папку")
     ap.add_argument("--allow-dirty", action="store_true",
@@ -163,10 +180,23 @@ def main() -> int:
         print(f"kb_reset: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
-    drop, keep, statuses, orphan = scan(a.drop_handmade)
+    drop, keep, statuses, orphan = scan(a.drop_unknown)
+
+    if a.list_unknown:
+        rows = [os.path.relpath(p, ROOT).replace("\\", "/") for p, why in keep
+                if why.startswith("происхождение")]
+        print(f"# Карточки неизвестного происхождения — {TODAY}\n")
+        print(f"Ни живого `source:`, ни метки `built: machine`. Пересборка их не вернёт,"
+              f" но это не значит, что их писал человек: на старых базах метку ещё не"
+              f" ставили, и сюда же попадают заготовки `kb:repair --stubs`.\n")
+        for rel in rows:
+            print(f"  {rel}")
+        print(f"\nВсего: {len(rows)}")
+        print("Своего здесь нет — снести: `kb:reset --drop-unknown --apply`.")
+        return 0
     cards = [p for p in drop if p.endswith(".md")]
     print(f"# Сброс базы знаний — {TODAY}\n")
-    print(f"Режим: {'полный, включая рукотворное' if a.drop_handmade else 'всё, что соберётся заново'}")
+    print(f"Режим: {'полный, включая неизвестное' if a.drop_unknown else 'всё, что соберётся заново'}")
     print(f"К удалению: {len(drop)} файлов (карточек {len(cards)}) · остаётся: {len(keep)}")
     print("Не тронутся: .obsidian/ (настройки хранилища) и meta/aurora_version.txt, "
           "а за пределами базы — ничего: Sources/, Raw/, Artifacts/, Deliverables/, "
@@ -191,10 +221,10 @@ def main() -> int:
         print()
     lost = sum(orphan.values())
     if lost:
-        print(f"⚠️  Идут под снос {lost} карточек, за которыми не стоит документа "
-              f"(`source:` пуст или указывает на файл, которого нет). Пересборка их не "
-              f"вернёт — только git. Вы попросили это флагом `--drop-handmade`.\n")
-    if not a.drop_handmade:
+        print(f"⚠️  Идут под снос {lost} карточек неизвестного происхождения: ни живого "
+              f"`source:`, ни метки `built: machine`. Пересборка их не вернёт — только "
+              f"git. Вы попросили это флагом `--drop-unknown`.\n")
+    if not a.drop_unknown:
         # обвязку базы уже назвали выше — здесь только рукотворное
         seen = {}
         for path, why in keep:
@@ -204,6 +234,14 @@ def main() -> int:
             print("Остаётся — пересборка это не вернёт:")
             for why, n in sorted(seen.items()):
                 print(f"  {why}: {n}")
+            unknown = sum(n for why, n in seen.items() if why.startswith("происхождение"))
+            if unknown:
+                print(f"\n«Происхождение неизвестно» — это НЕ обязательно ваша работа. На"
+                      f" старых базах метку `built: machine` ещё не ставили, и под этот"
+                      f" счёт попадают заготовки `kb:repair --stubs` и всё, что пришло"
+                      f" массовыми коммитами. Посмотрите список глазами: если своего там"
+                      f" нет, снесите их `--drop-unknown` — база станет чище.")
+                print(f"Показать поимённо: `kb:reset --list-unknown`.")
             print()
     if not drop:
         print("✅ Удалять нечего — база уже пуста.")
@@ -211,8 +249,8 @@ def main() -> int:
 
     if not a.apply:
         print("(dry-run) Ничего не удалено. Обнулить: --apply")
-        if not a.drop_handmade:
-            print("Снести вообще всё, включая то, за чем нет документа: --drop-handmade")
+        if not a.drop_unknown:
+            print("Снести вообще всё, включая неизвестное: --drop-unknown")
         print("\nПосле сброса: `kb:build` → задание ассистенту на партию → `kb:links --cards`.")
         return 0
 
@@ -243,7 +281,7 @@ def main() -> int:
           "ничего — Sources/, Raw/, Artifacts/, Deliverables/, Workspaces/, Templates/, "
           "Prompts/ на месте.")
     print("Дальше:")
-    if a.drop_handmade:
+    if a.drop_unknown:
         print("  0. правила базы (meta/conventions.md, meta/golden_questions.md) из источников")
         print("     не вернутся — возьмите их из git или из шаблонов kit'а")
     print("  1. `kb:build`                    — план: партии и готовое задание ассистенту")

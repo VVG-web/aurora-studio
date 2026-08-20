@@ -2490,44 +2490,54 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
-def test_reset_spares_what_no_rebuild_can_return(tmp: Path):
-    """Карточку без документа сносить по умолчанию нельзя: её никто не вернёт.
+def test_reset_keeps_only_what_it_cannot_identify(tmp: Path):
+    """«Нет источника» ≠ «писал человек». Оставляем только НЕОПОЗНАННОЕ — и говорим об этом.
 
-    Защита раньше висела на именах папок (`--keep-handmade`: Decisions, Questions,
-    Reference) — и промахивалась в обе стороны. Замер на живом проекте в 1955 карточек:
-    внутри «рукотворных» разделов невосстановимых **31** из 269, а снаружи — **451**.
-    Папка не может знать, кто написал карточку: база разложена по предметам, а авторство
-    лежит поперёк предметов.
+    Сначала защита висела на именах папок (`Decisions/`, `Questions/`, `Reference/`) и
+    ошибалась в обе стороны: на живом проекте внутри них невосстановимых 31 из 269, а
+    снаружи 451. Потом — на отсутствии `source:`, и это оказалось не лучше: из 425
+    карточек без источника 137 создал `kb:repair --stubs` заготовками, 64 пришли
+    массовым коммитом, а рукотворными были единицы. Беречь заготовки вредно вдвойне:
+    пересборка их не вернёт, а держать пустышки незачем.
 
-    Решает факт: стоит ли за карточкой документ. Флаг перевернулся — теперь нужен
-    `--drop-handmade`, чтобы снести и невосстановимое.
+    Верный признак — положительный: машина ставит `built: machine` сама. На пересобранной
+    базе таких 965 из 965, и неопознанных не остаётся вовсе. Что не опознано — остаётся,
+    но названо своим именем: «происхождение неизвестно», а не «ваша работа».
     """
     root = make_project(tmp)
     (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
     (root / "Sources/Confluence/Док.md").write_text("текст", encoding="utf-8")
     card(root, "Concepts/Из-зеркала.md", "тело", status="knowledge",
-         source="Sources/Confluence/Док.md")
-    # рукотворное живёт в обычном предметном разделе, а не в особой папке
-    card(root, "Concepts/Написано-руками.md", "тело", status="knowledge")
+         source="Sources/Confluence/Док.md", built="machine")
+    # заготовка старого движка: источника нет, метки нет — но и человек её не писал
+    card(root, "Concepts/Заготовка.md", "тело", status="knowledge", built="machine")
+    # а это уже неопознанное: ни того, ни другого
+    card(root, "Concepts/Неопознанная.md", "тело", status="knowledge")
     card(root, "Decisions/DR-001.md", "почему выбрали так", status="knowledge")
 
     cp = run("kb_reset.py", cwd=root, expect_rc=0)
-    assert "Из-зеркала" not in cp.stdout or "К удалению: 1" in cp.stdout, cp.stdout[:400]
-    assert "остаётся: 2" in cp.stdout or "остаётся: 3" in cp.stdout, \
-        f"рукотворное не защищено по умолчанию:\n{cp.stdout[:600]}"
+    assert "происхождение неизвестно" in cp.stdout, "неопознанное не названо своим именем"
+    assert "НЕ обязательно ваша работа" in cp.stdout, \
+        "движок выдаёт догадку за факт — именно так он и ошибся дважды"
+
+    named = run("kb_reset.py", "--list-unknown", cwd=root, expect_rc=0)
+    assert "Неопознанная" in named.stdout and "Заготовка" not in named.stdout, \
+        f"список неопознанных собран неверно:\n{named.stdout}"
+    assert "Всего: 2" in named.stdout, "в списке не все неопознанные (DR тоже без метки)"
 
     run("kb_reset.py", "--apply", cwd=root, expect_rc=0)
     assert not (root / "AuroraKnowledgeDB/Concepts/Из-зеркала.md").exists(), \
-        "карточка с живым источником пережила сброс — пересборка её продублирует"
-    assert (root / "AuroraKnowledgeDB/Concepts/Написано-руками.md").exists(), \
-        "снесено рукотворное в обычном разделе: именно этого папка и не ловила"
-    assert (root / "AuroraKnowledgeDB/Decisions/DR-001.md").exists(), "снесён журнал решений"
+        "карточка с живым источником пережила сброс — после пересборки будет двойник"
+    assert not (root / "AuroraKnowledgeDB/Concepts/Заготовка.md").exists(), \
+        "заготовка сбережена: пересборка её не вернёт, но и держать пустышку незачем"
+    assert (root / "AuroraKnowledgeDB/Concepts/Неопознанная.md").exists(), \
+        "снесено то, про что движок не знает, чьё оно"
 
-    # полный снос по-прежнему возможен — но теперь его просят явно
-    cp2 = run("kb_reset.py", "--drop-handmade", "--apply", cwd=root, expect_rc=0)
-    assert "не стоит документа" in cp2.stdout, "полный снос не предупредил о потере"
-    assert not (root / "AuroraKnowledgeDB/Concepts/Написано-руками.md").exists(), \
-        "--drop-handmade не снёс то, ради чего его просят"
+    cp2 = run("kb_reset.py", "--drop-unknown", "--apply", "--allow-dirty", cwd=root,
+              expect_rc=0)
+    assert "неизвестного происхождения" in cp2.stdout, "полный снос не назвал потерю"
+    assert not (root / "AuroraKnowledgeDB/Concepts/Неопознанная.md").exists(), \
+        "--drop-unknown не снёс то, ради чего его просят"
 
 
 @test
@@ -2575,7 +2585,7 @@ def test_reset_warns_about_facts_not_folder_names(tmp: Path):
     (root / "AuroraKnowledgeDB/MOC").mkdir(parents=True, exist_ok=True)
     card(root, "MOC/Карта.md", "карта", status="index")
 
-    cp = run("kb_reset.py", "--drop-handmade", cwd=root, expect_rc=0)
+    cp = run("kb_reset.py", "--drop-unknown", cwd=root, expect_rc=0)
     assert "Reference: 3  ⚠️ из них 2 не выведется" in cp.stdout, \
         f"счёт невосстановимых считается не по факту:\n{cp.stdout}"
     assert "MOC: 1" in cp.stdout and "MOC: 1  ⚠️" not in cp.stdout, \
@@ -2586,7 +2596,7 @@ def test_reset_warns_about_facts_not_folder_names(tmp: Path):
     # база, целиком выведенная из источников, не должна пугать вовсе
     (root / "AuroraKnowledgeDB/Reference/Ниоткуда.md").unlink()
     (root / "AuroraKnowledgeDB/Reference/Ссылка-в-никуда.md").unlink()
-    cp2 = run("kb_reset.py", "--drop-handmade", cwd=root, expect_rc=0)
+    cp2 = run("kb_reset.py", "--drop-unknown", cwd=root, expect_rc=0)
     assert "⚠️ из них" not in cp2.stdout, "предупреждение осталось там, где терять нечего"
     assert "Идут под снос" not in cp2.stdout, "предупреждение о потере без потери"
 
@@ -4415,7 +4425,7 @@ def test_kb_reset_empties_the_base_and_nothing_else(tmp: Path):
         (root / outside).write_text("содержимое\n", encoding="utf-8")
 
     # полный снос просят явно — и тогда движок называет числом, что теряется
-    dry = run("kb_reset.py", "--drop-handmade", cwd=root)
+    dry = run("kb_reset.py", "--drop-unknown", cwd=root)
     assert "verified: 1" in dry.stdout and "работа человека" in dry.stdout, \
         f"не предупреждает, что удаляет проверенное человеком:\n{dry.stdout[:600]}"
     assert "не выведется заново: источника нет" in dry.stdout, \
@@ -4424,7 +4434,7 @@ def test_kb_reset_empties_the_base_and_nothing_else(tmp: Path):
         "нет итоговой строки: человек читает разделы и не видит общего счёта"
     assert (kb / "Concepts/Карточка.md").exists(), "dry-run удалил файлы"
 
-    run("kb_reset.py", "--drop-handmade", "--apply", cwd=root)
+    run("kb_reset.py", "--drop-unknown", "--apply", cwd=root)
     for gone in ("Concepts/Карточка.md", "MOC/Связи.md", "_archive/Старая.md",
                  "meta/manifest.json", "meta/golden_questions.md", "Decisions/DR-001.md",
                  "Questions/Q-001.md", "Reference/abbr.md"):
@@ -4480,8 +4490,8 @@ def test_kb_reset_keep_handmade_spares_what_has_no_source(tmp: Path):
     assert not (kb / "meta/links.json").exists(), "сгенерированный граф связей не удалён"
 
     # снести и невосстановимое можно, но только по явному ключу
-    run("kb_reset.py", "--drop-handmade", "--apply", "--allow-dirty", cwd=root)
-    assert not (kb / "Decisions/DR-001.md").exists(), "--drop-handmade не снёс журнал решений"
+    run("kb_reset.py", "--drop-unknown", "--apply", "--allow-dirty", cwd=root)
+    assert not (kb / "Decisions/DR-001.md").exists(), "--drop-unknown не снёс журнал решений"
 
 
 @test
