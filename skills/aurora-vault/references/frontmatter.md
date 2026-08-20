@@ -15,12 +15,15 @@ tags: [process.algorithm]
 type: process             # concept | process | glossary | system | role | status-model |
                           # reference | decision | spec | moc
 schema_version: 3         # версия схемы карточки; проставляет kb:schema
-status: verified          # imported → draft → in-review → verified → deprecated
-owner: "@vadim"           # кто отвечает за актуальность (git-имя или @handle)
+status: knowledge         # knowledge | draft · служебные: index, deprecated
+kind: knowledge           # dictionary | document | knowledge — кому позволено править тело
+built: machine            # метку ставит машина; её отсутствие НЕ значит «писал человек»
+trust: trusted            # класс источника: raw | trusted | draft | unknown
+trust_basis: "все связанные задачи в доверенных статусах, например PRJ-123 — «Закрыто»"
+trust_checked: 2026-08-21 # когда доверие пересчитывалось (kb:trust)
+distilled: 2026-08-21     # когда модель написала тезис (kind: knowledge)
 created: 2026-05-17
 updated: 2026-07-05
-verified: 2026-07-05      # дата последней сверки с реальностью (пусто у imported/draft)
-review_by: 2026-10-05     # после этой даты карточка считается протухшей
 source: "Sources/Confluence/SM - Алгоритмы/04. ..."   # или Raw/..., или Sources/JIRA/...
 source_synced: 2026-07-05 # версия источника на момент последней обработки
 supersedes: []            # wiki-ссылки на карточки, которые эта заменила
@@ -34,24 +37,29 @@ related: []
 `applies_to` semantics: empty/absent = верно для всех релизов. Список релизов проекта и
 текущий релиз ведутся в `AuroraKnowledgeDB/meta/releases.md` (создать при первом использовании:
 одна строка на релиз + маркер `current`). Когда знание меняется от релиза к релизу —
-это ДВЕ карточки: старая получает `applies_to: [R2]` (остаётся verified — она верна для
-своего релиза, это не deprecated!), новая — `applies_to: [R3+]`, взаимные ссылки в
+это ДВЕ карточки: старая получает `applies_to: [R2]` (остаётся `knowledge` — она верна
+для своего релиза, это не deprecated!), новая — `applies_to: [R3+]`, взаимные ссылки в
 `related`. `deprecated` — только когда знание неверно для ВСЕХ релизов.
 
 ## Status semantics
 
-| status | Meaning | LLM treats as |
-|---|---|---|
-| `imported` | синк/extraction положил, человек не смотрел | материал для оценки, НЕ факт |
-| `draft` | набросок аналитика, гипотеза | идея, требует проверки |
-| `in-review` | на ревью у команды | не использовать как факт |
-| `verified` | проверено владельцем | факт с датой годности (`review_by`) |
-| `deprecated` | устарело, заменено | история; НЕ применять, цитировать только для «почему» |
+Шкала закрыта и **вычисляется движком**. Человек статус не назначает: он выводится из
+статусов задач Jira, связанных с источником карточки (`ops:trace-table` → `kb:trust`).
 
-Allowed transitions: `imported|draft → in-review → verified`;
-anything → `deprecated` (only with `superseded_by` filled or an explicit DR link).
-Backward transitions (`verified → draft`) are allowed when drift is detected — log why in
-the card body under `## История`.
+| status | Откуда берётся | LLM treats as |
+|---|---|---|
+| `knowledge` | все связанные задачи в доверенных статусах | факт |
+| `draft` | хоть одна задача в работе, либо связей нет вовсе | идея, требует проверки |
+| `index` | служебный: карта содержания, `_index.md` | навигация, не знание |
+| `deprecated` | заменено через `kb:supersede` | история; НЕ применять, цитировать для «почему» |
+
+Переходы не «разрешаются» — они **происходят сами** при следующем `kb:trust`: задача
+вернулась в работу, и карточка стала черновиком. Почему именно — записано в
+`trust_basis` той же карточки, с ключом задачи и её статусом.
+
+Старые базы содержат `imported`, `in-review`, `verified`, `accepted`. Движок их **читает**
+(`verified` считается доверенным), но больше не назначает. `kb:trust` переводит базу на
+новую шкалу за один прогон.
 
 ## Версия схемы
 
@@ -101,7 +109,7 @@ these cards by the `trace` workflow — never edit the table by hand.
 Domain reference lists in `AuroraKnowledgeDB/Reference/`, hand-maintained by the team:
 abbreviations, adjacent-subsystem lists, participants and roles, code mappings.
 One list = one card (`type: reference`) with the normal lifecycle fields; owner keeps it
-current like any verified card. These are living cards — editing them is normal (unlike
+current like any `knowledge` card. These are living cards — editing them is normal (unlike
 Raw/, which is immutable evidence). `build` may extract atomic Glossary cards FROM
 reference lists (they are manifest sources), but the list itself stays the editable master.
 
@@ -179,12 +187,12 @@ spec_id: SPEC-012
 implements: ["[[REQ-042]]"]   # какие требования реализует
 decisions: ["[[DR-0007]]"]    # решения-ограничения
 jira: [PROJ-234]              # Epic/US, созданные ИЗ спеки
-based_on: []                  # verified-карточки-основания — обязательно
+based_on: []                  # карточки-основания (status: knowledge) — обязательно
 applies_to: [R2]
 ```
 
-Lifecycle: `draft → in-review → verified` (согласована командой)
-(передана в разработку через spec-pack). Gate между verified и handoff — Definition of
+Lifecycle: `draft → knowledge` (движок пересчитывает по статусам задач)
+(передана в разработку через spec-pack). Gate между `knowledge` и handoff — Definition of
 Ready (см. workflows.md). После передачи в разработку спека неизменна для своего релиза: изменение =
 новая версия (`applies_to`/`supersede`) + дельта-задачи. Сценарии — Given/When/Then,
 формулировки EARS-style.
@@ -222,8 +230,10 @@ tracing: when a card changes, `garden`/`diff` can list released documents built 
 ## Invariants (check before any write)
 
 - [ ] `status` present and valid; `deprecated` ⇒ `superseded_by` or DR link present
-- [ ] `verified` ⇒ `owner` and `review_by` present
-- [ ] a `verified` card body contains no wiki-links to `deprecated` cards
+- [ ] `status` внутри шкалы: `knowledge` · `draft` · `index` · `deprecated`
+- [ ] у карточки есть `kind` — иначе неизвестно, можно ли переписывать тело
+- [ ] `knowledge`-карточка не ссылается на `deprecated`
+- [ ] у карточки есть хоть одна связь: до неё должно быть можно дойти
       (link to the successor instead)
 - [ ] deprecated cards move to `AuroraKnowledgeDB/_archive/` (create the folder if missing);
       wiki-links keep working in Obsidian regardless of folder
