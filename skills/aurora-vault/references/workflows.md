@@ -61,7 +61,7 @@ Rebuild `AuroraKnowledgeDB/MOC/Трассировка-требований.md` f
 (the table is generated — manual edits will be lost):
 1. One row per REQ: req_id | пункт ТЗ (tz_ref) | суть (title) | req_status | источник |
    SPEC | Jira (Epic/US) | AC | ПМИ | приёмка | вопросы | DR | releases (applies_to) |
-   владелец | verified. (SPEC берётся из Specs-карточек, чьё `implements` содержит этот REQ;
+   владелец | доверие. (SPEC берётся из Specs-карточек, чьё `implements` содержит этот REQ;
    приёмка — из `Artifacts/acceptance/*` по полю `covers`; вопросы — из `Questions/*`
    со статусом `open`/`asked`, у которых REQ указан в `blocks`.)
 2. Sort by tz_ref (пункты ТЗ первыми), затем req_id. Highlight problems below the table:
@@ -75,7 +75,7 @@ Rebuild `AuroraKnowledgeDB/MOC/Трассировка-требований.md` f
 
 ## spec <тема> — собрать спецификацию фичи (SDD)
 
-1. Inputs: REQ cards (`req_status: agreed`) the feature implements, verified knowledge
+1. Inputs: REQ cards (`req_status: agreed`) the feature implements, `knowledge` cards
    per `retrieval.md` (generate mode), related DRs. Template: `Templates/spec_template.md`.
 2. Create `AuroraKnowledgeDB/Specs/SPEC-NNN-<фича>.md`, `status: draft`, `based_on` = FULL list
    of cards used. Scenarios in Given/When/Then, wording EARS-style
@@ -85,16 +85,16 @@ Rebuild `AuroraKnowledgeDB/MOC/Трассировка-требований.md` f
 
 ## Definition of Ready — гейт передачи спеки в разработку
 
-A spec may move to `verified` (согласована) and be handed off ONLY when:
-- [ ] все термины резолвятся в verified+ карточки Glossary/Concepts;
+A spec may be handed off ONLY when:
+- [ ] все термины резолвятся в карточки Glossary/Concepts со статусом `knowledge`;
 - [ ] все `implements` REQ имеют `req_status: agreed`;
 - [ ] нестандартные выборы оформлены DR (accepted) и слинкованы;
 - [ ] раздел «Открытые вопросы» ПУСТ — то есть **нет карточек `Questions/` со статусом
       `open`/`asked`, у которых в `blocks` эта спека** (проверяется механически, см. `ops:questions`);
       вопрос, закрытый как `closed-no-answer`, допустим только вместе с DR о допущении;
 - [ ] каждый сценарий имеет строку в «Критериях приёмки»;
-- [ ] в `based_on` нет карточек ниже verified (или они явно помечены как допущения).
-`verified` + выпущенный spec-pack = передана в разработку. После этого
+- [ ] в `based_on` нет черновиков (или они явно помечены как допущения).
+Пройденный чек-лист + выпущенный spec-pack = передана в разработку. После этого
 изменение спеки = новая версия (`applies_to`/`supersede`) + дельта-задачи в Jira —
 прямая правка кода или US в обход спеки запрещена.
 
@@ -117,7 +117,7 @@ python3 .opencode/scripts/spec_pack.py SPEC-012 --apply   # записать б�
 4. Output: `Deliverables/work/spec-packs/SPEC-NNN_v<версия>.md`; факт передачи
    фиксируется командой `release` (снапшот в `Deliverables/released/`).
 5. Гейт DoR проверяется механически: REQ не в `agreed`, открытые вопросы из
-   `Questions/` с `blocks: [[SPEC-NNN]]`, основания ниже `verified`. Нарушения не
+   `Questions/` с `blocks: [[SPEC-NNN]]`, основания-черновики. Нарушения не
    блокируют сборку, но печатаются и попадают в раздел «Риски передачи» — подрядчик
    должен видеть, на чём построен контракт.
 Вопросы разработчиков по спеке возвращаются НЕ устно: каждый ответ = уточнение
@@ -136,7 +136,7 @@ python3 .opencode/scripts/spec_pack.py SPEC-012 --apply   # записать б�
 ## assemble <ОПЗ|ПМИ|РП|...> — сборка поставляемого документа
 
 1. Template from `Templates/`; knowledge context per `retrieval.md`
-   (generate mode: verified, с учётом релиза документа).
+   (generate mode: только `knowledge`, с учётом релиза документа).
 2. Для ПМИ: секция проверок строится от трассировки — каждый REQ с `req_status: agreed`
    должен получить хотя бы один тест; недостающие — в отчёт сборки.
 3. Output: `Deliverables/work/<doc>_v<version>.md`, frontmatter per `frontmatter.md`
@@ -173,7 +173,7 @@ Confluence быть не должно.
 5. US/AC в Jira: создание задач по шаблону `Templates/jira_us_create_template.json`
    (если он есть в проекте); ключ созданной задачи записывается в артефакт и в поле
    `jira` соответствующего REQ — иначе трассировка снова разойдётся.
-6. Перед публикацией — предупредить, если в `based_on` есть карточки ниже verified:
+6. Перед публикацией — предупредить, если в `based_on` есть черновики:
    наружу уходит непроверенное знание.
 7. После публикации: `sync:confluence` (зеркало подхватит опубликованное) и `sync:audit`.
 
@@ -199,28 +199,34 @@ Confluence быть не должно.
    (+ переданный бинарник, если есть). Snapshot немедленно неизменяем.
 2. Set `released:` date in the work copy; в REQ-карточках, покрытых документом
    (например ПМИ), обновить поле `pmi`.
-3. Report: какие карточки из `based_on` имеют статус ниже verified — риск: сдали документ,
+3. Report: какие карточки из `based_on` — черновики — риск: сдали документ,
    собранный на непроверенном знании.
 
-## verify / promote [card|folder|all-imported] — гейт качества
+## Доверие — считается, не присваивается
 
-Класс доверия считает `kb_trust.py` по таблице трассировки (см. `maintenance.md`): он не пропустит
-карточку без `source`, с битыми ссылками или уже deprecated. Ниже — то, что остаётся
-человеку и агенту.
+Команды `verify` больше нет, и это не упрощение, а исправление. Доверие карточки —
+свойство её **источника**, а не мнение читателя: если знание пришло из задачи, которую
+команда закрыла, оно доверенное; если задача вернулась в работу — знание снова черновик,
+и никакая приёмка человеком этого не отменит.
 
-1. For each card: show the analyst a short digest (title, source, key claims,
-   duplicates by alias, broken links).
-2. On approval: set `status: verified`, `owner`, `verified: today`,
-   `review_by: today + 3 months` (или срок, названный владельцем). Fix links, update `_index.md`.
-   **Quick mode («прими с дефолтами» / "apply defaults"):** no questions asked — owner =
-   the requesting analyst, review_by = +3 months, applies_to untouched. One-line
-   confirmation per card.
-3. Team mode: batch the changes into one git commit/PR so a second analyst reviews;
-   `verified` is the top status of the base: there is no further step.
+Порядок такой:
+
+1. `ops:trace-table` строит таблицу «артефакт ↔ задача»: прямые связи (совпавший номер,
+   ключ задачи в тексте, `page_id`) и связи через трассировку глубиной до двух переходов.
+   У каждой связи в таблице записано её доказательство.
+2. `kb:trust` проставляет карточкам класс по статусам связанных задач и пишет основание в
+   `trust_basis` — с ключом задачи и её статусом.
+3. Всё. Человек в этой цепочке не участвует.
+
+**Что остаётся человеку** (см. `ops:todo`): карточки, у которых связей не нашлось вовсе.
+Это не «непринятые» карточки, а неувязанные: либо в источнике нет номера задачи, либо
+задача не заведена. Лечится трассировкой или вопросом к команде — но не статусом.
+
+Подробно, включая классы источников и что делать с `unknown`: `docs/knowledge-rules.md`.
 
 ## diff — дрейф после синка (запускать после confluence-sync/jira-export)
 
-1. Compare `Sources/` state vs cards: for every `verified` card whose `source`
+1. Compare `Sources/` state vs cards: for every `knowledge` card whose `source`
    file hash ≠ `source_synced` state, extract what changed.
 2. Output `Artifacts/reports/YYYY-MM-DD_drift.md`: card, owner, what changed in source,
    suggested action (re-verify / supersede / ignore formatting change).
@@ -233,7 +239,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 1. Build knowledge context per `retrieval.md` (review mode): terms from `Glossary/`,
    linked algorithms from `Processes/`, statuses, related DRs.
 2. Check: терминология против глоссария; ссылки на существующие алгоритмы/статусы;
-   противоречия с verified-карточками; полнота по шаблону
+   противоречия с доверенными карточками; полнота по шаблону
    (`Templates/user_story_template.md` / `AC_template.md`); тестируемость критериев;
    противоречия с accepted DRs.
 3. Output `Artifacts/reviews/YYYY-MM-DD_review_<ID>.md`: verdict, findings ranked by
@@ -245,7 +251,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 1. Template from `Templates/` (US → user_story_template, AC → AC_template, ПР →
    proektnoe_reshenie_template); if user's `Prompts/` has a matching prompt (US_create,
    AC_new) — follow its instructions too.
-2. Knowledge context per `retrieval.md` (generate mode: verified only).
+2. Knowledge context per `retrieval.md` (generate mode: только `knowledge`).
 3. Output: `Artifacts/<тип>/` строго по существующей папке типа; спека →
    `AuroraKnowledgeDB/Specs/`; frontmatter `status: draft`,
    `based_on: [список использованных карточек]`, `template: <какой шаблон>`.
@@ -267,7 +273,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
    `asked_to`, `blocks` (какие REQ/SPEC стоят), `due`.
 2. Одно неизвестное = одна карточка. Сформулировать так, чтобы можно было отправить
    заказчику без редактуры; приложить 2 гипотезы («A или B?» отвечается быстрее открытого вопроса).
-3. Проверить базу ДО создания: `ask` по теме — возможно, ответ уже есть в verified-карточке
+3. Проверить базу ДО создания: `ask` по теме — возможно, ответ уже есть в доверенной карточке
    или в отклонённой DR. Спрашивать заказчика о том, что мы уже знаем, дорого.
 4. Отметить блокировку: в спеке раздел «Открытые вопросы» ссылается на `[[Q-NNN]]`
    (а не пересказывает вопрос) — так DoR считается механически.
@@ -335,7 +341,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
    `AuroraKnowledgeDB/_archive/`, keep all aliases (links keep resolving).
 3. Successor card: `supersedes: [[old]]`, add `## История` line (когда и почему заменили,
    ссылка на DR если есть).
-4. Fix inbound links: verified cards must not link to the deprecated card (frontmatter.md
+4. Fix inbound links: `knowledge` cards must not link to the deprecated card (frontmatter.md
    invariant); update `_index.md`.
 
 ## garden — еженедельная гигиена (дежурный аналитик)
@@ -399,7 +405,7 @@ validate). Вопрос один: **чего база не знала или з�
 
 ## status — здоровье базы
 
-Числа даёт `python3 .opencode/scripts/aurora_stats.py` (статусы, % verified+, режим
+Числа даёт `python3 .opencode/scripts/aurora_stats.py` (статусы, доля `knowledge`, режим
 bootstrap, протухшее, сироты, битые источники, REQ/DR/спеки, артефакты с `based_on`,
 поставляемые документы на непроверенных основаниях). Модель их не пересчитывает —
 комментирует динамику и называет три ближайших действия. Подробно — `maintenance.md`.
@@ -416,11 +422,10 @@ Zettelkasten живёт дописыванием: карточку уточня�
 Отсюда порядок, который не мешает работать и не даёт статусу врать:
 
 1. **Связи, метки, попадание в MOC** статуса не меняют — это не утверждение о фактах.
-   `kb:links --cards` и `kb:moc` спокойно правят `verified`-карточки.
-2. **Человек дописал тело** — статус остаётся `verified` ровно до ближайшего `kb:lint`:
-   отпечаток `verified_hash` разошёлся, линтер называет карточку. Дальше решает человек —
-   пересобрать карточку (`agent:distill`) либо дождаться пересчёта `kb:trust`
-   (дописал начерно, вернусь).
+   `kb:links --cards` и `kb:moc` спокойно правят доверенные карточки.
+2. **Человек дописал тело** — статус не меняется: он про источник, а не про текст. Если
+   дописанное расходится с источником, это увидит Момус на ближайшем вопросе к базе; если
+   источник изменился — `sync:diff` покажет дрейф. Статус руками не трогают.
 3. **Машина принесла новое из источника** — тело не переписывается никогда. Новое идёт
    отдельной секцией «Из источника (не проверено)», в отчёт пишется `DRIFT`.
 

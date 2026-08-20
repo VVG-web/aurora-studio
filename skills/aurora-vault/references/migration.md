@@ -67,14 +67,15 @@ ingest-команды** — по природе документа, а не по
 ```
 /confluence-sync-<SLUG>     # зеркала Confluence → Sources/Confluence
 /jira-export-<SLUG>         # зеркала Jira → Sources/JIRA
-/aurora-vault build         # извлечь карточки из Sources/ и Raw/project/ (все → imported)
+/aurora-vault build         # извлечь карточки из Sources/ и Raw/project/ (все → draft)
 /aurora-vault ingest-tz Raw/contract/...   # если есть ТЗ — требования и трассировка
-/aurora-vault status        # дашборд: сколько карточек, % verified (стартует в bootstrap)
+/aurora-vault status        # дашборд: сколько карточек, доля knowledge (стартует в bootstrap)
 ```
 
-Дальше — обычный цикл: `context` → `verify` (10 мин/нед) → `garden` (пятница). Пока
-verified < 20 %, действует bootstrap-режим (непроверенные карточки в контексте с
-пометкой) — см. `retrieval.md`.
+Дальше — обычный цикл: `agent:build` → `kb:kind` → `agent:distill` → `ops:trace-table` →
+`kb:trust` → `garden` (пятница). Доля `knowledge` растёт не приёмкой, а движением задач в
+Jira. Пока она ниже 20 %, действует bootstrap-режим (черновики в контексте с пометкой) —
+см. `retrieval.md`.
 
 ## Шаг 5 — проект уже имел зеркало Confluence (переезд на детерминированный экспорт)
 
