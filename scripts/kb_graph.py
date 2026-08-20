@@ -576,7 +576,7 @@ def main() -> int:
             return 1
         pairs = card_links(g, hubs, a.conf, a.jira)
         if a.apply and not git_guard(KB_DIR, a.allow_dirty, "перенос связей в карточки"):
-            return 1
+            return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
         st = apply_card_links(pairs, a.apply, a.max_related)
         print(f"# Связи в карточках — {TODAY}\n")
         print(f"- карточек в графе: {len(pairs)}")
