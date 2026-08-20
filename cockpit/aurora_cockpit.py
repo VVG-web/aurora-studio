@@ -49,6 +49,11 @@ TOKEN = secrets.token_urlsafe(24)
 # новая страница начинает просить у него то, чего он ещё не умеет. Сравнить время старта
 # с временем правки своего же файла — единственный честный способ это заметить.
 STARTED = time.time()
+# Каким кодом поднят этот процесс. Снимок делается на импорте — именно поэтому он честен:
+# кит могли обновить уже после старта, и тогда работающая панель остаётся вчерашней.
+# Метка входит в ключ кэша реестра: без неё старый процесс пишет свой (неполный) реестр
+# под тем же ключом, что считает новый код, и панель теряет команды до смены версии.
+ENGINE = os.path.getmtime(os.path.abspath(__file__))
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 CACHE: dict = {}
@@ -231,7 +236,7 @@ def registry() -> list:
     # из панели до следующей смены версии.
     key = (f"{kit_version()}|{stamp}|"
            f"{os.path.getmtime(os.path.join(KIT, 'commands.txt'))}|"
-           f"src={int(kit_is_source())}")
+           f"src={int(kit_is_source())}|engine={ENGINE}")
     cached = read_text(REGISTRY_CACHE, limit=4_000_000)
     if cached:
         try:
