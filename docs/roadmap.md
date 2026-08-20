@@ -81,7 +81,7 @@ Raw) задаются kit'ом в [`structure_dirs.txt`](../structure_dirs.txt) 
 |---|---|---|
 | `kb:repair` | `kb_fix.py` | 482 битые ссылки, гомоглифы, легаси-frontmatter — вместо самописных `fix_links*.py` |
 | `kb:dedupe` | `kb_fix.py --dupes` | пары-двойники, разошедшиеся по регистру/гомоглифам |
-| `kb:queue` | `kb_queue.py` | 7 verified из 1971: очередь по употреблению × входящим ссылкам × протуханию |
+| `kb:trust` | `kb_trust.py` | класс доверия из статусов задач: приёмка человеком отменена |
 | `sync:audit` | `sync_audit.py` | missing/orphan/collision в зеркалах — вместо ручного отчёта |
 | `ops:stats` | `aurora_stats.py` | дашборд и месячные метрики без обхода базы моделью |
 | `kit:hooks` | `aurora_hooks.py` | pre-commit с `kb_lint` — ошибки больше не копятся молча |

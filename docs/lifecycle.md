@@ -85,7 +85,7 @@ stateDiagram-v2
 |---|---|---|
 | каждый день, 10 минут | утренний обход | `sync:confluence` → `sync:jira` → `sync:audit` → `sync:diff` → `ops:stats` |
 | после синка | пополнить базу | `kb:build --partition N` → ассистент → `kb:links --cards` → `kb:moc` → `kb:lint` |
-| раз в неделю | верификация | `kb:queue` → человек → `kb:verify` |
+| после каждого синка | пересчёт доверия | `ops:trace-table --apply` → `kb:trust --apply` |
 | раз в месяц | навигация | `kb:moc --suggest` → правило в `moc_groups.txt` → `kb:moc --apply` |
 | пятница, 30 минут | прополка | `kb:garden` → `kb:dedupe` → `kb:index` → `kb:schema` |
 | когда идёт разработка | трассировка | `sync:jira-status` → `ops:trace` → `make:spec-pack` |
