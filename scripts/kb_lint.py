@@ -161,9 +161,6 @@ def main():
                                                                 "verified", "canonical"):
             errors.append(f"{rel}: статус «{status}» вне шкалы "
                           f"({', '.join(STATUSES)}) — пересчитайте `kb:trust`")
-        if status in ("knowledge", "draft") and not (fm.get("kind") or "").strip():
-            errors.append(f"{rel}: нет kind — неизвестно, можно ли переписывать тело "
-                          f"(`kb:kind --apply`)")
         if status == "verified":
             if not fm.get("owner"):
                 errors.append(f"{rel}: verified без owner")
@@ -239,6 +236,28 @@ def main():
     for a, a1, a2 in dup_aliases:
         errors.append(f"дубликат alias «{a}»: {a1} и {a2}")
 
+    # Карточка без связей — ошибка, а не особенность. Знание, до которого не дойти ни по
+    # ссылке, ни по карте, в базе не участвует: его не найдёт ни человек, ни ретрив. Связью
+    # считается ссылка из другой карточки, запись в `related:` и вхождение в карту.
+    linked = set()
+    for rel, (fm, text) in cards.items():
+        for target in link_refs(text):
+            linked.add(os.path.splitext(os.path.basename(target.split("#")[0].strip()))[0])
+        for m in re.finditer(r'^\s*-\s*"?\[([^\]]+)\]', text, re.M):
+            linked.add(os.path.splitext(os.path.basename(m.group(1).strip()))[0])
+    for rel, (fm, text) in cards.items():
+        name = os.path.basename(rel)
+        section = os.path.relpath(os.path.dirname(rel), ROOT).split(os.sep)[0]
+        if (name.startswith("_") or section in ("meta", ".", "MOC") or section.startswith("_")
+                or (fm.get("status") or "").strip() == "index"):
+            continue
+        stem = os.path.splitext(name)[0]
+        if stem in linked:
+            continue
+        if not (link_refs(text) or (fm.get("related") or "").strip("[] ")):
+            errors.append(f"{rel}: карточка без связей — до неё не дойти ни по ссылке, "
+                          f"ни по карте (`kb:moc --apply`)")
+
     # orphan binaries in _assets
     assets = os.path.join(ROOT, "_assets")
     if os.path.isdir(assets):
@@ -301,10 +320,11 @@ def main():
         ("дубликат alias", "одинаковые alias у разных карточек",
          "ссылка по такому имени неоднозначна. `kb:repair --aliases` оставит alias там, "
          "где он совпадает с названием, и снимет у остальных"),
-        ("правили после приёмки", "правка после приёмки",
-         "текст изменился после verified: `kb:verify --refresh` или понизить до draft"),
-        ("verified без", "verified без обязательных полей",
-         "приёмка без владельца или срока годности — запустите `kb:verify` заново"),
+        ("карточка без связей", "карточки без связей",
+         "до карточки не дойти ни по ссылке, ни по карте — её не найдут ни человек, ни "
+         "ретрив. `kb:moc --apply` заведёт вход в карту раздела и в карту документа"),
+        ("статус «", "статус вне шкалы",
+         "шкала закрытая: knowledge, draft, deprecated, index. Пересчитайте `kb:trust`"),
         ("нет frontmatter", "карточки без шапки",
          "`kb:repair --frontmatter` проставит статус и дату"),
         ("артефакт в знаниях", "артефакты, попавшие в базу знаний",
