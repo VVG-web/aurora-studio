@@ -35,7 +35,8 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import SERVICE_STATUS, frontmatter, set_field, split_frontmatter, walk_md  # noqa: E402
+from aurora_common import (SERVICE_STATUS, frontmatter, split_frontmatter, walk_md,  # noqa: E402
+                           with_fields)
 
 TODAY = date.today().isoformat()
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
@@ -158,14 +159,16 @@ def main() -> int:
         moved += 1
         changes.append((os.path.relpath(path, root), was or "(нет)", now, why))
         if a.apply:
-            new = set_field(head, "status", now)
-            new = set_field(new, "trust", cls)
-            new = set_field(new, "trust_basis", f'"{why[:200]}"')
-            new = set_field(new, "trust_checked", TODAY)
-            body = rest
+            # Поля ставит with_fields: она же сторожит, что тело осталось прежним.
+            new = with_fields(text, {"status": now, "trust": cls,
+                                     "trust_basis": f'"{why[:200]}"',
+                                     "trust_checked": TODAY})
+            # Сноску о понижении дописываем ПОСЛЕ: это единственная правка тела здесь,
+            # и она обязана быть видимой, а не спрятанной внутри записи полей.
             if was == "knowledge" and now == "draft":
-                body = note_downgrade(body, "knowledge", "draft", why)
-            open(path, "w", encoding="utf-8").write("---" + new + body)
+                nhead, nrest = split_frontmatter(new)
+                new = "---" + nhead + note_downgrade(nrest, "knowledge", "draft", why)
+            open(path, "w", encoding="utf-8").write(new)
 
     print(f"# Класс доверия — {TODAY}\n")
     print("| Класс источника | Карточек |")

@@ -2490,6 +2490,67 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_writing_a_field_refuses_to_touch_the_body(tmp: Path):
+    """`with_fields` сторожит себя сама — в любом проекте, на каждой записи.
+
+    Тесты гоняются при разработке кита, а команды человек запускает у себя: между этими
+    двумя моментами лежат недели. Поэтому проверка «тело не тронуто» живёт не в тестах,
+    а внутри самой записи — она срабатывает у человека, на его карточках, до того как
+    испорченный текст попадёт на диск.
+
+    Здесь проверяем обе стороны: обычная запись проходит и ничего не ломает, а подмена
+    сборки ловится исключением, а не тихой порчей.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_common as A
+
+    src = '---\nid: KB-1\nstatus: draft\n---\n\nТело. см. [[Другая]]\n'
+    out = A.with_fields(src, {"kind": "knowledge", "status": "knowledge"})
+    assert A.card_body(out) == A.card_body(src), "запись поля тронула тело"
+    assert A.frontmatter(out)["kind"] == "knowledge", "поле не встало"
+    assert A.frontmatter(out)["status"] == "knowledge", "поле не заменилось"
+    assert out.count("---") == 2, "разделители удвоились — классика неверной сборки"
+
+    # карточка без шапки: ставить поле некуда, и молча дописывать его в начало текста
+    # нельзя — так рождается ровно то повреждение, от которого эта функция и заведена
+    try:
+        A.with_fields("Просто текст без шапки\n", {"kind": "knowledge"})
+        assert False, "поле поставлено карточке без шапки"
+    except ValueError:
+        pass
+
+    # сама сборка «---» + head + rest — не догадка вызывающего кода: в скриптах, которые
+    # правят карточки, ручной сборки остаться не должно
+    for name in ("kb_kind.py", "kb_trust.py", "sync_audit.py"):
+        code = (KIT / "scripts" / name).read_text(encoding="utf-8")
+        assert "with_fields(" in code, f"{name} правит шапку в обход with_fields"
+
+
+@test
+def test_lint_catches_a_field_that_slid_into_the_body(tmp: Path):
+    """Поле шапки в первой строке тела — повреждение, и линтер обязан его назвать.
+
+    Живой случай: неверная сборка файла разнесла `kind:` по первой строке тела 2033
+    карточек за один прогон. Ни одна проверка не сработала — шапка разбиралась, ссылки
+    были целы, число ошибок не выросло, храповик пропустил бы коммит. Заметили случайно.
+    Проверка ловит повреждение от любого источника: старой версии движка, чужого
+    скрипта, правки руками.
+    """
+    root = make_project(tmp)
+    card(root, "Systems/Целая.md", "Тело. см. [[Битая]]", status="knowledge",
+         type="system")
+    broken = root / "AuroraKnowledgeDB/Systems/Битая.md"
+    broken.write_text('---\nid: KB-2\ntitle: Битая\nstatus: knowledge\ntype: system\n'
+                      '---\nkind: knowledge\n\nТело. см. [[Целая]]\n', encoding="utf-8")
+
+    cp = run("kb_lint.py", cwd=root, expect_rc=1)
+    assert "уехало в тело" in cp.stdout, \
+        "поле шапки в теле карточки прошло мимо линтера — так и разошлось 2033 карточки"
+    assert "Битая" in cp.stdout and "Целая" not in cp.stdout.split("уехало в тело")[0][-200:], \
+        "названа не та карточка"
+
+
+@test
 def test_the_panel_script_actually_parses(tmp: Path):
     """Скрипт панели должен разбираться целиком: синтаксис — это всё или ничего.
 
