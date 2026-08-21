@@ -2170,7 +2170,7 @@ def test_distill_writes_a_thesis_and_keeps_the_source(tmp: Path):
                     'type: concept\n---\n\nИсходный текст страницы.\nВторая строка.\n',
                     encoding="utf-8")
 
-    def fake(cfg, role, messages, deadline=None):
+    def fake(cfg, role, messages, deadline=None, **kw):
         if role == "qa":
             return {"ok": True, "backend": 1, "model": "qa", "log": [],
                     "text": "ВЕРДИКТ: ЧИСТО"}
@@ -2851,6 +2851,132 @@ def test_long_source_is_not_silently_cut(tmp: Path):
                      if not l.lstrip().startswith("#"))
     assert "[:12000]" not in code and "[:6000]" not in code, \
         "тихое обрезание вернулось в код"
+
+
+@test
+def test_each_backend_declares_what_it_is_for(tmp: Path):
+    """Параллельность — свойство шлюза, а не прогона: у каждого своя пропускная способность.
+
+    Ширина была одна на всё кольцо, и это неверно с обеих сторон: корпоративный шлюз
+    держит десяток запросов, домашняя llama.cpp — один. Плюс две разные роли, которые
+    раньше путались: бэкенд может держать поток заданий (в пул), может ждать своей
+    очереди на случай отказа (запасной), а может и то и другое.
+
+    Первому бэкенду галочки не нужны: он всегда и в пуле, и запасной. Общий
+    `AURORA_AGENT_PARALLEL` остаётся потолком — без него сумма ширин подняла бы три
+    десятка потоков разом.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    cfg = A.parse_config({
+        "AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+        "AURORA_AGENT_BACKEND_1_WIDTH": "4",
+        "AURORA_AGENT_BACKEND_2_URL": "u", "AURORA_AGENT_BACKEND_2_MODEL": "m",
+        "AURORA_AGENT_BACKEND_2_PARALLEL": "0",
+        "AURORA_AGENT_BACKEND_3_URL": "u", "AURORA_AGENT_BACKEND_3_MODEL": "m",
+        "AURORA_AGENT_BACKEND_3_FALLBACK": "0", "AURORA_AGENT_BACKEND_3_WIDTH": "2",
+        "AURORA_AGENT_BACKEND_2_WIDTH": "1",
+        "AURORA_AGENT_PARALLEL": "8"})
+
+    b1, b2, b3 = cfg["backends"]
+    assert b1["parallel"] and b1["fallback"], "первый обязан быть и в пуле, и запасным"
+    assert not b2["parallel"] and b2["fallback"], "роли второго прочитаны неверно"
+    assert b3["parallel"] and not b3["fallback"], "роли третьего прочитаны неверно"
+
+    slots = A.pool(cfg)
+    assert slots.count(1) == 4 and slots.count(3) == 2, f"слоты розданы не по ширине: {slots}"
+    assert 2 not in slots, "запасной попал в пул — он там не для этого"
+
+    # потолок режет сумму ширин, а не наоборот
+    narrow = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                             "AURORA_AGENT_BACKEND_1_WIDTH": "16"})
+    assert len(A.pool(narrow)) == 1, "потолок по умолчанию (1) не удержал ширину шлюза"
+
+    # прежние настройки не должны потерять смысл: кто поставил только потолок — получает его
+    old_way = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u",
+                              "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                              "AURORA_AGENT_PARALLEL": "6"})
+    assert A.pool(old_way) == [1] * 6, \
+        "бэкенд без объявленной ширины перестал делить общий потолок — прежние настройки мертвы"
+
+    # кольцо: своё задание идёт на свой шлюз, подменяют только запасные
+    assert [b["n"] for b in A.ring_order(cfg)] == [1, 2, 3], "обычный порядок кольца изменился"
+    assert [b["n"] for b in A.ring_order(cfg, 3)] == [3, 1, 2], "вызов не начался со своего шлюза"
+    assert [b["n"] for b in A.ring_order(cfg, 1)] == [1, 2], \
+        "третий подменяет упавшего, хотя запасным не объявлен"
+
+
+@test
+def test_a_dead_gateway_stops_the_run_but_one_bad_card_does_not(tmp: Path):
+    """Одна нечитаемая карточка не роняет ночной прогон; мёртвый шлюз — останавливает.
+
+    Раньше исключение в потоке всплывало из пула и уносило всю партию: одна карточка
+    портила четыре часа работы. А отказ шлюза, наоборот, никого не останавливал — восемь
+    потоков молотили в мёртвый сервер до конца базы.
+
+    Разница смысловая: сбой на карточке — это карточка, три сбоя подряд — это шлюз.
+    """
+    import time as _t
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    def base(n):
+        root = tmp / f"p{n}"
+        kb = root / "AuroraKnowledgeDB/Concepts"
+        kb.mkdir(parents=True)
+        for i in range(n):
+            (kb / f"К{i}.md").write_text(
+                f'---\nid: X\ntitle: "К{i}"\nkind: knowledge\nstatus: knowledge\n'
+                f'---\n\nтело {i}\n', encoding="utf-8")
+        return root
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    seen = {"n": 0}
+
+    def boom(cfg_, role, messages, prefer=0, **kw):
+        seen["n"] += 1
+        if seen["n"] == 3:
+            raise RuntimeError("шлюз выплюнул мусор")
+        return {"ok": True, "text": "ТЕЗИС", "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    res = R.run_distill(cfg, str(base(12)), apply=False, limit=12, momus=False, call=boom)
+    got = [s["status"] for s in res["steps"]]
+    assert len(got) == 12, f"исключение унесло партию: сделано {len(got)} из 12"
+    assert got.count("сбой") == 1 and got.count("переписана") == 11, \
+        f"сбой посчитан неверно: {got}"
+
+    def dead(cfg_, role, messages, prefer=0, **kw):
+        return {"ok": False, "log": ["№1: connection refused"]}
+
+    res2 = R.run_distill(cfg, str(base(30)), apply=False, limit=30, momus=False, call=dead)
+    assert len(res2["steps"]) <= R.FAILS_IN_A_ROW, \
+        f"мёртвый шлюз не остановил прогон: сделано {len(res2['steps'])} шагов из 30"
+
+
+@test
+def test_route_progress_is_visible_from_any_tab(tmp: Path):
+    """Ход маршрута видно отовсюду, а не только в консоли.
+
+    Прогон запускают и уходят на другую вкладку — спросить базу, посмотреть зеркала.
+    Ход, привязанный к консоли, в этот момент спрятан, и человек не знает ни где он, ни
+    сколько ждать. Полоса живёт в шапке, пустует, когда ничего не идёт, и по клику
+    возвращает в консоль.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="routeBar"' in ui, "нет полосы хода в шапке"
+    assert "function drawRouteBar(" in ui, "полосу нечем обновлять"
+    assert ui.count("drawRouteBar(") >= 3, \
+        "полоса обновляется не на каждом шаге либо не гаснет в конце"
+    assert 'drawRouteBar(null)' in ui, "полоса не гаснет после маршрута"
+    assert '$("#routeBar").onclick' in ui, "по полосе нельзя вернуться к прогону"
+
+    # роли бэкендов должны быть видны человеку, а не только в .env
+    for field in ("PARALLEL", "FALLBACK", "WIDTH", "CONTEXT"):
+        assert f'pre+"{field}"' in ui, f"поле {field} не выведено в панель"
+    assert "первый: всегда в параллель и всегда запасной" in ui, \
+        "первому бэкенду показывают галочки, которые ничего не решают"
 
 
 @test
@@ -4264,7 +4390,7 @@ def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
         seen["topic"] = args[0]
         return {"ok": True, "out": "# Пак (карточек 2)\n\n## Возврат-обеспечения\nтекст"}
 
-    def fake_call(cfg, role, messages, deadline=None):
+    def fake_call(cfg, role, messages, deadline=None, **kw):
         seen[role] = messages[0]["content"]
         return {"ok": True, "text": "Порядок тот же [[Возврат-обеспечения]].",
                 "backend": 1, "model": "qwen", "log": []}
@@ -4341,7 +4467,7 @@ def test_momus_checks_the_answer_statement_by_statement(tmp: Path):
 
     seen = {}
 
-    def critic(cfg, role, messages, deadline=None):
+    def critic(cfg, role, messages, deadline=None, **kw):
         seen["role"] = role
         seen["prompt"] = messages[0]["content"]
         return {"ok": True, "backend": 2, "model": "qa-model", "log": [],
