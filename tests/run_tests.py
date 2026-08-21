@@ -2490,6 +2490,43 @@ def test_registry_cache_belongs_to_the_engine_that_wrote_it(tmp: Path):
 
 
 @test
+def test_qa_corpus_does_not_describe_a_removed_engine(tmp: Path):
+    """Кейсы и сценарии не должны звать снятые команды и снятые статусы.
+
+    Скиллы отстали от движка на пятнадцать команд, и по коду это было не видно. С QA то
+    же самое, только хуже: по кейсу человек **проверяет** движок, и кейс, требующий
+    `kb:verify --source-older-than 6`, проваливается не потому что движок плох, а потому
+    что такой команды нет. Прогон учит не верить прогону.
+
+    Выведенные из оборота кейсы (`status: deprecated`) — исключение: они историческая
+    запись о том, как было, и переписывать их нельзя.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import kit_commands as K
+
+    known = {r["cmd"] for r in K.read_registry()}
+    gone_status = ("status: verified", "status: imported", "status: in-review")
+    bad = []
+    # только кейсы и сценарии: журналы прогонов и находки — запись о том, как было, и
+    # переписывать историю нельзя, иначе прогон полугодовой давности начнёт врать
+    files = list((KIT / "Development/QA/cases").glob("*.md")) \
+        + list((KIT / "Development/QA/scenarios").glob("*.md"))
+    for f in sorted(files):
+        text = f.read_text(encoding="utf-8")
+        if re.search(r"^status: deprecated", text, re.M):
+            continue          # выведен из оборота: это запись о прошлом
+        for cmd in re.findall(r"`((?:kb|ctx|make|ship|ops|sync|kit|agent|dev):[a-z-]+)", text):
+            if cmd not in known:
+                bad.append(f"{f.name}: зовёт снятую команду {cmd}")
+        # с начала строки: так пишут ожидаемый frontmatter. Внутри фразы упоминание
+        # снятого статуса законно — им объясняют, почему его больше нет.
+        for s in gone_status:
+            if re.search(rf"^\s*{re.escape(s)}", text, re.M):
+                bad.append(f"{f.name}: ждёт снятый статус «{s}»")
+    assert not bad, "QA описывает движок, которого нет:\n  " + "\n  ".join(bad[:12])
+
+
+@test
 def test_skills_describe_the_engine_as_it_is_now(tmp: Path):
     """Скилл — это то, что читает модель вместо кода. Отстанет он — отстанет и работа.
 
