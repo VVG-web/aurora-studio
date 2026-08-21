@@ -833,7 +833,10 @@ def agent_state(project: str) -> dict:
         "parallel": cfg.get("parallel", 1),
         "backends": [{"n": b["n"], "url": b["url"], "key_set": bool(b["key"]),
                       "model": b["model"], "models": b["models"],
-                      "context": b.get("context", 0)} for b in cfg["backends"]],
+                      "context": b.get("context", 0),
+                      "parallel": b.get("parallel", True),
+                      "fallback": b.get("fallback", True),
+                      "width": b.get("width", 1)} for b in cfg["backends"]],
         # Ключ наружу не отдаём никогда — только «заполнен или нет», как и у бэкендов.
         "embed": {"url": cfg["embed"]["url"], "model": cfg["embed"]["model"],
                   "key_set": bool(cfg["embed"]["key"])},
