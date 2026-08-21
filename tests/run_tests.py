@@ -2576,6 +2576,135 @@ def test_oversized_request_does_not_kill_the_provider(tmp: Path):
 
 
 @test
+def test_planner_gives_structure_to_a_shapeless_source(tmp: Path):
+    """Источник без заголовков разбирает планировщик, а не человек.
+
+    Разметки нет — резать не по чему, и такой источник уходил человеку целиком: «структуры
+    нет, карточку писать чтением». Это работа, которую машина умеет: границы тем видны по
+    описи абзацев, а переносит текст движок дословно, как и в обычном разборе.
+
+    Так разбираются расшифровки встреч, выгрузки и сканы — всё, у чего автор не расставил
+    заголовков. Знания в источнике нет вовсе — планировщик возвращает пустой список, и
+    поведение остаётся прежним.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    root = make_project(tmp)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    # абзацы длинные не для красоты: на коротких опись выходит длиннее текста, и
+    # проверить, что планировщику ушла именно она, невозможно
+    text = "\n\n".join(f"Абзац {i}. Правило номер {i} и условия его применения. " * 8
+                        for i in range(1, 13))
+    (root / "Raw/project/Расшифровка.md").write_text(text, encoding="utf-8")
+
+    seen = {}
+
+    def fake(cfg, role, messages, **kw):
+        seen[role] = messages[0]["content"]
+        if role == "planner":
+            rows = {"parts": [{"title": "Правила один-четыре", "from": 1, "to": 4},
+                              {"title": "Правила пять-восемь", "from": 5, "to": 8}]}
+            return {"ok": True, "text": json.dumps(rows, ensure_ascii=False),
+                    "backend": 1, "model": "p", "tps": 9, "log": []}
+        return {"ok": True, "text": json.dumps({"keep": "знание есть"}),
+                "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    step = {"card": "", "status": "", "note": "", "backends": []}
+    out = R.judge_empty(cfg, str(root), "Raw/project/Расшифровка.md", step, True, False,
+                        fake, 0)
+
+    assert out["status"] == "разобран по абзацам", \
+        f"источник без заголовков снова ушёл человеку: {out}"
+    made = sorted((root / "AuroraKnowledgeDB/Concepts").glob("Правила-*.md"))
+    assert len(made) == 2, f"карточек должно быть две, а не {len(made)}"
+    body = made[0].read_text(encoding="utf-8")
+    assert body.count("Абзац 1. Правило номер 1") == 8, "текст не перенесён дословно"
+    assert "Абзац 5." not in body, "границы не соблюдены — куски перемешались"
+    assert "status: draft" in body, "карточка родилась с присвоенным доверием"
+    assert "source: \"Raw/project/Расшифровка.md\"" in body, "потерян провенанс"
+    assert len(seen["planner"]) < len(text) / 2, \
+        f"планировщику отдали текст вместо описи: {len(seen['planner'])} против {len(text)}"
+
+    # знания нет — поведение прежнее, выдумывать карточки не начинаем
+    def empty_planner(cfg, role, messages, **kw):
+        if role == "planner":
+            return {"ok": True, "text": '{"parts": []}', "backend": 1, "model": "p",
+                    "tps": 9, "log": []}
+        return {"ok": True, "text": json.dumps({"keep": "знание есть"}),
+                "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    step2 = {"card": "", "status": "", "note": "", "backends": []}
+    out2 = R.judge_empty(cfg, str(root), "Raw/project/Расшифровка.md", step2, False, False,
+                         empty_planner, 0)
+    assert out2["status"] == "без секций — человеку", \
+        "планировщик не нашёл границ, а движок всё равно что-то собрал"
+
+
+@test
+def test_planner_cuts_what_will_not_fit(tmp: Path):
+    """Словарь длиннее окна режет планировщик, а текст переносит движок дословно.
+
+    Тело словаря и документа модель не переписывает никогда — в этом смысл самих типов.
+    Но словарь на сорок тысяч знаков не работает ни как словарь, ни как карточка: его не
+    найти выборкой и не подать в контекст, а `agent:distill` его вообще не видел — тип
+    не тот. Такому нужна не переработка, а границы.
+
+    Планировщик получает **опись абзацев** (номер, размер, первые слова), а не текст: так
+    границы выбираются даже для тела, которое в окно не влезает — тем же приёмом, которым
+    `agent:build` разбирает источники по секциям. Режет движок.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    kb = tmp / "AuroraKnowledgeDB/Reference"
+    kb.mkdir(parents=True)
+    para = lambda i: f"Термин {i}. Определение термина {i} и правила применения. " * 6
+    body = "\n\n".join(para(i) for i in range(1, 31))
+    card = kb / "Справочник.md"
+    card.write_text(f'---\nid: X\ntitle: "Справочник"\nkind: dictionary\n'
+                    f'status: knowledge\ntype: reference\nsource: "Sources/C/S.md"\n'
+                    f'---\n\n{R.QUOTES}\n{body}\n', encoding="utf-8")
+
+    saw = {}
+
+    def fake(cfg, role, messages, **kw):
+        saw[role] = messages[0]["content"]
+        if role == "planner":
+            rows = {"parts": [{"title": f"Термины {k*10+1}-{k*10+10}",
+                               "from": 1 + k*10, "to": 10 + k*10} for k in range(3)]}
+            return {"ok": True, "text": json.dumps(rows, ensure_ascii=False),
+                    "backend": 1, "model": "p", "tps": 9, "log": []}
+        return {"ok": True, "text": "ТЕЗИС", "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "3000"})
+    R.run_distill(cfg, str(tmp), apply=True, limit=5, momus=False, call=fake)
+
+    assert "planner" in saw, "словарь не дошёл до планировщика"
+    assert "worker" not in saw, "словарю писали тезис — тело словаря переписывать нельзя"
+    # опись, а не текст: первые слова абзаца в ней есть по делу, а сам абзац целиком — нет
+    assert para(1).strip() not in saw["planner"], \
+        "планировщику отдали текст вместо описи: на длинном теле это не сработает"
+    assert len(saw["planner"]) < len(body) / 2, \
+        f"опись не короче тела ({len(saw['planner'])} против {len(body)}) — это не опись"
+
+    parts = sorted(p for p in kb.glob("Термины*.md"))
+    assert len(parts) == 3, f"частей должно быть три, а не {len(parts)}"
+    first = parts[0].read_text(encoding="utf-8")
+    assert para(1).strip()[:40] in first, "текст части не дословный — движок его пересказал"
+    assert "part_of:" in first and "[[Термины-11-20]]" in first, \
+        "часть без связей: нарезка чинит одно и ломает другое (TC-036)"
+    assert "status: draft" in first, "часть родилась с присвоенным доверием"
+
+    left = card.read_text(encoding="utf-8")
+    assert "status: index" in left, "карта документа осталась знанием — попадёт в пак дважды"
+    assert left.count("[[Термины-") == 3, "в карте не все части"
+    assert para(1).strip()[:40] not in left, "тело осталось в карте: знание задвоилось"
+
+
+@test
 def test_context_pack_knows_the_model_window(tmp: Path):
     """Пак собирался вслепую к окну: `--budget` ставил человек, иначе предела не было.
 
