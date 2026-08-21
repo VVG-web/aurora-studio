@@ -186,6 +186,8 @@ tr:last-child td{border-bottom:0}
   white-space:pre-wrap;word-break:break-word;color:var(--console-ink)}
 .console-wrap{position:relative}
 .console-tail{position:absolute;right:14px;bottom:12px;z-index:2;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.metric.clickable{cursor:pointer;transition:border-color .12s,transform .12s}
+.metric.clickable:hover{border-color:var(--primary);transform:translateY(-1px)}
 .routebar{background:var(--primary);color:#fff;border-color:transparent;font-weight:600}
 .routebar .rb-dim{opacity:.75;font-weight:400}
 .console .err{color:var(--danger)} .console .ok{color:var(--primary)}
@@ -522,7 +524,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.93.3";
+const UI_VERSION = "1.94.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -896,6 +898,100 @@ $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
 });
 
 /* ---------------- здоровье ---------------- */
+// Карточка дашборда: число, подпись и куда идти. Цвет строгий — красный только там, где
+// работа СТОИТ; янтарь — есть работа, но всё функционирует; бирюза — в порядке; серый —
+// не измерялось. Доля доверенных цветом не красится никогда: 29% на молодой базе это
+// норма, а не авария, и порог здесь плодил бы ложную тревогу.
+function metricCard(o){
+  const tone = o.tone || "";
+  const card = el("div",{class:"card metric" + (o.go ? " clickable" : ""),
+    style:"padding:14px;min-width:0", title:o.hint || ""},
+    el("div",{class:"muted",style:"font-size:12px"}, o.title),
+    el("div",{style:"font-size:26px;font-weight:700;margin:2px 0 4px;line-height:1.1"
+              + (tone ? ";color:var(--" + tone + ")" : "")}, String(o.value)),
+    el("div",{class:"muted",style:"font-size:12px;line-height:1.35"}, o.sub || ""),
+    o.go ? el("div",{class:"chip",style:"margin-top:8px"}, o.go.label) : null);
+  if (o.go) card.onclick = o.go.act;
+  return card;
+}
+
+// Действие карточки: либо запуск маршрута с подтверждением, либо список, с которым надо
+// разбираться. Ведём туда, где решают проблему, а не туда, где о ней написано подробнее.
+const goRoute = (id, label) => ({label, act: async () => {
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+  const sc = (d.scenarios||[]).find(s=>s.id===id);
+  if (!sc) return toast("маршрут не найден","warn");
+  runRoute(sc, true);
+}});
+const goCmd = (cmd, args, label) => ({label, act: async () => {
+  const r = S.state.commands.find(x=>x.cmd===cmd);
+  if (!r || !r.runnable) return toast("команда недоступна: " + cmd, "warn");
+  const line = (cmd + " " + (args||[]).join(" ")).trim();
+  if ((args||[]).includes("--apply") && !confirm(
+      `Записать изменения в проект «${S.project.name}»?\n\n${line}\n\n`
+      + "Отменить можно через git.")) return;
+  show("console");
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, cmd, args:args||[]})});
+  if (res.job) poll(res.job, 0, line);
+}});
+
+function baseCards(h, st){
+  const lint = h.lint || {}, kinds = lint.kinds || {}, b = h.build || {};
+  const k = st.kinds || {}, why = st.trust_why || {};
+  const noKind = k["(нет kind)"] || 0;
+  const orphans = kinds["карточки без связей"] || 0;
+  const broken = kinds["битые ссылки"] || 0;
+  const trace = h.trace || {};
+  const cards = [
+    metricCard({title:"Состав базы", value: st.total ?? "—",
+      sub: `знание ${st.statuses?.knowledge ?? st.trusted ?? 0} · черновики ${st.statuses?.draft ?? 0}`,
+      hint:"Сколько карточек в базе, не считая служебных карт и оглавлений"}),
+    metricCard({title:"Доверие", value: (st.pct_verified ?? 0) + "%",
+      sub: Object.entries(why).filter(([n])=>n!=="доверенные")
+             .map(([n,v])=>`${v} — ${n}`).join(" · ")
+           || "почему остальные нет — не посчитано: движок проекта старее 1.93",
+      hint:"Доверие вычисляется по статусам связанных задач, а не присваивается человеком",
+      go: goRoute("update","Обновить базу")}),
+    // Пустой `kinds` — это «движок проекта старый и типов не считает», а не «у всех
+    // проставлен». Разница между «не измеряли» и «в порядке» — та самая догадка,
+    // выданная за факт, за которую мы уже платили дважды.
+    metricCard({title:"Типы карточек",
+      value: Object.keys(k).length ? (st.total ?? 0) - noKind : "—",
+      sub: !Object.keys(k).length ? "не измерялись: движок проекта старее 1.93"
+           : noKind ? `${noKind} без типа — неизвестно, кому править тело`
+                    : "у всех проставлен",
+      tone: noKind ? "warn" : "",
+      go: Object.keys(k).length && noKind
+          ? goCmd("kb:kind",["--apply"],"Проставить типы") : null}),
+    metricCard({title:"Связи", value: orphans + broken,
+      sub: orphans ? `${orphans} карточек без связей · ${broken} битых ссылок`
+                   : broken ? `${broken} битых ссылок` : "до каждой карточки можно дойти",
+      tone: (orphans + broken) ? "warn" : "",
+      go: (orphans + broken) ? goRoute("fix","Починить базу") : null}),
+    metricCard({title:"Трассировка", value: trace.direct != null
+        ? (trace.direct + (trace.indirect||0)) : "—",
+      sub: trace.direct != null
+        ? `прямых ${trace.direct} · через трассировку ${trace.indirect||0} · без связи ${trace.orphan||0}`
+        : "не строилась: `ops:trace-table`",
+      go: goCmd("ops:trace-table",["--apply"],"Построить таблицу")}),
+    metricCard({title:"Ошибки базы", value: lint.errors ?? "—",
+      sub: Object.entries(kinds).slice(0,3).map(([n,v])=>`${v} ${n}`).join(" · ") || "нет",
+      tone: (lint.errors||0) ? "warn" : "",
+      go: (lint.errors||0) ? goRoute("fix","Починить базу") : null}),
+    metricCard({title:"Свежесть", value: b.left != null ? b.left : "—",
+      sub: b.left != null
+        ? `источников не разобрано из ${b.total} · разобрано ${b.pct}%`
+        : "план не строился",
+      tone: (b.left||0) ? "warn" : "",
+      go: (b.left||0) ? goRoute("update","Обновить базу") : null}),
+    metricCard({title:"Остаток человеку", value: h.todo != null ? h.todo : "—",
+      sub:"то, что кнопкой не решается",
+      go: goCmd("ops:todo",[],"Посмотреть список")}),
+  ];
+  return el("div",{class:"grid metrics",style:"margin-bottom:14px"}, ...cards);
+}
+
 function renderHealth(){
   const box = $("#healthBody");
   if (!S.project){ box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
@@ -920,20 +1016,11 @@ function renderHealth(){
       "Ошибки линтера не обязаны быть нулевыми: храповик держит планку на достигнутом. "
       + "Зелёный означает «не стало хуже», а не «идеально».")));
 
-  const pct = st.pct_verified ?? 0;
-  const ring = el("div",{class:"card",style:"padding:16px;display:flex;gap:16px;align-items:center"},
-    el("div",{class:"ring",style:`--p:${Math.max(pct,1.5)}`}, el("span",{}, pct+"%")),
-    el("div",{},
-      el("div",{style:"font-weight:700"}, "Проверено человеком"),
-      el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"},
-        st.trusted + " из " + st.total + " карточек · порог " + (st.threshold ?? 20) + "%"),
-      st.bootstrap ? el("div",{class:"note warn",style:"margin-top:10px"},
-        "Режим bootstrap: пока доля проверенного ниже порога, непроверенные карточки " +
-        "допускаются в контекст — но каждая с пометкой «НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ».") : null));
-  const strip = el("div",{class:"card",style:"padding:16px"},
+  box.append(baseCards(h, st));
+  const strip = el("div",{class:"card",style:"padding:16px;margin-bottom:14px"},
     el("div",{style:"font-weight:700;margin-bottom:10px"},"Статусы карточек"),
     statusBar(st.statuses||{}));
-  box.append(el("div",{class:"grid",style:"grid-template-columns:minmax(260px,1fr) 2fr;gap:14px"}, ring, strip));
+  box.append(strip);
 
   // Сборка базы — то, чем человек занят каждый день. Раньше дашборд показывал здоровье
   // уже собранного и молчал о том, сколько осталось собрать: узнать это можно было
@@ -941,23 +1028,10 @@ function renderHealth(){
   const b = h.build || {}, ag = h.agent || {}, kinds = (h.lint && h.lint.kinds) || {};
   const conflicts = kinds["одинаковые alias у разных карточек"] || 0;
   const brokenLinks = kinds["битые ссылки"] || 0;
+  // Числа сборки переехали в плитки наверху: «Свежесть», «Связи», «Ошибки базы».
+  // Держать их дважды значит показывать одно и то же разными словами, а человек будет
+  // искать, которое из двух настоящее.
   if (b.total){
-    box.append(el("h2",{},"Сборка базы знаний"));
-    box.append(el("div",{class:"grid metrics"},
-      metric(b.left,"источников ждут разбора","из " + b.total + " · разобрано " + b.pct + "%",
-        b.left?"warn":"ok", ()=>openRun("kb:build")),
-      metric(b.cards,"карточек собрано","из " + b.done + " разобранных источников","ok",
-        ()=>openRun("kb:build")),
-      // Собранная карточка — ещё не знание: тело перенесено дословно, вместе с вёрсткой
-      // исходника. Пока эта плитка растёт быстрее «проверено человеком», база копит
-      // сырьё, а не знание, — и это должно быть видно, а не выясняться при чтении.
-      metric((st.statuses||{}).imported ?? 0,"карточек ждут доводки",
-        "status: imported — текст сырой","warn", ()=>openRun("kb:queue")),
-      metric(conflicts,"конфликтов синонимов","ссылка по имени неоднозначна",
-        conflicts?"warn":"ok", ()=>openRun("agent:aliases")),
-      metric(brokenLinks,"битых ссылок","ведут в никуда",
-        brokenLinks?"warn":"ok", ()=>openRun("kb:repair")),
-    ));
     if (ag.file){
       const chip = ag.ok ? "ok" : "warn";
       box.append(el("div",{class:"card",style:"padding:12px 16px;margin-top:-4px"},
@@ -977,14 +1051,12 @@ function renderHealth(){
     metric(h.lint.errors ?? "—", "ошибок линтера",
       h.lint.baseline!==null ? "храповик: "+h.lint.baseline : "базовой линии нет",
       lintBad?"bad":(h.lint.errors?"warn":"ok"), ()=>openRun("kb:lint")),
-    metric(st.orphans_count ?? "—","карточек-сирот","ни одной входящей ссылки","warn",()=>openRun("kb:queue")),
     metric(st.missing_source_count ?? "—","битых источников","source: ведёт в никуда",
       st.missing_source_count?"bad":"ok", ()=>openRun("kit:remap-sources")),
-    metric(st.expired_count ?? "—","протухших verified","review_by в прошлом",
-      st.expired_count?"warn":"ok", ()=>openRun("kb:verify")),
-    metric(st.no_owner_count ?? "—","verified без владельца","некому отвечать",
-      st.no_owner_count?"warn":"ok"),
-    metric(st.total ?? "—","карточек всего","", "ok", ()=>openRun("kb:index")),
+    // Плитки про срок годности и владельца сняты вместе с приёмкой: доверие
+    // вычисляется по статусам задач, и ни того ни другого у него нет.
+    metric(st.stubs ?? "—","заготовок","карточка заведена под ссылку, знания в ней нет",
+      st.stubs?"warn":"ok", ()=>openRun("kb:repair")),
   ));
 
   box.append(el("h2",{},"Требования и поставка"));
@@ -1036,6 +1108,33 @@ function statusBar(statuses){
 }
 
 /* ---------------- зеркала ---------------- */
+// Здоровье источников: сколько привезли и сколько из привезённого стало знанием.
+// Целостность зеркала (missing/orphan) говорит, что синк отработал; она ничего не
+// говорит о том, дошло ли привезённое до базы — а это и есть главный вопрос.
+function sourceCards(sh){
+  const names = Object.keys(sh);
+  if (!names.length)
+    return el("div",{class:"card",style:"padding:18px;margin-bottom:14px"},
+      el("div",{class:"muted"},
+        "Ни в Sources/, ни в Raw/ документов нет — базе не из чего собираться."));
+  const cards = names.map(name => {
+    const v = sh[name];
+    const pct = v.total ? Math.round(v.parsed * 100 / v.total) : 0;
+    return metricCard({
+      title: name,
+      value: pct + "%",
+      sub: `разобрано ${v.parsed} из ${v.total}`
+           + (v.left ? ` · ждут ${v.left}` : "")
+           + (v.archived ? ` · в архиве ${v.archived}` : ""),
+      tone: v.left ? "warn" : "",
+      hint: "Доля документов источника, из которых уже собраны карточки",
+      go: v.left ? goRoute("update","Обновить базу") : null});
+  });
+  return el("div",{},
+    el("h2",{style:"margin-top:0"},"Что из источников стало знанием"),
+    el("div",{class:"grid metrics",style:"margin-bottom:18px"}, ...cards));
+}
+
 function renderMirrors(){
   const box = $("#mirrorsBody");
   if (!S.project){ box.innerHTML='<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
@@ -1044,6 +1143,7 @@ function renderMirrors(){
   const m = S.health.mirrors || {}, p = S.project;
   const src = S.health.sources || {installed:[], instances:[]};
   box.innerHTML = "";
+  box.append(sourceCards(S.health.source_health || {}));
   // Что за зеркала есть, панель не решает: список даёт реестр подключённых модулей
   const card = (inst) => {
     // до 1.28 аудит называл разделы по продукту («Jira»), а не по id зеркала («JIRA»)
@@ -1298,7 +1398,6 @@ const ARG_HINTS = {
   "ctx:context": "тема, например «Заявка»",
   "make:spec-pack": "идентификатор спеки, например SPEC-012",
   "ops:impact": "имя карточки, например Шина-обмена",
-  "kb:verify": "раздел базы, например Glossary",
   "kb:supersede": "старая карточка и новая через пробел",
   "ship:release": "путь к документу в Deliverables/work/",
   "ship:publish": "путь к артефакту в Artifacts/",
@@ -1998,7 +2097,7 @@ function fixButton(what){
 const FIX_HINT = {
   "битые ссылки": "kb:repair --links",
   "одинаковые alias": "agent:aliases (дубли отложит человеку)",
-  "правка после приёмки": "kb:verify --refresh либо понизить до draft",
+  "правка после приёмки": "kb:trust пересчитает: доверие идёт от статусов задач",
   "артефакты, попавшие в базу знаний": "перенести в Artifacts/ — решение человека",
   "тип не по разделу": "поправить type: в шапке или перенести карточку в свой раздел",
   "карточки-двойники": "kb:dedupe",
@@ -2042,10 +2141,20 @@ function drawRouteBar(cmd){
 async function runRoute(sc, write){
   if (!S.project) return toast("Сначала выберите проект","warn");
   if (await busyElsewhere(sc.title)) return;
-  const steps = sc.steps.filter(st=>!st.manual)
-    .map(st=>({cmd:st.cmd, why:st.why,
-               args:(st.flags||[]).filter(f=>write || f!=="--apply")}))
-    .filter(st=>{ const r = S.state.commands.find(x=>x.cmd===st.cmd); return r && r.runnable; });
+  // Блок «цикл:» повторяется партиями: разобрали, осмыслили, связали, закоммитили — и
+  // снова. Разметка сохраняется до фильтрации, иначе граница блока потеряется вместе с
+  // недоступной командой внутри него.
+  const raw = sc.steps.filter(st=>!st.manual);
+  const steps = [];
+  let inCycle = false;
+  for (const st of raw){
+    if (st.cycle === "цикл:"){ inCycle = true; continue; }
+    if (st.cycle === "конец цикла"){ inCycle = false; continue; }
+    const r = S.state.commands.find(x=>x.cmd===st.cmd);
+    if (!r || !r.runnable) continue;
+    steps.push({cmd:st.cmd, why:st.why, cycle:inCycle,
+                args:(st.flags||[]).filter(f=>write || f!=="--apply")});
+  }
   const writes = steps.filter(st=>st.args.includes("--apply"));
   if (write && writes.length && !confirm(
       `Маршрут «${sc.title}» — ${steps.length} шагов, из них пишут в проект ${writes.length}:\n\n`
@@ -2056,19 +2165,77 @@ async function runRoute(sc, write){
   show("console");
   const out = $("#consoleOut"); out.innerHTML = "";
   $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
-  ROUTE = {title:sc.title, done:0, total:steps.length, failed:null};
+  ROUTE = {title:sc.title, done:0, total:steps.length, failed:null, lap:0};
   const summary = [];
-  for (const st of steps){
+
+  // Сколько источников осталось разобрать — это печатает сам agent:build последней
+  // строкой. Панель не гадает и не считает файлы: цикл вертится, пока движок говорит,
+  // что работа есть, и останавливается, когда число перестало убывать.
+  const leftInPlan = lines => {
+    for (const l of (lines||[]).slice().reverse()){
+      const m = /Источников в плане:\s*(\d+)\s*→\s*(\d+)/.exec(l);
+      if (m) return Number(m[2]);
+    }
+    return null;
+  };
+
+  const runOne = async (st) => {
     ROUTE.done++;
     drawRouteBar(st.cmd);
-    $("#consoleCmd").textContent = `${sc.title} · шаг ${ROUTE.done} из ${ROUTE.total}: `
+    const lap = ROUTE.lap ? ` · оборот ${ROUTE.lap}` : "";
+    $("#consoleCmd").textContent = `${sc.title} · шаг ${ROUTE.done} из ${ROUTE.total}${lap}: `
       + st.cmd + " " + st.args.join(" ");
     $("#consoleRc").textContent = "выполняется…"; $("#consoleRc").className = "chip";
     out.append(el("div",{class:"ok",style:"margin-top:10px"},
-      `▸ шаг ${ROUTE.done}/${ROUTE.total} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
-    const {rc, skipped, lines} = await runStep(st.cmd, st.args);
-    summary.push({cmd:st.cmd, rc, skipped, found: rc === 1 ? findings(lines||[]) : []});
-    if (rc >= 2){ ROUTE.failed = st.cmd; break; }
+      `▸ шаг ${ROUTE.done}/${ROUTE.total}${lap} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
+    const res = await runStep(st.cmd, st.args);
+    summary.push({cmd:st.cmd, rc:res.rc, skipped:res.skipped,
+                  found: res.rc === 1 ? findings(res.lines||[]) : []});
+    return res;
+  };
+
+  const CYCLE_LIMIT = 500;          // предохранитель: движок мог перестать печатать остаток
+  let i = 0;
+  outer:
+  while (i < steps.length){
+    if (!steps[i].cycle){
+      const {rc} = await runOne(steps[i]);
+      if (rc >= 2){ ROUTE.failed = steps[i].cmd; break; }
+      i++;
+      continue;
+    }
+    // блок цикла: от i до первого нецикличного шага
+    let end = i;
+    while (end < steps.length && steps[end].cycle) end++;
+    let prev = null;
+    for (ROUTE.lap = 1; ROUTE.lap <= CYCLE_LIMIT; ROUTE.lap++){
+      let left = null;
+      for (let k = i; k < end; k++){
+        const {rc, lines} = await runOne(steps[k]);
+        if (rc >= 2){ ROUTE.failed = steps[k].cmd; break outer; }
+        const seen = leftInPlan(lines);
+        if (seen !== null) left = seen;
+      }
+      if (left === null){
+        out.append(el("div",{class:"dim"},
+          "  оборот прошёл, но движок не сказал, сколько источников осталось — "
+          + "дальше по маршруту"));
+        break;
+      }
+      if (left === 0){
+        out.append(el("div",{class:"ok"}, `  источники кончились за ${ROUTE.lap} оборотов`));
+        break;
+      }
+      if (prev !== null && left >= prev){
+        out.append(el("div",{class:"warn"},
+          `  остаток не убывает (${left}) — прекращаю цикл, чтобы не крутиться впустую`));
+        break;
+      }
+      prev = left;
+      out.append(el("div",{class:"dim"}, `  осталось источников: ${left} — следующий оборот`));
+    }
+    ROUTE.lap = 0;
+    i = end;
   }
   const bad = ROUTE.failed;
   drawRouteBar(null);
@@ -2157,7 +2324,7 @@ async function poll(id, since, label){
   LAST_TASKS = assistantTasks(CONSOLE_LINES);
   drawTaskButton();
   // Код 1 — «отработала и нашла, что чинить», и записывать после него как раз и надо:
-  // это `kb:repair`, `kb:verify`, `kb:index`. Условие `rc===0` отбирало у них кнопку
+  // это `kb:repair`, `kb:moc`, `kb:index`. Условие `rc===0` отбирало у них кнопку
   // «Применить», и человек шёл искать флаг руками — которого в панели и нет.
   if (rc<=1 && PENDING_APPLY && PENDING_APPLY.job===id){
     const line = PENDING_APPLY.line;
@@ -2413,13 +2580,13 @@ async function renderSetup(){
     inp("jira_jql","Jira: JQL по умолчанию","project = PROJ ORDER BY updated DESC"),
     inp("trust_statuses","Статусы задач, дающие доверие",
         'Закрыто, Разработка, "Тестирование - готово"',
-        "kb:verify --by-jira ставит verified: постановка прошла разбор и приёмку"),
+        "kb:trust даёт knowledge: все связанные задачи в этих статусах"),
     inp("assumption_statuses","Статусы задач «это ещё предположение»",
         "Бэклог, Сделать, Аналитика",
         "карточка получает draft — знанием она пока не является"),
     el("div",{class:"sep"}),
     inp("trusted_sources","Доверенные источники","Raw/contract, Raw/customer, Raw/project",
-        "kb:verify --by-source: карточка из подписанного документа решения не требует"),
+        "карточка из подписанного документа доверенная сразу: решения не требует"),
     inp("trusted_sections","Доверенные разделы базы","Glossary, Reference, Statuses",
         "словарь и справочники — не выводы, а именование"),
     el("div",{class:"sep"}),
