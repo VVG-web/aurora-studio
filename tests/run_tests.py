@@ -2576,6 +2576,118 @@ def test_oversized_request_does_not_kill_the_provider(tmp: Path):
 
 
 @test
+def test_context_pack_knows_the_model_window(tmp: Path):
+    """Пак собирался вслепую к окну: `--budget` ставил человек, иначе предела не было.
+
+    Пак — единственное место, где знание уходит модели пачкой, и он рос без ограничения:
+    43 карточки на живой базе. Дальше два исхода, оба плохие: шлюз откажет по длине, либо
+    модель молча прочитает начало. Окно объявлено — берём его как бюджет и **говорим** об
+    этом строкой в самом паке, вместе со списком того, что не вошло.
+    """
+    root = make_project(tmp)
+    for i in range(12):
+        card(root, f"Concepts/Карточка-{i}.md", "Правило работает так. " * 60,
+             status="knowledge", kind="knowledge")
+
+    env = dict(os.environ, AURORA_AGENT_BACKEND_1_URL="http://x/v1",
+               AURORA_AGENT_BACKEND_1_MODEL="m", AURORA_AGENT_BACKEND_1_CONTEXT="8000")
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/ctx_pack.py"), "правило"],
+                        cwd=root, capture_output=True, text=True, env=env)
+    assert "Объём пака ограничен окном модели" in cp.stdout, \
+        f"пак не узнал про окно модели:\n{cp.stdout[:400]}"
+    assert "исчерпан" in cp.stdout, "бюджет объявлен, а лишнее всё равно вошло"
+
+    # окно не объявлено — предела нет, и пак об этом не врёт
+    bare = dict(os.environ)
+    for k in list(bare):
+        if k.startswith("AURORA_AGENT_"):
+            bare.pop(k)
+    cp2 = subprocess.run([sys.executable, str(KIT / "scripts/ctx_pack.py"), "правило"],
+                         cwd=root, capture_output=True, text=True, env=bare)
+    assert "Объём пака ограничен окном модели" not in cp2.stdout, \
+        "движок придумал предел там, где окно не объявлено"
+
+
+@test
+def test_long_source_is_not_silently_cut(tmp: Path):
+    """Текст длиннее окна не обрезается молча: либо в несколько заходов, либо отказ.
+
+    В `distill` стояло `quotes.strip()[:12000]`, в `judge_empty` — `[:6000]`. Всё, что
+    дальше, в тезис не попадало, и об этом не узнавал никто: ни отчёт, ни карточка, ни
+    человек. Это худший вид потери — знание есть в базе, но его нет в тезисе, и разница
+    видна только тому, кто откроет источник и прочитает его целиком.
+
+    Теперь длина считается по объявленному окну: влезает — один заход; не влезает, но
+    укладывается в три — выписки по частям и свод (каждую часть проверяет Момус); не
+    укладывается — отказ с именем лечения. Окна не объявлены — движок не режет вовсе и
+    не выдумывает себе предел.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    kb = tmp / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True)
+
+    def card(name, body):
+        p = kb / name
+        p.write_text(f'---\nid: X\ntitle: "{name[:-3]}"\nkind: knowledge\n'
+                     f'status: knowledge\n---\n\n{R.QUOTES}\n{body}\n', encoding="utf-8")
+        return p
+
+    seen = []
+
+    def fake(cfg, role, messages, **kw):
+        txt = messages[0]["content"]
+        seen.append(len(txt))
+        if "Собери из них" in txt:
+            return {"ok": True, "text": "СВОД", "backend": 1, "model": "m", "tps": 9, "log": []}
+        return {"ok": True, "text": "ТЕЗИС", "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    para = "Правило работает так. " * 40 + "\n\n"
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "4000"})
+    budget = A.prompt_budget(cfg, reserve_chars=len(R.PROMPT_DISTILL) + 200)
+    assert budget > 0, "окно объявлено, а бюджет не посчитан"
+
+    short = R.distill_card(cfg, str(card("Короткая.md", para * 2)), call=fake, momus=False)
+    assert short["status"] == "переписана" and not short.get("parts"), \
+        "короткую карточку зачем-то разрезали"
+
+    seen.clear()
+    mid = R.distill_card(cfg, str(card("Средняя.md", para * 12)), call=fake, momus=False)
+    assert mid["status"] == "переписана" and mid.get("parts") == 3, \
+        f"текст на три захода обработан неверно: {mid}"
+    assert max(seen) <= budget + len(R.PROMPT_DISTILL_PART) + 500, \
+        "кусок не влез в бюджет — резали не по окну"
+
+    huge = R.distill_card(cfg, str(card("Огромная.md", para * 60)), call=fake, momus=False)
+    assert huge["status"] == "слишком длинная", "гигантская карточка молча пересказана"
+    assert "kb:split" in huge["note"], "отказ без имени лечения"
+
+    # окна не объявлены — режем? нет: движок не придумывает себе предел
+    free = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    seen.clear()
+    whole = R.distill_card(free, str(card("Безокна.md", para * 60)), call=fake, momus=False)
+    assert whole["status"] == "переписана" and not whole.get("parts"), \
+        "без объявленного окна движок сам решил порезать текст"
+    assert max(seen) > 40000, "текст всё-таки обрезан"
+
+    # и в отчёте это названо, а не растворено
+    rep = R.report_distill({"steps": [huge, mid], "left": 0, "unsupported": 0,
+                            "seconds": 1.0}, apply=True)
+    assert "Слишком длинные для окна модели" in rep and "Огромная" in rep, \
+        "отказ не попал в отчёт — человек о потере не узнает"
+    assert "Собрано из частей: 1" in rep, "свод из частей не назван в отчёте"
+
+    # в коде, а не в комментариях: комментарии как раз объясняют, почему так больше нельзя
+    code = "\n".join(l for l in (KIT / "scripts/agent_runner.py")
+                     .read_text(encoding="utf-8").splitlines()
+                     if not l.lstrip().startswith("#"))
+    assert "[:12000]" not in code and "[:6000]" not in code, \
+        "тихое обрезание вернулось в код"
+
+
+@test
 def test_cards_are_distilled_side_by_side(tmp: Path):
     """Карточки разбираются одновременно: ожидание шлюза — не работа машины.
 
