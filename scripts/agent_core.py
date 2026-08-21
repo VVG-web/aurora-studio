@@ -115,6 +115,17 @@ def parse_config(env: dict) -> dict:
             # узнать это из API нельзя — поле объявляет человек. 0 — не объявлено, тогда
             # движок не считает и не отказывает, а показывает размер запроса как есть.
             "context": int(env.get(prefix + "CONTEXT", "0") or 0),
+            # Для чего этот бэкенд. Первый всегда работает в параллель и всегда стоит
+            # первым в кольце — ему галочки не нужны. У второго и третьего роль
+            # объявляется: один держит поток запросов, другой ждёт своей очереди на
+            # случай отказа, и это разные вещи.
+            "parallel": n == 1 or env.get(prefix + "PARALLEL", "1") not in ("0", "false", "no"),
+            "fallback": n == 1 or env.get(prefix + "FALLBACK", "1") not in ("0", "false", "no"),
+            # Сколько запросов держит ЭТОТ шлюз. Общий AURORA_AGENT_PARALLEL — потолок на
+            # весь прогон; здесь — что выдерживает конкретный сервер.
+            # 0 — ширина не объявлена: такой бэкенд делит с другими общий потолок.
+            # Объявленная ширина — жёсткий предел этого шлюза, потолок её не поднимает.
+            "width": max(0, int(env.get(prefix + "WIDTH", "0") or 0)),
         })
         n += 1
     # Эмбеддинги живут своей жизнью: их часто держат отдельным сервисом (TEI, свой vLLM),
@@ -376,14 +387,58 @@ def looks_like_overflow(err: str, body) -> bool:
                                    "reduce the length", "превышен контекст"))
 
 
+def ring_order(cfg: dict, prefer: int = 0) -> list:
+    """Порядок обхода бэкендов для одного вызова.
+
+    Без `prefer` — как раньше: с первого, восстановившийся подхватывается сразу. С
+    `prefer` (параллельный прогон раздаёт задания по слотам) вызов начинается со своего
+    бэкенда, а дальше идут только те, кто объявлен **запасным**: бэкенд, взятый в пул
+    ради пропускной способности, не обязан подменять упавшего — иначе весь поток заданий
+    сойдётся на одной модели, и параллельность обернётся очередью.
+    """
+    backends = cfg["backends"]
+    if not prefer:
+        return backends
+    mine = [b for b in backends if b["n"] == prefer]
+    return mine + [b for b in backends if b["n"] != prefer and b.get("fallback", True)]
+
+
+def pool(cfg: dict) -> list:
+    """Слоты параллельного прогона: номер бэкенда на каждый его свободный поток.
+
+    Ширина у каждого шлюза своя — корпоративный держит десяток запросов, домашняя
+    llama.cpp один. Объявленная ширина это **предел** шлюза: общий потолок её не
+    поднимает, потому что потолок про нагрузку на прогон, а ширина про сервер.
+
+    Ширина не объявлена — бэкенд делит с такими же общий потолок
+    `AURORA_AGENT_PARALLEL`. Так поведение прежних настроек сохраняется: кто поставил
+    только потолок, получает ровно его.
+    """
+    cap = max(1, cfg.get("parallel", 1))
+    usable = [b for b in cfg["backends"] if b.get("parallel", True)] or cfg["backends"][:1]
+    slots = []
+    for b in usable:
+        if b.get("width"):
+            slots += [b["n"]] * b["width"]
+    slots = slots[:cap]
+    free = [b for b in usable if not b.get("width")]
+    i = 0
+    while len(slots) < cap and free:
+        slots.append(free[i % len(free)]["n"])
+        i += 1
+    return slots or [1]
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
-              thinking: bool | None = None, max_tokens: int | None = None) -> dict:
+              thinking: bool | None = None, max_tokens: int | None = None,
+              prefer: int = 0) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     → {ok, text, reasoning, backend, model, seconds, waited, log[]} либо {ok: False, log}.
     Кольцо: каждый круг начинается с первого бэкенда — восстановившийся корпоративный
-    подхватывается сразу, у него слоты почти не ограничены.
+    подхватывается сразу, у него слоты почти не ограничены. `prefer` задаёт, с какого
+    начать: параллельный прогон раздаёт задания по слотам, и каждое идёт на свой шлюз.
     """
     transport = transport or default_transport
     think = cfg["thinking"] if thinking is None else thinking
@@ -396,9 +451,10 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     if not cfg["backends"]:
         return {"ok": False, "log": ["бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
 
+    order = ring_order(cfg, prefer)
     while time.time() < deadline:
         ring += 1
-        for b in cfg["backends"]:
+        for b in order:
             model = role_model(b, role)
             if not model:
                 log.append(f"№{b['n']}: нет модели для роли {role} — пропущен")

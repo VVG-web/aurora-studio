@@ -186,6 +186,8 @@ tr:last-child td{border-bottom:0}
   white-space:pre-wrap;word-break:break-word;color:var(--console-ink)}
 .console-wrap{position:relative}
 .console-tail{position:absolute;right:14px;bottom:12px;z-index:2;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.routebar{background:var(--primary);color:#fff;border-color:transparent;font-weight:600}
+.routebar .rb-dim{opacity:.75;font-weight:400}
 .console .err{color:var(--danger)} .console .ok{color:var(--primary)}
 .console .warn{color:var(--tier-inreview)} .console .dim{color:#6D7F98}
 
@@ -260,6 +262,10 @@ tr:last-child td{border-bottom:0}
       AURORA <small id="kitver">cockpit</small>
     </div>
     <button class="btn sm projbadge none" id="projBadge"><span class="dot"></span><span class="nm">Проект не выбран</span></button>
+    <!-- Ход маршрута виден отовсюду: прогон запускают и уходят на другую вкладку —
+         спросить базу, посмотреть зеркала. Привязать ход к консоли значит спрятать его. -->
+    <button class="btn sm routebar" id="routeBar" hidden
+            title="Идёт маршрут — нажмите, чтобы открыть консоль"></button>
     <div class="spacer"></div>
     <button class="btn sm" id="paletteBtn">Команды <span class="kbd">⌘K</span></button>
     <select class="btn sm" id="skinSel" title="Оформление" aria-label="Скин"
@@ -516,7 +522,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.93.2";
+const UI_VERSION = "1.93.3";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2022,6 +2028,17 @@ function findings(lines){
   return out.filter(x => !seen.has(x.what + x.n) && seen.add(x.what + x.n)).slice(0, 8);
 }
 
+// Полоса хода: «шаг 9 из 16 · agent:build». Пусто — маршрут кончился, полоса прячется.
+function drawRouteBar(cmd){
+  const bar = $("#routeBar");
+  if (!bar) return;
+  if (!cmd || !ROUTE){ bar.hidden = true; bar.textContent = ""; return; }
+  bar.hidden = false;
+  bar.innerHTML = "";
+  bar.append(el("span",{}, `шаг ${ROUTE.done} из ${ROUTE.total}`),
+             el("span",{class:"rb-dim"}, " · " + cmd));
+}
+
 async function runRoute(sc, write){
   if (!S.project) return toast("Сначала выберите проект","warn");
   if (await busyElsewhere(sc.title)) return;
@@ -2043,6 +2060,7 @@ async function runRoute(sc, write){
   const summary = [];
   for (const st of steps){
     ROUTE.done++;
+    drawRouteBar(st.cmd);
     $("#consoleCmd").textContent = `${sc.title} · шаг ${ROUTE.done} из ${ROUTE.total}: `
       + st.cmd + " " + st.args.join(" ");
     $("#consoleRc").textContent = "выполняется…"; $("#consoleRc").className = "chip";
@@ -2053,6 +2071,7 @@ async function runRoute(sc, write){
     if (rc >= 2){ ROUTE.failed = st.cmd; break; }
   }
   const bad = ROUTE.failed;
+  drawRouteBar(null);
   $("#consoleCmd").textContent = `${sc.title} — ${bad ? "остановлен" : "пройден"}`;
   $("#consoleRc").textContent = bad ? "остановлен на " + bad : "пройден: шагов " + ROUTE.done;
   $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
@@ -2248,6 +2267,8 @@ $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; followAgain($(
 // Очистка и кнопка «вывод продолжается» возвращают слежение: человек сам сказал, что
 // снова смотрит конец.
 $("#consoleTail").onclick = ()=> followAgain($("#consoleOut"));
+// Полоса хода — не украшение: по ней возвращаются к прогону с любой вкладки.
+$("#routeBar").onclick = ()=> show("console");
 
 /* ---------------- настройка ---------------- */
 async function renderSetup(){
@@ -2772,6 +2793,28 @@ async function renderAgentCard(box){
       // модели в кольце вместо того, чтобы погасить эту ошибкой на 15 минут.
       fld(pre+"CONTEXT","Окно контекста, токенов (пусто — не проверять)",
           b.context ? String(b.context) : "", "например 196608", "number"),
+      // Первый бэкенд всегда и в параллель, и запасной — галочки ему не нужны. У
+      // остальных это разные роли: один держит поток запросов, другой ждёт своей
+      // очереди на случай отказа, и путать их дорого.
+      el("div",{class:"row",style:"gap:14px;flex-wrap:wrap;margin:2px 0 8px"},
+        n===1 ? el("span",{class:"muted",style:"font-size:12px"},
+                   "первый: всегда в параллель и всегда запасной")
+              : el("label",{class:"row",style:"gap:6px;font-size:12px",
+                    title:"Брать этот бэкенд в параллельную работу"},
+                  el("input",{type:"checkbox", checked:(b.parallel!==false)?"":null,
+                    onchange:e=>touch(pre+"PARALLEL", e.target.checked?"1":"0")}),
+                  "в параллельную работу"),
+        n===1 ? null
+              : el("label",{class:"row",style:"gap:6px;font-size:12px",
+                    title:"Подменять упавшего: вызов уйдёт сюда, когда основной не ответит"},
+                  el("input",{type:"checkbox", checked:(b.fallback!==false)?"":null,
+                    onchange:e=>touch(pre+"FALLBACK", e.target.checked?"1":"0")}),
+                  "запасной"),
+        el("label",{class:"row",style:"gap:6px;font-size:12px",
+              title:"Сколько запросов держит ЭТОТ шлюз одновременно"},
+          "потоков:", el("input",{class:"btn",style:"width:56px;font-weight:400",
+            type:"number", value:b.width||1,
+            oninput:e=>touch(pre+"WIDTH", e.target.value)}))),
       el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
         ...["worker","planner","critic","qa"].map(r =>
           el("label",{style:"flex:1;min-width:130px"},

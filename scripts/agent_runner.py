@@ -1207,7 +1207,8 @@ def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
     return {"outside": outside, "mentioned": mentioned, "invented": invented}
 
 
-def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None) -> dict:
+def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
+              prefer: int = 0) -> dict:
     """Момус: вторая модель разбирает ответ по утверждениям и ищет то, что без опоры.
 
     Механическая проверка ловит только ссылки. Утверждение без ссылки — «возврат
@@ -1223,7 +1224,7 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None) -> di
     started = time.time()
     v = call(cfg, "qa", [{"role": "user", "content": PROMPT_MOMUS.format(
         pack=pack, question=question, answer=answer)}],
-        deadline=time.time() + cfg["request_timeout"])
+        deadline=time.time() + cfg["request_timeout"], prefer=prefer)
     if not v["ok"]:
         return {"ok": False, "why": "; ".join(v["log"][-2:]), "seconds": 0.0}
     text = (v["text"] or "").strip()
@@ -1283,6 +1284,9 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
 # Больше трёх кусков — это уже не карточка, а документ: тезис тезисов вырождается в
 # аннотацию ни о чём, а знание надо не пересказывать, а разрезать (`kb:split`).
 MAX_PARTS = 3
+# Столько сбоев подряд означает, что лёг шлюз, а не попались плохие карточки. Молотить
+# восемью потоками в мёртвый сервер всю ночь — потерянная ночь.
+FAILS_IN_A_ROW = 3
 
 PROMPT_DISTILL_PART = """Ты читаешь ЧАСТЬ {n} из {total} перенесённого текста источника.
 
@@ -1394,7 +1398,8 @@ QUOTES = "## Источник (перенесено дословно)"
 FOOTER = "## История изменений"
 
 
-def plan_split(cfg: dict, title: str, text: str, call, deadline: float) -> list:
+def plan_split(cfg: dict, title: str, text: str, call, deadline: float,
+               prefer: int = 0) -> list:
     """Границы нарезки раздутой карточки от планировщика. → [(имя части, текст), …].
 
     Планировщик видит только опись абзацев, а не текст: границы можно выбрать по описи, и
@@ -1405,7 +1410,7 @@ def plan_split(cfg: dict, title: str, text: str, call, deadline: float) -> list:
     if len(paras) < 6:
         return []          # шесть абзацев не документ: резать нечего
     r = call(cfg, "planner", [{"role": "user", "content": PROMPT_PLAN_SPLIT.format(
-        title=title, size=len(text), outline=listing)}], deadline=deadline)
+        title=title, size=len(text), outline=listing)}], deadline=deadline, prefer=prefer)
     if not r["ok"]:
         return []
     # `parse_json` достаёт объект, а не массив: модель любит обрамлять ответ текстом, и
@@ -1428,7 +1433,7 @@ def plan_split(cfg: dict, title: str, text: str, call, deadline: float) -> list:
 
 
 def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
-                 deadline: float = 0.0) -> dict:
+                 deadline: float = 0.0, prefer: int = 0) -> dict:
     """Переписать одну карточку `kind: knowledge` в тезис. → шаг для отчёта.
 
     Дословный текст не пропадает: он уезжает в раздел «Источник» под тезисом. Это и есть
@@ -1463,7 +1468,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         kind = (_fm(text).get("kind") or "").strip().strip('"')
     if kind in ("dictionary", "document"):
         # Тело не переписываем ни при каких условиях — только предлагаем границы.
-        plan = plan_split(cfg, title, quotes.strip(), call, deadline)
+        plan = plan_split(cfg, title, quotes.strip(), call, deadline, prefer)
         if plan:
             step.update(status="слишком длинная", split=plan,
                         note=f"{kind}: тело переросло окно модели; планировщик предлагает "
@@ -1487,7 +1492,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                     note=f"{len(src)} символов — это {len(parts)} {zahod(len(parts))} "
                          f"при окне модели: пересказ такого объёма вырождается в "
                          f"аннотацию")
-        plan = plan_split(cfg, title, src, call, deadline)
+        plan = plan_split(cfg, title, src, call, deadline, prefer)
         if plan:
             step["split"] = plan
             step["note"] += f"; планировщик предлагает частей: {len(plan)}"
@@ -1496,7 +1501,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         return step
 
     def once(prompt: str) -> dict:
-        r = call(cfg, "worker", [{"role": "user", "content": prompt}], deadline=deadline)
+        r = call(cfg, "worker", [{"role": "user", "content": prompt}], deadline=deadline,
+                 prefer=prefer)
         if r["ok"]:
             step["backends"].append((r["backend"], r["model"]))
             step["tps"] = r.get("tps") or 0
@@ -1523,7 +1529,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             if piece and not piece.upper().startswith("ПУСТО"):
                 notes.append(piece)
                 if momus:
-                    mp = run_momus(cfg, chunk, f"Выписка из части {i} «{title}»", piece, call)
+                    mp = run_momus(cfg, chunk, f"Выписка из части {i} «{title}»", piece,
+                                   call, prefer)
                     if mp.get("ok") and not mp.get("clean"):
                         step["unsupported"] = step.get("unsupported", 0) + mp["unsupported"]
         if not notes:
@@ -1542,7 +1549,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if momus:
         # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
         # это проверкой целого было бы той же тихой потерей, только в проверке.
-        mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»", thesis, call)
+        mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»", thesis, call, prefer)
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
             step["unsupported"] = step.get("unsupported", 0) + mo["unsupported"]
@@ -1595,12 +1602,24 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     # между «одна за раз» и «восемь за раз» — это ночь против часа. Запись в файл идёт
     # в главном потоке: два потока, пишущие в разные карточки, безопасны, но проверять
     # это на живой базе мы не будем.
-    width = min(cfg.get("parallel", 1), total) or 1
-    done = 0
+    slots = AG.pool(cfg)
+    width = min(len(slots), total) or 1
+    done, in_a_row = 0, 0
 
-    def one(path):
-        return path, distill_card(cfg, path, call=call, momus=momus,
-                                  deadline=min(budget, time.time() + cfg["request_timeout"]))
+    def one(job):
+        i, path = job
+        # Задание идёт на свой слот: у каждого шлюза своя пропускная способность, и
+        # раздавать всё первому значит выстроить очередь на его стороне.
+        prefer = slots[i % len(slots)] if len(slots) > 1 else 0
+        try:
+            return path, distill_card(cfg, path, call=call, momus=momus,
+                                      deadline=min(budget, time.time() + cfg["request_timeout"]),
+                                      prefer=prefer)
+        except Exception as e:                              # noqa: BLE001
+            # Одна нечитаемая карточка не должна ронять ночной прогон: сбой становится
+            # шагом со статусом, а не исключением, всплывающим из пула и уносящим партию.
+            return path, {"card": os.path.basename(path), "status": "сбой",
+                          "note": f"{type(e).__name__}: {e}"[:160], "backends": []}
 
     def apply_split(path: str, step: dict) -> None:
         """Записать части и превратить исходную карточку в карту документа.
@@ -1663,22 +1682,33 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             text = "---" + step["head"] + "\n---" + step["body"]
             open(path, "w", encoding="utf-8").write(with_fields(text, fields))
 
+    def keep_going(step) -> bool:
+        """Сбой за сбоем — признак мёртвого шлюза, а не плохих карточек."""
+        nonlocal in_a_row
+        in_a_row = in_a_row + 1 if step["status"] == "сбой" else 0
+        if in_a_row >= FAILS_IN_A_ROW:
+            say(f"  {FAILS_IN_A_ROW} сбоя подряд — останавливаюсь: это шлюз, а не "
+                f"карточки. Проверьте `agent:ping`")
+            return False
+        return time.time() <= budget
+
+    jobs = list(enumerate(todo[:total]))
     if width == 1:
-        for path in todo[:total]:
-            if time.time() > budget:
-                say(f"  бюджет {cfg['budget_min']} мин исчерпан")
-                break
+        for job in jobs:
+            path, step = one(job)
             done += 1
-            finish(*one(path))
+            finish(path, step)
+            if not keep_going(step):
+                break
     else:
         from concurrent.futures import ThreadPoolExecutor
-        say(f"  одновременно: {width} (AURORA_AGENT_PARALLEL)")
-        with ThreadPoolExecutor(max_workers=width) as pool:
-            for path, step in pool.map(one, todo[:total]):
+        say(f"  одновременно: {width} · слоты по бэкендам: "
+            + ", ".join(f"№{n}×{slots.count(n)}" for n in sorted(set(slots))))
+        with ThreadPoolExecutor(max_workers=width) as ex:
+            for path, step in ex.map(one, jobs):
                 done += 1
                 finish(path, step)
-                if time.time() > budget:
-                    say(f"  бюджет {cfg['budget_min']} мин исчерпан")
+                if not keep_going(step):
                     break
     return {"steps": steps, "left": len(todo) - len(steps), "unsupported": unsupported,
             "seconds": round(time.time() - started, 1)}
