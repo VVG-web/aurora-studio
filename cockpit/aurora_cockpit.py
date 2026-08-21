@@ -139,6 +139,14 @@ def scenarios() -> list:
             cur["steps"].append({"manual": True, "title": parts[0].lstrip("- ").strip(),
                                  "why": parts[1] if len(parts) > 1 else "",
                                  "skill": parts[2] if len(parts) > 2 else ""})
+        elif parts[0] in ("цикл:", "конец цикла"):
+            # Полный цикл по партии вместо фаз по всей базе. Прогон, нарезанный фазами,
+            # при остановке на середине оставляет карточки без типов, тезисов и связей —
+            # то есть сотни ошибок и ноль пригодного знания. Цикл делает по партии всё:
+            # разобрал, осмыслил, связал, посчитал доверие, закоммитил. Выключили в
+            # любой момент — прибавленное осталось и годно.
+            cur["steps"].append({"manual": False, "cycle": parts[0],
+                                 "why": parts[1] if len(parts) > 1 else ""})
         else:
             cur["steps"].append({"manual": False, "cmd": parts[0],
                                  "why": parts[1] if len(parts) > 1 else "",
@@ -620,9 +628,70 @@ def health(project: str) -> dict:
             nums = re.search(r"MISSING: \*\*(\d+)\*\*.*?ORPHAN: \*\*(\d+)\*\*", chunk, re.S)
             if name and nums:
                 mirrors[name] = {"missing": int(nums.group(1)), "orphan": int(nums.group(2))}
+    # Трассировку и остаток человеку читаем с диска, а не запуском команд: обе уже
+    # посчитаны, а дашборд открывают чаще, чем пересчитывают базу.
+    trace = {}
+    tp = os.path.join(project, "AuroraKnowledgeDB", "meta", "trace", "trace-summary.json")
+    if os.path.isfile(tp):
+        try:
+            trace = json.loads(read_text(tp, limit=20_000))
+        except ValueError:
+            trace = {}
     return {"stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
             "build": build_progress(project), "agent": last_agent_run(project),
-            "sources": sources(project), "runs": read_runlog(project)}
+            "sources": sources(project), "runs": read_runlog(project),
+            "trace": trace, "todo": todo_count(project),
+            "source_health": source_health(project)}
+
+
+def source_health(project: str) -> dict:
+    """Сколько документов каждого зеркала и `Raw/` уже стали карточками.
+
+    Панель показывала целостность зеркал (missing/orphan) и молчала о главном: сколько
+    из привезённого превратилось в знание. Учёт разбора движок ведёт сам —
+    `meta/manifest.json`; считаем по нему, а не запуском команд.
+    """
+    done = set()
+    mp = os.path.join(project, "AuroraKnowledgeDB", "meta", "manifest.json")
+    try:
+        done = set((json.loads(read_text(mp, limit=8_000_000)).get("sources") or {}))
+    except (ValueError, TypeError):
+        pass
+    out = {}
+    for root in ("Sources", "Raw"):
+        base = os.path.join(project, root)
+        if not os.path.isdir(base):
+            continue
+        for name in sorted(os.listdir(base)):
+            folder = os.path.join(base, name)
+            if not os.path.isdir(folder) or name.startswith("."):
+                continue
+            total = parsed = archived = 0
+            for dirpath, dirs, files in os.walk(folder):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                stale = "_outdated" in dirpath or "_archive" in dirpath
+                for f in files:
+                    if not f.endswith(".md"):
+                        continue
+                    if stale:
+                        archived += 1
+                        continue
+                    total += 1
+                    rel = os.path.relpath(os.path.join(dirpath, f), project).replace("\\", "/")
+                    if rel in done:
+                        parsed += 1
+            if total or archived:
+                out[f"{root}/{name}"] = {"total": total, "parsed": parsed,
+                                         "left": total - parsed, "archived": archived}
+    return out
+
+
+def todo_count(project: str) -> int | None:
+    """Сколько дел осталось человеку. Считает `ops:todo`, панель только показывает."""
+    rc, out = run_capture(project, "aurora_todo.py", [], timeout=120)
+    m = re.search(r"[Дд]ел[оа]?[^\d]{0,20}(\d+)", out)
+    n = len(re.findall(r"^\s*\d+\.\s", out, re.M))
+    return n or (int(m.group(1)) if m else None)
 
 
 def build_progress(project: str) -> dict:

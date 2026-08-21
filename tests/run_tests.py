@@ -1215,8 +1215,15 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
     assert len(scen) >= 4, "сценариев подозрительно мало"
     for s in scen:
         assert s["title"] and s["steps"], f"пустой сценарий {s['id']}"
+        seen_cycle = 0
         for st in s["steps"]:
             assert st["why"], f"шаг без объяснения в сценарии {s['id']}"
+            if st.get("cycle"):
+                # Разметка блока, а не шаг: у неё нет команды и быть не должно.
+                seen_cycle += 1 if st["cycle"] == "цикл:" else -1
+                assert seen_cycle in (0, 1), \
+                    f"сценарий {s['id']}: цикл открыт или закрыт не по парам"
+                continue
             if not st.get("manual"):
                 assert st["cmd"] in known, \
                     f"сценарий {s['id']} зовёт несуществующую команду {st['cmd']}"
@@ -1243,10 +1250,11 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
                 # шаг без кнопки обязан говорить, что сделать вместо неё
                 assert st.get("skill", "").startswith("/aurora-vault"), \
                     f"шаг «{st['title']}» в сценарии {s['id']} не называет команду скилла"
+        assert seen_cycle == 0, f"сценарий {s['id']}: цикл открыт и не закрыт"
     runnable = {r["cmd"] for r in ck.registry() if r["runnable"]}
     for s in ck.scenarios():
         for st in s["steps"]:
-            if not st.get("manual") and st["cmd"] not in runnable:
+            if not st.get("manual") and not st.get("cycle") and st["cmd"] not in runnable:
                 continue   # модельную команду панель показывает как строку для ассистента
 
     # --- скины: имя и описание из шапки файла, путь наружу не принимается
@@ -1980,7 +1988,13 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
     # шаг есть в маршруте пересборки, и флаги существуют у команды
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
     rebuild = scen.split("[rebuild]")[1].split("\n[")[0]
-    assert "--until-done" in rebuild, "маршрут пересборки не умеет разбирать проект целиком"
+    # С 1.94 маршрут разбирает проект **циклами**, а не одной командой до упора: фазы по
+    # всей базе при остановке на середине оставляли карточки без типов, тезисов и связей.
+    assert "цикл:" in rebuild and "конец цикла" in rebuild, \
+        "маршрут пересборки не нарезан циклами — остановка на середине снова даст заготовки"
+    cyc = rebuild.split("цикл:")[1].split("конец цикла")[0]
+    for need in ("agent:build", "kb:kind", "agent:distill", "kb:links"):
+        assert need in cyc, f"в цикле нет шага {need} — оборот даёт не готовое знание"
     assert "на ночь" in rebuild, "шаг не предупреждает, что это часы работы"
     assert hasattr(R, "build_left"), "счётчик плана переименован — цикл сломается молча"
 
@@ -2073,17 +2087,22 @@ def test_one_button_ends_with_what_is_left_to_the_human(tmp: Path):
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
     ck = importlib.import_module("aurora_cockpit")
-    route = next((s for s in ck.scenarios() if s["id"] == "all"), None)
-    assert route, "маршрута «Привести базу в порядок» нет"
-    cmds = [st["cmd"] for st in route["steps"]]
-    for need in ("sync:confluence", "agent:build", "kb:repair", "kb:trust", "ops:todo"):
-        assert need in cmds, f"в одной кнопке нет шага {need}"
+    route = next((s for s in ck.scenarios() if s["id"] == "fix"), None)
+    assert route, "маршрута «Починить базу» нет"
+    cmds = [st.get("cmd") for st in route["steps"]]
+    for need in ("kb:repair", "kb:dedupe", "kb:moc", "kb:index", "ops:todo"):
+        assert need in cmds, f"в кнопке «Починить» нет шага {need}"
     assert cmds[-1] == "ops:todo", "маршрут не заканчивается списком того, что осталось"
     assert not any(st.get("manual") for st in route["steps"]), \
-        "в одной кнопке есть шаг-человек — значит она не одна кнопка"
-    build = next(st for st in route["steps"] if st["cmd"] == "agent:build")
-    assert "--until-done" in build["flags"] and "--apply" in build["flags"], \
-        "разбор в одной кнопке не доходит до конца сам"
+        "в кнопке «Починить» есть шаг-человек — значит она не одна кнопка"
+    # «Починить» смотрит внутрь базы: в источники ходит «Обновить», и смешивать их значит
+    # заставлять ждать синхронизации того, кто просто чинит ссылки
+    assert not any((c or "").startswith("sync:") for c in cmds), \
+        "«Починить» ходит в источники — это работа «Обновить»"
+    upd = next(s for s in ck.scenarios() if s["id"] == "update")
+    ucmds = [st.get("cmd") for st in upd["steps"]]
+    assert "sync:confluence" in ucmds and "agent:build" in ucmds and "kb:trust" in ucmds, \
+        "«Обновить» не берёт новое из источников и не доводит его до знания"
 
     root = make_project(tmp, git=True)
     card(root, "Concepts/Понятие.md", "тело", status="imported", type="concept")
@@ -2851,6 +2870,79 @@ def test_long_source_is_not_silently_cut(tmp: Path):
                      if not l.lstrip().startswith("#"))
     assert "[:12000]" not in code and "[:6000]" not in code, \
         "тихое обрезание вернулось в код"
+
+
+@test
+def test_five_buttons_instead_of_eleven_routes(tmp: Path):
+    """Одиннадцать маршрутов свелись в пять, и каждый отвечает на свой вопрос.
+
+    «Привести базу в порядок», «Обновить базу», «Утренний обход», «Пересчитать доверие»,
+    «Прополка», «Разобрать всё» — шесть кнопок, делающих пересекающиеся вещи, и человек
+    каждый раз выбирал между ними, не зная разницы. Осталось два вопроса: **взять новое
+    из источников** («Обновить») и **привести в порядок то, что есть** («Починить»).
+    Граница между ними проверяемая: «Починить» в источники не ходит.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    ids = [s["id"] for s in ck.scenarios()]
+    assert set(ids) == {"update", "fix", "rebuild", "write", "deliver"}, \
+        f"набор маршрутов не тот, что решили: {ids}"
+    for gone in ("all", "morning", "trust", "garden", "bulk", "trace", "outward", "assemble"):
+        assert gone not in ids, f"старый маршрут {gone} остался: сложность просто спрятана"
+
+    fix = next(s for s in ck.scenarios() if s["id"] == "fix")
+    assert not any((st.get("cmd") or "").startswith("sync:") for st in fix["steps"]), \
+        "«Починить» ходит в источники — тогда граница между кнопками исчезает"
+    upd = next(s for s in ck.scenarios() if s["id"] == "update")
+    assert any((st.get("cmd") or "").startswith("sync:") for st in upd["steps"]), \
+        "«Обновить» не ходит в источники — тогда она не про новое"
+
+    # цикл: полный оборот по партии, а не фазы по всей базе
+    for rid in ("update", "rebuild"):
+        s = next(x for x in ck.scenarios() if x["id"] == rid)
+        marks = [st.get("cycle") for st in s["steps"] if st.get("cycle")]
+        assert marks == ["цикл:", "конец цикла"], f"{rid}: цикл размечен неверно: {marks}"
+        inside, seen = [], False
+        for st in s["steps"]:
+            if st.get("cycle") == "цикл:": seen = True; continue
+            if st.get("cycle") == "конец цикла": break
+            if seen: inside.append(st.get("cmd"))
+        for need in ("agent:build", "kb:kind", "agent:distill", "kb:links"):
+            assert need in inside, \
+                f"{rid}: в обороте нет {need} — остановка на середине даст заготовки"
+
+
+@test
+def test_dashboards_say_what_they_measured(tmp: Path):
+    """Плитка не должна выдавать «не измеряли» за «в порядке».
+
+    Панель показывала «Типы карточек: у всех проставлен» на проекте, где типы вообще не
+    считались: движок проекта старее той версии, где типы появились. Пустое значение
+    прочиталось как ноль проблем — та же догадка вместо факта, за которую мы уже платили.
+
+    И вторая половина: у плитки должен быть смысл и адрес. Число без действия — это
+    сообщение, которое некуда отнести.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "function metricCard(" in ui and "function baseCards(" in ui, \
+        "нет панели с плитками здоровья базы"
+    assert "function sourceCards(" in ui, "нет панели здоровья источников"
+    assert "не измерялись: движок проекта старее" in ui, \
+        "пустое измерение снова читается как «в порядке»"
+    assert "goRoute(" in ui and "goCmd(" in ui, "плитки никуда не ведут"
+
+    # снятые понятия не должны висеть плитками
+    for gone in ("протухших verified", "verified без владельца", "kb:queue", "kb:verify"):
+        assert gone not in ui, f"панель показывает снятое понятие: {gone}"
+
+    # сервер обязан отдавать то, что панель рисует
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    for field in ('"trace"', '"todo"', '"source_health"'):
+        assert field in srv, f"панель просит {field}, а сервер его не отдаёт"
+    assert "trace-summary.json" in srv, \
+        "дашборд читает всю таблицу трассировки — это двадцать мегабайт на открытие"
 
 
 @test
