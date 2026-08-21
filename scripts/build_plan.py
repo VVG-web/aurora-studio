@@ -333,7 +333,7 @@ def slice_report(path: str, chars: int = 110) -> int:
 
 
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
-               summary: str = "") -> int:
+               summary: str = "", paras: str = "") -> int:
     """Собрать карточку из указанных секций источника: текст переносится дословно."""
     if not os.path.isfile(source):
         print(f"build_plan: нет файла {source}", file=sys.stderr)
@@ -345,7 +345,17 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         print(f"build_plan: раздела «{into}» нет в схеме базы. Разделы: "
               + ", ".join(sorted(SECTION_TYPE)), file=sys.stderr)
         return 1
-    secs = sections(open(source, encoding="utf-8", errors="ignore").read())
+    raw = open(source, encoding="utf-8", errors="ignore").read()
+    if paras:
+        # Источник без заголовков резать не по чему, и раньше он целиком уходил человеку.
+        # Границы для такого предлагает планировщик — по описи абзацев, а не по тексту, —
+        # а сюда приходят номерами. Текст всё равно переносит движок: дословность не
+        # зависит от того, кто выбрал границу.
+        blocks = [x for x in re.split(r"\n\s*\n", raw) if x.strip()]
+        secs = [(title, b) for b in blocks]
+        spec = paras
+    else:
+        secs = sections(raw)
     picked: list = []
     for part in spec.split(","):
         part = part.strip()
@@ -366,7 +376,10 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         print("build_plan: не указано ни одной секции (--sections 1,3-5)", file=sys.stderr)
         return 1
 
-    body = "\n\n".join(f"## {t}\n\n{b}" if len(picked) > 1 else b for t, b in picked)
+    # Абзацы склеиваются как есть: заголовок у них общий — имя карточки. Секции же
+    # приходят каждая со своим названием, и без него текст теряет структуру источника.
+    body = ("\n\n".join(b for _t, b in picked) if paras
+            else "\n\n".join(f"## {t}\n\n{b}" if len(picked) > 1 else b for t, b in picked))
     safe = card_filename(title)
     path = os.path.join(KB_ROOT, into, safe + ".md")
     if os.path.exists(path):
@@ -391,7 +404,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # выборке: по ней модель понимает, о чём карточка, не читая её целиком, и вся база
     # умещается в оглавление на пару десятков тысяч токенов.
     head_summary = f'summary: "{summary.strip()}"\n' if summary.strip() else ""
-    card = (f'---\ntitle: "{title}"\naliases: []\nstatus: imported\n'
+    card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
             f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}source: "{source}"\n'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
             f"built: machine\nrelated: []\n---\n\n# {title}\n\n{body}\n")
@@ -606,6 +619,9 @@ def main() -> int:
                          "оглавление базы для модели")
     ap.add_argument("--sections", metavar="N,M-K", default="",
                     help="номера секций из раскадровки (для --card)")
+    ap.add_argument("--paras", metavar="N-M", default="",
+                    help="номера абзацев вместо секций: для источников без заголовков, "
+                         "границы которых предложил планировщик")
     ap.add_argument("--to", metavar="SECTION", default="Concepts",
                     help="раздел базы для --card (по умолчанию Concepts)")
     ap.add_argument("--thin", action="store_true",
@@ -635,7 +651,8 @@ def main() -> int:
         if not a.src:
             print("build_plan: для --card нужен --source <источник>", file=sys.stderr)
             return 1
-        return build_card(a.card, a.src, a.sections, a.to, a.apply, a.summary)
+        return build_card(a.card, a.src, a.sections, a.to, a.apply, a.summary,
+                          a.paras)
     if a.thin or (a.reopen and a.thin):
         return thin_report(manifest, a.group or "", a.reopen and a.apply)
     if a.reopen:

@@ -724,6 +724,42 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     return step
 
 
+def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply: bool,
+                call, deadline: float) -> int:
+    """Источник без заголовков → карточки по границам планировщика. → сколько собрано."""
+    listing, paras = outline(whole)
+    if len(paras) < 4:
+        return 0
+    r = call(cfg, "planner", [{"role": "user", "content": PROMPT_PLAN_SOURCE.format(
+        source=source, size=len(whole), outline=listing)}], deadline=deadline)
+    if not r["ok"]:
+        return 0
+    step["backends"].append((r["backend"], r["model"]))
+    rows = (parse_json(r["text"]) or {}).get("parts")
+    if not isinstance(rows, list) or not rows:
+        return 0
+    made, used = 0, set()
+    for row in rows:
+        try:
+            a, b, name = int(row["from"]), int(row["to"]), str(row["title"]).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not name or a < 1 or b > len(paras) or a > b or any(n in used for n in range(a, b + 1)):
+            continue
+        used.update(range(a, b + 1))
+        if not apply:
+            made += 1
+            continue
+        res = run_command(cwd, "build_plan.py",
+                          ["--card", name, "--source", source, "--paras", f"{a}-{b}",
+                           "--to", "Concepts", "--apply"])
+        if res["ok"]:
+            made += 1
+    if made and apply:
+        run_command(cwd, "build_plan.py", ["--done", source])
+    return made
+
+
 def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
                 use_critic: bool, call, deadline) -> dict:
     """Источник без структуры: пусто (отметить) или человеку (написать чтением)."""
@@ -756,6 +792,15 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
                          f"чтением или объявите окно шире")
         return step
     if not ans.get("empty"):
+        # Знание есть, а разметки нет. Раньше такой источник уходил человеку целиком —
+        # то есть работа, которую машина умеет, оставалась ему. Границы предлагает
+        # планировщик по описи абзацев, карточки собирает движок дословно.
+        made = plan_source(cfg, cwd, source, whole, step, apply, call, deadline)
+        if made:
+            step.update(status="разобран по абзацам",
+                        note=f"заголовков нет — границы предложил планировщик, "
+                             f"карточек: {made}")
+            return step
         step.update(status="без секций — человеку",
                     note=str(ans.get("keep") or "структуры нет, карточку писать чтением"))
         return defer(cwd, source, step, apply)
@@ -1258,6 +1303,59 @@ PROMPT_DISTILL_JOIN = """Ниже — выписки из {total} частей �
 источник целиком. Ничего не добавляй от себя: если чего-то в выписках нет, этого нет."""
 
 
+PROMPT_PLAN_SOURCE = """Ты планировщик. Источник «{source}» ({size} знаков) не размечен
+заголовками — резать его по структуре не по чему, и до сих пор такие уходили человеку.
+
+Ниже — опись абзацев: номер, размер, первые слова. Самого текста ты не видишь и он тебе
+не нужен: твоя работа — границы тем, а переносит текст движок дословно.
+
+{outline}
+
+Верни JSON в исходном порядке карточек:
+{{"parts": [{{"title": "Название карточки", "from": 1, "to": 7}}]}}
+
+Правила:
+• карточка — одно понятие, правило или сущность. Название — то, как его будут искать;
+• границы не пересекаются; служебные абзацы (шапка, участники, подписи) пропускай;
+• меньше двух абзацев в карточку не выделяй;
+• если знания в источнике нет вовсе — верни {{"parts": []}}."""
+
+
+PROMPT_PLAN_SPLIT = """Ты планировщик. Карточка «{title}» разрослась до {size} знаков —
+это документ, а не карточка знания. Её надо разрезать на атомарные части.
+
+Ниже — раскадровка тела: номер абзаца, размер, первые слова. Самого текста ты не видишь
+и он тебе не нужен: твоя работа — границы, а переносит текст движок дословно.
+
+{outline}
+
+Верни JSON в исходном порядке частей:
+{{"parts": [{{"title": "Название части", "from": 1, "to": 7}}]}}
+
+Правила:
+• часть — это одно понятие, правило или сущность. Не «Раздел 2», а то, о чём он;
+• границы не пересекаются и не оставляют дыр: следующая начинается там, где кончилась
+  предыдущая;
+• куски меньше трёх абзацев не выделяй — присоединяй к соседу по смыслу;
+• служебное (оглавление, ссылки, история правок) в части не включай — пропусти номера;
+• название части — то, как его будут искать: термин, а не «Общие положения»."""
+
+
+def outline(text: str, preview: int = 90) -> tuple:
+    """Тело карточки → (раскадровка для планировщика, список абзацев).
+
+    Планировщику отдаётся не текст, а его опись: номер, размер, первые слова. Так
+    границы можно спланировать даже для тела, которое в окно не влезает целиком —
+    ровно тем же приёмом, которым `agent:build` разбирает источники по секциям.
+    """
+    paras = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    rows = []
+    for i, para in enumerate(paras, 1):
+        first = " ".join(para.split())[:preview]
+        rows.append(f"  {i}. ({len(para)} симв.) {first}")
+    return "\n".join(rows), paras
+
+
 def zahod(n: int) -> str:
     """«1 заход», «3 захода», «12 заходов» — число в отчёте читает человек."""
     if n % 10 == 1 and n % 100 != 11:
@@ -1296,6 +1394,39 @@ QUOTES = "## Источник (перенесено дословно)"
 FOOTER = "## История изменений"
 
 
+def plan_split(cfg: dict, title: str, text: str, call, deadline: float) -> list:
+    """Границы нарезки раздутой карточки от планировщика. → [(имя части, текст), …].
+
+    Планировщик видит только опись абзацев, а не текст: границы можно выбрать по описи, и
+    так работает даже с телом, которое в окно не влезает. Текст режется движком по этим
+    границам дословно — тип `dictionary` и `document` тем и ценны, что их не пересказывают.
+    """
+    listing, paras = outline(text)
+    if len(paras) < 6:
+        return []          # шесть абзацев не документ: резать нечего
+    r = call(cfg, "planner", [{"role": "user", "content": PROMPT_PLAN_SPLIT.format(
+        title=title, size=len(text), outline=listing)}], deadline=deadline)
+    if not r["ok"]:
+        return []
+    # `parse_json` достаёт объект, а не массив: модель любит обрамлять ответ текстом, и
+    # искать в нём голый массив ненадёжно — просим объект с ключом `parts`.
+    rows = (parse_json(r["text"]) or {}).get("parts")
+    if not isinstance(rows, list):
+        return []
+    out, used = [], set()
+    for row in rows:
+        try:
+            a, b = int(row["from"]), int(row["to"])
+            name = str(row["title"]).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not name or a < 1 or b > len(paras) or a > b or any(n in used for n in range(a, b + 1)):
+            continue          # пересечения и выходы за край — молча не чиним, пропускаем
+        used.update(range(a, b + 1))
+        out.append((name, "\n\n".join(paras[a - 1:b]).strip()))
+    return out if len(out) >= 2 else []
+
+
 def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                  deadline: float = 0.0) -> dict:
     """Переписать одну карточку `kind: knowledge` в тезис. → шаг для отчёта.
@@ -1325,6 +1456,23 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         footer = FOOTER + footer
     title = os.path.splitext(os.path.basename(path))[0]
     deadline = deadline or (time.time() + cfg["request_timeout"])
+    kind = (AG.frontmatter_of(text).get("kind") or "").strip().strip('"') \
+        if hasattr(AG, "frontmatter_of") else ""
+    if not kind:
+        from aurora_common import frontmatter as _fm
+        kind = (_fm(text).get("kind") or "").strip().strip('"')
+    if kind in ("dictionary", "document"):
+        # Тело не переписываем ни при каких условиях — только предлагаем границы.
+        plan = plan_split(cfg, title, quotes.strip(), call, deadline)
+        if plan:
+            step.update(status="слишком длинная", split=plan,
+                        note=f"{kind}: тело переросло окно модели; планировщик предлагает "
+                             f"частей: {len(plan)} — текст переносится дословно")
+        else:
+            step.update(status="человеку",
+                        note=f"{kind} длиннее окна, а границ планировщик не нашёл — "
+                             f"разрежьте руками (`kb:split`)")
+        return step
     src = quotes.strip()
     # Раньше здесь стояло `[:12000]` — молчаливое обрезание. Всё, что дальше, в тезис не
     # попадало, и об этом никто не узнавал: ни отчёт, ни карточка. Теперь режем по
@@ -1332,11 +1480,19 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + len(title) + 200)
     parts = chunks(src, budget)
     if len(parts) > MAX_PARTS:
+        # Пересказывать такой объём нельзя — но и отдавать человеку с советом «разрежьте»
+        # значит оставить ему работу, которую машина умеет. Границы предлагает
+        # планировщик, текст переносит движок: модель тела не касается.
         step.update(status="слишком длинная",
                     note=f"{len(src)} символов — это {len(parts)} {zahod(len(parts))} "
-                         f"при окне модели; "
-                         f"разрежьте карточку (`kb:split`), пересказ такого объёма "
-                         f"вырождается в аннотацию")
+                         f"при окне модели: пересказ такого объёма вырождается в "
+                         f"аннотацию")
+        plan = plan_split(cfg, title, src, call, deadline)
+        if plan:
+            step["split"] = plan
+            step["note"] += f"; планировщик предлагает частей: {len(plan)}"
+        else:
+            step["note"] += "; планировщик границ не нашёл — разрежьте руками (`kb:split`)"
         return step
 
     def once(prompt: str) -> dict:
@@ -1403,19 +1559,32 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
 
 def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True,
                 call=None) -> dict:
-    """Тезисы для карточек типа `knowledge`. Словари и документы не трогаем никогда."""
+    """Тезисы для карточек `knowledge`; словари и документы — только режем, если не влезают.
+
+    Тело словаря и документа модель не переписывает никогда — это смысл самих типов. Но
+    словарь на сорок тысяч знаков не работает ни как словарь, ни как карточка: его не
+    найти выборкой и не подать в контекст. Такому нужна не переработка, а границы —
+    их предлагает планировщик, а текст режет движок дословно.
+    """
     from aurora_common import frontmatter, walk_md
     started = time.time()
     budget = started + cfg["budget_min"] * 60
+    window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
     todo = []
     for p in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
                      skip_archive=True):
-        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
-        if (fm.get("kind") or "").strip().strip('"') != "knowledge":
-            continue
-        if (fm.get("distilled") or "").strip():
-            continue
-        todo.append(p)
+        text = open(p, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        kind = (fm.get("kind") or "").strip().strip('"')
+        if kind == "knowledge":
+            if (fm.get("distilled") or "").strip():
+                continue
+            todo.append(p)
+        elif kind in ("dictionary", "document") and window:
+            # только те, что не влезают: остальные словари трогать незачем и нельзя
+            src = text.split(QUOTES, 1)[-1]
+            if len(src) > window * MAX_PARTS:
+                todo.append(p)
     total = min(len(todo), limit or cfg["max_steps"])
     say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "
         f"бюджет {cfg['budget_min']} мин")
@@ -1433,6 +1602,48 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         return path, distill_card(cfg, path, call=call, momus=momus,
                                   deadline=min(budget, time.time() + cfg["request_timeout"]))
 
+    def apply_split(path: str, step: dict) -> None:
+        """Записать части и превратить исходную карточку в карту документа.
+
+        Части получают `part_of` и ссылки на соседей: карточка без связей — ошибка
+        линтера, а нарезка, порождающая сирот, чинит одно и ломает другое.
+        """
+        from aurora_common import frontmatter, split_frontmatter
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        head, _ = split_frontmatter(text)
+        folder = os.path.dirname(path)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        made = []
+        for i, (name, chunk) in enumerate(step["split"]):
+            safe = re.sub(r"[^\w\- ]+", "", name).strip().replace(" ", "-")[:90] or f"часть-{i+1}"
+            dest = os.path.join(folder, safe + ".md")
+            if os.path.exists(dest):
+                continue
+            made.append((safe, name, dest, chunk))
+        if len(made) < 2:
+            step["note"] += "; части уже вынесены"
+            return
+        for i, (safe, name, dest, chunk) in enumerate(made):
+            neighbours = [made[j][0] for j in (i - 1, i + 1) if 0 <= j < len(made)]
+            related = ", ".join(f'"[[{n}]]"' for n in neighbours)
+            open(dest, "w", encoding="utf-8").write(
+                f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
+                f'type: {fm.get("type") or "concept"}\nkind: {fm.get("kind") or "knowledge"}\n'
+                + (f'source: {fm["source"]}\n' if fm.get("source") else "")
+                + f'part_of: "[[{stem}]]"\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
+                f'built: machine\nrelated: [{related}]\n---\n\n# {name}\n\n{chunk}\n')
+        # Исходная карточка остаётся входом: тело уехало в части, вход и провенанс здесь.
+        # Статус — служебный: знание теперь в частях, а это карта, и в паке ей не место.
+        # Иначе одна и та же мысль попадёт в контекст дважды — списком и текстом.
+        from aurora_common import set_field
+        body = (f"\n\nКарточка была разрезана: тело выросло до размеров документа, а знание "
+                f"ищут атомарным. Границы предложил планировщик, текст перенесён дословно.\n\n"
+                + "\n".join(f"- [[{s}|{n}]]" for s, n, _d, _c in made) + "\n")
+        open(path, "w", encoding="utf-8").write(
+            "---" + set_field(head, "status", "index") + "\n---" + body)
+        step["note"] += f"; разрезана на {len(made)}"
+
     def finish(path, step):
         nonlocal unsupported
         steps.append(step)
@@ -1441,6 +1652,9 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             + (f": {step['note'][:100]}" if step["note"] else "") + where(step))
         if step.get("unsupported"):
             unsupported += step["unsupported"]
+        if apply and step.get("split"):
+            apply_split(path, step)
+            return
         if apply and step.get("head") is not None:
             from aurora_common import with_fields
             fields = {"distilled": TODAY_STR}

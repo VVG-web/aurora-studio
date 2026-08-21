@@ -606,7 +606,7 @@ def main() -> int:
         print(f"Отчёт: {a.report_path}")
     if a.write:
         os.makedirs(os.path.dirname(OUT_MOC), exist_ok=True)
-        head = ("---\ntype: moc\nstatus: imported\n"
+        head = ("---\ntype: moc\nstatus: index\n"
                 f"schema_version: 3\nupdated: {TODAY}\n---\n\n"
                 "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_graph.py — ручные правки будут потеряны. -->\n\n")
         open(OUT_MOC, "w", encoding="utf-8").write(head + text)

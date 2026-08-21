@@ -10,7 +10,7 @@
                  старое написание в aliases карточки-цели (чтобы больше не ломалось).
   --homoglyphs   имена файлов со смешанной кириллицей/латиницей (AИС → АИС): переименовать,
                  старое имя — в aliases, входящие ссылки переписать.
-  --frontmatter  легаси-карточки без status: проставить status: imported
+  --frontmatter  легаси-карточки без status: проставить status: draft
                  (правило build.md №3); при полном отсутствии frontmatter — создать.
   --dupes        отчёт по карточкам-двойникам (одно имя после свёртки регистра/гомоглифов,
                  общие aliases, одинаковый title). Слияние — отдельной командой:
@@ -243,13 +243,13 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
         if m:
             title = m.group(1).strip()
         fm = (f'---\ntitle: "{title}"\naliases: []\ntags: []\n'
-              f"status: imported\ncreated: {TODAY}\nupdated: {TODAY}\n---\n\n")
+              f"status: draft\ncreated: {TODAY}\nupdated: {TODAY}\n---\n\n")
         return fm + card.text.lstrip("\n")
     head, rest = card.text[:card.fm_end], card.text[card.fm_end:]
     head = drop_retired(head)
     add = ""
     if not card.fm.get("status"):
-        add += "status: imported\n"
+        add += "status: draft\n"
     if not card.fm.get("type") and SECTION_TYPE.get(section):
         add += f"type: {SECTION_TYPE[section]}\n"
     if not add:
@@ -456,7 +456,7 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
         path = os.path.join(root, section, name + ".md")
         if path in cards or os.path.exists(path):
             continue
-        card = (f'---\ntitle: "{title}"\naliases: []\nstatus: imported\n'
+        card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
                 f'type: {frontmatter(text).get("type") or "concept"}\n'
                 + (f'source: {src}\n' if src else "")
                 + f'part_of: "[[{hit.stem}]]"\ncreated: {TODAY}\nupdated: {TODAY}\n'
