@@ -347,6 +347,24 @@ def fits(backend: dict, messages: list, max_tokens: int | None) -> tuple:
                    f"не отправляю, чтобы не гасить провайдера ошибкой")
 
 
+def prompt_budget(cfg: dict, reserve_chars: int = 0) -> int:
+    """Сколько символов содержимого влезет в самое широкое объявленное окно кольца.
+
+    Самое широкое, а не самое узкое: узкий бэкенд просто пропустит запрос (см. `fits`),
+    и резать по нему значит терять знание ради модели, которая его всё равно не возьмёт.
+
+    → 0, если окна не объявлены ни у кого. Это не «безлимит», а «движок не знает»: он
+    отправит запрос целиком и, если шлюз откажет по длине, скажет об этом словами. Сам
+    себе предел движок не выдумывает — иначе тихая потеря возвращается через другую дверь.
+    """
+    windows = [b.get("context") or 0 for b in cfg.get("backends") or []]
+    widest = max(windows) if windows else 0
+    if not widest:
+        return 0
+    room = (widest - ANSWER_ROOM) * CHARS_PER_TOKEN - reserve_chars
+    return int(max(0, room))
+
+
 def looks_like_overflow(err: str, body) -> bool:
     """Шлюз отказал из-за длины запроса, а не потому что провайдер лёг.
 

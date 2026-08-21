@@ -729,10 +729,16 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     """Источник без структуры: пусто (отметить) или человеку (написать чтением)."""
     path = Path(cwd) / source
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")[:6000]
+        whole = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         step.update(status="сбой", note="источник не читается")
         return step
+    # Здесь тоже стояло тихое обрезание — `[:6000]`. На источнике в 300 КБ модель судила
+    # о наличии знания по первым двум процентам и почти всегда отвечала «пусто». Режем по
+    # объявленному окну, а факт обрезания называем: вердикт по части — это не вердикт.
+    budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_NO_SECTIONS) + len(source) + 200)
+    text = whole if not budget else whole[:budget]
+    cut = len(whole) - len(text)
     r = call(cfg, "worker", [{"role": "user", "content": PROMPT_NO_SECTIONS.format(
         source=source, text=text)}], deadline=deadline)
     if not r["ok"]:
@@ -742,6 +748,13 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     step["tps"] = r.get("tps") or step.get("tps") or 0
     step["degraded"] = r["backend"] != 1
     ans = parse_json(r["text"]) or {}
+    if cut and ans.get("empty"):
+        # «Пусто» по обрезку — не вывод, а незнание: остальное модель не видела.
+        step.update(status="человеку",
+                    note=f"источник {len(whole)} символов, в окно вошло {len(text)} — "
+                         f"вердикт «знания нет» по части не принимается; разберите "
+                         f"чтением или объявите окно шире")
+        return step
     if not ans.get("empty"):
         step.update(status="без секций — человеку",
                     note=str(ans.get("keep") or "структуры нет, карточку писать чтением"))
@@ -1222,6 +1235,63 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
 
 # --------------------------------------------------------------- задача: тезисы
 
+# Больше трёх кусков — это уже не карточка, а документ: тезис тезисов вырождается в
+# аннотацию ни о чём, а знание надо не пересказывать, а разрезать (`kb:split`).
+MAX_PARTS = 3
+
+PROMPT_DISTILL_PART = """Ты читаешь ЧАСТЬ {n} из {total} перенесённого текста источника.
+
+Карточка: {title}
+
+{body}
+
+Выпиши, что знает ИМЕННО ЭТА часть: определения, правила, условия, значения. Своими
+словами не пересказывай — важна суть, а не объём. Если в этой части знания нет (одна
+вёрстка, ссылки, оглавление) — ответь одним словом ПУСТО."""
+
+PROMPT_DISTILL_JOIN = """Ниже — выписки из {total} частей одного источника. Собери из них
+ОДИН тезис карточки «{title}»: что это такое и по каким правилам работает.
+
+{parts}
+
+Не перечисляй части и не ссылайся на них («в первой части…»). Пиши так, как будто читал
+источник целиком. Ничего не добавляй от себя: если чего-то в выписках нет, этого нет."""
+
+
+def zahod(n: int) -> str:
+    """«1 заход», «3 захода», «12 заходов» — число в отчёте читает человек."""
+    if n % 10 == 1 and n % 100 != 11:
+        return "заход"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return "захода"
+    return "заходов"
+
+
+def chunks(text: str, budget: int) -> list:
+    """Разрезать текст по границам абзацев, не длиннее бюджета каждый.
+
+    По абзацам, а не по символам: разрез посреди предложения даёт куску оборванную мысль,
+    и модель честно выпишет из неё половину правила.
+    """
+    if budget <= 0 or len(text) <= budget:
+        return [text]
+    out, cur = [], ""
+    for para in text.split("\n\n"):
+        if cur and len(cur) + len(para) + 2 > budget:
+            out.append(cur)
+            cur = para
+        else:
+            cur = (cur + "\n\n" + para) if cur else para
+        # один абзац длиннее бюджета — режем его по строкам, иначе кусок не влезет никогда
+        while len(cur) > budget:
+            cut = cur.rfind("\n", 0, budget) + 1 or budget
+            out.append(cur[:cut])
+            cur = cur[cut:]
+    if cur:
+        out.append(cur)
+    return out
+
+
 QUOTES = "## Источник (перенесено дословно)"
 FOOTER = "## История изменений"
 
@@ -1255,22 +1325,71 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         footer = FOOTER + footer
     title = os.path.splitext(os.path.basename(path))[0]
     deadline = deadline or (time.time() + cfg["request_timeout"])
-    a = call(cfg, "worker", [{"role": "user", "content": PROMPT_DISTILL.format(
-        title=title, body=quotes.strip()[:12000])}], deadline=deadline)
-    if not a["ok"]:
-        step.update(status="сбой", note="; ".join(a["log"][-2:]))
+    src = quotes.strip()
+    # Раньше здесь стояло `[:12000]` — молчаливое обрезание. Всё, что дальше, в тезис не
+    # попадало, и об этом никто не узнавал: ни отчёт, ни карточка. Теперь режем по
+    # объявленному окну и говорим, когда текст не влезает целиком.
+    budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + len(title) + 200)
+    parts = chunks(src, budget)
+    if len(parts) > MAX_PARTS:
+        step.update(status="слишком длинная",
+                    note=f"{len(src)} символов — это {len(parts)} {zahod(len(parts))} "
+                         f"при окне модели; "
+                         f"разрежьте карточку (`kb:split`), пересказ такого объёма "
+                         f"вырождается в аннотацию")
         return step
-    step["backends"].append((a["backend"], a["model"]))
-    step["tps"] = a.get("tps") or 0
-    thesis = (a["text"] or "").strip()
+
+    def once(prompt: str) -> dict:
+        r = call(cfg, "worker", [{"role": "user", "content": prompt}], deadline=deadline)
+        if r["ok"]:
+            step["backends"].append((r["backend"], r["model"]))
+            step["tps"] = r.get("tps") or 0
+        return r
+
+    if len(parts) == 1:
+        a = once(PROMPT_DISTILL.format(title=title, body=parts[0]))
+        if not a["ok"]:
+            step.update(status="сбой", note="; ".join(a["log"][-2:]))
+            return step
+        thesis = (a["text"] or "").strip()
+    else:
+        # Map-reduce: выписка по каждому куску, потом свод. Момус проверяет и куски, и
+        # итог — иначе опора теряется ровно там, где её труднее всего заметить.
+        step["parts"] = len(parts)
+        notes = []
+        for i, chunk in enumerate(parts, 1):
+            r = once(PROMPT_DISTILL_PART.format(n=i, total=len(parts), title=title,
+                                                body=chunk))
+            if not r["ok"]:
+                step.update(status="сбой", note=f"часть {i}: " + "; ".join(r["log"][-2:]))
+                return step
+            piece = (r["text"] or "").strip()
+            if piece and not piece.upper().startswith("ПУСТО"):
+                notes.append(piece)
+                if momus:
+                    mp = run_momus(cfg, chunk, f"Выписка из части {i} «{title}»", piece, call)
+                    if mp.get("ok") and not mp.get("clean"):
+                        step["unsupported"] = step.get("unsupported", 0) + mp["unsupported"]
+        if not notes:
+            step.update(status="знания нет", note="во всех частях одна вёрстка — человеку")
+            return step
+        j = once(PROMPT_DISTILL_JOIN.format(total=len(parts), title=title,
+                                            parts="\n\n".join(notes)))
+        if not j["ok"]:
+            step.update(status="сбой", note="свод частей: " + "; ".join(j["log"][-2:]))
+            return step
+        thesis = (j["text"] or "").strip()
+
     if not thesis or thesis.strip().upper().startswith("ПУСТО"):
         step.update(status="знания нет", note="в тексте одна вёрстка — человеку")
         return step
     if momus:
-        mo = run_momus(cfg, quotes.strip()[:12000], f"Тезис карточки «{title}»", thesis, call)
+        # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
+        # это проверкой целого было бы той же тихой потерей, только в проверке.
+        mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»", thesis, call)
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
-            step["unsupported"] = mo["unsupported"]
+            step["unsupported"] = step.get("unsupported", 0) + mo["unsupported"]
     new_body = ("\n\n" + thesis.strip() + "\n\n" + QUOTES + "\n" + quotes.rstrip()
                 + ("\n\n" + footer.strip() + "\n" if footer.strip() else "\n"))
     # Файл собирается ровно из тех частей, на которые его разобрали: «---» + шапка + тело.
@@ -1355,9 +1474,21 @@ def report_distill(res: dict, apply: bool) -> str:
     made = [s for s in res["steps"] if s["status"] == "переписана"]
     empty = [s for s in res["steps"] if s["status"] == "знания нет"]
     bad = [s for s in res["steps"] if s["status"] == "сбой"]
+    long = [s for s in res["steps"] if s["status"] == "слишком длинная"]
+    parted = [s for s in made if s.get("parts")]
     L = [f"# Агент · тезисы карточек — {datetime.now():%Y-%m-%d %H:%M}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · переписано: {len(made)} · "
          f"без знания: {len(empty)} · сбоев: {len(bad)} · осталось: {res['left']}", ""]
+    if parted:
+        L += [f"Собрано из частей: {len(parted)} — источник не влез в окно модели за один "
+              f"заход. Тезис сведён из выписок, каждую проверял Момус.", ""]
+    if long:
+        L += ["## Слишком длинные для окна модели", "",
+              "Пересказ такого объёма вырождается в аннотацию: это документ, а не "
+              "карточка. Разрежьте — `kb:split` сделает из заголовков атомарные карточки, "
+              "а саму карточку превратит в карту документа.", ""]
+        L += [f"- {s['card']}: {s['note']}" for s in long[:15]]
+        L += [""]
     if res["unsupported"]:
         L += [f"⚠️ Момус нашёл утверждений без опоры: {res['unsupported']}. Эти карточки "
               "помечены `unsupported:` и ждут человека — это единственная работа, которую "
