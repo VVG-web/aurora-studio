@@ -49,6 +49,10 @@ except Exception:                                    # noqa: BLE001
 TODAY = date.today().isoformat()
 OUT_DIR = os.path.join("AuroraKnowledgeDB", "meta", "trace")
 TABLE = os.path.join(OUT_DIR, "trace.json")
+# Сводка отдельным файлом: сама таблица на живом проекте весит двадцать
+# мегабайт, а панели нужны три числа. Читать двадцать мегабайт на каждое
+# открытие дашборда — это секунды ожидания за счёт человека.
+SUMMARY = os.path.join(OUT_DIR, "trace-summary.json")
 MOC = os.path.join("AuroraKnowledgeDB", "MOC", "Трассировка.md")
 DEPTH = 2                       # переходов по артефактам: дальше связь ничего не значит
 
@@ -242,6 +246,12 @@ def main() -> int:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0
     os.makedirs(os.path.join(a.root, OUT_DIR), exist_ok=True)
+    direct, indirect = len(t["direct"]), len(t["indirect"])
+    Path(a.root, SUMMARY).write_text(json.dumps(
+        {"date": t["date"], "tasks": t["tasks"], "artifacts": t["artifacts"],
+         "direct": direct, "indirect": indirect,
+         "orphan": max(0, t["artifacts"] - direct - indirect)},
+        ensure_ascii=False, indent=1), encoding="utf-8")
     Path(a.root, TABLE).write_text(json.dumps(t, ensure_ascii=False, indent=1),
                                    encoding="utf-8")
     os.makedirs(os.path.dirname(os.path.join(a.root, MOC)), exist_ok=True)

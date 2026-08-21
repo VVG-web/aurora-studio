@@ -43,6 +43,7 @@ def threshold() -> int:
 
 def collect() -> dict:
     cards, statuses, sections = {}, Counter(), Counter()
+    kinds, trust_why = Counter(), Counter()
     expired, no_owner, missing_source, stubs = [], [], [], []
     for path in walk_md(ROOT):
         base = os.path.basename(path)
@@ -65,6 +66,19 @@ def collect() -> dict:
             cards.pop(path, None)
             continue
         statuses[status] += 1
+        # Тип карточки и ПРИЧИНА её класса доверия. Одно число «29% доверенных» —
+        # не диагноз: черновик из-за задачи в работе и черновик из-за отсутствия связей
+        # лечатся по-разному, и вести человека они должны в разные места.
+        kinds[(fm.get("kind") or "").strip().strip('"') or "(нет kind)"] += 1
+        why = (fm.get("trust_basis") or "").strip().strip('"').lower()
+        if status in TRUSTED or status == "knowledge":
+            trust_why["доверенные"] += 1
+        elif "связей" in why or "не найден" in why:
+            trust_why["связей с задачами нет"] += 1
+        elif why:
+            trust_why["задачи ещё в работе"] += 1
+        else:
+            trust_why["доверие не считалось"] += 1
         if "заготовка" in (fm.get("tags") or "") or "_Заготовка:" in text:
             stubs.append(stem)
         sections[section] += 1
@@ -154,6 +168,7 @@ def collect() -> dict:
         "stubs": len(stubs),
         "threshold": threshold(), "bootstrap": pct < threshold(),
         "statuses": dict(statuses.most_common()), "sections": dict(sections.most_common()),
+        "kinds": dict(kinds.most_common()), "trust_why": dict(trust_why.most_common()),
         "expired": sorted(expired)[:20], "expired_count": len(expired),
         "no_owner_count": len(no_owner), "orphans_count": len(orphans),
         "missing_source": missing_source[:20], "missing_source_count": len(missing_source),
