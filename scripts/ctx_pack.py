@@ -384,7 +384,8 @@ def main() -> int:
     # значит выбрасывать релевантное там, где места хватает.
     ap.add_argument("--max-cards", type=int, default=40,
                     help="потолок числа карточек в паке")
-    ap.add_argument("--budget", type=int, default=0, help="ограничение объёма пака в символах")
+    ap.add_argument("--budget", type=int, default=0,
+                    help="объём пака в символах; 0 — взять из объявленного окна модели")
     ap.add_argument("--release", help="релиз задачи (по умолчанию current из meta/releases.md)")
     ap.add_argument("--save", action="store_true", help="сохранить пак в Artifacts/drafts/")
     ap.add_argument("--no-log", action="store_true", help="не писать в meta/usage.log")
@@ -464,6 +465,21 @@ def main() -> int:
         out += [f"> Исключено по релизу {release}: {len(dropped)} карточек "
                 f"({', '.join(c.stem for c in dropped[:5])}…)\n"]
     out += jira_block(jira)
+
+    # Пак собирался вслепую к окну модели: `--budget` в символах ставил человек, а если
+    # не ставил — пак рос без предела и упирался в шлюз уже на стороне модели. Окно
+    # объявлено — берём его; не объявлено — предела нет, как и раньше: движок не
+    # придумывает чужие ограничения.
+    if not a.budget:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import agent_core as AG
+            cfg = AG.parse_config(AG.raw_config())
+            a.budget = AG.prompt_budget(cfg, reserve_chars=len("".join(out)) + 4000)
+            if a.budget:
+                out.append(f"\n> Объём пака ограничен окном модели: {a.budget} символов.\n")
+        except Exception:                                   # noqa: BLE001
+            a.budget = 0        # агент не настроен — это не повод не собрать пак
 
     used, total = [], 0
     for c in chosen:
