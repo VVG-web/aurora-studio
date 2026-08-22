@@ -2,8 +2,9 @@
 
 Every card in `AuroraKnowledgeDB/` carries these fields. Legacy cards (only
 `title/aliases/tags/created/updated/source/related`) are valid but are treated as
-`status: imported` until upgraded. Upgrade lazily: whenever any workflow
-touches a legacy card, add the missing fields.
+`status: draft` until upgraded — доверие им никто не считал. Upgrade lazily: whenever any
+workflow touches a legacy card, add the missing fields; `kb:trust` пересчитает класс, как
+только у карточки появится источник и связи.
 
 ## Full schema
 
