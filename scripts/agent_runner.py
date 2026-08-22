@@ -65,7 +65,8 @@ RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
-ASK_ECHO = 700        # символов прошлого ответа: нужна суть, а не пересказ целиком
+# ASK_ECHO больше нет: обрезание ответа до 700 знаков было ценой текстового пересказа
+# истории в промпте. Механизму истории оно не нужно — модель получает реплики целиком.
 
 
 def human_time(seconds: float) -> str:
@@ -1031,15 +1032,13 @@ PROMPT_MOMUS = """Ты Момус: проверяешь ответ на вопр
 
 где N — сколько утверждений без опоры или с противоречием."""
 
-PROMPT_ASK_TAIL = """
+PROMPT_ASK_HINT = """
 ─────────────────────────────────────────────────────────────────────
-РАНЬШЕ В ЭТОМ РАЗГОВОРЕ (для понимания, о чём спрашивают; факты — по-прежнему только
-из карточек выше):
-
-{history}
-─────────────────────────────────────────────────────────────────────
-Новый вопрос — уточнение к сказанному. «А если он ИП?» значит тот же вопрос, что и
+Этот вопрос — уточнение к разговору выше. «А если он ИП?» значит тот же вопрос, что и
 раньше, но про ИП: не начинай с нуля и не переспрашивай, о чём речь.
+
+Прошлые реплики нужны, чтобы понять, о чём спрашивают. Факты — по-прежнему только из
+карточек, а не из того, что было сказано раньше.
 """
 
 
@@ -1084,13 +1083,22 @@ def read_thread(path: Path) -> list:
     return turns
 
 
-def thread_history(turns: list) -> str:
-    """Хвост разговора для промпта: вопросы целиком, ответы — по сути."""
+def turns_as_messages(turns) -> list:
+    """Пары разговора → сообщения для модели.
+
+    Пар берём последние `ASK_TAIL`, а ответы **не режем**: обрезание до 700 знаков было
+    ценой текстового пересказа в промпте, а механизму истории оно не нужно. Служебный
+    хвост ответа (подпись, ссылки, вердикт Момуса) в разговор не входит: это оформление
+    панели, а не то, что модель говорила.
+    """
     out = []
-    for t in turns[-ASK_TAIL:]:
-        answer = t["a"].split("\n---")[0].strip()[:ASK_ECHO]
-        out.append(f"Вопрос: {t['q']}\nОтвет: {answer}")
-    return "\n\n".join(out)
+    for t in list(turns)[-ASK_TAIL:]:
+        answer = (t.get("a") or "").split("\n---")[0].strip()
+        if not (t.get("q") and answer):
+            continue
+        out.append({"role": "user", "content": t["q"]})
+        out.append({"role": "assistant", "content": answer})
+    return out
 
 
 def append_turn(path: Path, question: str, answer: str, note: str, mode: str) -> Path:
@@ -1341,8 +1349,23 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             say(f"  планировщик спрашивает: {len(questions)}")
             return {"ok": True, "sid": sid, "stage": "planning", "questions": questions,
                     "seconds": round(time.time() - started, 1)}
+        if not plan and force_plan:
+            # «Хватит, работай» не должна упираться в то, что модель по инерции вернула
+            # ещё вопросов. Просим ровно план и ничего больше — одной попыткой, а не
+            # бесконечно: если и она не сработала, честнее сказать, чем сочинить план.
+            # Найдено на живом прогоне: модель вернула пятый раунд вопросов вместо плана.
+            r2 = call(cfg, "planner", [{"role": "user", "content": prompt + (
+                "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
+                "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
+                "«не определено: …» — это честнее пустых разделов.")}],
+                deadline=deadline, tools=True,
+                guard_text=[st["idea"], st["pack"]])
+            if r2["ok"]:
+                plan = ((parse_json(r2["text"]) or {}).get("plan") or "").strip()
         if not plan:
-            return {"ok": False, "sid": sid, "why": "планировщик не вернул плана"}
+            return {"ok": False, "sid": sid,
+                    "why": ("планировщик не вернул плана даже по прямой просьбе. "
+                            "Ответьте на его вопросы — по ним он план и построит.")}
         st["plan"] = plan
         stages["planned"] = TODAY_STR
         save_session(cwd, sid, st)
@@ -1457,7 +1480,11 @@ def write_artifact(cwd: str, st: dict) -> str:
                 n += 1
             path = os.path.join(out_dir, f"{name}-{n}.md")
             st["renamed_from"] = f"{name}.md"
-    done = bool(stages.get("checked")) and not st.get("issues")
+    # Готов — значит прошёл ВСЕ проверки. Момус, нашедший шесть утверждений без опоры,
+    # весит не меньше критика: документ с домыслами уходит заказчику так же легко, как
+    # документ не по форме. Найдено на живом прогоне: `status: ready` при `unsupported: 6`.
+    unsupported = int(((st.get("momus") or {}).get("unsupported") or 0))
+    done = bool(stages.get("checked")) and not st.get("issues") and not unsupported
     head = ["---", f'title: "{title.replace(chr(34), "")}"',
             f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
             f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine",
@@ -1469,7 +1496,7 @@ def write_artifact(cwd: str, st: dict) -> str:
         head.append(f"review_issues: {len(st['issues'])}")
     mo = st.get("momus") or {}
     if mo.get("ok"):
-        head.append(f"unsupported: {mo.get('unsupported', 0)}")
+        head.append(f"unsupported: {unsupported}")
     task = spec.get("task") or {}
     if any(str(v).strip() for v in task.values()):
         head.append("task:")
@@ -1480,7 +1507,22 @@ def write_artifact(cwd: str, st: dict) -> str:
     if spec.get("publish_url"):
         head.append(f'publish_parent: "{spec["publish_url"]}"')
     head.append("---")
-    body = [st["draft"].rstrip(), ""]
+    # Модель нередко возвращает документ вместе с YAML-шапкой: она видит её в шаблоне и
+    # честно повторяет. Приклеить свою поверх значит получить в файле две шапки — вторую
+    # любой разборщик прочитает как текст, а Obsidian покажет мусором. Своя шапка одна,
+    # и собирает её движок. Найдено на живом прогоне.
+    draft = st["draft"].strip()
+    if draft.startswith("---"):
+        end = draft.find("\n---", 3)
+        if end != -1:
+            theirs = draft[3:end]
+            draft = draft[end + 4:].lstrip("\n")
+            # Заголовок из их шапки не выбрасываем: модель писала его про этот документ,
+            # и он точнее, чем первая строка задачи.
+            m = re.search(r'^title:\s*"?(.+?)"?\s*$', theirs, re.M)
+            if m and len(m.group(1)) > 5:
+                head[1] = f'title: "{m.group(1).replace(chr(34), "")}"'
+    body = [draft.rstrip(), ""]
     if st.get("issues"):
         body += ["## Замечания критика", ""] + [f"- {x}" for x in st["issues"]] + [""]
     if mo.get("ok") and not mo.get("clean"):
@@ -1526,11 +1568,16 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     total = int(m.group(1)) if m else 0
     cards = re.findall(r"^## (.+)$", pack, re.M)
 
-    prompt = PROMPT_ASK.format(pack=pack, question=question)  # noqa: F841 — см. ниже
+    prompt = PROMPT_ASK.format(pack=pack, question=question)
+    # Разговор передаётся МЕХАНИЗМОМ истории, а не пересказом в промпте. Текстовый
+    # вариант резал историю до четырёх пар и обрезал ответы до 700 знаков — на длинном
+    # разговоре модель видела разное в зависимости от того, каким путём к ней пришли.
+    # Два способа нести одно и то же расходятся всегда; остался один.
     if history:
-        prompt += PROMPT_ASK_TAIL.format(history=thread_history(list(history)))
+        prompt += PROMPT_ASK_HINT
     a = call(cfg, "worker", [{"role": "user", "content": prompt}],
-             deadline=time.time() + cfg["request_timeout"])
+             deadline=time.time() + cfg["request_timeout"],
+             history=turns_as_messages(history))
     if not a["ok"]:
         return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
                 "why": "; ".join(a["log"][-2:])}
