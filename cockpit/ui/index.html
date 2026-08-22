@@ -510,6 +510,7 @@ tr:last-child td{border-bottom:0}
           </label>
           <div class="spacer"></div>
           <button class="btn primary" id="makeGo">Создать артефакт</button>
+          <button class="btn" id="makePublish">Опубликовать…</button>
         </div>
         <div class="muted" id="makeSpec" style="font-size:12px;margin:8px 0 10px"></div>
         <textarea id="makeIdea" class="btn" rows="3" placeholder="Задача своими словами: под какую фичу или требование делаем документ"
@@ -557,7 +558,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.94.4";
+const UI_VERSION = "1.95.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2231,6 +2232,10 @@ async function fillMakeKinds(){
     $("#makeSpec").textContent = bits.join(" · ");
     const ready = rec.template && rec.out;
     $("#makeGo").disabled = !ready;
+    $("#makePublish").disabled = !rec.publish_url;
+    $("#makePublish").title = rec.publish_url
+      ? "выбрать готовый документ и отправить его дочерней страницей"
+      : "у этого типа не задан адрес публикации — «Настройки проекта» → «Артефакты»";
   };
   sel.onchange = draw; draw();
 }
@@ -2282,6 +2287,63 @@ function drawMake(lines){
           if (l) drawMake(l);
         }},"Хватит, работай")));
   }
+}
+
+// Публикация: выбрать из готового, а не набирать путь руками — первая же опечатка ушла
+// бы в Confluence чужой страницей. Уточняющий промпт остаётся заданием ассистенту:
+// правку текста перед отправкой делает тот, кто её видит.
+async function publishArtifact(){
+  if (!S.project) return toast("Сначала выберите проект","warn");
+  const kind = $("#makeKind").value;
+  const box = $("#makeDialog"); box.innerHTML = "";
+  const d = await api(`/api/artifacts?project=${encodeURIComponent(S.project.path)}&kind=${kind}`);
+  const files = d.files || [];
+  if (!files.length)
+    return box.append(el("div",{class:"card",style:"padding:18px"},
+      "В папке этого вида пока пусто — создайте документ, потом публикуйте."));
+  const sel = el("select",{class:"btn",style:"font-weight:400;min-width:300px"});
+  files.forEach(f=>{
+    const o = document.createElement("option");
+    o.value = f.rel;
+    o.textContent = f.name + " · " + f.status
+      + (f.published ? " · опубликован " + f.published : " · не публиковался");
+    sel.append(o);
+  });
+  const note = el("textarea",{class:"btn",rows:2,style:"width:100%;font-weight:400;margin-top:10px;resize:vertical",
+    placeholder:"уточнение для ассистента перед публикацией (необязательно)"});
+  const hint = el("div",{class:"muted",style:"font-size:12px;margin-top:6px"});
+  const draw = () => {
+    const f = files.find(x=>x.rel===sel.value) || {};
+    hint.textContent = f.status === "draft"
+      ? "⚠️ документ со статусом draft: цепочка не пройдена до конца — критик или Момус остались позади"
+      : (f.url ? "чистовик уже есть: " + f.url + " — публикация обновит ту же страницу"
+               : "будет создана новая дочерняя страница");
+  };
+  sel.onchange = draw; draw();
+  box.append(el("div",{class:"card",style:"padding:18px"},
+    el("div",{style:"font-weight:700;margin-bottom:8px"},"Опубликовать документ"),
+    sel, hint, note,
+    el("div",{class:"row",style:"gap:10px;margin-top:10px"},
+      el("button",{class:"btn primary",onclick:async ()=>{
+        const f = files.find(x=>x.rel===sel.value) || {};
+        if (f.status === "draft" && !confirm(
+            "Документ не прошёл цепочку до конца (status: draft).\n\n"
+            + "Опубликованное становится местом жизни чистовика — его увидит команда.\n\n"
+            + "Всё равно публиковать?")) return;
+        show("console");
+        const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+          {project:S.project.path, cmd:"ship:publish", args:[f.rel, "--apply"]})});
+        if (res.job) poll(res.job, 0, "ship:publish " + f.rel);
+      }},"Опубликовать"),
+      el("button",{class:"btn",onclick:()=>{
+        const f = files.find(x=>x.rel===sel.value) || {};
+        const task = `Опубликуй ${f.rel} в Confluence дочерней страницей.\n`
+             + (note.value.trim() ? "Уточнение: " + note.value.trim() + "\n" : "")
+             + "Настройки вида документа — /aurora-vault make:kinds.";
+        navigator.clipboard.writeText(task)
+          .then(()=>toast("Задание скопировано — вставьте ассистенту","ok"))
+          .catch(()=>toast("Буфер недоступен — скопируйте из консоли","warn"));
+      }},"Скопировать ассистенту"))));
 }
 
 async function runRoute(sc, write){
@@ -2576,6 +2638,7 @@ function renderHistory(){
       "kit " + h.kit) : null,
     el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
 }
+$("#makePublish").onclick = ()=> publishArtifact();
 $("#makeGo").onclick = async ()=>{
   if (!S.project) return toast("Сначала выберите проект","warn");
   const idea = $("#makeIdea").value.trim();
@@ -3246,7 +3309,17 @@ async function renderAgentCard(box, scope){
         toast(r.ok ? "Pydantic AI установлен" : (r.error || "не получилось"), r.ok?"ok":"err");
         if (r.ok) renderSetup();
       }}, a.venv.ok ? "Обновить Pydantic AI" : "Установить Pydantic AI")),
-    pingBox);
+    pingBox,
+    // MCP нужен только там, где движок чего-то не умеет сам: публикация и заведение
+    // задач умеют работать и без него. Пусто — это норма, а не недонастройка.
+    el("div",{style:"border-top:1px solid var(--line);margin:14px 0 0;padding-top:12px"},
+      el("div",{class:"muted",style:"font-size:12px"},
+        (a.mcp||[]).length
+          ? "MCP-серверы проекта: " + a.mcp.join(", ")
+            + " — модель зовёт их для того, чего движок не умеет сам. Какой сервер берёт "
+            + "вид документа, задаётся в «Артефактах»."
+          : "MCP-серверы не объявлены. Нужны только для того, чего движок не умеет сам; "
+            + "объявляются в mcp.json проекта — в той же форме, что у Claude Code.")));
 
   box.append(el("h2",{}, scope === "project"
       ? "Агент · переопределения проекта" : "Агент · кольцо машины"), card);
@@ -3262,6 +3335,15 @@ async function renderAbout(){
     "База знаний на markdown-карточках со статусами доверия, зеркала Confluence и Jira, " +
     "производство артефактов из проверенного знания, трассировка требований до приёмки. " +
     "Движок без внешних зависимостей: только стандартная библиотека Python."));
+  // Навыки — часть поставки, а не приложение к ней: одну инструкцию читают и модель
+  // внутри панели, и ассистент в чате. Разойтись двум копиям негде, потому что копия одна.
+  box.append(el("p",{class:"sub"},
+    "В поставке три навыка: ", el("b",{},"aurora-vault"), " — работа с базой знаний, ",
+    el("b",{},"aurora-dev"), " — разработка самого движка, ", el("b",{},"aurora-grill"),
+    " — разбор замысла по дереву решений: раунды вопросов с рекомендациями, пока не "
+    + "останется молчаливых допущений. Последний ведёт планировщик перед производством "
+    + "артефакта, и он же доступен ассистенту в чате. Ставятся командой ",
+    el("span",{class:"mono"},"kit:skills"), " в общий каталог агента."));
 
   const facts = el("div",{class:"grid metrics"},
     metric(a.kit, "версия kit", "панель " + a.ui, "ok"),

@@ -900,6 +900,9 @@ def agent_state(project: str) -> dict:
         own = {k: v for k, v in AG.load_env(Path(project) / ".env.aurora.local").items()}
     return {
         "own": sorted(own),
+        # Что подключено через MCP: панель показывает объявленное проектом, а не
+        # угадывает по чужой конфигурации — та меняется без нашего ведома.
+        "mcp": sorted((AG.mcp_config(project or KIT).get("mcpServers") or {})),
         "target": target,
         "target_label": (f"проект «{os.path.basename(project)}»" if project
                          else "глобально (кит) — общая настройка всех проектов"),
@@ -988,6 +991,32 @@ def kinds_read(project: str) -> dict:
 
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 import make_kinds as AG_KINDS          # noqa: E402 — список полей типа артефакта
+
+
+def artifact_files(project: str, kind: str) -> list:
+    """Готовые документы этого вида: имя, размер, состояние цепочки, опубликован ли."""
+    rec = (AG_KINDS.read_kinds(project) or {}).get(kind) or {}
+    folder = os.path.join(project, rec.get("out") or "")
+    if not rec.get("out") or not os.path.isdir(folder):
+        return []
+    out = []
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(folder, name)
+        head = read_text(path, limit=4000)
+        fm = {}
+        for line in head.splitlines():
+            m = re.match(r"^([\w_]+)\s*:\s*(.*)$", line)
+            if m:
+                fm[m.group(1)] = m.group(2).strip().strip('"')
+        out.append({"name": name,
+                    "rel": os.path.relpath(path, project).replace("\\", "/"),
+                    "status": fm.get("status", "—"),
+                    "published": fm.get("published", ""),
+                    "url": fm.get("published_url", ""),
+                    "size": os.path.getsize(path)})
+    return out
 
 
 def kinds_write(project: str, kinds: dict) -> dict:
@@ -1247,6 +1276,14 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             self.send_json(card_text(project, (q.get("path") or [""])[0])
                            if project and self._known(project) else {"error": "проект не выбран"})
+        elif u.path == "/api/artifacts":
+            # Что уже создано по типу: список файлов из его папки. Публиковать выбирают
+            # из готового, а не набирают путь руками — иначе первая же опечатка уходит
+            # в Confluence чужой страницей.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json({"files": artifact_files(project, q.get("kind", [""])[0])})
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
             self.send_json(kinds_read(project) if project and self._known(project)

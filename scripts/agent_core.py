@@ -253,6 +253,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     fresh = payload["messages"][len(hist):] if hist else payload["messages"]
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
             "messages": fresh, "history": hist, "timeout": timeout,
+            "tools": ([payload["tools_root"]] if payload.get("tools_root") else []),
+            "mcp": payload.get("mcp") or {},
             "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
     t0 = time.time()
     try:
@@ -433,11 +435,34 @@ def pool(cfg: dict) -> list:
     return slots or [1]
 
 
+def mcp_config(project: str) -> dict:
+    """Объявленные проектом MCP-серверы — из `mcp.json` в стандартной форме.
+
+    Форма та же, что у Claude Code и Cursor (`{"mcpServers": {...}}`): своя заставила бы
+    человека держать две конфигурации об одном. Файла нет — серверов нет, и это норма:
+    MCP нужен только там, где движок чего-то не умеет сам.
+    """
+    path = os.path.join(project, "mcp.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) and data.get("mcpServers") else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
-              prefer: int = 0, history: list | None = None) -> dict:
+              prefer: int = 0, history: list | None = None,
+              tools: bool = False) -> dict:
     """Один вызов модели через кольцо бэкендов.
+
+    `tools` — дать модели инструменты чтения (поиск по базе, файлы проекта). Включается
+    там, где модель ведёт разбор и может сама поискать недостающее; в разборе базы не
+    нужен: там всё, что ей положено видеть, движок кладёт в промпт сам.
 
     `history` — прошлые пары «вопрос-ответ» этого же разговора. Пусто — вызов одиночный,
     как было всегда; заполнено — модель видит, о чём шла речь, и диалог становится
@@ -490,6 +515,9 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
                 payload["messages"] = list(history) + list(messages)
                 payload["history"] = list(history)      # для адаптера pydantic-ai
+            if tools:
+                payload["tools_root"] = os.getcwd()
+                payload["mcp"] = mcp_config(os.getcwd())
             if max_tokens:
                 payload["max_tokens"] = max_tokens
             # Дедлайн общий на весь вызов, и первый бэкенд его съедает целиком: пока

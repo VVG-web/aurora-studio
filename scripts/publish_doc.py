@@ -240,12 +240,13 @@ def published_links(base_url: str) -> dict:
     return out
 
 
-def stamp(text: str, pid: str, commit: str) -> str:
+def stamp(text: str, pid: str, commit: str, ver: str = "", url: str = "") -> str:
     """Соответствие «файл ↔ страница» живёт в самом артефакте, иначе связь теряется."""
     head, rest = split_frontmatter(text)
     if head is None:
         head, rest = "\n", "\n---\n\n" + text.lstrip("\n")
     for key, value in (("confluence_page_id", pid), ("published", date.today().isoformat()),
+                       ("published_version", str(ver)), ("published_url", url or "—"),
                        ("published_commit", commit or "—")):
         head = set_field(head, key, value)
     return "---" + head.rstrip("\n") + rest
@@ -272,6 +273,8 @@ def main() -> int:
     ap.add_argument("path", help="файл из Artifacts/ или Deliverables/")
     ap.add_argument("--parent", help="page_id родителя для новой страницы")
     ap.add_argument("--title", help="заголовок страницы (по умолчанию — H1 или имя файла)")
+    ap.add_argument("--force", action="store_true",
+                    help="перезаписать страницу, которую правили после вашей публикации")
     ap.add_argument("--adopt", action="store_true",
                     help="взять под управление существующую страницу с таким заголовком")
     ap.add_argument("--apply", action="store_true",
@@ -343,6 +346,20 @@ def main() -> int:
             existing = found
 
     if existing:
+        # Страницу могли править коллеги после нашей публикации. Перезаписать молча —
+        # значит однажды стереть чужую работу, а узнают об этом через месяц. Сравниваем
+        # версию, которую опубликовали мы, с той, что лежит сейчас.
+        was = (frontmatter(text).get("published_version") or "").strip().strip('"')
+        now = str((existing.get("version") or {}).get("number", ""))
+        if was and now and was != now and not a.force:
+            by = ((existing.get("version") or {}).get("by") or {}).get("displayName", "?")
+            when = ((existing.get("version") or {}).get("when") or "")[:10]
+            print(f"\npublish: страницу правили после вашей публикации — версия {was} → "
+                  f"{now}, {by}, {when}.\n"
+                  "Перезаписать чужую правку публикация сама не станет: посмотрите "
+                  "страницу и повторите с --force, если ваша версия главнее.",
+                  file=sys.stderr)
+            return 1
         cur = ((existing.get("body") or {}).get("storage") or {}).get("value", "")
         target = f"обновление страницы {existing.get('id')} v{(existing.get('version') or {}).get('number', '?')}"
         if cur == storage:
@@ -381,7 +398,8 @@ def main() -> int:
 
     pid = str(res.get("id", ""))
     ver = (res.get("version") or {}).get("number", "?")
-    text = stamp(text, pid, commit)
+    text = stamp(text, pid, commit, str(ver),
+                 f"{base_url}/pages/viewpage.action?pageId={pid}")
     open(path, "w", encoding="utf-8").write(text)
 
     print(f"\n✅ {base_url}/pages/viewpage.action?pageId={pid} (версия {ver}, доступ {kind})")
