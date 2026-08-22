@@ -677,9 +677,13 @@ def ping_state(project: str, out: str = "", rc: int = 0) -> dict:
     path = os.path.join(project, ".opencode", PING_FILE) if os.path.isdir(
         os.path.join(project, ".opencode")) else os.path.join(KIT, PING_FILE)
     if out:
-        alive = len(re.findall(r"^\s*✅", out, re.M))
-        dead = len(re.findall(r"^\s*(?:❌|⛔)", out, re.M))
-        embed = "эмбеддинги" in out.lower() and "✅" in out.split("эмбеддинги")[-1][:200]
+        # Считаем ровно по тем строкам, которые печатает `agent_core --ping`: «✅ №N» и
+        # «✗ №N». Первая версия искала «❌», которого скрипт не пишет вовсе, — и плитка
+        # сказала бы «3 из 3 отвечают» при мёртвом третьем бэкенде. Найдено на живом
+        # прогоне: ровно то, ради чего плитка и заведена.
+        alive = len(re.findall(r"^✅ №\d", out, re.M))
+        dead = len(re.findall(r"^✗ №\d", out, re.M))
+        embed = bool(re.search(r"^✅ Эмбеддинги", out, re.M))
         state = {"when": datetime.now().strftime("%Y-%m-%d %H:%M"), "rc": rc,
                  "alive": alive, "dead": dead, "embed": bool(embed),
                  "tail": "\n".join(out.strip().splitlines()[-12:])}

@@ -3038,6 +3038,24 @@ def test_retrieval_is_watched_not_guessed(tmp: Path):
     assert "P.measure_rarity(cards)" in src, \
         "отчёт считает без редкости слов — сторожит не то ранжирование, что работает"
 
+    # Плитка связи считает по тем строкам, которые печатает `agent:ping`, а не по
+    # придуманным значкам. Первая версия искала «❌», которого скрипт не пишет вовсе, —
+    # и сказала бы «3 из 3 отвечают» при мёртвом третьем бэкенде. Найдено на живом
+    # прогоне: ровно то, ради чего плитка и заведена.
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    sample = ("# Агент — проверка цепочки\n\n"
+              "✅ №1 https://a/v1 · m1 · 7.29 с · «готов»\n"
+              "✅ №2 http://b/v1 · m2 · 0.54 с · «Готов»\n"
+              "✗ №3 http://c/v1 · m3 — нет связи\n"
+              "✅ Эмбеддинги: bge-m3 на https://a/v1 · размерность 1024")
+    st = ck.ping_state(str(tmp), sample, 0)
+    assert (st["alive"], st["dead"]) == (2, 1), \
+        f"плитка связи считает не по выводу agent:ping: {st['alive']}/{st['dead']}"
+    assert st["embed"], "живой шлюз эмбеддингов не распознан"
+    assert st["when"], "нет отметки времени: «проверено месяц назад» — тоже ответ"
+
     # прогон одной проверки: без него правка одной вещи стоит полного прогона
     runner = (KIT / "tests/run_tests.py").read_text(encoding="utf-8")
     assert "--only" in runner and "ONLY.lower() not in name.lower()" in runner, \
