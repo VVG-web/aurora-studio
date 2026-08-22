@@ -31,6 +31,7 @@ import signal
 import subprocess
 import tempfile
 import sys
+from datetime import datetime
 from pathlib import Path
 import threading
 import time
@@ -641,7 +642,94 @@ def health(project: str) -> dict:
             "build": build_progress(project), "agent": last_agent_run(project),
             "sources": sources(project), "runs": read_runlog(project),
             "trace": trace, "todo": todo_count(project),
-            "source_health": source_health(project)}
+            "source_health": source_health(project),
+            "index": index_health(project), "ping": ping_state(project),
+            "retrieval": retrieval_state(project)}
+
+
+def retrieval_state(project: str) -> dict:
+    """Когда последний раз смотрели выдачу и менялся ли порядок.
+
+    Читаем с диска: сама проверка — это выборка по всей базе, и делать её на каждое
+    открытие дашборда нельзя. «Проверено месяц назад» — тоже ответ, и он говорит больше
+    любой цифры.
+    """
+    path = os.path.join(project, "AuroraKnowledgeDB", "meta", "retrieval-last.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        data = json.loads(read_text(path, limit=2_000_000))
+    except ValueError:
+        return {}
+    return {"when": datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d"),
+            "queries": len(data)}
+
+
+PING_FILE = "ping-state.json"
+
+
+def ping_state(project: str, out: str = "", rc: int = 0) -> dict:
+    """Состояние связи: что ответило в последнюю проверку и когда она была.
+
+    Результат кладём на диск: без него плитка после перезагрузки панели показывала бы
+    «не проверялось», хотя человек проверял пять минут назад, — и он проверял бы снова.
+    """
+    path = os.path.join(project, ".opencode", PING_FILE) if os.path.isdir(
+        os.path.join(project, ".opencode")) else os.path.join(KIT, PING_FILE)
+    if out:
+        alive = len(re.findall(r"^\s*✅", out, re.M))
+        dead = len(re.findall(r"^\s*(?:❌|⛔)", out, re.M))
+        embed = "эмбеддинги" in out.lower() and "✅" in out.split("эмбеддинги")[-1][:200]
+        state = {"when": datetime.now().strftime("%Y-%m-%d %H:%M"), "rc": rc,
+                 "alive": alive, "dead": dead, "embed": bool(embed),
+                 "tail": "\n".join(out.strip().splitlines()[-12:])}
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False)
+        except OSError:
+            pass
+        return state
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def index_health(project: str) -> dict:
+    """Семантический индекс: собран ли, чем, и что в нём разошлось с базой.
+
+    Две болезни, и они разные. «Не в индексе» — карточку не индексировали, лечится
+    обычным `kb:embed --apply`. «Устарели» — тело правили после индексации, и поиск по
+    смыслу отвечает по старому тексту. Свести их в одно число значит спрятать вторую, а
+    она тише и хуже.
+
+    Считаем по отпечаткам с диска: индекс их и хранит. Сети не трогаем — дашборд
+    открывают чаще, чем пересобирают индекс.
+    """
+    meta = os.path.join(project, "AuroraKnowledgeDB", "meta")
+    path = os.path.join(meta, "embeddings.json")
+    if not os.path.isfile(path):
+        return {"built": False}
+    try:
+        idx = json.loads(read_text(path, limit=20_000_000))
+    except ValueError:
+        return {"built": False, "broken": True}
+    known = idx.get("cards") or {}
+    # Меряем ТОЙ ЖЕ линейкой, которой строился индекс: у него своё представление
+    # карточки (заголовок, синонимы, хвост тела) и свой отпечаток. Считать по телу
+    # карточки значит получить число, похожее на диагноз, но им не являющееся —
+    # на живой базе оно показало 1859 «устаревших» из 1867 при целом индексе.
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import kb_embed as E
+    texts = E.card_texts(os.path.join(project, "AuroraKnowledgeDB"))
+    total = len(texts)
+    missing = sum(1 for n in texts if n not in known)
+    stale = sum(1 for n, txt in texts.items()
+                if n in known and known[n].get("hash") != E.digest(txt))
+    return {"built": True, "model": idx.get("model", "—"), "when": idx.get("built", "—"),
+            "cards": len(known), "total": total, "missing": missing, "stale": stale}
 
 
 def source_health(project: str) -> dict:
@@ -1276,6 +1364,15 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             self.send_json(card_text(project, (q.get("path") or [""])[0])
                            if project and self._known(project) else {"error": "проект не выбран"})
+        elif u.path == "/api/agent/ping":
+            # Живая проверка связи — по кнопке, а не на каждое открытие дашборда:
+            # это сетевой запрос к каждому бэкенду, и вкладка открывалась бы секундами
+            # ради числа, которое меняется раз в неделю.
+            project = q.get("project", [""])[0]
+            if project and not self._known(project):
+                return
+            rc, out = run_capture(project or KIT, "agent_core.py", ["--ping"], timeout=180)
+            self.send_json(ping_state(project or KIT, out, rc))
         elif u.path == "/api/artifacts":
             # Что уже создано по типу: список файлов из его папки. Публиковать выбирают
             # из готового, а не набирают путь руками — иначе первая же опечатка уходит

@@ -558,7 +558,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.95.0";
+const UI_VERSION = "1.96.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1024,6 +1024,39 @@ function baseCards(h, st){
         : "план не строился",
       tone: (b.left||0) ? "warn" : "",
       go: (b.left||0) ? goRoute("update","Обновить базу") : null}),
+    // Связь и индекс — здоровье не базы, а того, чем она обслуживается. Без них
+    // «поиск по смыслу» тихо вырождается в поиск по словам, и заметить это нельзя.
+    metricCard({title:"Связь с моделями",
+      value: (h.ping && h.ping.when) ? `${h.ping.alive}/${h.ping.alive + h.ping.dead}` : "—",
+      sub: (h.ping && h.ping.when)
+        ? `проверено ${h.ping.when}` + (h.ping.dead ? ` · не отвечают: ${h.ping.dead}` : "")
+        : "не проверялась — связь живая, её смотрят по кнопке",
+      tone: (h.ping && h.ping.dead) ? "warn" : "",
+      hint:"Живая проверка каждого бэкенда. Делается по кнопке: это сетевые запросы",
+      go: {label:"Проверить связь", act: async () => {
+        toast("проверяю связь…","ok");
+        const r = await api("/api/agent/ping?project=" + encodeURIComponent(S.project.path));
+        S.health.ping = r; renderHealth();
+        toast(r.dead ? `не отвечают: ${r.dead}` : "все бэкенды отвечают", r.dead?"warn":"ok");
+      }}}),
+    metricCard({title:"Семантический индекс",
+      value: (h.index && h.index.built) ? (h.index.missing + h.index.stale) : "—",
+      sub: !(h.index && h.index.built)
+        ? "не собран: поиск идёт только по словам"
+        : `не в индексе ${h.index.missing} · устарели ${h.index.stale} · модель ${h.index.model}`,
+      tone: (h.index && h.index.built && (h.index.missing + h.index.stale)) ? "warn" : "",
+      hint:"«Не в индексе» лечится пересборкой; «устарели» значит, что поиск по смыслу "
+           + "отвечает по старому тексту",
+      go: goCmd("kb:embed",["--apply"],"Пересобрать индекс")}),
+    // Ранжирование — то, на чём стоит и ответ базы, и обогащение перед производством.
+    // Менять его вслепую нельзя, а «стало лучше» — не проверка.
+    metricCard({title:"Выборка",
+      value: (h.retrieval && h.retrieval.when) ? h.retrieval.queries : "—",
+      sub: (h.retrieval && h.retrieval.when)
+        ? `запросов · проверено ${h.retrieval.when}`
+        : "не проверялась: порядок карточек меняется незаметно",
+      hint:"Какие карточки приходят первыми по реальным запросам и что изменилось",
+      go: goCmd("ops:retrieval",[],"Проверить выдачу")}),
     metricCard({title:"Остаток человеку", value: h.todo != null ? h.todo : "—",
       sub:"то, что кнопкой не решается",
       go: goCmd("ops:todo",[],"Посмотреть список")}),
