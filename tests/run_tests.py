@@ -2890,6 +2890,92 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_the_base_explains_itself_to_a_stranger(tmp: Path):
+    """В базе лежит проводник, и он описывает движок, а не то, чем движок был.
+
+    Ассистент, открывший `AuroraKnowledgeDB/` впервые, видит полторы тысячи файлов и не
+    знает ни что такое `MOC/`, ни почему у карточки два статуса, ни куда смотреть, чтобы
+    найти ответ. Пока это знание жило только в скилле, любой другой харнесс работал с
+    базой вслепую — и правил то, что править нельзя.
+
+    Проверяем не наличие файла, а его правдивость: статусы, типы и команды в нём должны
+    быть теми же, что в коде. Документ, отставший от движка, хуже отсутствующего — он
+    уверенно ведёт не туда.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_common as A, kb_kind as KIND, kit_commands as C
+
+    guide = (KIT / "templates/meta/READING.md").read_text(encoding="utf-8")
+    short = (KIT / "docs/knowledge-rules-tldr.md").read_text(encoding="utf-8")
+
+    for s in A.STATUSES:
+        assert f"`{s}`" in guide, f"проводник не называет статус {s}"
+        assert f"`{s}`" in short, f"короткая справка не называет статус {s}"
+    for k in KIND.KINDS:
+        assert f"`{k}`" in guide, f"проводник не называет тип карточки {k}"
+
+    known = {r["cmd"] for r in C.read_registry()}
+    for doc, name in ((guide, "проводник"), (short, "короткая справка")):
+        for cmd in set(re.findall(r"`((?:kb|ctx|ops|agent|make|ship|sync|kit):[a-z-]+)", doc)):
+            assert cmd in known, f"{name} зовёт несуществующую команду {cmd}"
+
+    # поля, которые движок пишет сам, обязаны быть объяснены — иначе читатель их выдумает
+    for field in ("kind", "trust", "trust_basis", "built", "distilled", "part_of",
+                  "source_hash", "related", "applies_to"):
+        assert f"`{field}`" in guide, f"проводник не описывает поле {field}"
+
+    # и главное: чем MOC и _index отличаются от знания
+    for must in ("MOC", "_index.md", "status: index", "generated"):
+        assert must in guide, f"проводник не объясняет {must}"
+    assert "Отсутствие метки" in guide and "писал человек" in guide, \
+        "проводник не предупреждает про отсутствие метки — читатель сделает вывод из пустоты"
+
+    # проводник доезжает до проектов вместе с движком
+    manifest = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "templates/meta/READING.md" in manifest and "AuroraKnowledgeDB/README.md" in manifest, \
+        "проводник не входит в манифест движка — в проектах он не появится и не обновится"
+    assert "docs/knowledge-rules-tldr.md" in manifest, "короткая справка не доезжает до проектов"
+
+    # и появляется на свежем проекте
+    root = make_project(tmp)
+    assert (KIT / "templates/meta/READING.md").is_file()
+    src = (KIT / "scripts/install_aurora.py").read_text(encoding="utf-8")
+    assert 'AuroraKnowledgeDB/README.md' in src, \
+        "установщик не кладёт проводник: новый проект родится без объяснения"
+
+
+@test
+def test_the_engine_does_not_strip_what_it_just_wrote(tmp: Path):
+    """Поле `trust` пишет `kb:trust` — снимать его как «наследие» нельзя.
+
+    Имя `trust` было у прежней схемы и значило «уровень доверия, выставленный
+    человеком»; вместе с приёмкой поле сняли и внесли в список наследия, который
+    вычищают `kb:repair --frontmatter` и `kit:doctor`. С 1.92 то же имя пишет `kb:trust`
+    — класс источника, посчитанный по статусам задач. Список остался прежним, и ремонт
+    стирал бы то, что пересчёт доверия только что записал: каждый прогон «Починить»
+    отменял бы результат «Обновить», и оба при этом отчитывались бы успехом.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_common as A
+
+    assert "trust" not in A.RETIRED_FIELDS, \
+        "поле trust снова объявлено наследием — ремонт будет стирать вычисленное доверие"
+    for gone in ("audience", "confirmed_by"):
+        assert gone in A.RETIRED_FIELDS, f"поле {gone} перестало вычищаться"
+
+    # и на живой карточке: пересчёт доверия и ремонт не воюют друг с другом
+    root = make_project(tmp)
+    card(root, "Concepts/Понятие.md", "тело см. [[Другое]]", status="knowledge",
+         kind="knowledge", trust="trusted", audience="внутренняя")
+    card(root, "Concepts/Другое.md", "тело см. [[Понятие]]", status="knowledge",
+         kind="knowledge")
+    run("kb_fix.py", "--frontmatter", "--apply", "--allow-dirty", cwd=root)
+    now = (root / "AuroraKnowledgeDB/Concepts/Понятие.md").read_text(encoding="utf-8")
+    assert "trust: trusted" in now, "ремонт стёр вычисленный класс доверия"
+    assert "audience:" not in now, "ремонт не убрал настоящее наследие"
+
+
+@test
 def test_quality_review_measures_instead_of_judging(tmp: Path):
     """Ревизия качества приходит с числом, а не с мнением, и укладывается в секунды.
 
