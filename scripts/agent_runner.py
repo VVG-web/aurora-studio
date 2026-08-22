@@ -48,6 +48,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -914,6 +915,27 @@ def verdict_build(res: dict, apply: bool) -> tuple:
 
 # ------------------------------------------------------------------ задача: вопрос к базе
 
+PROMPT_REDISTILL = """Источник карточки «{title}» изменился, и тезис надо пересобрать.
+
+Прежний тезис (его написали по старой версии источника):
+
+{was}
+
+Новый текст источника, перенесённый дословно:
+
+{body}
+
+Верни ДВА блока и ничего больше:
+
+ТЕЗИС:
+<новый тезис по тем же правилам: только то, что есть в тексте выше; первая строка —
+определение одной фразой; числа, сроки и коды дословно; 3–15 строк по-русски>
+
+ИЗМЕНИЛОСЬ:
+<одна-две фразы: что в знании стало другим против прежнего тезиса. Если по сути ничего
+не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>"""
+
+
 PROMPT_DISTILL = """Ты превращаешь перенесённый текст источника в карточку знания.
 
 Карточка: {title}
@@ -1508,7 +1530,24 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             step["tps"] = r.get("tps") or 0
         return r
 
-    if len(parts) == 1:
+    # Тезис уже был — значит источник изменился (иначе карточка сюда не попала бы), и
+    # переписать его молча нельзя: прежний тезис невосстановим, его писала модель, которой
+    # в том же состоянии больше нет. Просим сразу и новый тезис, и строку «что изменилось»:
+    # одним вызовом дешевле, а главное — модель в этот момент видит оба текста, тогда как
+    # механическая разница на переформатированной странице даст «изменилось всё».
+    was_thesis = (source_part or "").strip()
+    changed = ""
+    if len(parts) == 1 and was_thesis:
+        a = once(PROMPT_REDISTILL.format(title=title, was=was_thesis[:4000], body=parts[0]))
+        if not a["ok"]:
+            step.update(status="сбой", note="; ".join(a["log"][-2:]))
+            return step
+        raw = (a["text"] or "").strip()
+        m = re.split(r"^\s*ИЗМЕНИЛОСЬ:\s*$", raw, maxsplit=1, flags=re.M)
+        thesis = re.sub(r"^\s*ТЕЗИС:\s*$", "", m[0], count=1, flags=re.M).strip()
+        changed = (m[1].strip() if len(m) > 1 else "")
+        step["redistilled"] = True
+    elif len(parts) == 1:
         a = once(PROMPT_DISTILL.format(title=title, body=parts[0]))
         if not a["ok"]:
             step.update(status="сбой", note="; ".join(a["log"][-2:]))
@@ -1553,6 +1592,22 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
             step["unsupported"] = step.get("unsupported", 0) + mo["unsupported"]
+    # Подвал не затирается пересборкой, а переезжает в новую карточку и прирастает
+    # строкой: дата, документ-основание, что поменялось и прежний тезис. Источник в
+    # историю не кладём — он есть в зеркале по `source:`, а прежний тезис невосстановим.
+    if step.get("redistilled"):
+        src_name = (AG.frontmatter_of(text).get("source") if hasattr(AG, "frontmatter_of")
+                    else "") or ""
+        if not src_name:
+            from aurora_common import frontmatter as _fm2
+            src_name = (_fm2(text).get("source") or "").strip().strip('"')
+        line = (f"- {TODAY_STR}: тезис пересобран — источник изменился"
+                + (f" (`{src_name}`)" if src_name else "") + ". "
+                + (changed or "что именно изменилось, модель не назвала") + "\n"
+                + "  <details><summary>прежний тезис</summary>\n\n"
+                + "\n".join("  " + l for l in was_thesis.splitlines()) + "\n\n  </details>")
+        footer = ((footer.rstrip() + "\n" + line + "\n") if footer.strip()
+                  else f"{FOOTER}\n\n{line}\n")
     new_body = ("\n\n" + thesis.strip() + "\n\n" + QUOTES + "\n" + quotes.rstrip()
                 + ("\n\n" + footer.strip() + "\n" if footer.strip() else "\n"))
     # Файл собирается ровно из тех частей, на которые его разобрали: «---» + шапка + тело.
@@ -1584,6 +1639,9 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         fm = frontmatter(text)
         kind = (fm.get("kind") or "").strip().strip('"')
         if kind == "knowledge":
+            # Признак «тезис устарел» ставит разбор: перенеся новый текст источника,
+            # он снимает `distilled`. Сравнивать хеши здесь значило бы переписывать
+            # тезис по СТАРОМУ тексту в карточке — вызов впустую и тот же тезис.
             if (fm.get("distilled") or "").strip():
                 continue
             todo.append(p)
