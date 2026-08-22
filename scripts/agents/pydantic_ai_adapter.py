@@ -31,6 +31,10 @@ def main() -> int:
         from pydantic_ai import Agent
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
+        # История разговора: без неё модель не помнит, что спрашивала минуту назад, и
+        # диалог (планировщик, уточняющие вопросы) невозможен в принципе.
+        from pydantic_ai.messages import (ModelRequest, ModelResponse, TextPart,
+                                          UserPromptPart)
     except Exception as e:  # noqa: BLE001
         answer({"ok": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
         return 0
@@ -59,8 +63,19 @@ def main() -> int:
             # в него, а прогон уходил на stdlib-фолбэк, теряя валидацию ответа.
             if task.get("timeout"):
                 settings["timeout"] = float(task["timeout"])
+            # Два пути живут рядом намеренно. Старый — склейка в одну строку — держит
+            # разбор базы, который работает; новый нужен диалогу. Развилку снимаем, когда
+            # новый докажет себя на живой работе, а не когда он просто написан.
+            history = []
+            for turn in (task.get("history") or []):
+                text_of = str(turn.get("content") or "")
+                if turn.get("role") == "assistant":
+                    history.append(ModelResponse(parts=[TextPart(content=text_of)]))
+                else:
+                    history.append(ModelRequest(parts=[UserPromptPart(content=text_of)]))
             result = agents[key].run_sync(
                 "\n\n".join(m["content"] for m in task["messages"]),
+                message_history=history or None,
                 model_settings=settings)
             text = (result.output or "").strip()
             answer({"ok": True, "text": text, "reasoning": ""} if text

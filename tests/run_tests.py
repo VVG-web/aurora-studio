@@ -2890,6 +2890,99 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_making_an_artifact_survives_an_interruption(tmp: Path):
+    """Цепочка производства идёт этапами, и обрыв не заставляет начинать сначала.
+
+    Между обогащением и готовым документом стоит человек: планировщик задаёт вопросы и
+    ждёт ответов. Значит между вызовами проходят минуты и часы — вкладка закрывается,
+    браузер падает, ночь кончается. Состояние живёт в сессии, этапы отмечены и в ней, и в
+    шапке документа: по ней видно, докуда дошли, не заглядывая в панель.
+
+    Документ появляется сразу после воркера и лежит со `status: draft`, пока цепочка не
+    пройдена. Прятать сделанную работу нельзя — человек хочет её видеть; выдавать
+    непроверенное за готовое нельзя тем более — оно уедет заказчику.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/AC.md").write_text("# AC\n\n## Предусловия\n\n## Сценарии\n",
+                                          encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "Критерии приёмки"\n'
+                          '    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    for i in range(6):
+        card(root, f"Concepts/Заявка-{i}.md",
+             f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
+             status="knowledge", kind="knowledge")
+
+    seen, rounds = [], {"n": 0}
+
+    def fake(cfg_, role, messages, **kw):
+        seen.append(role)
+        if role == "planner":
+            rounds["n"] += 1
+            if rounds["n"] == 1:
+                return {"ok": True, "backend": 1, "model": "p", "tps": 9, "log": [],
+                        "text": json.dumps({"questions": [{"q": "Какой срок?",
+                                                           "why": "меняет критерий",
+                                                           "rec": "10 дней"}], "plan": ""},
+                                           ensure_ascii=False)}
+            return {"ok": True, "backend": 1, "model": "p", "tps": 9, "log": [],
+                    "text": json.dumps({"questions": [], "plan": "1. Предусловия"},
+                                       ensure_ascii=False)}
+        if role == "critic":
+            return {"ok": True, "backend": 1, "model": "c", "tps": 9, "log": [],
+                    "text": json.dumps({"ok": False, "issues": ["нет раздела «Сценарии»"]},
+                                       ensure_ascii=False)}
+        if role == "qa":
+            return {"ok": True, "backend": 1, "model": "q", "tps": 9, "log": [],
+                    "text": "УТВЕРЖДЕНИЕ: срок\nНЕТ ОПОРЫ\n\nВЕРДИКТ: без опоры 1"}
+        return {"ok": True, "backend": 1, "model": "w", "tps": 9, "log": [],
+                "text": "# AC\n\n## Предусловия\n\nЗаявка создана."}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    # 1) первый вызов доходит до вопросов и останавливается — человек ещё не ответил
+    r1 = R.run_make(cfg, str(root), "ac", "статусы заявки и срок", "", "", False, call=fake)
+    assert r1["ok"] and r1["stage"] == "planning", f"планировщик не задал вопросов: {r1}"
+    assert r1["questions"] and r1["questions"][0].get("rec"), \
+        "вопрос без рекомендации — на такой отвечают абзацем вместо слова"
+    sid = r1["sid"]
+    assert "worker" not in seen, "воркер запущен до того, как человек ответил"
+
+    # 2) ответили — цепочка идёт до конца
+    r2 = R.run_make(cfg, str(root), "", "", sid, "10 дней", False, call=fake)
+    assert r2["ok"] and r2["stage"] == "done", f"цепочка не завершилась: {r2}"
+    st = R.load_session(str(root), sid)
+    for stage in R.MAKE_STAGES:
+        assert st["stages"].get(stage), f"этап {stage} не отмечен"
+    doc = (root / st["path"]).read_text(encoding="utf-8")
+    assert "pipeline:" in doc and "checked:" in doc, "в шапке нет контрольных точек"
+    assert "status: draft" in doc, \
+        "документ с замечаниями критика назван готовым — такой уедет заказчику"
+    assert "## Под вопросом" in doc, "утверждения без опоры не выделены"
+    assert "## План, по которому собран" in doc, \
+        "план исчез: через полгода «почему здесь так» спросят у документа"
+
+    # 3) обрыв: снимаем две последние точки и продолжаем — ранние этапы не повторяются
+    st["stages"].pop("checked"); st["stages"].pop("reviewed")
+    R.save_session(str(root), sid, st)
+    seen.clear()
+    R.run_make(cfg, str(root), "", "", sid, "", False, call=fake)
+    assert seen == ["critic", "qa"], \
+        f"после обрыва переделано лишнее: {seen} — обогащение и план должны быть пропущены"
+
+    # 4) база не знает темы — не выдумываем документ
+    bad = R.run_make(cfg, str(root), "ac", "квантовая криптография", "", "", False, call=fake)
+    assert not bad["ok"] and "не найдено" in bad["why"], \
+        "артефакт собран на пустом контексте — это домысел с шапкой доверия"
+
+
+@test
 def test_artifact_is_a_production_recipe_not_a_template(tmp: Path):
     """У типа артефакта есть всё производство, и записанное читается обратно.
 

@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:make`
 """
 from __future__ import annotations
 
@@ -1130,6 +1130,336 @@ def threads(cwd: str) -> list:
     return sorted(out, key=lambda t: t["last"], reverse=True)
 
 
+# --------------------------------------------------------- производство артефакта
+#
+# Цепочка длинная и с человеком посередине, поэтому она разбита на вызовы, а состояние
+# живёт в файле: панель может закрыться, браузер — упасть, ночь — кончиться. Каждый этап
+# отмечается и в сессии, и в шапке готового документа: по ней видно, докуда дошли.
+
+MAKE_STAGES = ("enriched", "planned", "drafted", "reviewed", "checked")
+
+PROMPT_MAKE_PLAN = """Ты планировщик. Аналитик хочет получить документ «{title}».
+
+Его задача своими словами:
+{idea}
+
+Форма документа (шаблон проекта):
+{template}
+
+{extra}Что база знает по теме:
+{pack}
+
+{answers}Твоя работа — не написать документ, а понять, что в нём должно быть. Задай
+аналитику вопросы, ответы на которые изменят содержание: чего нет в базе, что можно
+понять двояко, где решение за ним. Вопросы нумеруй и к каждому давай свой рекомендованный
+ответ — так на них отвечают одним словом, а не абзацем.
+
+Верни JSON:
+{{"questions": [{{"q": "вопрос", "why": "почему это меняет документ", "rec": "рекомендую"}}],
+  "plan": "план документа по разделам — заполняй, только когда вопросов больше нет"}}
+
+Пока остаются вопросы, `plan` оставь пустым. Когда всё ясно — верни пустой `questions` и
+план: по разделу шаблона на строку, с указанием, из каких карточек берётся содержание."""
+
+PROMPT_MAKE_WRITE = """Напиши документ «{title}» по плану и форме.
+
+План, утверждённый аналитиком:
+{plan}
+
+Форма документа (шаблон проекта) — соблюдай её разделы и порядок:
+{template}
+
+{extra}Знание базы, на котором документ стоит:
+{pack}
+
+Правила, они же критерии проверки:
+
+1. Только то, что есть в плане и в знании выше. Ни одного факта из общих знаний: по этому
+   документу будут работать, и додуманное уедет в разработку.
+2. Соблюдай разделы шаблона — их проверяет критик.
+3. Числа, сроки, коды и названия систем переноси дословно.
+4. Где знания не хватило, пиши прямо: «не определено — вопрос к заказчику», а не догадку.
+5. Ссылайся на карточки как `[[имя]]` — по ним читатель проверит.
+
+Верни только текст документа, без пояснений."""
+
+PROMPT_MAKE_CRITIC = """Проверь документ «{title}» на соответствие форме и плану.
+
+Шаблон:
+{template}
+
+План:
+{plan}
+
+Документ:
+{draft}
+
+Верни JSON: {{"ok": true|false, "issues": ["что не так, по одному пункту"]}}
+Смотри только на форму и полноту по плану: правдивость проверяет другой. Пустой список
+issues означает, что документ можно отдавать."""
+
+
+def make_session_dir(cwd: str, kind: str) -> Path:
+    """Папка сессии производства. Живёт в Workspaces: это работа, а не знание."""
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    d = Path(cwd) / "Workspaces" / f"{kind}-{stamp}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_session(cwd: str, sid: str) -> dict:
+    f = Path(cwd) / "Workspaces" / sid / "session.json"
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_session(cwd: str, sid: str, data: dict) -> None:
+    d = Path(cwd) / "Workspaces" / sid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "session.json").write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                    encoding="utf-8")
+
+
+def make_spec(cwd: str, kind: str) -> dict:
+    """Настройки типа артефакта из конфига проекта — с проверкой обязательного."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import make_kinds as MK
+    rec = (MK.read_kinds(cwd) or {}).get(kind)
+    if not rec:
+        return {"error": f"типа артефакта «{kind}» нет в aurora.config.yaml"}
+    if not rec.get("template"):
+        return {"error": f"у типа «{kind}» не указан шаблон: документ выйдет не по форме, "
+                         f"и ревью этого не поймает"}
+    if not os.path.isfile(os.path.join(cwd, rec["template"])):
+        return {"error": f"шаблона нет на диске: {rec['template']}"}
+    if not rec.get("out"):
+        return {"error": f"у типа «{kind}» не указана папка результата — некуда класть"}
+    return rec
+
+
+def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
+             force_plan: bool, call=None, momus: bool = True) -> dict:
+    """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
+
+    Разбито на вызовы, потому что посередине стоит человек: планировщик задаёт вопросы и
+    ждёт ответов. Состояние живёт в `Workspaces/<сессия>/session.json` — панель может
+    закрыться, браузер упасть, ночь кончиться, а работа продолжится с того же места.
+    """
+    call = call or AG.call_role
+    started = time.time()
+    deadline = started + cfg["request_timeout"]
+
+    # --- сессия: новая или продолжение
+    if sid:
+        st = load_session(cwd, sid)
+        if not st:
+            return {"ok": False, "why": f"сессии {sid} нет — начните заново"}
+    else:
+        spec = make_spec(cwd, kind)
+        if spec.get("error"):
+            return {"ok": False, "why": spec["error"]}
+        d = make_session_dir(cwd, kind)
+        sid = d.name
+        st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
+              "stages": {}, "rounds": [], "plan": ""}
+
+    spec = st["spec"]
+    stages = st["stages"]
+    say(f"Артефакт: {spec.get('title') or st['kind']} · сессия {sid}")
+
+    # --- 1. обогащение: тот же механизм, что отвечает в «Спросить»
+    if not stages.get("enriched"):
+        r = run_command(cwd, "ctx_pack.py", [st["idea"], "--mode", "generate", "--no-log"])
+        if not r["ok"] or "## " not in r["out"]:
+            return {"ok": False, "sid": sid,
+                    "why": (r["out"] or "пак не собран")[-300:]}
+        st["pack"] = r["out"]
+        stages["enriched"] = TODAY_STR
+        m = re.search(r"карточек (\d+)", r["out"])
+        say(f"  обогащение: карточек {m.group(1) if m else '?'}")
+        save_session(cwd, sid, st)
+
+    template = read_text_file(os.path.join(cwd, spec["template"]))
+    prompt_extra = ""
+    if spec.get("prompt") and os.path.isfile(os.path.join(cwd, spec["prompt"])):
+        prompt_extra = ("Промпт проекта для этого вида документа:\n"
+                        + read_text_file(os.path.join(cwd, spec["prompt"])) + "\n\n")
+
+    # --- 2. план: раунды вопросов, пока человек не скажет «хватит»
+    if not stages.get("planned"):
+        if answers:
+            st["rounds"].append({"answers": answers})
+        seen = "\n\n".join(
+            f"Раунд {i + 1}. Вопросы: {json.dumps(rd.get('questions') or [], ensure_ascii=False)}\n"
+            f"Ответы аналитика: {rd.get('answers') or '—'}"
+            for i, rd in enumerate(st["rounds"]) if rd.get("questions") or rd.get("answers"))
+        prompt = PROMPT_MAKE_PLAN.format(
+            title=spec.get("title") or st["kind"], idea=st["idea"], template=template[:8000],
+            extra=prompt_extra, pack=st["pack"],
+            answers=(f"Уже выяснено:\n{seen}\n\n" if seen else ""))
+        if force_plan:
+            prompt += ("\n\nАналитик просит закончить расспрос: верни план по тому, что "
+                       "уже известно, и назови в нём прямо, что осталось невыясненным.")
+        r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline)
+        if not r["ok"]:
+            return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
+        ans = parse_json(r["text"]) or {}
+        questions = ans.get("questions") or []
+        plan = (ans.get("plan") or "").strip()
+        if questions and not force_plan:
+            st["rounds"].append({"questions": questions})
+            save_session(cwd, sid, st)
+            say(f"  планировщик спрашивает: {len(questions)}")
+            return {"ok": True, "sid": sid, "stage": "planning", "questions": questions,
+                    "seconds": round(time.time() - started, 1)}
+        if not plan:
+            return {"ok": False, "sid": sid, "why": "планировщик не вернул плана"}
+        st["plan"] = plan
+        stages["planned"] = TODAY_STR
+        save_session(cwd, sid, st)
+        say("  план готов")
+
+    # --- 3. воркер: документ по плану и форме
+    if not stages.get("drafted"):
+        r = call(cfg, "worker", [{"role": "user", "content": PROMPT_MAKE_WRITE.format(
+            title=spec.get("title") or st["kind"], plan=st["plan"], template=template[:8000],
+            extra=prompt_extra, pack=st["pack"])}], deadline=deadline)
+        if not r["ok"]:
+            return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
+        st["draft"] = (r["text"] or "").strip()
+        if not st["draft"]:
+            return {"ok": False, "sid": sid, "why": "воркер вернул пустой документ"}
+        stages["drafted"] = TODAY_STR
+        st["path"] = write_artifact(cwd, st)
+        save_session(cwd, sid, st)
+        say(f"  черновик: {len(st['draft'])} знаков → {st['path']}")
+
+    # --- 4. критик: форма и полнота по плану
+    if not stages.get("reviewed"):
+        r = call(cfg, "critic", [{"role": "user", "content": PROMPT_MAKE_CRITIC.format(
+            title=spec.get("title") or st["kind"], template=template[:8000],
+            plan=st["plan"], draft=st["draft"])}], deadline=deadline)
+        verdict = parse_json(r["text"]) if r["ok"] else {}
+        st["issues"] = (verdict or {}).get("issues") or []
+        stages["reviewed"] = TODAY_STR
+        st["path"] = write_artifact(cwd, st)
+        save_session(cwd, sid, st)
+        say(f"  критик: замечаний {len(st['issues'])}")
+
+    # --- 5. Момус: не выдумано ли. Опора — пак знаний, и только он
+    if momus and not stages.get("checked"):
+        mo = run_momus(cfg, st["pack"], f"Документ «{spec.get('title') or st['kind']}»",
+                       st["draft"], call)
+        st["momus"] = mo
+        stages["checked"] = TODAY_STR
+        st["path"] = write_artifact(cwd, st)
+        save_session(cwd, sid, st)
+        say(f"  Момус: {'чисто' if mo.get('clean') else 'без опоры ' + str(mo.get('unsupported', 0))}")
+
+    return {"ok": True, "sid": sid, "stage": "done", "state": st,
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_make(res: dict) -> str:
+    """Отчёт производства. Панель разбирает его же, поэтому формат стабилен."""
+    L = [f"# Артефакт · {datetime.now():%Y-%m-%d %H:%M}", "", f"Сессия: `{res['sid']}`", ""]
+    if res.get("stage") == "planning":
+        L += ["Планировщик спрашивает — ответьте, и он продолжит. На каждый вопрос есть "
+              "рекомендация: с ней можно согласиться одним словом.", ""]
+        for i, q in enumerate(res["questions"], 1):
+            L += [f"**{i}. {q.get('q', '')}**", ""]
+            if q.get("why"):
+                L.append(f"   _{q['why']}_")
+            if q.get("rec"):
+                L.append(f"   → рекомендую: {q['rec']}")
+            L.append("")
+        L += ["Кнопка «Хватит, работай» строит план по тому, что уже известно, и называет "
+              "в нём невыясненное."]
+        return "\n".join(L)
+
+    st = res.get("state") or {}
+    stages = st.get("stages") or {}
+    L += ["| Этап | Когда |", "|---|---|"]
+    names = {"enriched": "обогащение базой", "planned": "план", "drafted": "черновик",
+             "reviewed": "критик", "checked": "Момус"}
+    for stage in MAKE_STAGES:
+        L.append(f"| {names[stage]} | {stages.get(stage) or '— не пройден'} |")
+    L += ["", f"Документ: `{st.get('path', '—')}`"]
+    if st.get("issues"):
+        L += ["", f"Критик нашёл замечаний: {len(st['issues'])} — они в самом документе."]
+    mo = st.get("momus") or {}
+    if mo.get("ok"):
+        L += ["", ("Момус: чисто" if mo.get("clean")
+                   else f"⛔ Момус: без опоры {mo.get('unsupported', 0)} — раздел «Под "
+                        f"вопросом» в документе. В чистовик это не переносится.")]
+    if not stages.get("checked"):
+        L += ["", "Цепочка не пройдена до конца: документ лежит со `status: draft`. "
+                  "Продолжить — тем же `--session`."]
+    return "\n".join(L)
+
+
+def write_artifact(cwd: str, st: dict) -> str:
+    """Положить документ в объявленную папку с шапкой этапов. → путь.
+
+    Файл пишет движок, а не модель: так путь всегда внутри объявленной папки, шапка
+    всегда собрана кодом, а не текстом из ответа, и точка записи одна — значит откат
+    возможен. Ровно это правило спасло базу от переписанных словарей.
+
+    Документ появляется сразу после воркера и лежит со `status: draft`, пока цепочка не
+    пройдена. Прятать сделанную работу нельзя — человек хочет её видеть; выдавать
+    непроверенное за готовое тоже нельзя — оно уедет заказчику.
+    """
+    spec, stages = st["spec"], st["stages"]
+    out_dir = os.path.join(cwd, spec["out"])
+    os.makedirs(out_dir, exist_ok=True)
+    title = (st["idea"].strip().splitlines() or ["документ"])[0][:80]
+    name = re.sub(r"[^\w\- ]+", "", title).strip().replace(" ", "-")[:80] or st["kind"]
+    path = os.path.join(out_dir, f"{name}.md")
+    done = bool(stages.get("checked")) and not st.get("issues")
+    head = ["---", f'title: "{title.replace(chr(34), "")}"',
+            f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
+            f"created: {TODAY_STR}", f"updated: {TODAY_STR}", "built: machine",
+            f"session: {st['sid']}",
+            "pipeline:"]
+    for stage in MAKE_STAGES:
+        head.append(f"  {stage}: {stages.get(stage) or '—'}")
+    if st.get("issues"):
+        head.append(f"review_issues: {len(st['issues'])}")
+    mo = st.get("momus") or {}
+    if mo.get("ok"):
+        head.append(f"unsupported: {mo.get('unsupported', 0)}")
+    task = spec.get("task") or {}
+    if any(str(v).strip() for v in task.values()):
+        head.append("task:")
+        for k, v in task.items():
+            if not v:
+                continue
+            head.append(f"  {k}: {', '.join(v) if isinstance(v, list) else v}")
+    if spec.get("publish_url"):
+        head.append(f'publish_parent: "{spec["publish_url"]}"')
+    head.append("---")
+    body = [st["draft"].rstrip(), ""]
+    if st.get("issues"):
+        body += ["## Замечания критика", ""] + [f"- {x}" for x in st["issues"]] + [""]
+    if mo.get("ok") and not mo.get("clean"):
+        body += ["## Под вопросом", "",
+                 "Момус не нашёл опоры в базе для этих утверждений — в чистовик их "
+                 "переносить нельзя, даже если выглядят разумно.", "",
+                 (mo.get("report") or "").strip(), ""]
+    body += ["## План, по которому собран", "", st.get("plan", "").rstrip(), ""]
+    open(path, "w", encoding="utf-8").write("\n".join(head) + "\n\n" + "\n".join(body))
+    return os.path.relpath(path, cwd)
+
+
+def read_text_file(path: str, limit: int = 200_000) -> str:
+    try:
+        return open(path, encoding="utf-8", errors="ignore").read(limit)
+    except OSError:
+        return ""
+
+
 def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
             call=None, history: list = (), momus: bool = True) -> dict:
     """Вопрос к базе: пак собирает движок, отвечает модель, ответ проверяется.
@@ -2027,15 +2357,27 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
 def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
-                    choices=["aliases", "build", "ask", "distill"],
+                    choices=["aliases", "build", "ask", "distill", "make"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
+                         "make — произвести артефакт: обогащение, план с вопросами, "
+                         "воркер, критик, Момус; "
                          "ask — ответить на вопрос по базе (ничего не пишет)")
     ap.add_argument("--question", metavar="ТЕКСТ", default="",
                     help="вопрос к базе своими словами (для --task ask)")
     ap.add_argument("--mode", default="generate",
                     choices=["generate", "ask", "evaluate", "review"],
                     help="какие карточки брать в контекст (для --task ask)")
+    ap.add_argument("--kind", metavar="ТИП", default="",
+                    help="тип артефакта из aurora.config.yaml (для --task make)")
+    ap.add_argument("--idea", metavar="ТЕКСТ", default="",
+                    help="задача своими словами: под что делаем документ")
+    ap.add_argument("--session", metavar="ID", default="",
+                    help="продолжить производство: сессия в Workspaces/")
+    ap.add_argument("--answers", metavar="ТЕКСТ", default="",
+                    help="ответы на вопросы планировщика")
+    ap.add_argument("--enough", action="store_true",
+                    help="хватит расспросов: строить план по тому, что известно")
     ap.add_argument("--thread", metavar="ID", default="",
                     help="продолжить разговор: уточняющий вопрос с контекстом прошлых "
                          "ответов (id — имя файла в meta/ask/ без .md)")
@@ -2088,6 +2430,19 @@ def main() -> int:
         print("agent_runner: агент не настроен — панель «Настройка» → «Агент», "
               "проверка: agent:ping", file=sys.stderr)
         return 1
+
+    if a.task == "make":
+        if not a.session and not (a.kind and a.idea):
+            print("agent_runner: нужен --kind ТИП и --idea «задача», либо --session ID",
+                  file=sys.stderr)
+            return 1
+        res = run_make(cfg, cwd, a.kind, a.idea, a.session, a.answers, a.enough,
+                       momus=not a.no_momus)
+        if not res["ok"]:
+            print(f"# Артефакт не сделан\n\n{res.get('why', '')}")
+            return 2
+        print(report_make(res))
+        return 0
 
     if a.task == "ask":
         # Вопрос не правит базу: ни чекпойнта, ни коммита, ни правки карточек. Пишется
