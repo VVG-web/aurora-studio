@@ -22,6 +22,7 @@ import argparse
 import os, re, sys, collections
 
 from aurora_common import (STATUSES, aliases, body_hash, card_body, config_value, frontmatter,
+                           is_service,
                            link_refs)
 
 ROOT = "AuroraKnowledgeDB"
@@ -108,6 +109,12 @@ def main():
                 continue
             path = os.path.join(dirpath, f)
             rel = path.replace("\\", "/")
+            # README базы — документация движка, а не карточка: у неё нет шапки, а
+            # примеры синтаксиса в ней линтер читал как настоящие ссылки и объявлял
+            # свежий проект больным. `is_service` — то же определение служебного файла,
+            # которым пользуется весь остальной движок.
+            if os.path.basename(rel) == "README.md" and is_service(rel):
+                continue
             stem = os.path.splitext(f)[0]
             names.add(stem)
             try:

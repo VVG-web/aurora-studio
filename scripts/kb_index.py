@@ -56,7 +56,10 @@ def first_sentence(text: str, limit: int = 120) -> str:
     """Первая содержательная строка тела — как описание карточки в индексе."""
     for line in text.splitlines():
         s = line.strip()
-        if not s or s.startswith(("---", "#", ">", "|", "-", "*", "```")):
+        # Служебные комментарии — не описание: у карт содержания первая строка тела это
+        # пометка «файл генерируется», и оглавление MOC выходило из двухсот одинаковых
+        # строк про kb_moc.py вместо двухсот разных описаний.
+        if not s or s.startswith(("---", "#", ">", "|", "-", "*", "```", "<!--", "<")):
             continue
         s = s.split(". ")[0].strip().rstrip(".")
         return (s[:limit] + "…") if len(s) > limit else s
@@ -77,7 +80,9 @@ def collect(section_dir: str) -> list:
             "stem": stem,
             "title": fm.get("title", stem),
             "status": (fm.get("status") or "").strip() or "—",
-            "owner": fm.get("owner", "—"),
+            # Владелец жил при прежней приёмке и сегодня пуст у всех новых карточек.
+            # Тип полезнее: он говорит читателю, дословный это текст или тезис.
+            "kind": (fm.get("kind") or "—").strip().strip('"'),
             "desc": first_sentence(body_start),
             # Оглавление ссылается на карточку и по имени файла, и по синониму:
             # `[[DR-0001]]` — это ссылка на `DR-0001-Единственный-источник…`.
@@ -171,10 +176,10 @@ def render(section: str, rows: list, intro: list = ()) -> str:
     stats = " · ".join(f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda x: -x[1]))
     out = [MARK] + (list(intro) or [f"# {section}"]) + ["",
            f"_Карточек: {len(rows)} · {stats} · обновлено {TODAY}_", "",
-           "| Карточка | Статус | Владелец | О чём |", "|---|---|---|---|"]
+           "| Карточка | Статус | Тип | О чём |", "|---|---|---|---|"]
     for r in rows:
         desc = r["desc"].replace("|", "\\|")
-        out.append(f"| [[{r['stem']}]] | {r['status']} | {r['owner']} | {desc} |")
+        out.append(f"| [[{r['stem']}]] | {r['status']} | {r['kind']} | {desc} |")
     return "\n".join(out) + "\n"
 
 

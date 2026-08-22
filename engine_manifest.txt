@@ -13,6 +13,11 @@
 #   (agents) — регенерировать из шаблона, подставив имя/slug/ключи из aurora.config.yaml
 #   (seed)   — вариант (1): не перезаписывать; новую версию положить рядом как <файл>.new
 
+# --- проводник по базе знаний: его читает любой ассистент, открывший папку ---
+templates/meta/READING.md               => AuroraKnowledgeDB/README.md
+docs/knowledge-rules.md                 => .opencode/docs/knowledge-rules.md
+docs/knowledge-rules-tldr.md            => .opencode/docs/knowledge-rules-tldr.md
+
 # --- скилл aurora-vault (полностью engine-managed) ---
 skills/aurora-vault/SKILL.md            => .opencode/skills/aurora-vault/SKILL.md
 skills/aurora-vault/skill.json          => .opencode/skills/aurora-vault/skill.json

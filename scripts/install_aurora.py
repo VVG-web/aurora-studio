@@ -200,6 +200,10 @@ class Installer:
 
     def install_meta(self):
         self.log("== AuroraKnowledgeDB meta ==")
+        # Проводник по базе: его читает ассистент, впервые открывший папку. Кладётся
+        # README-ом в корень базы — туда смотрят и человек, и харнесс.
+        self.write("AuroraKnowledgeDB/README.md",
+                   (KIT_ROOT / "templates/meta/READING.md").read_text(encoding="utf-8"))
         conv = (KIT_ROOT / "templates/meta/conventions.md").read_text(encoding="utf-8")
         # strip project-specific tag examples into generic ones if still present
         self.write("AuroraKnowledgeDB/meta/conventions.md", conv)
