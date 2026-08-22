@@ -22,6 +22,90 @@ import json
 import sys
 
 
+def mcp_toolsets(config: dict) -> list:
+    """Подключённые MCP-серверы — для того, чего движок не умеет сам.
+
+    Конфиг приходит в стандартной форме (`{"mcpServers": {...}}`) — той же, что у Claude
+    Code и Cursor: изобретать свою значило бы заставить человека держать две.
+
+    Сервера объявляет проект, а не панель угадывает по чужой конфигурации: чужая меняется
+    без нашего ведома, и панель начала бы врать о том, что доступно.
+    """
+    if not config or not config.get("mcpServers"):
+        return []
+    try:
+        from fastmcp import Client
+        from pydantic_ai.mcp import MCPToolset
+    except ImportError:
+        return []
+    try:
+        return [MCPToolset(Client(config))]
+    except Exception:  # noqa: BLE001 — сервер может быть не поднят: это не повод падать
+        return []
+
+
+def register_tools(agent, allowed: list) -> None:
+    """Инструменты модели — все на чтение и все внутри проекта.
+
+    Ни одного на запись, и это не осторожность, а правило движка: файл создаёт код по
+    ответу модели. Так путь всегда внутри объявленной папки, шапка собрана кодом, а точка
+    записи одна — значит откат возможен. Ровно это спасло базу от переписанных словарей.
+
+    Корень проекта модель не выбирает: он приходит в задании, и выйти за него нельзя.
+    """
+    import os
+    import subprocess as sp
+
+    root = os.path.abspath(allowed[0]) if allowed and isinstance(allowed[0], str) else "."
+
+    def inside(rel: str) -> str:
+        path = os.path.abspath(os.path.join(root, rel))
+        if not (path == root or path.startswith(root + os.sep)):
+            raise ValueError("путь вне проекта")
+        return path
+
+    @agent.tool_plain
+    def read_file(path: str) -> str:
+        """Прочитать файл проекта: шаблон, промпт, ранее созданный артефакт."""
+        try:
+            with open(inside(path), encoding="utf-8", errors="ignore") as f:
+                return f.read(60_000)
+        except (OSError, ValueError) as e:
+            return f"не прочитан: {e}"
+
+    @agent.tool_plain
+    def list_dir(path: str = ".") -> str:
+        """Что лежит в папке проекта — например, какие артефакты уже созданы."""
+        try:
+            return "\n".join(sorted(os.listdir(inside(path)))[:200])
+        except (OSError, ValueError) as e:
+            return f"не прочитана: {e}"
+
+    def engine(script: str, args: list) -> str:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            r = sp.run([os.sys.executable, os.path.join(here, script), *args],
+                       cwd=root, capture_output=True, text=True, timeout=180)
+            return (r.stdout or r.stderr)[:40_000]
+        except Exception as e:  # noqa: BLE001
+            return f"{type(e).__name__}: {e}"
+
+    @agent.tool_plain
+    def kb_search(query: str) -> str:
+        """Поиск по базе знаний проекта — тот же, что отвечает в разделе «Спросить»."""
+        return engine("ctx_pack.py", [query, "--mode", "ask", "--max-cards", "12", "--no-log"])
+
+    @agent.tool_plain
+    def kb_context(topic: str) -> str:
+        """Собрать пак знаний по теме: только доверенные карточки."""
+        return engine("ctx_pack.py", [topic, "--mode", "generate", "--no-log"])
+
+    @agent.tool_plain
+    def artifact_spec(kind: str = "") -> str:
+        """Настройки вида документа: шаблон, промпт, папка результата, куда публиковать."""
+        return engine("make_kinds.py", ["--kind", kind] if kind else [])
+
+
 def answer(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
@@ -50,11 +134,17 @@ def main() -> int:
             answer({"ok": False, "error": "задание не разобрано как JSON"})
             continue
         try:
-            key = (task["url"], task["model"])
+            key = (task["url"], task["model"], bool(task.get("tools")),
+                   json.dumps(task.get("mcp") or {}, sort_keys=True))
             if key not in agents:
                 provider = OpenAIProvider(base_url=task["url"],
                                           api_key=task.get("key") or "none")
-                agents[key] = Agent(OpenAIChatModel(task["model"], provider=provider))
+                toolsets = mcp_toolsets(task.get("mcp") or {})
+                agent = Agent(OpenAIChatModel(task["model"], provider=provider),
+                              toolsets=toolsets or None)
+                if task.get("tools"):
+                    register_tools(agent, task["tools"])
+                agents[key] = agent
             # thinking у шлюза включается нестандартным полем шаблона — прокидываем как есть
             settings = {"extra_body": {"chat_template_kwargs":
                                        {"enable_thinking": bool(task.get("thinking"))}}}

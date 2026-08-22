@@ -1138,7 +1138,7 @@ def threads(cwd: str) -> list:
 
 MAKE_STAGES = ("enriched", "planned", "drafted", "reviewed", "checked")
 
-PROMPT_MAKE_PLAN = """Ты планировщик. Аналитик хочет получить документ «{title}».
+PROMPT_MAKE_PLAN = """{method}Ты планировщик. Аналитик хочет получить документ «{title}».
 
 Его задача своими словами:
 {idea}
@@ -1222,6 +1222,25 @@ def save_session(cwd: str, sid: str, data: dict) -> None:
                                     encoding="utf-8")
 
 
+def grill_method(cwd: str = "") -> str:
+    """Метод разбора замысла — из навыка `aurora-grill`, а не из копии в промпте.
+
+    Навык лежит в ките и ставится вместе с остальными: одну инструкцию читают и модель
+    в панели, и ассистент в чате. Копия в промпте разошлась бы с ней на первой же правке,
+    и никто бы не заметил, какая из двух настоящая.
+    """
+    for base in (os.path.join(cwd, ".opencode", "skills"),
+                 os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "skills")):
+        path = os.path.join(base, "aurora-grill", "SKILL.md")
+        if os.path.isfile(path):
+            text = read_text_file(path, 12_000)
+            # Шапку навыка модели читать незачем: она про то, как навык находят.
+            body = text.split("---", 2)[-1].strip() if text.startswith("---") else text
+            return body + "\n\n---\n\n"
+    return ""
+
+
 def make_spec(cwd: str, kind: str) -> dict:
     """Настройки типа артефакта из конфига проекта — с проверкой обязательного."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1296,13 +1315,17 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             f"Ответы аналитика: {rd.get('answers') or '—'}"
             for i, rd in enumerate(st["rounds"]) if rd.get("questions") or rd.get("answers"))
         prompt = PROMPT_MAKE_PLAN.format(
-            title=spec.get("title") or st["kind"], idea=st["idea"], template=template[:8000],
-            extra=prompt_extra, pack=st["pack"],
+            method=grill_method(), title=spec.get("title") or st["kind"], idea=st["idea"],
+            template=template[:8000], extra=prompt_extra, pack=st["pack"],
             answers=(f"Уже выяснено:\n{seen}\n\n" if seen else ""))
         if force_plan:
             prompt += ("\n\nАналитик просит закончить расспрос: верни план по тому, что "
                        "уже известно, и назови в нём прямо, что осталось невыясненным.")
-        r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline)
+        # Инструменты даём планировщику: он один в цепочке может обнаружить, что чего-то
+        # не хватает, и доискать сам. Воркеру они не нужны — у него есть план и пак, а
+        # лишний поиск на этом шаге размывает основания документа.
+        r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline,
+                 tools=True)
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
         ans = parse_json(r["text"]) or {}
