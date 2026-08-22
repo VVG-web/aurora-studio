@@ -499,6 +499,23 @@ tr:last-child td{border-bottom:0}
         историю, собрать закрывающий документ и передать его наружу. Обслуживание самой
         базы — на вкладке «Быстрый старт».</p>
       <p class="sub"><b>В итоге:</b> готовый документ в папке своего типа, собранный на проверенном знании и помнящий, на чём собран (<span class="mono">based_on</span>). База при этом не меняется — здесь её читают.</p>
+      <!-- Производство артефакта: тип из реестра проекта, задача своими словами, дальше
+           цепочка с человеком посередине. Диалог живёт здесь же — уходить в другое место
+           за ответом на вопрос планировщика значило бы потерять нить. -->
+      <div class="card" style="padding:18px;margin-bottom:16px" id="makeCard">
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <label style="flex:none">
+            <div class="muted" style="font-size:12px;margin-bottom:3px">Что делаем</div>
+            <select class="btn" id="makeKind" style="font-weight:400;min-width:220px"></select>
+          </label>
+          <div class="spacer"></div>
+          <button class="btn primary" id="makeGo">Создать артефакт</button>
+        </div>
+        <div class="muted" id="makeSpec" style="font-size:12px;margin:8px 0 10px"></div>
+        <textarea id="makeIdea" class="btn" rows="3" placeholder="Задача своими словами: под какую фичу или требование делаем документ"
+                  style="width:100%;font-weight:400;resize:vertical"></textarea>
+        <div id="makeDialog" style="margin-top:12px"></div>
+      </div>
       <div id="workBody"></div>
     </section>
 
@@ -628,6 +645,7 @@ function show(view){
   if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
   if (view==="work") renderQuick("продуктивность");
+  if (view==="work") fillMakeKinds();
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
   if (view==="reports") renderReports();
   if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
@@ -2186,6 +2204,86 @@ function drawRouteBar(cmd){
              el("span",{class:"rb-dim"}, " · " + cmd));
 }
 
+/* ---------------- производство артефакта ----------------
+
+   Цепочка длинная и с человеком посередине: планировщик спрашивает, аналитик отвечает.
+   Состояние держит движок в сессии, панель только показывает и передаёт ответы — иначе
+   закрытая вкладка означала бы потерянную работу. */
+let MAKE = null;               // {sid, kind} — идущее производство
+
+async function fillMakeKinds(){
+  const sel = $("#makeKind"); if (!sel || !S.project) return;
+  const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path));
+  const kinds = d.kinds || {};
+  sel.innerHTML = "";
+  Object.keys(kinds).sort().forEach(k=>{
+    const o = document.createElement("option");
+    o.value = k; o.textContent = (kinds[k].title || k) + "  · " + k;
+    sel.append(o);
+  });
+  const draw = () => {
+    const rec = kinds[sel.value] || {};
+    const bits = [];
+    bits.push(rec.template ? "шаблон: " + rec.template : "⚠️ шаблон не указан — создавать нельзя");
+    bits.push(rec.out ? "результат: " + rec.out : "⚠️ папка не указана — некуда класть");
+    bits.push(rec.prompt ? "промпт: " + rec.prompt : "промпт не задан (необязательно)");
+    bits.push(rec.publish_url ? "публикация: " + rec.publish_url : "адрес публикации не задан");
+    $("#makeSpec").textContent = bits.join(" · ");
+    const ready = rec.template && rec.out;
+    $("#makeGo").disabled = !ready;
+  };
+  sel.onchange = draw; draw();
+}
+
+// Вызов производства — тот же путь, что у любой команды: панель не знает другого способа
+// запускать движок, и это правильно, иначе появился бы второй.
+async function makeCall(args){
+  const box = $("#makeDialog");
+  box.innerHTML = "";
+  box.append(el("div",{class:"card",style:"padding:14px"},
+    el("span",{class:"spin"}), el("span",{style:"margin-left:8px"},
+      "обогащаю базой и спрашиваю модель…")));
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, cmd:"agent:make", args})});
+  if (!res.job){ box.innerHTML = ""; return null; }
+  let since = 0, lines = [];
+  for (;;){
+    const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
+    if (!d || d.error){ box.innerHTML = ""; toast("задание потеряно","err"); return null; }
+    lines = lines.concat(d.lines||[]); since = d.next;
+    if (d.done) break;
+    await new Promise(ok=>setTimeout(ok, 600));
+  }
+  return lines;
+}
+
+function drawMake(lines){
+  const box = $("#makeDialog"); box.innerHTML = "";
+  const text = (lines||[]).join("\n");
+  const sid = (text.match(/Сессия: `([^`]+)`/) || [])[1];
+  if (sid) MAKE = {sid, kind: $("#makeKind").value};
+  const body = text.split("\n").filter(l=>!/^Артефакт: |^  /.test(l)).join("\n").trim();
+  box.append(el("div",{class:"card",style:"padding:18px"},
+    el("div",{class:"ansbody",style:"white-space:pre-wrap",html: mdLite(body)})));
+  // Планировщик спрашивает — значит человеку есть что ответить, и поле для ответа должно
+  // быть здесь же. «Хватит, работай» доступна с первого раунда: сколько раундов нужно
+  // этой задаче, знает тот, кто её ставил.
+  if (/Планировщик спрашивает/.test(text)){
+    const ans = el("textarea",{class:"btn",rows:3,placeholder:"Ответы: можно по номерам, можно «согласен»",
+      style:"width:100%;font-weight:400;margin-top:10px;resize:vertical"});
+    box.append(ans, el("div",{class:"row",style:"gap:10px;margin-top:8px"},
+      el("button",{class:"btn primary",onclick:async ()=>{
+        const l = await makeCall(["--session", MAKE.sid, "--answers", ans.value.trim()]);
+        if (l) drawMake(l);
+      }},"Ответить"),
+      el("button",{class:"btn",title:"строить план по тому, что уже известно",
+        onclick:async ()=>{
+          const l = await makeCall(["--session", MAKE.sid, "--enough"]);
+          if (l) drawMake(l);
+        }},"Хватит, работай")));
+  }
+}
+
 async function runRoute(sc, write){
   if (!S.project) return toast("Сначала выберите проект","warn");
   if (await busyElsewhere(sc.title)) return;
@@ -2478,6 +2576,14 @@ function renderHistory(){
       "kit " + h.kit) : null,
     el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
 }
+$("#makeGo").onclick = async ()=>{
+  if (!S.project) return toast("Сначала выберите проект","warn");
+  const idea = $("#makeIdea").value.trim();
+  if (!idea) return $("#makeIdea").focus();
+  MAKE = null;
+  const lines = await makeCall(["--kind", $("#makeKind").value, "--idea", idea]);
+  if (lines) drawMake(lines);
+};
 $("#projectReload").onclick = ()=>{ if (confirmLeave()) renderProject(); };
 $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; followAgain($("#consoleOut")); };
 // Очистка и кнопка «вывод продолжается» возвращают слежение: человек сам сказал, что
