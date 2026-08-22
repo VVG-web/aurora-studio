@@ -52,8 +52,17 @@ KNOWN = {
 }
 
 
+# Поля типа артефакта. Шаблон и папка обязательны: без первого документ выйдет не по
+# форме (и ревью этого не поймает), без второй его некуда класть. Остальное
+# необязательно — промпта у типа может не быть, публиковать можно не всё.
+FIELDS = ("title", "template", "prompt", "out", "publish_url", "mcp")
+# Свойства связанной задачи: их собирает панель, а заводит задачу ассистент. Заводить
+# задачу в общей системе команды кнопкой, нажатой между делом, движок не будет.
+TASK_FIELDS = ("project", "type", "assignee", "labels", "components", "epic")
+
+
 def read_kinds(root: str = ".") -> dict:
-    """{тип: {title, template, out}} из секции `artifacts:` конфига проекта.
+    """{тип: {title, template, prompt, out, publish_url, mcp, task}} из `artifacts:`.
 
     Разбираем сами, а не через YAML-библиотеку: ядро движка живёт без зависимостей, а
     формат здесь простой — два уровня вложенности и строковые значения.
@@ -66,7 +75,7 @@ def read_kinds(root: str = ".") -> dict:
     if not block:
         return {}
     kinds: dict = {}
-    current = None
+    current = task_of = None
     for line in block.group(1).splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -77,8 +86,18 @@ def read_kinds(root: str = ".") -> dict:
         key, value = m.group(1), m.group(2).strip().strip('"')
         if indent <= 2 and not value:
             current = key
-            kinds[current] = {"title": KNOWN.get(key, key), "template": "", "out": ""}
-        elif current and key in ("title", "template", "out"):
+            kinds[current] = {f: "" for f in FIELDS}
+            kinds[current]["title"] = KNOWN.get(key, key)
+            kinds[current]["task"] = {}
+            task_of = None
+        elif current and key == "task" and not value:
+            task_of = current          # дальше идёт вложенный блок свойств задачи
+        elif current and task_of and indent >= 4 and key in TASK_FIELDS:
+            # labels и components — списки: в конфиге они пишутся через запятую
+            kinds[task_of]["task"][key] = ([x.strip() for x in value.split(",") if x.strip()]
+                                           if key in ("labels", "components") else value)
+        elif current and key in FIELDS:
+            task_of = None
             kinds[current][key] = value
     return kinds
 
