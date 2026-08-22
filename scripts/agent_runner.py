@@ -1439,7 +1439,20 @@ def write_artifact(cwd: str, st: dict) -> str:
     os.makedirs(out_dir, exist_ok=True)
     title = (st["idea"].strip().splitlines() or ["документ"])[0][:80]
     name = re.sub(r"[^\w\- ]+", "", title).strip().replace(" ", "-")[:80] or st["kind"]
-    path = os.path.join(out_dir, f"{name}.md")
+    # Своя сессия пишет в свой же файл — критик и Момус дописывают шапку того, что уже
+    # положил воркер. Чужой файл не трогаем: молча затереть документ, который человек
+    # писал руками, значит потерять его без следа — в git он мог и не попасть.
+    # Найдено на живом прогоне, после того как код был написан.
+    if st.get("path"):
+        path = os.path.join(cwd, st["path"])          # продолжение: файл уже выбран
+    else:
+        path = os.path.join(out_dir, f"{name}.md")
+        if os.path.exists(path) and f"session: {st['sid']}" not in read_text_file(path, 2000):
+            n = 2
+            while os.path.exists(os.path.join(out_dir, f"{name}-{n}.md")):
+                n += 1
+            path = os.path.join(out_dir, f"{name}-{n}.md")
+            st["renamed_from"] = f"{name}.md"
     done = bool(stages.get("checked")) and not st.get("issues")
     head = ["---", f'title: "{title.replace(chr(34), "")}"',
             f"type: {st['kind']}", f"status: {'ready' if done else 'draft'}",
