@@ -332,6 +332,41 @@ def slice_report(path: str, chars: int = 110) -> int:
     return 0
 
 
+QUOTES_MARK = "## Источник (перенесено дословно)"
+FOOTER_MARK = "## История изменений"
+
+
+def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) -> int:
+    """Заменить в готовой карточке перенесённый текст на свежий. → код возврата.
+
+    Меняется ровно одно: раздел «Источник (перенесено дословно)». Тезис, история и связи
+    остаются — их писали не по этому тексту, а поверх него, и терять их при обновлении
+    источника значит наказывать за то, что страницу поправили.
+    """
+    head, _sep, rest = old_text.partition("\n---\n") if old_text.startswith("---") else ("", "", old_text)
+    if QUOTES_MARK not in rest:
+        print(f"(уже собрана из этого же источника, раздела с текстом нет) {path}")
+        return 0
+    before, _m, after = rest.partition(QUOTES_MARK)
+    tail = ""
+    if FOOTER_MARK in after:
+        _old_src, _m2, tail = after.partition(FOOTER_MARK)
+        tail = FOOTER_MARK + tail
+    fresh = QUOTES_MARK + "\n\n" + body.strip() + "\n"
+    new_rest = before.rstrip() + "\n\n" + fresh + ("\n" + tail.strip() + "\n" if tail.strip() else "")
+    new_head = head
+    for key, val in (("source_synced", TODAY), ("updated", TODAY)):
+        new_head = re.sub(rf"^{key}:.*$", f"{key}: {val}", new_head, flags=re.M) \
+            if re.search(rf"^{key}:", new_head, re.M) else new_head.rstrip("\n") + f"\n{key}: {val}"
+    # тезис написан по прежнему тексту: снимаем отметку, `agent:distill` перепишет
+    new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+    print(f"{'✅ обновлён источник' if apply else '(dry-run) обновить источник'}: {path} · "
+          f"{len(body)} симв.")
+    if apply:
+        open(path, "w", encoding="utf-8").write(new_head + "\n---\n" + new_rest)
+    return 0
+
+
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
                summary: str = "", paras: str = "") -> int:
     """Собрать карточку из указанных секций источника: текст переносится дословно."""
@@ -386,11 +421,16 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         # Та же карточка из того же источника — это повторный проход, а не конфликт:
         # источник правят и разбирают снова. Отказывать здесь значит ронять разбор на
         # каждом обновлении страницы. Чужое имя из другого источника — другое дело.
-        head = open(path, encoding="utf-8", errors="ignore").read(1500)
-        was = (frontmatter(head).get("source") or "").strip().strip('"')
+        old_text = open(path, encoding="utf-8", errors="ignore").read()
+        was = (frontmatter(old_text).get("source") or "").strip().strip('"')
         if was == source:
-            print(f"(уже собрана из этого же источника) {path}")
-            return 0
+            # Тот же источник — это повторный проход. Раньше он молча ничего не делал, и
+            # изменившаяся страница Confluence в базу не попадала никогда: карточка есть,
+            # значит «уже собрана». Теперь заменяем перенесённый текст на свежий, а всё
+            # остальное — тезис, подвал истории, связи, шапку — оставляем как есть.
+            # `distilled` снимаем: тезис написан по прежнему тексту и устарел. Его
+            # перепишет `agent:distill`, сохранив прежний в истории карточки.
+            return refresh_card(path, old_text, body, source, apply)
         print(f"build_plan: карточка уже есть — {path}\n"
               f"   и собрана из другого источника: {was or '—'}\n"
               "Имя должно быть уникальным: допишите уточнение или дополните существующую.",
@@ -496,7 +536,14 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     for path in sorted(manifest.get("sources") or {}):
         if group and not path.startswith(group):
             continue
-        if path in known or not os.path.isfile(path):
+        if not os.path.isfile(path):
+            continue
+        # Источник изменился после разбора — его надо перечитать, даже если карточки
+        # из него есть. Раньше `--reopen` брал только бесплодные, и правка страницы в
+        # Confluence не доходила до базы никогда: «карточки есть, значит разобран».
+        rec = (manifest.get("sources") or {}).get(path) or {}
+        changed = bool(rec.get("hash")) and rec["hash"] != file_hash(path)
+        if path in known and not changed:
             continue
         victims.append(path)
 

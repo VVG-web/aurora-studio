@@ -2873,6 +2873,82 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_a_changed_source_reaches_the_base(tmp: Path):
+    """Страницу поправили — правка доходит до карточки, а прежний тезис остаётся в истории.
+
+    Цепочка была разорвана в двух местах, и обе тихие. `kb:build --reopen` возвращал в
+    план только **бесплодные** источники: изменившаяся страница, из которой карточки
+    есть, не возвращалась никогда. А если бы и вернулась, `build_plan --card` печатал
+    «(уже собрана из этого же источника)» и не делал ничего. Итог: правка в Confluence в
+    базу не попадала, и узнать об этом можно было только сверив карточку с источником
+    руками.
+
+    Теперь: изменившийся источник возвращается в план по несовпадению отпечатка; разбор
+    заменяет в карточке **только** перенесённый текст и снимает `distilled`; `agent:distill`
+    видит карточку без отметки, но с прежним тезисом — и пишет новый, а прежний убирает в
+    историю карточки вместе с датой, документом и строкой «что изменилось».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    src = root / "Sources/Confluence/Стр.md"
+    src.write_text("Возврат за 10 дней. Правило действует для всех заявок.", encoding="utf-8")
+
+    cp = run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md",
+             "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
+    card = root / "AuroraKnowledgeDB/Concepts/Возврат.md"
+    assert card.exists(), f"карточка не собрана:\n{cp.stdout}{cp.stderr}"
+
+    # доводим её до вида «с тезисом и историей», как после agent:distill
+    txt = card.read_text(encoding="utf-8")
+    txt = txt.replace("# Возврат\n\n",
+                      "Возврат занимает десять дней.\n\n## Источник (перенесено дословно)\n\n")
+    # `kind` карточке ставит `kb:kind` — в маршруте он идёт следом за разбором
+    txt = txt.replace("built: machine",
+                      "built: machine\nkind: knowledge\ndistilled: 2026-08-01")
+    txt += "\n## История изменений\n\n- 2026-08-01: карточка заведена\n"
+    card.write_text(txt, encoding="utf-8")
+
+    src.write_text("Возврат за 14 дней. Правило действует для всех заявок.", encoding="utf-8")
+    cp2 = run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md",
+              "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
+    assert "обновлён источник" in cp2.stdout, \
+        f"изменившийся источник снова не дошёл до карточки:\n{cp2.stdout}"
+    now = card.read_text(encoding="utf-8")
+    assert "14 дней" in now, "перенесённый текст не обновился"
+    assert "Возврат занимает десять дней" in now, "тезис затёрт вместе с текстом источника"
+    assert "- 2026-08-01: карточка заведена" in now, "история затёрта обновлением источника"
+    assert "distilled:" not in now, "отметка о тезисе осталась — distill карточку не возьмёт"
+
+    def fake(cfg_, role, messages, **kw):
+        assert "Прежний тезис" in messages[0]["content"], \
+            "модель пересобирает тезис, не видя прежнего — сравнить ей не с чем"
+        return {"ok": True, "text": "ТЕЗИС:\nВозврат занимает четырнадцать дней.\n\n"
+                                    "ИЗМЕНИЛОСЬ:\nСрок вырос с десяти дней до четырнадцати.",
+                "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    R.run_distill(cfg, str(root), apply=True, limit=3, momus=False, call=fake)
+    done = card.read_text(encoding="utf-8")
+    assert "четырнадцать дней" in done.split("## Источник")[0], "тезис не пересобран"
+    assert "- 2026-08-01: карточка заведена" in done, "прежняя история потеряна"
+    assert "тезис пересобран" in done and "Срок вырос" in done, \
+        "в истории нет строки о том, что и почему изменилось"
+    assert "прежний тезис" in done and "десять дней" in done.split("## История")[1], \
+        "прежний тезис не сохранён — восстановить его больше неоткуда"
+
+    # и наоборот: неизменившийся источник карточку не трогает
+    cp3 = run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md",
+              "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
+    assert "обновлён источник" in cp3.stdout or "уже собрана" in cp3.stdout
+    again = card.read_text(encoding="utf-8")
+    assert again.count("тезис пересобран") == 1, \
+        "повторный проход по неизменившемуся источнику дописал историю впустую"
+
+
+@test
 def test_five_buttons_instead_of_eleven_routes(tmp: Path):
     """Одиннадцать маршрутов свелись в пять, и каждый отвечает на свой вопрос.
 
