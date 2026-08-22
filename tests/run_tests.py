@@ -2544,6 +2544,23 @@ def test_qa_corpus_does_not_describe_a_removed_engine(tmp: Path):
                 bad.append(f"{f.name}: ждёт снятый статус «{s}»")
     assert not bad, "QA описывает движок, которого нет:\n  " + "\n  ".join(bad[:12])
 
+    # Кейс вне сценария не гоняется никогда: он выглядит покрытием, но им не является.
+    # И наоборот: сценарий не должен вести на выведенный из оборота кейс.
+    live, retired, covered = set(), set(), set()
+    for f in (KIT / "Development/QA/cases").glob("*.md"):
+        head = f.read_text(encoding="utf-8")[:600]
+        cid = (re.search(r"^id:\s*(\S+)", head, re.M) or [None, ""])[1]
+        (retired if re.search(r"^status: deprecated", head, re.M) else live).add(cid)
+    for f in (KIT / "Development/QA/scenarios").glob("*.md"):
+        m = re.search(r"^covers:\s*\[(.+)\]", f.read_text(encoding="utf-8"), re.M)
+        if m:
+            covered |= {x.strip() for x in m.group(1).split(",")}
+    orphan = sorted(c for c in live - covered if c)
+    assert not orphan, ("кейсы не входят ни в один сценарий — гоняться они не будут: "
+                        + ", ".join(orphan))
+    dead = sorted(covered & retired)
+    assert not dead, "сценарий ведёт на выведенный из оборота кейс: " + ", ".join(dead)
+
 
 @test
 def test_skills_describe_the_engine_as_it_is_now(tmp: Path):
