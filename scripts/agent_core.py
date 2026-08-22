@@ -247,8 +247,12 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     proc = adapter_process()
     if proc is None:
         return None, None, "venv с pydantic-ai не установлен", 0.0
+    hist = payload.get("history") or []
+    # Адаптеру история нужна отдельно: pydantic-ai кладёт её в `message_history`, а не в
+    # текст запроса. Поэтому в `messages` для него — только новое сообщение.
+    fresh = payload["messages"][len(hist):] if hist else payload["messages"]
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
-            "messages": payload["messages"], "timeout": timeout,
+            "messages": fresh, "history": hist, "timeout": timeout,
             "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
     t0 = time.time()
     try:
@@ -432,8 +436,12 @@ def pool(cfg: dict) -> list:
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
-              prefer: int = 0) -> dict:
+              prefer: int = 0, history: list | None = None) -> dict:
     """Один вызов модели через кольцо бэкендов.
+
+    `history` — прошлые пары «вопрос-ответ» этого же разговора. Пусто — вызов одиночный,
+    как было всегда; заполнено — модель видит, о чём шла речь, и диалог становится
+    возможен. Разговор ведёт вызывающий: движок историю не копит и не хранит.
 
     → {ok, text, reasoning, backend, model, seconds, waited, log[]} либо {ok: False, log}.
     Кольцо: каждый круг начинается с первого бэкенда — восстановившийся корпоративный
@@ -478,6 +486,10 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 continue
             payload = {"model": model, "messages": messages,
                        "chat_template_kwargs": {"enable_thinking": think}}
+            if history:
+                # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
+                payload["messages"] = list(history) + list(messages)
+                payload["history"] = list(history)      # для адаптера pydantic-ai
             if max_tokens:
                 payload["max_tokens"] = max_tokens
             # Дедлайн общий на весь вызов, и первый бэкенд его съедает целиком: пока
