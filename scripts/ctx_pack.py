@@ -211,6 +211,46 @@ def semantic(topic: str, limit: int) -> dict:
         return {}
 
 
+RARITY: dict = {}          # {слово: во скольких карточках встречается}
+
+
+def measure_rarity(cards: dict) -> None:
+    """Во скольких карточках встречается каждое слово. Считается один раз на выборку.
+
+    Без этого «статус» весит столько же, сколько «ЭСФ», хотя первое есть на каждой
+    второй карточке, а второе выделяет одну. Частое слово почти не сужает поиск — значит
+    и вес его должен быть меньше. Это обычный IDF, только считается по базе, которая уже
+    прочитана, и потому ничего не стоит.
+    """
+    RARITY.clear()
+    RARITY["__total__"] = max(1, len(cards))
+    for c in cards.values():
+        for w in set(words(c.stem) + words(c.title) + words(c.summary) + words(c.text)):
+            RARITY[w] = RARITY.get(w, 0) + 1
+
+
+def weight(word: str) -> float:
+    """Множитель слова: редкое весит до двух раз больше частого, частое — вдвое меньше.
+
+    Границы намеренно узкие. Полный IDF даёт разброс в десятки раз, и тогда одна опечатка
+    в запросе (слово, которого нет в базе) перевешивает всё остальное.
+    """
+    total = RARITY.get("__total__", 0)
+    if not total:
+        return 1.0
+    seen = RARITY.get(word, 0)
+    if not seen:
+        return 1.0          # слова нет в базе: судить не по чему, вес обычный
+    share = seen / total
+    if share > 0.30:
+        return 0.5          # каждая третья карточка — слово почти ничего не сужает
+    if share > 0.10:
+        return 0.8
+    if share < 0.01:
+        return 2.0          # реже одной карточки из ста — это имя, код или термин
+    return 1.2
+
+
 def score(card: Card, topic: str, close: dict | None = None) -> int:
     """Насколько карточка отвечает теме: заголовок > алиас > теги > тело.
 
@@ -233,32 +273,34 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
     for w in body:
         seen[w] = seen.get(w, 0) + 1
 
-    s, hits = 0, 0
+    s, hits = 0.0, 0
     for w in ask:
-        got = False
+        got, part = False, 0
         if w in head:
-            s += 10; got = True
+            part += 10; got = True
         if w in brief:
-            s += 8; got = True
+            part += 8; got = True
         if w in alias:
-            s += 6; got = True
+            part += 6; got = True
         if w in tag:
-            s += 3; got = True
+            part += 3; got = True
         if w in seen:
-            s += min(seen[w], 4); got = True
+            part += min(seen[w], 4); got = True
+        # Редкое слово сужает поиск сильнее частого — значит и весит больше.
+        s += part * weight(w)
         hits += got
     # Совпало всё, что спрашивали, — карточка про это, а не «упомянула слово».
     if hits == len(ask):
         s += 8
     elif hits * 2 < len(ask):
-        s = s // 2          # половину запроса не нашли — это скорее шум
+        s = s / 2           # половину запроса не нашли — это скорее шум
     # Близость по смыслу добавляется к словам, а не заменяет их: ниже 0.35 совпадение
     # случайно, выше — весит примерно как попадание в заголовок.
     if close:
         sim = close.get(card.stem, 0.0)
         if sim > 0.35:
             s += int((sim - 0.35) * 60)
-    return s
+    return int(s)
 
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
@@ -400,6 +442,9 @@ def main() -> int:
         print(f"ctx_pack: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     cards = load_cards()
+    # Редкость слов считается один раз по всей базе — до ранжирования, а не в каждом
+    # сравнении: иначе тот же счёт делался бы тысячу раз за одну выборку.
+    measure_rarity(cards)
     if not cards:
         print("ctx_pack: в базе нет карточек", file=sys.stderr)
         return 1

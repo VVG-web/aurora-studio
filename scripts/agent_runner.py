@@ -1324,8 +1324,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # Инструменты даём планировщику: он один в цепочке может обнаружить, что чего-то
         # не хватает, и доискать сам. Воркеру они не нужны — у него есть план и пак, а
         # лишний поиск на этом шаге размывает основания документа.
+        # Сторожу отдаём то, из чего модель могла бы составить запрос: задачу аналитика,
+        # пак знаний и названия карточек. Шаблон не берём — он из общих слов, и по нему
+        # заблокировалось бы всё.
         r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline,
-                 tools=True)
+                 tools=True,
+                 guard_text=[st["idea"], st["pack"]] + re.findall(r"^## (.+)$", st["pack"], re.M))
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
         ans = parse_json(r["text"]) or {}

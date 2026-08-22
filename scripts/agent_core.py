@@ -254,7 +254,9 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
             "messages": fresh, "history": hist, "timeout": timeout,
             "tools": ([payload["tools_root"]] if payload.get("tools_root") else []),
-            "mcp": payload.get("mcp") or {},
+            "mcp": payload.get("mcp") or {}, "guard": payload.get("guard") or {},
+            "role": payload.get("role") or "",
+            "tool_calls": TOOL_CALLS if payload.get("tools_root") else 0,
             "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
     t0 = time.time()
     try:
@@ -435,6 +437,45 @@ def pool(cfg: dict) -> list:
     return slots or [1]
 
 
+# ------------------------------------------------------- что уходит за периметр
+#
+# Запрос к внешнему серверу строится моделью из промпта, а в промпте лежит задача
+# аналитика, пак знаний и шаблон. Значит без сторожа наружу уйдут формулировки
+# требований заказчика — не потому что модель злонамеренна, а потому что ей больше не
+# из чего составить вопрос.
+#
+# Сторож механический и проверяемый: совпало четыре слова подряд — не пропускаем. Это
+# порог, поднимающий цену утечки, а не стена: перескажет другими словами — пройдёт.
+# Полная гарантия одна — не подключать `outbound`-серверы вовсе.
+
+GRAM = 4               # столько слов подряд считаем пересказом, а не совпадением
+MAX_QUERY_WORDS = 15   # вопрос про фреймворк укладывается; пересказ задачи — нет
+# Сколько раз модель может позвать инструмент за один заход. Самостоятельность появилась
+# вместе с инструментами: pydantic-ai сам гоняет цикл «подумал → позвал → подумал ещё».
+# Без потолка один сложный вопрос съедает бюджет всего прогона.
+TOOL_CALLS = int(os.environ.get("AURORA_AGENT_TOOL_CALLS", "8") or 8)
+
+
+def guard_grams(texts: list) -> list:
+    """Ключи-четвёрки из текста проекта: по ним ловится пересказ.
+
+    Нормализация — та же, что в поиске по базе (`ctx_pack`): регистр, ё/е, окончания,
+    стоп-слова. Иначе «Заявки» и «заявка» разошлись бы, и сторож ловил бы только цитату
+    слово в слово.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from ctx_pack import words
+    except ImportError:
+        return []
+    out = set()
+    for text in texts:
+        w = words(text or "")
+        for i in range(len(w) - GRAM + 1):
+            out.add(" ".join(w[i:i + GRAM]))
+    return sorted(out)
+
+
 def mcp_config(project: str) -> dict:
     """Объявленные проектом MCP-серверы — из `mcp.json` в стандартной форме.
 
@@ -457,7 +498,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
               prefer: int = 0, history: list | None = None,
-              tools: bool = False) -> dict:
+              tools: bool = False, guard_text: list | None = None) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `tools` — дать модели инструменты чтения (поиск по базе, файлы проекта). Включается
@@ -518,6 +559,14 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             if tools:
                 payload["tools_root"] = os.getcwd()
                 payload["mcp"] = mcp_config(os.getcwd())
+                # Сторож на исходящее собирается ЗДЕСЬ, а не в адаптере: нормализация
+                # слов должна быть той же, что в поиске по базе, а она живёт в движке.
+                # `ready` — отметка, что сторож действительно собран. Без неё адаптер
+                # ничего не выпускает: забытый `guard_text` не должен открывать канал.
+                payload["guard"] = {"grams": guard_grams(guard_text or []),
+                                    "gram": GRAM, "max_words": MAX_QUERY_WORDS,
+                                    "ready": bool(guard_text)}
+                payload["role"] = role
             if max_tokens:
                 payload["max_tokens"] = max_tokens
             # Дедлайн общий на весь вызов, и первый бэкенд его съедает целиком: пока

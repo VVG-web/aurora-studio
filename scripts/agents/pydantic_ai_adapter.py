@@ -19,10 +19,103 @@
 по которому движок правит базу знаний. Ошибка формата здесь дороже лишней секунды.
 """
 import json
+import os
+import re
 import sys
 
 
-def mcp_toolsets(config: dict) -> list:
+def leaks(query: str, guard: dict) -> str:
+    """Что не так с запросом наружу. Пустая строка — можно отправлять.
+
+    Сравниваем нормализованные четвёрки слов: движок присылает их из задачи аналитика,
+    пака знаний и названий карточек. Совпало — значит модель пересказывает проект, а не
+    спрашивает про механику.
+    """
+    # Сторож закрыт по умолчанию. Пустой `guard` значит «движок его не собрал» — и это
+    # не разрешение, а неизвестность: следующий вызывающий, забывший передать текст
+    # проекта, иначе получил бы канал наружу без единой проверки. Найдено критиком.
+    if not guard.get("ready"):
+        return ("сторож на исходящее не собран — движок не передал текст проекта. "
+                "Наружу в таком состоянии ничего не уходит; это защита, а не поломка.")
+    grams = set(guard.get("grams") or [])
+    limit = int(guard.get("max_words") or 15)
+    raw = [x for x in re.findall(r"[\w\-]+", (query or "").lower()) if x]
+    if len(raw) > limit:
+        return (f"запрос длиннее {limit} слов ({len(raw)}): похоже на пересказ задачи, а не "
+                f"на вопрос про механику. Спросите короче и общими словами.")
+    if not grams:
+        return ""
+    # Нормализация ОДНА на движок и сторожа: своя копия разошлась бы с поиском на первой
+    # же правке окончаний, и сторож начал бы пропускать то, что база считает тем же словом.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        from ctx_pack import words as norm_words
+    except ImportError:
+        # Без общей нормализации сравнить нечем — значит и пропускать нельзя.
+        return ("нормализация слов недоступна: сверить запрос с текстом проекта нечем. "
+                "Наружу в таком состоянии ничего не уходит.")
+    keys = norm_words(query or "")
+    n = int(guard.get("gram") or 4)
+    for i in range(len(keys) - n + 1):
+        chunk = " ".join(keys[i:i + n])
+        if chunk in grams:
+            return ("в запросе текст проекта — «" + " ".join(keys[i:i + n]) + "». Наружу "
+                    "уходят только вопросы про механики, фреймворки и события: "
+                    "переформулируйте без слов заказчика, названий систем и требований.")
+    return ""
+
+
+def log_outbound(root: str, server: str, query: str, verdict: str) -> None:
+    """Журнал наружу: сто последних строк, в git, обе категории.
+
+    Без заблокированных не понять, не мешает ли сторож работать; без ушедших — не понять,
+    не утекло ли лишнее. Поэтому пишутся оба, и в проекте, а не в сессии: вопрос «что
+    вообще уходило за месяц» задают проекту.
+    """
+    import datetime
+    path = os.path.join(root, "Workspaces", "_outbound.md")
+    head = ("# Что уходило за периметр\n\n"
+            "Последние сто запросов к серверам с `outbound: true`: ушедшие и "
+            "заблокированные. Файл ведёт движок, правки будут потеряны.\n\n"
+            "| Когда | Сервер | Вердикт | Запрос |\n|---|---|---|---|\n")
+    row = (f"| {datetime.datetime.now():%Y-%m-%d %H:%M} | {server} | {verdict} | "
+           f"{(query or '').replace('|', '/')[:200]} |\n")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        old = ""
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                old = f.read()
+        rows = [l for l in old.splitlines(True) if l.startswith("| 20")]
+        rows = ([row] + rows)[:100]
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(head + "".join(rows))
+    except OSError:
+        pass
+
+
+def servers_for_role(config: dict, role: str = "") -> dict:
+    """{имя: описание} — какие серверы доступны этой роли.
+
+    Чистая функция без зависимостей: отбор ролей — это правило, и проверять его надо в
+    любом Python, а не только там, где стоит pydantic-ai. Раньше проверка требовала venv,
+    и правило оставалось непроверенным на машине без него.
+
+    Роль не указана — сервер доступен всем: у объявленного сервера обычно одно
+    назначение. А `outbound` без пометки считается внутренним, и это осознанно: забыть
+    его страшнее, чем забыть `roles`.
+    """
+    out = {}
+    for name, spec in ((config or {}).get("mcpServers") or {}).items():
+        roles = (spec or {}).get("roles")
+        if roles and role and role not in roles:
+            continue
+        out[name] = spec or {}
+    return out
+
+
+def mcp_toolsets(config: dict, guard: dict = None, root: str = ".",
+                 role: str = "") -> list:
     """Подключённые MCP-серверы — для того, чего движок не умеет сам.
 
     Конфиг приходит в стандартной форме (`{"mcpServers": {...}}`) — той же, что у Claude
@@ -30,18 +123,59 @@ def mcp_toolsets(config: dict) -> list:
 
     Сервера объявляет проект, а не панель угадывает по чужой конфигурации: чужая меняется
     без нашего ведома, и панель начала бы врать о том, что доступно.
+
+    Toolset строится **по серверу**, а не один на всех: сторож привязан к конкретному
+    серверу, и знать, чей это вызов, можно только так.
     """
-    if not config or not config.get("mcpServers"):
+    servers = servers_for_role(config, role)
+    if not servers:
         return []
     try:
         from fastmcp import Client
         from pydantic_ai.mcp import MCPToolset
     except ImportError:
         return []
-    try:
-        return [MCPToolset(Client(config))]
-    except Exception:  # noqa: BLE001 — сервер может быть не поднят: это не повод падать
+    out = []
+    for name, spec in servers.items():
+        one = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
+                                     if k not in ("roles", "outbound", "about")}}}
+        hook = None
+        if (spec or {}).get("outbound"):
+            hook = outbound_hook(name, guard or {}, root)
+        try:
+            out.append(MCPToolset(Client(one), process_tool_call=hook))
+        except Exception:  # noqa: BLE001 — сервер может быть не поднят: это не повод падать
+            continue
+    return out
+
+
+def outbound_hook(server: str, guard: dict, root: str):
+    """Сторож на вызовах внешнего сервера: смотрит аргументы до отправки."""
+    def all_strings(value) -> list:
+        """Все строки из аргументов, на любой глубине.
+
+        Собирать только верхний уровень нельзя: у сервера может быть схема
+        `{"queries": ["…"]}` или `{"query": {"text": "…"}}`, и тогда текст задачи прошёл
+        бы мимо сторожа целиком, а в журнале осталась бы пустая строка. Найдено критиком.
+        """
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [s for v in value.values() for s in all_strings(v)]
+        if isinstance(value, (list, tuple)):
+            return [s for v in value for s in all_strings(v)]
         return []
+
+    async def check(ctx, call_tool, name, args):
+        query = " ".join(all_strings(args or {}))
+        why = leaks(query, guard)
+        log_outbound(root, server, query, "не пропущен" if why else "ушёл")
+        if why:
+            # Молчаливый пустой результат модель истолкует как «в интернете ничего нет»
+            # и пойдёт дальше с этим ложным знанием. Объясняем и даём переформулировать.
+            return f"Запрос не отправлен: {why}"
+        return await call_tool(name, args)
+    return check
 
 
 def register_tools(agent, allowed: list) -> None:
@@ -133,6 +267,10 @@ def main() -> int:
         # диалог (планировщик, уточняющие вопросы) невозможен в принципе.
         from pydantic_ai.messages import (ModelRequest, ModelResponse, TextPart,
                                           UserPromptPart)
+        # Потолок на вызовы инструментов: самостоятельность модели появилась вместе с
+        # ними — pydantic-ai сам гоняет цикл «подумал → позвал → подумал ещё». Без
+        # потолка один сложный вопрос съедает бюджет всего прогона.
+        from pydantic_ai.usage import UsageLimits
     except Exception as e:  # noqa: BLE001
         answer({"ok": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
         return 0
@@ -153,7 +291,9 @@ def main() -> int:
             if key not in agents:
                 provider = OpenAIProvider(base_url=task["url"],
                                           api_key=task.get("key") or "none")
-                toolsets = mcp_toolsets(task.get("mcp") or {})
+                toolsets = mcp_toolsets(task.get("mcp") or {}, task.get("guard") or {},
+                                        (task.get("tools") or ["."])[0],
+                                        task.get("role") or "")
                 agent = Agent(OpenAIChatModel(task["model"], provider=provider),
                               toolsets=toolsets or None)
                 if task.get("tools"):
@@ -177,9 +317,11 @@ def main() -> int:
                     history.append(ModelResponse(parts=[TextPart(content=text_of)]))
                 else:
                     history.append(ModelRequest(parts=[UserPromptPart(content=text_of)]))
+            limit = int(task.get("tool_calls") or 0)
             result = agents[key].run_sync(
                 "\n\n".join(m["content"] for m in task["messages"]),
                 message_history=history or None,
+                usage_limits=UsageLimits(tool_calls_limit=limit) if limit else None,
                 model_settings=settings)
             text = (result.output or "").strip()
             answer({"ok": True, "text": text, "reasoning": ""} if text

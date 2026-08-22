@@ -17,11 +17,12 @@
 Работает только в самом ките: в проекте на основе Авроры проверять нечего — там пользуются
 движком, а не разрабатывают его.
 
-Панель: `dev:qa-list`, `dev:qa-check`, `dev:qa-gap`, `dev:qa-cover`, `dev:qa-run`, `dev:qa-new`
+Панель: `dev:qa-list`, `dev:qa-check`, `dev:qa-gap`, `dev:qa-cover`, `dev:qa-run`, `dev:qa-new` · `dev:qa-retrieval`
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -391,9 +392,81 @@ def cmd_new(kind: str, title: str) -> int:
     return 0
 
 
+CORPUS = KIT / "tests" / "corpus" / "project"
+CORPUS_EXPECTED = KIT / "tests" / "corpus" / "RETRIEVAL.json"
+# Запросы подобраны ПОД КОРПУС, а не сочинены: четыре из шести придуманных не находили
+# ничего, и такой сторож не сторожит. Взяты слова, которые в корпусе действительно есть
+# и разложены по разным разделам — иначе проверялась бы одна ветка ранжирования.
+CORPUS_QUERIES = [
+    "заявка на поставку",
+    "аналитический баланс",
+    "ёмкость канала",
+    "сопряжение систем",
+    "легаси шина",
+    "критерии приёмки экранной формы",
+]
+
+
+def retrieval_report(save: bool = False) -> int:
+    """Выдача по эталонному корпусу — сторож ранжирования.
+
+    Корпус лежит в ките и не меняется, поэтому порядок карточек по этим запросам обязан
+    быть постоянным. Изменился — либо правка ранжирования сделала своё дело (и эталон
+    надо переписать осознанно), либо она сломала что-то незаметное.
+    """
+    import subprocess as sp
+    if not CORPUS.is_dir():
+        print(f"dev_qa: нет эталонного корпуса {CORPUS}", file=sys.stderr)
+        return 1
+    args = [sys.executable, str(KIT / "scripts" / "kb_retrieval.py"), "--json",
+            "--no-semantic"]
+    for q in CORPUS_QUERIES:
+        args += ["--query", q]
+    r = sp.run(args, cwd=CORPUS, capture_output=True, text=True, timeout=180)
+    try:
+        now = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        print(f"dev_qa: выдача не собрана:\n{(r.stdout + r.stderr)[-400:]}", file=sys.stderr)
+        return 1
+    was = {}
+    if CORPUS_EXPECTED.is_file():
+        try:
+            was = json.loads(CORPUS_EXPECTED.read_text(encoding="utf-8"))
+        except ValueError:
+            was = {}
+    print(f"# Выдача по эталонному корпусу — {TODAY}\n")
+    moved = []
+    for q in CORPUS_QUERIES:
+        old = was.get(q) or []
+        mark = ""
+        if old and old != now[q]:
+            mark = f"  ← было: {', '.join(old[:3]) or '—'}"
+            moved.append(q)
+        print(f"- **{q}**: {', '.join(now[q][:3]) or '—'}{mark}")
+    if save:
+        CORPUS_EXPECTED.write_text(json.dumps(now, ensure_ascii=False, indent=1) + "\n",
+                                   encoding="utf-8")
+        print(f"\n✅ Эталон обновлён: {CORPUS_EXPECTED.name}")
+        return 0
+    if not was:
+        print("\nЭталона ещё нет: `dev:qa-retrieval --save` зафиксирует эту выдачу.")
+        return 0
+    if moved:
+        print(f"\n⚠️ Порядок изменился по запросам: {len(moved)}. Это либо результат "
+              f"правки ранжирования — тогда обновите эталон осознанно (`--save`), — "
+              f"либо поломка, которую иначе никто бы не заметил.")
+        return 1
+    print("\nПорядок не менялся.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="QA-контур разработки движка")
     ap.add_argument("--list", action="store_true", help="кейсы, сценарии и покрытие")
+    ap.add_argument("--save", action="store_true",
+                    help="зафиксировать текущую выдачу как эталон (с --retrieval)")
+    ap.add_argument("--retrieval", action="store_true",
+                    help="выдача по эталонному корпусу: сторож ранжирования в git")
     ap.add_argument("--check", action="store_true", help="целостность реестра QA")
     ap.add_argument("--gap", action="store_true", help="что изменено в коде и чем покрыто")
     ap.add_argument("--cover", action="store_true",
@@ -429,6 +502,8 @@ def main() -> int:
             print("dev_qa: вид документа — case или scenario", file=sys.stderr)
             return 1
         return cmd_new(kind, a.new[1])
+    if a.retrieval:
+        return retrieval_report(a.save)
     if a.check:
         return cmd_check()
     if a.cover:
