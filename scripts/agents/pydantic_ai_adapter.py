@@ -58,10 +58,24 @@ def register_tools(agent, allowed: list) -> None:
 
     root = os.path.abspath(allowed[0]) if allowed and isinstance(allowed[0], str) else "."
 
+    # Границы проекта мало: секреты лежат внутри него. Модель, прочитавшая
+    # `.env.aurora.local`, может вписать токен в артефакт — а артефакт уходит в
+    # Confluence и в git. Закрываем по имени, а не по расширению: `.env.aurora.local`
+    # и `.env` — разные файлы с одинаковой ценой ошибки.
+    SECRET = (".env", ".env.aurora.local", ".env.local", "id_rsa", ".netrc",
+              "credentials", ".pypirc", ".npmrc")
+    HIDDEN = (".git", ".ssh", ".aws", ".venv", "node_modules")
+
     def inside(rel: str) -> str:
         path = os.path.abspath(os.path.join(root, rel))
         if not (path == root or path.startswith(root + os.sep)):
             raise ValueError("путь вне проекта")
+        parts = os.path.relpath(path, root).split(os.sep)
+        base = parts[-1]
+        if base in SECRET or base.startswith(".env"):
+            raise ValueError("файл с доступами читать нельзя")
+        if any(p in HIDDEN for p in parts):
+            raise ValueError("служебная папка: читать нечего")
         return path
 
     @agent.tool_plain

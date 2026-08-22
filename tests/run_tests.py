@@ -3001,6 +3001,14 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
         assert forbidden not in ad, f"у модели появился инструмент записи: {forbidden}"
     assert 'raise ValueError("путь вне проекта")' in ad, \
         "инструменты не держат границу проекта — модель прочитает что угодно на машине"
+    # Границы проекта мало: секреты лежат ВНУТРИ него. Модель, прочитавшая
+    # `.env.aurora.local`, может вписать токен в артефакт, а артефакт уходит в Confluence
+    # и в git. Найдено на живом коде уже после того, как инструменты были написаны.
+    assert 'raise ValueError("файл с доступами читать нельзя")' in ad, \
+        "модель может прочитать токены проекта и вписать их в документ"
+    assert 'SECRET = (' in ad and '".env"' in ad, "список файлов с доступами не объявлен"
+    assert '"служебная папка: читать нечего"' in ad, \
+        "модель ходит в .git и .ssh — там нет знания, но есть чем навредить"
 
     # планировщик получает инструменты, воркер — нет: у него есть план и пак, а лишний
     # поиск на этом шаге размывает основания документа
@@ -3108,7 +3116,29 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
     assert seen == ["critic", "qa"], \
         f"после обрыва переделано лишнее: {seen} — обогащение и план должны быть пропущены"
 
-    # 4) база не знает темы — не выдумываем документ
+    # 4) чужой файл с тем же именем не затирается: человек мог писать его руками, и в
+    # git он мог не попасть — тогда потеря безвозвратна. Найдено на живом прогоне.
+    mine = root / st["path"]
+    theirs = mine.parent / "заявка-и-статусы.md"
+    theirs.write_text("# Мой документ\n", encoding="utf-8")
+    seen.clear(); rounds["n"] = 1
+    r3 = R.run_make(cfg, str(root), "ac", "заявка и статусы", "", "", True, call=fake)
+    assert r3["ok"], f"производство упало на занятом имени: {r3}"
+    assert theirs.read_text(encoding="utf-8").startswith("# Мой документ"), \
+        "рукотворный документ затёрт машинным — потеря без следа"
+    made = R.load_session(str(root), r3["sid"])["path"]
+    assert made.endswith("-2.md"), f"машина положила документ не рядом, а поверх: {made}"
+
+    # 5) продолжение той же сессии пишет в свой файл, а не плодит новые на каждом этапе
+    st3 = R.load_session(str(root), r3["sid"])
+    st3["stages"].pop("reviewed", None)
+    R.save_session(str(root), r3["sid"], st3)
+    R.run_make(cfg, str(root), "", "", r3["sid"], "", True, call=fake)
+    files = sorted(p.name for p in (root / "Artifacts/ac").glob("заявка-и-статусы*.md"))
+    assert files == ["заявка-и-статусы-2.md", "заявка-и-статусы.md"], \
+        f"каждый этап заводит новый файл: {files}"
+
+    # 6) база не знает темы — не выдумываем документ
     bad = R.run_make(cfg, str(root), "ac", "квантовая криптография", "", "", False, call=fake)
     assert not bad["ok"] and "не найдено" in bad["why"], \
         "артефакт собран на пустом контексте — это домысел с шапкой доверия"
