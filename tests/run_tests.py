@@ -2890,6 +2890,107 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_artifact_is_a_production_recipe_not_a_template(tmp: Path):
+    """У типа артефакта есть всё производство, и записанное читается обратно.
+
+    Реестр знал три поля: название, шаблон, папка. Этого хватает, чтобы положить файл, и
+    не хватает ни на что дальше: чем его наполнять (промпт), куда публиковать, какую
+    задачу заводить. Всё это жило в голове аналитика и терялось при передаче работы.
+
+    Проверяется круг целиком: панель записала — движок прочитал то же самое. Форма,
+    умеющая сохранить поле, которого чтение не знает, — это настройка, пропадающая молча.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    M = importlib.import_module("make_kinds")
+    ck = importlib.import_module("aurora_cockpit")
+
+    for f in ("title", "template", "prompt", "out", "publish_url", "mcp"):
+        assert f in M.FIELDS, f"поле {f} не описано в движке"
+    for f in ("project", "type", "assignee", "labels", "components", "epic"):
+        assert f in M.TASK_FIELDS, f"свойство задачи {f} не описано"
+
+    root = tmp / "проект"
+    (root / "Templates").mkdir(parents=True)
+    (root / "Templates/AC.md").write_text("шаблон", encoding="utf-8")
+    (root / "aurora.config.yaml").write_text(
+        'project:\n  name: Т\nartifacts:\n  ac:\n    title: "AC"\n'
+        '    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n', encoding="utf-8")
+
+    written = {"ac": {"title": "Критерии приёмки", "template": "Templates/AC.md",
+                      "prompt": "Prompts/AC.md", "out": "Artifacts/ac",
+                      "publish_url": "https://conf.example.com/display/PRJ/AC",
+                      "mcp": "atlassian",
+                      "task": {"project": "PRJ", "type": "Task", "assignee": "@vadim",
+                               "labels": "ac, аналитика", "epic": "PRJ-1"}}}
+    res = ck.kinds_write(str(root), written)
+    assert res.get("ok"), f"реестр не записан: {res}"
+
+    back = M.read_kinds(str(root))["ac"]
+    assert back["prompt"] == "Prompts/AC.md", "промпт не дожил до чтения"
+    assert back["publish_url"].startswith("https://"), "адрес публикации не дожил"
+    assert back["mcp"] == "atlassian", "выбор MCP-сервера не дожил"
+    assert back["task"]["assignee"] == "@vadim", "свойства задачи не дожили"
+    assert back["task"]["labels"] == ["ac", "аналитика"], \
+        f"метки должны читаться списком, а не строкой: {back['task']['labels']}"
+    assert back["task"].get("components") in (None, "", []), \
+        "пустое свойство записано — пустое значит «ассистент решит», а не «поставь пусто»"
+
+    # папка результата создаётся при сохранении: объявить и не найти — та же ловушка,
+    # что и с несуществующим шаблоном, только вскрывается в момент записи артефакта
+    assert (root / "Artifacts/ac").is_dir(), "папка результата не создана"
+
+    # и форма показывает ровно те поля, что знает движок
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for f in ("prompt", "publish_url", "mcp"):
+        assert f'field("{f}"' in ui, f"поля {f} нет в форме — настроить его будет негде"
+    assert 'tfield("labels"' in ui and 'tfield("assignee"' in ui, \
+        "свойств задачи нет в форме"
+
+
+@test
+def test_kit_and_project_settings_are_separate(tmp: Path):
+    """Настройка машины и настройка проекта — разные вкладки, и видно, что откуда.
+
+    Одна форма держала и общее, и частное: корни поиска рядом с доступами проекта, а
+    кольцо бэкендов писалось то в кит, то в проект — смотря выбран ли проект. Вопрос
+    «почему правка не подействовала на другом проекте» повторялся, и ответить на него по
+    виду формы было нельзя.
+
+    Теперь у поля есть происхождение: сервер отдаёт `own` — что задано в самом проекте, —
+    и всё остальное помечается «из кита». Без этой пометки человек правит унаследованное
+    значение, считая его своим.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+
+    assert 'data-view="project"' in ui and 'id="view-project"' in ui, \
+        "нет вкладки настроек проекта"
+    assert "async function renderProject(" in ui, "вкладку нечем рисовать"
+    assert 'if (view==="project") renderProject();' in ui, "вкладка не открывается"
+
+    # реестр артефактов принадлежит проекту и не должен дублироваться в ките
+    calls = [l for l in ui.splitlines()
+             if "renderKinds(box)" in l and "function renderKinds" not in l]
+    assert len(calls) == 1, \
+        f"реестр артефактов рисуется {len(calls)} раз(а) — он принадлежит проекту, и место у него одно"
+
+    # происхождение значения приходит с сервера, а не угадывается формой
+    assert '"own": sorted(own)' in srv, "сервер не говорит, что задано в самом проекте"
+    assert "const inherited = k =>" in ui and '"из кита"' in ui, \
+        "форма не помечает унаследованные поля"
+
+    # общая настройка называется общей: подпись пункта меню тоже часть ответа
+    assert 'class="label">Настройка кита<' in ui, \
+        "пункт меню по-прежнему называется «Настройка» — по имени не отличить от проектной"
+
+    # смена проекта перерисовывает вкладку: иначе на ней остаются чужие значения
+    assert 'if (S.view === "project") renderProject();' in ui, \
+        "после смены проекта настройки остаются от прежнего — правка уйдёт не туда"
+
+
+@test
 def test_the_base_explains_itself_to_a_stranger(tmp: Path):
     """В базе лежит проводник, и он описывает движок, а не то, чем движок был.
 
