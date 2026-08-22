@@ -49,11 +49,15 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter, git_guard  # noqa: E402
+from aurora_common import card_body, frontmatter, git_guard  # noqa: E402
 
 CONF_DIR = "Sources/Confluence"
 JIRA_DIR = "Sources/JIRA"
 OUT_MOC = "AuroraKnowledgeDB/MOC/Связи.md"
+# Ниже этой близости пара — просто соседи по теме: на живой базе порог 0.93
+# оставляет десятки настоящих кандидатов, 0.85 — сотни соседей и ни одного решения.
+LOOK_ALIKE = 0.93
+
 TODAY = date.today().isoformat()
 
 # «US-4.4.2», «US 4.4.2», «us_4.4.2», «AC-3.6.19»: разделитель не значим, регистр тоже.
@@ -356,6 +360,72 @@ def communities(pairs: dict, cut: set | None = None) -> dict:
     return label
 
 
+def look_alike(root: str, top: int = 25) -> list:
+    """Пары карточек, которые говорят об одном. → [(близость, имя, имя), …].
+
+    Механика, а не мнение: близость считается по векторам семантического индекса
+    (`kb:embed`), и у каждой находки есть **число**. «Эти две карточки на 0.94 похожи» —
+    проверяемо; «модель считает это пересказом» — нет.
+
+    Отбор дешёвый и по всей базе; судить, слить их или развести, всё равно человеку:
+    два близких текста бывают и двумя сторонами одного понятия.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import kb_embed as E
+    except ImportError:
+        return []
+    idx = E.load_index()
+    cards = idx.get("cards") or {}
+    dim = idx.get("dim") or 0
+    if len(cards) < 2 or not dim:
+        return []
+    vec = E.load_vectors(dim, len(cards))
+    if len(vec) < dim * len(cards):
+        return []
+    names = list(cards)
+    rows = [cards[n]["row"] for n in names]
+    out = []
+    try:
+        # Попарная близость — это n²·dim умножений: на живой базе в 1712 карточек по
+        # 1024 измерения выходит полтора миллиарда операций и пять минут ожидания.
+        # Столько ждать внутри «Починить» нельзя, а numpy делает ту же матрицу за
+        # доли секунды. Его нет — считаем как считали, но честно предупредив.
+        import numpy as np
+        m = np.frombuffer(vec, dtype="float32", count=dim * len(cards)).reshape(-1, dim)
+        m = m[rows]
+        sim = m @ m.T
+        iu = np.triu_indices(len(names), k=1)
+        hits = np.nonzero(sim[iu] >= LOOK_ALIKE)[0]
+        for h in hits:
+            i, j = int(iu[0][h]), int(iu[1][h])
+            out.append((round(float(sim[i, j]), 3), names[i], names[j]))
+    except ImportError:
+        print("  (numpy не установлен — считаю попарно, это может занять минуты)",
+              file=sys.stderr)
+        for i in range(len(names)):
+            oi = rows[i] * dim
+            for j in range(i + 1, len(names)):
+                oj = rows[j] * dim
+                s = sum(vec[oi + k] * vec[oj + k] for k in range(dim))
+                if s >= LOOK_ALIKE:
+                    out.append((round(s, 3), names[i], names[j]))
+    out.sort(reverse=True)
+    # Не больше двух пар на карточку: семейство однотипных (REACTION-001…010) даёт
+    # полсотни взаимных пар и вытесняет из списка настоящие двойники, которых пять.
+    seen: dict = {}
+    kept = []
+    for s, x, y in out:
+        if seen.get(x, 0) >= 2 or seen.get(y, 0) >= 2:
+            continue
+        seen[x] = seen.get(x, 0) + 1
+        seen[y] = seen.get(y, 0) + 1
+        kept.append((s, x, y))
+        if len(kept) >= top:
+            break
+    return kept
+
+
 def insights(pairs: dict, cards: dict) -> dict:
     """Что говорит граф: острова, мосты, крупные сообщества без своей карты.
 
@@ -551,6 +621,46 @@ def main() -> int:
                   + (f" … ещё {size - 4}" if size > 4 else ""))
         print("\n  Имя карты и то, чем она полезна, механикой не выводятся: "
               "добавьте строку в `moc_groups.txt` и соберите карты (`kb:moc --apply`).")
+        # Ревизия качества: не «модель считает это плохим», а измеримые признаки.
+        # Каждая находка приходит с числом, и решение остаётся человеку.
+        print("\n## Карточки, которые говорят об одном\n")
+        alike = look_alike(".")
+        if not alike:
+            print("Пар выше порога близости нет либо семантический индекс не собран "
+                  "(`kb:embed --apply`).\n")
+        for s, x, y in alike:
+            print(f"- **{s}** · [[{x}]] ↔ [[{y}]]")
+        if alike:
+            print("\n  Близость — не приговор: две стороны одного понятия тоже похожи. "
+                  "Слить — `kb:dedupe`; развести — уточнить названия и связать через "
+                  "`related`.")
+
+        # Раздутая карточка не работает как карточка: её не найти выборкой и не подать
+        # в контекст. Порог — не абсолютный размер, а отрыв от медианы этой базы:
+        # у справочника и у процессной базы разная норма.
+        sizes = []
+        for path in pairs:
+            try:
+                body = card_body(open(path, encoding="utf-8", errors="ignore").read())
+            except OSError:
+                continue
+            sizes.append((len(body), path))
+        print("\n## Карточки размером с документ\n")
+        if len(sizes) < 10:
+            print("Карточек слишком мало, чтобы говорить о норме размера.\n")
+        else:
+            sizes.sort()
+            median = sizes[len(sizes) // 2][0] or 1
+            fat = [(n, p) for n, p in sizes if n > median * 6][-15:]
+            if not fat:
+                print(f"Все карточки в пределах нормы: медиана {median} знаков.\n")
+            for n, path in reversed(fat):
+                print(f"- **{n} знаков** (медиана {median}) · "
+                      f"[[{os.path.splitext(os.path.basename(path))[0]}]]")
+            if fat:
+                print("\n  Разрезать — `kb:split`; если это словарь, границы предложит "
+                      "планировщик на ближайшем `agent:distill`.")
+
         print("\n## Мосты: единственная связь между темами\n")
         if not ins["bridges"]:
             print("Мостов нет — темы связаны не в одну ниточку.\n")
