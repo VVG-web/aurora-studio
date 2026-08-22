@@ -892,7 +892,14 @@ def agent_state(project: str) -> dict:
     venv_ok, venv_ver = AG.venv_status()
     target = (os.path.join(project, ".env.aurora.local") if project
               else os.path.join(KIT, ".env.aurora.local"))
+    # Что задано В САМОМ проекте, а что пришло из кита. Без этого форма показывает
+    # слитое значение, человек правит поле — и не понимает, почему на соседнем проекте
+    # ничего не изменилось: он смотрел на унаследованное и считал его своим.
+    own = {}
+    if project:
+        own = {k: v for k, v in AG.load_env(Path(project) / ".env.aurora.local").items()}
     return {
+        "own": sorted(own),
         "target": target,
         "target_label": (f"проект «{os.path.basename(project)}»" if project
                          else "глобально (кит) — общая настройка всех проектов"),
@@ -979,6 +986,10 @@ def kinds_read(project: str) -> dict:
                 if f.endswith(".md")) if os.path.isdir(os.path.join(project, "Templates")) else []}
 
 
+sys.path.insert(0, os.path.join(KIT, "scripts"))
+import make_kinds as AG_KINDS          # noqa: E402 — список полей типа артефакта
+
+
 def kinds_write(project: str, kinds: dict) -> dict:
     """Переписать секцию `artifacts:` в aurora.config.yaml, не трогая остальной конфиг.
 
@@ -995,9 +1006,22 @@ def kinds_write(project: str, kinds: dict) -> dict:
     for kind in sorted(kinds):
         rec = kinds[kind] or {}
         lines.append(f"  {kind}:")
-        for field in ("title", "template", "out"):
+        # Поля описывает движок, а не панель: список один на всех — `make_kinds.FIELDS`.
+        # Иначе форма научится сохранять поле, которого чтение не знает, и настройка
+        # будет молча пропадать при следующем разборе конфига.
+        for field in AG_KINDS.FIELDS:
             value = str(rec.get(field) or "").strip().strip('"')
             lines.append(f'    {field}: "{value}"')
+        task = rec.get("task") or {}
+        if any(str(v).strip() for v in task.values()):
+            lines.append("    task:")
+            for field in AG_KINDS.TASK_FIELDS:
+                value = task.get(field)
+                if isinstance(value, list):
+                    value = ", ".join(str(x).strip() for x in value if str(x).strip())
+                value = str(value or "").strip().strip('"')
+                if value:
+                    lines.append(f'      {field}: "{value}"')
         # Папку результата создаём сразу: объявить её и не найти — та же ловушка,
         # что и с несуществующим шаблоном, только вскрывается в момент записи артефакта.
         out = str(rec.get("out") or "").strip()

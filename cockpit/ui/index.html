@@ -279,13 +279,14 @@ tr:last-child td{border-bottom:0}
     <div class="group">Машина</div>
     <button data-view="overview" aria-current="true" aria-label="Мостик: все проекты"><span class="label">Мостик</span></button>
     <button data-view="install" aria-label="Установка компонентов"><span class="label">Установка</span><span class="count" id="navInstall"></span></button>
-    <button data-view="setup" aria-label="Настройка проекта"><span class="label">Настройка</span></button>
+    <button data-view="setup" aria-label="Настройка кита и машины"><span class="label">Настройка кита</span></button>
     <button data-view="reference" aria-label="Справка"><span class="label">Справка</span></button>
     <button data-view="about" aria-label="О проекте"><span class="label">О проекте</span></button>
     <div class="group">Проект</div>
     <!-- Маршруты и работа по базе живут здесь, а не в «Машине»: каждый их шаг —
          команда в выбранном проекте. В группе машины они выглядели общесистемными,
          и человек открывал их, не выбрав проект. -->
+    <button data-view="project" aria-label="Настройки проекта"><span class="label">Настройки проекта</span></button>
     <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
     <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
@@ -399,6 +400,21 @@ tr:last-child td{border-bottom:0}
         последний прогон, его итог, версия ядра и кто запускал. Запуски из терминала сюда
         не попадают.</p>
       <div class="card" id="historyBox"><div class="list-item muted">Пока пусто.</div></div>
+    </section>
+
+    <!-- НАСТРОЙКИ ПРОЕКТА -->
+    <!-- Разделены с настройкой кита не для порядка, а потому что вопрос «почему правка
+         не подействовала на другом проекте» задавали регулярно: одна вкладка держала и
+         общее, и частное, и по виду формы понять это было нельзя. -->
+    <section class="view" id="view-project">
+      <div class="row">
+        <h1>Настройки проекта</h1>
+        <div class="spacer"></div>
+        <button class="btn sm" id="projectReload">↻ Обновить</button>
+      </div>
+      <p class="sub">Всё, что принадлежит выбранному проекту: доступы, конфиг, артефакты и
+        переопределения агента. Общее для всех проектов — в «Настройке кита».</p>
+      <div id="projectBody"><span class="spin"></span></div>
     </section>
 
     <!-- НАСТРОЙКА -->
@@ -606,6 +622,7 @@ function show(view){
   if (view==="mirrors") renderMirrors();
   if (view==="install") renderInstall();
   if (view==="setup") renderSetup();
+  if (view==="project") renderProject();
   if (view==="version") renderVersion();
   if (view==="commands") renderCommands();
   if (view==="reference") renderReference();
@@ -829,6 +846,9 @@ async function pick(p, go=true){
   // «выберите проект» — и оставалась такой навсегда: перерисовать её было некому,
   // человек видел пустоту при выбранном проекте и уходил искать поломку.
   renderMirrors();
+  // Настройки проекта — тоже про выбранный проект: без перерисовки вкладка осталась бы
+  // с чужими значениями, а правка ушла бы не туда.
+  if (S.view === "project") renderProject();
   // журнал запусков — свой у каждого проекта; его отметки стоят и в командах, и в сценариях
   renderCommands(); renderHistory(); renderQuick(); renderQuick("продуктивность");
   navBadges(p, h);
@@ -1588,9 +1608,11 @@ async function renderKinds(box){
   const draw = () => {
     card.innerHTML = "";
     card.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
-      "Какой шаблон брать и куда класть результат — по каждому виду документа. "
-      + "Хранится в aurora.config.yaml проекта, читается ассистентом (artifact_spec) "
-      + "и любой IDE. Новые виды заводите здесь же."));
+      "Всё производство документа по каждому виду: шаблон, промпт, папка результата, "
+      + "куда публиковать и свойства связанной задачи. Обязательны только шаблон и папка "
+      + "— без первого документ выйдет не по форме, без второй его некуда класть. "
+      + "Хранится в aurora.config.yaml проекта, читается ассистентом (artifact_spec) и "
+      + "любой IDE."));
     (d.problems||[]).forEach(p=>card.append(el("div",{class:"warnbox",style:"margin-bottom:8px"},
       `${p.kind}: ${p.why}`)));
     const rows = el("div",{});
@@ -1599,13 +1621,38 @@ async function renderKinds(box){
       const field = (key, ph, width) => el("input",{class:"btn mono",
         style:`width:${width};font-size:12px`, value:rec[key]||"", placeholder:ph,
         oninput:e=>{ rec[key] = e.target.value; setDirty("kinds","«Артефакты»",true); }});
+      // Свойства задачи держим свёрнутыми: они нужны не всем типам и не каждый день,
+      // а развёрнутый список из шести полей у девяти типов превращает форму в стену.
+      rec.task = rec.task || {};
+      const tfield = (key, ph, width) => el("input",{class:"btn mono",
+        style:`width:${width};font-size:12px`,
+        value: Array.isArray(rec.task[key]) ? rec.task[key].join(", ") : (rec.task[key]||""),
+        placeholder:ph,
+        oninput:e=>{ rec.task[key] = e.target.value; setDirty("kinds","«Артефакты»",true); }});
+      const taskBox = el("div",{hidden:true,style:"width:100%;padding:8px 0 4px 26px"},
+        el("div",{class:"muted",style:"font-size:12px;margin-bottom:6px"},
+          "Свойства связанной задачи. Панель их собирает, задачу заводит ассистент: "
+          + "заводить её в общей системе команды кнопкой, нажатой между делом, движок не будет."),
+        el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
+          tfield("project","ключ проекта","120px"), tfield("type","тип задачи","130px"),
+          tfield("assignee","ответственный","150px"), tfield("epic","эпик","120px"),
+          tfield("labels","метки через запятую","190px"),
+          tfield("components","компоненты через запятую","190px")));
       rows.append(el("div",{class:"list-item",style:"gap:8px;flex-wrap:wrap"},
         el("span",{class:"chip mono",style:"flex:none"}, kind),
-        field("title","название для человека","190px"),
-        field("template","Templates/…","210px"),
-        field("out","куда класть","150px"),
+        field("title","название для человека","170px"),
+        field("template","Templates/… (обязательно)","190px"),
+        field("prompt","Prompts/… (необязательно)","180px"),
+        field("out","куда класть (обязательно)","150px"),
+        field("publish_url","https://…/родительская страница","230px"),
+        field("mcp","MCP-сервер для того, чего движок не умеет","210px"),
+        el("button",{class:"btn sm",title:"свойства связанной задачи",
+          onclick:e=>{ taskBox.hidden = !taskBox.hidden;
+                       e.target.textContent = taskBox.hidden ? "задача…" : "задача ▴"; }},
+          "задача…"),
         el("button",{class:"btn sm",title:"убрать вид документа",
-          onclick:()=>{ delete KINDS[kind]; setDirty("kinds","«Артефакты»",true); draw(); }},"×")));
+          onclick:()=>{ delete KINDS[kind]; setDirty("kinds","«Артефакты»",true); draw(); }},"×"),
+        taskBox));
     });
     card.append(rows);
     const name = el("input",{class:"btn mono",style:"width:150px",
@@ -1617,7 +1664,8 @@ async function renderKinds(box){
         if (!/^[a-z][a-z0-9-]{1,30}$/.test(key))
           return toast("Имя типа — латиница, цифры и дефис","warn");
         if (KINDS[key]) return toast("Такой тип уже есть","warn");
-        KINDS[key] = {title:"", template:"", out:"Artifacts/" + key};
+        KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
+                      publish_url:"", mcp:"", task:{}};
         name.value = ""; setDirty("kinds","«Артефакты»",true); draw();
       }},"Добавить вид"),
       saveButton("kinds","«Артефакты»","Сохранить", async ()=>{
@@ -1625,7 +1673,7 @@ async function renderKinds(box){
           body:JSON.stringify({project:S.project.path, kinds:KINDS})});
         if (r.ok){ toast("Записано в " + r.target.split("/").pop()
                          + ": видов " + r.kinds); setDirty("kinds","«Артефакты»",false);
-                   renderSetup(); }
+                   renderProject(); }
         else toast(r.error || "не записано","err");
       }),
       el("span",{class:"muted",style:"font-size:12px"},
@@ -2430,6 +2478,7 @@ function renderHistory(){
       "kit " + h.kit) : null,
     el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
 }
+$("#projectReload").onclick = ()=>{ if (confirmLeave()) renderProject(); };
 $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; followAgain($("#consoleOut")); };
 // Очистка и кнопка «вывод продолжается» возвращают слежение: человек сам сказал, что
 // снова смотрит конец.
@@ -2441,8 +2490,6 @@ $("#routeBar").onclick = ()=> show("console");
 async function renderSetup(){
   const box = $("#setupBody"); box.innerHTML = "";
   DIRTY.clear();     // раздел перерисован заново — значения в полях снова совпадают с файлом
-
-  await renderAgentCard(box);
 
   // 1. новый проект
   const nf = {};
@@ -2508,14 +2555,26 @@ async function renderSetup(){
         "git init и первый коммит сделайте сами — фреймворк живёт в git")));
   box.append(newBox);
 
+  // Кольцо бэкендов — общая настройка машины: адреса, ключи, модели, окна, ширины.
+  // Проект может переопределить своё, и это видно в «Настройках проекта».
+  await renderAgentCard(box, "kit");
+}
+
+/* ---------------- настройки проекта ----------------
+
+   Отдельная вкладка появилась не ради порядка. Одна форма держала и общее, и частное:
+   человек правил поле, оно ложилось то в кит, то в проект — в зависимости от того, был
+   ли выбран проект, — и вопрос «почему на другом проекте не изменилось» повторялся. */
+async function renderProject(){
+  const box = $("#projectBody"); box.innerHTML = "";
+  DIRTY.clear();
   if (!S.project){
-    box.append(el("h2",{},"Настройки проекта"),
-      el("div",{class:"card",style:"padding:22px"},"Выберите проект на Мостике — и здесь появятся его настройки."));
+    box.append(el("div",{class:"card",style:"padding:22px"},"Выберите проект на Мостике — и здесь появятся его настройки."));
     return;
   }
 
   // 2. настройка проекта формой — те же вопросы, что задаёт setup в терминале
-  box.append(el("h2",{},"Настройки проекта · " + S.project.name));
+  box.append(el("h2",{},"Проект · " + S.project.name));
   const cfgRaw = await api("/api/config?project=" + encodeURIComponent(S.project.path));
   const get = (k, d="") => {
     const m = cfgRaw.text && cfgRaw.text.match(new RegExp("^\\s*"+k+"\\s*:\\s*\"?([^\"\n#]+?)\"?\\s*$","m"));
@@ -2634,7 +2693,7 @@ async function renderSetup(){
           setDirty("form","«Настройки проекта»",false);
           S.state = await api("/api/state");
           S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
-          renderOverview(); renderSetup();
+          renderOverview(); renderProject();
         }
       }),
       el("span",{class:"muted",style:"font-size:12px"},
@@ -2664,7 +2723,7 @@ async function renderSetup(){
       if (r.ok){ toast("Токены записаны"); setDirty("tokens","«Доступы»",false);
         S.state = await api("/api/state");
         S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
-        renderSetup(); }
+        renderProject(); }
     })));
 
   // 4. конфиг как текст — для того, чего нет в форме
@@ -2691,9 +2750,12 @@ async function renderSetup(){
           S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
           renderOverview(); }
       }),
-      el("button",{class:"btn sm",onclick:()=>{ if (confirmLeave()) renderSetup(); }},"Перечитать"),
+      el("button",{class:"btn sm",onclick:()=>{ if (confirmLeave()) renderProject(); }},"Перечитать"),
       el("span",{class:"muted",style:"font-size:12px"},
         "пример блока sync_roots есть в самом файле, в комментарии"))));
+
+  await renderAgentCard(box, "project");
+  renderKinds(box);
 }
 
 /* ---------------- скины ---------------- */
@@ -2931,15 +2993,22 @@ async function renderDev(){
 /* Раздел виден и без проекта: без выбранного пишем в кит (общая настройка всех
    проектов), с выбранным — в его .env.aurora.local. Цель записи названа явно — это
    было отдельным требованием: человек должен видеть, КУДА сохраняет. */
-async function renderAgentCard(box){
-  const q = S.project ? "?project=" + encodeURIComponent(S.project.path) : "";
+async function renderAgentCard(box, scope){
+  // scope: "kit" — общее кольцо машины; "project" — что переопределено в проекте.
+  // Значения приходят слитыми (кит < проект), а `own` говорит, что задано здесь.
+  const q = (scope === "project" && S.project)
+    ? "?project=" + encodeURIComponent(S.project.path) : "";
   const a = await api("/api/agent" + q);
+  const own = new Set(a.own || []);
+  const inherited = k => scope === "project" && !own.has(k);
   if (a.error){ box.append(el("div",{class:"card",style:"padding:16px"}, a.error)); return; }
   const AGV = {};                                    // копятся только правки, не всё подряд
   const touch = (k, v) => { AGV[k] = v; setDirty("agent","«Агент»",true); };
 
   const fld = (key, label, val, ph, type) => el("label",{style:"display:block;margin-bottom:8px"},
-    el("div",{class:"muted",style:"font-size:12px;margin-bottom:3px"}, label),
+    el("div",{class:"muted",style:"font-size:12px;margin-bottom:3px"}, label,
+      inherited(key) ? el("span",{class:"chip",style:"margin-left:6px;font-size:10.5px"},
+                          "из кита") : null),
     el("input",{class:"btn",type:type||"text",style:"width:100%;font-weight:400",
       value: val||"", placeholder: ph||"", oninput:e=>touch(key, e.target.value)}));
 
@@ -2994,8 +3063,13 @@ async function renderAgentCard(box){
   const pingBox = el("div",{});
   const card = el("div",{class:"card",style:"padding:20px;margin-bottom:18px"},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 8px"},
-      "Цепочка LLM-бэкендов для встроенного агента. Кольцо: каждый вызов идёт с первого; " +
-      "недоступный или занятый пропускается, восстановившийся подхватывается сам."),
+      scope === "project"
+        ? "Здесь только то, что этот проект переопределяет. Поле с пометкой «из кита» "
+          + "берётся из общей настройки машины — правьте его там, иначе изменение "
+          + "коснётся одного проекта, а вы будете ждать его на всех."
+        : "Цепочка LLM-бэкендов для встроенного агента, общая для всех проектов. Кольцо: "
+          + "каждый вызов идёт с первого; недоступный или занятый пропускается, "
+          + "восстановившийся подхватывается сам."),
     el("div",{class:"warnbox",style:"margin-bottom:12px"},
       "Сохраняется: ", el("b",{}, a.target_label), el("br",{}),
       el("span",{class:"mono",style:"font-size:11.5px"}, a.target)),
@@ -3068,8 +3142,8 @@ async function renderAgentCard(box){
       }}, a.venv.ok ? "Обновить Pydantic AI" : "Установить Pydantic AI")),
     pingBox);
 
-  box.append(el("h2",{},"Агент" + (S.project ? " · " + S.project.name : " · вся машина")), card);
-  renderKinds(box);
+  box.append(el("h2",{}, scope === "project"
+      ? "Агент · переопределения проекта" : "Агент · кольцо машины"), card);
 }
 
 /* ---------------- о проекте ---------------- */
