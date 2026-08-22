@@ -97,8 +97,17 @@ def count_cards(root: Path) -> int:
     return len(list((root / "AuroraKnowledgeDB").rglob("*.md")))
 
 
+# Прогон одной проверки. Без него любая правка одной вещи стоила полного прогона на
+# несколько минут — и проверялась поэтому реже, чем следовало.
+ONLY = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--only=")),
+            (sys.argv[sys.argv.index("--only") + 1]
+             if "--only" in sys.argv and len(sys.argv) > sys.argv.index("--only") + 1 else ""))
+
+
 def test(fn):
     name = fn.__name__.replace("test_", "").replace("_", " ")
+    if ONLY and ONLY.lower() not in name.lower():
+        return fn
     with tempfile.TemporaryDirectory() as td:
         try:
             fn(Path(td))
@@ -2890,6 +2899,152 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_nothing_leaves_the_perimeter_unchecked(tmp: Path):
+    """Наружу уходят вопросы про механики, а не пересказ задачи заказчика.
+
+    Запрос к внешнему серверу модель строит из промпта, а в промпте лежит задача
+    аналитика и пак знаний. Без сторожа формулировки требований уедут в чужой поисковый
+    API — не потому что модель злонамеренна, а потому что ей больше не из чего составить
+    вопрос.
+
+    Сторож механический: совпало четыре слова подряд после той же нормализации, что в
+    поиске по базе, — не пропускаем. Это порог, а не стена: перескажет другими словами —
+    пройдёт. Полная гарантия одна — не подключать `outbound`-серверы вовсе.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "scripts" / "agents"))
+    import agent_core as A
+    import pydantic_ai_adapter as AD
+
+    idea = "Возврат обеспечительного платежа после аннулирования заявки"
+    pack = "## Заявка-и-статусы\nЗаявка проходит статусы. Возврат обеспечительного платежа."
+    guard = {"grams": A.guard_grams([idea, pack]), "gram": A.GRAM,
+             "max_words": A.MAX_QUERY_WORDS, "ready": True}
+    assert guard["grams"], "сторож пуст — из текста проекта не собрано ни одной четвёрки"
+
+    assert not AD.leaks("что такое SAGA pattern в микросервисах", guard), \
+        "заблокирован вопрос про механику — ради него всё и затевалось"
+
+    # Сторож ЗАКРЫТ по умолчанию: пустой guard значит «движок его не собрал», а не
+    # «можно всё». Следующий вызывающий, забывший передать текст проекта, иначе получил
+    # бы канал наружу без единой проверки. Найдено критиком после реализации.
+    assert AD.leaks("любой текст задачи заказчика", {}), \
+        "без собранного сторожа наружу уходит всё — это открытый канал"
+    assert AD.leaks("текст", {"grams": [], "max_words": 15}), \
+        "guard без отметки ready принят за разрешение"
+    assert AD.leaks(idea, guard), "задача аналитика ушла наружу дословно"
+    # перефразировка ФОРМОЙ ловится: нормализация та же, что в поиске
+    assert AD.leaks("Возврату обеспечительных платежей после аннулирования", guard), \
+        "перефразировка словоформами прошла — значит сторож ловит только цитату"
+    assert AD.leaks(" ".join(["слово"] * 20), guard), "нет потолка длины запроса"
+
+    # отказ ОБЪЯСНЯЕТСЯ: пустой результат модель истолкует как «в интернете ничего нет»
+    why = AD.leaks(idea, guard)
+    assert "переформулируйте" in why, "отказ без объяснения — модель уйдёт с ложным знанием"
+
+    # журнал: обе категории, сто строк, в проекте
+    root = tmp / "проект"
+    (root / "Workspaces").mkdir(parents=True)
+    for i in range(105):
+        AD.log_outbound(str(root), "search", f"запрос {i}", "ушёл" if i % 2 else "не пропущен")
+    log = (root / "Workspaces/_outbound.md").read_text(encoding="utf-8")
+    rows = [l for l in log.splitlines() if l.startswith("| 20")]
+    assert len(rows) == 100, f"журнал не держит сто строк: {len(rows)}"
+    assert "не пропущен" in log and "ушёл" in log, \
+        "в журнале одна категория: без заблокированных не понять, не мешает ли сторож"
+
+    # роли: сервер достаётся тем, кому объявлен
+    cfg = {"mcpServers": {
+        "inside": {"command": "echo", "args": ["x"]},
+        "search": {"command": "echo", "args": ["y"], "roles": ["planner"], "outbound": True}}}
+    assert set(AD.servers_for_role(cfg, "planner")) == {"inside", "search"}, \
+        "планировщику не досталось объявленного ему сервера"
+    assert set(AD.servers_for_role(cfg, "worker")) == {"inside"}, \
+        "воркер получил сервер, объявленный только планировщику"
+
+    # Аргументы бывают вложенными: `{"queries": ["…"]}` или `{"query": {"text": "…"}}`.
+    # Собирать только верхний уровень значит выпустить задачу целиком, а в журнал
+    # записать пустую строку. Найдено критиком после реализации.
+    import asyncio
+    sent = []
+
+    async def call_tool(name, args):
+        sent.append(args)
+        return "ушло"
+
+    hook = AD.outbound_hook("search", guard, str(root))
+    for args in ({"query": idea}, {"query": {"text": idea}}, {"queries": [idea, "ещё"]}):
+        res = asyncio.run(hook(None, call_tool, "search", args))
+        assert "не отправлен" in str(res), f"вложенный аргумент прошёл мимо сторожа: {args}"
+    assert not sent, "запрос с текстом проекта всё-таки ушёл на сервер"
+    assert "ушло" == asyncio.run(hook(None, call_tool, "search",
+                                      {"query": "что такое SAGA pattern"})), \
+        "безопасный вопрос не дошёл до сервера"
+
+    ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    assert "process_tool_call=hook" in ad, "сторож не подключён к вызовам инструментов"
+    assert "if (spec or {}).get(\"outbound\")" in ad, \
+        "сторож вешается на все серверы подряд — Confluence внутри периметра фильтровать незачем"
+    assert "tool_calls_limit" in ad, \
+        "нет потолка на вызовы инструментов: один сложный вопрос съест бюджет прогона"
+
+
+@test
+def test_retrieval_is_watched_not_guessed(tmp: Path):
+    """Ранжирование меняется — и это должно быть видно, а не выясняться по жалобам.
+
+    На нём стоит всё: ответ базы, обогащение перед производством артефакта, инструменты
+    ассистента. «Стало лучше» — не проверка. Поэтому есть сторож на эталонном корпусе
+    (падает сам) и отчёт по живым запросам (показывает разницу с прошлым разом).
+
+    Учёт редкости слова добавлен под этим сторожем, а не вслепую: «ЭСФ» весит больше,
+    чем «статус», потому что встречается в базе реже.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import ctx_pack as P
+
+    # редкость: частое слово весит меньше, редкое больше, неизвестное — обычно
+    P.RARITY.clear()
+    P.RARITY.update({"__total__": 100, "статус": 40, "заявк": 12, "эсф": 1})
+    assert P.weight("статус") < P.weight("заявк") < P.weight("эсф"), \
+        "редкость слова не влияет на вес — «статус» и «ЭСФ» сужают поиск одинаково"
+    assert P.weight("неведомое") == 1.0, \
+        "слова нет в базе — судить не по чему, вес должен быть обычным"
+    assert P.weight("эсф") <= 2.0, \
+        "разброс весов слишком широк: одна опечатка в запросе перевесит всё остальное"
+
+    # сторож на корпусе: есть эталон и он сходится
+    expected = KIT / "tests/corpus/RETRIEVAL.json"
+    assert expected.is_file(), "нет эталона выдачи — сторожить нечем"
+    saved = json.loads(expected.read_text(encoding="utf-8"))
+    assert len(saved) >= 5, "эталон из пары запросов ничего не сторожит"
+    assert all(v for v in saved.values()), \
+        "в эталоне есть запросы, которые ничего не находят — такой сторож не сторожит"
+
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--retrieval"],
+                        capture_output=True, text=True, timeout=300)
+    assert cp.returncode == 0, f"выдача по корпусу разошлась с эталоном:\n{cp.stdout[-600:]}"
+    assert "Порядок не менялся" in cp.stdout, cp.stdout[-400:]
+
+    # отчёт по живому проекту: берёт настоящие запросы и умеет сравнивать
+    src = (KIT / "scripts/kb_retrieval.py").read_text(encoding="utf-8")
+    assert 'line.startswith("### Вопрос")' in src, \
+        "запросы читаются не тем форматом, которым их пишет agent:ask"
+    assert "retrieval-last.json" in src, "не с чем сравнивать: точка отсчёта не хранится"
+    # Молчание про неизмеренное — не подтверждение: отчёт писал «порядок не менялся» про
+    # запрос, которого в точке сравнения не было вовсе. Найдено критиком.
+    assert "Не с чем сравнить" in src and "сравнимых" in src, \
+        "новый запрос считается подтверждённым — это догадка вместо факта"
+    assert "P.measure_rarity(cards)" in src, \
+        "отчёт считает без редкости слов — сторожит не то ранжирование, что работает"
+
+    # прогон одной проверки: без него правка одной вещи стоит полного прогона
+    runner = (KIT / "tests/run_tests.py").read_text(encoding="utf-8")
+    assert "--only" in runner and "ONLY.lower() not in name.lower()" in runner, \
+        "нельзя прогнать одну проверку"
+
+
+@test
 def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
     """MCP-серверы объявляет проект, а не панель угадывает по чужой конфигурации.
 
@@ -2922,8 +3077,13 @@ def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
 
     ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
     assert "def mcp_toolsets(" in ad, "адаптер не умеет подключать MCP"
-    assert "MCPToolset(Client(config))" in ad, "серверы подключаются не стандартной формой"
-    assert "except Exception:  # noqa" in ad.split("def mcp_toolsets(")[1][:800], \
+    assert "MCPToolset(Client(one)" in ad, "серверы подключаются не стандартной формой"
+    # Toolset строится по серверу, а не один на всех: сторож на исходящее привязан к
+    # конкретному серверу, и узнать, чей это вызов, можно только так.
+    assert "for name, spec in servers.items():" in ad, \
+        "все серверы в одном toolset — сторож не поймёт, чей запрос уходит наружу"
+    block = ad.split("def mcp_toolsets(")[1].split("def outbound_hook(")[0]
+    assert "except Exception:  # noqa" in block, \
         "неподнятый сервер уронит прогон — а он может быть просто выключен"
 
     # и это видно человеку: настроил или нет
@@ -6438,7 +6598,11 @@ def test_office_ingest_converts_and_is_idempotent(tmp: Path):
 # -------------------------------------------------------------------- main
 
 def main() -> int:
-    print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text().strip()}\n")
+    print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text().strip()}"
+          + (f" · только «{ONLY}»" if ONLY else "") + "\n")
+    if ONLY and not RESULTS:
+        print(f"Ни одна проверка не подошла под «{ONLY}».")
+        return 1
     failed = [(n, e) for n, e in RESULTS if e]
     print(f"\nПройдено: {len(RESULTS) - len(failed)}/{len(RESULTS)}")
     if failed:

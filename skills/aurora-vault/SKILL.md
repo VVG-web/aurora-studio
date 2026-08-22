@@ -209,6 +209,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `ops:stats` (`status`) | дашборд здоровья базы: статусы, риски, метрики (`--append-metrics` — строка в `meta/metrics.md`) | `references/maintenance.md` |
 | `ops:impact <карточка>` | что зависит от карточки; `--explain <документ>` — на чём он собран | `references/maintenance.md` |
 | `ops:trace` (`trace`) | перестроить трассировку: пункт ТЗ → REQ → SPEC → Jira → AC → ПМИ → приёмка | `references/workflows.md` |
+| `ops:retrieval` | какие карточки приходят первыми по реальным запросам аналитиков и что изменилось с прошлого раза: сторож ранжирования. Запросы — из разговоров `meta/ask/` | `references/retrieval.md` |
 | `ops:todo` | что осталось человеку: одним списком, с объяснением, почему это нельзя сделать кнопкой | `references/maintenance.md` |
 | `ops:report` | дашборд эффективности аналитиков: недельная активность по Jira и Confluence; настройки — в секции `reports:` конфига | `references/maintenance.md` |
 | `ops:questions` | реестр вопросов: открытые, просроченные, что блокируют (числа — из `aurora_stats.py`) | `references/workflows.md` |
