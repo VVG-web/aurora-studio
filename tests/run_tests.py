@@ -2890,6 +2890,138 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
+    """MCP-серверы объявляет проект, а не панель угадывает по чужой конфигурации.
+
+    Соблазн — прочитать настройку Claude Code или Cursor и предложить оттуда. Она
+    меняется без нашего ведома, и панель начала бы врать о том, что доступно: ровно та
+    догадка вместо факта, которая уже дважды дорого обошлась.
+
+    Форма конфига — стандартная (`{"mcpServers": {...}}`). Своя заставила бы человека
+    держать две конфигурации об одном и том же.
+
+    MCP нужен только там, где движок чего-то не умеет сам: публикация и заведение задач
+    работают и без него. Файла нет — серверов нет, и это норма, а не недонастройка.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    root = tmp / "проект"
+    root.mkdir()
+    assert A.mcp_config(str(root)) == {}, "без файла движок что-то придумал"
+
+    (root / "mcp.json").write_text(json.dumps({
+        "mcpServers": {"atlassian": {"command": "echo", "args": ["x"],
+                                     "about": "Confluence и Jira"}}},
+        ensure_ascii=False), encoding="utf-8")
+    cfg = A.mcp_config(str(root))
+    assert list(cfg["mcpServers"]) == ["atlassian"], f"конфиг не прочитан: {cfg}"
+
+    (root / "mcp.json").write_text("{ это не json", encoding="utf-8")
+    assert A.mcp_config(str(root)) == {}, "битый конфиг уронил чтение вместо тишины"
+
+    ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    assert "def mcp_toolsets(" in ad, "адаптер не умеет подключать MCP"
+    assert "MCPToolset(Client(config))" in ad, "серверы подключаются не стандартной формой"
+    assert "except Exception:  # noqa" in ad.split("def mcp_toolsets(")[1][:800], \
+        "неподнятый сервер уронит прогон — а он может быть просто выключен"
+
+    # и это видно человеку: настроил или нет
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "MCP-серверы проекта" in ui and "не объявлены" in ui, \
+        "панель молчит про MCP — человек не узнает ни что подключено, ни что это норма"
+
+
+@test
+def test_publishing_does_not_overwrite_someone_elses_edit(tmp: Path):
+    """У артефакта две жизни: черновик на диске и чистовик на странице команды.
+
+    Публикация перезаписывает страницу — и однажды сотрёт правку коллеги, а узнают об
+    этом через месяц. Поэтому в шапке артефакта хранится версия страницы, которую
+    опубликовали мы: разошлась с текущей — публикация останавливается и называет, кто и
+    когда правил. Это тот же класс, что дрейф источника, только зеркально.
+
+    Выбор файла — из готового, а не набором пути: первая же опечатка ушла бы в Confluence
+    чужой страницей.
+    """
+    src = (KIT / "scripts/publish_doc.py").read_text(encoding="utf-8")
+    assert "published_version" in src, "версия опубликованной страницы не запоминается"
+    assert 'was != now and not a.force' in src, \
+        "публикация перезаписывает страницу, не глядя на чужие правки"
+    assert '"--force"' in src, "нет способа настоять на своей версии осознанно"
+    assert "published_url" in src, \
+        "в черновике не остаётся адреса чистовика — связи между двумя жизнями нет"
+
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "def artifact_files(" in srv and '"/api/artifacts"' in srv, \
+        "панель не умеет показать, что уже создано по типу"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "async function publishArtifact(" in ui, "нет публикации из панели"
+    assert 'cmd:"ship:publish"' in ui, "публикация идёт мимо движка"
+    assert 'f.status === "draft"' in ui, \
+        "непройденная цепочка публикуется молча — команда увидит непроверенное как чистовик"
+    assert "rec.publish_url" in ui, \
+        "кнопка не смотрит на адрес публикации: тип без адреса опубликовать нельзя"
+
+
+@test
+def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
+    """В ките лежал агентный фреймворк, работавший как `curl`.
+
+    `Agent(...)` создавался и тут же использовался для одноразовой подстановки текста:
+    все сообщения склеивались в одну строку, `message_history` не передавалась,
+    инструменты не регистрировались. Диалог был невозможен в принципе — модель не помнила,
+    что спрашивала минуту назад.
+
+    Достроено ровно то, чего не хватало, и **рядом** со старым путём: на старом стоит
+    работающий разбор базы, и ронять его ради нового экрана нельзя. Развилка временная —
+    её снимают, когда новый путь докажет себя на живой работе.
+
+    Инструменты — все на чтение и все внутри проекта. Файл создаёт код по ответу модели:
+    так путь всегда внутри объявленной папки, шапка собрана кодом, точка записи одна.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import inspect
+    import agent_core as A
+
+    assert "history" in inspect.signature(A.call_role).parameters, \
+        "вызов не принимает историю — диалога не будет"
+    assert "tools" in inspect.signature(A.call_role).parameters, \
+        "вызов не умеет давать модели инструменты"
+
+    ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    assert "message_history=history or None" in ad, \
+        "адаптер снова склеивает разговор в строку — модель не помнит предыдущей реплики"
+    assert "def register_tools(" in ad, "инструменты не регистрируются"
+    for tool in ("read_file", "list_dir", "kb_search", "kb_context", "artifact_spec"):
+        assert f"def {tool}(" in ad, f"нет инструмента {tool}"
+    # ни одного на запись: файл пишет движок, а не модель
+    for forbidden in ("def write_file", "def save_", "def create_file", "def apply_"):
+        assert forbidden not in ad, f"у модели появился инструмент записи: {forbidden}"
+    assert 'raise ValueError("путь вне проекта")' in ad, \
+        "инструменты не держат границу проекта — модель прочитает что угодно на машине"
+
+    # планировщик получает инструменты, воркер — нет: у него есть план и пак, а лишний
+    # поиск на этом шаге размывает основания документа
+    run = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    # именно планировщик производства: тот, что размечает источник, работает по описи
+    # абзацев, и инструменты ему не нужны
+    planner = run[run.index("def run_make("):run.index("def read_text_file(")]
+    assert "tools=True" in planner, "планировщик производства не может доискать недостающее"
+    writer = planner[planner.index("PROMPT_MAKE_WRITE.format"):][:400]
+    assert "tools=True" not in writer, "воркеру даны инструменты — основания размоются"
+
+    # и навык разбора берётся из файла, а не из копии в промпте
+    assert "def grill_method(" in run and "aurora-grill" in run, \
+        "метод разбора вшит в промпт — копия разойдётся с навыком и никто не заметит"
+    assert (KIT / "skills/aurora-grill/SKILL.md").is_file(), "навыка нет в поставке"
+    # и он не затирает чужой grill-me в общем каталоге
+    assert not (KIT / "skills/grill-me").exists(), \
+        "навык назван так же, как чужой в ~/.claude/skills — установка затрёт настроенное"
+
+
+@test
 def test_making_an_artifact_survives_an_interruption(tmp: Path):
     """Цепочка производства идёт этапами, и обрыв не заставляет начинать сначала.
 

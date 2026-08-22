@@ -18,6 +18,10 @@ templates/meta/READING.md               => AuroraKnowledgeDB/README.md
 docs/knowledge-rules.md                 => .opencode/docs/knowledge-rules.md
 docs/knowledge-rules-tldr.md            => .opencode/docs/knowledge-rules-tldr.md
 
+# --- скилл grill-me: его читает и планировщик панели, и ассистент в чате ---
+skills/aurora-grill/SKILL.md                => .opencode/skills/aurora-grill/SKILL.md
+skills/aurora-grill/skill.json              => .opencode/skills/aurora-grill/skill.json
+
 # --- скилл aurora-vault (полностью engine-managed) ---
 skills/aurora-vault/SKILL.md            => .opencode/skills/aurora-vault/SKILL.md
 skills/aurora-vault/skill.json          => .opencode/skills/aurora-vault/skill.json
