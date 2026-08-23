@@ -37,7 +37,8 @@ import urllib.request
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, frontmatter,
+from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy,
+                           frontmatter,
                            set_field, split_frontmatter)
 
 from confluence_export import Api, read_config, read_secret
@@ -293,7 +294,10 @@ def main() -> int:
 
     text = open(path, encoding="utf-8").read()
     fm = frontmatter(text)
-    body = md_body(text)
+    # В чистовик уходит только документ: уточнения, допущения, замечания критика и
+    # план — это производство, и команде разработки они не нужны. Режем по маркеру, а
+    # не по списку заголовков: список разошёлся бы с тем, кто их пишет.
+    body = clean_copy(md_body(text))
     cfg = read_config()
     auth, kind = read_secret()
     base_url, space = cfg["base_url"], cfg["space"]

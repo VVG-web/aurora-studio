@@ -1164,7 +1164,12 @@ PROMPT_MAKE_PLAN = """{method}Ты планировщик. Аналитик хо
 
 Верни JSON:
 {{"questions": [{{"q": "вопрос", "why": "почему это меняет документ", "rec": "рекомендую"}}],
+  "assumptions": ["решение, которое ты приняла молча, не спрашивая"],
   "plan": "план документа по разделам — заполняй, только когда вопросов больше нет"}}
+
+`assumptions` — то, что ты решила сама и о чём не стала спрашивать: срок хранения,
+обработка ошибки, способ интеграции. Это не недостаток, а нормальная работа с
+умолчанием — но читатель документа должен видеть, где выясненное, а где принятое.
 
 Пока остаются вопросы, `plan` оставь пустым. Когда всё ясно — верни пустой `questions` и
 план: по разделу шаблона на строку, с указанием, из каких карточек берётся содержание."""
@@ -1187,7 +1192,10 @@ PROMPT_MAKE_WRITE = """Напиши документ «{title}» по плану
 2. Соблюдай разделы шаблона — их проверяет критик.
 3. Числа, сроки, коды и названия систем переноси дословно.
 4. Где знания не хватило, пиши прямо: «не определено — вопрос к заказчику», а не догадку.
-5. Ссылайся на карточки как `[[имя]]` — по ним читатель проверит.
+{agnostic}5. У каждого критерия приёмки — **как проверить**, что он выполнен: тест, команда,
+   наблюдаемое поведение или предъявленный документ. Прямо в тексте критерия. «Сделано»
+   не должно быть предметом спора.
+6. Ссылайся на карточки как `[[имя]]` — по ним читатель проверит.
 
 Верни только текст документа, без пояснений."""
 
@@ -1202,9 +1210,21 @@ PROMPT_MAKE_CRITIC = """Проверь документ «{title}» на соо�
 Документ:
 {draft}
 
-Верни JSON: {{"ok": true|false, "issues": ["что не так, по одному пункту"]}}
-Смотри только на форму и полноту по плану: правдивость проверяет другой. Пустой список
-issues означает, что документ можно отдавать."""
+Верни JSON:
+{{"ok": true|false,
+  "issues": ["что не так, по одному пункту"],
+  "coverage": {{"объём": "полно|частично|пробел", "крайние случаи": "…",
+              "термины": "…", "признаки завершения": "…", "ограничения": "…"}}}}
+
+Смотри на форму и полноту по плану: правдивость проверяет другой.
+
+В `issues` обязательно называй:
+• критерий приёмки, у которого не сказано, **как проверить**, что он выполнен;
+{agnostic_check}
+`coverage` — зрелость документа по пяти осям. «объём» — сказано ли, что входит и что нет;
+«крайние случаи» — что при ошибке, пустоте, отказе; «термины» — названо ли одинаково;
+«признаки завершения» — по чему поймём, что сделано; «ограничения» — чего делать нельзя
+и почему. Это не оценка качества, а карта пробелов: пробел — нормальный ответ."""
 
 
 def make_session_dir(cwd: str, kind: str) -> Path:
@@ -1304,8 +1324,14 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                     "why": (r["out"] or "пак не собран")[-300:]}
         st["pack"] = r["out"]
         stages["enriched"] = TODAY_STR
+        st.setdefault("draft", "")
+        st.setdefault("clarifications", [])
+        st.setdefault("assumptions", [])
+        # Файл появляется здесь, а не после воркера: дальше в него пишутся ответы
+        # человека, и они не должны жить в служебной папке, куда никто не ходит.
+        st["path"] = write_artifact(cwd, st)
         m = re.search(r"карточек (\d+)", r["out"])
-        say(f"  обогащение: карточек {m.group(1) if m else '?'}")
+        say(f"  обогащение: карточек {m.group(1) if m else '?'} → {st['path']}")
         save_session(cwd, sid, st)
 
     template = read_text_file(os.path.join(cwd, spec["template"]))
@@ -1318,6 +1344,17 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if not stages.get("planned"):
         if answers:
             st["rounds"].append({"answers": answers})
+            # Пара «вопрос → ответ» уходит в документ немедленно, до всякого воркера:
+            # прервалась цепочка — работа человека всё равно записана там, где он её
+            # найдёт. Раньше пять ответов на пять предметных вопросов терялись вместе
+            # с сессией.
+            asked = next((rd.get("questions") for rd in reversed(st["rounds"])
+                          if rd.get("questions")), []) or []
+            st.setdefault("clarifications", []).append(
+                {"q": "; ".join(q.get("q", "") for q in asked)[:400] or "вопросы раунда",
+                 "a": answers})
+            st["path"] = write_artifact(cwd, st)
+            save_session(cwd, sid, st)
         seen = "\n\n".join(
             f"Раунд {i + 1}. Вопросы: {json.dumps(rd.get('questions') or [], ensure_ascii=False)}\n"
             f"Ответы аналитика: {rd.get('answers') or '—'}"
@@ -1366,6 +1403,19 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             return {"ok": False, "sid": sid,
                     "why": ("планировщик не вернул плана даже по прямой просьбе. "
                             "Ответьте на его вопросы — по ним он план и построит.")}
+        if force_plan:
+            # Вопросы, оставшиеся без ответа, — это принятые решения, и они обязаны быть
+            # видны. «Не спросили» и «решила модель» — разные источники: первое
+            # недоработка опроса, второе обычная работа с умолчанием.
+            unanswered = next((rd.get("questions") for rd in reversed(st["rounds"])
+                               if rd.get("questions")), []) or []
+            for q in unanswered:
+                st.setdefault("assumptions", []).append(
+                    {"text": f"{q.get('q', '')} — принято: {q.get('rec') or 'на усмотрение модели'}",
+                     "by": "не спросили: аналитик закончил опрос"})
+        for a in (ans.get("assumptions") or []):
+            st.setdefault("assumptions", []).append(
+                {"text": str(a)[:300], "by": "решила модель"})
         st["plan"] = plan
         stages["planned"] = TODAY_STR
         save_session(cwd, sid, st)
@@ -1373,9 +1423,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     # --- 3. воркер: документ по плану и форме
     if not stages.get("drafted"):
+        agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
+                        in ("1", "true", "да", "yes"))
         r = call(cfg, "worker", [{"role": "user", "content": PROMPT_MAKE_WRITE.format(
             title=spec.get("title") or st["kind"], plan=st["plan"], template=template[:8000],
-            extra=prompt_extra, pack=st["pack"])}], deadline=deadline)
+            extra=prompt_extra, pack=st["pack"],
+            agnostic=AGNOSTIC_WRITE if agnostic else "")}], deadline=deadline)
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
         st["draft"] = (r["text"] or "").strip()
@@ -1388,11 +1441,18 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
     # --- 4. критик: форма и полнота по плану
     if not stages.get("reviewed"):
+        agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
+                        in ("1", "true", "да", "yes"))
         r = call(cfg, "critic", [{"role": "user", "content": PROMPT_MAKE_CRITIC.format(
             title=spec.get("title") or st["kind"], template=template[:8000],
-            plan=st["plan"], draft=st["draft"])}], deadline=deadline)
+            plan=st["plan"], draft=st["draft"],
+            agnostic_check=AGNOSTIC_CHECK if agnostic else "")}], deadline=deadline)
         verdict = parse_json(r["text"]) if r["ok"] else {}
         st["issues"] = (verdict or {}).get("issues") or []
+        # Покрытие заполняет критик, а не планировщик: это свойство документа, а не
+        # опроса. Планировщик мог спросить про крайние случаи, получить ответ и всё
+        # равно не дойти до них в плане.
+        st["coverage"] = clean_coverage((verdict or {}).get("coverage"))
         stages["reviewed"] = TODAY_STR
         st["path"] = write_artifact(cwd, st)
         save_session(cwd, sid, st)
@@ -1450,6 +1510,24 @@ def report_make(res: dict) -> str:
     return "\n".join(L)
 
 
+def clean_coverage(raw) -> dict:
+    """Покрытие от критика — в вид, пригодный для заголовка артефакта.
+
+    Модель возвращает JSON, а не гарантию: критик отдавал то строку вместо словаря —
+    и `agent:make` падал на самом последнем шаге, теряя всю работу прогона, — то значение
+    с переводом строки, и оно дописывало во frontmatter собственное поле. Найдено критиком.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k, v in raw.items():
+        key = " ".join(str(k).split())
+        val = " ".join(str(v).replace(":", " ").split())[:60]
+        if key and val:
+            out[key] = val
+    return out
+
+
 def write_artifact(cwd: str, st: dict) -> str:
     """Положить документ в объявленную папку с шапкой этапов. → путь.
 
@@ -1457,9 +1535,14 @@ def write_artifact(cwd: str, st: dict) -> str:
     всегда собрана кодом, а не текстом из ответа, и точка записи одна — значит откат
     возможен. Ровно это правило спасло базу от переписанных словарей.
 
-    Документ появляется сразу после воркера и лежит со `status: draft`, пока цепочка не
-    пройдена. Прятать сделанную работу нельзя — человек хочет её видеть; выдавать
-    непроверенное за готовое тоже нельзя — оно уедет заказчику.
+    Документ появляется **сразу после обогащения**, ещё пустым, и растёт по мере
+    работы. Причина: сессия в `Workspaces/` служебная, туда никто не ходит, и ответы на
+    вопросы планировщика, живущие только там, потеряны для всех, кроме движка. Файл в
+    папке артефактов человек видит и может открыть с первой минуты.
+
+    Пока цепочка не пройдена, он лежит со `status: draft` и незакрытыми точками в шапке.
+    Прятать сделанную работу нельзя — человек хочет её видеть; выдавать непроверенное за
+    готовое тоже нельзя — оно уедет заказчику.
     """
     spec, stages = st["spec"], st["stages"]
     out_dir = os.path.join(cwd, spec["out"])
@@ -1497,6 +1580,27 @@ def write_artifact(cwd: str, st: dict) -> str:
     mo = st.get("momus") or {}
     if mo.get("ok"):
         head.append(f"unsupported: {unsupported}")
+    # `based_on` — карточки, на которые документ СОСЛАЛСЯ, а не весь пак: сорок карточек
+    # в контексте и три ссылки в тексте значат, что документ стоит на трёх. Пак — это
+    # «что мы дали», основания — «на чём стоит».
+    # Разбор ссылок — общий на движок: своя регулярка не знала про якоря, и
+    # «[[Заявка-1#Статусы]]» не сходилась с карточкой «Заявка-1» — настоящее основание
+    # объявлялось выдумкой. Найдено критиком после реализации.
+    from aurora_common import link_refs
+    cited = list(dict.fromkeys(
+        os.path.splitext(os.path.basename(x.split("#")[0].strip()))[0]
+        for x in link_refs(st.get("draft") or "") if x.strip()))
+    in_pack = {h.split(" — ")[0].strip()
+               for h in re.findall(r"^## (.+)$", st.get("pack") or "", re.M)}
+    grounded = [c for c in cited if c in in_pack]
+    # Сослалась на то, чего в паке не было, — назвала то, чего ей не давали. Тот же
+    # класс, что утверждение без опоры, и место ему там же: Момус имён не проверяет.
+    invented = [c for c in cited if c not in in_pack]
+    if grounded:
+        head.append("based_on: [" + ", ".join(f'"[[{c}]]"' for c in grounded) + "]")
+    cov = st.get("coverage") or {}
+    if cov:
+        head.append("coverage: " + ", ".join(f"{k}={v}" for k, v in cov.items()))
     task = spec.get("task") or {}
     if any(str(v).strip() for v in task.values()):
         head.append("task:")
@@ -1522,15 +1626,39 @@ def write_artifact(cwd: str, st: dict) -> str:
             m = re.search(r'^title:\s*"?(.+?)"?\s*$', theirs, re.M)
             if m and len(m.group(1)) > 5:
                 head[1] = f'title: "{m.group(1).replace(chr(34), "")}"'
-    body = [draft.rstrip(), ""]
+    body = [draft.rstrip() if draft else
+            "_Документ ещё не написан: цепочка производства не дошла до воркера._", ""]
+    made = [MADE_MARK, ""]
+    if st.get("clarifications"):
+        made += ["## Уточнения", "",
+                 "Что спросил планировщик и что ответил аналитик. Пишется сразу после "
+                 "ответа: работа человека не должна зависеть от того, дошла ли цепочка "
+                 "до конца.", ""]
+        for c in st["clarifications"]:
+            made.append(f"- **{c.get('q', '')}** → {c.get('a', '')}")
+        made.append("")
+    if st.get("assumptions"):
+        made += ["## Допущения", "",
+                 "Решения, принятые без ответа человека. Источник у каждого свой: "
+                 "«не спросили» — недоработка опроса, «решила модель» — обычная работа "
+                 "с умолчанием.", ""]
+        for a in st["assumptions"]:
+            made.append(f"- {a.get('text', '')} · _{a.get('by', 'решила модель')}_")
+        made.append("")
     if st.get("issues"):
-        body += ["## Замечания критика", ""] + [f"- {x}" for x in st["issues"]] + [""]
-    if mo.get("ok") and not mo.get("clean"):
-        body += ["## Под вопросом", "",
-                 "Момус не нашёл опоры в базе для этих утверждений — в чистовик их "
-                 "переносить нельзя, даже если выглядят разумно.", "",
-                 (mo.get("report") or "").strip(), ""]
-    body += ["## План, по которому собран", "", st.get("plan", "").rstrip(), ""]
+        made += ["## Замечания критика", ""] + [f"- {x}" for x in st["issues"]] + [""]
+    if (mo.get("ok") and not mo.get("clean")) or invented:
+        made += ["## Под вопросом", "",
+                 "Модель назвала то, чего в контексте не было. В чистовик это не "
+                 "переносится, даже если выглядит разумно.", ""]
+        if mo.get("ok") and not mo.get("clean"):
+            made += [(mo.get("report") or "").strip(), ""]
+        if invented:
+            made += ["Ссылки на карточки, которых не было в контексте: "
+                     + ", ".join(f"`[[{c}]]`" for c in invented[:10]), ""]
+    if st.get("plan"):
+        made += ["## План, по которому собран", "", st["plan"].rstrip(), ""]
+    body += made
     open(path, "w", encoding="utf-8").write("\n".join(head) + "\n\n" + "\n".join(body))
     return os.path.relpath(path, cwd)
 
@@ -1566,7 +1694,8 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     # обещать человеку контекст втрое больше настоящего. Число даёт сам пак.
     m = re.search(r"карточек (\d+)", pack)
     total = int(m.group(1)) if m else 0
-    cards = re.findall(r"^## (.+)$", pack, re.M)
+    # Имя карточки — до тире: заголовок блока пака теперь «имя — title».
+    cards = [h.split(" — ")[0].strip() for h in re.findall(r"^## (.+)$", pack, re.M)]
 
     prompt = PROMPT_ASK.format(pack=pack, question=question)
     # Разговор передаётся МЕХАНИЗМОМ истории, а не пересказом в промпте. Текстовый
@@ -1723,6 +1852,20 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
 # Больше трёх кусков — это уже не карточка, а документ: тезис тезисов вырождается в
 # аннотацию ни о чём, а знание надо не пересказывать, а разрезать (`kb:split`).
 MAX_PARTS = 3
+# Граница между документом и производством. Публикация режет по ней: в чистовик уходит
+# только то, что выше. Маркер ставит тот же код, что пишет разделы ниже, — разойтись им
+# негде, а список служебных заголовков в двух местах разошёлся бы на шестом разделе.
+from aurora_common import MADE_MARK          # noqa: E402 — граница одна на движок
+
+# Правило «критерии без технологий» включается ТИПОМ артефакта, а не глобально: у ОПЗ и
+# проектного решения стек — это предмет документа, и общее правило заставило бы критика
+# ругаться на каждый. Поле `tech_agnostic` в реестре, по умолчанию выключено.
+AGNOSTIC_WRITE = """4a. Критерии успеха — измеримые и **без технологий**: «оформление
+   заказа за 3 минуты» — да, «API отвечает за 200 мс» — нет. Требование, называющее
+   технологию, нельзя выполнить иначе, даже если иначе лучше.
+"""
+AGNOSTIC_CHECK = ("• критерий, в который просочилось решение об архитектуре: названа "
+                  "технология, протокол, хранилище или конкретный сервис.\n")
 # Столько сбоев подряд означает, что лёг шлюз, а не попались плохие карточки. Молотить
 # восемью потоками в мёртвый сервер всю ночь — потерянная ночь.
 FAILS_IN_A_ROW = 3

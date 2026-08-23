@@ -558,7 +558,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.96.2";
+const UI_VERSION = "1.97.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1057,6 +1057,31 @@ function baseCards(h, st){
         : "не проверялась: порядок карточек меняется незаметно",
       hint:"Какие карточки приходят первыми по реальным запросам и что изменилось",
       go: goCmd("ops:retrieval",[],"Проверить выдачу")}),
+    // Файл артефакта рождается сразу после обогащения — значит брошенная работа
+    // остаётся видимой. Удалять её движок не должен: срок автоудаления никто не
+    // подберёт правильно, а потеря необратима.
+    metricCard({title:"Незаконченные",
+      value: (h.unfinished && h.unfinished.count) || 0,
+      sub: (h.unfinished && h.unfinished.count)
+        ? `документов не прошли цепочку · старшему ${h.unfinished.oldest} дн.`
+        : "все начатые документы доведены до конца",
+      tone: (h.unfinished && h.unfinished.count) ? "warn" : "",
+      hint:"Производство начато и не закончено. Продолжить можно с той же точки",
+      go: (h.unfinished && h.unfinished.count) ? {label:"Посмотреть список", act: () => {
+        const box = $("#healthBody");
+        const list = el("div",{class:"card",style:"padding:18px;margin-bottom:14px"},
+          el("h2",{style:"margin-top:0"},"Незаконченные документы"),
+          el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
+            "Цепочка остановилась на названном этапе. Продолжается с той же точки — "
+            + "заново разбирать и переспрашивать не придётся."),
+          ...h.unfinished.items.map(x => el("div",{class:"list-item"},
+            el("span",{class:"chip"}, x.kind),
+            el("div",{style:"flex:1"},
+              el("div",{class:"mono",style:"font-size:12.5px"}, x.path),
+              el("div",{class:"muted",style:"font-size:12px"},
+                `остановилось на «${x.stopped}» · ${x.days} дн. назад`)))));
+        box.prepend(list); list.scrollIntoView({behavior:"smooth", block:"center"});
+      }} : null}),
     metricCard({title:"Остаток человеку", value: h.todo != null ? h.todo : "—",
       sub:"то, что кнопкой не решается",
       go: goCmd("ops:todo",[],"Посмотреть список")}),
@@ -1698,6 +1723,19 @@ async function renderKinds(box){
         field("out","куда класть (обязательно)","150px"),
         field("publish_url","https://…/родительская страница","230px"),
         field("mcp","MCP-сервер для того, чего движок не умеет","210px"),
+        // Правило включается видом документа, а не глобально: у ОПЗ стек — это предмет,
+        // и общее правило заставило бы критика ругаться на каждый такой документ.
+        el("label",{class:"row",style:"gap:6px;font-size:12px;flex:none",
+              title:"Критерии успеха измеримые и без названия технологий: «оформление "
+                    + "заказа за 3 минуты» — да, «API отвечает за 200 мс» — нет. "
+                    + "Требование, называющее технологию, нельзя выполнить иначе, даже "
+                    + "если иначе лучше. Осмысленно для AC, историй и тест-кейсов; для "
+                    + "ОПЗ и проектного решения — нет, там стек это предмет документа."},
+          el("input",{type:"checkbox",
+            checked:(String(rec.tech_agnostic||"").toLowerCase()==="true")?"":null,
+            onchange:e=>{ rec.tech_agnostic = e.target.checked ? "true" : "";
+                          setDirty("kinds","«Артефакты»",true); }}),
+          "без технологий"),
         el("button",{class:"btn sm",title:"свойства связанной задачи",
           onclick:e=>{ taskBox.hidden = !taskBox.hidden;
                        e.target.textContent = taskBox.hidden ? "задача…" : "задача ▴"; }},
@@ -1717,7 +1755,7 @@ async function renderKinds(box){
           return toast("Имя типа — латиница, цифры и дефис","warn");
         if (KINDS[key]) return toast("Такой тип уже есть","warn");
         KINDS[key] = {title:"", template:"", prompt:"", out:"Artifacts/" + key,
-                      publish_url:"", mcp:"", task:{}};
+                      publish_url:"", mcp:"", tech_agnostic:"", task:{}};
         name.value = ""; setDirty("kinds","«Артефакты»",true); draw();
       }},"Добавить вид"),
       saveButton("kinds","«Артефакты»","Сохранить", async ()=>{

@@ -644,6 +644,7 @@ def health(project: str) -> dict:
             "trace": trace, "todo": todo_count(project),
             "source_health": source_health(project),
             "index": index_health(project), "ping": ping_state(project),
+            "unfinished": unfinished(project),
             "retrieval": retrieval_state(project)}
 
 
@@ -699,6 +700,42 @@ def ping_state(project: str, out: str = "", rc: int = 0) -> dict:
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+def unfinished(project: str) -> dict:
+    """Документы, не прошедшие цепочку производства: сколько и как давно начаты.
+
+    Файл артефакта рождается сразу после обогащения, значит брошенная работа остаётся
+    видимой. Удалять её движок не должен — это работа человека, пусть и неоконченная, а
+    срок автоудаления никто не подберёт правильно, тогда как потеря необратима.
+    """
+    import datetime as _dt
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import make_kinds as MK
+    out, oldest = [], None
+    for kind, rec in (MK.read_kinds(project) or {}).items():
+        folder = os.path.join(project, rec.get("out") or "")
+        if not rec.get("out") or not os.path.isdir(folder):
+            continue
+        for name in sorted(os.listdir(folder)):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(folder, name)
+            head = read_text(path, limit=3000)
+            if "pipeline:" not in head or "session:" not in head:
+                continue          # не наш артефакт: писали руками
+            if "checked: —" not in head and "drafted: —" not in head \
+                    and "reviewed: —" not in head:
+                continue          # цепочка пройдена
+            days = int((_dt.datetime.now()
+                        - _dt.datetime.fromtimestamp(os.path.getmtime(path))).days)
+            stage = next((s for s in ("enriched", "planned", "drafted", "reviewed", "checked")
+                          if f"{s}: —" in head), "?")
+            out.append({"path": os.path.relpath(path, project), "days": days,
+                        "stopped": stage, "kind": kind})
+            oldest = max(oldest or 0, days)
+    out.sort(key=lambda x: -x["days"])
+    return {"count": len(out), "oldest": oldest, "items": out[:20]}
 
 
 def index_health(project: str) -> dict:
