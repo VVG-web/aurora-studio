@@ -31,6 +31,41 @@ from pathlib import Path
 
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
+PUSH_MARKER = "# aurora-hook push v1"
+
+# Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
+# кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
+# опечатки, а не главная защита: главная — понимать, что в эти ветки пишут.
+PRIVATE_BRANCHES = ("development", "history-private")
+
+PUSH_HOOK = """#!/bin/sh
+{marker}
+# Кухня разработки наружу не уходит: репозиторий кита публичный.
+remote_url="$2"
+case "$remote_url" in
+  *github.com*|*gitlab.com*) public=1 ;;
+  *) public=0 ;;
+esac
+[ "$public" = "1" ] || exit 0
+
+while read -r _l local_sha remote_ref _r; do
+  branch="${{remote_ref##*/}}"
+  case " {branches} " in
+    *" $branch "*)
+      echo "" >&2
+      echo "push отклонён: ветка $branch наружу не уходит." >&2
+      echo "  Это кухня разработки — кейсы, разборы дефектов и числа с живых" >&2
+      echo "  проектов, а $remote_url публичный." >&2
+      echo "  Нужна копия на другой машине — заводите приватный remote:" >&2
+      echo "    git remote add private <адрес> && git push private $branch" >&2
+      echo "" >&2
+      exit 1
+      ;;
+  esac
+  [ -n "$local_sha" ] || true
+done
+exit 0
+"""
 TERMS = "local/private_terms.txt"
 BASELINE = Path("AuroraKnowledgeDB/meta/lint_baseline.txt")
 
@@ -191,6 +226,11 @@ def main() -> int:
         else:
             print("commit-msg: не нужен — это проект, а не кит "
                   "(проверка приватности защищает публикацию движка)")
+        push_hook = gd / "hooks" / "pre-push"
+        if push_hook.is_file() and PUSH_MARKER in push_hook.read_text(encoding="utf-8", errors="ignore"):
+            print(f"pre-push: хук Авроры · наружу не уходят {', '.join(PRIVATE_BRANCHES)}")
+        elif is_kit():
+            print("pre-push: не установлен — ветки кухни можно случайно опубликовать")
         if BASELINE.is_file():
             print(f"базовая линия ошибок: {BASELINE.read_text().strip()}")
         errs = current_errors()
@@ -243,6 +283,22 @@ def main() -> int:
             msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             note = "" if Path(TERMS).is_file() else f" — но {TERMS} нет, проверка спит"
             print(f"Установлен commit-msg: сообщения проверяются по {TERMS}{note}")
+
+    # Хук пуша — тоже только в ките и по той же причине: он защищает публикацию.
+    # Ветка `development` держит тест-кейсы и разборы; в открытый репозиторий им нельзя.
+    if is_kit():
+        push_hook = gd / "hooks" / "pre-push"
+        foreign = (push_hook.is_file()
+                   and PUSH_MARKER not in push_hook.read_text(encoding="utf-8", errors="ignore"))
+        if foreign and not a.force:
+            print("В репозитории есть свой pre-push — защита веток кухни не поставлена "
+                  "(перезаписать: --force)", file=sys.stderr)
+        else:
+            push_hook.write_text(
+                PUSH_HOOK.format(marker=PUSH_MARKER, branches=" ".join(PRIVATE_BRANCHES)),
+                encoding="utf-8")
+            push_hook.chmod(push_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            print(f"Установлен pre-push: наружу не уходят {', '.join(PRIVATE_BRANCHES)}")
 
     if a.mode == "ratchet":
         errs = current_errors()
