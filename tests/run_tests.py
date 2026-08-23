@@ -5046,6 +5046,60 @@ def test_embeddings_are_configured_separately(tmp: Path):
 
 
 @test
+def test_agent_card_writes_where_it_reads(tmp: Path):
+    """Карточка агента сохраняет туда же, откуда читает.
+
+    Панель показывает две карточки: общая настройка машины и то, что переопределяет
+    проект. Читали они по-разному, а писали одинаково — «есть выбранный проект, значит
+    туда». Правка в карточке кита уезжала в проект, карточка кита перечитывала кит и
+    показывала прежнее: человек нажимал «Сохранить» и видел, что всё сбросилось, — а
+    настройка тем временем меняла один проект вместо машины.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    card = ui[ui.index("async function renderAgentCard"):]
+    card = card[:card.index("\n/* ")] if "\n/* " in card else card
+
+    assert "const scopeTarget = (scope === \"project\" && S.project)" in card, \
+        "цель карточки не вычисляется из её же области"
+    for call in ("/api/agent/env", "/api/agent/ping"):
+        i = card.index(call)
+        body = card[i:i + 260]
+        assert "scopeTarget" in body, f"{call} шлёт не цель карточки, а выбранный проект"
+    assert "S.project?S.project.path:\"\"" not in card and \
+           "S.project ? S.project.path : \"\"" not in card.replace(
+               "const scopeTarget = (scope === \"project\" && S.project) ? S.project.path : \"\";", ""), \
+        "осталось место, где карточка пишет в выбранный проект помимо своей области"
+
+    # у карточек разные ключи «несохранённого»: правка в одной не метит другую
+    assert 'const dirtyKey = "agent-" + scope;' in card, \
+        "обе карточки делят один ключ — предупреждение об изменениях будет врать"
+
+    # карточка называет свою область, и запись сверяется с ней
+    assert '{project: scopeTarget, scope, vars:AGV}' in card, \
+        "карточка не сообщает серверу, из какой она области"
+
+    # сама запись кладёт переменные в тот файл, который назван целью
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    project = tmp / "proj"
+    project.mkdir()
+    r = ck.agent_write_env(str(project), {"AURORA_AGENT_PARALLEL": "4"}, "project")
+    assert r.get("ok") and str(project) in r["target"], r
+    assert "AURORA_AGENT_PARALLEL=4" in (project / ".env.aurora.local").read_text(encoding="utf-8")
+
+    # Настройки кита общие для всех проектов, настройки проекта — только его. Пути,
+    # ведущие из одной области в другую, закрыты: иначе правка одного проекта молча
+    # меняет поведение остальных.
+    lost = ck.agent_write_env("", {"AURORA_AGENT_PARALLEL": "9"}, "project")
+    assert "без пути" in (lost.get("error") or ""), \
+        f"правка проекта ушла бы в общую настройку кита: {lost}"
+    stray = ck.agent_write_env(str(project), {"AURORA_AGENT_PARALLEL": "9"}, "kit")
+    assert "только в разделе" in (stray.get("error") or ""), \
+        f"правка кита ушла бы в проект: {stray}"
+
+
+@test
 def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
     """MCP отдаёт базу ассистенту и только читает; stdout занят протоколом.
 

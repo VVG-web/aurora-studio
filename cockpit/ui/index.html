@@ -558,7 +558,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.97.1";
+const UI_VERSION = "1.97.2";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3236,14 +3236,20 @@ async function renderDev(){
 async function renderAgentCard(box, scope){
   // scope: "kit" — общее кольцо машины; "project" — что переопределено в проекте.
   // Значения приходят слитыми (кит < проект), а `own` говорит, что задано здесь.
-  const q = (scope === "project" && S.project)
-    ? "?project=" + encodeURIComponent(S.project.path) : "";
+  // Куда эта карточка смотрит И куда пишет. Одно значение на оба направления: пока цель
+  // записи вычислялась отдельно («есть выбранный проект — пишем туда»), карточка кита
+  // читала из кита, а сохраняла в проект. Человек нажимал «Сохранить» и видел прежние
+  // значения — правка уезжала в проект, о котором он в этот момент не думал.
+  const scopeTarget = (scope === "project" && S.project) ? S.project.path : "";
+  const q = scopeTarget ? "?project=" + encodeURIComponent(scopeTarget) : "";
   const a = await api("/api/agent" + q);
   const own = new Set(a.own || []);
   const inherited = k => scope === "project" && !own.has(k);
   if (a.error){ box.append(el("div",{class:"card",style:"padding:16px"}, a.error)); return; }
   const AGV = {};                                    // копятся только правки, не всё подряд
-  const touch = (k, v) => { AGV[k] = v; setDirty("agent","«Агент»",true); };
+  const dirtyKey = "agent-" + scope;
+  const dirtyName = scope === "project" ? "«Агент проекта»" : "«Агент»";
+  const touch = (k, v) => { AGV[k] = v; setDirty(dirtyKey, dirtyName, true); };
 
   const fld = (key, label, val, ph, type) => el("label",{style:"display:block;margin-bottom:8px"},
     el("div",{class:"muted",style:"font-size:12px;margin-bottom:3px"}, label,
@@ -3353,17 +3359,18 @@ async function renderAgentCard(box, scope){
         ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,
             selected:a.adapter===v?"":null}, v))))),
     el("div",{class:"row",style:"gap:10px"},
-      saveButton("agent","«Агент»","Сохранить", async e=>{
+      saveButton(dirtyKey, dirtyName, "Сохранить", async e=>{
         if (!Object.keys(AGV).length) return toast("Нечего сохранять","warn");
         const r = await api("/api/agent/env",{method:"POST",
-          body:JSON.stringify({project:S.project?S.project.path:"", vars:AGV})});
-        if (r.ok){ toast("Записано: " + r.target); setDirty("agent","«Агент»",false); renderSetup(); }
+          body:JSON.stringify({project: scopeTarget, scope, vars:AGV})});
+        if (r.ok){ toast("Записано: " + r.target); setDirty(dirtyKey, dirtyName, false);
+                   scope === "project" ? renderProject() : renderSetup(); }
       }),
       el("button",{class:"btn sm",onclick:async e=>{
         e.target.disabled = true; e.target.textContent = "Проверяю…";
         pingBox.innerHTML = "";
         const r = await api("/api/agent/ping",{method:"POST",
-          body:JSON.stringify({project:S.project?S.project.path:""})});
+          body:JSON.stringify({project: scopeTarget})});
         e.target.disabled = false; e.target.textContent = "Проверить соединение";
         (r.backends||[]).forEach(b=>pingBox.append(el("div",{class:"mono",
           style:"font-size:12.5px;margin-top:4px"},

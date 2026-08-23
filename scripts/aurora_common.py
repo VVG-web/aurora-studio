@@ -388,6 +388,19 @@ def git_guard(path: str, allow_dirty: bool, what: str = "операция") -> b
 
 # ------------------------------------------------------------------- конфиг
 
+def child_env(**extra) -> dict:
+    """Окружение для дочернего процесса: без чужих отладочных переменных аллокатора.
+
+    macOS печатает в stderr «MallocStackLogging: can't turn off…» каждому процессу, у
+    которого в окружении осталась переменная от отладчика или IDE. Сообщение не наше и
+    ни на что не влияет, но врезается в строку прогресса и в вывод команд — человек
+    видит чужую ошибку там, где движок отчитывается о работе.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
+    env.update(extra)
+    return env
+
+
 def config_value(key: str, default: str = "") -> str:
     """Значение простого поля из aurora.config.yaml (без PyYAML)."""
     cfg = "aurora.config.yaml"
