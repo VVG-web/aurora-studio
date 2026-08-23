@@ -43,6 +43,7 @@ from urllib.parse import parse_qs, urlparse
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
+from aurora_common import child_env            # noqa: E402  — путь до scripts добавлен выше
 
 TOKEN = secrets.token_urlsafe(24)
 # Когда запустился этот процесс. Обновление кита правит файлы на диске, а работающая
@@ -1195,12 +1196,23 @@ def kinds_write(project: str, kinds: dict) -> dict:
     return {"ok": True, "kinds": len(kinds), "target": path}
 
 
-def agent_write_env(project: str, vars: dict) -> dict:
+def agent_write_env(project: str, vars: dict, scope: str = "") -> dict:
     """Дописать/заменить AURORA_AGENT_* в целевом .env, не трогая остальные строки.
 
     Пустое значение удаляет переменную. Ключи вне AURORA_AGENT_ не принимаются: эта
     ручка настраивает агента, а не редактирует произвольные секреты.
+
+    `scope` — из какой карточки пришла правка. Он не уточняет цель, а **сторожит** её:
+    настройки кита общие для всех проектов, настройки проекта — только его. Пустой путь
+    при `scope="project"` означал бы «правку проекта записать всем», и это молчаливо
+    поменяло бы поведение остальных проектов. Такой запрос отвергается.
     """
+    if scope == "project" and not project:
+        return {"error": "правка проекта без пути к нему: в общую настройку кита она "
+                         "не пишется — выберите проект и повторите"}
+    if scope == "kit" and project:
+        return {"error": "правка кита адресована проекту: общая настройка машины "
+                         "меняется только в разделе «Настройка»"}
     # AURORA_EMBED_* — тот же контур агента: свой сервис векторов у него бывает
     # отдельным (свой адрес, свой ключ, своя модель), но настраивается он здесь же.
     bad = [k for k in vars if not k.startswith(("AURORA_AGENT_", "AURORA_EMBED_"))]
@@ -1275,7 +1287,9 @@ def start_job(project: str, cmd: str, extra: list) -> str:
             # Python буферизует stdout, когда на том конце не терминал: длинная команда
             # (синк на семьсот страниц, прогон агента) молчала минутами, а потом
             # вываливала всё разом. Человек в это время не знает, работает она или висит.
-            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            # Заодно вычищаем Malloc*-переменные отладчика: их предупреждения врезаются
+            # в строку прогресса и читаются как ошибка движка.
+            env = child_env(PYTHONUNBUFFERED="1")
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
@@ -1549,7 +1563,8 @@ class Handler(BaseHTTPRequestHandler):
             project = payload.get("project", "")
             if project and not self._known(project):
                 return
-            self.send_json(agent_write_env(project, payload.get("vars") or {}))
+            self.send_json(agent_write_env(project, payload.get("vars") or {},
+                                           payload.get("scope", "")))
             return
         if u.path == "/api/agent/retry-primary":
             # Провайдер упал, агент ушёл на запасного и не трогает основного 15 минут.

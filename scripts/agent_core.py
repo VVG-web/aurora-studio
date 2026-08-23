@@ -43,9 +43,12 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
+from aurora_common import child_env
+
 TODAY = date.today().isoformat()
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
+
 RING_PAUSE = 10              # пауза между полными кругами по цепочке
 VENV = Path.home() / ".aurora" / "venv"
 # Какой адаптер выбран и почему пришлось откатиться: заполняется при разборе конфига,
@@ -232,7 +235,7 @@ def adapter_process():
         return None
     proc = subprocess.Popen([str(vpy), str(adapter)], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            text=True, bufsize=1)
+                            text=True, bufsize=1, env=child_env())
     ADAPTER["proc"] = proc
     return proc
 
@@ -748,7 +751,7 @@ def venv_status() -> tuple:
     try:
         p = subprocess.run([str(vpy), "-c",
                             "from importlib.metadata import version; print(version('pydantic-ai'))"],
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=20, env=child_env())
         return (p.returncode == 0, p.stdout.strip())
     except Exception:  # noqa: BLE001
         return False, ""
