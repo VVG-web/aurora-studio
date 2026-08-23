@@ -3262,6 +3262,186 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
 
 
 @test
+def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
+    """Документ показывает, на чём стоит, что выяснили и что приняли молча.
+
+    Раньше он этого не показывал вовсе: `based_on` не писался, ответы человека жили в
+    служебной сессии, а молчаливые умолчания не назывались нигде. Через месяц читатель
+    не отличал выясненное от угаданного, а «на чём документ стоит» узнавали чтением
+    контекста, которого уже нет.
+
+    Отдельно — граница производства. В чистовик уходит только документ; уточнения,
+    допущения, замечания критика и план остаются в черновике, с которым работают
+    аналитики. Режем по маркеру, а не по списку заголовков: список в трёх местах
+    разошёлся бы на первом же новом разделе.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    from aurora_common import MADE_MARK, clean_copy
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/AC.md").write_text("# AC\n\n## Критерии приёмки\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "AC"\n'
+                          '    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n'
+                          '    tech_agnostic: "true"\n', encoding="utf-8")
+    for i in range(6):
+        card(root, f"Concepts/Заявка-{i}.md",
+             f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
+             status="knowledge", kind="knowledge")
+
+    seen, rounds = {}, {"n": 0}
+
+    def fake(cfg_, role, messages, **kw):
+        seen[role] = messages[0]["content"]
+        if role == "planner":
+            rounds["n"] += 1
+            if rounds["n"] == 1:
+                return {"ok": True, "backend": 1, "model": "p", "tps": 9, "log": [],
+                        "text": json.dumps({"questions": [{"q": "Какой срок?",
+                                                           "why": "меняет критерий",
+                                                           "rec": "10 дней"}],
+                                            "assumptions": [], "plan": ""},
+                                           ensure_ascii=False)}
+            return {"ok": True, "backend": 1, "model": "p", "tps": 9, "log": [],
+                    "text": json.dumps({"questions": [], "assumptions": ["хранение 3 года"],
+                                        "plan": "1. Критерии"}, ensure_ascii=False)}
+        if role == "critic":
+            return {"ok": True, "backend": 1, "model": "c", "tps": 9, "log": [],
+                    "text": json.dumps({"ok": True, "issues": [],
+                                        "coverage": {"объём": "полно",
+                                                     "крайние случаи": "пробел"}},
+                                       ensure_ascii=False)}
+        if role == "qa":
+            return {"ok": True, "backend": 1, "model": "q", "tps": 9, "log": [],
+                    "text": "ВЕРДИКТ: чисто"}
+        return {"ok": True, "backend": 1, "model": "w", "tps": 9, "log": [],
+                "text": "# AC\n\nСрок ([[Заявка-1]]), проверяется отчётом. См. [[Выдуманная]]."}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    # 1) файл рождается СРАЗУ после обогащения: ответы человека не должны жить в сессии
+    # тема должна находиться в базе: производство на пустом контексте отказывает, и
+    # это правильно — но проверяем мы здесь не его
+    r1 = R.run_make(cfg, str(root), "ac", "срок заявки", "", "", False, call=fake)
+    assert r1.get("ok"), f"обогащение не прошло: {r1.get('why')}"
+    early = R.load_session(str(root), r1["sid"]).get("path")
+    assert early and (root / early).is_file(), \
+        "файла нет до воркера — ответы человека уйдут в служебную папку и потеряются"
+    assert "не написан" in (root / early).read_text(encoding="utf-8"), \
+        "пустой документ не объясняет, почему он пуст"
+
+    # 2) ответ попадает в документ немедленно, до всякого воркера
+    R.run_make(cfg, str(root), "", "", r1["sid"], "10 дней", False, call=fake)
+    doc = (root / R.load_session(str(root), r1["sid"])["path"]).read_text(encoding="utf-8")
+    assert "## Уточнения" in doc and "10 дней" in doc, "ответ человека не дошёл до документа"
+
+    # 3) правило «без технологий» включено ТИПОМ и дошло до обоих
+    assert "без технологий" in seen["worker"], "tech_agnostic не дошёл до воркера"
+    assert "просочилось решение об архитектуре" in seen["critic"], \
+        "tech_agnostic не дошёл до критика"
+    assert "как проверить" in seen["worker"], "проверяемость критериев не потребована"
+
+    # 4) основания — из цитат, а не из всего пака; выдумка названа выдумкой
+    assert 'based_on: ["[[Заявка-1]]"]' in doc, \
+        f"основания не из цитат: сорок карточек в паке — не сорок оснований\n{doc[:400]}"
+    assert "Выдуманная" in doc.split("## Под вопросом")[1], \
+        "ссылка на карточку не из пака не названа — Момус имён не проверяет"
+
+    # 5) допущения с источником
+    assert "## Допущения" in doc and "решила модель" in doc, \
+        "молчаливое умолчание не названо — читатель не отличит его от выясненного"
+
+    # 6) покрытие заполняет критик, и оно в шапке
+    assert "coverage: объём=полно" in doc, "покрытие не попало в шапку"
+
+    # 7) граница: в чистовик уходит только документ
+    assert MADE_MARK in doc, "нет границы производства"
+    clean = clean_copy(doc)
+    for gone in ("## Уточнения", "## Допущения", "## План", "## Под вопросом"):
+        assert gone not in clean, f"{gone} уедет заказчику"
+    assert "Критерии приёмки" in clean or "Срок" in clean, "чистовик потерял сам документ"
+
+    # Критик после реализации нашёл две дыры в том, что уже «работало».
+    # 1) Ссылка на раздел карточки: своя регулярка не знала про якоря, и
+    #    «[[Заявка-1#Статусы]]» не сходилась с «Заявка-1» — настоящее основание
+    #    объявлялось выдумкой, а документ выглядел стоящим ни на чём.
+    st_anchor = dict(R.load_session(str(root), r1["sid"]))
+    st_anchor["draft"] = "См. [[Заявка-1#Статусы]], [[Заявка-2|заявку]], [[дом/Заявка-3.md]]."
+    st_anchor["pack"] = "## Заявка-1 — Заявка\n\n## Заявка-2 — Ещё\n\n## Заявка-3 — И три\n"
+    st_anchor["path"] = None
+    anchored = (root / R.write_artifact(str(root), st_anchor)).read_text(encoding="utf-8")
+    base = [ln for ln in anchored.splitlines() if ln.startswith("based_on:")]
+    assert base and all(f'"[[Заявка-{n}]]"' in base[0] for n in (1, 2, 3)), \
+        f"ссылка с якорём/подписью/путём не признана основанием: {base}"
+    assert "по памяти" not in anchored, "настоящая карточка объявлена выдумкой"
+
+    # 2) Критик возвращает JSON, а не гарантию: строка вместо словаря роняла запись
+    #    артефакта на последнем шаге — вся работа прогона терялась; перевод строки
+    #    в значении дописывал во frontmatter собственное поле.
+    assert R.clean_coverage("полно") == {} and R.clean_coverage(["полно"]) == {}, \
+        "покрытие не-словарём не отброшено — agent:make упадёт на записи"
+    assert R.clean_coverage({"объём": "полно\nsupersedes: чужое"}) \
+        == {"объём": "полно supersedes чужое"}, "покрытие подделывает поля frontmatter"
+
+    # 3) Маркер внутри блока кода резал документ: артефакт про саму Аврору потерял бы
+    #    всё, что ниже, и молча — в опубликованной странице этого не видно.
+    inside = "# AC\n\n```\n    " + MADE_MARK + "\n```\n\nВажный текст.\n"
+    assert "Важный текст" in clean_copy(inside), \
+        "маркер в блоке кода режет документ — публикация потеряет содержание"
+    assert clean_copy("# AC\n\nТекст.\n\n" + MADE_MARK + "\n\n## Уточнения\n").strip() \
+        == "# AC\n\nТекст.", "настоящая граница перестала резать"
+
+    pub = (KIT / "scripts/publish_doc.py").read_text(encoding="utf-8")
+    ship = (KIT / "scripts/ship_doc.py").read_text(encoding="utf-8")
+    assert "clean_copy(md_body(" in pub and "clean_copy(md_body(" in ship, \
+        "публикация или выгрузка режут не по маркеру — список заголовков разойдётся"
+
+
+@test
+def test_replacing_a_requirement_asks_what_changed(tmp: Path):
+    """Требование не заменить, не сказав что изменилось и что делать с реализованным.
+
+    По старой редакции могли написать код и пройти испытания. Момент замены —
+    единственный, когда человек это помнит: через неделю не восстановит, и линтер будет
+    ругаться в пустоту. Поэтому отказ здесь, а не жалоба потом.
+
+    У обычной карточки знания этих полей нет: там замена — это уточнение формулировки,
+    и требовать миграцию значило бы просить выдумывать.
+    """
+    root = make_project(tmp)
+    (root / "AuroraKnowledgeDB/Requirements").mkdir(parents=True, exist_ok=True)
+    for a, b in (("REQ-001", "REQ-002"), ("REQ-002", "REQ-001")):
+        (root / f"AuroraKnowledgeDB/Requirements/{a}.md").write_text(
+            f'---\ntitle: "{a}"\ntype: requirement\nreq_status: agreed\n'
+            f'status: knowledge\nrelated: []\n---\n\nТребование. см. [[{b}]]\n',
+            encoding="utf-8")
+
+    cp = run("kb_supersede.py", "REQ-001", "REQ-002", "--apply", cwd=root, expect_rc=2)
+    out = cp.stdout + cp.stderr
+    assert "--changed" in out and "--migration" in out, "отказ не называет, чего не хватает"
+    assert "через неделю" in out, "отказ не объясняет, почему спрашивают именно сейчас"
+    assert "панели" in out, "человеку не сказано, где это сделать мышью"
+    assert (root / "AuroraKnowledgeDB/Requirements/REQ-001.md").is_file(), \
+        "карточка тронута, несмотря на отказ"
+
+    run("kb_supersede.py", "REQ-001", "REQ-002", "--changed", "срок с 10 до 14 дней",
+        "--migration", "переделать проверку, тесты перезапустить", "--apply", cwd=root)
+    arch = (root / "AuroraKnowledgeDB/_archive/REQ-001.md").read_text(encoding="utf-8")
+    assert "Что изменилось: срок с 10 до 14" in arch, "изменение не записано в историю"
+    assert "Что делать с реализованным" in arch, "миграция не записана"
+
+    # обычная карточка знания заменяется как раньше: там миграции не бывает
+    card(root, "Concepts/Старое.md", "тело см. [[Новое]]", status="knowledge")
+    card(root, "Concepts/Новое.md", "тело см. [[Старое]]", status="knowledge")
+    run("kb_supersede.py", "Старое", "Новое", "--apply", cwd=root)
+    assert (root / "AuroraKnowledgeDB/_archive/Старое.md").is_file(), \
+        "обычная карточка перестала заменяться — правило утекло за пределы требований"
+
+
+@test
 def test_making_an_artifact_survives_an_interruption(tmp: Path):
     """Цепочка производства идёт этапами, и обрыв не заставляет начинать сначала.
 

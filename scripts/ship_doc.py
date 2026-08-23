@@ -31,6 +31,7 @@ import sys
 from datetime import date
 
 from aurora_common import (KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
+                           clean_copy,
                            frontmatter, set_field, split_frontmatter, walk_md)
 
 WORK = "Deliverables/work"
@@ -71,7 +72,8 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) ->
         return 1
     raw = open(source, encoding="utf-8").read()
     fm = frontmatter(raw)
-    text = md_body(raw)
+    # Выгружаемый документ — тоже чистовик: разделы производства в docx заказчику не идут.
+    text = clean_copy(md_body(raw))
     if not keep_links:
         text = flatten_links(text)
 

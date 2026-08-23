@@ -264,7 +264,12 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
         return 0
     # Одна фраза о сути весит почти как заголовок: она написана про смысл карточки,
     # а не про то, как её назвали в источнике.
-    head = set(words(card.stem) + words(card.title))
+    # Имя карточки — не текст, а склейка слов дефисами: «AC-4.4.1-Просмотр-реестра-Заявок»
+    # это одно слово для `words()` и ноль совпадений для запроса «просмотр реестра».
+    # Поэтому имя перед разбором разжимаем, а тело — нет: в прозе «бизнес-процесс» это
+    # один термин, и рвать его значило бы находить его по слову «процесс».
+    head = set(words(card.stem.replace("-", " ").replace("_", " "))
+               + words(card.title.replace("-", " ").replace("_", " ")))
     brief = set(words(card.summary))
     alias = {w for a in card.aliases for w in words(a)}
     tag = set(words(card.tags))
@@ -528,7 +533,12 @@ def main() -> int:
 
     used, total = [], 0
     for c in chosen:
-        block = f"\n---\n\n## {c.title}\n\n{c.header()}\n\n{body(c.text).strip()}\n"
+        # Заголовок блока — ИМЯ КАРТОЧКИ, а не её title: по нему на неё ссылаются
+        # (`[[имя]]`), и по нему же читающий сопоставляет ссылку с источником. Пока в
+        # заголовке стоял title, ссылка «[[Заявка-0]]» не сходилась с блоком «## Заявка 0»,
+        # и всякое настоящее основание выглядело выдумкой.
+        name = f"{c.stem}" + (f" — {c.title}" if c.title and c.title != c.stem else "")
+        block = f"\n---\n\n## {name}\n\n{c.header()}\n\n{body(c.text).strip()}\n"
         if a.budget and total + len(block) > a.budget:
             out.append(f"\n> ⚠️ Бюджет {a.budget} символов исчерпан: не вошло "
                        f"{len(chosen) - len(used)} карточек ({', '.join(x.stem for x in chosen[len(used):][:5])}…)")

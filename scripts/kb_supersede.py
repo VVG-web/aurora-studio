@@ -55,6 +55,11 @@ def main() -> int:
     ap.add_argument("new", help="карточка-преемник (имя без .md)")
     ap.add_argument("--dr", help="Decision Record, обосновывающий замену")
     ap.add_argument("--reason", default="", help="короткая причина для «## История»")
+    ap.add_argument("--changed", default="", metavar="ТЕКСТ",
+                    help="что именно изменилось в требовании (обязательно для требований)")
+    ap.add_argument("--migration", default="", metavar="ТЕКСТ",
+                    help="что делать с тем, что уже реализовано по старой редакции "
+                         "(обязательно для требований)")
     ap.add_argument("--apply", action="store_true",
                     help="записать изменения (иначе dry-run)")
     a = ap.parse_args()
@@ -74,6 +79,33 @@ def main() -> int:
         print("kb_supersede: карточка не может заменить саму себя", file=sys.stderr)
         return 1
 
+    # У требования замена — это событие с последствиями: по старой редакции уже могли
+    # написать код и пройти испытания. Момент замены — единственный, когда человек
+    # помнит, что и почему изменилось; через неделю он этого не восстановит, и линтер
+    # будет ругаться в пустоту. Поэтому отказываем здесь, а не жалуемся потом.
+    old_fm = frontmatter(open(old_path, encoding="utf-8", errors="ignore").read())
+    is_req = ((old_fm.get("type") or "").strip() == "requirement"
+              or (old_fm.get("req_status") or "").strip() != "")
+    # Пустота бывает не только пустой строкой: «—», «-», «нет» в поле формы — это
+    # обход защиты, а не ответ. Требуем текста, а не заполненности.
+    def answered(x: str) -> bool:
+        return len(re.sub(r"[\W\d_]+", "", x, flags=re.U)) >= 3
+
+    if is_req and not (answered(a.changed) and answered(a.migration)):
+        print(f"kb_supersede: «{a.old}» — требование, и заменить его без двух ответов "
+              f"нельзя.\n", file=sys.stderr)
+        print("  Что нужно:", file=sys.stderr)
+        print("    --changed «что именно стало другим против прежней редакции»",
+              file=sys.stderr)
+        print("    --migration «что делать с тем, что уже сделано по старой редакции: "
+              "переделать, оставить, проверить»", file=sys.stderr)
+        print("\n  Почему сейчас: через неделю этого уже не вспомнить, а заказчик "
+              "спросит\n  «что изменилось в требовании» на первой же новой редакции ТЗ.",
+              file=sys.stderr)
+        print("\n  В панели: «Команды» → kb:supersede — форма с этими полями.",
+              file=sys.stderr)
+        return 2
+
     writes, moves, relinked = {}, [], []
     reason = a.reason or "заменена преемником"
     dr_note = f" (см. [[{a.dr}]])" if a.dr else ""
@@ -88,7 +120,12 @@ def main() -> int:
     head = set_field(head, "status", "deprecated")
     head = set_field(head, "superseded_by", f'"[[{a.new}]]"')
     head = set_field(head, "updated", TODAY)
-    body = append_history(rest, f"- {TODAY}: {reason} → [[{a.new}]]{dr_note}.")
+    line = f"- {TODAY}: {reason} → [[{a.new}]]{dr_note}."
+    if a.changed.strip():
+        line += f"\n  - Что изменилось: {a.changed.strip()}"
+    if a.migration.strip():
+        line += f"\n  - Что делать с реализованным: {a.migration.strip()}"
+    body = append_history(rest, line)
     writes[old_path] = "---" + head + body
     if "/_archive/" not in old_path:
         moves.append((old_path, os.path.join(ARCHIVE, os.path.basename(old_path)).replace("\\", "/")))
