@@ -28,6 +28,16 @@ SCRIPTS = KIT / "scripts"
 VERBOSE = "-v" in sys.argv
 RESULTS: list = []
 
+# Прогон не читает личный конфиг машины. Без этого тест, объявивший один бэкенд с окном
+# в 8 000, видел ещё три из `.env.aurora.local` разработчика: `prompt_budget` берёт самое
+# широкое окно кольца и возвращал чужие 200 000. Такой прогон зелёный или красный в
+# зависимости от того, чья машина его запустила, — и один релиз уже вышел с красным.
+# Тесты, которым нужно кольцо из нескольких бэкендов, объявляют его сами через окружение:
+# слой окружения изоляция не трогает.
+os.environ["AURORA_TESTS_ISOLATED"] = "1"
+for _k in [k for k in os.environ if k.startswith("AURORA_AGENT_BACKEND_")]:
+    del os.environ[_k]
+
 
 # ------------------------------------------------------------------ каркас
 
@@ -1528,7 +1538,8 @@ def test_no_private_terms_in_tracked_files(tmp: Path):
         if not path.is_file() or path.suffix not in (".md", ".py", ".txt", ".json",
                                                      ".yaml", ".yml", ".html"):
             continue
-        if rel.startswith("tests/corpus/"):     # корпус синтетический, домена в нём нет
+        if rel.startswith(("tests/corpus/",   # корпус синтетический, домена в нём нет
+                           "cockpit/vendor/")):  # чужой код: мы его не пишем и не правим
             continue
         for n, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
             m = rx.search(line)
@@ -2543,7 +2554,10 @@ def test_qa_corpus_does_not_describe_a_removed_engine(tmp: Path):
         text = f.read_text(encoding="utf-8")
         if re.search(r"^status: deprecated", text, re.M):
             continue          # выведен из оборота: это запись о прошлом
-        for cmd in re.findall(r"`((?:kb|ctx|make|ship|ops|sync|kit|agent|dev):[a-z-]+)", text):
+        # Цифра в имени команды — не выдумка: `kit:i18n`. Регулярка без неё обрывала имя
+        # на `kit:i` и объявляла снятой команду, которая есть. Проверка, которая врёт
+        # про несуществующую поломку, обесценивает и настоящие свои находки.
+        for cmd in re.findall(r"`((?:kb|ctx|make|ship|ops|sync|kit|agent|dev):[a-z0-9-]+)", text):
             if cmd not in known:
                 bad.append(f"{f.name}: зовёт снятую команду {cmd}")
         # с начала строки: так пишут ожидаемый frontmatter. Внутри фразы упоминание
@@ -4623,6 +4637,416 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
     known = {r["cmd"] for r in rows}
     assert all(n in known for n in named), \
         f"в порядке раздела названы несуществующие команды: {[n for n in named if n not in known]}"
+
+
+@test
+def test_editor_cannot_reach_outside_the_project(tmp: Path):
+    """Редактор — первая в панели возможность «записать что угодно куда угодно».
+
+    Панель принципиально не исполняет произвольных строк и запускает только команды
+    реестра. Файловый редактор эту стену пробивает, и держать её теперь должен код, а
+    не интерфейс: путь вне проекта, ссылка наружу, чужое расширение.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    (root / "Artifacts" / "ac").mkdir(parents=True)
+    (root / "Artifacts" / "ac" / "AC-1.md").write_text("# AC\n\nтело\n", encoding="utf-8")
+    secret = tmp / "снаружи.md"
+    secret.write_text("чужое\n", encoding="utf-8")
+
+    assert ck.inside(str(root), "Artifacts/ac/AC-1.md"), "свой файл не признан своим"
+    assert not ck.inside(str(root), "../снаружи.md"), "путь наверх не отсечён"
+    assert not ck.inside(str(root), "Artifacts/../../снаружи.md"), "путь наверх через папку"
+    # Абсолютный путь превращается в относительный внутри проекта, а не в побег:
+    # `os.path.join(root, "/etc/passwd")` в Python вернул бы «/etc/passwd».
+    assert ck.inside(str(root), "/etc/passwd").startswith(str(root.resolve())), \
+        "абсолютный путь ушёл за пределы проекта"
+
+    # Ссылка наружу опаснее «..»: её не видно в самом пути.
+    os.symlink(str(tmp), str(root / "вон"))
+    assert "text" not in ck.file_read(str(root), "вон/снаружи.md"), \
+        "прочитали файл за периметром по символической ссылке"
+
+    assert ck.file_write(str(root), "../снаружи.md", "затёрто").get("error"), \
+        "запись за пределы проекта не отклонена"
+    assert secret.read_text(encoding="utf-8") == "чужое\n", "файл снаружи всё-таки изменён"
+
+
+@test
+def test_editor_respects_what_must_not_be_edited(tmp: Path):
+    """Инварианты базы — не текст в скилле, а поведение: мышью их нарушить нельзя.
+
+    Поставленное неизменяемо, доказательная часть Raw не правится, зеркало сотрёт
+    следующий синк, а карточка базы выводится из источников — её правят корректирующим
+    артефактом. Редактор, открывающий всё подряд на запись, обнуляет это одним движением.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    closed = ["Deliverables/released/ОПЗ.md", "Raw/contract/ТЗ.md", "Raw/meetings/п.md",
+              "Raw/laws/з.md", "Raw/customer/письмо.md", "Sources/Confluence/Стр.md",
+              "AuroraKnowledgeDB/Concepts/Заявка.md"]
+    for rel in closed:
+        why = ck.why_readonly(rel)
+        assert why, f"{rel} открыт на запись"
+        assert len(why) > 20, f"{rel}: запрет без объяснения — его обойдут мимо панели"
+
+    # Рукотворное в базе ниоткуда не выводится: корректирующий артефакт для него
+    # бессмыслен, потому что нет карточки-владельца в источниках.
+    for rel in ["AuroraKnowledgeDB/Decisions/DR-1.md", "AuroraKnowledgeDB/Questions/Q-1.md",
+                "AuroraKnowledgeDB/meta/releases.md", "Raw/project/заметка.md",
+                "Raw/examples/пример.md", "Artifacts/ac/AC-1.md", "Workspaces/x/черновик.md"]:
+        assert not ck.why_readonly(rel), f"{rel} закрыт зря — править его законно"
+
+    assert ck.why_readonly("Artifacts/x.md", "---\nkind: document\n---\n"), \
+        "карточка kind: document правится: тело переносится дословно и не переписывается"
+
+
+@test
+def test_saving_does_not_silently_overwrite(tmp: Path):
+    """Файл под редактором меняется и снаружи: агент дописывает артефакт, синк приносит
+    чужое, его правят в Obsidian. Молча затирать — тот же класс, что публикация поверх
+    чужой страницы: работа исчезает, и об этом никто не узнаёт."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    (root / "Artifacts" / "ac").mkdir(parents=True)
+    path = root / "Artifacts" / "ac" / "AC-1.md"
+    path.write_text("# AC\n\nпервое\n", encoding="utf-8")
+
+    opened = ck.file_read(str(root), "Artifacts/ac/AC-1.md")
+    assert opened["digest"], "файл открыт без слепка — расхождение потом не поймать"
+
+    path.write_text("# AC\n\nчужое\n", encoding="utf-8")     # кто-то записал, пока читали
+    res = ck.file_write(str(root), "Artifacts/ac/AC-1.md", "# AC\n\nмоё\n",
+                        expect=opened["digest"])
+    assert res.get("conflict"), "чужая правка затёрта молча"
+    assert res.get("disk", "").strip().endswith("чужое"), \
+        "конфликт объявлен, а показать человеку нечего — выбирать не из чего"
+    assert path.read_text(encoding="utf-8").endswith("чужое\n"), "затёрли, объявив конфликт"
+
+    # Осознанное решение человека «оставить моё» проходит: слепок не передан.
+    ok = ck.file_write(str(root), "Artifacts/ac/AC-1.md", "# AC\n\nмоё\n")
+    assert ok.get("ok") and path.read_text(encoding="utf-8").endswith("моё\n")
+    assert not list(path.parent.glob("*.aurora-tmp")), \
+        "временный файл остался рядом: следующий обход дерева покажет его человеку"
+
+    # Критик после реализации: отказ файловой системы уходил трассировкой. Длинное имя,
+    # полный диск, папка без прав — обычные исходы, а не исключительные; для человека
+    # трассировка означает «панель сломалась», хотя сломался его путь.
+    long = ck.file_write(str(root), "Artifacts/ac/" + "д" * 400 + ".md", "текст")
+    assert long.get("error") and "записать" in long["error"], \
+        f"отказ файловой системы не превращён в ответ: {long}"
+    assert not list((root / "Artifacts" / "ac").glob("*.aurora-tmp")), \
+        "после отказа остался обрубок"
+
+    # И линтер после сохранения не имеет права решать судьбу сохранения: он читает базу
+    # целиком, на большой базе висел до потолка — а файл к тому моменту уже записан.
+    (root / ".opencode" / "scripts").mkdir(parents=True)
+    (root / ".opencode" / "scripts" / "kb_lint.py").write_text(
+        "import time; time.sleep(300)", encoding="utf-8")
+    slow = ck.file_write(str(root), "Artifacts/ac/AC-1.md", "# AC\n\nещё\n")
+    assert slow.get("ok"), "зависший линтер отменил сохранение"
+    assert slow["lint"]["lines"] and "не ответил" in slow["lint"]["lines"][0], \
+        "молчание линтера выглядит как «находок нет»"
+
+
+@test
+def test_commit_from_the_panel_skips_the_ratchet_not_the_names(tmp: Path):
+    """Панель годами писала «сделайте коммит», не умея его сделать.
+
+    При этом двенадцать скриптов движка отказываются работать по незакоммиченному
+    дереву: правка одной карточки блокировала ремонт базы и пересборку. Для человека,
+    который не открывает терминал, это тупик, а не защита.
+
+    И обход храповика не имеет права быть `--no-verify`: тот снимет заодно `commit-msg`,
+    который не пускает внутренние названия в историю. Пропустить проверку качества базы —
+    решение человека; выпустить имя заказчика в git — необратимая утечка.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    root.mkdir(parents=True)
+    (root / "файл.md").write_text("текст\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "."], cwd=root, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=root, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=root, capture_output=True)
+
+    st = ck.git_state(str(root))
+    assert st["repo"] and st["count"] == 1, f"состояние дерева не прочитано: {st}"
+    assert any(r["new"] for r in st["dirty"]), "новый файл не отмечен новым"
+
+    assert ck.git_commit(str(root), "   ").get("error"), \
+        "коммит без сообщения: через месяц по такой истории не понять, что произошло"
+    done = ck.git_commit(str(root), "первый")
+    assert done.get("ok") and done.get("commit"), f"коммит не прошёл: {done}"
+    assert ck.git_state(str(root))["count"] == 0, "после коммита дерево не чисто"
+    assert ck.git_commit(str(root), "ещё").get("error"), "коммит пустоты не отклонён"
+
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    body = src[src.index("def git_commit("):src.index("def git_push(")]
+    # Смотрим на код, а не на текст: в комментарии `--no-verify` назван нарочно —
+    # именно тем, чего мы не делаем.
+    code = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    code = re.sub(r'"""[\s\S]*?"""', "", code)
+    assert "--no-verify" not in code, \
+        "обход храповика снимает и проверку внутренних названий — имя заказчика уедет в git"
+    assert "AURORA_SKIP_RATCHET" in code, "обход храповика не через переменную окружения"
+
+    assert ck.git_push(str(root)).get("error"), \
+        "push без удалённого репозитория должен объяснить, что отправлять некуда"
+
+    # Файл в `.gitignore` — не «зафиксирован», а вне git. `git status` молчит про оба
+    # случая одинаково, и панель объявляла защищённым историей то, чего в git нет.
+    # Человек правил бы такой файл в уверенности, что откат возможен.
+    (root / ".gitignore").write_text("Workspaces/\n", encoding="utf-8")
+    (root / "Workspaces").mkdir()
+    (root / "Workspaces" / "черновик.md").write_text("текст\n", encoding="utf-8")
+    state = ck.git_file_state(str(root), "Workspaces/черновик.md")
+    assert "вне git" in state, f"игнорируемый файл объявлен «{state}»"
+    assert ck.git_file_state(str(root), "файл.md") == "зафиксирован", \
+        "обычный файл перестал быть зафиксированным"
+
+
+@test
+def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
+    """Храповик судил всю базу при каждом коммите.
+
+    Правишь один артефакт — отвечаешь за триста чужих ошибок в карточках, которых не
+    касался, а «починить» предлагается командой, которая сама меняет полбазы. Отказ
+    переставал что-либо значить, и его научились обходить не глядя.
+
+    Отдельно проверяем кириллицу: git печатает такие имена в кавычках и восьмеричных
+    escape, и путь через оболочку до линтера не доходит — проверка молча проходила бы
+    всегда, а в русской базе это значит «её нет».
+    """
+    root = tmp / "proj"
+    (root / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+
+    def card_at(name: str, body: str):
+        (root / "AuroraKnowledgeDB" / "Concepts" / name).write_text(
+            "---\ntype: concept\nstatus: draft\nkind: knowledge\n---\n\n# " + name + "\n\n"
+            + body, encoding="utf-8")
+
+    card_at("Чужая.md", "Битые: [[Нет-1]] и [[Нет-2]].\n")
+    card_at("Моя.md", "Целая ссылка: [[Чужая]].\n")
+
+    lint = KIT / "scripts/kb_lint.py"
+    whole = subprocess.run([sys.executable, str(lint), "--summary"], cwd=root,
+                           capture_output=True, text=True).stdout
+    assert "ошибок 2" in whole, f"подготовка сломалась: {whole}"
+
+    mine = subprocess.run([sys.executable, str(lint), "--only",
+                           "AuroraKnowledgeDB/Concepts/Моя.md", "--summary"],
+                          cwd=root, capture_output=True, text=True)
+    assert "ошибок 0" in mine.stdout, \
+        f"за чужие ошибки отвечает тот, кто их не делал:\n{mine.stdout}"
+    assert mine.returncode == 0, "чистый файл, а код возврата ненулевой"
+
+    # Кириллица через файл: список путей передаётся не оболочкой.
+    lst = root / "список.txt"
+    lst.write_text("AuroraKnowledgeDB/Concepts/Чужая.md\n", encoding="utf-8")
+    by_file = subprocess.run([sys.executable, str(lint), "--only-from", str(lst), "--summary"],
+                             cwd=root, capture_output=True, text=True).stdout
+    assert "ошибок 2" in by_file, \
+        f"список путей из файла не сработал — а через оболочку кириллица не доходит:\n{by_file}"
+
+    hook = (KIT / "scripts/aurora_hooks.py").read_text(encoding="utf-8")
+    assert "core.quotepath=false" in hook, \
+        "хук берёт пути у git как есть: кириллица приедет в кавычках и escape"
+    assert "--only-from" in hook, "хук судит базу целиком, а не то, что коммитят"
+    start = hook.index("  ratchet)")
+    ratchet = hook[start:hook.index("esac", start)]
+    assert "плотность ошибок по всей базе выросла" in ratchet, \
+        "глобальная плотность не стала предупреждением"
+    assert "exit 1" not in ratchet, \
+        "за состояние всей базы отвечает не тот, кто сейчас коммитит один файл"
+    assert "AURORA_SKIP_RATCHET" in hook, "из панели храповик не обойти"
+
+
+@test
+def test_interface_language_is_a_file_not_a_rewrite(tmp: Path):
+    """Языки закладываются механизмом, а не разовым выносом 982 строк.
+
+    Разовый вынос трогает каждый экран и не даёт человеку ничего видимого — идеальные
+    условия, чтобы сломать работающее и узнать об этом от пользователя. Новый код
+    пишется через каталог сразу, старые экраны переезжают тогда, когда их и так правят.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    langs = ck.languages()
+    assert any(l["id"] == "ru" for l in langs), "русского каталога нет"
+    ru = ck.i18n_catalogue("ru")
+    assert ru["lang"] == "ru" and ru["strings"], "каталог пуст"
+    assert ru["strings"].get("nav.files"), "строк нового раздела нет в каталоге"
+
+    # Языка нет — берём русский, а не пустой экран и не имена ключей.
+    assert ck.i18n_catalogue("de")["lang"] == "ru", "неизвестный язык не откатился на русский"
+    assert ck.i18n_catalogue("../../etc/passwd")["lang"] == "ru", "путь в имени языка"
+
+    # Битый каталог откатывается целиком и называет причину. Оставить его выбранным
+    # значило бы показать русский экран под именем другого языка: человек решит, что
+    # перевода нет, и чинить не станет.
+    bad = KIT / "cockpit/i18n/zz.json"
+    bad.write_text("{сломано", encoding="utf-8")
+    try:
+        broken = ck.i18n_catalogue("zz")
+        assert broken["lang"] == "ru", "битый каталог остался выбранным языком"
+        assert broken["warning"], "поломка каталога не названа"
+        assert all(l["id"] != "zz" for l in ck.languages()), \
+            "битый каталог предлагается к выбору"
+    finally:
+        bad.unlink()
+    assert not ck.i18n_catalogue("ru")["warning"], "предупреждение на исправном каталоге"
+    assert 'if (d.warning) toast(' in (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8"), \
+        "сервер назвал поломку, а панель её не показывает"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "data-i18n" in ui and "function applyI18n" in ui, "разметка не умеет переводиться"
+    assert "await loadI18n();" in ui, "строки грузятся после первой отрисовки — экран моргнёт"
+    i18n_dir = KIT / "cockpit/i18n"
+    assert (i18n_dir / "ru.json").is_file(), "каталог языка не файлом рядом с темами"
+    # Новый язык = новый файл: ни сервер, ни панель править не нужно.
+    assert "os.listdir(I18N_DIR)" in (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8"), \
+        "список языков захардкожен — добавление языка станет правкой кода"
+
+
+@test
+def test_editor_ships_prebuilt_and_pruned(tmp: Path):
+    """Редактор приезжает собранным: сборки в ките нет и не будет.
+
+    Панель — self-contained HTML, сервер — стандартная библиотека. Это условие закрытого
+    контура: на машине аналитика может не быть ни интернета, ни Node. Цена — мегабайты
+    в репозитории, и они не должны расти вдвое от невнимательности: полный `dist` тянет
+    23 МБ, из которых половина — то, чем мы не пользуемся.
+    """
+    v = KIT / "cockpit/vendor/vditor"
+    assert v.is_dir(), "редактора нет в поставке"
+    # Раскладка повторяет пакет: библиотека тянет своё по пути `<cdn>/dist/…`, и
+    # плоская папка давала 404 на языке интерфейса и на mermaid — редактор поднимался
+    # без них и молчал об этом.
+    assert (v / "dist/index.min.js").is_file() and (v / "dist/index.css").is_file(), "нет сборки"
+    assert (v / "VERSION").is_file() and (v / "LICENSE").is_file(), \
+        "чужой код без версии и лицензии"
+    for keep in ("dist/js/lute", "dist/js/mermaid", "dist/js/katex",
+                 "dist/js/i18n/ru_RU.js"):
+        assert (v / keep).exists(), f"вычищено нужное: {keep}"
+    for drop in ("dist/js/mathjax", "dist/js/graphviz", "dist/js/echarts",
+                 "dist/js/markmap", "dist/ts", "dist/index.js", "dist/types"):
+        assert not (v / drop).exists(), f"неиспользуемое в репозитории: {drop}"
+
+    size = sum(p.stat().st_size for p in v.rglob("*") if p.is_file())
+    assert size < 14_000_000, f"вендор разросся: {size // 1_000_000} МБ (ждали ~10)"
+
+    assert not (KIT / "package.json").exists(), "в ките завелась сборка"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "/vendor/vditor" in ui, "панель не знает, откуда брать редактор"
+    assert "cdn.jsdelivr" not in ui and "unpkg.com" not in ui, \
+        "панель тянет библиотеку из интернета — в закрытом контуре это пустой экран"
+    assert "function ensureVditor" in ui and "VDITOR_READY" in ui, \
+        "10 МБ грузятся при старте: панель обязана открываться сразу"
+
+    # Раздаём только известные типы и только из этой папки.
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "STATIC_TYPES" in srv and "inside(base, rel)" in srv, \
+        "статика раздаётся без проверки пути и типа"
+
+
+@test
+def test_save_button_compares_text_not_a_touched_flag(tmp: Path):
+    """«Сохранить» неактивна без изменений — и «без изменений» считается сравнением текста.
+
+    В режиме «как в Word» редактор пересобирает разметку своим сериализатором: файл
+    расходится с исходным сразу после открытия, ничего не тронув. Внутренний признак
+    «трогали» загорелся бы сам, и защита от дифа на весь файл исчезла бы молча — а в
+    git-базе такой диф означает, что настоящую правку в нём не найти.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "function wholeText()" in ui and 'F.dirty = wholeText() !== F.orig;' in ui, \
+        "признак изменений берётся не из сравнения текста целого документа"
+    # Шапка правится отдельно от тела — значит и сравнивать надо документ целиком,
+    # иначе правка одной только шапки не включит кнопку «Сохранить».
+    assert "function splitFrontmatter" in ui and 'return (F.fm || "")' in ui, \
+        "шапка не отделена от тела: в режиме «как в Word» редактор её перепишет"
+    assert 'if (mode === "wysiwyg" && now !== text)' in ui, \
+        "расхождение сразу после открытия в WYSIWYG не проверяется"
+    assert "editor.wysiwyg_warn" in ui, "о переписанной разметке человеку не говорят"
+    assert '$("#fileSave").disabled = true;' in ui, "кнопка активна на нетронутом файле"
+    assert 'mode: localStorage' not in ui, "режим не запоминается — выбирать придётся каждый раз"
+    assert '"aurora-editor-mode"' in ui, "выбранный режим не сохраняется"
+    ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+    assert "{n}" in ru["editor.wysiwyg_warn"], \
+        "предупреждение не называет число расходящихся строк — цена не видна"
+
+    # Живой прогон: редактор сам написал «предпросмотр требует 20901мс» на карточке в
+    # 11 КБ, а `_index.md` живой базы весит 171 КБ. Без порогов панель подвисала бы
+    # молча, и человек решил бы, что сломалась она, а не документ велик.
+    assert "PREVIEW_LIMIT" in ui and "EDIT_LIMIT" in ui, "порогов размера нет"
+    assert "editor.too_big" in ui and "editor.heavy" in ui, \
+        "порог сработает молча: человеку не сказано, почему вида нет"
+    assert 'F.ed.disabled()' in ui, \
+        "в файле «только для чтения» можно печатать: работа пропадёт при первом уходе"
+    for key in ("editor.too_big", "editor.heavy"):
+        assert "{kb}" in ru[key], f"{key} не называет размер — непонятно, что за файл"
+
+
+@test
+def test_files_section_is_reachable_and_explains_itself(tmp: Path):
+    """Раздел «Файлы» — место, куда человек идёт искать документ, а не запускать программу."""
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'data-view="files"' in ui and 'id="view-files"' in ui, "раздела нет"
+    # После «Продуктивности»: к файлам возвращаются часто, но начинают не с них.
+    assert ui.index('data-view="work"') < ui.index('data-view="files"') < ui.index('data-view="ask"'), \
+        "раздел «Файлы» стоит не после «Продуктивности»"
+    assert 'if (view==="files") renderFiles();' in ui, "переход в раздел ничего не рисует"
+    for handler in ('$("#fileSave")?.addEventListener', '$("#fileSearch")?.addEventListener',
+                    '$("#fileFolder")?.addEventListener', '$("#fileMode")?.addEventListener'):
+        assert handler in ui, f"кнопка без обработчика: {handler}"
+    assert 'e.key === "s"' in ui, "Ctrl+S не сохраняет — а он и есть подтверждение"
+    assert "resolveConflict" in ui, "расхождение с диском некому показать"
+
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    for route in ("/api/files/tree", "/api/files/read", "/api/files/write",
+                  "/api/files/reveal", "/api/git", "/api/git/commit", "/api/git/push",
+                  "/api/i18n"):
+        assert f'"{route}"' in srv, f"панель зовёт маршрут, которого нет: {route}"
+        assert route in ui, f"сервер отвечает на {route}, но панель его не зовёт"
+
+
+@test
+def test_reveal_hands_the_path_to_the_os_without_a_shell(tmp: Path):
+    """Имя файла — чужой текст, и `; rm -rf` в нём не должно ничего значить."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    body = src[src.index("def reveal("):src.index("def reveal(") + 1400]
+    assert "shell=True" not in body, "путь уходит в оболочку"
+    assert "subprocess.Popen(cmd)" in body, "команда собирается не списком"
+
+    root = tmp / "proj"
+    root.mkdir()
+    assert ck.reveal(str(root), "../снаружи.md").get("error"), \
+        "проводник открывает путь за пределами проекта"
+    assert ck.reveal(str(root), "нет-такого.md").get("error"), \
+        "проводник зовётся на несуществующий файл"
 
 
 @test

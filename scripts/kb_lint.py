@@ -93,8 +93,21 @@ def main():
                     help="перечислить все находки, а не первые примеры (для очереди приёмки)")
     ap.add_argument("--summary", action="store_true",
                     help="только итоговая строка: карточек и ошибок")
+    ap.add_argument("--only", nargs="+", metavar="ПУТЬ", default=None,
+                    help="судить только эти файлы (базу всё равно читаем целиком: без "
+                         "неё не проверить ссылки). Так работает pre-commit: за чужие "
+                         "ошибки в карточках, которых вы не касались, отказывать незачем")
+    ap.add_argument("--only-from", metavar="ФАЙЛ", default="",
+                    help="то же, что --only, но список путей читается из файла по строке "
+                         "на путь: git печатает кириллицу в кавычках и восьмеричных "
+                         "escape, и через оболочку такой путь не доходит")
     args = ap.parse_args()
     summary, full = args.summary, args.full
+    picked = list(args.only or [])
+    if args.only_from and os.path.isfile(args.only_from):
+        picked += [l.strip() for l in open(args.only_from, encoding="utf-8").read().splitlines()
+                   if l.strip()]
+    only = [x.replace("\\", "/").lstrip("./") for x in picked] or None
     releases = load_releases()
     names, alias_owner, cards = set(), {}, {}
     dup_aliases, errors = [], []
@@ -322,7 +335,15 @@ def main():
                 break
 
     n = len(cards)
-    print(f"kb_lint: карточек {n}, ошибок {len(errors)}")
+    if only:
+        # Фильтруем ПОСЛЕ полного прохода: находка «битая ссылка» рождается от знания
+        # обо всей базе, и урезать вход значило бы объявить целые карточки пропавшими.
+        errors = [e for e in errors
+                  if any(e.replace("\\", "/").lstrip("./").startswith(o) for o in only)]
+        print(f"kb_lint: карточек {n}, ошибок {len(errors)} "
+              f"(судим только переданные файлы: {len(only)})")
+    else:
+        print(f"kb_lint: карточек {n}, ошибок {len(errors)}")
     if summary or not errors:
         return 1 if errors else 0
 

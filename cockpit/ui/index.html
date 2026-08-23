@@ -248,6 +248,17 @@ tr:last-child td{border-bottom:0}
   border-radius:50%;display:inline-block;animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* Редактор показывает ДОКУМЕНТ, а не панель. Скины Авроры красят агрессивно —
+   капс, разрядка, свой шрифт, — и заголовок карточки в предпросмотре выходил жёлтым
+   капсом. Человек правит текст, который потом уедет заказчику: он должен видеть текст,
+   а не оформление панели. Сбрасываем на поддереве редактора, чужой код не трогаем. */
+#vditor, #vditor *{text-transform:none !important; letter-spacing:normal !important;
+  font-variant:normal !important}
+#vditor .vditor-reset{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+  "Helvetica Neue",Arial,sans-serif}
+#vditor .vditor-reset h1,#vditor .vditor-reset h2,#vditor .vditor-reset h3,
+#vditor .vditor-reset h4{color:inherit; font-weight:600}
+
 @media (max-width:860px){#app{grid-template-columns:64px 1fr}nav .label,nav .group,nav .count{display:none}
   nav button{justify-content:center}main{padding:16px}}
 </style>
@@ -290,6 +301,7 @@ tr:last-child td{border-bottom:0}
     <button data-view="project" aria-label="Настройки проекта"><span class="label">Настройки проекта</span></button>
     <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
     <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
+    <button data-view="files" aria-label="Файлы проекта"><span class="label" data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
     <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
     <button data-view="reports" aria-label="Отчёты"><span class="label">Отчёты</span></button>
     <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
@@ -423,6 +435,17 @@ tr:last-child td{border-bottom:0}
       <p class="sub">Подключить новый проект и настроить текущий — не выходя в терминал.
         Форма задаёт те же вопросы, что <span class="mono">setup</span> в терминале, и
         записывает их тем же скриптом. Ниже — весь конфиг текстом, для того, чего в форме нет.</p>
+      <div class="card" style="padding:14px;margin-bottom:12px">
+        <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+          <b>Язык интерфейса</b>
+          <select id="langSel" style="font:inherit;padding:6px 8px;border-radius:8px"></select>
+          <span class="sub" id="langNote"></span>
+        </div>
+        <p class="sub" style="margin:8px 0 0">Общий для всех проектов на этой машине.
+          Новый язык — новый файл в <span class="mono">cockpit/i18n/</span>, как темы
+          оформления. Строки, которых в переводе нет, показываются по-русски: половина
+          экрана на чужом языке хуже, чем весь экран на своём.</p>
+      </div>
       <div id="setupBody"></div>
     </section>
 
@@ -437,6 +460,51 @@ tr:last-child td{border-bottom:0}
     </section>
 
     <!-- СПРОСИТЬ БАЗУ -->
+    <!-- ФАЙЛЫ -->
+    <section class="view" id="view-files">
+      <h1 data-i18n="files.title">Файлы проекта</h1>
+      <p class="sub" data-i18n="files.about">Дерево проекта как есть. Файл открывается в
+        редакторе, если это текст; остальное — системным приложением.</p>
+
+      <div class="card" id="filesGit" style="padding:12px 16px;margin-bottom:12px"></div>
+
+      <div class="row" style="gap:14px;align-items:flex-start">
+        <div class="card" style="padding:10px;flex:0 0 320px;max-height:70vh;overflow:auto">
+          <input id="fileSearch" data-i18n-ph="files.search" placeholder="Поиск по имени и пути"
+            style="width:100%;font:inherit;padding:8px;border-radius:8px;margin-bottom:8px">
+          <div id="fileTree"></div>
+        </div>
+        <div class="card" style="padding:12px;flex:1;min-width:0" id="filePane">
+          <div class="sub" id="fileNone" data-i18n="files.pick_file">Выберите файл слева.</div>
+          <div id="fileEditor" hidden>
+            <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <b id="fileName" class="mono"></b>
+              <span id="fileRO" class="pill" hidden></span>
+              <span id="fileGit" class="pill"></span>
+              <span style="flex:1"></span>
+              <select id="fileMode" style="font:inherit;padding:4px 6px;border-radius:8px">
+                <option value="sv" data-i18n="editor.mode_sv">Разметка и вид</option>
+                <option value="wysiwyg" data-i18n="editor.mode_wysiwyg">Как в Word</option>
+              </select>
+              <button class="btn" id="fileFolder" data-i18n="files.reveal_folder">Показать в папке</button>
+              <button class="btn" id="fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
+              <button class="btn primary" id="fileSave" disabled data-i18n="editor.save">Сохранить</button>
+            </div>
+            <details id="fileFm" hidden style="margin-bottom:8px">
+              <summary class="sub" style="cursor:pointer" data-i18n="editor.frontmatter">Шапка документа</summary>
+              <textarea id="fileFmText" spellcheck="false" rows="8"
+                style="width:100%;font:12px var(--mono);padding:8px;border-radius:8px;margin-top:6px"></textarea>
+              <div class="sub" id="fileFmHint"></div>
+            </details>
+            <div id="fileStale" class="note" hidden></div>
+            <div id="fileWarn" class="note" hidden></div>
+            <div id="vditor"></div>
+            <div id="fileLint" class="sub" style="margin-top:8px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="view" id="view-ask">
       <h1>Спросить базу</h1>
       <p class="sub">Вопрос своими словами. Движок соберёт контекст из карточек, модель
@@ -558,7 +626,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.97.2";
+const UI_VERSION = "1.98.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -589,6 +657,368 @@ function toast(msg, kind="ok"){
   const t = el("div",{class:"toast "+kind}, msg);
   $("#toasts").append(t);
   setTimeout(()=>{ t.style.opacity=0; setTimeout(()=>t.remove(),250); }, 4200);
+}
+
+
+/* ---------------- языки ---------------- */
+// Каталог строк живёт отдельным файлом (`cockpit/i18n/<язык>.json`) — тем же приёмом,
+// что и темы оформления: новый язык = новый файл, панель править не нужно. Ключа нет в
+// переводе — берём русский: половина экрана на чужом языке хуже, чем весь на своём.
+let I18N = {};
+
+function t(key, vars){
+  let s = I18N[key];
+  if (s === undefined) return key;          // такого ключа нет вовсе — видно сразу
+  if (vars) for (const [k,v] of Object.entries(vars)) s = s.replaceAll("{"+k+"}", v);
+  return s;
+}
+
+async function loadI18n(){
+  const lang = localStorage.getItem("aurora-lang") || "ru";
+  const d = await api("/api/i18n?lang=" + encodeURIComponent(lang), {quiet:true});
+  I18N = d.strings || {};
+  if (d.warning) toast(d.warning, "warn");
+  S.langs = d.languages || [];
+  S.lang = d.lang || "ru";
+  document.documentElement.lang = S.lang;
+  applyI18n();
+}
+
+function applyI18n(){
+  // Разметка помечена `data-i18n`; новые экраны пишутся сразу так, старые переезжают
+  // тогда, когда их и так правят. Разовый вынос 982 строк — правка, которая трогает
+  // каждый экран и не даёт человеку ничего видимого.
+  $$("[data-i18n]").forEach(n => { const v = I18N[n.dataset.i18n]; if (v) n.textContent = v; });
+  $$("[data-i18n-ph]").forEach(n => { const v = I18N[n.dataset.i18nPh]; if (v) n.placeholder = v; });
+}
+
+function drawLangPicker(){
+  const sel = $("#langSel");
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const l of (S.langs || [])){
+    const o = el("option", {value:l.id}, l.name + " · строк " + l.keys);
+    if (l.id === S.lang) o.selected = true;
+    sel.append(o);
+  }
+  const total = Math.max(...(S.langs || [{keys:0}]).map(l => l.keys), 1);
+  const mine = (S.langs || []).find(l => l.id === S.lang);
+  // Полноту говорим числом, а не «переведено частично»: человек должен видеть,
+  // сколько экрана придёт по-русски, прежде чем выбрать язык.
+  $("#langNote").textContent = mine && mine.keys < total
+    ? `переведено ${mine.keys} из ${total} — остальное покажется по-русски`
+    : "";
+  sel.onchange = async () => {
+    localStorage.setItem("aurora-lang", sel.value);
+    await loadI18n();
+    drawLangPicker();
+    toast("язык интерфейса: " + sel.options[sel.selectedIndex].text.split(" · ")[0]);
+  };
+}
+
+/* ---------------- файлы проекта ---------------- */
+const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"" };
+// Порог живого предпросмотра в знаках. Не выдумка: на карточке в 11 КБ редактор сам
+// написал «требует 20901мс», а `_index.md` живой базы весит 171 КБ.
+const PREVIEW_LIMIT = 40000;
+// Потолок редактора. Выше него не «медленно», а «висит»: разбор документа в редакторе
+// растёт с размером, и `_index.md` живой базы (171 КБ) подвесил бы панель молча.
+// Такие файлы — не документы аналитика, а машинные оглавления: их не правят руками.
+const EDIT_LIMIT = 150000;
+
+async function renderFiles(){
+  if (!S.project){ $("#fileTree").innerHTML = ""; $("#filesGit").textContent = t("files.pick_project"); return; }
+  await drawGit();
+  const d = await api("/api/files/tree?project=" + encodeURIComponent(S.project.path));
+  F.files = d.files || [];
+  $("#navFiles").textContent = F.files.length || "";
+  drawTree();
+  if (d.truncated) toast(t("files.truncated", {n:d.count}), "warn");
+}
+
+function drawTree(){
+  const q = ($("#fileSearch").value || "").trim().toLowerCase();
+  const rows = q ? F.files.filter(f => f.path.toLowerCase().includes(q)) : F.files;
+  const box = $("#fileTree");
+  box.innerHTML = "";
+  if (!rows.length){ box.append(el("div",{class:"sub"}, t("files.empty"))); return; }
+  let dir = null;
+  for (const f of rows.slice(0, 1500)){
+    if (f.dir !== dir){
+      dir = f.dir;
+      box.append(el("div",{class:"group", style:"margin-top:8px"}, dir || "/"));
+    }
+    const b = el("button", {class:"btn", style:"width:100%;text-align:left;margin:1px 0",
+      onclick:()=>openFile(f)}, f.name);
+    if (f.readonly) b.append(el("span",{class:"pill", style:"margin-left:6px"}, "🔒"));
+    if (!f.text) b.append(el("span",{class:"pill", style:"margin-left:6px"}, "вне редактора"));
+    box.append(b);
+  }
+}
+
+async function openFile(f){
+  if (F.ed && F.dirty && !confirm("В открытом файле есть несохранённое. Уйти?")) return;
+  $("#fileNone").hidden = true; $("#fileEditor").hidden = false;
+  $("#fileName").textContent = f.path;
+  if (!f.text){
+    destroyEditor();
+    $("#fileWarn").hidden = false; $("#fileWarn").textContent = t("files.binary");
+    $("#fileSave").disabled = true; F.path = f.path; F.ro = "не текстовый";
+    return;
+  }
+  const d = await api("/api/files/read?project=" + encodeURIComponent(S.project.path)
+                      + "&path=" + encodeURIComponent(f.path));
+  if (d.error) return;
+  if ((d.text || "").length > EDIT_LIMIT){
+    destroyEditor();
+    $("#fileFm").hidden = true;
+    $("#fileStale").hidden = true;
+    $("#fileWarn").hidden = false;
+    $("#fileWarn").textContent = t("editor.too_big", {kb: Math.round(d.text.length / 1024)});
+    $("#fileSave").disabled = true;
+    F.path = d.path; F.ro = "слишком большой для редактора"; F.dirty = false;
+    $("#fileGit").textContent = d.git || "";
+    $("#fileRO").hidden = false;
+    $("#fileRO").textContent = "🔒 " + F.ro;
+    return;
+  }
+  F.path = d.path; F.digest = d.digest; F.ro = d.readonly || ""; F.orig = d.text; F.dirty = false;
+  $("#fileRO").hidden = !F.ro;
+  $("#fileRO").textContent = F.ro ? "🔒 " + t("files.readonly") + ": " + F.ro : "";
+  $("#fileGit").textContent = d.git || "";
+  $("#fileStale").hidden = !d.stale;
+  if (d.stale) $("#fileStale").innerHTML = esc(t("editor.stale", {date:d.published}))
+    + ' <button class="btn" id="filePublish">' + esc(t("editor.publish")) + '</button>';
+  $("#fileWarn").hidden = true;
+  $("#fileLint").textContent = "";
+  const [fm, body] = splitFrontmatter(d.text);
+  F.fm = fm;
+  $("#fileFm").hidden = !fm;
+  if (fm){
+    $("#fileFmText").value = fm;
+    $("#fileFmHint").textContent = t("editor.fm_hint");
+    $("#fileFmText").readOnly = !!F.ro;
+    $("#fileFmText").oninput = markDirty;
+  }
+  await mountEditor(body);
+  $("#fileSave").disabled = true;
+  $("#fileSave").title = t("editor.nochanges");
+}
+
+function splitFrontmatter(text){
+  // Шапка правится текстом в свёрнутом блоке, тело — редактором. Класть шапку внутрь
+  // Vditor нельзя: в режиме «как в Word» он попытается её отрисовать и перепишет.
+  const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text || "");
+  return m ? [m[0], text.slice(m[0].length)] : ["", text || ""];
+}
+
+function wholeText(){
+  return (F.fm || "") + (F.ed ? F.ed.getValue() : "");
+}
+
+function markDirty(){
+  if ($("#fileFmText") && !$("#fileFm").hidden) F.fm = $("#fileFmText").value;
+  F.dirty = wholeText() !== F.orig;
+  $("#fileSave").disabled = !F.dirty || !!F.ro;
+  setDirty("file:" + F.path, "файл " + F.path, F.dirty);
+}
+
+function destroyEditor(){
+  if (F.ed && F.ed.destroy) { try { F.ed.destroy(); } catch(e){} }
+  F.ed = null; $("#vditor").innerHTML = "";
+}
+
+async function mountEditor(text){
+  destroyEditor();
+  const mode = localStorage.getItem("aurora-editor-mode") || "sv";
+  $("#fileMode").value = mode;
+  await ensureVditor();
+  // Живой предпросмотр перерисовывает документ целиком. На карточке в 11 КБ редактор
+  // сам сообщил про 20 секунд, а в живой базе есть карточки по 170 КБ — на них это
+  // уже не «медленно», а «не открывается». Выше порога показываем разметку, а вид —
+  // по требованию: лучше честно сказать, чем подвесить панель.
+  const heavy = text.length > PREVIEW_LIMIT;
+  F.heavy = heavy;
+  F.ed = new Vditor("vditor", {
+    lang: S.lang === "ru" ? "ru_RU" : "en_US",
+    mode, height: Math.max(360, Math.round(
+      (window.innerHeight || document.documentElement.clientHeight || 900) * 0.62)),
+    cache:{enable:false},
+    toolbarConfig:{pin:true},
+    preview:{ math:{engine:"KaTeX"}, mode: heavy ? "editor" : "both", actions:[],
+              delay: 800 },
+    cdn: "/vendor/vditor",
+    after(){
+      F.ed.setValue(text);
+      // «Без изменений» считаем сравнением ТЕКСТА, а не внутренним признаком «трогали»:
+      // в режиме «как в Word» редактор пересобирает разметку своим сериализатором, и
+      // файл расходится с исходным сразу после открытия, ничего не тронув. Признак
+      // «трогали» загорелся бы сам, и защита от лишнего дифа исчезла бы молча.
+      if (F.ro && F.ed.disabled) F.ed.disabled();   // «только для чтения» — значит не печатать
+      if (heavy){
+        $("#fileWarn").hidden = false;
+        $("#fileWarn").innerHTML = "";
+        $("#fileWarn").append(
+          document.createTextNode(t("editor.heavy", {kb: Math.round(text.length / 1024)})),
+          el("button",{class:"btn", style:"margin-left:8px", onclick(){
+            F.ed.setPreviewMode("both"); $("#fileWarn").hidden = true;
+          }}, t("editor.heavy_show")));
+      }
+      setTimeout(()=>{
+        const now = F.ed.getValue();
+        if (mode === "wysiwyg" && now !== text){
+          const n = diffLines(text, now);
+          $("#fileWarn").hidden = false;
+          $("#fileWarn").textContent = t("editor.wysiwyg_warn", {n});
+        }
+        F.dirty = false; $("#fileSave").disabled = true;
+      }, 60);
+    },
+    input(){ markDirty(); }
+  });
+}
+
+function diffLines(a, b){
+  const x = a.split("\n"), y = b.split("\n");
+  let n = 0;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if (x[i] !== y[i]) n++;
+  return n;
+}
+
+// Библиотека тяжёлая (10 МБ на диске) — грузим её при первом открытии файла, а не при
+// старте панели: панель обязана открываться сразу, и платить за редактор тот, кто им
+// не пользуется, не должен.
+let VDITOR_READY = null;
+function ensureVditor(){
+  if (VDITOR_READY) return VDITOR_READY;
+  VDITOR_READY = new Promise((ok, fail)=>{
+    const css = el("link",{rel:"stylesheet", href:"/vendor/vditor/dist/index.css"});
+    document.head.append(css);
+    const s = el("script",{src:"/vendor/vditor/dist/index.min.js"});
+    s.onload = ok;
+    s.onerror = ()=>{ toast("редактор не загрузился: папка cockpit/vendor/vditor на месте?", "err"); fail(); };
+    document.head.append(s);
+  });
+  return VDITOR_READY;
+}
+
+async function saveFile(){
+  if (!F.path || F.ro) return;
+  const text = wholeText();
+  const d = await api("/api/files/write", {method:"POST", quiet:true, body: JSON.stringify(
+    {project:S.project.path, path:F.path, text, expect:F.digest})});
+  if (d.conflict) return resolveConflict(text, d.disk);
+  if (d.error) return toast(d.error, "err");
+  F.digest = d.digest; F.orig = text; F.dirty = false;
+  $("#fileSave").disabled = true; $("#fileGit").textContent = d.git || "";
+  setDirty("file:"+F.path, "", false);
+  toast(t("editor.saved"));
+  drawLint(d.lint);
+  drawGit();
+}
+
+function drawLint(lint){
+  const box = $("#fileLint");
+  if (!lint || !lint.lines){ box.textContent = ""; return; }
+  const bad = lint.lines.filter(l => /ошибок [1-9]/.test(l));
+  box.innerHTML = bad.length
+    ? "⚠ " + esc(t("editor.lint_found", {n: bad.length})) + "<br>" + lint.lines.map(esc).join("<br>")
+    : "✅ " + esc(t("editor.lint_clean"));
+}
+
+function resolveConflict(mine, disk){
+  // Молча затирать чужую правку — тот же класс ошибки, что публикация поверх чужой
+  // страницы: работа исчезает, и никто об этом не узнаёт.
+  const box = el("div",{class:"card", style:"padding:14px"},
+    el("b",{}, t("editor.conflict")),
+    el("p",{class:"sub"}, t("editor.conflict_help")),
+    el("div",{class:"row", style:"gap:8px"},
+      el("button",{class:"btn primary", onclick:async()=>{
+        const d = await api("/api/files/write", {method:"POST", body: JSON.stringify(
+          {project:S.project.path, path:F.path, text:mine})});
+        if (!d.error){ F.digest = d.digest; F.orig = mine; box.remove(); toast(t("editor.saved")); }
+      }}, t("editor.keep_mine")),
+      el("button",{class:"btn", onclick:()=>{
+        F.ed.setValue(disk); F.orig = disk; F.dirty = false;
+        $("#fileSave").disabled = true; box.remove();
+      }}, t("editor.take_disk"))));
+  $("#filePane").prepend(box);
+}
+
+/* ---------------- git проекта ---------------- */
+async function drawGit(){
+  const box = $("#filesGit");
+  if (!S.project){ box.textContent = ""; return; }
+  const g = await api("/api/git?project=" + encodeURIComponent(S.project.path), {quiet:true});
+  S.git = g;
+  box.innerHTML = "";
+  if (!g.repo){ box.append(el("span",{class:"sub"}, g.why || t("git.norepo"))); return; }
+  const head = el("div",{class:"row", style:"gap:10px;align-items:center;flex-wrap:wrap"},
+    el("b",{}, t("git.title")),
+    el("span",{class:"pill mono"}, g.branch || "—"),
+    el("span",{class:"sub"}, g.count ? t("git.count",{n:g.count}) : t("git.clean")));
+  if (g.ahead) head.append(el("span",{class:"pill"}, t("git.ahead", {n:g.ahead})));
+  box.append(head);
+  // Блок держим в одну-две строки: на живом проекте он занял 345 пикселей списком из
+  // шестидесяти путей и утолкал редактор ниже экрана. Редактор — то, ради чего сюда
+  // пришли; git — то, чем заканчивают.
+  if (g.count){
+    const list = el("details", {},
+      el("summary", {class:"sub", style:"cursor:pointer"}, "какие именно"),
+      el("div",{class:"mono sub", style:"max-height:160px;overflow:auto;margin-top:6px"},
+        g.dirty.slice(0,200).map(r => (r.new ? "+ " : "· ") + r.path).join("\n")),
+      el("div",{class:"sub", style:"margin-top:6px"}, t("git.why")));
+    head.append(list);
+    const msg = el("input",{id:"gitMsg", placeholder:t("git.message"),
+      style:"flex:1;min-width:180px;font:inherit;padding:6px 8px;border-radius:8px"});
+    const row = el("div",{class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"}, msg,
+      el("button",{class:"btn primary", onclick:()=>doCommit(false)}, t("git.commit")),
+      el("button",{class:"btn", onclick:()=>doCommit(true),
+        title:t("git.ratchet_anyway")}, t("git.commit_anyway")));
+    if (g.remotes && g.remotes.length)
+      row.append(el("button",{class:"btn", onclick:doPush}, t("git.push")));
+    box.append(row);
+  } else if (g.remotes && g.remotes.length && g.ahead){
+    box.append(el("div",{class:"row", style:"gap:8px;margin-top:8px"},
+      el("button",{class:"btn", onclick:doPush}, t("git.push"))));
+  }
+}
+
+async function doCommit(skip){
+  const msg = ($("#gitMsg")?.value || "").trim();
+  const d = await api("/api/git/commit", {method:"POST", quiet:true, body: JSON.stringify(
+    {project:S.project.path, message:msg, skip_ratchet:!!skip})});
+  if (d.error){
+    toast(d.ratchet ? t("git.ratchet_blocked") : d.error, "err");
+    if (d.ratchet) $("#filesGit").append(el("div",{class:"note"},
+      t("git.ratchet_blocked") + " " + t("git.ratchet_anyway")));
+    if (d.tail) $("#filesGit").append(el("pre",{class:"mono sub",
+      style:"white-space:pre-wrap;margin-top:8px"}, d.tail));
+    return;
+  }
+  toast("зафиксировано: " + d.commit);
+  drawGit();
+  if (F.path) $("#fileGit").textContent = "зафиксирован";
+}
+
+async function doPush(){
+  toast("отправляю…");
+  const d = await api("/api/git/push", {method:"POST", quiet:true,
+    body: JSON.stringify({project:S.project.path})});
+  if (d.error){
+    toast(d.error, "err");
+    $("#filesGit").append(el("pre",{class:"mono sub",
+      style:"white-space:pre-wrap;margin-top:8px"}, d.tail || ""));
+    return;
+  }
+  toast("отправлено в " + d.remote);
+  drawGit();
+}
+
+async function revealFile(mode){
+  if (!F.path) return;
+  await api("/api/files/reveal", {method:"POST", body: JSON.stringify(
+    {project:S.project.path, path:F.path, mode})});
 }
 
 /* ---------------- несохранённые правки ---------------- */
@@ -639,7 +1069,7 @@ function show(view){
   if (view==="health") renderHealth();
   if (view==="mirrors") renderMirrors();
   if (view==="install") renderInstall();
-  if (view==="setup") renderSetup();
+  if (view==="setup"){ renderSetup(); drawLangPicker(); }
   if (view==="project") renderProject();
   if (view==="version") renderVersion();
   if (view==="commands") renderCommands();
@@ -647,6 +1077,7 @@ function show(view){
   if (view==="quickstart") renderQuick();
   if (view==="work") renderQuick("продуктивность");
   if (view==="work") fillMakeKinds();
+  if (view==="files") renderFiles();
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
   if (view==="reports") renderReports();
   if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
@@ -700,6 +1131,7 @@ document.documentElement.dataset.theme = localStorage.getItem("aurora-theme") ||
 /* ---------------- загрузка ---------------- */
 async function boot(){
   $("#towers").innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
+  await loadI18n();      // строки до первой отрисовки: иначе экран моргнёт с русского на выбранный
   S.state = await api("/api/state");
   showDevNav();          // раздел разработки, если его уже открывали на этой машине
   const ui = S.state.ui || {};
@@ -3611,6 +4043,22 @@ $("#paletteOverlay").onclick = e => { if (e.target.id==="paletteOverlay") e.curr
 document.addEventListener("keydown", e=>{
   if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); openPalette(); }
   if (e.key==="Escape"){ closeRun(); $("#paletteOverlay").classList.remove("on"); }
+});
+
+/* ---------------- обработчики раздела «Файлы» ---------------- */
+$("#fileSearch")?.addEventListener("input", drawTree);
+$("#fileSave")?.addEventListener("click", saveFile);
+$("#fileFolder")?.addEventListener("click", ()=>revealFile("folder"));
+$("#fileOpen")?.addEventListener("click", ()=>revealFile("open"));
+$("#fileMode")?.addEventListener("change", async e=>{
+  localStorage.setItem("aurora-editor-mode", e.target.value);
+  if (F.path && F.ed) await mountEditor(F.dirty ? F.ed.getValue() : F.orig);
+});
+document.addEventListener("keydown", e=>{
+  if ((e.metaKey || e.ctrlKey) && e.key === "s" && S.view === "files"){
+    e.preventDefault();
+    if (!$("#fileSave").disabled) saveFile();
+  }
 });
 
 boot();
