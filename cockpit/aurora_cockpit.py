@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import importlib.util
 import json
 import os
@@ -104,6 +105,405 @@ def skin_css(skin_id: str) -> str:
     path = os.path.join(SKINS_DIR, name)
     return read_text(path, limit=200_000) if os.path.isfile(path) else ""
 
+
+
+# ------------------------------------------------------------------ файлы проекта
+
+VENDOR_DIR = os.path.join(KIT, "cockpit", "vendor")
+I18N_DIR = os.path.join(KIT, "cockpit", "i18n")
+
+# Что редактор открывает как текст. Всё остальное — «откройте системным приложением»:
+# показать .drawio или .png внутри редактора мы не можем, а притворяться, что можем,
+# хуже отказа — человек решит, что файл пустой.
+TEXT_EXT = {".md", ".txt", ".yaml", ".yml", ".json", ".csv", ".py", ".sh", ".js", ".css",
+            ".html", ".xml", ".ini", ".cfg", ".toml", ".sql", ".env", ".gitignore", ""}
+MAX_EDIT = 2_000_000          # потолок на файл: больше — это не документ, а выгрузка
+
+# Только для чтения. Список тот же, что в инвариантах скилла, и это не совпадение:
+# редактор — ещё одно место, где инвариант может быть нарушен мышью.
+READONLY = (
+    ("Deliverables/released", "поставленное неизменяемо: released — то, что уже отдано"),
+    ("Raw/contract", "доказательная часть: подписанный документ не правят"),
+    ("Raw/meetings", "доказательная часть: протокол не правят задним числом"),
+    ("Raw/laws", "доказательная часть: закон не правят"),
+    ("Raw/customer", "доказательная часть: письмо заказчика не правят"),
+    ("Sources", "зеркало внешней системы: правку сотрёт следующий синк"),
+)
+# База знаний выводится из источников — правится корректировкой, а не руками. Кроме
+# того, что ниоткуда не выводится: решения, вопросы и правила базы пишет человек.
+KB_WRITABLE = ("AuroraKnowledgeDB/Decisions", "AuroraKnowledgeDB/Questions",
+               "AuroraKnowledgeDB/meta")
+
+
+def inside(root: str, path: str) -> str:
+    """Абсолютный путь внутри проекта — или пусто.
+
+    Символические ссылки разрешаем ДО сравнения: `Artifacts/ac/../../../../etc/passwd`
+    отсекается очевидно, а ссылка наружу — нет, и именно она опаснее.
+    """
+    root = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(root, path.lstrip("/\\")))
+    return full if full == root or full.startswith(root + os.sep) else ""
+
+
+def why_readonly(rel: str, text: str = "") -> str:
+    """Почему этот файл нельзя править — словами, а не флагом.
+
+    Пустая строка значит «правится». Причина нужна в заголовке страницы: запрет без
+    объяснения человек обходит через системный проводник, и мы теряем и запрет, и след.
+    """
+    rel = rel.replace("\\", "/")
+    for prefix, why in READONLY:
+        if rel == prefix or rel.startswith(prefix + "/"):
+            return why
+    if rel.startswith("AuroraKnowledgeDB/"):
+        if any(rel.startswith(w + "/") or rel == w for w in KB_WRITABLE):
+            return ""
+        return ("карточка выведена из источников: правится корректирующим артефактом, "
+                "а не здесь — иначе следующая сборка сотрёт правку")
+    if re.search(r"^kind:\s*document\s*$", text or "", re.M):
+        return "тип document: тело переносится дословно и не переписывается никем"
+    return ""
+
+
+def file_tree(project: str, limit: int = 4000) -> dict:
+    """Дерево проекта как есть, с пометками. Скрывать нечего: проводник, который что-то
+    прячет, заставляет лезть в системный — а мы ровно от этого и уходим."""
+    root = os.path.realpath(project)
+    skip = {".git", "__pycache__", ".opencode", "node_modules", ".obsidian", ".DS_Store"}
+    rows, cut = [], False
+    for cur, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in skip and not d.startswith(".git"))
+        rel_dir = os.path.relpath(cur, root).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+        for name in sorted(files):
+            if name in skip or name.startswith("."):
+                continue
+            rel = f"{rel_dir}/{name}" if rel_dir else name
+            if len(rows) >= limit:
+                cut = True
+                break
+            ext = os.path.splitext(name)[1].lower()
+            try:
+                size = os.path.getsize(os.path.join(cur, name))
+            except OSError:
+                size = 0
+            rows.append({"path": rel, "dir": rel_dir, "name": name, "size": size,
+                         "text": ext in TEXT_EXT and size <= MAX_EDIT,
+                         "readonly": why_readonly(rel)})
+        if cut:
+            break
+    return {"root": root, "files": rows, "truncated": cut, "count": len(rows)}
+
+
+def file_read(project: str, rel: str) -> dict:
+    """Файл плюс всё, что нужно знать до правки: можно ли править, что с ним в git,
+    опубликован ли он и не отстала ли страница."""
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"error": "файл не найден в этом проекте"}
+    size = os.path.getsize(full)
+    ext = os.path.splitext(full)[1].lower()
+    if ext not in TEXT_EXT or size > MAX_EDIT:
+        return {"error": "не текстовый файл или слишком большой — откройте системным "
+                         "приложением", "binary": True, "size": size}
+    text = read_text(full, limit=MAX_EDIT)
+    fm = frontmatter(text) if ext == ".md" else {}
+    return {"path": rel, "text": text, "size": size,
+            "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "readonly": why_readonly(rel, text),
+            "git": git_file_state(project, rel),
+            "published": fm.get("published", ""),
+            "published_url": fm.get("published_url", "") or fm.get("confluence_page_id", ""),
+            "stale": bool(fm.get("published")) and file_changed_since_publish(project, rel, fm)}
+
+
+def file_changed_since_publish(project: str, rel: str, fm: dict) -> bool:
+    """Опубликован и с тех пор изменён — значит страница у заказчика отстала.
+
+    Сравниваем не даты, а коммиты: дата публикации и дата правки могут совпасть до дня,
+    а страница всё равно будет старой.
+    """
+    commit = (fm.get("published_commit") or "").strip()
+    if not commit:
+        return False
+    r = subprocess.run(["git", "-C", project, "diff", "--quiet", commit, "--", rel],
+                       capture_output=True, text=True)
+    return r.returncode == 1        # 0 — не менялся, 1 — менялся, прочее — не выяснили
+
+
+def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
+    """Запись с проверкой расхождения и без шанса оставить половину файла.
+
+    Пишем во временный файл рядом и переименовываем: обрыв на середине оставит целым
+    прежний документ, а не обрубок. `expect` — слепок того, что человек открывал: если
+    на диске уже другое (агент дописал, `git pull` принёс чужое), молча не затираем.
+    """
+    full = inside(project, rel)
+    if not full:
+        return {"error": "путь вне проекта"}
+    ro = why_readonly(rel, read_text(full, limit=4000) if os.path.isfile(full) else "")
+    if ro:
+        return {"error": f"файл только для чтения: {ro}"}
+    if os.path.splitext(full)[1].lower() not in TEXT_EXT:
+        return {"error": "не текстовый файл"}
+    if len(text.encode("utf-8")) > MAX_EDIT:
+        return {"error": "файл больше потолка редактора"}
+    if os.path.isfile(full) and expect:
+        now = hashlib.sha256(read_text(full, limit=MAX_EDIT).encode("utf-8")).hexdigest()
+        if now != expect:
+            return {"conflict": True, "disk": read_text(full, limit=MAX_EDIT),
+                    "error": "файл изменился на диске с момента открытия"}
+    # Отказ файловой системы — обычный исход, а не исключительный: длинное имя, полный
+    # диск, папка без прав. Трассировка вместо ответа означает для человека «панель
+    # сломалась», хотя сломался его путь; и временный файл остался бы лежать рядом.
+    tmp = full + ".aurora-tmp"
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp, full)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return {"error": f"не удалось записать файл: {e.strerror or e}"}
+    out = {"ok": True, "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+           "git": git_file_state(project, rel)}
+    if os.path.splitext(full)[1].lower() == ".md":
+        out["lint"] = lint_one(project, rel)
+    return out
+
+
+def lint_one(project: str, rel: str) -> dict:
+    """Линтер по одному файлу — сразу после сохранения, но сохранение не блокирует.
+
+    Не давать сохранить, пока есть находки, — верный способ заставить человека править
+    файл мимо панели. Молчать — значит копить находки к общему прогону, когда уже не
+    помнишь, что менял.
+    """
+    script = os.path.join(project, ".opencode", "scripts", "kb_lint.py")
+    if not os.path.isfile(script):
+        return {}
+    # Сохранение не зависит от линтера. Он читает базу целиком, и на большой базе или
+    # при своей поломке висел до потолка в две минуты — а файл к тому моменту уже
+    # записан. Человек видел ошибку после успешного сохранения и сохранял снова.
+    try:
+        r = subprocess.run([sys.executable, script, "--only", rel],
+                           cwd=project, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return {"rc": None, "lines": ["линтер не ответил за 20 секунд — файл сохранён, "
+                                      "проверьте базу отдельно: kb:lint"]}
+    except OSError as e:
+        return {"rc": None, "lines": [f"линтер не запустился: {e}"]}
+    lines = [l for l in (r.stdout or "").splitlines() if l.strip()]
+    return {"rc": r.returncode, "lines": lines[:20]}
+
+
+def reveal(project: str, rel: str, mode: str = "folder") -> dict:
+    """Показать в папке или открыть системным приложением.
+
+    Путь проверяем сами и передаём списком, без оболочки: имя файла — это чужой текст,
+    и `; rm -rf` в нём не должен ничего значить.
+    """
+    full = inside(project, rel)
+    if not full or not os.path.exists(full):
+        return {"error": "файл не найден в этом проекте"}
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", full] if mode == "folder" else ["open", full]
+    elif os.name == "nt":
+        cmd = (["explorer", f"/select,{full}"] if mode == "folder"
+               else ["cmd", "/c", "start", "", full])
+    else:
+        cmd = ["xdg-open", os.path.dirname(full) if mode == "folder" else full]
+    try:
+        subprocess.Popen(cmd)
+    except OSError as e:
+        return {"error": f"не удалось открыть: {e}"}
+    return {"ok": True, "how": " ".join(cmd[:2])}
+
+
+# --------------------------------------------------------------------------- языки
+
+DEFAULT_LANG = "ru"
+
+
+def languages() -> list:
+    """Какие языки есть. Новый язык = новый файл в `cockpit/i18n/`, править сервер и
+    панель для этого не нужно — тот же приём, что у тем оформления."""
+    out = []
+    if not os.path.isdir(I18N_DIR):
+        return out
+    for f in sorted(os.listdir(I18N_DIR)):
+        if not f.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(I18N_DIR, f), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        out.append({"id": f[:-5], "name": data.get("_name") or f[:-5],
+                    "keys": len([k for k in data if not k.startswith("_")])})
+    return out
+
+
+def i18n_catalogue(lang: str) -> dict:
+    """Каталог строк одного языка плюс список доступных.
+
+    Ключа нет в переводе — панель берёт русский, а не пустоту и не имя ключа: половина
+    экрана на английском хуже, чем весь экран по-русски.
+    """
+    lang = os.path.basename(lang or DEFAULT_LANG)
+    path = os.path.join(I18N_DIR, lang + ".json")
+    warning = ""
+    if not os.path.isfile(path):
+        path, lang = os.path.join(I18N_DIR, DEFAULT_LANG + ".json"), DEFAULT_LANG
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        # Битый каталог откатываем целиком и называем причину. Молча оставить его
+        # выбранным значило бы показать русский экран под именем другого языка —
+        # человек решил бы, что перевода просто нет, и чинить бы не стал.
+        warning = f"каталог «{lang}» не разобран ({e}) — показан русский"
+        data, lang = {}, DEFAULT_LANG
+    base = data
+    if lang != DEFAULT_LANG:
+        try:
+            with open(os.path.join(I18N_DIR, DEFAULT_LANG + ".json"), encoding="utf-8") as f:
+                base = {**json.load(f), **data}
+        except (OSError, ValueError):
+            pass
+    return {"lang": lang, "strings": base, "languages": languages(),
+            "default": DEFAULT_LANG, "warning": warning}
+
+
+# ------------------------------------------------------------------- git проекта
+
+def git_out(project: str, *args, timeout: int = 60) -> tuple:
+    """(код, stdout, stderr) от git в проекте. Ни один вызов не идёт через оболочку."""
+    try:
+        r = subprocess.run(["git", "-C", project, *args], capture_output=True,
+                           text=True, timeout=timeout)
+        return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return 1, "", str(e)
+
+
+def git_file_state(project: str, rel: str) -> str:
+    """Состояние одного файла: изменён, новый, зафиксирован или вне git.
+
+    `--ignored` обязателен: без него `git status` молчит и про чистый файл, и про файл
+    в `.gitignore` — и панель объявляла «зафиксирован» то, чего в git нет вовсе. Человек
+    правил бы такой файл в уверенности, что работа под защитой истории. Найдено на живом
+    проекте: `Workspaces/*` закрыт `.gitignore`, а редактор показывал «зафиксирован».
+    """
+    rc, out, _ = git_out(project, "status", "--porcelain", "--ignored=matching", "--", rel)
+    if rc != 0:
+        return "нет git"
+    if not out:
+        return "зафиксирован"
+    code = out[:2]
+    if code.startswith("!"):
+        return "вне git (.gitignore)"
+    if "?" in code:
+        return "новый"
+    return "изменён"
+
+
+def git_state(project: str) -> dict:
+    """Что не зафиксировано и насколько разошлись с удалённым.
+
+    Панель годами писала человеку «сделайте коммит», не умея его сделать. При этом
+    двенадцать скриптов движка отказываются работать по незакоммиченному дереву — и
+    правка одной карточки блокировала `kb:reset`, `kb:fix`, `kb:moc`, `kb:schema`.
+    Для человека, который не открывает терминал, это тупик, а не защита.
+    """
+    if not os.path.isdir(os.path.join(project, ".git")):
+        return {"repo": False, "why": "проект не под git — фиксировать нечего"}
+    rc, out, _ = git_out(project, "status", "--porcelain")
+    rows = []
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:].strip().strip('"')
+        rows.append({"path": path, "new": "?" in code, "code": code.strip()})
+    _, branch, _ = git_out(project, "branch", "--show-current")
+    _, remote, _ = git_out(project, "remote")
+    ahead = 0
+    if branch and remote:
+        rc2, cnt, _ = git_out(project, "rev-list", "--count", f"@{{u}}..HEAD")
+        ahead = int(cnt) if rc2 == 0 and cnt.isdigit() else 0
+    return {"repo": True, "branch": branch, "dirty": rows[:200], "count": len(rows),
+            "remotes": remote.split() if remote else [], "ahead": ahead,
+            "hook": hook_mode(project)}
+
+
+def hook_mode(project: str) -> str:
+    """Режим pre-commit: по нему понятно, чего ждать от фиксации."""
+    path = os.path.join(project, ".git", "hooks", "pre-commit")
+    text = read_text(path, limit=4000) if os.path.isfile(path) else ""
+    if "aurora" not in text:
+        return "нет"
+    return next((m for m in ("ratchet", "block", "warn") if f"режим: {m}" in text), "?")
+
+
+def git_commit(project: str, message: str, paths: list = None,
+               skip_ratchet: bool = False) -> dict:
+    """Зафиксировать. `skip_ratchet` снимает ТОЛЬКО храповик.
+
+    Не `--no-verify`: он снял бы заодно `commit-msg`, который не пускает внутренние
+    названия в историю. Пропустить проверку качества базы — решение человека; выпустить
+    имя заказчика в git — необратимая утечка, и её обходной кнопкой не открывают.
+    """
+    message = " ".join((message or "").split())
+    if not message:
+        return {"error": "без сообщения коммита фиксировать нельзя: через месяц по такой "
+                         "истории не понять, что произошло"}
+    if not os.path.isdir(os.path.join(project, ".git")):
+        return {"error": "проект не под git"}
+    add = (["add", "--"] + list(paths)) if paths else ["add", "-A"]
+    rc, _, err = git_out(project, *add)
+    if rc != 0:
+        return {"error": f"git add: {err[:400]}"}
+    rc, out, _ = git_out(project, "diff", "--cached", "--name-only")
+    if rc == 0 and not out:
+        return {"error": "нечего фиксировать: изменений в дереве нет"}
+    env = dict(os.environ)
+    if skip_ratchet:
+        env["AURORA_SKIP_RATCHET"] = "1"
+        message += "\n\n[храповик пропущен из панели]"
+    try:
+        r = subprocess.run(["git", "-C", project, "commit", "-m", message],
+                           capture_output=True, text=True, timeout=300, env=env)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"error": str(e)}
+    tail = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+    if r.returncode != 0:
+        return {"error": "коммит не прошёл", "tail": tail[-1500:],
+                "ratchet": "плотность ошибок" in tail}
+    _, head, _ = git_out(project, "rev-parse", "--short", "HEAD")
+    return {"ok": True, "commit": head, "tail": tail[-800:]}
+
+
+def git_push(project: str, remote: str = "") -> dict:
+    """Отправить. Отказ показываем целиком: у push свои причины падать — нет сети,
+    чужие изменения, нет прав, — и молчаливая неудача здесь опаснее, чем у сохранения:
+    человек уверен, что работа уехала."""
+    if not os.path.isdir(os.path.join(project, ".git")):
+        return {"error": "проект не под git"}
+    _, remotes, _ = git_out(project, "remote")
+    names = remotes.split()
+    if not names:
+        return {"error": "у проекта нет удалённого репозитория — отправлять некуда"}
+    target = remote if remote in names else names[0]
+    rc, out, err = git_out(project, "push", target, timeout=300)
+    tail = (out + "\n" + err).strip()
+    if rc != 0:
+        return {"error": f"отправка не прошла ({target})", "tail": tail[-1500:]}
+    return {"ok": True, "remote": target, "tail": tail[-800:] or "уже всё отправлено"}
 
 # --------------------------------------------------------------- быстрый старт
 
@@ -666,6 +1066,9 @@ def retrieval_state(project: str) -> dict:
     return {"when": datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d"),
             "queries": len(data)}
 
+
+sys.path.insert(0, os.path.join(KIT, "scripts"))
+from aurora_common import frontmatter          # noqa: E402 — разбор шапки один на движок
 
 PING_FILE = "ping-state.json"
 
@@ -1327,6 +1730,12 @@ class Handler(BaseHTTPRequestHandler):
         if host not in ("127.0.0.1", "localhost", "[::1]"):
             self.send_json({"error": "панель отвечает только на 127.0.0.1"}, 403)
             return False
+        # Вендоренная статика — без токена. Не послабление: браузер грузит `<script src>`
+        # и `<link href>` сам, а сама библиотека тянет своё (lute, mermaid, KaTeX, язык)
+        # по путям, которые мы не подписываем. Токен защищает данные проекта; здесь их
+        # нет — это чужой код, тот же самый у всех, и петлевой интерфейс уже проверен.
+        if self.path.startswith("/vendor/"):
+            return True
         tok = (query.get("t", [""])[0] or self.headers.get("X-Aurora-Token", ""))
         if not secrets.compare_digest(tok, TOKEN):
             self.send_json({"error": "нет токена сессии — откройте адрес из консоли"}, 403)
@@ -1339,6 +1748,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    # Типы известны заранее: раздаём только то, из чего состоит собранная библиотека.
+    # Списком, а не через mimetypes: угадывание типа по расширению на чужом дереве —
+    # лишняя степень свободы там, где она не нужна.
+    STATIC_TYPES = {".js": "text/javascript", ".css": "text/css", ".map": "application/json",
+                    ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf",
+                    ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json",
+                    ".wasm": "application/wasm"}
+
+    def send_static(self, base: str, rel: str):
+        """Файл из вендоренной папки. Путь проверяем так же, как файлы проекта."""
+        full = inside(base, rel)
+        ext = os.path.splitext(full)[1].lower() if full else ""
+        if not full or not os.path.isfile(full) or ext not in self.STATIC_TYPES:
+            self.send_error(404)
+            return
+        with open(full, "rb") as f:
+            body = f.read()
+        self.send_response(200)
+        self.send_header("Content-Type", self.STATIC_TYPES[ext] + "; charset=utf-8"
+                         if ext in (".js", ".css", ".json", ".svg") else self.STATIC_TYPES[ext])
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=86400")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1465,6 +1899,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif u.path == "/api/files/tree":
+            project = (q.get("project") or [""])[0]
+            self.send_json(file_tree(project) if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/files/read":
+            project = (q.get("project") or [""])[0]
+            self.send_json(file_read(project, (q.get("path") or [""])[0])
+                           if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/git":
+            project = (q.get("project") or [""])[0]
+            self.send_json(git_state(project) if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/i18n":
+            self.send_json(i18n_catalogue((q.get("lang") or [""])[0]))
+        elif u.path.startswith("/vendor/"):
+            self.send_static(VENDOR_DIR, u.path[len("/vendor/"):])
         elif u.path == "/api/kit/status":
             self.send_json(kit_git_status())
         elif u.path == "/api/doc":
@@ -1519,6 +1970,34 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(self._write_config(project, payload.get("text", "")))
+            return
+        if u.path == "/api/files/write":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(file_write(project, payload.get("path", ""),
+                                      payload.get("text", ""), payload.get("expect", "")))
+            return
+        if u.path == "/api/files/reveal":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(reveal(project, payload.get("path", ""),
+                                  payload.get("mode", "folder")))
+            return
+        if u.path == "/api/git/commit":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(git_commit(project, payload.get("message", ""),
+                                      payload.get("paths") or None,
+                                      bool(payload.get("skip_ratchet"))))
+            return
+        if u.path == "/api/git/push":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(git_push(project, payload.get("remote", "")))
             return
         if u.path == "/api/kit/update":
             self.send_json(kit_pull())

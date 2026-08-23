@@ -71,10 +71,38 @@ BASELINE = Path("AuroraKnowledgeDB/meta/lint_baseline.txt")
 
 HOOK = '''#!/bin/sh
 {marker} — pre-commit: линтер базы знаний Авроры (режим: {mode})
-# Обойти: git commit --no-verify
+# Обойти храповик: AURORA_SKIP_RATCHET=1 git commit  (или кнопка в панели)
+# Обойти всё, включая проверку внутренних названий: git commit --no-verify
 
 LINT=".opencode/scripts/kb_lint.py"
+MODE_EARLY="{mode}"
 [ -f "$LINT" ] || exit 0
+
+# Судим то, что коммитят, а не всю базу. Хук годами мерял человека по всей базе:
+# правишь один артефакт — отвечаешь за триста чужих ошибок в карточках, которых не
+# касался. Отказ переставал что-либо значить, и его научились обходить не глядя.
+# Список через файл, а не через оболочку: git печатает кириллические имена в
+# кавычках и восьмеричных escape («\\320\\234…»), и такой путь линтер не находит —
+# проверка молча проходила бы всегда. В русской базе это значит «её нет».
+STAGED_LIST=$(mktemp)
+git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM \\
+    -- AuroraKnowledgeDB > "$STAGED_LIST" 2>/dev/null
+if [ -s "$STAGED_LIST" ]; then
+  MINE=$(python3 "$LINT" --only-from "$STAGED_LIST" --summary 2>&1)
+  MINE_ERR=$(printf '%s' "$MINE" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
+  if [ -n "$MINE_ERR" ] && [ "$MINE_ERR" -gt 0 ] && [ "$MODE_EARLY" != "warn" ]; then
+    echo "$MINE"
+    echo "aurora: в том, что вы коммитите, ошибок $MINE_ERR — они ваши, не чужие."
+    python3 "$LINT" --only-from "$STAGED_LIST" 2>&1 | head -20
+    echo "        Починить: в панели «Команды» → kb:repair (в терминале:"
+    echo "                  python3 .opencode/scripts/kb_fix.py --all --apply)"
+    echo "        Всё равно зафиксировать: кнопка «Зафиксировать всё равно» в панели"
+    echo "                  (в терминале: AURORA_SKIP_RATCHET=1 git commit …)"
+    if [ -z "$AURORA_SKIP_RATCHET" ]; then rm -f "$STAGED_LIST"; exit 1; fi
+    echo "aurora: AURORA_SKIP_RATCHET — пропускаем. Проверка внутренних названий остаётся."
+  fi
+fi
+rm -f "$STAGED_LIST"
 
 OUT=$(python3 "$LINT" --summary 2>&1)
 ERRORS=$(printf '%s' "$OUT" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
@@ -113,10 +141,11 @@ case "$MODE" in
     NOW_D=$(( ERRORS * 100 / CARDS ))
     BASE_D=$(( BASE * 100 / BASE_CARDS ))
     if [ "$ERRORS" -gt "$BASE" ] && [ "$NOW_D" -gt "$BASE_D" ]; then
-      echo "aurora: плотность ошибок выросла ($BASE_D → $NOW_D на 100 карточек)."
-      echo "        Почините: python3 .opencode/scripts/kb_fix.py --all --apply"
-      echo "        Осознанно пропустить: git commit --no-verify"
-      exit 1
+      # Предупреждение, а не отказ: за состояние всей базы отвечает не тот, кто
+      # сейчас коммитит один файл. Отказывает проверка выше — по тому, что в коммите.
+      echo "aurora: ⚠ плотность ошибок по всей базе выросла ($BASE_D → $NOW_D на 100"
+      echo "        карточек). Коммит не останавливаем — в ваших файлах чисто."
+      echo "        Разгрести: в панели «Команды» → kb:repair"
     fi
     if [ "$ERRORS" -lt "$BASE" ]; then
       echo "$ERRORS" > "$BASE_FILE"
