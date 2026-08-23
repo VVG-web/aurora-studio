@@ -2611,6 +2611,83 @@ def test_skills_describe_the_engine_as_it_is_now(tmp: Path):
     assert "AURORA_AGENT_PARALLEL" in vault or "одновременно" in vault, \
         "скилл не знает про параллельный разбор"
 
+    # Скилл читает чужой харнесс — Claude Code и любой другой ассистент. Проверка имён
+    # команд ловит снятое, но не ловит расхождение по существу: команда на месте, а
+    # правило, без которого её выводом нельзя пользоваться, названо только в панели.
+    # Ревизия нашла четыре таких: граница чистовика, признак «без технологий», дельта
+    # требования и сторож исходящих запросов.
+    from aurora_common import MADE_MARK
+    assert MADE_MARK in vault, \
+        "маркер границы чистовика не назван в скилле дословно: чужой ассистент напишет " \
+        "допущения в тело, и они уедут заказчику"
+    assert "tech_agnostic" in vault or "без технологий" in vault, \
+        "правило «без технологий» есть в движке, но не в скилле"
+    assert "--changed" in vault and "--migration" in vault, \
+        "замена требования требует дельты, а скилл про это молчит"
+    assert "outbound" in vault, "сторож исходящих запросов не описан"
+
+    # Кухня разработки переехала из `.gitignore` в ветку `development` (1.96.2).
+    # Скилл, утверждающий старое, оставит правки QA без истории и без копии.
+    assert "`.gitignore`: наружу" not in dev, \
+        "скилл всё ещё считает Development/ игнорируемой папкой, а не веткой"
+    assert "kitchen" in dev, "скилл не говорит, куда пушить кухню"
+
+
+@test
+def test_foreign_harness_gets_rules_not_only_paths(tmp: Path):
+    """`artifact_spec` — единственное, чем чужой ассистент узнаёт, как делать документ.
+
+    Через MCP его зовут Claude Code и любой другой харнесс, и всё, чего в ответе нет, для
+    него не существует. Ревизия нашла: инструмент отдавал шаблон и папку, а признак «без
+    технологий» и границу чистовика — нет. Значит чужой ассистент пишет критерии с именами
+    СУБД (правило жило только в панели) и кладёт «Допущения» в тело документа — откуда они
+    уезжают заказчику как часть спецификации.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    from aurora_common import MADE_MARK
+
+    root = tmp / "proj"
+    (root / "Templates").mkdir(parents=True)
+    (root / "Artifacts" / "ac").mkdir(parents=True)
+    (root / "Artifacts" / "opz").mkdir(parents=True)
+    (root / "Templates" / "AC.md").write_text("шаблон", encoding="utf-8")
+    (root / "Templates" / "OPZ.md").write_text("шаблон", encoding="utf-8")
+    (root / "aurora.config.yaml").write_text(
+        "artifacts:\n"
+        "  ac:\n    title: \"Критерии приёмки\"\n    template: Templates/AC.md\n"
+        "    out: Artifacts/ac\n    tech_agnostic: true\n"
+        "  opz:\n    title: \"ОПЗ\"\n    template: Templates/OPZ.md\n"
+        "    out: Artifacts/opz\n", encoding="utf-8")
+
+    def spec(*args):
+        r = subprocess.run([sys.executable, str(KIT / "scripts" / "make_kinds.py"), *args],
+                           cwd=root, capture_output=True, text=True)
+        return r.stdout
+
+    ac, opz, all_kinds = spec("--kind", "ac"), spec("--kind", "opz"), spec()
+
+    assert "Templates/AC.md" in ac and "Artifacts/ac" in ac, "пути пропали"
+    assert "без технологий" in ac.lower(), \
+        "признак «без технологий» не доехал до ассистента — он назовёт стек в критериях"
+    assert "без технологий" not in opz.lower(), \
+        "правило навязано ОПЗ: там стек — предмет документа, и критик будет ругаться зря"
+    assert "ac" in all_kinds and "без технологий" in all_kinds.lower(), \
+        "в общем реестре не видно, у каких видов правило включено"
+
+    for name, out in (("вид", ac), ("вид", opz)):
+        assert MADE_MARK in out, f"граница чистовика не названа ({name})"
+        marker = [ln for ln in out.splitlines() if MADE_MARK in ln]
+        assert marker == [MADE_MARK], \
+            f"маркер показан с отступом или в строке с текстом: {marker!r} — скопировав " \
+            "его так, ассистент получит границу, по которой публикация ничего не отрежет"
+
+    # Находка в конфиге не должна прятать правила: один незаполненный шаблон у одного
+    # вида оставлял чужой харнесс без правил по всем остальным.
+    (root / "Templates" / "OPZ.md").unlink()
+    broken = spec()
+    assert "без технологий" in broken.lower(), \
+        "ошибка в одном виде скрыла правила остальных"
+
 
 @test
 def test_oversized_request_does_not_kill_the_provider(tmp: Path):
