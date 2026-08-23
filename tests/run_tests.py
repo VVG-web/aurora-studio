@@ -2899,6 +2899,60 @@ def test_long_source_is_not_silently_cut(tmp: Path):
 
 
 @test
+def test_the_development_kitchen_stays_private(tmp: Path):
+    """Кухня разработки живёт в git, но наружу не уходит.
+
+    Семьдесят с лишним файлов — кейсы, сценарии, разборы дефектов, числа с живых
+    проектов — лежали вне git: папка `Development/` целиком в `.gitignore`, потому что
+    репозиторий кита публичный. Причина верная, следствие плохое: всё, написанное за
+    неделю, существовало в одном экземпляре на одной машине, без истории.
+
+    Решение — отдельная локальная ветка `development`, смонтированная как worktree на то
+    же место. История есть, файлы там же, где были, `master` их по-прежнему не видит. А
+    от `git push --all` защищает хук: он не главная защита (главная — понимать, что туда
+    пишут), но опечатку ловит.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_hooks as H
+
+    assert "development" in H.PRIVATE_BRANCHES, "ветка кухни не защищена от публикации"
+    assert "history-private" in H.PRIVATE_BRANCHES, "прежняя приватная ветка забыта"
+    assert "PUSH_HOOK" in (KIT / "scripts/aurora_hooks.py").read_text(encoding="utf-8"), \
+        "хука пуша нет — после клона защиты не будет"
+
+    # хук ставится вместе с остальными и только в ките: в проекте публиковать нечего
+    src = (KIT / "scripts/aurora_hooks.py").read_text(encoding="utf-8")
+    tail = src[src.index("    # Хук пуша"):][:900]
+    assert "if is_kit():" in tail, \
+        "хук пуша ставится и в проектах — там он бессмыслен, а мешать будет"
+
+    # и он действительно отказывает
+    repo = tmp / "репо"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "engine_manifest.txt").write_text("x", encoding="utf-8")
+    hook = repo / ".git/hooks/pre-push"
+    hook.write_text(H.PUSH_HOOK.format(marker=H.PUSH_MARKER,
+                                       branches=" ".join(H.PRIVATE_BRANCHES)),
+                    encoding="utf-8")
+    hook.chmod(0o755)
+    for branch, public, expect in (("development", "https://github.com/x/y.git", 1),
+                                   ("master", "https://github.com/x/y.git", 0),
+                                   ("development", "/tmp/private.git", 0)):
+        cp = subprocess.run(["sh", str(hook), "origin", public],
+                            input=f"refs/heads/{branch} abc123 refs/heads/{branch} def456\n",
+                            capture_output=True, text=True)
+        assert cp.returncode == expect, \
+            (f"ветка {branch} на {public}: ждали rc={expect}, получили {cp.returncode}\n"
+             f"{cp.stderr[:300]}")
+
+    # `.gitignore` обязан объяснять, куда делась папка: иначе после клона её сочтут мусором
+    ign = (KIT / ".gitignore").read_text(encoding="utf-8")
+    assert "git worktree add Development development" in ign, \
+        "после клона папку кухни нечем восстановить — команда не записана"
+
+
+@test
 def test_nothing_leaves_the_perimeter_unchecked(tmp: Path):
     """Наружу уходят вопросы про механики, а не пересказ задачи заказчика.
 
