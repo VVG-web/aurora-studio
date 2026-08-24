@@ -626,7 +626,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.98.0";
+const UI_VERSION = "1.98.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -664,10 +664,16 @@ function toast(msg, kind="ok"){
 // Каталог строк живёт отдельным файлом (`cockpit/i18n/<язык>.json`) — тем же приёмом,
 // что и темы оформления: новый язык = новый файл, панель править не нужно. Ключа нет в
 // переводе — берём русский: половина экрана на чужом языке хуже, чем весь на своём.
-let I18N = {};
+// Русский каталог сервер подставляет в саму страницу. Так язык по умолчанию не зависит
+// ни от одного запроса: сеть, старый процесс сервера или отсутствующий файл каталога
+// больше не превращают панель в набор имён ключей.
+const RU = (() => { const raw = "__AURORA_I18N__";
+  return (raw && typeof raw === "object") ? raw : {}; })();
+let I18N = RU;
 
 function t(key, vars){
   let s = I18N[key];
+  if (s === undefined) s = RU[key];         // другой язык неполон — берём русский
   if (s === undefined) return key;          // такого ключа нет вовсе — видно сразу
   if (vars) for (const [k,v] of Object.entries(vars)) s = s.replaceAll("{"+k+"}", v);
   return s;
@@ -675,12 +681,25 @@ function t(key, vars){
 
 async function loadI18n(){
   const lang = localStorage.getItem("aurora-lang") || "ru";
-  const d = await api("/api/i18n?lang=" + encodeURIComponent(lang), {quiet:true});
-  I18N = d.strings || {};
-  if (d.warning) toast(d.warning, "warn");
-  S.langs = d.languages || [];
-  S.lang = d.lang || "ru";
-  document.documentElement.lang = S.lang;
+  S.lang = "ru"; S.langs = [{id:"ru", name:"Русский", keys:Object.keys(RU).length}];
+  document.documentElement.lang = "ru";
+  if (lang === "ru") { applyI18n(); return; }   // русский уже в странице — ходить некуда
+  // За другим языком идём по сети, но её отказ не должен ломать загрузку панели:
+  // не ответила — остаёмся на русском и говорим об этом, а не показываем пустые экраны.
+  try {
+    const d = await api("/api/i18n?lang=" + encodeURIComponent(lang), {quiet:true});
+    if (d && d.strings) {
+      I18N = {...RU, ...d.strings};
+      S.langs = d.languages && d.languages.length ? d.languages : S.langs;
+      S.lang = d.lang || "ru";
+      document.documentElement.lang = S.lang;
+      if (d.warning) toast(d.warning, "warn");
+    } else {
+      toast("язык «" + lang + "» не загрузился — панель осталась на русском", "warn");
+    }
+  } catch (e) {
+    toast("язык не загрузился — панель осталась на русском", "warn");
+  }
   applyI18n();
 }
 
@@ -727,9 +746,27 @@ const PREVIEW_LIMIT = 40000;
 const EDIT_LIMIT = 150000;
 
 async function renderFiles(){
-  if (!S.project){ $("#fileTree").innerHTML = ""; $("#filesGit").textContent = t("files.pick_project"); return; }
+  const tree = $("#fileTree");
+  if (!S.project){
+    tree.innerHTML = "";
+    tree.append(el("div",{class:"sub"}, t("files.pick_project")));
+    $("#filesGit").textContent = t("files.pick_project");
+    $("#navFiles").textContent = "";
+    return;
+  }
+  // Пустое место человек читает как «файлов нет», а не как «ещё читаю». На живом
+  // проекте обход дерева и опрос git занимают около двух секунд — за это время
+  // молчащая панель успевает выглядеть сломанной.
+  tree.innerHTML = "";
+  tree.append(el("div",{class:"sub"}, t("files.loading")));
   await drawGit();
   const d = await api("/api/files/tree?project=" + encodeURIComponent(S.project.path));
+  if (d.error){
+    tree.innerHTML = "";
+    tree.append(el("div",{class:"sub"}, t("files.failed", {why: d.error})));
+    $("#navFiles").textContent = "";
+    return;
+  }
   F.files = d.files || [];
   $("#navFiles").textContent = F.files.length || "";
   drawTree();
@@ -1302,6 +1339,13 @@ async function pick(p, go=true){
   if (S.view === "project") renderProject();
   // журнал запусков — свой у каждого проекта; его отметки стоят и в командах, и в сценариях
   renderCommands(); renderHistory(); renderQuick(); renderQuick("продуктивность");
+  // Список артефактов и дерево файлов — тоже про выбранный проект. Наполнял их только
+  // переход на вкладку, поэтому выбор проекта, сделанный СТОЯ на «Продуктивности» или
+  // «Файлах», оставлял экран пустым навсегда: перерисовать его было некому. Ровно та же
+  // беда, что была с зеркалами двумя строками выше, — и человек снова уходил искать
+  // поломку там, где её нет.
+  fillMakeKinds();
+  if (S.view === "files") renderFiles();
   navBadges(p, h);
   stamp("#healthStamp");
   // Пришли в проект, а в нём что-то уже идёт — сказать сразу. Молчание здесь стоило
@@ -2716,9 +2760,26 @@ function drawRouteBar(cmd){
 let MAKE = null;               // {sid, kind} — идущее производство
 
 async function fillMakeKinds(){
-  const sel = $("#makeKind"); if (!sel || !S.project) return;
-  const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path));
+  const sel = $("#makeKind"); if (!sel) return;
+  if (!S.project){
+    sel.innerHTML = "";
+    sel.append(el("option",{value:""}, "сначала выберите проект"));
+    return;
+  }
+  const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path),
+                      {quiet:true});
   const kinds = d.kinds || {};
+  // Список чистим, только когда есть чем наполнить. Иначе один сорвавшийся запрос
+  // стирал настроенные виды артефактов, и это выглядело как «настройки пропали».
+  if (!Object.keys(kinds).length){
+    sel.innerHTML = "";
+    sel.append(el("option",{value:""}, d.error
+      ? "виды артефактов не прочитались: " + d.error
+      : "в проекте не объявлено ни одного вида — «Настройки проекта» → «Артефакты»"));
+    $("#makeSpec").textContent = "";
+    $("#makeGo").disabled = true;
+    return;
+  }
   sel.innerHTML = "";
   Object.keys(kinds).sort().forEach(k=>{
     const o = document.createElement("option");

@@ -4877,6 +4877,77 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
 
 
 @test
+def test_choosing_a_project_refills_the_screen_you_are_standing_on(tmp: Path):
+    """Выбор проекта обязан перерисовать текущий экран, а не только тот, куда уйдут.
+
+    Список видов артефактов и дерево файлов наполнял **только переход на вкладку**.
+    Значит выбор проекта, сделанный стоя на «Продуктивности» или «Файлах», оставлял
+    экран пустым навсегда: перерисовать его было некому. Человек видит пустоту при
+    выбранном проекте и уходит искать поломку там, где её нет.
+
+    Ровно эта беда уже случалась с «Зеркалами» — предупреждение об этом написано прямо
+    в `pick()`, двумя строками выше. Значит одного комментария мало: нужна проверка,
+    которая не даст добавить следующий экран с той же дырой.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    pick = ui[ui.index("async function pick("):ui.index("async function pick(") + 3000]
+    for call in ("renderMirrors()", "fillMakeKinds()", "renderFiles()"):
+        assert call in pick, f"выбор проекта не перерисовывает экран: нет {call}"
+
+    # Пустой список обязан объяснять себя. И он не имеет права чиститься до того, как
+    # стало чем наполнять: один сорвавшийся запрос стирал настроенные виды артефактов,
+    # и это выглядело как «настройки пропали».
+    at = ui.index("async function fillMakeKinds(")
+    fill = ui[at:at + 1800]
+    assert "сначала выберите проект" in fill, "пустой список молчит о причине"
+    assert fill.index("if (!Object.keys(kinds).length)") < fill.rindex('sel.innerHTML = ""'), \
+        "список чистится раньше, чем известно, есть ли чем наполнить"
+    assert "не объявлено ни одного вида" in fill, \
+        "проект без артефактов неотличим от сорвавшегося запроса"
+
+    # Дерево тоже: пустое место человек читает как «файлов нет», а не «ещё читаю».
+    rf = ui.index("async function renderFiles(")
+    tree = ui[rf:rf + 1600]
+    assert "files.loading" in tree, "дерево молчит, пока читается"
+    assert "files.failed" in tree, "отказ дерева неотличим от пустого проекта"
+
+
+@test
+def test_default_language_does_not_depend_on_the_network(tmp: Path):
+    """Русский каталог уезжает в самой странице, а не отдельным запросом.
+
+    Пока за ним ходили по сети, панель зависела от ответа до первой отрисовки: сервер
+    не ответил — и вместо надписей человек видит имена ключей. Хуже того, запрос стоял
+    первым в загрузке, то есть отказ по нему ставил под угрозу весь экран.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert '"__AURORA_I18N__"' in ui, "в странице нет места под каталог по умолчанию"
+    assert "const RU = " in ui and "s = RU[key]" in ui, \
+        "нет отката на русский, когда в другом языке ключа нет"
+    at = ui.index("async function loadI18n(")
+    boot = ui[at:at + 1600]
+    assert 'if (lang === "ru")' in boot, "за русским всё ещё ходят по сети"
+    assert "try {" in boot and "catch" in boot, \
+        "отказ сети за чужим языком роняет загрузку панели"
+
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "__AURORA_I18N__" in srv, "сервер не подставляет каталог в страницу"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    strings = ck.i18n_catalogue("ru").get("strings") or {}
+    assert strings, "русский каталог пуст — подставлять нечего"
+    blob = json.dumps(strings, ensure_ascii=False)
+    assert "</script>" not in blob, \
+        "строка каталога способна закрыть тег скрипта и сломать всю страницу"
+    page = ui.replace('"__AURORA_I18N__"', blob)
+    at2 = page.index("const RU = ")
+    assert '"__AURORA_I18N__"' not in page[at2:at2 + 200], "каталог не подставился"
+
+
+@test
 def test_interface_language_is_a_file_not_a_rewrite(tmp: Path):
     """Языки закладываются механизмом, а не разовым выносом 982 строк.
 

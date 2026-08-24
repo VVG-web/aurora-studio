@@ -1784,6 +1784,12 @@ class Handler(BaseHTTPRequestHandler):
             if not html:
                 html = "<h1>cockpit/ui/index.html не найден</h1>"
             html = html.replace("__AURORA_TOKEN__", TOKEN)
+            # Русский каталог уезжает вместе со страницей, а не отдельным запросом.
+            # Пока за ним ходили по сети, панель зависела от него до первой отрисовки:
+            # сервер не ответил — и вместо надписей человек видит имена ключей, а то и
+            # пустые экраны. Язык по умолчанию не имеет права зависеть от сети.
+            html = html.replace('"__AURORA_I18N__"', json.dumps(
+                i18n_catalogue(DEFAULT_LANG).get("strings") or {}, ensure_ascii=False))
             body = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
