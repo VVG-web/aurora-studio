@@ -726,30 +726,59 @@ def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS) -> dict:
     one = {**cfg, "backends": [b], "request_timeout": 60}
 
     def shot(_):
-        r = call_role(one, "worker", [{"role": "user", "content": "Ответь одним словом: да"}],
-                      thinking=False, max_tokens=8, deadline=time.time() + 60,
+        # Проба должна походить на работу. На запросе «ответь одним словом» время съедает
+        # круговая задержка сети, а не генерация: шлюз выглядит узким там, где он
+        # широкий. Просим короткий абзац — генерация начинает преобладать, и меряется
+        # то, ради чего меряем.
+        r = call_role(one, "worker",
+                      [{"role": "user", "content": "Одним абзацем в три предложения: "
+                                                   "зачем нужна единица измерения."}],
+                      thinking=False, max_tokens=120, deadline=time.time() + 90,
                       sleep=lambda s: None)
         return bool(r["ok"]), r["seconds"]
 
-    rows, best, best_k = [], 0.0, 1
+    # Прогрев. Первый запрос платит за установку соединения и загрузку модели: на живом
+    # шлюзе это 7 секунд против 0,4 у второго. Без прогрева замер видит двадцатикратный
+    # «прирост» на второй ступени и объявляет параллельностью то, что было разогревом.
+    shot(0)
+
+    rows, best, best_k, stall = [], 0.0, 1, 0
     for k in steps:
+        # На каждой ступени — несколько волн, а не один залп. Быстрый шлюз отвечает за
+        # доли секунды, и одиночный замер меряет шум сети, а не пропускную способность:
+        # на живом шлюзе так вышло, что два запроса «медленнее» одного. Несколько волн
+        # усредняют разброс, и число становится числом.
+        shots = max(k * 3, 6)
         started = time.time()
         with ThreadPoolExecutor(max_workers=k) as ex:
-            res = list(ex.map(shot, range(k)))
+            res = list(ex.map(shot, range(shots)))
         spent = max(time.time() - started, 0.001)
         ok = sum(1 for good, _ in res if good)
         rate = ok / spent                      # ответов в секунду — вот что растёт
-        rows.append({"k": k, "ok": ok, "seconds": round(spent, 1), "rate": round(rate, 2)})
-        if ok < k:
-            rows[-1]["note"] = f"отказов: {k - ok} — жёсткий предел шлюза"
+        rows.append({"k": k, "shots": shots, "ok": ok,
+                     "seconds": round(spent, 1), "rate": round(rate, 2)})
+        if ok < shots:
+            rows[-1]["note"] = f"отказов: {shots - ok} — жёсткий предел шлюза"
             break
-        # Прирост меньше десятой доли — шлюз перестал обслуживать параллельно.
+        # Прирост меньше десятой доли — похоже, шлюз перестал обслуживать параллельно.
+        # «Похоже», а не «точно»: пропускная способность растёт не всегда гладко, и
+        # обрыв на первой же заминке занижает ширину. Даём ступени второй шанс и
+        # останавливаемся, только если и она не прибавила.
         if rate > best * 1.1:
-            best, best_k = rate, k
+            best, best_k, stall = rate, k, 0
         else:
-            rows[-1]["note"] = "прирост кончился — дальше очередь на стороне шлюза"
-            break
-    return {"n": b["n"], "url": b["url"], "model": model, "rows": rows, "width": best_k}
+            stall += 1
+            rows[-1]["note"] = ("прироста нет — пробуем ещё ступень" if stall < 2
+                                else "прирост кончился — дальше очередь на стороне шлюза")
+            if stall >= 2:
+                break
+    # Плоская пропускная способность — это ответ, а не число «ширина 2». Шлюз, который
+    # при одном и при четырёх запросах отдаёт одинаково, параллельностью не пользуется:
+    # ставить ему потоки бессмысленно, выигрыш надо искать в других шлюзах кольца.
+    first = rows[0]["rate"] if rows else 0
+    flat = bool(rows) and max(r["rate"] for r in rows) < first * 1.25
+    return {"n": b["n"], "url": b["url"], "model": model, "rows": rows,
+            "width": 1 if flat else best_k, "flat": flat}
 
 
 def cmd_probe(as_json: bool) -> int:
@@ -758,7 +787,9 @@ def cmd_probe(as_json: bool) -> int:
     if not cfg["backends"]:
         print("agent_core: бэкенды не объявлены — мерить нечего", file=sys.stderr)
         return 1
-    out = [probe_width(cfg, b) for b in cfg["backends"] if b.get("parallel", True)]
+    doing = [b for b in cfg["backends"] if b.get("parallel", True)]
+    skipped = [b for b in cfg["backends"] if not b.get("parallel", True)]
+    out = [probe_width(cfg, b) for b in doing]
     if as_json:
         print(json.dumps({"backends": out}, ensure_ascii=False))
         return 0
@@ -771,16 +802,32 @@ def cmd_probe(as_json: bool) -> int:
         if r.get("error"):
             print(f"⚠️  {r['error']}\n")
             continue
-        print("| Запросов | Ответили | Секунд | Ответов/с |")
-        print("|---|---|---|---|")
+        print("| Одновременно | Запросов | Ответили | Секунд | Ответов/с |")
+        print("|---|---|---|---|---|")
         for row in r["rows"]:
             note = f" · {row['note']}" if row.get("note") else ""
-            print(f"| {row['k']} | {row['ok']} | {row['seconds']} | {row['rate']}{note} |")
-        print(f"\n**Ширина: {r['width']}** — столько и ставьте этому шлюзу в «потоков».\n")
+            print(f"| {row['k']} | {row['shots']} | {row['ok']} | "
+                  f"{row['seconds']} | {row['rate']}{note} |")
+        if r.get("flat"):
+            print(f"\n**Ширина: 1 — шлюз не даёт выигрыша от параллельности.** При одном "
+                  f"и при\n{r['rows'][-1]['k']} одновременных он отдаёт одинаково: очередь "
+                  f"у него внутри. Потоки этому\nшлюзу не помогут — выигрыш ищите в "
+                  f"других шлюзах кольца.\n")
+        else:
+            print(f"\n**Ширина: {r['width']}** — столько и ставьте этому шлюзу в "
+                  f"«потоков».\n")
+    # Пропущенные называем. Молча мерить один шлюз из трёх — то же самое, что выдать
+    # часть за целое: человек прочитает «сумма по кольцу» и решит, что померено всё.
+    for b in skipped:
+        print(f"## №{b['n']} · {b['url']}\n")
+        print("Не мерился: у шлюза снята галка «в параллельную работу» — он запасной.")
+        print("В параллельных прогонах он не участвует, и ширина ему не нужна.\n")
     total = sum(r.get("width", 1) for r in out)
     print(f"Сумма по кольцу: {total}. При «одновременно» = авто движок возьмёт ровно "
           f"столько.\n")
-    print("Замер — не приговор: под нагрузкой шлюз держит меньше, чем в тишине. "
+    print("Мерилось коротким абзацем на запрос. Настоящая карточка тяжелее, и под ней "
+          "шлюз\nдержит меньше: считайте названное верхней оценкой, а не гарантией.")
+    print("\nЗамер — не приговор: под нагрузкой шлюз держит меньше, чем в тишине. "
           "Повторите\nв рабочее время, если числа кажутся завышенными.")
     return 0
 

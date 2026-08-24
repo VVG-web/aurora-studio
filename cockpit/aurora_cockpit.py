@@ -1091,6 +1091,7 @@ def report_state(project: str) -> dict:
                 "mtime": os.path.getmtime(path) if ok else 0}
 
     # Без этих выгрузок считать нечего, и «Собрать» без похода в Jira не сработает.
+    # (история версий добавляется ниже, после сборки записи отчёта)
     cache = {n: os.path.isfile(os.path.join(cfg["data_dir"], n))
              for n in ("issues.json", "full_status.json", "confluence_raw_metadata.json")}
     return {"reports": [{
@@ -1104,7 +1105,79 @@ def report_state(project: str) -> dict:
         "events": entry(cfg["events"]),
         "cached": all(cache.values()),
         "missing_cache": [n for n, ok in cache.items() if not ok],
+        "history": keep_version(project, "analyst", cfg["output"]),
     }]}
+
+
+REPORT_HISTORY = os.path.join("Artifacts", "reports", "_history")
+
+
+def history_dir(project: str, report_id: str) -> str:
+    return os.path.join(project, REPORT_HISTORY, os.path.basename(report_id))
+
+
+def versions(project: str, report_id: str) -> list:
+    """Сохранённые версии отчёта, свежие сверху."""
+    folder = history_dir(project, report_id)
+    if not os.path.isdir(folder):
+        return []
+    out = []
+    for name in os.listdir(folder):
+        full = os.path.join(folder, name)
+        if not os.path.isfile(full) or not name.endswith(".html"):
+            continue
+        out.append({"stamp": os.path.splitext(name)[0],
+                    "size": os.path.getsize(full),
+                    "when": datetime.fromtimestamp(
+                        os.path.getmtime(full)).strftime("%Y-%m-%d %H:%M")})
+    return sorted(out, key=lambda x: x["stamp"], reverse=True)
+
+
+def keep_version(project: str, report_id: str, output: str) -> list:
+    """Сохранить текущий отчёт в историю, если он новее последней сохранённой версии.
+
+    Отчёт собирается в один и тот же файл, и каждая сборка затирает прежний. Ошибка в
+    выгрузке или в ростере — и вместо рабочего отчёта остаётся испорченный, а сравнить
+    показатели с прошлой неделей уже не с чем.
+
+    Копию делаем при взгляде на вкладку, а не при нажатии кнопки: отчёт собирают и из
+    терминала, и маршрутом, и копия должна появиться в любом случае.
+    """
+    src = output if os.path.isabs(output) else os.path.join(project, output)
+    if not os.path.isfile(src):
+        return versions(project, report_id)
+    folder = history_dir(project, report_id)
+    stamp = datetime.fromtimestamp(os.path.getmtime(src)).strftime("%Y-%m-%d_%H%M")
+    dst = os.path.join(folder, stamp + ".html")
+    if not os.path.isfile(dst):
+        try:
+            os.makedirs(folder, exist_ok=True)
+            shutil.copy2(src, dst)
+        except OSError:
+            pass            # не смогли сохранить копию — это не повод не показать отчёт
+    return versions(project, report_id)
+
+
+def report_version_path(project: str, report_id: str, stamp: str) -> str:
+    """Путь к сохранённой версии — только из списка, а не из запроса.
+
+    Имя приходит из браузера, и подставить в него путь стоит недорого. Поэтому сверяем
+    со списком того, что действительно лежит в истории: чего в нём нет, того не выдаём.
+    """
+    if not any(v["stamp"] == stamp for v in versions(project, report_id)):
+        return ""
+    return os.path.join(history_dir(project, report_id), stamp + ".html")
+
+
+def forget_version(project: str, report_id: str, stamp: str) -> dict:
+    path = report_version_path(project, report_id, stamp)
+    if not path:
+        return {"error": "такой версии отчёта нет"}
+    try:
+        os.remove(path)
+    except OSError as e:
+        return {"error": f"не удалось удалить: {e.strerror or e}"}
+    return {"ok": True, "left": len(versions(project, report_id))}
 
 
 def health(project: str) -> dict:
@@ -1979,6 +2052,21 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             wanted = q.get("id", ["analyst"])[0]
+            stamp = (q.get("stamp") or [""])[0]
+            if stamp:
+                # Старая версия из истории: путь берём из списка сохранённого, а не из
+                # запроса — иначе именем версии можно вытащить любой файл проекта.
+                old_path = report_version_path(project, wanted, stamp)
+                if not old_path:
+                    self.send_json({"error": "такой версии отчёта нет"}, 404)
+                    return
+                body = read_text(old_path, limit=64_000_000).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             row = next((r for r in report_state(project).get("reports", [])
                         if r["id"] == wanted), None)
             if not row or not row["output"]["exists"]:
@@ -2127,6 +2215,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(self._write_config(project, payload.get("text", "")))
+            return
+        if u.path == "/api/report/forget":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(forget_version(project, payload.get("id", "analyst"),
+                                          payload.get("stamp", "")))
             return
         if u.path == "/api/files/write":
             project = payload.get("project", "")

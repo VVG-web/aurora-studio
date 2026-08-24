@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parents[1]
@@ -5094,6 +5095,91 @@ def test_panel_says_how_many_requests_actually_go(tmp: Path):
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
     assert "фактически: " in ui and "обрезает потоки шлюзов" in ui, \
         "человеку не сказано, сколько запросов уйдёт на самом деле"
+
+
+@test
+def test_width_probe_measures_work_not_noise(tmp: Path):
+    """Замер ширины шлюза должен мерить работу, а не разогрев и не шум сети.
+
+    Живой прогон показал три способа получить неверное число: первый запрос платит за
+    соединение и загрузку модели (7 секунд против 0,4 у второго) — без прогрева замер
+    видит двадцатикратный «прирост» и объявляет параллельностью разогрев; дешёвый запрос
+    меряет круговую задержку, а не генерацию; одиночный залп на быстром шлюзе меряет
+    разброс — два запроса «медленнее» одного.
+    """
+    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    at = src.index("def probe_width(")
+    body = src[at:src.index("\ndef ", at + 10)]
+    assert "shot(0)" in body and "Прогрев" in body, \
+        "нет прогрева: первый запрос платит за соединение, и замер примет это за параллельность"
+    assert "shots = max(k * 3, 6)" in body, \
+        "на ступени один залп: на быстром шлюзе это замер шума, а не пропускной способности"
+    assert "max_tokens=120" in body, \
+        "проба слишком дешёвая: меряется задержка сети, а не генерация"
+    assert "stall" in body, \
+        "замер обрывается на первой заминке и занижает ширину"
+    assert 'flat' in body and "1 if flat else best_k" in body, \
+        "плоская пропускная способность выдаётся числом вместо ответа «выигрыша нет»"
+
+    probe = src[src.index("def cmd_probe("):src.index("def models_of(")]
+    assert "skipped" in probe and "Не мерился" in probe, \
+        "шлюзы вне параллельной работы пропускаются молча — часть выдаётся за целое"
+    assert "верхней оценкой" in probe, \
+        "не сказано, что настоящая карточка тяжелее пробы"
+
+
+@test
+def test_reports_keep_their_previous_versions(tmp: Path):
+    """Отчёт собирается в один и тот же файл, и каждая сборка затирает прежний.
+
+    Ошибка в выгрузке или в ростере — и вместо рабочего отчёта остаётся испорченный, а
+    сравнить показатели с прошлой неделей уже не с чем. Копия делается при взгляде на
+    вкладку, а не по нажатию кнопки: отчёт собирают и маршрутом, и из терминала.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    (root / "Artifacts" / "reports").mkdir(parents=True)
+    out = root / "Artifacts" / "reports" / "r.html"
+    out.write_text("<h1>первый</h1>", encoding="utf-8")
+    first = ck.keep_version(str(root), "analyst", str(out))
+    assert len(first) == 1, "первая сборка не сохранилась"
+
+    assert len(ck.keep_version(str(root), "analyst", str(out))) == 1, \
+        "тот же файл сохраняется снова и снова — история станет мусором"
+
+    out.write_text("<h1>второй</h1>", encoding="utf-8")
+    os.utime(out, (time.time() + 120, time.time() + 120))
+    two = ck.keep_version(str(root), "analyst", str(out))
+    assert len(two) == 2, "новая сборка не попала в историю"
+    assert two[0]["stamp"] > two[1]["stamp"], "свежие версии не сверху"
+
+    # Имя версии приходит из браузера: подставить в него путь стоит недорого.
+    for bad in ("../../../etc/passwd", "..%2Fx", "/etc/passwd", ""):
+        assert not ck.report_version_path(str(root), "analyst", bad), \
+            f"именем версии можно вытащить чужой файл: {bad!r}"
+
+    gone = ck.forget_version(str(root), "analyst", two[0]["stamp"])
+    assert gone.get("ok") and gone["left"] == 1, f"версия не удалилась: {gone}"
+    assert ck.forget_version(str(root), "analyst", two[0]["stamp"]).get("error"), \
+        "удаление несуществующей версии проходит молча"
+
+    # Отсутствие отчёта — не повод падать: вкладку открывают и на пустом проекте.
+    out.unlink()
+    assert ck.keep_version(str(root), "analyst", str(out)) == ck.versions(str(root), "analyst")
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "Прежние версии" in ui and "/api/report/forget" in ui, \
+        "историю негде посмотреть и нечем почистить"
+    assert "stamp=" in ui, "старую версию нельзя открыть"
+    assert "Вернуть её будет неоткуда" in ui, \
+        "удаление версии без предупреждения — необратимая потеря по одному нажатию"
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"history": keep_version(' in src, \
+        "история собирается не для каждого отчёта вкладки, а для одного"
 
 
 @test
