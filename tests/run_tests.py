@@ -5097,6 +5097,29 @@ def test_panel_says_how_many_requests_actually_go(tmp: Path):
 
 
 @test
+def test_panel_admits_it_is_running_old_code(tmp: Path):
+    """Разметка отдаётся с диска свежая, а процесс отвечает старым кодом.
+
+    Обновили кит, не перезапустив панель — на экране новые кнопки, а API под ними нет.
+    Человек нажимает и получает «неизвестный маршрут»: он ищет поломку в себе, хотя
+    достаточно перезапуска. Предупреждение об этом было написано — и не срабатывало
+    ни разу: сервер клал признак рядом с `ui`, а панель читала его внутри `ui`.
+    """
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    block = src[src.index('"ui": {'):src.index('"projects": find_projects')]
+    assert "stale_process" in block, \
+        "признак «процесс старее файлов» лежит не там, где его читает панель"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "S.state.ui.stale_process" in ui, "панель перестала проверять устаревший процесс"
+    assert 'self.send_header("Cache-Control", "no-store")' in src, \
+        "страница кэшируется: обновление кита останется невидимым до очистки кэша"
+
+    # Режим, о котором знает только подсказка при наведении, не существует.
+    assert "можно написать «авто»" in ui, "про «авто» сказано только во всплывающей подсказке"
+    assert "Замерить шлюзы" in ui, "измерить ширину можно только из терминала"
+
+
+@test
 def test_route_works_until_the_work_is_done_and_saves_each_lap(tmp: Path):
     """Маршрут идёт, пока есть работа, и фиксирует каждый оборот.
 
