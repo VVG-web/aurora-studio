@@ -78,5 +78,6 @@
   "files.shown": "Показано {shown} из {total} — уточните поиск или откройте нужную папку.",
   "files.rename": "Переименовать",
   "files.delete": "Удалить",
-  "git.unknown": "Состояние git не выяснено: {why}"
+  "git.unknown": "Состояние git не выяснено: {why}",
+  "console.stop": "Прервать"
 }
