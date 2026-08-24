@@ -658,7 +658,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.3";
+const UI_VERSION = "1.99.4";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2622,6 +2622,42 @@ function reportCard(r){
            + `&id=${encodeURIComponent(r.id)}&t=${encodeURIComponent(TOKEN)}`},
       "Открыть"));
   card.append(row);
+
+  // История версий. Отчёт собирается в один и тот же файл, и каждая сборка затирает
+  // прежний: ошибка в выгрузке или в ростере — и сравнить показатели с прошлой неделей
+  // уже не с чем. Копия делается сама при взгляде на вкладку, потому что отчёт собирают
+  // и кнопкой, и маршрутом, и из терминала.
+  const hist = r.history || [];
+  if (hist.length){
+    const list = el("div", {style:"margin-top:6px"});
+    const draw = () => {
+      list.innerHTML = "";
+      for (const v of hist){
+        list.append(el("div", {class:"list-item"},
+          el("div", {style:"flex:1"},
+            el("span", {class:"mono", style:"font-size:12.5px"}, v.when),
+            el("span", {class:"muted", style:"font-size:12px;margin-left:8px"}, kb(v.size))),
+          el("a", {class:"btn", target:"_blank",
+            href:`/api/report/file?project=${encodeURIComponent(S.project.path)}`
+                 + `&id=${encodeURIComponent(r.id)}&stamp=${encodeURIComponent(v.stamp)}`
+                 + `&t=${encodeURIComponent(TOKEN)}`}, "Открыть"),
+          el("button", {class:"btn", onclick:async ()=>{
+            if (!confirm(`Удалить версию от ${v.when}? Вернуть её будет неоткуда.`)) return;
+            const res = await api("/api/report/forget", {method:"POST", body: JSON.stringify(
+              {project:S.project.path, id:r.id, stamp:v.stamp})});
+            if (!res.error){ hist.splice(hist.indexOf(v), 1); draw(); toast("версия удалена"); }
+          }}, "Удалить")));
+      }
+    };
+    draw();
+    card.append(el("details", {style:"margin-top:12px"},
+      el("summary", {class:"sub", style:"cursor:pointer"},
+        `Прежние версии: ${hist.length}`),
+      el("div", {class:"muted", style:"font-size:12px;margin:6px 0"},
+        "Сохраняются сами при каждой новой сборке. Пригодятся, если свежая сборка вышла "
+        + "испорченной, и чтобы сравнить показатели с прошлым разом."),
+      list));
+  }
   return card;
 }
 
