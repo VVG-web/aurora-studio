@@ -54,6 +54,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -72,6 +73,28 @@ ASK_TAIL = 4          # столько прошлых пар вопрос-отв
 def human_time(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 60}м {s % 60:02d}с" if s >= 60 else f"{s}с"
+
+
+def threads_line(cfg: dict, width: int, why_one: str = "") -> str:
+    """Строка «сколько потоков и почему» — одна на все длинные шаги.
+
+    Человек у экрана видит бегущие строки и не может отличить шаг, идущий в девять
+    потоков, от шага, идущего в один: выглядят они одинаково, а разница — ночь против
+    часа. Настроив «одновременно», он вправе знать, где эта настройка работает, а где
+    не применяется вовсе.
+    """
+    if width > 1:
+        slots = AG.pool(cfg)
+        return ("  потоков: " + str(width) + " · слоты по шлюзам: "
+                + ", ".join(f"№{n}×{slots.count(n)}" for n in sorted(set(slots))))
+    if why_one:
+        return "  в один поток: " + why_one
+    cap = cfg.get("parallel", 1)
+    if cap > 1:
+        return ("  в один поток: этот шаг не распараллеливается — «одновременно» = "
+                f"{cap} на него не влияет")
+    return ("  в один поток: «одновременно» = 1 в настройке агента (Настройка кита → "
+            "Агент)")
 
 
 def progress(done: int, total: int, started: float) -> str:
@@ -851,7 +874,11 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
             break
         total = min(len(sources), cfg["max_steps"])
-        say(f"  {progress(len(steps), total, started)} · {source.rsplit('/', 1)[-1][:60]} …")
+        if not steps:
+            say(threads_line(cfg, 1, "разбор источников идёт по очереди: карточки "
+                                     "предыдущего источника нужны следующему"))
+        say(f"  {progress(len(steps), total, started)} · 1 поток · "
+            f"{source.rsplit('/', 1)[-1][:60]} …")
         step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
                             deadline=min(budget, time.time() + cfg["request_timeout"]))
         steps.append(step)
@@ -2223,12 +2250,19 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     slots = AG.pool(cfg)
     width = min(len(slots), total) or 1
     done, in_a_row = 0, 0
+    # Сколько заданий висит в воздухе прямо сейчас. Человек у экрана видит бегущие
+    # строки и не может отличить «шаг идёт в девять потоков» от «шаг идёт в один»:
+    # оба выглядят одинаково, а разница между ними — ночь против часа.
+    busy, busy_lock = 0, threading.Lock()
 
     def one(job):
+        nonlocal busy
         i, path = job
         # Задание идёт на свой слот: у каждого шлюза своя пропускная способность, и
         # раздавать всё первому значит выстроить очередь на его стороне.
         prefer = slots[i % len(slots)] if len(slots) > 1 else 0
+        with busy_lock:
+            busy += 1
         try:
             return path, distill_card(cfg, path, call=call, momus=momus,
                                       deadline=min(budget, time.time() + cfg["request_timeout"]),
@@ -2238,6 +2272,9 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             # шагом со статусом, а не исключением, всплывающим из пула и уносящим партию.
             return path, {"card": os.path.basename(path), "status": "сбой",
                           "note": f"{type(e).__name__}: {e}"[:160], "backends": []}
+        finally:
+            with busy_lock:
+                busy -= 1
 
     def apply_split(path: str, step: dict) -> None:
         """Записать части и превратить исходную карточку в карту документа.
@@ -2284,7 +2321,9 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     def finish(path, step):
         nonlocal unsupported
         steps.append(step)
-        say(f"  {progress(done, total, started)} · {os.path.basename(path)}"
+        say(f"  {progress(done, total, started)}"
+            + (f" · потоков {busy}/{width}" if width > 1 else " · в один поток")
+            + f" · {os.path.basename(path)}"
             f" → {step['status']}"
             + (f": {step['note'][:100]}" if step["note"] else "") + where(step))
         if step.get("unsupported"):
@@ -2312,6 +2351,10 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
 
     jobs = list(enumerate(todo[:total]))
     if width == 1:
+        # Почему в один поток — говорим сразу. Молча последовательный прогон выглядит
+        # так же, как параллельный, только идёт в девять раз дольше, и человек ищет
+        # причину в шлюзе, а она в его же настройке.
+        say(threads_line(cfg, 1, "карточка одна" if total == 1 else ""))
         for job in jobs:
             path, step = one(job)
             done += 1
@@ -2320,8 +2363,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 break
     else:
         from concurrent.futures import ThreadPoolExecutor
-        say(f"  одновременно: {width} · слоты по бэкендам: "
-            + ", ".join(f"№{n}×{slots.count(n)}" for n in sorted(set(slots))))
+        say(threads_line(cfg, width))
         with ThreadPoolExecutor(max_workers=width) as ex:
             for path, step in ex.map(one, jobs):
                 done += 1
@@ -2384,7 +2426,10 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
             break
         total = min(len(conflicts), cfg["max_steps"])
-        say(f"  {progress(len(steps), total, started)} · «{alias[:50]}» …")
+        if not steps:
+            say(threads_line(cfg, 1, "разбор синонимов идёт по очереди: решение по "
+                                     "одной паре меняет картину для следующих"))
+        say(f"  {progress(len(steps), total, started)} · 1 поток · «{alias[:50]}» …")
         step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
                               deadline=min(budget, time.time() + cfg["request_timeout"]))
         steps.append(step)

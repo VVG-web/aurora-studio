@@ -5097,6 +5097,50 @@ def test_panel_says_how_many_requests_actually_go(tmp: Path):
 
 
 @test
+def test_console_says_which_step_uses_the_threads(tmp: Path):
+    """Шаг в девять потоков и шаг в один выглядят в консоли одинаково.
+
+    Разница между ними — ночь против часа, а человек, настроивший «одновременно»,
+    вправе знать, где эта настройка работает, а где не применяется вовсе: разбор
+    источников и разбор синонимов идут по очереди при любом потолке.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ag = importlib.import_module("agent_core")
+    importlib.reload(ag)
+    ar = importlib.import_module("agent_runner")
+    importlib.reload(ar)
+
+    wide = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                            "AURORA_AGENT_BACKEND_1_WIDTH": "9",
+                            "AURORA_AGENT_PARALLEL": "9"})
+    line = ar.threads_line(wide, 9)
+    assert "потоков: 9" in line and "№1×9" in line, \
+        f"параллельный шаг не называет ни числа потоков, ни шлюзов: {line}"
+
+    # Шаг, который не распараллеливается, обязан сказать это, а не молчать: иначе
+    # человек ждёт ускорения от настройки, на этот шаг не влияющей.
+    seq = ar.threads_line(wide, 1)
+    assert "не распараллеливается" in seq and "9" in seq, \
+        f"последовательный шаг молчит про потолок: {seq}"
+
+    narrow = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                              "AURORA_AGENT_PARALLEL": "1"})
+    why = ar.threads_line(narrow, 1)
+    assert "«одновременно» = 1" in why and "Настройка кита" in why, \
+        f"не сказано, где именно поднять потолок: {why}"
+
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    # Занятость считается живой, а не выводится из ширины пула: пул может простаивать.
+    assert "busy_lock" in src and "потоков {busy}/{width}" in src, \
+        "в строке прогресса не видно, сколько потоков занято прямо сейчас"
+    assert src.count("threads_line(") >= 4, \
+        "не все длинные шаги объявляют свою параллельность"
+    assert "· 1 поток ·" in src, \
+        "последовательные шаги не помечают строки прогресса"
+
+
+@test
 def test_base_graph_shows_the_base_not_a_guess(tmp: Path):
     """Граф базы — то, что в ней написано: ссылки в тексте и `related:`.
 
