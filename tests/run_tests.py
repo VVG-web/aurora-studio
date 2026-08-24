@@ -5043,10 +5043,57 @@ def test_panel_offers_the_fix_where_editing_is_forbidden(tmp: Path):
     structure = (KIT / "structure_dirs.txt").read_text(encoding="utf-8")
     assert "Raw/corrections" in structure, \
         "папка не объявлена в схеме — doctor сочтёт её мусором"
-    plan = (KIT / "scripts/build_plan.py").read_text(encoding="utf-8")
-    assert "Raw/corrections" in plan, "сборка базы не читает исправления"
-    assert plan.index("Raw/corrections") < plan.index('("Confluence"'), \
-        "исправления читаются позже страницы, которую исправляют"
+    # Исправление НЕ источник: сделай его источником — и рядом с «Заявкой» появится
+    # карточка «Исправление: Заявка», то самое задвоение, от которого уходили. Оно
+    # накладывается на карточку-владельца, и место этому шагу — ПОСЛЕ разбора, когда
+    # тела карточек уже переписаны моделью.
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    bp = importlib.import_module("build_plan")
+    importlib.reload(bp)
+    assert not any(g == "Raw/corrections" for g, _ in bp.GROUPS), \
+        "исправления попали в план сборки источником — движок сделает из них карточки"
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    assert "kb:correct" in scen, \
+        "исправления не накладываются в маршруте — «применяется при каждой сборке» станет обещанием"
+    for block in scen.split("agent:build")[1:]:
+        head = block.split("kb:correct")[0]
+        assert "kb:trust" not in head, \
+            "доверие считается раньше, чем наложены исправления: карточка получит класс от источника"
+
+
+@test
+def test_panel_says_how_many_requests_actually_go(tmp: Path):
+    """Два числа в настройке агента складываются не так, как ждёт человек.
+
+    «Потоков» у шлюза — предел сервера, общее «одновременно» — предел прогона, и второе
+    ОБРЕЗАЕТ сумму первых. Поставив шлюзу девять потоков при потолке 1, человек получает
+    один запрос и уверен, что настроил девять: работа идёт по очереди, а он ждёт ускорения
+    и не понимает, почему его нет. Нашлось на живой настройке пользователя.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ag = importlib.import_module("agent_core")
+    importlib.reload(ag)
+
+    cfg = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                           "AURORA_AGENT_BACKEND_1_WIDTH": "9",
+                           "AURORA_AGENT_PARALLEL": "1"})
+    assert len(ag.pool(cfg)) == 1, "общий потолок перестал обрезать ширину шлюзов"
+    wide = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                            "AURORA_AGENT_BACKEND_1_WIDTH": "9",
+                            "AURORA_AGENT_PARALLEL": "4"})
+    assert len(ag.pool(wide)) == 4, "потолок перестал действовать"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"slots": len(AG.pool(cfg))' in src, \
+        "панель считает параллельность своим способом, а не тем же, что движок"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "фактически: " in ui and "обрезает потоки шлюзов" in ui, \
+        "человеку не сказано, сколько запросов уйдёт на самом деле"
 
 
 @test

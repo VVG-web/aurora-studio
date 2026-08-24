@@ -1549,6 +1549,12 @@ def agent_state(project: str) -> dict:
         "max_steps": cfg["max_steps"], "budget_min": cfg["budget_min"],
         "request_timeout": cfg["request_timeout"],
         "parallel": cfg.get("parallel", 1),
+        # Сколько запросов пойдёт НА САМОМ ДЕЛЕ. Два числа в форме — «потоков» у шлюза
+        # и общее «одновременно» — перемножаются не так, как ждёт человек: общий потолок
+        # ОБРЕЗАЕТ сумму ширин. Поставив шлюзу девять потоков при потолке 1, человек
+        # получает один запрос и уверен, что настроил девять. Считаем тем же кодом,
+        # которым считает движок, и показываем результат.
+        "slots": len(AG.pool(cfg)) if cfg.get("backends") else 0,
         "backends": [{"n": b["n"], "url": b["url"], "key_set": bool(b["key"]),
                       "model": b["model"], "models": b["models"],
                       "context": b.get("context", 0),

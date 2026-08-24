@@ -4134,6 +4134,15 @@ async function renderAgentCard(box, scope){
                         + "очереди. Больше — быстрее, пока шлюз выдерживает."},
         "одновременно ", el("input",{class:"btn",style:"width:64px",value:a.parallel||1,
         oninput:e=>touch("AURORA_AGENT_PARALLEL", e.target.value)})),
+      // Итог называем числом. Два поля — «потоков» у шлюза и общее «одновременно» —
+      // складываются не так, как ждёт человек: общий потолок ОБРЕЗАЕТ сумму ширин, и
+      // девять потоков при потолке 1 дают один запрос. Молча это выглядит как «настроил,
+      // а быстрее не стало».
+      el("span",{class:"sub", id:"slotsNote",
+        title:"Столько запросов уйдёт в кольцо одновременно. Считается тем же кодом, что и в движке."},
+        "фактически: " + (a.slots || 1)
+        + ((a.slots || 1) < (a.backends || []).reduce((s,b)=>s+(b.width||1),0)
+           ? " — «одновременно» обрезает потоки шлюзов" : "")),
       el("label",{},"адаптер ", el("select",{class:"btn",
           onchange:e=>touch("AURORA_AGENT_ADAPTER", e.target.value)},
         ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,
