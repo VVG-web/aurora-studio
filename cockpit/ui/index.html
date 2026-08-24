@@ -302,6 +302,7 @@ tr:last-child td{border-bottom:0}
     <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
     <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="files" aria-label="Файлы проекта"><span class="label" data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
+    <button data-view="graph" aria-label="Граф базы знаний"><span class="label" data-i18n="nav.graph">Граф</span></button>
     <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
     <button data-view="reports" aria-label="Отчёты"><span class="label">Отчёты</span></button>
     <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
@@ -460,6 +461,35 @@ tr:last-child td{border-bottom:0}
     </section>
 
     <!-- СПРОСИТЬ БАЗУ -->
+    <!-- ГРАФ -->
+    <section class="view" id="view-graph">
+      <h1 data-i18n="graph.title">Граф базы</h1>
+      <p class="sub" data-i18n="graph.about">Карточки и связи между ними — то, что в базе
+        написано: ссылки в тексте и поле related. Способ дойти до карточки, а не отчёт:
+        сообщества, мосты и острова считает kb:map.</p>
+      <div class="card" style="padding:12px;margin-bottom:10px">
+        <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+          <input id="graphFind" data-i18n-ph="graph.find" placeholder="Карточка, от которой смотрим"
+            style="flex:1;min-width:220px;font:inherit;padding:8px;border-radius:8px" list="graphList">
+          <datalist id="graphList"></datalist>
+          <label class="sub" style="display:flex;gap:6px;align-items:center">
+            <span data-i18n="graph.depth">Ступеней</span>
+            <select id="graphDepth" style="font:inherit;padding:4px 6px;border-radius:8px">
+              <option value="1">1</option><option value="2" selected>2</option>
+              <option value="3">3</option>
+            </select>
+          </label>
+          <button class="btn" id="graphAll" data-i18n="graph.all">Показать всю базу</button>
+          <button class="btn" id="graphRebuild" data-i18n="graph.rebuild">Пересчитать</button>
+          <span class="sub" id="graphStamp"></span>
+        </div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <div id="graphBox" style="height:62vh;min-height:380px"></div>
+      </div>
+      <div class="sub" id="graphNote" style="margin-top:8px"></div>
+    </section>
+
     <!-- ФАЙЛЫ -->
     <section class="view" id="view-files">
       <h1 data-i18n="files.title">Файлы проекта</h1>
@@ -488,6 +518,7 @@ tr:last-child td{border-bottom:0}
               </select>
               <button class="btn" id="fileFolder" data-i18n="files.reveal_folder">Показать в папке</button>
               <button class="btn" id="fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
+              <button class="btn" id="filePub" hidden data-i18n="editor.publish">Опубликовать</button>
               <button class="btn primary" id="fileSave" disabled data-i18n="editor.save">Сохранить</button>
             </div>
             <details id="fileFm" hidden style="margin-bottom:8px">
@@ -626,7 +657,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.98.1";
+const UI_VERSION = "1.98.2";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -735,6 +766,127 @@ function drawLangPicker(){
   };
 }
 
+
+/* ---------------- граф базы ---------------- */
+const G = { data:null, cy:null, focus:"" };
+
+// Библиотека раскладки — 428 КБ; грузим при первом открытии раздела, как и редактор.
+let CYTO_READY = null;
+function ensureCyto(){
+  if (CYTO_READY) return CYTO_READY;
+  CYTO_READY = new Promise((ok, fail)=>{
+    const s = el("script",{src:"/vendor/cytoscape/dist/cytoscape.min.js"});
+    s.onload = ok;
+    s.onerror = ()=>{ toast(t("graph.nolib"), "err"); fail(); };
+    document.head.append(s);
+  });
+  return CYTO_READY;
+}
+
+async function renderGraph(rebuild){
+  const note = $("#graphNote");
+  if (!S.project){ note.textContent = t("files.pick_project"); return; }
+  note.textContent = t("graph.loading");
+  const d = await api("/api/graph?project=" + encodeURIComponent(S.project.path)
+                      + (rebuild ? "&rebuild=1" : ""), {quiet:true});
+  if (d.error){ note.textContent = d.error; return; }
+  G.data = d;
+  $("#graphStamp").textContent = t("graph.when", {when: d.when || "—"});
+  // Пересчёт сорвался, а картинка прежняя — сказать вслух. Молча показанный вчерашний
+  // граф человек примет за сегодняшний и построит на нём решение.
+  if (d.stale_reason) toast(t("graph.stale", {why: d.stale_reason}), "warn");
+  const list = $("#graphList"); list.innerHTML = "";
+  // Список для подсказки ограничиваем: три тысячи <option> браузер рисует заметно.
+  d.nodes.slice(0, 1200).forEach(n => list.append(el("option",{value:n.id}, n.title)));
+  note.textContent = t("graph.counts",
+    {nodes:d.nodes.length, edges:d.edges.length, orphans:d.orphans});
+  await ensureCyto();
+  drawGraph();
+}
+
+function neighbourhood(id, depth){
+  // Окрестность вместо всей базы: полторы тысячи узлов на экране — это клубок, из
+  // которого не выбрать ни одного. Человеку нужен ответ на «с чем это связано и куда
+  // идти дальше», а не портрет базы целиком.
+  const near = new Set([id]);
+  let edge = new Set([id]);
+  for (let i = 0; i < depth; i++){
+    const next = new Set();
+    for (const e of G.data.edges){
+      if (edge.has(e.from) && !near.has(e.to)) next.add(e.to);
+      if (edge.has(e.to) && !near.has(e.from)) next.add(e.from);
+    }
+    next.forEach(x => near.add(x));
+    edge = next;
+    if (!next.size) break;
+  }
+  return near;
+}
+
+function drawGraph(){
+  if (!G.data || !window.cytoscape) return;
+  const box = $("#graphBox");
+  const depth = parseInt($("#graphDepth").value, 10) || 2;
+  const want = G.focus ? neighbourhood(G.focus, depth) : null;
+  const nodes = want ? G.data.nodes.filter(n => want.has(n.id)) : G.data.nodes;
+  const ids = new Set(nodes.map(n => n.id));
+  const edges = G.data.edges.filter(e => ids.has(e.from) && ids.has(e.to));
+  if (!G.focus && nodes.length > 900){
+    $("#graphNote").textContent = t("graph.toobig", {n: nodes.length});
+    return;
+  }
+  if (G.cy){ G.cy.destroy(); G.cy = null; }
+  const css = getComputedStyle(document.body);
+  const ink = css.getPropertyValue("--text").trim() || "#ddd";
+  const line = css.getPropertyValue("--border").trim() || "#555";
+  const hot = css.getPropertyValue("--accent").trim() || "#e0a33e";
+  G.cy = cytoscape({
+    container: box,
+    elements: [
+      ...nodes.map(n => ({data:{id:n.id, label:n.title || n.id, path:n.path,
+                                draft: n.status === "draft" ? 1 : 0,
+                                me: n.id === G.focus ? 1 : 0}})),
+      ...edges.map(e => ({data:{id:e.from+"→"+e.to, source:e.from, target:e.to}}))],
+    style: [
+      {selector:"node", style:{"background-color": line, "label":"data(label)",
+        "color": ink, "font-size":"9px", "width":10, "height":10,
+        "text-max-width":"120px", "text-wrap":"ellipsis"}},
+      // Черновик виден отдельно: строить на нём требования нельзя, и это должно быть
+      // заметно до того, как человек откроет карточку.
+      {selector:"node[draft = 1]", style:{"background-color":"#8a8a8a",
+        "border-width":1, "border-style":"dashed", "border-color": line}},
+      {selector:"node[me = 1]", style:{"background-color": hot, "width":16,
+        "height":16, "font-size":"11px", "font-weight":"bold"}},
+      {selector:"edge", style:{"width":1, "line-color": line,
+        "curve-style":"haystack", "opacity":0.55}}],
+    layout: {name:"cose", animate:false, nodeRepulsion: 9000, idealEdgeLength: 60},
+    wheelSensitivity: 0.25
+  });
+  G.cy.on("tap", "node", evt => {
+    const d = evt.target.data();
+    // Клик ведёт в карточку. Граф, из которого нельзя попасть в файл, — картинка
+    // «смотрите, красиво»: её посмотрят один раз.
+    openPath(d.path);
+  });
+  G.cy.on("cxttap", "node", evt => { G.focus = evt.target.id(); $("#graphFind").value = G.focus; drawGraph(); });
+  $("#graphNote").textContent = G.focus
+    ? t("graph.around", {id: G.focus, n: nodes.length, depth})
+    : t("graph.counts", {nodes: G.data.nodes.length, edges: G.data.edges.length,
+                         orphans: G.data.orphans});
+}
+
+$("#graphFind")?.addEventListener("change", e => {
+  const v = (e.target.value || "").trim();
+  if (!G.data) return;
+  const hit = G.data.nodes.find(n => n.id === v)
+           || G.data.nodes.find(n => (n.title || "").toLowerCase() === v.toLowerCase());
+  if (!hit) return toast(t("graph.nocard", {id: v}), "warn");
+  G.focus = hit.id; drawGraph();
+});
+$("#graphDepth")?.addEventListener("change", drawGraph);
+$("#graphAll")?.addEventListener("click", ()=>{ G.focus = ""; $("#graphFind").value = ""; drawGraph(); });
+$("#graphRebuild")?.addEventListener("click", ()=> renderGraph(true));
+
 /* ---------------- файлы проекта ---------------- */
 const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"" };
 // Порог живого предпросмотра в знаках. Не выдумка: на карточке в 11 КБ редактор сам
@@ -823,9 +975,17 @@ async function openFile(f){
   $("#fileRO").hidden = !F.ro;
   $("#fileRO").textContent = F.ro ? "🔒 " + t("files.readonly") + ": " + F.ro : "";
   $("#fileGit").textContent = d.git || "";
+  // «Опубликовать» показываем только там, где публикация применима: у видов артефактов
+  // с объявленным адресом и у документов из `Deliverables/work`. Кнопка, которая всегда
+  // на виду и почти всегда отказывает, учит не читать отказы.
+  F.publishable = publishTarget(d.path);
+  $("#filePub").hidden = !F.publishable;
   $("#fileStale").hidden = !d.stale;
-  if (d.stale) $("#fileStale").innerHTML = esc(t("editor.stale", {date:d.published}))
-    + ' <button class="btn" id="filePublish">' + esc(t("editor.publish")) + '</button>';
+  if (d.stale){
+    $("#fileStale").innerHTML = "";
+    $("#fileStale").append(t("editor.stale", {date: d.published}) + " ",
+      el("button",{class:"btn", onclick:()=>publishFromEditor()}, t("editor.publish")));
+  }
   $("#fileWarn").hidden = true;
   $("#fileLint").textContent = "";
   const [fm, body] = splitFrontmatter(d.text);
@@ -937,6 +1097,56 @@ function ensureVditor(){
     document.head.append(s);
   });
   return VDITOR_READY;
+}
+
+function publishTarget(rel){
+  // Смотрим по реестру видов: папка артефакта с объявленным `publish_url` — и
+  // `Deliverables/work`, откуда публикуются собранные документы.
+  const r = (rel || "").replace(/\\/g, "/");
+  if (r.startsWith("Deliverables/work/")) return true;
+  const kinds = (S.kinds || {});
+  return Object.values(kinds).some(k => k.out && k.publish_url
+                                        && r.startsWith(k.out.replace(/\/$/, "") + "/"));
+}
+
+async function publishFromEditor(){
+  if (!F.path) return;
+  if (F.dirty && !confirm(t("editor.publish_dirty"))) return;
+  if (F.dirty) await saveFile();
+  const d = await api("/api/files/clean?project=" + encodeURIComponent(S.project.path)
+                      + "&path=" + encodeURIComponent(F.path));
+  if (d.error) return toast(d.error, "err");
+  // Показываем ровно то, что уйдёт. Граница производства невидима в тексте, и человек
+  // должен увидеть её собственными глазами до отправки, а не на странице у заказчика.
+  const box = el("div",{class:"card", style:"padding:14px;margin-bottom:10px"},
+    el("b",{}, t("editor.publish_preview")),
+    el("div",{class:"sub"}, d.marked
+      ? t("editor.publish_cut", {n: d.cut})
+      : t("editor.publish_nomark")),
+    el("pre",{class:"mono", style:"white-space:pre-wrap;max-height:260px;overflow:auto;"
+      + "margin-top:8px;padding:8px;border-radius:8px;background:var(--surface-2)"}, d.clean),
+    el("div",{class:"row", style:"gap:8px;margin-top:10px"},
+      el("button",{class:"btn primary", onclick:async ()=>{
+        box.remove();
+        show("console");
+        const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+          {project:S.project.path, cmd:"ship:publish", args:[F.path, "--apply"]})});
+        if (res.job) poll(res.job, 0, "ship:publish " + F.path);
+      }}, t("editor.publish_go")),
+      el("button",{class:"btn", onclick:()=>box.remove()}, t("editor.publish_cancel"))));
+  $("#filePane").prepend(box);
+}
+
+async function openPath(rel){
+  // Общий вход в редактор по пути: им пользуются «Незаконченные», готовый артефакт
+  // после производства и всё, что появится дальше.
+  if (!S.project) return toast("Сначала выберите проект", "warn");
+  show("files");
+  if (!F.files.length) await renderFiles();
+  const f = F.files.find(x => x.path === rel)
+        || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
+  await openFile(f);
+  $("#filePane").scrollIntoView({behavior:"smooth", block:"start"});
 }
 
 async function saveFile(){
@@ -1115,6 +1325,7 @@ function show(view){
   if (view==="work") renderQuick("продуктивность");
   if (view==="work") fillMakeKinds();
   if (view==="files") renderFiles();
+  if (view==="graph") renderGraph();
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
   if (view==="reports") renderReports();
   if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
@@ -1555,7 +1766,10 @@ function baseCards(h, st){
             el("div",{style:"flex:1"},
               el("div",{class:"mono",style:"font-size:12.5px"}, x.path),
               el("div",{class:"muted",style:"font-size:12px"},
-                `остановилось на «${x.stopped}» · ${x.days} дн. назад`)))));
+                `остановилось на «${x.stopped}» · ${x.days} дн. назад`)),
+            // Список без перехода — это отчёт, а не находка: человек всё равно пойдёт
+            // искать файл руками, и плитка станет счётчиком, на который не смотрят.
+            el("button",{class:"btn", onclick:()=>openPath(x.path)}, "Открыть"))));
         box.prepend(list); list.scrollIntoView({behavior:"smooth", block:"center"});
       }} : null}),
     metricCard({title:"Остаток человеку", value: h.todo != null ? h.todo : "—",
@@ -2769,6 +2983,7 @@ async function fillMakeKinds(){
   const d = await api("/api/kinds?project=" + encodeURIComponent(S.project.path),
                       {quiet:true});
   const kinds = d.kinds || {};
+  S.kinds = kinds;
   // Список чистим, только когда есть чем наполнить. Иначе один сорвавшийся запрос
   // стирал настроенные виды артефактов, и это выглядело как «настройки пропали».
   if (!Object.keys(kinds).length){
@@ -2837,6 +3052,15 @@ function drawMake(lines){
   // Планировщик спрашивает — значит человеку есть что ответить, и поле для ответа должно
   // быть здесь же. «Хватит, работай» доступна с первого раунда: сколько раундов нужно
   // этой задаче, знает тот, кто её ставил.
+  const done = (text.match(/Документ: `([^`]+)`/) || [])[1];
+  if (done && /Момус|checked/.test(text) && !/Планировщик спрашивает/.test(text)){
+    box.append(el("div",{class:"row", style:"gap:10px;margin-top:10px"},
+      el("button",{class:"btn primary", onclick:()=>openPath(done)},
+        "Открыть в редакторе")));
+    // Открываем сами: человек просил, чтобы готовый документ сразу оказывался в
+    // редакторе. Кнопка рядом — на случай, если он уже ушёл на другой экран.
+    setTimeout(()=>{ if (S.view === "work") openPath(done); }, 400);
+  }
   if (/Планировщик спрашивает/.test(text)){
     const ans = el("textarea",{class:"btn",rows:3,placeholder:"Ответы: можно по номерам, можно «согласен»",
       style:"width:100%;font-weight:400;margin-top:10px;resize:vertical"});
@@ -4111,6 +4335,7 @@ $("#fileSearch")?.addEventListener("input", drawTree);
 $("#fileSave")?.addEventListener("click", saveFile);
 $("#fileFolder")?.addEventListener("click", ()=>revealFile("folder"));
 $("#fileOpen")?.addEventListener("click", ()=>revealFile("open"));
+$("#filePub")?.addEventListener("click", publishFromEditor);
 $("#fileMode")?.addEventListener("change", async e=>{
   localStorage.setItem("aurora-editor-mode", e.target.value);
   if (F.path && F.ed) await mountEditor(F.dirty ? F.ed.getValue() : F.orig);

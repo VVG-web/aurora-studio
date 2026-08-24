@@ -33,3 +33,12 @@
 | Папка | Что это | Версия |
 |---|---|---|
 | `vditor/` | редактор markdown: WYSIWYG, split view, mermaid, KaTeX, таблицы | см. `vditor/VERSION` |
+| `cytoscape/` | граф связей базы знаний: раскладка и навигация по узлам | см. `cytoscape/VERSION` |
+
+## Cytoscape
+
+Берём только `dist/cytoscape.min.js` (428 КБ) — ни ESM-сборок, ни исходников: панель
+подключает библиотеку тегом `<script>`, а не собирает.
+
+    npm pack cytoscape@<версия>
+    cp package/dist/cytoscape.min.js cockpit/vendor/cytoscape/dist/
