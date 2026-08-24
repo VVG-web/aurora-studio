@@ -6,6 +6,7 @@
 честно сказать, что работает. Агентский цикл (задачи, оракулы) строится поверх — фаза 2.
 
   python3 .opencode/scripts/agent_core.py --ping          # каждый бэкенд: жив, занят, пуст
+  python3 .opencode/scripts/agent_core.py --probe-width   # сколько запросов держит шлюз
   python3 .opencode/scripts/agent_core.py --show          # собранная конфигурация (ключи маской)
   python3 .opencode/scripts/agent_core.py --venv-status   # стоит ли Pydantic AI и какой версии
   python3 .opencode/scripts/agent_core.py --venv-install  # поставить/обновить в ~/.aurora/venv
@@ -27,7 +28,7 @@
     `max_tokens` рассуждения съедают всё и `content=None` при `finish_reason=length`;
   • формы ошибок две: `{"error": {...}}` и `{"code": ..., "message": ...}`.
 
-Панель: `agent:ping`
+Панель: `agent:ping`, `agent:width`
 """
 from __future__ import annotations
 
@@ -166,7 +167,11 @@ def parse_config(env: dict) -> dict:
         # шлюза, а не работа процессора: пока модель думает над одной карточкой, машина
         # простаивает. Умолчание 1 — прежнее поведение; ставить больше, чем шлюз держит
         # параллельных запросов, бессмысленно: очередь просто переедет на его сторону.
-        "parallel": max(1, int(env.get("AURORA_AGENT_PARALLEL", "1") or 1)),
+        # «авто» и 0 значат «сколько шлюзы про себя объявили»: человек не обязан знать
+        # число, которого он и не может знать. Считается в `pool()`, потому что там же
+        # известны ширины. Отрицательные и мусор — как 1: молчаливое «безлимитно» из
+        # опечатки хуже медленной работы.
+        "parallel": parallel_cap(env.get("AURORA_AGENT_PARALLEL", "1")),
         "debug": env.get("AURORA_AGENT_DEBUG", "0") in ("1", "true", "yes"),
         "backends": backends,
     }
@@ -428,6 +433,20 @@ def ring_order(cfg: dict, prefer: int = 0) -> list:
     return mine + [b for b in backends if b["n"] != prefer and b.get("fallback", True)]
 
 
+AUTO = -1          # «столько, сколько объявили шлюзы» — не число, а решение
+
+
+def parallel_cap(raw) -> int:
+    """Потолок прогона из настройки. `авто`, `auto` и 0 → AUTO."""
+    s = str(raw or "").strip().lower()
+    if s in ("авто", "auto", "все", "all", "0", ""):
+        return AUTO
+    try:
+        return max(1, int(s))
+    except ValueError:
+        return 1
+
+
 def pool(cfg: dict) -> list:
     """Слоты параллельного прогона: номер бэкенда на каждый его свободный поток.
 
@@ -439,8 +458,14 @@ def pool(cfg: dict) -> list:
     `AURORA_AGENT_PARALLEL`. Так поведение прежних настроек сохраняется: кто поставил
     только потолок, получает ровно его.
     """
-    cap = max(1, cfg.get("parallel", 1))
     usable = [b for b in cfg["backends"] if b.get("parallel", True)] or cfg["backends"][:1]
+    cap = cfg.get("parallel", 1)
+    if cap == AUTO:
+        # Каждый шлюз даёт то, что про себя объявил; не объявивший даёт один. Это не
+        # «безлимитно», а «по объявленному»: движок не выдумывает чужую пропускную
+        # способность — он её либо знает от человека, либо считает равной единице.
+        cap = sum(b.get("width") or 1 for b in usable)
+    cap = max(1, cap)
     slots = []
     for b in usable:
         if b.get("width"):
@@ -676,6 +701,110 @@ def cmd_show() -> int:
     return 0
 
 
+PROBE_STEPS = (1, 2, 3, 4, 6, 8, 12, 16)
+
+
+def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS) -> dict:
+    """Сколько запросов шлюз держит **на самом деле**.
+
+    Человек не обязан знать это число: его не пишут в документации, и оно меняется от
+    нагрузки на сервер. Поэтому не спрашиваем, а меряем — короткими одинаковыми
+    запросами, наращивая их число, пока растёт пропускная способность.
+
+    Растёт — значит шлюз обслуживает параллельно. Перестала расти — дальше он ставит в
+    очередь, и увеличивать потоки бессмысленно: очередь просто переедет на его сторону.
+    Появились отказы — это его жёсткий предел, и переступать его нельзя.
+
+    Меряем осторожно: минимальные запросы, шаг за шагом, останов на первом же отказе.
+    Чужой корпоративный шлюз — не полигон.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    model = role_model(b, "worker")
+    if not model:
+        return {"n": b["n"], "url": b["url"], "error": "у шлюза не задана модель"}
+
+    one = {**cfg, "backends": [b], "request_timeout": 60}
+
+    def shot(_):
+        r = call_role(one, "worker", [{"role": "user", "content": "Ответь одним словом: да"}],
+                      thinking=False, max_tokens=8, deadline=time.time() + 60,
+                      sleep=lambda s: None)
+        return bool(r["ok"]), r["seconds"]
+
+    rows, best, best_k = [], 0.0, 1
+    for k in steps:
+        started = time.time()
+        with ThreadPoolExecutor(max_workers=k) as ex:
+            res = list(ex.map(shot, range(k)))
+        spent = max(time.time() - started, 0.001)
+        ok = sum(1 for good, _ in res if good)
+        rate = ok / spent                      # ответов в секунду — вот что растёт
+        rows.append({"k": k, "ok": ok, "seconds": round(spent, 1), "rate": round(rate, 2)})
+        if ok < k:
+            rows[-1]["note"] = f"отказов: {k - ok} — жёсткий предел шлюза"
+            break
+        # Прирост меньше десятой доли — шлюз перестал обслуживать параллельно.
+        if rate > best * 1.1:
+            best, best_k = rate, k
+        else:
+            rows[-1]["note"] = "прирост кончился — дальше очередь на стороне шлюза"
+            break
+    return {"n": b["n"], "url": b["url"], "model": model, "rows": rows, "width": best_k}
+
+
+def cmd_probe(as_json: bool) -> int:
+    """`--probe-width`: замерить ширину каждого шлюза и назвать числа, а не мнение."""
+    cfg = parse_config(raw_config())
+    if not cfg["backends"]:
+        print("agent_core: бэкенды не объявлены — мерить нечего", file=sys.stderr)
+        return 1
+    out = [probe_width(cfg, b) for b in cfg["backends"] if b.get("parallel", True)]
+    if as_json:
+        print(json.dumps({"backends": out}, ensure_ascii=False))
+        return 0
+    print("# Ширина шлюзов — замер\n")
+    print("Наращиваем число одновременных запросов, пока растёт пропускная способность.")
+    print("Перестала расти — дальше шлюз ставит в очередь, и потоки добавлять "
+          "бессмысленно.\n")
+    for r in out:
+        print(f"## №{r['n']} · {r['url']}\n")
+        if r.get("error"):
+            print(f"⚠️  {r['error']}\n")
+            continue
+        print("| Запросов | Ответили | Секунд | Ответов/с |")
+        print("|---|---|---|---|")
+        for row in r["rows"]:
+            note = f" · {row['note']}" if row.get("note") else ""
+            print(f"| {row['k']} | {row['ok']} | {row['seconds']} | {row['rate']}{note} |")
+        print(f"\n**Ширина: {r['width']}** — столько и ставьте этому шлюзу в «потоков».\n")
+    total = sum(r.get("width", 1) for r in out)
+    print(f"Сумма по кольцу: {total}. При «одновременно» = авто движок возьмёт ровно "
+          f"столько.\n")
+    print("Замер — не приговор: под нагрузкой шлюз держит меньше, чем в тишине. "
+          "Повторите\nв рабочее время, если числа кажутся завышенными.")
+    return 0
+
+
+def models_of(b: dict, timeout: float = 20) -> dict:
+    """Что шлюз предлагает: список моделей его же API.
+
+    Имя модели человек до сих пор вписывал руками, а опечатка в нём выглядит как
+    «шлюз не отвечает»: сервер честно возвращает ошибку про неизвестную модель, а
+    человек ищет сеть. Спросить у сервера дешевле, чем угадывать.
+    """
+    url = b["url"].rstrip("/") + "/models"
+    status, body, err, _ = http_json(url, None, b.get("key", ""), timeout)
+    if err or not isinstance(body, dict):
+        return {"n": b["n"], "url": b["url"], "error": err or "ответ не разобран"}
+    data = body.get("data") if isinstance(body.get("data"), list) else []
+    names = sorted({str(x.get("id") or "").strip() for x in data if isinstance(x, dict)}
+                   - {""})
+    if not names:
+        return {"n": b["n"], "url": b["url"],
+                "error": "шлюз не отдал списка моделей — впишите имя руками"}
+    return {"n": b["n"], "url": b["url"], "models": names}
+
+
 def cmd_ping(as_json: bool) -> int:
     """Каждый бэкенд отдельно: живой ответ, а не код 200.
 
@@ -802,6 +931,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Встроенный агент: конфигурация и проверка цепочки")
     ap.add_argument("--ping", action="store_true",
                     help="проверить каждый бэкенд живым запросом (thinking выключен)")
+    ap.add_argument("--probe-width", action="store_true",
+                    help="замерить, сколько одновременных запросов держит каждый шлюз")
     ap.add_argument("--show", action="store_true", help="собранная конфигурация, ключи маской")
     ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
     ap.add_argument("--venv-install", action="store_true",
@@ -811,6 +942,8 @@ def main() -> int:
 
     if a.ping:
         return cmd_ping(a.json)
+    if a.probe_width:
+        return cmd_probe(a.json)
     if a.venv_status:
         ok, version = venv_status()
         if a.json:

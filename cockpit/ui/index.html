@@ -658,7 +658,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.1";
+const UI_VERSION = "1.99.2";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -741,6 +741,23 @@ function applyI18n(){
   // каждый экран и не даёт человеку ничего видимого.
   $$("[data-i18n]").forEach(n => { const v = I18N[n.dataset.i18n]; if (v) n.textContent = v; });
   $$("[data-i18n-ph]").forEach(n => { const v = I18N[n.dataset.i18nPh]; if (v) n.placeholder = v; });
+}
+
+async function loadModels(n, btn){
+  const was = btn.textContent;
+  btn.textContent = "спрашиваю…"; btn.disabled = true;
+  try {
+    const d = await api("/api/agent/models?n=" + encodeURIComponent(n), {quiet:true});
+    const list = $("#models-" + n);
+    if (d.error || !list){ toast(d.error || "список некуда положить", "warn"); return; }
+    list.innerHTML = "";
+    (d.models || []).forEach(m => list.append(el("option",{value:m})));
+    // Число называем вслух: пустой выпадающий список выглядит как «сломалось»,
+    // а «шлюз отдал 0 моделей» — это ответ.
+    toast(`шлюз №${n}: моделей ${(d.models||[]).length} — нажмите в поле, чтобы выбрать`);
+  } finally {
+    btn.textContent = was; btn.disabled = false;
+  }
 }
 
 function drawLangPicker(){
@@ -3230,12 +3247,19 @@ async function runRoute(sc, write){
   // Сколько источников осталось разобрать — это печатает сам agent:build последней
   // строкой. Панель не гадает и не считает файлы: цикл вертится, пока движок говорит,
   // что работа есть, и останавливается, когда число перестало убывать.
+  // Сколько работы осталось ПОСЛЕ оборота — по всем видам сразу, а не только по
+  // источникам. Раньше считались одни источники: они кончались, цикл завершался, и
+  // маршрут отчитывался «пройден» при восьмистах карточках без единого тезиса. База
+  // «знает всё, что появилось в источниках» — это про знание, а не про разбор.
   const leftInPlan = lines => {
-    for (const l of (lines||[]).slice().reverse()){
-      const m = /Источников в плане:\s*(\d+)\s*→\s*(\d+)/.exec(l);
-      if (m) return Number(m[2]);
+    let left = null;
+    for (const l of (lines||[])){
+      const src = /Источников в плане:\s*(\d+)\s*→\s*(\d+)/.exec(l);
+      if (src) left = Math.max(left ?? 0, Number(src[2]));
+      const rest = /·\s*осталось:\s*(\d+)/.exec(l);
+      if (rest) left = Math.max(left ?? 0, Number(rest[1]));
     }
-    return null;
+    return left;
   };
 
   const runOne = async (st) => {
@@ -3282,7 +3306,11 @@ async function runRoute(sc, write){
         break;
       }
       if (left === 0){
-        out.append(el("div",{class:"ok"}, `  источники кончились за ${ROUTE.lap} оборотов`));
+        const saved = await api("/api/git/commit", {method:"POST", quiet:true,
+          body: JSON.stringify({project:S.project.path, skip_ratchet:true,
+            message:`Аврора: маршрут «${sc.title}» — работа кончилась за ${ROUTE.lap} оборотов`})});
+        out.append(el("div",{class:"ok"}, `  работа кончилась за ${ROUTE.lap} оборотов`
+          + (saved.ok ? ` · зафиксировано: ${saved.commit}` : "")));
         break;
       }
       if (prev !== null && left >= prev){
@@ -3291,7 +3319,16 @@ async function runRoute(sc, write){
         break;
       }
       prev = left;
-      out.append(el("div",{class:"dim"}, `  осталось источников: ${left} — следующий оборот`));
+      // Фиксируем результат оборота. Прогон идёт часами, и человек вправе выключить его
+      // в любую минуту: без коммита прерванная работа осталась бы незафиксированной, а
+      // двенадцать команд движка не работают по грязному дереву — следующий запуск
+      // встал бы на первом же шаге.
+      const saved = await api("/api/git/commit", {method:"POST", quiet:true,
+        body: JSON.stringify({project:S.project.path, skip_ratchet:true,
+          message:`Аврора: оборот ${ROUTE.lap} маршрута «${sc.title}» · осталось ${left}`})});
+      out.append(el("div",{class:"dim"}, saved.ok
+        ? `  оборот зафиксирован: ${saved.commit} · осталось ${left} — следующий оборот`
+        : `  осталось ${left} — следующий оборот (не зафиксировано: ${saved.error || "?"})`));
     }
     ROUTE.lap = 0;
     i = end;
@@ -4048,7 +4085,20 @@ async function renderAgentCard(box, scope){
       fld(pre+"URL","Адрес (OpenAI-совместимый, …/v1)", b.url, "https://llm.example.com/v1"),
       fld(pre+"KEY","Ключ" + (b.key_set?" · сохранён, ввод заменит":" · пусто, если не нужен"),
           "", b.key_set?"••••••":"", "password"),
-      fld(pre+"MODEL","Модель на все роли (если ролевые не заданы)", b.model),
+      // Имя модели вписывали руками, и опечатка выглядела как «шлюз не отвечает»:
+      // сервер честно отвечает «нет такой модели», а человек ищет сеть. Список берём
+      // у самого шлюза, но поле остаётся полем ввода: свои имена никто не отменял.
+      el("label",{style:"display:block;margin-bottom:8px"},
+        el("div",{class:"muted",style:"font-size:11px"},
+          "Модель на все роли (если ролевые не заданы)"),
+        el("div",{class:"row",style:"gap:6px"},
+          el("input",{class:"btn",style:"flex:1;font-weight:400",value:b.model||"",
+            list:"models-"+n,
+            oninput:e=>touch(pre+"MODEL", e.target.value)}),
+          el("button",{class:"btn",style:"white-space:nowrap",
+            title:"Спросить у шлюза, какие модели он предлагает",
+            onclick:e=>loadModels(n, e.target)},"Список"))),
+      el("datalist",{id:"models-"+n}),
       // Окно контекста узнать из API нельзя, а порезано оно у каждого шлюза по-своему:
       // одна и та же модель держит 252 000 у одного и 196 608 у другого. Пусто — движок
       // не считает и не отказывает; объявлено — заведомо большой запрос уходит следующей
@@ -4074,7 +4124,7 @@ async function renderAgentCard(box, scope){
                   "запасной"),
         el("label",{class:"row",style:"gap:6px;font-size:12px",
               title:"Сколько запросов держит ЭТОТ шлюз одновременно"},
-          "потоков:", el("input",{class:"btn",style:"width:56px;font-weight:400",
+          "потоков:", el("input",{class:"btn",style:"width:78px;font-weight:400",
             type:"number", value:b.width||1,
             oninput:e=>touch(pre+"WIDTH", e.target.value)}))),
       el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
@@ -4082,7 +4132,7 @@ async function renderAgentCard(box, scope){
           el("label",{style:"flex:1;min-width:130px"},
             el("div",{class:"muted",style:"font-size:11px"}, r),
             el("input",{class:"btn",style:"width:100%;font-weight:400;font-size:12px",
-              value:(b.models||{})[r]||"",
+              value:(b.models||{})[r]||"", list:"models-"+n,
               oninput:e=>touch(pre+"MODEL_"+r.toUpperCase(), e.target.value)})))));
   };
 
@@ -4132,7 +4182,10 @@ async function renderAgentCard(box, scope){
       // параллельных запросов, бессмысленно — очередь просто переедет на его сторону.
       el("label",{title:"Сколько карточек разбирать одновременно. 1 — как раньше, по "
                         + "очереди. Больше — быстрее, пока шлюз выдерживает."},
-        "одновременно ", el("input",{class:"btn",style:"width:64px",value:a.parallel||1,
+        "одновременно ", el("input",{class:"btn",style:"width:92px",
+        value:(a.parallel === -1 ? "авто" : (a.parallel || 1)),
+        title:"Число или «авто». «Авто» — столько, сколько шлюзы про себя объявили: "
+             + "движок не выдумывает чужую пропускную способность.",
         oninput:e=>touch("AURORA_AGENT_PARALLEL", e.target.value)})),
       // Итог называем числом. Два поля — «потоков» у шлюза и общее «одновременно» —
       // складываются не так, как ждёт человек: общий потолок ОБРЕЗАЕТ сумму ширин, и
