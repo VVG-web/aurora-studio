@@ -349,6 +349,20 @@ def reveal(project: str, rel: str, mode: str = "folder") -> dict:
     return {"ok": True, "how": " ".join(cmd[:2])}
 
 
+def backend_models(n: str) -> dict:
+    """Список моделей одного шлюза. Ключ наружу не отдаём — только имена моделей."""
+    import agent_core as AG
+    cfg = AG.parse_config(AG.raw_config())
+    try:
+        num = int(n)
+    except ValueError:
+        return {"error": "неизвестный шлюз"}
+    b = next((x for x in cfg["backends"] if x["n"] == num), None)
+    if not b:
+        return {"error": f"шлюза №{num} нет в кольце"}
+    return AG.models_of(b)
+
+
 def corrections_state(project: str) -> dict:
     """Исправления человека: сколько действует и сколько под вопросом.
 
@@ -2032,6 +2046,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(file_read(project, (q.get("path") or [""])[0])
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
+        elif u.path == "/api/agent/models":
+            self.send_json(backend_models((q.get("n") or ["1"])[0]))
         elif u.path == "/api/graph":
             project = (q.get("project") or [""])[0]
             self.send_json(graph_state(project, (q.get("rebuild") or [""])[0] == "1")
