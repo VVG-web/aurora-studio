@@ -150,8 +150,19 @@ def main() -> int:
         was = (fm.get("status") or "").strip()
         if head is None or was in (SERVICE_STATUS, "deprecated"):
             continue
-        cls, why = source_class((fm.get("source") or "").strip().strip('"'),
-                                table, statuses, trust, draft)
+        # Исправление человека сильнее статуса задачи в Jira. Карточка выведена из
+        # источника, но человек сказал про неё своё слово и положил это слово в `Raw/` —
+        # значит класс берётся оттуда, существующим правилом «первоисточник в Raw/», а не
+        # отдельным исключением. Иначе в базе появился бы второй способ получить доверие,
+        # и инвариант «доверие вычисляется, а не присваивается» пришлось бы переписать в
+        # «вычисляется, кроме случаев, когда присваивается».
+        fix = (fm.get("corrected_by") or "").strip().strip('"[]')
+        if fix and not (fm.get("correction_retired") or "").strip():
+            cls, why = "raw", (f"исправлено человеком: [[{fix}]] — первоисточник в Raw/, "
+                               f"доверие по определению")
+        else:
+            cls, why = source_class((fm.get("source") or "").strip().strip('"'),
+                                    table, statuses, trust, draft)
         counts[cls] = counts.get(cls, 0) + 1
         now = wanted_status(cls)
         if now == was:

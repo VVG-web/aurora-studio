@@ -43,6 +43,10 @@ TODAY = date.today().isoformat()
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
     ("Reference", os.path.join(KB_ROOT, "Reference")),
+    # Исправления человека читаются раньше источников, которые они исправляют: модель
+    # должна знать, что здесь уже сказано «на самом деле так», прежде чем разбирать
+    # страницу, где написано иначе.
+    ("Raw/corrections", os.path.join("Raw", "corrections")),
     ("Raw/project", os.path.join("Raw", "project")),
     ("Raw/customer", os.path.join("Raw", "customer")),
     ("Raw/contract", os.path.join("Raw", "contract")),

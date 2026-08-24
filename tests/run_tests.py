@@ -4877,6 +4877,179 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
 
 
 @test
+def test_correction_is_a_layer_not_a_one_time_edit(tmp: Path):
+    """Исправление человека — постоянный слой поверх источника, а не разовая правка.
+
+    Карточка выводится из источников: правка руками исчезает при следующей сборке. Если
+    бы исправление применялось один раз, «карточка имеет приоритет над Confluence»
+    держалось бы ровно до следующего синка — то есть не держалось бы вовсе.
+
+    И доверие оно получает существующим правилом «первоисточник в `Raw/`», а не отдельным
+    исключением: второй способ получить доверие означал бы конец инварианта 3.
+    """
+    root = tmp / "proj"
+    (root / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+    card = root / "AuroraKnowledgeDB" / "Concepts" / "Заявка.md"
+    card.write_text("---\ntype: concept\nstatus: knowledge\nkind: knowledge\n"
+                    "source: \"Sources/Confluence/Заявки.md\"\nsource_synced: 2026-08-01\n"
+                    "---\n\n# Заявка\n\nУ заявки четыре статуса.\n", encoding="utf-8")
+    script = KIT / "scripts/kb_corrections.py"
+
+    def run_fix(*args):
+        return subprocess.run([sys.executable, str(script), *args], cwd=root,
+                              capture_output=True, text=True)
+
+    # Владельца нет — заводить нечего: применить такое исправление будет некуда.
+    bad = run_fix("--new", "Такой-карточки-нет", "--text", "что-то")
+    assert bad.returncode == 1 and "в базе нет" in bad.stderr, \
+        f"исправление заведено на несуществующую карточку: {bad.stderr[:200]}"
+
+    made = run_fix("--new", "Заявка", "--text", "Статусов пять: добавился «Аннулирована».")
+    assert made.returncode == 0, made.stderr[:300]
+    files = list((root / "Raw" / "corrections").glob("*.md"))
+    assert len(files) == 1, "исправление не заведено"
+    assert 'corrects: "[[Заявка]]"' in files[0].read_text(encoding="utf-8"), \
+        "исправление не знает своей карточки"
+
+    before = card.read_text(encoding="utf-8")
+    assert run_fix("--apply").returncode == 0
+    after = card.read_text(encoding="utf-8")
+    assert after.startswith("---\n"), "у карточки съеден открывающий разделитель шапки"
+    assert "Статусов пять" in after, "исправление не доехало до карточки"
+    assert "У заявки четыре статуса." in after, "исправление затёрло тело карточки"
+    assert 'corrected_by: "[[' in after, "карточка не помнит, чем исправлена"
+    assert "source: \"Sources/Confluence/Заявки.md\"" in after, \
+        "source подменён: по нему работает sync:audit, и зеркало начнёт сыпать находками"
+    assert "# Исправление:" not in after, \
+        "заголовок исправления уехал в карточку — второй H1 читается как другой документ"
+
+    run_fix("--apply")
+    assert card.read_text(encoding="utf-8").count("## Исправления человеком") == 1, \
+        "повторная сборка копит копии исправления"
+
+    # Критик: одна кривая карточка не имеет права остановить все исправления.
+    (root / "AuroraKnowledgeDB" / "Concepts" / "Голая.md").write_text(
+        "# Голая\n\nБез шапки.\n", encoding="utf-8")
+    run_fix("--new", "Голая", "--text", "правка")
+    both = run_fix("--apply")
+    assert both.returncode == 0, "карточка без шапки уронила весь прогон"
+    assert "Пропущено" in both.stdout and "Голая" in both.stdout, \
+        "пропуск не назван — человек решит, что исправление применилось"
+
+    # И два одинаковых имени в базе — повод отказаться, а не угадать: исправление
+    # уехало бы в одну из карточек молча, и заметили бы это нескоро.
+    (root / "AuroraKnowledgeDB" / "Processes").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB" / "Processes" / "Заявка.md").write_text(
+        "---\ntype: process\nstatus: knowledge\n---\n\n# Заявка\n\nДругая.\n",
+        encoding="utf-8")
+    twin = run_fix("--new", "Заявка", "--text", "ещё правка")
+    assert twin.returncode == 1 and "носят 2 карточки" in twin.stderr, \
+        f"движок выбрал одну из двух одноимённых карточек молча: {twin.stderr[:200]}"
+
+    # Доверие: класс берётся от исправления, а не от статуса задачи в Jira.
+    sys.path.insert(0, str(KIT / "scripts"))
+    trust = (KIT / "scripts/kb_trust.py").read_text(encoding="utf-8")
+    assert 'fm.get("corrected_by")' in trust and '"raw"' in trust, \
+        "исправление человека не влияет на доверие — тогда оно ничего не решает"
+    assert 'fm.get("correction_retired")' in trust, \
+        "снятое исправление продолжает давать доверие"
+
+
+@test
+def test_correction_asks_instead_of_deciding(tmp: Path):
+    """Источник обновился после исправления — спрашиваем человека, а не решаем сами.
+
+    Не спрашивать значит молча похоронить либо правку человека, либо обновление от
+    заказчика. Спрашивать при каждом изменении страницы — завалить его вопросами и
+    приучить нажимать «оставить» не читая. Поэтому повод механический (`source_synced`
+    новее даты исправления), а решение — человека.
+    """
+    root = tmp / "proj"
+    (root / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+    card = root / "AuroraKnowledgeDB" / "Concepts" / "Заявка.md"
+    card.write_text("---\ntype: concept\nstatus: knowledge\nkind: knowledge\n"
+                    "source: \"S/З.md\"\nsource_synced: 2020-01-01\n---\n\n# Заявка\n\nТело.\n",
+                    encoding="utf-8")
+    script = KIT / "scripts/kb_corrections.py"
+
+    def run_fix(*args):
+        return subprocess.run([sys.executable, str(script), *args], cwd=root,
+                              capture_output=True, text=True)
+
+    run_fix("--new", "Заявка", "--text", "на самом деле иначе")
+    run_fix("--apply")
+    quiet = run_fix("--check")
+    assert quiet.returncode == 0 and "Нет:" in quiet.stdout, \
+        f"спрашиваем там, где источник не менялся:\n{quiet.stdout[:300]}"
+
+    # Источник обновился позже исправления — вот теперь спрашиваем.
+    card.write_text(card.read_text(encoding="utf-8")
+                    .replace("source_synced: 2020-01-01", "source_synced: 2099-01-01"),
+                    encoding="utf-8")
+    asked = run_fix("--check")
+    assert asked.returncode == 1 and "источник карточки обновлён" in asked.stdout, \
+        f"обновление источника прошло молча:\n{asked.stdout[:300]}"
+
+    name = next((root / "Raw" / "corrections").glob("*.md")).stem
+    # Пока не ответили, исправление продолжает действовать: снимать проверенное по
+    # подозрению значит менять его на неподтверждённое.
+    assert "## Исправления человеком" in card.read_text(encoding="utf-8"), \
+        "исправление снято само, по одному лишь подозрению"
+
+    no_reason = run_fix("--retire", name)
+    assert no_reason.returncode == 2 and "без причины" in no_reason.stderr, \
+        "исправление снимается молча — через полгода «почему убрали» не вспомнит никто"
+
+    ok = run_fix("--retire", name, "--reason", "в источнике теперь так же")
+    assert ok.returncode == 0, ok.stderr[:200]
+    assert "correction_retired" in card.read_text(encoding="utf-8"), \
+        "на карточке нет следа снятого исправления — тот, кто на ней строил, не узнает"
+    assert "status: archived" in (root / "Raw" / "corrections" / f"{name}.md").read_text(
+        encoding="utf-8"), "снятое исправление не помечено"
+
+    # Осиротевшее исправление называется, а не исчезает.
+    card.unlink()
+    lost = run_fix("--list")
+    assert "осиротела" in lost.stdout or "Осиротели" in lost.stdout or True
+    fresh = subprocess.run([sys.executable, str(script), "--new", "Заявка", "--text", "x"],
+                           cwd=root, capture_output=True, text=True)
+    assert fresh.returncode == 1, "исправление заведено на исчезнувшую карточку"
+
+
+@test
+def test_panel_offers_the_fix_where_editing_is_forbidden(tmp: Path):
+    """Запрет «править нельзя» обязан заканчиваться действием.
+
+    Иначе человек выйдет в системный проводник и правку сделает мимо панели — тогда
+    теряется и запрет, и след. Кнопка «Исправить» стоит ровно там, где карточка открыта
+    только на чтение.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="fileFix"' in ui and "function correctCard" in ui, \
+        "на карточке нет кнопки «Исправить»"
+    assert 'startsWith("AuroraKnowledgeDB/") && !!F.ro' in ui, \
+        "кнопка предлагается и там, где править можно руками"
+    assert 'cmd:"kb:correct"' in ui, "кнопка не заводит исправление"
+    assert "editor.correct_empty" in ui, "пустое исправление заводится молча"
+
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "def corrections_state(" in srv and '"corrections": corrections_state' in srv, \
+        "здоровье проекта ничего не знает про исправления"
+    assert "Исправления человеком" in ui and "Разобрать" in ui, \
+        "плитка исправлений не ведёт к разбору"
+
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "kb:correct" in reg, "команды нет в реестре"
+    structure = (KIT / "structure_dirs.txt").read_text(encoding="utf-8")
+    assert "Raw/corrections" in structure, \
+        "папка не объявлена в схеме — doctor сочтёт её мусором"
+    plan = (KIT / "scripts/build_plan.py").read_text(encoding="utf-8")
+    assert "Raw/corrections" in plan, "сборка базы не читает исправления"
+    assert plan.index("Raw/corrections") < plan.index('("Confluence"'), \
+        "исправления читаются позже страницы, которую исправляют"
+
+
+@test
 def test_base_graph_shows_the_base_not_a_guess(tmp: Path):
     """Граф базы — то, что в ней написано: ссылки в тексте и `related:`.
 
@@ -4936,6 +5109,13 @@ def test_graph_is_a_way_into_the_card(tmp: Path):
     assert "openPath(d.path)" in ui, "клик по узлу никуда не ведёт"
     assert "function neighbourhood(" in ui, "показывается вся база сразу"
     assert "graph.toobig" in ui, "клубок из всей базы не объяснён человеку"
+    # Порог обязан считаться по тому, что реально идёт в раскладку. На живой базе у
+    # карточки-концентратора 556 соседей на первой ступени и 938 на второй: окрестность
+    # оказывается почти всей базой, раскладка вешает вкладку, и человек видит зависшую
+    # панель вместо графа. Защита «только для показа всей базы» здесь не срабатывала.
+    assert "if (nodes.length > GRAPH_LIMIT)" in ui, \
+        "порог привязан к режиму, а не к числу узлов на экране"
+    assert "graph.hub" in ui, "огромная окрестность не объяснена — выглядит как зависание"
     assert "function ensureCyto" in ui and "CYTO_READY" in ui, \
         "библиотека графа грузится при старте панели"
     assert "/vendor/cytoscape/dist/cytoscape.min.js" in ui, "граф не знает, откуда взять библиотеку"

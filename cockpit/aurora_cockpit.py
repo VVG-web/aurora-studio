@@ -349,6 +349,33 @@ def reveal(project: str, rel: str, mode: str = "folder") -> dict:
     return {"ok": True, "how": " ".join(cmd[:2])}
 
 
+def corrections_state(project: str) -> dict:
+    """Исправления человека: сколько действует и сколько под вопросом.
+
+    Под вопросом — не «сломалось», а «источник обновился после того, как человек написал
+    исправление». Само противоречие видит только человек: движок называет повод и ждёт
+    решения, а не решает сам. Пока не ответили, исправление продолжает действовать —
+    снимать проверенное по подозрению значит менять его на неподтверждённое.
+    """
+    script = os.path.join(project, ".opencode", "scripts", "kb_corrections.py")
+    folder = os.path.join(project, "Raw", "corrections")
+    if not os.path.isfile(script) or not os.path.isdir(folder):
+        return {"count": 0, "ask": 0, "items": []}
+    try:
+        r = subprocess.run([sys.executable, script, "--check"], cwd=project,
+                           capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return {"count": 0, "ask": 0, "items": []}
+    items = []
+    for line in (r.stdout or "").splitlines():
+        m = re.match(r"^- `([^`]+)` → \[\[([^\]]+)\]\]", line.strip())
+        if m:
+            items.append({"name": m.group(1), "card": m.group(2)})
+    total = len([f for f in os.listdir(folder)
+                 if f.endswith(".md") and not f.startswith("_")])
+    return {"count": total, "ask": len(items), "items": items[:50]}
+
+
 def graph_state(project: str, rebuild: bool = False) -> dict:
     """Граф базы из кэша, с отметкой, когда он посчитан.
 
@@ -1124,6 +1151,7 @@ def health(project: str) -> dict:
             "source_health": source_health(project),
             "index": index_health(project), "ping": ping_state(project),
             "unfinished": unfinished(project),
+            "corrections": corrections_state(project),
             "retrieval": retrieval_state(project)}
 
 
