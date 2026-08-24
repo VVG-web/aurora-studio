@@ -4877,6 +4877,157 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
 
 
 @test
+def test_base_graph_shows_the_base_not_a_guess(tmp: Path):
+    """Граф базы — то, что в ней написано: ссылки в тексте и `related:`.
+
+    Не выведенные правилами связи: их считает `--cards` и кладёт в те же `related:` —
+    значит в граф они попадут только после того, как человек их принял. Граф, который
+    показывает догадку, нельзя использовать для навигации: пойдёшь по связи, которой
+    в базе нет.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB" / "Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    pairs = {"Заявка": ["Документ"], "Документ": ["Заявка", "Подпись"],
+             "Подпись": ["Документ"], "Одинокая": []}
+    for name, links in pairs.items():
+        body = "\n".join(f"См. [[{l}]]." for l in links) or "Ни с чем не связана."
+        st = "draft" if name == "Одинокая" else "knowledge"
+        (kb / f"{name}.md").write_text(
+            f"---\ntype: concept\nstatus: {st}\nkind: knowledge\n---\n\n# {name}\n\n{body}\n",
+            encoding="utf-8")
+    (root / "AuroraKnowledgeDB" / "README.md").write_text(
+        "# База\n\nПример ссылки: [[Заявка]].\n", encoding="utf-8")
+
+    out = root / "AuroraKnowledgeDB" / "meta" / "graph.json"
+    # Зеркала Confluence в проекте нет — и это не должно мешать: граф базы читает
+    # только карточки. Требовать зеркало значило бы оставить без графа проект,
+    # собранный из Raw/, и свежий проект, где зеркала ещё нет.
+    assert not (root / "Sources" / "Confluence").is_dir()
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_graph.py"),
+                         "--cards-json", str(out)], cwd=root,
+                        capture_output=True, text=True)
+    assert cp.returncode == 0, f"граф без зеркала не построился:\n{cp.stderr[:400]}"
+    data = json.loads(out.read_text(encoding="utf-8"))
+
+    ids = {n["id"] for n in data["nodes"]}
+    assert ids == set(pairs), f"в графе не то, что в базе: {sorted(ids)}"
+    assert "README" not in ids, \
+        "README базы принят за карточку — линтер уже однажды сделал эту ошибку"
+    got = {tuple(sorted((e["from"], e["to"]))) for e in data["edges"]}
+    assert got == {("Документ", "Заявка"), ("Документ", "Подпись")}, \
+        f"связи не совпадают с написанным в базе: {sorted(got)}"
+    assert data["orphans"] == 1, "карточка без связей не посчитана"
+    assert any(n["id"] == "Одинокая" and n["status"] == "draft" for n in data["nodes"]), \
+        "статус не доехал: черновик и знание в графе неразличимы"
+
+
+@test
+def test_graph_is_a_way_into_the_card(tmp: Path):
+    """Граф, из которого нельзя попасть в карточку, — картинка «смотрите, красиво».
+
+    Её посмотрят один раз. Поэтому: клик по узлу открывает карточку в редакторе,
+    окрестность показывается вместо всей базы, а тяжёлый расчёт живёт в кэше с
+    отметкой времени — экран, который открывается несколько секунд, открывать перестанут.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'data-view="graph"' in ui and 'id="view-graph"' in ui, "раздела графа нет"
+    assert 'if (view==="graph") renderGraph();' in ui, "переход в раздел ничего не рисует"
+    assert "openPath(d.path)" in ui, "клик по узлу никуда не ведёт"
+    assert "function neighbourhood(" in ui, "показывается вся база сразу"
+    assert "graph.toobig" in ui, "клубок из всей базы не объяснён человеку"
+    assert "function ensureCyto" in ui and "CYTO_READY" in ui, \
+        "библиотека графа грузится при старте панели"
+    assert "/vendor/cytoscape/dist/cytoscape.min.js" in ui, "граф не знает, откуда взять библиотеку"
+    assert 'node[draft = 1]' in ui, \
+        "черновик неотличим от знания: строить на нём требования нельзя, и это видно должно быть до открытия"
+
+    v = KIT / "cockpit/vendor/cytoscape"
+    assert (v / "dist/cytoscape.min.js").is_file(), "библиотеки графа нет в поставке"
+    assert (v / "VERSION").is_file() and (v / "LICENSE").is_file(), "чужой код без версии и лицензии"
+    size = sum(p.stat().st_size for p in v.rglob("*") if p.is_file())
+    assert size < 1_500_000, f"в вендор поехало лишнее: {size // 1000} КБ"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"/api/graph"' in srv and "meta" in srv, "нет эндпоинта графа"
+    at = srv.index("def graph_state(")
+    body = srv[at:srv.index("\ndef ", at + 10)]
+    assert "graph.json" in body and 'data["when"]' in body, \
+        "граф считается заново при каждом открытии, и когда посчитан — неизвестно"
+    assert "движок проекта не умеет строить граф" in body, \
+        "отставший движок объясняется трассировкой argparse"
+    assert "stale_reason" in body and "stale_reason" in ui, \
+        "прежний граф показан как свежий: человек построит решение на вчерашнем"
+
+    # Кэш — производная, а не работа человека: битый файл чинится сам.
+    proj = tmp / "гп"
+    (proj / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+    (proj / ".opencode" / "scripts").mkdir(parents=True)
+    (proj / "aurora.config.yaml").write_text("project:\n  name: Г\n", encoding="utf-8")
+    shutil.copy(KIT / "scripts/kb_graph.py", proj / ".opencode/scripts/kb_graph.py")
+    for dep in ("aurora_common.py",):
+        shutil.copy(KIT / "scripts" / dep, proj / ".opencode/scripts" / dep)
+    (proj / "AuroraKnowledgeDB" / "Concepts" / "Одна.md").write_text(
+        "---\ntype: concept\nstatus: knowledge\n---\n\n# Одна\n", encoding="utf-8")
+    cache = proj / "AuroraKnowledgeDB" / "meta" / "graph.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("{сломано", encoding="utf-8")
+    healed = ck.graph_state(str(proj))
+    assert healed.get("nodes"), f"битый кэш не починился сам: {healed.get('error')}"
+
+
+@test
+def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
+    """Готовый документ открывается в редакторе сам, и опубликовать его можно оттуда.
+
+    Человек просил не искать файл после производства. И публикация из редактора обязана
+    сначала показать **чистовик** — ровно то, что уйдёт: граница производства в тексте
+    невидима, а «Допущения» на странице у заказчика читаются как часть спецификации.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "Документ: `" in ui and "openPath(done)" in ui, \
+        "готовый артефакт не открывается в редакторе"
+    assert 'S.view === "work"' in ui, \
+        "документ открывается поверх экрана, на который человек уже ушёл"
+    assert "function publishFromEditor" in ui and "/api/files/clean" in ui, \
+        "публикация из редактора не показывает чистовик"
+    pub = ui[ui.index("async function publishFromEditor("):
+             ui.index("async function publishFromEditor(") + 2000]
+    assert pub.index("api(\"/api/files/clean") < pub.index('cmd:"ship:publish"'), \
+        "публикация уходит раньше, чем человек увидел, что именно уйдёт"
+    assert "editor.publish_nomark" in ui, \
+        "документ без маркера публикуется молча — уедет всё тело целиком"
+    assert "function publishTarget" in ui, \
+        "кнопка публикации видна там, где публикация не применима"
+    # «Незаконченные» обязаны заканчиваться действием, а не списком.
+    assert 'onclick:()=>openPath(x.path)' in ui, \
+        "список незаконченных не ведёт в документ — станет счётчиком, на который не смотрят"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    sys.path.insert(0, str(KIT / "scripts"))
+    from aurora_common import MADE_MARK
+
+    root = tmp / "proj"
+    (root / "Artifacts" / "ac").mkdir(parents=True)
+    (root / "Artifacts" / "ac" / "AC-1.md").write_text(
+        "---\ntype: ac\nstatus: ready\n---\n\n# AC\n\nТребование.\n\n"
+        + MADE_MARK + "\n\n## Допущения\n\n- движок предположил\n", encoding="utf-8")
+    prev = ck.clean_preview(str(root), "Artifacts/ac/AC-1.md")
+    assert "Требование." in prev["clean"], "чистовик пуст"
+    assert "Допущения" not in prev["clean"] and MADE_MARK not in prev["clean"], \
+        "в предпросмотре видна кухня — значит она уедет и заказчику"
+    assert "type: ac" not in prev["clean"], "шапка движка уходит наружу"
+    assert prev["cut"] > 0 and prev["marked"], "не сказано, сколько осталось в черновике"
+
+
+@test
 def test_choosing_a_project_refills_the_screen_you_are_standing_on(tmp: Path):
     """Выбор проекта обязан перерисовать текущий экран, а не только тот, куда уйдут.
 

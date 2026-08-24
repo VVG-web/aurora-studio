@@ -219,6 +219,30 @@ def file_read(project: str, rel: str) -> dict:
             "stale": bool(fm.get("published")) and file_changed_since_publish(project, rel, fm)}
 
 
+def clean_preview(project: str, rel: str) -> dict:
+    """Ровно то, что уйдёт наружу: тело документа до строки-маркера.
+
+    Считаем тем же кодом, что режет публикация (`aurora_common.clean_copy`), а не своей
+    копией правила: разойдись они — предпросмотр показывал бы одно, а заказчик получал
+    другое, и заметили бы это на опубликованной странице.
+    """
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"error": "файл не найден в этом проекте"}
+    from aurora_common import clean_copy, MADE_MARK
+    text = read_text(full, limit=MAX_EDIT)
+    body = strip_frontmatter(text)
+    clean = clean_copy(body)
+    return {"path": rel, "clean": clean, "chars": len(clean),
+            "cut": len(body) - len(clean), "marked": MADE_MARK in body}
+
+
+def strip_frontmatter(text: str) -> str:
+    """Тело без шапки: наружу уходит документ, а не служебные поля движка."""
+    m = re.match(r"^---\r?\n[\s\S]*?\r?\n---\r?\n?", text or "")
+    return text[m.end():] if m else (text or "")
+
+
 def file_changed_since_publish(project: str, rel: str, fm: dict) -> bool:
     """Опубликован и с тех пор изменён — значит страница у заказчика отстала.
 
@@ -323,6 +347,60 @@ def reveal(project: str, rel: str, mode: str = "folder") -> dict:
     except OSError as e:
         return {"error": f"не удалось открыть: {e}"}
     return {"ok": True, "how": " ".join(cmd[:2])}
+
+
+def graph_state(project: str, rebuild: bool = False) -> dict:
+    """Граф базы из кэша, с отметкой, когда он посчитан.
+
+    Считаем в `meta/graph.json` и показываем из кэша: обход базы на живом проекте — это
+    полторы тысячи карточек и несколько секунд, а экран, который открывается через
+    несколько секунд, человек открывать перестанет. Отметка времени и кнопка пересчёта
+    честнее, чем свежесть любой ценой: видно, насколько картинка отстала.
+    """
+    path = os.path.join(project, "AuroraKnowledgeDB", "meta", "graph.json")
+    script = os.path.join(project, ".opencode", "scripts", "kb_graph.py")
+
+    def build() -> str:
+        """Пересчитать. Пустая строка — получилось; иначе причина словами."""
+        if not os.path.isfile(script):
+            return "в проекте нет kb_graph.py — обновите движок проекта"
+        before = os.path.getmtime(path) if os.path.isfile(path) else 0
+        try:
+            r = subprocess.run([sys.executable, script, "--cards-json", path,
+                                "--allow-dirty"],
+                               cwd=project, capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError) as e:
+            return f"граф не посчитался: {e}"
+        if os.path.isfile(path) and os.path.getmtime(path) > before:
+            return ""
+        tail = (r.stderr or r.stdout or "").strip()
+        # Отставший движок проекта — самый частый случай, и argparse объясняет его так,
+        # что человек идёт искать поломку в панели. Называем причину.
+        if "unrecognized arguments" in tail and "--cards-json" in tail:
+            return ("движок проекта не умеет строить граф базы: обновите его — "
+                    "«Версия» → «Обновить движок проекта»")
+        return "граф не посчитался: " + (tail[-300:] or "причина неизвестна")
+
+    why = build() if (rebuild or not os.path.isfile(path)) else ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # Кэш — производная, а не работа человека: битый файл чиним сами, а не
+        # заставляем удалять его руками. Один раз: если и пересчёт не помог — говорим.
+        why = why or build()
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            return {"error": why or f"кэш графа не прочитан: {e}"}
+    if why:
+        # Пересчёт сорвался, но прежняя картинка есть — отдаём её и говорим, что она
+        # прежняя. Потерять рабочий граф из-за неудачной кнопки хуже, чем показать
+        # вчерашний.
+        data["stale_reason"] = why
+    data["when"] = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M")
+    return data
 
 
 # --------------------------------------------------------------------------- языки
@@ -1912,6 +1990,16 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/files/read":
             project = (q.get("project") or [""])[0]
             self.send_json(file_read(project, (q.get("path") or [""])[0])
+                           if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/graph":
+            project = (q.get("project") or [""])[0]
+            self.send_json(graph_state(project, (q.get("rebuild") or [""])[0] == "1")
+                           if project and self._known(project)
+                           else {"error": "проект не выбран"})
+        elif u.path == "/api/files/clean":
+            project = (q.get("project") or [""])[0]
+            self.send_json(clean_preview(project, (q.get("path") or [""])[0])
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
         elif u.path == "/api/git":

@@ -197,6 +197,67 @@ SKIP_DIRS = ("meta", "_archive", "MOC")
 REL_RE = re.compile(r"^related:\s*(.*)$", re.M)
 
 
+def write_cards_graph(path: str) -> dict:
+    """Граф базы знаний для панели: узлы — карточки, рёбра — ссылки между ними.
+
+    Берём то, что **написано в базе**: ссылки `[[…]]` в теле и поле `related:`. Не
+    выведенные правилами связи (RY-ключи, номера историй) — их считает `--cards` и
+    кладёт в те же `related:`, так что попадут они сюда только после того, как человек
+    их принял. Граф должен показывать базу, а не догадку о ней.
+
+    Аналитика (сообщества, мосты, острова) остаётся за `kb:map`: граф здесь — способ
+    дойти до карточки, а не отчёт о её месте в мире.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from aurora_common import link_refs, is_service
+
+    nodes, edges, seen = [], [], set()
+    by_stem: dict = {}
+    for dirpath, dirs, files in os.walk(KB_DIR):
+        dirs[:] = [d for d in dirs if d not in ("meta", "_archive")]
+        for f in sorted(files):
+            if not f.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, f)
+            rel = os.path.relpath(full, ".").replace("\\", "/")
+            # Служебное — не карточка: README базы, оглавления, манифесты. Определение
+            # одно на весь движок, своё здесь заводить нельзя: линтер уже однажды принял
+            # README за карточку и объявил свежий проект больным.
+            if is_service(rel):
+                continue
+            text = open(full, encoding="utf-8", errors="ignore").read()
+            fm = frontmatter(text) or {}
+            stem = os.path.splitext(f)[0]
+            by_stem[stem] = rel
+            nodes.append({"id": stem, "path": rel,
+                          "title": (fm.get("title") or stem).strip('"'),
+                          "status": (fm.get("status") or "").strip(),
+                          "type": (fm.get("type") or "").strip(),
+                          "kind": (fm.get("kind") or "").strip()})
+    for n in nodes:
+        text = open(n["path"], encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text) or {}
+        targets = [os.path.splitext(os.path.basename(x.split("#")[0].strip()))[0]
+                   for x in link_refs(text) if x.strip()]
+        targets += [x.strip().strip('[]"') for x in lst(fm.get("related"))]
+        for tgt in targets:
+            tgt = tgt.strip()
+            if not tgt or tgt == n["id"] or tgt not in by_stem:
+                continue        # ссылка в никуда — забота линтера, не графа
+            pair = tuple(sorted((n["id"], tgt)))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            edges.append({"from": pair[0], "to": pair[1]})
+    data = {"generated": TODAY, "nodes": nodes, "edges": edges,
+            "orphans": sum(1 for n in nodes
+                           if not any(n["id"] in e.values() for e in edges))}
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, sort_keys=True)
+    return data
+
+
 def cards_by_source(conf_root: str, jira_root: str) -> dict:
     """{путь файла зеркала → [карточки]}: чем подтверждается знание, тем и связывается."""
     out: dict = {}
@@ -567,6 +628,10 @@ def main() -> int:
     ap.add_argument("--write", action="store_true",
                     help=f"записать {OUT_MOC} (файл генерируется, правки затрутся)")
     ap.add_argument("--json", dest="json_path", help="выгрузить граф машинночитаемо")
+    ap.add_argument("--cards-json", dest="cards_json", metavar="ФАЙЛ",
+                    help="граф самой базы для панели: карточки и связи между ними — "
+                         "ссылки в теле и поле related:, то есть то, что в базе "
+                         "написано, а не выведено правилами")
     ap.add_argument("--cards", action="store_true",
                     help="перенести связи графа в поле related: карточек базы")
     ap.add_argument("--apply", action="store_true",
@@ -585,6 +650,17 @@ def main() -> int:
     ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR})")
     ap.add_argument("--jira", default=JIRA_DIR, help=f"зеркало Jira ({JIRA_DIR})")
     a = ap.parse_args()
+
+    # Граф самой базы читает только `AuroraKnowledgeDB` — ни зеркал, ни RY-ключей ему
+    # не нужно. Требовать Confluence значило бы оставить без графа проект, собранный
+    # из Raw/, и свежий проект, где зеркала ещё нет.
+    if a.cards_json and not os.path.isdir(a.conf):
+        if not os.path.isdir(KB_DIR):
+            print(f"kb_graph: нет {KB_DIR}/ — запускайте из корня проекта", file=sys.stderr)
+            return 1
+        write_cards_graph(a.cards_json)
+        print(f"Граф базы: {a.cards_json}")
+        return 0
 
     if not os.path.isdir(a.conf):
         print(f"kb_graph: нет {a.conf}/ — запускайте из корня проекта", file=sys.stderr)
@@ -710,6 +786,9 @@ def main() -> int:
         with open(a.json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
         print(f"Граф: {a.json_path}")
+    if a.cards_json:
+        write_cards_graph(a.cards_json)
+        print(f"Граф базы: {a.cards_json}")
     if a.report_path:
         os.makedirs(os.path.dirname(a.report_path) or ".", exist_ok=True)
         open(a.report_path, "w", encoding="utf-8").write(text)
