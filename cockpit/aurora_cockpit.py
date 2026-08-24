@@ -2189,6 +2189,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"text": read_text(os.path.join(project, "aurora.config.yaml")),
                             "path": "aurora.config.yaml"})
+        elif u.path == "/api/runlog":
+            # Журнал запусков — своим маршрутом. Он читается мгновенно, а ехал внутри
+            # `/api/health`, который зовёт несколько команд и занимает секунды: на живом
+            # проекте девять. Всё это время вкладка «Консоль» показывала «выберите
+            # проект» при выбранном проекте, и это читалось как «журнал потерян».
+            project = (q.get("project") or [""])[0]
+            self.send_json({"runs": read_runlog(project)}
+                           if project and self._known(project)
+                           else {"error": "проект не выбран"})
         elif u.path == "/api/report":
             project = q.get("project", [""])[0]
             if not self._known(project):
