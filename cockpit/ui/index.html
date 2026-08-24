@@ -405,6 +405,7 @@ tr:last-child td{border-bottom:0}
       <div class="row" style="margin-bottom:12px">
         <span class="chip mono" id="consoleCmd">—</span>
         <span class="chip" id="consoleRc">не запускалось</span>
+        <button class="btn" id="consoleStop" hidden data-i18n="console.stop">Прервать</button>
         <div class="row-right">
           <span id="consoleApply"></span>
           <span id="consoleTask"></span>
@@ -672,7 +673,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.5";
+const UI_VERSION = "1.99.6";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -723,6 +724,29 @@ function t(key, vars){
   if (s === undefined) return key;          // такого ключа нет вовсе — видно сразу
   if (vars) for (const [k,v] of Object.entries(vars)) s = s.replaceAll("{"+k+"}", v);
   return s;
+}
+
+async function restartPanel(){
+  // Токен новый процесс получает от текущего, поэтому открытая вкладка продолжит
+  // работать: адрес тот же, и после подъёма достаточно перечитать страницу.
+  const busy = await api("/api/jobs", {quiet:true});
+  const live = (busy && busy.jobs || []).filter(j => !j.done);
+  if (live.length && !confirm(
+      `Сейчас идёт: ${live.map(j => j.cmd).join(", ")}.\n\n`
+      + "Перезапуск прервёт эти прогоны — их вывод идёт в панель. Всё равно перезапустить?"))
+    return;
+  const d = await api("/api/restart", {method:"POST", quiet:true, body:"{}"});
+  if (d && d.error) return toast(d.error, "err");
+  toast("панель поднимается…");
+  // Ждём, пока новый процесс ответит, и перечитываем страницу.
+  for (let i = 0; i < 40; i++){
+    await new Promise(ok => setTimeout(ok, 500));
+    try {
+      const r = await fetch("/api/state?t=" + encodeURIComponent(TOKEN));
+      if (r.ok){ location.reload(); return; }
+    } catch (e) { /* ещё не поднялась */ }
+  }
+  toast("панель не поднялась за 20 секунд — посмотрите терминал", "err");
 }
 
 async function loadI18n(){
@@ -1628,11 +1652,13 @@ async function boot(){
   // отдаётся свежая и начинает просить у старого сервера то, чего он не умеет, — человек
   // получает «неизвестный маршрут» и ищет поломку там, где её нет.
   if (S.state.ui && S.state.ui.stale_process){
+    // Кнопка, а не команда для терминала: панель заводилась, чтобы в терминал не ходить,
+    // и отправлять туда за собственным перезапуском — расписываться в этом.
     $("main").prepend(el("div",{class:"stalebar"},
       el("b",{},"Панель обновилась на диске, а работает прежним процессом. "),
       "Страница уже новая, сервер — ещё старый: часть кнопок ответит ошибкой. ",
-      "Перезапустите панель: ",
-      el("span",{class:"mono"},"python3 aurora.py cockpit --restart")));
+      el("button",{class:"btn", style:"margin-left:8px", onclick:restartPanel},
+        "Перезапустить панель")));
   }
   $("#navCmds").textContent = S.state.commands.length;
   const missing = S.state.env.items.filter(i=>!i.ok).length;
@@ -3108,7 +3134,7 @@ async function attachJob(id){
     $("#consoleCmd").textContent = d.cmd + " " + (d.args||[]).join(" ");
     if (d.done){
       $("#consoleRc").textContent = "код " + d.rc;
-      $("#consoleRc").className = "chip " + (d.rc >= 2 ? "bad" : d.rc === 1 ? "warn" : "ok");
+      $("#consoleRc").className = "chip " + (failed(d.rc) ? "bad" : d.rc === 1 ? "warn" : "ok");
       drawLiveJobs();
       return;
     }
@@ -3206,8 +3232,8 @@ function fixButton(what){
         + "Всё, что команда сделает, видно в `git diff` и снимается `git reset --hard`.")) return;
     if (await busyElsewhere(fix.cmd)) return;
     const {rc} = await runStep(fix.cmd, fix.args);
-    toast(rc >= 2 ? `${fix.cmd}: не отработала (код ${rc})` : `${fix.cmd}: готово`,
-          rc >= 2 ? "err" : "ok");
+    toast(failed(rc) ? `${fix.cmd}: не отработала (код ${rc})` : `${fix.cmd}: готово`,
+          failed(rc) ? "err" : "ok");
   }}, "Починить: " + fix.cmd);
 }
 const FIX_HINT = {
@@ -3244,6 +3270,11 @@ function findings(lines){
 }
 
 // Полоса хода: «шаг 9 из 16 · agent:build». Пусто — маршрут кончился, полоса прячется.
+// Отрицательный код — процесс убит сигналом: человек нажал «Прервать» или система
+// его сняла. Проверка «код 2 и выше» такое пропускала, и маршрут после осознанного
+// прерывания шёл дальше — ровно то, чего человек и не хотел.
+const failed = rc => rc >= 2 || rc < 0;
+
 function drawRouteBar(cmd){
   const bar = $("#routeBar");
   if (!bar) return;
@@ -3491,7 +3522,7 @@ async function runRoute(sc, write){
   while (i < steps.length){
     if (!steps[i].cycle){
       const {rc} = await runOne(steps[i]);
-      if (rc >= 2){ ROUTE.failed = steps[i].cmd; break; }
+      if (failed(rc)){ ROUTE.failed = steps[i].cmd; break; }
       i++;
       continue;
     }
@@ -3503,7 +3534,7 @@ async function runRoute(sc, write){
       let left = null;
       for (let k = i; k < end; k++){
         const {rc, lines} = await runOne(steps[k]);
-        if (rc >= 2){ ROUTE.failed = steps[k].cmd; break outer; }
+        if (failed(rc)){ ROUTE.failed = steps[k].cmd; break outer; }
         const seen = leftInPlan(lines);
         if (seen !== null) left = seen;
       }
@@ -3547,7 +3578,7 @@ async function runRoute(sc, write){
   $("#consoleRc").textContent = bad ? "остановлен на " + bad : "пройден: шагов " + ROUTE.done;
   $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
   out.append(el("div",{class:bad?"err":"ok",style:"margin-top:12px"},
-    bad ? `■ Маршрут остановлен на «${bad}»: команда не отработала (код 2 и выше). `
+    bad ? `■ Маршрут остановлен на «${bad}». `
         + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
         + "без вреда."
         : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
@@ -3590,6 +3621,20 @@ let CONSOLE_LINES = [];      // строки текущего прогона: и
 async function poll(id, since, label){
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
   const out = $("#consoleOut");
+  // Кнопка «Прервать» живёт ровно столько, сколько идёт прогон. Без неё запрет на
+  // перезапуск панели при работающем задании превращается в тупик: ни остановить,
+  // ни перезапустить — только ждать часами.
+  const stop = $("#consoleStop");
+  if (stop){
+    stop.hidden = !!(d && d.done) || !d || !!d.error;
+    stop.onclick = async () => {
+      if (!confirm("Прервать прогон?\n\nСделанное останется: карточки пишутся по одной, "
+                   + "а маршрут фиксирует каждый оборот.")) return;
+      const r = await api("/api/job/stop", {method:"POST", quiet:true,
+        body: JSON.stringify({id})});
+      if (r.error) toast(r.error, "warn"); else toast("прогон прерван");
+    };
+  }
   // Задания нет: панель перезапускали, пока команда шла. Раньше цикл продолжал спрашивать
   // про исчезнувшее задание и «выполняется…» стояло вечно — команда при этом могла давно
   // отработать. Тишина здесь дороже ошибки: человек ждёт того, чего уже не случится.

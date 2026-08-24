@@ -46,7 +46,10 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 from aurora_common import child_env            # noqa: E402  — путь до scripts добавлен выше
 
-TOKEN = secrets.token_urlsafe(24)
+# Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
+# иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
+# токен другой. Знает его тот же, кто и просил перезапуск.
+TOKEN = os.environ.pop("AURORA_COCKPIT_TOKEN", "") or secrets.token_urlsafe(24)
 # Когда запустился этот процесс. Обновление кита правит файлы на диске, а работающая
 # панель продолжает жить прежним кодом: страница отдаётся свежая, а сервер — старый, и
 # новая страница начинает просить у него то, чего он ещё не умеет. Сравнить время старта
@@ -2042,9 +2045,11 @@ def start_job(project: str, cmd: str, extra: list) -> str:
             # Заодно вычищаем Malloc*-переменные отладчика: их предупреждения врезаются
             # в строку прогресса и читаются как ошибка движка.
             env = child_env(PYTHONUNBUFFERED="1")
+            mark_running(job["id"], cmd, project, True)
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
+            job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
             for line in p.stdout:
                 with JOBS_LOCK:
                     job["out"].append(line.rstrip("\n"))
@@ -2058,6 +2063,7 @@ def start_job(project: str, cmd: str, extra: list) -> str:
         finally:
             job["done"] = True
             job["finished"] = time.time()
+            mark_running(job["id"], cmd, project, False)
             write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
                          int(job["finished"] - job["started"]))
 
@@ -2373,6 +2379,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(file_write(project, payload.get("path", ""),
                                       payload.get("text", ""), payload.get("expect", "")))
+            return
+        if u.path == "/api/job/stop":
+            self.send_json(stop_job(payload.get("id", "")))
+            return
+        if u.path == "/api/restart":
+            self.send_json(restart_self(self.server.server_address[1]))
+            threading.Timer(0.4, lambda: os._exit(0)).start()
             return
         if u.path == "/api/files/create":
             project = payload.get("project", "")
@@ -2717,7 +2730,89 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
 
+def stop_job(job_id: str) -> dict:
+    """Прервать прогон. Мягко, потом жёстко.
+
+    Запрет на перезапуск панели при работающем прогоне без кнопки «прервать» — это
+    тупик: человек не может ни перезапустить, ни остановить, и остаётся ждать часами.
+    Прогон при этом устроен так, что прерывание безопасно: каждая карточка записывается
+    отдельно, а маршрут фиксирует каждый оборот.
+    """
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job:
+        return {"error": "такого задания нет — возможно, оно уже закончилось"}
+    proc = job.get("proc")
+    if job.get("done") or not proc:
+        return {"error": "задание уже закончилось"}
+    try:
+        proc.terminate()
+        for _ in range(40):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        if proc.poll() is None:
+            proc.kill()
+    except OSError as e:
+        return {"error": f"не удалось остановить: {e}"}
+    job["out"].append("■ Прогон прерван человеком. Сделанное записано и зафиксировано "
+                      "до этого места.")
+    return {"ok": True}
+
+
+def restart_self(port: int) -> dict:
+    """Поднять панель заново и умереть. Токен передаём новому процессу.
+
+    Иначе открытая вкладка после перезапуска перестала бы работать: адрес тот же, токен
+    другой. Токен от этого не становится слабее — его знает тот, кто и просит перезапуск,
+    и наружу он по-прежнему не выходит.
+    """
+    entry = os.path.join(KIT, "aurora.py")
+    if not os.path.isfile(entry):
+        return {"error": "не найден aurora.py — перезапустите панель вручную"}
+    env = dict(os.environ, AURORA_COCKPIT_TOKEN=TOKEN)
+    try:
+        subprocess.Popen([sys.executable, entry, "cockpit", "--port", str(port),
+                          "--restart", "--force", "--no-browser"],
+                         cwd=KIT, env=env, start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        return {"error": f"не удалось запустить новую панель: {e}"}
+    return {"ok": True, "wait": "панель поднимется через пару секунд"}
+
+
 SESSION = os.path.join(KIT, "cockpit", ".session.json")
+# Что панель запустила и что ещё не кончилось. На диске, а не только в памяти: перед
+# перезапуском об этом надо знать ДРУГОМУ процессу — тому, который собирается убить
+# работающий. Вывод прогона идёт в трубу панели, и когда панель умирает, прогон умирает
+# следом: ночной разбор базы теряется от одного обновления кита.
+RUNNING = os.path.join(KIT, "cockpit", ".running.json")
+
+
+def mark_running(job_id: str, name: str, project: str, on: bool) -> None:
+    try:
+        with open(RUNNING, encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        rows = {}
+    if on:
+        rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
+                        "since": datetime.now().strftime("%H:%M")}
+    else:
+        rows.pop(job_id, None)
+    try:
+        with open(RUNNING, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def running_now() -> dict:
+    try:
+        with open(RUNNING, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
 def write_session(port: int, url: str) -> None:
@@ -2771,10 +2866,26 @@ def main() -> int:
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--restart", action="store_true",
                     help="остановить уже работающую панель и поднять заново")
+    ap.add_argument("--force", action="store_true",
+                    help="перезапустить, даже если идёт прогон (он будет прерван)")
     a = ap.parse_args()
 
     prev = read_session()
     if a.restart and prev.get("pid") and alive(prev.get("url", "")):
+        # Вывод прогона идёт в трубу панели: убьём панель — прогон умрёт следом, когда
+        # в следующий раз что-нибудь напечатает. Ночной разбор базы теряется от одного
+        # обновления кита, и человек узнаёт об этом по «задание шага потеряно».
+        busy = running_now()
+        if busy and not a.force:
+            print("Панель не перезапущена: сейчас идёт работа.\n", file=sys.stderr)
+            for row in busy.values():
+                print(f"  {row.get('cmd')} · проект {row.get('project') or '—'} · "
+                      f"с {row.get('since')}", file=sys.stderr)
+            print("\nПерезапуск убьёт эти прогоны: их вывод идёт в панель, и без неё они\n"
+                  "останавливаются на первой же строке. Дождитесь конца или, если это\n"
+                  "осознанное решение: aurora.py cockpit --restart --force",
+                  file=sys.stderr)
+            return 2
         try:
             os.kill(prev["pid"], signal.SIGTERM)
             for _ in range(20):
@@ -2785,6 +2896,11 @@ def main() -> int:
         except OSError as e:
             print(f"Не удалось остановить прежнюю панель: {e}", file=sys.stderr)
 
+    # После падения в списке остаются мёртвые записи — новая панель начинает с чистого.
+    try:
+        os.remove(RUNNING)
+    except OSError:
+        pass
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     except OSError as e:

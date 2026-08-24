@@ -5129,6 +5129,70 @@ def test_width_probe_measures_work_not_noise(tmp: Path):
 
 
 @test
+def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
+    """Вывод прогона идёт в трубу панели: убьём панель — прогон умрёт следом.
+
+    Не сразу, а на первой же строке, которую он попытается напечатать. Ночной разбор
+    базы теряется от одного обновления кита, и человек узнаёт об этом по «задание шага
+    потеряно». Дважды за одну сессию так и вышло, причём оба раза перезапускал не он.
+
+    Список работающего живёт на диске, а не в памяти: знать о нём должен ДРУГОЙ процесс —
+    тот, который собирается убить работающий.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "def running_now(" in src and "RUNNING" in src, \
+        "панель не оставляет следа о том, что сейчас работает"
+    at = src.index("if a.restart and prev.get(\"pid\")")
+    guard = src[at:at + 1400]
+    assert "running_now()" in guard and "a.force" in guard, \
+        "перезапуск убивает работу молча"
+    assert "return 2" in guard, "отказ не останавливает перезапуск"
+    assert "--force" in src, "нет способа перезапустить осознанно"
+    assert "os.remove(RUNNING)" in src, \
+        "после падения мёртвые записи навсегда запретят перезапуск"
+
+    # Запрет без кнопки «прервать» — тупик: ни остановить, ни перезапустить.
+    assert "def stop_job(" in src and '"/api/job/stop"' in src, \
+        "прогон нельзя прервать — остаётся ждать часами"
+    assert "proc.terminate()" in src and "proc.kill()" in src, \
+        "прерывание не доводится до конца, если процесс не отозвался"
+    # Панель заводилась, чтобы не ходить в терминал: за собственным перезапуском тоже.
+    assert "def restart_self(" in src and '"/api/restart"' in src, \
+        "перезапуск панели возможен только из терминала"
+    assert 'AURORA_COCKPIT_TOKEN' in src, \
+        "после перезапуска из панели открытая вкладка перестанет работать: токен другой"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="consoleStop"' in ui and "/api/job/stop" in ui, "нет кнопки «Прервать»"
+    assert "restartPanel" in ui and "Перезапустить панель" in ui, \
+        "полоса про устаревший процесс всё ещё отсылает в терминал"
+    # Прерванный процесс возвращает отрицательный код: «код 2 и выше» его пропускало,
+    # и маршрут после осознанного прерывания шёл дальше.
+    assert "const failed = rc => rc >= 2 || rc < 0;" in ui, \
+        "маршрут не считает прерывание поводом остановиться"
+    assert "rc >= 2){ ROUTE.failed" not in ui, "остались проверки, пропускающие прерывание"
+
+    # Отметка ставится вокруг запуска команды, а не где-то рядом.
+    run = src[src.index("mark_running(job[\"id\"], cmd, project, True)") - 400:]
+    assert "mark_running(job[\"id\"], cmd, project, False)" in run[:4000], \
+        "запись о работе не снимается по окончании — перезапуск запретится навсегда"
+
+    was = ck.running_now()
+    ck.mark_running("тест", "agent:distill", "/x/Проект", True)
+    now = ck.running_now()
+    assert now.get("тест", {}).get("cmd") == "agent:distill", "работа не отмечена"
+    assert now["тест"]["project"] == "Проект", "не сказано, в каком проекте идёт работа"
+    ck.mark_running("тест", "agent:distill", "/x/Проект", False)
+    assert "тест" not in ck.running_now(), "отметка не снялась"
+    assert ck.running_now() == was, "список работающего изменился после теста"
+
+
+@test
 def test_file_tree_is_a_tree_and_says_what_it_hides(tmp: Path):
     """Раздел «Файлы» разбирался критиком на живом проекте: 3882 файла, 89 000 пикселей
     прокрутки, имена в капсе, полторы тысячи из четырёх без единого слова об этом.
@@ -5356,6 +5420,16 @@ def test_console_says_which_step_uses_the_threads(tmp: Path):
     line = ar.threads_line(wide, 9)
     assert "потоков: 9" in line and "№1×9" in line, \
         f"параллельный шаг не называет ни числа потоков, ни шлюзов: {line}"
+
+    # Раскладка — по тем слотам, что реально пойдут в работу. Печатали весь пул, и
+    # строка противоречила сама себе: «потоков: 30 · слоты по шлюзам: №1×99». Строка
+    # заведена, чтобы говорить правду о параллельности, и врать ей нельзя вдвойне.
+    huge = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                            "AURORA_AGENT_BACKEND_1_WIDTH": "99",
+                            "AURORA_AGENT_PARALLEL": "99"})
+    cut = ar.threads_line(huge, 30)
+    assert "потоков: 30" in cut and "№1×30" in cut, \
+        f"строка про потоки противоречит сама себе: {cut}"
 
     # Шаг, который не распараллеливается, обязан сказать это, а не молчать: иначе
     # человек ждёт ускорения от настройки, на этот шаг не влияющей.
