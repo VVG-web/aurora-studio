@@ -518,6 +518,7 @@ tr:last-child td{border-bottom:0}
               </select>
               <button class="btn" id="fileFolder" data-i18n="files.reveal_folder">Показать в папке</button>
               <button class="btn" id="fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
+              <button class="btn" id="fileFix" hidden data-i18n="editor.correct">Исправить</button>
               <button class="btn" id="filePub" hidden data-i18n="editor.publish">Опубликовать</button>
               <button class="btn primary" id="fileSave" disabled data-i18n="editor.save">Сохранить</button>
             </div>
@@ -657,7 +658,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.98.2";
+const UI_VERSION = "1.99.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -769,6 +770,9 @@ function drawLangPicker(){
 
 /* ---------------- граф базы ---------------- */
 const G = { data:null, cy:null, focus:"" };
+// Сколько узлов имеет смысл раскладывать. Не выдумка: на живой базе раскладка тысячи
+// узлов вешает вкладку целиком, и это выглядит как поломка панели, а не как «много».
+const GRAPH_LIMIT = 400;
 
 // Библиотека раскладки — 428 КБ; грузим при первом открытии раздела, как и редактор.
 let CYTO_READY = null;
@@ -831,8 +835,16 @@ function drawGraph(){
   const nodes = want ? G.data.nodes.filter(n => want.has(n.id)) : G.data.nodes;
   const ids = new Set(nodes.map(n => n.id));
   const edges = G.data.edges.filter(e => ids.has(e.from) && ids.has(e.to));
-  if (!G.focus && nodes.length > 900){
-    $("#graphNote").textContent = t("graph.toobig", {n: nodes.length});
+  // Порог считаем по тому, что реально пойдёт в раскладку, а не по тому, откуда набор
+  // взялся. На живой базе у карточки-концентратора («Понятия») 556 соседей на первой
+  // ступени и 938 на второй — окрестность оказывается почти всей базой, раскладка
+  // вешает вкладку, и человек видит зависшую панель вместо графа.
+  if (nodes.length > GRAPH_LIMIT){
+    $("#graphNote").textContent = G.focus
+      ? t("graph.hub", {id: G.focus, n: nodes.length, depth})
+      : t("graph.toobig", {n: nodes.length});
+    if (G.cy){ G.cy.destroy(); G.cy = null; }
+    $("#graphBox").innerHTML = "";
     return;
   }
   if (G.cy){ G.cy.destroy(); G.cy = null; }
@@ -974,6 +986,12 @@ async function openFile(f){
   F.path = d.path; F.digest = d.digest; F.ro = d.readonly || ""; F.orig = d.text; F.dirty = false;
   $("#fileRO").hidden = !F.ro;
   $("#fileRO").textContent = F.ro ? "🔒 " + t("files.readonly") + ": " + F.ro : "";
+  // Запрет обязан заканчиваться действием. «Править нельзя» без «а вот как можно» —
+  // это тупик, из которого человек выйдет в системный проводник, и след потеряется.
+  const fixable = (d.path || "").startsWith("AuroraKnowledgeDB/") && !!F.ro
+                  && !(d.path || "").includes("/meta/");
+  $("#fileFix").hidden = !fixable;
+  if (fixable) $("#fileFix").onclick = () => correctCard(d.path);
   $("#fileGit").textContent = d.git || "";
   // «Опубликовать» показываем только там, где публикация применима: у видов артефактов
   // с объявленным адресом и у документов из `Deliverables/work`. Кнопка, которая всегда
@@ -1147,6 +1165,28 @@ async function openPath(rel){
         || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
   await openFile(f);
   $("#filePane").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+async function correctCard(rel){
+  const card = rel.split("/").pop().replace(/\.md$/, "");
+  const box = el("div",{class:"card", style:"padding:14px;margin-bottom:10px"},
+    el("b",{}, t("editor.correct_title", {card})),
+    el("p",{class:"sub"}, t("editor.correct_why")),
+    el("textarea",{id:"fixText", rows:4, placeholder:t("editor.correct_ph"),
+      style:"width:100%;font:inherit;padding:8px;border-radius:8px"}),
+    el("div",{class:"row", style:"gap:8px;margin-top:8px"},
+      el("button",{class:"btn primary", onclick:async ()=>{
+        const text = ($("#fixText").value || "").trim();
+        if (!text) return toast(t("editor.correct_empty"), "warn");
+        show("console");
+        const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+          {project:S.project.path, cmd:"kb:correct",
+           args:["--new", card, "--text", text]})});
+        if (res.job) poll(res.job, 0, "kb:correct " + card);
+      }}, t("editor.correct_go")),
+      el("button",{class:"btn", onclick:()=>box.remove()}, t("common.cancel"))));
+  $("#filePane").prepend(box);
+  setTimeout(()=>$("#fixText")?.focus(), 50);
 }
 
 async function saveFile(){
@@ -1770,6 +1810,29 @@ function baseCards(h, st){
             // Список без перехода — это отчёт, а не находка: человек всё равно пойдёт
             // искать файл руками, и плитка станет счётчиком, на который не смотрят.
             el("button",{class:"btn", onclick:()=>openPath(x.path)}, "Открыть"))));
+        box.prepend(list); list.scrollIntoView({behavior:"smooth", block:"center"});
+      }} : null}),
+    metricCard({title:"Исправления человеком",
+      value: (h.corrections && h.corrections.count) || 0,
+      sub: (h.corrections && h.corrections.ask)
+        ? `под вопросом ${h.corrections.ask}: источник обновился позже исправления`
+        : "поверх источников, применяются при каждой сборке",
+      tone: (h.corrections && h.corrections.ask) ? "warn" : "",
+      go: (h.corrections && h.corrections.ask) ? {label:"Разобрать", act: () => {
+        const box = $("#healthBody");
+        const list = el("div",{class:"card",style:"padding:18px;margin-bottom:14px"},
+          el("h2",{style:"margin-top:0"},"Исправления под вопросом"),
+          el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
+            "Источник изменился после того, как человек написал исправление. "
+            + "Противоречие видит только человек: прочитайте обе версии и решите. "
+            + "Пока не решили, исправление продолжает действовать — снимать проверенное "
+            + "по подозрению значит менять его на неподтверждённое."),
+          ...h.corrections.items.map(x => el("div",{class:"list-item"},
+            el("div",{style:"flex:1"},
+              el("div",{class:"mono",style:"font-size:12.5px"}, x.name),
+              el("div",{class:"muted",style:"font-size:12px"}, "карточка: " + x.card)),
+            el("button",{class:"btn", onclick:()=>openPath(
+              "Raw/corrections/" + x.name + ".md")}, "Открыть исправление"))));
         box.prepend(list); list.scrollIntoView({behavior:"smooth", block:"center"});
       }} : null}),
     metricCard({title:"Остаток человеку", value: h.todo != null ? h.todo : "—",

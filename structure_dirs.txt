@@ -13,6 +13,7 @@ Raw/customer
 Raw/project
 Raw/meetings
 Raw/examples
+Raw/corrections
 
 AuroraKnowledgeDB/Concepts
 AuroraKnowledgeDB/Processes
