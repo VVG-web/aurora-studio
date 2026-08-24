@@ -658,7 +658,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.2";
+const UI_VERSION = "1.99.3";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4191,6 +4191,17 @@ async function renderAgentCard(box, scope){
       // складываются не так, как ждёт человек: общий потолок ОБРЕЗАЕТ сумму ширин, и
       // девять потоков при потолке 1 дают один запрос. Молча это выглядит как «настроил,
       // а быстрее не стало».
+      // Режим, о котором знает только подсказка при наведении, не существует. Пишем
+      // словами рядом с полем — и кнопкой, которая избавляет от угадывания вовсе.
+      el("button",{class:"btn", style:"white-space:nowrap",
+        title:"Наращивает нагрузку на каждый шлюз, пока растёт пропускная способность",
+        onclick:async ()=>{
+          if (!S.state) return;
+          show("console");
+          const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+            {project:"", cmd:"agent:width", args:[]})});
+          if (res.job) poll(res.job, 0, "agent:width");
+        }}, "Замерить шлюзы"),
       el("span",{class:"sub", id:"slotsNote",
         title:"Столько запросов уйдёт в кольцо одновременно. Считается тем же кодом, что и в движке."},
         "фактически: " + (a.slots || 1)
@@ -4198,6 +4209,11 @@ async function renderAgentCard(box, scope){
            ? " (" + a.slot_split.map(([n,k]) => "№" + n + "×" + k).join(", ") + ")" : "")
         + ((a.slots || 1) < (a.backends || []).reduce((s,b)=>s+(b.width||1),0)
            ? " — «одновременно» обрезает потоки шлюзов" : "")),
+      el("div",{class:"muted", style:"font-size:12px;flex-basis:100%;margin-top:4px"},
+        "В «одновременно» можно написать «авто» — тогда движок возьмёт столько, сколько "
+        + "шлюзы объявили в «потоков» (не объявивший считается за один). Не знаете, "
+        + "сколько держит шлюз, — нажмите «Замерить шлюзы»: движок нарастит нагрузку и "
+        + "скажет число."),
       el("label",{},"адаптер ", el("select",{class:"btn",
           onchange:e=>touch("AURORA_AGENT_ADAPTER", e.target.value)},
         ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,

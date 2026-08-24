@@ -1926,6 +1926,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            # Страница собирается заново на каждый запрос (токен, каталог строк) — её
+            # кэширование делает обновление кита невидимым до очистки кэша браузера.
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -1938,10 +1941,14 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/state":
             self.send_json({
                 "kit": {"version": kit_version(), "path": KIT},
+                # `stale_process` живёт ВНУТРИ `ui`: панель читает его как `ui.stale_process`,
+                # и пока он лежал рядом, предупреждение не срабатывало ни разу. Случай
+                # ровно тот, ради которого оно заведено: разметка отдаётся с диска
+                # свежая, а процесс отвечает старым кодом — новые кнопки есть, а API под
+                # ними нет, и человек ищет поломку в себе.
                 "ui": {"version": ui_version(),
-                       "behind": minor(ui_version()) != minor(kit_version())},
-                # правили движок панели после её запуска — процесс работает старым кодом
-                "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED,
+                       "behind": minor(ui_version()) != minor(kit_version()),
+                       "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED},
                 "projects": find_projects(self.server.roots),
                 "env": environment(),
                 "commands": registry(),
