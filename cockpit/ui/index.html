@@ -252,8 +252,14 @@ tr:last-child td{border-bottom:0}
    длинное имя карточки занимало две строки и не читалось. Тот же
    дефект, что был у предпросмотра документа: оформление панели поверх содержимого. */
 #fileTree button{text-transform:none !important; letter-spacing:normal !important;
-  font-weight:400; padding:5px 8px; line-height:1.35; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; display:block}
+  font-weight:400; padding:3px 8px; line-height:1.3; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; display:block; font-size:12px}
+#fileTree .group{font-size:11px}
+/* Ширину панели тянут мышью: имена карточек длинные и у каждого проекта свои, угадать
+   одну ширину для всех нельзя. Запоминается, чтобы не настраивать каждый раз. */
+#filesSplit{width:6px; cursor:col-resize; flex:0 0 6px; align-self:stretch;
+  border-radius:3px; background:var(--border); opacity:.5}
+#filesSplit:hover{opacity:1; background:var(--accent)}
 #fileTree button .pill{margin-left:8px}
 #fileTree button[aria-current="true"]{background:var(--surface-2); font-weight:700;
   outline:1px solid var(--accent)}
@@ -488,8 +494,16 @@ tr:last-child td{border-bottom:0}
             <span data-i18n="graph.depth">Ступеней</span>
             <select id="graphDepth" style="font:inherit;padding:4px 6px;border-radius:8px">
               <option value="1">1</option><option value="2" selected>2</option>
-              <option value="3">3</option>
+              <option value="3">3</option><option value="4">4</option>
+              <option value="5">5</option><option value="6">6</option>
+              <option value="8">8</option><option value="99">все</option>
             </select>
+          </label>
+          <label class="sub" style="display:flex;gap:4px;align-items:center">
+            <span data-i18n="graph.spread">Разброс</span>
+            <button class="btn" id="graphOut" style="padding:2px 8px" title="Развести узлы дальше">+</button>
+            <span id="graphSpreadNow" class="mono" style="min-width:34px;text-align:center"></span>
+            <button class="btn" id="graphIn" style="padding:2px 8px" title="Свести узлы ближе">−</button>
           </label>
           <button class="btn" id="graphAll" data-i18n="graph.all">Показать всю базу</button>
           <button class="btn" id="graphRebuild" data-i18n="graph.rebuild">Пересчитать</button>
@@ -511,12 +525,13 @@ tr:last-child td{border-bottom:0}
       <div class="card" id="filesGit" style="padding:12px 16px;margin-bottom:12px"></div>
 
       <div class="row" style="gap:14px;align-items:flex-start">
-        <div class="card" style="padding:10px;flex:0 0 320px;max-height:70vh;overflow:auto">
+        <div class="card" id="filesPanel" style="padding:10px;flex:0 0 320px;max-height:70vh;overflow:auto">
           <input id="fileSearch" data-i18n-ph="files.search" placeholder="Поиск по имени и пути"
             style="width:100%;font:inherit;padding:8px;border-radius:8px;margin-bottom:6px">
           <div id="fileFilters" class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="fileTree"></div>
         </div>
+        <div id="filesSplit" title="Потяните, чтобы изменить ширину списка"></div>
         <div class="card" style="padding:12px;flex:1;min-width:0" id="filePane">
           <div class="sub" id="fileNone" data-i18n="files.pick_file">Выберите файл слева.</div>
           <div id="fileEditor" hidden>
@@ -533,6 +548,7 @@ tr:last-child td{border-bottom:0}
               <button class="btn" id="fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
               <button class="btn" id="fileRename" data-i18n="files.rename">Переименовать</button>
               <button class="btn" id="fileDelete" data-i18n="files.delete">Удалить</button>
+              <button class="btn" id="fileGraph" hidden data-i18n="files.on_graph">На графе</button>
               <button class="btn" id="fileFix" hidden data-i18n="editor.correct">Исправить</button>
               <button class="btn" id="filePub" hidden data-i18n="editor.publish">Опубликовать</button>
               <button class="btn primary" id="fileSave" disabled data-i18n="editor.save">Сохранить</button>
@@ -673,7 +689,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.6";
+const UI_VERSION = "1.99.7";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -824,10 +840,14 @@ function drawLangPicker(){
 
 
 /* ---------------- граф базы ---------------- */
-const G = { data:null, cy:null, focus:"" };
+const G = { data:null, cy:null, focus:"", anyway:false, fitKey:"" };
 // Сколько узлов имеет смысл раскладывать. Не выдумка: на живой базе раскладка тысячи
 // узлов вешает вкладку целиком, и это выглядит как поломка панели, а не как «много».
-const GRAPH_LIMIT = 400;
+const GRAPH_LIMIT = 900;
+// Насколько разводить узлы. Одной раскладки на все базы не бывает: сорок карточек и
+// четыреста требуют разного, и «чёрный клубок» — это не свойство графа, а неподходящий
+// разброс. Человек крутит его сам, значение запоминается.
+let GRAPH_SPREAD = parseFloat(localStorage.getItem("aurora-graph-spread") || "1") || 1;
 
 // Библиотека раскладки — 428 КБ; грузим при первом открытии раздела, как и редактор.
 let CYTO_READY = null;
@@ -894,10 +914,19 @@ function drawGraph(){
   // взялся. На живой базе у карточки-концентратора («Понятия») 556 соседей на первой
   // ступени и 938 на второй — окрестность оказывается почти всей базой, раскладка
   // вешает вкладку, и человек видит зависшую панель вместо графа.
-  if (nodes.length > GRAPH_LIMIT){
-    $("#graphNote").textContent = G.focus
+  // Порог — предупреждение с проходом, а не запрет. Раскладка тысячи узлов вешает
+  // вкладку на несколько секунд, и человек вправе об этом знать заранее; но решать за
+  // него, что ему не нужен большой граф, мы не вправе — тем более что разброс как раз
+  // и делает такой граф читаемым.
+  if (nodes.length > GRAPH_LIMIT && !G.anyway){
+    const note = $("#graphNote");
+    note.innerHTML = "";
+    note.append(document.createTextNode(G.focus
       ? t("graph.hub", {id: G.focus, n: nodes.length, depth})
-      : t("graph.toobig", {n: nodes.length});
+      : t("graph.toobig", {n: nodes.length})), " ",
+      el("button",{class:"btn", style:"margin-left:6px", onclick(){
+        G.anyway = true; drawGraph(); G.anyway = false;
+      }}, t("graph.anyway")));
     if (G.cy){ G.cy.destroy(); G.cy = null; }
     $("#graphBox").innerHTML = "";
     return;
@@ -926,9 +955,21 @@ function drawGraph(){
         "height":16, "font-size":"11px", "font-weight":"bold"}},
       {selector:"edge", style:{"width":1, "line-color": line,
         "curve-style":"haystack", "opacity":0.55}}],
-    layout: {name:"cose", animate:false, nodeRepulsion: 9000, idealEdgeLength: 60},
+    // `fit: false` намеренно: с автоподгонкой раскладка всегда вписывается в окно, и
+    // «развести узлы» гасится обратным масштабированием — человек жмёт «+», а картинка
+    // не меняется. Первый показ подгоняем сами, дальше масштаб в руках человека.
+    layout: {name:"cose", animate:false, fit: false, randomize: true,
+             nodeRepulsion: Math.round(9000 * GRAPH_SPREAD * GRAPH_SPREAD),
+             idealEdgeLength: Math.round(60 * GRAPH_SPREAD),
+             nestingFactor: 1.2, gravity: 1 / GRAPH_SPREAD},
     wheelSensitivity: 0.25
   });
+  // Первый показ вписываем, чтобы граф не оказался за краем; дальше масштаб и разброс
+  // человек крутит сам.
+  if (G.fitKey !== G.focus + "|" + depth){
+    G.fitKey = G.focus + "|" + depth;
+    setTimeout(() => { try { G.cy.fit(undefined, 40); } catch (e) {} }, 30);
+  }
   G.cy.on("tap", "node", evt => {
     const d = evt.target.data();
     // Клик ведёт в карточку. Граф, из которого нельзя попасть в файл, — картинка
@@ -951,6 +992,16 @@ $("#graphFind")?.addEventListener("change", e => {
   G.focus = hit.id; drawGraph();
 });
 $("#graphDepth")?.addEventListener("change", drawGraph);
+function setSpread(v){
+  GRAPH_SPREAD = Math.max(0.4, Math.min(6, Math.round(v * 10) / 10));
+  localStorage.setItem("aurora-graph-spread", String(GRAPH_SPREAD));
+  const box = $("#graphSpreadNow");
+  if (box) box.textContent = "×" + GRAPH_SPREAD.toFixed(1);
+  if (G.cy) drawGraph();
+}
+$("#graphOut")?.addEventListener("click", ()=> setSpread(GRAPH_SPREAD * 1.4));
+$("#graphIn")?.addEventListener("click", ()=> setSpread(GRAPH_SPREAD / 1.4));
+setSpread(GRAPH_SPREAD);
 $("#graphAll")?.addEventListener("click", ()=>{ G.focus = ""; $("#graphFind").value = ""; drawGraph(); });
 $("#graphRebuild")?.addEventListener("click", ()=> renderGraph(true));
 
@@ -1186,6 +1237,12 @@ async function openFile(f){
   $("#fileFix").hidden = !fixable;
   // Переименовать и удалить нельзя там же, где нельзя править: кнопка, которая всегда
   // на виду и почти всегда отказывает, учит не читать отказы.
+  // Переход из графа в файл был, обратного не было. Связь односторонняя — это половина
+  // навигации: посмотрел карточку, захотел увидеть окружение — иди искать её в графе
+  // руками.
+  const inKb = (d.path || "").startsWith("AuroraKnowledgeDB/") && d.path.endsWith(".md");
+  $("#fileGraph").hidden = !inKb;
+  if (inKb) $("#fileGraph").onclick = () => showOnGraph(d.path);
   $("#fileRename").hidden = !!F.ro;
   $("#fileDelete").hidden = !!F.ro || (d.path || "").startsWith("AuroraKnowledgeDB/");
   if (fixable) $("#fileFix").onclick = () => correctCard(d.path);
@@ -1374,6 +1431,19 @@ async function openPath(rel){
         || {path: rel, name: rel.split("/").pop(), text: true, readonly: ""};
   await openFile(f);
   $("#filePane").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+async function showOnGraph(rel){
+  const card = rel.split("/").pop().replace(/\.md$/, "");
+  show("graph");
+  if (!G.data) await renderGraph();
+  if (!G.data) return;
+  if (!G.data.nodes.some(n => n.id === card))
+    return toast(t("graph.nocard", {id: card}), "warn");
+  G.focus = card;
+  const box = $("#graphFind");
+  if (box) box.value = card;
+  drawGraph();
 }
 
 async function correctCard(rel){
@@ -1581,7 +1651,7 @@ function show(view){
   if (view==="graph") renderGraph();
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
   if (view==="reports") renderReports();
-  if (view==="console"){ renderHistory(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
+  if (view==="console"){ renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
   if (view==="about") renderAbout();
   if (view==="dev") renderDev();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
@@ -1789,6 +1859,10 @@ async function pick(p, go=true){
   S.project = p;
   // Разговор с базой принадлежит проекту: открытым его нести в другой нельзя.
   THREAD = null; $("#askBody").innerHTML = ""; drawThreadHint();
+  // Журнал запусков тянем СРАЗУ, до тяжёлого здоровья: он читается мгновенно, а
+  // здоровье зовёт несколько команд и занимает секунды. Поставить его после — значит
+  // не отвязать вовсе.
+  S.runs = null; loadRuns();
   $("#healthTitle").textContent = "Здоровье базы · " + p.name;
   renderProjBadge();
   if (go) show("health");
@@ -3750,7 +3824,17 @@ function rcMark(rc){
 /* Журнал запусков живёт в проекте (`.opencode/run_log.md`) и ездит по git вместе с ним:
    «когда последний раз обновляли зеркала» — вопрос ко всей команде, а не к одному
    браузеру. Панель его только показывает; пишет сервер после каждого запуска. */
-function runs(){ return (S.health && S.health.runs) || {}; }
+// Журнал запусков живёт отдельно от здоровья: читается мгновенно, а здоровье зовёт
+// несколько команд и занимает секунды. Пока они ехали вместе, «Консоль» показывала
+// «выберите проект» при выбранном проекте — и это читалось как «журнал потерян».
+function runs(){ return S.runs || (S.health && S.health.runs) || {}; }
+
+async function loadRuns(){
+  if (!S.project) return;
+  const d = await api("/api/runlog?project=" + encodeURIComponent(S.project.path),
+                      {quiet:true});
+  if (d && d.runs){ S.runs = d.runs; renderHistory(); }
+}
 function lastRun(cmd){ return runs()[cmd]; }
 
 /* Список переживает сессии, поэтому одного времени мало: без даты «14:20» назавтра
@@ -4733,6 +4817,32 @@ $("#fileFolder")?.addEventListener("click", ()=>revealFile("folder"));
 $("#fileOpen")?.addEventListener("click", ()=>revealFile("open"));
 $("#filePub")?.addEventListener("click", publishFromEditor);
 $("#fileRename")?.addEventListener("click", renameFile);
+// Перетаскивание ширины: имена карточек длинные и у каждого проекта свои — одной
+// ширины на всех не бывает. Запоминаем выбранную, чтобы не настраивать каждый раз.
+(function(){
+  const split = $("#filesSplit"), panel = $("#filesPanel");
+  if (!split || !panel) return;
+  const saved = parseInt(localStorage.getItem("aurora-files-width") || "0", 10);
+  if (saved >= 200) panel.style.flexBasis = saved + "px";
+  let from = 0, base = 0;
+  const move = e => {
+    const w = Math.max(200, Math.min(900, base + (e.clientX - from)));
+    panel.style.flexBasis = w + "px";
+  };
+  const stop = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", stop);
+    document.body.style.userSelect = "";
+    localStorage.setItem("aurora-files-width", parseInt(panel.style.flexBasis, 10) || 320);
+  };
+  split.addEventListener("mousedown", e => {
+    from = e.clientX; base = panel.getBoundingClientRect().width;
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", stop);
+    e.preventDefault();
+  });
+})();
 $("#fileDelete")?.addEventListener("click", deleteFile);
 $("#fileMode")?.addEventListener("change", async e=>{
   localStorage.setItem("aurora-editor-mode", e.target.value);

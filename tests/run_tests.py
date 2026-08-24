@@ -1940,12 +1940,30 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     # панель отдаёт журнал вместе со здоровьем — иначе отметкам у команд неоткуда взяться
     assert "runs" in ck.health(str(root)), "журнал не попадает в /api/health"
 
+    # …но ЖДАТЬ здоровья журнал не должен. Он читается мгновенно, а здоровье зовёт
+    # несколько команд: на живом проекте девять секунд. Всё это время «Консоль»
+    # показывала «выберите проект» при выбранном проекте, и человек читал это как
+    # «журнал потерян» — так и написал. Проверки на это не было.
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"/api/runlog"' in src, "у журнала нет своего маршрута — он едет внутри здоровья"
+
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
     assert "function assistantTasks" in ui and "task.label" in ui, \
         "задания ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
-    assert re.search(r'if \(view==="console"\)\{ renderHistory\(\); drawTaskButton\(\);', ui), \
-        "на входе в «Консоль» не восстанавливаются журнал и кнопка задания"
+    assert "async function loadRuns()" in ui, "журнал не тянется отдельно от здоровья"
+    pick = ui[ui.index("async function pick("):ui.index("async function pick(") + 3200]
+    assert "loadRuns()" in pick, "выбор проекта не обновляет журнал"
+    assert pick.index("loadRuns()") < pick.index('api("/api/health'), \
+        "журнал тянется ПОСЛЕ здоровья — значит ждёт его, и отвязка бессмысленна"
+    assert 'if (view==="console")' in ui and "loadRuns()" in ui[ui.index('if (view==="console")'):
+                                                               ui.index('if (view==="console")') + 200], \
+        "переход на «Консоль» не обновляет журнал"
+    entry = ui[ui.index('if (view==="console")'):ui.index('if (view==="console")') + 200]
+    for call in ("renderHistory()", "drawTaskButton()", "drawLiveJobs()"):
+        assert call in entry, \
+            f"на входе в «Консоль» не восстанавливается {call}: журнал, задание и то, " \
+            f"что идёт прямо сейчас"
     assert ui.count("lastRun(") >= 3, \
         "отметка последнего запуска стоит не везде: команды, сценарии, журнал"
 
@@ -5129,6 +5147,43 @@ def test_width_probe_measures_work_not_noise(tmp: Path):
 
 
 @test
+def test_graph_and_files_link_both_ways_and_can_be_read(tmp: Path):
+    """Переход из графа в файл был, обратного не было — это половина навигации.
+
+    Посмотрел карточку, захотел увидеть её окружение — иди ищи её в графе руками. И сам
+    граф: «чёрный клубок» — не свойство базы, а неподходящий разброс, одного значения на
+    все базы не бывает. Решать за человека, что ему не нужен большой граф, мы не вправе:
+    порог обязан быть предупреждением с проходом, а не запретом.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    assert 'id="fileGraph"' in ui and "function showOnGraph(" in ui, \
+        "из файла нельзя попасть на граф — связь односторонняя"
+    assert "openPath(d.path)" in ui, "из графа перестало открываться в файл"
+
+    # Ширину списка тянут мышью: имена карточек длинные и у каждого проекта свои.
+    assert 'id="filesSplit"' in ui and "col-resize" in ui, \
+        "ширина списка файлов не меняется"
+    assert '"aurora-files-width"' in ui, "выбранная ширина не запоминается"
+    assert "font-size:12px" in ui[ui.index("#fileTree button{"):
+                                  ui.index("#fileTree button{") + 400], \
+        "шрифт в списке файлов не уменьшен — длинные имена не помещаются в строку"
+
+    # Разброс и ступени.
+    assert "GRAPH_SPREAD" in ui and "function setSpread(" in ui, \
+        "расстоянием между узлами нельзя управлять"
+    assert 'id="graphOut"' in ui and 'id="graphIn"' in ui, "нет плюса и минуса у разброса"
+    assert '"aurora-graph-spread"' in ui, "разброс не запоминается"
+    assert "fit: false" in ui, \
+        "раскладка вписывается в окно: «развести узлы» гасится обратным масштабом, " \
+        "и человек жмёт «+» без всякого эффекта"
+    depths = ui[ui.index('id="graphDepth"'):ui.index('id="graphDepth"') + 500]
+    for step in ("4", "5", "6", "8", "99"):
+        assert f'value="{step}"' in depths, f"ступени {step} нет — дальше третьей не уйти"
+    assert "graph.anyway" in ui, "порог размера запрещает вместо того, чтобы предупредить"
+
+
+@test
 def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     """Вывод прогона идёт в трубу панели: убьём панель — прогон умрёт следом.
 
@@ -5517,7 +5572,7 @@ def test_graph_is_a_way_into_the_card(tmp: Path):
     # карточки-концентратора 556 соседей на первой ступени и 938 на второй: окрестность
     # оказывается почти всей базой, раскладка вешает вкладку, и человек видит зависшую
     # панель вместо графа. Защита «только для показа всей базы» здесь не срабатывала.
-    assert "if (nodes.length > GRAPH_LIMIT)" in ui, \
+    assert "if (nodes.length > GRAPH_LIMIT" in ui, \
         "порог привязан к режиму, а не к числу узлов на экране"
     assert "graph.hub" in ui, "огромная окрестность не объяснена — выглядит как зависание"
     assert "function ensureCyto" in ui and "CYTO_READY" in ui, \
