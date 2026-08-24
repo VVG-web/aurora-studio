@@ -5129,6 +5129,101 @@ def test_width_probe_measures_work_not_noise(tmp: Path):
 
 
 @test
+def test_file_tree_is_a_tree_and_says_what_it_hides(tmp: Path):
+    """Раздел «Файлы» разбирался критиком на живом проекте: 3882 файла, 89 000 пикселей
+    прокрутки, имена в капсе, полторы тысячи из четырёх без единого слова об этом.
+
+    Дерево обязано быть деревом: девять папок верхнего уровня вместо плоского списка
+    полных путей. Свёрнутый список из 382 путей — та же стена, только другой формы.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "function treeOf(" in ui and "node.dirs" in ui, \
+        "дерево осталось плоским списком путей"
+    assert "SHOW_LIMIT" in ui and "files.shown" in ui, \
+        "обрезка списка проходит молча — он выглядит полным"
+    assert '#fileTree button{text-transform:none' in ui, \
+        "скин красит имена файлов: имя — данные, а не интерфейс"
+    assert 'b.setAttribute("aria-current", "true")' in ui, \
+        "открытый файл в дереве не отмечен — человек теряет место"
+    assert 'mark.scrollIntoView' in ui, "к открытому файлу не подводится прокрутка"
+    assert "FILTERS" in ui and '"изменённые"' in ui, \
+        "нет быстрых фильтров: «что я трогал сегодня» приходится искать глазами"
+    # `dirty` уже занят признаком несохранённых правок редактора: второе значение под
+    # тем же именем превратило множество в булево и уронило дерево на первом файле.
+    assert "F.changed" in ui and "F.dirty.has" not in ui, \
+        "множество изменённых файлов названо тем же именем, что признак правок редактора"
+    assert "git.unknown" in ui, \
+        "«не смогли спросить» показывается как «проект не под git»"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    root = tmp / "proj"
+    for d in (".ruff_cache", ".claude", "Workspaces", "AuroraKnowledgeDB/meta"):
+        (root / d).mkdir(parents=True)
+    (root / ".ruff_cache" / "мусор.md").write_text("x", encoding="utf-8")
+    (root / "Workspaces" / "своё.md").write_text("x", encoding="utf-8")
+    tree = ck.file_tree(str(root))
+    dirs = {f["dir"].split("/")[0] for f in tree["files"]}
+    assert not any(d.startswith(".") for d in dirs), \
+        f"папки инструментов в дереве проекта: {sorted(dirs)}"
+    assert tree.get("create_dirs"), "панель не знает, где можно заводить файлы"
+
+
+@test
+def test_creating_and_removing_files_respects_the_structure(tmp: Path):
+    """Панель управления файлами обещала создание — и не умела его.
+
+    За этим человек шёл в системный проводник, то есть ровно туда, откуда мы его уводили.
+    Но структура папок фиксирована движком: «создать» в `Sources/Confluence` означало бы
+    файл, который сотрёт следующий синк, а удаление из базы знаний нарушает инвариант 2.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    for d in ("Workspaces", "Sources/Confluence", "AuroraKnowledgeDB/Concepts",
+              "AuroraKnowledgeDB/meta"):
+        (root / d).mkdir(parents=True)
+    (root / "AuroraKnowledgeDB" / "Concepts" / "К.md").write_text(
+        "---\ntype: concept\nstatus: knowledge\n---\n\n# К\n", encoding="utf-8")
+
+    made = ck.file_create(str(root), "Workspaces/проба")
+    assert made.get("path") == "Workspaces/проба.md", f"не создан: {made}"
+    assert ck.file_create(str(root), "Workspaces/проба.md").get("error"), \
+        "повторное создание молча затирает существующий файл"
+    assert ck.file_create(str(root), "Sources/Confluence/x.md").get("error"), \
+        "файл заведён в зеркале — его сотрёт следующий синк"
+    assert ck.file_create(str(root), "в-корне.md").get("error"), \
+        "файл заведён в корне: структура папок фиксирована движком"
+    for bad in ("../снаружи.md", "Workspaces/../../побег.md", "Workspaces/../Sources/x.md"):
+        assert ck.file_create(str(root), bad).get("error"), f"путь наружу принят: {bad}"
+    assert not (tmp / "снаружи.md").exists() and not (tmp / "побег.md").exists()
+
+    ren = ck.file_rename(str(root), "Workspaces/проба.md", "другое")
+    assert ren.get("path") == "Workspaces/другое.md", f"не переименован: {ren}"
+    assert ren.get("note"), \
+        "не сказано, что ссылки на прежнее имя стали битыми — карточка выпадет из базы молча"
+    assert ck.file_rename(str(root), "Workspaces/другое.md", "../побег")["path"] \
+        .startswith("Workspaces/"), "переименованием можно вынести файл из папки"
+
+    assert ck.file_delete(str(root), "AuroraKnowledgeDB/Concepts/К.md").get("error"), \
+        "карточку удалили из базы: устаревшее заменяют, а не стирают (инвариант 2)"
+    assert (root / "AuroraKnowledgeDB" / "Concepts" / "К.md").is_file()
+    assert ck.file_delete(str(root), "Workspaces/побег.md").get("ok"), "черновик не удаляется"
+
+    # Недавние живут в проекте, а не в браузере: список у команды один.
+    ck.recent(str(root), "Workspaces/нет-такого.md")
+    assert "Workspaces/нет-такого.md" not in ck.recent(str(root)), \
+        "в недавних остаются исчезнувшие файлы"
+    assert (root / "AuroraKnowledgeDB" / "meta" / "recent-files.json").is_file(), \
+        "недавние хранятся в браузере — второй аналитик их не увидит"
+
+
+@test
 def test_reports_keep_their_previous_versions(tmp: Path):
     """Отчёт собирается в один и тот же файл, и каждая сборка затирает прежний.
 

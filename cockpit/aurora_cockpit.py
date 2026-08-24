@@ -170,10 +170,14 @@ def file_tree(project: str, limit: int = 4000) -> dict:
     """Дерево проекта как есть, с пометками. Скрывать нечего: проводник, который что-то
     прячет, заставляет лезть в системный — а мы ровно от этого и уходим."""
     root = os.path.realpath(project)
-    skip = {".git", "__pycache__", ".opencode", "node_modules", ".obsidian", ".DS_Store"}
+    # Папки инструментов в дереве проекта не нужны: `.claude`, `.ruff_cache`,
+    # `.playwright-mcp` — чужой кэш, он и в git не едет. Отсеивали только файлы с точки
+    # и `.git*`, и в живом проекте набралось 22 файла чужого мусора среди двух тысяч
+    # карточек.
+    skip = {"__pycache__", "node_modules", ".DS_Store"}
     rows, cut = [], False
     for cur, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d not in skip and not d.startswith(".git"))
+        dirs[:] = sorted(d for d in dirs if d not in skip and not d.startswith("."))
         rel_dir = os.path.relpath(cur, root).replace("\\", "/")
         if rel_dir == ".":
             rel_dir = ""
@@ -194,7 +198,146 @@ def file_tree(project: str, limit: int = 4000) -> dict:
                          "readonly": why_readonly(rel)})
         if cut:
             break
-    return {"root": root, "files": rows, "truncated": cut, "count": len(rows)}
+    return {"root": root, "files": rows, "truncated": cut, "count": len(rows),
+            "recent": recent(project), "create_dirs": create_dirs(project)}
+
+
+# Где заводить файлы законно. Структура папок фиксирована движком, и «создать» в
+# `Sources/Confluence` означало бы файл, который сотрёт следующий синк.
+MAKEABLE = ("Workspaces", "AuroraKnowledgeDB/Decisions", "AuroraKnowledgeDB/Questions",
+            "Raw/corrections", "Raw/project", "Raw/examples", "Deliverables/work")
+
+
+def create_dirs(project: str) -> list:
+    """Куда можно положить новый файл: постоянные места плюс папки видов артефактов."""
+    out = list(MAKEABLE)
+    try:
+        sys.path.insert(0, os.path.join(KIT, "scripts"))
+        import make_kinds as MK
+        for rec in (MK.read_kinds(project) or {}).values():
+            folder = (rec.get("out") or "").strip().strip("/")
+            if folder and folder not in out:
+                out.append(folder)
+    except Exception:                                   # noqa: BLE001
+        pass
+    return sorted(out)
+
+
+def why_no_create(project: str, rel: str) -> str:
+    """Почему здесь нельзя завести файл — словами."""
+    # Нормализуем ДО проверки: `Workspaces/../..` начинается с разрешённой папки и
+    # проходило первую проверку, упираясь только во вторую. Защита в глубину сработала,
+    # но сообщение человек получал не про то.
+    rel = os.path.normpath((rel or "").replace("\\", "/").strip("/")).replace("\\", "/")
+    if rel.startswith("..") or rel == ".":
+        return "путь ведёт за пределы проекта"
+    if not rel.endswith(".md") and "." not in os.path.basename(rel):
+        rel += ".md"
+    folder = os.path.dirname(rel)
+    if not folder:
+        return ("в корне проекта файлы не заводят: структура папок фиксирована движком "
+                "и одинакова во всех проектах Авроры")
+    ok = create_dirs(project)
+    if not any(folder == d or folder.startswith(d + "/") for d in ok):
+        return ("здесь файлы не заводят. Можно: " + ", ".join(ok)
+                + ". Нужен новый вид артефакта — объявите его в «Настройках проекта»")
+    return ""
+
+
+def file_create(project: str, rel: str, text: str = "") -> dict:
+    """Завести файл там, где это законно."""
+    rel = (rel or "").replace("\\", "/").strip("/")
+    if not rel:
+        return {"error": "не сказано, как назвать файл"}
+    if "." not in os.path.basename(rel):
+        rel += ".md"
+    why = why_no_create(project, rel)
+    if why:
+        return {"error": why}
+    full = inside(project, rel)
+    if not full:
+        return {"error": "путь вне проекта"}
+    if os.path.exists(full):
+        return {"error": "такой файл уже есть — откройте его"}
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(text or f"# {os.path.splitext(os.path.basename(rel))[0]}\n\n")
+    except OSError as e:
+        return {"error": f"не удалось создать: {e.strerror or e}"}
+    return {"ok": True, "path": rel}
+
+
+def file_rename(project: str, rel: str, name: str) -> dict:
+    """Переименовать. Ссылки на карточку по имени чинит `kb:repair`, и об этом говорим."""
+    name = os.path.basename((name or "").strip())
+    if not name or name.startswith("."):
+        return {"error": "новое имя пустое или начинается с точки"}
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"error": "файл не найден в этом проекте"}
+    ro = why_readonly(rel, read_text(full, limit=4000))
+    if ro:
+        return {"error": f"файл только для чтения: {ro}"}
+    if "." not in name:
+        name += os.path.splitext(full)[1] or ".md"
+    dst = os.path.join(os.path.dirname(full), name)
+    if os.path.exists(dst):
+        return {"error": "файл с таким именем уже есть"}
+    try:
+        os.rename(full, dst)
+    except OSError as e:
+        return {"error": f"не удалось переименовать: {e.strerror or e}"}
+    new_rel = os.path.relpath(dst, os.path.realpath(project)).replace("\\", "/")
+    return {"ok": True, "path": new_rel,
+            "note": ("Ссылки `[[…]]` на прежнее имя теперь битые — почините базу: "
+                     "«Команды» → kb:repair" if new_rel.endswith(".md") else "")}
+
+
+def file_delete(project: str, rel: str) -> dict:
+    """Удалить. В базе знаний — нельзя: устаревшее знание заменяют, а не стирают."""
+    full = inside(project, rel)
+    if not full or not os.path.isfile(full):
+        return {"error": "файл не найден в этом проекте"}
+    ro = why_readonly(rel, read_text(full, limit=4000))
+    if ro:
+        return {"error": f"файл только для чтения: {ro}"}
+    if rel.replace("\\", "/").startswith("AuroraKnowledgeDB/"):
+        return {"error": "из базы знаний не удаляют: устаревшее заменяют через "
+                         "kb:supersede, неверное правят корректировкой. Инвариант 2"}
+    try:
+        os.remove(full)
+    except OSError as e:
+        return {"error": f"не удалось удалить: {e.strerror or e}"}
+    return {"ok": True}
+
+
+RECENT_FILE = os.path.join("AuroraKnowledgeDB", "meta", "recent-files.json")
+
+
+def recent(project: str, add: str = "") -> list:
+    """Последние открытые файлы. Лежат в проекте, а не в браузере.
+
+    В браузере список принадлежит одному человеку и одной машине; в проекте он уезжает
+    в git вместе с базой, и второй аналитик видит, над чем работали до него.
+    """
+    path = os.path.join(project, RECENT_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+        rows = [str(x) for x in rows if isinstance(x, str)]
+    except (OSError, ValueError):
+        rows = []
+    if add:
+        rows = [add] + [x for x in rows if x != add]
+        rows = rows[:12]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False)
+        except OSError:
+            pass
+    return [x for x in rows if os.path.isfile(os.path.join(project, x))]
 
 
 def file_read(project: str, rel: str) -> dict:
@@ -210,6 +353,7 @@ def file_read(project: str, rel: str) -> dict:
                          "приложением", "binary": True, "size": size}
     text = read_text(full, limit=MAX_EDIT)
     fm = frontmatter(text) if ext == ".md" else {}
+    recent(project, rel)
     return {"path": rel, "text": text, "size": size,
             "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "readonly": why_readonly(rel, text),
@@ -2229,6 +2373,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(file_write(project, payload.get("path", ""),
                                       payload.get("text", ""), payload.get("expect", "")))
+            return
+        if u.path == "/api/files/create":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(file_create(project, payload.get("path", ""),
+                                       payload.get("text", "")))
+            return
+        if u.path == "/api/files/rename":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(file_rename(project, payload.get("path", ""),
+                                       payload.get("name", "")))
+            return
+        if u.path == "/api/files/delete":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(file_delete(project, payload.get("path", "")))
             return
         if u.path == "/api/files/reveal":
             project = payload.get("project", "")

@@ -248,6 +248,17 @@ tr:last-child td{border-bottom:0}
   border-radius:50%;display:inline-block;animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* Имя файла — данные, а не интерфейс. Скин уводил их в капс с разрядкой, и
+   длинное имя карточки занимало две строки и не читалось. Тот же
+   дефект, что был у предпросмотра документа: оформление панели поверх содержимого. */
+#fileTree button{text-transform:none !important; letter-spacing:normal !important;
+  font-weight:400; padding:5px 8px; line-height:1.35; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; display:block}
+#fileTree button .pill{margin-left:8px}
+#fileTree button[aria-current="true"]{background:var(--surface-2); font-weight:700;
+  outline:1px solid var(--accent)}
+#fileTree .group{cursor:pointer; user-select:none}
+
 /* Редактор показывает ДОКУМЕНТ, а не панель. Скины Авроры красят агрессивно —
    капс, разрядка, свой шрифт, — и заголовок карточки в предпросмотре выходил жёлтым
    капсом. Человек правит текст, который потом уедет заказчику: он должен видеть текст,
@@ -501,7 +512,8 @@ tr:last-child td{border-bottom:0}
       <div class="row" style="gap:14px;align-items:flex-start">
         <div class="card" style="padding:10px;flex:0 0 320px;max-height:70vh;overflow:auto">
           <input id="fileSearch" data-i18n-ph="files.search" placeholder="Поиск по имени и пути"
-            style="width:100%;font:inherit;padding:8px;border-radius:8px;margin-bottom:8px">
+            style="width:100%;font:inherit;padding:8px;border-radius:8px;margin-bottom:6px">
+          <div id="fileFilters" class="row" style="gap:4px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="fileTree"></div>
         </div>
         <div class="card" style="padding:12px;flex:1;min-width:0" id="filePane">
@@ -518,6 +530,8 @@ tr:last-child td{border-bottom:0}
               </select>
               <button class="btn" id="fileFolder" data-i18n="files.reveal_folder">Показать в папке</button>
               <button class="btn" id="fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
+              <button class="btn" id="fileRename" data-i18n="files.rename">Переименовать</button>
+              <button class="btn" id="fileDelete" data-i18n="files.delete">Удалить</button>
               <button class="btn" id="fileFix" hidden data-i18n="editor.correct">Исправить</button>
               <button class="btn" id="filePub" hidden data-i18n="editor.publish">Опубликовать</button>
               <button class="btn primary" id="fileSave" disabled data-i18n="editor.save">Сохранить</button>
@@ -658,7 +672,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.4";
+const UI_VERSION = "1.99.5";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -917,7 +931,8 @@ $("#graphAll")?.addEventListener("click", ()=>{ G.focus = ""; $("#graphFind").va
 $("#graphRebuild")?.addEventListener("click", ()=> renderGraph(true));
 
 /* ---------------- файлы проекта ---------------- */
-const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"" };
+const F = { files:[], path:null, digest:"", ed:null, ro:"", loaded:false, orig:"", fm:"",
+            filter:"все", open:new Set(), recent:[], changed:new Set(), createDirs:[] };
 // Порог живого предпросмотра в знаках. Не выдумка: на карточке в 11 КБ редактор сам
 // написал «требует 20901мс», а `_index.md` живой базы весит 171 КБ.
 const PREVIEW_LIMIT = 40000;
@@ -949,29 +964,166 @@ async function renderFiles(){
     return;
   }
   F.files = d.files || [];
+  F.recent = d.recent || [];
+  F.createDirs = d.create_dirs || [];
+  F.changed = new Set(((S.git && S.git.dirty) || []).map(r => r.path));
   $("#navFiles").textContent = F.files.length || "";
+  drawFilters();
   drawTree();
   if (d.truncated) toast(t("files.truncated", {n:d.count}), "warn");
 }
 
+const SHOW_LIMIT = 600;      // столько рисуем зараз: 1500 кнопок — 89 метров прокрутки
+
+// Быстрые фильтры отвечают на вопросы, которые у человека реально есть, вместо того
+// чтобы заставлять его вспоминать путь. «Изменённые» — самый ценный: это «что я трогал
+// сегодня», и данные для него уже есть в состоянии git.
+const FILTERS = {
+  "все":        () => true,
+  "изменённые": f => F.changed.has(f.path),
+  "база":       f => f.path.startsWith("AuroraKnowledgeDB/"),
+  "артефакты":  f => f.path.startsWith("Artifacts/") || f.path.startsWith("Deliverables/"),
+  "черновики":  f => f.path.startsWith("Workspaces/") || f.path.startsWith("Raw/"),
+};
+
+function fileRow(f){
+  const b = el("button", {class:"btn", style:"width:100%;text-align:left;margin:1px 0",
+    title:f.path, onclick:()=>openFile(f)}, f.name);
+  if (f.path === F.path) b.setAttribute("aria-current", "true");
+  if (F.changed.has(f.path)) b.append(el("span",{class:"pill"}, "изменён"));
+  if (f.readonly) b.append(el("span",{class:"pill"}, "🔒"));
+  if (!f.text) b.append(el("span",{class:"pill"}, "вне редактора"));
+  return b;
+}
+
+function treeOf(rows){
+  // Настоящее дерево, а не плоский список путей. Свёрнутый список из 382 полных путей —
+  // та же стена, что 1500 файлов, только другой формы: человек ищет папку глазами
+  // вместо того, чтобы раскрыть одну ветку.
+  const root = {dirs:new Map(), files:[]};
+  for (const f of rows){
+    let node = root;
+    for (const part of (f.dir ? f.dir.split("/") : [])){
+      if (!node.dirs.has(part)) node.dirs.set(part, {dirs:new Map(), files:[]});
+      node = node.dirs.get(part);
+    }
+    node.files.push(f);
+  }
+  return root;
+}
+
+function countIn(node){
+  let n = node.files.length;
+  for (const child of node.dirs.values()) n += countIn(child);
+  return n;
+}
+
 function drawTree(){
   const q = ($("#fileSearch").value || "").trim().toLowerCase();
-  const rows = q ? F.files.filter(f => f.path.toLowerCase().includes(q)) : F.files;
+  const pass = FILTERS[F.filter] || FILTERS["все"];
+  const rows = F.files.filter(f => pass(f) && (!q || f.path.toLowerCase().includes(q)));
   const box = $("#fileTree");
   box.innerHTML = "";
-  if (!rows.length){ box.append(el("div",{class:"sub"}, t("files.empty"))); return; }
-  let dir = null;
-  for (const f of rows.slice(0, 1500)){
-    if (f.dir !== dir){
-      dir = f.dir;
-      box.append(el("div",{class:"group", style:"margin-top:8px"}, dir || "/"));
+
+  // Недавние — первым блоком: человек возвращается к тому, над чем работал вчера,
+  // а не ищет по алфавиту среди двух тысяч карточек.
+  if (!q && F.filter === "все" && (F.recent || []).length){
+    const rec = F.recent.map(p => F.files.find(f => f.path === p)).filter(Boolean);
+    if (rec.length){
+      box.append(el("div",{class:"group", style:"margin-top:2px"}, "недавние"));
+      rec.slice(0, 10).forEach(f => box.append(fileRow(f)));
     }
-    const b = el("button", {class:"btn", style:"width:100%;text-align:left;margin:1px 0",
-      onclick:()=>openFile(f)}, f.name);
-    if (f.readonly) b.append(el("span",{class:"pill", style:"margin-left:6px"}, "🔒"));
-    if (!f.text) b.append(el("span",{class:"pill", style:"margin-left:6px"}, "вне редактора"));
+  }
+
+  if (!rows.length){ box.append(el("div",{class:"sub"}, t("files.empty"))); return; }
+
+  let shown = 0;
+  const walk = (node, path, depth) => {
+    for (const [name, child] of [...node.dirs.entries()].sort((a,b)=>a[0].localeCompare(b[0]))){
+      const full = path ? path + "/" + name : name;
+      // При поиске раскрываем всё: человек ищет файл, а не папку.
+      const open = !!q || F.open.has(full);
+      box.append(el("div",{class:"group",
+        style:`margin-top:6px;padding-left:${depth * 12}px`,
+        onclick:()=>{ if (F.open.has(full)) F.open.delete(full); else F.open.add(full);
+                      drawTree(); }},
+        (open ? "▾ " : "▸ ") + name + "  " + countIn(child)));
+      if (open) walk(child, full, depth + 1);
+      if (shown >= SHOW_LIMIT) return;
+    }
+    for (const f of node.files){
+      if (shown >= SHOW_LIMIT) return;
+      const b = fileRow(f);
+      b.style.paddingLeft = (depth * 12 + 8) + "px";
+      box.append(b);
+      shown++;
+    }
+  };
+  walk(treeOf(rows), "", 0);
+
+  // Молчаливая обрезка — худший вид: список выглядит полным. Говорим числом.
+  if (shown < rows.length)
+    box.append(el("div",{class:"sub", style:"margin-top:10px"},
+      t("files.shown", {shown, total: rows.length})));
+}
+
+function drawFilters(){
+  const box = $("#fileFilters");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const name of Object.keys(FILTERS)){
+    const n = F.files.filter(FILTERS[name]).length;
+    const b = el("button",{class:"btn", style:"font-size:12px;padding:3px 8px",
+      onclick:()=>{ F.filter = name; drawFilters(); drawTree(); }},
+      name + (name === "все" ? "" : " " + n));
+    if (F.filter === name) b.setAttribute("aria-current", "true");
     box.append(b);
   }
+  box.append(el("span",{style:"flex:1"}),
+    el("button",{class:"btn", style:"font-size:12px;padding:3px 8px",
+      onclick:newFile}, "+ файл"));
+}
+
+async function newFile(){
+  const where = F.createDirs.length ? F.createDirs : ["Workspaces"];
+  const guess = (F.path && where.find(d => F.path.startsWith(d + "/"))) || where[0];
+  const name = prompt("Куда и как назвать новый файл?\n\nМожно: "
+    + where.join(", ") + "\n\nРасширение можно не писать — будет .md", guess + "/");
+  if (!name) return;
+  const d = await api("/api/files/create", {method:"POST", quiet:true, body: JSON.stringify(
+    {project:S.project.path, path:name})});
+  if (d.error) return toast(d.error, "err");
+  await renderFiles();
+  const f = F.files.find(x => x.path === d.path);
+  if (f) await openFile(f); else toast("создан: " + d.path);
+}
+
+async function renameFile(){
+  if (!F.path || F.ro) return;
+  const was = F.path.split("/").pop();
+  const name = prompt("Новое имя файла:", was);
+  if (!name || name === was) return;
+  const d = await api("/api/files/rename", {method:"POST", quiet:true, body: JSON.stringify(
+    {project:S.project.path, path:F.path, name})});
+  if (d.error) return toast(d.error, "err");
+  // Ссылки на прежнее имя стали битыми — сказать об этом обязательно: карточка,
+  // на которую больше никто не ссылается, выпадает из базы молча.
+  if (d.note) toast(d.note, "warn");
+  await renderFiles();
+  const f = F.files.find(x => x.path === d.path);
+  if (f) await openFile(f);
+}
+
+async function deleteFile(){
+  if (!F.path || F.ro) return;
+  if (!confirm(`Удалить ${F.path}?\n\nВернуть можно будет только из git — если файл был зафиксирован.`)) return;
+  const d = await api("/api/files/delete", {method:"POST", quiet:true, body: JSON.stringify(
+    {project:S.project.path, path:F.path})});
+  if (d.error) return toast(d.error, "err");
+  F.path = null; destroyEditor();
+  $("#fileEditor").hidden = true; $("#fileNone").hidden = false;
+  await renderFiles();
+  toast("удалён");
 }
 
 async function openFile(f){
@@ -1008,6 +1160,10 @@ async function openFile(f){
   const fixable = (d.path || "").startsWith("AuroraKnowledgeDB/") && !!F.ro
                   && !(d.path || "").includes("/meta/");
   $("#fileFix").hidden = !fixable;
+  // Переименовать и удалить нельзя там же, где нельзя править: кнопка, которая всегда
+  // на виду и почти всегда отказывает, учит не читать отказы.
+  $("#fileRename").hidden = !!F.ro;
+  $("#fileDelete").hidden = !!F.ro || (d.path || "").startsWith("AuroraKnowledgeDB/");
   if (fixable) $("#fileFix").onclick = () => correctCard(d.path);
   $("#fileGit").textContent = d.git || "";
   // «Опубликовать» показываем только там, где публикация применима: у видов артефактов
@@ -1035,6 +1191,18 @@ async function openFile(f){
   await mountEditor(body);
   $("#fileSave").disabled = true;
   $("#fileSave").title = t("editor.nochanges");
+  // Открытый файл отмечаем в дереве и подводим к нему прокрутку: без этого человек
+  // теряет место и возвращается к соседнему документу поиском.
+  // Раскрываем всю ветку до файла, а не одну папку: иначе он остаётся в свёрнутом
+  // дереве и подсвечивать нечего.
+  let acc = "";
+  for (const part of (f.dir ? f.dir.split("/") : [])){
+    acc = acc ? acc + "/" + part : part;
+    F.open.add(acc);
+  }
+  drawTree();
+  const mark = $('#fileTree button[aria-current="true"]');
+  if (mark) mark.scrollIntoView({block:"nearest"});
 }
 
 function splitFrontmatter(text){
@@ -1256,6 +1424,10 @@ async function drawGit(){
   const g = await api("/api/git?project=" + encodeURIComponent(S.project.path), {quiet:true});
   S.git = g;
   box.innerHTML = "";
+  // Не смогли спросить — не то же самое, что «репозитория нет». Устаревший токен
+  // сессии выдавал «проект не под git» на проекте под git, и человек шёл чинить
+  // репозиторий, с которым всё в порядке.
+  if (g.error){ box.append(el("span",{class:"sub"}, t("git.unknown", {why: g.error}))); return; }
   if (!g.repo){ box.append(el("span",{class:"sub"}, g.why || t("git.norepo"))); return; }
   const head = el("div",{class:"row", style:"gap:10px;align-items:center;flex-wrap:wrap"},
     el("b",{}, t("git.title")),
@@ -4515,6 +4687,8 @@ $("#fileSave")?.addEventListener("click", saveFile);
 $("#fileFolder")?.addEventListener("click", ()=>revealFile("folder"));
 $("#fileOpen")?.addEventListener("click", ()=>revealFile("open"));
 $("#filePub")?.addEventListener("click", publishFromEditor);
+$("#fileRename")?.addEventListener("click", renameFile);
+$("#fileDelete")?.addEventListener("click", deleteFile);
 $("#fileMode")?.addEventListener("change", async e=>{
   localStorage.setItem("aurora-editor-mode", e.target.value);
   if (F.path && F.ed) await mountEditor(F.dirty ? F.ed.getValue() : F.orig);
