@@ -49,7 +49,7 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import card_body, frontmatter, git_guard  # noqa: E402
+from aurora_common import card_body, card_stem, frontmatter, git_guard  # noqa: E402
 
 CONF_DIR = "Sources/Confluence"
 JIRA_DIR = "Sources/JIRA"
@@ -237,8 +237,7 @@ def write_cards_graph(path: str) -> dict:
     for n in nodes:
         text = open(n["path"], encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text) or {}
-        targets = [os.path.splitext(os.path.basename(x.split("#")[0].strip()))[0]
-                   for x in link_refs(text) if x.strip()]
+        targets = [card_stem(x) for x in link_refs(text) if x.strip()]
         targets += [x.strip().strip('[]"') for x in lst(fm.get("related"))]
         for tgt in targets:
             tgt = tgt.strip()

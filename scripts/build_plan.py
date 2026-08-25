@@ -57,6 +57,32 @@ GROUPS = [
 SKIP = ("sync_state.md", "update_log.md", "manifest.json", "_index.md", "index.md")
 
 # Раздел базы → тип карточки (тот же список, что в kb_lint и kb_fix).
+# Код документа в начале имени: «AC-3.4.2 Отправка начислений», «US-4.2.19 Поиск в поле».
+# Карточка знания — про объект, а не про бумагу, в которой объект описан: искать будут
+# «Отправка начислений», а по коду ходит ссылка. Поэтому код уезжает в синонимы, а имя
+# остаётся человеческим. Это перекодирование, а не решение о знании: тот же текст, то же
+# знание, другая подпись.
+DOC_CODE_RE = re.compile(
+    r"^\s*((?:[A-Z]{2,4}[.\-_][A-Z]{2,6}[.\-_])?"
+    r"(?:US|AC|BR|NFR|EPIC|TASK|BUG|SPEC|REQ)[-_. ]?\d[\w.\-]*)"
+    r"[.\s:\u2014-]+(?=\S)", re.I | re.U)
+
+
+def split_doc_code(title: str) -> tuple:
+    """«AC-3.4.2 Отправка начислений» → («Отправка начислений», ['AC-3.4.2']).
+
+    Ничего не нашли — имя возвращается как было. Остаток короче трёх букв кодом не
+    считаем: «US-1 API» — это всё имя, и резать его значит потерять карточку.
+    """
+    m = DOC_CODE_RE.match(title or "")
+    if not m:
+        return (title or "").strip(), []
+    rest = (title or "")[m.end():].strip(" .:-\u2014")
+    if len(rest) < 3:
+        return (title or "").strip(), []
+    return rest, [m.group(1).strip(" .:-\u2014")]
+
+
 SECTION_TYPE = {
     "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
     "Systems": "system", "Roles": "role", "Statuses": "status-model",
@@ -448,8 +474,11 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # `summary` — одна фраза о сути. Она нужна не человеку (он видит заголовок), а
     # выборке: по ней модель понимает, о чём карточка, не читая её целиком, и вся база
     # умещается в оглавление на пару десятков тысяч токенов.
+    # Код документа из имени — в синонимы: карточка знания называется по объекту.
+    title, codes = split_doc_code(title)
     head_summary = f'summary: "{summary.strip()}"\n' if summary.strip() else ""
-    card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
+    codes_list = ("\n" + "\n".join(f'  - "{c}"' for c in codes)) if codes else " []"
+    card = (f'---\ntitle: "{title}"\naliases:{codes_list}\nstatus: draft\n'
             f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}source: "{source}"\n'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
             f"built: machine\nrelated: []\n---\n\n# {title}\n\n{body}\n")

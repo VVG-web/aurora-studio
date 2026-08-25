@@ -21,7 +21,8 @@
 import argparse
 import os, re, sys, collections
 
-from aurora_common import (STATUSES, aliases, body_hash, card_body, config_value, frontmatter,
+from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
+                           config_value, frontmatter,
                            is_service,
                            link_refs)
 
@@ -262,9 +263,9 @@ def main():
     linked = set()
     for rel, (fm, text) in cards.items():
         for target in link_refs(text):
-            linked.add(os.path.splitext(os.path.basename(target.split("#")[0].strip()))[0])
+            linked.add(card_stem(target))
         for m in re.finditer(r'^\s*-\s*"?\[([^\]]+)\]', text, re.M):
-            linked.add(os.path.splitext(os.path.basename(m.group(1).strip()))[0])
+            linked.add(card_stem(m.group(1)))
     for rel, (fm, text) in cards.items():
         name = os.path.basename(rel)
         section = os.path.relpath(os.path.dirname(rel), ROOT).split(os.sep)[0]

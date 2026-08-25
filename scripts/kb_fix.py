@@ -259,6 +259,131 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
 
 # --------------------------------------------------------------------- планы
 
+# Карточка живёт в разделе, соответствующем её типу. Раздел и тип — не два независимых
+# поля: раздел это и есть тип, записанный папкой. Разъезжались они потому, что раздел
+# при разборе выбирался по умолчанию («Concepts»), а тип писала модель по существу
+# содержимого. На живой базе так набралось 142 расхождения: 76 алгоритмов лежали среди
+# понятий, 36 словарных статей — среди справочников.
+#
+# Перенос безопасен: ссылки в базе идут по имени карточки, а не по пути, поэтому
+# `[[ALG-148…]]` продолжает работать. Оглавления и карты пересобираются следом.
+TYPE_SECTION = {v: k for k, v in SECTION_TYPE.items()}
+
+# Типы, которые модель придумывает вместо схемных. Не выбрасываем и не молчим: пишем
+# схемный, а прежний оставляем строкой в отчёте — это перекодирование, а не решение.
+TYPE_ALIASES = {
+    "entity": "concept", "userstory": "requirement", "user-story": "requirement",
+    # Критерии приёмки описывают требуемое поведение — это требование, а не понятие.
+    "acceptance": "requirement", "acceptance-criteria": "requirement",
+    "algorithm": "process", "dictionary": "glossary", "term": "glossary",
+    "system-component": "system", "status": "status-model",
+}
+
+
+def plan_names(cards: dict, plan: "Plan") -> tuple:
+    """Убрать код документа из имени карточки. → (переименовано, спорных).
+
+    Карточка знания — про объект, а не про бумагу, в которой объект описан: искать будут
+    «Отправка начислений на КБК ОП», а не «AC-3.4.2». Код и ПРЕЖНЕЕ ПОЛНОЕ ИМЯ уезжают в
+    синонимы, поэтому ни одна ссылка не ломается — ни `[[AC-3.4.2]]`, ни ссылка на старое
+    имя целиком. Это перекодирование: тот же текст, то же знание, другая подпись.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from build_plan import split_doc_code
+
+    renamed, stuck = [], []
+    taken = {p.replace("\\", "/") for p in cards}
+    # Код документа достаётся ОДНОЙ карточке. Документ часто режется на несколько, и
+    # если код отдать всем, `[[AC-4.4.1]]` перестанет вести куда-либо определённо —
+    # линтер честно назовёт это двойником синонима. Первая по порядку забирает код,
+    # остальные остаются под прежним полным именем: оно уникально, и ссылка по нему жива.
+    claimed = set()
+    for _p, _c in cards.items():
+        for _a in _c.aliases:
+            claimed.add(_a.strip())
+    for path, card in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/meta/" in rel or "/MOC/" in rel:
+            continue
+        stem = os.path.splitext(os.path.basename(rel))[0]
+        title = (card.fm.get("title") or stem).strip().strip('"')
+        clean, codes = split_doc_code(title)
+        if not codes or clean == title:
+            continue
+        new_stem = re.sub(r"[^\w\-. ]", "", clean, flags=re.U).strip().replace(" ", "-")
+        if not new_stem:
+            stuck.append((rel, "после снятия кода имя пустое"))
+            continue
+        new_rel = os.path.join(os.path.dirname(rel), new_stem + ".md").replace("\\", "/")
+        if new_rel != rel and (new_rel in taken or os.path.exists(new_rel)):
+            stuck.append((rel, f"имя «{new_stem}» уже занято — это слияние, а не переименование"))
+            continue
+        head = card.text[:card.fm_end] if card.has_frontmatter else ""
+        if not head:
+            stuck.append((rel, "нет шапки — синонимы записать некуда"))
+            continue
+        # Прежнее имя тоже в синонимы: по нему ходят ссылки, и терять их нельзя.
+        free_codes = [c for c in codes if c not in claimed]
+        claimed.update(free_codes)
+        keep = [c for c in free_codes + [title, stem] if c and c not in card.aliases]
+        lines = "\n".join(f'  - "{c}"' for c in dict.fromkeys(list(card.aliases) + keep))
+        new_head = set_field(head[3:], "title", f'"{clean}"')
+        new_head = re.sub(r"^aliases:.*(?:\n  - .*)*", "aliases:\n" + lines,
+                          new_head, count=1, flags=re.M)
+        if "aliases:" not in new_head:
+            new_head = new_head.rstrip("\n") + "\naliases:\n" + lines
+        # Заголовок в теле — то, что человек видит в Obsidian. Оставить его прежним
+        # значит переименовать карточку наполовину: в списке одно имя, в документе другое.
+        rest = card.text[card.fm_end:]
+        rest = re.sub(r"^(#\s+).*$", lambda m: m.group(1) + clean, rest, count=1, flags=re.M)
+        plan.write(path, "---" + new_head + rest)
+        if new_rel != rel:
+            plan.renames.append((path, new_rel))
+        renamed.append((rel, clean))
+        taken.add(new_rel)
+    return renamed, stuck
+
+
+def plan_sections(cards: dict, plan: "Plan") -> tuple:
+    """Развезти карточки по разделам, которые отвечают их типу. → (перенесено, спорных)."""
+    moved, stuck = [], []
+    # Занятые ПУТИ, а не имена: карточка видела саму себя занявшей своё имя, и не
+    # переезжала ни одна. Проверять надо, стоит ли в целевом разделе ДРУГАЯ карточка.
+    taken = {p.replace("\\", "/") for p in cards}
+    for path, card in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        parts = rel.split("/")
+        if len(parts) < 3 or parts[1] in ("meta", "_archive", "_inbox", "_assets", "MOC"):
+            continue
+        if is_service(rel):
+            continue
+        section = parts[1]
+        kind = (card.fm.get("type") or "").strip().strip('"')
+        want_type = TYPE_ALIASES.get(kind, kind)
+        if not want_type or want_type not in TYPE_SECTION:
+            if kind:
+                stuck.append((rel, f"тип «{kind}» не сходится ни с одним разделом"))
+            continue
+        want = TYPE_SECTION[want_type]
+        if want == section and want_type == kind:
+            continue
+        new_rel = "/".join([parts[0], want] + parts[2:])
+        if want != section and (new_rel in taken or os.path.exists(new_rel)):
+            # Одноимённая карточка уже стоит в целевом разделе: перенос сложил бы две
+            # разные карточки в одну. Это не перекодирование, а слияние знания — человеку.
+            stuck.append((rel, f"в разделе {want} уже есть карточка с таким именем"))
+            continue
+        if want_type != kind:
+            head = card.text[:card.fm_end] if card.has_frontmatter else ""
+            if head:
+                plan.write(path, "---" + set_field(head[3:], "type", want_type)
+                           + card.text[card.fm_end:])
+        if want != section:
+            plan.renames.append((path, new_rel))
+            moved.append((rel, new_rel))
+    return moved, stuck
+
+
 class Plan:
     def __init__(self):
         self.file_writes: dict = {}      # path → новый текст
@@ -972,6 +1097,12 @@ def main() -> int:
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
+    ap.add_argument("--names", action="store_true",
+                    help="снять код документа с имени карточки: знание называется по "
+                         "объекту, код и прежнее имя уходят в синонимы")
+    ap.add_argument("--sections", action="store_true",
+                    help="развезти карточки по разделам, отвечающим их типу: раздел — "
+                         "это тип, записанный папкой, и разъезжаться им нельзя")
     ap.add_argument("--aliases", action="store_true",
                     help="разобрать одинаковые alias у разных карточек (по умолчанию отчёт)")
     ap.add_argument("--split", metavar="КАРТОЧКА",
@@ -1005,12 +1136,13 @@ def main() -> int:
         print(f"kb_fix: нет папки {a.root}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     if a.all:
-        a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.aliases = True
+        a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = True
+        a.aliases = a.sections = a.names = True
     if a.set_alias and not (a.old and a.new):
         print("kb_fix: для --set-alias нужны и --old, и --new", file=sys.stderr)
         return 1
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.merge, a.merge_all, a.set_alias)):
+                a.stubs, a.merge, a.merge_all, a.set_alias, a.sections, a.names)):
         ap.print_help()
         return 0
 
@@ -1025,6 +1157,27 @@ def main() -> int:
         idx = Index(cards)
         plan = Plan()
         head: list = []
+        if a.names:
+            renamed, bad = plan_names(cards, plan)
+            head.append(f"  снят код документа с имён: {len(renamed)}")
+            for rel, clean in renamed[:8]:
+                head.append(f"    {os.path.basename(rel)} → «{clean}»")
+            if len(renamed) > 8:
+                head.append(f"    … ещё {len(renamed) - 8}")
+            for rel, why in bad[:6]:
+                head.append(f"    ! {rel}: {why}")
+        if a.sections:
+            moved, stuck = plan_sections(cards, plan)
+            head.append(f"  развезено по разделам: {len(moved)}")
+            for rel, new_rel in moved[:12]:
+                head.append(f"    {rel} → {new_rel.split('/')[1]}/")
+            if len(moved) > 12:
+                head.append(f"    … ещё {len(moved) - 12}")
+            if stuck:
+                head.append(f"  не развезено: {len(stuck)} — это не перекодирование, "
+                            f"а решение о знании")
+                for rel, why in stuck[:8]:
+                    head.append(f"    {rel}: {why}")
         if a.merge_all:
             done, refused = plan_merge_all(cards, plan)
             plan.notes.append(f"  двойников слито правилом: {len(done)}, "
