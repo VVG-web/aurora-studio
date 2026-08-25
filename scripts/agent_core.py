@@ -37,6 +37,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import sys
 import time
 import urllib.error
@@ -245,23 +246,60 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
         return None, None, f"{type(e).__name__}: {e}", time.time() - t0
 
 
-def adapter_process():
-    """Долгоживущий процесс адаптера: старт venv с импортом фреймворка стоит секунд восемь.
+# Пул процессов адаптера. Один процесс на все вызовы означал очередь длиной в прогон:
+# запрос пишется в его stdin и ответ читается из stdout построчно — параллельные потоки
+# упирались в одну трубу. Замер на живом шлюзе: чистый HTTP при восьми потоках даёт
+# 2,40 ответа в секунду, тот же шлюз через один адаптерный процесс — 0,47. Впятеро
+# меньше, и «шлюз не тянет» тут ни при чём.
+#
+# Хуже медленного: замка на трубе не было вовсе, и два потока могли разобрать ответы
+# друг друга. Теперь у каждого процесса свой замок, и берётся он целиком.
+ADAPTER_MAX = int(os.environ.get("AURORA_AGENT_ADAPTER_PROCS", "6") or 6)
+_ADAPTER_LOCK = threading.Lock()
 
-    Платить их на каждом шаге агента значило бы минуты пустого ожидания за прогон, поэтому
-    процесс поднимается один раз и обслуживает все вызовы построчно.
-    """
-    proc = ADAPTER.get("proc")
-    if proc is not None and proc.poll() is None:
-        return proc
+
+def _spawn_adapter():
     vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     adapter = Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
     if not vpy.is_file() or not adapter.is_file():
         return None
-    proc = subprocess.Popen([str(vpy), str(adapter)], stdin=subprocess.PIPE,
+    return subprocess.Popen([str(vpy), str(adapter)], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             text=True, bufsize=1, env=child_env())
-    ADAPTER["proc"] = proc
+
+
+def adapter_slot(want: int = 1):
+    """Свободный процесс адаптера и его замок. → (proc, lock) либо (None, None).
+
+    Процессов держим не больше `want` и не больше потолка: каждый поднимает venv с
+    фреймворком — восемь секунд и заметная память. Все заняты — ждём на замке первого,
+    это ровно прежнее поведение, но уже как крайний случай, а не как правило.
+    """
+    want = max(1, min(int(want or 1), ADAPTER_MAX))
+    with _ADAPTER_LOCK:
+        slots = ADAPTER.setdefault("slots", [])
+        slots[:] = [s for s in slots if s["proc"].poll() is None]
+        free = next((s for s in slots if not s["lock"].locked()), None)
+        if free is None and len(slots) < want:
+            proc = _spawn_adapter()
+            if proc is None:
+                return None, None
+            free = {"proc": proc, "lock": threading.Lock()}
+            slots.append(free)
+        if free is None:
+            free = slots[0] if slots else None
+        if free is None:
+            proc = _spawn_adapter()
+            if proc is None:
+                return None, None
+            free = {"proc": proc, "lock": threading.Lock()}
+            slots.append(free)
+    return free["proc"], free["lock"]
+
+
+def adapter_process():
+    """Совместимость: один процесс, как было. Используется там, где параллельности нет."""
+    proc, _ = adapter_slot(1)
     return proc
 
 
@@ -272,7 +310,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     питон движка не попадают. Сломался venv — вызывающий откатится на stdlib-транспорт,
     и работа не встанет.
     """
-    proc = adapter_process()
+    proc, lock = adapter_slot(payload.get("_slots") or 1)
     if proc is None:
         return None, None, "venv с pydantic-ai не установлен", 0.0
     hist = payload.get("history") or []
@@ -287,16 +325,21 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             "tool_calls": TOOL_CALLS if payload.get("tools_root") else 0,
             "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
     t0 = time.time()
+    # Труба у процесса одна: запрос и ответ берутся вместе, иначе два потока разберут
+    # ответы друг друга. Замок держим на время всего обмена, а не на запись.
     try:
-        proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
-        proc.stdin.flush()
-        line = proc.stdout.readline()
+        with lock:
+            proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
         if not line:
-            ADAPTER["proc"] = None      # процесс умер — следующий вызов поднимет заново
             return None, None, "адаптер закрылся", time.time() - t0
         out = json.loads(line)
     except Exception as e:  # noqa: BLE001
-        ADAPTER["proc"] = None
+        try:
+            proc.kill()                 # мёртвый процесс уберётся из пула сам
+        except OSError:
+            pass
         return None, None, f"адаптер не ответил: {type(e).__name__}", time.time() - t0
     if not out.get("ok"):
         return None, None, out.get("error", "адаптер вернул ошибку"), time.time() - t0
@@ -604,7 +647,10 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"№{b['n']} {model}: {why_big}")
                 continue
             payload = {"model": model, "messages": messages,
-                       "chat_template_kwargs": {"enable_thinking": think}}
+                       "chat_template_kwargs": {"enable_thinking": think},
+                       # сколько процессов адаптера имеет смысл держать: столько же,
+                       # сколько слотов в кольце — по одному на параллельный запрос
+                       "_slots": len(pool(cfg))}
             if history:
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
                 payload["messages"] = list(history) + list(messages)

@@ -5147,6 +5147,56 @@ def test_width_probe_measures_work_not_noise(tmp: Path):
 
 
 @test
+def test_adapter_does_not_serialise_the_whole_run(tmp: Path):
+    """Один процесс адаптера обслуживал ВСЕ вызовы построчно — очередь длиной в прогон.
+
+    Запрос пишется в его stdin, ответ читается из stdout; параллельные потоки упирались
+    в одну трубу. Замер на живом шлюзе: чистый HTTP при восьми потоках 2,40 ответа в
+    секунду, тот же шлюз через один адаптерный процесс — 0,47. Впятеро меньше, и «шлюз
+    не тянет» тут ни при чём: ёмкость была, очередь стояла у нас.
+
+    Хуже медленного: замка на трубе не было вовсе — два потока могли разобрать ответы
+    друг друга. Тихая подмена ответа страшнее любой задержки.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ag = importlib.import_module("agent_core")
+    importlib.reload(ag)
+
+    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    assert "def adapter_slot(" in src, "процесс адаптера по-прежнему один на всё"
+    assert '"slots"' in src and "threading.Lock()" in src, \
+        "у процессов адаптера нет своих замков — потоки разберут чужие ответы"
+    body = src[src.index("def pydantic_transport("):src.index("def default_transport(")]
+    assert "with lock:" in body, "замок не держится на весь обмен запрос-ответ"
+    assert body.index("proc.stdin.write") > body.index("with lock:"), \
+        "запись в трубу идёт вне замка"
+    assert "readline()" in body and body.index("readline()") > body.index("with lock:"), \
+        "ответ читается вне замка — его может забрать чужой поток"
+    assert "_slots" in src, "пул не знает, сколько параллельных запросов будет"
+
+    # Пул поднимается по числу слотов и не растёт бесконечно: каждый процесс — это venv
+    # с фреймворком, восемь секунд старта и заметная память.
+    assert "ADAPTER_MAX" in src, "число процессов адаптера ничем не ограничено"
+    ag.ADAPTER["slots"] = []
+    proc, lock = ag.adapter_slot(3)
+    if proc is None:
+        return          # venv с pydantic-ai не поставлен — проверять нечего
+    assert lock is not None and hasattr(lock, "acquire"), "у процесса нет замка"
+    assert len(ag.ADAPTER["slots"]) == 1, "пул поднял больше, чем нужно под первый вызов"
+    with lock:
+        p2, l2 = ag.adapter_slot(3)
+        assert p2 is not None and p2 is not proc, \
+            "занятый процесс выдан второму потоку — они смешают ответы"
+    for s in ag.ADAPTER.get("slots") or []:
+        try:
+            s["proc"].kill()
+        except OSError:
+            pass
+    ag.ADAPTER["slots"] = []
+
+
+@test
 def test_moc_recognises_its_own_files(tmp: Path):
     """Карта содержания генерируется, руками её не пишут никогда.
 
