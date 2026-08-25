@@ -813,7 +813,7 @@ def cmd_show() -> int:
 PROBE_STEPS = (1, 2, 4, 6, 8, 12, 16, 24, 32)
 
 
-def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS) -> dict:
+def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS, heavy: bool = False) -> dict:
     """Сколько запросов шлюз держит **на самом деле**.
 
     Человек не обязан знать это число: его не пишут в документации, и оно меняется от
@@ -835,15 +835,13 @@ def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS) -> dict:
     one = {**cfg, "backends": [b], "request_timeout": 60}
 
     def shot(_):
-        # Проба должна походить на работу. На запросе «ответь одним словом» время съедает
-        # круговая задержка сети, а не генерация: шлюз выглядит узким там, где он
-        # широкий. Просим короткий абзац — генерация начинает преобладать, и меряется
-        # то, ради чего меряем.
+        # При heavy=True — тяжёлый путь: подаём историю, чтобы needs_adapter сработал
+        hist = [{"role": "user", "content": "контекст"}] if heavy else None
         r = call_role(one, "worker",
                       [{"role": "user", "content": "Одним абзацем в три предложения: "
                                                    "зачем нужна единица измерения."}],
                       thinking=False, max_tokens=120, deadline=time.time() + 90,
-                      sleep=lambda s: None)
+                      sleep=lambda s: None, history=hist)
         return bool(r["ok"]), r["seconds"]
 
     # Прогрев. Первый запрос платит за установку соединения и загрузку модели: на живом
@@ -890,7 +888,7 @@ def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS) -> dict:
             "width": 1 if flat else best_k, "flat": flat}
 
 
-def cmd_probe(as_json: bool) -> int:
+def cmd_probe(as_json: bool, heavy: bool = False) -> int:
     """`--probe-width`: замерить ширину каждого шлюза и назвать числа, а не мнение."""
     cfg = parse_config(raw_config())
     if not cfg["backends"]:
@@ -898,11 +896,12 @@ def cmd_probe(as_json: bool) -> int:
         return 1
     doing = [b for b in cfg["backends"] if b.get("parallel", True)]
     skipped = [b for b in cfg["backends"] if not b.get("parallel", True)]
-    out = [probe_width(cfg, b) for b in doing]
+    out = [probe_width(cfg, b, heavy=heavy) for b in doing]
     if as_json:
         print(json.dumps({"backends": out}, ensure_ascii=False))
         return 0
-    print("# Ширина шлюзов — замер\n")
+    heavy_label = " (тяжёлый путь: адаптер/история)" if heavy else ""
+    print(f"# Ширина шлюзов — замер{heavy_label}\n")
     print("Наращиваем число одновременных запросов, пока растёт пропускная способность.")
     print("Перестала расти — дальше шлюз ставит в очередь, и потоки добавлять "
           "бессмысленно.\n")
@@ -1089,6 +1088,8 @@ def main() -> int:
                     help="проверить каждый бэкенд живым запросом (thinking выключен)")
     ap.add_argument("--probe-width", action="store_true",
                     help="замерить, сколько одновременных запросов держит каждый шлюз")
+    ap.add_argument("--heavy", action="store_true",
+                    help="мерить тяжёлый путь (через адаптер, по истории)")
     ap.add_argument("--show", action="store_true", help="собранная конфигурация, ключи маской")
     ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
     ap.add_argument("--venv-install", action="store_true",
@@ -1099,7 +1100,7 @@ def main() -> int:
     if a.ping:
         return cmd_ping(a.json)
     if a.probe_width:
-        return cmd_probe(a.json)
+        return cmd_probe(a.json, heavy=a.heavy)
     if a.venv_status:
         ok, version = venv_status()
         if a.json:
