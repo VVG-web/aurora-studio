@@ -2816,8 +2816,13 @@ def test_planner_gives_structure_to_a_shapeless_source(tmp: Path):
     assert "Абзац 5." not in body, "границы не соблюдены — куски перемешались"
     assert "status: draft" in body, "карточка родилась с присвоенным доверием"
     assert "source: \"Raw/project/Расшифровка.md\"" in body, "потерян провенанс"
-    assert len(seen["planner"]) < len(text) / 2, \
-        f"планировщику отдали текст вместо описи: {len(seen['planner'])} против {len(text)}"
+    # Намерение проверки — «планировщику ушла ОПИСЬ, а не текст», и мерить его длиной
+    # промпта нельзя: правила в шаблоне растут, и порог начинает ловить не то. Опись
+    # показывает первые слова абзаца, поэтому целого абзаца в промпте быть не должно.
+    whole = f"Абзац 3. Правило номер 3 и условия его применения. " * 8
+    assert whole.strip() not in seen["planner"], "планировщику отдали текст вместо описи"
+    assert len(seen["planner"]) < len(text), \
+        f"промпт длиннее самого источника: {len(seen['planner'])} против {len(text)}"
 
     # знания нет — поведение прежнее, выдумывать карточки не начинаем
     def empty_planner(cfg, role, messages, **kw):
@@ -5144,6 +5149,146 @@ def test_width_probe_measures_work_not_noise(tmp: Path):
         "шлюзы вне параллельной работы пропускаются молча — часть выдаётся за целое"
     assert "верхней оценкой" in probe, \
         "не сказано, что настоящая карточка тяжелее пробы"
+
+
+@test
+def test_link_names_survive_dots_and_table_escapes(tmp: Path):
+    """Имя карточки из ссылки движок разбирал двумя сломанными способами.
+
+    Первый: `os.path.splitext` считает расширением всё после последней точки, а в именах
+    карточек точки — часть кода (`US-3.6.2`, `ALG-3.21`, `AC-4.2.19`). На живой базе таких
+    имён 388 из 1938, и у каждой ссылки на них имя обрезалось: `us-3.6.2-nachisleniya`
+    становилось `us-3.6`. Ссылка не сходилась ни с чем, и карточка объявлялась «без
+    связей» — при живой карте документа, которая её перечисляет. Так набралось 163 ложные
+    находки линтера из 440.
+
+    Второй: внутри таблицы markdown вертикальная черта экранируется — `[[Имя\\|подпись]]`.
+    Целью становилось «Имя\\» с хвостовым слэшем. А оглавления разделов и карты
+    документов — это таблицы, то есть ломалось ровно там, где ссылок больше всего.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ac = importlib.import_module("aurora_common")
+    importlib.reload(ac)
+
+    for name, want in (("us-3.6.2-nachisleniya-kbk-op-rsb", "us-3.6.2-nachisleniya-kbk-op-rsb"),
+                       ("AC-3.2.3-Проверка.md", "AC-3.2.3-Проверка"),
+                       ("папка/ALG-3.21-Имя.md", "ALG-3.21-Имя"),
+                       ("Имя#Раздел", "Имя"),
+                       ("Курс-ЦБ", "Курс-ЦБ")):
+        assert ac.card_stem(name) == want, f"{name} → {ac.card_stem(name)}, ждали {want}"
+
+    assert ac.link_refs("[[Core_QR-код\\|QR-кода]]") == ["Core_QR-код"], \
+        "экранированная черта в таблице ломает разбор ссылки"
+    assert ac.link_refs("[[A\\|x]] [[B|y]] [[C]] [[D#Р]] ![[e.png]]") == \
+        ["A", "B", "C", "D", "e.png"], "какая-то форма ссылки перестала разбираться"
+
+    # Переписывание сохраняет экранирование: потеряй его — развалится ячейка таблицы.
+    assert ac.rewrite_links("[[Старое\\|подпись]]", {"Старое": "Новое"}) == "[[Новое\\|подпись]]"
+    assert ac.rewrite_links("[[Старое|подпись]]", {"Старое": "Новое"}) == "[[Новое|подпись]]"
+    assert ac.rewrite_links("[[Старое#Р|п]]", {"Старое": "Новое"}) == "[[Новое#Р|п]]"
+
+    # Разбор имени из ссылки — один на движок: своя копия в каждом скрипте и была
+    # причиной того, что одна и та же ссылка в линтере, графе и артефакте читалась
+    # по-разному.
+    for f in ("kb_lint.py", "kb_graph.py", "agent_runner.py"):
+        src = (KIT / "scripts" / f).read_text(encoding="utf-8")
+        assert "card_stem(" in src, f"{f} разбирает имя ссылки сам"
+
+
+@test
+def test_card_is_named_after_the_object_not_the_paper(tmp: Path):
+    """Карточка знания называется по объекту, а не по бумаге, в которой объект описан.
+
+    Разбор оставлял в имени код документа — «AC-3.4.2 Отправка начислений», — и линтер
+    честно звал такую карточку артефактом в базе: на живом проекте их набралось 110.
+    Но это не артефакт, а знание под чужой подписью: искать будут «Отправка начислений».
+
+    Перекодирование, а не решение: код и ПРЕЖНЕЕ имя уезжают в синонимы, поэтому ни одна
+    ссылка не ломается — ни `[[AC-3.4.2]]`, ни ссылка на старое имя целиком.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    bp = importlib.import_module("build_plan")
+    importlib.reload(bp)
+
+    assert bp.split_doc_code("AC-3.4.2 Отправка начислений") == \
+        ("Отправка начислений", ["AC-3.4.2"])
+    assert bp.split_doc_code("RU.PRJ.US-3.6.14 — Изменение") == ("Изменение", ["RU.PRJ.US-3.6.14"])
+    assert bp.split_doc_code("US-4.2.19. Поиск")[1] == ["US-4.2.19"], "точка уехала в синоним"
+    # Код предметной области — не код документа: ALG, SPR, BP это часть имени объекта.
+    for keep in ("ALG-148 Алгоритм расчёта", "SPR-031 Справочник исключений",
+                 "Курс ЦБ на дату подачи"):
+        assert bp.split_doc_code(keep) == (keep, []), f"обрезано имя объекта: {keep}"
+
+    root = tmp / "proj"
+    (root / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+    card = root / "AuroraKnowledgeDB" / "Concepts" / "AC-3.4.2-Отправка.md"
+    card.write_text('---\ntitle: "AC-3.4.2 Отправка начислений"\naliases:\n  - "Своё"\n'
+                    'type: process\nstatus: knowledge\n---\n\n'
+                    "# AC-3.4.2 Отправка начислений\n\nТело. [[Другая]]\n", encoding="utf-8")
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--names", "--apply"],
+                        cwd=root, capture_output=True, text=True)
+    assert cp.returncode in (0, 1), cp.stderr[:300]
+    made = list((root / "AuroraKnowledgeDB" / "Concepts").glob("*.md"))
+    assert len(made) == 1 and made[0].name == "Отправка-начислений.md", \
+        f"файл не переименован: {[m.name for m in made]}"
+    text = made[0].read_text(encoding="utf-8")
+    assert 'title: "Отправка начислений"' in text, "заголовок в шапке остался прежним"
+    assert "# Отправка начислений" in text and "# AC-3.4.2" not in text, \
+        "заголовок в теле остался прежним: в списке одно имя, в документе другое"
+    for keep in ("AC-3.4.2", "AC-3.4.2 Отправка начислений", "AC-3.4.2-Отправка", "Своё"):
+        assert f'"{keep}"' in text, f"ссылка по «{keep}» перестанет разрешаться"
+    assert "[[Другая]]" in text, "тело тронуто"
+
+
+@test
+def test_section_is_the_type_written_as_a_folder(tmp: Path):
+    """Раздел базы — это тип карточки, записанный папкой, и разъезжаться им нельзя.
+
+    Раздел при разборе выбирался по умолчанию («Concepts») — в том числе жёстко, для
+    источников без заголовков, — а тип писала модель по существу содержимого. На живой
+    базе так набралось 142 расхождения: 76 алгоритмов среди понятий, 36 словарных статей
+    среди справочников. Это техническая ошибка перекодирования, а не решение о знании.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    fx = importlib.import_module("kb_fix")
+    importlib.reload(fx)
+
+    root = tmp / "proj"
+    for sec in ("Concepts", "Processes", "Glossary", "Reference"):
+        (root / "AuroraKnowledgeDB" / sec).mkdir(parents=True)
+    kb = root / "AuroraKnowledgeDB"
+    (kb / "Concepts" / "Алгоритм.md").write_text(
+        '---\ntitle: "Алгоритм"\ntype: process\nstatus: knowledge\n---\n\n# Алгоритм\n',
+        encoding="utf-8")
+    (kb / "Reference" / "Термин.md").write_text(
+        '---\ntitle: "Термин"\ntype: glossary\nstatus: knowledge\n---\n\n# Термин\n',
+        encoding="utf-8")
+    (kb / "Concepts" / "Понятие.md").write_text(
+        '---\ntitle: "Понятие"\ntype: concept\nstatus: knowledge\n---\n\n# Понятие\n',
+        encoding="utf-8")
+    # Тип вне схемы движок не выдумывает за модель, но и не молчит: он его переводит.
+    (kb / "Concepts" / "Сущность.md").write_text(
+        '---\ntitle: "Сущность"\ntype: entity\nstatus: knowledge\n---\n\n# Сущность\n',
+        encoding="utf-8")
+
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--sections", "--apply"],
+                        cwd=root, capture_output=True, text=True)
+    assert cp.returncode in (0, 1), cp.stderr[:300]
+    assert (kb / "Processes" / "Алгоритм.md").is_file(), "процесс остался среди понятий"
+    assert (kb / "Glossary" / "Термин.md").is_file(), "словарная статья осталась в справочниках"
+    assert (kb / "Concepts" / "Понятие.md").is_file(), "карточка на месте переехала зря"
+    ent = (kb / "Concepts" / "Сущность.md")
+    assert ent.is_file() and "type: concept" in ent.read_text(encoding="utf-8"), \
+        "тип вне схемы не переведён в схемный"
+
+    # Раздел больше не выбирается по умолчанию для источников без заголовков.
+    ar = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert '"--to", "Concepts"' not in ar, \
+        "источник без заголовков по-прежнему валится в Concepts"
+    assert "to_section" in ar, "планировщик не спрашивается о разделе"
 
 
 @test
