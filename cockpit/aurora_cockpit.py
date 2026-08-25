@@ -1780,6 +1780,7 @@ def agent_state(project: str) -> dict:
         "target_label": (f"проект «{os.path.basename(project)}»" if project
                          else "глобально (кит) — общая настройка всех проектов"),
         "adapter": cfg["adapter"], "thinking": cfg["thinking"],
+        "thinking_roles": cfg.get("thinking_roles") or {},
         "max_steps": cfg["max_steps"], "budget_min": cfg["budget_min"],
         "request_timeout": cfg["request_timeout"],
         "parallel": cfg.get("parallel", 1),

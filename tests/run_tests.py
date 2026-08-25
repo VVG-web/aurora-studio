@@ -5147,6 +5147,35 @@ def test_width_probe_measures_work_not_noise(tmp: Path):
 
 
 @test
+def test_moc_recognises_its_own_files(tmp: Path):
+    """Карта содержания генерируется, руками её не пишут никогда.
+
+    А скрипт объявлял рукотворными собственные файлы: маркер он искал в первых
+    четырёхстах байтах, а `kb:links --cards` дописывает в шапку карты `related:`, и
+    шапка растёт. На живом проекте маркер уезжал на позицию 480 и 831 — карты переставали
+    обновляться, и человек читал «написан руками» про то, чего руками не писал.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    moc = importlib.import_module("kb_moc")
+    importlib.reload(moc)
+
+    card = tmp / "карта.md"
+    long_head = "\n".join(f"related_{i}: \"[[Карточка-{i}]]\"" for i in range(40))
+    card.write_text(f"---\ntype: moc\n{long_head}\n---\n\n{moc.GENERATED}\n\n# Карта\n",
+                    encoding="utf-8")
+    assert len(card.read_text(encoding="utf-8").index(moc.GENERATED) * [0]) > 400, \
+        "подготовка: маркер должен оказаться дальше прежнего окна в 400 байт"
+    assert moc.machine_made(str(card)), \
+        "скрипт не узнаёт свой файл: маркер за пределами прежнего окна чтения"
+
+    hand = tmp / "рукотворная.md"
+    hand.write_text("---\ntype: moc\n---\n\n# Своя карта\n", encoding="utf-8")
+    assert not moc.machine_made(str(hand)), "чужой файл принят за машинный — перезапишем"
+    assert not moc.machine_made(str(tmp / "нет-такого.md")), "несуществующий файл"
+
+
+@test
 def test_graph_and_files_link_both_ways_and_can_be_read(tmp: Path):
     """Переход из графа в файл был, обратного не было — это половина навигации.
 
@@ -5224,6 +5253,14 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
     assert 'id="consoleStop"' in ui and "/api/job/stop" in ui, "нет кнопки «Прервать»"
+    # Кнопка нужна ОБОИМ способам опроса. Она висела только на одиночном запуске, а
+    # маршрут — то, что идёт часами, — опрашивает задание своим циклом, и там её не было.
+    assert "function armStop(" in ui, "управление кнопкой размазано по двум циклам"
+    step = ui[ui.index("async function runStep("):ui.index("async function runStep(") + 1600]
+    assert "armStop(res.job)" in step, "у шага маршрута нет кнопки «Прервать»"
+    assert "armStop(null)" in step, "кнопка остаётся висеть после конца шага"
+    assert "ROUTE.stopped" in ui, \
+        "прерывание человеком показывается как отказ команды: «разберитесь с ней»"
     assert "restartPanel" in ui and "Перезапустить панель" in ui, \
         "полоса про устаревший процесс всё ещё отсылает в терминал"
     # Прерванный процесс возвращает отрицательный код: «код 2 и выше» его пропускало,
@@ -5432,12 +5469,20 @@ def test_route_works_until_the_work_is_done_and_saves_each_lap(tmp: Path):
     не работают по грязному дереву — следующий запуск встал бы на первом шаге.
     """
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    at = ui.index("const leftInPlan = lines =>")
+    at = ui.index("const leftByKind = lines =>")
     fn = ui[at:at + 700]
     assert "Источников в плане" in fn and "осталось:" in fn, \
         "остаток считается по одному виду работы — маршрут закончится раньше работы"
-    assert "Math.max" in fn, \
-        "виды работы не складываются: кончился один — цикл встанет при живом втором"
+    # Виды работы считаются РАЗДЕЛЬНО. Сложенные в один максимум, они врали: разбор
+    # добавляет карточки, переосмысление их разбирает, суммарный остаток стоит — и цикл
+    # объявлял гонку застоем. На живой базе он так и встал на 814.
+    assert "out.источники" in fn and "out.карточки" in fn, \
+        "остатки разных видов работы слиты в одно число"
+    cycle0 = ui[ui.index("for (ROUTE.lap = 1"):ui.index("ROUTE.lap = 0;")]
+    assert "const moved = names.filter" in cycle0, \
+        "цикл встаёт, когда не убыл общий остаток, а не когда не сдвинулось ничего"
+    assert "разбор рождает карточки быстрее" in cycle0, \
+        "гонка разбора с переосмыслением не названа человеку числами"
 
     cycle = ui[ui.index("for (ROUTE.lap = 1"):ui.index("ROUTE.lap = 0;")]
     assert '"/api/git/commit"' in cycle, "оборот не фиксируется — прерванный прогон пропадёт"
@@ -5491,6 +5536,29 @@ def test_console_says_which_step_uses_the_threads(tmp: Path):
     seq = ar.threads_line(wide, 1)
     assert "не распараллеливается" in seq and "9" in seq, \
         f"последовательный шаг молчит про потолок: {seq}"
+
+    # Рассуждения по ролям. Замер на живом шлюзе: пересказ карточки в тезис с
+    # рассуждениями — 66 секунд на три карточки, без них 5,7. В одиннадцать раз быстрее,
+    # а тезис выходит не хуже, местами точнее: пересказ — извлечение, а не суждение.
+    # Судят критик и Момус, и им рассуждения нужны.
+    mixed = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
+                             "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                             "AURORA_AGENT_THINKING": "1",
+                             "AURORA_AGENT_THINKING_WORKER": "0"})
+    seen = {}
+
+    def spy(role):
+        def tr(kind, b, pl, to):
+            if pl:
+                seen[role] = pl.get("chat_template_kwargs", {}).get("enable_thinking")
+            return 200, {"choices": [{"message": {"content": "ок"}}], "usage": {}}, "", 0.1
+        return tr
+
+    for role in ("worker", "qa"):
+        ag.call_role(mixed, role, [{"role": "user", "content": "x"}],
+                     transport=spy(role), deadline=9e9, sleep=lambda s: None)
+    assert seen.get("worker") is False, "роль не может выключить себе рассуждения"
+    assert seen.get("qa") is True, "роль без своей настройки перестала слушать общую"
 
     narrow = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a/v1",
                               "AURORA_AGENT_PARALLEL": "1"})

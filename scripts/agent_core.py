@@ -160,6 +160,12 @@ def parse_config(env: dict) -> dict:
         "embed": embed,
         "adapter": ADAPTER["name"],
         "thinking": env.get("AURORA_AGENT_THINKING", "1") not in ("0", "false", "no"),
+        # Рассуждения по ролям. Замер на живом шлюзе: пересказ карточки в тезис с
+        # рассуждениями — 66 секунд на три карточки, без них — 5,7. В одиннадцать раз
+        # быстрее, а тезис выходит не хуже, местами точнее: пересказ это извлечение, а
+        # не суждение. Момусу и критику рассуждения нужны — они как раз судят.
+        "thinking_roles": {r: env.get(f"AURORA_AGENT_THINKING_{r.upper()}", "")
+                           for r in ROLES},
         "max_steps": int(env.get("AURORA_AGENT_MAX_STEPS", "15") or 15),
         "budget_min": int(env.get("AURORA_AGENT_BUDGET_MIN", "20") or 20),
         "request_timeout": int(env.get("AURORA_AGENT_REQUEST_TIMEOUT", "300") or 300),
@@ -557,7 +563,12 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     начать: параллельный прогон раздаёт задания по слотам, и каждое идёт на свой шлюз.
     """
     transport = transport or default_transport
-    think = cfg["thinking"] if thinking is None else thinking
+    if thinking is None:
+        # Роль сказала своё — слушаем её; молчит — общая настройка.
+        own = (cfg.get("thinking_roles") or {}).get(role, "")
+        think = (own not in ("0", "false", "no")) if own != "" else cfg["thinking"]
+    else:
+        think = thinking
     deadline = deadline or (time.time() + cfg["request_timeout"])
     log, waited, ring = [], 0.0, 0
     tried: set = set()          # кому уже давали честный шанс в этом вызове
@@ -685,6 +696,10 @@ def cmd_show() -> int:
     print(f"# Агент — собранная конфигурация · {TODAY}\n")
     print(f"Слои: кит {kit / '.env.aurora.local'}"
           + (f" ← проект {project / '.env.aurora.local'}" if project else " (проект не выбран)"))
+    roles_off = [r for r, v in (cfg.get("thinking_roles") or {}).items()
+                 if v in ("0", "false", "no")]
+    if roles_off:
+        print("Рассуждения выключены у ролей: " + ", ".join(roles_off))
     print(f"Адаптер: {cfg['adapter']} · thinking: {'вкл' if cfg['thinking'] else 'выкл'} · "
           f"шагов ≤ {cfg['max_steps']} · бюджет {cfg['budget_min']} мин · "
           f"таймаут запроса {cfg['request_timeout']} с\n")

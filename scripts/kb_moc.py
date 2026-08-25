@@ -141,6 +141,21 @@ def incoming(cards: dict) -> dict:
     return hits
 
 
+def machine_made(path: str) -> bool:
+    """Файл сделан этим скриптом?
+
+    Ищем маркер во ВСЁМ файле, а не в первых четырёхстах байтах. Карту генерирует
+    `kb_moc`, а потом `kb:links --cards` дописывает в её шапку `related:`, и шапка
+    растёт: на живом проекте маркер уезжал на позицию 480 и 831. Скрипт переставал
+    узнавать собственный файл и объявлял его рукотворным — «написан руками» про карту,
+    которую руками не пишут никогда.
+    """
+    try:
+        return GENERATED in open(path, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return False
+
+
 def render(name: str, note: str, items: list, kind: str = "moc") -> str:
     """Карта содержания: шапка карточки, пояснение, список ссылок по алфавиту."""
     # `index` — служебный статус: файл собирается командой и перезаписывается целиком.
@@ -288,11 +303,9 @@ def main() -> int:
             if not a.apply:
                 continue
             path = os.path.join(MOC_DIR, fname)
-            if os.path.isfile(path):
-                head = open(path, encoding="utf-8", errors="ignore").read(400)
-                if GENERATED not in head:
-                    print(f"  ⚠️  {path} написан руками — не трогаю")
-                    continue
+            if os.path.isfile(path) and not machine_made(path):
+                print(f"  ⚠️  {path} написан руками — не трогаю")
+                continue
             os.makedirs(MOC_DIR, exist_ok=True)
             note = (f"Карточки, извлечённые из одного документа: `{src}`. Каждая "
                     "атомарна и читается сама по себе; эта карта показывает, как они "
@@ -343,11 +356,9 @@ def main() -> int:
         if not items or not a.apply:
             continue
         path = os.path.join(MOC_DIR, fname)
-        if os.path.isfile(path):
-            head = open(path, encoding="utf-8", errors="ignore").read(400)
-            if GENERATED not in head:
-                print(f"  ⚠️  {path} написан руками — не трогаю")
-                continue
+        if os.path.isfile(path) and not machine_made(path):
+            print(f"  ⚠️  {path} написан руками — не трогаю")
+            continue
         os.makedirs(MOC_DIR, exist_ok=True)
         open(path, "w", encoding="utf-8").write(render(name, note, items))
         written += 1
