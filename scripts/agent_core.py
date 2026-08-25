@@ -258,6 +258,7 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
 # слотов кольца, а не к прежним 6. Спустить под себя по памяти (слот ≈ 114 МБ RSS):
 #   AURORA_AGENT_ADAPTER_PROCS=6
 ADAPTER_MAX = int(os.environ.get("AURORA_AGENT_ADAPTER_PROCS", "32") or 32)
+ADAPTER_WARN_AT = 8      # с этого числа процессов говорим про память вслух, один раз
 _ADAPTER_LOCK = threading.Lock()
 
 
@@ -312,6 +313,15 @@ def adapter_slot(want: int = 1):
         proc = _spawn_adapter()          # ВНЕ глобального замка: рост никого не держит
         if proc is None:
             return None, None
+        # Цена роста названа вслух, и один раз. Процесс адаптера — это venv с
+        # фреймворком: ~114 МБ и шесть секунд старта. Пул на два десятка слотов стоит
+        # гигабайтов, и молча их занимать движок не вправе: человек увидит только то,
+        # что машина «стала тормозить», и причину будет искать не там.
+        grown = len(ADAPTER.get("slots") or []) + 1
+        if grown == ADAPTER_WARN_AT:
+            print(f"agent: процессов адаптера уже {grown}, каждый ≈114 МБ — это около "
+                  f"{grown * 114 // 1024 or 1} ГБ памяти. Потолок задаётся "
+                  f"AURORA_AGENT_ADAPTER_PROCS (сейчас {ADAPTER_MAX}).", file=sys.stderr)
         with _ADAPTER_LOCK:
             slots = ADAPTER["slots"]
             slots[:] = [s for s in slots if s["proc"].poll() is None]
