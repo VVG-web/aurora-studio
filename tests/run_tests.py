@@ -5207,6 +5207,65 @@ def test_adapter_does_not_serialise_the_whole_run(tmp: Path):
             pass
     ag.ADAPTER["slots"] = []
 
+@test
+def test_adapter_pool_structure_and_growth(tmp: Path):
+    """Структурные asserts пула адаптера: спавн вне замка, честная раздача по курсору, ленивый рост."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ag = importlib.import_module("agent_core")
+    importlib.reload(ag)
+
+    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    
+    # (a) спавн ВНЕ `with _ADAPTER_LOCK:` — резервация под замком, запуск venv вне
+    body = src[src.index("def adapter_slot("):src.index("def adapter_process(")]
+    first_lock = body.index("with _ADAPTER_LOCK:")
+    do_spawn = body.index("if do_spawn:")
+    assert "_spawn_adapter(" not in body[first_lock:do_spawn], \
+        "спавн запускается под замком — рост пула блокирует всех искателей"
+    assert body.index("_spawn_adapter(") > do_spawn, \
+        "запуск venv должен идти в ветке роста, вне замка"
+    spawn_line_end = body.index("\n", body.index("_spawn_adapter("))
+    second_lock_start = spawn_line_end
+    assert "with _ADAPTER_LOCK:" in body[second_lock_start:], \
+        "регистрация процесса должна быть отделена от резервации замка"
+    
+    # (b) честная раздача по курсору — не всегда первый слот
+    assert "_cursor" in src and 'ADAPTER["_cursor"]' in src, \
+        "пул не ведёт курсор раздачи — насыщение начнёт давить на первый слот"
+    assert "slots[cursor % len(slots)]" in body, \
+        "при насыщении не используется круговой обход слотов"
+    
+    # (c) ленивый рост пула на живом venv (skip если venv нет)
+    ag.ADAPTER["slots"] = []
+    proc, lock = ag.adapter_slot(3)
+    if proc is None:
+        return  # venv с pydantic-ai не поставлен — проверять нечего
+    assert lock is not None and hasattr(lock, "acquire"), "у процесса нет замка"
+    assert len(ag.ADAPTER["slots"]) == 1, "пул поднял больше, чем нужно под первый вызов"
+    
+    p2, p3, l2 = None, None, None
+    try:
+        with lock:
+            p2, l2 = ag.adapter_slot(3)
+            assert p2 is not None and p2 is not proc, \
+                "занятый процесс выдан второму потоку — они смешают ответы"
+            # Удерживая l2 (второй процесс), запросить ещё: пул растёт дальше к want
+            with l2:
+                p3, l3 = ag.adapter_slot(3)
+                assert p3 is not None and p3 is not proc and p3 is not p2, \
+                    "пул уперся в один процесс и не растёт к want"
+    finally:
+        # Погашение всех процессов в try/finally — без зомби
+        for s in ag.ADAPTER.get("slots") or []:
+            try:
+                s["proc"].kill()
+            except OSError:
+                pass
+        ag.ADAPTER["slots"] = []
+
+    # Укрепление существующего живого блока: после проверки p2 is not proc добавить p3
+    # (уже выше в блоке try/finally)
 
 @test
 def test_moc_recognises_its_own_files(tmp: Path):
