@@ -689,7 +689,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.99.7";
+const UI_VERSION = "1.99.8";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3253,6 +3253,24 @@ function watchScroll(box){
   });
 }
 
+function armStop(jobId){
+  // Кнопка «Прервать» — одна на все способы запустить команду. Была повешена только на
+  // одиночный запуск, а маршрут опрашивает задание своим циклом: именно он идёт часами,
+  // и именно там кнопки не оказалось.
+  const b = $("#consoleStop");
+  if (!b) return;
+  b.hidden = !jobId;
+  if (!jobId){ b.onclick = null; return; }
+  b.onclick = async () => {
+    if (!confirm("Прервать прогон?\n\nСделанное останется: карточки пишутся по одной, "
+                 + "а маршрут фиксирует каждый оборот.")) return;
+    const r = await api("/api/job/stop", {method:"POST", quiet:true,
+      body: JSON.stringify({id: jobId})});
+    if (r.error) toast(r.error, "warn");
+    else { ROUTE.stopped = true; toast("прогон прерван"); }
+  };
+}
+
 async function runStep(cmd, args){
   const r = S.state.commands.find(x=>x.cmd===cmd);
   if (!r || !r.runnable) return {rc:0, skipped:true, lines:[]};
@@ -3266,18 +3284,23 @@ async function runStep(cmd, args){
   }
   const out = $("#consoleOut");
   let since = 0, lines = [];
-  for (;;){
-    const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
-    if (!d || d.error){
-      out.append(el("div",{class:"err"}, "■ Задание шага потеряно (панель перезапускали) — "
-        + "маршрут дальше не идёт: следующие шаги пошли бы по неизвестному состоянию."));
-      return {rc:2, lines};      // код 2 — маршрут останавливается, и это правильно
+  armStop(res.job);
+  try {
+    for (;;){
+      const d = await api(`/api/job?id=${res.job}&since=${since}`, {quiet:true});
+      if (!d || d.error){
+        out.append(el("div",{class:"err"}, "■ Задание шага потеряно (панель перезапускали) — "
+          + "маршрут дальше не идёт: следующие шаги пошли бы по неизвестному состоянию."));
+        return {rc:2, lines};      // код 2 — маршрут останавливается, и это правильно
+      }
+      (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
+      watchScroll(out); stickToBottom(out);
+      since = d.next;
+      if (d.done) return {rc:d.rc, lines};
+      await new Promise(ok=>setTimeout(ok, 450));
     }
-    (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
-    watchScroll(out); stickToBottom(out);
-    since = d.next;
-    if (d.done) return {rc:d.rc, lines};
-    await new Promise(ok=>setTimeout(ok, 450));
+  } finally {
+    armStop(null);
   }
 }
 
@@ -3564,15 +3587,18 @@ async function runRoute(sc, write){
   // источникам. Раньше считались одни источники: они кончались, цикл завершался, и
   // маршрут отчитывался «пройден» при восьмистах карточках без единого тезиса. База
   // «знает всё, что появилось в источниках» — это про знание, а не про разбор.
-  const leftInPlan = lines => {
-    let left = null;
+  // Остатки — по видам работы РАЗДЕЛЬНО. Сложенные в один максимум, они врали: разбор
+  // добавляет карточки, переосмысление их разбирает, и суммарный остаток стоит на месте,
+  // хотя работа идёт. Цикл объявлял это «крутиться впустую» и вставал.
+  const leftByKind = lines => {
+    const out = {};
     for (const l of (lines||[])){
       const src = /Источников в плане:\s*(\d+)\s*→\s*(\d+)/.exec(l);
-      if (src) left = Math.max(left ?? 0, Number(src[2]));
+      if (src) out.источники = Number(src[2]);
       const rest = /·\s*осталось:\s*(\d+)/.exec(l);
-      if (rest) left = Math.max(left ?? 0, Number(rest[1]));
+      if (rest) out.карточки = Number(rest[1]);
     }
-    return left;
+    return out;
   };
 
   const runOne = async (st) => {
@@ -3590,6 +3616,7 @@ async function runRoute(sc, write){
     return res;
   };
 
+  ROUTE.stopped = false;            // прерывание человеком — не то же самое, что отказ
   const CYCLE_LIMIT = 500;          // предохранитель: движок мог перестать печатать остаток
   let i = 0;
   outer:
@@ -3603,15 +3630,16 @@ async function runRoute(sc, write){
     // блок цикла: от i до первого нецикличного шага
     let end = i;
     while (end < steps.length && steps[end].cycle) end++;
-    let prev = null;
+    let prev = {};
     for (ROUTE.lap = 1; ROUTE.lap <= CYCLE_LIMIT; ROUTE.lap++){
-      let left = null;
+      let kinds = {};
       for (let k = i; k < end; k++){
         const {rc, lines} = await runOne(steps[k]);
         if (failed(rc)){ ROUTE.failed = steps[k].cmd; break outer; }
-        const seen = leftInPlan(lines);
-        if (seen !== null) left = seen;
+        Object.assign(kinds, leftByKind(lines));
       }
+      const names = Object.keys(kinds);
+      const left = names.length ? names.reduce((s, k) => s + kinds[k], 0) : null;
       if (left === null){
         out.append(el("div",{class:"dim"},
           "  оборот прошёл, но движок не сказал, сколько источников осталось — "
@@ -3626,12 +3654,22 @@ async function runRoute(sc, write){
           + (saved.ok ? ` · зафиксировано: ${saved.commit}` : "")));
         break;
       }
-      if (prev !== null && left >= prev){
+      // Встаём, только если НИ ОДИН вид работы не сдвинулся. Пока хоть что-то убывает,
+      // прогон идёт: разбор может добавлять карточки быстрее, чем переосмысление их
+      // разбирает, — это не застой, а гонка, и о ней надо сказать числами.
+      const moved = names.filter(k => prev[k] === undefined || kinds[k] < prev[k]);
+      if (!moved.length && ROUTE.lap > 1){
         out.append(el("div",{class:"warn"},
-          `  остаток не убывает (${left}) — прекращаю цикл, чтобы не крутиться впустую`));
+          "  за оборот не убыло ничего (" + names.map(k => `${k}: ${kinds[k]}`).join(", ")
+          + ") — останавливаюсь, чтобы не крутиться впустую"));
         break;
       }
-      prev = left;
+      const grew = names.filter(k => prev[k] !== undefined && kinds[k] > prev[k]);
+      if (grew.length)
+        out.append(el("div",{class:"dim"},
+          "  прибавилось: " + grew.map(k => `${k} ${prev[k]}→${kinds[k]}`).join(", ")
+          + " — разбор рождает карточки быстрее, чем переосмысление их разбирает"));
+      prev = {...kinds};
       // Фиксируем результат оборота. Прогон идёт часами, и человек вправе выключить его
       // в любую минуту: без коммита прерванная работа осталась бы незафиксированной, а
       // двенадцать команд движка не работают по грязному дереву — следующий запуск
@@ -3639,9 +3677,10 @@ async function runRoute(sc, write){
       const saved = await api("/api/git/commit", {method:"POST", quiet:true,
         body: JSON.stringify({project:S.project.path, skip_ratchet:true,
           message:`Аврора: оборот ${ROUTE.lap} маршрута «${sc.title}» · осталось ${left}`})});
+      const tail = names.map(k => `${k}: ${kinds[k]}`).join(", ");
       out.append(el("div",{class:"dim"}, saved.ok
-        ? `  оборот зафиксирован: ${saved.commit} · осталось ${left} — следующий оборот`
-        : `  осталось ${left} — следующий оборот (не зафиксировано: ${saved.error || "?"})`));
+        ? `  оборот зафиксирован: ${saved.commit} · осталось — ${tail}`
+        : `  осталось — ${tail} (не зафиксировано: ${saved.error || "?"})`));
     }
     ROUTE.lap = 0;
     i = end;
@@ -3652,9 +3691,12 @@ async function runRoute(sc, write){
   $("#consoleRc").textContent = bad ? "остановлен на " + bad : "пройден: шагов " + ROUTE.done;
   $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
   out.append(el("div",{class:bad?"err":"ok",style:"margin-top:12px"},
-    bad ? `■ Маршрут остановлен на «${bad}». `
-        + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
-        + "без вреда."
+    bad ? (ROUTE.stopped
+        ? `■ Маршрут прерван вами на «${bad}». Сделанное зафиксировано: запускайте снова, `
+          + "пройденные шаги повторяются без вреда."
+        : `■ Маршрут остановлен на «${bad}»: команда не отработала. `
+          + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
+          + "без вреда.")
         : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
   summary.filter(s=>s.rc===1).forEach(s=>{
     out.append(el("div",{class:"warn"},
@@ -3698,17 +3740,7 @@ async function poll(id, since, label){
   // Кнопка «Прервать» живёт ровно столько, сколько идёт прогон. Без неё запрет на
   // перезапуск панели при работающем задании превращается в тупик: ни остановить,
   // ни перезапустить — только ждать часами.
-  const stop = $("#consoleStop");
-  if (stop){
-    stop.hidden = !!(d && d.done) || !d || !!d.error;
-    stop.onclick = async () => {
-      if (!confirm("Прервать прогон?\n\nСделанное останется: карточки пишутся по одной, "
-                   + "а маршрут фиксирует каждый оборот.")) return;
-      const r = await api("/api/job/stop", {method:"POST", quiet:true,
-        body: JSON.stringify({id})});
-      if (r.error) toast(r.error, "warn"); else toast("прогон прерван");
-    };
-  }
+  armStop((d && !d.done && !d.error) ? id : null);
   // Задания нет: панель перезапускали, пока команда шла. Раньше цикл продолжал спрашивать
   // про исчезнувшее задание и «выполняется…» стояло вечно — команда при этом могла давно
   // отработать. Тишина здесь дороже ошибки: человек ждёт того, чего уже не случится.
@@ -4551,6 +4583,22 @@ async function renderAgentCard(box, scope){
         + "шлюзы объявили в «потоков» (не объявивший считается за один). Не знаете, "
         + "сколько держит шлюз, — нажмите «Замерить шлюзы»: движок нарастит нагрузку и "
         + "скажет число."),
+      // Рассуждения по ролям. Замер на живом шлюзе: пересказ карточки в тезис с
+      // рассуждениями 22 секунды, без них — 1,9. Пересказ — извлечение, а не суждение;
+      // судят критик и Момус, и им рассуждения нужны.
+      el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;flex-basis:100%;margin-top:6px"},
+        el("span",{class:"sub"},"рассуждения:"),
+        ...["worker","planner","critic","qa"].map(r => {
+          const own = (a.thinking_roles || {})[r];
+          const on = own === "" || own === undefined
+            ? !!a.thinking : !["0","false","no"].includes(String(own));
+          return el("label",{class:"row",style:"gap:4px;font-size:12px",
+            title:"Пусто — как общая настройка. Пересказ идёт в разы быстрее без "
+                 + "рассуждений, проверка — точнее с ними."},
+            el("input",{type:"checkbox", checked:on?"":null,
+              onchange:e=>touch("AURORA_AGENT_THINKING_" + r.toUpperCase(),
+                                e.target.checked ? "1" : "0")}), r);
+        })),
       el("label",{},"адаптер ", el("select",{class:"btn",
           onchange:e=>touch("AURORA_AGENT_ADAPTER", e.target.value)},
         ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,
