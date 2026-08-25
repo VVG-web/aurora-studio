@@ -354,7 +354,13 @@ def default_transport(kind: str, backend: dict, payload: dict | None, timeout: f
     if kind == "slots":
         root = backend["url"].rsplit("/v1", 1)[0]
         return http_json(root + "/slots", None, backend["key"], CONNECT_TIMEOUT)
-    if ADAPTER.get("name") == "pydantic_ai":
+    # Тяжёлый путь — только там, где его возможности нужны. Pydantic AI даёт историю
+    # разговора, инструменты и сторож исходящего; одиночный вызов без всего этого он
+    # выполняет ровно как обычный HTTP, но через трубу одного подпроцесса. На живом
+    # шлюзе разница решающая: сервер отдаёт 5,46 ответа в секунду на 24 потоках, а через
+    # адаптер выходит 1,05 при любом их числе — упирается не сервер, а пул процессов.
+    needs_adapter = bool(payload and (payload.get("tools_root") or payload.get("history")))
+    if ADAPTER.get("name") == "pydantic_ai" and needs_adapter:
         st, body, err, dt = pydantic_transport(backend, payload, timeout)
         if st == 200:
             return st, body, err, dt
@@ -762,7 +768,9 @@ def cmd_show() -> int:
     return 0
 
 
-PROBE_STEPS = (1, 2, 3, 4, 6, 8, 12, 16)
+# До 32: сервер на 24 потоках ещё не насыщался. Прежний потолок в 16 был подобран
+# под замер, который упирался в наш же адаптер, а не в шлюз.
+PROBE_STEPS = (1, 2, 4, 6, 8, 12, 16, 24, 32)
 
 
 def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS) -> dict:
