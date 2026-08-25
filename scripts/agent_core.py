@@ -258,6 +258,13 @@ ADAPTER_MAX = int(os.environ.get("AURORA_AGENT_ADAPTER_PROCS", "6") or 6)
 _ADAPTER_LOCK = threading.Lock()
 
 
+
+def _emit_metrics(metrics: dict):
+    """Метрики пула в stderr, только при AURORA_AGENT_DEBUG=1."""
+    if os.environ.get("AURORA_AGENT_DEBUG", "0") in ("1", "true", "yes"):
+        print(json.dumps(metrics), file=sys.stderr)
+
+
 def _spawn_adapter():
     vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     adapter = Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
@@ -325,14 +332,19 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             "tool_calls": TOOL_CALLS if payload.get("tools_root") else 0,
             "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
     t0 = time.time()
-    # Труба у процесса одна: запрос и ответ берутся вместе, иначе два потока разберут
-    # ответы друг друга. Замок держим на время всего обмена, а не на запись.
+    queue_wait_ms = 0.0
+    # Труба у процесса одна: ...
     try:
         with lock:
+            # первая строка ВНУТРИ with выполняется сразу после захвата замка:
+            # это и есть время ожидания свободного процесса (очередь в пуле)
+            queue_wait_ms = (time.time() - t0) * 1000
             proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
             proc.stdin.flush()
             line = proc.stdout.readline()
         if not line:
+            _emit_metrics({"queue_wait_ms": queue_wait_ms,
+                           "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
             return None, None, "адаптер закрылся", time.time() - t0
         out = json.loads(line)
     except Exception as e:  # noqa: BLE001
@@ -340,12 +352,18 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             proc.kill()                 # мёртвый процесс уберётся из пула сам
         except OSError:
             pass
+        _emit_metrics({"queue_wait_ms": queue_wait_ms,
+                       "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
         return None, None, f"адаптер не ответил: {type(e).__name__}", time.time() - t0
     if not out.get("ok"):
+        _emit_metrics({"queue_wait_ms": queue_wait_ms,
+                       "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
         return None, None, out.get("error", "адаптер вернул ошибку"), time.time() - t0
     body = {"choices": [{"message": {"content": out["text"],
                                      "reasoning": out.get("reasoning", "")},
                          "finish_reason": "stop"}]}
+    _emit_metrics({"queue_wait_ms": queue_wait_ms,
+                   "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
     return 200, body, "", time.time() - t0
 
 
