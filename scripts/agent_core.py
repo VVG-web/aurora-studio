@@ -254,7 +254,10 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
 #
 # Хуже медленного: замка на трубе не было вовсе, и два потока могли разобрать ответы
 # друг друга. Теперь у каждого процесса свой замок, и берётся он целиком.
-ADAPTER_MAX = int(os.environ.get("AURORA_AGENT_ADAPTER_PROCS", "6") or 6)
+# Потолок пула. По умолчанию 32 (> кольца в 24): под нагрузкой пул растёт к числу
+# слотов кольца, а не к прежним 6. Спустить под себя по памяти (слот ≈ 114 МБ RSS):
+#   AURORA_AGENT_ADAPTER_PROCS=6
+ADAPTER_MAX = int(os.environ.get("AURORA_AGENT_ADAPTER_PROCS", "32") or 32)
 _ADAPTER_LOCK = threading.Lock()
 
 
@@ -278,30 +281,49 @@ def _spawn_adapter():
 def adapter_slot(want: int = 1):
     """Свободный процесс адаптера и его замок. → (proc, lock) либо (None, None).
 
-    Процессов держим не больше `want` и не больше потолка: каждый поднимает venv с
-    фреймворком — восемь секунд и заметная память. Все заняты — ждём на замке первого,
-    это ровно прежнее поведение, но уже как крайний случай, а не как правило.
+    Под глобальным замком — только резерв слота и решение о спавне; сам спавн venv
+    (~6–8 с) идёт ВНЕ замка. Иначе каждое вырастание пула блокирует всех искателей
+    свободного слота, и параллельность оплачивается общей задержкой.
+    Все заняты и пул упёрся в потолок — ожидающие распределяются курсором по пулу,
+    а не валятся на первый процесс.
     """
-    want = max(1, min(int(want or 1), ADAPTER_MAX))
+    cap = max(1, min(max(1, int(want or 1)), ADAPTER_MAX))
+    reserve = None
+    do_spawn = False
     with _ADAPTER_LOCK:
         slots = ADAPTER.setdefault("slots", [])
         slots[:] = [s for s in slots if s["proc"].poll() is None]
-        free = next((s for s in slots if not s["lock"].locked()), None)
-        if free is None and len(slots) < want:
-            proc = _spawn_adapter()
-            if proc is None:
-                return None, None
-            free = {"proc": proc, "lock": threading.Lock()}
-            slots.append(free)
-        if free is None:
-            free = slots[0] if slots else None
-        if free is None:
-            proc = _spawn_adapter()
-            if proc is None:
-                return None, None
-            free = {"proc": proc, "lock": threading.Lock()}
-            slots.append(free)
-    return free["proc"], free["lock"]
+        # Свободный процесс — отдаём его и двигаем курсор мимо, чтобы раздача
+        # при насыщении не начиналась с только что отданного соседа.
+        for i, s in enumerate(slots):
+            if not s["lock"].locked():
+                reserve = s
+                ADAPTER["_cursor"] = (i + 1) % len(slots)
+                break
+        # Свободного нет и есть куда расти — под нагрузкой пул растёт к want.
+        if reserve is None and len(slots) < cap:
+            do_spawn = True
+        elif reserve is None:
+            # Потолок достигнут, все заняты: честный круговой обход.
+            cursor = ADAPTER.get("_cursor", 0)
+            reserve = slots[cursor % len(slots)]
+            ADAPTER["_cursor"] = (cursor + 1) % len(slots)
+    if do_spawn:
+        proc = _spawn_adapter()          # ВНЕ глобального замка: рост никого не держит
+        if proc is None:
+            return None, None
+        with _ADAPTER_LOCK:
+            slots = ADAPTER["slots"]
+            slots[:] = [s for s in slots if s["proc"].poll() is None]
+            if proc.poll() is None:
+                reserve = {"proc": proc, "lock": threading.Lock()}
+                slots.append(reserve)
+                ADAPTER["_cursor"] = 0
+            else:
+                reserve = None           # процесс умер сразу — не отдаём его
+    if reserve is None:
+        return None, None
+    return reserve["proc"], reserve["lock"]
 
 
 def adapter_process():
