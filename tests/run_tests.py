@@ -5852,6 +5852,72 @@ def test_console_says_which_step_uses_the_threads(tmp: Path):
 
 
 @test
+def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
+    """Публикацию стерегут по содержимому уезжающих коммитов, а не только по имени ветки.
+
+    До 1.100.1 содержимое не смотрел никто: хук сообщений читает текст коммита, линтер —
+    базу знаний. Через эту дыру в публичный репозиторий уехали рабочая папка стороннего
+    инструмента (адрес внутреннего шлюза) и файл состояния прогона с именем живого
+    проекта.
+
+    Смотреть надо **добавленные строки диапазона**, а не итоговое дерево: файл, заведённый
+    и убранный внутри одной серии коммитов, из дерева исчезает, а в истории остаётся.
+    """
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text("ТайныйПроект\nexample.com\n", encoding="utf-8")
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+
+    def commit(msg: str) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(git + ["commit", "-qm", msg, "--no-verify"], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+                              capture_output=True, text=True).stdout.strip()
+
+    (root / "чисто.md").write_text("маршрут не спотыкается о флаг\n", encoding="utf-8")
+    base = commit("основа")
+
+    def scan(old: str, new_: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"],
+            cwd=root, input=f"refs/heads/main {new_} refs/heads/main {old}\n",
+            capture_output=True, text=True)
+
+    # 1. Утечка, которая не дожила до итогового дерева: заведена и убрана в диапазоне.
+    (root / "утечка.json").write_text('{"url": "https://api.example.com/v1"}\n', encoding="utf-8")
+    mid = commit("завёл")
+    (root / "утечка.json").unlink()
+    head = commit("убрал")
+    cp = scan(base, head)
+    assert cp.returncode == 1, \
+        "файл заведён и убран внутри диапазона — из дерева исчез, но в истории остался"
+    assert "example.com" in cp.stderr and "утечка.json" in cp.stderr, \
+        f"хук не назвал ни термин, ни файл:\n{cp.stderr}"
+
+    # 2. Честный push не блокируется словом, внутри которого оказалось название.
+    (root / "обычное.md").write_text("маршрут не спотыкается, а ТайныйПроектор — прибор\n",
+                                     encoding="utf-8")
+    clean = commit("обычная правка")
+    cp = scan(head, clean)
+    assert cp.returncode == 0, (
+        "название внутри длинного слова приняли за утечку — хук, ловящий подстроку, "
+        f"блокирует живую работу:\n{cp.stderr}")
+
+    # 3. Настоящее вхождение по границам слова — ловится.
+    (root / "плохое.md").write_text("сделано для ТайныйПроект в августе\n", encoding="utf-8")
+    bad = commit("имя проекта в тексте")
+    cp = scan(clean, bad)
+    assert cp.returncode == 1 and "ТайныйПроект" in cp.stderr, \
+        f"имя проекта отдельным словом не поймано:\n{cp.stderr}"
+
+    # 4. Нет списка названий — проверка спит, а не роняет push.
+    (root / "local" / "private_terms.txt").unlink()
+    assert scan(clean, bad).returncode == 0, \
+        "без списка названий хук обязан молчать: иначе он ломает любой чужой клон"
+
+
+@test
 def test_a_failure_without_words_is_still_a_failure(tmp: Path):
     """Прогон, который считает молчаливый провал успехом, хуже отсутствующего прогона.
 

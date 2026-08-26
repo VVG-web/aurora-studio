@@ -31,7 +31,7 @@ from pathlib import Path
 
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
-PUSH_MARKER = "# aurora-hook push v1"
+PUSH_MARKER = "# aurora-hook push v2"
 
 # Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
 # кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
@@ -40,7 +40,7 @@ PRIVATE_BRANCHES = ("development", "history-private")
 
 PUSH_HOOK = """#!/bin/sh
 {marker}
-# Кухня разработки наружу не уходит: репозиторий кита публичный.
+# Наружу не уходят ни ветки кухни, ни внутренние названия в содержимом коммитов.
 remote_url="$2"
 case "$remote_url" in
   *github.com*|*gitlab.com*) public=1 ;;
@@ -48,22 +48,42 @@ case "$remote_url" in
 esac
 [ "$public" = "1" ] || exit 0
 
+# stdin читается один раз, а нужен дважды — и `exit` из тела `while` в конвейере
+# не выходит из хука, поэтому решение принимается по собранному выводу, а не внутри цикла.
+input=$(cat)
+
+# Через файл, а не через конвейер: `case` со своей `)` внутри `$( )` ломает разбор в sh,
+# а тело `while` в конвейере живёт в подоболочке и переменную наружу не отдаёт.
+refs=$(mktemp)
+printf '%s\n' "$input" > "$refs"
+blocked=""
 while read -r _l local_sha remote_ref _r; do
   branch="${{remote_ref##*/}}"
   case " {branches} " in
-    *" $branch "*)
-      echo "" >&2
-      echo "push отклонён: ветка $branch наружу не уходит." >&2
-      echo "  Это кухня разработки — кейсы, разборы дефектов и числа с живых" >&2
-      echo "  проектов, а $remote_url публичный." >&2
-      echo "  Нужна копия на другой машине — заводите приватный remote:" >&2
-      echo "    git remote add private <адрес> && git push private $branch" >&2
-      echo "" >&2
-      exit 1
-      ;;
+    *" $branch "*) blocked="$blocked $branch" ;;
   esac
   [ -n "$local_sha" ] || true
-done
+done < "$refs"
+rm -f "$refs"
+
+if [ -n "$blocked" ]; then
+  echo "" >&2
+  echo "push отклонён: ветка $blocked наружу не уходит." >&2
+  echo "  Это кухня разработки — кейсы, разборы дефектов и числа с живых" >&2
+  echo "  проектов, а $remote_url публичный." >&2
+  echo "  Нужна копия на другой машине — заводите приватный remote:" >&2
+  echo "    git remote add private <адрес> && git push private $blocked" >&2
+  echo "" >&2
+  exit 1
+fi
+
+# Ветка может быть законной, а содержимое — нет. Хук сообщений смотрит только текст
+# коммита, линтер — только базу знаний: содержимое файлов до 1.100.1 не смотрел никто,
+# и через эту дыру в публичный репозиторий уехали рабочая папка чужого инструмента
+# и файл состояния прогона с именем живого проекта.
+if [ -f scripts/aurora_hooks.py ]; then
+  printf '%s\n' "$input" | python3 scripts/aurora_hooks.py --scan-push || exit 1
+fi
 exit 0
 """
 TERMS = "local/private_terms.txt"
@@ -187,6 +207,79 @@ exit 0
 """
 
 
+ZERO = "0" * 40
+SKIP_PREFIXES = ("cockpit/vendor/",)   # минифицированный чужой код: случайные подстроки
+
+
+def private_terms() -> list[str]:
+    """Список внутренних названий. Нет файла — проверка спит, а не падает."""
+    f = Path(TERMS)
+    if not f.is_file():
+        return []
+    return [x.strip() for x in f.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if x.strip() and not x.strip().startswith("#")]
+
+
+def scan_push() -> int:
+    """Содержимое уезжающих коммитов: нет ли в нём внутренних названий.
+
+    Смотрим **добавленные строки** всего диапазона, а не итоговое дерево: файл, заведённый
+    и убранный внутри одной серии коммитов, из дерева исчезает, но в истории остаётся
+    навсегда — ровно так `.sisyphus/` пережил собственное удаление.
+
+    Совпадение ищем по границам слова: короткое название сплошь и рядом оказывается куском
+    обычного слова — и хук, ловящий подстроку, блокировал бы честную работу вместо утечки.
+    Обратная сторона названа вслух: название внутри длинного слова (имя проекта в пути
+    вроде `/Cursor_git/<Имя>CDP`) так не ловится — такие формы дописывают в список
+    отдельной строкой.
+    """
+    terms = private_terms()
+    if not terms:
+        return 0
+    pats = [(t, re.compile(r"(^|[^0-9A-Za-zА-Яа-яЁё])" + re.escape(t)
+                           + r"([^0-9A-Za-zА-Яа-яЁё]|$)", re.I)) for t in terms]
+
+    hits: dict[tuple[str, str], str] = {}
+    for line in sys.stdin.read().splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        local_sha, remote_sha = parts[1], parts[3]
+        if local_sha == ZERO:            # удаление ветки — содержимого не прибавляет
+            continue
+        rng = [local_sha] if remote_sha == ZERO else [f"{remote_sha}..{local_sha}"]
+        # `core.quotepath=false` обязателен: иначе git отдаёт русское имя файла
+        # экранированным («"\\321\\203..."»), и хук называет термин, но не файл —
+        # человек читает предупреждение и не понимает, что именно убирать.
+        cp = subprocess.run(["git", "-c", "core.quotepath=false",
+                             "log", "-p", "--no-color", "--unified=0", *rng],
+                            capture_output=True, text=True, errors="replace")
+        path = "?"
+        for row in cp.stdout.splitlines():
+            if row.startswith("+++ b/"):
+                path = row[6:].strip('"')
+            elif row.startswith("+") and not row.startswith("+++"):
+                if path.startswith(SKIP_PREFIXES):
+                    continue
+                for term, pat in pats:
+                    if pat.search(row) and (path, term) not in hits:
+                        hits[(path, term)] = row.strip()[:100]
+
+    if not hits:
+        return 0
+    print("", file=sys.stderr)
+    print("push отклонён: в содержимом коммитов внутренние названия.", file=sys.stderr)
+    for (path, term), sample in sorted(hits.items()):
+        print(f"  {path} → «{term}»", file=sys.stderr)
+        print(f"      {sample}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  Опубликованное не чинится удалением: коммит остаётся в истории.", file=sys.stderr)
+    print("  Уберите файл из индекса и закройте .gitignore, затем перепишите", file=sys.stderr)
+    print("  историю — или, осознанно: git push --no-verify", file=sys.stderr)
+    print("", file=sys.stderr)
+    return 1
+
+
 def is_kit() -> bool:
     """Мы в самом ките, а не в проекте на его основе.
 
@@ -230,7 +323,15 @@ def main() -> int:
     ap.add_argument("--mode", choices=["ratchet", "block", "warn"], default="ratchet",
                     help="режим хука: ratchet (планка не растёт) или strict (ноль ошибок)")
     ap.add_argument("--force", action="store_true", help="перезаписать чужой pre-commit (с бэкапом)")
+    ap.add_argument("--scan-push", action="store_true",
+                    help="служебный режим pre-push: прочитать refs со stdin и проверить "
+                         "содержимое уезжающих коммитов по " + TERMS)
     a = ap.parse_args()
+
+    # Служебный режим зовётся хуком, а не человеком: решение принимается до всего
+    # остального, git_dir() тут не нужен — хук уже запущен из корня репозитория.
+    if a.scan_push:
+        return scan_push()
 
     gd = git_dir()
     if not gd:
