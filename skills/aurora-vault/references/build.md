@@ -92,7 +92,7 @@ Every note follows this structure:
 ---
 title: "Заявка. Статус: Черновик"
 aliases: ["DRAFT статус", "Черновик заявки"]
-tags: [[доменный термин убран], статус, процесс]
+tags: [заявка, статус, процесс]
 created: 2026-03-25
 updated: 2026-05-17
 source: Sources/Confluence/SM - Алгоритмы/20. Алгоритмы для Сервиса Заявителя/...
@@ -142,7 +142,7 @@ Process each source file independently and sequentially:
     "Sources/Confluence/SM - Алгоритмы/...": {
       "hash": "abc123",
       "processed": "2026-05-17T12:00:00",
-      "notes": ["Concepts/[доменный термин убран]-status-draft.md", "Processes/..."]
+      "notes": ["Concepts/заявка-status-draft.md", "Processes/..."]
     }
   }
 }
@@ -335,7 +335,7 @@ Given any title from an external source (Confluence, JIRA, dictionary):
 ## Quick Links
 - [[заявки]] — Main document type
 - [[Main Process]] — Core workflow
-- [[Status Model [доменный термин убран]]] — All status transitions
+- [[Status Model заявки]] — All status transitions
 ```
 
 ## Conventions (stored in `_meta/conventions.md`)
@@ -350,8 +350,8 @@ Given any title from an external source (Confluence, JIRA, dictionary):
 
 ## Tags
 Taxonomy: {domain}.{subdomain}.{concept}
-- `[доменный термин убран].status` — заявки statuses
-- `[доменный термин убран].process` — заявки workflows
+- `заявка.status` — заявки statuses
+- `заявка.process` — заявки workflows
 - `system.<код>` — интеграция со смежной системой
 - `system.<код2>` — интеграция со второй смежной системой
 - `role.actor` — User roles
