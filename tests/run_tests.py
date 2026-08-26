@@ -115,6 +115,16 @@ ONLY = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--only=")),
              if "--only" in sys.argv and len(sys.argv) > sys.argv.index("--only") + 1 else ""))
 
 
+def why(e: BaseException) -> str:
+    """Провал без пояснения — всё равно провал.
+
+    `assert x` без текста даёт пустую строку. Она уходила в RESULTS как есть, а сводка
+    считала провалом только непустое (`if e`): тест печатал ❌, засчитывался пройденным
+    и прогон возвращал 0. Красное читалось зелёным — и так уехал целый релиз.
+    """
+    return str(e) or "(без пояснения — добавьте текст в assert)"
+
+
 def test(fn):
     name = fn.__name__.replace("test_", "").replace("_", " ")
     if ONLY and ONLY.lower() not in name.lower():
@@ -125,9 +135,8 @@ def test(fn):
             RESULTS.append((name, None))
             print(f"  ✅ {name}")
         except AssertionError as e:
-            RESULTS.append((name, str(e)))
-            first = (str(e).splitlines() or ["(без пояснения — добавьте текст в assert)"])[0]
-            print(f"  ❌ {name}\n     {first}")
+            RESULTS.append((name, why(e)))
+            print(f"  ❌ {name}\n     {why(e).splitlines()[0]}")
         except Exception as e:  # noqa: BLE001
             RESULTS.append((name, f"{type(e).__name__}: {e}"))
             print(f"  ❌ {name} — {type(e).__name__}: {e}")
@@ -5843,6 +5852,22 @@ def test_console_says_which_step_uses_the_threads(tmp: Path):
 
 
 @test
+def test_a_failure_without_words_is_still_a_failure(tmp: Path):
+    """Прогон, который считает молчаливый провал успехом, хуже отсутствующего прогона.
+
+    Ровно это и случилось: `assert` без текста давал пустую строку, сводка печатала
+    «Пройдено: 225/225» при напечатанном ❌ и выходила с кодом 0.
+    """
+    assert why(AssertionError()), \
+        "assert без пояснения даёт пустую строку, а сводка считает провалом только " \
+        "непустое — молчаливое падение засчитается пройденным"
+    assert why(AssertionError("связи не совпали")) == "связи не совпали", \
+        "пояснение из assert потерялось по дороге в отчёт"
+    beaten = [(n, e) for n, e in [("тихий", why(AssertionError()))] if e]
+    assert beaten, "сводка всё ещё отбрасывает провал без пояснения"
+
+
+@test
 def test_base_graph_shows_the_base_not_a_guess(tmp: Path):
     """Граф базы — то, что в ней написано: ссылки в тексте и `related:`.
 
@@ -5869,7 +5894,10 @@ def test_base_graph_shows_the_base_not_a_guess(tmp: Path):
     # Зеркала Confluence в проекте нет — и это не должно мешать: граф базы читает
     # только карточки. Требовать зеркало значило бы оставить без графа проект,
     # собранный из Raw/, и свежий проект, где зеркала ещё нет.
-    assert not (root / "Sources" / "Confluence").is_dir()
+    shutil.rmtree(root / "Sources" / "Confluence", ignore_errors=True)
+    assert not (root / "Sources" / "Confluence").is_dir(), \
+        "фикстура сама создала зеркало по манифесту коннектора — проверка «граф без " \
+        "зеркала» перестала проверять то, ради чего написана"
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_graph.py"),
                          "--cards-json", str(out)], cwd=root,
                         capture_output=True, text=True)
