@@ -8732,9 +8732,492 @@ def test_office_ingest_converts_and_is_idempotent(tmp: Path):
     cp2 = run("office_ingest.py", cwd=root)
     assert "пропущено (не изменились): 1" in cp2.stdout, "повторный запуск переделывает работу"
 
+@test
+def test_build_parallel_executes_concurrently(tmp: Path):
+    """T4: run_build при «одновременно» = 2 и пуле из 2 — два источника сразу.
 
-# -------------------------------------------------------------------- main
+    Регрессия: build был сериальным for-циклом и пул читал только distill. Проверяем
+    перекрытие интервалов, а не настенное время: два заглушенных solve_source «думают
+    по 0.1 с, и сериальная обработка не может перекрыть эти интервалы, а пул на два
+    потока — не может не перекрыть.
+    """
+    import threading
+    from unittest.mock import patch
 
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_build
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    marks, lock = {}, threading.Lock()
+
+    def mock_solve(cfg_, *a, **k):
+        src = a[2]
+        t0 = time.monotonic()
+        with lock:
+            marks[src] = [t0, None]
+        time.sleep(0.1)
+        with lock:
+            marks[src][1] = time.monotonic()
+        return {'alias': 't', 'status': 'разобран', 'backends': [], 'degraded': False, 'note': ''}
+
+    sources = [('Confluence', 'f1.md', 1), ('Confluence', 'f2.md', 1)]
+    with patch('agent_runner.read_partition', return_value=sources), patch('agent_runner.solve_source', side_effect=mock_solve):
+        res = run_build(cfg, str(root), False, True, 0)
+
+    assert len(marks) == 2, f"обработаны не оба источника: {list(marks)}"
+    (a0, a1), (b0, b1) = sorted(marks.values(), key=lambda p: p[0])
+    assert a0 < b1 and b0 < a1, (
+        f"интервалы solve_source ({a0:.3f}–{a1:.3f}, {b0:.3f}–{b1:.3f}) не пересекаются — "
+        "обработка по очереди, а не пулом на два потока")
+    assert len(res["steps"]) == 2 and all(s["status"] == "разобран" for s in res["steps"]), f"run_build потерял источник: {res['steps']}"
+
+
+@test
+def test_build_width_calculation_respects_cap(tmp: Path):
+    """T4: width = min(слоты, источники) — потолок режет пул до числа источников.
+
+    Пул из 2 слотов с одним источником — это сериальный путь в один слот, а не
+    двухпоточный исполнитель, а «одновременно» незаданное / = 1 — всегда по очереди,
+    какая бы широкая ни была ширина шлюза. Детерминизм: сериальный путь гоняет
+    solve_source в главном потоке и строго один за другим.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_build
+
+    root = make_project(tmp)
+    main_thread = threading.get_ident()
+
+    def make_cfg(parallel=None):
+        env = {'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+               'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+               'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+               'AURORA_AGENT_BUDGET_MIN': '20',
+               'AURORA_AGENT_MAX_STEPS': '10',
+               'AURORA_AGENT_REQUEST_TIMEOUT': '300'}
+        if parallel is not None:
+            env['AURORA_AGENT_PARALLEL'] = parallel
+        return parse_config(env)
+
+    def run_once(cfg_, n_sources):
+        marks, lock = {}, threading.Lock()
+
+        def mock_solve(cfg2, *a, **k):
+            src = a[2]
+            t0 = time.monotonic()
+            with lock:
+                marks[src] = [t0, None, threading.get_ident()]
+            time.sleep(0.05)
+            with lock:
+                marks[src][1] = time.monotonic()
+            return {'alias': 't', 'status': 'разобран', 'backends': [], 'degraded': False,
+                    'note': ''}
+
+        sources = [('Confluence', f's{i}.md', 1) for i in range(n_sources)]
+        with patch('agent_runner.read_partition', return_value=sources), patch('agent_runner.solve_source', side_effect=mock_solve):
+            res = run_build(cfg_, str(root), False, True, 0)
+        return marks, res
+
+    def assert_serial(marks, why):
+        for s1 in marks:
+            for s2 in marks:
+                if s1 >= s2:
+                    continue
+                i1, i2 = marks[s1], marks[s2]
+                assert i1[2] == main_thread and i2[2] == main_thread, f"{why}: solve_source ушёл в поток исполнителя — это параллельность"
+                assert not (i1[0] < i2[1] and i2[0] < i1[1]), f"{why}: интервалы источников пересекаются — сериальный режим стал параллельным"
+
+    # два слота пула, один источник: width = min(2, 1) = 1
+    marks, res = run_once(make_cfg(parallel="2"), 1)
+    assert len(marks) == 1 and len(res["steps"]) == 1, f"один источник должен дать один шаг: marks={list(marks)} steps={res['steps']}"
+    assert next(iter(marks.values()))[2] == main_thread, \
+        "один источник пошёл через исполнителя: пул из 2 слотов стартанул с 1 источника"
+
+    # «одновременно» незаданное / = 1: два источника строго один за другим, в главном потоке
+    for parallel in (None, "1"):
+        why = f"PARALLEL={'не задан' if parallel is None else parallel}"
+        marks, res = run_once(make_cfg(parallel=parallel), 2)
+        assert len(marks) == 2 and len(res["steps"]) == 2
+        assert_serial(marks, why)
+        assert all(s["status"] == "разобран" for s in res["steps"]), res["steps"]
+
+
+@test
+def test_build_plan_inprocess_no_popen_per_card(tmp: Path):
+    """T5: solve_source пишет карточки в-процессе — ноль Popen build_plan.py на карточку.
+
+    Регрессия: каждая карточка и каждый --done поднимали subprocess build_plan.py (128–311 мс
+    холодный запуск, N×M за прогон). In-process-путь (run_build_plan: те же build_card/
+    mark_done под единым локом) обязан не оставить ни одного запуска с --card/--done за весь
+    solve_source, а побочные эффекты те же: карточки в базе, отметка в манифесте.
+    """
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import solve_source
+
+    root = make_project(tmp)
+    src_rel = "Sources/Confluence/Страница.md"
+    src = root / src_rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(
+        "# Страница\n\n"
+        "## Первая тема\n\n" + "Текст первой темы. " * 20 +
+        "\n\n## Вторая тема\n\n" + "Текст второй темы. " * 20 + "\n",
+        encoding="utf-8")
+    cfg = parse_config({'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+                        'AURORA_AGENT_BACKEND_1_MODEL': 'test'})
+
+    def fake_call(cfg_, role, messages, **k):
+        return {'ok': True,
+                'text': '{"cards": [{"title": "Тема-два", "sections": "2", "to": "Concepts"},'
+                        ' {"title": "Тема-одна", "sections": "1", "to": "Concepts"}]}',
+                'backend': 1, 'model': 'm', 'log': []}
+
+    sections = [(1, "Первая тема", 340, "превью"), (2, "Вторая тема", 340, "превью")]
+    spawned = []
+
+    class TracingPopen(subprocess.Popen):
+        """Popen, записывающий запуски: оракул «были ли холодные subprocess»."""
+        def __init__(self, args, *a, **k):
+            spawned.append([str(x) for x in args])
+            super().__init__(args, *a, **k)
+
+    with patch('agent_runner.read_sections', return_value=sections), patch('subprocess.Popen', TracingPopen):
+        step = solve_source(cfg, str(root), "Confluence", src_rel, True, False, call=fake_call)
+
+    assert step["status"] == "разобран", f"solve_source сломался: {step}"
+    bp = [a for a in spawned if "build_plan.py" in " ".join(a)
+          and ("--card" in a or "--done" in a)]
+    assert bp == [], f"холодные запуски build_plan.py на карточки: {bp}"
+
+    made = sorted(p.name for p in (root / "AuroraKnowledgeDB" / "Concepts").glob("Тема-*.md"))
+    assert made == ["Тема-два.md", "Тема-одна.md"], f"карточки не собраны: {made}"
+    man = json.loads((root / "AuroraKnowledgeDB" / "meta" / "manifest.json")
+                     .read_text(encoding="utf-8"))
+    assert man["sources"][src_rel]["cards"] == 2, f"отметка не на 2 карточки: {man['sources']}"
+
+
+def _write_embed_index(root: Path, names: list, vecs: list, with_pf: bool):
+    """Индекс эмбеддингов с известными векторами в проекте (bin v2 + json-карта).
+
+    → массив векторов, реально сохранённых: в файле float32, и точные оценки оракул
+    должен считать с него, а не с двойных из фикстуры.
+    """
+    import array
+    import importlib
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    E = importlib.import_module("kb_embed")
+    dim = len(vecs[0])
+    out = array.array("f")
+    cards = {}
+    for i, (nm, v) in enumerate(zip(names, vecs)):
+        cards[nm] = {"hash": E.digest(nm), "row": i}
+        out.extend(v)
+    pf = E.build_prefilter(out, dim, len(cards)) if with_pf else None
+    (root / "AuroraKnowledgeDB" / "meta").mkdir(parents=True, exist_ok=True)
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(root))
+        E.save_index("bge-m3", dim, cards, out, pf)
+    finally:
+        os.chdir(old_cwd)
+    return out
+
+
+def _embed_search(root: Path, qv: list, limit: int):
+    """E.search в проекте с контролируемым вектором запроса — без сети. → (E, выдача)."""
+    import importlib
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    E = importlib.import_module("kb_embed")
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(root))
+        with patch.object(E, "embed", return_value=[qv]):
+            return E, E.search("запрос", {"backends": [], "request_timeout": 5},
+                               "bge-m3", limit=limit)
+    finally:
+        os.chdir(old_cwd)
+
+
+@test
+def test_semantic_search_prefilter_keeps_exact_top_n_and_ties(tmp: Path):
+    """T7: предфильтр держит точный топ-N и не теряет ничью на границе выдачи.
+
+    Связка консервативна: карточка, чья верхняя связь дотягивается до порога, обязана
+    попасть в кандидаты, даже если нижняя связь поставила её за топ-N. Фикстура: шесть
+    единичных векторов в R², две пары совпадают — ничья ровно на границе топ-3. Точные
+    оценки известны (запрос лежит на оси X), а между ничейными код выбирает по имени —
+    сверяемся с оракулом полного точного перебора.
+    """
+    import math
+
+    root = make_project(tmp)
+    names = ["Один-альфа", "Два-бета", "Три-гамма", "Три-гамма-дубль",
+             "Пять-дельта", "Шесть-эпсилон"]
+    vecs = [[math.cos(math.radians(a)), math.sin(math.radians(a))]
+            for a in (0.0, 20.0, 40.0, 40.0, 80.0, 100.0)]
+    qv = [1.0, 0.0]
+    out = _write_embed_index(root, names, vecs, with_pf=True)
+
+    # фикстура обязана содержать ничью на границе топ-3 — иначе тест ничего не доказывает
+    s = [out[i * 2] for i in range(len(names))]      # qv = (1, 0): оценка — первая координата
+    order = sorted(range(len(s)), key=lambda i: s[i], reverse=True)
+    assert s[order[2]] == s[order[3]] and s[order[3]] > s[order[4]] + 0.1, f"фикстура сломана: ничья не на границе топ-3: {sorted(s, reverse=True)}"
+
+    E, res = _embed_search(root, qv, 3)
+    assert E.LAST_SEARCH["prefilter"] is True, "поиск обошёл предфильтр, хотя он в индексе"
+    assert E.LAST_SEARCH["candidates"] < len(names), f"предфильтр не сузил: {E.LAST_SEARCH}"
+
+    expected = sorted(((s[i], names[i]) for i in range(len(names))), reverse=True)[:3]
+    expected = [(nm, round(sc, 4)) for sc, nm in expected]
+    assert res == expected, f"предфильтр потерял точный топ-N: {res} вместо {expected}"
+    assert res[2][0] == "Три-гамма-дубль", "ничья на границе решилась отбором предфильтра, а не точной оценкой"
+
+
+@test
+def test_semantic_search_prefilter_reduces_candidates_and_falls_back(tmp: Path):
+    """T7: предфильтр реально сужает кандидатов; невозможный путь — честный полный перебор.
+
+    На корпусе в 600 векторов точное скалярное считается по горсти кандидатов, а не по
+    всей базе (живой запуск: 48 из 600, 3.23×). И когда предфильтр невозможен — осей в
+    индексе нет или лимит больше числа карточек — поиск делает медленный, но точный
+    полный перебор, а не ошибку.
+    """
+    import math
+
+    root = make_project(tmp)
+    n = 600
+    names = [f"Карта-{i:03d}" for i in range(n)]
+    # золотой угол: вектора равномерно размазаны по кругу, совпадающих направлений нет
+    vecs = [[math.cos(math.radians((i * 137.50776405) % 360)),
+             math.sin(math.radians((i * 137.50776405) % 360))] for i in range(n)]
+    qv = [1.0, 0.0]
+    limit = 10
+    out = _write_embed_index(root, names, vecs, with_pf=True)
+
+    s = [out[i * 2] for i in range(n)]
+    expected = sorted(((s[i], names[i]) for i in range(n)), reverse=True)[:limit]
+    expected = [(nm, round(sc, 4)) for sc, nm in expected]
+
+    E, res = _embed_search(root, qv, limit)
+    assert E.LAST_SEARCH["prefilter"] is True, "поиск обошёл предфильтр, хотя он в индексе"
+    cands = E.LAST_SEARCH["candidates"]
+    assert limit <= cands < n // 2, f"предфильтр не сузил кандидатов: {cands} из {n}"
+    assert res == expected, "после сузчения результат разошёлся с полным точным перебором"
+
+    # предфильтра в индексе нет (старый файл / осей не вышло) — полный перебор без ошибки
+    _write_embed_index(root, names, vecs, with_pf=False)
+    E, res = _embed_search(root, qv, limit)
+    assert E.LAST_SEARCH["prefilter"] is False, "без предфильтра должен идти полный перебор"
+    assert E.LAST_SEARCH["candidates"] == n, "полный перебор не посмотрел все карточки"
+    assert res == expected, "откат на полный перебор потерял карточки"
+
+    # лимит больше числа карточек: предфильтр бессмыслен, тоже полный перебор
+    names6 = ["А", "Б", "В", "Г", "Д", "Е"]
+    vecs6 = [[math.cos(math.radians(a)), math.sin(math.radians(a))]
+             for a in (0.0, 20.0, 40.0, 80.0, 120.0, 150.0)]
+    out6 = _write_embed_index(root, names6, vecs6, with_pf=True)
+    s6 = [out6[i * 2] for i in range(len(names6))]
+    exp6 = sorted(((s6[i], names6[i]) for i in range(len(names6))), reverse=True)
+    exp6 = [(nm, round(sc, 4)) for sc, nm in exp6]
+    E, res = _embed_search(root, qv, 60)
+    assert E.LAST_SEARCH["prefilter"] is False and E.LAST_SEARCH["candidates"] == 6, f"лимит ≥ число карточек должен идти полным перебором: {E.LAST_SEARCH}"
+    assert res == exp6, f"полный перебор по маленькой базе: {res} вместо {exp6}"
+
+
+@test
+def test_t6_critic_overlap_worker_with_next(tmp: Path):
+    """T6: критик одного источника не держит воркера следующего.
+
+    Регрессия: width=2, а очередь гонялась по одному — воркер i+1 стартал, когда
+    критик i уже вернулся, и «параллелизм» был очередью исполнителя, а не обработкой.
+    Проверка без настенного магического порога: второй воркер обязан стартовать, пока
+    первый источник ещё обрабатывается (а заодно — до того, как его критик кончится).
+    Сериальная обработка стартует второго на 0.2 с (воркер 0.1 + критик 0.1) позже,
+    параллельная — на миллисекунды.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_build
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    marks, lock = {}, threading.Lock()
+
+    def mock_solve(cfg_, *a, **k):
+        src = a[2]
+        with lock:
+            marks[src] = {'w0': time.monotonic(), 'c0': None, 'c1': None}
+        time.sleep(0.1)                      # воркер
+        with lock:
+            marks[src]['c0'] = time.monotonic()
+        time.sleep(0.1)                      # критик
+        with lock:
+            marks[src]['c1'] = time.monotonic()
+        return {'alias': 't', 'status': 'разобран', 'backends': [], 'degraded': False, 'note': ''}
+
+    sources = [('Confluence', 'f1.md', 1), ('Confluence', 'f2.md', 1)]
+    with patch('agent_runner.read_partition', return_value=sources), patch('agent_runner.solve_source', side_effect=mock_solve):
+        res = run_build(cfg, str(root), False, True, 0)
+
+    assert len(marks) == 2, f"обработаны не оба источника: {list(marks)}"
+    first, second = sorted(marks, key=lambda s_: marks[s_]['w0'])
+    f, s = marks[first], marks[second]
+    assert s['w0'] < f['c0'], (
+        f"второй воркер стартовал через {s['w0'] - f['w0']:.3f} с после первого — только "
+        f"после того, как воркер первого кончился: источники гоняются по одному")
+    assert s['w0'] < f['c1'], (
+        f"второй воркер стартовал через {s['w0'] - f['w0']:.3f} с — критик первого "
+        "источника догнал следующий: параллелизма нет")
+    assert len(res["steps"]) == 2 and all(x["status"] == "разобран" for x in res["steps"]), f"run_build потерял источник: {res['steps']}"
+
+@test
+def test_aliases_batches_independent_conflicts_concurrently(tmp: Path):
+    """T9: run_aliases при «одновременно» = 2 и пуле из 2 — два конфликта сразу.
+    
+    Регрессия: aliases был сериальным for-циклом и пул читали только build и distill.
+    Проверяем перекрытие интервалов, а не настенное время: два заглушенных
+    solve_conflict «думают» по 0.1 с, и сериальная обработка не может перекрыть эти
+    интервалы, а пул на два потока — не может не перекрыть.
+    """
+    import threading
+    from unittest.mock import patch
+    
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_aliases
+    
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+    
+    marks, lock = {}, threading.Lock()
+    
+    def mock_solve(cfg_, *a, **k):
+        alias = a[1]
+        t0 = time.monotonic()
+        with lock:
+            marks[alias] = [t0, None, threading.get_ident()]
+        time.sleep(0.1)
+        with lock:
+            marks[alias][1] = time.monotonic()
+        return {'alias': alias, 'status': 'уточнил бы', 'backends': [], 'degraded': False, 'note': ''}
+    
+    conflicts = [('a', 'x'), ('b', 'y')]
+    with patch('agent_runner.read_conflicts', return_value=conflicts), patch('agent_runner.solve_conflict', side_effect=mock_solve):
+        res = run_aliases(cfg, str(root), False, True, 0)
+    
+    assert len(marks) == 2, f"обработаны не оба конфликта: {list(marks)}"
+    (a0, a1, ta), (b0, b1, tb) = sorted(marks.values(), key=lambda p: p[0])
+    assert ta != tb or (a0 < b1 and b0 < a1), (
+        f"интервалы solve_conflict ({a0:.3f}–{a1:.3f}, {b0:.3f}–{b1:.3f}) не пересекаются "
+        "и потоки один — обработка по очереди, а не пулом на два потока")
+    assert len(res["steps"]) == 2 and all(s["status"] == "уточнил бы" for s in res["steps"]), f"run_aliases потерял конфликт: {res['steps']}"
+    
+    
+@test
+def test_aliases_serial_fallback_without_parallelism(tmp: Path):
+    """T9: width без «одновременно» — 1: run_aliases гоняет solve_conflict в главном
+    потоке строго один за другим, какой бы широкой ни была ширина шлюза.
+    
+    Детерминизм: сериальный путь не запускает исполнителя, поэтому интервалы
+    не пересекаются и поток — главный.
+    """
+    import threading
+    from unittest.mock import patch
+    
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_aliases
+    
+    root = make_project(tmp)
+    main_thread = threading.get_ident()
+    
+    def make_cfg(parallel=None):
+        env = {'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+               'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+               'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+               'AURORA_AGENT_BUDGET_MIN': '20',
+               'AURORA_AGENT_MAX_STEPS': '10',
+               'AURORA_AGENT_REQUEST_TIMEOUT': '300'}
+        if parallel is not None:
+            env['AURORA_AGENT_PARALLEL'] = parallel
+        return parse_config(env)
+    
+    def run_once(cfg_, n_conflicts):
+        marks, lock = {}, threading.Lock()
+        
+        def mock_solve(cfg2, *a, **k):
+            alias = a[1]
+            t0 = time.monotonic()
+            with lock:
+                marks[alias] = [t0, None, threading.get_ident()]
+            time.sleep(0.05)
+            with lock:
+                marks[alias][1] = time.monotonic()
+            return {'alias': alias, 'status': 'уточнил бы', 'backends': [], 'degraded': False,
+                    'note': ''}
+        
+        conflicts = [(f'c{i}', f'x{i}') for i in range(n_conflicts)]
+        with patch('agent_runner.read_conflicts', return_value=conflicts), patch('agent_runner.solve_conflict', side_effect=mock_solve):
+            res = run_aliases(cfg_, str(root), False, True, 0)
+        return marks, res
+    
+    def assert_serial(marks, why):
+        for k1 in marks:
+            for k2 in marks:
+                if k1 >= k2:
+                    continue
+                i1, i2 = marks[k1], marks[k2]
+                assert i1[2] == main_thread and i2[2] == main_thread, f"{why}: solve_conflict ушёл в поток исполнителя — это параллельность"
+                assert not (i1[0] < i2[1] and i2[0] < i1[1]), f"{why}: интервалы конфликтов пересекаются — сериальный режим стал параллельным"
+    
+    # «одновременно» незаданное / = 1: два конфликта строго один за другим, в главном потоке
+    for parallel in (None, "1"):
+        why = f"PARALLEL={'не задан' if parallel is None else parallel}"
+        marks, res = run_once(make_cfg(parallel=parallel), 2)
+        assert len(marks) == 2 and len(res["steps"]) == 2
+        assert_serial(marks, why)
+        assert all(s["status"] == "уточнил бы" for s in res["steps"]), res["steps"]
+    
 def main() -> int:
     print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text().strip()}"
           + (f" · только «{ONLY}»" if ONLY else "") + "\n")
