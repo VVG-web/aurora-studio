@@ -48,7 +48,10 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import re
@@ -204,6 +207,104 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": ((p.stdout or "") + (p.stderr or "")).strip(), "refused": ""}
 
+# ------------------------------------------------------------------ in-process build_plan
+#
+# T5: solve_source больше не поднимает build_plan.py subprocess'ом на каждую карточку и
+# каждый --done — модуль импортируется в процесс, вызываются те же функции (build_card /
+# mark_done). Побочные эффекты те же: карточка в базе, отметка в манифесте; холодных
+# Popen на карточку нет. Одиночный _BP_LOCK накрывает весь вызов: глобальное состояние
+# build_plan — файл манифеста (два потока, одновременно поставившие отметку, держат
+# собственные копии словаря, и поздняя запись затёрла бы раннюю — это же пряталось в
+# subprocess-режиме T4) — и якорь KB_ROOT, который не по потокам.
+
+_BP_MODULES: dict = {}
+_BP_LOCK = threading.Lock()
+
+# Константы по умолчанию для build_plan
+_DEFAULT_CARD_SECTION = "Concepts"
+
+def _bp_path(cwd: str) -> str:
+    """Тот же файл, что выбрал бы run_command: движок проекта, затем кит."""
+    path = os.path.join(cwd, ".opencode", "scripts", "build_plan.py")
+    if not os.path.isfile(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_plan.py")
+    return path
+
+
+def _bp_import(cwd: str):
+    """build_plan как модуль в процессе. → модуль. Вызывать под _BP_LOCK."""
+    key = os.path.abspath(_bp_path(cwd))
+    mod = _BP_MODULES.get(key)
+    if mod is None:
+        scripts_dir = os.path.dirname(key)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        spec = importlib.util.spec_from_file_location(
+            "aurora_build_plan_" + re.sub(r"\W", "_", key.lstrip(os.sep)), key)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"build_plan.py не импортируется как модуль: {key}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _BP_MODULES[key] = mod
+    # KB_ROOT относителен корню проекта (aurora_common), а CWD процесса корнем проекта
+    # быть не обязан: якорим к cwd — так subprocess.run(cwd=cwd) вёл подпроцесс.
+    if not os.path.isabs(mod.KB_ROOT):
+        mod.KB_ROOT = os.path.join(cwd, mod.KB_ROOT)
+    mod.MANIFEST = os.path.join(mod.KB_ROOT, "meta", "manifest.json")
+    return mod
+
+
+def _bp_flag(args: list, flag: str, default: str = "") -> str:
+    """Значение флага из списка аргументов — чтобы в-процесс совпадало с CLI."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return default
+
+
+def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
+    """build_plan.py в-процессе: те же побочные эффекты, без Popen. → как run_command.
+
+    Режимы, которыми пользуется solve_source: --card и --done. Если модуль не импортируется
+    — прежний путь, subprocess, без падения.
+    """
+    allowed, why = AG.write_allowed("build_plan.py", args)
+    if not allowed:
+        return {"ok": False, "refused": why, "rc": None, "out": ""}
+    try:
+        out, err = io.StringIO(), io.StringIO()
+        prev_cwd = os.getcwd()
+        with _BP_LOCK:
+            try:
+                # Относительные пути source/--done решаются от корня проекта — так подпроцесс
+                # держал subprocess.run(cwd=cwd). Под локом другой поток файлов с относительными
+                # путями не трогает: воркеры ждут лок или в LLM-вызове, основная — печатает прогресс.
+                os.chdir(cwd)
+                mod = _bp_import(cwd)
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    if "--card" in args:
+                        rc = mod.build_card(_bp_flag(args, "--card"), _bp_flag(args, "--source"),
+                                            _bp_flag(args, "--sections"),
+                                            _bp_flag(args, "--to", _DEFAULT_CARD_SECTION),
+                                            "--apply" in args, _bp_flag(args, "--summary"),
+                                            _bp_flag(args, "--paras"))
+                    elif "--done" in args:
+                        manifest = mod.load_manifest()
+                        manifest.setdefault("sources", {})
+                        rc = mod.mark_done(manifest, _bp_flag(args, "--done"),
+                                           int(_bp_flag(args, "--cards", "0") or 0),
+                                           _bp_flag(args, "--empty"))
+                    else:
+                        raise ValueError("режим не поддерживается в-процессе: " + " ".join(args))
+            finally:
+                os.chdir(prev_cwd)
+        return {"ok": rc == 0, "rc": rc,
+                "out": ((out.getvalue() or "") + (err.getvalue() or "")).strip(),
+                "refused": ""}
+    except Exception:  # noqa: BLE001 — импорт сломан: subprocess, а не падение
+        return run_command(cwd, "build_plan.py", args, timeout=timeout)
+
 
 # ------------------------------------------------------------------ задача: синонимы
 
@@ -296,7 +397,6 @@ PROMPT_CRITIC = """Ты проверяешь решение по конфлик�
 {{"ok": true}}
 или
 {{"ok": false, "why": "<что не так, одна фраза>", "better": "distinct|duplicate"}}"""
-
 
 def parse_json(text: str) -> dict | None:
     """Достать JSON из ответа модели: она любит обрамлять его текстом или ```-оградой."""
@@ -721,7 +821,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     if plan.get("empty"):
         note = str(plan["empty"])[:200]
         if apply:
-            res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
+            res = run_build_plan(cwd, ["--done", source, "--empty", note])
             if not res["ok"]:
                 step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-160:]}")
                 return step
@@ -736,7 +836,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             args += ["--summary", str(card["summary"])[:300]]
         if apply:
             args.append("--apply")
-        res = run_command(cwd, "build_plan.py", args)
+        res = run_build_plan(cwd, args)
         if res.get("refused"):
             step.update(status="сбой", note="команда отклонена: " + res["refused"])
             return step
@@ -746,7 +846,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         made.append(f"«{card['title']}» ← секции {card['sections']} → {card.get('to') or 'Concepts'}")
 
     if apply:
-        res = run_command(cwd, "build_plan.py", ["--done", source, "--cards", str(len(made))])
+        res = run_build_plan(cwd, ["--done", source, "--cards", str(len(made))])
         if not res["ok"]:
             # Отметка проверяется по базе: не поставилась — карточек в базе нет,
             # и считать источник разобранным нельзя.
@@ -875,47 +975,78 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     if limit:
         sources = sources[:limit]
 
-    steps, fails, stopped = [], {}, ""
-    say(f"Источников в работе: {len(sources)} · лимит шагов {cfg['max_steps']} · "
-        f"бюджет {cfg['budget_min']} мин")
-    for group, source, _kb in sources:
+    # Determine parallelism width
+    cfg_parallel = cfg.get("parallel", 1)
+    if cfg_parallel is not None and cfg_parallel > 1:
+        try:
+            from agent_core import pool as get_pool
+            slots = get_pool(cfg)
+            width = min(len(slots), len(sources)) or 1
+        except Exception:
+            width = 1
+    else:
+        width = 1
+
+    import sys
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    progress_lock = threading.Lock()
+    processed_count = 0
+
+    def process_source(index_source):
+        index, (group, source, _kb) = index_source
         if time.time() > budget:
-            stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
-            break
-        if len(steps) >= cfg["max_steps"]:
-            stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
-            break
-        total = min(len(sources), cfg["max_steps"])
-        if not steps:
-            say(threads_line(cfg, 1, "разбор источников идёт по очереди: карточки "
-                                     "предыдущего источника нужны следующему"))
-        say(f"  {progress(len(steps), total, started)} · 1 поток · "
-            f"{source.rsplit('/', 1)[-1][:60]} …")
-        step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
-                            deadline=min(budget, time.time() + cfg["request_timeout"]))
-        steps.append(step)
-        say(f"      → {step['status']}"
-            + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
-        if step["status"] == "сбой":
-            key = step["note"][:60]
-            fails[key] = fails.get(key, 0) + 1
-            if fails[key] >= SAME_FAIL_LIMIT:
-                steps.append({"alias": "—", "status": "стоп", "backends": [], "degraded": False,
-                              "note": f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"})
+            return index, (group, source, _kb), {"alias": "—", "status": "стоп", "note": f"бюджет {cfg['budget_min']} мин исчерпан"}
+        step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call, deadline=min(budget, time.time() + cfg["request_timeout"]))
+        return index, (group, source, _kb), step
+
+    steps, fails, stopped = [], {}, ""
+    say(f"Источников в работе: {len(sources)} · лимит шагов {cfg['max_steps']} · бюджет {cfg['budget_min']} мин")
+    total = min(len(sources), cfg["max_steps"])
+    jobs = list(enumerate(sources[:total]))
+
+    if width == 1:
+        say(threads_line(cfg, 1, "разбор источников идёт по очереди: карточки предыдущего источника нужны следующему"))
+        for group, source, _kb in sources:
+            if time.time() > budget:
+                stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
                 break
-            if cfg["debug"]:
-                steps.append({"alias": "—", "status": "стоп", "backends": [], "degraded": False,
-                              "note": "AURORA_AGENT_DEBUG=1: стоп на первой ошибке"})
+            if len(steps) >= cfg["max_steps"]:
+                stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
                 break
+            say(f"  {progress(len(steps), total, started)} · поток 1 · {source.rsplit('/', 1)[-1][:60]} …")
+            step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call, deadline=min(budget, time.time() + cfg["request_timeout"]))
+            steps.append(step)
+            say(f"      → {step['status']}" + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+            if step["status"] == "сбой":
+                fails[step["note"][:60]] = fails.get(step["note"][:60], 0) + 1
+                if fails[step["note"][:60]] >= SAME_FAIL_LIMIT:
+                    steps.append({"alias": "—", "status": "стоп", "backends": [], "degraded": False, "note": f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд"})
+                    break
+                if cfg["debug"]:
+                    break
+    else:
+        say(threads_line(cfg, width))
+        with ThreadPoolExecutor(max_workers=width) as executor:
+            futures = {executor.submit(process_source, job): job[0] for job in jobs}
+            for future in as_completed(futures):
+                if time.time() > budget or len(steps) >= cfg["max_steps"]:
+                    break
+                with progress_lock:
+                    idx, source_info, step = future.result()
+                    steps.append(step)
+                    source = source_info[1]
+                    say(f"  {progress(len(steps)-1, total, started)} · потоков {width} · {source.rsplit('/', 1)[-1][:60]} …")
+                    say(f"      → {step['status']}" + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+                    if step["status"] == "сбой":
+                        key = step["note"][:60]
+                        fails[key] = fails.get(key, 0) + 1
+                        if fails[key] >= SAME_FAIL_LIMIT:
+                            stopped = f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"
+                            break
 
     after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
-    return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build",
-            "before": {"left": before_left, "done": before_done, "errors": before_errors},
-            "after": {"left": after_left, "done": after_done,
-                      "errors": lint_errors(cwd) if apply else before_errors},
-            "total": len(sources), "partition": partition, "limited": bool(limit),
-            "stopped": stopped,
-            "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
+    return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build", "before": {"left": before_left, "done": before_done, "errors": before_errors}, "after": {"left": after_left, "done": after_done, "errors": lint_errors(cwd) if apply else before_errors}, "total": len(sources), "partition": partition, "limited": bool(limit), "stopped": stopped, "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
 
 
 def verdict_build(res: dict, apply: bool) -> tuple:
@@ -2436,36 +2567,83 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     steps, fails, stopped = [], {}, ""
     say(f"Конфликтов в работе: {len(conflicts)} · лимит шагов {cfg['max_steps']} · "
         f"бюджет {cfg['budget_min']} мин")
-    for alias, cards in conflicts:
-        if time.time() > budget:
-            stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
-            break
-        if len(steps) >= cfg["max_steps"]:
-            stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
-            break
+    # Determine parallelism width
+    cfg_parallel = cfg.get("parallel", 1)
+    if cfg_parallel is not None and cfg_parallel > 1:
+        try:
+            from agent_core import pool as get_pool
+            slots = get_pool(cfg)
+            width = min(len(slots), len(conflicts)) or 1
+        except Exception:
+            width = 1
+    else:
+        width = 1
+    
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    progress_lock = threading.Lock()
+    
+    if width == 1:
+        for alias, cards in conflicts:
+            if time.time() > budget:
+                stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
+                break
+            if len(steps) >= cfg["max_steps"]:
+                stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
+                break
+            total = min(len(conflicts), cfg["max_steps"])
+            if not steps:
+                say(threads_line(cfg, 1, "разбор синонимов идёт по очереди: решение по "
+                                         "одной паре меняет картину для следующих"))
+            say(f"  {progress(len(steps), total, started)} · 1 поток · «{alias[:50]}» …")
+            step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
+                                  deadline=min(budget, time.time() + cfg["request_timeout"]))
+            steps.append(step)
+            say(f"      → {step['status']}"
+                + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+            if step["status"] == "сбой":
+                key = step["note"][:60]
+                fails[key] = fails.get(key, 0) + 1
+                if fails[key] >= SAME_FAIL_LIMIT:
+                    steps.append({"alias": "—", "status": "стоп",
+                                  "note": f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}",
+                                  "backends": [], "degraded": False})
+                    break
+                if cfg["debug"]:
+                    steps.append({"alias": "—", "status": "стоп",
+                                  "note": "AURORA_AGENT_DEBUG=1: стоп на первой ошибке",
+                                  "backends": [], "degraded": False})
+                    break
+    else:
+        say(threads_line(cfg, width))
         total = min(len(conflicts), cfg["max_steps"])
-        if not steps:
-            say(threads_line(cfg, 1, "разбор синонимов идёт по очереди: решение по "
-                                     "одной паре меняет картину для следующих"))
-        say(f"  {progress(len(steps), total, started)} · 1 поток · «{alias[:50]}» …")
-        step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
-                              deadline=min(budget, time.time() + cfg["request_timeout"]))
-        steps.append(step)
-        say(f"      → {step['status']}"
-            + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
-        if step["status"] == "сбой":
-            key = step["note"][:60]
-            fails[key] = fails.get(key, 0) + 1
-            if fails[key] >= SAME_FAIL_LIMIT:
-                steps.append({"alias": "—", "status": "стоп",
-                              "note": f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}",
-                              "backends": [], "degraded": False})
-                break
-            if cfg["debug"]:
-                steps.append({"alias": "—", "status": "стоп",
-                              "note": "AURORA_AGENT_DEBUG=1: стоп на первой ошибке",
-                              "backends": [], "degraded": False})
-                break
+        jobs = list(enumerate(conflicts[:total]))
+        
+        def process_conflict(index_conflict):
+            index, (alias, cards) = index_conflict
+            step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
+                                  deadline=min(budget, time.time() + cfg["request_timeout"]))
+            return index, (alias, cards), step
+        
+        with ThreadPoolExecutor(max_workers=width) as executor:
+            futures = {executor.submit(process_conflict, job): job[0] for job in jobs}
+            for future in as_completed(futures):
+                if time.time() > budget or len(steps) >= cfg["max_steps"]:
+                    break
+                with progress_lock:
+                    idx, (alias, cards), step = future.result()
+                    steps.append(step)
+                    say(f"  {progress(len(steps)-1, total, started)} · потоков {width} · «{alias[:50]}» …")
+                    say(f"      → {step['status']}"
+                        + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+                    if step["status"] == "сбой":
+                        key = step["note"][:60]
+                        fails[key] = fails.get(key, 0) + 1
+                        if fails[key] >= SAME_FAIL_LIMIT:
+                            stopped = f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"
+                            break
+                        if cfg["debug"]:
+                            break
 
     after_conflicts = lint_conflicts(cwd) if apply else before_conflicts
     after_errors = lint_errors(cwd) if apply else before_errors
