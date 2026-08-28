@@ -9365,17 +9365,23 @@ def test_embed_prefilter_scale(tmp: Path):
     qv = [x / q_vec_norm for x in raw_qvec]
 
     root = make_project(tmp)
-    
-    # Генерируем N случайно сгенерированных векторов
     names = [f"Карта-{i:04d}" for i in range(n)]
+   
+    # Остальные измерения — малый шум
+    # Это создаёт сильную вариативность, которую предфильтр может отсечь
+    golden_angle = 137.50776405
     vecs = []
-    for _ in range(n):
-        # Генерируем векторы с кластерами для эффективности предфильтра:
-        # используются рандомные знаки для разных направлений в пространстве
-        base_vec = [rng.choice([-1, 1]) * abs(rng.gauss(0, 0.5)) for _ in range(dim)]
-        vec_norm = math.sqrt(sum(x**2 for x in base_vec))
-        vecs.append([x / vec_norm for x in base_vec])
-
+    for i in range(n):
+        angle_rad = math.radians((i * golden_angle) % 360)
+        # Сильная компонентная на 2D плоскости для работы предфильтра
+        main_strength = 1.0
+        noise_strength = 0.01
+        v = [0.0] * dim
+        v[0] = main_strength * math.cos(angle_rad)
+        v[1] = main_strength * math.sin(angle_rad)
+        for j in range(2, dim):
+            v[j] = noise_strength * (i % 17 - 8) / 8  # детерминированный шум
+        vecs.append(v)
     # Записываем индекс с предфильтром
     out = _write_embed_index(root, names, vecs, with_pf=True)
 
@@ -9396,13 +9402,9 @@ def test_embed_prefilter_scale(tmp: Path):
     # Проверка: предфильтр включен
     assert E.LAST_SEARCH["prefilter"] is True, "поиск обошёл предфильтр, хотя он в индексе"
 
-    # Примечание: на данных 768D случайной генерации предфильтр может не сократить
-    # кандидатов, но основную задачу (результат == оракулу) выполняет.
+    # Проверка: предфильтр действительно сузил пространство
     cands = E.LAST_SEARCH.get("candidates", n)
-    if cands < n:
-        print(f"[scale] предфильтр сузил до {cands}")
-    else:
-        print(f"[scale] предфильтр не сузил кандидатов ({cands}/{n}), выполняется полный перебор")
+    assert 10 <= cands < n, f"предфильтр не сузил кандидатов: {cands} из {n}"
 
     # Жёсткая проверка: точное совпадение с оракулом
     assert res == expected, f"предфильтр потерял точный топ-N: {res}\nvs\n{expected}"
