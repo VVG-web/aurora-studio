@@ -28,6 +28,7 @@ KIT = Path(__file__).resolve().parents[1]
 SCRIPTS = KIT / "scripts"
 VERBOSE = "-v" in sys.argv
 RESULTS: list = []
+REGISTRY: list = []
 
 # Прогон не читает личный конфиг машины. Без этого тест, объявивший один бэкенд с окном
 # в 8 000, видел ещё три из `.env.aurora.local` разработчика: `prompt_budget` берёт самое
@@ -125,21 +126,50 @@ def why(e: BaseException) -> str:
     return str(e) or "(без пояснения — добавьте текст в assert)"
 
 
+# Инварианты — source-scan проверки: читают текст кода движка (scripts/*.py) через
+# `.read_text(`, потому регрессия в этих файлах ловится ТОЛЬКО их прогоном. Любой
+# `--only=X` обязан их гонять (урок T5: литерал сломал source-scan тест, его поймал
+# только полный прогон). Список зафиксирован по точкам чтения, каждая проверка <2 с.
+INVARIANTS = frozenset({
+    "build can run the whole plan overnight",
+    "ask tab names the model and lets you pick it",
+    "console names the model and the speed",
+    "night run waits out a dropped connection",
+    "oversized request does not kill the provider",
+    "long source is not silently cut",
+    "the agent can hold a conversation and use tools",
+    "width probe measures work not noise",
+    "section is the type written as a folder",
+    "adapter does not serialise the whole run",
+    "adapter pool structure and growth",
+    "console says which step uses the threads",
+})
+
+
+def select_tests(only: str = "", smoke: bool = False, no_invariants: bool = False):
+    """Выборка (display_name, fn, is_invariant) в порядке регистрации."""
+    chosen = []
+    for name, fn in REGISTRY:
+        is_inv = name in INVARIANTS
+        if smoke:
+            if is_inv:
+                chosen.append((name, fn, True))
+        elif only:
+            if only.lower() in name.lower():
+                chosen.append((name, fn, is_inv))
+            elif is_inv and not no_invariants:
+                chosen.append((name, fn, True))
+        else:
+            if no_invariants and is_inv:
+                continue
+            chosen.append((name, fn, is_inv))
+    return chosen
+
+
 def test(fn):
+    """Регистрация проверки (исполняет драйвер после импорта, перед main())."""
     name = fn.__name__.replace("test_", "").replace("_", " ")
-    if ONLY and ONLY.lower() not in name.lower():
-        return fn
-    with tempfile.TemporaryDirectory() as td:
-        try:
-            fn(Path(td))
-            RESULTS.append((name, None))
-            print(f"  ✅ {name}")
-        except AssertionError as e:
-            RESULTS.append((name, why(e)))
-            print(f"  ❌ {name}\n     {why(e).splitlines()[0]}")
-        except Exception as e:  # noqa: BLE001
-            RESULTS.append((name, f"{type(e).__name__}: {e}"))
-            print(f"  ❌ {name} — {type(e).__name__}: {e}")
+    REGISTRY.append((name, fn))
     return fn
 
 
@@ -9412,12 +9442,58 @@ def test_embed_prefilter_scale(tmp: Path):
     near_k = sum(1 for s in scores_sorted if abs(s[0] - kscore) < 1e-9)
     assert near_k <= 1, f"фикстура сломана: {near_k} векторов с одинаковой оценкой на границе топ-{limit}"
 
+# ------------------------------------------------------------------- smoke-мета-тесты
+# Не являются инвариантами (имена *_smoke_* исключены из рекурсии subprocess).
+@test
+def test_smoke_invariants_always_run_with_filter(_t):
+    """Пустой фильтр: rc 1 + warning «не подошёл», но инварианты всё равно прогнаны (урок T5)."""
+    cp = subprocess.run([sys.executable, __file__, "--only=zzz_no_match_zzz"],
+                      capture_output=True, text=True, env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
+    assert cp.returncode == 1, cp.stdout
+    assert "не подошёл" in cp.stdout, cp.stdout
+    for name in INVARIANTS:
+        assert name in cp.stdout, (name, cp.stdout)
 
+
+@test
+def test_smoke_runs_only_invariants(_t):
+    """--smoke гоняет только инварианты, без тяжёлых интеграционных проверок."""
+    cp = subprocess.run([sys.executable, __file__, "--smoke"],
+                      capture_output=True, text=True, env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
+    assert cp.returncode == 0, cp.stdout
+    for name in INVARIANTS:
+        assert name in cp.stdout, (name, cp.stdout)
+    assert "aliases serial fallback without parallelism" not in cp.stdout, cp.stdout
+
+SMOKE = "--smoke" in sys.argv
+NO_INVARIANTS = "--no-invariants" in sys.argv
+
+# ---------------------------------+ import-драйвер: исполняет отобранные проверки
+# (декоратор лишь регистрирует; исполнение здесь — чтобы --only/--smoke/--no-invariants
+# решали состав до прогона).
+selected = select_tests(only=ONLY, smoke=SMOKE, no_invariants=NO_INVARIANTS)
+FILTER_MISSED = bool(ONLY) and not SMOKE and not any(not is_inv for _n, _f, is_inv in selected)
+with tempfile.TemporaryDirectory() as td:
+    for _n, _fn, _is_inv in selected:
+        run_td = Path(td) / f"case-{len(RESULTS)}"
+        run_td.mkdir(parents=True)
+        try:
+            _fn(run_td)
+            RESULTS.append((_n, None))
+            print(f"  ✅ {_n}")
+        except AssertionError as e:
+            RESULTS.append((_n, why(e)))
+            print(f"  ❌ {_n}\n     {why(e).splitlines()[0]}")
+        except Exception as e:  # noqa: BLE001
+            RESULTS.append((_n, f"{type(e).__name__}: {e}"))
+            print(f"  ❌ {_n} — {type(e).__name__}: {e}")
 def main() -> int:
     print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text().strip()}"
           + (f" · только «{ONLY}»" if ONLY else "") + "\n")
     if ONLY and not RESULTS:
         print(f"Ни одна проверка не подошла под «{ONLY}».")
+    if FILTER_MISSED:
+        print(f"⚠️ фильтр «{ONLY}» не подошёл ни одной проверке — инварианты прогнаны; проверьте опечатку в фильтре")
         return 1
     failed = [(n, e) for n, e in RESULTS if e]
     print(f"\nПройдено: {len(RESULTS) - len(failed)}/{len(RESULTS)}")
