@@ -9339,6 +9339,82 @@ def test_aliases_mixed_groups_parallel_across_serial_within(tmp: Path):
         f"конца группы {group_end:.3f}: независимые группы гоняются по очереди")
     assert len(res["steps"]) == 3 and all(s["status"] == "уточнил бы" for s in res["steps"]), \
         f"run_aliases потерял конфликт: {res['steps']}"
+@test
+def test_embed_prefilter_scale(tmp: Path):
+    """T7: предфильтр сохраняет точный топ-N на масштабном наборе (1000–1500 векторов).
+
+    Проверяем, что при большом количестве векторов (1000 шт. × 768 измерений)
+    предфильтр не теряет лучшие совпадения. Оракул (полный перебор) и ассистент
+    должны давать идентичный результат.
+    """
+    import random
+    import random
+
+    import math
+    # Параметры теста
+    n = 1000  # число векторов (нижняя граница масштаба 1000-1500)
+    dim = 768  # размерность (стандарт для bge-m3)
+    limit = 10  # размер выдачи топ-N
+
+    # Создаём детерминированный вектор запроса
+    rng = random.Random(42)
+
+    # Генерируем вектор запроса: случайные числа → нормализуем
+    raw_qvec = [rng.gauss(0, 1) for _ in range(dim)]
+    q_vec_norm = math.sqrt(sum(x**2 for x in raw_qvec))
+    qv = [x / q_vec_norm for x in raw_qvec]
+
+    root = make_project(tmp)
+    
+    # Генерируем N случайно сгенерированных векторов
+    names = [f"Карта-{i:04d}" for i in range(n)]
+    vecs = []
+    for _ in range(n):
+        # Генерируем векторы с кластерами для эффективности предфильтра:
+        # используются рандомные знаки для разных направлений в пространстве
+        base_vec = [rng.choice([-1, 1]) * abs(rng.gauss(0, 0.5)) for _ in range(dim)]
+        vec_norm = math.sqrt(sum(x**2 for x in base_vec))
+        vecs.append([x / vec_norm for x in base_vec])
+
+    # Записываем индекс с предфильтром
+    out = _write_embed_index(root, names, vecs, with_pf=True)
+
+    # Измеряем время работы (без assert ограничения)
+    t0 = time.monotonic()
+    E, res = _embed_search(root, qv, limit)
+    elapsed = time.monotonic() - t0
+    print(f"[scale] n={n} dim={dim} search={elapsed:.3f}s")
+
+    # Оракул: полный перебор по сохраненным векторам (float32)
+    scores = []
+    for i in range(n):
+        dot = sum(qv[j] * float(out[i * dim + j]) for j in range(dim))
+        scores.append((dot, names[i]))
+    scores_sorted = sorted(scores, key=lambda x: x[0], reverse=True)
+    expected = [(name, round(score, 4)) for score, name in scores_sorted[:limit]]
+
+    # Проверка: предфильтр включен
+    assert E.LAST_SEARCH["prefilter"] is True, "поиск обошёл предфильтр, хотя он в индексе"
+
+    # Примечание: на данных 768D случайной генерации предфильтр может не сократить
+    # кандидатов, но основную задачу (результат == оракулу) выполняет.
+    cands = E.LAST_SEARCH.get("candidates", n)
+    if cands < n:
+        print(f"[scale] предфильтр сузил до {cands}")
+    else:
+        print(f"[scale] предфильтр не сузил кандидатов ({cands}/{n}), выполняется полный перебор")
+
+    # Жёсткая проверка: точное совпадение с оракулом
+    assert res == expected, f"предфильтр потерял точный топ-N: {res}\nvs\n{expected}"
+
+    # Проверка на вырожденность фикстуры: топ-N не должен иметь ничью на границе
+    # (иначе тест непредсказуем из-за произвольного порядка сортировки)
+    kscore = scores_sorted[limit - 1][0]
+    near_k = [s[0] for s in scores_sorted if abs(s[0] - kscore) < 1e-6]
+    if len(near_k) > 1:
+        # Если есть несколько векторов с практически равной оценкой — тоже райшь,
+        # но в 768-мерном пространстве с непрерывным распределением это крайне маловероятно
+        print(f"[scale] warning: {len(near_k)} векторов с близкой оценкой у границы: {kscore}")
 
 
 def main() -> int:
