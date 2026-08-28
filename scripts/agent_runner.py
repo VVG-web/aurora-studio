@@ -2617,21 +2617,40 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     else:
         say(threads_line(cfg, width))
         total = min(len(conflicts), cfg["max_steps"])
-        jobs = list(enumerate(conflicts[:total]))
-        
-        def process_conflict(index_conflict):
-            index, (alias, cards) = index_conflict
-            step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
-                                  deadline=min(budget, time.time() + cfg["request_timeout"]))
-            return index, (alias, cards), step
-        
-        with ThreadPoolExecutor(max_workers=width) as executor:
-            futures = {executor.submit(process_conflict, job): job[0] for job in jobs}
-            for future in as_completed(futures):
-                if time.time() > budget or len(steps) >= cfg["max_steps"]:
+        # Конфликты над общей карточкой — сериально: решение одного переписывает alias
+        # в базе и меняет картину для следующего. Раскладываем на группы по пересечению
+        # карточек — жадно O(N²): конфликт уходит в первую группу, с которой пересекается,
+        # иначе заводит новую. Группы карточек не делят — идут параллельно, конфликты
+        # внутри группы — строго один за другим.
+        def cards_of(cards):
+            if isinstance(cards, str):
+                cards = [cards]
+            return frozenset(str(c).strip() for c in (cards or []) if str(c).strip())
+
+        groups = []
+        for alias, cards in conflicts[:total]:
+            cs = cards_of(cards)
+            for g in groups:
+                if cs & g[0]:
+                    g[0] |= cs
+                    g[1].append((alias, cards))
                     break
+            else:
+                groups.append([set(cs), [(alias, cards)]])
+
+        effective = min(len(slots), len(groups)) or 1
+        stop = threading.Event()
+
+        def process_group(items):
+            nonlocal stopped
+            for alias, cards in items:
+                if stop.is_set() or time.time() > budget or len(steps) >= cfg["max_steps"]:
+                    break
+                step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
+                                      deadline=min(budget, time.time() + cfg["request_timeout"]))
                 with progress_lock:
-                    idx, (alias, cards), step = future.result()
+                    if stop.is_set() or time.time() > budget or len(steps) >= cfg["max_steps"]:
+                        return
                     steps.append(step)
                     say(f"  {progress(len(steps)-1, total, started)} · потоков {width} · «{alias[:50]}» …")
                     say(f"      → {step['status']}"
@@ -2641,9 +2660,13 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                         fails[key] = fails.get(key, 0) + 1
                         if fails[key] >= SAME_FAIL_LIMIT:
                             stopped = f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"
-                            break
-                        if cfg["debug"]:
-                            break
+                            stop.set()
+                        elif cfg["debug"]:
+                            stop.set()
+
+        with ThreadPoolExecutor(max_workers=effective) as executor:
+            for g in groups:
+                executor.submit(process_group, g[1])
 
     after_conflicts = lint_conflicts(cwd) if apply else before_conflicts
     after_errors = lint_errors(cwd) if apply else before_errors
