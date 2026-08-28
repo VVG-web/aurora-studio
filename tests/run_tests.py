@@ -9218,6 +9218,129 @@ def test_aliases_serial_fallback_without_parallelism(tmp: Path):
         assert_serial(marks, why)
         assert all(s["status"] == "уточнил бы" for s in res["steps"]), res["steps"]
     
+@test
+def test_aliases_dependent_conflicts_stay_serial(tmp: Path):
+    """T9: конфликты над общей карточкой — сериально, даже в параллельном отделе.
+
+    Гонка: параллельный отдел скармливал все конфликты в пул сразу, и два конфликта
+    над одной карточкой решались одновременно. А решение одного переписывает alias в
+    базе и меняет картину для следующего — пара над общей карточкой обязана идти
+    строго один за другим. Проверяем непересечение интервалов solve_conflict:
+    два заглушенных шага "думают" по 0.1 с, сериальная обработка не может их
+    перекрыть, а пул на два потока — почти наверняка может.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_aliases
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    def run_once(conflicts):
+        marks, lock = {}, threading.Lock()
+
+        def mock_solve(cfg_, *a, **k):
+            alias = a[1]
+            t0 = time.monotonic()
+            with lock:
+                marks[alias] = [t0, None]
+            time.sleep(0.1)
+            with lock:
+                marks[alias][1] = time.monotonic()
+            return {'alias': alias, 'status': 'уточнил бы', 'backends': [], 'degraded': False,
+                    'note': ''}
+
+        with patch('agent_runner.read_conflicts', return_value=conflicts), \
+                patch('agent_runner.solve_conflict', side_effect=mock_solve):
+            res = run_aliases(cfg, str(root), False, True, 0)
+        return marks, res
+
+    # два конфликта над общей карточкой «x» — строго один за другим
+    marks, res = run_once([('a', 'x'), ('b', 'x')])
+    assert len(marks) == 2, f"обработаны не оба конфликта: {list(marks)}"
+    (a0, a1), (b0, b1) = marks['a'], marks['b']
+    assert not (a0 < b1 and b0 < a1), (
+        f"конфликты над общей карточкой «x» шли параллельно: интервалы {a0:.3f}–{a1:.3f} и "
+        f"{b0:.3f}–{b1:.3f} пересекаются, а решение одного меняет картину для следующего")
+    assert len(res["steps"]) == 2 and all(s["status"] == "уточнил бы" for s in res["steps"]), \
+        f"run_aliases потерял конфликт: {res['steps']}"
+
+    # граница: одиночный конфликт в параллельном режиме — один шаг, без падения
+    marks, res = run_once([('a', 'x')])
+    assert len(marks) == 1, f"одиночный конфликт: {list(marks)}"
+    assert len(res["steps"]) == 1 and res["steps"][0]["status"] == "уточнил бы", \
+        f"одиночный конфликт сломал прогон: {res['steps']}"
+
+
+@test
+def test_aliases_mixed_groups_parallel_across_serial_within(tmp: Path):
+    """T9: группы конфликтов по карточкам: внутри группы — сериально, между — параллельно.
+
+    a и b над карточкой «x» и c над «y»: a с b обязаны идти один за другим (общая
+    карточка), а c — не конфликтует с группой и обязан успеть стартовать, пока группа
+    ещё работает: c стартует ДО конца объединённого интервала a+b. Пул на два потока:
+    группа и одиночка уходят в разные воркеры.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_aliases
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    marks, lock = {}, threading.Lock()
+
+    def mock_solve(cfg_, *a, **k):
+        alias = a[1]
+        t0 = time.monotonic()
+        with lock:
+            marks[alias] = [t0, None]
+        time.sleep(0.1)
+        with lock:
+            marks[alias][1] = time.monotonic()
+        return {'alias': alias, 'status': 'уточнил бы', 'backends': [], 'degraded': False,
+                'note': ''}
+
+    conflicts = [('a', 'x'), ('b', 'x'), ('c', 'y')]
+    with patch('agent_runner.read_conflicts', return_value=conflicts), \
+            patch('agent_runner.solve_conflict', side_effect=mock_solve):
+        res = run_aliases(cfg, str(root), False, True, 0)
+
+    assert len(marks) == 3, f"обработаны не все три конфликта: {list(marks)}"
+    (a0, a1), (b0, b1), (c0, c1) = marks['a'], marks['b'], marks['c']
+    assert not (a0 < b1 and b0 < a1), (
+        f"a и b над общей карточкой «x» шли параллельно: интервалы {a0:.3f}–{a1:.3f} и "
+        f"{b0:.3f}–{b1:.3f} пересекаются, а внутри группы — строго по одному")
+    group_end = max(a1, b1)
+    assert c0 < group_end, (
+        f"c (карточка «y», с группой не конфликтует) стартовал в {c0:.3f} — уже после "
+        f"конца группы {group_end:.3f}: независимые группы гоняются по очереди")
+    assert len(res["steps"]) == 3 and all(s["status"] == "уточнил бы" for s in res["steps"]), \
+        f"run_aliases потерял конфликт: {res['steps']}"
+
+
 def main() -> int:
     print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text().strip()}"
           + (f" · только «{ONLY}»" if ONLY else "") + "\n")
