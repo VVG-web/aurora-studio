@@ -5908,6 +5908,13 @@ def test_a_route_waits_for_the_network_like_the_engine(tmp: Path):
     assert "const ROUTE_OFFLINE_TRIES = 8;" in ui, \
         "нет лимита попыток ожидания сети"
     assert "const looksOffline" in ui, "нет проверки текста на офлайн"
+    # Все вызовы передают вывод шага массивом строк (буфер runStep), а не строкой: проверка
+    # обязана принимать и то и другое. (text||"").toLowerCase() на массиве — TypeError, и
+    # первый шаг с кодом 1 убивает весь маршрут без единой строки в консоли («Починить
+    # базу» останавливался на 1/13, 2026-08-30).
+    m_lo = re.search(r"const looksOffline\s*=\s*text\s*=>\s*\{(.*?)\};", ui, re.S)
+    assert m_lo, "не найдена реализация looksOffline"
+    assert "Array.isArray" in m_lo.group(1) and ".join(" in m_lo.group(1), "looksOffline не принимает массив строк: маршрут гибнет на первом шаге с кодом 1"
     assert "const waitNetworkCycle" in ui, "нет цикла ожидания сети"
     assert "ждёт сеть (попытка" in ui, "нет текста о состоянии ожидания сети"
     assert "Перестал ждать сеть:" in ui, "нет текста о потолке ожидания"
