@@ -441,6 +441,33 @@ DOWN_FOR = 900        # столько не трогаем провайдера,
 DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
 RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
+# Жёсткий лимит параллельности на бэкенд: семафор размера `width`, по одному на №.
+# Объявленная ширина — это предел ШЛЮЗА, и нарушить его нельзя даже если много потоков
+# прогона сошлось на одном бэкенде после фолловера. Ширина не объявлена — делим общий
+# потолок, как в `pool`. Хранится в процессе, а не в конфиге: конфиг может пересобираться,
+# а сервер один.
+_SEM: dict = {}        # {№ бэкенда: threading.Semaphore}
+_SEM_LOCK = threading.Lock()
+
+
+def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
+    """Семафор для № бэкенда, один на процесс. Размер — объявленная `width`,
+    не объявлена — общий потолок `AURORA_AGENT_PARALLEL` (как `pool` делит незаявленные).
+
+    Разделяем на процесс, а не на прогон: семафор обязан стоять на пути каждого выхода в
+    сеть, иначе две партии запросов в одном процессе пройдут через `pool` по отдельности и
+    вместе превысят ширину шлюза."""
+    key = backend["n"]
+    with _SEM_LOCK:
+        sem = _SEM.get(key)
+        if sem is None:
+            value = backend.get("width") or 1
+            sem = threading.Semaphore(max(1, value))
+            _SEM[key] = sem
+        return sem
+DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
+RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
+
 
 def retry_primary_asked() -> bool:
     """Человек нажал «Вернуться на основного» — снять отметки и пробовать заново.
@@ -494,20 +521,15 @@ def fits(backend: dict, messages: list, max_tokens: int | None) -> tuple:
 
 
 def prompt_budget(cfg: dict, reserve_chars: int = 0) -> int:
-    """Сколько символов содержимого влезет в самое широкое объявленное окно кольца.
+    """Сколько символов содержимого влезет в самое узкое объявленное окно кольца.
 
-    Самое широкое, а не самое узкое: узкий бэкенд просто пропустит запрос (см. `fits`),
-    и резать по нему значит терять знание ради модели, которая его всё равно не возьмёт.
-
-    → 0, если окна не объявлены ни у кого. Это не «безлимит», а «движок не знает»: он
-    отправит запрос целиком и, если шлюз откажет по длине, скажет об этом словами. Сам
-    себе предел движок не выдумывает — иначе тихая потеря возвращается через другую дверь.
-    """
-    windows = [b.get("context") or 0 for b in cfg.get("backends") or []]
-    widest = max(windows) if windows else 0
-    if not widest:
+    Самое узкое, а не самое широкое: фолловер может увести запрос на узкий бэкенд, и
+    контекст обязан влезать в бэкенд, который РЕАЛЬНО ответит. Не режем молча: запрос,
+    не влезший даже в узкое окно, движок не отправит никому и скажет об этом словами."""
+    declared = [w for w in (b.get("context") or 0 for b in cfg.get("backends") or []) if w > 0]
+    if not declared:
         return 0
-    room = (widest - ANSWER_ROOM) * CHARS_PER_TOKEN - reserve_chars
+    room = (min(declared) - ANSWER_ROOM) * CHARS_PER_TOKEN - reserve_chars
     return int(max(0, room))
 
 
@@ -739,44 +761,54 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 deadline += fair
                 left = deadline - time.time()
                 log.append(f"№{b['n']}: даю запасному свой срок ({int(fair)} с)")
-            tried.add(b["n"])
-            st, body, err, dt = transport("chat", b, payload,
-                                          max(5.0, min(left, cfg["request_timeout"])))
-            if st == 400 and not looks_like_overflow(err, body):
-                # бэкенд не знает chat_template_kwargs — повторяем без него
-                payload.pop("chat_template_kwargs", None)
-                st, body, err, dt = transport("chat", b, payload, max(5.0, deadline - time.time()))
-            if st != 200 or not isinstance(body, dict):
-                if looks_like_overflow(err, body):
-                    # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
-                    # его на 15 минут — значит потерять рабочего провайдера из-за одной
-                    # большой карточки, а следом по той же причине и всех остальных.
-                    log.append(f"№{b['n']} {model}: запрос длиннее окна модели "
-                               f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — "
-                               f"движок не будет отправлять заведомо большие)")
-                else:
-                    DOWN[b["n"]] = time.time() + DOWN_FOR
-                    log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
+            # Жёсткий лимит ширины бэкенда. Семафор ключён по № и висит на пути в сеть,
+            # поэтому держит число одновременных запросов к шлюзу, а не число потоков:
+            # сколько бы потоков ни сошлось на бэкенд после фолловера, в сеть уйдёт не
+            # больше `width`. Не дождались слота за малую долю срока — дальше по кольцу.
+            sem = _slot_semaphore(b, cfg)
+            grant = max(0.5, min(FAIR_SHARE * cfg["request_timeout"], left))
+            if not sem.acquire(timeout=grant):
+                log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
                 continue
-            text, reasoning = answer_of(body)
-            finish = (body.get("choices") or [{}])[0].get("finish_reason")
-            if not text:
-                why = ("рассуждения съели лимит токенов (finish_reason=length)"
-                       if finish == "length" and reasoning else
-                       "пустой ответ — вероятно, chat-шаблон на сервере")
-                log.append(f"№{b['n']} {model}: {why}")
-                continue
-            # Токены отдаёт сам сервер в `usage` — считать их своей меркой значит
-            # подгонять цифру. Нет поля — нет и скорости: пустое место честнее выдумки.
-            DOWN.pop(b["n"], None)          # ответил — снова в строю
-            usage = body.get("usage") or {}
-            out_tokens = int(usage.get("completion_tokens") or 0)
-            return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
-                    "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
-                    "ring": ring, "log": log, "url": b["url"],
-                    "tokens_in": int(usage.get("prompt_tokens") or 0),
-                    "tokens_out": out_tokens,
-                    "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0}
+            try:
+                st, body, err, dt = transport("chat", b, payload,
+                                              max(5.0, min(left, cfg["request_timeout"])))
+                if st == 400 and not looks_like_overflow(err, body):
+                    payload.pop("chat_template_kwargs", None)
+                    st, body, err, dt = transport("chat", b, payload,
+                                                  max(5.0, deadline - time.time()))
+                if st != 200 or not isinstance(body, dict):
+                    if looks_like_overflow(err, body):
+                        # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
+                        # его на 15 минут — значит потерять рабочего провайдера из-за одной
+                        # большой карточки, а следом по той же причине и всех остальных.
+                        log.append(f"№{b['n']} {model}: запрос длиннее окна модели ",
+                                   f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — ",
+                                   f"движок не будет отправлять заведомо большие)")
+                    else:
+                        DOWN[b["n"]] = time.time() + DOWN_FOR
+                        log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
+                    continue
+                text, reasoning = answer_of(body)
+                finish = (body.get("choices") or [{}])[0].get("finish_reason")
+                if not text:
+                    why = ("рассуждения съели лимит токенов (finish_reason=length)"
+                           if finish == "length" and reasoning else
+                           "пустой ответ — вероятно, chat-шаблон на сервере")
+                    log.append(f"№{b['n']} {model}: {why}")
+                    continue
+                DOWN.pop(b["n"], None)
+                usage = body.get("usage") or {}
+                out_tokens = int(usage.get("completion_tokens") or 0)
+                return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
+                        "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
+                        "ring": ring, "log": log, "url": b["url"],
+                        "tokens_in": int(usage.get("prompt_tokens") or 0),
+                        "tokens_out": out_tokens,
+                        "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0}
+            finally:
+                sem.release()
+            continue
         if time.time() + RING_PAUSE >= deadline:
             break
         log.append(f"круг {ring} неудачен — пауза {RING_PAUSE} с, снова с первого")

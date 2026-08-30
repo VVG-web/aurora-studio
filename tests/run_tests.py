@@ -1889,6 +1889,10 @@ def test_cockpit_ui_version_tracks_kit(tmp: Path):
     assert m, "в панели не объявлена версия UI_VERSION"
     kit = (KIT / "VERSION").read_text(encoding="utf-8").strip()
     ui_v, kit_v = m.group(1), kit
+    assert ui_v == kit_v, (
+        f"панель собрана под {ui_v}, ядро {kit_v} — версии разошлись. ",
+        "Либо обновите cockpit/ui/index.html под новые команды и метрики, ",
+        "либо поднимите UI_VERSION осознанно")
     assert ui_v.split(".")[:2] == kit_v.split(".")[:2], (
         f"панель собрана под {ui_v}, ядро {kit_v} — младшая версия разошлась. "
         "Либо обновите cockpit/ui/index.html под новые команды и метрики, "
@@ -3316,6 +3320,87 @@ def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
     assert "MCP-серверы проекта" in ui and "не объявлены" in ui, \
         "панель молчит про MCP — человек не узнает ни что подключено, ни что это норма"
+
+
+@test
+def test_the_panel_never_stores_mcp_secrets(tmp: Path):
+    """Панель пишет MCP-конфиг, но не токены: поле `env` в браузер не проходит.
+
+    Секреты человек кладёт в env mcp.json или в `.env.aurora.local` сам. Прошли бы
+    через панель — легли бы на страницу, в историю браузера и в бэкап. Существующий
+    `env` при слиянии переносится на диск в неизменном виде, а браузеру отдаётся
+    только флаг `hasEnv` — что токены настроены, но не сами токены.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "проект"
+    root.mkdir()
+    w = ck.Handler._write_mcp
+
+    # Новый сервер: стандартная форма на диск, бэкапа до первой записи нет
+    r = w(None, str(root), {"atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian"]}})
+    assert r.get("ok") is True, f"обычный сервер не записан: {r}"
+    data = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+    srv = data["mcpServers"]["atlassian"]
+    assert srv["command"] == "npx" and srv["args"] == ["-y", "mcp-atlassian"], \
+        f"стандартная форма не записана: {srv}"
+    assert not (root / "mcp.json.bak").exists(), "бэкап до первой записи — пустая форма"
+
+    # Вторая запись: прежняя версия остаётся рядом как .bak
+    old = (root / "mcp.json").read_text(encoding="utf-8")
+    r = w(None, str(root), {"atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian", "--x"]}})
+    assert r.get("ok") is True, r
+    assert (root / "mcp.json.bak").read_text(encoding="utf-8") == old, \
+        "бэкап не сохранил прежнюю версию конфига"
+
+    # env на диске — не дело панели: при слиянии переносится в неизменном виде
+    cur = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+    cur["mcpServers"]["atlassian"]["env"] = {"TOKEN": "секрет"}
+    (root / "mcp.json").write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
+    r = w(None, str(root), {"atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian"]}})
+    assert r.get("ok") is True, r
+    cur = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
+    assert cur["mcpServers"]["atlassian"].get("env") == {"TOKEN": "секрет"}, \
+        "слияние стёрло чужой env — токены человека потеряны"
+
+    # А в нагрузку панели env не принимается никогда
+    r = w(None, str(root), {"atlassian": {"command": "npx", "env": {"TOKEN": "секрет"}}})
+    assert r.get("error") == "панель не хранит секреты: env в mcp.json настраивается вне панели", \
+        f"панель приняла секрет: {r}"
+
+    # Прочие кривые формы тоже не доходят до диска
+    assert w(None, str(root), ["atlassian"])["error"] == "mcpServers должен быть объектом"
+    assert w(None, str(root), {"": {"command": "npx"}})["error"] == "имя сервера не может быть пустым"
+    assert "неизвестное поле" in w(None, str(root), {"x": {"command": "npx", "port": 1}})["error"]
+    assert "command должен быть непустой строкой" in w(None, str(root), {"x": {"command": " "}})["error"]
+    assert "args должен быть списком строк" in w(None, str(root), {"x": {"command": "npx", "args": [1]}})["error"]
+
+    # Битый файл не преграда: чистый лист, прежний — в бэкапе
+    (root / "mcp.json").write_text("{ это не json", encoding="utf-8")
+    r = w(None, str(root), {"atlassian": {"command": "npx"}})
+    assert r.get("ok") is True, "битый конфиг запретил панели работать"
+    assert json.loads((root / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]["atlassian"]["command"] == "npx"
+    assert "{ это не json" in (root / "mcp.json.bak").read_text(encoding="utf-8"), \
+        "битая версия не сохранена в бэкапе"
+
+    # Браузеру — только метаданные: флаг hasEnv, а не значения env
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    at = src.index('elif u.path == "/api/mcp":')
+    block = src[at:src.index('elif u.path == "/api/runlog":')]
+    assert '"hasEnv": bool(cfg.get("env"))' in block, \
+        "панель молчит про то, что токены настроены, — человек этого не видит"
+    assert '"env": cfg.get("env")' not in block, \
+        "GET-маршрут отдаёт значения env браузеру"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "MCP-серверы · " in ui, "нет раздела MCP-серверов"
+    assert '"/api/mcp?project="' in ui and '"/api/mcp",{method:"POST"' in ui, \
+        "раздел не ходит через /api/mcp"
+    assert "env •••" in ui and "токены настраиваются вне панели" in ui, \
+        "человек не видит, что токены есть и где они правятся"
 
 
 @test
@@ -5561,7 +5646,9 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     # Кнопка нужна ОБОИМ способам опроса. Она висела только на одиночном запуске, а
     # маршрут — то, что идёт часами, — опрашивает задание своим циклом, и там её не было.
     assert "function armStop(" in ui, "управление кнопкой размазано по двум циклам"
-    step = ui[ui.index("async function runStep("):ui.index("async function runStep(") + 1600]
+    # Окно — на весь runStep, а не на «сколько было»: F5 легально добавил в цикл шага
+    # слежение за тишиной, и функция выросла. Иллюзия «кнопка пропала» от короткого среза.
+    step = ui[ui.index("async function runStep("):ui.index("async function runStep(") + 2200]
     assert "armStop(res.job)" in step, "у шага маршрута нет кнопки «Прервать»"
     assert "armStop(null)" in step, "кнопка остаётся висеть после конца шага"
     assert "ROUTE.stopped" in ui, \
@@ -5587,6 +5674,295 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     ck.mark_running("тест", "agent:distill", "/x/Проект", False)
     assert "тест" not in ck.running_now(), "отметка не снялась"
     assert ck.running_now() == was, "список работающего изменился после теста"
+
+
+@test
+def test_run_archive_keeps_the_full_console_history(tmp: Path):
+    """Полный вывод прогона живёт на диске: после перезапуска можно сравнить старый и новый.
+
+    Живой буфер процесса пропадает вместе с процессом — панель однажды перезапускали
+    во время ночного разбора, и вывод потерялся. Теперь у каждого прогона папка
+    `.opencode/runs/<id>/` с полным console.log и events.jsonl по шагам, архив не
+    растёт вечно, а id прогона, рождённый в браузере, не становится чужим путём.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "проект"
+    root.mkdir()
+    assert ck.runs_dir(str(root)) == os.path.join(str(root), ".opencode", "runs")
+    assert ck.run_archive(str(root)) == [], "архива нет — список пустой, а не ошибка"
+
+    base = ck.runs_dir(str(root))
+    for rid in ("20260829-120000-aaaaaa", "20260829-110000-bbbbbb"):
+        d = os.path.join(base, rid)
+        os.makedirs(d)
+        with open(os.path.join(d, "console.log"), "w", encoding="utf-8") as f:
+            f.write("вывод прогона " + rid + "\n")
+    arch = ck.run_archive(str(root))
+    assert [a["id"] for a in arch] == sorted(["20260829-120000-aaaaaa", "20260829-110000-bbbbbb"]), \
+        f"архив не в хронологии: {arch}"
+    assert arch[0]["path"].endswith(os.path.join("20260829-110000-bbbbbb", "console.log")), \
+        "у записи архива нет пути к console.log"
+    got = ck.read_run_console(str(root), "20260829-120000-aaaaaa")
+    assert got.get("text", "").startswith("вывод прогона 20260829-120000"), \
+        f"архивный прогон не читается: {got}"
+    assert "не найден" in ck.read_run_console(str(root), "нет-такого")["error"], \
+        "несуществующий прогон — исключение вместо ошибки"
+    # id рождается в браузере и попадает в путь — безопасен только basename
+    assert "не найден" in ck.read_run_console(str(root), "../чужой/проект")["error"], \
+        "id прогона из браузера стал чужим путём"
+
+    # Архив не растёт вечно: оставляем последние RUNS_KEEP прогонов
+    for i in range(ck.RUNS_KEEP + 5):
+        os.makedirs(os.path.join(base, f"20260101-000000-{i:06d}"))
+    ck.trim_runs(str(root))
+    left = sorted(os.listdir(base))
+    assert len(left) == ck.RUNS_KEEP, f"trim оставил {len(left)} прогонов вместо {ck.RUNS_KEEP}"
+    assert "20260101-000000-000000" not in left, "старейший прогон не удалён"
+    assert f"20260101-000000-{ck.RUNS_KEEP + 4:06d}" in left, "свежий прогон удалён"
+
+    # Каждый прогон получает id, а stdout пишется на диск рядом с живым буфером
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    at = src.index("def start_job(")
+    sj = src[at:at + 4000]
+    assert 'time.strftime("%Y%m%d-%H%M%S") + "-" + job_id[:6]' in sj, \
+        "у прогона нет id — архив не соберётся в хронологию"
+    assert '"run_id": run_id' in sj, "задание не помнит id своего архива"
+    assert 'os.path.join(runs_dir(project), run_id)' in sj and '"console.log"' in sj, \
+        "вывод прогона не пишется на диск"
+    assert "run_log.write(line)" in sj and "run_log.flush()" in sj, \
+        "вывод уходит на диск порциями — архив пуст до конца прогона"
+    assert "trim_runs(project)" in sj, "архив растёт без ограничения"
+
+    # id из браузера — имя папки: оба маршрута проверяют его
+    assert src.count('"/" in run_id or run_id.startswith("..")') >= 2, \
+        "id прогона не проверен на обоих маршрутах"
+    at = src.index('\n        elif u.path == "/api/run/steps":')
+    block = src[at:at + 1700]
+    assert '"steps": events' in block and "json.loads(line)" in block, \
+        "события шагов не читаются для продолжения маршрута"
+    at = src.index('\n        if u.path == "/api/run/steps":')
+    block = src[at:at + 1400]
+    assert "events.jsonl" in block and "json.dumps(step, ensure_ascii=False)" in block, \
+        "шаги маршрута не сохраняются строкой на шаг"
+    assert '"/api/run/logs"' in src and '"/api/run/file"' in src, "нет маршрутов архива"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for token in ("function renderArchiveBox(", "function archiveWhen(", "function rtime(",
+                  "function fmtDur(", 'id="exportMd"', "Продолжить маршрут",
+                  "const SILENCE_MS = 120000;", '"/api/run/logs?project="',
+                  '"/api/run/file?project="', '"/api/run/steps"'):
+        assert token in ui, f"консоль потеряла: {token}"
+    assert "Date.now() - lastLineAt > SILENCE_MS" in ui, "шаг молчит без предупреждения"
+    assert "Date.now() - POLL_LAST_OUT > SILENCE_MS" in ui, \
+        "одиночный прогон молчит без предупреждения"
+    assert "началось в" in ui and "предыдущий шаг занял" in ui, \
+        "у шага нет времени начала и цены предыдущего"
+
+
+
+@test
+def test_a_stalled_route_is_an_stop_not_a_pass(tmp: Path):
+    """Застой цикла — остановка, а не проход: «Продолжить маршрут» появляется и там.
+
+    Когда за оборот не убыло ничего, маршрут вставал, но конец читался как «пройден»:
+    кнопки продолжения не было, и недоделанная работа запускалась с начала. Теперь застой
+    ставит ROUTE.stalled, баннер его честно называет, а продолжение пропускает только шаги
+    с кодом ровно 0 — код 1 («отработала и нашла, что чинить») повторять надо.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "ROUTE.stalled = true" in ui, \
+        "застой не помечен флагом — не отличить его от прохода и не дать «Продолжить»"
+    assert "ROUTE.failed || ROUTE.stalled" in ui, \
+        "застой не считается остановкой: bad решает по одному ROUTE.failed"
+    assert "застой" in ui, "в интерфейсе нет «застой» — баннер не честен о причине"
+    assert "if (st.rc===0||st.rc===1) sigs.add" not in ui, \
+        "продолжение до сих пор пропускает шаги с кодом 1 — они «нашли, что чинить», а не прошли"
+    assert "if (st.rc===0) sigs.add" in ui, \
+        "продолжение собирает сигнатуры не только с успешных шагов"
+    assert "Продолжить маршрут" in ui, "кнопку продолжения потеряли совсем"
+
+
+@test
+def test_a_stopped_route_survives_a_panel_restart(tmp: Path):
+    """Остановленный маршрут переживает перезапуск панели: «Продолжить маршрут» после него.
+
+    Состояние последнего остановленного маршрута лежит в `AuroraKnowledgeDB/meta/last_route.json`,
+    а не только в памяти вкладки: консоль читает его на загрузке и поднимает кнопку. Конец
+    маршрута его пишет (застой/отказ/ручная остановка), полный проход — стирает. Битый файл —
+    None, а не исключение: чужой обрывок не должен ронять панель.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "проект"
+    root.mkdir()
+    assert ck.route_state_path(str(root)) == \
+        os.path.join(str(root), "AuroraKnowledgeDB", "meta", "last_route.json")
+    assert ck.read_route_state(str(root)) is None, \
+        "файла нет — состояние читается как объект вместо None"
+
+    wrote = ck.write_route_state(str(root), {"scId": "update", "title": "Обновить базу",
+                                           "at": "2026-08-30T04:12:00"})
+    assert wrote.get("ok") is True, f"запись состояния не удалась: {wrote}"
+    path = root / "AuroraKnowledgeDB/meta/last_route.json"
+    assert path.exists(), "файл последнего маршрута не появился"
+    state = ck.read_route_state(str(root))
+    assert state and state.get("scId") == "update" and state.get("title") == "Обновить базу", \
+        f"состояние не пережило запись->чтение: {state}"
+    assert state.get("at") == "2026-08-30T04:12:00", "метка времени не сохранилась"
+
+    assert ck.clear_route_state(str(root)).get("ok") is True
+    assert ck.read_route_state(str(root)) is None, "после очистки состояние осталось"
+    assert not path.exists(), "файл состояния не удалён"
+    assert ck.clear_route_state(str(root)).get("ok") is True, \
+        "повторная очистка без файла — ошибка вместо «нечего чистить»"
+
+    path.write_text("{ не json", encoding="utf-8")
+    assert ck.read_route_state(str(root)) is None, \
+        "битый файл состояния — исключение вместо None"
+
+    # Источник: эндпоинт есть и на чтение, и на запись; консоль пишет и читает состояние
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert src.count('"/api/route/state"') >= 2, \
+        "эндпоинт состояния маршрута только с одной стороны (нужны GET и POST)"
+    assert "last_route.json" in src, "эндпоинт не знает имени файла состояния"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert '"/api/route/state?project="' in ui, \
+        "вкладка «Консоль» не читает состояние остановленного маршрута при загрузке"
+    assert '"/api/route/state", {method:"POST"' in ui, \
+        "конец маршрута не пишет состояние в проект"
+    assert "остановлен в" in ui, \
+        "на кнопке после перезапуска нет времени и причины остановки"
+
+@test
+def test_a_stalled_route_stops_honestly_and_resume_skips_only_success(tmp: Path):
+    """Застой останавливает маршрут честно, а продолжение повторяет только успешное.
+
+    Оборот, не убавивший работы, — это не «пройдено»: остановка по застою (stall) отделена
+    от отказа (`ROUTE.stalled`), ей полагается жёлтая плашка с честным текстом и кнопка
+    «Продолжить маршрут». Продолжение накапливает сигнатуры шагов, завершившихся ровно
+    кодом 0: код 1 («нашла, что чинить») не сигнатура успеха и обязан повторяться. Ручная
+    остановка и остановка по застою определяют причину в одной ветке; стоп цикла по
+    требованию выставляет оба флага разом.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    assert "ROUTE.stalled = true;" in ui, \
+        "флаг застоя не ставится — по нему отличается «застой» от «пройден»"
+    assert "const bad = ROUTE.failed || ROUTE.stalled;" in ui, \
+        "решение «остановить» не учитывает застой — bad решает по одному ROUTE.failed"
+    assert "остановлен: застой — работа не убывает" in ui, \
+        "нет честной жёлтой плашки о причине застоя"
+    assert 'className = "chip warn"' in ui, \
+        "плашка застоя не жёлтая — выглядит как успех"
+    assert "if (bad && S.lastRoute && S.project){" in ui, \
+        "кнопка «Продолжить маршрут» не связана с состоянием bad"
+
+    assert "if (st.rc===0) sigs.add" in ui, \
+        "продолжение не собирает сигнатуры только с успешных шагов"
+    assert "if (st.rc===0||st.rc===1) sigs.add" not in ui, \
+        "продолжение снова пропускает rc 1 — а их повторять надо"
+
+    assert 'ROUTE.stopped ? "stopped"' in ui, \
+        "причина остановки в кнопке не читает код остановки по застою"
+    assert "ROUTE.stopped = st.cmd; ROUTE.failed = st.cmd" in ui, \
+        "стоп цикла по требованию не выставляет оба флага остановки"
+
+
+@test
+def test_a_route_waits_for_the_network_like_the_engine(tmp: Path):
+    """Маршрут ждёт сеть ровно по признакам движка, а не глотает обрыв.
+
+    Признаки офлайна в панели — буквальная копия списка `agent_runner`: обе стороны
+    отличают «упала связь» от «источник молчит». Паритет проверяем как инвариант равенства
+    множеств: изменение списка на любой стороне — расхождение, которое обязано дойти до
+    человека. Дальше — протокол ожидания: шаг с кодом 1 и офлайн-текстом не роняет
+    маршрут, а ставит его «ждёт сеть», накопительно до лимита попыток, и позволяет
+    выйти из ожидания руками («Попробовать сейчас» / «не ждать»).
+    """
+    engine = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    m = re.search(r"OFFLINE_SIGNS\s*=\s*[\[(](.*?)[\])]", engine, re.S)
+    assert m, "в agent_runner не найден список OFFLINE_SIGNS"
+    engine_signs = set(re.findall(r"[\"']([^\"']+)[\"']", m.group(1)))
+
+    start = ui.index("const OFFLINE_SIGNS = [") + len("const OFFLINE_SIGNS = [")
+    end = ui.index("];", start)
+    ui_block = ui[start:end]
+    ui_signs = set(re.findall(r"[\"']([^\"']+)[\"']", ui_block))
+
+    assert engine_signs == ui_signs, \
+        "офлайн-признаки панели и движка разошлись: в панели лишние " \
+        + repr(sorted(ui_signs - engine_signs)) + ", не хватает " \
+        + repr(sorted(engine_signs - ui_signs))
+
+    assert "const ROUTE_OFFLINE_RETRY_MS = 15 * 60 * 1000;" in ui, \
+        "нет паузы ожидания сети (15 минут)"
+    assert "const ROUTE_OFFLINE_TRIES = 8;" in ui, \
+        "нет лимита попыток ожидания сети"
+    assert "const looksOffline" in ui, "нет проверки текста на офлайн"
+    assert "const waitNetworkCycle" in ui, "нет цикла ожидания сети"
+    assert "ждёт сеть (попытка" in ui, "нет текста о состоянии ожидания сети"
+    assert "Перестал ждать сеть:" in ui, "нет текста о потолке ожидания"
+    assert ui.count("Попробовать сейчас") >= 2, \
+        "кнопка «Попробовать сейчас» не во всех ветках ожидания (живой цикл, потолок, догон)"
+    assert "не ждать" in ui, "нет кнопки выйти из ожидания без сети"
+
+    assert "attempts: cy.attempt" in ui and "nextRetryAt: cy.nextRetryAt" in ui, \
+        "не сохраняются попытка и время следующего повтора для перезапуска"
+    assert "if (state.reason === \"offline\")" in ui, \
+        "догон остановленного на сети маршрута не распознаёт причину offline"
+    assert "showOfflineResume(state)" in ui, "нет продолжения после возвращения сети"
+    assert "attempts: last.attempts" in ui, \
+        "продолжение не переносит счётчик попыток из сохранённого состояния"
+
+
+@test
+def test_a_failed_command_can_be_retried_as_the_next_attempt(tmp: Path):
+    """Упавшая (код ≥ 2) команда получает «Попробовать снова» как следующую попытку.
+
+    `fire` запоминает последний шаг (`S.lastStep`) с полем `failed`; провал пишется только
+    для своей же попытки и только при коде ≥ 2 — прерванная команда (отрицательный код) и
+    код 1 (не ошибка, а «нашли, что чинить») кнопки не получают. Повтор — это снова тот же
+    id, шаг нумеруется `n+1`, метка «попытка N» в обеих точках, команда уходит тем же
+    `cmd`/`args`. Дополнено инвариантом хранения: файл состояния маршрута лежит в общей
+    папке проекта, рядом с UI-тестами, а не разъехался.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    assert "S.lastStep = {cmd:r.cmd, args, n, failed:false, job:res.job};" in ui, \
+        "fire не запоминает шаг попытки с полем failed"
+    assert ui.count('"попытка " + n + ": "') >= 2, \
+        "метка номера попытки не в обеих точках (fire и retryStep)"
+    assert "prev.failed && prev.cmd === r.cmd" in ui, \
+        "счёт попыток не привязан к тому же шагу с прошлого провала"
+    assert "S.lastStep.failed = (rc >= 2);" in ui, \
+        "провал ставится не по коду >= 2"
+    assert "if (S.lastStep && S.lastStep.job === id){" in ui, \
+        "провал пишется не под защитой «это наша попытка»"
+    assert 'if (rc >= 2) $("#consoleApply").append(el("button",{class:"btn sm gold",' in ui, \
+        "кнопка повтора появляется не ровно на коде >= 2"
+    assert "Попробовать снова" in ui, "нет кнопки «Попробовать снова»"
+    assert "const n = st.n + 1;" in ui, "повтор не увеличивает номер попытки"
+    assert "cmd:st.cmd, args:st.args" in ui, \
+        "повтор не шлёт ту же команду теми же аргументами"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    root = tmp / "проект"
+    root.mkdir()
+    assert ck.route_state_path(str(root)) == \
+        os.path.join(str(root), "AuroraKnowledgeDB", "meta", "last_route.json"), \
+        "файл состояния маршрута уехал из общей папки AuroraKnowledgeDB/meta/"
 
 
 @test
