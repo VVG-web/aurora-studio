@@ -417,6 +417,7 @@ tr:last-child td{border-bottom:0}
           <span id="consoleTask"></span>
           <button class="btn sm" id="retryPrimary" title="Снять отметку «не отвечает» с основного провайдера и проверить его на следующем источнике">Вернуться на основного</button>
           <button class="btn sm" id="clearConsole">Очистить</button>
+          <button class="btn sm" id="exportMd" title="Выгрузить текущий вывод консоли в .md-файл">В .md</button>
         </div>
       </div>
       <div id="consoleLive"></div>
@@ -689,7 +690,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.2";
+const UI_VERSION = "1.100.6";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1651,7 +1652,15 @@ function show(view){
   if (view==="graph") renderGraph();
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
   if (view==="reports") renderReports();
-  if (view==="console"){ renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs(); }   // журнал, задание и то, что идёт прямо сейчас
+  if (view==="console"){
+    renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs();
+    // Маршрут мог остановиться в прошлой сессии: состояние читаем из проекта и, если сейчас
+    // ничего не идёт, поднимаем «Продолжить маршрут» — её не было на перезапуске вкладки.
+    if (S.project && ROUTE === null){
+      api("/api/route/state?project="+encodeURIComponent(S.project.path), {quiet:true})
+        .then(d=>{ showLastRoute(d && d.state); });
+    }
+  }   // журнал, задание и то, что идёт прямо сейчас
   if (view==="about") renderAbout();
   if (view==="dev") renderDev();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
@@ -2700,15 +2709,50 @@ async function fire(apply){
   PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   $("#consoleApply").innerHTML = "";
   const out = $("#consoleOut"); out.innerHTML="";
-  $("#consoleCmd").textContent = r.cmd + " " + args.join(" ");
+  const line = (r.cmd + " " + args.join(" ")).trim();
+  // Номер попытки: 1 для свежего запуска, а для повтора того же шага после неудачи
+  // (прошлый прогон того же cmd и тех же аргументов кончился кодом 2 и выше) — прежний + 1.
+  const prev = S.lastStep;
+  const n = (prev && prev.failed && prev.cmd === r.cmd && JSON.stringify(prev.args) === JSON.stringify(args))
+    ? prev.n + 1 : 1;
+  $("#consoleCmd").textContent = (n > 1 ? "попытка " + n + ": " : "") + line;
   $("#consoleRc").textContent = "выполняется…";
   $("#consoleRc").className = "chip";
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
     {project: (isEngineCmd(r) ? "" : S.project.path), cmd:r.cmd, args})});
   if (!res.job) return;
+  S.lastStep = {cmd:r.cmd, args, n, failed:false, job:res.job};
+  const label = (n > 1 ? "попытка " + n + ": " : "") + line;
   if (!apply && r.flags.includes("--apply"))
-    PENDING_APPLY = {line:(r.cmd + " " + args.join(" ")).trim(), job:res.job};
-  poll(res.job, 0, (r.cmd + " " + args.join(" ")).trim());
+    PENDING_APPLY = {line, job:res.job};
+  poll(res.job, 0, label);
+}
+/* Кнопка «Попробовать снова» живёт только для настоящей ошибки команды — код 2 и выше.
+   Отрицательный код — процесс убит сигналом (человек «Прервать» или система): это не
+   ошибка команды, предлагать повтор нечего. Код 1 («есть что поправить») — команда
+   отработала и нашла работу, это успех. Условие строгое: rc >= 2, без доп. флагов остановки.
+   Повтор не трогает ящик команды: берёт строку запуска из сохранённого шага и шлёт её
+   новым заданием; номер попытки растёт с каждым неудачным повтором. */
+async function retryStep(){
+  const st = S.lastStep;
+  if (!st) return;
+  if (st.args.includes("--apply") && await busyElsewhere(st.cmd)) return;
+  show("console");
+  PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
+  $("#consoleApply").innerHTML = "";
+  const out = $("#consoleOut"); out.innerHTML = "";
+  const line = (st.cmd + " " + st.args.join(" ")).trim();
+  const n = st.n + 1;
+  const label = "попытка " + n + ": " + line;
+  $("#consoleCmd").textContent = label;
+  $("#consoleRc").textContent = "выполняется…";
+  $("#consoleRc").className = "chip";
+  const res = await api("/api/run", {method:"POST", body: JSON.stringify(
+    {project: (isEngineCmd(S.state.commands.find(x=>x.cmd===st.cmd) || {}) ? "" : S.project.path),
+     cmd:st.cmd, args:st.args})});
+  if (!res.job) return;
+  st.n = n; st.failed = false; st.job = res.job;
+  poll(res.job, 0, label);
 }
 /* ---------------- артефакты проекта ----------------
 
@@ -3233,6 +3277,19 @@ async function busyElsewhere(what){
 // модель, а страница каждые полсекунды возвращала его в конец. Возвращается к слежению
 // само, когда он домотает обратно вниз.
 const NEAR_BOTTOM = 40;   // px: «внизу» — не пиксель в пиксель, иначе слежение теряется
+// Молчание шага: команда жива, но за две минуты не выдала ни строки. Скорее всего, зависла —
+// но убивать её нельзя: честная `kb:build` идёт часами. Предупреждаем один раз и ждём дальше;
+// «Прервать» — уже решение человека, а не автомата.
+const SILENCE_MS = 120000;
+// Офлайн-пауза в маршруте: бэкенды отвалились, а не дело сломалось. Признаки — точная
+// копия OFFLINE_SIGNS из scripts/agent_runner.py — инвариант проверяет автотест.
+const OFFLINE_SIGNS = ["timed out", "timeout", "connection error", "connection refused",
+                     "ни один бэкенд", "temporarily unavailable", "failed to establish",
+                     "name or service not known", "ssl", "network is unreachable"];
+const ROUTE_OFFLINE_RETRY_MS = 15 * 60 * 1000;   // между попытками достучаться до бэкендов
+const ROUTE_OFFLINE_TRIES = 8;                        // лимит: 8 попыток ≈ 2 часа, дальше — ручками
+const looksOffline = text => { const t = (text||"").toLowerCase();
+  return OFFLINE_SIGNS.some(s => t.includes(s)); };
 function stickToBottom(box){
   if (box.dataset.follow === "0") return;
   box.scrollTop = box.scrollHeight;
@@ -3284,6 +3341,7 @@ async function runStep(cmd, args){
   }
   const out = $("#consoleOut");
   let since = 0, lines = [];
+  let lastLineAt = Date.now(), silenceShown = false;   // слежение за тишиной шага, см. SILENCE_MS
   armStop(res.job);
   try {
     for (;;){
@@ -3294,9 +3352,17 @@ async function runStep(cmd, args){
         return {rc:2, lines};      // код 2 — маршрут останавливается, и это правильно
       }
       (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
+      if (d.lines && d.lines.length){ lastLineAt = Date.now(); silenceShown = false; }
       watchScroll(out); stickToBottom(out);
       since = d.next;
       if (d.done) return {rc:d.rc, lines};
+      // Жива, но молчит дольше порога — показываем предупреждение один раз за «эпизод тишины».
+      // Само задание не трогаем: честный длинный шаг не должен умирать по таймеру.
+      if (!silenceShown && Date.now() - lastLineAt > SILENCE_MS){
+        silenceShown = true;
+        out.append(el("div",{class:"warn"},
+          "⚠️ нет вывода уже 2 мин — команда, возможно, зависла. «Прервать» остановит прогон."));
+      }
       await new Promise(ok=>setTimeout(ok, 450));
     }
   } finally {
@@ -3550,7 +3616,7 @@ async function publishArtifact(){
       }},"Скопировать ассистенту"))));
 }
 
-async function runRoute(sc, write){
+async function runRoute(sc, write, resume){
   if (!S.project) return toast("Сначала выберите проект","warn");
   if (await busyElsewhere(sc.title)) return;
   // Блок «цикл:» повторяется партиями: разобрали, осмыслили, связали, закоммитили — и
@@ -3579,6 +3645,19 @@ async function runRoute(sc, write){
   $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   ROUTE = {title:sc.title, done:0, total:steps.length, failed:null, lap:0};
   const summary = [];
+  let prevEnd = 0;           // конец предыдущего шага — отсюда длительность текущего
+  const stepEvents = [];      // каждый шаг: начало, конец, длительность, итоговый код
+  const routeRunId = rtime() + "-route";   // id этого маршрута для архива событий
+  // Следующей попытке (кнопка «Продолжить маршрут») нужны тот же сценарий и те же события,
+  // что были у этой: что уже сделано — знает только архив, а по нему не восстановишь, каким
+  // флагом (--apply) шёл маршрут и в какой вкладке. Храним контекст, пока не стартует новый.
+  S.lastRoute = {scId: sc.id, write, runId: routeRunId, title: sc.title};
+  // Сигнатуры шагов, которые прошлая попытка уже завершила успехом (0 или 1). Только их
+  // и пропускаем при продолжении; нецикличные и неудавшиеся гоняем заново.
+  const SKIP_SIGS = (resume && resume.skipSigs) ? resume.skipSigs : null;
+  // Офлайн-эпизод продолжается после перезапуска: `attempts` из сохранённого состояния
+  // переносим в первый эпизод текущего прогона (не сбрасываем счёт); дальше — с нуля.
+  let offlineCarry = (resume && typeof resume.attempts === "number") ? resume.attempts : 0;
 
   // Сколько источников осталось разобрать — это печатает сам agent:build последней
   // строкой. Панель не гадает и не считает файлы: цикл вертится, пока движок говорит,
@@ -3601,19 +3680,129 @@ async function runRoute(sc, write){
     return out;
   };
 
+  // Ожидание сети: шаг упал по сети (rc 1 + признак офлайна из движка), а не по делу. Ждём
+  // по таймеру во вкладке, пока бэкенды не ответят, и держим маршрут на месте. Каждая
+  // попытка — тот же шаг через runStep и новая запись в events.jsonl (это ожидаемо).
+  const waitNetworkCycle = (st) => new Promise(resolve => {
+    const cmd = st.cmd + " " + st.args.join(" ");
+    const cy = {attempt: offlineCarry + 1, nextRetryAt: Date.now() + ROUTE_OFFLINE_RETRY_MS,
+                timer: null, capped: false, resolve};
+    offlineCarry = 0;   // переносим только первый эпизод (продолжение после перезапуска)
+    const done = o => { if (cy.timer){ clearTimeout(cy.timer); cy.timer = null; } resolve(o); };
+    const emit = r => stepEvents.push({cmd: st.cmd, args: st.args,
+      start: new Date().toISOString(), end: new Date().toISOString(),
+      duration_s: 0, rc: r.rc});
+    const persist = () => { if (!S.project) return;
+      api("/api/route/state", {method:"POST", quiet:true, body: JSON.stringify({
+        project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
+          runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
+          write:S.lastRoute&&S.lastRoute.write, reason:"offline", step: st.cmd,
+          attempts: cy.attempt, nextRetryAt: cy.nextRetryAt, at: new Date().toISOString()}})}); };
+    const holder = el("div",{class:"warn", style:"margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap"});
+    out.append(holder);
+    const renderWait = () => {
+      holder.innerHTML = "";
+      const when = new Date(cy.nextRetryAt).toLocaleTimeString("ru-RU",
+        {hour:"2-digit", minute:"2-digit"});
+      holder.append(el("span",{class:"chip warn"}, "ждём сеть"),
+        el("div",{style:"flex:1;min-width:220px"},
+          `Шаг <b>${cmd}</b> ждёт сеть (попытка ${cy.attempt}/${ROUTE_OFFLINE_TRIES}), следующий раз ${when}`),
+        el("button",{class:"btn sm gold", onclick:manualRetry}, "Попробовать сейчас"),
+        el("button",{class:"btn sm", onclick:notWait}, "не ждать"));
+    };
+    const renderCapped = () => {
+      cy.capped = true; cy.nextRetryAt = null;
+      holder.innerHTML = "";
+      holder.append(el("span",{class:"chip warn"}, "ждём сеть"),
+        el("div",{style:"flex:1;min-width:220px"},
+          `Перестал ждать сеть: ${ROUTE_OFFLINE_TRIES} попыток за 2 часа, бэкенды не отвечают. Проверьте шлюз/сеть и нажмите «Попробовать сейчас».`),
+        el("button",{class:"btn sm gold", onclick:manualRetry}, "Попробовать сейчас"));
+      persist();
+    };
+    const schedule = () => { cy.timer = setTimeout(attempt, Math.max(0, cy.nextRetryAt - Date.now())); };
+    const attempt = async () => {
+      cy.timer = null;
+      const r = await runStep(st.cmd, st.args); emit(r);
+      if (r.rc >= 2) return done("failed");
+      if (r.rc === 1 && looksOffline(r.lines||[])){
+        cy.attempt++;
+        if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
+        cy.nextRetryAt = Date.now() + ROUTE_OFFLINE_RETRY_MS;
+        persist(); renderWait(); schedule();
+        return;
+      }
+      done("continue");
+    };
+    const manualRetry = async () => {
+      if (cy.timer){ clearTimeout(cy.timer); cy.timer = null; }
+      const r = await runStep(st.cmd, st.args); emit(r);
+      if (r.rc >= 2) return done("failed");
+      if (r.rc === 1 && looksOffline(r.lines||[])){
+        if (cy.capped){
+          holder.innerHTML = "";
+          holder.append(el("div",{}, "Попытка не удалась: бэкенды всё ещё не отвечают."),
+            el("button",{class:"btn sm gold", onclick:manualRetry}, "Попробовать сейчас"));
+          return;
+        }
+        cy.attempt++;
+        if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
+        cy.nextRetryAt = Date.now() + ROUTE_OFFLINE_RETRY_MS;
+        persist(); renderWait(); schedule();
+        return;
+      }
+      done("continue");
+    };
+    const notWait = () => done("stopped");
+    if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
+    persist(); renderWait(); schedule();
+  });
   const runOne = async (st) => {
+    // Продолжение маршрута: этот нецикличный шаг уже отработал в прошлой попытке (код 0 или
+    // 1) — повторять его незачем, счет не раздувается. Цикличные не трогаем: они заново
+    // оценивают остаток работы по живому выводу движения. Сигнатуры в SKIP_SIGS не оказалось —
+    // архив пуст или шаг падал — значит, гоняем как обычно.
+    const sig = st.cmd + " " + st.args.join(" ");
+    if (SKIP_SIGS && !st.cycle && SKIP_SIGS.has(sig)){
+      out.append(el("div",{class:"dim"}, `  ↳ пропущен: «${st.cmd}» уже выполнен в прошлой попытке`));
+      return {rc:0, skipped:true, lines:[]};
+    }
     ROUTE.done++;
     drawRouteBar(st.cmd);
     const lap = ROUTE.lap ? ` · оборот ${ROUTE.lap}` : "";
+    // Системные часы на входе в шаг: «началось в» — это календарь, а не счётчик,
+    // чтобы после прогона сверяться с журналом и другими прогонами.
+    const stepStart = Date.now();
     $("#consoleCmd").textContent = `${sc.title} · шаг ${ROUTE.done} из ${ROUTE.total}${lap}: `
       + st.cmd + " " + st.args.join(" ");
     $("#consoleRc").textContent = "выполняется…"; $("#consoleRc").className = "chip";
     out.append(el("div",{class:"ok",style:"margin-top:10px"},
       `▸ шаг ${ROUTE.done}/${ROUTE.total}${lap} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
+    // Длительность прошлого шага — единственный симптом букса на длинном маршруте: один
+    // шаг «всегда так шёл», пока не видно, что соседний занял втрое больше обычного.
+    out.append(el("div",{class:"dim"},
+      `  началось в ${new Date(stepStart).toLocaleTimeString("ru-RU")}`
+      + (prevEnd ? ` · предыдущий шаг занял ${fmtDur((stepStart - prevEnd) / 1000)}`
+                 : " · первый шаг")));
     const res = await runStep(st.cmd, st.args);
+    const stepEnd = Date.now();
+    prevEnd = stepEnd;
+    // Каждый шаг — одна строка в events.jsonl маршрута: данные для разбора, когда живой
+    // буфер консоли давно остыл. ISO-время пишем, чтобы не зависеть от часового пояса.
+    stepEvents.push({cmd: st.cmd, args: st.args,
+                    start: new Date(stepStart).toISOString(),
+                    end: new Date(stepEnd).toISOString(),
+                    duration_s: Math.round((stepEnd - stepStart) / 1000),
+                    rc: res.rc});
     summary.push({cmd:st.cmd, rc:res.rc, skipped:res.skipped,
                   found: res.rc === 1 ? findings(res.lines||[]) : []});
-    return res;
+    // rc 1 с признаком сети — пауза ожидания, а не «нашла, что чинить»: маршрут остаётся
+    // на этом шаге. Цикл решает по флагу `ended`; обычный успех/отказ проходят как раньше.
+    const cyc = (res.rc === 1 && looksOffline(res.lines||[])) ? await waitNetworkCycle(st) : null;
+    if (cyc === "continue") summary[summary.length-1].rc = 0;
+    if (cyc === "stopped"){ ROUTE.stopped = st.cmd; ROUTE.failed = st.cmd;
+      return {rc:0, lines:res.lines, ended:"stopped"}; }
+    if (cyc === "failed") return {rc:2, lines:res.lines};
+    return cyc === "continue" ? {rc:0, lines:res.lines} : res;
   };
 
   ROUTE.stopped = false;            // прерывание человеком — не то же самое, что отказ
@@ -3622,8 +3811,9 @@ async function runRoute(sc, write){
   outer:
   while (i < steps.length){
     if (!steps[i].cycle){
-      const {rc} = await runOne(steps[i]);
-      if (failed(rc)){ ROUTE.failed = steps[i].cmd; break; }
+      const res = await runOne(steps[i]);
+      if (res.ended) break;
+      if (failed(res.rc)){ ROUTE.failed = steps[i].cmd; break; }
       i++;
       continue;
     }
@@ -3634,7 +3824,9 @@ async function runRoute(sc, write){
     for (ROUTE.lap = 1; ROUTE.lap <= CYCLE_LIMIT; ROUTE.lap++){
       let kinds = {};
       for (let k = i; k < end; k++){
-        const {rc, lines} = await runOne(steps[k]);
+        const res = await runOne(steps[k]);
+        if (res.ended) break outer;
+        const {rc, lines} = res;
         if (failed(rc)){ ROUTE.failed = steps[k].cmd; break outer; }
         Object.assign(kinds, leftByKind(lines));
       }
@@ -3662,6 +3854,7 @@ async function runRoute(sc, write){
         out.append(el("div",{class:"warn"},
           "  за оборот не убыло ничего (" + names.map(k => `${k}: ${kinds[k]}`).join(", ")
           + ") — останавливаюсь, чтобы не крутиться впустую"));
+        ROUTE.stalled = true;   // застой — остановка, а не проход: даём «Продолжить маршрут»
         break;
       }
       const grew = names.filter(k => prev[k] !== undefined && kinds[k] > prev[k]);
@@ -3685,19 +3878,33 @@ async function runRoute(sc, write){
     ROUTE.lap = 0;
     i = end;
   }
-  const bad = ROUTE.failed;
+  const bad = ROUTE.failed || ROUTE.stalled;
+  // Причина остановки — для файла маршрута; считается до `ROUTE = null`, где поля гаснут.
+  const routeReason = ROUTE.stalled ? "stall" : ROUTE.stopped ? "stopped"
+    : ROUTE.failed ? "failed" : "stopped",
+        routeDone = ROUTE.done;
   drawRouteBar(null);
-  $("#consoleCmd").textContent = `${sc.title} — ${bad ? "остановлен" : "пройден"}`;
-  $("#consoleRc").textContent = bad ? "остановлен на " + bad : "пройден: шагов " + ROUTE.done;
-  $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
-  out.append(el("div",{class:bad?"err":"ok",style:"margin-top:12px"},
-    bad ? (ROUTE.stopped
-        ? `■ Маршрут прерван вами на «${bad}». Сделанное зафиксировано: запускайте снова, `
-          + "пройденные шаги повторяются без вреда."
-        : `■ Маршрут остановлен на «${bad}»: команда не отработала. `
-          + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
-          + "без вреда.")
-        : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
+  if (ROUTE.stalled){
+    $("#consoleCmd").textContent = `${sc.title} — остановлен (застой)`;
+    $("#consoleRc").textContent = "остановлен: застой — работа не убывает";
+    $("#consoleRc").className = "chip warn";
+    out.append(el("div",{class:"err",style:"margin-top:12px"},
+      "■ Маршрут остановлен: за оборот не убыло ничего — работа не двигается (возможно, "
+      + "бэкенды не отвечают, или новых источников нет). Запустите маршрут снова — "
+      + "пройденные шаги повторяться не будут."));
+  } else {
+    $("#consoleCmd").textContent = `${sc.title} — ${bad ? "остановлен" : "пройден"}`;
+    $("#consoleRc").textContent = bad ? "остановлен на " + bad : "пройден: шагов " + ROUTE.done;
+    $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
+    out.append(el("div",{class:bad?"err":"ok",style:"margin-top:12px"},
+      bad ? (ROUTE.stopped
+          ? `■ Маршрут прерван вами на «${bad}». Сделанное зафиксировано: запускайте снова, `
+            + "пройденные шаги повторяются без вреда."
+          : `■ Маршрут остановлен на «${bad}»: команда не отработала. `
+            + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
+            + "без вреда.")
+          : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
+  }
   summary.filter(s=>s.rc===1).forEach(s=>{
     out.append(el("div",{class:"warn"},
       `  ${s.cmd} — нашла, что чинить (это не ошибка маршрута):`));
@@ -3711,7 +3918,33 @@ async function runRoute(sc, write){
         btn));
     });
   });
+  // Застрял или остановлен — даём ручку не перезапускать маршрут целиком, а дойти до конца
+  // с пропуском уже сделанного. Кнопку вешаем в `#consoleApply`: новый прогон чистит его
+  // в самом начале, так что продолжить можно только один раз — дальше маршрут живёт сам.
+  if (bad && S.lastRoute && S.project){
+    $("#consoleApply").append(el("button",{class:"btn sm gold",
+      onclick:()=>resumeLastRoute(S.lastRoute)}, "Продолжить маршрут"));
+  }
   ROUTE = null;
+  // События шагов сохраняем даже на остановке: именно прерванный маршрут чаще всего и
+  // разбирают. POST в фоне — маршрут уже отработал, ждать его не нужно.
+  if (stepEvents.length && S.project){
+    api("/api/run/steps", {method:"POST", quiet:true,
+      body: JSON.stringify({project:S.project.path, run:routeRunId, steps:stepEvents})});
+  }
+
+  // Последний остановленный маршрут — в проект, «Продолжить маршрут» переживает перезапуск
+  // вкладки и панели. Прошёл целиком — запись стираем: продолжать больше нечего. POST в фоне,
+  // маршрут уже отработал. Причина уже посчитана в `routeReason` до `ROUTE = null`.
+  if (S.project){
+    const body = bad
+      ? {project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
+           runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
+           write:S.lastRoute&&S.lastRoute.write, reason:routeReason, step:routeDone,
+           at:new Date().toISOString()}}
+      : {project:S.project.path, clear:true};
+    api("/api/route/state", {method:"POST", quiet:true, body: JSON.stringify(body)});
+  }
   if (S.project){ const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
       renderOverview(); renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность");});
@@ -3729,11 +3962,91 @@ async function runRoute(sc, write){
         + "работу с этой."));
     });
   }
-  toast(bad ? "Маршрут остановлен на " + bad : "Маршрут пройден: " + sc.title,
+  toast(routeReason === "stall"
+    ? "Маршрут остановлен: застой — работа не двигалась"
+    : bad ? "Маршрут остановлен на " + bad : "Маршрут пройден: " + sc.title,
         bad ? "err" : "ok");
 }
 
+/* Кнопка «Продолжить маршрут» — именованная функция: её зовут и конец маршрута, и кнопка
+   после перезапуска вкладки. Пропускаем только шаги, завершившиеся именно успехом (rc 0):
+   rc 1 — «отработала и нашла, что чинить», и повторять её надо, а не считать сделанной. */
+async function resumeLastRoute(last){
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+  const sc2 = (d.scenarios||[]).find(s=>s.id===last.scId);
+  if (!sc2) return toast("маршрут не найден","warn");
+  // Живой буфер уже остыл; события шагов ушли в архив в конце маршрута. Файла нет —
+  // события просто пустые, и продолжение становится честным полным повтором без вреда.
+  const ev = await api("/api/run/steps?project="+encodeURIComponent(S.project.path)
+    +"&run="+encodeURIComponent(last.runId), {quiet:true});
+  const sigs = new Set();
+  ((ev&&ev.steps)||[]).forEach(st=>{
+    if (st.rc===0) sigs.add(st.cmd+" "+(st.args||[]).join(" "));
+  });
+  runRoute(sc2, last.write, {skipSigs: sigs, attempts: last.attempts});
+}
+
+/* Кнопка «Продолжить маршрут» после перезапуска: состояние остановленного маршрута читается
+   из проекта на загрузке консоли. Время остановки — часами, причина — человеческой подписью. */
+async function showLastRoute(state){
+  if (!state || !S.project || ROUTE !== null) return;
+  // Сценарий мог пропасть из `cockpit/scenarios.txt` — продолжать нечего, кнопку не рисуем.
+  const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+  if (!(d.scenarios||[]).some(s=>s.id===state.scId)) return;
+  if (state.reason === "offline"){ showOfflineResume(state); return; }
+  const when = state.at ? new Date(state.at)
+    .toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"}) : "";
+  const label = state.reason === "stall" ? "застой"
+    : state.reason === "failed" ? "ошибка"
+    : state.reason === "offline" ? "нет сети"
+    : state.reason === "stopped" ? "остановлен вами"
+    : "остановлен";
+  $("#consoleApply").append(el("button",{class:"btn sm gold",
+    onclick:()=>resumeLastRoute(state)},
+    `Продолжить маршрут «${state.title}» (остановлен в ${when} — ${label})`));
+}
+
+// Офлайн-пауза после перезапуска вкладки: таймер жил в закрытом окне и мог прогореть.
+// Просроченный тик — продолжаем маршрут сразу (кэтч-ап); будущий — рисуем ожидание и
+// заводим таймер заново; упёршийся в лимит — только ручные «Попробовать сейчас».
+function showOfflineResume(state){
+  const holder = el("div",{class:"warn", style:"margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap"});
+  const btn = () => el("button",{class:"btn sm gold",
+    onclick:()=>{ holder.remove(); resumeLastRoute(state); }}, "Попробовать сейчас");
+  const notWait = () => { if (S.project)
+      api("/api/route/state",{method:"POST", quiet:true,
+        body: JSON.stringify({project:S.project.path, state:{
+          scId:state.scId, runId:state.runId, title:state.title, write:state.write,
+          reason:"stopped", step:state.step, attempts:state.attempts||0,
+          nextRetryAt:null, at:new Date().toISOString()}})});
+    holder.remove(); };
+  if (state.attempts >= ROUTE_OFFLINE_TRIES){
+    holder.append(el("span",{class:"chip warn"}, "ждём сеть"),
+      el("div",{style:"flex:1"},
+        `Перестал ждать сеть: ${ROUTE_OFFLINE_TRIES} попыток за 2 часа, бэкенды не отвечают. Проверьте шлюз/сеть и нажмите «Попробовать сейчас».`),
+      btn());
+    $("#consoleApply").append(holder);
+    return;
+  }
+  if (!state.nextRetryAt || state.nextRetryAt <= Date.now()){
+    resumeLastRoute(state); return;      // тик был пропущен — дождали сеть, продолжаем сейчас
+  }
+  const when = new Date(state.nextRetryAt).toLocaleTimeString("ru-RU",
+    {hour:"2-digit", minute:"2-digit"});
+  holder.append(el("span",{class:"chip warn"}, "ждём сеть"),
+    el("div",{style:"flex:1"},
+      `Шаг <b>${state.step}</b> ждёт сеть (попытка ${state.attempts}/${ROUTE_OFFLINE_TRIES}), следующий раз ${when}`),
+    btn(),
+    el("button",{class:"btn sm", onclick:notWait}, "не ждать"));
+  $("#consoleApply").append(holder);
+  setTimeout(()=>{ if (ROUTE === null) resumeLastRoute(state); else holder.remove(); },
+    Math.max(0, state.nextRetryAt - Date.now()));
+}
+
 let CONSOLE_LINES = [];      // строки текущего прогона: из них собирается задание
+// Тишина одиночного задания: poll уходит в setTimeout и возвращается, а между вызовами состояние
+// надо держать снаружи. Сброс — на старте нового потока (since===0), см. SILENCE_MS.
+let POLL_LAST_OUT = 0, POLL_SILENT = false;
 async function poll(id, since, label){
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
   const out = $("#consoleOut");
@@ -3752,7 +4065,8 @@ async function poll(id, since, label){
     drawLiveJobs();
     return;
   }
-  if (!since) CONSOLE_LINES = [];
+  let outLines = d.lines||[];
+  if (!since){ CONSOLE_LINES = []; POLL_LAST_OUT = Date.now(); POLL_SILENT = false; }
   (d.lines||[]).forEach(l=>{
     CONSOLE_LINES.push(l);
     /* Красили по вхождению слова: путь к файлу, в имени которого есть «ошибки»,
@@ -3767,6 +4081,14 @@ async function poll(id, since, label){
     out.append(el("div",{class:cls}, l));
   });
   watchScroll(out); stickToBottom(out);
+  if (outLines.length){ POLL_LAST_OUT = Date.now(); POLL_SILENT = false; }
+  // Та же забота о подвисшей команде, что в маршруте: один раз сообщаем про тишину,
+  // а не молчим до бесконечности с «выполняется…».
+  if (!d.done && !POLL_SILENT && Date.now() - POLL_LAST_OUT > SILENCE_MS){
+    POLL_SILENT = true;
+    out.append(el("div",{class:"warn"},
+      "⚠️ нет вывода уже 2 мин — команда, возможно, зависла. «Прервать» остановит прогон."));
+  }
   if (!d.done) return setTimeout(()=>poll(id, d.next, label), 450);
   const rc = d.rc, mark = rcMark(rc);
   const badge = $("#consoleRc");
@@ -3786,6 +4108,15 @@ async function poll(id, since, label){
     $("#consoleApply").append(el("button",{class:"btn sm gold",
       onclick:()=>{ if (confirm(applyAsk(line))) fire(true); }},
       "Применить: " + line + " --apply"));
+  }
+  // Кнопка «Попробовать снова» — только для настоящей ошибки команды: код 2 и выше.
+  // Код 1 — команда отработала и нашла, что чинить, это успех; отрицательный код — процесс
+  // снят сигналом («Прервать» или система), это не ошибка команды. Повтор шлёт ту же строку
+  // запуска новым заданием, номер попытки растёт; на успехе или коде 1 кнопки нет.
+  if (S.lastStep && S.lastStep.job === id){
+    S.lastStep.failed = (rc >= 2);
+    if (rc >= 2) $("#consoleApply").append(el("button",{class:"btn sm gold",
+      onclick:retryStep}, "Попробовать снова"));
   }
   // журнал пишет сервер — перечитываем его вместе со здоровьем, а не ведём копию в вкладке
   if (S.project) { const p = S.project;
@@ -3863,9 +4194,16 @@ function runs(){ return S.runs || (S.health && S.health.runs) || {}; }
 
 async function loadRuns(){
   if (!S.project) return;
-  const d = await api("/api/runlog?project=" + encodeURIComponent(S.project.path),
-                      {quiet:true});
-  if (d && d.runs){ S.runs = d.runs; renderHistory(); }
+  // Архив прогонов читаем рядом с журналом: оба мгновенные, и вместе они дают полную
+  // картину «что запускали» — строки журнала (последний прогон команды) поверх, полные
+  // выводы прошлых прогонов под ними, в секции «Архив прогонов».
+  const [d, a] = await Promise.all([
+    api("/api/runlog?project=" + encodeURIComponent(S.project.path), {quiet:true}),
+    api("/api/run/logs?project=" + encodeURIComponent(S.project.path), {quiet:true}),
+  ]);
+  if (d && d.runs) S.runs = d.runs;
+  S.runArchive = (a && a.archive && a.archive.length) ? a.archive : null;
+  renderHistory();
 }
 function lastRun(cmd){ return runs()[cmd]; }
 
@@ -3878,12 +4216,76 @@ function histWhen(iso){
   return d.toDateString()===new Date().toDateString() ? hm
     : d.toLocaleDateString("ru-RU",{day:"2-digit",month:"2-digit"}) + " " + hm;
 }
+// Метка для имён в формате серверного архива прогонов: YYYYMMDD-HHMMSS. Без разделителей
+// в дате — так лежат папки в .opencode/runs, и наш id не спутать с чужим.
+function rtime(d){
+  d = d || new Date();
+  const p = n => String(n).padStart(2, "0");
+  return "" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-"
+    + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+// Секунды компактно, как в житейском таймере: до минуты «Xс», дальше «Mм Sс».
+function fmtDur(sec){
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + "с";
+  return Math.floor(sec / 60) + "м " + (sec % 60) + "с";
+}
+
+// «Когда» архивного прогона — по его имени: первый отрезок id это локальное время старта.
+function archiveWhen(runId){
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(runId || "");
+  if (!m) return runId || "";
+  return histWhen(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+}
+
+// Полные выводы прошлых прогонов .opencode/runs. Живут отдельной секцией под журналом и
+// не трогают живой вывод: раскрыть старый лог здесь можно, не сбивая идущий прогон, а
+// открытых может быть несколько — старый и новый сравнивают, глядя на оба сразу.
+function renderArchiveBox(box, archived){
+  if (!archived || !archived.length) return;
+  box.append(el("div",{class:"list-item dim",
+      style:"margin-top:14px;font-size:12px;letter-spacing:.05em;text-transform:uppercase"},
+    "Архив прогонов"),
+    el("div",{class:"muted",style:"font-size:12px;margin:2px 14px 8px"},
+      "Полные выводы прошлых прогонов. Строку — клик, чтобы раскрыть; повторный — закрыть. "
+      + "Раскрытие не затрагивает текущий вывод."));
+  archived.forEach(item=>{
+    const runId = item.id || "";
+    const arrow = el("span",{class:"muted",style:"font-size:12px"},"▸");
+    const pre = el("pre",{class:"mono",
+      style:"margin:0;padding:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:420px;overflow:auto"},
+      el("span",{class:"muted"},"загрузка…"));
+    const body = el("div",{style:"display:none;padding:0 14px 8px"}, pre);
+    let loaded = false;          // полный вывод тянем с диска один раз, дальше из кэша
+    box.append(
+      el("div",{class:"list-item",style:"cursor:pointer",
+        title:"Раскрыть полный вывод этого прогона",
+        onclick:async ()=>{
+          const open = body.style.display !== "none";
+          body.style.display = open ? "none" : "";
+          arrow.textContent = open ? "▸" : "▾";
+          if (open || loaded) return;
+          loaded = true;
+          const d = await api("/api/run/file?project=" + encodeURIComponent(S.project.path)
+            + "&run=" + encodeURIComponent(runId), {quiet:true});
+          pre.textContent = (d && d.text) ? d.text
+            : ((d && d.error) ? d.error : "не удалось прочитать лог");
+        }},
+        arrow,
+        el("span",{class:"mono",style:"flex:1;overflow:hidden;text-overflow:ellipsis"},
+          runId),
+        el("span",{class:"muted",style:"font-size:12px"}, archiveWhen(runId))),
+      body);
+  });
+}
 function renderHistory(){
   const box = $("#historyBox"); box.innerHTML="";
   if (!S.project){ box.append(el("div",{class:"list-item muted"},"Выберите проект.")); return; }
   const rows = Object.entries(runs()).map(([cmd, r])=>({cmd, ...r}))
     .sort((a, b)=> String(b.at).localeCompare(String(a.at)));
-  if (!rows.length){
+  const archived = (S.runArchive && S.runArchive.length) ? S.runArchive : null;
+  if (!rows.length && !archived){
     box.append(el("div",{class:"list-item muted"},
       "Пока пусто: журнал заполняется по мере запусков из панели.")); return; }
   rows.slice(0,20).forEach(h=>box.append(el("div",{class:"list-item"},
@@ -3894,6 +4296,9 @@ function renderHistory(){
     h.kit ? el("span",{class:"chip mono",title:"версия ядра, на которой команда отработала"},
       "kit " + h.kit) : null,
     el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
+  // Архив (полные выводы) под журналом: у одной команды есть и «последний прогон» здесь,
+  // и полные выводы прошлых прогонов ниже. Один без другого был бы половинчатой картиной.
+  renderArchiveBox(box, archived);
 }
 $("#makePublish").onclick = ()=> publishArtifact();
 $("#makeGo").onclick = async ()=>{
@@ -3909,6 +4314,26 @@ $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; followAgain($(
 // Очистка и кнопка «вывод продолжается» возвращают слежение: человек сам сказал, что
 // снова смотрит конец.
 $("#consoleTail").onclick = ()=> followAgain($("#consoleOut"));
+$("#exportMd").onclick = ()=>{
+  // Берём строки текущего прогона, а если его нет — текст консоли. Кнопка полезна и после
+  // маршрута, который в CONSOLE_LINES не пишет (там свой цикл опроса).
+  const lines = CONSOLE_LINES.length
+    ? CONSOLE_LINES.slice()
+    : $("#consoleOut").innerText.split("\n");
+  if (!lines.some(l => l.trim())){
+    toast("Нечего выгружать — консоль пуста","warn"); return; }
+  const stamp = new Date().toLocaleString("ru-RU");
+  const md = ["# Журнал консоли Aurora", "",
+    "- Проект: " + (S.project ? S.project.path : "—"),
+    "- Выгружен: " + stamp, ""].concat(lines).join("\n");
+  const blob = new Blob([md], {type:"text/markdown;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "aurora-console-" + rtime() + ".md";
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+  toast("Лог выгружен в .md","ok");
+};
 // Полоса хода — не украшение: по ней возвращаются к прогону с любой вкладки.
 $("#routeBar").onclick = ()=> show("console");
 
@@ -4151,6 +4576,71 @@ async function renderProject(){
         S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
         renderProject(); }
     })));
+
+  // 4. MCP-серверы — движок подключает их, когда сам чего-то не умеет
+  box.append(el("h2",{},"MCP-серверы · " + S.project.name));
+  const mcp = await api("/api/mcp?project=" + encodeURIComponent(S.project.path));
+  const M = {list:[]};
+  (mcp.mcpServers || {}).forEach((cfg, name) => M.list.push({
+    name, command: cfg.command || "", args: (cfg.args||[]).join(" "), url: cfg.url || "", hasEnv: !!cfg.hasEnv }));
+  const mcpBox = el("div",{});
+  const drawMcp = () => {
+    mcpBox.innerHTML = "";
+    M.list.forEach((s, i) => mcpBox.append(el("div",{class:"row",style:"gap:8px;margin-bottom:8px","data-mcp":i},
+      el("div",{style:"flex:1"},
+        el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, "имя сервера"),
+        watch(el("input",{class:"btn mono",style:"width:100%;font-weight:400",placeholder:"curator",
+          value:s.name,oninput:e=>s.name=e.target.value}), "mcp", "«MCP-серверы»")),
+      el("div",{style:"flex:1.4"},
+        el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, "command (или url)"),
+        watch(el("input",{class:"btn mono",style:"width:100%;font-weight:400",
+          placeholder:"npx", value:s.command,oninput:e=>s.command=e.target.value}), "mcp", "«MCP-серверы»")),
+      el("div",{style:"flex:1.4"},
+        el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, "args · пробел разделитель"),
+        watch(el("input",{class:"btn mono",style:"width:100%;font-weight:400",
+          placeholder:"-y mcp-server-name", value:s.args,oninput:e=>s.args=e.target.value}), "mcp", "«MCP-серверы»")),
+      el("div",{style:"flex:1"},
+        el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"}, "url · http/sse (опц.)"),
+        watch(el("input",{class:"btn mono",style:"width:100%;font-weight:400",
+          placeholder:"https://…", value:s.url,oninput:e=>s.url=e.target.value}), "mcp", "«MCP-серверы»")),
+      s.hasEnv ? el("span",{class:"chip warn",title:"токены настраиваются вне панели — панель их не показывает"}, "env •••") : null,
+      el("button",{class:"btn sm danger",style:"align-self:flex-end",title:"убрать сервер",
+        onclick:()=>{M.list.splice(i,1); drawMcp(); setDirty("mcp","«MCP-серверы»",true);}},"✕"))));
+    if (!M.list.length) mcpBox.append(el("div",{class:"muted",style:"font-size:12px"}, "серверов нет — добавьте первый."));
+  };
+  drawMcp();
+  box.append(el("div",{class:"card",style:"padding:20px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},
+      "MCP-серверы — внешние инструменты, которые движок подключает, когда сам чего-то не умеет ",
+      "(Composer, разбор офиса и другие). Пишутся в <project>/mcp.json. Панель хранит только ",
+      "command/args/url и не касается секретов: env-переменные с токенами настраиваются в ",
+      "редакторе или .env.aurora.local. Если секреты уже в файле, панель их не показывает и ",
+      "сохраняет как есть — они остаются на диске неизменными."),
+    mcpBox,
+    el("div",{class:"row",style:"margin-top:4px;gap:8px"},
+      el("button",{class:"btn sm",style:"margin-top:4px",
+        onclick:()=>{M.list.push({name:"",command:"",args:"",url:"",hasEnv:false}); drawMcp();
+          setDirty("mcp","«MCP-серверы»",true);}}, "+ добавить сервер"),
+      saveButton("mcp","«MCP-серверы»","Сохранить", async ()=>{
+        const names = M.list.map(s=>s.name.trim());
+        if (names.some(n=>!n)) return toast("У каждого сервера должно быть имя","warn");
+        if (new Set(names).size !== names.length) return toast("Имена серверов не должны повторяться","warn");
+        const bad = M.list.find(s=>!((s.command||"").trim() || (s.url||"").trim()));
+        if (bad) return toast("Каждому серверу нужен command или url","warn");
+        const mcpServers = {};
+        M.list.forEach(s => {
+          const e = {};
+          if ((s.command||"").trim()) e.command = s.command.trim();
+          const args = (s.args||"").split(/\s+/).filter(Boolean);
+          if (args.length) e.args = args;
+          if ((s.url||"").trim()) e.url = s.url.trim();
+          mcpServers[s.name.trim()] = e;
+        });
+        const r = await api("/api/mcp",{method:"POST",
+          body:JSON.stringify({project:S.project.path, mcpServers})});
+        if (r.ok){ toast("MCP сохранён · резервная копия " + r.backup);
+          setDirty("mcp","«MCP-серверы»",false); renderProject(); }
+      }))));
 
   // 4. конфиг как текст — для того, чего нет в форме
   box.append(el("h2",{},"aurora.config.yaml · полный текст"));

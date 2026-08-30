@@ -1670,6 +1670,91 @@ def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> N
         pass    # журнал — удобство, а не результат работы: не записался, так не записался
 
 
+RUNS_KEEP = 50      # столько последних прогонов храним в `.opencode/runs` — хронология для сравнения
+
+
+def runs_dir(project: str) -> str:
+    """Папка архива прогонов: полный вывод каждой команды, чтобы старый и новый можно было
+    сравнить после перезапуска, а не только в живом буфере процесса."""
+    return os.path.join(project, ".opencode", "runs")
+
+
+def run_archive(project: str) -> list:
+    """Список сохранённых прогонов: [{id, path}] по папке `.opencode/runs`."""
+    base = runs_dir(project)
+    try:
+        return [{"id": d, "path": os.path.join(base, d, "console.log")}
+                for d in sorted(os.listdir(base))]
+    except OSError:
+        return []
+
+
+def trim_runs(project: str) -> None:
+    """Оставить последние RUNS_KEEP прогонов, старые — удалить: хронология без роста диска."""
+    base = runs_dir(project)
+    try:
+        dirs = sorted(os.listdir(base))
+    except OSError:
+        return
+    for d in dirs[:-RUNS_KEEP]:
+        shutil.rmtree(os.path.join(base, d), ignore_errors=True)
+
+
+def read_run_console(project: str, run_id: str) -> dict:
+    """Полный текст архивированного прогона. Раньше жил только в памяти процесса
+    и пропадал на перезапуске — теперь лежит в `.opencode/runs/<id>/console.log`."""
+    rid = os.path.basename(run_id or "")
+    path = os.path.join(runs_dir(project), rid, "console.log")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return {"text": f.read()}
+    except OSError:
+        return {"error": "архив прогона не найден"}
+
+
+
+def route_state_path(project: str) -> str:
+    """Файл последнего остановленного маршрута: панель читает его при загрузке «Консоли»,
+    чтобы предложить «Продолжить маршрут» после перезапуска вкладки или процесса."""
+    return os.path.join(project, "AuroraKnowledgeDB", "meta", "last_route.json")
+
+
+def read_route_state(project: str):
+    """Последний остановленный маршрут (stall/отказ/ручная остановка): {scId, runId, title,
+    write, reason, at}. Файла нет или он битый — None: продолжать нечего, и панель не должна
+    падать на порванном файле."""
+    path = route_state_path(project)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_route_state(project: str, state) -> dict:
+    """Запомнить остановленный маршрут. Папку meta создаём — в свежем проекте её может не быть
+    заранее, а файл рядом с решениями появляется вместе с первым остановленным маршрутом."""
+    try:
+        os.makedirs(os.path.dirname(route_state_path(project)), exist_ok=True)
+        with open(route_state_path(project), "w", encoding="utf-8") as f:
+            f.write(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+        return {"ok": True}
+    except OSError as ex:
+        return {"ok": False, "error": str(ex)}
+
+
+def clear_route_state(project: str) -> dict:
+    """Маршрут прошёл целиком — «продолжить» больше нечего. Отсутствия файла не ошибка:
+    свежий проект ещё ни разу не останавливал маршрут."""
+    try:
+        os.remove(route_state_path(project))
+    except OSError:
+        pass
+    return {"ok": True}
+
+
+
 def sources(project: str) -> dict:
     """Что за модули источников установлены и что подключено — спрашиваем реестр проекта."""
     rc, out = run_capture(project, "sources_registry.py", ["--json"])
@@ -2033,8 +2118,9 @@ def start_job(project: str, cmd: str, extra: list) -> str:
 
     path = script_path(project, row["script"])
     job_id = secrets.token_hex(8)
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
-           "out": [], "started": time.time(), "done": False}
+           "out": [], "started": time.time(), "done": False, "run_id": run_id}
     with JOBS_LOCK:
         JOBS[job_id] = job
 
@@ -2051,11 +2137,29 @@ def start_job(project: str, cmd: str, extra: list) -> str:
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
             job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
+            run_cdir = os.path.join(runs_dir(project), run_id)
+            try:
+                os.makedirs(run_cdir, exist_ok=True)
+                run_log = open(os.path.join(run_cdir, "console.log"), "w", encoding="utf-8")
+            except OSError:
+                run_log = None
             for line in p.stdout:
                 with JOBS_LOCK:
                     job["out"].append(line.rstrip("\n"))
                     if len(job["out"]) > 4000:
                         job["out"] = job["out"][-4000:]
+                if run_log is not None:
+                    try:
+                        run_log.write(line)
+                        run_log.flush()
+                    except OSError:
+                        pass
+            if run_log is not None:
+                try:
+                    run_log.close()
+                except OSError:
+                    pass
+                trim_runs(project)
             p.wait()
             job["rc"] = p.returncode
         except Exception as e:
@@ -2171,8 +2275,9 @@ class Handler(BaseHTTPRequestHandler):
                 # свежая, а процесс отвечает старым кодом — новые кнопки есть, а API под
                 # ними нет, и человек ищет поломку в себе.
                 "ui": {"version": ui_version(),
-                       "behind": minor(ui_version()) != minor(kit_version()),
+                       "behind": ui_version() != kit_version(),
                        "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED},
+                "projects": find_projects(self.server.roots),
                 "projects": find_projects(self.server.roots),
                 "env": environment(),
                 "commands": registry(),
@@ -2190,6 +2295,30 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"text": read_text(os.path.join(project, "aurora.config.yaml")),
                             "path": "aurora.config.yaml"})
+        elif u.path == "/api/mcp":
+            # MCP-серверы проекта (`<project>/mcp.json`). Панель читает только метаданные:
+            # имя, command, args, url — и флаг `hasEnv`. Значения `env` (токены) панель в
+            # браузер не отдаёт никогда: они правятся в редакторе или `.env.aurora.local`.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            try:
+                data = json.loads(read_text(os.path.join(project, "mcp.json")) or "{}")
+            except ValueError:
+                self.send_json({"error": "mcp.json не разобран"}, 400)
+                return
+            servers = data.get("mcpServers") if isinstance(data, dict) else {}
+            out = {}
+            for name, cfg in (servers or {}).items():
+                if not isinstance(cfg, dict):
+                    continue
+                out[name] = {
+                    "command": cfg.get("command"),
+                    "args": cfg.get("args", []),
+                    "url": cfg.get("url"),
+                    "hasEnv": bool(cfg.get("env")),
+                }
+            self.send_json({"mcpServers": out})
         elif u.path == "/api/runlog":
             # Журнал запусков — своим маршрутом. Он читается мгновенно, а ехал внутри
             # `/api/health`, который зовёт несколько команд и занимает секунды: на живом
@@ -2199,6 +2328,60 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"runs": read_runlog(project)}
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
+        elif u.path == "/api/run/logs":
+            # Хронология архивов прогонов (каждый прогон — папка в `.opencode/runs`).
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json({"archive": run_archive(project)}
+                         if project else {"archive": []})
+
+        elif u.path == "/api/run/file":
+            # Полный вывод прошлого прогона из архива `.opencode/runs`. В отличие от
+            # `/api/job` он читается из файла, а не из памяти: живой прогон идёт своим
+            # буфером, архив — этим, и раскрытие старого не трогает текущий вывод.
+            project = q.get("project", [""])[0]
+            run_id = (q.get("run") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(read_run_console(project, run_id))
+        elif u.path == "/api/run/steps":
+            # События шагов маршрута из архивного events.jsonl — то, что маршрут POST`ил по
+            # ходу. Кнопка «Продолжить маршрут» читает их, чтобы не повторять нецикличные
+            # шаги, уже завершившиеся успехом. Файла нет (другой проект, старый прогон) —
+            # возвращаем пустой список: продолжение тогда равно честному полному повтору.
+            project = q.get("project", [""])[0]
+            run_id = (q.get("run") or [""])[0]
+            if not self._known(project):
+                return
+            # id рождается на клиенте и держит путь до файла — пропускаем только безопасное.
+            if not run_id or "/" in run_id or run_id.startswith(".."):
+                self.send_json({"error": "недопустимый id прогона"}, 400)
+                return
+            events = []
+            try:
+                path = os.path.join(runs_dir(project),
+                                   os.path.basename(run_id), "events.jsonl")
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            events.append(json.loads(line))
+                        except ValueError:
+                            continue    # битая строка — не повод ронять остальное чтение
+            except OSError:
+                pass                   # события ещё не писались: продолжение = полный повтор
+            self.send_json({"steps": events})
+        elif u.path == "/api/route/state":
+            # Последний остановленный маршрут — «Продолжить маршрут» после перезапуска
+            # вкладки/процесса. Путь фиксирован внутри проекта; из запроса берём только проект,
+            # выбранный из списка известных, — каких-либо компонентов пути извне здесь нет.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json({"state": read_route_state(project)})
         elif u.path == "/api/report":
             project = q.get("project", [""])[0]
             if not self._known(project):
@@ -2393,6 +2576,48 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/job/stop":
             self.send_json(stop_job(payload.get("id", "")))
             return
+        if u.path == "/api/run/steps":
+            # Шаги маршрута сохраняем на диск для позднего разбора: прогон идёт часами, и
+            # «что когда началось и сколько заняло» спрашивают уже после того, как живой буфер
+            # консоли остыл. JSONL строкой на шаг, перезаписью — повторная отправка для того
+            # же маршрута не дублирует события, а падающий третий шаг не роняет остальных.
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            run_id = payload.get("run", "") or ""
+            # id рождается на клиенте и становится именем папки — пропускаем только безопасное.
+            if not run_id or "/" in run_id or run_id.startswith(".."):
+                self.send_json({"error": "недопустимый id прогона"}, 400)
+                return
+            try:
+                base = os.path.join(runs_dir(project), run_id)
+                os.makedirs(base, exist_ok=True)
+                with open(os.path.join(base, "events.jsonl"), "w",
+                          encoding="utf-8") as f:
+                    for step in payload.get("steps") or []:
+                        f.write(json.dumps(step, ensure_ascii=False) + "\n")
+                self.send_json({"ok": True})
+            except Exception as ex:
+                self.send_json({"error": str(ex)}, 500)
+            return
+        if u.path == "/api/route/state":
+            # Панель пишет сюда остановленный маршрут (застой/отказ/ручная остановка), а при
+            # полном проходе стирает запись. Путь фиксирован внутри проекта — произвольного пути
+            # из запроса нет, только проект из списка известных. Тело может быть целым `null`
+            # (сброс записи) — тогда проект берём из строки запроса, как на чтении.
+            project = (payload.get("project", "") if isinstance(payload, dict) else "")
+            if not project:
+                project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            if payload is None or (isinstance(payload, dict) and payload.get("clear")):
+                self.send_json(clear_route_state(project))
+                return
+            if not isinstance(payload, dict) or not isinstance(payload.get("state"), dict):
+                self.send_json({"ok": False, "error": "state должен быть объектом"}, 400)
+                return
+            self.send_json(write_route_state(project, payload["state"]))
+            return
         if u.path == "/api/restart":
             self.send_json(restart_self(self.server.server_address[1]))
             threading.Timer(0.4, lambda: os._exit(0)).start()
@@ -2464,6 +2689,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(self._write_tokens(project, payload))
+            return
+        if u.path == "/api/mcp":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(self._write_mcp(project, payload.get("mcpServers")))
             return
         if u.path == "/api/project/new":
             self.send_json(self._create_project(payload))
@@ -2586,6 +2817,58 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"error": f"не удалось записать: {e}"}
         return {"ok": True}
+
+    def _write_mcp(self, project: str, servers) -> dict:
+        """MCP-серверы проекта (`<project>/mcp.json`). Панель не хранит и не знает секреты:
+        поле `env` (туда кладут токены) панель не принимает и не отдаёт. Существующий `env`
+        переносится на диск в неизменном виде — слиянием со старым файлом, без вывода в браузер.
+        Прежняя версия сохраняется рядом как .bak."""
+        if not isinstance(servers, dict):
+            return {"error": "mcpServers должен быть объектом"}
+        allowed = ("command", "args", "url")
+        for name, entry in servers.items():
+            if not isinstance(name, str) or not name.strip():
+                return {"error": "имя сервера не может быть пустым"}
+            if not isinstance(entry, dict):
+                return {"error": f"сервер `{name}`: ожидался объект"}
+            if "env" in entry:
+                return {"error": "панель не хранит секреты: env в mcp.json настраивается вне панели"}
+            for key in entry:
+                if key not in allowed:
+                    return {"error": f"сервер `{name}`: неизвестное поле {key}"}
+            if "command" in entry and (not isinstance(entry["command"], str) or not entry["command"].strip()):
+                return {"error": f"сервер `{name}`: command должен быть непустой строкой"}
+            if "url" in entry and (not isinstance(entry["url"], str) or not entry["url"].strip()):
+                return {"error": f"сервер `{name}`: url должен быть непустой строкой"}
+            if "args" in entry:
+                if not isinstance(entry["args"], list) or not all(isinstance(a, str) for a in entry["args"]):
+                    return {"error": f"сервер `{name}`: args должен быть списком строк"}
+        path = os.path.join(project, "mcp.json")
+        try:
+            old = json.loads(read_text(path) or "{}")
+        except ValueError:
+            old = {}       # битый файл не преграда: начнём с чистого листа
+        old_servers = old.get("mcpServers") if isinstance(old, dict) else {}
+        merged = {}
+        for name, entry in servers.items():
+            base = dict(old_servers.get(name, {})) if isinstance(old_servers, dict) else {}
+            for key in allowed:
+                if key in entry:
+                    base[key] = entry[key]
+                else:
+                    base.pop(key, None)
+            merged[name] = base
+        try:
+            if os.path.isfile(path):
+                backup = path + ".bak"
+                with open(backup, "w", encoding="utf-8") as f:
+                    f.write(read_text(path))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"mcpServers": merged}, ensure_ascii=False, indent=2) + "\n")
+        except Exception as e:
+            return {"error": f"не удалось записать: {e}"}
+        return {"ok": True, "backup": "mcp.json.bak"}
+
 
     def _write_sources(self, project: str, modules: list) -> dict:
         """Переписать секцию `sources:` конфига — подключение и отключение модулей.
