@@ -310,7 +310,11 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
         clean, codes = split_doc_code(title)
         if not codes or clean == title:
             continue
-        new_stem = re.sub(r"[^\w\-. ]", "", clean, flags=re.U).strip().replace(" ", "-")
+        # Имя файла считает `card_filename` — тот же, которым его считает сборка карточки.
+        # Своя регулярка здесь расходилась с ним по подчёркиванию, и ремонт переименовывал
+        # карточку в форму, которую сборка потом не воспроизводила: следующий разбор того
+        # же источника заводил двойника.
+        new_stem = normalize_title(clean)
         if not new_stem:
             stuck.append((rel, "после снятия кода имя пустое"))
             continue
