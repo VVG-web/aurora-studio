@@ -284,6 +284,49 @@ def build_prefilter(out: array.array, dim: int, rows: int):
     return axes, per_row
 
 
+PF_USEFUL_AT = 0.70        # доля базы, которую предфильтр обязан отсечь, чтобы остаться
+
+
+def prefilter_pays_off(out: array.array, dim: int, rows: int, pf) -> tuple:
+    """Отсекает ли предфильтр хоть что-нибудь на ЭТИХ векторах. → (стоит ли, доля, пояснение).
+
+    Связка карточки — «проекция ± |остаток запроса| × |остаток карточки|». Если оси
+    забирают малую часть нормы, остатки велики, связка шире всего разброса близостей — и
+    кандидатами остаются все. Такой предфильтр не ускоряет, а замедляет: к полному
+    перебору он добавляет свою арифметику и лишнее чтение с диска.
+
+    Именно это и вышло на живой базе: bge-m3 раскладывается по восьми осям всего на 63 %
+    нормы, кандидатов оставалось 3156 из 3156, замер дал 0.97×. Заявленные 3.23× меряли
+    на синтетике, где данные ложатся по осям куда охотнее.
+
+    Поэтому предфильтр обязан доказать пользу на своих же векторах, а не на чужих. Проба
+    берёт вектора самих карточек как запросы: сети для этого не нужно.
+    """
+    if not pf or rows < 50:
+        return False, 1.0, "база мала — перебор дешевле любой подготовки"
+    axes, per_row = pf
+    k = len(axes)
+    probes = [i * max(1, rows // 24) for i in range(min(24, rows))]
+    limit = min(40, max(1, rows // 4))
+    seen = []
+    for r in probes:
+        qv = out[r * dim:(r + 1) * dim]
+        qproj = [sum(a[j] * qv[j] for j in range(dim)) for a in axes]
+        qperp = max(0.0, sum(x * x for x in qv) - sum(x * x for x in qproj)) ** 0.5
+        lower = []
+        for i in range(rows):
+            base = i * (k + 1)
+            pr = sum(qproj[j] * per_row[base + j] for j in range(k))
+            lower.append((pr - qperp * per_row[base + k], pr + qperp * per_row[base + k]))
+        thr = sorted((lo for lo, _ in lower), reverse=True)[limit - 1]
+        seen.append(sum(1 for _, hi in lower if hi >= thr) / rows)
+    share = sum(seen) / len(seen)
+    if share <= PF_USEFUL_AT:
+        return True, share, f"кандидатов {share*100:.0f} % базы"
+    return False, share, (f"кандидатов {share*100:.0f} % базы — связки шире разброса "
+                          f"близостей, отсекать нечего")
+
+
 def save_index(model: str, dim: int, cards: dict, out: "array.array", pf) -> None:
     """Индекс на диск: файл v2 (заголовок, оси, вектора, проекции) и json-карта.
     Файлы производные: битые считываются как пустые, пересобираются --apply."""
@@ -454,9 +497,15 @@ def main() -> int:
         out.extend(vec)
 
     pf = build_prefilter(out, dim, len(cards))
+    # Записываем предфильтр, только если он себя оправдал на этих самых векторах:
+    # бесполезный слой не нейтрален — он стоит арифметики и чтения с диска на каждый поиск.
+    pays, share, why = prefilter_pays_off(out, dim, len(cards), pf)
+    if not pays:
+        pf = None
     save_index(model, dim, cards, out, pf)
     print(f"\n✅ Индекс собран: карточек {len(cards)}, размерность {dim}, модель {model}"
-          + (f" · предфильтр {len(pf[0])} осей" if pf else "") + ".")
+          + (f" · предфильтр {len(pf[0])} осей ({why})" if pf
+             else f" · предфильтр не пригодился: {why}") + ".")
     print(f"   Файлы: {VECTORS} и {INDEX} (в git не идут — это производная).")
     return 0
 
