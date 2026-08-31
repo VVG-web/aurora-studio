@@ -616,6 +616,9 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     Заготовка честно говорит, что она заготовка: `status: draft`, метка `заготовка` и
     список тех, кто на неё ссылается, — по нему видно, в каком контексте её ждут.
     """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from build_plan import split_doc_code
+
     wanted: dict = {}
     # Имена, уже занятые карточками, — с точностью до разделителей: «ER BaR FID» и
     # «ER-BaR-FID» это одно понятие, и заводить под второе написание пустую карточку
@@ -641,7 +644,25 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
 
     created = []
     for name, refs in sorted(wanted.items()):
-        safe = re.sub(r"[\\/:*?\"<>|]", "-", name).strip()
+        # Заготовка называется по тем же правилам, что и настоящая карточка. Раньше имя
+        # файла бралось из текста ссылки дословно — снимались только запрещённые файловой
+        # системой символы. Отсюда две беды, обе видны на живой базе:
+        #
+        #   • ссылка «[[US-3.6.6 Получение сальдо по заявителям]]» заводила карточку
+        #     с кодом документа в имени, и линтер справедливо звал её артефактом. Каждый
+        #     оборот маршрута добавлял новые такие — база «портилась» ровно на своём росте;
+        #   • пробелы и подчёркивания оставались как есть, и одно понятие получало файл,
+        #     который сборка потом не воспроизводила.
+        #
+        # Код документа снимаем, но не теряем: он и исходное написание ссылки уходят в
+        # синонимы — ссылка `[[US-3.6.6 …]]` продолжает вести в эту карточку.
+        clean, codes = split_doc_code(name)
+        clean = clean or name
+        extra: list = list(codes)
+        safe = normalize_title(clean) or re.sub(r"[\\/:*?\"<>|]", "-", name).strip()
+        if name != safe:
+            extra.append(name)
+
         # короткая заглавная строка — это термин, ему место в глоссарии
         section = "Glossary" if (len(safe) <= 12 and safe.upper() == safe) else "Concepts"
         path = os.path.join(root, section, safe + ".md").replace("\\", "/")
@@ -649,15 +670,17 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
             continue
         mentions = "\n".join(f"- [[{r}]]" for r in sorted(set(refs))[:20])
         taken.add(fold_hard(safe))
+        alias_lines = ("[]" if not extra else
+                       "\n" + "\n".join(f'  - "{a}"' for a in dict.fromkeys(extra)))
         plan.write(path,
-                   f"---\ntitle: \"{name}\"\naliases: []\nstatus: draft\n"
+                   f"---\ntitle: \"{clean}\"\naliases: {alias_lines}\nstatus: draft\n"
                    f"type: {SECTION_TYPE.get(section, 'concept')}\n"
                    f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
-                   f"related: []\n---\n\n# {name}\n\n"
+                   f"related: []\n---\n\n# {clean}\n\n"
                    "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n"
                    "_Наполните её при следующем разборе источника — ссылки переписывать "
                    "не придётся._\n\n## Упоминается в\n\n" + mentions + "\n")
-        created.append((name, section, len(set(refs))))
+        created.append((clean, section, len(set(refs))))
     return created
 
 
