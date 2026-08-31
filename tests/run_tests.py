@@ -6331,6 +6331,188 @@ def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
 
 
 @test
+def test_build_stop_really_stops_the_work(tmp: Path):
+    """Остановка параллельного build обязана остановить работу, а не только отчёт.
+
+    Регрессия: все задачи уходили в пул разом, а `break` из `as_completed` выходил в
+    `with ThreadPoolExecutor`, который на выходе делает `shutdown(wait=True)` — очередь
+    дорабатывалась до конца. Бюджет, лимит шагов и «одна и та же ошибка N раз подряд»
+    оказывались пожеланиями: с `--apply` база продолжала меняться уже после того, как
+    прогон решил остановиться.
+
+    Считаем не шаги в отчёте, а фактические входы в solve_source: именно они трогают базу.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    import agent_runner
+    from agent_runner import run_build
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '50',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    entered, lock = [], threading.Lock()
+
+    def always_fails(cfg_, *a, **k):
+        with lock:
+            entered.append(a[2])
+        time.sleep(0.02)
+        return {'alias': 't', 'status': 'сбой', 'backends': [], 'degraded': False,
+                'note': 'шлюз недоступен'}
+
+    sources = [('Confluence', f'f{i}.md', 1) for i in range(24)]
+    with patch('agent_runner.read_partition', return_value=sources), \
+            patch('agent_runner.solve_source', side_effect=always_fails):
+        res = run_build(cfg, str(root), False, True, 0)
+
+    limit = agent_runner.SAME_FAIL_LIMIT
+    # Порог с запасом на уже начатые: сколько потоков в работе, столько шагов могут
+    # завершиться после решения остановиться. Но не все 24 — очередь обязана свернуться.
+    ceiling = limit + 2 * 2
+    assert len(entered) <= ceiling, (
+        f"после {limit} одинаковых ошибок в работу вошло {len(entered)} источников из "
+        f"{len(sources)} — очередь доработала вместо остановки, и с --apply это правки "
+        f"в базе после решения остановиться")
+    assert res.get("stopped"), "прогон остановился, но причина не названа в отчёте"
+
+
+@test
+def test_aliases_bridging_conflict_merges_groups(tmp: Path):
+    """T9: конфликт-мост склеивает группы, а не уходит в первую попавшуюся.
+
+    Раскладка `a→x`, `b→y`, `c→{x,y}`: жадная группировка клала `c` в ПЕРВУЮ группу, с
+    которой он пересёкся, и останавливалась. Получались `{x,y}` c [a,c] и `{y}` c [b] —
+    две группы, делящие карточку `y`, и они шли параллельно. Ровно та гонка, ради
+    которой T9 и писался: решение по одному синониму переписывает alias в базе и меняет
+    картину для другого.
+
+    Проверяем не устройство группировки, а её смысл: никакие два конфликта над общей
+    карточкой не пересекаются во времени — как бы группы ни легли.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_aliases
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '4',
+        'AURORA_AGENT_PARALLEL': '4',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    marks, lock = {}, threading.Lock()
+    # Длительности разные нарочно: при жадной группировке «b» идёт своей группой и
+    # держится долго, а «c» стартует сразу после короткого «a» — и накладывается на «b»
+    # поверх общей карточки «y». С равными длительностями гонка существует, но прячется:
+    # «b» успевает закончить ровно к старту «c», и тест ловит удачу, а не поведение.
+    naps = {'a': 0.05, 'b': 0.40, 'c': 0.05}
+
+    def mock_solve(cfg_, *a, **k):
+        alias = a[1]
+        t0 = time.monotonic()
+        with lock:
+            marks[alias] = [t0, None]
+        time.sleep(naps.get(alias, 0.05))
+        with lock:
+            marks[alias][1] = time.monotonic()
+        return {'alias': alias, 'status': 'уточнил бы', 'backends': [], 'degraded': False,
+                'note': ''}
+
+    conflicts = [('a', 'x'), ('b', 'y'), ('c', ['x', 'y'])]
+    with patch('agent_runner.read_conflicts', return_value=conflicts), \
+            patch('agent_runner.solve_conflict', side_effect=mock_solve):
+        res = run_aliases(cfg, str(root), False, True, 0)
+
+    assert len(marks) == 3, f"обработаны не все три конфликта: {list(marks)}"
+    cards = {'a': {'x'}, 'b': {'y'}, 'c': {'x', 'y'}}
+    for one, two in (('a', 'c'), ('b', 'c')):
+        (s1, e1), (s2, e2) = marks[one], marks[two]
+        assert not (s1 < e2 and s2 < e1), (
+            f"«{one}» и «{two}» делят карточку {sorted(cards[one] & cards[two])} и шли "
+            f"параллельно: {s1:.3f}–{e1:.3f} и {s2:.3f}–{e2:.3f}. Конфликт-мост обязан "
+            "склеивать группы, а не уходить в первую пересёкшуюся")
+    assert len(res["steps"]) == 3 and all(s["status"] == "уточнил бы" for s in res["steps"]), \
+        f"run_aliases потерял конфликт: {res['steps']}"
+
+
+@test
+def test_ring_survives_an_overflow_and_pays_the_spare_once(tmp: Path):
+    """Кольцо: отказ по длине запроса — это строка в журнале, а не падение вызова.
+
+    Два дефекта одной правки (семафор ширины, 1.100.3):
+
+    1. Ветка «запрос длиннее окна модели» собирала строку тремя аргументами
+       `log.append(a, b, c)` вместо склейки литералов — а `list.append` берёт ровно
+       один. Любой бэкенд, отказавший по длине, ронял весь вызов `TypeError`. Это тот
+       самый путь, ради которого окна вообще объявляют.
+
+    2. `tried.add(b["n"])` выпал: множество заводилось и читалось, но не наполнялось.
+       Поэтому «даю запасному свой срок» продлевал дедлайн одному и тому же бэкенду
+       снова и снова — вызов тянулся дольше, чем разрешает request_timeout.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    # Окно НЕ объявлено: `fits` пропускает запрос, а шлюз отказывает по длине сам —
+    # так и бывает в жизни, когда настоящий предел сервера меньше, чем думает человек.
+    # Именно этот путь и падал.
+    env = {"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m1",
+           "AURORA_AGENT_BACKEND_2_URL": "http://b", "AURORA_AGENT_BACKEND_2_MODEL": "m2",
+           "AURORA_AGENT_REQUEST_TIMEOUT": "10"}
+    cfg = A.parse_config(env)
+
+    # 1. Первый отказывает по длине, второй отвечает: вызов обязан дойти до второго.
+    ok_body = {"choices": [{"message": {"content": "готово"}, "finish_reason": "stop"}]}
+
+    def overflow_then_ok(kind, b, payload, timeout):
+        if kind == "slots":
+            return (404, None, "нет /slots", 0.0)
+        if b["n"] == 1:
+            return (400, None, "This model's maximum context length is 1000 tokens", 0.0)
+        return (200, ok_body, "", 0.1)
+
+    r = A.call_role(cfg, "worker", [{"role": "user", "content": "x"}],
+                    transport=overflow_then_ok, deadline=time.time() + 60,
+                    sleep=lambda s: None)
+    assert r["ok"] and r["backend"] == 2, \
+        f"отказ по длине уронил кольцо вместо перехода к следующему: {r}"
+    assert any("длиннее окна" in l for l in r["log"]), \
+        f"причина отказа первого не названа словами: {r['log']}"
+
+    # 2. Честный срок запасному даётся один раз на бэкенд, а не на каждый круг.
+    def always_empty(kind, b, payload, timeout):
+        if kind == "slots":
+            return (404, None, "нет /slots", 0.0)
+        return (200, {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]},
+                "", 0.1)
+
+    r2 = A.call_role(cfg, "worker", [{"role": "user", "content": "x"}],
+                     transport=always_empty, deadline=time.time() + 0.2,
+                     sleep=lambda s: None)
+    gifts = [l for l in r2["log"] if "даю запасному свой срок" in l]
+    assert len(gifts) <= len(cfg["backends"]), (
+        "срок запасному выдан больше раза на бэкенд — значит tried не наполняется, "
+        f"и вызов может тянуться дольше request_timeout: {gifts}")
+
+
+@test
 def test_a_failure_without_words_is_still_a_failure(tmp: Path):
     """Прогон, который считает молчаливый провал успехом, хуже отсутствующего прогона.
 

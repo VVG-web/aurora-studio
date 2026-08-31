@@ -987,26 +987,42 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     else:
         width = 1
 
-    import sys
-    import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    progress_lock = threading.Lock()
-    processed_count = 0
-
-    def process_source(index_source):
-        index, (group, source, _kb) = index_source
-        if time.time() > budget:
-            return index, (group, source, _kb), {"alias": "—", "status": "стоп", "note": f"бюджет {cfg['budget_min']} мин исчерпан"}
-        step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call, deadline=min(budget, time.time() + cfg["request_timeout"]))
-        return index, (group, source, _kb), step
 
     steps, fails, stopped = [], {}, ""
-    say(f"Источников в работе: {len(sources)} · лимит шагов {cfg['max_steps']} · бюджет {cfg['budget_min']} мин")
+    say(f"Источников в работе: {len(sources)} · лимит шагов {cfg['max_steps']} · "
+        f"бюджет {cfg['budget_min']} мин")
     total = min(len(sources), cfg["max_steps"])
     jobs = list(enumerate(sources[:total]))
 
+    # Общий признак остановки. Задача, снятая с очереди уже после решения остановиться,
+    # обязана НЕ начинать работу: с `--apply` каждый вход в solve_source — правка базы,
+    # и «остановились» должно значить «перестали писать», а не «перестали отчитываться».
+    stop = threading.Event()
+
+    def process_source(index_source):
+        index, (group, source, _kb) = index_source
+        if stop.is_set() or time.time() > budget:
+            return index, (group, source, _kb), {
+                "alias": "—", "status": "стоп", "backends": [], "degraded": False,
+                "note": "остановлено до начала работы"}
+        step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
+                            deadline=min(budget, time.time() + cfg["request_timeout"]))
+        return index, (group, source, _kb), step
+
+    def note_failure(step) -> str:
+        """Учесть сбой. → причина остановки или пустая строка."""
+        key = step["note"][:60]
+        fails[key] = fails.get(key, 0) + 1
+        if fails[key] >= SAME_FAIL_LIMIT:
+            return f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"
+        if cfg["debug"]:
+            return "AURORA_AGENT_DEBUG=1: стоп на первой ошибке"
+        return ""
+
     if width == 1:
-        say(threads_line(cfg, 1, "разбор источников идёт по очереди: карточки предыдущего источника нужны следующему"))
+        say(threads_line(cfg, 1, "разбор источников идёт по очереди: карточки "
+                                 "предыдущего источника нужны следующему"))
         for group, source, _kb in sources:
             if time.time() > budget:
                 stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
@@ -1014,36 +1030,47 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             if len(steps) >= cfg["max_steps"]:
                 stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
                 break
-            say(f"  {progress(len(steps), total, started)} · поток 1 · {source.rsplit('/', 1)[-1][:60]} …")
-            step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call, deadline=min(budget, time.time() + cfg["request_timeout"]))
+            say(f"  {progress(len(steps), total, started)} · поток 1 · "
+                f"{source.rsplit('/', 1)[-1][:60]} …")
+            step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
+                                deadline=min(budget, time.time() + cfg["request_timeout"]))
             steps.append(step)
-            say(f"      → {step['status']}" + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
-            if step["status"] == "сбой":
-                fails[step["note"][:60]] = fails.get(step["note"][:60], 0) + 1
-                if fails[step["note"][:60]] >= SAME_FAIL_LIMIT:
-                    steps.append({"alias": "—", "status": "стоп", "backends": [], "degraded": False, "note": f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд"})
-                    break
-                if cfg["debug"]:
-                    break
+            say(f"      → {step['status']}"
+                + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+            if step["status"] == "сбой" and (why := note_failure(step)):
+                # Причина остановки — строка в журнале, а не молчаливый break: иначе
+                # человек видит оборванный прогон и не знает, кто его оборвал.
+                steps.append({"alias": "—", "status": "стоп", "backends": [],
+                              "degraded": False, "note": why})
+                stopped = why
+                break
     else:
         say(threads_line(cfg, width))
         with ThreadPoolExecutor(max_workers=width) as executor:
-            futures = {executor.submit(process_source, job): job[0] for job in jobs}
-            for future in as_completed(futures):
-                if time.time() > budget or len(steps) >= cfg["max_steps"]:
-                    break
-                with progress_lock:
-                    idx, source_info, step = future.result()
+            futures = [executor.submit(process_source, job) for job in jobs]
+            try:
+                for future in as_completed(futures):
+                    _idx, source_info, step = future.result()
                     steps.append(step)
                     source = source_info[1]
-                    say(f"  {progress(len(steps)-1, total, started)} · потоков {width} · {source.rsplit('/', 1)[-1][:60]} …")
-                    say(f"      → {step['status']}" + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
-                    if step["status"] == "сбой":
-                        key = step["note"][:60]
-                        fails[key] = fails.get(key, 0) + 1
-                        if fails[key] >= SAME_FAIL_LIMIT:
-                            stopped = f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"
-                            break
+                    say(f"  {progress(len(steps) - 1, total, started)} · потоков {width} · "
+                        f"{source.rsplit('/', 1)[-1][:60]} …")
+                    say(f"      → {step['status']}"
+                        + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+                    if time.time() > budget:
+                        stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
+                    elif len(steps) >= cfg["max_steps"]:
+                        stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
+                    elif step["status"] == "сбой":
+                        stopped = note_failure(step)
+                    if stopped:
+                        break
+            finally:
+                # Снимаем всё, что ещё не начиналось. Без `cancel_futures` выход из
+                # `with` делает shutdown(wait=True) — очередь дорабатывает до конца, и
+                # остановка превращается в пожелание.
+                stop.set()
+                executor.shutdown(wait=False, cancel_futures=True)
 
     after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
     return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build", "before": {"left": before_left, "done": before_done, "errors": before_errors}, "after": {"left": after_left, "done": after_done, "errors": lint_errors(cwd) if apply else before_errors}, "total": len(sources), "partition": partition, "limited": bool(limit), "stopped": stopped, "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
@@ -2627,16 +2654,26 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 cards = [cards]
             return frozenset(str(c).strip() for c in (cards or []) if str(c).strip())
 
-        groups = []
-        for alias, cards in conflicts[:total]:
+        # Сливаем ВСЕ пересёкшиеся группы, а не входим в первую. Конфликт-мост (общая
+        # карточка с одной группой и общая с другой) обязан склеить их в одну: иначе две
+        # группы разъедутся по потокам, продолжая делить карточку, и вернётся ровно та
+        # гонка, ради которой группировка и заведена.
+        groups = []                              # [[карточки, [(i, alias, cards)]]]
+        for i, (alias, cards) in enumerate(conflicts[:total]):
             cs = cards_of(cards)
-            for g in groups:
-                if cs & g[0]:
-                    g[0] |= cs
-                    g[1].append((alias, cards))
-                    break
-            else:
-                groups.append([set(cs), [(alias, cards)]])
+            hit = {k for k, g in enumerate(groups) if cs & g[0]}
+            merged = [set(cs), [(i, alias, cards)]]
+            for k in hit:
+                merged[0] |= groups[k][0]
+                merged[1] += groups[k][1]
+            groups = [g for k, g in enumerate(groups) if k not in hit] + [merged]
+        # Порядок восстанавливаем по исходному номеру: решение по одному синониму меняет
+        # картину для следующего, и «следующий» — это следующий у человека, а не тот,
+        # кого слияние случайно поставило первым.
+        for g in groups:
+            g[1].sort(key=lambda row: row[0])
+        groups.sort(key=lambda g: g[1][0][0])
+        groups = [[g[0], [(a, c) for _i, a, c in g[1]]] for g in groups]
 
         effective = min(len(slots), len(groups)) or 1
         stop = threading.Event()
