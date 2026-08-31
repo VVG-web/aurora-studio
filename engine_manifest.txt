@@ -40,6 +40,13 @@ scripts/aurora_common.py => .opencode/scripts/aurora_common.py
 scripts/sources_core.py     => .opencode/scripts/sources_core.py
 scripts/sources_registry.py => .opencode/scripts/sources_registry.py
 scripts/kb_lint.py       => .opencode/scripts/kb_lint.py
+# Эти три ставились установкой, но в манифест не попали — и потому не обновлялись
+# никогда: проект годами держал версию времён своего создания, при том что
+# `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
+# только молча.
+scripts/kb_embed.py      => .opencode/scripts/kb_embed.py
+scripts/make_kinds.py    => .opencode/scripts/make_kinds.py
+scripts/aurora_mcp.py    => .opencode/scripts/aurora_mcp.py
 scripts/kb_fix.py        => .opencode/scripts/kb_fix.py
 scripts/kb_remap.py      => .opencode/scripts/kb_remap.py
 scripts/build_plan.py    => .opencode/scripts/build_plan.py
