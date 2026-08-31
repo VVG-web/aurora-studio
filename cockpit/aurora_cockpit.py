@@ -1703,7 +1703,12 @@ def trim_runs(project: str) -> None:
 def read_run_console(project: str, run_id: str) -> dict:
     """Полный текст архивированного прогона. Раньше жил только в памяти процесса
     и пропадал на перезапуске — теперь лежит в `.opencode/runs/<id>/console.log`."""
-    rid = os.path.basename(run_id or "")
+    # Имя приходит из браузера — сверяем со списком того, что действительно лежит в
+    # архиве, а не чистим строку. `basename` пропускал «..»: путь уходил на уровень выше.
+    # Тот же приём, что у истории отчётов: чего нет в списке, того не выдаём.
+    rid = str(run_id or "")
+    if not any(r["id"] == rid for r in run_archive(project)):
+        return {"error": "архив прогона не найден"}
     path = os.path.join(runs_dir(project), rid, "console.log")
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -1716,7 +1721,11 @@ def read_run_console(project: str, run_id: str) -> dict:
 def route_state_path(project: str) -> str:
     """Файл последнего остановленного маршрута: панель читает его при загрузке «Консоли»,
     чтобы предложить «Продолжить маршрут» после перезапуска вкладки или процесса."""
-    return os.path.join(project, "AuroraKnowledgeDB", "meta", "last_route.json")
+    # Не в AuroraKnowledgeDB/meta: чекпойнт агента коммитит `AuroraKnowledgeDB` целиком
+    # как «работу агента», и состояние панели попадало бы в коммит, про который сказано
+    # «ровно то, что менял агент». Это след работающей панели — ему место рядом с
+    # архивом прогонов, за `.gitignore`.
+    return os.path.join(project, ".opencode", "state", "last_route.json")
 
 
 def read_route_state(project: str):

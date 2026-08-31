@@ -5806,7 +5806,7 @@ def test_a_stalled_route_is_an_stop_not_a_pass(tmp: Path):
 def test_a_stopped_route_survives_a_panel_restart(tmp: Path):
     """Остановленный маршрут переживает перезапуск панели: «Продолжить маршрут» после него.
 
-    Состояние последнего остановленного маршрута лежит в `AuroraKnowledgeDB/meta/last_route.json`,
+    Состояние последнего остановленного маршрута лежит в `.opencode/state/last_route.json`,
     а не только в памяти вкладки: консоль читает его на загрузке и поднимает кнопку. Конец
     маршрута его пишет (застой/отказ/ручная остановка), полный проход — стирает. Битый файл —
     None, а не исключение: чужой обрывок не должен ронять панель.
@@ -5819,14 +5819,14 @@ def test_a_stopped_route_survives_a_panel_restart(tmp: Path):
     root = tmp / "проект"
     root.mkdir()
     assert ck.route_state_path(str(root)) == \
-        os.path.join(str(root), "AuroraKnowledgeDB", "meta", "last_route.json")
+        os.path.join(str(root), ".opencode", "state", "last_route.json")
     assert ck.read_route_state(str(root)) is None, \
         "файла нет — состояние читается как объект вместо None"
 
     wrote = ck.write_route_state(str(root), {"scId": "update", "title": "Обновить базу",
                                            "at": "2026-08-30T04:12:00"})
     assert wrote.get("ok") is True, f"запись состояния не удалась: {wrote}"
-    path = root / "AuroraKnowledgeDB/meta/last_route.json"
+    path = root / ".opencode/state/last_route.json"
     assert path.exists(), "файл последнего маршрута не появился"
     state = ck.read_route_state(str(root))
     assert state and state.get("scId") == "update" and state.get("title") == "Обновить базу", \
@@ -5984,7 +5984,7 @@ def test_a_failed_command_can_be_retried_as_the_next_attempt(tmp: Path):
     root = tmp / "проект"
     root.mkdir()
     assert ck.route_state_path(str(root)) == \
-        os.path.join(str(root), "AuroraKnowledgeDB", "meta", "last_route.json"), \
+        os.path.join(str(root), ".opencode", "state", "last_route.json"), \
         "файл состояния маршрута уехал из общей папки AuroraKnowledgeDB/meta/"
 
 
