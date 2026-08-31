@@ -451,8 +451,15 @@ _SEM_LOCK = threading.Lock()
 
 
 def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
-    """Семафор для № бэкенда, один на процесс. Размер — объявленная `width`,
-    не объявлена — общий потолок `AURORA_AGENT_PARALLEL` (как `pool` делит незаявленные).
+    """Семафор для № бэкенда, один на процесс. Размер — сколько слотов раздал `pool`.
+
+    Считать ширину здесь второй раз значит завести вторую версию правила и однажды их
+    развести — что и случилось: `width or 1` схлопывал в один запрос бэкенд без
+    объявленной ширины (а `pool` делит между такими общий потолок) и одновременно
+    пропускал девять при потолке в четыре. `pool` знает верный ответ в обе стороны:
+    объявленная ширина режется потолком, необъявленная делит остаток, а бэкенд с
+    `PARALLEL=0` слотов не получает вовсе — ему остаётся один, и это правильно:
+    кольцу он доступен, в параллель не идёт.
 
     Разделяем на процесс, а не на прогон: семафор обязан стоять на пути каждого выхода в
     сеть, иначе две партии запросов в одном процессе пройдут через `pool` по отдельности и
@@ -461,12 +468,9 @@ def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
     with _SEM_LOCK:
         sem = _SEM.get(key)
         if sem is None:
-            value = backend.get("width") or 1
-            sem = threading.Semaphore(max(1, value))
+            sem = threading.Semaphore(max(1, pool(cfg).count(key)))
             _SEM[key] = sem
         return sem
-DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
-RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
 
 def retry_primary_asked() -> bool:
@@ -520,12 +524,34 @@ def fits(backend: dict, messages: list, max_tokens: int | None) -> tuple:
                    f"не отправляю, чтобы не гасить провайдера ошибкой")
 
 
-def prompt_budget(cfg: dict, reserve_chars: int = 0) -> int:
-    """Сколько символов содержимого влезет в самое узкое объявленное окно кольца.
+def window_chars(backend: dict, overhead: int = 0) -> int:
+    """Сколько символов содержимого держит ОДИН бэкенд. 0 — окно не объявлено.
 
-    Самое узкое, а не самое широкое: фолловер может увести запрос на узкий бэкенд, и
-    контекст обязан влезать в бэкенд, который РЕАЛЬНО ответит. Не режем молча: запрос,
-    не влезший даже в узкое окно, движок не отправит никому и скажет об этом словами."""
+    Пара к `fits`: та говорит «влезет ли», эта — «сколько влезет». Обе смотрят на окно
+    конкретного шлюза, потому что резать раньше выбора бэкенда нечем: одно число на всё
+    кольцо неверно в обе стороны — по широкому узкий получит непроходящий запрос, по
+    узкому широкий получит огрызок.
+    """
+    limit = backend.get("context") or 0
+    if not limit:
+        return 0
+    return int(max(0, (limit - ANSWER_ROOM) * CHARS_PER_TOKEN - overhead))
+
+
+def prompt_budget(cfg: dict, reserve_chars: int = 0) -> int:
+    """Размер КУСКА для нарезки: сколько символов влезет в самое узкое окно кольца.
+
+    Не путать с `window_chars`, и разница существенная. `window_chars` режет один запрос
+    под тот бэкенд, который его берёт, — там про каждого известно, кто он. Здесь наоборот:
+    длинная карточка режется на части ЗАРАНЕЕ, а какой бэкенд возьмёт какую часть, решит
+    кольцо потом. Кусок обязан влезть в любого, значит меряем по самому узкому.
+
+    Резать по самому широкому тут нельзя: кусок, скроенный под корпоративный шлюз, не
+    влезет в локальную модель, `fits` её пропустит — и на исходе кольца работа встанет
+    из-за раскроя, сделанного до того, как стало известно, кто отвечает.
+
+    → 0, если окна не объявлены ни у кого. Это не «безлимит», а «движок не знает»: он
+    отправит запрос целиком и, если шлюз откажет по длине, скажет об этом словами."""
     declared = [w for w in (b.get("context") or 0 for b in cfg.get("backends") or []) if w > 0]
     if not declared:
         return 0
@@ -667,7 +693,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
               prefer: int = 0, history: list | None = None,
-              tools: bool = False, guard_text: list | None = None) -> dict:
+              tools: bool = False, guard_text: list | None = None,
+              trim: tuple | None = None) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `tools` — дать модели инструменты чтения (поиск по базе, файлы проекта). Включается
@@ -678,7 +705,16 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     как было всегда; заполнено — модель видит, о чём шла речь, и диалог становится
     возможен. Разговор ведёт вызывающий: движок историю не копит и не хранит.
 
-    → {ok, text, reasoning, backend, model, seconds, waited, log[]} либо {ok: False, log}.
+    `trim` — `(весь текст, собрать_сообщения)`. Задан — текст режется под окно того
+    бэкенда, которому уходит запрос, а не под одно число на всё кольцо: широкий видит
+    больше узкого, и никто не ограничивает другого. Накладные расходы шаблона движок
+    меряет сам — `собрать_сообщения("")`, — поэтому вызывающему не нужно их считать.
+    Сколько текста ушло и сколько отрезано, возвращается в `seen` и `cut`: «пусто по
+    огрызку — не вердикт» держится на этом, и знать это может только тот вызов, который
+    выбрал бэкенда.
+
+    → {ok, text, reasoning, backend, model, seconds, waited, seen, cut, log[]}
+      либо {ok: False, log}.
     Кольцо: каждый круг начинается с первого бэкенда — восстановившийся корпоративный
     подхватывается сразу, у него слоты почти не ограничены. `prefer` задаёт, с какого
     начать: параллельный прогон раздаёт задания по слотам, и каждое идёт на свой шлюз.
@@ -718,20 +754,31 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             if busy(b, transport):
                 log.append(f"№{b['n']}: слот занят (/slots) — дальше по кольцу")
                 continue
-            ok_size, why_big = fits(b, messages, max_tokens)
+            # Режем под ЭТОТ бэкенд. Накладные расходы шаблона меряем построением
+            # пустого сообщения: так вызывающему не нужно считать их самому и ошибаться.
+            msgs, seen_chars, cut_chars = messages, 0, 0
+            if trim:
+                whole_text, build_messages = trim
+                overhead = sum(len(m.get("content") or "")
+                               for m in build_messages(""))
+                room = window_chars(b, overhead)
+                part = whole_text if not room else whole_text[:room]
+                msgs = build_messages(part)
+                seen_chars, cut_chars = len(part), len(whole_text) - len(part)
+            ok_size, why_big = fits(b, msgs, max_tokens)
             if not ok_size:
                 # Не «мёртв», а «не по размеру»: в кольце может стоять модель с окном
                 # шире, и она этот же запрос возьмёт. Метку DOWN не ставим.
                 log.append(f"№{b['n']} {model}: {why_big}")
                 continue
-            payload = {"model": model, "messages": messages,
+            payload = {"model": model, "messages": msgs,
                        "chat_template_kwargs": {"enable_thinking": think},
                        # сколько процессов адаптера имеет смысл держать: столько же,
                        # сколько слотов в кольце — по одному на параллельный запрос
                        "_slots": len(pool(cfg))}
             if history:
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
-                payload["messages"] = list(history) + list(messages)
+                payload["messages"] = list(history) + list(msgs)
                 payload["history"] = list(history)      # для адаптера pydantic-ai
             if tools:
                 payload["tools_root"] = os.getcwd()
@@ -805,6 +852,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
                 return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
+                        "seen": seen_chars, "cut": cut_chars,
                         "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
                         "ring": ring, "log": log, "url": b["url"],
                         "tokens_in": int(usage.get("prompt_tokens") or 0),
