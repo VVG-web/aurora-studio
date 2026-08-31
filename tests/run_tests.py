@@ -5698,6 +5698,49 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
 
 @test
+def test_aliases_report_survives_leftovers_and_rejections(tmp: Path):
+    """Отчёт о синонимах не должен падать, когда работа осталась или критик отклонил.
+
+    С живого прогона: `agent:aliases` разобрал 14 конфликтов из 15 — восемь минут работы
+    модели, всё записано в базу — и упал на составлении отчёта:
+
+        UnboundLocalError: cannot access local variable 'L'
+
+    В `verdict()`, который обязан вернуть пару «успех, почему», лежали два блока текста
+    отчёта с `L += [...]`, а `L` там нет вовсе: он живёт в `report()`. Ветки срабатывают,
+    когда критик что-то отклонил или осталась работа на следующий прогон, — то есть на
+    любом непустом прогоне живой базы.
+
+    Цена ошибки не в трассировке: работа сделана и записана, а команда объявлена
+    неуспешной, и маршрут считает шаг провалившимся.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ar = importlib.import_module("agent_runner")
+    importlib.reload(ar)
+
+    res = {
+        "steps": [{"alias": "Курс валют", "status": "уточнено", "note": "разведено"},
+                  {"alias": "Заявка", "status": "отклонено критиком", "note": "не согласен"}],
+        "seconds": 12.0, "total_conflicts": 5, "limited": False, "left": 3,
+        "stopped": "дошли до лимита шагов (2)",
+        "before": {"conflicts": 5, "errors": 10},
+        "after": {"conflicts": 4, "errors": 10},
+    }
+    ok, why = ar.verdict(res, True)          # раньше здесь был UnboundLocalError
+    assert isinstance(ok, bool) and isinstance(why, str), \
+        f"вердикт вернул не пару «успех, почему»: {(ok, why)}"
+
+    cfg = ar.AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x",
+                              "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    text = ar.report(res, {"ok": True, "sha": "", "why": ""}, True, True, cfg)
+    assert "Осталось на следующий прогон: 3" in text, (
+        "отчёт молчит про оставшуюся работу — человек не узнает, что прогон надо повторить")
+    assert "критик не согласился" in text, \
+        "отчёт молчит про отклонённое критиком: эти конфликты остались как были"
+
+
+@test
 def test_a_stub_is_named_like_a_real_card(tmp: Path):
     """Заготовка называется по тем же правилам, что настоящая карточка.
 
