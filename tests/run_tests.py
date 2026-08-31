@@ -5698,6 +5698,55 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
 
 @test
+def test_run_archive_shows_the_newest_first_and_caps_the_list(tmp: Path):
+    """Архив прогонов: свежие сверху, в панели последние RUNS_SHOW, доступ — ко всем.
+
+    Сравнивают обычно последний прогон с предыдущим. При старых сверху оба оказывались
+    в конце списка из полусотни, и до них надо было доскроллить.
+
+    Ограничение — на ПОКАЗ, а не на хранение: файлы лежат до RUNS_KEEP, и прогон,
+    уехавший за границу показа, обязан открываться по id. Иначе «убрали из списка»
+    незаметно превратится в «потеряли».
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = make_project(tmp)
+    runs = Path(ck.runs_dir(str(root)))
+    made = []
+    for i in range(ck.RUNS_SHOW + 12):          # заведомо больше, чем показываем
+        rid = f"202608{10 + i // 24:02d}-{i % 24:02d}0000-{i:04x}"
+        (runs / rid).mkdir(parents=True)
+        (runs / rid / "console.log").write_text(f"прогон {i}\n", encoding="utf-8")
+        made.append(rid)
+
+    shown = ck.run_archive(str(root), limit=ck.RUNS_SHOW)
+    ids = [r["id"] for r in shown]
+    assert len(ids) == ck.RUNS_SHOW, \
+        f"в панель ушло {len(ids)} прогонов вместо {ck.RUNS_SHOW}"
+    assert ids == sorted(ids, reverse=True), \
+        f"порядок не от свежего к старому: {ids[:3]} …"
+    assert ids[0] == max(made), \
+        f"сверху не самый свежий прогон: {ids[0]}, а самый свежий {max(made)}"
+
+    whole = ck.run_archive(str(root))
+    assert len(whole) == len(made), \
+        "без limit архив обязан отдавать всё: по нему проверяется доступ к логу"
+
+    # Прогон за границей показа читается: он выпал из списка, но не с диска.
+    hidden = sorted(made, reverse=True)[ck.RUNS_SHOW + 2]
+    assert hidden not in ids, "проверяем именно тот, что не показан"
+    got = ck.read_run_console(str(root), hidden)
+    assert got.get("text", "").strip().startswith("прогон"), (
+        f"старый прогон не открывается по id — ограничение показа съело доступ: {got}")
+
+    assert ck.RUNS_SHOW <= ck.RUNS_KEEP, \
+        "показываем больше, чем храним: часть строк списка вела бы в никуда"
+
+
+@test
 def test_run_archive_keeps_the_full_console_history(tmp: Path):
     """Полный вывод прогона живёт на диске: после перезапуска можно сравнить старый и новый.
 
@@ -5723,10 +5772,17 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
         with open(os.path.join(d, "console.log"), "w", encoding="utf-8") as f:
             f.write("вывод прогона " + rid + "\n")
     arch = ck.run_archive(str(root))
-    assert [a["id"] for a in arch] == sorted(["20260829-120000-aaaaaa", "20260829-110000-bbbbbb"]), \
-        f"архив не в хронологии: {arch}"
-    assert arch[0]["path"].endswith(os.path.join("20260829-110000-bbbbbb", "console.log")), \
-        "у записи архива нет пути к console.log"
+    # Порядок обратный — свежие сверху. Раньше здесь ждали прямой хронологии; требование
+    # изменилось: сравнивают последний прогон с предыдущим, и оба должны быть на виду,
+    # а не в конце списка из полусотни.
+    assert [a["id"] for a in arch] == sorted(
+        ["20260829-120000-aaaaaa", "20260829-110000-bbbbbb"], reverse=True), \
+        f"архив не от свежего к старому: {arch}"
+    # Путь сверяем с id самой записи, а не с позицией в списке: позиция зависит от
+    # порядка сортировки, а связь «id ↔ его файл» — нет.
+    for a in arch:
+        assert a["path"].endswith(os.path.join(a["id"], "console.log")), \
+            f"путь записи не ведёт к её же console.log: {a}"
     got = ck.read_run_console(str(root), "20260829-120000-aaaaaa")
     assert got.get("text", "").startswith("вывод прогона 20260829-120000"), \
         f"архивный прогон не читается: {got}"
