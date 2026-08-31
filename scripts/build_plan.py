@@ -614,7 +614,7 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     return 0
 
 
-def mark_done(manifest: dict, target: str, claimed: int, empty: str) -> int:
+def mark_done(manifest: dict, target: str, claimed: int, empty: str, root: str = "") -> int:
     """Отметить источник разобранным — но только если разбор виден в базе.
 
     Отметку ставит ассистент, и до 1.47.0 она означала «сказал, что разобрал»: скрипт
@@ -626,7 +626,11 @@ def mark_done(manifest: dict, target: str, claimed: int, empty: str) -> int:
     отметки нет. Число берём из базы, а не из флага. Законный ноль (задача Jira без
     знания, служебная страница-оглавление) объявляется явно: `--empty "<причина>"`.
     """
-    if not os.path.isfile(target):
+    # `root` — откуда читать файл, когда текущая папка процесса не корень проекта. Ключ
+    # в манифесте и сверка с полем `source:` карточек остаются на ОТНОСИТЕЛЬНОМ пути:
+    # абсолютный ключ развалил бы и то, и другое.
+    read_from = target if (not root or os.path.isabs(target)) else os.path.join(root, target)
+    if not os.path.isfile(read_from):
         print(f"build_plan: нет файла {target}", file=sys.stderr)
         return 1
     path = target.replace("\\", "/")
@@ -640,7 +644,9 @@ def mark_done(manifest: dict, target: str, claimed: int, empty: str) -> int:
               file=sys.stderr)
         return 1
 
-    rec = {"hash": file_hash(path), "processed": TODAY, "cards": found}
+    # Хеш — от содержимого, значит читаем по разрешённому пути; ключом в манифесте
+    # остаётся относительный `path`.
+    rec = {"hash": file_hash(read_from), "processed": TODAY, "cards": found}
     if found == 0:
         rec["empty_reason"] = empty
     manifest["sources"][path] = rec
@@ -653,8 +659,9 @@ def mark_done(manifest: dict, target: str, claimed: int, empty: str) -> int:
     if claimed and claimed != found:
         note = f" (называли {claimed} — записано то, что нашлось в базе)"
     print(f"✅ {path}: обработан, карточек {found}{note}")
-    kb = os.path.getsize(path) / 1024 / found
-    heads = len(re.findall(r"^#{2,3} ", open(path, encoding="utf-8", errors="ignore").read(), re.M))
+    kb = os.path.getsize(read_from) / 1024 / found
+    heads = len(re.findall(r"^#{2,3} ",
+                           open(read_from, encoding="utf-8", errors="ignore").read(), re.M))
     if kb >= THIN_KB_PER_CARD or (heads >= 6 and found * THIN_HEAD_RATIO < heads):
         print(f"⚠️  на карточку приходится {kb:.0f} КБ исходника"
               f"{f', заголовков {heads}' if heads else ''} — похоже, разобрана только часть. "

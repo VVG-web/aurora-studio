@@ -6581,6 +6581,32 @@ def test_build_plan_inprocess_does_not_retry_or_wander(tmp: Path):
         f"относительный путь, прочитал бы не ту папку")
     assert os.getcwd() == here, "папка процесса не вернулась на место"
 
+    # 2б. То же для отметки «разобрано». Ветка короткая, но папка процесса общая: пока
+    #     она уведена, любой относительный путь в соседнем потоке читает не ту папку.
+    AR._BP_MODULES.clear()
+    seen2, done2 = [], threading.Event()
+
+    def slow_done(*a, **k):
+        time.sleep(0.25)
+        return 0
+
+    def watcher2():
+        while not done2.is_set():
+            seen2.append(os.getcwd())
+            time.sleep(0.01)
+
+    mod = AR._bp_import(str(root))
+    with patch.object(mod, "mark_done", side_effect=slow_done):
+        w2 = threading.Thread(target=watcher2, daemon=True)
+        w2.start()
+        AR.run_build_plan(str(root), ["--done", "Sources/Confluence/источник.md",
+                                      "--cards", "1"])
+        done2.set()
+        w2.join(timeout=2)
+    wandered2 = sorted({p for p in seen2 if p != here})
+    assert not wandered2, (
+        f"во время отметки «разобрано» папка процесса уходила в {wandered2}")
+
     # 3. Два проекта в одном процессе получают каждый свой корень базы.
     #    Кеш по одному лишь файлу движка отдавал бы второму проекту модуль, уже
     #    привязанный к первому, и карточки уехали бы в чужую базу.
