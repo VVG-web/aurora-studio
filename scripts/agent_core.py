@@ -765,6 +765,10 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             # поэтому держит число одновременных запросов к шлюзу, а не число потоков:
             # сколько бы потоков ни сошлось на бэкенд после фолловера, в сеть уйдёт не
             # больше `width`. Не дождались слота за малую долю срока — дальше по кольцу.
+            # Отмечаем попытку ДО семафора: «честный шанс» — это то, что бэкенду дали,
+            # а не то, чем он воспользовался. Иначе занятый слот выдаст ему свой срок
+            # второй раз, и вызов растянется сверх request_timeout.
+            tried.add(b["n"])
             sem = _slot_semaphore(b, cfg)
             grant = max(0.5, min(FAIR_SHARE * cfg["request_timeout"], left))
             if not sem.acquire(timeout=grant):
@@ -782,8 +786,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         # Провайдер жив и отказал по делу: запрос длиннее его окна. Гасить
                         # его на 15 минут — значит потерять рабочего провайдера из-за одной
                         # большой карточки, а следом по той же причине и всех остальных.
-                        log.append(f"№{b['n']} {model}: запрос длиннее окна модели ",
-                                   f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — ",
+                        log.append(f"№{b['n']} {model}: запрос длиннее окна модели "
+                                   f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — "
                                    f"движок не будет отправлять заведомо большие)")
                     else:
                         DOWN[b["n"]] = time.time() + DOWN_FOR
