@@ -1671,6 +1671,7 @@ def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> N
 
 
 RUNS_KEEP = 50      # столько последних прогонов храним в `.opencode/runs` — хронология для сравнения
+RUNS_SHOW = 30      # столько показываем в «Консоли»; остальные лежат файлами и открываются по id
 
 
 def runs_dir(project: str) -> str:
@@ -1679,14 +1680,26 @@ def runs_dir(project: str) -> str:
     return os.path.join(project, ".opencode", "runs")
 
 
-def run_archive(project: str) -> list:
-    """Список сохранённых прогонов: [{id, path}] по папке `.opencode/runs`."""
+def run_archive(project: str, limit: int = 0) -> list:
+    """Список сохранённых прогонов: [{id, path}], **свежие сверху**.
+
+    Порядок обратный не для красоты: сравнивают обычно последний прогон с предыдущим, и
+    оба должны быть под рукой, а не в конце списка из полусотни. Имя папки начинается с
+    даты и времени (`YYYYMMDD-HHMMSS`), поэтому обычная сортировка строк по убыванию —
+    это и есть хронология от свежего к старому.
+
+    `limit` ограничивает **показ**, а не хранение: панель берёт последние `RUNS_SHOW`,
+    а проверка доступа к логу спрашивает список целиком — иначе прогон, уехавший за
+    границу показа, стало бы нельзя открыть, хотя файл на диске есть.
+    """
     base = runs_dir(project)
     try:
-        return [{"id": d, "path": os.path.join(base, d, "console.log")}
-                for d in sorted(os.listdir(base))]
+        names = sorted(os.listdir(base), reverse=True)
     except OSError:
         return []
+    if limit > 0:
+        names = names[:limit]
+    return [{"id": d, "path": os.path.join(base, d, "console.log")} for d in names]
 
 
 def trim_runs(project: str) -> None:
@@ -2342,7 +2355,7 @@ class Handler(BaseHTTPRequestHandler):
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
-            self.send_json({"archive": run_archive(project)}
+            self.send_json({"archive": run_archive(project, limit=RUNS_SHOW)}
                          if project else {"archive": []})
 
         elif u.path == "/api/run/file":
