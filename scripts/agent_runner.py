@@ -232,25 +232,35 @@ def _bp_path(cwd: str) -> str:
 
 
 def _bp_import(cwd: str):
-    """build_plan как модуль в процессе. → модуль. Вызывать под _BP_LOCK."""
-    key = os.path.abspath(_bp_path(cwd))
+    """build_plan как модуль в процессе, свой на каждый проект. → модуль.
+
+    Ключ кеша — пара (файл движка, корень проекта), а не один файл. `KB_ROOT` модуля
+    мы делаем абсолютным под конкретный проект; при ключе по одному файлу второй проект
+    получил бы уже привязанный модуль, проверка `isabs` пропустила бы переякоривание —
+    и карточки поехали бы в базу ПЕРВОГО проекта. Один процесс сегодня обслуживает один
+    проект, но это свойство вызывающего, а не гарантия, и держаться на нём нельзя.
+    """
+    path = os.path.abspath(_bp_path(cwd))
+    key = (path, os.path.abspath(cwd))
     mod = _BP_MODULES.get(key)
     if mod is None:
-        scripts_dir = os.path.dirname(key)
+        scripts_dir = os.path.dirname(path)
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
         spec = importlib.util.spec_from_file_location(
-            "aurora_build_plan_" + re.sub(r"\W", "_", key.lstrip(os.sep)), key)
+            "aurora_build_plan_" + re.sub(r"\W", "_", path.lstrip(os.sep))
+            + "_" + hashlib.sha1(key[1].encode("utf-8")).hexdigest()[:8], path)
         if spec is None or spec.loader is None:
-            raise ImportError(f"build_plan.py не импортируется как модуль: {key}")
+            raise ImportError(f"build_plan.py не импортируется как модуль: {path}")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        # KB_ROOT относителен корню проекта (aurora_common), а CWD процесса корнем
+        # проекта быть не обязан: якорим к cwd — так subprocess.run(cwd=cwd) вёл
+        # подпроцесс. Делаем это один раз, на свежем модуле.
+        if not os.path.isabs(mod.KB_ROOT):
+            mod.KB_ROOT = os.path.join(cwd, mod.KB_ROOT)
+        mod.MANIFEST = os.path.join(mod.KB_ROOT, "meta", "manifest.json")
         _BP_MODULES[key] = mod
-    # KB_ROOT относителен корню проекта (aurora_common), а CWD процесса корнем проекта
-    # быть не обязан: якорим к cwd — так subprocess.run(cwd=cwd) вёл подпроцесс.
-    if not os.path.isabs(mod.KB_ROOT):
-        mod.KB_ROOT = os.path.join(cwd, mod.KB_ROOT)
-    mod.MANIFEST = os.path.join(mod.KB_ROOT, "meta", "manifest.json")
     return mod
 
 
@@ -266,44 +276,69 @@ def _bp_flag(args: list, flag: str, default: str = "") -> str:
 def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
     """build_plan.py в-процессе: те же побочные эффекты, без Popen. → как run_command.
 
-    Режимы, которыми пользуется solve_source: --card и --done. Если модуль не импортируется
-    — прежний путь, subprocess, без падения.
+    Режимы, которыми пользуется solve_source: --card и --done. Модуль не импортируется —
+    прежний путь, subprocess, без падения.
+
+    `timeout` относится только к этому фолбэку, и это названо вслух, а не спрятано:
+    прервать синхронный вызов в своём процессе нечем — поток в Python не убить. Цена
+    приемлема потому, что в-процессе идёт локальный ввод-вывод (прочитать источник,
+    записать карточку), а не обращение к сети: висеть тут может только сломанная
+    файловая система, и её таймаут всё равно не чинит.
     """
     allowed, why = AG.write_allowed("build_plan.py", args)
     if not allowed:
         return {"ok": False, "refused": why, "rc": None, "out": ""}
+
+    # Сеть безопасности — только на импорт. Раньше `except Exception` накрывал и сборку,
+    # а фолбэк перезапускал ту же команду подпроцессом: падение ПОСЛЕ частичной записи
+    # карточки означало вторую запись. Сбой сборки — это сбой шага, а не повод выполнить
+    # его ещё раз другим способом.
     try:
-        out, err = io.StringIO(), io.StringIO()
-        prev_cwd = os.getcwd()
-        with _BP_LOCK:
-            try:
-                # Относительные пути source/--done решаются от корня проекта — так подпроцесс
-                # держал subprocess.run(cwd=cwd). Под локом другой поток файлов с относительными
-                # путями не трогает: воркеры ждут лок или в LLM-вызове, основная — печатает прогресс.
-                os.chdir(cwd)
-                mod = _bp_import(cwd)
-                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                    if "--card" in args:
-                        rc = mod.build_card(_bp_flag(args, "--card"), _bp_flag(args, "--source"),
-                                            _bp_flag(args, "--sections"),
-                                            _bp_flag(args, "--to", _DEFAULT_CARD_SECTION),
-                                            "--apply" in args, _bp_flag(args, "--summary"),
-                                            _bp_flag(args, "--paras"))
-                    elif "--done" in args:
+        mod = _bp_import(cwd)
+    except Exception:  # noqa: BLE001 — модуль не поднялся: прежний путь, без падения
+        return run_command(cwd, "build_plan.py", args, timeout=timeout)
+
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            if "--card" in args:
+                # Путь источника остаётся ОТНОСИТЕЛЬНЫМ: он уходит в `source:` карточки
+                # и по нему потом сверяется отметка «разобрано». Читать от корня проекта
+                # `build_card` умеет сам — через `root`. Так длинная часть работы (чтение
+                # источника и запись карточки) обходится без os.chdir: папка процесса
+                # общая на все потоки, и менять её ради одного чтения нельзя.
+                with _BP_LOCK:
+                    rc = mod.build_card(_bp_flag(args, "--card"), _bp_flag(args, "--source"),
+                                        _bp_flag(args, "--sections"),
+                                        _bp_flag(args, "--to", _DEFAULT_CARD_SECTION),
+                                        "--apply" in args, _bp_flag(args, "--summary"),
+                                        _bp_flag(args, "--paras"), root=cwd)
+            elif "--done" in args:
+                # А здесь путь остаётся относительным: `mark_done` кладёт его КЛЮЧОМ в
+                # манифест и сверяет с полем `source:` карточек, где он тоже относительный.
+                # Абсолютный ключ развалил бы сверку. Поэтому на этой ветке os.chdir всё
+                # ещё нужен — но она короткая: проверка файла и запись манифеста, без
+                # обращений к модели.
+                prev_cwd = os.getcwd()
+                with _BP_LOCK:
+                    try:
+                        os.chdir(cwd)
                         manifest = mod.load_manifest()
                         manifest.setdefault("sources", {})
                         rc = mod.mark_done(manifest, _bp_flag(args, "--done"),
                                            int(_bp_flag(args, "--cards", "0") or 0),
                                            _bp_flag(args, "--empty"))
-                    else:
-                        raise ValueError("режим не поддерживается в-процессе: " + " ".join(args))
-            finally:
-                os.chdir(prev_cwd)
-        return {"ok": rc == 0, "rc": rc,
-                "out": ((out.getvalue() or "") + (err.getvalue() or "")).strip(),
-                "refused": ""}
-    except Exception:  # noqa: BLE001 — импорт сломан: subprocess, а не падение
-        return run_command(cwd, "build_plan.py", args, timeout=timeout)
+                    finally:
+                        os.chdir(prev_cwd)
+            else:
+                raise ValueError("режим не поддерживается в-процессе: " + " ".join(args))
+    except Exception as ex:  # noqa: BLE001 — сбой сборки: шаг провален, повтора нет
+        return {"ok": False, "rc": 1, "refused": "",
+                "out": ((out.getvalue() or "") + (err.getvalue() or "")
+                        + f"\nbuild_plan: {type(ex).__name__}: {ex}").strip()}
+    return {"ok": rc == 0, "rc": rc,
+            "out": ((out.getvalue() or "") + (err.getvalue() or "")).strip(),
+            "refused": ""}
 
 
 # ------------------------------------------------------------------ задача: синонимы
@@ -909,24 +944,28 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     # Здесь тоже стояло тихое обрезание — `[:6000]`. На источнике в 300 КБ модель судила
     # о наличии знания по первым двум процентам и почти всегда отвечала «пусто». Режем по
     # объявленному окну, а факт обрезания называем: вердикт по части — это не вердикт.
-    budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_NO_SECTIONS) + len(source) + 200)
-    text = whole if not budget else whole[:budget]
-    cut = len(whole) - len(text)
-    r = call(cfg, "worker", [{"role": "user", "content": PROMPT_NO_SECTIONS.format(
-        source=source, text=text)}], deadline=deadline)
+    # Режет не вызывающий, а сам вызов — по окну того бэкенда, который возьмёт запрос.
+    # Одним числом на всё кольцо тут не обойтись: широкий шлюз взял бы источник целиком,
+    # и урезать его до размеров узкого значит потерять знание ради модели, которая и
+    # не отвечала.
+    r = call(cfg, "worker", [], deadline=deadline,
+             trim=(whole, lambda part: [{"role": "user", "content":
+                                         PROMPT_NO_SECTIONS.format(source=source, text=part)}]))
     if not r["ok"]:
         step.update(status="сбой", note="; ".join(r["log"][-2:]))
         return step
     step["backends"].append((r["backend"], r["model"]))
     step["tps"] = r.get("tps") or step.get("tps") or 0
     step["degraded"] = r["backend"] != 1
+    cut, seen = r.get("cut", 0), r.get("seen", len(whole))
     ans = parse_json(r["text"]) or {}
     if cut and ans.get("empty"):
-        # «Пусто» по обрезку — не вывод, а незнание: остальное модель не видела.
+        # «Пусто» по обрезку — не вывод, а незнание: остальное модель не видела. Числа
+        # берём из ответа: сколько увидел именно тот бэкенд, который отвечал.
         step.update(status="человеку",
-                    note=f"источник {len(whole)} символов, в окно вошло {len(text)} — "
-                         f"вердикт «знания нет» по части не принимается; разберите "
-                         f"чтением или объявите окно шире")
+                    note=f"источник {len(whole)} символов, в окно бэкенда №{r['backend']} "
+                         f"вошло {seen} — вердикт «знания нет» по части не принимается; "
+                         f"разберите чтением или объявите окно шире")
         return step
     if not ans.get("empty"):
         # Знание есть, а разметки нет. Раньше такой источник уходил человеку целиком —
@@ -946,8 +985,13 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     if use_critic:
         # Отметка «пусто» необратима по смыслу: источник уходит из плана. Второе мнение
         # здесь дороже лишней минуты — потерянное знание не всплывёт само.
-        c = call(cfg, "critic", [{"role": "user", "content": PROMPT_NO_SECTIONS.format(
-            source=source, text=text)}], deadline=deadline)
+        # Критику — та же порезка по его собственному окну: роль может быть настроена
+        # на другой бэкенд, и мерить его чужой меркой значит спросить мнение о тексте,
+        # которого он не видел.
+        c = call(cfg, "critic", [], deadline=deadline,
+                 trim=(whole, lambda part: [{"role": "user", "content":
+                                             PROMPT_NO_SECTIONS.format(source=source,
+                                                                       text=part)}]))
         if c["ok"]:
             step["backends"].append((c["backend"], c["model"]))
             step["degraded"] = step["degraded"] or c["backend"] != 1
@@ -2702,8 +2746,12 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                             stop.set()
 
         with ThreadPoolExecutor(max_workers=effective) as executor:
-            for g in groups:
-                executor.submit(process_group, g[1])
+            futures = [executor.submit(process_group, g[1]) for g in groups]
+            for f in as_completed(futures):
+                # Результат читаем не ради значения, а ради исключения: не прочитанная
+                # Future уносит падение воркера с собой, группа молча не обрабатывается,
+                # и прогон отчитывается как успешный.
+                f.result()
 
     after_conflicts = lint_conflicts(cwd) if apply else before_conflicts
     after_errors = lint_errors(cwd) if apply else before_errors

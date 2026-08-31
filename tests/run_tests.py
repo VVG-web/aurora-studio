@@ -55,6 +55,22 @@ def run(script: str, *args, cwd: Path, expect_rc=None) -> subprocess.CompletedPr
     return cp
 
 
+def stub_messages(messages, kw):
+    """Сообщения так, как собрал бы их `call_role`. Для заглушек вместо `call`.
+
+    Часть вызовов передаёт не готовые сообщения, а `trim=(весь текст, собрать)`: текст
+    режется под окно того бэкенда, который возьмёт запрос, и собирается уже внутри
+    `call_role`. Заглушка, читающая `messages[0]`, на таком вызове видит пустой список —
+    и падает по индексу вместо того, чтобы проверить промпт. Один помощник на все
+    заглушки: перенос очередного вызова на `trim` не должен ронять чужой тест.
+    """
+    trim = kw.get("trim")
+    if trim:
+        whole, build = trim
+        return build(whole)
+    return messages
+
+
 def make_project(tmp: Path, git: bool = False) -> Path:
     """Пустой проект со стандартной структурой (из structure_dirs.txt) и движком."""
     root = tmp / "project"
@@ -2836,7 +2852,7 @@ def test_planner_gives_structure_to_a_shapeless_source(tmp: Path):
     seen = {}
 
     def fake(cfg, role, messages, **kw):
-        seen[role] = messages[0]["content"]
+        seen[role] = stub_messages(messages, kw)[0]["content"]
         if role == "planner":
             rows = {"parts": [{"title": "Правила один-четыре", "from": 1, "to": 4},
                               {"title": "Правила пять-восемь", "from": 5, "to": 8}]}
@@ -2910,7 +2926,7 @@ def test_planner_cuts_what_will_not_fit(tmp: Path):
     saw = {}
 
     def fake(cfg, role, messages, **kw):
-        saw[role] = messages[0]["content"]
+        saw[role] = stub_messages(messages, kw)[0]["content"]
         if role == "planner":
             rows = {"parts": [{"title": f"Термины {k*10+1}-{k*10+10}",
                                "from": 1 + k*10, "to": 10 + k*10} for k in range(3)]}
@@ -3006,7 +3022,7 @@ def test_long_source_is_not_silently_cut(tmp: Path):
     seen = []
 
     def fake(cfg, role, messages, **kw):
-        txt = messages[0]["content"]
+        txt = stub_messages(messages, kw)[0]["content"]
         seen.append(len(txt))
         if "Собери из них" in txt:
             return {"ok": True, "text": "СВОД", "backend": 1, "model": "m", "tps": 9, "log": []}
@@ -3534,7 +3550,7 @@ def test_artifact_shows_what_was_asked_assumed_and_grounded(tmp: Path):
     seen, rounds = {}, {"n": 0}
 
     def fake(cfg_, role, messages, **kw):
-        seen[role] = messages[0]["content"]
+        seen[role] = stub_messages(messages, kw)[0]["content"]
         if role == "planner":
             rounds["n"] += 1
             if rounds["n"] == 1:
@@ -6331,6 +6347,252 @@ def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
 
 
 @test
+def test_context_is_cut_to_the_backend_that_answers(tmp: Path):
+    """Текст режется по окну ТОГО бэкенда, который отвечает, а не по одному числу на всех.
+
+    Резать до выбора бэкенда нечем: в этот момент неизвестно, кто ответит, — и одно
+    число на кольцо неверно в обе стороны. По самому широкому окну узкий бэкенд получает
+    то, что в него не влезет, и `fits` его пропускает; по самому узкому широкий бэкенд,
+    который взял бы всё, получает огрызок — знание теряется ради модели, которая и не
+    отвечала. Бэкенды разные, и каждый обязан получить столько, сколько держит.
+
+    Отсюда же честность про обрезание: сколько модель увидела, знает только тот вызов,
+    который её выбрал, — значит `cut` обязан возвращаться из вызова, а не считаться
+    заранее по гипотетическому бэкенду.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    whole = "Я" * 200_000
+    build = lambda part: [{"role": "user", "content": "Разбери источник:\n" + part}]
+    seen = {}
+
+    def transport(kind, b, payload, timeout):
+        if kind == "slots":
+            return (404, None, "нет /slots", 0.0)
+        seen[b["n"]] = sum(len(m.get("content") or "") for m in payload["messages"])
+        return (200, {"choices": [{"message": {"content": "ок"}, "finish_reason": "stop"}]},
+                "", 0.1)
+
+    # Узкий отвечает первым: он и режет — но только для себя.
+    narrow_first = A.parse_config({
+        "AURORA_AGENT_BACKEND_1_URL": "http://narrow", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+        "AURORA_AGENT_BACKEND_1_CONTEXT": "8000",
+        "AURORA_AGENT_BACKEND_2_URL": "http://wide", "AURORA_AGENT_BACKEND_2_MODEL": "m",
+        "AURORA_AGENT_BACKEND_2_CONTEXT": "128000",
+        "AURORA_AGENT_REQUEST_TIMEOUT": "30"})
+    r1 = A.call_role(narrow_first, "worker", [], transport=transport,
+                     trim=(whole, build), deadline=time.time() + 30, sleep=lambda s: None)
+    assert r1["ok"] and r1["backend"] == 1, f"узкий бэкенд не ответил: {r1}"
+    narrow_seen = seen[1]
+
+    # Широкий отвечает первым (узкий выключен): он обязан увидеть СУЩЕСТВЕННО больше.
+    seen.clear()
+    wide_only = A.parse_config({
+        "AURORA_AGENT_BACKEND_1_URL": "http://wide", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+        "AURORA_AGENT_BACKEND_1_CONTEXT": "128000",
+        "AURORA_AGENT_REQUEST_TIMEOUT": "30"})
+    r2 = A.call_role(wide_only, "worker", [], transport=transport,
+                     trim=(whole, build), deadline=time.time() + 30, sleep=lambda s: None)
+    assert r2["ok"], f"широкий бэкенд не ответил: {r2}"
+    wide_seen = seen[1]
+
+    assert wide_seen > narrow_seen * 5, (
+        f"широкий бэкенд увидел {wide_seen} символов, узкий — {narrow_seen}: текст режется "
+        f"по одному числу на всё кольцо, а не по окну отвечающего")
+    assert r1["cut"] > r2["cut"] >= 0, (
+        f"обрезание не вернулось из вызова: узкий cut={r1.get('cut')}, "
+        f"широкий cut={r2.get('cut')} — а «пусто по огрызку не вердикт» держится на нём")
+
+    # Окно не объявлено — движок не выдумывает предел и отправляет всё.
+    seen.clear()
+    silent = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x",
+                             "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                             "AURORA_AGENT_REQUEST_TIMEOUT": "30"})
+    r3 = A.call_role(silent, "worker", [], transport=transport, trim=(whole, build),
+                     deadline=time.time() + 30, sleep=lambda s: None)
+    assert r3["ok"] and r3["cut"] == 0 and seen[1] > len(whole), (
+        f"необъявленное окно приняли за предел: увидено {seen.get(1)}, cut={r3.get('cut')}")
+
+
+@test
+def test_aliases_worker_crash_is_not_swallowed(tmp: Path):
+    """Падение воркера обязано дойти до человека, а не исчезнуть в футуре.
+
+    `executor.submit(...)` без чтения результата прячет исключение внутри Future: группа
+    молча не обрабатывается, а прогон отчитывается как успешный. Для параллельного build
+    результат читался (`future.result()`), для синонимов — нет: в одном файле два разных
+    подхода к одной опасности.
+    """
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    from agent_runner import run_aliases
+
+    root = make_project(tmp)
+    cfg = parse_config({
+        'AURORA_AGENT_BACKEND_1_URL': 'http://test',
+        'AURORA_AGENT_BACKEND_1_MODEL': 'test',
+        'AURORA_AGENT_BACKEND_1_WIDTH': '2',
+        'AURORA_AGENT_PARALLEL': '2',
+        'AURORA_AGENT_BUDGET_MIN': '20',
+        'AURORA_AGENT_MAX_STEPS': '10',
+        'AURORA_AGENT_REQUEST_TIMEOUT': '300',
+    })
+
+    def crash(cfg_, *a, **k):
+        raise RuntimeError("воркер упал на разборе синонима")
+
+    conflicts = [('a', 'x'), ('b', 'y')]
+    with patch('agent_runner.read_conflicts', return_value=conflicts), \
+            patch('agent_runner.solve_conflict', side_effect=crash):
+        try:
+            res = run_aliases(cfg, str(root), False, True, 0)
+        except RuntimeError:
+            return                      # долетело наружу — это честно
+    assert res.get("stopped") or any(s["status"] in ("сбой", "стоп") for s in res["steps"]), (
+        "воркер упал, а прогон отчитался как успешный: исключение осталось в Future, "
+        f"которую никто не прочитал. Отчёт: {res}")
+
+
+@test
+def test_slot_semaphore_matches_the_pool(tmp: Path):
+    """Ширина канала к бэкенду — ровно та, что раздал `pool`, и ни шире, ни уже.
+
+    Семафор считал её сам: `backend.get("width") or 1`. А `width` по умолчанию 0, и
+    бэкенд без объявленной ширины получал канал в ОДИН запрос — хотя `pool` делит между
+    такими общий потолок. Параллельность молча схлопывалась, а консоль объявляла N
+    потоков. Обратная сторона той же самодеятельности: при ширине 9 и потолке 4 семафор
+    пропускал 9, то есть нарушал потолок.
+
+    Правило про ширину живёт в `pool` — второй его копии быть не должно.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    one = {"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
+    two = dict(one, AURORA_AGENT_BACKEND_2_URL="http://b",
+               AURORA_AGENT_BACKEND_2_MODEL="m")
+    cases = [
+        ("объявленная ширина при потолке «авто»",
+         dict(one, AURORA_AGENT_BACKEND_1_WIDTH="9", AURORA_AGENT_PARALLEL="авто"), 1, 9),
+        ("ширина не объявлена — делит общий потолок",
+         dict(one, AURORA_AGENT_PARALLEL="8"), 1, 8),
+        ("объявленная ширина шире потолка — режет потолок",
+         dict(one, AURORA_AGENT_BACKEND_1_WIDTH="9", AURORA_AGENT_PARALLEL="4"), 1, 4),
+        ("бэкенд вне параллельности — один запрос за раз",
+         dict(two, AURORA_AGENT_BACKEND_2_PARALLEL="0",
+              AURORA_AGENT_BACKEND_1_WIDTH="4", AURORA_AGENT_PARALLEL="4"), 2, 1),
+    ]
+    for name, env, n, want in cases:
+        cfg = A.parse_config(env)
+        A._SEM.clear()
+        backend = [b for b in cfg["backends"] if b["n"] == n][0]
+        sem = A._slot_semaphore(backend, cfg)
+        got = sem._value
+        assert got == want, (
+            f"{name}: канал к бэкенду №{n} шириной {got}, а `pool` раздал "
+            f"{A.pool(cfg).count(n)} слотов — ожидали {want}")
+
+
+@test
+def test_build_plan_inprocess_does_not_retry_or_wander(tmp: Path):
+    """В-процессе build_plan: сбой не выполняется второй раз, и папка процесса не гуляет.
+
+    Два дефекта T5:
+
+    1. `except Exception` накрывал не только импорт, но и сам `build_card`, а фолбэк
+       перезапускал ту же команду подпроцессом. Падение ПОСЛЕ частичной записи карточки
+       означало вторую запись — побочный эффект дважды. Сеть безопасности нужна только
+       на импорт: сбой сборки это сбой шага, а не повод сделать его другим способом.
+
+    2. `os.chdir` — свойство процесса, а не потока. На длинном пути (`--card`) он висел
+       на всё время сборки, и соседний поток, читающий файл по относительному пути,
+       прочитал бы не ту папку. Держать корректность на предположении о том, чем заняты
+       соседи, нельзя.
+    """
+    import threading
+    from unittest.mock import patch
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as AR
+
+    root = make_project(tmp)
+    src = root / "Sources" / "Confluence" / "источник.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Заголовок\n\nТекст источника.\n", encoding="utf-8")
+
+    # 1. Сбой внутри build_card не должен уходить в subprocess-фолбэк.
+    AR._BP_MODULES.clear()
+    mod = AR._bp_import(str(root))
+    calls = {"card": 0, "fallback": 0}
+
+    def boom(*a, **k):
+        calls["card"] += 1
+        raise RuntimeError("диск кончился на половине карточки")
+
+    def fake_run_command(*a, **k):
+        calls["fallback"] += 1
+        return {"ok": True, "rc": 0, "out": "", "refused": ""}
+
+    with patch.object(mod, "build_card", side_effect=boom), \
+            patch.object(AR, "run_command", side_effect=fake_run_command):
+        res = AR.run_build_plan(str(root), ["--card", "Карточка", "--source",
+                                            "Sources/Confluence/источник.md",
+                                            "--to", "Concepts", "--apply"])
+    assert calls["card"] == 1, f"build_card вызван {calls['card']} раз — ожидался один"
+    assert calls["fallback"] == 0, (
+        "сбой сборки увёл в subprocess-фолбэк: карточка, записанная наполовину, будет "
+        "записана второй раз")
+    assert not res["ok"], f"сбой сборки выдан за успех: {res}"
+
+    # 2. Папка процесса не меняется, пока идёт сборка карточки.
+    AR._BP_MODULES.clear()
+    here = os.getcwd()
+    seen, done = [], threading.Event()
+
+    def slow_card(*a, **k):
+        time.sleep(0.25)
+        return 0
+
+    def watcher():
+        while not done.is_set():
+            seen.append(os.getcwd())
+            time.sleep(0.01)
+
+    mod = AR._bp_import(str(root))
+    with patch.object(mod, "build_card", side_effect=slow_card):
+        w = threading.Thread(target=watcher, daemon=True)
+        w.start()
+        AR.run_build_plan(str(root), ["--card", "Карточка", "--source",
+                                      "Sources/Confluence/источник.md",
+                                      "--to", "Concepts", "--apply"])
+        done.set()
+        w.join(timeout=2)
+    wandered = sorted({p for p in seen if p != here})
+    assert not wandered, (
+        f"во время сборки папка процесса уходила в {wandered} — соседний поток, читающий "
+        f"относительный путь, прочитал бы не ту папку")
+    assert os.getcwd() == here, "папка процесса не вернулась на место"
+
+    # 3. Два проекта в одном процессе получают каждый свой корень базы.
+    #    Кеш по одному лишь файлу движка отдавал бы второму проекту модуль, уже
+    #    привязанный к первому, и карточки уехали бы в чужую базу.
+    AR._BP_MODULES.clear()
+    (tmp / "второй").mkdir(parents=True, exist_ok=True)
+    other = make_project(tmp / "второй")
+    m1 = AR._bp_import(str(root))
+    m2 = AR._bp_import(str(other))
+    assert os.path.abspath(m1.KB_ROOT).startswith(os.path.abspath(str(root))), \
+        f"первый проект потерял свой корень: {m1.KB_ROOT}"
+    assert os.path.abspath(m2.KB_ROOT).startswith(os.path.abspath(str(other))), (
+        f"второй проект получил корень первого: {m2.KB_ROOT} — карточки уехали бы "
+        f"в чужую базу")
+    assert m1.MANIFEST != m2.MANIFEST, "манифест общий на два проекта"
+
+
+@test
 def test_build_stop_really_stops_the_work(tmp: Path):
     """Остановка параллельного build обязана остановить работу, а не только отчёт.
 
@@ -7936,7 +8198,7 @@ def test_ask_keeps_the_conversation_in_the_base(tmp: Path):
         return {"ok": True, "out": "# Пак (карточек 2)\n\n## Возврат-обеспечения\nтекст"}
 
     def fake_call(cfg, role, messages, deadline=None, history=None, **kw):
-        seen[role] = messages[0]["content"]
+        seen[role] = stub_messages(messages, kw)[0]["content"]
         # По ролям: Момус зовётся после воркера и без истории — общий ключ он бы затёр,
         # и проверка утверждала бы, что модель истории не видела.
         seen[role + ":history"] = history or []
@@ -8030,7 +8292,7 @@ def test_momus_checks_the_answer_statement_by_statement(tmp: Path):
 
     def critic(cfg, role, messages, deadline=None, **kw):
         seen["role"] = role
-        seen["prompt"] = messages[0]["content"]
+        seen["prompt"] = stub_messages(messages, kw)[0]["content"]
         return {"ok": True, "backend": 2, "model": "qa-model", "log": [],
                 "text": "1. ОПОРА «возврат по заявлению»\n"
                         "2. НЕТ ОПОРЫ срок десять дней\n\nВЕРДИКТ: БЕЗ ОПОРЫ 1"}
@@ -8093,7 +8355,7 @@ def test_agent_runner_oracle_and_checkpoint(tmp: Path):
 
     # модель подменяется: тест проверяет цикл и оракул, а не качество формулировок
     def fake_call(cfg, role, messages, **kw):
-        text = messages[0]["content"]
+        text = stub_messages(messages, kw)[0]["content"]
         if "SPR-7" in text:
             answer = '{"verdict": "duplicate", "reason": "один справочник дважды"}'
         else:

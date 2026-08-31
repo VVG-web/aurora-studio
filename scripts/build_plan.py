@@ -399,9 +399,17 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) 
 
 
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
-               summary: str = "", paras: str = "") -> int:
-    """Собрать карточку из указанных секций источника: текст переносится дословно."""
-    if not os.path.isfile(source):
+               summary: str = "", paras: str = "", root: str = "") -> int:
+    """Собрать карточку из указанных секций источника: текст переносится дословно.
+
+    `root` — откуда читать файл, когда текущая папка процесса не корень проекта (так
+    зовёт агент, разбирающий источники в несколько потоков: менять папку процесса ради
+    одного чтения нельзя — она общая на все потоки). В провенанс уходит `source` КАК ЕСТЬ:
+    путь в карточке относительный, и абсолютный сломал бы сверку с манифестом и отметку
+    «разобрано».
+    """
+    read_from = source if (not root or os.path.isabs(source)) else os.path.join(root, source)
+    if not os.path.isfile(read_from):
         print(f"build_plan: нет файла {source}", file=sys.stderr)
         return 1
     # Раздел базы — закрытый список, а не свободная строка: `--to «Модель данных»`
@@ -411,7 +419,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         print(f"build_plan: раздела «{into}» нет в схеме базы. Разделы: "
               + ", ".join(sorted(SECTION_TYPE)), file=sys.stderr)
         return 1
-    raw = open(source, encoding="utf-8", errors="ignore").read()
+    raw = open(read_from, encoding="utf-8", errors="ignore").read()
     if paras:
         # Источник без заголовков резать не по чему, и раньше он целиком уходил человеку.
         # Границы для такого предлагает планировщик — по описи абзацев, а не по тексту, —
