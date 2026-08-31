@@ -332,22 +332,17 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
                                         "--apply" in args, _bp_flag(args, "--summary"),
                                         _bp_flag(args, "--paras"), root=cwd)
             elif "--done" in args:
-                # А здесь путь остаётся относительным: `mark_done` кладёт его КЛЮЧОМ в
-                # манифест и сверяет с полем `source:` карточек, где он тоже относительный.
-                # Абсолютный ключ развалил бы сверку. Поэтому на этой ветке os.chdir всё
-                # ещё нужен — но она короткая: проверка файла и запись манифеста, без
-                # обращений к модели.
-                prev_cwd = os.getcwd()
+                # Путь остаётся относительным: `mark_done` кладёт его КЛЮЧОМ в манифест и
+                # сверяет с полем `source:` карточек, где он тоже относительный —
+                # абсолютный ключ развалил бы сверку. А читать файл `mark_done` умеет от
+                # корня, через `root`: папка процесса общая на все потоки, и уводить её
+                # даже на короткую операцию нельзя.
                 with _BP_LOCK:
-                    try:
-                        os.chdir(cwd)
-                        manifest = mod.load_manifest()
-                        manifest.setdefault("sources", {})
-                        rc = mod.mark_done(manifest, _bp_flag(args, "--done"),
-                                           int(_bp_flag(args, "--cards", "0") or 0),
-                                           _bp_flag(args, "--empty"))
-                    finally:
-                        os.chdir(prev_cwd)
+                    manifest = mod.load_manifest()
+                    manifest.setdefault("sources", {})
+                    rc = mod.mark_done(manifest, _bp_flag(args, "--done"),
+                                       int(_bp_flag(args, "--cards", "0") or 0),
+                                       _bp_flag(args, "--empty"), root=cwd)
             else:
                 raise ValueError("режим не поддерживается в-процессе: " + " ".join(args))
     except Exception as ex:  # noqa: BLE001 — сбой сборки: шаг провален, повтора нет
