@@ -5698,6 +5698,53 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
 
 @test
+def test_a_stub_is_named_like_a_real_card(tmp: Path):
+    """Заготовка называется по тем же правилам, что настоящая карточка.
+
+    Имя файла заготовки бралось из текста ссылки дословно — снимались только символы,
+    запрещённые файловой системой. На живой базе это давало две беды сразу, и обе росли
+    с каждым оборотом маршрута:
+
+    * ссылка «[[US-3.6.6 Получение сальдо…]]» заводила карточку с кодом документа в имени,
+      и линтер справедливо звал её артефактом. Три такие появились за один вечер, а всего
+      в отчёте их набралось 68 — база «портилась» ровно на своём росте;
+    * пробелы и подчёркивания оставались как есть, и понятие получало файл, который
+      сборка карточки потом не воспроизводила: рядом заводился двойник.
+
+    Код документа при этом терять нельзя: он и исходное написание ссылки уходят в
+    синонимы, иначе заготовка рождается уже битой — ссылка на неё не сойдётся.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    (kb / "Concepts").mkdir(parents=True, exist_ok=True)
+    (kb / "Concepts" / "Приём-начислений.md").write_text(
+        '---\ntitle: "Приём начислений"\naliases: []\ntype: concept\n'
+        'status: knowledge\nkind: knowledge\n---\n\n# Приём начислений\n\n'
+        'См. [[US-3.6.6 Получение сальдо по Заявителям]] и [[ALG-082_Выбор_профиля]].\n',
+        encoding="utf-8")
+
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--stubs", "--apply"],
+                        cwd=root, capture_output=True, text=True)
+    assert cp.returncode == 0, f"заготовки не завелись:\n{cp.stdout[-400:]}{cp.stderr[-400:]}"
+
+    made = {p.name for p in (kb / "Concepts").glob("*.md")}
+    assert "Получение-сальдо-по-Заявителям.md" in made, (
+        f"заготовка названа по тексту ссылки, вместе с кодом документа и пробелами: {made}")
+    assert "ALG-082-Выбор-профиля.md" in made, \
+        f"подчёркивание в имени заготовки не сведено к дефису: {made}"
+    assert not any(" " in n for n in made), f"в именах заготовок остались пробелы: {made}"
+
+    # Ссылка обязана вести в заготовку: исходное написание и код — в синонимах.
+    head = (kb / "Concepts" / "Получение-сальдо-по-Заявителям.md").read_text(encoding="utf-8")
+    assert "US-3.6.6" in head, "код документа потерян — ссылка по нему никуда не приведёт"
+    lint = subprocess.run([sys.executable, str(KIT / "scripts/kb_lint.py"), "--summary"],
+                          cwd=root, capture_output=True, text=True)
+    assert "ошибок 0" in lint.stdout, (
+        "заготовка родилась битой: ссылка, ради которой её завели, до неё не доходит\n"
+        + lint.stdout[-400:])
+
+
+@test
 def test_one_rule_turns_a_title_into_a_file_name(tmp: Path):
     """Имя файла карточки считает одна функция, и точка в коде — не разделитель.
 
