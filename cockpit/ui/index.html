@@ -690,7 +690,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.16";
+const UI_VERSION = "1.100.17";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3641,7 +3641,14 @@ async function runRoute(sc, write, resume){
       + "Пройти маршрут?")) return;
 
   show("console");
-  const out = $("#consoleOut"); out.innerHTML = "";
+  const out = $("#consoleOut");
+  // Продолжение — это продолжение, а не новый прогон: вывод прошлой попытки остаётся на
+  // экране. Стирать его значит отнять у человека то, ради чего он и жмёт «продолжить», —
+  // увидеть, что уже сделано. Кнопки и отложенные правки при этом сбрасываем: они от
+  // прошлой попытки и повторному нажатию не подлежат.
+  if (resume) out.append(el("div",{class:"ok",style:"margin-top:14px"},
+    `↻ продолжение маршрута «${sc.title}» — уже сделанное пропускается`));
+  else out.innerHTML = "";
   $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
   ROUTE = {title:sc.title, done:0, total:steps.length, failed:null, lap:0};
   const summary = [];
@@ -3655,6 +3662,11 @@ async function runRoute(sc, write, resume){
   // Сигнатуры шагов, которые прошлая попытка уже завершила успехом (0 или 1). Только их
   // и пропускаем при продолжении; нецикличные и неудавшиеся гоняем заново.
   const SKIP_SIGS = (resume && resume.skipSigs) ? resume.skipSigs : null;
+  // Сделанное копится между попытками. Каждая попытка пишет СВОЙ events.jsonl, и если
+  // помнить только его, то на третьей попытке шаги первой считаются несделанными и
+  // гоняются заново. Список переносим и сохраняем в состоянии маршрута — тогда он
+  // переживает и перезапуск панели.
+  const CARRIED = new Set(SKIP_SIGS || []);
   // Офлайн-эпизод продолжается после перезапуска: `attempts` из сохранённого состояния
   // переносим в первый эпизод текущего прогона (не сбрасываем счёт); дальше — с нуля.
   let offlineCarry = (resume && typeof resume.attempts === "number") ? resume.attempts : 0;
@@ -3763,7 +3775,13 @@ async function runRoute(sc, write, resume){
     // архив пуст или шаг падал — значит, гоняем как обычно.
     const sig = st.cmd + " " + st.args.join(" ");
     if (SKIP_SIGS && !st.cycle && SKIP_SIGS.has(sig)){
-      out.append(el("div",{class:"dim"}, `  ↳ пропущен: «${st.cmd}» уже выполнен в прошлой попытке`));
+      // Пропущенный — это ПРОЙДЕННЫЙ, и в счётчике он обязан стоять. Иначе продолжение
+      // после семи сделанных шагов показывает «шаг 1 из 20», и человек справедливо
+      // читает это как «всё началось заново».
+      ROUTE.done++;
+      drawRouteBar(st.cmd);
+      out.append(el("div",{class:"dim"},
+        `  ↳ шаг ${ROUTE.done}/${ROUTE.total} пропущен: «${st.cmd}» уже выполнен в прошлой попытке`));
       return {rc:0, skipped:true, lines:[]};
     }
     ROUTE.done++;
@@ -3941,6 +3959,8 @@ async function runRoute(sc, write, resume){
       ? {project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
            runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
            write:S.lastRoute&&S.lastRoute.write, reason:routeReason, step:routeDone,
+           done:[...CARRIED, ...stepEvents.filter(e=>e.rc===0)
+                              .map(e=>e.cmd + " " + (e.args||[]).join(" "))],
            at:new Date().toISOString()}}
       : {project:S.project.path, clear:true};
     api("/api/route/state", {method:"POST", quiet:true, body: JSON.stringify(body)});
@@ -3979,7 +3999,10 @@ async function resumeLastRoute(last){
   // события просто пустые, и продолжение становится честным полным повтором без вреда.
   const ev = await api("/api/run/steps?project="+encodeURIComponent(S.project.path)
     +"&run="+encodeURIComponent(last.runId), {quiet:true});
-  const sigs = new Set();
+  // Накопленное за прошлые попытки (из состояния маршрута) плюс события последней:
+  // события живут по одному файлу на попытку, и без объединения третья попытка забыла
+  // бы всё, что сделала первая.
+  const sigs = new Set(last.done || []);
   ((ev&&ev.steps)||[]).forEach(st=>{
     if (st.rc===0) sigs.add(st.cmd+" "+(st.args||[]).join(" "));
   });
