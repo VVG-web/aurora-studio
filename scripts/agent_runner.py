@@ -1019,17 +1019,10 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     if limit:
         sources = sources[:limit]
 
-    # Determine parallelism width
-    cfg_parallel = cfg.get("parallel", 1)
-    if cfg_parallel is not None and cfg_parallel > 1:
-        try:
-            from agent_core import pool as get_pool
-            slots = get_pool(cfg)
-            width = min(len(slots), len(sources)) or 1
-        except Exception:
-            width = 1
-    else:
-        width = 1
+    slots, width = [], 1
+    if (cfg.get("parallel") or 1) > 1:
+        slots = AG.pool(cfg)
+        width = min(len(slots), len(sources)) or 1
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -2638,22 +2631,14 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     steps, fails, stopped = [], {}, ""
     say(f"Конфликтов в работе: {len(conflicts)} · лимит шагов {cfg['max_steps']} · "
         f"бюджет {cfg['budget_min']} мин")
-    # Determine parallelism width
-    cfg_parallel = cfg.get("parallel", 1)
-    if cfg_parallel is not None and cfg_parallel > 1:
-        try:
-            from agent_core import pool as get_pool
-            slots = get_pool(cfg)
-            width = min(len(slots), len(conflicts)) or 1
-        except Exception:
-            width = 1
-    else:
-        width = 1
+    slots, width = [], 1
+    if (cfg.get("parallel") or 1) > 1:
+        slots = AG.pool(cfg)
+        width = min(len(slots), len(conflicts)) or 1
     
-    import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
     progress_lock = threading.Lock()
-    
+
     if width == 1:
         for alias, cards in conflicts:
             if time.time() > budget:
@@ -2686,7 +2671,6 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                                   "backends": [], "degraded": False})
                     break
     else:
-        say(threads_line(cfg, width))
         total = min(len(conflicts), cfg["max_steps"])
         # Конфликты над общей карточкой — сериально: решение одного переписывает alias
         # в базе и меняет картину для следующего. Раскладываем на группы по пересечению
@@ -2720,6 +2704,13 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         groups = [[g[0], [(a, c) for _i, a, c in g[1]]] for g in groups]
 
         effective = min(len(slots), len(groups)) or 1
+        # Говорим настоящее число, а не запрошенное: работа идёт группами, и групп может
+        # быть меньше, чем слотов. Объявить N потоков и гонять в двух — то самое враньё
+        # про параллельность, из-за которого ускорение «не чувствуется».
+        say(threads_line(cfg, effective,
+                         "" if effective >= width else
+                         f"групп конфликтов {len(groups)}, а слотов {len(slots)}: "
+                         f"конфликты над общей карточкой идут по одному"))
         stop = threading.Event()
 
         def process_group(items):
@@ -2733,7 +2724,8 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                     if stop.is_set() or time.time() > budget or len(steps) >= cfg["max_steps"]:
                         return
                     steps.append(step)
-                    say(f"  {progress(len(steps)-1, total, started)} · потоков {width} · «{alias[:50]}» …")
+                    say(f"  {progress(len(steps) - 1, total, started)} · потоков "
+                        f"{effective} · «{alias[:50]}» …")
                     say(f"      → {step['status']}"
                         + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
                     if step["status"] == "сбой":

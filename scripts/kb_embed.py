@@ -87,8 +87,40 @@ def digest(text: str) -> str:
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
 
 
+# Индекс, вектора и предфильтр перечитывались на КАЖДЫЙ запрос, а сборка контекста
+# делает их пачками: один вопрос — десятки поисков, и каждый заново читал мегабайты с
+# диска и распаковывал оси. Держим разобранное в процессе, а свежесть проверяем по
+# отпечатку файла (размер и время правки) — пересборка индекса отпечаток меняет, и
+# кеш сам себя выбрасывает. Ключ на файл: в одном процессе может жить не один проект.
+_FILE_CACHE: dict = {}
+
+
+def _stamp(path: str):
+    """Отпечаток файла: (размер, время правки). Нет файла — None."""
+    try:
+        st = os.stat(path)
+        return (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _cached(path: str, kind: str, make):
+    """Разобранное содержимое файла, пока файл не изменился."""
+    key, stamp = (path, kind), _stamp(path)
+    hit = _FILE_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    value = make()
+    _FILE_CACHE[key] = (stamp, value)
+    return value
+
+
 def load_index() -> dict:
     """{имя: {hash, row}} плюс размерность и модель. Битый индекс — просто пустой."""
+    return _cached(INDEX, "index", _read_index)
+
+
+def _read_index() -> dict:
     try:
         with open(INDEX, encoding="utf-8") as f:
             data = json.load(f)
@@ -100,8 +132,12 @@ def load_index() -> dict:
 
 
 def load_vectors(dim: int, rows: int) -> array.array:
-    """Вектора по карточкам. Файл v2 начинается с заголовка (там же предфильтр);
-    старый файл v1 — вектора с самого начала."""
+    """Вектора по карточкам, из кеша по отпечатку файла."""
+    return _cached(VECTORS, f"vectors-{dim}-{rows}", lambda: _read_vectors(dim, rows))
+
+
+def _read_vectors(dim: int, rows: int) -> array.array:
+    """Файл v2 начинается с заголовка (там же предфильтр); старый v1 — вектора сразу."""
     v = array.array("f")
     try:
         with open(VECTORS, "rb") as f:
@@ -164,6 +200,11 @@ LAST_SEARCH = {"prefilter": False, "candidates": 0, "total": 0}
 
 
 def load_prefilter(dim: int, rows: int):
+    """(k, оси, по_строкам) или None, из кеша по отпечатку файла."""
+    return _cached(VECTORS, f"prefilter-{dim}-{rows}", lambda: _read_prefilter(dim, rows))
+
+
+def _read_prefilter(dim: int, rows: int):
     """(k, оси, по_строкам) или None. Предфильтр — производный слой: его отсутствие
     или рассинхрон с json — не ошибка, поиск просто делает полный перебор.
     по_строкам: для каждой строки (порядка row) k проекций на оси и норма остатка."""
