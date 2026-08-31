@@ -78,6 +78,24 @@ def human_time(seconds: float) -> str:
     return f"{s // 60}м {s % 60:02d}с" if s >= 60 else f"{s}с"
 
 
+def parallel_width(cfg: dict, count: int) -> tuple:
+    """(слоты, ширина) для шага из `count` единиц работы.
+
+    Одно правило на все длинные шаги: больше слотов, чем работы, заводить незачем, а
+    меньше единицы не бывает. Считалось это в трёх местах слово в слово — и хватило бы
+    одной правки в одном из них, чтобы разбор источников и разбор синонимов начали
+    понимать параллельность по-разному.
+
+    Сами циклы при этом остаются разными, и сводить их не надо: разбор источников гоняет
+    независимые элементы, разбор синонимов — группы (внутри группы строго по одному),
+    дистилляция — карточки с общим окном. Общая у них ширина, а не устройство.
+    """
+    if (cfg.get("parallel") or 1) <= 1:
+        return [], 1
+    slots = AG.pool(cfg)
+    return slots, (min(len(slots), count) or 1)
+
+
 def threads_line(cfg: dict, width: int, why_one: str = "") -> str:
     """Строка «сколько потоков и почему» — одна на все длинные шаги.
 
@@ -1019,10 +1037,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     if limit:
         sources = sources[:limit]
 
-    slots, width = [], 1
-    if (cfg.get("parallel") or 1) > 1:
-        slots = AG.pool(cfg)
-        width = min(len(slots), len(sources)) or 1
+    slots, width = parallel_width(cfg, len(sources))
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1110,7 +1125,13 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 executor.shutdown(wait=False, cancel_futures=True)
 
     after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
-    return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build", "before": {"left": before_left, "done": before_done, "errors": before_errors}, "after": {"left": after_left, "done": after_done, "errors": lint_errors(cwd) if apply else before_errors}, "total": len(sources), "partition": partition, "limited": bool(limit), "stopped": stopped, "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
+    return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build",
+            "before": {"left": before_left, "done": before_done, "errors": before_errors},
+            "after": {"left": after_left, "done": after_done,
+                      "errors": lint_errors(cwd) if apply else before_errors},
+            "total": len(sources), "partition": partition, "limited": bool(limit),
+            "stopped": stopped,
+            "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
 
 
 def verdict_build(res: dict, apply: bool) -> tuple:
@@ -2460,8 +2481,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     # между «одна за раз» и «восемь за раз» — это ночь против часа. Запись в файл идёт
     # в главном потоке: два потока, пишущие в разные карточки, безопасны, но проверять
     # это на живой базе мы не будем.
-    slots = AG.pool(cfg)
-    width = min(len(slots), total) or 1
+    slots, width = parallel_width(cfg, total)
     done, in_a_row = 0, 0
     # Сколько заданий висит в воздухе прямо сейчас. Человек у экрана видит бегущие
     # строки и не может отличить «шаг идёт в девять потоков» от «шаг идёт в один»:
@@ -2631,10 +2651,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     steps, fails, stopped = [], {}, ""
     say(f"Конфликтов в работе: {len(conflicts)} · лимит шагов {cfg['max_steps']} · "
         f"бюджет {cfg['budget_min']} мин")
-    slots, width = [], 1
-    if (cfg.get("parallel") or 1) > 1:
-        slots = AG.pool(cfg)
-        width = min(len(slots), len(conflicts)) or 1
+    slots, width = parallel_width(cfg, len(conflicts))
     
     from concurrent.futures import ThreadPoolExecutor, as_completed
     progress_lock = threading.Lock()
