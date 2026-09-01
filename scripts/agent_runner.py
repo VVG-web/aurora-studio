@@ -3067,12 +3067,15 @@ def main() -> int:
         print(text)
         if res["ok"] and not a.no_journal:
             mo = res.get("momus") or {}
-            verdict = ("" if not mo else
-                       " · Момус: чисто" if mo.get("clean") else
-                       f" · Момус: без опоры {mo['unsupported']}" if mo.get("ok") else
-                       " · Момус не проверил")
+            # Не `verdict`: так зовётся функция-оракул этого же модуля, и присваивание
+            # здесь делало имя локальным на ВСЮ main() — вызов оракула в её конце падал
+            # `UnboundLocalError` уже после того, как прогон записал результат в базу.
+            momus_note = ("" if not mo else
+                          " · Момус: чисто" if mo.get("clean") else
+                          f" · Момус: без опоры {mo['unsupported']}" if mo.get("ok") else
+                          " · Момус не проверил")
             note = (f"модель {res['model']} · карточек в контексте "
-                    f"{res.get('total') or len(res['cards'])} · {res['seconds']} с{verdict}")
+                    f"{res.get('total') or len(res['cards'])} · {res['seconds']} с{momus_note}")
             p = append_turn(path, a.question, res["answer"], note, a.mode)
             print(f"\nРазговор: `{p.relative_to(cwd)}` (вопросов в нём: {len(history) + 1})")
             print("Уточнить, не теряя контекст: `agent:ask --thread " + p.stem + "`")
