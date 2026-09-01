@@ -5698,6 +5698,55 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
 
 @test
+def test_two_writing_runs_do_not_share_one_base(tmp: Path):
+    """Второй пишущий прогон агента в ту же базу останавливается замком.
+
+    Отметка `.running.json` живёт в ките и известна только панели: команду, запущенную
+    мимо неё — из терминала, из другого харнесса, вторым окном, — не останавливало ничто.
+    На живом проекте так и вышло: маршрут панели и терминальный цикл строили базу
+    одновременно, два процесса читали и писали один манифест. Обошлось, но это удача:
+    потерянная отметка «разобрано» — это повторный разбор источника и двойники карточек.
+
+    Замок только на запись: читающие задачи не мешают никому и чужой замок не снимают.
+    Мёртвый процесс замок не держит — иначе прогон, убитый по Ctrl+C, запер бы базу.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ar = importlib.import_module("agent_runner")
+    importlib.reload(ar)
+
+    root = make_project(tmp)
+    got, busy = ar.writing_lock(str(root), "build")
+    assert got and not busy, f"первый прогон не взял замок: {busy}"
+
+    lock = Path(root) / ar.LOCK
+    assert lock.is_file(), "замок не записан в проект"
+
+    # Второй — тем же процессом: замок наш, значит это тот же прогон, и он проходит.
+    # Проверяем именно ЧУЖОЙ: подменяем pid на живой процесс, которым точно не являемся.
+    import json as _j
+    held = _j.loads(lock.read_text(encoding="utf-8"))
+    held["pid"] = os.getppid()          # родитель жив, но это не мы
+    lock.write_text(_j.dumps(held), encoding="utf-8")
+    got2, busy2 = ar.writing_lock(str(root), "distill")
+    assert not got2, "второй пишущий прогон зашёл в базу поверх первого"
+    assert "идёт пишущий прогон" in busy2, f"причина отказа не названа словами: {busy2}"
+
+    # Чужой замок читающий прогон не снимает.
+    ar.release_lock(str(root))
+    assert lock.is_file(), "чужой замок снят — дверь второму писателю снова открыта"
+
+    # Мёртвый процесс базу не запирает.
+    held["pid"] = 99999999
+    lock.write_text(_j.dumps(held), encoding="utf-8")
+    got3, _ = ar.writing_lock(str(root), "build")
+    assert got3, "замок от мёртвого процесса запер базу навсегда"
+
+    ar.release_lock(str(root))
+    assert not lock.is_file(), "свой замок не снялся"
+
+
+@test
 def test_verdict_is_a_function_not_a_local_string(tmp: Path):
     """Имя `verdict` в `main()` обязано остаться функцией-оракулом.
 

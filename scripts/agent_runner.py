@@ -291,6 +291,59 @@ def _bp_flag(args: list, flag: str, default: str = "") -> str:
     return default
 
 
+LOCK = os.path.join(".opencode", "state", "agent.lock")
+
+
+def writing_lock(cwd: str, task: str):
+    """Замок на пишущий прогон агента. → (взят ли, чем занято). Снимать `release_lock`.
+
+    Отметка `.running.json` в ките защищает только от перезапуска панели: команду,
+    запущенную мимо неё — из терминала, из другого харнесса, вторым окном, — не
+    останавливало ничто. На живом проекте так и вышло: маршрут панели и терминальный цикл
+    строили базу одновременно, два процесса читали и писали один манифест. Обошлось, но
+    это была удача: потерянная отметка «разобрано» означает повторный разбор источника и
+    двойники карточек.
+
+    Замок лежит в проекте, а не в ките: пишут-то в проект. Мёртвый процесс замок не
+    держит — иначе прогон, убитый по Ctrl+C, запирал бы базу навсегда.
+    """
+    path = os.path.join(cwd, LOCK)
+    try:
+        with open(path, encoding="utf-8") as f:
+            held = json.load(f)
+        pid = int(held.get("pid") or 0)
+        alive = pid > 0 and (os.kill(pid, 0) is None)
+    except (OSError, ValueError, TypeError):
+        alive, held = False, {}
+    except ProcessLookupError:
+        alive, held = False, {}
+    if alive:
+        return False, (f"уже идёт пишущий прогон: {held.get('task')} "
+                       f"(pid {held.get('pid')}, с {held.get('since')})")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "task": task,
+                       "since": datetime.now().strftime("%H:%M:%S")}, f, ensure_ascii=False)
+    except OSError:
+        return True, ""          # не смогли записать замок — работать это не мешает
+    return True, ""
+
+
+def release_lock(cwd: str) -> None:
+    """Снять СВОЙ замок. Чужой не трогаем: читающий прогон, сняв чужой замок, открыл бы
+    дверь второму писателю — ровно тому, от чего замок и заведён. Отсутствие файла не
+    ошибка: его мог убрать уже завершившийся прогон."""
+    path = os.path.join(cwd, LOCK)
+    try:
+        with open(path, encoding="utf-8") as f:
+            if int(json.load(f).get("pid") or 0) != os.getpid():
+                return
+        os.remove(path)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
     """build_plan.py в-процессе: те же побочные эффекты, без Popen. → как run_command.
 
@@ -3006,6 +3059,15 @@ def main() -> int:
         print("agent_runner: нет AuroraKnowledgeDB/ — запускайте из корня проекта",
               file=sys.stderr)
         return 1
+    # Два пишущих прогона в одну базу — это потерянные отметки «разобрано» и двойники
+    # карточек. Замок только на запись: читающие задачи (`ask`, списки) не мешают никому.
+    if a.apply:
+        got, busy = writing_lock(cwd, a.task)
+        if not got:
+            print(f"agent_runner: {busy}.\n"
+                  "   Два пишущих прогона в одну базу теряют отметки «разобрано» и заводят\n"
+                  "   двойники. Дождитесь конца или остановите тот прогон.", file=sys.stderr)
+            return 2
     # Список разговоров — чтение файлов проекта: ни модели, ни настроенного агента для
     # него не нужно, и требовать их значило бы прятать историю за настройкой шлюза.
     if a.threads:
@@ -3172,4 +3234,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        _rc = main()
+    finally:
+        # Замок снимаем всегда: прогон, упавший на отчёте, не должен запирать базу.
+        release_lock(os.getcwd())
+    sys.exit(_rc)
