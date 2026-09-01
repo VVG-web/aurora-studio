@@ -5698,6 +5698,46 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
 
 @test
+def test_verdict_is_a_function_not_a_local_string(tmp: Path):
+    """Имя `verdict` в `main()` обязано остаться функцией-оракулом.
+
+    В ветке `agent:ask` заводилась локальная строка `verdict = "… Момус: чисто"`. Для
+    Python этого достаточно, чтобы считать имя локальным на ВСЮ функцию: в конце `main()`,
+    где вызывается `verdict(res, apply)`, оно оказывалось «ещё не присвоенным», и любой
+    прогон, дошедший до оракула не через `ask`, падал:
+
+        UnboundLocalError: cannot access local variable 'verdict'
+
+    Прогон при этом уже отработал и записал результат в базу — падал он на последней
+    строке. Человек видел красное там, где всё получилось, а маршрут считал шаг
+    провалившимся и останавливался.
+
+    Проверяем не текст, а факт: в теле `main()` нет присваивания имени, которым названа
+    функция-оракул. Такое затенение не ловится ни линтером, ни глазами при чтении диффа —
+    ловится только правилом.
+    """
+    import ast
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    top = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    assert "verdict" in top, "функция-оракул verdict пропала из модуля"
+
+    main = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"]
+    assert main, "в agent_runner нет main()"
+    shadowed = set()
+    for node in ast.walk(main[0]):
+        targets = (node.targets if isinstance(node, ast.Assign) else
+                   [node.target] if isinstance(node, (ast.AugAssign, ast.AnnAssign)) else [])
+        for tgt in targets:
+            if isinstance(tgt, ast.Name) and tgt.id in top:
+                shadowed.add(tgt.id)
+    assert not shadowed, (
+        f"в main() присваиваются имена модульных функций: {sorted(shadowed)} — "
+        "Python считает их локальными на всю функцию, и вызов такой функции ниже по коду "
+        "падает UnboundLocalError уже после того, как работа сделана")
+
+
+@test
 def test_aliases_report_survives_leftovers_and_rejections(tmp: Path):
     """Отчёт о синонимах не должен падать, когда работа осталась или критик отклонил.
 
