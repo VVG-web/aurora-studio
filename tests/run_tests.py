@@ -5698,6 +5698,43 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
 
 
 @test
+def test_a_backend_with_a_free_slot_is_not_busy(tmp: Path):
+    """Занят тот шлюз, у которого заняты ВСЕ слоты, а не хоть один.
+
+    `llama.cpp` не отказывает при нагрузке, а молча ставит в очередь, поэтому занятость
+    смотрят в `/slots`. Но проверка объявляла шлюз занятым, если работает **хоть один**
+    слот: `any(is_processing)`. У сервера с четырьмя слотами один занятый закрывал
+    остальные три.
+
+    На живом прогоне это стоило трети партии. В вердикте: «разобрано 9 из 15, одна и та
+    же ошибка 3 раза подряд: №3: слот занят (/slots) — дальше по кольцу; дедлайн
+    исчерпан». Кольцо обходило свободные шлюзы, упиралось в дедлайн, и шаг падал —
+    при живых серверах с незанятой ёмкостью.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+    b = {"n": 2, "url": "http://x/v1"}
+
+    def slots(state):
+        return lambda kind, _b, _p, _t: (200, state, "", 0.0)
+
+    assert not A.busy(b, slots([{"is_processing": False}] * 4)), \
+        "все слоты свободны — шлюз не занят"
+    assert not A.busy(b, slots([{"is_processing": True}] + [{"is_processing": False}] * 3)), (
+        "один занятый слот из четырёх закрыл весь шлюз — кольцо пройдёт мимо сервера, "
+        "готового взять работу, и упрётся в дедлайн")
+    assert not A.busy(b, slots([{"is_processing": True}] * 3 + [{"is_processing": False}])), \
+        "последний свободный слот всё ещё можно занять"
+    assert A.busy(b, slots([{"is_processing": True}] * 4)), \
+        "все слоты в работе — вот теперь занят"
+
+    # Шлюз без /slots: проверка неприменима, а не «занят».
+    assert not A.busy(b, lambda kind, _b, _p, _t: (404, None, "нет /slots", 0.0)), \
+        "шлюз без /slots объявлен занятым — так отключается всё кольцо разом"
+    assert not A.busy(b, slots([])), "пустой список слотов — не повод считать занятым"
+
+
+@test
 def test_a_flaky_gateway_is_not_a_dead_one(tmp: Path):
     """Шаг, который сделал работу и споткнулся, повторяется сразу, а не через четверть часа.
 

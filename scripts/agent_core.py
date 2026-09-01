@@ -430,11 +430,19 @@ def answer_of(body: dict) -> tuple:
 
 def busy(backend: dict, transport) -> bool:
     """llama.cpp не отказывает, а молча ставит в очередь — занятость видна только в /slots.
-    Шлюз на /slots отвечает ошибкой: это не занятость, а «проверка неприменима»."""
+    Шлюз на /slots отвечает ошибкой: это не занятость, а «проверка неприменима».
+
+    Занят тот, у кого заняты ВСЕ слоты. Было `any`, и один работающий слот из четырёх
+    закрывал остальные три: кольцо проходило мимо сервера, готового взять работу. На
+    живом прогоне это стоило трети партии — «разобрано 9 из 15, одна и та же ошибка
+    3 раза подряд: слот занят — дальше по кольцу; дедлайн исчерпан», при живых серверах
+    с незанятой ёмкостью.
+    """
     st, body, _err, _dt = transport("slots", backend, None, CONNECT_TIMEOUT)
     if st != 200 or not isinstance(body, list):
         return False
-    return any(s.get("is_processing") for s in body if isinstance(s, dict))
+    slots = [s for s in body if isinstance(s, dict)]
+    return bool(slots) and all(s.get("is_processing") for s in slots)
 
 
 DOWN_FOR = 900        # столько не трогаем провайдера, который не ответил: 15 минут
