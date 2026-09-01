@@ -690,7 +690,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.22";
+const UI_VERSION = "1.100.23";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3287,6 +3287,17 @@ const OFFLINE_SIGNS = ["timed out", "timeout", "connection error", "connection r
                      "ни один бэкенд", "temporarily unavailable", "failed to establish",
                      "name or service not known", "ssl", "network is unreachable"];
 const ROUTE_OFFLINE_RETRY_MS = 15 * 60 * 1000;   // между попытками достучаться до бэкендов
+const ROUTE_FLAKY_RETRY_MS = 30 * 1000;          // шлюз мигает, а не лежит: пробуем сразу
+// Шаг сделал работу — значит бэкенды отвечают, просто через раз. На живом прогоне так и
+// было: девять попыток подряд, каждая переписывала по 12–15 карточек и всё равно уходила
+// в пятнадцатиминутное ожидание. За четыре с половиной часа около двух ушло в простой.
+// Признак прогресса ищем в выводе самих шагов — числа, которые они печатают о сделанном.
+const DID_WORK = [/переписано:\s*([1-9]\d*)/, /разобрано\s+([1-9]\d*)\s+из/,
+                  /уточнено:\s*([1-9]\d*)/, /тезисов:\s*([1-9]\d*)/];
+const madeProgress = lines => {
+  const t = (Array.isArray(lines) ? lines.join("\n") : (lines || ""));
+  return DID_WORK.some(rx => rx.test(t));
+};
 const ROUTE_OFFLINE_TRIES = 8;                        // лимит: 8 попыток ≈ 2 часа, дальше — ручками
 const looksOffline = text => { const t = (Array.isArray(text) ? text.join("\n") : (text||"")).toLowerCase();
   return OFFLINE_SIGNS.some(s => t.includes(s)); };
@@ -3737,9 +3748,12 @@ async function runRoute(sc, write, resume){
       const r = await runStep(st.cmd, st.args); emit(r);
       if (r.rc >= 2) return done("failed");
       if (r.rc === 1 && looksOffline(r.lines||[])){
-        cy.attempt++;
+        // Шаг сделал работу и всё же споткнулся — это помехи, а не «сети нет».
+        // Ждать четверть часа тут значит стоять при живых бэкендах.
+        const flaky = madeProgress(r.lines || []);
+        if (!flaky) cy.attempt++;
         if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
-        cy.nextRetryAt = Date.now() + ROUTE_OFFLINE_RETRY_MS;
+        cy.nextRetryAt = Date.now() + (flaky ? ROUTE_FLAKY_RETRY_MS : ROUTE_OFFLINE_RETRY_MS);
         persist(); renderWait(); schedule();
         return;
       }
