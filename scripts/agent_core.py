@@ -399,6 +399,10 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     return 200, body, "", time.time() - t0
 
 
+# Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
+ADAPTER_ONLY = frozenset({"_slots", "guard", "role", "tools_root", "mcp", "history"})
+
+
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
     """kind: 'slots' | 'chat'. Отделён от логики кольца, чтобы тесты подменяли его целиком."""
     if kind == "slots":
@@ -417,7 +421,15 @@ def default_transport(kind: str, backend: dict, payload: dict | None, timeout: f
         # Фолбэк не молчаливый: причина уходит в журнал шага, и в отчёте видно, что
         # работали не тем адаптером, который выбран в конфиге.
         ADAPTER["fallback_why"] = err
-    return http_json(backend["url"] + "/chat/completions", payload, backend["key"], timeout)
+    # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
+    # серверу: `_slots` говорит пулу, сколько процессов держать, `guard`/`role`/
+    # `tools_root`/`mcp` — сторожу и инструментам, `history` в HTTP уже слита в
+    # `messages`. Строгий шлюз на неизвестное поле отвечает `400 Unrecognized request
+    # argument`, а движок объявлял его недоступным на пятнадцать минут и показывал
+    # «не отвечал» — при живом сервере, которым другие клиенты пользовались без помех.
+    return http_json(backend["url"] + "/chat/completions",
+                     {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
+                     backend["key"], timeout)
 
 
 def answer_of(body: dict) -> tuple:
@@ -446,6 +458,10 @@ def busy(backend: dict, transport) -> bool:
 
 
 DOWN_FOR = 900        # столько не трогаем провайдера, который не ответил: 15 минут
+# Коды, которыми живой сервер отказывает внятно. Их ожидание не лечит: правится ключ,
+# имя модели или сам запрос. В карантин за них не сажаем — иначе причина скроется за
+# «не отвечал», и человек пойдёт искать обрыв связи вместо строки в настройках.
+SPEAKS_CLEARLY = frozenset({400, 401, 403, 404, 422})
 DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
 RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
@@ -844,6 +860,15 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         log.append(f"№{b['n']} {model}: запрос длиннее окна модели "
                                    f"(объявите AURORA_AGENT_BACKEND_{b['n']}_CONTEXT — "
                                    f"движок не будет отправлять заведомо большие)")
+                    elif st in SPEAKS_CLEARLY:
+                        # Живой сервер отказал внятно: 400 — запрос не по вкусу, 401/403 —
+                        # ключ, 404 — нет такой модели. Ожиданием это не лечится, а карантин
+                        # прячет причину за «не отвечал»: человек ищет обрыв связи вместо
+                        # настройки. На живом контуре так и вышло — шлюз, которым в ту же
+                        # минуту пользовались другие программы, у нас числился мёртвым.
+                        log.append(f"№{b['n']} {model}: HTTP {st} — сервер ответил и отказал"
+                                   + (f": {str(err)[:120]}" if err else "")
+                                   + ". Это настройка, а не связь: карантин не ставлю")
                     else:
                         DOWN[b["n"]] = time.time() + DOWN_FOR
                         log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
@@ -1082,6 +1107,12 @@ def cmd_ping(as_json: bool) -> int:
             row.update(status="занят (слот в работе)", ok=False)
             rows.append(row)
             continue
+        # Снимаем карантин перед опросом. Отметка «не отвечал» верна для рабочих вызовов —
+        # не спрашивать мёртвого на каждом источнике, — но проверка связи обязана
+        # спрашивать. Иначе она печатает «вернёмся через 865 с» про сервер, которым в ту
+        # же минуту пользуются другие программы, и каждая следующая проверка повторяет ту
+        # же строку: сама проверка и была причиной, по которой отметку не снимали.
+        DOWN.pop(b["n"], None)
         r = call_role({**cfg, "backends": [b], "request_timeout": 45}, "worker",
                       [{"role": "user", "content": "Повтори одно слово: готов"}],
                       thinking=False, max_tokens=60,
