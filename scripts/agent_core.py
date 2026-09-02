@@ -463,6 +463,7 @@ DOWN_FOR = 900        # столько не трогаем провайдера,
 # «не отвечал», и человек пойдёт искать обрыв связи вместо строки в настройках.
 SPEAKS_CLEARLY = frozenset({400, 401, 403, 404, 422})
 DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
+LAST_OK: dict = {}    # {номер: когда он в последний раз ОТВЕТИЛ} — тоже в процессе
 RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
 # Жёсткий лимит параллельности на бэкенд: семафор размера `width`, по одному на №.
@@ -713,12 +714,18 @@ def mcp_config(project: str) -> dict:
         return {}
 
 
+def looks_like_timeout(err) -> bool:
+    """Молчание по сроку. Сервер жив и, возможно, всё ещё думает — просто не успел."""
+    s = str(err or "").lower()
+    return "timeout" in s or "timed out" in s
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
               prefer: int = 0, history: list | None = None,
               tools: bool = False, guard_text: list | None = None,
-              trim: tuple | None = None) -> dict:
+              trim: tuple | None = None, request_timeout: float | None = None) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `tools` — дать модели инструменты чтения (поиск по базе, файлы проекта). Включается
@@ -750,8 +757,15 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
         think = (own not in ("0", "false", "no")) if own != "" else cfg["thinking"]
     else:
         think = thinking
-    deadline = deadline or (time.time() + cfg["request_timeout"])
+    # Предел на ОДИН запрос. Обычно общий из настройки, но вызывающий вправе поднять его
+    # там, где уже знает цену работы: Момус читает тот же пак плюс ответ, и на модели,
+    # которой ответ дался за пять минут, проверка в те же пять минут не укладывается
+    # никогда. Дедлайн этого не решает — запрос всё равно режется по `request_timeout`.
+    req_timeout = float(request_timeout or cfg["request_timeout"])
+    deadline = deadline or (time.time() + req_timeout)
     log, waited, ring = [], 0.0, 0
+    slow = 0                    # сколько попыток кончилось молчанием по сроку
+    attempts = 0
     tried: set = set()          # кому уже давали честный шанс в этом вызове
     if retry_primary_asked():
         log.append("человек попросил вернуться на основного — отметки сняты")
@@ -827,7 +841,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             # времени: дедлайн сдвигается один раз на него. Худший случай — вызов длится
             # `request_timeout × число бэкендов`, и это честная цена запасного пути.
             left = deadline - time.time()
-            fair = cfg["request_timeout"] * FAIR_SHARE
+            fair = req_timeout * FAIR_SHARE
             if left < fair and b["n"] not in tried:
                 deadline += fair
                 left = deadline - time.time()
@@ -841,13 +855,14 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             # второй раз, и вызов растянется сверх request_timeout.
             tried.add(b["n"])
             sem = _slot_semaphore(b, cfg)
-            grant = max(0.5, min(FAIR_SHARE * cfg["request_timeout"], left))
+            grant = max(0.5, min(FAIR_SHARE * req_timeout, left))
             if not sem.acquire(timeout=grant):
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
                 continue
             try:
+                attempts += 1
                 st, body, err, dt = transport("chat", b, payload,
-                                              max(5.0, min(left, cfg["request_timeout"])))
+                                              max(5.0, min(left, req_timeout)))
                 if st == 400 and not looks_like_overflow(err, body):
                     payload.pop("chat_template_kwargs", None)
                     st, body, err, dt = transport("chat", b, payload,
@@ -869,6 +884,19 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         log.append(f"№{b['n']} {model}: HTTP {st} — сервер ответил и отказал"
                                    + (f": {str(err)[:120]}" if err else "")
                                    + ". Это настройка, а не связь: карантин не ставлю")
+                    elif looks_like_timeout(err):
+                        # Молчание по сроку — не смерть. Бэкенд, ответивший минуту назад,
+                        # жив: он просто думает дольше отпущенного, и на живом контуре
+                        # так и вышло — Момус не уложился на модели, которая только что
+                        # написала сам ответ, и её объявили недоступной. В карантин
+                        # сажаем лишь того, от кого давно ничего не слышали.
+                        slow += 1
+                        fresh = time.time() - LAST_OK.get(b["n"], 0) < DOWN_FOR
+                        if not fresh:
+                            DOWN[b["n"]] = time.time() + DOWN_FOR
+                        log.append(f"№{b['n']} {model}: не уложился в {int(req_timeout)} с"
+                                   + (" (но отвечал только что — карантин не ставлю)"
+                                      if fresh else ""))
                     else:
                         DOWN[b["n"]] = time.time() + DOWN_FOR
                         log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
@@ -882,6 +910,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                     log.append(f"№{b['n']} {model}: {why}")
                     continue
                 DOWN.pop(b["n"], None)
+                LAST_OK[b["n"]] = time.time()
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
                 return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
@@ -899,8 +928,13 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
         log.append(f"круг {ring} неудачен — пауза {RING_PAUSE} с, снова с первого")
         sleep(RING_PAUSE)
         waited += RING_PAUSE
-    log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
-    return {"ok": False, "log": log}
+    if attempts and slow == attempts:
+        log.append(f"никто не уложился в срок: {int(req_timeout)} с на запрос. "
+                   "Это медленно, а не мёртво — модель отвечает, но дольше отпущенного. "
+                   "Лечится AURORA_AGENT_REQUEST_TIMEOUT, а не ожиданием")
+    else:
+        log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
+    return {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts)}
 
 
 # ------------------------------------------------------------------ команды

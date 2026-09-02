@@ -192,7 +192,11 @@ def embed(texts: list, cfg: dict, model: str) -> list:
         if got is None or len(got) != len(chunk):
             return []
         out += got
-        print(f"  посчитано {len(out)} из {len(texts)}", flush=True)
+        # Прогресс — про сборку индекса, где батчей сотни. Один вопрос поиска это
+        # один батч, и строка «посчитано 1 из 1» на каждый запрос забивает вывод
+        # тому, кто спрашивает базу: замер качества печатал её двести раз подряд.
+        if len(texts) > BATCH:
+            print(f"  посчитано {len(out)} из {len(texts)}", flush=True)
     return out
 
 

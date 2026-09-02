@@ -236,6 +236,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `ops:impact <карточка>` | что зависит от карточки; `--explain <документ>` — на чём он собран | `references/maintenance.md` |
 | `ops:trace` (`trace`) | перестроить трассировку: пункт ТЗ → REQ → SPEC → Jira → AC → ПМИ → приёмка | `references/workflows.md` |
 | `ops:retrieval` | какие карточки приходят первыми по реальным запросам аналитиков и что изменилось с прошлого раза: сторож ранжирования. Запросы — из разговоров `meta/ask/` | `references/retrieval.md` |
+| `ops:search-quality` | качество поиска числом: находит ли база сама себя. Тезис карточки как вопрос — правильный ответ известен по построению, разметка не нужна. R@1/R@5/MRR, запас до чужого ответа и разница с прошлым замером | `references/retrieval.md` |
 | `ops:todo` | что осталось человеку: одним списком, с объяснением, почему это нельзя сделать кнопкой | `references/maintenance.md` |
 | `ops:report` | дашборд эффективности аналитиков: недельная активность по Jira и Confluence; настройки — в секции `reports:` конфига | `references/maintenance.md` |
 | `ops:questions` | реестр вопросов: открытые, просроченные, что блокируют (числа — из `aurora_stats.py`) | `references/workflows.md` |

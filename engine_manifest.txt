@@ -45,6 +45,7 @@ scripts/kb_lint.py       => .opencode/scripts/kb_lint.py
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
 # только молча.
 scripts/kb_embed.py      => .opencode/scripts/kb_embed.py
+scripts/kb_search_quality.py => .opencode/scripts/kb_search_quality.py
 scripts/agent_probe.py   => .opencode/scripts/agent_probe.py
 scripts/make_kinds.py    => .opencode/scripts/make_kinds.py
 scripts/aurora_mcp.py    => .opencode/scripts/aurora_mcp.py

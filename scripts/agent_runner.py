@@ -2021,7 +2021,8 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
            "ghosts": links["invented"], "mentioned": links["mentioned"],
            "outside": links["outside"], "backend": a["backend"], "model": a["model"]}
     if momus:
-        out["momus"] = run_momus(cfg, pack, question, text, call)
+        out["momus"] = run_momus(cfg, pack, question, text, call,
+                                 answered_in=float(a.get("seconds") or 0))
     out["seconds"] = round(time.time() - started, 1)
     return out
 
@@ -2080,8 +2081,24 @@ def classify_links(text: str, cards: list, pack: str, cwd: str) -> dict:
     return {"outside": outside, "mentioned": mentioned, "invented": invented}
 
 
+# Момус читает тот же пак плюс сам ответ — работа того же порядка, что и ответ, только
+# промпт больше. Давать ему одну и ту же цифру из настройки, независимо от того, во что
+# обошёлся ответ, значит гарантировать провал на медленной модели: на живом контуре ответ
+# занял пять минут, проверке отпустили те же пять — и её объявили несостоявшейся.
+MOMUS_SHARE = 1.5     # во столько раз щедрее, чем стоил сам ответ
+MOMUS_CAP = 2.0       # но не больше стольких `request_timeout`: человек ждёт
+
+
+def momus_timeout(cfg: dict, answered_in: float) -> float:
+    """Сколько дать проверке, зная, во сколько обошёлся ответ. → секунды на запрос."""
+    base = float(cfg["request_timeout"])
+    if answered_in <= 0:
+        return base
+    return round(min(base * MOMUS_CAP, max(base, answered_in * MOMUS_SHARE)), 1)
+
+
 def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
-              prefer: int = 0) -> dict:
+              prefer: int = 0, answered_in: float = 0.0) -> dict:
     """Момус: вторая модель разбирает ответ по утверждениям и ищет то, что без опоры.
 
     Механическая проверка ловит только ссылки. Утверждение без ссылки — «возврат
@@ -2095,11 +2112,13 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
     """
     call = call or AG.call_role
     started = time.time()
+    rt = momus_timeout(cfg, answered_in)
     v = call(cfg, "qa", [{"role": "user", "content": PROMPT_MOMUS.format(
         pack=pack, question=question, answer=answer)}],
-        deadline=time.time() + cfg["request_timeout"], prefer=prefer)
+        deadline=time.time() + rt, prefer=prefer, request_timeout=rt)
     if not v["ok"]:
-        return {"ok": False, "why": "; ".join(v["log"][-2:]), "seconds": 0.0}
+        return {"ok": False, "why": "; ".join(v["log"][-2:]), "seconds": 0.0,
+                "timed_out": bool(v.get("timed_out")), "given": rt}
     text = (v["text"] or "").strip()
     m = re.search(r"ВЕРДИКТ:\s*(ЧИСТО|БЕЗ ОПОРЫ\s*(\d+))", text, re.I)
     unsupported = int(m.group(2)) if (m and m.group(2)) else 0
@@ -2124,8 +2143,18 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
     mo = res.get("momus") or {}
     if mo:
         if not mo.get("ok"):
-            L += ["", f"⚠️ **Момус не проверил ответ**: {mo.get('why', 'причина неизвестна')}. "
-                  "Ответ ниже никем не сверен — читайте как черновик."]
+            # «Не проверил» и «недоступен» — разные вещи, и на живом контуре их путали:
+            # проверку вела та же модель, которая минуту назад написала ответ. Медленно —
+            # это про срок, а срок настраивается.
+            if mo.get("timed_out"):
+                L += ["", f"⚠️ **Момус не успел проверить ответ**: модель не уложилась в "
+                      f"{int(mo.get('given') or cfg['request_timeout'])} с. Она отвечает — "
+                      "просто дольше отпущенного: поднимите "
+                      "`AURORA_AGENT_REQUEST_TIMEOUT`. Ответ ниже никем не сверен — "
+                      "читайте как черновик."]
+            else:
+                L += ["", f"⚠️ **Момус не проверил ответ**: {mo.get('why', 'причина неизвестна')}. "
+                      "Ответ ниже никем не сверен — читайте как черновик."]
         elif mo.get("clean"):
             L += ["", f"✅ **Момус: чисто** — каждое утверждение нашло опору в контексте "
                   f"(проверил {mo['model']}, {mo['seconds']} с)."]

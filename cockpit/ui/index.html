@@ -594,7 +594,10 @@ tr:last-child td{border-bottom:0}
               <option value="0">по кольцу (основная, при отказе — запасная)</option>
             </select></label>
           <span class="muted" style="font-size:12.5px">Ctrl+Enter — спросить</span>
-          <span class="row-right"><button class="btn" id="askNew" hidden>Новый разговор</button></span>
+          <span class="row-right">
+            <button class="btn" id="askExport" hidden
+                    title="Выгрузить вопросы и ответы этого разговора в .md-файл">В .md</button>
+            <button class="btn" id="askNew" hidden>Новый разговор</button></span>
         </div>
         <div class="row" style="gap:10px;margin-top:10px">
           <span class="chip mono" id="askWho" title="кто ответил на последний вопрос">модель: —</span>
@@ -690,7 +693,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.27";
+const UI_VERSION = "1.100.28";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1650,7 +1653,8 @@ function show(view){
   if (view==="work") fillMakeKinds();
   if (view==="files") renderFiles();
   if (view==="graph") renderGraph();
-  if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint(); fillAskBackends(); }
+  if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint();
+                     drawAskExport(); fillAskBackends(); }
   if (view==="reports") renderReports();
   if (view==="console"){
     renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs();
@@ -3050,6 +3054,10 @@ async function askBase(){
   const said = (lines.find(l=>/^Разговор: /.test(l)) || "").match(/`([^`]+)`/);
   if (said) THREAD = {id: said[1].split("/").pop().replace(/\.md$/, "")};
   item.innerHTML = "";
+  // Исходный markdown держим на самой карточке: на экране он уже разобран в HTML, а
+  // выгружать надо то, что писала модель, — со ссылками `[[…]]`, живыми в Obsidian.
+  item.dataset.q = q; item.dataset.a = body;
+  item.dataset.at = new Date().toLocaleString("ru-RU");
   item.append(el("div",{style:"font-weight:700"}, q),
     el("div",{class:"ansbody",style:"margin-top:10px;white-space:pre-wrap",
               html: mdLite(body)}));
@@ -3067,6 +3075,7 @@ async function askBase(){
   }
   $("#askText").value = "";
   drawThreadHint();
+  drawAskExport();
   renderAskHistory();
 }
 
@@ -3085,7 +3094,46 @@ function drawThreadHint(){
               el("span",{class:"mono"}, THREAD.id),
               el("span",{}, " — модель увидит прошлые вопросы и ответы."));
 }
-$("#askNew").onclick = ()=>{ THREAD = null; $("#askBody").innerHTML = ""; drawThreadHint(); };
+$("#askNew").onclick = ()=>{ THREAD = null; $("#askBody").innerHTML = "";
+                             drawThreadHint(); drawAskExport(); };
+
+// Ответ читают не только в панели: его несут в задачу, в письмо, в саму базу — а
+// перенос выделением теряет ссылки `[[…]]` и переносы строк. Выгружаем тот markdown,
+// который написала модель, целиком: вопрос, ответ и подпись, откуда он взялся.
+function askCards(){
+  return Array.from($("#askBody").querySelectorAll("[data-a]"));
+}
+function drawAskExport(){
+  const btn = $("#askExport");
+  if (btn) btn.hidden = !askCards().length;
+}
+function askMarkdown(){
+  // Карточки на экране лежат свежим сверху; в файле разговор читают с начала.
+  const cards = askCards().reverse();
+  const head = ["# Ответ базы Aurora", "",
+    "- Проект: " + (S.project ? S.project.path : "—"),
+    "- Выгружено: " + new Date().toLocaleString("ru-RU"),
+    "- Модель: " + ($("#askWho").textContent || "—").replace(/^модель:\s*/, "")];
+  // Канонический экземпляр разговора лежит в базе и уходит в git. Файл выгрузки — копия
+  // для переноса, и об этом надо сказать, иначе правки понесут в копию.
+  if (THREAD) head.push("- Разговор в базе: `AuroraKnowledgeDB/meta/ask/" + THREAD.id + ".md`"
+                        + " — правки вносите туда, этот файл копия");
+  head.push("");
+  const body = cards.map(c => ["## " + c.dataset.q,
+                               c.dataset.at ? "_" + c.dataset.at + "_" : "",
+                               "", c.dataset.a, ""].join("\n"));
+  return head.concat(body).join("\n").replace(/\n{3,}/g, "\n\n");
+}
+$("#askExport").onclick = ()=>{
+  if (!askCards().length) return toast("Нечего выгружать — ответа пока нет","warn");
+  const blob = new Blob([askMarkdown()], {type:"text/markdown;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "aurora-otvet-" + (THREAD ? THREAD.id + "-" : "") + rtime() + ".md";
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+  toast("Ответ выгружен в .md","ok");
+};
 
 // Модель, которая отвечает, — не деталь настройки: у основной и запасной разные скорость
 // и качество, и человек должен видеть, чей ответ читает. Здесь же — выбор модели вручную
@@ -3156,13 +3204,16 @@ async function openThread(id){
   const box = $("#askBody"); box.replaceChildren();
   // Свежий вопрос сверху — как в самой вкладке: последнее сказанное читают первым.
   d.turns.slice().reverse().forEach(t=>{
-    box.append(el("div",{class:"card",style:"padding:18px;margin-top:14px"},
+    const card = el("div",{class:"card",style:"padding:18px;margin-top:14px"},
       el("div",{style:"font-weight:700"}, t.q),
       el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, t.at || ""),
       el("div",{class:"ansbody",style:"margin-top:10px;white-space:pre-wrap",
-                html: mdLite(t.a)})));
+                html: mdLite(t.a)}));
+    card.dataset.q = t.q; card.dataset.a = t.a; card.dataset.at = t.at || "";
+    box.append(card);
   });
   drawThreadHint();
+  drawAskExport();
   renderAskHistory();
   $("#askText").focus();
 }
