@@ -10928,6 +10928,298 @@ def test_embed_prefilter_scale(tmp: Path):
     near_k = sum(1 for s in scores_sorted if abs(s[0] - kscore) < 1e-9)
     assert near_k <= 1, f"фикстура сломана: {near_k} векторов с одинаковой оценкой на границе топ-{limit}"
 
+
+@test
+def test_a_slow_backend_is_not_a_dead_one(tmp: Path):
+    """Молчание по сроку — не смерть, и того, кто только что ответил, оно не хоронит.
+
+    С живого контура: человек выбрал бэкенд №2, тот написал ответ, а следом Момус на
+    ТОЙ ЖЕ модели не уложился в срок — и в отчёте появилось «ни один бэкенд не ответил
+    осмысленно». Модель при этом работала: её ответ человек читал на экране. Пятнадцать
+    минут карантина следом отняли бы её и у остальных вопросов.
+
+    Различие простое: сервер, ответивший недавно, жив и просто думает дольше отпущенного.
+    Это лечится сроком (`AURORA_AGENT_REQUEST_TIMEOUT`), а не ожиданием.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    importlib.reload(A)
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_REQUEST_TIMEOUT": "300"})
+    answer = {"choices": [{"message": {"content": "ответ"}, "finish_reason": "stop"}],
+              "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    state = {"first": True}
+
+    def flaky(kind, b, payload, timeout):
+        if kind == "slots":
+            return (404, None, "нет /slots", 0.0)
+        if state["first"]:
+            state["first"] = False
+            return (200, answer, "", 0.5)
+        return (None, None, "TimeoutError: timed out", timeout)
+
+    A.DOWN.clear(); A.LAST_OK.clear()
+    ok = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                     transport=flaky, deadline=time.time() + 5, sleep=lambda s: None)
+    assert ok["ok"], ok["log"]
+    assert A.LAST_OK.get(1), "успешный ответ не отмечен — судить о свежести будет нечем"
+
+    slow = A.call_role(cfg, "qa", [{"role": "user", "content": "проверь"}],
+                       transport=flaky, deadline=time.time() + 3, sleep=lambda s: None)
+    assert not slow["ok"], "таймаут принят за ответ"
+    assert 1 not in A.DOWN, (
+        "бэкенд, ответивший секунду назад, посажен в карантин на 15 минут из-за одного "
+        "таймаута — следующий вопрос уйдёт мимо живой модели")
+    assert slow.get("timed_out"), "вызов не отличил молчание по сроку от отказа"
+    joined = " ".join(slow["log"])
+    assert "не уложился" in joined, f"таймаут назван чужим именем: {slow['log']}"
+    assert "REQUEST_TIMEOUT" in joined, \
+        f"человеку не назван рычаг — он пойдёт чинить связь: {slow['log']}"
+    assert "ни один бэкенд не ответил осмысленно" not in joined, \
+        "итог по-прежнему читается как «серверов нет»"
+
+    # Тот, от кого давно не было ответа, в карантин садится как раньше.
+    A.DOWN.clear(); A.LAST_OK.clear()
+    dead = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                       transport=lambda k, b, pl, to: (404, None, "нет /slots", 0.0)
+                       if k == "slots" else (None, None, "TimeoutError: timed out", to),
+                       deadline=time.time() + 3, sleep=lambda s: None)
+    assert not dead["ok"] and 1 in A.DOWN, \
+        "молчащего с самого начала перестали сажать в карантин — его будут спрашивать вечно"
+
+
+@test
+def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
+    """Момусу отпущено по цене ответа, а не по одной цифре из настройки.
+
+    Он читает тот же пак плюс сам ответ — работа того же порядка, промпт даже больше.
+    Модель, которой ответ дался за пять минут, в пять минут проверки не уложится никогда,
+    и предел на запрос это не обойти: дедлайна мало, запрос режется по `request_timeout`.
+    Поэтому проверка получает свой предел — щедрее, но с потолком: человек ждёт.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    cfg = {"request_timeout": 300}
+    assert R.momus_timeout(cfg, 0) == 300, "без замера ответа берём настройку как была"
+    assert R.momus_timeout(cfg, 40) == 300, "быстрый ответ не должен УРЕЗАТЬ проверку"
+    assert R.momus_timeout(cfg, 280) == 420, "медленный ответ не поднял предел проверки"
+    assert R.momus_timeout(cfg, 5000) == 600, "потолок не держит: человек ждёт ответа"
+
+    # и этот предел действительно доезжает до вызова
+    seen = {}
+
+    def fake_call(cfg, role, messages, **kw):
+        seen.update(kw); seen["role"] = role
+        return {"ok": False, "log": ["№2 m: не уложился в 420 с"], "timed_out": True}
+
+    mo = R.run_momus(cfg, "пак", "вопрос", "ответ", fake_call, answered_in=280)
+    assert seen["role"] == "qa", seen
+    assert seen.get("request_timeout") == 420, \
+        f"предел на запрос не передан — вызов снова обрежется по настройке: {seen}"
+    assert seen["deadline"] > time.time() + 400, "дедлайн остался коротким"
+    assert mo["timed_out"] and mo["given"] == 420, mo
+
+    # отчёт называет причину сроком, а не недоступностью
+    text = R.report_ask({"ok": True, "answer": "текст", "cards": ["К"], "total": 1,
+                         "model": "m", "backend": 2, "seconds": 534.3, "momus": mo},
+                        "вопрос", cfg)
+    assert "не успел" in text and "420" in text, text
+    assert "REQUEST_TIMEOUT" in text, "человеку не назван рычаг"
+    assert "не проверил ответ" not in text, \
+        "медленную проверку по-прежнему объявляют несостоявшейся без причины"
+
+
+@test
+def test_search_quality_refuses_instead_of_reporting_zero(tmp: Path):
+    """Индекс собран другой моделью — это отказ, а не «R@1 0.0».
+
+    `kb_embed.search` на чужой модели возвращает пустой список **молча**: так задумано,
+    чужие вектора сравнивать не с чем. Замер, не знающий об этом, честно посчитал бы
+    ноль найденных из двухсот и напечатал «R@1 0.0» — приговор базе за расхождение в
+    одной строке настроек. Ноль, полученный не измерением, опаснее отсутствия числа:
+    по нему пойдут чинить карточки, а чинить надо `AURORA_EMBED_MODEL`.
+    """
+    root = make_project(tmp)
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "embeddings.json").write_text(
+        json.dumps({"model": "e5-large", "dim": 2,
+                    "cards": {"Карточка": {"row": 0, "digest": "x"}}}),
+        encoding="utf-8")
+    env = {**os.environ, "AURORA_EMBED_MODEL": "bge-m3", "AURORA_TESTS_ISOLATED": "1"}
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "kb_search_quality.py")],
+                        cwd=str(root), capture_output=True, text=True, env=env)
+    assert cp.returncode == 1, f"молча посчитал на чужом индексе: {cp.stdout}"
+    said = cp.stdout + cp.stderr
+    assert "e5-large" in said and "bge-m3" in said, \
+        f"не назвал обе модели — человек не поймёт, что именно разошлось:\n{said}"
+    assert "R@1" not in cp.stdout, f"напечатал меру там, где мерить нечем:\n{cp.stdout}"
+
+    # А молодая база — не поломка: тезисов ещё не написали, мерить нечего, и красный шаг
+    # в маршруте «Починить базу» соврал бы про сломанное. Настройка сходится — rc 0.
+    (meta / "embeddings.json").write_text(
+        json.dumps({"model": "bge-m3", "dim": 2, "cards": {"Карточка": {"row": 0}}}),
+        encoding="utf-8")
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "kb_search_quality.py")],
+                        cwd=str(root), capture_output=True, text=True, env=env)
+    assert cp.returncode == 0, (
+        "молодая база объявлена поломкой: маршрут «Починить базу» покажет ошибку там, "
+        f"где просто нечего мерить\n{cp.stdout}{cp.stderr}")
+    assert "Мерить нечего" in cp.stdout, cp.stdout
+
+
+@test
+def test_search_quality_asks_with_meaning_not_with_the_title(tmp: Path):
+    """Вопрос — тезис из тела, а не заголовок, и не «Заготовка».
+
+    Заголовок и синонимы лежат в самом векторе (`kb_embed.card_texts`), поэтому вопрос
+    заголовком меряет совпадение строки с собой и всегда даёт красивое число. Мерить
+    надо связь короткой формулировки смысла с полной карточкой — то, что делает человек,
+    когда спрашивает базу своими словами. Заготовка смысла не несёт: спрашивать ею нечего.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    Q = importlib.import_module("kb_search_quality")
+
+    card = ("---\ntitle: Профиль абонента\nkind: knowledge\ndistilled: 2026-09-01\n---\n\n"
+            "# Профиль абонента\n\n"
+            "Набор параметров, определяющий доступные абоненту услуги и порядок их "
+            "тарификации в биллинге.\n\n## Связи\n")
+    got = Q.thesis(card)
+    assert got.startswith("Набор параметров"), f"взят не тезис, а {got!r}"
+    assert "title:" not in got and "#" not in got, f"в вопрос утекла шапка: {got!r}"
+
+    stub = ("---\nkind: knowledge\ndistilled: 2026-09-01\n---\n\n"
+            "Заготовка: карточка создана ссылкой, содержание не написано.\n")
+    assert Q.thesis(stub) == "", "заготовка ушла в вопрос — замер считал бы шум"
+
+
+@test
+def test_search_quality_names_everyone_it_counted_as_a_miss(tmp: Path):
+    """Список «не нашлись» обязан совпадать с R@5, а не с R@1.
+
+    Расхождение здесь — худший вид вранья: сводка показывает R@5 0.6, а разбираться
+    человеку не с кем, список пуст. Тогда меру перестают читать целиком.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    Q = importlib.import_module("kb_search_quality")
+
+    # выдача: своя карточка на 1-м, на 4-м, на 7-м и не найдена вовсе
+    plan = {"первая": 1, "четвёртая": 4, "седьмая": 7, "нету": 0}
+
+    def fake_search(question, cfg, model, limit=10):
+        pos = plan[question]
+        names = [f"чужая-{i}" for i in range(1, limit + 1)]
+        if pos:
+            names[pos - 1] = question
+        return [(n, round(1.0 - i * 0.01, 4)) for i, n in enumerate(names)]
+
+    old, Q.EMB.search = Q.EMB.search, fake_search
+    try:
+        res = Q.measure([(k, k) for k in plan], {}, "m", say=lambda *_: None)
+    finally:
+        Q.EMB.search = old
+
+    assert res["R@1"] == 0.25 and res["R@5"] == 0.5, res
+    missed = {name for name, _why in res["не нашлись"]}
+    assert missed == {"седьмая", "нету"}, \
+        f"список расходится с R@5: {missed}"
+    assert res["карточек"] == 4 and 0 < res["MRR"] < 1, res
+
+
+@test
+def test_golden_question_is_asked_without_its_own_answer(tmp: Path):
+    """Из эталона берём колонку вопроса, а не строку целиком.
+
+    `meta/golden_questions.md` — таблица `| # | Вопрос | Эталон | [[Карточка]] |`, и
+    рядом с вопросом лежит **готовый ответ**. Спросить базу строкой целиком значит
+    подсказать ей: эталон пересказывает тело карточки, попадание выходит само собой, и
+    замер показывает качество подсказки вместо качества поиска. Завышенная мера хуже
+    отсутствующей — на неё ссылаются, когда решают, можно ли базе доверять.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    Q = importlib.import_module("kb_search_quality")
+
+    gold = tmp / "golden.md"
+    gold.write_text(
+        "| # | Вопрос | Эталон (кратко) | Карточка-источник |\n"
+        "|---|---|---|---|\n"
+        "| 1 | Чем профиль отличается от тарифа? | Профиль задаёт набор услуг, тариф — "
+        "цену обращения к ним | [[Профиль-абонента]] |\n"
+        "- свободной строкой: где хранится история начислений [[Журнал-начислений]]\n",
+        encoding="utf-8")
+    old, Q.GOLDEN = Q.GOLDEN, str(gold)
+    try:
+        pairs = dict((c, q) for c, q in Q.golden_pairs())
+    finally:
+        Q.GOLDEN = old
+
+    assert set(pairs) == {"Профиль-абонента", "Журнал-начислений"}, pairs
+    q = pairs["Профиль-абонента"]
+    assert q == "Чем профиль отличается от тарифа?", f"взята не колонка вопроса: {q!r}"
+    assert "цену обращения" not in q, f"ответ утёк в вопрос — замер завышен: {q!r}"
+    assert "[[" not in q and not q.startswith("1"), q
+    assert pairs["Журнал-начислений"].endswith("начислений"), pairs
+
+
+@test
+def test_ask_export_takes_the_markdown_not_the_screen(tmp: Path):
+    """Выгрузка ответа берёт исходный markdown, а не текст с экрана.
+
+    Ответ читают не только в панели: его несут в задачу, в письмо, обратно в базу.
+    На экране markdown уже разобран в HTML — выгрузи `innerText`, и пропадут ссылки
+    `[[Карточка]]`, ради которых ответ и связан с базой. Поэтому исходник модели живёт
+    на самой карточке (`data-a`), и выгружается он.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="askExport"' in ui, "во вкладке «Спросить» нет кнопки выгрузки"
+    assert "function askMarkdown()" in ui and "askCards()" in ui, \
+        "нет сборки markdown из карточек разговора"
+    assert "item.dataset.a = body" in ui, \
+        "свежий ответ не сохраняет исходный markdown — выгружать будет нечего"
+    assert "card.dataset.a = t.a" in ui, \
+        "открытый разговор не сохраняет исходники: кнопка сработает только на свежем ответе"
+    block = ui[ui.index("function askMarkdown()"):ui.index('$("#askExport").onclick')]
+    assert "innerText" not in block and "textContent" not in block.replace(
+        '$("#askWho").textContent', ""), \
+        "выгрузка читает экран вместо исходника — ссылки [[…]] потеряются"
+    assert "meta/ask/" in block, \
+        "выгрузка не говорит, где лежит сам разговор: правки понесут в копию"
+
+    # кнопка появляется и исчезает вместе с содержимым, а не висит всегда
+    assert "function drawAskExport()" in ui
+    for place in ('drawThreadHint(); drawAskExport(); };',
+                  "  drawAskExport();"):
+        assert place in ui, f"кнопку не обновляют там, где меняются ответы: {place}"
+    assert 'text/markdown;charset=utf-8' in ui and 'aurora-otvet-' in ui, \
+        "файл выгрузки не помечен как markdown"
+
+
+@test
+def test_search_quality_wired_into_engine(tmp: Path):
+    """Замер зарегистрирован везде: реестр, манифест, скилл.
+
+    Скрипт, которого нет в `engine_manifest.txt`, остаётся в ките навсегда — этим уже
+    болел `kb_embed.py` (1.100.14). Команда, которой нет в `commands.txt`, не появится
+    в панели, а человек без терминала иначе её не запустит.
+    """
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "ops | ops:search-quality" in reg, "замера нет в реестре — в панели кнопки не будет"
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "scripts/kb_search_quality.py" in man, \
+        "замер не едет в проекты: останется только в ките"
+    skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
+    assert "ops:search-quality" in skill, "модель о замере не знает — сама не позовёт"
+    assert (SCRIPTS / "kb_search_quality.py").is_file()
+
+
 # ------------------------------------------------------------------- smoke-мета-тесты
 # Не являются инвариантами (имена *_smoke_* исключены из рекурсии subprocess).
 @test
