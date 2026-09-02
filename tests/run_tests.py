@@ -5774,6 +5774,164 @@ def test_double_brackets_before_a_url_are_not_a_card_link(tmp: Path):
 
 
 @test
+def test_a_clear_refusal_is_not_a_dead_provider(tmp: Path):
+    """Внятный отказ живого сервера не сажает его в пятнадцатиминутный карантин.
+
+    Карантин придуман против молчащего провайдера: не спрашивать мёртвого на каждом
+    источнике. Но под него попадал любой ответ не-200, включая те, что ожиданием не
+    лечатся:
+
+        400  запрос не по вкусу шлюза — правится запросом
+        401  ключ неверен или истёк    — правится ключом
+        404  нет такой модели          — правится настройкой
+
+    Сервер при этом жив и ответил за доли секунды. Пятнадцать минут карантина здесь не
+    помогают, а мешают: причина скрыта за строкой «не отвечал», и человек ищет проблему
+    в сети вместо настройки.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    importlib.reload(A)
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def refuse(code, text):
+        def transport(kind, b, payload, timeout):
+            if kind == "slots":
+                return (404, None, "нет /slots", 0.0)
+            return (code, None, text, 0.05)
+        return transport
+
+    for code, text in ((400, "Unrecognized request argument supplied: _slots"),
+                       (401, "Invalid authentication credentials"),
+                       (404, "The model does not exist")):
+        A.DOWN.clear()
+        r = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                        transport=refuse(code, text), deadline=time.time() + 5,
+                        sleep=lambda s: None)
+        assert not r["ok"], f"отказ {code} принят за успех"
+        assert 1 not in A.DOWN, (
+            f"HTTP {code} посадил живой шлюз в карантин на 15 минут — а он ответил за "
+            "0.05 с, и ожидание тут ничего не чинит")
+        joined = " ".join(r["log"])
+        assert str(code) in joined or text[:20] in joined, \
+            f"причина отказа не названа человеку: {r['log']}"
+
+    # А молчание — по-прежнему карантин: мёртвого не спрашивают на каждом источнике.
+    A.DOWN.clear()
+    dead = lambda kind, b, payload, timeout: (None, None, "Connection refused", 0.0)
+    A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=dead,
+                deadline=time.time() + 5, sleep=lambda s: None)
+    assert 1 in A.DOWN, "молчащий провайдер обязан попадать в карантин"
+
+
+@test
+def test_ping_probes_instead_of_reading_the_quarantine(tmp: Path):
+    """Проверка связи опрашивает шлюз, а не пересказывает отметку карантина.
+
+    Бэкенд, не ответивший однажды, помечается недоступным на пятнадцать минут: это верно
+    для рабочих вызовов — не спрашивать мёртвого на каждом источнике. Но `agent:ping`
+    наследовал ту же отметку и печатал «не отвечал, вернёмся через 865 с».
+
+    Это сообщение о **пропуске**, а не результат опроса: к шлюзу никто не обращался.
+    Человек видел «недоступен» у сервера, которым в ту же минуту пользовались другие
+    программы, и каждая следующая проверка повторяла ту же строку — потому что проверка
+    и была причиной, по которой отметку не снимали.
+
+    Проверка связи, показывающая кеш, бесполезна ровно тогда, когда нужна.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    importlib.reload(A)
+
+    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
+    body = src[src.index("def cmd_ping("):]
+    body = body[:body.index("\ndef ", 10)]
+    assert "DOWN.pop" in body, (
+        "cmd_ping не снимает карантин перед опросом — покажет метку вместо проверки")
+
+    # И по существу: помеченный бэкенд всё равно опрашивается.
+    A.DOWN[1] = time.time() + 900
+    asked = []
+
+    def transport(kind, b, payload, timeout):
+        if kind == "slots":
+            return (404, None, "нет /slots", 0.0)
+        asked.append(b["n"])
+        return (200, {"choices": [{"message": {"content": "готов"},
+                                   "finish_reason": "stop"}]}, "", 0.1)
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    A.DOWN[1] = time.time() + 900
+    r = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=transport,
+                    deadline=time.time() + 10, sleep=lambda s: None)
+    assert not asked and not r["ok"], \
+        "рабочий вызов обязан щадить помеченный бэкенд — иначе мёртвого спросят на каждом источнике"
+    A.DOWN.pop(1, None)
+    r2 = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=transport,
+                     deadline=time.time() + 10, sleep=lambda s: None)
+    assert asked == [1] and r2["ok"], f"после снятия метки опрос не состоялся: {r2['log']}"
+
+
+@test
+def test_gateway_gets_only_what_it_understands(tmp: Path):
+    """В шлюз уходит запрос по стандарту, без внутренних полей движка.
+
+    С живого контура: шлюз, которым успешно пользуются chatbox и opencode, у Авроры
+    числился недоступным. Модель существовала, ключ был верен, сервер отвечал за 0.08 с.
+    Ломался сам запрос: `default_transport` отдавал в HTTP **весь** payload, а в нём
+    лежат поля для внутреннего адаптера —
+
+        _slots      сколько процессов держать пулу (читается в adapter_slot)
+        guard       сторож исходящего для инструментов
+        role        роль вызова
+        tools_root  корень файлов проекта
+        mcp         настройка MCP-серверов
+        history     история разговора (в HTTP она уже слита в messages)
+
+    Строгий шлюз на неизвестное поле отвечает `400 Unrecognized request argument`, движок
+    объявлял бэкенд мёртвым на пятнадцать минут и показывал «не отвечал». Повтор без
+    `chat_template_kwargs` при 400 уже был — то есть про капризные шлюзы знали, — но
+    `_slots` не снимался никогда, и повтор падал так же.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    importlib.reload(A)
+
+    sent = {}
+
+    def fake_http(url, payload, key, timeout):
+        sent["url"], sent["payload"] = url, payload
+        return 200, {"choices": [{"message": {"content": "ок"}}]}, "", 0.01
+
+    real, A.http_json = A.http_json, fake_http
+    try:
+        A.default_transport("chat", {"url": "http://x/v1", "key": "k", "n": 1},
+                            {"model": "m", "messages": [{"role": "user", "content": "?"}],
+                             "max_tokens": 1, "chat_template_kwargs": {"enable_thinking": False},
+                             "_slots": 8, "role": "worker", "tools_root": "/tmp",
+                             "mcp": {}, "guard": {"ready": False},
+                             "history": [{"role": "user", "content": "было"}]},
+                            5.0)
+    finally:
+        A.http_json = real
+
+    got = set(sent["payload"])
+    internal = {"_slots", "role", "tools_root", "mcp", "guard", "history"}
+    leaked = sorted(got & internal)
+    assert not leaked, (
+        f"в шлюз ушли внутренние поля движка: {leaked}. Строгий шлюз отвечает на них "
+        "400 Unrecognized request argument, а движок объявляет его недоступным на 15 минут")
+    assert {"model", "messages"} <= got, f"из запроса пропало нужное: {sorted(got)}"
+    assert "max_tokens" in got, "max_tokens — стандартное поле, его снимать нельзя"
+
+
+@test
 def test_a_backend_with_a_free_slot_is_not_busy(tmp: Path):
     """Занят тот шлюз, у которого заняты ВСЕ слоты, а не хоть один.
 
