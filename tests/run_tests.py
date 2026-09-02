@@ -11035,6 +11035,58 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
 
 
 @test
+def test_probe_asks_the_same_settings_and_every_role_model(tmp: Path):
+    """Проверка связи читает настройку движком и спрашивает каждую модель кольца.
+
+    Две ошибки, обе с живого контура и обе — «своя копия вместо общего кода».
+
+    Копия чтения `.env` смотрела только в папку проекта, а движок складывает настройку
+    слоями (кит < проект < окружение) и бэкенды держит в файле **кита**. Проверка
+    печатала «бэкенды не настроены» там, где движок видел три.
+
+    И спрашивала она одну модель на шлюз, хотя у ролей они разные: отчёт называл
+    `deepseek-v4-flash` (роль qa), а проверка ходила к модели работника и говорила
+    «жив». «Шлюз доступен» без имени модели не значит ничего.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    P = importlib.import_module("agent_probe")
+    importlib.reload(P)
+
+    src = (KIT / "scripts/agent_probe.py").read_text(encoding="utf-8")
+    assert "AG.raw_config()" in src and "AG.parse_config" in src, \
+        "проверка снова читает настройку сама — разойдётся с движком"
+    assert "def read_env" not in src, "осталась своя копия чтения .env"
+
+    env = {"AURORA_AGENT_BACKEND_1_URL": "http://one/v1",
+           "AURORA_AGENT_BACKEND_1_KEY": "k",
+           "AURORA_AGENT_BACKEND_1_MODEL_WORKER": "рабочая",
+           "AURORA_AGENT_BACKEND_1_MODEL_QA": "судья",
+           "AURORA_AGENT_BACKEND_2_URL": "http://two/v1",
+           "AURORA_AGENT_BACKEND_2_MODEL": "общая"}
+    old_raw, A.raw_config = A.raw_config, lambda: env
+    try:
+        rows = P.backends()
+    finally:
+        A.raw_config = old_raw
+
+    got = [(r["n"], r["model"]) for r in rows]
+    assert (1, "рабочая") in got and (1, "судья") in got, \
+        f"спрошены не все модели шлюза — падение одной останется невидимым: {got}"
+    assert (2, "общая") in got, f"шлюз с одной моделью на всё потерян: {got}"
+    assert len([r for r in rows if r["n"] == 1]) == 2, \
+        f"модели шлюза №1 не разделены по строкам: {got}"
+    qa = next(r for r in rows if r["model"] == "судья")
+    assert "qa" in qa["roles"], qa
+    assert qa["key"] == "k" and qa["url"] == "http://one/v1", qa
+
+    # пустое имя модели в запрос не уходит: шлюз ответит «Missing model field», и живой
+    # контур будет объявлен сломанным — так и случилось до этой правки
+    assert all(r["model"] for r in rows), f"в проверку ушло пустое имя модели: {rows}"
+
+
+@test
 def test_search_quality_refuses_instead_of_reporting_zero(tmp: Path):
     """Индекс собран другой моделью — это отказ, а не «R@1 0.0».
 

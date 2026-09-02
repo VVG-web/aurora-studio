@@ -31,52 +31,45 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
 import urllib.request
 
-ENV_FILES = (".env.aurora.local", "aurora.env.local",
-             os.path.expanduser("~/.aurora/env"))
-KEY_NAMES = ("KEY", "TOKEN", "API_KEY")
-GLOBAL_KEYS = ("AURORA_API_KEY", "AURORA_AGENT_API_KEY", "OPENAI_API_KEY")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import agent_core as AG                                           # noqa: E402
 
 
-def read_env() -> dict:
-    """Настройки из .env-файла проекта плюс окружение. Значения не печатаем никогда."""
-    env = {}
-    for name in ENV_FILES:
-        try:
-            with open(name, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-        except OSError:
-            continue
-    for k, v in os.environ.items():
-        if k.startswith(("AURORA_", "OPENAI_")):
-            env.setdefault(k, v)
-    return env
+def backends() -> list:
+    """[{n, url, model, key}] — тем же чтением настроек, каким живёт сам движок.
 
-
-def backends(env: dict) -> list:
-    """[{n, url, model, key}] — по объявленным AURORA_AGENT_BACKEND_N_*."""
-    nums = sorted({int(m.group(1)) for k in env
-                   if (m := re.match(r"AURORA_AGENT_BACKEND_(\d+)_URL$", k))})
+    Своё чтение .env здесь уже было, и оно врало: движок складывает настройку слоями
+    (кит < проект < окружение) и бэкенды держит в файле **кита**, а копия смотрела
+    только в папку проекта — «бэкенды не настроены» там, где движок видел три. Два пути
+    к одной настройке расходятся всегда; остался один, общий с движком.
+    """
+    cfg = AG.parse_config(AG.raw_config())
     out = []
-    for n in nums:
-        p = f"AURORA_AGENT_BACKEND_{n}_"
-        url = (env.get(p + "URL") or "").rstrip("/")
-        if not url:
-            continue
-        key = next((env[p + s] for s in KEY_NAMES if env.get(p + s)), "")
-        if not key:
-            key = next((env[g] for g in GLOBAL_KEYS if env.get(g)), "")
-        out.append({"n": n, "url": url, "model": env.get(p + "MODEL") or "", "key": key})
+    for b in cfg["backends"]:
+        # Общей модели может не быть вовсе: контур, где у каждой роли своя. Движок в
+        # таком случае берёт ролевую (`role_model`), и проверка обязана спрашивать тем
+        # же именем — иначе она шлёт пустое поле и получает «Missing model field»,
+        # объявляя живой шлюз сломанным. Так и вышло на живом контуре.
+        # У ролей могут быть РАЗНЫЕ модели на одном шлюзе, и «бэкенд недоступен» тогда
+        # ничего не значит: планировщик ходит к одной, работник к другой, и упасть может
+        # любая. На живом контуре отчёт назвал `deepseek-v4-flash` — модель роли qa, — а
+        # проверка спрашивала работника и говорила «жив». Спрашиваем каждую.
+        models = []
+        for role in AG.ROLES:
+            m = AG.role_model(b, role)
+            if m and m not in [x["model"] for x in models]:
+                models.append({"model": m,
+                               "roles": [r for r in AG.ROLES if AG.role_model(b, r) == m]})
+        for spec in models or [{"model": b["model"], "roles": []}]:
+            out.append({"n": b["n"], "url": b["url"], "key": b["key"],
+                        "model": spec["model"], "roles": spec["roles"],
+                        "by_role": bool(spec["model"] and not b["model"])})
     return out
 
 
@@ -165,11 +158,11 @@ def main() -> int:
                     help="послойно: какой кусок запроса шлюз не принимает")
     a = ap.parse_args()
 
-    env = read_env()
-    bs = backends(env)
+    bs = backends()
     if not bs:
         print("Бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL.\n"
-              "Ищу настройки в " + ", ".join(ENV_FILES) + " и в окружении.", file=sys.stderr)
+              "Настройка читается слоями: .env.aurora.local кита, затем проекта, затем "
+              "окружение.", file=sys.stderr)
         return 1
 
     print(f"# Живая проверка связи — {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -185,7 +178,10 @@ def main() -> int:
                                   a.timeout, "/chat/completions")
         mark, kind, say = verdict(code, body, err)
         keyed = "ключ есть" if b["key"] else "ключа нет"
-        print(f"{mark} №{b['n']} {b['url']} · {b['model'] or '—'} · {dt:.2f} с · {keyed}")
+        roles = b.get("roles") or []
+        named = (b["model"] or "—") + (f" · роли: {', '.join(roles)}"
+                                       if b.get("by_role") and roles else "")
+        print(f"{mark} №{b['n']} {b['url']} · {named} · {dt:.2f} с · {keyed}")
         print(f"    {say}")
         if kind == "ок":
             alive += 1
@@ -214,7 +210,9 @@ def main() -> int:
                       + ("…" if len(got) > 12 else ""))
         print()
 
-    print(f"Живых сейчас: {alive} из {len(bs)}.")
+    print(f"Отвечают сейчас: {alive} из {len(bs)} "
+          "(шлюз считается по каждой своей модели отдельно: у ролей они могут "
+          "отличаться,\nи упасть может одна из них).")
     if alive < len(bs):
         print("\nОтвет «HTTP …» означает, что сервер жив и что-то сказал — это не «нет связи».\n"
               "Ключ и имя модели ожиданием не чинятся: `agent:ping` сажает такой шлюз в\n"
