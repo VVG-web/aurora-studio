@@ -16,6 +16,7 @@
 # --- проводник по базе знаний: его читает любой ассистент, открывший папку ---
 templates/meta/READING.md               => AuroraKnowledgeDB/README.md
 docs/knowledge-rules.md                 => .opencode/docs/knowledge-rules.md
+docs/накопление-знания.md               => .opencode/docs/накопление-знания.md
 docs/knowledge-rules-tldr.md            => .opencode/docs/knowledge-rules-tldr.md
 
 # --- скилл grill-me: его читает и планировщик панели, и ассистент в чате ---
@@ -46,6 +47,8 @@ scripts/kb_lint.py       => .opencode/scripts/kb_lint.py
 # только молча.
 scripts/kb_embed.py      => .opencode/scripts/kb_embed.py
 scripts/kb_search_quality.py => .opencode/scripts/kb_search_quality.py
+scripts/kb_translit.py   => .opencode/scripts/kb_translit.py
+scripts/kb_twins.py      => .opencode/scripts/kb_twins.py
 scripts/agent_probe.py   => .opencode/scripts/agent_probe.py
 scripts/make_kinds.py    => .opencode/scripts/make_kinds.py
 scripts/aurora_mcp.py    => .opencode/scripts/aurora_mcp.py

@@ -44,7 +44,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import KB_ROOT, body, frontmatter  # noqa: E402
+from aurora_common import KB_ROOT, body, frontmatter, is_placeholder  # noqa: E402
 
 META = os.path.join(KB_ROOT, "meta")
 VECTORS = os.path.join(META, "embeddings.bin")
@@ -74,6 +74,11 @@ def card_texts(root: str = KB_ROOT) -> dict:
             path = os.path.join(dirpath, f).replace("\\", "/")
             text = open(path, encoding="utf-8", errors="ignore").read()
             fm = frontmatter(text)
+            # Пустышка — занятое имя без знания. В индексе она вредна вдвойне: всплывает
+            # в выдаче как термин, у которого есть определение, и оттесняет карточку, где
+            # определение действительно написано. На живом проекте таких имён тысячи.
+            if is_placeholder(fm, text):
+                continue
             head = " · ".join(x for x in (
                 (fm.get("title") or f[:-3]).strip('"'),
                 (fm.get("summary") or "").strip('"'),

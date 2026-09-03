@@ -35,7 +35,8 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (SERVICE_STATUS, frontmatter, split_frontmatter, walk_md,  # noqa: E402
+from aurora_common import (SERVICE_STATUS, card_sources, frontmatter,  # noqa: E402
+                           split_frontmatter, walk_md,
                            with_fields)
 
 TODAY = date.today().isoformat()
@@ -94,6 +95,12 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set) 
     other = next(s for s in known if s[1].casefold() not in trust)
     return "unknown", (f"статус задачи {other[0]} — «{other[1]}» — не отнесён "
                        f"ни к доверенным, ни к черновым")
+
+
+# Сила класса. Нужна там, где источников у карточки несколько: берётся слабейший.
+# Порядок тот же, что в правилах базы: доказанное сильнее недоказанного, а одна черновая
+# задача перевешивает десять готовых.
+CLASS_RANK = {"unknown": 0, "draft": 1, "trusted": 2, "raw": 3}
 
 
 def wanted_status(cls: str) -> str:
@@ -161,8 +168,16 @@ def main() -> int:
             cls, why = "raw", (f"исправлено человеком: [[{fix}]] — первоисточник в Raw/, "
                                f"доверие по определению")
         else:
-            cls, why = source_class((fm.get("source") or "").strip().strip('"'),
-                                    table, statuses, trust, draft)
+            # Источников у карточки может быть несколько: она накапливает знание об
+            # одной сущности из разных артефактов. Класс берём **самый слабый** — по
+            # тому же правилу, по которому одна черновая задача перевешивает десять
+            # готовых. Иначе доказанный источник вытянул бы в знание всё, что к нему
+            # приписали.
+            srcs = card_sources(text) or [""]
+            judged = [source_class(s, table, statuses, trust, draft) for s in srcs]
+            cls, why = min(judged, key=lambda cw: CLASS_RANK.get(cw[0], 0))
+            if len(judged) > 1:
+                why += f" (слабейший из {len(judged)} источников)"
         counts[cls] = counts.get(cls, 0) + 1
         now = wanted_status(cls)
         if now == was:

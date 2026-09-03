@@ -34,8 +34,9 @@ import re
 import sys
 from datetime import date
 
-from aurora_common import (KB_ROOT, card_filename, frontmatter, split_frontmatter,
-                           walk_md)
+from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
+                           card_sources, frontmatter, sources_block,
+                           split_frontmatter, walk_md)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 TODAY = date.today().isoformat()
@@ -153,6 +154,19 @@ def sources() -> list:
                     continue
                 out.append((group, path, size))
     return out
+
+
+# Источник, из которого база узнаёт термины: глоссарий, список сокращений, справочник
+# определений. Узнаём по имени файла и по пути — заголовок внутри читать дорого, а
+# названия таких страниц в источниках стандартны.
+TERMS_SOURCE = re.compile(
+    r"(?i)глоссар|glossary|термин|определени|сокращен|аббревиатур|abbrev|"
+    r"обозначени|словар|definitions|\bspr[-_ ]?\d")
+
+
+def is_terminology(path: str) -> bool:
+    """Источник с терминами — он идёт в разбор раньше всех, кто на них ссылается."""
+    return bool(TERMS_SOURCE.search(path.replace("\\", "/")))
 
 
 def state(manifest: dict, path: str, size: int) -> tuple:
@@ -372,6 +386,116 @@ QUOTES_MARK = "## Источник (перенесено дословно)"
 FOOTER_MARK = "## История изменений"
 
 
+def find_card(name: str, root: str = "") -> str:
+    """Путь карточки по имени или синониму. Пусто — такой карточки нет."""
+    base = os.path.join(root, KB_ROOT) if root else KB_ROOT
+    want = card_filename(name)
+    for path in walk_md(base, skip_service=True, skip_archive=True):
+        stem = os.path.basename(path)[:-3]
+        if stem == name or stem == want:
+            return path
+    for path in walk_md(base, skip_service=True, skip_archive=True):
+        text = open(path, encoding="utf-8", errors="ignore").read(4000)
+        if name in card_aliases(text):
+            return path
+    return ""
+
+
+def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -> int:
+    """Дописать знание нового источника в существующую карточку. → код возврата.
+
+    Это и есть накопление, ради которого карточка называется сущностью, а не пересказом
+    документа. Про один объект говорят пять артефактов — все пять ложатся сюда, каждый
+    своим блоком под общим разделом «Источник (перенесено дословно)». Блок подписан
+    источником: разнести обратно можно механически, и видно, откуда что.
+
+    Что происходит с шапкой: `sources` пополняется, `source_synced` обновляется,
+    `distilled` снимается. Последнее обязательно — тезис написан по прежнему тексту, а
+    знания стало больше; `agent:distill` перепишет его по всему накопленному, назвав
+    расхождения между источниками, если они есть.
+
+    Повторное дополнение тем же источником **заменяет свой блок**, а не добавляет второй:
+    источник правят и разбирают снова, и удвоение здесь означало бы, что карточка растёт
+    от собственных прогонов.
+    """
+    head, _sep, rest = (old_text.partition("\n---\n") if old_text.startswith("---")
+                        else ("", "", old_text))
+    mark = f"### {source}"
+    block = f"{mark}\n\n{body.strip()}\n"
+
+    if QUOTES_MARK not in rest:
+        # У карточки нет раздела с дословным текстом (её писал человек). Заводим раздел,
+        # не трогая написанного: его текст остаётся первым, наш ложится под него.
+        before, tail = rest.rstrip(), ""
+        if FOOTER_MARK in rest:
+            before, _m, tail = rest.partition(FOOTER_MARK)
+            before, tail = before.rstrip(), FOOTER_MARK + tail
+        new_rest = (before + "\n\n" + QUOTES_MARK + "\n\n" + block
+                    + ("\n" + tail.strip() + "\n" if tail.strip() else ""))
+    else:
+        before, _m, after = rest.partition(QUOTES_MARK)
+        tail = ""
+        if FOOTER_MARK in after:
+            after, _m2, tail = after.partition(FOOTER_MARK)
+            tail = FOOTER_MARK + tail
+        blocks = split_source_blocks(after)
+        blocks[source] = body.strip()
+        quoted = "\n\n".join(f"### {s}\n\n{b}" for s, b in blocks.items())
+        new_rest = (before.rstrip() + "\n\n" + QUOTES_MARK + "\n\n" + quoted + "\n"
+                    + ("\n" + tail.strip() + "\n" if tail.strip() else ""))
+
+    srcs = card_sources(old_text)
+    new_head = head
+    if source not in srcs:
+        srcs = srcs + [source]
+    block_txt = sources_block(srcs).rstrip("\n")
+    if re.search(r"^sources:", new_head, re.M):
+        new_head = re.sub(r"^sources:(?:\s*\[.*\])?(?:\n\s+-.*)*$", block_txt,
+                          new_head, count=1, flags=re.M)
+    else:
+        new_head = re.sub(r"^source:.*$", block_txt, new_head, count=1, flags=re.M) \
+            if re.search(r"^source:", new_head, re.M) else new_head.rstrip("\n") + "\n" + block_txt
+    for key, val in (("source_synced", TODAY), ("updated", TODAY)):
+        new_head = (re.sub(rf"^{key}:.*$", f"{key}: {val}", new_head, flags=re.M)
+                    if re.search(rf"^{key}:", new_head, re.M)
+                    else new_head.rstrip("\n") + f"\n{key}: {val}")
+    new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+
+    print(f"{'✅ дописано' if apply else '(dry-run) дописать'}: {path} · "
+          f"источник {source} · {len(body)} симв. · источников теперь {len(srcs)}")
+    if not apply:
+        print("Повторите с --apply, чтобы записать.")
+        return 0
+    # `head` уже содержит открывающее `---`: так его отдаёт partition. Дописать своё
+    # значило бы получить `------` в первой строке — шапку после этого не читает никто.
+    open(path, "w", encoding="utf-8").write(
+        (new_head + "\n---\n\n" if head else "") + new_rest.lstrip("\n"))
+    return 0
+
+
+def split_source_blocks(quoted: str) -> dict:
+    """Раздел дословного текста → {источник: текст}, в порядке появления.
+
+    Карточка, собранная до накопления, блоков не имеет — весь её текст безымянный. Такой
+    достаётся ключ `(первый разбор)`: терять его нельзя, а приписать конкретному источнику
+    уже не получится — тогда его никто не подписывал.
+    """
+    out: dict = {}
+    marks = list(re.finditer(r"^### (.+)$", quoted, re.M))
+    if not marks:
+        body = quoted.strip()
+        if body:
+            out["(первый разбор)"] = body
+        return out
+    head = quoted[:marks[0].start()].strip()
+    if head:
+        out["(первый разбор)"] = head
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(quoted)
+        out[m.group(1).strip()] = quoted[m.end():end].strip()
+    return out
+
+
 def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) -> int:
     """Заменить в готовой карточке перенесённый текст на свежий. → код возврата.
 
@@ -404,7 +528,8 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) 
 
 
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
-               summary: str = "", paras: str = "", root: str = "") -> int:
+               summary: str = "", paras: str = "", root: str = "",
+               append_to: str = "") -> int:
     """Собрать карточку из указанных секций источника: текст переносится дословно.
 
     `root` — откуда читать файл, когда текущая папка процесса не корень проекта (так
@@ -459,6 +584,18 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # приходят каждая со своим названием, и без него текст теряет структуру источника.
     body = ("\n\n".join(b for _t, b in picked) if paras
             else "\n\n".join(f"## {t}\n\n{b}" if len(picked) > 1 else b for t, b in picked))
+    # Дополнение существующей карточки: знание о сущности копится в ней, а не расходится
+    # по новым именам. Карточку ищем по имени — раздел у неё уже свой.
+    if append_to:
+        target = find_card(append_to, root)
+        if not target:
+            print(f"build_plan: карточки «{append_to}» нет — дописывать некуда.\n"
+                  "Заведите её обычным разбором (--card) либо проверьте имя.",
+                  file=sys.stderr)
+            return 1
+        old_text = open(target, encoding="utf-8", errors="ignore").read()
+        return append_card(target, old_text, body, source, apply)
+
     safe = card_filename(title)
     path = os.path.join(KB_ROOT, into, safe + ".md")
     if os.path.exists(path):
@@ -466,8 +603,8 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         # источник правят и разбирают снова. Отказывать здесь значит ронять разбор на
         # каждом обновлении страницы. Чужое имя из другого источника — другое дело.
         old_text = open(path, encoding="utf-8", errors="ignore").read()
-        was = (frontmatter(old_text).get("source") or "").strip().strip('"')
-        if was == source:
+        was = card_sources(old_text)
+        if source in was:
             # Тот же источник — это повторный проход. Раньше он молча ничего не делал, и
             # изменившаяся страница Confluence в базу не попадала никогда: карточка есть,
             # значит «уже собрана». Теперь заменяем перенесённый текст на свежий, а всё
@@ -475,9 +612,12 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             # `distilled` снимаем: тезис написан по прежнему тексту и устарел. Его
             # перепишет `agent:distill`, сохранив прежний в истории карточки.
             return refresh_card(path, old_text, body, source, apply)
-        print(f"build_plan: карточка уже есть — {path}\n"
-              f"   и собрана из другого источника: {was or '—'}\n"
-              "Имя должно быть уникальным: допишите уточнение или дополните существующую.",
+        print(f"build_plan: карточка «{safe}» уже есть и собрана из другого источника: "
+              f"{', '.join(was) or '—'}\n"
+              "Если это ТА ЖЕ сущность — допишите знание в неё: "
+              f"--append «{safe}» вместо --card. Знание о сущности копится в одной "
+              "карточке.\nЕсли сущность другая — дайте карточке другое имя, "
+              "по которому её отличат.",
               file=sys.stderr)
         return 1
     # `built: machine` — метка машинной нарезки. Текст перенесён из источника дословно,
@@ -491,8 +631,13 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     title, codes = split_doc_code(title)
     head_summary = f'summary: "{summary.strip()}"\n' if summary.strip() else ""
     codes_list = ("\n" + "\n".join(f'  - "{c}"' for c in codes)) if codes else " []"
+    # Источники списком с самого рождения карточки. Одно поле `source:` держало ровно
+    # один документ, а карточка — сущность: про один объект говорят несколько артефактов,
+    # и все они в неё накапливаются. С одним полем после первого же дополнения оно начнёт
+    # называть один источник из пяти.
     card = (f'---\ntitle: "{title}"\naliases:{codes_list}\nstatus: draft\n'
-            f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}source: "{source}"\n'
+            f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}'
+            f'{sources_block([source])}'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
             f"built: machine\nrelated: []\n---\n\n# {title}\n\n{body}\n")
     print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
@@ -506,16 +651,20 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     return 0
 
 
-def card_sources() -> set:
-    """Пути источников, на которые ссылается хоть одна карточка базы."""
+def sources_in_use() -> set:
+    """Пути источников, на которые ссылается хоть одна карточка базы.
+
+    Имя нарочно не `card_sources`: так зовётся чтение источников ОДНОЙ карточки в
+    `aurora_common`. Два разных смысла под одним именем уже сталкивались — локальная
+    функция молча перекрывала импорт, и разбор падал на живом прогоне.
+    """
     out = set()
     for path in walk_md(KB_ROOT, skip_service=True):
         try:
-            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+            head = open(path, encoding="utf-8", errors="ignore").read(4000)
         except Exception:  # noqa: BLE001
             continue
-        src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
-        if src:
+        for src in card_sources(head):
             out.add(src.split("#")[0].strip())
     return out
 
@@ -532,12 +681,15 @@ def card_counts() -> dict:
     out: dict = {}
     for path in walk_md(KB_ROOT, skip_service=True):
         try:
-            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+            head = open(path, encoding="utf-8", errors="ignore").read(4000)
         except Exception:  # noqa: BLE001
             continue
-        src = (fm.get("source") or "").strip().strip('"').replace("\\", "/").split("#")[0].strip()
-        if src:
-            out[src] = out.get(src, 0) + 1
+        # Карточка накапливает знание из нескольких источников, и каждый из них вправе
+        # считать её своей: «сколько карточек дал документ» — про вклад, а не про
+        # владение. Иначе накопленная карточка исчезнет из счёта всех, кроме первого.
+        for src in card_sources(head):
+            key = src.split("#")[0].strip()
+            out[key] = out.get(key, 0) + 1
     return out
 
 
@@ -578,7 +730,7 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     честно не порождают новых карточек. Поэтому сверяемся не со счётчиком в манифесте, а с
     базой: есть ли хоть одна карточка с таким `source`.
     """
-    known = card_sources()
+    known = sources_in_use()
     victims = []
     for path in sorted(manifest.get("sources") or {}):
         if group and not path.startswith(group):
@@ -714,6 +866,10 @@ def main() -> int:
                     help="сколько текста секции показывать (агенту нужно больше человека)")
     ap.add_argument("--card", metavar="TITLE",
                     help="собрать карточку из секций источника (--from, --sections)")
+    ap.add_argument("--append", metavar="КАРТОЧКА", default="",
+                    help="дописать секции источника в существующую карточку: знание об "
+                         "одной сущности копится в одной карточке, а не расходится по "
+                         "новым именам")
     ap.add_argument("--source", metavar="FILE", dest="src", help="источник для --card")
     ap.add_argument("--summary", metavar="ФРАЗА", default="",
                     help="одна фраза о сути карточки: по ней идёт выборка и строится "
@@ -748,6 +904,12 @@ def main() -> int:
 
     if a.slice:
         return slice_report(a.slice, a.slice_chars)
+    if a.append:
+        if not a.src:
+            print("build_plan: для --append нужен --source <источник>", file=sys.stderr)
+            return 1
+        return build_card("", a.src, a.sections, a.to, a.apply, a.summary,
+                          a.paras, append_to=a.append)
     if a.card:
         if not a.src:
             print("build_plan: для --card нужен --source <источник>", file=sys.stderr)
@@ -789,9 +951,19 @@ def main() -> int:
         print("\n✅ Все источники обработаны. Изменится источник — он вернётся в план сам.")
         return 0
 
-    # партиции: порядок групп из build.md, внутри — от мелких к крупным
+    # Партиции: порядок групп из build.md, внутри — сначала терминология, потом от
+    # мелких к крупным.
+    #
+    # Терминология идёт первой не для красоты. Модель, разбирающая источник, видит в нём
+    # незнакомое сокращение и **придумывает** правдоподобную расшифровку — промпт требует
+    # определения, а сказать «не знаю» ей никто не разрешал. На живом проекте так родились
+    # два выдуманных значения одной аббревиатуры, разошедшиеся по восьми карточкам.
+    # Лечится это тем, что расшифровки подаются в промпт (`agent_runner.with_terms`), —
+    # но подать можно только то, что уже разобрано. Значит словари и справочники терминов
+    # обязаны попасть в базу раньше всех, кто на них ссылается.
     order = {g: i for i, (g, _) in enumerate(GROUPS)}
-    todo.sort(key=lambda r: (order.get(r[0], 99), r[2], r[1]))
+    todo.sort(key=lambda r: (order.get(r[0], 99), 0 if is_terminology(r[1]) else 1,
+                             r[2], r[1]))
     partitions, cur, used = [], [], 0
     for r in todo:
         if cur and (used + r[2] > a.budget or len(cur) >= a.max_files):

@@ -121,6 +121,17 @@ def card(root: Path, rel: str, body: str = "", **fm) -> Path:
     return p
 
 
+def card_srcs(text: str) -> list:
+    """Источники карточки — тем же чтением, каким живёт движок.
+
+    Проверять провенанс строкой `source: "..."` нельзя: запись у него менялась (одно поле
+    → список), и тест ловил бы формат вместо смысла. Читаем так же, как читает движок.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    return importlib.import_module("aurora_common").card_sources(text)
+
+
 def count_cards(root: Path) -> int:
     return len(list((root / "AuroraKnowledgeDB").rglob("*.md")))
 
@@ -408,8 +419,8 @@ def test_remap_repoints_sources_after_mirror_move(tmp: Path):
 
     cp = run("kb_remap.py", "--apply", cwd=root)
     moved = (root / "AuroraKnowledgeDB/Concepts/Знание.md").read_text(encoding="utf-8")
-    assert 'source: "Sources/Confluence/Новый/Путь/Страница.md"' in moved, \
-        f"source не перенацелен:\n{moved}"
+    assert "Sources/Confluence/Новый/Путь/Страница.md" in card_srcs(moved), \
+        f"источник не перенацелен:\n{moved}"
     orphan = (root / "AuroraKnowledgeDB/Concepts/Осиротевшее.md").read_text(encoding="utf-8")
     assert "Ушедшая.md" in orphan, "источник исчезнувшей страницы не должен подменяться наугад"
     assert "не сопоставлено: 1" in cp.stdout, f"пропавшая страница не попала в отчёт:\n{cp.stdout}"
@@ -1097,7 +1108,8 @@ def test_build_slices_source_and_assembles_card(tmp: Path):
     made = root / "AuroraKnowledgeDB/Processes/Алгоритм-приёма.md"
     assert made.is_file(), "имя файла собрано не по правилу build.md"
     text = made.read_text(encoding="utf-8")
-    assert "type: process" in text and 'source: "Sources/Confluence/Страница.md"' in text, text[:300]
+    assert "type: process" in text, text[:300]
+    assert card_srcs(text) == ["Sources/Confluence/Страница.md"], text[:300]
     assert "поля запроса" in text and "шаг за шагом" in text, "тело секций не перенесено"
     assert "версии страницы" not in text, "перенесена секция, которую не просили"
 
@@ -1585,8 +1597,14 @@ def test_no_private_terms_in_tracked_files(tmp: Path):
              if l.strip() and not l.startswith("#")]
     if not terms:
         return
+    # Отслеживаемые ПЛЮС ещё не добавленные, но и не игнорируемые. Новый файл до первого
+    # `git add` проверкой не виден — и уезжает в коммит с внутренними названиями внутри.
+    # Так и вышло: `kb_translit.py` прошёл прогон зелёным, а хук отклонил push.
     tracked = subprocess.run(["git", "ls-files"], cwd=str(KIT),
                              capture_output=True, text=True).stdout.split()
+    fresh = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
+                           cwd=str(KIT), capture_output=True, text=True).stdout.split()
+    tracked = list(dict.fromkeys(tracked + fresh))
     rx = term_regex(terms)
     hits = []
     for rel in tracked:
@@ -1828,7 +1846,7 @@ def test_schema_version_migrates_by_chain(tmp: Path):
     legacy = (root / "AuroraKnowledgeDB/Глоссарий" if False else
               root / "AuroraKnowledgeDB/Glossary/Легаси.md").read_text(encoding="utf-8")
     assert "status: imported" in legacy and "type: glossary" in legacy, "ступень v2 не отработала"
-    assert "schema_version: 4" in legacy, "версия схемы не проставлена"
+    assert "schema_version: 6" in legacy, "версия схемы не проставлена"
     assert "trust:" not in legacy, "поле trust осталось после миграции"
     old = (root / "AuroraKnowledgeDB/Systems/Старая.md").read_text(encoding="utf-8")
     assert "audience" not in old and "status: verified" in old, "ступень v3 не отработала"
@@ -2313,16 +2331,27 @@ def test_card_kind_decides_who_may_rewrite_the_body(tmp: Path):
     import importlib
     K = importlib.import_module("kb_kind")
 
-    assert K.guess("AuroraKnowledgeDB/Concepts/Договор.md",
-                   {"source": '"Raw/contract/ГК-2026.md"'}, "текст")[0] == "document"
-    assert K.guess("AuroraKnowledgeDB/Glossary/Накладная.md",
-                   {"source": '"Sources/Confluence/x.md"'}, "определение")[0] == "dictionary"
+    doc = K.guess("AuroraKnowledgeDB/Concepts/Договор.md", {}, "текст",
+                  ["Raw/contract/ГК-2026.md"])
+    assert doc[0] == "document", f"нормативный текст — не документ: {doc}"
+    gloss = K.guess("AuroraKnowledgeDB/Glossary/Накладная.md", {}, "определение",
+                    ["Sources/Confluence/x.md"])
+    assert gloss[0] == "dictionary", f"раздел Glossary — это именование: {gloss}"
     table = "| код | имя |\n|---|---|\n| 1 | а |\n| 2 | б |\n| 3 | в |\n"
-    assert K.guess("AuroraKnowledgeDB/Concepts/Коды.md",
-                   {"source": '"Sources/Confluence/x.md"'}, table)[0] == "dictionary"
-    assert K.guess("AuroraKnowledgeDB/Processes/Расчёт.md",
-                   {"source": '"Sources/Confluence/x.md"'},
-                   "Абзац.\nВторой.\nТретий.\nЧетвёртый.")[0] == "knowledge"
+    codes = K.guess("AuroraKnowledgeDB/Concepts/Коды.md", {}, table,
+                    ["Sources/Confluence/x.md"])
+    assert codes[0] == "dictionary", f"таблица значений — справочник: {codes}"
+    know = K.guess("AuroraKnowledgeDB/Processes/Расчёт.md", {},
+                   "Абзац.\nВторой.\nТретий.\nЧетвёртый.", ["Sources/Confluence/x.md"])
+    assert know[0] == "knowledge", f"пересказ страницы — знание: {know}"
+
+    # Накопленная карточка документом уже не является: текст нормативной бумаги ценен
+    # дословно, а карточка, вобравшая ещё четыре артефакта, — это знание о сущности,
+    # и переписывать его тезисом можно. Иначе `agent:distill` обошёл бы её стороной.
+    grown = K.guess("AuroraKnowledgeDB/Concepts/Договор.md", {}, "текст",
+                    ["Raw/contract/ГК-2026.md", "Sources/Confluence/x.md"])
+    assert grown[0] != "document", \
+        f"карточка из пяти источников осталась «документом» — тезис ей не напишут: {grown}"
 
     root = make_project(tmp)
     (root / "AuroraKnowledgeDB/Concepts/Своё.md").write_text(
@@ -2874,7 +2903,7 @@ def test_planner_gives_structure_to_a_shapeless_source(tmp: Path):
     assert body.count("Абзац 1. Правило номер 1") == 8, "текст не перенесён дословно"
     assert "Абзац 5." not in body, "границы не соблюдены — куски перемешались"
     assert "status: draft" in body, "карточка родилась с присвоенным доверием"
-    assert "source: \"Raw/project/Расшифровка.md\"" in body, "потерян провенанс"
+    assert "Raw/project/Расшифровка.md" in card_srcs(body), "потерян провенанс"
     # Намерение проверки — «планировщику ушла ОПИСЬ, а не текст», и мерить его длиной
     # промпта нельзя: правила в шаблоне растут, и порог начинает ловить не то. Опись
     # показывает первые слова абзаца, поэтому целого абзаца в промпте быть не должно.
@@ -5082,8 +5111,8 @@ def test_correction_is_a_layer_not_a_one_time_edit(tmp: Path):
     assert "Статусов пять" in after, "исправление не доехало до карточки"
     assert "У заявки четыре статуса." in after, "исправление затёрло тело карточки"
     assert 'corrected_by: "[[' in after, "карточка не помнит, чем исправлена"
-    assert "source: \"Sources/Confluence/Заявки.md\"" in after, \
-        "source подменён: по нему работает sync:audit, и зеркало начнёт сыпать находками"
+    assert "Sources/Confluence/Заявки.md" in card_srcs(after), \
+        "источник подменён: по нему работает sync:audit, и зеркало начнёт сыпать находками"
     assert "# Исправление:" not in after, \
         "заголовок исправления уехал в карточку — второй H1 читается как другой документ"
 
@@ -9600,7 +9629,9 @@ def test_repair_frees_alias_taken_twice(tmp: Path):
     stub = run("kb_fix.py", "--stubs", "--apply", "--allow-dirty", cwd=root)
     assert "Заготовки под ссылки: 2" in stub.stdout, stub.stdout[:600]
     made = (root / "AuroraKnowledgeDB/Glossary/УТС.md").read_text(encoding="utf-8")
-    assert "status: draft" in made and "заготовка" in made, made
+    # Пустышка рождается со своим статусом: из поиска и контекста она выведена сразу,
+    # а не после того, как кто-то вспомнит про метку в тегах.
+    assert "status: placeholder" in made and "заготовка" in made, made
     assert "[[Процесс]]" in made, "в заготовке не сказано, кто её ждёт"
     assert run("kb_lint.py", cwd=root).returncode == 0 or True
 
@@ -9783,11 +9814,11 @@ def test_remap_jira_moves_sources_to_issue_keys(tmp: Path):
     dry = run("kb_remap.py", "--mirror", "Sources/JIRA", cwd=root)
     assert "`US-3.1.1.md` → `PRJ-327.md`" in dry.stdout, dry.stdout[:600]
     assert "Ссылки в никуда (1)" in dry.stdout, "ссылка на несуществующий файл не отмечена"
-    assert "source: Sources/JIRA/US-3.1.1.md" in card.read_text(encoding="utf-8"), \
+    assert "Sources/JIRA/US-3.1.1.md" in card_srcs(card.read_text(encoding="utf-8")), \
         "dry-run не должен писать в карточки"
 
     run("kb_remap.py", "--mirror", "Sources/JIRA", "--apply", cwd=root)
-    assert "source: Sources/JIRA/PRJ-327.md" in card.read_text(encoding="utf-8"), \
+    assert "Sources/JIRA/PRJ-327.md" in card_srcs(card.read_text(encoding="utf-8")), \
         "ссылка не перенацелена на ключ задачи"
 
     sys.path.insert(0, str(KIT / "scripts"))
@@ -11087,6 +11118,669 @@ def test_probe_asks_the_same_settings_and_every_role_model(tmp: Path):
 
 
 @test
+def test_a_placeholder_is_not_an_answer(tmp: Path):
+    """Пустышка выведена из выдачи одним правилом и видна отдельной картой.
+
+    Карточка, заведённая под ссылку, знания не несёт. Раньше её признаком была метка в
+    тегах, а читали метку пять скриптов пятью разными выражениями — и каждое новое место
+    про пустышки забывало. Они уходили в семантический индекс и всплывали в поиске как
+    термины, у которых есть определение, оттесняя карточки, где определение написано.
+    На живом проекте таких имён тысячи.
+
+    Признак теперь один — `status: placeholder`, и решает его одна функция.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    E = importlib.import_module("kb_embed")
+    importlib.reload(E)
+
+    assert AC.PLACEHOLDER in AC.STATUSES, "статус не объявлен — линтер сочтёт его чужим"
+    assert AC.is_placeholder({"status": "placeholder"}, ""), "статус не читается"
+    assert AC.is_placeholder({"tags": "[заготовка]"}, ""), \
+        "старая метка перестала читаться — базы прошлых версий ослепнут"
+    assert AC.is_placeholder({}, "_Заготовка: знания пока нет._"), "старое тело не читается"
+    assert not AC.is_placeholder({"status": "knowledge"}, "Определение написано."), \
+        "знание принято за пустышку"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Полная.md", status="knowledge",
+         body="Профиль обслуживания — набор параметров, определяющий доступные услуги.")
+    card(root, "Concepts/Пустая.md", status="placeholder", tags="[заготовка]",
+         body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._")
+
+    # из семантического индекса пустышка не попадает вовсе
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        texts = E.card_texts()
+    finally:
+        os.chdir(cwd)
+    assert "Полная" in texts and "Пустая" not in texts, \
+        f"пустышка ушла в индекс и будет всплывать в поиске: {sorted(texts)}"
+
+    # и получает свою карту, отдельную от тематических
+    run("kb_moc.py", "--apply", "--allow-dirty", cwd=root)
+    holes = root / "AuroraKnowledgeDB" / "MOC" / "Пустышки.md"
+    assert holes.is_file(), "нет карты пустышек — увидеть их разом негде"
+    body = holes.read_text(encoding="utf-8")
+    assert "Пустая" in body and "Полная" not in body, body
+    for other in (root / "AuroraKnowledgeDB" / "MOC").glob("*.md"):
+        if other.name != "Пустышки.md":
+            assert "[[Пустая" not in other.read_text(encoding="utf-8"), \
+                f"пустышка попала в тематическую карту {other.name}"
+
+
+@test
+def test_a_filled_placeholder_stops_being_one(tmp: Path):
+    """Появилось определение — отметка снимается, карточка возвращается в выдачу.
+
+    Определение приходит тремя путями: его пишет человек, приносит `agent:distill` из
+    источника или добавляет разбор. Ни один не обязан помнить про статус. Не снимай
+    отметку по самому тексту — карточка с готовым определением осталась бы вне поиска, и
+    база молчала бы о том, что в ней написано.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Наполненная.md", status="placeholder", tags="[заготовка]",
+         body="Профиль обслуживания абонента — набор параметров, определяющий доступные "
+              "абоненту услуги и порядок их тарификации. Назначается при заключении "
+              "договора, меняется заявкой.\n\n## Упоминается в\n\n- [[Расчёт]]")
+    card(root, "Concepts/Так-и-пустая.md", status="placeholder", tags="[заготовка]",
+         body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n\n"
+              "## Упоминается в\n\n- [[Расчёт]]")
+
+    run("kb_fix.py", "--frontmatter", "--apply", "--allow-dirty", cwd=root)
+    filled = (root / "AuroraKnowledgeDB/Concepts/Наполненная.md").read_text(encoding="utf-8")
+    empty = (root / "AuroraKnowledgeDB/Concepts/Так-и-пустая.md").read_text(encoding="utf-8")
+    assert "status: draft" in filled, \
+        f"наполненная карточка осталась пустышкой и вне поиска:\n{filled[:300]}"
+    assert "status: placeholder" in empty, \
+        "с настоящей пустышки сняли отметку — она вернётся в выдачу пустой"
+
+
+@test
+def test_the_accumulation_rule_is_written_down(tmp: Path):
+    """Правило «карточка — сущность» записано и доезжает до проектов.
+
+    Это главное правило зеттелькастена, на котором стоит вся схема, и **самый большой
+    открытый долг движка**: разбор идёт по оси «документ → карточки» и базы не видит.
+    На живом проекте это дало 493 группы дублей — треть базы повторяет саму себя.
+
+    Требование живёт в трёх местах, и каждое нужно: правило — в правилах базы, разрыв
+    между правилом и реализацией — в отдельном документе, краткая сводка — в PROJECT.md,
+    который читает ассистент. Проверка держит их на месте: незаписанное требование
+    исчезает вместе с тем, кто его помнил, а инструменты вокруг дублей выглядят решением
+    задачи, хотя лечат симптом.
+    """
+    rules = (KIT / "docs/knowledge-rules.md").read_text(encoding="utf-8")
+    assert "Карточка — сущность" in rules, \
+        "правило накопления пропало из правил базы"
+    for must in ("накапливает", "выносится в свою карточку", "kb:twins"):
+        assert must in rules, f"правило записано неполно: нет «{must}»"
+
+    spec = KIT / "docs/накопление-знания.md"
+    assert spec.is_file(), "документ с требованиями к накоплению исчез"
+    body = spec.read_text(encoding="utf-8")
+    for must in ("PROMPT_BUILD", "build_card", "ALLOWED_WRITES", "kb:split", "source:"):
+        assert must in body, f"в требованиях не назван {must} — по ним нельзя работать"
+    assert "Как проверить, что сделано" in body, \
+        "требование без признака выполнения — это пожелание"
+
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "docs/накопление-знания.md" in man, \
+        "документ не едет в проекты: там о долге не узнают"
+    # На `agent/project/PROJECT.md` не опираемся: он в .gitignore, и у того, кто
+    # склонирует кит, его нет — проверка упала бы на пустом месте. Спрашиваем с того,
+    # что действительно едет с движком.
+    rules_tldr = (KIT / "docs/knowledge-rules-tldr.md").read_text(encoding="utf-8")
+    assert "накоплен" in rules_tldr or "сущность" in rules_tldr, \
+        "короткая справка молчит о главном правиле — её читают первой"
+
+
+@test
+def test_twins_are_found_by_text_not_by_name(tmp: Path):
+    """Одно знание под разными именами: `kb:dedupe` его не видит, `kb:twins` видит.
+
+    Ремонт ищет двойников по имени — свёрнутому регистру, общему синониму, одинаковому
+    title. На живом проекте одну и ту же таблицу несли десять карточек с разными именами,
+    и ни одна пара по имени не совпадала. Вред не косметический: ссылки расходятся по
+    копиям, правка ложится в одну, остальные продолжают говорить прежнее — и обе стороны
+    выглядят одинаково достоверно.
+
+    Мера — общие куски текста. Вёрстка, повторяющаяся во многих карточках, отброшена:
+    без этого в одну «группу» склеивались семьдесят карточек с одинаковой шапкой таблицы.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    T = importlib.import_module("kb_twins")
+
+    same = ("Профиль обслуживания абонента задаёт перечень доступных услуг и порядок их "
+            "тарификации в биллинге. Профиль назначается при заключении договора и "
+            "меняется заявкой абонента через личный кабинет. Смена профиля вступает в "
+            "силу с первого числа следующего расчётного периода, а начисления за текущий "
+            "период считаются по прежнему профилю. ")
+    other = ("Журнал начислений хранит историю операций по лицевому счёту абонента за "
+             "весь срок действия договора. Записи журнала не удаляются и не правятся: "
+             "исправление вносится сторнирующей записью со ссылкой на исходную. Журнал "
+             "закрывается на дату окончания расчётного периода. ")
+
+    root = make_project(tmp)
+    card(root, "Concepts/Профиль-абонента.md", status="knowledge", body=same * 3)
+    card(root, "Concepts/Профиль-обслуживания.md", status="draft", body=same * 3)
+    card(root, "Concepts/Что-такое-профиль.md", status="draft", body=same * 3)
+    card(root, "Concepts/Журнал-начислений.md", status="knowledge", body=other * 3)
+    # пустышки в сравнение не идут: они похожи друг на друга по построению
+    card(root, "Concepts/ПРФ.md", status="placeholder", tags="[заготовка]",
+         body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._")
+
+    cp = run("kb_twins.py", cwd=root)
+    assert "Профиль-абонента" in cp.stdout and "Что-такое-профиль" in cp.stdout, cp.stdout
+    assert "Журнал-начислений" not in cp.stdout, \
+        f"в группу попала карточка о другом — мера ловит вёрстку, а не знание:\n{cp.stdout}"
+    assert "ПРФ" not in cp.stdout, "пустышки пошли в сравнение и дадут ложные группы"
+    assert "оставить" in cp.stdout, "не предложено, кого оставить"
+    assert "решение человека" in cp.stdout, \
+        "отчёт не говорит, что ничего не слито: его прочтут как выполненную работу"
+
+
+@test
+def test_one_translation_per_name_is_remembered(tmp: Path):
+    """Транслит в имени переводится один раз, и перевод переиспользуется.
+
+    Источники приходят с разными именами страниц: часть по-русски, часть транслитом.
+    Карточка наследует имя источника, и понятие расщепляется — в других карточках оно
+    названо кириллицей, ссылка до транслитерованной карточки не доходит, и под неё
+    заводится пустышка. Одно понятие, две карточки, ни одной связи.
+
+    Механически транслит не развернуть, поэтому перевод делается один раз и живёт в
+    словаре. Второй разбор того же понятия обязан получить то же имя.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    TR = importlib.import_module("kb_translit")
+
+    assert TR.is_latin_name("Statusy-profilya-abonenta"), "транслит не опознан"
+    assert TR.is_latin_name("us-3.6.4-storno-nachisleniy"), "транслит в нижнем регистре"
+    assert not TR.is_latin_name("Статусы-профиля"), "кириллица принята за транслит"
+    assert not TR.is_latin_name("ALG-105"), "код принят за транслит"
+    assert not TR.is_latin_name("SPR-001"), "код справочника принят за транслит"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Profil-abonenta.md", status="draft",
+         body="Профиль обслуживания абонента задаёт перечень доступных услуг.")
+    card(root, "Concepts/Профиль-договора.md", status="draft", body="Русское имя, не транслит.")
+
+    cp = run("kb_translit.py", "--apply", cwd=root)
+    assert "Profil-abonenta" in cp.stdout, cp.stdout
+    assert "Профиль-договора" not in cp.stdout, "русское имя попало в словарь транслита"
+    d = root / "AuroraKnowledgeDB" / "meta" / "translit.md"
+    assert d.is_file(), "словарь не создан"
+    rows = TR.read_dict(str(d))
+    assert rows.get("Profil-abonenta") == "", \
+        f"перевод придуман машиной вместо человека: {rows}"
+
+    # человек вписал перевод — он переиспользуется, старое имя уходит в синонимы
+    d.write_text(d.read_text(encoding="utf-8").replace(
+        "| Profil-abonenta |  |", "| Profil-abonenta | Профиль абонента |"), encoding="utf-8")
+    assert TR.read_dict(str(d))["Profil-abonenta"] == "Профиль абонента"
+    run("kb_translit.py", "--rename", "--apply", "--allow-dirty", cwd=root)
+    new = root / "AuroraKnowledgeDB/Concepts/Профиль-абонента.md"
+    assert new.is_file(), "карточка не переименована по словарю"
+    assert "Profil-abonenta" in new.read_text(encoding="utf-8"), \
+        "старое написание не ушло в синонимы — ссылки на него сломаются"
+
+
+@test
+def test_knowledge_accumulates_in_one_card(tmp: Path):
+    """Про одну сущность говорят разные документы — знание копится в одной карточке.
+
+    Это главное правило зеттелькастена, на котором стоит схема. До него разбор умел
+    только два хода: тот же источник — перечитать, другой — **отказать**. Отказ был
+    написан для человека («допишите уточнение»), а читала его модель и делала
+    единственное доступное: придумывала другое имя. На живом проекте так появились
+    двенадцать карточек об одном процессе.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    B = importlib.import_module("build_plan")
+    importlib.reload(B)
+
+    root = make_project(tmp)
+    (root / "Sources" / "Confluence").mkdir(parents=True, exist_ok=True)
+    long = "Профиль назначается при заключении договора и меняется заявкой абонента. " * 6
+    for name, body in (("A.md", "## Про профиль\n\n" + long),
+                       ("B.md", "## Ещё про профиль\n\n" + long.replace("заявкой", "письмом"))):
+        (root / "Sources/Confluence" / name).write_text(body, encoding="utf-8")
+    card(root, "Concepts/Профиль-абонента.md", status="draft", distilled="2026-08-02",
+         body="Тезис: набор параметров.\n\n## Источник (перенесено дословно)\n\n"
+              "### Sources/Confluence/A.md\n\nПервый текст.")
+    path = root / "AuroraKnowledgeDB/Concepts/Профиль-абонента.md"
+    # у карточки уже есть источник — как после обычного разбора
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "type: concept", 'type: concept\nsources:\n  - "Sources/Confluence/A.md"'),
+        encoding="utf-8")
+
+    cp = run("build_plan.py", "--append", "Профиль абонента",
+             "--source", "Sources/Confluence/B.md", "--sections", "1", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    got = path.read_text(encoding="utf-8")
+    assert card_srcs(got) == ["Sources/Confluence/A.md", "Sources/Confluence/B.md"], \
+        f"источники не накопились: {card_srcs(got)}"
+    assert "Первый текст." in got, "прежний текст затёрт — знание потеряно при накоплении"
+    assert "письмом" in got, "новый текст не дописан"
+    assert "### Sources/Confluence/B.md" in got, \
+        "блок не подписан источником — разнести обратно будет нечем"
+    assert "distilled:" not in got.split("---")[1], \
+        "тезис остался помеченным готовым: он написан по прежнему тексту, а знания стало больше"
+
+    # тот же источник дважды не удваивает блок: источник правят и разбирают снова
+    run("build_plan.py", "--append", "Профиль абонента", "--source",
+        "Sources/Confluence/B.md", "--sections", "1", "--apply", cwd=root)
+    twice = path.read_text(encoding="utf-8")
+    assert twice.count("### Sources/Confluence/B.md") == 1, \
+        "повторный разбор удвоил блок — карточка растёт от собственных прогонов"
+    assert len(card_srcs(twice)) == 2, card_srcs(twice)
+
+    # и отказ при занятом имени теперь называет операцию, а не советует невозможное
+    (root / "Sources/Confluence/C.md").write_text("## Раздел\n\n" + long, encoding="utf-8")
+    ref = run("build_plan.py", "--card", "Профиль абонента", "--source",
+              "Sources/Confluence/C.md", "--sections", "1", "--to", "Concepts", cwd=root)
+    assert ref.returncode == 1, ref.stdout
+    assert "--append" in ref.stderr, \
+        f"отказ не называет операцию — модель придумает другое имя:\n{ref.stderr}"
+
+
+@test
+def test_parsing_is_shown_what_the_base_already_has(tmp: Path):
+    """Разбор видит существующие карточки и может дописать знание в них.
+
+    Без этого правило «карточка — сущность» невыполнимо: модель не знает, что карточка
+    про этот объект уже есть, и заводит вторую под другим именем. Список кандидатов —
+    то, чего разбору не хватало, чтобы правило стало исполнимым.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    block = R.candidates_block([("Профиль-абонента", "Concepts", "Набор услуг и тарификация"),
+                                ("Журнал-начислений", "Concepts", "История операций")])
+    assert "Профиль-абонента" in block and "Набор услуг" in block, block
+    assert "into" in block, "модель не узнает, как дописать в существующую"
+    for must in ("ТУ ЖЕ САМУЮ сущность", "Сомневаешься — заводи новую"):
+        assert must in block, f"нет правила «{must}»: модель начнёт склеивать похожее"
+    assert R.candidates_block([]) == "", \
+        "пустой список кандидатов всё равно печатается — это собьёт модель"
+
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert "candidates_block(candidates_for(cwd, cfg, listing))" in src, \
+        "кандидаты не доезжают до промпта разбора"
+    assert 'карточка — это сущность, а не пересказ документа' in src.lower(), \
+        "правило не сказано в самом промпте — список кандидатов без него бесполезен"
+
+    # разбор умеет обе записи, и не обе сразу
+    assert R.check_cards([{"into": "Профиль-абонента", "sections": "1"}],
+                         [(1, "Раздел", 100, "…")]) == "", "запись `into` не принята"
+    both = R.check_cards([{"into": "А", "title": "Б", "sections": "1"}],
+                         [(1, "Раздел", 100, "…")])
+    assert "into" in both and "title" in both, f"смешение двух записей не поймано: {both}"
+
+    # и операция дополнения разрешена агенту: без белого списка он ею не воспользуется
+    A = importlib.import_module("agent_core")
+    ok, why = A.write_allowed("build_plan.py", ["--append", "Карточка", "--apply"])
+    assert ok, f"агенту запрещено дополнять карточки: {why}"
+
+
+@test
+def test_extraction_moves_text_and_never_loses_it(tmp: Path):
+    """Чужое определение переезжает в свою карточку дословно — и не пропадает.
+
+    Знание о ФЦОД, объяснённое попутно внутри карточки про аналитический баланс, лежит
+    не там: его ищут по имени системы, а оно внутри чужого тезиса. Перенос — механика:
+    движок вырезает присланный кусок и вставляет. Не нашёл дословно — отменяет, потому
+    что взять похожее значит переписать знание под видом переезда.
+
+    Инвариант, который здесь и проверяется: **вырезанный текст обязан где-то оказаться.**
+    Ход, который удалил бы кусок и никуда не положил, невозможен по построению.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    definition = "которая является частью проекта обработки платежей"
+    thesis = ("Аналитический баланс получает информацию из подсистемы ФЦОД, "
+              + definition + ". Баланс обновляется по факту поступления платежа и "
+              "хранит остатки по каждому лицевому счёту за расчётный период. "
+              "Сверка проводится ежедневно.")
+    card(root, "Concepts/Аналитический-баланс.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", body=thesis)
+    path = root / "AuroraKnowledgeDB/Concepts/Аналитический-баланс.md"
+
+    def fake(cfg, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": json.dumps({"extract": [
+                    {"term": "ФЦОД", "definition": definition, "keep": ""}]},
+                    ensure_ascii=False)}
+
+    step = R.extract_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+                           "thinking_roles": {}, "thinking": False, "backends": []},
+                          str(path), fake, apply=True)
+    assert step["status"] == "вынесено", step
+    left = path.read_text(encoding="utf-8")
+    assert "[[ФЦОД]]" in left, "ссылка не подставлена на место определения"
+    assert definition not in left, "определение осталось в исходной карточке — знание удвоено"
+    assert "Баланс обновляется по факту" in left, "задет чужой текст"
+
+    made = root / "AuroraKnowledgeDB/Concepts/ФЦОД.md"
+    assert made.is_file(), "карточка сущности не заведена — текст пропал бы"
+    body = made.read_text(encoding="utf-8")
+    assert definition in body, "определение переехало не дословно"
+    assert "Аналитический-баланс" in body, "не сказано, откуда перенесено"
+
+    # пересказанное определение не переносится вовсе: это правка, а не переезд
+    card(root, "Concepts/Другая.md", status="draft", kind="knowledge",
+         distilled="2026-09-01",
+         body="Реестр платежей ведёт подсистема УФК, отвечающая за казначейские операции. "
+              "Реестр закрывается на конец расчётного периода и передаётся в архив на "
+              "долговременное хранение. Хранение — три года с даты закрытия периода. "
+              "Записи реестра не правятся: исправление вносится сторнирующей записью со "
+              "ссылкой на исходную операцию и датой внесения.")
+    def paraphrase(cfg, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": json.dumps({"extract": [
+                    {"term": "УФК", "definition": "которая отвечает за казначейские операции",
+                     "keep": ""}]}, ensure_ascii=False)}
+    other = root / "AuroraKnowledgeDB/Concepts/Другая.md"
+    before = other.read_text(encoding="utf-8")
+    st2 = R.extract_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+                          "thinking_roles": {}, "thinking": False, "backends": []},
+                         str(other), paraphrase, apply=True)
+    assert st2["status"] == "нечего выносить", st2
+    assert other.read_text(encoding="utf-8") == before, \
+        "карточка изменена по пересказанному куску — знание переписано под видом переноса"
+    assert "не найдено дословно" in st2["note"], st2
+
+
+@test
+def test_merging_twins_is_decided_by_the_model(tmp: Path):
+    """«Сливать или нет» решает модель по тексту, а не человек.
+
+    Пересборка базы с нуля не должна упираться в этот вопрос: на живом проекте групп
+    двойников оказалось 493, и каждая означала бы остановку прогона. Судить о том, одна
+    это сущность или разные, можно по тексту — значит, это работа модели.
+
+    Но не любой ценой: слитое по ошибке разъединять придётся вручную, восстанавливая, что
+    откуда. Поэтому модель обязана уметь сказать «разные», и её «разные» должно
+    исполняться так же строго, как «одна».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    # Промпт свёрстан по ширине: искать по сырому тексту значит ловить перенос строки,
+    # а не отсутствие правила.
+    flat = " ".join(R.PROMPT_TWINS.split())
+    for must in ("одна это сущность или разные", "Сомневаешься — НЕ сливай",
+                 "имя точнее называет сущность"):
+        assert must in flat, f"в промпте нет правила «{must}»"
+
+    root = make_project(tmp)
+    # Текст нарочно длинный: мера сравнивает куски по восемь слов, и на коротком теле
+    # их набирается слишком мало, чтобы говорить о совпадении.
+    same = ("Профиль обслуживания абонента задаёт перечень доступных услуг и порядок их "
+            "тарификации в биллинге. Профиль назначается при заключении договора и "
+            "меняется заявкой абонента через личный кабинет. Смена профиля вступает в "
+            "силу с первого числа следующего расчётного периода, а начисления за текущий "
+            "период считаются по прежнему профилю. ")
+    card(root, "Concepts/Профиль-абонента.md", status="knowledge", kind="knowledge",
+         body=same * 3)
+    card(root, "Concepts/Что-такое-профиль.md", status="draft", kind="knowledge",
+         body=same * 3)
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+
+    def says_merge(c, role, messages, **kw):
+        assert "Профиль-абонента" in messages[0]["content"], "модели не показали карточки"
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"merge": True, "keep": "Профиль-абонента", "why": "одно понятие"},
+            ensure_ascii=False)}
+
+    step = R.solve_twins(cfg, str(root), ["Профиль-абонента", "Что-такое-профиль"],
+                         apply=True, call=says_merge)
+    assert step["status"] == "слито", step
+    assert step["keep"] == "Профиль-абонента", step
+    kept = (root / "AuroraKnowledgeDB/Concepts/Профиль-абонента.md")
+    assert kept.is_file(), "победитель исчез"
+    assert not (root / "AuroraKnowledgeDB/Concepts/Что-такое-профиль.md").is_file() \
+        or "deprecated" in (root / "AuroraKnowledgeDB/Concepts/Что-такое-профиль.md"
+                            ).read_text(encoding="utf-8"), \
+        "проигравшая осталась живой карточкой — знание по-прежнему в двух местах"
+
+    # «разные» исполняется так же строго: ничего не трогаем
+    card(root, "Concepts/Смена-профиля.md", status="draft", kind="knowledge", body=same * 3)
+    def says_no(c, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"merge": False, "why": "объект и действие над ним"}, ensure_ascii=False)}
+    before = (root / "AuroraKnowledgeDB/Concepts/Смена-профиля.md").read_text(encoding="utf-8")
+    st = R.solve_twins(cfg, str(root), ["Профиль-абонента", "Смена-профиля"],
+                       apply=True, call=says_no)
+    assert st["status"] == "оставлено" and "действие" in st["why"], st
+    assert (root / "AuroraKnowledgeDB/Concepts/Смена-профиля.md").read_text(
+        encoding="utf-8") == before, "карточка тронута вопреки решению «разные»"
+
+    # группы читаются из отчёта `kb:twins`: разбор чужого вывода молча вернул бы пустой
+    # список, и весь ход стал бы бездействием, неотличимым от «двойников нет»
+    groups = R.twin_groups(str(root))
+    assert groups, "группы не прочитаны из отчёта — ход будет молча ничего не делать"
+    assert any("Профиль-абонента" in g for g in groups), groups
+    assert all(len(g) > 1 for g in groups), f"группа из одной карточки — не группа: {groups}"
+
+    # названная не из группы — сбой, а не «сольём что-нибудь»
+    def says_alien(c, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"merge": True, "keep": "Чужая-карточка", "why": "…"}, ensure_ascii=False)}
+    bad = R.solve_twins(cfg, str(root), ["Профиль-абонента", "Смена-профиля"],
+                        apply=True, call=says_alien)
+    assert bad["status"] == "сбой" and "не из группы" in bad["why"], bad
+
+
+@test
+def test_no_script_shadows_what_it_imports(_t):
+    """Скрипт не определяет функцию с именем того, что сам импортирует из движка.
+
+    За одну сессию это выстрелило трижды. `kb_fix` имел свою `is_placeholder` про
+    шаблонные ссылки — импорт молча её перекрыл, и ремонт упал на живом прогоне.
+    `build_plan` имел свою `card_sources` без аргументов — разбор упал `TypeError` уже
+    после того, как половина карточек была записана. Python не предупреждает: последнее
+    определение побеждает, и падает оно не там, где ошиблись.
+
+    Инвариант, а не совет: имя из `aurora_common` в скрипте движка значит ровно то, что
+    в `aurora_common`. Нужно другое — назовите иначе.
+    """
+    import ast as _ast
+    bad = []
+    for path in sorted(SCRIPTS.glob("*.py")):
+        if path.name == "aurora_common.py":
+            continue
+        tree = _ast.parse(path.read_text(encoding="utf-8"))
+        imported = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.ImportFrom) and (node.module or "") == "aurora_common":
+                for al in node.names:
+                    imported.add(al.asname or al.name)
+        if not imported:
+            continue
+        for node in tree.body:            # только верхний уровень: методы классов свои
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) \
+                    and node.name in imported:
+                bad.append(f"{path.name}:{node.lineno} — «{node.name}» перекрывает импорт "
+                           "из aurora_common")
+    assert not bad, ("имя занято дважды, и побеждает последнее определение:\n  "
+                     + "\n  ".join(bad))
+
+
+@test
+def test_the_model_is_told_what_the_abbreviations_mean(tmp: Path):
+    """Разбору источника подаются расшифровки проекта и запрет придумывать остальные.
+
+    Модель, разбирающая источник, видит незнакомое сокращение и **придумывает**
+    правдоподобную расшифровку — не по злому умыслу, а потому что промпт требует
+    определения, а сказать «не знаю» ей никто не разрешал. На живом проекте так родились
+    два выдуманных значения одной аббревиатуры, разошедшиеся по восьми карточкам и
+    читаемые как факт: на вид ошибка неотличима от знания.
+
+    Лечится двумя вещами сразу, и обе обязаны быть: **дать** то, что база уже знает, и
+    **явно разрешить не знать** остальное. Одного списка мало — сокращений всегда больше,
+    чем записано; одного запрета мало — тогда модель оставит как есть и то, что в базе
+    расшифровано.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    R = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    card(root, "Reference/Сокращения-проекта.md", type="reference", status="knowledge",
+         body="| Сокращение | Значение |\n|---|---|\n"
+              "| ПРФ | профиль обслуживания абонента |\n"
+              "| ЖНЧ | журнал начислений по счёту |\n")
+    card(root, "Glossary/ТРФ.md", type="glossary", status="draft",
+         body="**ТРФ** — тариф: цена обращения к услуге.\n")
+    # заготовка расшифровкой не является: подать её значит научить модель, что
+    # «ЗГТ — заготовка, знания пока нет»
+    card(root, "Glossary/ЗГТ.md", type="glossary", status="draft",
+         body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n")
+
+    terms = AC.project_terms(str(root / "AuroraKnowledgeDB"))
+    assert terms.get("ПРФ") == "профиль обслуживания абонента", terms
+    assert terms.get("ЖНЧ") == "журнал начислений по счёту", terms
+    assert terms.get("ТРФ", "").startswith("тариф"), \
+        f"повтор имени не убран из расшифровки: {terms.get('ТРФ')!r}"
+    assert "ЗГТ" not in terms, "заготовка попала в словарь как определение"
+
+    text = "Абонент меняет ПРФ, начисление уходит в ЖНЧ."
+    block = AC.terms_block(text, terms)
+    assert "ПРФ — профиль обслуживания абонента" in block, block
+    assert "ЖНЧ" in block and "ТРФ" not in block, \
+        "в промпт ушли расшифровки, которых в тексте нет — модель пристегнёт их к чужому"
+    for must in ("не расшифровывай", "оставь ровно так"):
+        assert must in block.lower(), f"нет запрета придумывать: {block}"
+
+    # запрет печатается и тогда, когда база не знает ни одного сокращения: он и есть
+    # главная часть, а список — вспомогательная
+    empty = AC.terms_block(text, {})
+    assert "не расшифровывай" in empty.lower() and "не выдумывай" in empty.lower(), empty
+
+    # и всё это действительно доезжает до промптов разбора, а не лежит рядом
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    for prompt in ("PROMPT_BUILD", "PROMPT_DISTILL", "PROMPT_DISTILL_PART",
+                   "PROMPT_REDISTILL", "PROMPT_NO_SECTIONS"):
+        assert re.search(r"with_terms\(\s*\n?\s*" + prompt, src), \
+            f"{prompt} уходит модели без словаря проекта"
+    got = R.with_terms("<промпт>", text, str(root))
+    assert "ПРФ — профиль" in got and got.rstrip().endswith("<промпт>"), got[:400]
+
+
+@test
+def test_an_invented_expansion_is_caught_by_the_linter(tmp: Path):
+    """Расшифровка вопреки словарю — ошибка, а обычная русская фраза перед скобкой — нет.
+
+    Промпт запрещает выдумывать, но промпт это просьба, а не гарантия. Ошибку ищет
+    машина: на вид выдуманная расшифровка неотличима от настоящей, и читатель её не
+    поймает — он и читает базу затем, чтобы узнать значение.
+
+    Тонкость в том, что форма «<фраза> (АББР)» — обычная русская речь. «Проверка
+    достаточности обеспечительного платежа (ОП)» не расшифровка, а предложение, где
+    сокращение просто стоит следом. Ругаться на такие значит утопить настоящие находки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    L = importlib.import_module("kb_lint")
+
+    terms = {"ПРФ": "профиль обслуживания абонента",
+             "ЖНЧ": "журнал начислений по счёту",
+             "ПП": "прикладная подсистема"}
+
+    bad = L.wrong_expansions("Система хранит признак расчёта фактуры (ПРФ) в базе.", terms)
+    assert bad and bad[0][0] == "ПРФ", f"выдуманная расшифровка не поймана: {bad}"
+    assert "признак расчёта фактуры" in bad[0][1], bad
+
+    ok_cases = [
+        # та же расшифровка другим падежом — не спор
+        "Значение профиля обслуживания абонента (ПРФ) берётся на дату подачи.",
+        # обычная речь: фраза перед скобкой расшифровкой не является
+        "Выполняется проверка достаточности журнала (ЖНЧ) при закрытии периода.",
+        # омоним: «ПП» это и подсистема, и платёжное поручение — обе верны в своём месте
+        "К заявлению прикладывается копия платёжного поручения (ПП).",
+    ]
+    for s in ok_cases:
+        assert not L.wrong_expansions(s, terms), f"ложная тревога на: {s}"
+
+    # и то же самое целиком, через линтер на настоящем проекте
+    root = make_project(tmp)
+    card(root, "Reference/Сокращения-проекта.md", type="reference", status="knowledge",
+         body="| Сокращение | Значение |\n|---|---|\n"
+              "| ПРФ | профиль обслуживания абонента |\n")
+    card(root, "Concepts/Расчёт-начислений.md", status="draft",
+         body="Начисление считается по признаку расчёта фактуры (ПРФ) на дату подачи.")
+    cp = run("kb_lint.py", cwd=root, expect_rc=1)
+    assert "ПРФ" in cp.stdout and "расшифровано как" in cp.stdout, cp.stdout
+
+
+@test
+def test_a_section_cannot_be_nested_inside_itself(tmp: Path):
+    """`Glossary/Glossary` — не мелочь оформления, а спрятанные карточки.
+
+    Раздел базы — это тип карточки. Второй уровень с тем же именем означает, что
+    карточки одного типа разъехались по двум адресам: ссылка по имени ведёт в один,
+    ищут в другом, оглавление раздела собирает верхний и не видит нижнего. На живом
+    проекте так осели три десятка справочников, и нашлись они только при разборе
+    эталонных вопросов.
+    """
+    root = make_project(tmp)
+    card(root, "Glossary/Glossary/ТРФ.md", type="glossary", status="draft",
+         body="**ТРФ** — тариф.")
+    cp = run("kb_lint.py", cwd=root, expect_rc=1)
+    assert "вложена сама в себя" in cp.stdout, cp.stdout
+    assert "Glossary/Glossary" in cp.stdout, cp.stdout
+
+    # служебные папки внутри разделов — не нарушение: у них своё назначение
+    (root / "AuroraKnowledgeDB" / "Concepts" / "_assets").mkdir(parents=True, exist_ok=True)
+    out = run("kb_lint.py", cwd=root).stdout
+    assert "_assets: папка вложена" not in out, out
+
+
+@test
+def test_terminology_is_parsed_before_what_refers_to_it(tmp: Path):
+    """Словари и списки сокращений идут в разбор первыми.
+
+    Расшифровки подаются модели в промпт, но подать можно только то, что уже разобрано.
+    Разбери процесс раньше глоссария — и модель встретит сокращение, которого база ещё
+    не знает, а промпт требует определения: она его придумает. Порядок здесь не удобство,
+    а условие, при котором запрет выдумывать вообще выполним.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    B = importlib.import_module("build_plan")
+
+    for name in ("Глоссарий-проекта.md", "Термины-и-определения.md",
+                 "Список-сокращений.md", "SPR-001-Статусы.md"):
+        assert B.is_terminology("Sources/Confluence/" + name), name
+    for name in ("Процесс-подачи.md", "US-4.2-Поиск.md", "Требования-к-форме.md"):
+        assert not B.is_terminology("Sources/Confluence/" + name), name
+
+    # в плане словарь идёт раньше процесса, даже если крупнее его
+    todo = [("Confluence", "Sources/Confluence/Процесс-подачи.md", 1000),
+            ("Confluence", "Sources/Confluence/Глоссарий-проекта.md", 90000),
+            ("Confluence", "Sources/Confluence/Требования.md", 500)]
+    order = {g: i for i, (g, _) in enumerate(B.GROUPS)}
+    todo.sort(key=lambda r: (order.get(r[0], 99), 0 if B.is_terminology(r[1]) else 1,
+                             r[2], r[1]))
+    assert "Глоссарий" in todo[0][1], \
+        f"словарь разбирается не первым — сокращения будут выдуманы: {[r[1] for r in todo]}"
+
+
+@test
 def test_search_quality_refuses_instead_of_reporting_zero(tmp: Path):
     """Индекс собран другой моделью — это отказ, а не «R@1 0.0».
 
@@ -11187,17 +11881,22 @@ def test_search_quality_names_everyone_it_counted_as_a_miss(tmp: Path):
 
 @test
 def test_golden_question_is_asked_without_its_own_answer(tmp: Path):
-    """Из эталона берём колонку вопроса, а не строку целиком.
+    """Из эталона берём колонку вопроса, а не строку целиком, и годится любая карточка.
 
     `meta/golden_questions.md` — таблица `| # | Вопрос | Эталон | [[Карточка]] |`, и
     рядом с вопросом лежит **готовый ответ**. Спросить базу строкой целиком значит
     подсказать ей: эталон пересказывает тело карточки, попадание выходит само собой, и
     замер показывает качество подсказки вместо качества поиска. Завышенная мера хуже
     отсутствующей — на неё ссылаются, когда решают, можно ли базе доверять.
+
+    Ссылок в строке может быть несколько. Это не поблажка: одно знание в живой базе
+    лежит в справочнике, в процессе, где оно применяется, и в разборе частного случая —
+    все трое отвечают верно. Требовать одну конкретную значит мерить угадывание имени.
     """
     sys.path.insert(0, str(SCRIPTS))
     import importlib
     Q = importlib.import_module("kb_search_quality")
+    importlib.reload(Q)
 
     gold = tmp / "golden.md"
     gold.write_text(
@@ -11205,53 +11904,47 @@ def test_golden_question_is_asked_without_its_own_answer(tmp: Path):
         "|---|---|---|---|\n"
         "| 1 | Чем профиль отличается от тарифа? | Профиль задаёт набор услуг, тариф — "
         "цену обращения к ним | [[Профиль-абонента]] |\n"
-        "- свободной строкой: где хранится история начислений [[Журнал-начислений]]\n",
+        "| 2 | Где хранится история начислений? | В журнале начислений | "
+        "[[Журнал-начислений]], [[Хранение-начислений]] |\n"
+        "\n## Известные расхождения в самой базе\n\n"
+        "| Что | Верно | Где написано иначе |\n|---|---|---|\n"
+        "| Расшифровка кода | так, как в источнике [[Справочник-кодов]] | "
+        "иначе сказано в [[Старая-выгрузка]] |\n",
         encoding="utf-8")
     old, Q.GOLDEN = Q.GOLDEN, str(gold)
     try:
-        pairs = dict((c, q) for c, q in Q.golden_pairs())
+        pairs = {names: q for names, q in Q.golden_pairs()}
     finally:
         Q.GOLDEN = old
 
-    assert set(pairs) == {"Профиль-абонента", "Журнал-начислений"}, pairs
-    q = pairs["Профиль-абонента"]
-    assert q == "Чем профиль отличается от тарифа?", f"взята не колонка вопроса: {q!r}"
-    assert "цену обращения" not in q, f"ответ утёк в вопрос — замер завышен: {q!r}"
-    assert "[[" not in q and not q.startswith("1"), q
-    assert pairs["Журнал-начислений"].endswith("начислений"), pairs
+    by_q = {q: names for names, q in pairs.items()}
+    q1 = "Чем профиль отличается от тарифа?"
+    assert q1 in by_q, by_q
+    assert by_q[q1] == ("Профиль-абонента",), by_q[q1]
+    assert "цену обращения" not in q1
+    # В файле живут и другие таблицы со ссылками — реестр найденных в базе противоречий,
+    # например. Без номера строка не вопрос: иначе замер считал бы то, чего человек в
+    # него не клал, и число перестало бы значить обещанное.
+    assert len(by_q) == 2, f"в замер уехала строка не из таблицы вопросов: {list(by_q)}"
+    assert not any("Расшифровка кода" in q for q in by_q), by_q
 
+    two = next(n for q, n in by_q.items() if "начислений" in q)
+    assert set(two) == {"Журнал-начислений", "Хранение-начислений"}, \
+        f"вторая карточка строки потеряна — годной считается только одна: {two}"
 
-@test
-def test_ask_export_takes_the_markdown_not_the_screen(tmp: Path):
-    """Выгрузка ответа берёт исходный markdown, а не текст с экрана.
+    # и в замере годится любая из названных
+    def fake_search(question, cfg, model, limit=10):
+        return [("Хранение-начислений", 0.9), ("чужая", 0.8)]
 
-    Ответ читают не только в панели: его несут в задачу, в письмо, обратно в базу.
-    На экране markdown уже разобран в HTML — выгрузи `innerText`, и пропадут ссылки
-    `[[Карточка]]`, ради которых ответ и связан с базой. Поэтому исходник модели живёт
-    на самой карточке (`data-a`), и выгружается он.
-    """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    assert 'id="askExport"' in ui, "во вкладке «Спросить» нет кнопки выгрузки"
-    assert "function askMarkdown()" in ui and "askCards()" in ui, \
-        "нет сборки markdown из карточек разговора"
-    assert "item.dataset.a = body" in ui, \
-        "свежий ответ не сохраняет исходный markdown — выгружать будет нечего"
-    assert "card.dataset.a = t.a" in ui, \
-        "открытый разговор не сохраняет исходники: кнопка сработает только на свежем ответе"
-    block = ui[ui.index("function askMarkdown()"):ui.index('$("#askExport").onclick')]
-    assert "innerText" not in block and "textContent" not in block.replace(
-        '$("#askWho").textContent', ""), \
-        "выгрузка читает экран вместо исходника — ссылки [[…]] потеряются"
-    assert "meta/ask/" in block, \
-        "выгрузка не говорит, где лежит сам разговор: правки понесут в копию"
-
-    # кнопка появляется и исчезает вместе с содержимым, а не висит всегда
-    assert "function drawAskExport()" in ui
-    for place in ('drawThreadHint(); drawAskExport(); };',
-                  "  drawAskExport();"):
-        assert place in ui, f"кнопку не обновляют там, где меняются ответы: {place}"
-    assert 'text/markdown;charset=utf-8' in ui and 'aurora-otvet-' in ui, \
-        "файл выгрузки не помечен как markdown"
+    old_s, Q.EMB.search = Q.EMB.search, fake_search
+    try:
+        res = Q.measure([(two, "где хранится история начислений")], {}, "m",
+                        say=lambda *_: None)
+    finally:
+        Q.EMB.search = old_s
+    assert res["R@1"] == 1.0, \
+        f"вторая годная карточка не засчитана — эталон меряет угадывание имени: {res}"
+    assert not res["не нашлись"], res
 
 
 @test
