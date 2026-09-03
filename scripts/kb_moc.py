@@ -38,7 +38,9 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter, git_guard, is_service  # noqa: E402
+from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402
+                           is_placeholder,
+                           is_service)
 
 ROOT = "AuroraKnowledgeDB"
 MOC_DIR = os.path.join(ROOT, "MOC")
@@ -122,7 +124,8 @@ def read_cards() -> dict:
                 "type": (fm.get("type") or "").strip(),
                 "status": (fm.get("status") or "").strip(),
                 "tags": tags, "text": text,
-                "source": (fm.get("source") or "").strip().strip('"'),
+                "source": (card_sources(text) or [""])[0],
+                "sources": card_sources(text),
                 "summary": (fm.get("summary") or "").strip().strip('"'),
             }
     return cards
@@ -329,6 +332,17 @@ def main() -> int:
             print(f"- … ещё {len(orphans) - 200}")
         return 0
 
+    # Пустышки в тематические карты не идут: карта содержания обещает знание, а пустышка
+    # это занятое имя без него. Смешать их значит утопить настоящие карточки — на живом
+    # проекте пустышек тысячи. У них своя карта, и она нужна: по ней видно, чего база
+    # ещё не знает, но уже упоминает.
+    holes = [c for c in cards.values() if is_placeholder({"status": c["status"],
+                                                          "tags": ", ".join(c["tags"])},
+                                                         c["text"])]
+    hole_stems = {c["stem"] for c in holes}
+    cards = {s: c for s, c in cards.items() if s not in hole_stems}
+    orphans = [c for c in orphans if c["stem"] not in hole_stems]
+
     planned, covered = [], set()
     for name, rules, note in groups:
         items = [c for c in cards.values() if match(c, rules)]
@@ -342,6 +356,12 @@ def main() -> int:
     planned.append(("Брошенные", "На эти карточки не ссылается ни одна другая. Пока вход "
                     "только отсюда: свяжите их (`kb:links --cards`) или опишите вручную.",
                     orphans))
+    planned.append(("Пустышки", "Имя занято ссылкой, знания в карточке нет "
+                    "(`status: placeholder`). Из поиска, контекста и замеров они выведены "
+                    "целиком: отвечать пустышкой значит обещать содержание, которого нет. "
+                    "Список читается как перечень того, чего база ещё не знает, но уже "
+                    "упоминает. Появилось определение — `kb:repair --frontmatter` снимет "
+                    "отметку, и карточка уйдёт отсюда сама.", holes))
 
     print(f"# Карты содержания — {TODAY}\n")
     print(f"Карточек в базе: **{len(cards)}** · покрыто группами: **{len(covered)}** "

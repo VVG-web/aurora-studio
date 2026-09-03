@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:make`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:make`
 """
 from __future__ import annotations
 
@@ -384,6 +384,17 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
                                         _bp_flag(args, "--to", _DEFAULT_CARD_SECTION),
                                         "--apply" in args, _bp_flag(args, "--summary"),
                                         _bp_flag(args, "--paras"), root=cwd)
+            elif "--append" in args:
+                # Дополнение идёт тем же путём, что и сборка: один процесс, без chdir.
+                # Замок общий с `--card` — обе операции пишут карточки, и параллельные
+                # потоки не должны сойтись на одном файле.
+                with _BP_LOCK:
+                    rc = mod.build_card("", _bp_flag(args, "--source"),
+                                        _bp_flag(args, "--sections"),
+                                        _bp_flag(args, "--to", _DEFAULT_CARD_SECTION),
+                                        "--apply" in args, _bp_flag(args, "--summary"),
+                                        _bp_flag(args, "--paras"), root=cwd,
+                                        append_to=_bp_flag(args, "--append"))
             elif "--done" in args:
                 # Путь остаётся относительным: `mark_done` кладёт его КЛЮЧОМ в манифест и
                 # сверяет с полем `source:` карточек, где он тоже относительный —
@@ -405,6 +416,355 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
     return {"ok": rc == 0, "rc": rc,
             "out": ((out.getvalue() or "") + (err.getvalue() or "")).strip(),
             "refused": ""}
+
+
+# ------------------------------------------------------------------ задача: выделение
+
+MIN_DEFINITION = 20      # короче — не определение, а обрывок фразы
+EXTRACT_LIMIT = 6        # сколько сущностей выносить из одной карточки за прогон
+
+
+def thesis_of(text: str) -> str:
+    """Тезис карточки — то, что написала модель, до раздела дословного текста."""
+    from aurora_common import card_body
+    return card_body(text).split("## Источник (перенесено дословно)", 1)[0]
+
+
+def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
+                 deadline: float = 0.0, prefer: int = 0) -> dict:
+    """Вынести из карточки чужие определения в их собственные карточки. → шаг отчёта.
+
+    Обратная сторона правила «карточка — сущность»: знание о ФЦОД, попутно объяснённое
+    внутри карточки про аналитический баланс, живёт не там. Его найдут по слову «ФЦОД»,
+    а лежит оно внутри чужого тезиса — и не найдётся.
+
+    Перенос — механика, а не пересказ: движок ищет присланный моделью кусок в тезисе
+    ПОДСТРОКОЙ и переносит его посимвольно. Не нашёл — выделение отменяется целиком, без
+    попыток «примерно там же». Так текст не может измениться при переезде: единственное,
+    что делает движок, — вырезает и вставляет.
+
+    Текст не может и пропасть. Куда бы он ни ехал — в новую карточку, в пустышку или в
+    существующую, — он туда ложится; ход, который вырезал бы кусок и никуда не положил,
+    невозможен по построению.
+    """
+    call = call or AG.call_role
+    from aurora_common import (KB_ROOT, PLACEHOLDER, card_filename, frontmatter,
+                               is_placeholder, set_field)
+    step = {"card": os.path.basename(path)[:-3], "status": "пропущена", "note": "",
+            "made": [], "backends": []}
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    fm = frontmatter(text)
+    if is_placeholder(fm, text) or (fm.get("kind") or "").strip().strip('"') != "knowledge":
+        step["note"] = "не карточка знания"
+        return step
+    thesis = thesis_of(text)
+    if len(" ".join(thesis.split())) < 200:
+        step["note"] = "тезис короток — выносить нечего"
+        return step
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+    known = candidates_block(candidates_for(root, cfg, thesis, limit=8))
+    title = (fm.get("title") or step["card"]).strip().strip('"')
+    r = call(cfg, "planner", [{"role": "user", "content": with_terms(
+        PROMPT_EXTRACT.format(title=title, thesis=thesis[:8000], known=known),
+        thesis, root)}], deadline=deadline or (time.time() + cfg["request_timeout"]),
+        prefer=prefer)
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        return step
+    plan = (parse_json(r["text"]) or {}).get("extract")
+    if plan is None:
+        step.update(status="сбой", note="модель ответила не JSON")
+        return step
+
+    new_thesis, made = thesis, []
+    for item in plan[:EXTRACT_LIMIT]:
+        term = str(item.get("term") or "").strip()
+        definition = str(item.get("definition") or "").strip()
+        keep = str(item.get("keep") or "").strip()
+        if not term or len(definition) < MIN_DEFINITION:
+            continue
+        if definition not in new_thesis:
+            # Кусок не найден дословно: модель его пересказала. Молча взять похожее
+            # значило бы переписать знание под видом переноса.
+            step["note"] = (step["note"] + f"; «{term}»: определение не найдено дословно"
+                            ).strip("; ")
+            continue
+        replacement = (keep + " " if keep else "") + f"[[{term}]]"
+        new_thesis = new_thesis.replace(definition, replacement, 1)
+        made.append((term, definition))
+
+    if not made:
+        step["status"] = "нечего выносить"
+        return step
+
+    step["made"] = [term for term, _d in made]
+    step["status"] = "вынесено" if apply else "вынес бы"
+    if not apply:
+        return step
+
+    for term, definition in made:
+        place_definition(root, term, definition, title)
+    open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
+    return step
+
+
+def place_definition(root: str, term: str, definition: str, came_from: str) -> str:
+    """Положить перенесённое определение в карточку термина. → путь.
+
+    Три случая, и ни в одном текст не пропадает: карточки нет — заводим; лежит пустышка
+    (её завёл `kb:repair --stubs` под уже существующую ссылку) — наполняем и снимаем
+    отметку; карточка есть и с содержанием — дописываем, потому что выбросить принесённое
+    значило бы потерять знание при переезде.
+    """
+    from aurora_common import (KB_ROOT, PLACEHOLDER, card_body, card_filename,
+                               frontmatter, is_placeholder, set_field)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+
+    base = os.path.join(root, KB_ROOT)
+    existing = BP.find_card(term, root)
+    line = definition.strip()
+    note = f"_Перенесено из [[{came_from}]]._"
+    if not existing:
+        path = os.path.join(base, "Concepts", card_filename(term) + ".md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w", encoding="utf-8").write(
+            f'---\ntitle: "{term}"\naliases: []\nstatus: draft\ntype: concept\n'
+            f'kind: knowledge\nsources: []\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
+            f'built: machine\nrelated: []\n---\n\n# {term}\n\n{line}\n\n{note}\n')
+        return path
+
+    text = open(existing, encoding="utf-8", errors="ignore").read()
+    fm = frontmatter(text)
+    if is_placeholder(fm, text):
+        # Пустышку наполняем: имя под неё уже занято ссылкой, и знание ехало именно сюда.
+        head, _sep, _rest = text.partition("\n---\n")
+        new_head = set_field(head[3:] if head.startswith("---") else head,
+                             "status", "draft")
+        open(existing, "w", encoding="utf-8").write(
+            "---" + new_head + "\n---\n\n" + f"# {term}\n\n{line}\n\n{note}\n")
+        return existing
+    body = card_body(text)
+    if line in body:
+        return existing          # это же определение там уже есть — второй раз не кладём
+    open(existing, "w", encoding="utf-8").write(
+        text.rstrip("\n") + f"\n\n{line}\n\n{note}\n")
+    return existing
+
+
+def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Пройти по карточкам знания и вынести из них чужие определения. → сводка."""
+    from aurora_common import frontmatter, is_placeholder, walk_md
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    todo = []
+    for path in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
+                        skip_archive=True):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        if (fm.get("kind") or "").strip().strip('"') != "knowledge":
+            continue
+        if is_placeholder(fm, text):
+            continue
+        # Тезиса ещё нет — выносить нечего: `agent:distill` пройдёт раньше.
+        if not (fm.get("distilled") or "").strip():
+            continue
+        todo.append(path)
+    todo.sort()
+    if limit:
+        todo = todo[:limit]
+
+    steps = []
+    for i, path in enumerate(todo, 1):
+        if time.time() > budget:
+            steps.append({"card": "—", "status": "стоп", "made": [],
+                          "note": f"бюджет {cfg['budget_min']} мин исчерпан, "
+                                  f"осталось {len(todo) - i + 1}"})
+            break
+        steps.append(extract_card(cfg, path, call, apply, deadline=budget))
+    made = sum(len(s.get("made") or []) for s in steps)
+    return {"steps": steps, "cards": len(todo), "made": made,
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_extract(res: dict, apply: bool) -> str:
+    L = [f"# Выделение сущностей — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Просмотрено карточек: **{res['cards']}** · вынесено определений: "
+         f"**{res['made']}** · {res['seconds']} с", ""]
+    if not apply:
+        L += ["(dry-run) Ничего не записано. Применить: `--apply`.", ""]
+    L += ["Чужое определение — когда внутри рассказа об одном объекте попутно объясняется "
+          "другой. Его знание живут не здесь: его ищут по имени объекта, а лежит оно "
+          "внутри чужого тезиса и не находится. Перенос дословный: движок вырезает кусок "
+          "и вставляет, не меняя ни символа.", ""]
+    moved = [s for s in res["steps"] if s.get("made")]
+    if moved:
+        L += ["| Из карточки | Вынесено |", "|---|---|"]
+        for s in moved[:60]:
+            L.append(f"| `{s['card']}` | " + ", ".join(f"[[{m}]]" for m in s["made"]) + " |")
+        L.append("")
+    trouble = [s for s in res["steps"] if s["status"] == "сбой" or s.get("note")]
+    if trouble:
+        L += ["## Не сделано", ""]
+        for s in trouble[:20]:
+            L.append(f"- `{s['card']}` — {s['note'] or s['status']}")
+        L.append("")
+        L.append("«Определение не найдено дословно» значит, что модель его пересказала. "
+                 "Перенос отменён намеренно: взять похожее — переписать знание под видом "
+                 "переезда.")
+    return "\n".join(L)
+
+
+# ------------------------------------------------------------------ задача: двойники
+
+PROMPT_TWINS = """Ты решаешь судьбу карточек, которые говорят об одном и том же.
+
+Движок нашёл группу карточек с сильно совпадающим текстом. Твоя работа — сказать, **одна
+это сущность или разные**, и если одна, то какую карточку оставить.
+
+{group}
+
+Правила, они же критерии проверки:
+
+1. Одна сущность — один объект, о котором знание. Разные названия одного объекта, разные
+   формулировки одного процесса, выписка и её источник — это ОДНА сущность.
+2. Разные сущности — объект и действие над ним («Профиль абонента» и «Смена профиля»),
+   общее правило и частный случай с собственными условиями, две системы с похожими
+   описаниями. Совпадение текста тут — следствие общего шаблона, а не общего смысла.
+3. Оставлять надо ту, чьё **имя точнее называет сущность**, а не самую длинную. Длина
+   часто значит, что в карточку попал лишний текст источника.
+4. Сомневаешься — НЕ сливай. Разъехавшееся знание человек сведёт, а слитое по ошибке
+   разъединять придётся вручную, восстанавливая, что откуда.
+
+Ответь строго одним JSON-объектом:
+
+{{"merge": true, "keep": "<имя карточки, которую оставить>", "why": "<одна фраза>"}}
+
+либо, если сущности разные:
+
+{{"merge": false, "why": "<чем они отличаются, одна фраза>"}}"""
+
+
+def twin_groups(cwd: str, min_score: float = 0.6, limit: int = 0) -> list:
+    """Группы карточек-двойников по содержимому. Считает `kb_twins`, здесь — разбор."""
+    r = run_command(cwd, "kb_twins.py", ["--min", str(min_score)])
+    if not r["ok"]:
+        return []
+    groups, cur = [], []
+    for line in r["out"].splitlines():
+        if line.startswith("## "):
+            if cur:
+                groups.append(cur)
+            cur = []
+        elif line.startswith("- `"):
+            name = line.split("`")[1]
+            cur.append(name)
+    if cur:
+        groups.append(cur)
+    groups = [g for g in groups if len(g) > 1]
+    return groups[:limit] if limit else groups
+
+
+def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
+                deadline: float = 0.0) -> dict:
+    """Решить судьбу одной группы двойников. Решает модель, не человек. → шаг отчёта.
+
+    Пересборка базы с нуля не должна упираться в вопрос «сливать или нет»: он задавался
+    человеку сотнями раз и означал, что прогон встал. Судить о том, одна это сущность или
+    разные, можно по тексту — а значит, это работа модели.
+
+    Слияние выполняет `kb:dedupe --merge`: тело проигравшей уезжает в раздел «Слияние»,
+    синонимы объединяются, входящие ссылки переписываются, сама она уходит в архив со
+    ссылкой на победителя. Ничего не удаляется безвозвратно.
+    """
+    call = call or AG.call_role
+    step = {"group": group, "status": "оставлено", "keep": "", "why": "", "backends": []}
+    from aurora_common import KB_ROOT, card_body, frontmatter
+    import build_plan as BP
+    rows = []
+    for name in group[:12]:
+        path = BP.find_card(name, cwd)
+        if not path:
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        rows.append(f"### {name}\n"
+                    f"раздел: {os.path.relpath(os.path.dirname(path), os.path.join(cwd, KB_ROOT))}"
+                    f" · статус: {(fm.get('status') or '—').strip()}\n\n"
+                    + " ".join(card_body(text).split())[:900])
+    if len(rows) < 2:
+        step.update(status="пропущена", why="карточек группы уже нет")
+        return step
+
+    r = call(cfg, "critic", [{"role": "user", "content": PROMPT_TWINS.format(
+        group="\n\n".join(rows))}],
+        deadline=deadline or (time.time() + cfg["request_timeout"]))
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        return step
+    verdict = parse_json(r["text"]) or {}
+    step["why"] = str(verdict.get("why") or "")[:200]
+    if not verdict.get("merge"):
+        return step
+    keep = str(verdict.get("keep") or "").strip()
+    if keep not in group:
+        step.update(status="сбой", why=f"названа карточка не из группы: «{keep}»")
+        return step
+    step["keep"] = keep
+    losers = [n for n in group if n != keep]
+    step["status"] = "слито" if apply else "слил бы"
+    if not apply:
+        return step
+    for drop in losers:
+        args = ["--dupes", "--merge", keep, drop, "--apply", "--allow-dirty"]
+        res = run_command(cwd, "kb_fix.py", args)
+        if not res["ok"]:
+            step.update(status="сбой", why=f"слияние {drop}: {res['out'][-160:]}")
+            return step
+    return step
+
+
+def run_twins(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Пройти по группам двойников и решить каждую моделью. → сводка."""
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    groups = twin_groups(cwd, limit=limit)
+    steps = []
+    for i, g in enumerate(groups, 1):
+        if time.time() > budget:
+            steps.append({"group": [], "status": "стоп", "keep": "", "why":
+                          f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
+                          f"{len(groups) - i + 1}", "backends": []})
+            break
+        steps.append(solve_twins(cfg, cwd, g, apply, call, deadline=budget))
+    merged = sum(1 for s in steps if s["status"] in ("слито", "слил бы"))
+    return {"steps": steps, "groups": len(groups), "merged": merged,
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_twins(res: dict, apply: bool) -> str:
+    L = [f"# Двойники по содержимому — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Групп: **{res['groups']}** · слито: **{res['merged']}** · {res['seconds']} с", ""]
+    if not apply:
+        L += ["(dry-run) Ничего не слито. Применить: `--apply`.", ""]
+    L += ["Решает модель, а не человек: вопрос «одна это сущность или разные» решается по "
+          "тексту, и упирать в него пересборку базы значит останавливать прогон сотни раз. "
+          "Слияние обратимо — тело проигравшей уезжает в раздел «Слияние», сама она "
+          "в архив со ссылкой на победителя.", ""]
+    for s in res["steps"][:60]:
+        if s["status"] in ("слито", "слил бы"):
+            L.append(f"- **{s['keep']}** ← " + ", ".join(n for n in s["group"]
+                                                         if n != s["keep"])
+                     + (f" — {s['why']}" if s["why"] else ""))
+        elif s["status"] == "оставлено":
+            L.append(f"- оставлены раздельно: " + ", ".join(s["group"][:4])
+                     + (f" — {s['why']}" if s["why"] else ""))
+        else:
+            L.append(f"- {s['status']}: {s['why']}")
+    return "\n".join(L)
 
 
 # ------------------------------------------------------------------ задача: синонимы
@@ -705,6 +1065,135 @@ def build_left(cwd: str) -> tuple:
     return (int(left.group(1)) if left else -1, int(done.group(1)) if done else -1)
 
 
+# ------------------------------------------------------------------ словарь в промпт
+
+# Словарь проекта читается один раз на процесс: он не меняется, пока идёт разбор, а
+# обход базы на каждую карточку стоил бы дороже самого разбора.
+_TERMS: dict = {}
+_TERMS_ROOT = None
+
+
+def terms_of(root: str = "") -> dict:
+    """Расшифровки сокращений проекта. Кэш на процесс."""
+    global _TERMS, _TERMS_ROOT
+    import aurora_common as AC
+    key = os.path.abspath(root or ".")
+    if _TERMS_ROOT != key:
+        base = os.path.join(root, AC.KB_ROOT) if root else AC.KB_ROOT
+        _TERMS, _TERMS_ROOT = AC.project_terms(base), key
+    return _TERMS
+
+
+def with_terms(prompt: str, text: str, root: str = "") -> str:
+    """Промпт со словарём проекта впереди — и с запретом придумывать расшифровки.
+
+    Разбор источника видит текст, но не видит базы. Встретив незнакомое сокращение,
+    модель придумывает правдоподобную расшифровку — не по злому умыслу, а потому что
+    промпт требует определения, а сказать «не знаю» ей никто не разрешал. На живом
+    проекте так родились два выдуманных значения одной аббревиатуры; они разошлись по
+    карточкам и читаются как факт.
+
+    Лечится двумя вещами сразу, и обе тут: **дать** то, что база уже знает, и **явно
+    разрешить не знать остальное**. Одного списка мало — сокращений всегда больше, чем
+    записано; одного запрета мало — модель начнёт оставлять как есть даже то, что в базе
+    расшифровано.
+    """
+    import aurora_common as AC
+    return AC.terms_block(text, terms_of(root)) + "\n" + prompt
+
+
+# ------------------------------------------------------------------ кандидаты из базы
+
+CANDIDATES = 12         # сколько существующих карточек показать разбору
+CAND_SUMMARY = 110      # длина фразы о сути в списке кандидатов
+
+
+def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES) -> list:
+    """[(имя, раздел, о чём)] — карточки базы, близкие к теме источника.
+
+    Разбор идёт вслепую: модель видит текст источника и не видит базы. Встретив сущность,
+    про которую карточка уже есть, она заводит вторую — под другим именем, потому что
+    первое занято. На живом проекте так появились двенадцать карточек об одном процессе.
+
+    Список кандидатов — это то, чего разбору не хватало, чтобы правило «карточка есть
+    сущность» стало выполнимым: увидев карточку, модель может дополнить её вместо того,
+    чтобы придумывать имя. Ищем семантически: имена в источнике и в базе называются
+    разными словами, и совпадения строк тут не будет.
+
+    Нет индекса или он собран другой моделью — возвращаем пусто и работаем как раньше:
+    кандидаты улучшают разбор, но не являются его условием.
+    """
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import kb_embed as EMB
+        import aurora_common as AC
+    except ImportError:
+        return []
+    here = os.getcwd()
+    try:
+        if cwd:
+            os.chdir(cwd)
+        idx = EMB.load_index()
+        model = (cfg.get("embed") or {}).get("model") or ""
+        if not idx.get("cards") or (idx.get("model") and idx["model"] != model):
+            return []
+        hits = EMB.search(query[:2000], cfg, model, limit=limit * 2)
+        out = []
+        for name, _score in hits:
+            path = _card_path(name)
+            if not path:
+                continue
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            fm = AC.frontmatter(text)
+            if AC.is_placeholder(fm, text):
+                continue          # пустышке дополнять нечего: знания в ней нет
+            section = os.path.relpath(os.path.dirname(path), AC.KB_ROOT).split(os.sep)[0]
+            brief = (fm.get("summary") or "").strip().strip('"')[:CAND_SUMMARY]
+            out.append((name, section, brief))
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:                                          # noqa: BLE001
+        return []      # подсказка не обязана работать: без неё разбор идёт как прежде
+    finally:
+        os.chdir(here)
+
+
+def _card_path(stem: str) -> str:
+    """Путь карточки по имени. Пусто — карточки нет (индекс отстал от базы)."""
+    import aurora_common as AC
+    for path in AC.walk_md(AC.KB_ROOT, skip_service=True, skip_archive=True):
+        if os.path.basename(path)[:-3] == stem:
+            return path
+    return ""
+
+
+def candidates_block(rows: list) -> str:
+    """Блок для промпта. Пусто — блока нет вовсе: пустой список сбивает с толку."""
+    if not rows:
+        return ""
+    lines = ["В БАЗЕ УЖЕ ЕСТЬ КАРТОЧКИ ПО БЛИЗКИМ ТЕМАМ:", ""]
+    for name, section, brief in rows:
+        lines.append(f"  {name}  [{section}]" + (f" — {brief}" if brief else ""))
+    lines += [
+        "",
+        "Если секция говорит про ТУ ЖЕ САМУЮ сущность, что одна из них, — не заводи новую",
+        "карточку. Верни `into` с её именем: движок допишет знание в неё, и оно окажется",
+        "там, где его будут искать.",
+        "",
+        "«Та же сущность», а не «та же тема». Разные сущности — «Профиль абонента» и",
+        "«Смена профиля абонента»: второе это процесс, а не объект. Одна сущность —",
+        "«Профиль абонента» и «Профиль абонента при расторжении договора»: второе имя",
+        "описывает тот же объект в частном случае, и знание о нём принадлежит первой",
+        "карточке.",
+        "",
+        "Сомневаешься — заводи новую: лишнюю карточку человек сольёт, а знание, дописанное",
+        "не в ту, ищи потом по всей базе.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
 
 Источник: {source}
@@ -716,6 +1205,11 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
 **где границы темы** и **как она называется**.
 
 Правила, по которым тебя будут проверять:
+- **карточка — это сущность, а не пересказ документа.** Про один объект говорят разные
+  документы, и все они дописываются в ОДНУ карточку — она накапливает знание о нём. Пять
+  карточек «Профиль абонента», «Профиль абонента (из ТЗ)», «Профиль в договоре» — это
+  расколотое знание: ссылки разойдутся по копиям, правка ляжет в одну, остальные
+  продолжат говорить прежнее;
 - одна карточка — одна атомарная тема. Пересказ файла целиком карточкой не является;
 - каждая секция попадает максимум в ОДНУ карточку. Две карточки из одних и тех же
   секций — это одно тело под двумя именами, разбор с таким пересечением отклоняется;
@@ -742,6 +1236,14 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
 
 {{"cards": [{{"title": "<имя>", "sections": "1,3-5", "to": "<раздел>",
              "summary": "<одна фраза: что человек узнает из этой карточки>"}}]}}
+
+Карточка, которая уже есть в базе (см. список выше), записывается иначе — без имени,
+раздела и summary: у неё они свои, и переписывать их незачем.
+
+{{"cards": [{{"into": "<имя существующей карточки>", "sections": "3-5"}}]}}
+
+Оба вида можно смешивать в одном ответе: часть секций дописывается в существующие
+карточки, часть образует новые.
 
 Отмечать источник пустым можно ТОЛЬКО если в секциях действительно нет знания:
 пустая страница, одно оглавление, только служебная информация. Текст секций показан
@@ -781,13 +1283,21 @@ PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источник
 Предложенный разбор:
 {proposal}
 
-Ты проверяешь ТОЛЬКО две вещи — границы тем и имена:
+Ты проверяешь ТОЛЬКО границы тем, имена и то, куда знание кладут:
 
 1. Нет ли карточки, которая просто пересказывает файл целиком (все секции в одной
    карточке при разных темах — это она).
 2. Осмысленны ли имена: по имени должно быть понятно, какое знание внутри. «Таблица 1»,
    «Раздел 2», имя файла — не годятся.
 3. Подходит ли раздел базы каждой карточке.
+4. **Не заводится ли новое имя под сущность, которая в базе уже есть.** Список
+   существующих карточек показан выше; запись `{{"into": "<имя>"}}` означает «дописать
+   в неё». Новая карточка под тем же объектом — это расколотое знание: ссылки разойдутся
+   по копиям, правка ляжет в одну, остальные продолжат говорить прежнее.
+   Отклоняй, если имя новой карточки называет ТОТ ЖЕ объект, что карточка из списка.
+   Не отклоняй, если объекты разные: «Профиль абонента» и «Смена профиля» — разное.
+5. **Не дописывают ли знание в чужую карточку.** `into` на карточку про другой объект
+   хуже лишнего имени: знание уедет туда, где его не найдут, и смешается с чужим.
 
 Чего проверять НЕ надо, и за что отклонять нельзя:
 
@@ -838,22 +1348,26 @@ def check_cards(cards: list, sections: list) -> str:
     service = {n: title for n, title, _s, _p in sections if is_service_section(title)}
     seen: dict = {}
     for c in cards:
+        name = c.get("title") or c.get("into") or "—"
+        if c.get("into") and c.get("title"):
+            return (f"у карточки «{name}» указаны сразу `into` и `title`: либо знание "
+                    "дописывается в существующую, либо заводится новая")
         nums = section_set(c.get("sections", ""))
         if not nums:
-            return f"у карточки «{c.get('title')}» не разобраны номера секций"
+            return f"у карточки «{name}» не разобраны номера секций"
         unknown = nums - known
         if unknown:
-            return (f"карточка «{c.get('title')}» ссылается на секции, которых нет: "
+            return (f"карточка «{name}» ссылается на секции, которых нет: "
                     + ", ".join(str(n) for n in sorted(unknown)))
         hit = sorted(nums & set(service))
         if hit:
-            return (f"в карточку «{c.get('title')}» попала служебная секция "
+            return (f"в карточку «{name}» попала служебная секция "
                     f"{hit[0]} «{service[hit[0]]}» — это не знание")
         for n in nums:
             if n in seen:
-                return (f"секция {n} попала и в «{seen[n]}», и в «{c.get('title')}» — "
+                return (f"секция {n} попала и в «{seen[n]}», и в «{name}» — "
                         "это две карточки с одним телом, а не две темы")
-            seen[n] = c.get("title")
+            seen[n] = name
     return ""
 
 
@@ -876,7 +1390,11 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         + f"\n     {prev}"
         for n, title, size, prev in sections)
 
-    prompt = PROMPT_BUILD.format(source=source, sections=listing)
+    # Кандидаты из базы — впереди всего: модель должна увидеть, что карточка про эту
+    # сущность уже есть, ДО того как начнёт придумывать ей имя.
+    cands = candidates_block(candidates_for(cwd, cfg, listing))
+    prompt = cands + with_terms(PROMPT_BUILD.format(source=source, sections=listing),
+                                listing, cwd)
     attempt, note_back = 0, ""
     while True:
         attempt += 1
@@ -934,10 +1452,18 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
 
     made = []
     for card in cards:
-        args = ["--card", str(card["title"]), "--source", source,
-                "--sections", str(card["sections"]), "--to", str(card.get("to") or "Concepts")]
-        if card.get("summary"):
-            args += ["--summary", str(card["summary"])[:300]]
+        # `into` — знание дописывается в существующую карточку: про одну сущность
+        # говорят несколько документов, и все они копятся в ней. `title` — новая карточка.
+        into_name = str(card.get("into") or "").strip()
+        if into_name:
+            args = ["--append", into_name, "--source", source,
+                    "--sections", str(card["sections"])]
+        else:
+            args = ["--card", str(card["title"]), "--source", source,
+                    "--sections", str(card["sections"]),
+                    "--to", str(card.get("to") or "Concepts")]
+            if card.get("summary"):
+                args += ["--summary", str(card["summary"])[:300]]
         if apply:
             args.append("--apply")
         res = run_build_plan(cwd, args)
@@ -947,7 +1473,9 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if not res["ok"]:
             step.update(status="сбой", note=f"карточка не собрана: {res['out'][-200:]}")
             return step
-        made.append(f"«{card['title']}» ← секции {card['sections']} → {card.get('to') or 'Concepts'}")
+        made.append(f"«{into_name}» ← дописаны секции {card['sections']}" if into_name
+                    else f"«{card['title']}» ← секции {card['sections']} → "
+                         f"{card.get('to') or 'Concepts'}")
 
     if apply:
         res = run_build_plan(cwd, ["--done", source, "--cards", str(len(made))])
@@ -1018,8 +1546,8 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     # и урезать его до размеров узкого значит потерять знание ради модели, которая и
     # не отвечала.
     r = call(cfg, "worker", [], deadline=deadline,
-             trim=(whole, lambda part: [{"role": "user", "content":
-                                         PROMPT_NO_SECTIONS.format(source=source, text=part)}]))
+             trim=(whole, lambda part: [{"role": "user", "content": with_terms(
+                 PROMPT_NO_SECTIONS.format(source=source, text=part), part, cwd)}]))
     if not r["ok"]:
         step.update(status="сбой", note="; ".join(r["log"][-2:]))
         return step
@@ -1058,9 +1586,8 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
         # на другой бэкенд, и мерить его чужой меркой значит спросить мнение о тексте,
         # которого он не видел.
         c = call(cfg, "critic", [], deadline=deadline,
-                 trim=(whole, lambda part: [{"role": "user", "content":
-                                             PROMPT_NO_SECTIONS.format(source=source,
-                                                                       text=part)}]))
+                 trim=(whole, lambda part: [{"role": "user", "content": with_terms(
+                     PROMPT_NO_SECTIONS.format(source=source, text=part), part, cwd)}]))
         if c["ok"]:
             step["backends"].append((c["backend"], c["model"]))
             step["degraded"] = step["degraded"] or c["backend"] != 1
@@ -1261,6 +1788,12 @@ PROMPT_DISTILL = """Ты превращаешь перенесённый тек�
    исключения. Вёрстку исходника, «см. рисунок ниже», номера разделов и повторы выбрось.
 3. Числа, сроки, коды и названия систем переноси дословно. Округлять и пересказывать
    своими словами их нельзя.
+3a. Текст мог прийти из НЕСКОЛЬКИХ источников — они разделены подзаголовками `### путь`.
+   Это одна сущность, увиденная с разных сторон: собери из них один тезис, а не пересказ
+   по документам. Источники **расходятся** в числе, сроке или условии — назови оба
+   значения и скажи, откуда каждое: «по одному источнику 5 дней, по другому 3». Усреднять,
+   выбирать «более правдоподобное» или молча брать последнее нельзя: расхождение в базе —
+   это находка, а не шум, и разбирать его человеку.
 4. Пиши по-русски, от 3 до 15 строк. Если в тексте знания нет вовсе (одна вёрстка,
    пустая таблица) — верни ровно `ПУСТО`.
 5. Не выдумывай ссылки на другие карточки: связи расставляет движок.
@@ -1330,6 +1863,11 @@ PROMPT_MOMUS = """Ты Момус: проверяешь ответ на вопр
    настоящим.
 4. Оговорки «в базе этого нет», «требуется уточнение» проверять не нужно — это честность,
    а не утверждение.
+5. **Расшифровка сокращения — такое же утверждение, как число.** «ДПП (документ о
+   предстоящей поставке)» имеет опору, только если контекст расшифровывает ДПП именно
+   так. Нет расшифровки в контексте — НЕТ ОПОРЫ, даже если раскрытие выглядит очевидным
+   и складывается по буквам. Придуманная расшифровка неотличима от настоящей и уезжает
+   в требования; сокращение, оставленное сокращением, безвредно.
 
 Последняя строка — ровно одна из двух:
 
@@ -1451,6 +1989,53 @@ def threads(cwd: str) -> list:
 # отмечается и в сессии, и в шапке готового документа: по ней видно, докуда дошли.
 
 MAKE_STAGES = ("enriched", "planned", "drafted", "reviewed", "checked")
+
+PROMPT_EXTRACT = """Ты читаешь карточку знания и ищешь в ней ЧУЖИЕ определения.
+
+Карточка: {title}
+Её тезис:
+
+{thesis}
+
+{known}
+
+Чужое определение — это когда внутри рассказа об одном объекте попутно объясняется
+ДРУГОЙ, самостоятельный объект. Пример:
+
+  «Аналитический баланс получает информацию из подсистемы ФЦОД, которая является
+   частью проекта МинФин по обработке платежей.»
+
+Здесь объясняется ФЦОД — отдельная сущность, и её определение живёт не здесь. Оно
+переедет в свою карточку, а на его месте останется ссылка:
+
+  «Аналитический баланс получает информацию из подсистемы [[ФЦОД]].»
+
+Найди такие места. На каждое верни:
+
+  "term"       как называется сущность — так, как её будут искать;
+  "definition" КУСОК ТЕКСТА ТЕЗИСА, который является её определением, ДОСЛОВНО,
+               символ в символ, без кавычек вокруг и без правок;
+  "keep"       чем заменить этот кусок в исходной карточке: обычно пусто (тогда движок
+               подставит ссылку) либо короткая связка вроде «подсистемы».
+
+Ответь строго одним JSON-объектом:
+
+{{"extract": [{{"term": "ФЦОД", "definition": "которая является частью проекта МинФин по обработке платежей", "keep": ""}}]}}
+
+Правила, они же критерии проверки:
+
+1. `definition` обязан встречаться в тезисе ДОСЛОВНО. Движок ищет его подстрокой; не
+   нашёл — выделение отменяется целиком. Не пересказывай, не исправляй опечатки, не
+   меняй падеж и не дописывай точку.
+2. Выделяй только **самостоятельные сущности**: систему, документ, роль, понятие. Не
+   выделяй свойства объекта карточки, условия, сроки и шаги процесса — они про неё саму.
+3. Не трогай то, что и так ссылка (`[[…]]`), и то, ради чего карточка написана: её
+   собственное определение остаётся в ней.
+4. Если сущность уже есть в базе (список выше), всё равно верни её: движок допишет
+   определение в существующую карточку, а не заведёт вторую.
+5. Ничего не нашёл — верни {{"extract": []}}. Пустой ответ здесь нормален: большинство
+   карточек говорят ровно о своём объекте."""
+
 
 PROMPT_MAKE_PLAN = """{method}Ты планировщик. Аналитик хочет получить документ «{title}».
 
@@ -2189,7 +2774,8 @@ MAX_PARTS = 3
 # Граница между документом и производством. Публикация режет по ней: в чистовик уходит
 # только то, что выше. Маркер ставит тот же код, что пишет разделы ниже, — разойтись им
 # негде, а список служебных заголовков в двух местах разошёлся бы на шестом разделе.
-from aurora_common import MADE_MARK          # noqa: E402 — граница одна на движок
+from aurora_common import (MADE_MARK, card_sources,  # noqa: E402 — граница одна на движок
+                           sources_block)
 
 # Правило «критерии без технологий» включается ТИПОМ артефакта, а не глобально: у ОПЗ и
 # проектного решения стек — это предмет документа, и общее правило заставило бы критика
@@ -2369,6 +2955,9 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     """
     call = call or AG.call_role
     step = {"card": os.path.basename(path), "status": "пропущена", "note": "", "backends": []}
+    # Корень проекта — то, что над разделом базы: карточка лежит в `<корень>/<база>/<раздел>/`.
+    # Он нужен словарю сокращений: тот читается из базы, а не из папки процесса.
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
     text = open(path, encoding="utf-8", errors="ignore").read()
     head, body = AG.split_frontmatter(text) if hasattr(AG, "split_frontmatter") else (None, None)
     if head is None:
@@ -2443,7 +3032,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     was_thesis = (source_part or "").strip()
     changed = ""
     if len(parts) == 1 and was_thesis:
-        a = once(PROMPT_REDISTILL.format(title=title, was=was_thesis[:4000], body=parts[0]))
+        a = once(with_terms(PROMPT_REDISTILL.format(
+            title=title, was=was_thesis[:4000], body=parts[0]), parts[0], root))
         if not a["ok"]:
             step.update(status="сбой", note="; ".join(a["log"][-2:]))
             return step
@@ -2453,7 +3043,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         changed = (m[1].strip() if len(m) > 1 else "")
         step["redistilled"] = True
     elif len(parts) == 1:
-        a = once(PROMPT_DISTILL.format(title=title, body=parts[0]))
+        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]),
+                            parts[0], root))
         if not a["ok"]:
             step.update(status="сбой", note="; ".join(a["log"][-2:]))
             return step
@@ -2464,8 +3055,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         step["parts"] = len(parts)
         notes = []
         for i, chunk in enumerate(parts, 1):
-            r = once(PROMPT_DISTILL_PART.format(n=i, total=len(parts), title=title,
-                                                body=chunk))
+            r = once(with_terms(PROMPT_DISTILL_PART.format(
+                n=i, total=len(parts), title=title, body=chunk), chunk, root))
             if not r["ok"]:
                 step.update(status="сбой", note=f"часть {i}: " + "; ".join(r["log"][-2:]))
                 return step
@@ -2501,13 +3092,10 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # строкой: дата, документ-основание, что поменялось и прежний тезис. Источник в
     # историю не кладём — он есть в зеркале по `source:`, а прежний тезис невосстановим.
     if step.get("redistilled"):
-        src_name = (AG.frontmatter_of(text).get("source") if hasattr(AG, "frontmatter_of")
-                    else "") or ""
-        if not src_name:
-            from aurora_common import frontmatter as _fm2
-            src_name = (_fm2(text).get("source") or "").strip().strip('"')
+        from aurora_common import card_sources as _srcs
+        src_name = ", ".join(f"`{s}`" for s in _srcs(text)[:3])
         line = (f"- {TODAY_STR}: тезис пересобран — источник изменился"
-                + (f" (`{src_name}`)" if src_name else "") + ". "
+                + (f" ({src_name})" if src_name else "") + ". "
                 + (changed or "что именно изменилось, модель не назвала") + "\n"
                 + "  <details><summary>прежний тезис</summary>\n\n"
                 + "\n".join("  " + l for l in was_thesis.splitlines()) + "\n\n  </details>")
@@ -2621,7 +3209,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             open(dest, "w", encoding="utf-8").write(
                 f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
                 f'type: {fm.get("type") or "concept"}\nkind: {fm.get("kind") or "knowledge"}\n'
-                + (f'source: {fm["source"]}\n' if fm.get("source") else "")
+                + sources_block(card_sources(text))
                 + f'part_of: "[[{stem}]]"\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
                 f'built: machine\nrelated: [{related}]\n---\n\n# {name}\n\n{chunk}\n')
         # Исходная карточка остаётся входом: тело уехало в части, вход и провенанс здесь.
@@ -3034,7 +3622,8 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
 def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
-                    choices=["aliases", "build", "ask", "distill", "make"],
+                    choices=["aliases", "build", "ask", "distill", "extract",
+                             "twins", "make"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
@@ -3230,6 +3819,12 @@ def main() -> int:
     elif a.task == "distill":
         res = run_distill(cfg, cwd, a.apply, a.limit, momus=not a.no_momus)
         text = report_distill(res, a.apply)
+    elif a.task == "extract":
+        res = run_extract(cfg, cwd, a.apply, a.limit)
+        text = report_extract(res, a.apply)
+    elif a.task == "twins":
+        res = run_twins(cfg, cwd, a.apply, a.limit)
+        text = report_twins(res, a.apply)
     elif a.task == "build":
         res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
         text = report_build(res, cp, a.apply, a.critic, cfg)
@@ -3244,6 +3839,21 @@ def main() -> int:
     (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
 
+    if a.task == "twins":
+        if a.apply and res["merged"]:
+            done = commit_result(cwd, "agent:twins", f"слито групп: {res['merged']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 0
+    if a.task == "extract":
+        # Ничего не вынести — не провал: большинство карточек говорят ровно о своём
+        # объекте, и пустой прогон здесь нормален.
+        if a.apply and res["made"]:
+            done = commit_result(cwd, "agent:extract",
+                                 f"вынесено определений: {res['made']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 0
     if a.task == "distill":
         # Свой вердикт: успех — переписанные карточки, находка — утверждения без опоры.
         made = sum(1 for s in res["steps"] if s["status"] == "переписана")

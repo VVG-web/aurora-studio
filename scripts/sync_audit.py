@@ -40,7 +40,7 @@ import sys
 from datetime import date, datetime
 
 import sources_registry as R
-from aurora_common import (KB_ROOT, TRUSTED, frontmatter, git_guard,
+from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guard,
                            split_frontmatter, walk_md, with_fields)
 from sources_core import ASSET_DIR_RE, SERVICE_RE, cited_by_cards, nfc
 
@@ -366,10 +366,14 @@ def drift_collect(only_trusted: bool) -> tuple:
         except Exception:
             continue
         fm = frontmatter(text)
-        src = (fm.get("source") or "").strip()
+        # Сверяем каждый источник карточки: накопленная привязана к нескольким зеркалам,
+        # и проверка только первого молча пропустила бы пропажу остальных.
+        srcs = [s for s in card_sources(text)
+                if s and not s.startswith("http") and "/" in s]
         status = (fm.get("status") or "").strip()
-        if not src or src.startswith("http") or "/" not in src:
+        if not srcs:
             continue
+        src = srcs[0]
         if only_trusted and status not in TRUSTED:
             continue
         total += 1

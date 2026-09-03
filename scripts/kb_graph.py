@@ -49,7 +49,8 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import card_body, card_stem, frontmatter, git_guard  # noqa: E402
+from aurora_common import (card_body, card_sources, card_stem,  # noqa: E402
+                           frontmatter, git_guard)
 
 CONF_DIR = "Sources/Confluence"
 JIRA_DIR = "Sources/JIRA"
@@ -266,10 +267,9 @@ def cards_by_source(conf_root: str, jira_root: str) -> dict:
             if not f.endswith(".md") or f.startswith("_"):
                 continue
             path = os.path.join(dirpath, f)
-            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
-            src = (fm.get("source") or "").strip().strip('"')
-            if src:
-                out.setdefault(src.replace("\\", "/"), []).append(path)
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            for src in card_sources(text):
+                out.setdefault(src, []).append(path)
     return out
 
 

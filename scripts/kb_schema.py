@@ -27,10 +27,11 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (KB_ROOT, RETIRED_FIELDS, RETIRED_STATUS, frontmatter, git_guard,
+from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_FIELDS, RETIRED_STATUS,
+                           frontmatter, git_guard, sources_block,
                            is_service, set_field, split_frontmatter, walk_md)
 
-CURRENT = 4
+CURRENT = 6
 TODAY = date.today().isoformat()
 
 # Разделы базы → тип карточки: та же таблица, по которой достраивает тип `kb:repair`.
@@ -81,6 +82,43 @@ def m4(head: str, section: str) -> tuple:
     return head, (["убрано trust"] if head != before else [])
 
 
+def m5(head: str, section: str) -> tuple:
+    """4 → 5: пустышка получает свой статус `placeholder` (1.100.31).
+
+    Карточка, заведённая под ссылку, помечалась тегом `заготовка` при `status: draft`.
+    Тег читали пять скриптов пятью разными выражениями, и каждое новое место про
+    пустышки забывало: они уходили в семантический индекс и всплывали в поиске как
+    термины, у которых есть определение, оттесняя карточки, где определение написано.
+
+    Статус решает это одним правилом: пустышка выведена из поиска, контекста и замеров,
+    и видна отдельной картой. Меняем только `draft` — карточку, которую человек успел
+    довести до знания, ступень не трогает.
+    """
+    fm = frontmatter("---" + head + "\n---\n")
+    tags = (fm.get("tags") or "")
+    status = (fm.get("status") or "").strip().strip('"')
+    if "заготовка" not in tags or status not in ("draft", "imported", ""):
+        return head, []
+    head = set_field(head, "status", PLACEHOLDER)
+    return head, [f"status {status or '—'} → {PLACEHOLDER} (пустышка)"]
+
+
+def m6(head: str, section: str) -> tuple:
+    """5 → 6: происхождение стало списком `sources:` (1.100.32).
+
+    Карточка — сущность, а не пересказ документа: про один объект говорят несколько
+    артефактов, и все они в неё накапливаются (`knowledge-rules.md`, раздел 4). Одно
+    поле `source:` этого не вмещало — после первого же дополнения оно называло бы один
+    источник из пяти, и по нему считались бы доверие, сверка зеркал и трассировка.
+    """
+    fm = frontmatter("---" + head + "\n---\n")
+    one = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
+    if not one or re.search(r"^sources:", head, re.M):
+        return head, []
+    head = re.sub(r"^source:.*$\n?", sources_block([one]), head, count=1, flags=re.M)
+    return head, ["source → sources (список источников)"]
+
+
 # Что убрала каждая ступень — записано здесь навсегда. Брать живой список выведенных
 # полей нельзя: он растёт, и прошлая ступень начинает делать не то, что делала.
 V3_DROPPED = ("audience", "confirmed_by")
@@ -106,6 +144,8 @@ MIGRATIONS = {
     2: ("статус доверия, trust и тип раздела в каждой карточке", m2),
     3: ("удалены ступень canonical и поле audience", m3),
     4: ("удалено поле trust: доверие выражает status", m4),
+    5: ("пустышки получили свой статус placeholder и выведены из выдачи", m5),
+    6: ("происхождение стало списком sources: карточка копит знание из многих источников", m6),
 }
 
 

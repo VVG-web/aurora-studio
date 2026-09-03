@@ -30,7 +30,13 @@ SERVICE_STATUS = "index"
 # доверенного источника, `draft` — из недоверенного либо недоказанного. Прежние
 # `imported`/`in-review`/`verified` означали ступени ручной приёмки, которой больше нет:
 # доверие считает движок по статусам задач, а не человек по ощущению.
-STATUSES = ("knowledge", "draft", "deprecated", SERVICE_STATUS)
+# `placeholder` — карточка-пустышка: имя занято ссылкой, знания в ней нет. Отдельный
+# статус, а не метка в тегах: пустышку надо уметь исключать из выдачи одним правилом,
+# а метку читали пять скриптов пятью разными выражениями, и каждое новое место про неё
+# забывало. Из поиска, контекста и замеров пустышка выведена целиком: она не знание, и
+# отвечать ею на вопрос — обещать содержание, которого нет.
+PLACEHOLDER = "placeholder"
+STATUSES = ("knowledge", "draft", PLACEHOLDER, "deprecated", SERVICE_STATUS)
 # Что попадает в строгий контекст: только знание из доверенного источника.
 KNOWLEDGE = ("knowledge",)
 
@@ -123,18 +129,23 @@ def frontmatter(text: str) -> dict:
     return fm
 
 
-def aliases(text: str) -> list:
-    """Алиасы карточки: поддерживаются и inline-список, и блочный."""
+def list_field(text: str, field: str) -> list:
+    """Список из шапки: поддерживаются и inline-запись, и блочная.
+
+    Один разбор на все списочные поля. Написан он был под `aliases`, а когда у карточки
+    появилось второе такое поле (`sources`), копировать его значило завести второй способ
+    читать одно и то же — и разойтись на первой же правке.
+    """
     head, _ = split_frontmatter(text)
     if head is None:
         return []
-    m = re.search(r"^aliases:\s*\[(.*)\]", head, re.M)
+    m = re.search(rf"^{re.escape(field)}:\s*\[(.*)\]", head, re.M)
     if m:
         inline = [a.strip().strip('"').strip("'") for a in m.group(1).split(",") if a.strip()]
         return list(dict.fromkeys(inline))
     out, inside = [], False
     for line in head.splitlines():
-        if line.startswith("aliases:"):
+        if line.startswith(field + ":"):
             inside = True
             continue
         if inside:
@@ -143,10 +154,43 @@ def aliases(text: str) -> list:
                 out.append(am.group(1))
             else:
                 inside = False
-    # Повтор синонима внутри одной карточки — не конфликт с другой карточкой,
-    # а мусор извлечения. Пока он не снимался, ремонт видел «имя занято дважды»
-    # и требовал разбирать спор, которого нет: карточка-то одна.
     return list(dict.fromkeys(out))
+
+
+def aliases(text: str) -> list:
+    """Алиасы карточки.
+
+    Повтор синонима внутри одной карточки — не конфликт с другой карточкой, а мусор
+    извлечения. Пока он не снимался, ремонт видел «имя занято дважды» и требовал
+    разбирать спор, которого нет: карточка-то одна.
+    """
+    return list_field(text, "aliases")
+
+
+def card_sources(text: str) -> list:
+    """Откуда в карточке знание. Список путей, в порядке появления.
+
+    Карточка — сущность, а не пересказ документа: про один объект говорят пять
+    артефактов, и все пять она в себя накапливает (`knowledge-rules.md`, раздел 4).
+    Одно поле `source:` этого не вмещало — после первого же дополнения оно начинало
+    врать, называя один источник из пяти.
+
+    Читается и старая запись: база, не прошедшая миграцию схемы, отдаёт свой
+    единственный `source:`. Писать так больше нельзя — только `sources:`.
+    """
+    got = list_field(text, "sources")
+    if got:
+        return [s for s in (x.strip() for x in got) if s]
+    one = (frontmatter(text).get("source") or "").strip().strip('"').replace("\\", "/")
+    return [one] if one else []
+
+
+def sources_block(paths: list) -> str:
+    """Список источников так, как он пишется в шапку."""
+    uniq = list(dict.fromkeys(p.replace("\\", "/").strip() for p in paths if p and p.strip()))
+    if not uniq:
+        return "sources: []\n"
+    return "sources:\n" + "".join(f'  - "{p}"\n' for p in uniq)
 
 
 def body(text: str) -> str:
@@ -506,8 +550,21 @@ class Card:
         return (self.fm.get("status") or "").strip()
 
     @property
+    def sources(self) -> list:
+        """Откуда в карточке знание. Список: карточка — сущность, а не пересказ одного
+        документа, и про один объект говорят несколько артефактов."""
+        return card_sources(self.text)
+
+    @property
     def source(self) -> str:
-        return (self.fm.get("source") or "").strip().strip('"').replace("\\", "/")
+        """Первый источник — для мест, где нужен один: показать, отнести к документу.
+
+        Судить по нему о происхождении **нельзя**: у накопленной карточки источников
+        несколько, и первый — просто тот, с которого она началась. Где важна полнота,
+        читайте `sources`.
+        """
+        got = self.sources
+        return got[0] if got else ""
 
     @property
     def tags(self) -> str:
@@ -515,11 +572,30 @@ class Card:
 
     @property
     def is_stub(self) -> bool:
-        """Заготовка: имя есть, знания пока нет (`kb:repair --stubs`)."""
-        return "заготовка" in self.tags or "_Заготовка:" in self.text
+        """Пустышка: имя есть, знания пока нет (`kb:repair --stubs`)."""
+        return is_placeholder(self.fm, self.text)
 
     def links(self) -> list:
         return link_targets(self.text)
+
+
+# Тело пустышки, как его пишет `kb:repair --stubs`. Читается ради баз, заведённых до
+# появления статуса: там пустышка помечена только тегом и этой строкой.
+STUB_BODY = "_Заготовка:"
+
+
+def is_placeholder(fm: dict, text: str = "") -> bool:
+    """Пустышка ли карточка — единственное место, где это решается.
+
+    Раньше вопрос решался выражением `"заготовка" in tags or "_Заготовка:" in text`,
+    и жило оно в пяти скриптах порознь. Каждое новое место про пустышки забывало: они
+    попадали в семантический индекс и всплывали в поиске как термины, у которых есть
+    определение. Теперь признак один — `status: placeholder`; тег и строка в теле
+    читаются только ради баз, заведённых до этой версии.
+    """
+    if (fm.get("status") or "").strip().strip('"') == PLACEHOLDER:
+        return True
+    return "заготовка" in (fm.get("tags") or "") or STUB_BODY in (text or "")
 
 
 def load_cards(root: str = KB_ROOT, skip_service: bool = True,
@@ -552,3 +628,122 @@ def body_hash(body: str) -> str:
     import hashlib
     norm = "\n".join(line.rstrip() for line in (body or "").strip().splitlines())
     return hashlib.md5(norm.encode("utf-8")).hexdigest()[:12]
+
+
+# ------------------------------------------------------------------ словарь проекта
+
+# Заголовки справочников, где лежат расшифровки: имя файла или title карточки.
+TERMS_HINT = re.compile(r"(?i)аббревиатур|abbrev|сокращен|термин|глоссар|glossary")
+# Строка таблицы вида `| ПРФ | профиль обслуживания абонента … |`
+TERMS_ROW = re.compile(r"^\|\s*\**([^|*]{2,40}?)\**\s*\|\s*([^|]{8,400}?)\s*\|", re.M)
+# Что считаем сокращением: заглавные буквы, цифры и дефис. «ПРФ», «ГП-3», «BP-005».
+ABBR = re.compile(r"\b([A-ZА-ЯЁ][A-ZА-ЯЁ0-9]{1,}(?:-[A-ZА-ЯЁ0-9]+)*)\b")
+
+
+def project_terms(root: str = KB_ROOT) -> dict:
+    """{сокращение: расшифровка} из глоссария и справочников базы.
+
+    Зачем это вообще есть. Модель, разбирающая источник, видит в тексте «ГП-3» и не знает,
+    что это. Знания у неё нет, а промпт требует определения — и она **придумывает
+    правдоподобную расшифровку**. На живом проекте так появились три разных значения
+    одной аббревиатуры, два из них выдуманы, и разошлись по карточкам, откуда их читают
+    как факт. Ошибка неотличима от настоящего знания: выглядит она точно так же.
+
+    Поэтому расшифровки подаются модели вместе с текстом. Берём их оттуда, где они
+    записаны человеком или перенесены из источника дословно: таблицы справочников с
+    «аббревиатуры» в названии и карточки раздела `Glossary` (имя карточки — сам термин).
+    Справочник главнее: его строки перенесены из источника, а карточку писала модель.
+    """
+    ref: dict = {}
+    gloss: dict = {}
+    if not os.path.isdir(root):
+        return {}
+    for path in walk_md(root, skip_service=True, skip_archive=True):
+        rel = path.replace("\\", "/")
+        try:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        fm = frontmatter(text)
+        title = (fm.get("title") or os.path.basename(path)[:-3]).strip().strip('"')
+        section = rel.split(KB_ROOT.replace("\\", "/") + "/", 1)[-1].split("/")[0]
+        body = card_body(text)
+        if TERMS_HINT.search(os.path.basename(path) + " " + title):
+            for abbr, mean in TERMS_ROW.findall(body):
+                abbr, mean = abbr.strip(), clean_meaning(mean, abbr)
+                # Побеждает более полная расшифровка: справочников с одним термином
+                # бывает несколько, и «документ о предстоящей поставке» без «товаров из
+                # стран ЕАЭС» — уже не то определение, ради которого список собирали.
+                if 2 <= len(abbr) <= 40 and mean and "---" not in abbr:
+                    if len(mean) > len(ref.get(abbr, "")):
+                        ref[abbr] = mean
+        if section == "Glossary":
+            first = next((" ".join(p.split()) for p in re.split(r"\n\s*\n", body)
+                          if p.strip() and not p.strip().startswith(("#", "|", ">", "-"))), "")
+            mean = clean_meaning(first, title)
+            if mean:
+                gloss.setdefault(title, mean)
+    return {**gloss, **ref}
+
+
+# Заготовка — не определение. Карточка, заведённая под ссылку, честно пишет об этом в
+# теле; подать такой текст как расшифровку значит научить модель, что «ОЭДО — заготовка».
+STUB_MARK = re.compile(r"(?i)заготовк|знания пока нет|содержание не написано|наполни")
+
+
+def clean_meaning(text: str, term: str = "", limit: int = 180) -> str:
+    """Расшифровка, годная для промпта: без разметки, без повтора термина, короткая.
+
+    Тело карточки начинается с «**Термин** — определение»: это верстка для человека,
+    а в списке расшифровок она даёт «ЕНП — **Единый налоговый платёж** — платёж…».
+    """
+    s = " ".join((text or "").split())
+    if not s or STUB_MARK.search(s):
+        return ""
+    s = re.sub(r"[*_`]", "", s).strip()
+    if term:
+        # «Термин — определение» и «Термин: определение» в начале строки — повтор имени
+        s = re.sub(r"^" + re.escape(term) + r"\s*[—–:-]\s*", "", s).strip()
+    s = s.lstrip("—–-: ").strip()
+    if len(s) < 8:
+        return ""
+    return (s[:limit].rstrip() + "…") if len(s) > limit else s
+
+
+def terms_in(text: str, terms: dict, limit: int = 40) -> dict:
+    """Только те расшифровки, которые пригодятся вот этому тексту.
+
+    Весь словарь в каждый промпт не кладём: на большом проекте он вытеснит сам источник,
+    а лишние расшифровки модель начнёт пристёгивать к тексту, где их нет.
+    """
+    if not terms:
+        return {}
+    seen = {a for a in ABBR.findall(text or "")}
+    hit = {a: m for a, m in terms.items() if a in seen}
+    if len(hit) <= limit:
+        return hit
+    return dict(sorted(hit.items(), key=lambda kv: -len(kv[0]))[:limit])
+
+
+def terms_block(text: str, terms: dict, limit: int = 40) -> str:
+    """Блок для промпта: известные расшифровки плюс запрет придумывать остальные.
+
+    Запрет печатается ВСЕГДА, даже когда ни одного термина не нашлось: он и есть главная
+    часть. Список помогает там, где знание уже записано; запрет — везде.
+    """
+    hit = terms_in(text, terms, limit)
+    lines = ["СОКРАЩЕНИЯ ПРОЕКТА — единственно верные расшифровки:"]
+    if hit:
+        lines += [f"  {a} — {m}" for a, m in sorted(hit.items())]
+    else:
+        lines.append("  (в базе пока не записано ни одного — тем более не выдумывай)")
+    lines += [
+        "",
+        "Аббревиатуру, которой нет ни в этом списке, ни расшифрованной в самом тексте",
+        "источника, ты НЕ знаешь. Не расшифровывай её, не подбирай похожую по смыслу и не",
+        "заменяй её «понятным» словом — оставь ровно так, как она написана. Выдуманная",
+        "расшифровка неотличима от настоящей: по ней пишут требования, и она уходит в",
+        "разработку. Не знать — допустимо, придумать — нет.",
+        "",
+    ]
+    return "\n".join(lines)

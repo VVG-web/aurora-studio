@@ -26,7 +26,9 @@ import sys
 from collections import Counter
 from datetime import date
 
-from aurora_common import (TRUSTED, config_value, frontmatter, inbound_counts,
+from aurora_common import (TRUSTED, card_sources, config_value, frontmatter,
+                           inbound_counts,
+                           is_placeholder,
                            SERVICE_STATUS, link_targets, load_cards, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
@@ -79,7 +81,7 @@ def collect() -> dict:
             trust_why["задачи ещё в работе"] += 1
         else:
             trust_why["доверие не считалось"] += 1
-        if "заготовка" in (fm.get("tags") or "") or "_Заготовка:" in text:
+        if is_placeholder(fm, text):
             stubs.append(stem)
         sections[section] += 1
         if status in TRUSTED:
@@ -88,9 +90,10 @@ def collect() -> dict:
                 expired.append((rb, stem, fm.get("owner", "—")))
             if not (fm.get("owner") or "").strip():
                 no_owner.append(stem)
-        src = (fm.get("source") or "").strip()
-        if src and ("/" in src) and not src.startswith("http"):
-            probe = src.split("#")[0].strip().strip('"')
+        for src in card_sources(text):
+            if not ("/" in src) or src.startswith("http"):
+                continue
+            probe = src.split("#")[0].strip()
             if probe.startswith(("Raw/", "Sources/", "Deliverables/")) and not os.path.exists(probe):
                 missing_source.append((stem, probe))
 

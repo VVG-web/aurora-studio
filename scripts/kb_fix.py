@@ -41,7 +41,9 @@ import subprocess
 import sys
 import unicodedata
 
-from aurora_common import (LINK_RE, RETIRED_FIELDS, RETIRED_STATUS, Card as BaseCard,
+from aurora_common import (LINK_RE, PLACEHOLDER, RETIRED_FIELDS, RETIRED_STATUS,
+                           STUB_BODY, Card as BaseCard, card_body, card_sources,
+                           is_placeholder,
                            aliases as card_aliases, card_filename as normalize_title,
                            frontmatter,
                            fix_mixed_script, fold, fold_hard,
@@ -59,12 +61,10 @@ TODAY = date.today().isoformat()
 LINK_RE = re.compile(r"(!?)\[\[([^\]|#]+)((?:#[^\]|]*)?)(?:\|([^\]]*))?\]\]")
 
 # Служебные файлы навигации/механики — не карточки знаний.
-SERVICE_NAMES = {"index.md", "_index.md", "manifest.json", "README.md"}
-
-
-def is_service(path: str) -> bool:
-    base = os.path.basename(path)
-    return base in SERVICE_NAMES or base.startswith("_") or "/meta/" in path or "/_meta/" in path
+# `is_service` и `rewrite_links` здесь были своими копиями и молча перекрывали импорт
+# из движка. Обе копии отстали: первая не приводила разделители пути к общему виду, а
+# вторая теряла экранированную черту `\|` — ссылка внутри таблицы после переписывания
+# ломала ячейку. Копий больше нет: имя из `aurora_common` значит то же, что там.
 
 
 
@@ -190,17 +190,6 @@ def add_alias(card: Card, alias: str) -> str:
         return head[:insert] + f'\n  - "{alias}"' + head[insert:] + rest
     return head.rstrip("\n") + f'\naliases: ["{alias}"]\n' + rest
 
-
-def rewrite_links(text: str, mapping: dict) -> str:
-    """Заменить цели wiki-ссылок по карте {старая-цель: новая-цель}."""
-    def sub(m):
-        bang, target, anchor, display = m.group(1), m.group(2), m.group(3) or "", m.group(4)
-        new = mapping.get(target.strip())
-        if not new:
-            return m.group(0)
-        tail = f"|{display}" if display is not None else ""
-        return f"{bang}[[{new}{anchor}{tail}]]"
-    return LINK_RE.sub(sub, text)
 
 
 SECTION_TYPE = {
@@ -404,17 +393,21 @@ class Plan:
 # а не строкой в отчёте, которую легко счесть успехом.
 SET_ALIAS_FAILED: list = []
 
-PLACEHOLDER_RE = re.compile(r"\.\.\.|\{\{|<[^>]*>")
+TEMPLATE_LINK_RE = re.compile(r"\.\.\.|\{\{|<[^>]*>")
 
 
-def is_placeholder(target: str) -> bool:
+def is_template_link(target: str) -> bool:
     """Образец имени в шаблоне: `[[...]]`, `[[{{протокол}}]]`, `[[Statuses/...]]`.
+
+    Имя нарочно не `is_placeholder`: так теперь зовётся карточка-пустышка, и два разных
+    смысла под одним именем уже однажды столкнулись — импорт молча перекрыл локальную
+    функцию, и ремонт упал на живом прогоне.
 
     Такая ссылка не битая, а показательная: она объясняет автору карточки, что сюда надо
     подставить. Чинить нечем, и каждый прогон ремонта она возвращалась в «осталось
     человеку» — от этого работа выглядела несходящейся.
     """
-    return bool(PLACEHOLDER_RE.search(target))
+    return bool(TEMPLATE_LINK_RE.search(target))
 
 
 def plan_links(cards: dict, idx: Index, plan: Plan):
@@ -430,7 +423,7 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         mapping, aliases_for = {}, {}
         for m in LINK_RE.finditer(c.text):
             target = m.group(2).strip()
-            if target.startswith("http") or is_placeholder(target):
+            if target.startswith("http") or is_template_link(target):
                 continue
             leaf = leaf_name(target)
             if not leaf or leaf in idx.by_stem or leaf in idx.by_alias:
@@ -452,7 +445,7 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         # тут нечего — строку надо убрать, что и делает ремонт ссылок.
         dead = [m.group(0) for m in re.finditer(r"^- \[\[([^\]|#]+)\]\][ \t]*$",
                                                c.text, re.M)
-                if "заготовка" in (c.fm.get("tags") or "")
+                if is_placeholder(c.fm, c.text)
                 and leaf_name(m.group(1)) not in idx.by_stem
                 and leaf_name(m.group(1)) not in idx.by_alias]
         if dead:
@@ -567,7 +560,7 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
         return f"«{hit.stem}»: заголовков в теле меньше двух — резать не по чему", False
 
     section = os.path.relpath(hit.path, root).replace("\\", "/").split("/")[0]
-    src = (frontmatter(text).get("source") or "").strip()
+    src = (card_sources(text) or [""])[0]
     parts, made = [], []
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(rest)
@@ -613,8 +606,10 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     ждёт наполнения, а не удаление ссылки. Когда придут данные, они лягут в готовую
     карточку, и переписывать ссылки не придётся.
 
-    Заготовка честно говорит, что она заготовка: `status: draft`, метка `заготовка` и
-    список тех, кто на неё ссылается, — по нему видно, в каком контексте её ждут.
+    Пустышка честно говорит, что она пустышка: `status: placeholder`, метка `заготовка`
+    и список тех, кто на неё ссылается, — по нему видно, в каком контексте её ждут.
+    Статус выводит её из выдачи целиком: из семантического индекса, из контекстного пака
+    и из замеров. Отвечать пустышкой на вопрос значит обещать содержание, которого нет.
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from build_plan import split_doc_code
@@ -673,7 +668,8 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
         alias_lines = ("[]" if not extra else
                        "\n" + "\n".join(f'  - "{a}"' for a in dict.fromkeys(extra)))
         plan.write(path,
-                   f"---\ntitle: \"{clean}\"\naliases: {alias_lines}\nstatus: draft\n"
+                   f"---\ntitle: \"{clean}\"\naliases: {alias_lines}\n"
+                   f"status: {PLACEHOLDER}\n"
                    f"type: {SECTION_TYPE.get(section, 'concept')}\n"
                    f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
                    f"related: []\n---\n\n# {clean}\n\n"
@@ -844,8 +840,34 @@ def plan_set_alias(cards: dict, plan: Plan, target: str, old: str, new: str) -> 
     return f"{short(path)}: «{old}» → «{new}»", True
 
 
+# Сколько знаков собственного текста делают пустышку карточкой. Заголовок, ссылка и
+# список «Упоминается в» — не знание; определение короче трёх строк не бывает.
+FILLED_CHARS = 120
+
+
+def outgrew_placeholder(c: "Card") -> bool:
+    """Пустышку наполнили: отметку пора снять.
+
+    Определение появляется тремя путями — его пишет человек, приносит `agent:distill`
+    из источника или добавляет разбор. Ни один из них не обязан помнить про статус,
+    поэтому решение принимается по самому тексту: исчезла строка-заготовка, и осталось
+    достаточно собственного содержания. Иначе карточка с определением так и осталась бы
+    вне поиска, а человек не понял бы, почему база молчит о том, что в ней написано.
+    """
+    if (c.fm.get("status") or "").strip().strip('"') != PLACEHOLDER:
+        return False
+    body = card_body(c.text)
+    if STUB_BODY in body:
+        return False
+    # Заголовок и раздел «Упоминается в» — служебная часть пустышки, она есть всегда.
+    own = re.sub(r"(?ms)^##\s*Упоминается в.*$", "", body)
+    own = re.sub(r"(?m)^#.*$", "", own)
+    own = re.sub(r"(?m)^\s*-\s*\[\[[^\]]*\]\]\s*$", "", own)
+    return len(" ".join(own.split())) >= FILLED_CHARS
+
+
 def plan_frontmatter(cards: dict, plan: Plan):
-    created = patched = selfsame = 0
+    created = patched = selfsame = filled = 0
     for path, c in cards.items():
         if is_service(path):
             continue
@@ -861,6 +883,16 @@ def plan_frontmatter(cards: dict, plan: Plan):
                 plan.file_writes[path] = fixed
                 base, probe = fixed, Card(path, fixed)
                 selfsame += 1
+        # Пустышка, в которой появилось знание, пустышкой быть перестаёт — иначе она
+        # останется вне поиска, и база будет молчать о том, что в ней уже написано.
+        if outgrew_placeholder(probe):
+            fixed = re.sub(r"(?m)^status:\s*" + PLACEHOLDER + r"\s*$", "status: draft",
+                           base, count=1)
+            fixed = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", fixed, count=1)
+            if fixed != base:
+                plan.file_writes[path] = fixed
+                base, probe = fixed, Card(path, fixed)
+                filled += 1
         section = os.path.relpath(os.path.dirname(path), ROOT).split(os.sep)[0]
         new_text = ensure_frontmatter(probe, section)
         if new_text == base:
@@ -873,6 +905,9 @@ def plan_frontmatter(cards: dict, plan: Plan):
             plan.notes.append(f"  создан frontmatter: {path}")
     if selfsame:
         plan.notes.append(f"  снято синонимов, повторяющих имя своей же карточки: {selfsame}")
+    if filled:
+        plan.notes.append(f"  пустышки, в которых появилось знание: {filled} — "
+                          "отметка снята, вернулись в поиск и в карты")
     return created, patched
 
 

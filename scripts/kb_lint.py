@@ -22,9 +22,9 @@ import argparse
 import os, re, sys, collections
 
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
-                           config_value, frontmatter,
+                           card_sources, config_value, clean_meaning, frontmatter,
                            is_service,
-                           link_refs)
+                           link_refs, project_terms)
 
 ROOT = "AuroraKnowledgeDB"
 
@@ -86,6 +86,99 @@ def load_releases() -> set:
         for m in re.finditer(r"\b(R\d+[\w.\-]*)", line):
             out.add(m.group(1))
     return out
+
+
+# Слово-пустышка в начале расшифровки: предлог или служебное. Начинать с него настоящая
+# расшифровка не может, а «для оформления документа …» встречается сплошь и рядом.
+FUNC_WORDS = {"для", "при", "по", "из", "на", "в", "с", "о", "об", "и", "или", "к", "до",
+              "от", "за", "под", "над", "про"}
+
+# «<фраза> (АББР)» — та самая форма, в которой на живом проекте появились выдуманные
+# расшифровки. Скобка со ссылкой или числом внутрь не попадает: аббревиатура — буквы.
+PAREN_ABBR = re.compile(r"([^.;:!?()\n|]{10,120})\s*\(([А-ЯЁA-Z][А-ЯЁA-Z0-9-]{1,20})\)")
+
+
+def wrong_expansions(body: str, terms: dict) -> list:
+    """[(аббревиатура, как расшифровано в карточке, как в словаре)] — расхождения.
+
+    Ищем ровно ту форму, в которой ошибка и появилась на живом проекте:
+    «признак расчёта фактуры (ПРФ)» — фраза, а следом в скобках
+    сокращение. Форма эта коварна: точно так же выглядит обычная русская речь
+    («проверка достаточности обеспечительного платежа (ОП)»), где фраза сокращению не
+    расшифровка, а просто предшествует ему. Отличаем двумя признаками сразу:
+
+    1. Расшифровка начинается с той же буквы, что и сокращение. Берём самый длинный
+       кусок фразы, для которого это верно, — иначе «рф для оформления документа …»
+       прочтётся с «рф» и настоящая расшифровка потеряется.
+    2. В расшифровке нет ни одного значимого слова из словарной. Совпало хоть одно —
+       это та же расшифровка другими падежами, а не спор.
+
+    Обе проверки нужны: без первой линтер ругается на любую фразу перед скобкой, без
+    второй — на каждое склонение.
+
+    Идём от текста к словарю, а не наоборот: словарь проекта — сотни строк, база —
+    тысячи карточек, и перебор одного по другому дал бы миллион поисков на прогон.
+    Скобок в карточке единицы.
+    """
+    out = []
+    for m in PAREN_ABBR.finditer(body):
+        phrase, abbr = m.group(1), m.group(2)
+        known = terms.get(abbr)
+        # Две буквы — не аббревиатура, а омоним: «ПП» это и прикладная подсистема, и
+        # платёжное поручение, обе расшифровки верны в своём месте. Спорить о них
+        # линтером значит требовать от базы одного значения там, где их законно два.
+        if not known or len(abbr) < 3:
+            continue
+        key = re.findall(r"[а-яёa-z]{5,}", known.lower())[:3]
+        if not key:
+            continue
+        words = phrase.split()
+        said = ""
+        for i in range(len(words)):
+            first = words[i].strip("«»\"',").lower()
+            if not first or first in FUNC_WORDS:
+                continue
+            # Расшифровка примерно вдвое длиннее самой аббревиатуры, не втрое: иначе
+            # под неё подходит целое предложение, начатое с нужной буквы: «Правила
+            # расчёта фактуры при закрытии периода … (ПРФ)» — это заголовок карточки,
+            # а не определение.
+            if first[0] == abbr[0].lower() and len(words) - i <= 2 * len(abbr):
+                said = " ".join(words[i:])
+                break
+        if not said or looks_like_expansion(said, abbr) < 0.6:
+            # Фраза перед скобкой на расшифровку не похожа — значит она ею и не была.
+            # «переданы из ядра в очередь (ПРФ)» начинается с той же буквы, но в
+            # аббревиатуру не складывается: это обычная речь, а не определение.
+            continue
+        low = said.lower()
+        if any(k[:5] in low for k in key):
+            continue
+        seen_here = (abbr, " ".join(said.split()))
+        if seen_here not in {(a, s) for a, s, _k in out}:
+            out.append((abbr, seen_here[1], known))
+    return out
+
+
+def looks_like_expansion(phrase: str, abbr: str) -> float:
+    """Насколько фраза складывается в аббревиатуру. 1.0 — все буквы легли по порядку.
+
+    Настоящая расшифровка отдаёт свои первые буквы в аббревиатуру: «документ о
+    предстоящей поставке» → Д-О-П-П. Порядок важен, полнота — нет: служебные слова
+    в сокращение попадают не всегда, а падежи и «и» между словами сбивают счёт.
+    Поэтому считаем долю букв аббревиатуры, нашедших своё слово по порядку.
+    """
+    letters = [c.lower() for c in abbr if c.isalpha()]
+    if not letters:
+        return 0.0
+    initials = [w[0].lower() for w in re.findall(r"[^\W\d_]+", phrase, re.UNICODE) if w]
+    i, hit = 0, 0
+    for c in letters:
+        while i < len(initials) and initials[i] != c:
+            i += 1
+        if i < len(initials):
+            hit += 1
+            i += 1
+    return hit / len(letters)
 
 
 def main():
@@ -156,13 +249,31 @@ def main():
     jira_re = re.compile(rf"(?i)^{re.escape(key)}-\d+") if key else None
     known_types = set(SECTION_TYPE.values())
 
+    # Папка, вложенная сама в себя: `Glossary/Glossary`. Раздел базы — это тип карточки,
+    # и второй такой же уровень означает, что карточки одного типа разъехались по двум
+    # адресам. Ссылка по имени ведёт в один, ищут в другом; оглавление раздела собирает
+    # верхний и не видит нижнего. На живом проекте так потерялись три десятка справочников.
+    for dirpath, dirnames, _ in os.walk(ROOT):
+        parts = dirpath.replace("\\", "/").split("/")
+        for d in dirnames:
+            if d.startswith(".") or d in ("meta", "_archive", "_assets"):
+                continue
+            if d in parts[1:]:
+                errors.append(
+                    f"{dirpath}/{d}: папка вложена сама в себя. Раздел базы — это тип "
+                    "карточки, и второй уровень с тем же именем прячет карточки от "
+                    "оглавления и от ссылок по имени. Перенесите их уровнем выше")
+
+    # Словарь проекта читается один раз: он нужен проверке расшифровок ниже.
+    terms = project_terms(ROOT)
     for rel, (fm, text) in cards.items():
         status = fm.get("status", "")
+        body = card_body(text)
         stem = os.path.splitext(os.path.basename(rel))[0]
         section = os.path.relpath(os.path.dirname(rel), ROOT).split(os.sep)[0]
         if not (stem.startswith("_") or section in ("meta", ".") or section.startswith("_")):
             kind = artifact_kind(stem, fm.get("title", stem),
-                                 (fm.get("source") or "").strip().strip('"'), section, jira_re)
+                                 (card_sources(text) or [""])[0], section, jira_re)
             if kind:
                 errors.append(f"{rel}: артефакт в знаниях — это {kind}, "
                               f"а не дистиллированное знание")
@@ -197,6 +308,17 @@ def main():
                               "или понизить статус до draft")
         if status == "deprecated" and not fm.get("superseded_by"):
             errors.append(f"{rel}: deprecated без superseded_by")
+
+        # Расшифровка вопреки словарю проекта. Промпт запрещает выдумывать расшифровки,
+        # но промпт — просьба, а не гарантия: на живом проекте одна аббревиатура получила
+        # три значения, два выдуманы моделью, и разъехались по карточкам как факт.
+        # Ошибка неотличима от знания на вид, поэтому её ищет машина, а не читатель.
+        for abbr, said, known in ([] if (stem.startswith("_") or "/meta/" in rel)
+                                  else wrong_expansions(body, terms)):
+            errors.append(f"{rel}: «{abbr}» расшифровано как «{said[:70]}», "
+                          f"а в словаре проекта — «{known[:70]}». "
+                          "Расшифровку не выдумывают: либо она есть в источнике, "
+                          "либо аббревиатура остаётся аббревиатурой")
 
         # applies_to без реестра релизов — мёртвая разметка: фильтр по релизу в
         # context pack молча выключается, и карточка чужого релиза уходит как факт

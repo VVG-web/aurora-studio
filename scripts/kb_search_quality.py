@@ -100,10 +100,17 @@ def cards_with_thesis(root: str = KB_ROOT) -> dict:
     return out
 
 
-def rank_of(name: str, hits: list) -> int:
-    """Позиция карточки в выдаче, считая с единицы. 0 — не нашлась вовсе."""
+def rank_of(names, hits: list) -> int:
+    """Лучшая позиция среди годных карточек, считая с единицы. 0 — ни одной нет.
+
+    Годных бывает несколько, и это не поблажка. Знание в живой базе лежит в нескольких
+    карточках: справочник, процесс, где он применяется, и разбор частного случая — все
+    трое отвечают на вопрос верно. Требовать одну конкретную значит мерить не поиск, а
+    угадывание имени: выдача законно вернёт соседа, и замер назовёт это провалом.
+    """
+    ok = {names} if isinstance(names, str) else set(names)
     for i, (found, _score) in enumerate(hits, 1):
-        if found == name:
+        if found in ok:
             return i
     return 0
 
@@ -111,16 +118,18 @@ def rank_of(name: str, hits: list) -> int:
 def measure(pairs: list, cfg: dict, model: str, say=print) -> dict:
     """Прогнать самопоиск по парам (имя, вопрос). → сводка."""
     ranks, margins, misses = [], [], []
-    for i, (name, question) in enumerate(pairs, 1):
+    for i, (names, question) in enumerate(pairs, 1):
+        ok = {names} if isinstance(names, str) else set(names)
+        label = " / ".join(sorted(ok))
         hits = EMB.search(question, cfg, model, limit=TOP)
         if not hits:
-            misses.append((name, "поиск ничего не вернул"))
+            misses.append((label, "поиск ничего не вернул"))
             ranks.append(0)
             continue
-        r = rank_of(name, hits)
+        r = rank_of(ok, hits)
         ranks.append(r)
-        own = next((s for n, s in hits if n == name), None)
-        best_other = next((s for n, s in hits if n != name), None)
+        own = next((s for n, s in hits if n in ok), None)
+        best_other = next((s for n, s in hits if n not in ok), None)
         if own is not None and best_other is not None:
             margins.append(own - best_other)
         # В список попадают все, кто не вошёл в первую пятёрку: карточка на седьмом
@@ -128,7 +137,7 @@ def measure(pairs: list, cfg: dict, model: str, say=print) -> dict:
         # R@5 — иначе он пуст при R@1 = 0.12, и мера расходится с тем, что показывает.
         if r == 0 or r > 5:
             where = f"первой пришла «{hits[0][0]}»" if r == 0 else f"только на {r}-м месте"
-            misses.append((name, where))
+            misses.append((label, where))
         if i % 25 == 0:
             say(f"  {i}/{len(pairs)} · R@1 пока "
                 f"{sum(1 for x in ranks if x == 1) / len(ranks):.2f}")
@@ -144,13 +153,15 @@ def measure(pairs: list, cfg: dict, model: str, say=print) -> dict:
 
 
 def golden_pairs(root: str = KB_ROOT) -> list:
-    """[(карточка, вопрос)] из эталона: вопрос человека и карточка, где ответ.
+    """[(годные карточки, вопрос)] из эталона: вопрос человека и где лежит ответ.
 
-    Эталон ведётся таблицей `| # | Вопрос | Эталон | [[Карточка]] |`, и брать «всю строку
-    без ссылки» нельзя: в строке рядом с вопросом лежит **готовый ответ**. Спрашивать
-    базу вопросом вместе с ответом — мерить не поиск, а собственную подсказку: эталон
-    пересказывает тело карточки, и попадание выходит само собой. Берём ровно колонку
-    вопроса. Строки не-таблицей разбираем по-старому: вопрос — это текст до ссылки.
+    Эталон ведётся таблицей `| # | Вопрос | Эталон | [[Карточка]] … |`, и брать «всю
+    строку без ссылок» нельзя: рядом с вопросом лежит **готовый ответ**. Спрашивать базу
+    вопросом вместе с ответом — мерить не поиск, а собственную подсказку: эталон
+    пересказывает тело карточки, и попадание выходит само собой. Берём колонку вопроса.
+
+    Ссылок в строке может быть несколько, и годится **любая**: знание в живой базе лежит
+    в нескольких карточках сразу, и требовать одну — мерить угадывание имени.
     """
     out = []
     try:
@@ -158,19 +169,23 @@ def golden_pairs(root: str = KB_ROOT) -> list:
     except OSError:
         return out
     for line in text.splitlines():
-        m = re.search(r"\[\[([^\]|#]+)", line)
-        if not m:
+        cards = [c.strip() for c in re.findall(r"\[\[([^\]|#]+)", line)]
+        if not cards:
             continue
-        card = m.group(1).strip()
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) >= 3:
-            # колонка вопроса — первая, где есть вопрос: не номер и не ссылка
-            q = next((c for c in cells
-                      if len(c) >= 12 and "[[" not in c and not c.strip("# ").isdigit()), "")
+        if "|" in line:
+            # Строка таблицы. Вопросом считается только пронумерованная: в файле живут и
+            # другие таблицы — например реестр найденных в базе противоречий, — и они
+            # тоже полны ссылок. Без номера такая строка уехала бы в замер как вопрос,
+            # и мера считала бы то, чего человек в неё не клал.
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) < 3 or not cells[0].strip("# ").isdigit():
+                continue
+            # колонка вопроса — первая после номера, где есть текст, а не ссылки
+            q = next((c for c in cells[1:] if len(c) >= 12 and "[[" not in c), "")
         else:
             q = re.sub(r"\[\[[^\]]*\]\]", "", line).strip(" -*|→#").strip()
         if len(q) >= 12:
-            out.append((card, q))
+            out.append((tuple(dict.fromkeys(cards)), q))
     return out
 
 
@@ -280,15 +295,19 @@ def main() -> int:
     gold = {}
     if a.golden:
         all_gp = golden_pairs()
-        gp = [(n, q) for n, q in all_gp if n in known]
-        lost = sorted({n for n, _q in all_gp if n not in known})
+        # Строка годится, пока в индексе есть ХОТЬ ОДНА из названных карточек: остальные
+        # могли переехать, и это не повод выбрасывать вопрос целиком.
+        gp = [(tuple(n for n in names if n in known), q)
+              for names, q in all_gp if any(n in known for n in names)]
+        lost = sorted({n for names, _q in all_gp for n in names if n not in known})
         print(f"\n## Эталонные вопросы: {len(gp)}\n")
         if lost:
             # Эталон стареет вместе с базой: карточку переименовали или разрезали, а
             # строка осталась. Молча выкинуть её значит мерить по остатку и не сказать
             # об этом; ошибка в эталоне ищется дольше всего именно потому, что не видна.
             print(f"Эталон ссылается на {len(lost)} карточек, которых в индексе нет — "
-                  "он отстал\nот базы, и эти строки в замер не вошли: "
+                  "он отстал\nот базы (строка идёт в замер, если жива хоть одна её "
+                  "карточка): "
                   + ", ".join("`" + n + "`" for n in lost[:8])
                   + (" …" if len(lost) > 8 else "") + "\n")
         if not gp:

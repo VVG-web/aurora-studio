@@ -34,7 +34,8 @@ import re
 import sys
 from datetime import date
 
-from aurora_common import TRUSTED, Card as BaseCard, body, frontmatter, link_targets, walk_md
+from aurora_common import (TRUSTED, Card as BaseCard, body, frontmatter,
+                           is_placeholder, link_targets, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
@@ -314,7 +315,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
     def allowed(c: Card) -> bool:
         # Заготовка проходит приёмку (утверждений в ней нет — не верить нечему), но в
         # контексте она пустое место: имя без содержания только съедает бюджет пака.
-        if "заготовка" in c.tags or "_Заготовка:" in c.text:
+        if is_placeholder(c.fm, c.text):
             return False
         if c.status in statuses:
             return True
@@ -464,7 +465,7 @@ def main() -> int:
         groups: dict = {}
         for c in cards.values():
             # Ключ словаря — имя карточки, а не путь: раздел берём у самой карточки.
-            if "заготовка" in c.tags or c.status not in MODE_STATUSES[a.mode]:
+            if is_placeholder(c.fm, c.text) or c.status not in MODE_STATUSES[a.mode]:
                 continue
             rel = os.path.relpath(c.path, ROOT).replace("\\", "/")
             section = rel.split("/")[0] if "/" in rel else "—"

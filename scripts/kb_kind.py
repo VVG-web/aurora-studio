@@ -34,7 +34,8 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter, split_frontmatter, walk_md, with_fields  # noqa: E402
+from aurora_common import (card_sources, frontmatter, split_frontmatter,  # noqa: E402
+                           walk_md, with_fields)
 
 TODAY = date.today().isoformat()
 KB = "AuroraKnowledgeDB"
@@ -58,13 +59,21 @@ def looks_like_table(body: str) -> bool:
     return len(rows) >= 4 and len(prose) <= 3
 
 
-def guess(path: str, fm: dict, body: str) -> tuple:
-    """(тип, почему) — правило, а не суждение модели."""
+def guess(path: str, fm: dict, body: str, sources: list | None = None) -> tuple:
+    """(тип, почему) — правило, а не суждение модели.
+
+    `sources` — откуда в карточке знание. Список, а не строка: карточка накапливает его
+    из нескольких артефактов, и тип зависит от происхождения целиком.
+    """
     section = os.path.relpath(path, KB).replace("\\", "/").split("/")[0]
-    src = (fm.get("source") or "").strip().strip('"').replace("\\", "/")
-    if any(src.startswith(r) for r in DOC_ROOTS):
+    # Источников может быть несколько. Документом карточку делает происхождение целиком:
+    # текст нормативной бумаги ценен дословно, а карточка, вобравшая ещё четыре артефакта,
+    # уже не бумага — это знание о сущности, и переписывать его тезисом можно.
+    srcs = list(sources or []) or [""]
+    src = srcs[0]
+    if len(srcs) == 1 and any(src.startswith(r) for r in DOC_ROOTS):
         return "document", f"источник в {src.split('/')[1] if '/' in src else 'Raw'} — нормативный текст"
-    if DOC_WORDS.search(os.path.basename(src)):
+    if len(srcs) == 1 and DOC_WORDS.search(os.path.basename(src)):
         return "document", "имя источника говорит о нормативном документе"
     if section in DICT_SECTIONS:
         return "dictionary", f"раздел {section} — именование, а не выводы"
@@ -101,7 +110,8 @@ def main() -> int:
             kept += 1
             counts[was] = counts.get(was, 0) + 1
             continue
-        kind, why = guess(os.path.relpath(path, root), fm, body or "")
+        kind, why = guess(os.path.relpath(path, root), fm, body or "",
+                          card_sources(text))
         counts[kind] = counts.get(kind, 0) + 1
         set_now.append((os.path.relpath(path, root), kind, why))
         if a.apply:
