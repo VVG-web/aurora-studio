@@ -236,8 +236,12 @@ def scan_push() -> int:
     terms = private_terms()
     if not terms:
         return 0
-    pats = [(t, re.compile(r"(^|[^0-9A-Za-zА-Яа-яЁё])" + re.escape(t)
-                           + r"([^0-9A-Za-zА-Яа-яЁё]|$)", re.I)) for t in terms]
+    # Звёздочка на конце названия — это основа: `Примор*` ловит и «Приморья». Без неё
+    # граница справа съедала все склонения, и название заказчика уезжало в публичный
+    # репозиторий при зелёной проверке.
+    pats = [(t, re.compile(r"(^|[^0-9A-Za-zА-Яа-яЁё])" + re.escape(t.rstrip("*"))
+                           + ("" if t.endswith("*") else r"([^0-9A-Za-zА-Яа-яЁё]|$)"),
+                           re.I)) for t in terms]
 
     hits: dict[tuple[str, str], str] = {}
     for line in sys.stdin.read().splitlines():

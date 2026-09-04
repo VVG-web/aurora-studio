@@ -74,6 +74,80 @@ ENGINE_DIRS = [
 TRUST_DIRS = _schema_dirs() + ENGINE_DIRS
 
 
+GITIGNORE_BLOCK = """
+# Aurora / local
+.DS_Store
+.env
+.env.*
+!.env.aurora.local.example
+aurora.env.local
+.env.aurora.local
+.mcp.json
+__pycache__/
+*.pyc
+.ruff_cache/
+~$*
+*.log
+
+# Служебное состояние инструментов. Правило Авроры: что закрыто .gitignore,
+# то допустимо вне схемы папок — doctor такие пути не считает нарушением.
+.sisyphus/
+.opencode/node_modules/
+node_modules/
+.venv/
+# Браузерные MCP-инструменты сбрасывают логи консоли и слепки страниц в текущую
+# рабочую папку. Открыли дашборд, стоя в корне проекта, — получили блокер doctor и
+# слепок чужой страницы в истории git.
+.playwright-mcp/
+.puppeteer/
+# Архив прогонов панели: полный лог консоли каждого запуска, полсотни последних. Там
+# имена карточек, пути источников и куски ответов модели — а чекпойнт агента делает
+# `git add -A` по всему дереву и утащил бы это в историю проекта под видом работы человека.
+.opencode/runs/
+# Состояние панели: какой маршрут остановлен и на чём. След работы, а не исходник.
+.opencode/state/
+# Семантический индекс — производная от карточек: бинарь на мегабайты, меняется
+# целиком при смене модели и пересобирается за минуты (`kb:embed --apply`).
+AuroraKnowledgeDB/meta/embeddings.bin
+AuroraKnowledgeDB/meta/embeddings.json
+"""
+
+
+def merge_gitignore(path, block: str = "") -> list:
+    """Дописать в .gitignore недостающие правила кита. → какие строки добавлены.
+
+    Раньше установка смотрела на файл целиком: есть в нём старые строки — значит
+    настроен, не трогаем. Правила, добавленные в кит позже, до заведённых проектов не
+    доезжали никогда. Так `.opencode/state/` — рантайм-состояние прогона — остался вне
+    игнора на двух живых проектах, а на одном замок агента попал под контроль версий и
+    после каждого прогона оставлял дерево грязным.
+
+    Сравниваем построчно и дописываем только недостающее. Чужие строки не трогаем и не
+    переставляем: файл правил человек, и порядок в нём — его дело.
+    """
+    from pathlib import Path
+    path = Path(path)
+    cur = path.read_text(encoding="utf-8") if path.exists() else ""
+    have = {ln.strip() for ln in cur.splitlines() if ln.strip()}
+    add, notes = [], []
+    for ln in (block or GITIGNORE_BLOCK).splitlines():
+        t = ln.strip()
+        if not t:
+            notes = []
+        elif t.startswith("#"):
+            notes.append(ln)          # комментарий поедет вместе со своим правилом
+        elif t not in have:
+            add += notes + [ln]
+            notes = []
+        else:
+            notes = []
+    if add:
+        head = "" if not cur else cur.rstrip() + "\n\n"
+        path.write_text(head + "# Aurora — правила движка\n" + "\n".join(add) + "\n",
+                        encoding="utf-8")
+    return [ln for ln in add if not ln.strip().startswith("#")]
+
+
 class Installer:
     def __init__(self, target: Path, name: str, slug: str | None, jira: str | None,
                  confluence: str | None, force: bool, dry_run: bool):
@@ -476,68 +550,13 @@ Do not hardcode another teammate's credentials in skills or rules.
 
     def install_gitignore(self):
         self.log("== .gitignore ==")
-        block = """
-# Aurora / local
-.DS_Store
-.env
-.env.*
-!.env.aurora.local.example
-aurora.env.local
-.env.aurora.local
-.mcp.json
-__pycache__/
-*.pyc
-.ruff_cache/
-~$*
-*.log
-
-# Служебное состояние инструментов. Правило Авроры: что закрыто .gitignore,
-# то допустимо вне схемы папок — doctor такие пути не считает нарушением.
-.sisyphus/
-.opencode/node_modules/
-node_modules/
-.venv/
-# Браузерные MCP-инструменты сбрасывают логи консоли и слепки страниц в текущую
-# рабочую папку. Открыли дашборд, стоя в корне проекта, — получили блокер doctor и
-# слепок чужой страницы в истории git.
-.playwright-mcp/
-.puppeteer/
-# Архив прогонов панели: полный лог консоли каждого запуска, полсотни последних. Там
-# имена карточек, пути источников и куски ответов модели — а чекпойнт агента делает
-# `git add -A` по всему дереву и утащил бы это в историю проекта под видом работы человека.
-.opencode/runs/
-# Состояние панели: какой маршрут остановлен и на чём. След работы, а не исходник.
-.opencode/state/
-# Семантический индекс — производная от карточек: бинарь на мегабайты, меняется
-# целиком при смене модели и пересобирается за минуты (`kb:embed --apply`).
-AuroraKnowledgeDB/meta/embeddings.bin
-AuroraKnowledgeDB/meta/embeddings.json
-"""
         gi = self.target / ".gitignore"
         if self.dry_run:
             self.log("  would update: .gitignore")
             return
-        if gi.exists():
-            cur = gi.read_text(encoding="utf-8")
-            if "aurora.config.yaml" in cur and ".env.aurora.local" in cur:
-                self.log("  skip (exists): .gitignore aurora entries")
-            elif ".mcp.json" in cur and "__pycache__" in cur:
-                if ".env.aurora.local" not in cur:
-                    gi.write_text(
-                        cur.rstrip()
-                        + "\n\n# Aurora local secrets\n.env.aurora.local\naurora.env.local\n",
-                        encoding="utf-8",
-                    )
-                    self.log("  appended: .gitignore aurora local secrets")
-                else:
-                    self.log("  skip (exists): .gitignore entries")
-                return
-            else:
-                gi.write_text(cur.rstrip() + "\n" + block, encoding="utf-8")
-                self.log("  appended: .gitignore")
-        else:
-            gi.write_text(block.lstrip(), encoding="utf-8")
-            self.log("  wrote: .gitignore")
+        added = merge_gitignore(gi)
+        self.log(f"  appended: .gitignore ({len(added)} правил)" if added
+                 else "  skip (exists): .gitignore")
 
     def write_report(self):
         report = f"""---

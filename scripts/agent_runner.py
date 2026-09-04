@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:clashes` · `agent:make`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:clashes` · `agent:relink` · `agent:make`
 """
 from __future__ import annotations
 
@@ -695,6 +695,207 @@ def report_extract(res: dict, apply: bool) -> str:
         L.append("«Определение не найдено дословно» значит, что модель его пересказала. "
                  "Перенос отменён намеренно: взять похожее — переписать знание под видом "
                  "переезда.")
+    return "\n".join(L)
+
+
+# ------------------------------------------------------------------ задача: связывание
+
+PROMPT_RELINK = """Ты расставляешь связи в готовом тезисе карточки. Текст менять нельзя.
+
+Карточка: {title}
+Её тезис:
+
+{thesis}
+
+{known}
+
+Верни ТОТ ЖЕ текст, вставив `[[Имя карточки]]` там, где он называет сущность из списка
+выше. Ссылка ставится на месте самого упоминания, слитно с фразой:
+
+  было:  Данные приходят из ФЦОД по расписанию.
+  стало: Данные приходят из [[ФЦОД]] по расписанию.
+
+Правила, они же критерии проверки:
+
+1. **Ни одного изменённого слова.** Движок снимет разметку с твоего ответа и сравнит с
+   исходным текстом посимвольно: не совпало — ответ отброшен целиком. Не исправляй
+   опечатки, не меняй падежи, не переставляй слова, не добавляй и не убирай пробелы.
+2. Ссылайся только на карточки из списка, имя пиши буква в букву, как в списке.
+3. Упоминание в другом падеже — ссылка с подписью: `[[Профиль абонента|Профиля
+   абонента]]`. Так текст остаётся тем же, а ссылка ведёт куда надо.
+4. На саму себя карточка не ссылается. Одну сущность связывай один раз — при первом
+   упоминании; дальше по тексту она уже названа.
+5. Нечего связывать — верни текст без единого изменения. Это нормальный исход.
+
+Верни только текст, без пояснений вокруг."""
+
+
+def strip_links(text: str) -> str:
+    """Текст без разметки ссылок: `[[Имя|подпись]]` → `подпись`, `[[Имя]]` → `Имя`.
+
+    По нему сверяется, что модель ТОЛЬКО расставила связи. Сравнение посимвольное после
+    схлопывания пробелов: перенос строки внутри абзаца — не правка текста, а вёрстка.
+    """
+    plain = re.sub(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]",
+                   lambda m: (m.group(2) or m.group(1)), text)
+    return " ".join(plain.split())
+
+
+def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
+                deadline: float = 0.0) -> dict:
+    """Расставить связи в готовом тезисе. Текст не меняется. → шаг отчёта.
+
+    Отдельный ход, а не пересборка тезиса: тексты уже написаны и проверены Момусом,
+    переписывать их ради связей значит рисковать знанием там, где рискa не требуется.
+    Здесь модель только вставляет разметку, а движок доказывает это сравнением.
+    """
+    call = call or AG.call_role
+    from aurora_common import frontmatter, is_placeholder
+    step = {"card": os.path.basename(path)[:-3], "status": "пропущена", "added": 0,
+            "note": "", "backends": []}
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    fm = frontmatter(text)
+    if is_placeholder(fm, text) or (fm.get("kind") or "").strip().strip('"') != "knowledge":
+        return step
+    whole = thesis_of(text)
+    # Заголовок карточки в разметке не нуждается и обратно дословно возвращается плохо:
+    # модель то опускает решётку, то меняет регистр. Отрезаем его и приставляем обратно
+    # сами — сверять надо текст знания, а не вёрстку вокруг него.
+    head, body_start = "", 0
+    m = re.match(r"\s*#[^\n]*\n+", whole)
+    if m:
+        head, body_start = m.group(0), m.end()
+    thesis = whole[body_start:]
+    if len(" ".join(thesis.split())) < 120:
+        step["note"] = "тезис короток"
+        return step
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+    title = (fm.get("title") or step["card"]).strip().strip('"')
+    near = candidates_for(root, cfg, title + "\n" + thesis, limit=CANDIDATES)
+    near = [c for c in near if c[0] != step["card"]]
+    if not near:
+        step["note"] = "не с чем связывать"
+        return step
+    listing = "КАРТОЧКИ БАЗЫ, НА КОТОРЫЕ МОЖНО ССЫЛАТЬСЯ:\n\n" + "\n".join(
+        f"  {n}" + (f" — {b}" if b else "") for n, _sec, b in near)
+
+    r = call(cfg, "worker", [{"role": "user", "content": PROMPT_RELINK.format(
+        title=title, thesis=thesis, known=listing)}],
+        deadline=deadline or (time.time() + cfg["request_timeout"]))
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        return step
+    got = (r["text"] or "").strip()
+    if not got:
+        step.update(status="сбой", note="пустой ответ")
+        return step
+    # Доказательство, а не доверие: снимаем разметку С ОБЕИХ сторон и сравниваем.
+    # Сравнивать ответ без разметки с исходником в разметке нельзя: карточка, где ссылка
+    # уже стояла, отвергалась бы всегда — так и вышло на живой базе, восемь из восьми.
+    if strip_links(got) != strip_links(thesis):
+        step.update(status="отброшен", note="текст изменён, а не только размечен")
+        return step
+    before = len(re.findall(r"\[\[", thesis))
+    after = len(re.findall(r"\[\[", got))
+    if after <= before:
+        step["status"] = "нечего связывать"
+        return step
+    got, invented = drop_invented_links(got, root)
+    step["added"] = len(re.findall(r"\[\[", got)) - before
+    if invented:
+        step["note"] = f"снято выдуманных: {invented}"
+    if step["added"] <= 0:
+        step["status"] = "нечего связывать"
+        return step
+    step["status"] = "связана" if apply else "связал бы"
+    if apply:
+        open(path, "w", encoding="utf-8").write(text.replace(whole, head + got, 1))
+    return step
+
+
+def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Пройти по карточкам знания и расставить связи в готовых тезисах."""
+    from aurora_common import frontmatter, is_placeholder, link_refs, walk_md
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    todo = []
+    for path in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
+                        skip_archive=True):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        if (fm.get("kind") or "").strip().strip('"') != "knowledge" or is_placeholder(fm, text):
+            continue
+        if not (fm.get("distilled") or "").strip():
+            continue                      # тезиса ещё нет — связывать нечего
+        if (fm.get("relinked") or "").strip() == (fm.get("distilled") or "").strip():
+            continue                      # уже связывали по этому тезису
+        todo.append(path)
+    todo.sort()
+    if limit:
+        todo = todo[:limit]
+    print(f"Карточек к связыванию: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
+
+    steps, left = [], 0
+    for i, path in enumerate(todo, 1):
+        if time.time() > budget:
+            left = len(todo) - i + 1
+            steps.append({"card": "—", "status": "стоп", "added": 0,
+                          "note": f"бюджет исчерпан, осталось {left}",
+                          "backends": []})
+            print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
+            break
+        s = relink_card(cfg, path, call, apply, deadline=budget)
+        steps.append(s)
+        if apply and s["status"] in ("связана", "нечего связывать", "отброшен"):
+            mark_relinked(path)
+        # «+3» без записи читается как сделанная работа. Предпросмотр обязан говорить,
+        # что он предпросмотр, в каждой строке — сводку в конце читают не всегда.
+        mark = (f"+{s['added']}" if s["added"] else s["status"])
+        if s["added"] and not apply:
+            mark += " (предпросмотр)"
+        print(f"  [{i}/{len(todo)}] {s['card']} → {mark}"
+              + (f" · {s['note']}" if s["note"] else ""), flush=True)
+    added = sum(s["added"] for s in steps)
+    return {"steps": steps, "cards": len(todo), "added": added, "left": left,
+            "seconds": round(time.time() - started, 1)}
+
+
+def mark_relinked(path: str) -> None:
+    """Отметить, что связи по этому тезису уже расставляли.
+
+    Как и у выделения, отметка держит дату тезиса: перепишут тезис — карточка вернётся
+    на связывание сама, без ручного снятия отметки.
+    """
+    from aurora_common import frontmatter, with_fields
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    stamp = (frontmatter(text).get("distilled") or "").strip()
+    if stamp:
+        open(path, "w", encoding="utf-8").write(with_fields(text, {"relinked": stamp}))
+
+
+def report_relink(res: dict, apply: bool) -> str:
+    L = [f"# Связывание тезисов — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Карточек просмотрено: **{res['cards']}** · связей поставлено: "
+         f"**{res['added']}** · {res['seconds']} с", ""]
+    if not apply:
+        L += ["(dry-run) Ничего не записано. Применить: `--apply`.", ""]
+    L += ["Тезис не переписывался: модель только вставляла разметку, а движок это доказал "
+          "— снял ссылки с ответа и сравнил с исходным текстом посимвольно. Не совпало — "
+          "ответ отброшен целиком.", ""]
+    got = [s for s in res["steps"] if s["added"]]
+    if got:
+        L += ["| Карточка | Связей |", "|---|---|"]
+        L += [f"| `{s['card']}` | +{s['added']} |" for s in got[:60]]
+        L.append("")
+    bad = [s for s in res["steps"] if s["status"] in ("отброшен", "сбой", "стоп")]
+    if bad:
+        L += ["## Не сделано", ""]
+        L += [f"- `{s['card']}` — {s['note'] or s['status']}" for s in bad[:20]]
+        L += ["", "«Текст изменён, а не только размечен» — модель поправила формулировку "
+              "вместо расстановки ссылок. Отброшено намеренно: связи не стоят того, "
+              "чтобы ради них менялось знание."]
     return "\n".join(L)
 
 
@@ -3918,7 +4119,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
-                             "twins", "clashes", "make"],
+                             "twins", "clashes", "relink", "make"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
@@ -3959,8 +4160,9 @@ def main() -> int:
     ap.add_argument("--partition", type=int, default=0, metavar="N",
                     help="разбирать только партию N (по умолчанию — по плану подряд)")
     ap.add_argument("--until-done", action="store_true",
-                    help="разбирать план целиком, партия за партией, пока источники не "
-                         "кончатся (первичная сборка проекта: часы, можно на ночь)")
+                    help="работать заходами, пока работа не кончится: для build — пока "
+                         "не кончатся источники (первичная сборка: часы, можно на ночь), "
+                         "для relink — пока не свяжутся все тезисы")
     ap.add_argument("--hours", type=float, default=12.0, metavar="Ч",
                     help="потолок времени для --until-done (по умолчанию 12)")
     ap.add_argument("--no-checkpoint", action="store_true",
@@ -4123,6 +4325,56 @@ def main() -> int:
     elif a.task == "clashes":
         res = run_clashes(cfg, cwd, a.limit)
         text = report_clashes(res)
+    elif a.task == "relink" and a.until_done and a.apply:
+        # Связывание идёт заходами по бюджету: четыреста карточек за двадцать минут не
+        # обойти. Заходы обязан гонять движок. Внешняя петля в шелле, написанная для
+        # живого прогона, спрашивала остаток отдельным запуском без --apply — и каждый
+        # такой запуск честно гонял модель по всей очереди двадцать минут впустую,
+        # ничего не записывая. Половина ночи ушла в мусор. Очередь же считается обходом
+        # файлов и стоит даром — поэтому здесь она пересчитывается сама, между заходами.
+        deadline = time.time() + a.hours * 3600
+        batch, texts, waits = 0, [], 0
+        while True:
+            batch += 1
+            say(f"\n=== заход {batch} · до конца окна "
+                f"{human_time(max(0, deadline - time.time()))}")
+            res = run_relink(cfg, cwd, True, a.limit)
+            texts.append(report_relink(res, True))
+            commit_result(cwd, "agent:relink",
+                          f"заход {batch}: связей поставлено: {res['added']}",
+                          not a.no_checkpoint)
+            if not res["left"]:
+                say(f"\n=== связаны все тезисы: заходов {batch}")
+                break
+            passed = res["cards"] - res["left"]
+            if passed <= 0:
+                # Ни одной карточки за заход — это не «мало работы», а стоп. Обрыв связи
+                # лечится ожиданием, как у первичной сборки: отметка держит дату тезиса,
+                # поэтому продолжаем ровно с той же карточки.
+                if looks_offline(res) and waits < OFFLINE_TRIES and time.time() < deadline:
+                    waits += 1
+                    say(f"\n=== связь потеряна (попытка {waits} из {OFFLINE_TRIES}): "
+                        f"жду {OFFLINE_WAIT // 60} мин и продолжаю с той же карточки")
+                    time.sleep(OFFLINE_WAIT)
+                    continue
+                say(f"\n=== заход {batch} не прошёл ни одной карточки"
+                    + (f", связь не вернулась за {waits * OFFLINE_WAIT // 60} мин"
+                       if waits else "") + ": останавливаюсь, разбираться человеку")
+                break
+            waits = 0
+            if time.time() > deadline:
+                say(f"\n=== окно {a.hours} ч закрылось: заходов {batch}, "
+                    f"осталось карточек {res['left']}")
+                break
+            cp = checkpoint(cwd, "agent:relink", not a.no_checkpoint)
+        text = "\n\n---\n\n".join(texts[-3:])
+    elif a.task == "relink":
+        if a.until_done and not a.apply:
+            print("agent_runner: --until-done без --apply зациклится: предпросмотр не "
+                  "ставит отметок, и очередь не убывает. Делаю один заход.",
+                  file=sys.stderr)
+        res = run_relink(cfg, cwd, a.apply, a.limit)
+        text = report_relink(res, a.apply)
     elif a.task == "build":
         res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
         text = report_build(res, cp, a.apply, a.critic, cfg)
@@ -4137,6 +4389,12 @@ def main() -> int:
     (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
 
+    if a.task == "relink":
+        if a.apply and res["added"]:
+            done = commit_result(cwd, "agent:relink", f"связей поставлено: {res['added']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 0
     if a.task == "clashes":
         return 0          # находки — не провал: их разбирает человек
     if a.task == "twins":
@@ -4163,7 +4421,10 @@ def main() -> int:
                                  not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 0 if made and not res["unsupported"] else 1
-    if a.apply and not (a.task == "build" and a.until_done):
+    # Задачи со своей петлёй коммитят каждый заход сами — итоговый коммит был бы вторым.
+    self_looped = a.until_done and (a.task == "build"
+                                    or (a.task == "relink" and a.apply))
+    if a.apply and not self_looped:
         ok, why = (verdict_build if a.task == "build" else verdict)(res, True)
         done = commit_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint)
         print(f"Результат агента: {done.get('why')}"
