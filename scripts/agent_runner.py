@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:make`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:clashes` · `agent:make`
 """
 from __future__ import annotations
 
@@ -427,6 +427,39 @@ MIN_DEFINITION = 20      # короче — не определение, а об
 EXTRACT_LIMIT = 6        # сколько сущностей выносить из одной карточки за прогон
 
 
+def drop_invented_links(thesis: str, root: str) -> tuple:
+    """Снять ссылки на карточки, которых нет. → (текст, сколько снято).
+
+    Тезису разрешено связывать — но только с тем, что в базе есть. Ссылка на выдуманное
+    имя ведёт в никуда, а `kb:repair --stubs` заводит под неё пустую карточку: база
+    растёт именами, которых никто не называл. Имя остаётся в тексте словами, знание не
+    страдает.
+    """
+    import aurora_common as AC
+    here = os.getcwd()
+    try:
+        if root:
+            os.chdir(root)
+        known = {os.path.basename(p)[:-3]
+                 for p in AC.walk_md(AC.KB_ROOT, skip_service=True, skip_archive=True)}
+    except OSError:
+        return thesis, 0
+    finally:
+        os.chdir(here)
+    dropped = 0
+
+    def sub(m):
+        nonlocal dropped
+        name = m.group(1).split("#")[0].strip()
+        if name in known:
+            return m.group(0)
+        dropped += 1
+        return m.group(2) or name          # подпись, если была, иначе само имя
+
+    fixed = re.sub(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]", sub, thesis)
+    return fixed, dropped
+
+
 def thesis_of(text: str) -> str:
     """Тезис карточки — то, что написала модель, до раздела дословного текста."""
     from aurora_common import card_body
@@ -662,6 +695,156 @@ def report_extract(res: dict, apply: bool) -> str:
         L.append("«Определение не найдено дословно» значит, что модель его пересказала. "
                  "Перенос отменён намеренно: взять похожее — переписать знание под видом "
                  "переезда.")
+    return "\n".join(L)
+
+
+# ------------------------------------------------------------------ задача: противоречия
+
+PROMPT_CLASH = """Ты ищешь ПРОТИВОРЕЧИЯ между карточками базы знаний об одном предмете.
+
+Ниже несколько карточек, которые движок счёл говорящими об одном. Твоя работа — не
+сравнивать формулировки, а найти места, где они утверждают **несовместимое**.
+
+{group}
+
+Противоречие — это когда обе карточки нельзя считать верными одновременно:
+
+  разные числа об одном      «срок 5 дней» и «срок 3 дня» про один и тот же срок;
+  разные условия             «признаётся при отгрузке» и «признаётся при оплате»;
+  разное подчинение          «формирует УТС» и «формирует ГП-3» про один документ;
+  есть/нет                   «интеграция автоматическая» и «обмен только вручную».
+
+Противоречием НЕ является:
+
+  разная подробность         одна говорит короче другой;
+  разные стороны предмета    одна про порядок, другая про сроки;
+  разные случаи              общее правило и его исключение, названное исключением;
+  разные периоды             «было до 2025» и «стало с 2025», если это сказано.
+
+Правила, они же критерии проверки:
+
+1. Цитируй **дословно** обе стороны — по цитате человек найдёт место сам. Пересказ не
+   годится: спор о том, чего никто не писал, дороже необнаруженного.
+2. Не решай, кто прав. Твоё дело — показать столкновение; какое утверждение верно,
+   решает человек по источникам.
+3. Ничего не нашёл — так и скажи. Пустой ответ здесь обычен: карточки об одном предмете
+   чаще дополняют друг друга, чем спорят.
+
+Ответь строго одним JSON-объектом:
+
+{{"clashes": [{{"cards": ["Имя-А", "Имя-Б"], "about": "<о чём спор, три слова>",
+              "a": "<дословная цитата из А>", "b": "<дословная цитата из Б>"}}]}}"""
+
+
+def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
+    """[[имена карточек]] — группы, говорящие об одном. Считает `kb_twins`, порог мягче.
+
+    Противоречие живёт там, где карточки об одном предмете, но текст разошёлся. Порог
+    двойников (0.6) для этого высок: полностью совпадающие карточки как раз не спорят.
+    Берём 0.35 — «об одном предмете, сказано по-разному».
+    """
+    r = run_command(cwd, "kb_twins.py", ["--min", "0.35", "--limit", "0"])
+    if not r["ok"]:
+        return []
+    groups, cur = [], []
+    for line in r["out"].splitlines():
+        if line.startswith("## "):
+            if cur:
+                groups.append(cur)
+            cur = []
+        elif line.startswith("- `"):
+            cur.append(line.split("`")[1])
+    if cur:
+        groups.append(cur)
+    groups = [g for g in groups if len(g) > 1]
+    return groups[:limit] if limit else groups
+
+
+def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0.0) -> dict:
+    """Найти противоречия внутри одной группы. → шаг отчёта. Ничего не правит."""
+    call = call or AG.call_role
+    step = {"group": group, "clashes": [], "status": "чисто", "why": "", "backends": []}
+    from aurora_common import KB_ROOT, card_body, frontmatter
+    import build_plan as BP
+    rows = []
+    for name in group[:8]:
+        path = BP.find_card(name, cwd)
+        if not path:
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        body = card_body(text).split("## Источник", 1)[0]
+        rows.append(f"### {name}\n\n" + " ".join(body.split())[:1400])
+    if len(rows) < 2:
+        step.update(status="пропущена", why="карточек группы уже нет")
+        return step
+
+    r = call(cfg, "qa", [{"role": "user", "content": PROMPT_CLASH.format(
+        group="\n\n".join(rows))}],
+        deadline=deadline or (time.time() + cfg["request_timeout"]))
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        return step
+    found = (parse_json(r["text"]) or {}).get("clashes")
+    if found is None:
+        step.update(status="сбой", why="модель ответила не JSON")
+        return step
+    known = set(group)
+    for c in found:
+        pair = [str(x).strip() for x in (c.get("cards") or [])][:2]
+        a, b = str(c.get("a") or "").strip(), str(c.get("b") or "").strip()
+        # Цитата обязана быть дословной: спор о том, чего никто не писал, дороже
+        # необнаруженного. Не нашли цитату в карточке — находку не берём.
+        if len(pair) != 2 or not all(p in known for p in pair) or len(a) < 15 or len(b) < 15:
+            continue
+        step["clashes"].append({"cards": pair, "about": str(c.get("about") or "")[:80],
+                                "a": a[:300], "b": b[:300]})
+    if step["clashes"]:
+        step["status"] = "спор"
+    return step
+
+
+def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
+    """Пройти по группам карточек об одном и найти противоречия. → сводка."""
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    groups = clash_groups(cwd, cfg, limit)
+    print(f"Групп об одном предмете: {len(groups)} · бюджет {cfg['budget_min']} мин",
+          flush=True)
+    steps = []
+    for i, g in enumerate(groups, 1):
+        if time.time() > budget:
+            steps.append({"group": [], "clashes": [], "status": "стоп",
+                          "why": f"бюджет исчерпан, осталось {len(groups) - i + 1}",
+                          "backends": []})
+            break
+        s = solve_clash(cfg, cwd, g, call, deadline=budget)
+        steps.append(s)
+        print(f"  [{i}/{len(groups)}] {', '.join(g[:3])} → "
+              + (f"споров {len(s['clashes'])}" if s["clashes"] else s["status"]), flush=True)
+    found = sum(len(s["clashes"]) for s in steps)
+    return {"steps": steps, "groups": len(groups), "found": found,
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_clashes(res: dict) -> str:
+    L = [f"# Противоречия в базе — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Групп об одном предмете: **{res['groups']}** · найдено споров: "
+         f"**{res['found']}** · {res['seconds']} с", "",
+         "Противоречие — это когда обе карточки нельзя считать верными одновременно. "
+         "Кто прав, решает человек по источникам: движок показывает столкновение и "
+         "цитирует обе стороны дословно, чтобы спор был проверяем, а не пересказан.", ""]
+    for s in res["steps"]:
+        for c in s["clashes"]:
+            L += [f"## {c['about'] or 'расхождение'}", "",
+                  f"- [[{c['cards'][0]}]]: «{c['a']}»",
+                  f"- [[{c['cards'][1]}]]: «{c['b']}»", ""]
+    if not res["found"]:
+        L.append("Противоречий не найдено. Это обычный исход: карточки об одном предмете "
+                 "чаще дополняют друг друга, чем спорят.")
+    bad = [s for s in res["steps"] if s["status"] in ("сбой", "стоп")]
+    if bad:
+        L += ["", "## Не проверено", ""] + [f"- {s['why']}" for s in bad[:10]]
     return "\n".join(L)
 
 
@@ -1891,7 +2074,16 @@ PROMPT_DISTILL = """Ты превращаешь перенесённый тек�
    это находка, а не шум, и разбирать его человеку.
 4. Пиши по-русски, от 3 до 15 строк. Если в тексте знания нет вовсе (одна вёрстка,
    пустая таблица) — верни ровно `ПУСТО`.
-5. Не выдумывай ссылки на другие карточки: связи расставляет движок.
+5. **Связывай.** Упомянул сущность, у которой ЕСТЬ карточка в списке выше, — поставь
+   `[[Имя карточки]]` прямо в тексте, слитно с фразой: «данные приходят из [[ФЦОД]]».
+   Связь — часть мысли, а не украшение: карточка без связей не находится и не читается,
+   а знание, которое ни с чем не связано, никто не найдёт.
+
+   Ссылайся ТОЛЬКО на карточки из списка. Имя пиши буква в букву, как в списке. Карточки
+   в списке нет — не выдумывай ссылку и не изобретай имя: просто назови сущность словами.
+   Выдуманная ссылка ведёт в никуда и плодит пустые карточки.
+
+   На саму себя карточка не ссылается.
 
 Верни только текст тезиса, без заголовков и пояснений."""
 
@@ -3138,8 +3330,9 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         changed = (m[1].strip() if len(m) > 1 else "")
         step["redistilled"] = True
     elif len(parts) == 1:
-        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]),
-                            parts[0], root))
+        near = candidates_block(candidates_for(root, cfg, title + "\n" + parts[0][:1500]))
+        a = once(near + with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]),
+                                   parts[0], root))
         if not a["ok"]:
             step.update(status="сбой", note="; ".join(a["log"][-2:]))
             return step
@@ -3176,6 +3369,13 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if not thesis or thesis.strip().upper().startswith("ПУСТО"):
         step.update(status="знания нет", note="в тексте одна вёрстка — человеку")
         return step
+    # Связывать тезису разрешено, выдумывать имена — нет. Ссылка на карточку, которой в
+    # базе не существует, ведёт в никуда, а ремонт заводит под неё пустышку: база растёт
+    # именами, которых никто не называл. Имя остаётся словами, знание не страдает.
+    thesis, invented = drop_invented_links(thesis, root)
+    if invented:
+        step["note"] = (step.get("note", "") + f"; снято выдуманных ссылок: {invented}"
+                        ).strip("; ")
     if momus:
         # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
         # это проверкой целого было бы той же тихой потерей, только в проверке.
@@ -3718,7 +3918,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
-                             "twins", "make"],
+                             "twins", "clashes", "make"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
@@ -3920,6 +4120,9 @@ def main() -> int:
     elif a.task == "twins":
         res = run_twins(cfg, cwd, a.apply, a.limit)
         text = report_twins(res, a.apply)
+    elif a.task == "clashes":
+        res = run_clashes(cfg, cwd, a.limit)
+        text = report_clashes(res)
     elif a.task == "build":
         res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
         text = report_build(res, cp, a.apply, a.critic, cfg)
@@ -3934,6 +4137,8 @@ def main() -> int:
     (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
 
+    if a.task == "clashes":
+        return 0          # находки — не провал: их разбирает человек
     if a.task == "twins":
         if a.apply and res["merged"]:
             done = commit_result(cwd, "agent:twins", f"слито групп: {res['merged']}",

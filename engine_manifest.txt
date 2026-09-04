@@ -49,6 +49,7 @@ scripts/kb_embed.py      => .opencode/scripts/kb_embed.py
 scripts/kb_search_quality.py => .opencode/scripts/kb_search_quality.py
 scripts/kb_translit.py   => .opencode/scripts/kb_translit.py
 scripts/kb_twins.py      => .opencode/scripts/kb_twins.py
+scripts/kb_gaps.py       => .opencode/scripts/kb_gaps.py
 scripts/agent_probe.py   => .opencode/scripts/agent_probe.py
 scripts/make_kinds.py    => .opencode/scripts/make_kinds.py
 scripts/aurora_mcp.py    => .opencode/scripts/aurora_mcp.py

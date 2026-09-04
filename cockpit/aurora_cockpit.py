@@ -748,8 +748,14 @@ def git_commit(project: str, message: str, paths: list = None,
         return {"error": str(e)}
     tail = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
     if r.returncode != 0:
+        # Узнаём храповик по названию его же обхода: текст отказа менялся («плотность
+        # ошибок» → «в том, что вы коммитите, ошибок N — они ваши»), и привязка к тексту
+        # отвалилась молча. Панель переставала предлагать «зафиксировать всё равно» ровно
+        # тогда, когда это нужно, и показывала человеку сырой вывод хука.
+        # `AURORA_SKIP_RATCHET` хук называет ровно там, где отказ можно снять; отказ по
+        # внутренним названиям снимается иначе (`--no-verify`) и сюда не попадает.
         return {"error": "коммит не прошёл", "tail": tail[-1500:],
-                "ratchet": "плотность ошибок" in tail}
+                "ratchet": "AURORA_SKIP_RATCHET" in tail}
     _, head, _ = git_out(project, "rev-parse", "--short", "HEAD")
     return {"ok": True, "commit": head, "tail": tail[-800:]}
 
@@ -1111,6 +1117,39 @@ def ui_version() -> str:
 
 def minor(v: str) -> str:
     return ".".join(v.split(".")[:2])
+
+
+def update_all_projects(roots: list, apply: bool) -> dict:
+    """Обновить движок во ВСЕХ отставших проектах разом. → отчёт по каждому.
+
+    Проектов на машине десятки, и обновлять их по одному — работа, которую человек
+    откладывает: отставший движок ломает маршрут на середине, объявив предыдущие шаги
+    успешными. Пока обновление стоит десяти кликов на проект, оно не делается вовсе.
+
+    Обновляем только те, чей движок разошёлся с китом. Каждый проект — своим запуском
+    `aurora_update.py`: он сам решает, что перезаписать, что положить рядом как `.new`,
+    и сам переставляет git-хук. Сбой на одном проекте не отменяет остальные — отчёт
+    называет каждый поимённо.
+    """
+    if not kit_is_source():
+        return {"error": "панель поднята не из кита — обновлять нечем"}
+    rows, done, failed = [], 0, 0
+    for p in find_projects(roots):
+        if not p.get("behind"):
+            continue
+        args = [sys.executable, os.path.join(KIT, "scripts", "aurora_update.py"), p["path"]]
+        if apply:
+            args.append("--apply")
+        cp = subprocess.run(args, capture_output=True, text=True, timeout=600)
+        ok = cp.returncode == 0
+        done += ok
+        failed += not ok
+        tail = (cp.stdout or cp.stderr or "").strip().splitlines()
+        rows.append({"name": p.get("name") or p["path"], "path": p["path"],
+                     "was": p.get("engine"), "ok": ok,
+                     "why": (tail[-1][:200] if tail else "")})
+    return {"apply": apply, "kit": kit_version(), "updated": done, "failed": failed,
+            "projects": rows}
 
 
 def version_gap(project: str) -> str:
@@ -2756,6 +2795,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/agent/venv":
             self.send_json(agent_venv_install())
+            return
+        if u.path == "/api/update-all":
+            self.send_json(update_all_projects(self.server.roots,
+                                               bool(payload.get("apply"))))
             return
         if u.path == "/api/run":
             project = payload.get("project", "")
