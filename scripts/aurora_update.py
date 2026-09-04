@@ -303,6 +303,26 @@ def refresh_hooks(target: Path) -> str:
     return mode if cp.returncode == 0 else ""
 
 
+def refresh_gitignore(target: Path) -> list:
+    """Дописать в .gitignore правила кита, появившиеся после заведения проекта.
+
+    Тот же класс, что и с хуком: правило живёт в ките, а в проекте лежит копия, снятая
+    при установке. Обновление движка возило новый установщик и не трогало файл — и
+    `.opencode/state/` остался вне игнора на проектах, заведённых до этого правила.
+    Замок агента попал под контроль версий и после каждого прогона оставлял дерево
+    грязным; чекпойнт агента делает `git add -A` и утащил бы его в историю как работу.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        from install_aurora import merge_gitignore
+    except Exception:
+        return []
+    try:
+        return merge_gitignore(target / ".gitignore")
+    except OSError:
+        return []
+
+
 def run(target: Path, apply: bool, structure_only: bool = False):
     if not (target / "AuroraKnowledgeDB").is_dir():
         print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
@@ -391,10 +411,13 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     (target / ".opencode").mkdir(parents=True, exist_ok=True)
     (target / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
     refreshed = refresh_hooks(target)
+    ignored = refresh_gitignore(target)
     stamp_version(target, kv)
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
-          + (f", хук обновлён ({refreshed})" if refreshed else "") + f". Версия → {kv}")
+          + (f", хук обновлён ({refreshed})" if refreshed else "")
+          + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
+          + f". Версия → {kv}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
     if seeds:
         print("   Не забудьте сравнить *.new с вашими Templates/Prompts и удалить .new.")

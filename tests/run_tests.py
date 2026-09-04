@@ -1577,9 +1577,47 @@ def term_regex(terms: list):
     его обходят, переписывая нормальный текст, и защита превращается в помеху, которую
     учатся игнорировать. Границей слова считаем букву или цифру, поэтому имя файла с
     подчёркиванием или дефисом по-прежнему ловится.
+
+    Но русское название склоняется, и в списке оно стоит основой. Граница справа эту
+    основу и убивала: основа «Примор» не ловила «Приморья» — название заказчика прошло
+    проверку зелёным и было поймано глазами перед самой отправкой. Поэтому основа
+    объявляется явно, звёздочкой на конце: `Примор*` ловит любое продолжение слова.
+    Угадывать, где основа, а где целое слово, проверка не вправе — это решение того,
+    кто ведёт список.
     """
-    body = "|".join(re.escape(t) for t in terms)
-    return re.compile(rf"(?<![0-9A-Za-zА-Яа-яЁё])(?:{body})(?![0-9A-Za-zА-Яа-яЁё])", re.I)
+    body = "|".join(re.escape(t.rstrip("*")) + ("" if t.endswith("*")
+                                                else "(?![0-9A-Za-zА-Яа-яЁё])")
+                    for t in terms)
+    return re.compile(rf"(?<![0-9A-Za-zА-Яа-яЁё])(?:{body})", re.I)
+
+
+@test
+def test_a_private_name_is_caught_in_every_form_it_is_written(tmp: Path):
+    """Основа в списке ловит склонения, целое слово — только себя.
+
+    Русское название заказчика склоняется, и в списке оно стоит основой. Проверка же
+    требовала границу слова справа — и основа не ловила ни одного склонения. Название
+    заказчика прошло прогон зелёным и было снято глазами перед самой отправкой; тот же
+    пробел был и в push-хуке, то есть последней сетки под ногами не было вовсе.
+
+    Граница справа осталась там, где она и нужна: короткое название вроде трёхбуквенного
+    без неё ловило бы половину живого текста. Отличает одно от другого не догадка
+    проверки, а звёздочка — её ставит тот, кто ведёт список.
+    """
+    rx = term_regex(["Примор*", "ЛТК"])
+    for probe, why_not in (("работа в Приморье", "склонение основы не поймано"),
+                           ("приморский узел", "производное от основы не поймано"),
+                           ("ПРИМОР", "сама основа не поймана"),
+                           ("проект ЛТК идёт", "целое название не поймано")):
+        assert rx.search(probe), f"{why_not}: {probe!r}"
+    for probe, why_not in (("живой проект", "поймана обычная фраза"),
+                           ("лткань", "целое название поймано внутри другого слова")):
+        assert not rx.search(probe), f"{why_not}: {probe!r}"
+
+    # хук перед отправкой обязан судить так же: иначе зелёный прогон и красный push
+    hook = (SCRIPTS / "aurora_hooks.py").read_text(encoding="utf-8")
+    assert 't.rstrip("*")' in hook and 'if t.endswith("*")' in hook, \
+        "push-хук не понимает основу — проверка и последняя сетка разойдутся"
 
 
 @test
@@ -2098,8 +2136,11 @@ def test_build_can_run_the_whole_plan_overnight(tmp: Path):
     assert "left_after >= left_before" not in src, "старая метрика прогресса вернулась"
     assert 'commit_result(cwd, "agent:build",\n                              f"партия' in src, \
         "партии не коммитятся по отдельности — откатить можно будет только всё сразу"
-    assert "if a.apply and not (a.task == \"build\" and a.until_done):" in src, \
+    assert "if a.apply and not self_looped:" in src, \
         "результат коммитится дважды: и в цикле, и в конце"
+    guard = src.split("self_looped = ")[1][:200]
+    assert 'a.task == "build"' in guard and "a.until_done" in guard, \
+        "итоговый коммит перестал знать про петлю сборки — коммитов снова будет два"
 
     # шаг есть в маршруте пересборки, и флаги существуют у команды
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
@@ -9762,6 +9803,46 @@ def test_links_and_stubs_respect_separators_and_dots(tmp: Path):
 
 
 @test
+def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Path):
+    """Правила `.gitignore`, появившиеся в ките позже, доезжают до заведённых проектов.
+
+    Тот же класс, что был с git-хуком: правило живёт в ките, а в проекте лежит копия,
+    снятая при установке. Установка смотрела на файл целиком — «есть старые строки,
+    значит настроен» — и не добавляла ничего. На двух живых проектах так и остался вне
+    игнора `.opencode/state/`: рантайм-состояние прогона. На одном замок агента попал
+    под контроль версий, и после каждого прогона дерево оставалось грязным, а чекпойнт
+    агента делает `git add -A` и утащил бы замок в историю под видом работы человека.
+
+    Дописываем только недостающее: файл правит человек, и его строки — его дело.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from install_aurora import merge_gitignore, GITIGNORE_BLOCK
+    gi = tmp / ".gitignore"
+    # проект, заведённый до правила: старые строки есть, нового нет
+    gi.write_text("# мой файл\n.DS_Store\n.env\nMyOwnFolder/\n", encoding="utf-8")
+    added = merge_gitignore(gi)
+    text = gi.read_text(encoding="utf-8")
+    assert ".opencode/state/" in text, \
+        "правило кита не доехало — состояние прогона снова попадёт под контроль версий"
+    assert "MyOwnFolder/" in text, "строка человека потерялась при дописывании"
+    assert text.count(".DS_Store") == 1, "уже имевшееся правило продублировано"
+    assert ".opencode/state/" in added and ".DS_Store" not in added, \
+        "отчёт врёт о том, что было добавлено"
+
+    second = merge_gitignore(gi)
+    assert second == [], why(second) or "повторный прогон дописывает то же ещё раз"
+
+    fresh = tmp / "новый" / ".gitignore"
+    fresh.parent.mkdir()
+    assert merge_gitignore(fresh), "на пустом проекте не записано ничего"
+    assert fresh.read_text(encoding="utf-8").strip(), "файл создан пустым"
+
+    upd = (SCRIPTS / "aurora_update.py").read_text(encoding="utf-8")
+    assert "refresh_gitignore(target)" in upd, \
+        "обновление движка не трогает .gitignore — правила снова не доедут"
+
+
+@test
 def test_update_removes_retired_engine_files(tmp: Path):
     """Слитые скрипты уезжают из проекта, а не остаются рядом работать по-своему.
 
@@ -11317,6 +11398,145 @@ def test_updating_the_engine_refreshes_the_git_hook(tmp: Path):
                     "--apply"], capture_output=True, text=True)
     assert "мой собственный хук" in hook.read_text(encoding="utf-8"), \
         "чужой хук перезаписан молча — потеряна работа человека"
+
+
+@test
+def test_relinking_adds_links_and_proves_the_text_is_untouched(tmp: Path):
+    """Связи расставляются в готовом тезисе, и движок доказывает, что текст не изменён.
+
+    Тезисы уже написаны и проверены Момусом. Переписывать их ради связей значит рисковать
+    знанием там, где риска не требуется: модель «заодно» поправит формулировку, и правка
+    уедет в базу под видом расстановки ссылок.
+
+    Поэтому ход другой: модель вставляет ТОЛЬКО разметку, а движок снимает её с ответа и
+    сравнивает с исходным текстом посимвольно. Не совпало — ответ отброшен целиком.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    importlib.reload(R)
+
+    assert R.strip_links("из [[ФЦОД]] и [[Профиль абонента|Профиля]]") == "из ФЦОД и Профиля", \
+        "разметка снимается неверно — сверка текста будет врать"
+
+    flat = " ".join(R.PROMPT_RELINK.split())
+    assert "Ни одного изменённого слова" in flat, "модели не сказано главное правило"
+    assert "сравнит с исходным текстом посимвольно" in flat, \
+        "модель не предупреждена о сверке — будет править текст «заодно»"
+
+    root = make_project(tmp)
+    thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию. Остатки "
+              "обновляются по факту поступления платежа и хранятся за расчётный период. "
+              "Сверка проводится ежедневно и фиксируется в журнале операций.")
+    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge",
+         body="Подсистема обработки платежей.")
+    card(root, "Concepts/Аналитический-баланс.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", body=thesis)
+    path = root / "AuroraKnowledgeDB/Concepts/Аналитический-баланс.md"
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+
+    linked = thesis.replace("из ФЦОД", "из [[ФЦОД]]", 1)
+    calls = {"n": 0}
+
+    def marks_only(c, role, messages, **kw):
+        calls["n"] += 1
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": linked}
+
+    # без кандидатов ход не зовёт модель вовсе: связывать не с чем
+    st = R.relink_card(cfg, str(path), marks_only, apply=True)
+    assert calls["n"] == 0 and st["status"] == "пропущена", \
+        f"без индекса ход всё равно пошёл к модели: {st}"
+
+    # с кандидатами — связывает и пишет
+    R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", "Подсистема платежей")]
+    st = R.relink_card(cfg, str(path), marks_only, apply=True)
+    assert st["status"] == "связана" and st["added"] == 1, st
+    got = path.read_text(encoding="utf-8")
+    assert "[[ФЦОД]]" in got, "ссылка не записана"
+    assert "Сверка проводится ежедневно" in got, "задет остальной текст"
+
+    # Карточка, где ссылка УЖЕ стояла, не должна отвергаться: разметка снимается с обеих
+    # сторон. Сравнение «ответ без разметки против исходника в разметке» отвергало такие
+    # всегда — на живой базе восемь попыток из восьми.
+    card(root, "Concepts/Со-ссылкой.md", status="draft", kind="knowledge",
+         distilled="2026-09-01",
+         body="Баланс получает данные из [[ФЦОД]] по расписанию. Остатки обновляются по "
+              "факту поступления платежа и хранятся за расчётный период целиком. "
+              "Сверка проводится ежедневно и фиксируется в журнале операций.")
+    withlink = root / "AuroraKnowledgeDB/Concepts/Со-ссылкой.md"
+    same = ("Баланс получает данные из [[ФЦОД]] по расписанию. Остатки обновляются по "
+            "факту поступления платежа и хранятся за расчётный период целиком. "
+            "Сверка проводится ежедневно и фиксируется в журнале операций.")
+    st3 = R.relink_card(cfg, str(withlink),
+                        lambda *a, **k: {"ok": True, "backend": 1, "model": "m",
+                                         "log": [], "text": same}, apply=True)
+    assert st3["status"] != "отброшен", \
+        f"карточка с уже стоявшей ссылкой отвергнута: {st3}"
+
+    # правка текста под видом разметки — отброшена целиком
+    card(root, "Concepts/Другая.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", body=thesis)
+    other = root / "AuroraKnowledgeDB/Concepts/Другая.md"
+    before = other.read_text(encoding="utf-8")
+
+    def rewrites(c, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": linked.replace("ежедневно", "еженедельно")}
+
+    st2 = R.relink_card(cfg, str(other), rewrites, apply=True)
+    assert st2["status"] == "отброшен" and "текст изменён" in st2["note"], st2
+    assert other.read_text(encoding="utf-8") == before, \
+        "правка формулировки записана под видом расстановки ссылок"
+
+    # отметка держит дату тезиса: перепишут тезис — карточка вернётся сама
+    R.mark_relinked(str(path))
+    assert "relinked: 2026-09-01" in path.read_text(encoding="utf-8"), \
+        "нет отметки — ход будет ходить по одним и тем же карточкам каждый раз"
+
+
+@test
+def test_relinking_runs_pass_after_pass_without_burning_a_pass_to_count(tmp: Path):
+    """Заходы связывания гоняет движок, и остаток он знает сам.
+
+    Четыреста карточек за двадцатиминутный бюджет не обойти, поэтому связывание идёт
+    заходами. На живом прогоне заходы гонял скрипт в шелле, а остаток спрашивал
+    отдельным запуском `--task relink` без `--apply`. Предпросмотр — это не подсчёт:
+    он честно гонял модель по всей очереди все двадцать минут и ничего не записывал.
+    Половина ночи ушла в холостые прогоны, темп упал вдвое, а в журнале осталась
+    запись с пометкой «(dry-run) Ничего не записано» — рядом с настоящей работой.
+
+    Очередь же собирается обходом файлов и стоит даром. Значит петля обязана жить в
+    движке: он пересчитывает очередь между заходами бесплатно и сообщает остаток в
+    ответе, чтобы спрашивать было нечего.
+    """
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert '"left": left' in src, \
+        "run_relink не сообщает остаток — петле придётся выяснять его прогоном модели"
+    assert 'a.task == "relink" and a.until_done and a.apply' in src, \
+        "у связывания нет своей петли — заходы снова придётся гонять скриптом снаружи"
+    loop = src.split('a.task == "relink" and a.until_done and a.apply')[1].split("elif a.task ==")[0]
+    assert 'run_relink(cfg, cwd, True, a.limit)' in loop, \
+        "заход внутри петли идёт без записи — очередь не убудет, петля не кончится"
+    assert 'commit_result(cwd, "agent:relink"' in loop, \
+        "заходы не коммитятся по отдельности — откатить можно будет только всё сразу"
+    assert "looks_offline(res)" in loop, \
+        "обрыв связи останавливает ночной прогон вместо ожидания"
+    assert 'res["left"]' in loop and "run_relink" in loop, \
+        "петля берёт остаток не из ответа прогона"
+    # предпросмотр отметок не ставит: очередь не убывает, петля крутилась бы вечно
+    guard = src.split('elif a.task == "relink":')[1][:400]
+    assert "a.until_done and not a.apply" in guard, \
+        "--until-done без --apply зациклится: предпросмотр не двигает очередь"
+
+    # шаг есть в маршрутах и идёт до общего связывания: карты считают брошенных по
+    # входящим, и посчитанные раньше связей — врут
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    for tag in ("[update]", "[fix]", "[rebuild]"):
+        part = scen.split(tag)[1].split("\n[")[0]
+        assert "agent:relink" in part, f"в маршруте {tag} нет связывания тезисов"
+        assert part.index("agent:relink") < part.rindex("kb:moc"), \
+            f"в маршруте {tag} карты строятся раньше связей — брошенные будут посчитаны неверно"
 
 
 @test
