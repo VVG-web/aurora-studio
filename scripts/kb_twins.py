@@ -128,7 +128,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Карточки, несущие одно знание")
     ap.add_argument("--min", type=float, default=0.6,
                     help="порог совпадения, 0..1 (по умолчанию 0.6)")
-    ap.add_argument("--limit", type=int, default=40, help="сколько групп печатать")
+    ap.add_argument("--limit", type=int, default=40,
+                    help="сколько групп печатать; 0 — все (отчёт читает `agent:twins`, "
+                         "и урезанная печать урезала бы ему работу)")
     ap.add_argument("--report", metavar="ФАЙЛ", default="",
                     help="записать отчёт в файл (например meta/twins.md)")
     a = ap.parse_args()
@@ -200,7 +202,11 @@ def main() -> int:
                 "`kb:dedupe --merge «оставить» «убрать»`.", "",
                 "«Оставить» предложено по статусу, входящим ссылкам и объёму — "
                 "проверьте, прежде чем сливать: длиннее не всегда значит полнее.", ""]
-    for g in groups[:a.limit]:
+    # Ноль — «все», как и в остальных командах кита. Отчёт читает не только человек:
+    # по нему работает `agent:twins`, и урезанная печать урезала бы ему работу молча —
+    # прогон выглядел бы завершённым, обработав сорок групп из пятисот.
+    shown = groups if not a.limit else groups[:a.limit]
+    for g in shown:
         best, why = keeper(g, cards, inbound)
         out.append(f"## {len(g)} карточек · оставить `{cards[best].stem}` ({why})")
         out.append("")
@@ -210,8 +216,8 @@ def main() -> int:
             out.append(f"- `{c.stem}` · {c.status or '—'} · {len(c.text)} знаков · "
                        f"входящих {inbound.get(c.stem, 0)} {mark}")
         out.append("")
-    if len(groups) > a.limit:
-        out.append(f"… ещё групп: {len(groups) - a.limit}")
+    if len(shown) < len(groups):
+        out.append(f"… ещё групп: {len(groups) - len(shown)}")
 
     text = "\n".join(out)
     print(text)

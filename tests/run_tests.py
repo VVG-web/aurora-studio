@@ -11331,6 +11331,94 @@ def test_one_translation_per_name_is_remembered(tmp: Path):
 
 
 @test
+def test_a_broken_manifest_stops_the_run_instead_of_forgetting(tmp: Path):
+    """Нечитаемый манифест — отказ, а не «начнём с нуля».
+
+    Манифест это учёт того, что уже разобрано. Прежде любая ошибка чтения возвращала
+    пустой словарь, и следующая же запись затирала учёт целиком: на живой пересборке
+    сто тридцать один разобранный источник разом стал неразобранным, план вырос вдвое,
+    и разбор пошёл по второму кругу. Движок это заметил и записал в сообщение коммита,
+    но не остановился — а должен был.
+
+    Пустой файл и отсутствие файла — законное «ещё ничего не разбирали»; битый — авария.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    B = importlib.import_module("build_plan")
+    importlib.reload(B)
+
+    root = make_project(tmp)
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        assert B.load_manifest() == {}, "нет файла — это не авария"
+        (meta / "manifest.json").write_text("", encoding="utf-8")
+        assert B.load_manifest() == {}, "пустой файл — это не авария"
+
+        # Запись должна быть неделимой: читатель не увидит половину файла
+        B.save_manifest({"sources": {"A.md": {"cards": 3}}})
+        assert not (meta / "manifest.json.tmp").exists(), "временный файл не убран"
+        assert B.load_manifest()["sources"]["A.md"]["cards"] == 3
+
+        (meta / "manifest.json").write_text('{"sources": {"A.md": ', encoding="utf-8")
+        try:
+            B.load_manifest()
+        except B.ManifestBroken as e:
+            assert "не читается" in str(e), str(e)
+            assert "git checkout" in str(e), "не сказано, как вернуть учёт"
+            # Обычное исключение, а не SystemExit: функцию зовут из потоков разбора,
+            # и `except Exception` вокруг вызова обязан её поймать.
+            assert isinstance(e, Exception), \
+                "ошибка чтения манифеста не ловится обычным except — поток умрёт молча"
+        else:
+            raise AssertionError("битый манифест прочитан как пустой — "
+                                 "следующая запись сотрёт весь учёт разбора")
+    finally:
+        os.chdir(here)
+
+
+@test
+def test_the_plan_does_not_feed_on_its_own_work(tmp: Path):
+    """Карточка, нарезанная из справочника, не возвращается в план источником.
+
+    Справочники раздела `Reference` ведут руками — они законный источник. Карточка,
+    извлечённая из справочника, ложится рядом с ним, и без отсева план получал бы её
+    как новый источник: разобрал источник — получил источник.
+
+    Отсев смотрит на происхождение, и читать его надо тем же кодом, что и все.
+    Проверка на голое поле `source:` перестала работать в день, когда происхождение
+    стало списком, — и разбор на живой пересборке немедленно принялся скармливать себе
+    собственные карточки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    B = importlib.import_module("build_plan")
+    importlib.reload(B)
+
+    root = make_project(tmp)
+    ref = root / "AuroraKnowledgeDB" / "Reference"
+    ref.mkdir(parents=True, exist_ok=True)
+    (ref / "Справочник-кодов.md").write_text(
+        '---\ntitle: "Справочник кодов"\nsources: []\n---\n\n| код | имя |\n|---|---|\n',
+        encoding="utf-8")
+    (ref / "Код-А.md").write_text(
+        '---\ntitle: "Код А"\nsources:\n  - "AuroraKnowledgeDB/Reference/Справочник-кодов.md"\n'
+        "---\n\nЗначение кода.\n", encoding="utf-8")
+    (ref / "Старая-нарезка.md").write_text(
+        '---\ntitle: "Старая нарезка"\nsource: "AuroraKnowledgeDB/Reference/Справочник-кодов.md"\n'
+        "---\n\nЗначение.\n", encoding="utf-8")
+
+    assert not B.derived_card(str(ref / "Справочник-кодов.md")), \
+        "справочник, который ведут руками, объявлен производным — он выпадет из плана"
+    assert B.derived_card(str(ref / "Код-А.md")), \
+        "карточка со списком источников не опознана как производная — вернётся в план"
+    assert B.derived_card(str(ref / "Старая-нарезка.md")), \
+        "карточка со старой записью источника не опознана: базы прошлых версий сломаются"
+
+
+@test
 def test_knowledge_accumulates_in_one_card(tmp: Path):
     """Про одну сущность говорят разные документы — знание копится в одной карточке.
 
@@ -11381,6 +11469,25 @@ def test_knowledge_accumulates_in_one_card(tmp: Path):
         "повторный разбор удвоил блок — карточка растёт от собственных прогонов"
     assert len(card_srcs(twice)) == 2, card_srcs(twice)
 
+    # Занятое имя из другого источника разбор не роняет, а дописывает сам. На первом же
+    # живом прогоне отказ научился называть `--append`, а исполнить его было некому:
+    # источник объявлялся сбойным, и разобранное терялось. По правилам базы имя карточки
+    # это имя сущности — совпало имя, значит совпала сущность.
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert 'if not res["ok"] and not into_name and "--append" in' in src, \
+        "разбор не дописывает при занятом имени — источник будет объявлен сбойным"
+    assert "дописана в существующую" in src, \
+        "человеку не сказано, что карточку дописали, а не завели"
+
+    # Опечатка в имени не теряет источник: одна буква в длинном имени — это опечатка,
+    # а не другое понятие. На живой пересборке модель поставила латинскую букву в русском
+    # слове, и источник пропал целиком при том, что карточка лежала рядом.
+    typo = run("build_plan.py", "--append", "Профиль абонeнта",  # латинская e
+               "--source", "Sources/Confluence/B.md", "--sections", "1", "--apply", cwd=root)
+    assert typo.returncode == 0, typo.stdout + typo.stderr
+    assert not (root / "AuroraKnowledgeDB/Concepts/Профиль-абонeнта.md").is_file(), \
+        "опечатка завела карточку-двойник вместо дополнения существующей"
+
     # и отказ при занятом имени теперь называет операцию, а не советует невозможное
     (root / "Sources/Confluence/C.md").write_text("## Раздел\n\n" + long, encoding="utf-8")
     ref = run("build_plan.py", "--card", "Профиль абонента", "--source",
@@ -11388,6 +11495,17 @@ def test_knowledge_accumulates_in_one_card(tmp: Path):
     assert ref.returncode == 1, ref.stdout
     assert "--append" in ref.stderr, \
         f"отказ не называет операцию — модель придумает другое имя:\n{ref.stderr}"
+
+    # А имени, которого нет вовсе, соответствует новая карточка — но не потеря источника:
+    # знание разобрано и годно, лишнюю карточку человек сведёт `kb:twins`. Терять источник
+    # хуже: в отчёте будет «сбой», и разбирать его придётся заново.
+    missing = run("build_plan.py", "--append", "Неизвестное понятие связи",
+                  "--source", "Sources/Confluence/C.md", "--sections", "1",
+                  "--to", "Concepts", "--apply", cwd=root)
+    assert missing.returncode == 0, \
+        f"источник потерян из-за имени, которого нет:\n{missing.stderr}"
+    assert (root / "AuroraKnowledgeDB/Concepts/Неизвестное-понятие-связи.md").is_file(), \
+        "карточка не заведена — знание пропало"
 
 
 @test
@@ -11414,8 +11532,21 @@ def test_parsing_is_shown_what_the_base_already_has(tmp: Path):
     src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
     assert "candidates_block(candidates_for(cwd, cfg, listing))" in src, \
         "кандидаты не доезжают до промпта разбора"
+    # Путь карточки ищется по карте, а не обходом базы на каждого кандидата: два десятка
+    # кандидатов на карточку и тысячи карточек дают миллионы обращений к диску за прогон.
+    block = src[src.index("def _card_path("):src.index("def candidates_block(")]
+    assert "_PATHS.get(stem" in block and "for p in AC.walk_md" not in block.split("if time")[0], \
+        "путь карточки ищется обходом всей базы — на большом проекте это минуты на карточку"
     assert 'карточка — это сущность, а не пересказ документа' in src.lower(), \
         "правило не сказано в самом промпте — список кандидатов без него бесполезен"
+    # Задача о работе — не знание. Без этого правила пересборка делает карточки вида
+    # «Разработка таблицы X — задача PRJ-000. В источнике прямо указано: разработка
+    # таблицы X»: пересказ заголовка, который линтер потом честно зовёт артефактом.
+    flat = " ".join(R.PROMPT_BUILD.split())
+    assert "задача о выполнении работы — не знание" in flat, \
+        "разбор сделает знание из задачи о работе — в базе появятся пересказы заголовков"
+    assert "карточку делай про **предмет**" in flat, \
+        "не сказано, что делать, когда предмет в задаче описан"
 
     # разбор умеет обе записи, и не обе сразу
     assert R.check_cards([{"into": "Профиль-абонента", "sections": "1"}],
@@ -11423,6 +11554,12 @@ def test_parsing_is_shown_what_the_base_already_has(tmp: Path):
     both = R.check_cards([{"into": "А", "title": "Б", "sections": "1"}],
                          [(1, "Раздел", 100, "…")])
     assert "into" in both and "title" in both, f"смешение двух записей не поймано: {both}"
+
+    # Фильтр между моделью и исполнителем обязан пропускать обе записи. Требовавший
+    # `title` молча выбрасывал `into`, и источник, про который модель сказала «это уже
+    # есть в карточке N», объявлялся сбойным — на живой пересборке так упала вся партия.
+    assert 'if (c.get("title") or c.get("into")) and c.get("sections")' in src, \
+        "ответы вида `into` отсеиваются до исполнителя — накопление не сработает ни разу"
 
     # и операция дополнения разрешена агенту: без белого списка он ею не воспользуется
     A = importlib.import_module("agent_core")
@@ -11477,6 +11614,46 @@ def test_extraction_moves_text_and_never_loses_it(tmp: Path):
     assert definition in body, "определение переехало не дословно"
     assert "Аналитический-баланс" in body, "не сказано, откуда перенесено"
 
+    # ход печатает работу по мере её выполнения: молчащий несколько минут шаг
+    # неотличим от зависшего, и вести прогон по логам становится нечем
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    block = src[src.index("def run_extract("):src.index("def report_extract(")]
+    assert "flush=True" in block and "Карточек к осмотру" in block, \
+        "ход выделения молчит до конца — по логам его не проконтролировать"
+
+    # Осмотренную карточку второй раз не смотрим: без отметки каждый оборот пересборки
+    # перебирал бы всю базу заново — часы вызовов модели ради уже полученного ответа.
+    # Отметка держит дату тезиса: перепишут тезис — карточка вернётся на осмотр сама.
+    again = path.read_text(encoding="utf-8")
+    assert "extracted: 2026-09-01" in again, \
+        f"карточка не помечена осмотренной — её будут осматривать каждый оборот:\n{again[:300]}"
+    cfg2 = {"request_timeout": 60, "budget_min": 5, "backends": [],
+            "embed": {"model": "m"}, "thinking_roles": {}, "thinking": False}
+    res = R.run_extract(cfg2, str(root), apply=False,
+                        call=lambda *a, **k: {"ok": True, "backend": 1, "model": "m",
+                                              "log": [], "text": '{"extract": []}'})
+    looked = [s["card"] for s in res["steps"]]
+    assert "Аналитический-баланс" not in looked, \
+        f"осмотренная карточка пошла на второй круг: {looked}"
+
+    # «Термин (расшифровка)» уходит целиком: иначе остаются скобки и имя дважды —
+    # «введена УСН ([[УСН]])». Ровно это вышло на первом живом прогоне.
+    card(root, "Concepts/Ставка.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Для оборота до тридцати миллионов введена УСН (упрощённая система "
+              "налогообложения). Ставка применяется с начала календарного года и не "
+              "меняется до его конца. Переход оформляется заявлением в инспекцию.")
+    def paren(cfg, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"extract": [{"term": "УСН", "definition": "упрощённая система налогообложения",
+                          "keep": ""}]}, ensure_ascii=False)}
+    sp = root / "AuroraKnowledgeDB/Concepts/Ставка.md"
+    R.extract_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+                    "thinking_roles": {}, "thinking": False, "backends": []},
+                   str(sp), paren, apply=True)
+    after = sp.read_text(encoding="utf-8")
+    assert "введена [[УСН]]" in after, f"скобки остались от конструкции:\n{after}"
+    assert "УСН ([[УСН]])" not in after, "имя выведено дважды, скобка пустая"
+
     # пересказанное определение не переносится вовсе: это правка, а не переезд
     card(root, "Concepts/Другая.md", status="draft", kind="knowledge",
          distilled="2026-09-01",
@@ -11490,13 +11667,16 @@ def test_extraction_moves_text_and_never_loses_it(tmp: Path):
                 "text": json.dumps({"extract": [
                     {"term": "УФК", "definition": "которая отвечает за казначейские операции",
                      "keep": ""}]}, ensure_ascii=False)}
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
     other = root / "AuroraKnowledgeDB/Concepts/Другая.md"
-    before = other.read_text(encoding="utf-8")
+    before = AC.card_body(other.read_text(encoding="utf-8"))
     st2 = R.extract_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
                           "thinking_roles": {}, "thinking": False, "backends": []},
                          str(other), paraphrase, apply=True)
     assert st2["status"] == "нечего выносить", st2
-    assert other.read_text(encoding="utf-8") == before, \
+    # Сверяем ТЕЛО: шапка меняется законно — карточку пометили осмотренной.
+    assert AC.card_body(other.read_text(encoding="utf-8")) == before, \
         "карточка изменена по пересказанному куску — знание переписано под видом переноса"
     assert "не найдено дословно" in st2["note"], st2
 
@@ -11568,8 +11748,19 @@ def test_merging_twins_is_decided_by_the_model(tmp: Path):
     assert (root / "AuroraKnowledgeDB/Concepts/Смена-профиля.md").read_text(
         encoding="utf-8") == before, "карточка тронута вопреки решению «разные»"
 
-    # группы читаются из отчёта `kb:twins`: разбор чужого вывода молча вернул бы пустой
-    # список, и весь ход стал бы бездействием, неотличимым от «двойников нет»
+    # Группы читаются из отчёта `kb:twins`: разбор чужого вывода молча вернул бы пустой
+    # список, и весь ход стал бы бездействием, неотличимым от «двойников нет».
+    #
+    # И отчёт обязан печатать ВСЕ группы, когда его читает машина. На живом проекте ход
+    # обработал сорок групп из пятисот и отрапортовал как о завершённой работе: отчёт
+    # печатает сорок по умолчанию, а `twin_groups` читает именно печатное.
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert '"--limit", "0"' in src, \
+        "ход читает отчёт с урезанной печатью — возьмёт сорок групп из пятисот и умолкнет"
+    twins = (SCRIPTS / "kb_twins.py").read_text(encoding="utf-8")
+    assert "groups if not a.limit else" in twins, \
+        "ноль в --limit не значит «все» — ход прочитает пустой отчёт"
+
     groups = R.twin_groups(str(root))
     assert groups, "группы не прочитаны из отчёта — ход будет молча ничего не делать"
     assert any("Профиль-абонента" in g for g in groups), groups
