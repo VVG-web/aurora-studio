@@ -410,9 +410,12 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
             else:
                 raise ValueError("режим не поддерживается в-процессе: " + " ".join(args))
     except Exception as ex:  # noqa: BLE001 — сбой сборки: шаг провален, повтора нет
-        return {"ok": False, "rc": 1, "refused": "",
-                "out": ((out.getvalue() or "") + (err.getvalue() or "")
-                        + f"\nbuild_plan: {type(ex).__name__}: {ex}").strip()}
+        # Причина идёт ПЕРВОЙ строкой: отчёт показывает хвост вывода, и трассировка,
+        # напечатанная кем-то до нас, вытесняла бы её — в журнале оставалось «~~~~^^^^»,
+        # по которому нельзя ни понять, ни воспроизвести. Поймано на живой пересборке.
+        why = f"build_plan: {type(ex).__name__}: {ex}"
+        return {"ok": False, "rc": 1, "refused": "", "why": why,
+                "out": (why + "\n" + (out.getvalue() or "") + (err.getvalue() or "")).strip()}
     return {"ok": rc == 0, "rc": rc,
             "out": ((out.getvalue() or "") + (err.getvalue() or "")).strip(),
             "refused": ""}
@@ -769,7 +772,8 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
         args = ["--dupes", "--merge", keep, drop, "--apply", "--allow-dirty"]
         res = run_command(cwd, "kb_fix.py", args)
         if not res["ok"]:
-            step.update(status="сбой", why=f"слияние {drop}: {res['out'][-160:]}")
+            step.update(status="сбой",
+                        why=f"слияние {drop}: " + (res.get("why") or res["out"][:200]))
             return step
     return step
 
@@ -1001,7 +1005,8 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
             return step
         if not res["ok"]:
             step.update(status="сбой",
-                        note=f"команда не выполнила правку: {res['out'][-160:]}")
+                        note="команда не выполнила правку: "
+                             + (res.get("why") or res["out"][:200]))
             return step
         done.append(f"{item['card']} → «{item['new']}»")
     step.update(status="уточнено" if apply else "уточнил бы", note="; ".join(done))
@@ -1516,7 +1521,8 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if apply:
             res = run_build_plan(cwd, ["--done", source, "--empty", note])
             if not res["ok"]:
-                step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-160:]}")
+                step.update(status="сбой", note="отметка не поставлена: "
+                            + (res.get("why") or res["out"][:200]))
                 return step
         step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
         return step
@@ -1557,7 +1563,8 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             res = run_build_plan(cwd, args)
             into_name = str(card["title"])
         if not res["ok"]:
-            step.update(status="сбой", note=f"карточка не собрана: {res['out'][-200:]}")
+            step.update(status="сбой", note="карточка не собрана: "
+                        + (res.get("why") or res["out"][:200]))
             return step
         made.append(f"«{into_name}» ← дописаны секции {card['sections']}" if into_name
                     else f"«{card['title']}» ← секции {card['sections']} → "
@@ -1568,7 +1575,8 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if not res["ok"]:
             # Отметка проверяется по базе: не поставилась — карточек в базе нет,
             # и считать источник разобранным нельзя.
-            step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-200:]}")
+            step.update(status="сбой", note="отметка не поставлена: "
+                        + (res.get("why") or res["out"][:200]))
             return step
     step.update(status="разобран" if apply else "разобрал бы", note="; ".join(made))
     return step
@@ -1686,7 +1694,8 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     if apply:
         res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
         if not res["ok"]:
-            step.update(status="сбой", note=f"отметка не поставлена: {res['out'][-160:]}")
+            step.update(status="сбой", note="отметка не поставлена: "
+                        + (res.get("why") or res["out"][:200]))
             return step
     step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
     return step

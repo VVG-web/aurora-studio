@@ -148,12 +148,26 @@ def save_manifest(data: dict) -> None:
     прочитавший его в этот миг, получал ошибку разбора — а она стоила всего учёта.
     """
     os.makedirs(os.path.dirname(MANIFEST), exist_ok=True)
-    tmp = MANIFEST + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, MANIFEST)
+    # Временный файл — СВОЙ у каждого писателя. С общим именем два процесса пишут в один
+    # и тот же файл: один усекает его, пока другой пишет, и после переименования остаётся
+    # обрывок чужого содержимого за закрывающей скобкой. Ровно это и вышло на живой
+    # пересборке — манифест стал нечитаемым при неделимой, казалось бы, записи.
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(MANIFEST) or ".",
+                               prefix=".manifest-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, MANIFEST)
+    except BaseException:
+        # Не оставляем мусор рядом с базой: недописанный временный файл никому не нужен.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def sources() -> list:
