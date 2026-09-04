@@ -82,8 +82,12 @@ def load(root: str = KB_ROOT) -> dict:
         out[stem] = {
             "path": path, "section": section, "fm": fm, "text": text, "thesis": body,
             "ph": is_placeholder(fm, text),
+            # Длину здесь не режем. Порог в четыре буквы отбрасывал имена карточек
+            # вроде «ИНН» и «КПП» — и они числились понятиями без карточки, хотя
+            # карточка есть: на живой базе три из двадцати двух «наверняка сущностей»
+            # были такой выдумкой отчёта. Где порог нужен, он стоит по месту.
             "names": {n for n in ({stem, (fm.get("title") or "").strip().strip('"')}
-                                  | set(aliases(text))) if len(n) >= 4},
+                                  | set(aliases(text))) if n},
             "out": ({l.split("#")[0].strip() for l in link_refs(text) if "/" not in l}
                     | {leaf_name(x) for x in related_targets(text)}),
         }

@@ -680,6 +680,57 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     return created
 
 
+def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
+    """Завести пустышку под понятие, которое база называет словами, но карточки не имеет.
+
+    Заготовки заводились только под битые ссылки — под то, что кто-то уже решил связать.
+    Но чаще сущность живёт в базе безымянной строкой: `НДС` назван в 91 карточке, `ИНН`
+    в 62, `МНС` в 58 — своих карточек нет ни у одной. Знание о них размазано по чужим
+    телам, по имени не находится, и связать с ними нечего: ссылке некуда вести.
+
+    Заводим только те, чью расшифровку база уже знает: словарь проекта собран из
+    справочников, перенесённых из источника, и карточек глоссария. Расшифровка оттуда —
+    записанный факт, а не догадка. Понятия без расшифровки не трогаем совсем: придумать
+    её — худшее, что здесь можно сделать, и `ops:gaps` показывает их человеку списком.
+
+    Пустышка честно пуста: расшифровка имени — не знание о предмете. Статус
+    `placeholder` держит её вне выдачи, пока разбор не принесёт содержание.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from kb_gaps import load as load_gaps, missing_cards
+    from aurora_common import project_terms
+
+    terms = {k.lower(): v for k, v in project_terms(root).items()}
+    if not terms:
+        return []
+    taken = {fold_hard(c.stem) for c in cards.values()}
+    created = []
+    for name, seen in missing_cards(load_gaps(root), floor):
+        meaning = terms.get(name.lower())
+        if not meaning or fold_hard(name) in taken:
+            continue
+        section = "Glossary" if (len(name) <= 12 and name.upper() == name) else "Concepts"
+        path = os.path.join(root, section, name + ".md").replace("\\", "/")
+        if path in cards or os.path.exists(path):
+            continue
+        taken.add(fold_hard(name))
+        plan.write(path,
+                   f"---\ntitle: \"{name}\"\naliases: []\n"
+                   f"status: {PLACEHOLDER}\n"
+                   f"type: {SECTION_TYPE.get(section, 'concept')}\n"
+                   f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
+                   f"related: []\n---\n\n# {name}\n\n"
+                   f"{name} — {meaning}.\n\n"
+                   "_Заготовка: имя названо в базе и расшифровка известна, знания о "
+                   "предмете пока нет._\n_Наполните её при следующем разборе источника — "
+                   "ссылки переписывать не придётся._\n\n"
+                   f"## Названо в карточках\n\nПонятие названо в {seen} "
+                   + ("карточке" if seen % 10 == 1 and seen % 100 != 11 else "карточках")
+                   + " базы.\n")
+        created.append((name, section, seen))
+    return created
+
+
 def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
     """Один alias у нескольких карточек — ссылка по нему неоднозначна.
 
@@ -1159,6 +1210,9 @@ def main() -> int:
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
+    ap.add_argument("--terms", action="store_true",
+                    help="завести заготовки под понятия, названные в базе словами: "
+                         "расшифровка берётся из словаря проекта, выдуманных нет")
     ap.add_argument("--names", action="store_true",
                     help="снять код документа с имени карточки: знание называется по "
                          "объекту, код и прежнее имя уходят в синонимы")
@@ -1203,8 +1257,9 @@ def main() -> int:
     if a.set_alias and not (a.old and a.new):
         print("kb_fix: для --set-alias нужны и --old, и --new", file=sys.stderr)
         return 1
+    # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.merge, a.merge_all, a.set_alias, a.sections, a.names)):
+                a.stubs, a.terms, a.merge, a.merge_all, a.set_alias, a.sections, a.names)):
         ap.print_help()
         return 0
 
@@ -1289,6 +1344,15 @@ def main() -> int:
                 head.append(f"- {section}/{name}.md — ждут {refs} ссылок")
             if len(created) > 15:
                 head.append(f"- … ещё {len(created) - 15}")
+        if a.terms:
+            made = plan_term_stubs(cards, idx, plan, a.root)
+            head.append(f"## Заготовки под понятия словаря: {len(made)} новых карточек")
+            for name, section, seen in made[:15]:
+                head.append(f"- {section}/{name}.md — названо в {seen} "
+                            + ("карточке" if seen % 10 == 1 and seen % 100 != 11
+                               else "карточках"))
+            if len(made) > 15:
+                head.append(f"- … ещё {len(made) - 15}")
         if a.aliases:
             dropped, kept = plan_aliases(cards, plan, drop=a.drop_alias)
             if a.json:
