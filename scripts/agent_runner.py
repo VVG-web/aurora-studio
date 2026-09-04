@@ -491,12 +491,22 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
             step["note"] = (step["note"] + f"; «{term}»: определение не найдено дословно"
                             ).strip("; ")
             continue
-        replacement = (keep + " " if keep else "") + f"[[{term}]]"
-        new_thesis = new_thesis.replace(definition, replacement, 1)
+        # «Термин (расшифровка)» заменяется целиком на ссылку. Иначе от конструкции
+        # остаются скобки, и в тексте выходит «введена УСН ([[УСН]])» — имя дважды и
+        # пустая скобка. Так и вышло на первом живом прогоне.
+        paren = f"{term} ({definition})"
+        if paren in new_thesis:
+            new_thesis = new_thesis.replace(paren, (keep + " " if keep else "")
+                                            + f"[[{term}]]", 1)
+        else:
+            replacement = (keep + " " if keep else "") + f"[[{term}]]"
+            new_thesis = new_thesis.replace(definition, replacement, 1)
         made.append((term, definition))
 
     if not made:
         step["status"] = "нечего выносить"
+        if apply:
+            mark_examined(path, fm)
         return step
 
     step["made"] = [term for term, _d in made]
@@ -505,9 +515,28 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
         return step
 
     for term, definition in made:
-        place_definition(root, term, definition, title)
+        # Ссылка «перенесено из» ведёт по ИМЕНИ карточки, а не по заголовку: заголовок
+        # может содержать двоеточие, проценты и запятые, которых в имени файла нет, и
+        # такая ссылка не разрешается. Поймано на живой пересборке.
+        place_definition(root, term, definition, os.path.basename(path)[:-3])
     open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
+    mark_examined(path, frontmatter(open(path, encoding="utf-8", errors="ignore").read()))
     return step
+
+
+def mark_examined(path: str, fm: dict) -> None:
+    """Отметить, что карточку осматривали по её нынешнему тезису.
+
+    Отметка держит дату тезиса, а не свою: перепишут тезис — она перестанет совпадать, и
+    карточка вернётся на осмотр сама. Своя дата этого не умеет, и «осмотрено» пришлось бы
+    снимать руками, о чём никто не помнит.
+    """
+    from aurora_common import with_fields
+    stamp = (fm.get("distilled") or "").strip()
+    if not stamp:
+        return
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    open(path, "w", encoding="utf-8").write(with_fields(text, {"extracted": stamp}))
 
 
 def place_definition(root: str, term: str, definition: str, came_from: str) -> str:
@@ -569,21 +598,37 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> 
         if is_placeholder(fm, text):
             continue
         # Тезиса ещё нет — выносить нечего: `agent:distill` пройдёт раньше.
-        if not (fm.get("distilled") or "").strip():
+        distilled = (fm.get("distilled") or "").strip()
+        if not distilled:
+            continue
+        # Карточку, осмотренную по этому же тезису, второй раз не смотрим. Без отметки
+        # каждый оборот пересборки перебирал бы всю базу заново — на шестнадцати партиях
+        # это часы вызовов модели ради ответа «нечего выносить», который уже получен.
+        # Тезис переписали — отметка устарела, карточка вернётся на осмотр сама.
+        seen_at = (fm.get("extracted") or "").strip()
+        if seen_at and seen_at == distilled:
             continue
         todo.append(path)
     todo.sort()
     if limit:
         todo = todo[:limit]
 
+    print(f"Карточек к осмотру: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
     steps = []
     for i, path in enumerate(todo, 1):
         if time.time() > budget:
             steps.append({"card": "—", "status": "стоп", "made": [],
                           "note": f"бюджет {cfg['budget_min']} мин исчерпан, "
                                   f"осталось {len(todo) - i + 1}"})
+            print(f"  стоп: бюджет исчерпан, осталось {len(todo) - i + 1}", flush=True)
             break
-        steps.append(extract_card(cfg, path, call, apply, deadline=budget))
+        s = extract_card(cfg, path, call, apply, deadline=budget)
+        steps.append(s)
+        # Ход, который молчит несколько минут, невозможно вести по логам: он неотличим
+        # от зависшего. Остальные задачи агента печатают ход работы — эта печатает тоже.
+        made = ", ".join(s.get("made") or []) or s["status"]
+        print(f"  [{i}/{len(todo)}] {s['card']} → {made}"
+              + (f" · {s['note']}" if s.get("note") else ""), flush=True)
     made = sum(len(s.get("made") or []) for s in steps)
     return {"steps": steps, "cards": len(todo), "made": made,
             "seconds": round(time.time() - started, 1)}
@@ -649,7 +694,9 @@ PROMPT_TWINS = """Ты решаешь судьбу карточек, котор�
 
 def twin_groups(cwd: str, min_score: float = 0.6, limit: int = 0) -> list:
     """Группы карточек-двойников по содержимому. Считает `kb_twins`, здесь — разбор."""
-    r = run_command(cwd, "kb_twins.py", ["--min", str(min_score)])
+    # `--limit 0` обязателен: отчёт по умолчанию печатает сорок групп, а читаем мы именно
+    # печатное. Без него ход молча брал бы сорок из пятисот и выглядел бы завершённым.
+    r = run_command(cwd, "kb_twins.py", ["--min", str(min_score), "--limit", "0"])
     if not r["ok"]:
         return []
     groups, cur = [], []
@@ -1159,13 +1206,23 @@ def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES) -> 
         os.chdir(here)
 
 
+# Карта «имя карточки → путь», собранная один раз на обход базы. Без неё поиск пути
+# обходил всю базу заново на КАЖДОГО кандидата: два десятка кандидатов на карточку и
+# тысячи карточек в базе дают миллионы обращений к диску на один прогон.
+_PATHS: dict = {}
+_PATHS_AT = 0.0
+PATHS_TTL = 120.0        # база меняется по ходу прогона: карту освежаем
+
+
 def _card_path(stem: str) -> str:
     """Путь карточки по имени. Пусто — карточки нет (индекс отстал от базы)."""
+    global _PATHS, _PATHS_AT
     import aurora_common as AC
-    for path in AC.walk_md(AC.KB_ROOT, skip_service=True, skip_archive=True):
-        if os.path.basename(path)[:-3] == stem:
-            return path
-    return ""
+    if time.time() - _PATHS_AT > PATHS_TTL:
+        _PATHS = {os.path.basename(p)[:-3]: p
+                  for p in AC.walk_md(AC.KB_ROOT, skip_service=True, skip_archive=True)}
+        _PATHS_AT = time.time()
+    return _PATHS.get(stem, "")
 
 
 def candidates_block(rows: list) -> str:
@@ -1227,6 +1284,14 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
   а не про документ, в котором объект описан;
 - секции, которые знанием не являются (оглавление, история изменений, служебные
   таблицы, ссылки «см. рисунок»), просто не включай ни в одну карточку;
+- **задача о выполнении работы — не знание.** «Разработать таблицу X», «Протестировать
+  форму Y», «Форкнуть репозиторий» — это то, что кто-то делает, а не то, как устроен
+  предмет. Карточка из такой задачи выходит пересказом её заголовка: «Разработка таблицы
+  X — задача PRJ-000. В источнике прямо указано: разработка таблицы X». Знания в ней
+  нет, и линтер потом честно назовёт её артефактом в базе знаний. Если во всём источнике
+  только это — верни `empty` с причиной. Если в задаче ЕСТЬ описание предмета (как
+  устроена таблица, какие поля, откуда данные) — карточку делай про **предмет**, а не
+  про задачу: «Таблица X» вместо «Разработка таблицы X»;
 - раздел базы выбирай по существу: Concepts — понятия и правила, Processes — этапы
   и процедуры, Glossary — термины, Systems — системы и интеграции, Roles — роли,
   Statuses — статусы и их переходы, Reference — справочники и таблицы значений,
@@ -1412,7 +1477,13 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             return step
         if plan.get("empty"):
             break
-        cards = [c for c in plan["cards"] if c.get("title") and c.get("sections")]
+        # Карточка названа либо именем новой (`title`), либо именем существующей, в
+        # которую знание дописывается (`into`). Фильтр, требовавший `title`, молча
+        # выбрасывал вторые — и источник, про который модель сказала «это уже есть в
+        # карточке N», объявлялся сбойным. На живой пересборке так упала целая партия:
+        # индекс собрался, модель начала отвечать `into`, и приняли это за пустой ответ.
+        cards = [c for c in plan["cards"]
+                 if (c.get("title") or c.get("into")) and c.get("sections")]
         if not cards:
             step.update(status="сбой", note="карточки предложены без имени или секций")
             return step
@@ -1470,6 +1541,21 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if res.get("refused"):
             step.update(status="сбой", note="команда отклонена: " + res["refused"])
             return step
+        # Имя занято карточкой из ДРУГОГО источника. По правилам базы имя карточки — это
+        # имя сущности; совпало имя — совпала сущность, и знание о ней копится в одной
+        # карточке. Дописываем сами: модель уже назвала сущность, спрашивать её второй
+        # раз незачем, а объявлять источник сбойным — терять разобранное. Ровно это и
+        # случилось на первом же живом прогоне: отказ научился называть операцию, а
+        # исполнить её было некому.
+        if not res["ok"] and not into_name and "--append" in (res.get("out") or ""):
+            step["note"] = (step["note"] + f"; «{card['title']}» дописана в существующую: "
+                            "имя занято, значит сущность та же").strip("; ")
+            args = ["--append", str(card["title"]), "--source", source,
+                    "--sections", str(card["sections"])]
+            if apply:
+                args.append("--apply")
+            res = run_build_plan(cwd, args)
+            into_name = str(card["title"])
         if not res["ok"]:
             step.update(status="сбой", note=f"карточка не собрана: {res['out'][-200:]}")
             return step

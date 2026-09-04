@@ -35,7 +35,7 @@ import sys
 from datetime import date
 
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
-                           card_sources, frontmatter, sources_block,
+                           card_sources, fold_hard, frontmatter, sources_block,
                            split_frontmatter, walk_md)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
@@ -105,20 +105,55 @@ def file_hash(path: str) -> str:
     return h.hexdigest()[:16]
 
 
+class ManifestBroken(RuntimeError):
+    """Учёт разобранного не читается. Не `SystemExit`: функцию зовут из потоков."""
+
+
 def load_manifest() -> dict:
-    if os.path.isfile(MANIFEST):
-        try:
-            data = json.load(open(MANIFEST, encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-    return {}
+    """Учёт разобранного. Нечитаемый манифест — отказ, а не пустой словарь.
+
+    Прежде любая ошибка чтения возвращала `{}`, и следующая же запись затирала весь
+    учёт: сто тридцать разобранных источников разом числились неразобранными, план
+    вырастал вдвое, а разбор шёл по второму кругу. Поймано на живой пересборке — движок
+    заметил («засчитал разобранными −131»), но не остановился.
+
+    Пустой файл и отсутствие файла — законное «ещё ничего не разбирали». Битый файл —
+    авария: молча начать с нуля значит потерять часы работы и не сказать об этом.
+    """
+    if not os.path.isfile(MANIFEST):
+        return {}
+    raw = open(MANIFEST, encoding="utf-8").read()
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        # Обычное исключение, а не `SystemExit`: эту функцию зовут и из потоков разбора.
+        # `SystemExit` наследует `BaseException`, его не ловит `except Exception` вокруг
+        # вызова — поток умер бы, унося с собой и отметку, и внятное сообщение.
+        raise ManifestBroken(
+            f"манифест разбора не читается — {MANIFEST}: {e}\n"
+            "Это учёт того, что уже разобрано. Начать с пустого значит разобрать всё "
+            "заново и потерять отметки.\n"
+            f"Восстановите файл из git: git checkout -- {MANIFEST}") from None
+    if not isinstance(data, dict):
+        raise ManifestBroken(f"манифест разбора не словарь — {MANIFEST}")
+    return data
 
 
 def save_manifest(data: dict) -> None:
+    """Запись целиком и разом: читатель не должен увидеть половину файла.
+
+    Прямая запись в файл оставляет окно, в котором он оборван. Параллельный поток,
+    прочитавший его в этот миг, получал ошибку разбора — а она стоила всего учёта.
+    """
     os.makedirs(os.path.dirname(MANIFEST), exist_ok=True)
-    json.dump(data, open(MANIFEST, "w", encoding="utf-8"), ensure_ascii=False, indent=1,
-              sort_keys=True)
+    tmp = MANIFEST + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, MANIFEST)
 
 
 def sources() -> list:
@@ -161,7 +196,7 @@ def sources() -> list:
 # названия таких страниц в источниках стандартны.
 TERMS_SOURCE = re.compile(
     r"(?i)глоссар|glossary|термин|определени|сокращен|аббревиатур|abbrev|"
-    r"обозначени|словар|definitions|\bspr[-_ ]?\d")
+    r"обозначени|словар|справочник|definitions|\bspr[-_ ]?\d")
 
 
 def is_terminology(path: str) -> bool:
@@ -324,16 +359,22 @@ def sections(text: str) -> list:
 
 
 def derived_card(path: str) -> bool:
-    """Карточка, извлечённая движком из другого источника (в шапке есть `source:`)."""
+    """Карточка, извлечённая движком из другого источника — в плане ей не место.
+
+    Справочники раздела `Reference` ведут руками, и они законный источник. Карточка,
+    нарезанная из справочника, ложится рядом с ним — и попадала в план новым источником:
+    разобрал источник, получил источник, план растёт от собственной работы.
+
+    Отличаем по происхождению. Читаем его общим `card_sources`: проверка на голое поле
+    `source:` перестала работать в тот день, когда происхождение стало списком, и разбор
+    немедленно принялся скармливать себе свои же карточки — поймано на живой пересборке.
+    """
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
-            head = f.read(1500)
+            head = f.read(4000)
     except OSError:
         return False
-    if not head.startswith("---"):
-        return False
-    fm = head.split("\n---", 1)[0]
-    return bool(re.search(r"^source:\s*\S", fm, re.M))
+    return bool(card_sources(head))
 
 
 def slice_report(path: str, chars: int = 110) -> int:
@@ -387,18 +428,41 @@ FOOTER_MARK = "## История изменений"
 
 
 def find_card(name: str, root: str = "") -> str:
-    """Путь карточки по имени или синониму. Пусто — такой карточки нет."""
+    """Путь карточки по имени или синониму. Пусто — такой карточки нет.
+
+    Сравниваем и «свёрнуто» — без учёта регистра и разделителей, — и прощаем опечатку в
+    один символ. Модель переписывает имя из списка кандидатов или из текста источника и
+    ошибается в букве: на живой пересборке она поставила латинскую букву в русском слове,
+    и источник был потерян целиком при том, что нужная карточка лежала рядом. Одна буква
+    в длинном имени — это опечатка, а не другое понятие.
+    """
     base = os.path.join(root, KB_ROOT) if root else KB_ROOT
-    want = card_filename(name)
+    want = {name, card_filename(name)}
+    folded = {fold_hard(x) for x in want}
+    fallback = ""
     for path in walk_md(base, skip_service=True, skip_archive=True):
         stem = os.path.basename(path)[:-3]
-        if stem == name or stem == want:
+        if stem in want:
             return path
-    for path in walk_md(base, skip_service=True, skip_archive=True):
-        text = open(path, encoding="utf-8", errors="ignore").read(4000)
-        if name in card_aliases(text):
-            return path
-    return ""
+        if not fallback and (fold_hard(stem) in folded
+                             or any(one_typo(fold_hard(stem), f) for f in folded)):
+            fallback = path
+        if not fallback:
+            text = open(path, encoding="utf-8", errors="ignore").read(4000)
+            if any(fold_hard(a) in folded for a in card_aliases(text)):
+                fallback = path
+    return fallback
+
+
+def one_typo(a: str, b: str, floor: int = 8) -> bool:
+    """Имена различаются ровно одним символом. Короткие не сравниваем — там это разное.
+
+    Порог по длине обязателен: «КПП» и «КПО» — разные понятия, а длинное имя, где
+    отличается одна буква, — одно понятие с опечаткой.
+    """
+    if len(a) != len(b) or len(a) < floor:
+        return False
+    return sum(1 for x, y in zip(a, b) if x != y) == 1
 
 
 def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -> int:
@@ -589,12 +653,17 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     if append_to:
         target = find_card(append_to, root)
         if not target:
-            print(f"build_plan: карточки «{append_to}» нет — дописывать некуда.\n"
-                  "Заведите её обычным разбором (--card) либо проверьте имя.",
+            # Карточки нет — но терять из-за этого весь источник нельзя. Модель могла
+            # назвать её по памяти или ошибиться в имени сильнее, чем на букву; знание
+            # при этом разобрано и годно. Заводим карточку под этим именем: лишнюю
+            # человек сольёт (`kb:twins`), а потерянный источник придётся разбирать
+            # заново, и он потеряется молча — в отчёте будет «сбой», а не «нет карточки».
+            print(f"build_plan: карточки «{append_to}» нет — завожу новую под этим именем.",
                   file=sys.stderr)
-            return 1
-        old_text = open(target, encoding="utf-8", errors="ignore").read()
-        return append_card(target, old_text, body, source, apply)
+            title, append_to = append_to, ""
+        else:
+            old_text = open(target, encoding="utf-8", errors="ignore").read()
+            return append_card(target, old_text, body, source, apply)
 
     safe = card_filename(title)
     path = os.path.join(KB_ROOT, into, safe + ".md")
