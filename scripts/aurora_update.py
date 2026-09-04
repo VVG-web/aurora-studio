@@ -27,7 +27,7 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
-import argparse, difflib, json, re, shutil, sys
+import argparse, difflib, json, re, shutil, subprocess, sys
 from pathlib import Path
 from datetime import date
 
@@ -274,6 +274,35 @@ def stamp_version(target: Path, ver: str):
 
 # ---------- main ----------
 
+def refresh_hooks(target: Path) -> str:
+    """Переставить git-хук, если он наш. → режим, которым переставлен (пусто — не трогали).
+
+    Хук — это установленная КОПИЯ в `.git/hooks/`, а не файл движка. Обновление движка
+    везло новый `aurora_hooks.py` и оставляло в проекте хук, поставленный при заведении.
+    На живом проекте так и вышло: храповик, переделанный в ките месяцы назад (абсолютный
+    счёт → плотность, отказ → предупреждение), туда не доехал ни разу, и человек воевал
+    с поведением, которого в ките уже нет.
+
+    Чужой хук не трогаем: его ставил не движок, и перезаписать его молча — потерять
+    чужую работу. Режим сохраняем прежний: его выбирал человек.
+    """
+    hook = target / ".git" / "hooks" / "pre-commit"
+    if not hook.is_file():
+        return ""
+    try:
+        text = hook.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    if "линтер базы знаний Авроры" not in text:
+        return ""            # чужой хук — не наше дело
+    m = re.search(r"режим:\s*([a-z]+)", text)
+    mode = m.group(1) if m else "ratchet"
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"),
+                         "--install", "--mode", mode, "--force"],
+                        cwd=str(target), capture_output=True, text=True)
+    return mode if cp.returncode == 0 else ""
+
+
 def run(target: Path, apply: bool, structure_only: bool = False):
     if not (target / "AuroraKnowledgeDB").is_dir():
         print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
@@ -361,9 +390,11 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         (target / r).unlink()
     (target / ".opencode").mkdir(parents=True, exist_ok=True)
     (target / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    refreshed = refresh_hooks(target)
     stamp_version(target, kv)
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
-          f"{len(seeds)} .new-файлов, {len(retired)} удалено. Версия → {kv}")
+          f"{len(seeds)} .new-файлов, {len(retired)} удалено"
+          + (f", хук обновлён ({refreshed})" if refreshed else "") + f". Версия → {kv}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
     if seeds:
         print("   Не забудьте сравнить *.new с вашими Templates/Prompts и удалить .new.")

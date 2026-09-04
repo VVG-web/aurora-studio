@@ -693,7 +693,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.34";
+const UI_VERSION = "1.100.35";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1842,12 +1842,44 @@ function renderOverview(){
   g.append(
     metric(S.state.projects.length, "проектов на движке", "", "ok"),
     metric(S.state.projects.filter(p=>p.behind).length, "отстают от kit " + S.state.kit.version,
-      "Обновление — раздел «Версия»", S.state.projects.some(p=>p.behind)?"warn":"ok"),
+      S.state.projects.some(p=>p.behind) ? "Нажмите, чтобы обновить все" : "все на текущей",
+      S.state.projects.some(p=>p.behind)?"warn":"ok",
+      S.state.projects.some(p=>p.behind) ? updateAllProjects : null),
     metric(S.state.env.items.filter(i=>!i.ok).length, "компонентов не хватает",
       "Раздел «Установка»", S.state.env.items.some(i=>!i.ok)?"warn":"ok"),
     metric(S.state.commands.length, "команд в реестре", "⌘K — палитра", "ok"),
   );
 }
+// Обновить движок сразу во всех отставших проектах. Проектов на машине десятки, и по
+// одному их не обновляют: отставший движок ломает маршрут на середине, объявив
+// предыдущие шаги успешными, — но пока обновление стоит десяти кликов на проект, оно
+// не делается вовсе.
+//
+// Сначала предпросмотр: человек видит поимённо, что именно тронется, и лишь потом
+// подтверждает. Обновление переписывает движок в чужих папках — молча такое не делают.
+async function updateAllProjects(){
+  const behind = (S.state.projects || []).filter(p => p.behind);
+  if (!behind.length) return;
+  const dry = await api("/api/update-all", {method:"POST", body: JSON.stringify({})});
+  if (!dry || dry.error) return toast((dry && dry.error) || "предпросмотр не удался", "warn");
+  const lines = (dry.projects || []).map(r => `• ${r.name} (${r.was} → ${dry.kit})`).join("\n");
+  if (!confirm(`Обновить движок до ${dry.kit} в ${dry.projects.length} проект(ах)?\n\n`
+               + lines
+               + "\n\nШаблоны и промпты не перезаписываются — они лягут рядом как .new."
+               + "\nGit-хук будет переставлен, режим сохранится."))
+    return;
+  toast("Обновляю проекты…", "ok");
+  const res = await api("/api/update-all", {method:"POST", body: JSON.stringify({apply:true})});
+  if (!res || res.error) return toast((res && res.error) || "обновление не удалось", "warn");
+  const bad = (res.projects || []).filter(r => !r.ok);
+  toast(bad.length ? `Обновлено ${res.updated}, не вышло ${bad.length}: `
+                     + bad.map(r => r.name).join(", ")
+                   : `Обновлено проектов: ${res.updated}`,
+        bad.length ? "warn" : "ok");
+  S.state = await api("/api/state");
+  renderOverview();
+}
+
 function metric(val, lbl, hint, cls, onclick){
   return el("button",{class:"card metric "+(cls||""), onclick: onclick||null},
     el("div",{class:"val"}, val), el("div",{class:"lbl"}, lbl),

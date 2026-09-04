@@ -11199,6 +11199,289 @@ def test_a_filled_placeholder_stops_being_one(tmp: Path):
 
 
 @test
+def test_the_panel_recognises_the_ratchet_by_its_escape(_t):
+    """Панель узнаёт храповик по названию его обхода, а не по тексту отказа.
+
+    Текст менялся: «плотность ошибок» → «в том, что вы коммитите, ошибок N — они ваши».
+    Привязка к тексту отвалилась молча, и панель переставала предлагать «зафиксировать
+    всё равно» ровно тогда, когда это нужно, — показывая человеку сырой вывод хука.
+
+    `AURORA_SKIP_RATCHET` хук называет там и только там, где отказ можно снять: отказ по
+    внутренним названиям снимается иначе и такой кнопки не заслуживает.
+    """
+    ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"ratchet": "AURORA_SKIP_RATCHET" in tail' in ck, \
+        "панель узнаёт храповик по тексту сообщения — он уже менялся однажды"
+
+    hook = (KIT / "scripts/aurora_hooks.py").read_text(encoding="utf-8")
+    refuse = hook[hook.index("в том, что вы коммитите"):]
+    assert "AURORA_SKIP_RATCHET" in refuse[:900], \
+        "хук не называет обход в тексте отказа — панели не по чему его узнать"
+    terms = hook[hook.index("внутренние названия"):] if "внутренние названия" in hook else ""
+    if terms:
+        assert "AURORA_SKIP_RATCHET" not in terms[:600], \
+            "отказ по внутренним названиям выдаёт себя за храповик — его снимать нельзя"
+
+
+@test
+def test_the_bridge_updates_every_lagging_project_at_once(tmp: Path):
+    """Мостик обновляет движок во всех отставших проектах одной кнопкой.
+
+    Проектов на машине десятки. Отставший движок ломает маршрут на середине, объявив
+    предыдущие шаги успешными, — но пока обновление стоит десяти кликов на проект, оно
+    не делается вовсе, и проекты копят отставание годами.
+
+    Сначала предпросмотр: человек видит поимённо, что тронется. Обновление переписывает
+    движок в чужих папках — молча такое не делают.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "машина"
+    root.mkdir()
+    made = {}
+    for name, ver in (("старый", "1.0.0"), ("свежий", ck.kit_version())):
+        here = root / name
+        here.mkdir()
+        d = make_project(here)          # заводит `<here>/project` со структурой базы
+        made[name] = d
+        (d / "aurora.config.yaml").write_text(f"project:\n  name: {name}\n",
+                                              encoding="utf-8")
+        (d / "AuroraKnowledgeDB/meta").mkdir(parents=True, exist_ok=True)
+        (d / "AuroraKnowledgeDB/meta/aurora_version.txt").write_text(ver, encoding="utf-8")
+    stale, fresh = made["старый"], made["свежий"]
+
+    dry = ck.update_all_projects([str(root)], False)
+    assert "error" not in dry, dry
+    names = [r["path"] for r in dry["projects"]]
+    assert any(str(stale) in n for n in names), \
+        f"отставший проект не попал в обновление: {names}"
+    assert not any(str(fresh) in n for n in names), \
+        "проект на текущей версии тронут без нужды"
+    assert dry["apply"] is False, "предпросмотр объявлен применением"
+    assert (stale / "AuroraKnowledgeDB/meta/aurora_version.txt").read_text(
+        encoding="utf-8").strip() == "1.0.0", "предпросмотр записал версию"
+
+    done = ck.update_all_projects([str(root)], True)
+    assert done["updated"] >= 1 and done["failed"] == 0, done
+    assert (stale / "AuroraKnowledgeDB/meta/aurora_version.txt").read_text(
+        encoding="utf-8").strip() == ck.kit_version(), "версия не проставлена"
+
+    # и кнопка на Мостике действительно ведёт сюда, а не в раздел «Версия»
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "async function updateAllProjects()" in ui, "на Мостике нет обработчика"
+    assert "/api/update-all" in ui, "кнопка не зовёт ручку массового обновления"
+    assert "Нажмите, чтобы обновить все" in ui, \
+        "карточка не говорит, что она нажимается — человек не догадается"
+    assert "confirm(" in ui[ui.index("async function updateAllProjects()"):
+                            ui.index("function metric(")], \
+        "обновление чужих папок без подтверждения"
+
+
+@test
+def test_updating_the_engine_refreshes_the_git_hook(tmp: Path):
+    """Обновление движка переставляет git-хук, если он наш.
+
+    Хук — установленная КОПИЯ в `.git/hooks/`, а не файл движка. Обновление везло новый
+    `aurora_hooks.py` и оставляло в проекте хук, поставленный при заведении. На живом
+    проекте так и вышло: храповик, переделанный в ките месяцы назад (абсолютный счёт →
+    плотность, отказ → предупреждение), не доехал ни разу — человек воевал с поведением,
+    которого в ките уже нет, и обходил хук `--no-verify` на каждом коммите.
+
+    Чужой хук не трогаем: его ставил не движок, и молча перезаписать значит потерять
+    чужую работу.
+    """
+    root = make_project(tmp, git=True)
+    run("aurora_hooks.py", "--install", "--mode", "ratchet", cwd=root)
+    hook = root / ".git" / "hooks" / "pre-commit"
+    assert hook.is_file(), "хук не поставился — проверять нечего"
+
+    # состарим хук: подменим тело на «прежнюю версию»
+    old_text = hook.read_text(encoding="utf-8")
+    hook.write_text(old_text.replace("плотность ошибок", "СТАРЫЙ_МАРКЕР"), encoding="utf-8")
+    assert "плотность ошибок" not in hook.read_text(encoding="utf-8")
+
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_update.py"), str(root),
+                         "--apply"], capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    fresh = hook.read_text(encoding="utf-8")
+    assert "плотность ошибок" in fresh, \
+        "хук не переставлен — исправления в нём не доедут до проектов никогда"
+    assert "режим: ratchet" in fresh, "режим не сохранён: его выбирал человек"
+
+    # чужой хук остаётся чужим
+    hook.write_text("#!/bin/sh\n# мой собственный хук\nexit 0\n", encoding="utf-8")
+    subprocess.run([sys.executable, str(SCRIPTS / "aurora_update.py"), str(root),
+                    "--apply"], capture_output=True, text=True)
+    assert "мой собственный хук" in hook.read_text(encoding="utf-8"), \
+        "чужой хук перезаписан молча — потеряна работа человека"
+
+
+@test
+def test_the_thesis_writes_its_own_links(tmp: Path):
+    """Связи ставит тот, кто пишет тезис, — но только на существующие карточки.
+
+    Правило было обратным: «не выдумывай ссылки, связи расставляет движок». Движок
+    расставлял их узко — по ключам требований и номерам историй, — и на живой базе
+    **232 карточки из 291 не имели в тезисе ни одной ссылки**. База выходила кучей, а
+    не сетью: до знания, лежащего рядом, человек не доходил.
+
+    Запрет имел смысл, пока модель не знала состава базы. Теперь она получает список
+    карточек — тот же, по которому дописывает знание, — и связь становится частью мысли,
+    как ей и положено в картотеке.
+
+    Обратная сторона: выдуманная ссылка ведёт в никуда, а ремонт заводит под неё пустышку.
+    Поэтому имя, которого в базе нет, снимается, а текст остаётся словами.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    importlib.reload(R)
+
+    flat = " ".join(R.PROMPT_DISTILL.split())
+    assert "Связывай" in flat, "тезису не велено связывать — база останется кучей"
+    assert "ТОЛЬКО на карточки из списка" in flat, \
+        "не сказано, что ссылаться можно лишь на существующие: пойдут ссылки в никуда"
+    assert "не выдумывай ссылки на другие карточки" not in flat.lower(), \
+        "прежний запрет остался — правила спорят друг с другом"
+
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert "candidates_block(candidates_for(root, cfg, title" in src, \
+        "тезис не получает список карточек — связывать ему не с чем"
+    assert "drop_invented_links(thesis, root)" in src, \
+        "выдуманные ссылки не снимаются — ремонт заведёт под них пустышки"
+
+    root = make_project(tmp)
+    card(root, "Concepts/ФЦОД.md", status="draft", body="Подсистема обработки платежей.")
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        kept, n = R.drop_invented_links(
+            "Данные приходят из [[ФЦОД]] и из [[Небывалая-система]].", str(root))
+    finally:
+        os.chdir(here)
+    assert "[[ФЦОД]]" in kept, "снята ссылка на существующую карточку"
+    assert "[[Небывалая-система]]" not in kept and "Небывалая-система" in kept, \
+        f"выдуманное имя должно остаться словами, а не ссылкой: {kept}"
+    assert n == 1, n
+
+
+@test
+def test_maps_are_drawn_after_the_base_is_linked(tmp: Path):
+    """Карты содержания собираются ПОСЛЕ сплошной связки, а не до.
+
+    «Брошенные» считаются по входящим ссылкам. Собранные раньше связывания, они
+    объявляют брошенными тех, кого свяжут через минуту: на живой базе страница
+    показывала 228 карточек вместо 116 — и именно она встречала человека первой в
+    графе Obsidian.
+    """
+    text = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    for route in ("[update]", "[fix]", "[rebuild]"):
+        start = text.index(route)
+        end = min((text.index(m, start + 1) for m in ("\n[", ) if m in text[start + 1:]),
+                  default=len(text))
+        block = text[start:text.find("\n[", start + 1) if text.find("\n[", start + 1) > 0
+                     else len(text)]
+        moc = [i for i, l in enumerate(block.splitlines())
+               if l.startswith("kb:moc") and "--by-source" not in l]
+        links = [i for i, l in enumerate(block.splitlines()) if l.startswith("kb:links")]
+        if not moc:
+            continue
+        assert links and min(links) < moc[-1], \
+            f"в маршруте {route} карты содержания собираются раньше связей — " \
+            "«Брошенные» покажут тех, кого свяжут следующим шагом"
+
+
+@test
+def test_gaps_finds_what_the_linter_cannot_see(tmp: Path):
+    """Смысловые дыры: понятие без карточки, названная и не поставленная связь, одиночки.
+
+    `kb:lint` проверяет механику — ссылки, схему, статусы. От этого база не перестаёт
+    быть базой. Перестаёт она от другого: сущность названа в восьмидесяти карточках, а
+    своей у неё нет; карточка называет соседа и не ссылается на него; карточка не связана
+    ни с чем. На живом проекте так и оказалось: `НДС` в 89 карточках без собственной.
+    """
+    root = make_project(tmp)
+    card(root, "Reference/Сокращения-проекта.md", type="reference", status="knowledge",
+         body="| Сокращение | Значение |\n|---|---|\n| ПРФ | профиль обслуживания |\n")
+    card(root, "Concepts/Профиль-абонента.md", status="draft", kind="knowledge",
+         distilled="2026-09-01",
+         body="Профиль абонента задаёт услуги. Значение ПРФ берётся на дату подачи.")
+    card(root, "Concepts/Тариф.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Тариф — цена обращения к услуге. Считается по данным ПРФ и зависит от "
+              "того, какой Профиль-абонента назначен договором.")
+    card(root, "Concepts/Одинокая.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", body="Ни на кого не ссылается и никем не назван.")
+
+    cp = run("kb_gaps.py", "--min-mentions", "2", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    out = cp.stdout
+    assert "ПРФ" in out, "понятие, названное в двух карточках без своей, не найдено"
+    assert "Наверняка сущности" in out, \
+        "словарь проекта не использован — достоверное не отделено от предположения"
+    assert "профиль обслуживания" in out, "не сказано, что это за понятие"
+    assert "Тариф" in out and "Профиль-абонента" in out, \
+        f"не найдена названная и не поставленная связь:\n{out}"
+    assert "Одинокая" in out, "одинокая карточка не названа"
+    assert "человек" in out, "отчёт не говорит, где работа человека"
+
+
+@test
+def test_clashes_quote_both_sides_and_judge_nobody(tmp: Path):
+    """Противоречие показывают цитатами и не решают, кто прав.
+
+    Это последний пункт списка Карпаты, которого механикой не взять: «обе карточки
+    нельзя считать верными одновременно» — суждение о смысле. Но суждение опасное:
+    спор о том, чего никто не писал, дороже необнаруженного. Поэтому цитата обязана
+    быть дословной, а решение остаётся человеку и источникам.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+
+    flat = " ".join(R.PROMPT_CLASH.split())
+    assert "Цитируй **дословно** обе стороны" in flat, "цитата не требуется дословной"
+    assert "Не решай, кто прав" in flat, "модель поставлена судьёй вместо человека"
+    for not_a_clash in ("разная подробность", "разные стороны предмета", "разные периоды"):
+        assert not_a_clash in flat, f"не сказано, что «{not_a_clash}» — не противоречие"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Срок-А.md", status="draft", kind="knowledge",
+         body="Срок подтверждения — пять дней с даты подачи.")
+    card(root, "Concepts/Срок-Б.md", status="draft", kind="knowledge",
+         body="Срок подтверждения — три дня с даты подачи.")
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+
+    def found(c, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"clashes": [{"cards": ["Срок-А", "Срок-Б"], "about": "срок подтверждения",
+                          "a": "Срок подтверждения — пять дней с даты подачи.",
+                          "b": "Срок подтверждения — три дня с даты подачи."}]},
+            ensure_ascii=False)}
+    st = R.solve_clash(cfg, str(root), ["Срок-А", "Срок-Б"], call=found)
+    assert st["status"] == "спор" and len(st["clashes"]) == 1, st
+    assert "пять дней" in st["clashes"][0]["a"], st
+
+    # Карточка не из группы и слишком короткая цитата — не находка, а шум
+    def noisy(c, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"clashes": [{"cards": ["Срок-А", "Чужая"], "about": "x", "a": "длинная цитата "
+                          "про сроки подтверждения", "b": "тоже длинная цитата про сроки"},
+                         {"cards": ["Срок-А", "Срок-Б"], "about": "y", "a": "мало", "b": "мало"}]},
+            ensure_ascii=False)}
+    st2 = R.solve_clash(cfg, str(root), ["Срок-А", "Срок-Б"], call=noisy)
+    assert st2["clashes"] == [], \
+        f"взяты находки с чужой карточкой или без дословной цитаты: {st2['clashes']}"
+
+    # и отчёт не берётся судить
+    rep = R.report_clashes({"steps": [st], "groups": 1, "found": 1, "seconds": 1.0})
+    assert "решает человек" in rep and "[[Срок-А]]" in rep, rep
+
+
+@test
 def test_the_accumulation_rule_is_written_down(tmp: Path):
     """Правило «карточка — сущность» записано и доезжает до проектов.
 
