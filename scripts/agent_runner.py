@@ -4264,6 +4264,7 @@ def main() -> int:
               "закоммитьте работу или запустите без --apply.", file=sys.stderr)
         return 1
 
+    relink_loop = (0, 0)          # заходов и связей за прогон: пусто — петли не было
     if a.task == "build" and a.until_done:
         # Первичная сборка: три года проекта — это полторы тысячи источников, а партия
         # агента ограничена нарочно (обозримый прогон, обозримый откат). Девяносто
@@ -4339,6 +4340,7 @@ def main() -> int:
             say(f"\n=== заход {batch} · до конца окна "
                 f"{human_time(max(0, deadline - time.time()))}")
             res = run_relink(cfg, cwd, True, a.limit)
+            relink_loop = (batch, relink_loop[1] + res["added"])
             texts.append(report_relink(res, True))
             commit_result(cwd, "agent:relink",
                           f"заход {batch}: связей поставлено: {res['added']}",
@@ -4390,9 +4392,14 @@ def main() -> int:
     print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
 
     if a.task == "relink":
-        if a.apply and res["added"]:
-            done = commit_result(cwd, "agent:relink", f"связей поставлено: {res['added']}",
-                                 not a.no_checkpoint)
+        # Заходы петли коммитятся по одному, поэтому здесь остаётся только журнал. Брать
+        # для него заголовок последнего захода — врать: в коммите нет ни одной из тех
+        # связей, он про весь прогон. Одиночный прогон говорит о себе как раньше.
+        head = (f"журнал прогона: заходов {relink_loop[0]}, "
+                f"связей поставлено: {relink_loop[1]}" if relink_loop[0]
+                else f"связей поставлено: {res['added']}")
+        if a.apply and (relink_loop[0] or res["added"]):
+            done = commit_result(cwd, "agent:relink", head, not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 0
     if a.task == "clashes":
@@ -4421,9 +4428,8 @@ def main() -> int:
                                  not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 0 if made and not res["unsupported"] else 1
-    # Задачи со своей петлёй коммитят каждый заход сами — итоговый коммит был бы вторым.
-    self_looped = a.until_done and (a.task == "build"
-                                    or (a.task == "relink" and a.apply))
+    # Сборка со своей петлёй коммитит каждую партию сама — итоговый коммит был бы вторым.
+    self_looped = a.until_done and a.task == "build"
     if a.apply and not self_looped:
         ok, why = (verdict_build if a.task == "build" else verdict)(res, True)
         done = commit_result(cwd, f"agent:{a.task}", why[:120], not a.no_checkpoint)
