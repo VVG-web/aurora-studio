@@ -11331,6 +11331,26 @@ def test_one_translation_per_name_is_remembered(tmp: Path):
 
 
 @test
+def test_a_failure_says_what_broke_not_the_tail_of_a_traceback(_t):
+    """Сбой называет ошибку, а не показывает хвост трассировки.
+
+    В отчёт уходили последние сто шестьдесят символов вывода — и на двух живых
+    пересборках это оказалась строка кареток: «отметка не поставлена: ~~~~^^^^^^^^».
+    По такому сообщению нельзя ни понять причину, ни воспроизвести; я дважды искал её
+    вслепую. Причина должна идти первой строкой, а не тонуть в трассировке.
+    """
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    block = src[src.index("def run_build_plan("):src.index("# ----------", src.index("def run_build_plan("))]
+    assert '"why": why' in block, "сбой не называет ошибку отдельным полем"
+    assert 'why = f"build_plan: {type(ex).__name__}: {ex}"' in block, \
+        "тип и текст ошибки не собираются в одну строку"
+    assert 'why + "\\n" +' in block, \
+        "причина не первой строкой — её вытеснит трассировка, напечатанная раньше"
+    assert "[-160:]" not in src and "[-200:]" not in src, \
+        "отчёт по-прежнему берёт хвост вывода: в журнале останется «~~~~^^^^»"
+
+
+@test
 def test_a_broken_manifest_stops_the_run_instead_of_forgetting(tmp: Path):
     """Нечитаемый манифест — отказ, а не «начнём с нуля».
 
@@ -11359,8 +11379,23 @@ def test_a_broken_manifest_stops_the_run_instead_of_forgetting(tmp: Path):
 
         # Запись должна быть неделимой: читатель не увидит половину файла
         B.save_manifest({"sources": {"A.md": {"cards": 3}}})
-        assert not (meta / "manifest.json.tmp").exists(), "временный файл не убран"
+        assert not list(meta.glob(".manifest-*")), "временный файл не убран"
+        assert not (meta / "manifest.json.tmp").exists(), \
+            "временный файл с общим именем: два писателя затрут друг друга"
         assert B.load_manifest()["sources"]["A.md"]["cards"] == 3
+
+        # Запись из нескольких потоков разом не должна портить файл. Общий временный файл
+        # давал ровно это: один усекает, другой пишет, и после переименования за
+        # закрывающей скобкой оставался обрывок чужого содержимого — манифест становился
+        # нечитаемым при неделимой, казалось бы, записи.
+        import concurrent.futures as _cf
+        def writer(n):
+            B.save_manifest({"sources": {f"S{i}.md": {"cards": i} for i in range(n)}})
+        with _cf.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(writer, [400, 3, 250, 5, 300, 7, 200, 9] * 3))
+        got = B.load_manifest()          # не должно бросить
+        assert isinstance(got.get("sources"), dict), got
+        assert not list(meta.glob(".manifest-*")), "временные файлы копятся рядом с базой"
 
         (meta / "manifest.json").write_text('{"sources": {"A.md": ', encoding="utf-8")
         try:
