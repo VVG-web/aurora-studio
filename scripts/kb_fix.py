@@ -42,6 +42,7 @@ import sys
 import unicodedata
 
 from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+                           sources_block,
                            RETIRED_STATUS, STUB_MARK,
                            STUB_BODY, Card as BaseCard, card_body, card_sources,
                            is_placeholder,
@@ -781,6 +782,150 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     return created
 
 
+def plan_drop_jira(cards: dict, plan: Plan) -> list:
+    """Убрать в архив карточки, сделанные из задач Jira. → [(имя, источники)].
+
+    Правило заказчика жёсткое: карточек из задач не бывает. Задача — это работа, а не
+    сущность, и описание у большинства пустое. Полезное в задаче — статус, код,
+    ответственный и дата статуса; это читают `ops:trace-table` и `kb:trust` прямо из
+    зеркала, карточка для этого не нужна.
+
+    Карточка признаётся сделанной из задачи, если ВСЕ её источники лежат в зеркале
+    задач. Смешанная (артефакт плюс задача) остаётся: в ней есть знание из артефакта.
+
+    Не удаляем, а архивируем: перенос обратим, входящие ссылки чинит `--links`.
+    """
+    dropped = []
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel:
+            continue
+        srcs = [x for x in card_sources(c.text) if x]
+        if not srcs or not all(x.replace("\\", "/").startswith("Sources/JIRA/") for x in srcs):
+            continue
+        plan.moves.append((rel, os.path.join(ROOT, "_archive",
+                                             os.path.basename(rel)).replace("\\", "/")))
+        dropped.append((c.stem, ", ".join(srcs[:3])))
+    return dropped
+
+
+def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
+    """Завести карточки под источники, которые разбор не берёт. → (шаблоны, указатели).
+
+    Два вида таких источников, и оба несут знание, которое прежде пропадало.
+
+    **Шаблон** — незаполненная форма. Разбирать его нечего, но он часть проекта: по нему
+    оформляют протоколы и заявки. Кладём целиком, помечаем `kind: template` — остальные
+    процедуры такие карточки не трогают, — и он попадает в карту «Шаблоны».
+
+    **Указатель** — источник, всё содержание которого сводится к ссылке на внешний
+    артефакт: схему `.drawio`, картинку, таблицу. Сущность названа, и указано, где она
+    описана; это знание, хоть и всё, какое есть. Карточка заводится заготовкой: имя
+    занято, ссылка находится, придёт текст — ляжет сюда же.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+
+    made_t, made_p = [], []
+    taken = {fold_hard(c.stem) for c in cards.values()}
+    for group, base in BP.GROUPS:
+        if not os.path.isdir(base):
+            continue
+        for dirpath, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
+            for f in sorted(files):
+                if not f.endswith(".md") or f in BP.SKIP or f.startswith("~"):
+                    continue
+                src = os.path.join(dirpath, f).replace("\\", "/")
+                try:
+                    text = open(src, encoding="utf-8", errors="ignore").read()
+                except OSError:
+                    continue
+                tpl = BP.is_template(src, text)
+                ptr = "" if tpl else BP.only_artifact_link(text)
+                if not tpl and not ptr:
+                    continue
+                name = normalize_title(BP.source_title(src, text))
+                if not name or fold_hard(name) in taken:
+                    continue
+                section = "Reference" if tpl else "Concepts"
+                path = os.path.join(root, section, name + ".md").replace("\\", "/")
+                if path in cards or os.path.exists(path):
+                    continue
+                taken.add(fold_hard(name))
+                if tpl:
+                    body = ("_Шаблон проекта. Разбору не подлежит: это форма, а не "
+                            "знание._\n\n" + BP.card_body_of(text))
+                    plan.write(path,
+                               f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
+                               f'type: reference\nkind: template\ntags: [шаблон]\n'
+                               f'{sources_block([src])}created: {TODAY}\nupdated: {TODAY}\n'
+                               f'built: machine\nrelated: []\n---\n\n# {name}\n\n{body}\n')
+                    made_t.append(name)
+                else:
+                    plan.write(path,
+                               f'---\ntitle: "{name}"\naliases: []\n'
+                               f'status: {PLACEHOLDER}\ntype: concept\nkind: knowledge\n'
+                               f'tags: [заготовка]\n{sources_block([src])}'
+                               f'created: {TODAY}\nupdated: {TODAY}\nbuilt: machine\n'
+                               f'related: []\n---\n\n# {name}\n\n'
+                               f'Описано во внешнем артефакте, текста в источнике нет:\n\n'
+                               f'{ptr.strip()}\n\n'
+                               "_Заготовка: сущность названа, содержание лежит вне базы._\n")
+                    made_p.append(name)
+    return made_t, made_p
+
+
+def plan_themes(cards: dict, plan: Plan, root: str, floor: int = 3) -> list:
+    """Завести карточку темы по папке источников. → [(имя, сколько карточек)].
+
+    Карточка, чьё имя не названо больше нигде, не связывается никаким правилом: связывать
+    её не с чем. На живой базе таких было 32 из 34, и это не поломка разбора — так лежат
+    источники: каждый про своё, и ни один не упоминает соседа.
+
+    Но тема у них общая, и она не выдумана: её задали люди, разложив страницы по папкам
+    Confluence и по эпикам Jira. Заводим карточку темы по папке и связываем с ней то, что
+    из неё вышло. Это структурная заметка в смысле зеттелькастена: не пересказ, а вход в
+    тему, откуда видно всё, что к ней относится.
+
+    Порог в три карточки нарочен: тема из одной страницы — это сама страница.
+    """
+    by_folder: dict = {}
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
+            continue
+        for src in card_sources(c.text)[:1]:
+            folder = os.path.dirname(src.replace("\\", "/"))
+            if folder.count("/") < 2:      # «Sources/Confluence» — не тема, а зеркало
+                continue
+            by_folder.setdefault(folder, []).append(c.stem)
+    made = []
+    taken = {fold_hard(c.stem) for c in cards.values()}
+    for folder, stems in sorted(by_folder.items()):
+        if len(stems) < floor:
+            continue
+        name = normalize_title(os.path.basename(folder).replace("_", " "))
+        if not name or fold_hard(name) in taken:
+            continue
+        path = os.path.join(root, "Concepts", name + ".md").replace("\\", "/")
+        if path in cards or os.path.exists(path):
+            continue
+        taken.add(fold_hard(name))
+        body = "\n".join(f"- [[{x}]]" for x in sorted(stems))
+        plan.write(path,
+                   f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
+                   f'type: concept\nkind: knowledge\ntags: [тема]\n'
+                   f'{sources_block([folder])}created: {TODAY}\nupdated: {TODAY}\n'
+                   f'built: machine\nrelated: []\n---\n\n# {name}\n\n'
+                   f"Тема проекта: под этим именем в источниках собраны страницы, из "
+                   f"которых вышли карточки ниже. Группировку задал человек — она взята "
+                   f"из структуры источников, а не выведена движком.\n\n"
+                   f"## Что относится к теме\n\n{body}\n")
+        made.append((name, len(stems)))
+    return made
+
+
 def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
     """Один alias у нескольких карточек — ссылка по нему неоднозначна.
 
@@ -1288,6 +1433,15 @@ def main() -> int:
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
+    ap.add_argument("--themes", action="store_true",
+                    help="завести карточку темы по папке источников: изолированные "
+                         "карточки получают вход, а группировку задал человек")
+    ap.add_argument("--unparsed", action="store_true",
+                    help="завести карточки под источники, которые разбор не берёт: "
+                         "шаблоны целиком и указатели на внешние артефакты")
+    ap.add_argument("--drop-jira", action="store_true",
+                    help="убрать в архив карточки, сделанные из задач Jira: задача — "
+                         "это работа, а не сущность (правило заказчика)")
     ap.add_argument("--rename", nargs=2, metavar=("СТАРОЕ", "НОВОЕ"),
                     help="назвать карточку иначе: прежнее имя уходит в синонимы, "
                          "входящие ссылки продолжают работать")
@@ -1340,8 +1494,9 @@ def main() -> int:
         return 1
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.terms, a.rename, a.merge, a.merge_all, a.set_alias, a.sections,
-                a.names)):
+                a.stubs, a.terms, a.rename, a.drop_jira, a.unparsed, a.themes,
+                a.merge, a.merge_all,
+                a.set_alias, a.sections, a.names)):
         ap.print_help()
         return 0
 
@@ -1426,6 +1581,24 @@ def main() -> int:
                 head.append(f"- {section}/{name}.md — ждут {refs} ссылок")
             if len(created) > 15:
                 head.append(f"- … ещё {len(created) - 15}")
+        if a.themes:
+            th = plan_themes(cards, plan, a.root)
+            head.append(f"## Карточки тем по папкам источников: {len(th)}")
+            for n, k in th[:15]:
+                head.append(f"- {n} — карточек в теме: {k}")
+        if a.unparsed:
+            tpl, ptr = plan_unparsed_sources(cards, plan, a.root)
+            head.append(f"## Источники вне разбора: шаблонов {len(tpl)}, "
+                        f"указателей {len(ptr)}")
+            for n in (tpl + ptr)[:15]:
+                head.append(f"- {n}")
+        if a.drop_jira:
+            gone = plan_drop_jira(cards, plan)
+            head.append(f"## Карточки из задач Jira: {len(gone)} в архив")
+            for name, srcs in gone[:20]:
+                head.append(f"- {name} ← {srcs}")
+            if len(gone) > 20:
+                head.append(f"- … ещё {len(gone) - 20}")
         if a.rename:
             done, why = plan_rename(cards, plan, a.rename[0], a.rename[1])
             if why:

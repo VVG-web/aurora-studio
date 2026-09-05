@@ -33,7 +33,8 @@ Aurora/
 │   ├── meta/conventions.md
 │   └── cursor/atlassian.mdc.template
 ├── scaffold/          # что копируется в проект как стартовый контент
-│   ├── Templates/
+│   ├── Templates/        # стартовый набор: дальше его ведёт проект
+│   ├── TemplatesCommon/  # общие шаблоны документов: их ведёт кит
 │   └── Prompts/
 ├── docs/readme/
 ├── docs/

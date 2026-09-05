@@ -123,6 +123,7 @@ def read_cards() -> dict:
                 "title": (fm.get("title") or f[:-3]).strip('"'),
                 "type": (fm.get("type") or "").strip(),
                 "status": (fm.get("status") or "").strip(),
+                "kind": (fm.get("kind") or "").strip().strip('"'),
                 "tags": tags, "text": text,
                 "source": (card_sources(text) or [""])[0],
                 "sources": card_sources(text),
@@ -336,6 +337,15 @@ def main() -> int:
     # это занятое имя без него. Смешать их значит утопить настоящие карточки — на живом
     # проекте пустышек тысячи. У них своя карта, и она нужна: по ней видно, чего база
     # ещё не знает, но уже упоминает.
+    # Шаблон — форма, а не знание: в тематические карты он не идёт по той же причине,
+    # что и пустышка. Но и терять его нельзя — по нему оформляют протоколы и заявки,
+    # и найти его должно быть можно. Своя карта, как у пустышек.
+    forms = [c for c in cards.values() if c.get("kind") == "template"
+             or "шаблон" in [t.lower() for t in c["tags"]]]
+    form_stems = {c["stem"] for c in forms}
+    cards = {s: c for s, c in cards.items() if s not in form_stems}
+    orphans = [c for c in orphans if c["stem"] not in form_stems]
+
     holes = [c for c in cards.values() if is_placeholder({"status": c["status"],
                                                           "tags": ", ".join(c["tags"])},
                                                          c["text"])]
@@ -362,6 +372,10 @@ def main() -> int:
                     "Список читается как перечень того, чего база ещё не знает, но уже "
                     "упоминает. Появилось определение — `kb:repair --frontmatter` снимет "
                     "отметку, и карточка уйдёт отсюда сама.", holes))
+    planned.append(("Шаблоны", "Незаполненные формы проекта: протоколы, заявки, бланки. "
+                    "Разбору они не подлежат — это не знание, а то, чем знание оформляют, "
+                    "— и остальные процедуры их не трогают. Лежат в базе целиком, чтобы "
+                    "их можно было найти и взять.", forms))
 
     print(f"# Карты содержания — {TODAY}\n")
     print(f"Карточек в базе: **{len(cards)}** · покрыто группами: **{len(covered)}** "

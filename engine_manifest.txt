@@ -2,6 +2,8 @@
 # Белый список инженерных файлов, которыми управляет kit. `aurora.py update`
 # перезаписывает В ПРОЕКТЕ только эти пути. Всё остальное (config, знания, Raw,
 # Sources, Deliverables, Artifacts, Workspaces, Templates/, Prompts/) не трогается.
+# Исключение — TemplatesCommon/: общие шаблоны ведёт кит, но правилом (seed), то есть
+# не затирая правку проекта, а кладя новую версию рядом как <файл>.new.
 #
 # Формат строки:  <путь-в-kit>  =>  <путь-в-проекте>
 # Спец-правила (в скобках после →) обрабатываются update-скриптом:
@@ -131,8 +133,12 @@ connectors => (connectors)
 templates/agents/AGENTS.md.template => (agents) AGENTS.md
 
 # --- шаблоны/промпты: вариант (1) — не перезаписывать, класть новое как .new ---
-scaffold/Templates => (seed) Templates
-scaffold/Prompts   => (seed) Prompts
+# Templates/ и Prompts/ — стартовый набор: дальше их ведёт проект.
+# TemplatesCommon/ — общие шаблоны документов, которые ведёт кит: правка шаблона в
+# ките должна доезжать до заведённых проектов, иначе улучшать общий шаблон незачем.
+scaffold/Templates       => (seed) Templates
+scaffold/Prompts         => (seed) Prompts
+scaffold/TemplatesCommon => (seed) TemplatesCommon
 
 # --- выведено из состава движка: обновление удаляет эти файлы в проекте ---
 # Формат: «- <путь в проекте>». Список ведётся руками: угадывать, наш это файл или

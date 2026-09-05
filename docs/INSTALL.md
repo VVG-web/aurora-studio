@@ -81,7 +81,7 @@ AuroraKnowledgeDB/
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,reviews,reports,drafts,meetings}/
 Deliverables/{work,released}/
 Workspaces/
-Templates/  Prompts/
+Templates/  TemplatesCommon/  Prompts/
 ```
 
 Folder list is fixed by the engine (`structure_dirs.txt`) and identical in every Aurora

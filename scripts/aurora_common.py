@@ -509,16 +509,24 @@ def config_list(key: str) -> list:
     return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
 
 
-def inbound_counts(root: str) -> dict:
+def inbound_counts(root: str, skip_nav: bool = False) -> dict:
     """{имя карточки: сколько на неё ссылок из базы}.
 
-    Считаем по ВСЕМ файлам, включая навигационные (`_index.md`, MOC): присутствие в
-    индексе — тоже связность, иначе «сиротами» станет вся база. Один счёт на всех, кто
-    спрашивает про сирот и про вес карточки.
+    По умолчанию считаем по ВСЕМ файлам, включая навигационные (`_index.md`, MOC):
+    присутствие в оглавлении — тоже связность, и для веса карточки это верно.
+
+    `skip_nav=True` — только ссылки ОТ КАРТОЧЕК. Для вопроса «кто брошен» первый счёт
+    бесполезен: карты содержания генерируются как раз под брошенных, и после `kb:moc`
+    сирот всегда ноль. На живой базе так и вышло — `ops:stats` рапортовал «сирот 0»,
+    пока 34 карточки из 74 висели на одной сгенерированной навигации, а карта
+    «Брошенные» в той же базе честно перечисляла 26.
     """
+    nav = ("/MOC/", "/_index", "/index.md")
     stems = {os.path.splitext(os.path.basename(p))[0] for p in walk_md(root)}
     counts: dict = {}
     for path in walk_md(root):
+        if skip_nav and any(x in path.replace("\\", "/") for x in nav):
+            continue
         self_stem = os.path.splitext(os.path.basename(path))[0]
         try:
             text = open(path, encoding="utf-8", errors="ignore").read()
@@ -641,8 +649,55 @@ def body_hash(body: str) -> str:
 TERMS_HINT = re.compile(r"(?i)аббревиатур|abbrev|сокращен|термин|глоссар|glossary")
 # Строка таблицы вида `| ПРФ | профиль обслуживания абонента … |`
 TERMS_ROW = re.compile(r"^\|\s*\**([^|*]{2,40}?)\**\s*\|\s*([^|]{8,400}?)\s*\|", re.M)
+# Расшифровка, написанная в тексте рядом с сокращением. Две формы, обе живые:
+#   «ЭСФ (электронный счёт-фактура)»  — сокращение впереди, расшифровка в скобках;
+#   «Federal Tax Authority (FTA)»     — наоборот, сокращение в скобках.
+INLINE_TERM = re.compile(
+    r"(?<![\w-])(?P<abbr>[A-ZА-ЯЁ][A-ZА-ЯЁ0-9]{1,11})\s*\(\s*(?P<mean>[^()]{6,120}?)\s*\)")
+INLINE_BACK = re.compile(
+    r"(?P<mean>[A-Za-zА-Яа-яЁё][\w\s-]{5,119}?)\s*\(\s*(?P<abbr>[A-ZА-ЯЁ][A-ZА-ЯЁ0-9]{1,11})\s*\)")
+
 # Что считаем сокращением: заглавные буквы, цифры и дефис. «ПРФ», «ГП-3», «BP-005».
 ABBR = re.compile(r"\b([A-ZА-ЯЁ][A-ZА-ЯЁ0-9]{1,}(?:-[A-ZА-ЯЁ0-9]+)*)\b")
+
+
+def looks_like_expansion(phrase: str, abbr: str) -> float:
+    """Насколько фраза складывается в аббревиатуру. 1.0 — все буквы легли по порядку.
+
+    Настоящая расшифровка отдаёт свои первые буквы в аббревиатуру: «документ о
+    предстоящей поставке» → Д-О-П-П. Порядок важен, полнота — нет: служебные слова
+    в сокращение попадают не всегда, а падежи и «и» между словами сбивают счёт.
+    Поэтому считаем долю букв аббревиатуры, нашедших своё слово по порядку.
+    """
+    letters = [c.lower() for c in abbr if c.isalpha()]
+    if not letters:
+        return 0.0
+    initials = [w[0].lower() for w in re.findall(r"[^\W\d_]+", phrase, re.UNICODE) if w]
+    i, hit = 0, 0
+    for c in letters:
+        while i < len(initials) and initials[i] != c:
+            i += 1
+        if i < len(initials):
+            hit += 1
+            i += 1
+    return hit / len(letters)
+
+
+def trim_to_expansion(phrase: str, abbr: str) -> str:
+    """Отрезать у фразы начало, не участвующее в сокращении. → расшифровка или пусто.
+
+    Скобка захватывает больше, чем нужно: «ASP (C2 - Accredited Service Provider)»,
+    «TDS (и Tax Data Status)». Первая буква сокращения обязана быть первой буквой
+    расшифровки — всё, что перед ней, к делу не относится.
+    """
+    letters = [c.lower() for c in abbr if c.isalpha()]
+    if not letters:
+        return ""
+    words_ = re.findall(r"[^\W\d_]+[^\s]*", phrase, re.UNICODE)
+    for i, w in enumerate(words_):
+        if w[:1].lower() == letters[0]:
+            return " ".join(words_[i:]).strip(" -–—:;,")
+    return ""
 
 
 def project_terms(root: str = KB_ROOT) -> dict:
@@ -661,6 +716,7 @@ def project_terms(root: str = KB_ROOT) -> dict:
     """
     ref: dict = {}
     gloss: dict = {}
+    inline: dict = {}          # «ЭСФ (электронный счёт-фактура)» прямо в тексте карточки
     if not os.path.isdir(root):
         return {}
     for path in walk_md(root, skip_service=True, skip_archive=True):
@@ -682,13 +738,30 @@ def project_terms(root: str = KB_ROOT) -> dict:
                 if 2 <= len(abbr) <= 40 and mean and "---" not in abbr:
                     if len(mean) > len(ref.get(abbr, "")):
                         ref[abbr] = mean
+        # Расшифровка обязана складываться в само сокращение: «электронный счёт-фактура»
+        # даёт Э-С-Ф. Без этой проверки в словарь лезет любой текст в скобках — на живой
+        # базе так получились «FTA — текущее решение» и «RE — отправляет негативный
+        # статус», то есть ровно то выдумывание, против которого словарь и заведён.
+        for rx in (INLINE_TERM, INLINE_BACK):
+            for m in rx.finditer(body):
+                abbr = m.group("abbr").strip()
+                mean = clean_meaning(m.group("mean"), "")
+                if not (2 <= len(abbr) <= 12) or not mean or len(mean.split()) < 2:
+                    continue
+                mean = trim_to_expansion(mean, abbr)
+                if mean and looks_like_expansion(mean, abbr) >= 0.6:
+                    inline.setdefault(abbr, mean)
         if section == "Glossary":
             first = next((" ".join(p.split()) for p in re.split(r"\n\s*\n", body)
                           if p.strip() and not p.strip().startswith(("#", "|", ">", "-"))), "")
             mean = clean_meaning(first, title)
             if mean:
                 gloss.setdefault(title, mean)
-    return {**gloss, **ref}
+    # Расшифровка, написанная в самом тексте, — тоже записанный факт, а не догадка:
+    # «ЭСФ (электронный счёт-фактура)», «Federal Tax Authority (FTA)». На проекте без
+    # собранного глоссария иначе не находится ни одной, и заготовки под понятия завести
+    # не из чего — 34 сокращения остаются в базе безымянными строками.
+    return {**inline, **gloss, **ref}
 
 
 # Заготовка — не определение. Карточка, заведённая под ссылку, честно пишет об этом в

@@ -97,7 +97,10 @@ def collect() -> dict:
             if probe.startswith(("Raw/", "Sources/", "Deliverables/")) and not os.path.exists(probe):
                 missing_source.append((stem, probe))
 
-    inbound = inbound_counts(ROOT)
+    # Сирот считаем БЕЗ навигации: карты содержания заводятся как раз под брошенных, и
+    # с ними счётчик всегда ноль — отчёт рапортовал о полной связности базы, треть
+    # которой держалась на одной сгенерированной карте.
+    inbound = inbound_counts(ROOT, skip_nav=True)
     orphans = [c["stem"] for c in cards.values()
                if not c["archived"] and inbound.get(c["stem"], 0) == 0]
 
@@ -205,7 +208,8 @@ def render(s: dict) -> str:
     L += ["", "## Риски и гигиена", "",
           f"- протухших verified (review_by в прошлом): **{s['expired_count']}**",
           f"- verified без владельца: **{s['no_owner_count']}**",
-          f"- карточек без входящих ссылок (сироты): **{s['orphans_count']}**",
+          f"- карточек, на которые не ссылается ни одна другая: "
+          f"**{s['orphans_count']}** (карты содержания не в счёт — их заводят под них же)",
           f"- карточек, чей `source` не существует на диске: **{s['missing_source_count']}**"]
     if s["expired"]:
         L += ["", "Ближайшие протухшие:"]
