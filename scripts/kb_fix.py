@@ -41,7 +41,8 @@ import subprocess
 import sys
 import unicodedata
 
-from aurora_common import (LINK_RE, PLACEHOLDER, RETIRED_FIELDS, RETIRED_STATUS,
+from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+                           RETIRED_STATUS, STUB_MARK,
                            STUB_BODY, Card as BaseCard, card_body, card_sources,
                            is_placeholder,
                            aliases as card_aliases, card_filename as normalize_title,
@@ -954,10 +955,19 @@ def outgrew_placeholder(c: "Card") -> bool:
     достаточно собственного содержания. Иначе карточка с определением так и осталась бы
     вне поиска, а человек не понял бы, почему база молчит о том, что в ней написано.
     """
-    if (c.fm.get("status") or "").strip().strip('"') != PLACEHOLDER:
+    if not is_placeholder(c.fm, c.text):
         return False
-    body = card_body(c.text)
-    if STUB_BODY in body:
+    # Судим по СВОЕЙ части карточки — до дословного текста источника. Строка-заготовка
+    # уезжает в блок «Источник (перенесено дословно)» и в историю изменений, и остаётся
+    # там навсегда: карточка, наполненная знанием, продолжала считаться пустышкой и не
+    # выходила из-под запрета на выдачу. На живой базе так стояли 60 заготовок из 60.
+    body = card_body(c.text).split(QUOTES, 1)[0]
+    # Мало убрать служебную строку: `agent:distill` пишет тезис и заготовке — «X —
+    # заготовка понятия, знаний пока нет, наполните при следующем разборе». Двести
+    # знаков прозы о том, что знания нет, по длине не отличаются от знания, и карточка
+    # вышла бы в выдачу пустой. Поэтому смотрим, не говорит ли текст сам, что он
+    # заготовка, — тем же признаком, которым это решают расшифровки.
+    if STUB_BODY in body or STUB_MARK.search(body):
         return False
     # Заголовок и раздел «Упоминается в» — служебная часть пустышки, она есть всегда.
     own = re.sub(r"(?ms)^##\s*Упоминается в.*$", "", body)
@@ -986,6 +996,9 @@ def plan_frontmatter(cards: dict, plan: Plan):
         # Пустышка, в которой появилось знание, пустышкой быть перестаёт — иначе она
         # останется вне поиска, и база будет молчать о том, что в ней уже написано.
         if outgrew_placeholder(probe):
+            # Снимаем ОБА признака. Статус ставился не всегда — на живой базе 41 из 60
+            # заготовок опознавались только по тегу, и снятие одного статуса оставляло
+            # их пустышками навсегда: `is_placeholder` читает и тег тоже.
             fixed = re.sub(r"(?m)^status:\s*" + PLACEHOLDER + r"\s*$", "status: draft",
                            base, count=1)
             fixed = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", fixed, count=1)

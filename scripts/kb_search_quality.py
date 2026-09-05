@@ -101,6 +101,13 @@ def cards_with_thesis(root: str = KB_ROOT) -> dict:
             continue
         if not (fm.get("distilled") or "").strip():
             continue
+        # Заготовка спрашивать не имеет права. Её «тезис» — это фраза «знаний пока нет»,
+        # а найтись она не может: выдача заготовки не показывает (их отсекает и пак).
+        # Замер задавал вопрос, правильный ответ на который сам себе запретил, и честно
+        # засчитывал промах: пять «не нашлись» на живой базе оказались все до одной
+        # заготовками.
+        if is_placeholder(fm, text):
+            continue
         t = thesis(text)
         if len(t) >= 60:            # слишком короткий тезис — не вопрос, а подпись
             out[os.path.basename(path)[:-3]] = t
@@ -135,13 +142,13 @@ def ranked(question: str, cfg: dict, model: str) -> list:
     if _CARDS is None:
         _CARDS = P.load_cards()
         P.measure_rarity(_CARDS)
-    close = P.semantic(question, TOP * 4)
+
     # Карты содержания и заготовки из выдачи убираем: в паке их отсекает отбор по
     # статусу (`MODE_STATUSES`), и замер обязан мерить то же самое. Иначе он показывает
     # промах там, где человеку ответили верно, — на живой базе карточку обошла страница
     # «Пустышки», то есть навигация, которую в ответ всё равно не подставят.
     out = []
-    for w, c in P.fuse(_CARDS, question, close):
+    for w, c in P.fuse(_CARDS, question, limit=TOP * 4):
         if (c.status or "").strip() == "index" or is_placeholder(c.fm, c.text):
             continue
         out.append((c.stem, round(w, 4)))
@@ -338,17 +345,22 @@ def main() -> int:
     gold = {}
     if a.golden:
         all_gp = golden_pairs()
-        # Строка годится, пока в индексе есть ХОТЬ ОДНА из названных карточек: остальные
-        # могли переехать, и это не повод выбрасывать вопрос целиком.
-        gp = [(tuple(n for n in names if n in known), q)
-              for names, q in all_gp if any(n in known for n in names)]
-        lost = sorted({n for names, _q in all_gp for n in names if n not in known})
+        # «Живой» — значит карточка ЕСТЬ В БАЗЕ, а не «есть в векторном индексе». Замер
+        # ходит гибридной выборкой и находит словами то, чего в индексе нет; проверять по
+        # индексу значило бы объявить отставшим эталон, который в порядке.
+        alive = {os.path.basename(p)[:-3]
+                 for p in walk_md(KB_ROOT, skip_service=True, skip_archive=True)}
+        # Строка годится, пока жива ХОТЬ ОДНА из названных карточек: остальные могли
+        # переехать, и это не повод выбрасывать вопрос целиком.
+        gp = [(tuple(n for n in names if n in alive), q)
+              for names, q in all_gp if any(n in alive for n in names)]
+        lost = sorted({n for names, _q in all_gp for n in names if n not in alive})
         print(f"\n## Эталонные вопросы: {len(gp)}\n")
         if lost:
             # Эталон стареет вместе с базой: карточку переименовали или разрезали, а
             # строка осталась. Молча выкинуть её значит мерить по остатку и не сказать
             # об этом; ошибка в эталоне ищется дольше всего именно потому, что не видна.
-            print(f"Эталон ссылается на {len(lost)} карточек, которых в индексе нет — "
+            print(f"Эталон ссылается на {len(lost)} карточек, которых в базе нет — "
                   "он отстал\nот базы (строка идёт в замер, если жива хоть одна её "
                   "карточка): "
                   + ", ".join("`" + n + "`" for n in lost[:8])

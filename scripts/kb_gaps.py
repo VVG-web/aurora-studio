@@ -37,12 +37,12 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aurora_common import (KB_ROOT, aliases, card_body, card_sources,  # noqa: E402
+from aurora_common import (KB_ROOT, QUOTES, aliases, card_body,  # noqa: E402
+                           card_sources,
                            frontmatter, is_placeholder, leaf_name, link_refs,
                            related_targets, walk_md)
 
 TODAY = date.today().isoformat()
-QUOTES = "## Источник (перенесено дословно)"
 
 # Кандидат в сущности — аббревиатура или код: заглавные буквы, цифры, дефис.
 TERM_RE = re.compile(r"\b([А-ЯЁA-Z][А-ЯЁA-Z0-9]{1,}(?:[-_.][А-ЯЁA-Z0-9]+)*)\b")
@@ -132,6 +132,32 @@ def missing_links(cards: dict) -> list:
     return sorted(out, key=lambda r: -len(r[1]))
 
 
+def behind_neighbour(cards: dict) -> list:
+    """[(карточка, сосед, когда её тезис, когда правлен сосед)] — сосед ушёл вперёд.
+
+    Отметки в базе привязаны к самой карточке: `relinked` и `extracted` держат дату её
+    тезиса, «тезис отстал» сравнивает карточку с её файлом-источником. Соседей не
+    проверял никто — поправили главную карточку, а пять ссылающихся на неё продолжают
+    говорить прежнее. Здесь это видно числом и без обращений к модели; разбирает пары
+    `agent:clashes`, он умеет цитировать обе стороны.
+    """
+    out = []
+    for stem, c in sorted(cards.items()):
+        if c["ph"]:
+            continue
+        mine = (c["fm"].get("distilled") or "").strip().strip('"')
+        if not mine:
+            continue
+        for other in sorted(c["out"]):
+            oc = cards.get(other)
+            if not oc or other == stem or oc["ph"]:
+                continue
+            theirs = (oc["fm"].get("updated") or "").strip().strip('"')
+            if theirs and theirs > mine:
+                out.append((stem, other, mine, theirs))
+    return out
+
+
 def lonely(cards: dict) -> list:
     """Карточки без входящих и без исходящих — не участвующие в мышлении."""
     inbound = collections.Counter()
@@ -195,12 +221,29 @@ def main() -> int:
     links = missing_links(cards)
     alone = lonely(cards)
     late, gone = stale(cards)
+    behind = behind_neighbour(cards)
     unlinked_pairs = sum(len(v) for _s, v in links)
 
     L = [f"# Смысловые дыры базы — {TODAY}", "",
          f"Карточек: **{len(cards)}** · понятий без карточки: **{len(terms)}** · "
          f"непоставленных связей: **{unlinked_pairs}** · одиноких: **{len(alone)}** · "
-         f"тезисов отстало: **{len(late)}** · оборванных источников: **{len(gone)}**", ""]
+         f"тезисов отстало: **{len(late)}** · отстало от соседа: **{len(behind)}** · "
+         f"оборванных источников: **{len(gone)}**", ""]
+
+    L += ["## Сосед изменился, карточка — нет", ""]
+    if not behind:
+        L.append("Таких нет.")
+    else:
+        L += ["Карточка ссылается на другую, а ту правили позже: знание о соседе в ней "
+              "могло устареть. Отметки движка привязаны к самой карточке, соседей до "
+              "1.100.39 не проверял никто.", "",
+              "Разбирает `agent:clashes`: он берёт эти пары первыми и цитирует обе "
+              "стороны — решать, кто прав, человеку.", "",
+              "| Карточка | Сосед | Тезис от | Сосед правлен |", "|---|---|---|---|"]
+        L += [f"| `{a}` | `{b}` | {m} | {t} |" for a, b, m, t in behind[:40]]
+        if len(behind) > 40:
+            L.append(f"\n… ещё {len(behind) - 40}.")
+        L.append("")
 
     L += ["## Понятие названо, карточки нет", ""]
     if not terms:
