@@ -442,9 +442,15 @@ _Мета-вопросы:_
         )
 
     def install_templates_prompts(self):
+        """Стартовые шаблоны и промпты. Templates/ дальше ведёт проект, TemplatesCommon/ —
+        кит: общий шаблон улучшается для всех сразу и доезжает до проектов обновлением
+        (engine_manifest.txt, правило seed). Без этой копии новый проект родился бы с
+        пустой папкой общих шаблонов и человек начал бы с сочинения формы.
+        """
         self.log("== Templates & Prompts ==")
         self.copy_tree_files(KIT_ROOT / "scaffold/Templates", "Templates")
         self.copy_tree_files(KIT_ROOT / "scaffold/Prompts", "Prompts")
+        self.copy_tree_files(KIT_ROOT / "scaffold/TemplatesCommon", "TemplatesCommon")
 
     def install_launchers(self):
         """Пусковые файлы в корне проекта: не всем удобно ходить в терминал.

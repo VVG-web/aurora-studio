@@ -491,12 +491,20 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
             "made": [], "backends": []}
     text = open(path, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
+    # Пропуск — это РЕЗУЛЬТАТ осмотра, а не его отсутствие: карточку посмотрели и
+    # решили, что выносить нечего. Без отметки она возвращается в очередь при каждом
+    # запуске навсегда — отсюда «сколько ни гоняй, всегда куча работы». Отметка держит
+    # дату тезиса: перепишут тезис — карточка вернётся сама.
     if is_placeholder(fm, text) or (fm.get("kind") or "").strip().strip('"') != "knowledge":
         step["note"] = "не карточка знания"
+        if apply:
+            mark_examined(path, fm)
         return step
     thesis = thesis_of(text)
     if len(" ".join(thesis.split())) < 200:
         step["note"] = "тезис короток — выносить нечего"
+        if apply:
+            mark_examined(path, fm)
         return step
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
@@ -742,6 +750,40 @@ def strip_links(text: str) -> str:
     return " ".join(plain.split())
 
 
+def named_here(thesis: str, cwd: str, skip: str) -> list:
+    """[(имя, раздел, о чём)] — карточки, чьё ИМЯ прямо названо в этом тезисе.
+
+    Механика надёжнее модели там, где надо заметить строку. На живой базе тридцать две
+    пары «сущность названа, карточка есть, ссылки нет» находились сравнением строк — и
+    не находились моделью, которой предлагалось заметить их самой. Отдаём ей готовый
+    список: её работа — расставить разметку, а не искать.
+
+    Порог длины имени в пять букв — тот же, что у `ops:gaps`: короткое имя совпадает
+    случайно («ЭСФ» внутри «ЭСФДок»), и такая связь была бы выдумана движком.
+    """
+    from aurora_common import KB_ROOT, frontmatter, is_placeholder, walk_md
+    low = " " + " ".join(thesis.lower().split()) + " "
+    out = []
+    for p2 in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
+        stem = os.path.basename(p2)[:-3]
+        if stem == skip or len(stem) < 5:
+            continue
+        text = open(p2, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        if is_placeholder(fm, text):
+            continue          # пустая карточка не должна обещать содержание
+        names = {stem, (fm.get("title") or "").strip().strip('"')}
+        hit = next((n for n in names if len(n) >= 5 and n.lower() in low), "")
+        if not hit:
+            hit = next((n for n in names
+                        if len(n) >= 5 and n.replace("-", " ").lower() in low), "")
+        if hit:
+            section = os.path.relpath(os.path.dirname(p2),
+                                      os.path.join(cwd, KB_ROOT)).split(os.sep)[0]
+            out.append((stem, section, "НАЗВАНА В ТЕКСТЕ — связь обязательна"))
+    return out[:20]
+
+
 def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
                 deadline: float = 0.0) -> dict:
     """Расставить связи в готовом тезисе. Текст не меняется. → шаг отчёта.
@@ -777,6 +819,12 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
     # Разбору они, наоборот, нужны — туда знание и кладут (`_pick`).
     near = candidates_for(root, cfg, title + "\n" + thesis, limit=CANDIDATES, stubs=False)
     near = [c for c in near if c[0] != step["card"]]
+    # Сначала — те, чьё имя прямо названо в тексте: их нашла механика, и спорить тут не
+    # о чем. Похожие по смыслу идут следом: перечень может быть неполным, и модель
+    # дополняет его — но не вместо механики, а после неё.
+    must = named_here(thesis, root, step["card"])
+    seen = {n for n, _s, _b in must}
+    near = must + [c for c in near if c[0] not in seen]
     if not near:
         step["note"] = "не с чем связывать"
         return step
@@ -851,7 +899,12 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
             break
         s = relink_card(cfg, path, call, apply, deadline=budget)
         steps.append(s)
-        if apply and s["status"] in ("связана", "нечего связывать", "отброшен"):
+        # «пропущена» здесь наравне с остальными: карточку посмотрели и решили не
+        # связывать. Не отметить её значит вернуть в очередь навсегда — на живой базе
+        # после полного прогона `--until-done` очередь всё равно показывала три штуки,
+        # и это были ровно пропущенные.
+        if apply and s["status"] in ("связана", "нечего связывать", "отброшен",
+                                     "пропущена"):
             mark_relinked(path)
         # «+3» без записи читается как сделанная работа. Предпросмотр обязан говорить,
         # что он предпросмотр, в каждой строке — сводку в конце читают не всегда.
@@ -2368,6 +2421,34 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
     return made
 
 
+def has_facts(text: str) -> str:
+    """Что в источнике опровергает вердикт «пусто». → причина или пусто.
+
+    Модель судит о наличии знания и ошибается в понятную сторону: страницу, где всё
+    знание лежит в таблице, она называет пустой, потому что прозы там нет. Живой случай:
+    «Расписание запуска алгоритмов» — таблица с алгоритмом, периодичностью и временем
+    запуска — отмечена как «только ссылка на .drawio, текстового знания нет». Источник
+    ушёл из плана вместе с расписанием.
+
+    Проверка механическая и грубая нарочно: она не решает, что знание есть, — она
+    запрещает СКАЗАТЬ, что его нет, когда в тексте лежат данные.
+    """
+    body = re.sub(r"(?s)^---.*?\n---\n", "", text or "")
+    rows = [l for l in body.splitlines()
+            if l.strip().startswith("|") and l.count("|") >= 3
+            and not re.fullmatch(r"[|\s:.-]+", l.strip())]
+    # Шапка и разделитель таблицы — ещё не данные: строк должно быть больше двух.
+    data = [l for l in rows if re.search(r"[^\W\d_]{2,}", l)]
+    # Первая строка таблицы — шапка, она есть и у пустой формы. Считаем то, что под ней:
+    # хотя бы одна заполненная строка — уже данные, и «пусто» про них сказать нельзя.
+    if len(data) >= 2:
+        return f"в источнике таблица с данными: заполненных строк {len(data) - 1}"
+    items = [l for l in body.splitlines() if re.match(r"\s*[-*+]\s+\S", l)]
+    if len(items) >= 5 and sum(len(x) for x in items) > 200:
+        return f"в источнике перечень фактов: пунктов {len(items)}"
+    return ""
+
+
 def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
                 use_critic: bool, call, deadline) -> dict:
     """Источник без структуры: пусто (отметить) или человеку (написать чтением)."""
@@ -2418,6 +2499,24 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
         return defer(cwd, source, step, apply)
 
     note = str(ans["empty"])[:200]
+    # Вердикт «пусто» необратим по смыслу: источник уходит из плана вместе со всем, что
+    # в нём было. Прежде чем принять его, движок сам смотрит в текст — и если там лежат
+    # данные, отказывается верить.
+    facts = has_facts(whole)
+    if facts:
+        # Отклонить вердикт мало: отдать источник человеку значило бы заменить одну
+        # потерю другой. Данные есть — значит карточка делается, как у любого источника
+        # без разметки: границы предлагает планировщик, текст переносит движок.
+        made = plan_source(cfg, cwd, source, whole, step, apply, call, deadline)
+        if made:
+            step.update(status="разобран по абзацам",
+                        note=f"модель сочла пустым, но {facts} — вердикт отклонён "
+                             f"движком, карточек: {made}")
+            return step
+        step.update(status="без секций — человеку",
+                    note=f"модель сочла пустым, но {facts}; разобрать по абзацам "
+                         "тоже не вышло")
+        return defer(cwd, source, step, apply)
     if use_critic:
         # Отметка «пусто» необратима по смыслу: источник уходит из плана. Второе мнение
         # здесь дороже лишней минуты — потерянное знание не всплывёт само.

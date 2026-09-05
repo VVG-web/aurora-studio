@@ -9889,6 +9889,89 @@ def test_a_long_card_is_indexed_whole_not_just_its_beginning(tmp: Path):
 
 
 @test
+def test_a_short_section_joins_its_neighbour_instead_of_vanishing(tmp: Path):
+    """Короткая секция присоединяется к соседней, а не выбрасывается.
+
+    Порог `MIN_SECTION` заводился, чтобы не плодить карточки из огрызков. Но он не
+    «не делал карточку» — он ТЕРЯЛ содержимое: секция не доходила до модели вовсе.
+
+    Живой случай. Источник «Расписание запуска алгоритмов» состоял из трёх секций:
+    таблица с расписанием (159 знаков), подпись к схеме (39) и ссылка на `.drawio`
+    (247). Первые две вылетели по порогу, модель получила одну — ссылку — и честно
+    ответила «только ссылка, знания нет». Источник ушёл из плана вместе с расписанием,
+    и виновата была не модель: ей не показали таблицу.
+
+    Заодно текст ДО первого заголовка: при первом заголовке `title` ещё пуст, и всё
+    накопленное отбрасывалось. У страниц, начинающихся с таблицы, терялось начало.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import build_plan as BP
+
+    short_table = "| A | B |\n|---|---|\n| 1 | 2 |"
+    text = (f"# Расписание\n\n{short_table}\n\n"
+            "# Схема\n\nподпись\n\n"
+            "## Ссылки\n\n" + "- [схема.drawio](x.drawio)\n" * 12)
+    got = BP.sections(text)
+    joined = "\n".join(b for _t, b in got)
+    assert short_table.splitlines()[2] in joined, \
+        why([(t, len(b)) for t, b in got]) or "таблица потеряна: секция короче порога выброшена"
+    assert len(got) >= 1 and all(b.strip() for _t, b in got), "пустые секции в раскадровке"
+
+    # преамбула: текст до первого заголовка
+    pre = "Важное вступление. " * 12
+    got2 = BP.sections(f"{pre}\n\n# Раздел\n\n" + "тело раздела. " * 30)
+    assert any("Важное вступление" in b for _t, b in got2), \
+        why([t for t, _b in got2]) or "текст до первого заголовка выброшен"
+
+    # и порог по-прежнему бережёт от карточек-огрызков: одна короткая секция целиком
+    tiny = BP.sections("# Крошка\n\nдва слова")
+    assert tiny == [] or sum(len(b) for _t, b in tiny) < BP.MIN_SECTION, \
+        why(tiny) or "огрызок снова стал полноценной секцией"
+
+
+@test
+def test_orphans_are_counted_without_the_maps_made_for_them(tmp: Path):
+    """«Сирот 0» — не победа, если считать ссылкой строку в сгенерированной карте.
+
+    `ops:stats` рапортовал «карточек без входящих ссылок: 0», а карта «Брошенные» в той
+    же базе перечисляла 26. Обе фразы про одно, числа разные. Правда была третьей:
+    без единой ссылки ОТ КАРТОЧЕК висели 34 из 74.
+
+    Причина — счёт по всем файлам, включая карты содержания. Для веса карточки это
+    верно: попасть в оглавление значит стать достижимым. Но карты заводятся ИМЕННО под
+    брошенных, поэтому для вопроса «кто брошен» счётчик обнуляет сам себя сразу после
+    `kb:moc`, и человек читает «база связна» о базе, треть которой держится на одной
+    автогенерации.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Одинокая.md", "Знание, на которое никто не ссылается.")
+    card(root, "Concepts/Связанная.md", "Знание, на которое ссылается соседняя карточка.")
+    card(root, "Concepts/Ссылающаяся.md", "Опирается на [[Связанная]].")
+    moc = root / "AuroraKnowledgeDB" / "MOC"
+    moc.mkdir(parents=True, exist_ok=True)
+    (moc / "Понятия.md").write_text(
+        '---\ntitle: "Понятия"\ntype: moc\nstatus: index\n---\n\n'
+        "- [[Одинокая]]\n- [[Связанная]]\n- [[Ссылающаяся]]\n", encoding="utf-8")
+
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import inbound_counts
+    kb = str(root / "AuroraKnowledgeDB")
+    with_nav = inbound_counts(kb)
+    assert with_nav.get("Одинокая", 0) > 0, \
+        "карта содержания перестала считаться связностью — вес карточки станет неверным"
+    without = inbound_counts(kb, skip_nav=True)
+    assert without.get("Одинокая", 0) == 0, \
+        why(without) or "брошенная карточка снова «связана» строкой в карте, заведённой под неё"
+    assert without.get("Связанная", 0) == 1, "ссылка от карточки потеряна вместе с картой"
+
+    stats = (SCRIPTS / "aurora_stats.py").read_text(encoding="utf-8")
+    assert "inbound_counts(ROOT, skip_nav=True)" in stats, \
+        "сводка снова считает сирот вместе с картами — метрика всегда будет нулём"
+    assert "карты содержания не в счёт" in stats, \
+        "в отчёте не сказано, что именно посчитано: два числа про «сирот» опять разойдутся"
+
+
+@test
 def test_a_changed_neighbour_puts_the_card_in_the_queue(tmp: Path):
     """Изменили соседа — карточка, ссылающаяся на него, встаёт в очередь на проверку.
 
@@ -13028,6 +13111,52 @@ def test_search_quality_wired_into_engine(tmp: Path):
     skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
     assert "ops:search-quality" in skill, "модель о замере не знает — сама не позовёт"
     assert (SCRIPTS / "kb_search_quality.py").is_file()
+
+
+@test
+def test_common_templates_folder_is_part_of_the_schema(tmp: Path):
+    """Общие шаблоны: папка в схеме, файлы едут в проект, doctor их не считает мусором.
+
+    Папка вне `structure_dirs.txt` — блокер doctor'а («папки верхнего уровня вне схемы
+    движка»), и человек, поставивший обновление, получает ошибку на ровном месте.
+    Правило (seed) в манифесте нужно отдельно: без него правка общего шаблона в ките до
+    заведённых проектов не доезжает никогда, а обычная строка затирала бы доводку.
+    """
+    structure = (KIT / "structure_dirs.txt").read_text(encoding="utf-8")
+    assert "\nTemplatesCommon\n" in structure, \
+        "папки нет в схеме — doctor назовёт её лишней в каждом проекте"
+
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "scaffold/TemplatesCommon => (seed) TemplatesCommon" in man.replace("  ", " "), \
+        "общие шаблоны не едут в проекты обновлением"
+
+    src = (KIT / "scripts/install_aurora.py").read_text(encoding="utf-8")
+    assert 'scaffold/TemplatesCommon", "TemplatesCommon"' in src, \
+        "новый проект родится с пустой папкой общих шаблонов"
+
+    folder = KIT / "scaffold/TemplatesCommon"
+    assert (folder / "README.md").is_file(), \
+        "нет описания папки: модель не узнает, что здесь шаблоны и как их читать"
+    templates = sorted(p for p in folder.glob("*.md") if p.name != "README.md")
+    assert templates, "папка общих шаблонов пуста — брать за основу нечего"
+
+    # Паспорт шаблона: по нему модель выбирает файл под нужный артефакт и версию.
+    # Версия в имени файла — чтобы рядом жили старая и новая: документ, начатый по 1.0,
+    # дописывают по 1.0, даже когда в папке уже 2.0.
+    for t in templates:
+        head = t.read_text(encoding="utf-8").split("---")[1]
+        for field in ("artifact:", "template:", "version:", "file:", "author:", "created:"):
+            assert field in head, f"{t.name}: в паспорте нет поля {field}"
+        version = re.search(r'^version:\s*"?([\d.]+)"?', head, re.M)
+        assert version, f"{t.name}: версия не разобралась"
+        assert t.name.endswith(f"_v{version.group(1)}.md"), \
+            f"{t.name}: версии нет в имени файла — рядом не положить следующую"
+        assert re.search(r"^file:\s*" + re.escape(t.name) + r"\s*(#.*)?$", head, re.M), \
+            f"{t.name}: поле file не совпадает с именем файла"
+
+    # и на свежем проекте папка появляется вместе с содержимым
+    root = make_project(tmp)
+    assert (root / "TemplatesCommon").is_dir(), "папки нет в разложенном проекте"
 
 
 # ------------------------------------------------------------------- smoke-мета-тесты

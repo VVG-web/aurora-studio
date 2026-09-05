@@ -53,7 +53,15 @@ GROUPS = [
     ("Raw/customer", os.path.join("Raw", "customer")),
     ("Raw/contract", os.path.join("Raw", "contract")),
     ("Confluence", os.path.join("Sources", "Confluence")),
-    ("JIRA", os.path.join("Sources", "JIRA")),
+    # Задач Jira здесь НЕТ, и это правило заказчика, а не настройка. Задача — это
+    # работа, а не сущность: карточка из неё выходит пересказом заголовка, а описание у
+    # большинства пустое (на живом проекте 40 задач из 78 дали ноль карточек и только
+    # засорили план вердиктами «пусто»).
+    #
+    # Зеркало Jira при этом остаётся полноправным источником — но не знания, а ДОВЕРИЯ:
+    # `ops:trace-table` связывает задачи с артефактами по кодам, `kb:trust` считает по
+    # их статусам класс доверия карточки. Оба читают зеркало напрямую, минуя план, —
+    # поэтому исключение задач из разбора ничего из этого не ломает.
 ]
 SKIP = ("sync_state.md", "update_log.md", "manifest.json", "_index.md", "index.md")
 
@@ -201,6 +209,11 @@ def sources() -> list:
                     continue
                 if size < 200:            # пустышки и заглушки нечего разбирать
                     continue
+                # Шаблон — форма, а не источник. Разбирать его значит каждый раз
+                # получать вердикт «пусто» и держать его в плане вечно. Его место —
+                # в базе целиком, под картой «Шаблоны» (`kb:moc`), без разбора.
+                if is_template(path):
+                    continue
                 out.append((group, path, size))
     return out
 
@@ -211,6 +224,60 @@ def sources() -> list:
 TERMS_SOURCE = re.compile(
     r"(?i)глоссар|glossary|термин|определени|сокращен|аббревиатур|abbrev|"
     r"обозначени|словар|справочник|definitions|\bspr[-_ ]?\d")
+
+
+# Шаблон — это форма, а не источник. Разбор честно говорил «пусто» и оставлял его в
+# плане навсегда: при каждой пересборке шаблон снова уходил к модели и снова признавался
+# пустым. Признак — слово в имени либо незаполненные плейсхолдеры в теле.
+TEMPLATE_NAME = re.compile(r"(?i)шаблон|template|_tpl\b")
+TEMPLATE_MARK = re.compile(r"\(##\)|yyyy-MM-dd|<[A-ZА-Я_]{3,}>|\bХ{3,}\b|\bXXX+\b")
+
+
+def is_template(path: str, text: str = "") -> bool:
+    """Источник — незаполненная форма, а не знание."""
+    if TEMPLATE_NAME.search(os.path.basename(path)):
+        return True
+    if not text:
+        try:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            return False
+    fm = text[:600]
+    if re.search(r"(?im)^\s*template:\s*(true|yes|да)\s*$", fm):
+        return True
+    return bool(TEMPLATE_MARK.search(text)) and len(text) < 4000
+
+
+# Источник, у которого всё содержание — ссылка на внешний артефакт (схема .drawio,
+# картинка, файл). Знание в нём есть: сущность названа и указано, где она описана.
+ARTIFACT_LINK = re.compile(r"(?i)\.(drawio|vsdx?|png|jpe?g|pdf|xlsx?|docx?|pptx?)\b")
+
+
+def only_artifact_link(text: str) -> str:
+    """Ссылка на внешний артефакт, если больше в источнике ничего нет. → ссылка или пусто."""
+    body = re.sub(r"(?s)^---.*?\n---\n", "", text or "")
+    body = re.sub(r"(?m)^#.*$", "", body).strip()
+    if len(" ".join(body.split())) > 400:
+        return ""
+    m = ARTIFACT_LINK.search(body)
+    return body if m else ""
+
+
+def source_title(path: str, text: str = "") -> str:
+    """Имя источника для карточки: заголовок в тексте, иначе имя файла без кода."""
+    text = text or open(path, encoding="utf-8", errors="ignore").read()
+    fm = re.search(r"(?im)^title:\s*\"?([^\"\n]+)", text[:800])
+    head = re.search(r"(?m)^#\s+(.+)$", re.sub(r"(?s)^---.*?\n---\n", "", text))
+    raw = (fm.group(1) if fm else (head.group(1) if head
+                                   else os.path.basename(path)[:-3])).strip()
+    clean, _codes = split_doc_code(raw.replace("_", " "))
+    return (clean or raw).strip()
+
+
+def card_body_of(text: str) -> str:
+    """Тело источника без frontmatter и без первого заголовка."""
+    body = re.sub(r"(?s)^---.*?\n---\n", "", text or "")
+    return re.sub(r"(?m)^#\s+.*$", "", body, count=1).strip()
 
 
 def is_terminology(path: str) -> bool:
@@ -341,15 +408,40 @@ def sections(text: str) -> list:
         m = HEAD_RE.match(line)
         b = BOLD_RE.match(line) if use_bold else None
         if (m and len(m.group(1)) <= top + 1) or b:
+            # Текст ДО первого заголовка тоже секция. Прежде он молча пропадал: при
+            # первом заголовке `title` ещё пуст, и всё накопленное отбрасывалось. У
+            # страниц, начинающихся с таблицы или врезки, так терялось начало.
             if title:
                 out.append((title, "\n".join(buf).strip()))
+            elif "\n".join(buf).strip():
+                out.append(("Начало документа", "\n".join(buf).strip()))
             title, buf = (m.group(2) if m else b.group(1)), []
         else:
             buf.append(line)
     if title:
         out.append((title, "\n".join(buf).strip()))
-    picked = [(t, b) for t, b in out if len(b) >= MIN_SECTION]
-    if picked:
+    # Короткая секция ПРИСОЕДИНЯЕТСЯ к соседней, а не выбрасывается. Порог заводился,
+    # чтобы не плодить карточки из огрызков, — но он молча терял содержимое: на живом
+    # источнике «Расписание запуска алгоритмов» таблица с алгоритмом, периодичностью и
+    # временем запуска весила 159 знаков при пороге 200, вылетела целиком, и модели
+    # досталась одна оставшаяся секция — ссылка на .drawio. Она честно ответила «только
+    # ссылка, знания нет», источник ушёл из плана вместе с расписанием.
+    #
+    # Присоединяем назад, а первые короткие — вперёд: у секции всегда есть сосед, и
+    # знание остаётся в источнике, откуда его перенесёт скрипт.
+    picked: list = []
+    for t, b in out:
+        if len(b) >= MIN_SECTION or not picked:
+            picked.append([t, b])
+        else:
+            picked[-1][1] = (picked[-1][1] + "\n\n" + (f"**{t}**\n\n" if t else "")
+                             + b).strip()
+    while len(picked) > 1 and len(picked[0][1]) < MIN_SECTION:
+        picked[1][1] = (picked[0][1] + "\n\n**" + picked[1][0] + "**\n\n"
+                        + picked[1][1]).strip()
+        picked.pop(0)
+    picked = [(t, b) for t, b in picked if b.strip()]
+    if picked and sum(len(b) for _t, b in picked) >= MIN_SECTION:
         return picked
 
     # Заголовков внутри нет — и это не «документ без структуры», а документ про одно.

@@ -21,6 +21,7 @@
 import argparse
 import os, re, sys, collections
 
+from aurora_common import looks_like_expansion  # noqa: F401
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
                            card_sources, config_value, clean_meaning, frontmatter,
                            is_service,
@@ -171,28 +172,6 @@ def wrong_expansions(body: str, terms: dict) -> list:
         if seen_here not in {(a, s) for a, s, _k in out}:
             out.append((abbr, seen_here[1], known))
     return out
-
-
-def looks_like_expansion(phrase: str, abbr: str) -> float:
-    """Насколько фраза складывается в аббревиатуру. 1.0 — все буквы легли по порядку.
-
-    Настоящая расшифровка отдаёт свои первые буквы в аббревиатуру: «документ о
-    предстоящей поставке» → Д-О-П-П. Порядок важен, полнота — нет: служебные слова
-    в сокращение попадают не всегда, а падежи и «и» между словами сбивают счёт.
-    Поэтому считаем долю букв аббревиатуры, нашедших своё слово по порядку.
-    """
-    letters = [c.lower() for c in abbr if c.isalpha()]
-    if not letters:
-        return 0.0
-    initials = [w[0].lower() for w in re.findall(r"[^\W\d_]+", phrase, re.UNICODE) if w]
-    i, hit = 0, 0
-    for c in letters:
-        while i < len(initials) and initials[i] != c:
-            i += 1
-        if i < len(initials):
-            hit += 1
-            i += 1
-    return hit / len(letters)
 
 
 def main():

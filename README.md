@@ -125,8 +125,9 @@ git -C /path/to/your-project add -A && git -C /path/to/your-project commit -m "U
 
 Only files in `engine_manifest.txt` are touched (skill, references, scripts, sync-skill
 bodies, AGENTS.md). Config, `AuroraKnowledgeDB/**`, `Raw/`, `Sources/`, `Deliverables/`,
-`Artifacts/`, `Workspaces/` are never modified. Your `Templates/`/`Prompts/` are left as-is;
-changed kit versions land beside them as `*.new` for you to compare. The project's engine
+`Artifacts/`, `Workspaces/` are never modified. Your `Templates/`/`Prompts/` and the
+kit's `TemplatesCommon/` are left as-is; changed kit versions land beside them as `*.new`
+for you to compare. The project's engine
 version is stamped in `AuroraKnowledgeDB/meta/aurora_version.txt`. Version history: [CHANGELOG.md](CHANGELOG.md).
 
 > **Symlinked engines:** if a project symlinks the skill to a shared location (e.g.
@@ -164,7 +165,9 @@ AuroraKnowledgeDB/      # knowledge cards with status = trust level (incl. Quest
 Artifacts/        # AI+analyst products (US, AC, acceptance, reports) — not knowledge
 Deliverables/     # customer-facing docs (work/ + immutable released/)
 Workspaces/       # large-task sandboxes
-Templates/ Prompts/
+Templates/         # your own document templates — the kit never overwrites them
+TemplatesCommon/  # ready-made shared templates from the kit (versioned, updated as *.new)
+Prompts/
 ```
 
 Card statuses: `imported → draft → in-review → verified` (or `deprecated`).

@@ -693,7 +693,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.39";
+const UI_VERSION = "1.100.41";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3538,7 +3538,9 @@ function drawRouteBar(cmd){
   if (!cmd || !ROUTE){ bar.hidden = true; bar.textContent = ""; return; }
   bar.hidden = false;
   bar.innerHTML = "";
-  bar.append(el("span",{}, `шаг ${ROUTE.done} из ${ROUTE.total}`),
+  bar.append(el("span",{}, ROUTE.lap
+      ? `оборот ${ROUTE.lap} · шаг ${ROUTE.inLap} из ${ROUTE.cycleSize}`
+      : `шаг ${ROUTE.done} из ${ROUTE.total}`),
              el("span",{class:"rb-dim"}, " · " + cmd));
 }
 
@@ -3744,7 +3746,12 @@ async function runRoute(sc, write, resume){
     `↻ продолжение маршрута «${sc.title}» — уже сделанное пропускается`));
   else out.innerHTML = "";
   $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
-  ROUTE = {title:sc.title, done:0, total:steps.length, failed:null, lap:0};
+  // `total` считал ВСЕ строки маршрута, а блок цикла повторяется партиями: на третьем
+  // обороте счётчик показывал сорок седьмой шаг из двадцати — число росло, предел стоял,
+  // и понять по нему, сколько осталось, было нельзя. Считаем раздельно: шаги маршрута —
+  // по списку, шаги внутри оборота — своим счётом.
+  ROUTE = {title:sc.title, done:0, total:steps.filter(s=>!s.cycle).length,
+           cycleSize:steps.filter(s=>s.cycle).length || 1, inLap:0, failed:null, lap:0};
   const summary = [];
   let prevEnd = 0;           // конец предыдущего шага — отсюда длительность текущего
   const stepEvents = [];      // каждый шаг: начало, конец, длительность, итоговый код
@@ -3882,16 +3889,19 @@ async function runRoute(sc, write, resume){
       return {rc:0, skipped:true, lines:[]};
     }
     ROUTE.done++;
+    if (ROUTE.lap) ROUTE.inLap = (ROUTE.inLap % ROUTE.cycleSize) + 1;
     drawRouteBar(st.cmd);
     const lap = ROUTE.lap ? ` · оборот ${ROUTE.lap}` : "";
+    const where = ROUTE.lap ? `шаг ${ROUTE.inLap} из ${ROUTE.cycleSize} в обороте`
+                            : `шаг ${ROUTE.done} из ${ROUTE.total}`;
     // Системные часы на входе в шаг: «началось в» — это календарь, а не счётчик,
     // чтобы после прогона сверяться с журналом и другими прогонами.
     const stepStart = Date.now();
-    $("#consoleCmd").textContent = `${sc.title} · шаг ${ROUTE.done} из ${ROUTE.total}${lap}: `
+    $("#consoleCmd").textContent = `${sc.title} · ${where}${lap}: `
       + st.cmd + " " + st.args.join(" ");
     $("#consoleRc").textContent = "выполняется…"; $("#consoleRc").className = "chip";
     out.append(el("div",{class:"ok",style:"margin-top:10px"},
-      `▸ шаг ${ROUTE.done}/${ROUTE.total}${lap} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
+      `▸ ${where}${lap} · ${st.cmd} ${st.args.join(" ")} — ${st.why}`));
     // Длительность прошлого шага — единственный симптом букса на длинном маршруте: один
     // шаг «всегда так шёл», пока не видно, что соседний занял втрое больше обычного.
     out.append(el("div",{class:"dim"},
