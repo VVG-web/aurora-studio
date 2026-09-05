@@ -9803,6 +9803,131 @@ def test_links_and_stubs_respect_separators_and_dots(tmp: Path):
 
 
 @test
+def test_hybrid_search_puts_words_and_meaning_on_one_scale(tmp: Path):
+    """Гибрид складывает слова и смысл, приведя их к одной шкале.
+
+    Он назывался гибридом, а был словами с маленькой добавкой: к счёту по словам, где
+    набираются сотни, прибавлялась премия за близость — не больше тридцати трёх пунктов.
+    Вектора фактически не участвовали. Живой промах: по запросу «разработка и
+    тестирование: КПП» карточка «КПП» не попадала в первую десятку — слова «разработка»
+    и «тестирование» вытягивали чужие карточки, где они встречаются в теле, а короткое
+    имя из трёх букв столько очков набрать не может. Вектора ставили её первой, и это
+    ничего не меняло.
+
+    Замер на живой базе, сорок коротких запросов с именем предмета: чистые вектора
+    довели предмет до списка 39 раз из 40, починенный гибрид — 40 из 40.
+
+    Чистый RRF (сумма `1/(K + место)`) тут замерен и отвергнут: он выбрасывает величину
+    совпадения, и уверенная находка одного способа разбавляется парой середняков,
+    которых оба нашли посредственно. Он терял две карточки из сорока.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import ctx_pack as P
+
+    src = (SCRIPTS / "ctx_pack.py").read_text(encoding="utf-8")
+    fuse = src.split("def fuse")[1].split("\ndef ")[0]
+    assert "w / best" in fuse, "счёт по словам не приведён к доле от своего лучшего"
+    assert "sim / top_sim" in fuse, \
+        "близость нормируется не по своему лучшему — вектора снова будут тише слов"
+    assert "max(was, sem)" in fuse, \
+        "сигналы складываются, а не берётся сильнейший: находка одного способа утонет"
+
+    class Fake:
+        def __init__(self, stem, text):
+            self.stem = self.title = stem
+            self.path = f"AuroraKnowledgeDB/Concepts/{stem}.md"
+            self.text, self.summary, self.aliases, self.tags = text, "", [], ""
+            self.fm = {}
+    cards = {
+        "КПП": Fake("КПП", "код причины постановки на учёт"),
+        "Разработка-отчёта": Fake("Разработка-отчёта",
+                                  "разработка и тестирование отчёта, разработка формы"),
+    }
+    P.measure_rarity(cards)
+    # слова тянут длинную карточку, смысл — короткую: сильнейший сигнал решает
+    got = [c.stem for _w, c in P.fuse(cards, "разработка и тестирование КПП", {"КПП": 0.9})]
+    assert got and got[0] == "КПП", \
+        why(got) or "уверенная находка по смыслу снова тонет под совпадением слов"
+
+    # без индекса выборка обязана работать по одним словам, а не отказывать
+    only_words = [c.stem for _w, c in P.fuse(cards, "разработка отчёта", {})]
+    assert only_words and only_words[0] == "Разработка-отчёта", \
+        why(only_words) or "без семантики гибрид перестал искать словами"
+
+    # ранжирование одно на всех: своя копия разошлась бы с тем, что отвечает человеку
+    for script, why_not in (("agent_runner.py", "подбор кандидатов"),
+                            ("kb_retrieval.py", "отчёт о выдаче"),
+                            ("aurora_mcp.py", "поиск ассистента")):
+        text = (SCRIPTS / script).read_text(encoding="utf-8")
+        assert ".fuse(" in text, f"{why_not} ранжирует сам по себе — разойдётся с «Спросить»"
+
+    # архив и карты в кандидаты не идут: слитая карточка снова предлагалась бы как живая
+    take = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    take = take.split("def _pick")[1].split("\ndef ")[0]
+    assert "_archive" in take and '["MOC"]' in take, "ctx_pack архив не отсеивает, а тут он вреден"
+    assert "is_placeholder" in take, "пустышка в кандидатах — дополнять в ней нечего"
+
+
+@test
+def test_a_task_gives_its_knowledge_to_the_subject_not_to_a_card_of_its_own(tmp: Path):
+    """Задача Jira — это работа, а знание её принадлежит предмету.
+
+    Разбор делал из задачи отдельную карточку: «Разработка таблицы X — задача PRJ-000.
+    В источнике прямо указано: разработка таблицы X». Знания в ней нет, линтер называл её
+    артефактом, и человеку оставалось решать вручную. Но выбрасывать её нельзя: код
+    задачи и ссылка — полезные сведения, по ним считается доверие и строится таблица
+    связей. Место им — в карточке предмета, которая и так о нём накапливает знание.
+
+    Три вещи здесь ломались на живом прогоне, и каждая проверяется ниже.
+    """
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+
+    # 1. Правило разбора: сведения о задаче дописываются в предмет, а не теряются пустым
+    build = src.split("PROMPT_BUILD")[1].split('"""')[1]
+    assert "дописываются в карточку\n  предмета" in build or "дописываются в карточку" in build, \
+        "разбор снова теряет задачу вместо того, чтобы отдать её знание предмету"
+    assert "Пустым" in build and "(`empty`)" in build, \
+        "не сказано, что задача — не пустой источник: привязка к ней потеряется"
+
+    # 2. Имя предмета сначала спрашивается у базы. Модель видит только близкие карточки,
+    #    и предмет, до которого список не дотянулся, объявляет новым: на живом прогоне
+    #    рядом с карточкой «ПериодыСтавки» так появилась «Таблица ПериодыСтавки» — раскол сущности.
+    solve = src.split("def solve_task_card")[1].split("\ndef ")[0]
+    assert "BP.find_card(subject, cwd)" in solve, \
+        "имя предмета не проверяется по базе — сущность расколется надвое"
+    assert "near_named(cwd, cfg, subject, stem)" in solve, \
+        "нет переспроса по пересекающимся именам: «Таблица X» не сойдётся с «X»"
+    assert "fail_why(res)" in solve, \
+        "причина отказа команды снова прячется за «команда не прошла»"
+
+    # 3. Переименование — такая же правка, как перенос: не посчитаешь — не закоммитишь
+    run = src.split("def run_tasks")[1].split("\ndef ")[0]
+    assert '"renamed": renamed' in run, \
+        "переименования не в счёте — записанные имена останутся незафиксированными"
+
+    # слияние возвращает предмету и ИСТОЧНИК задачи, иначе теряется доверие
+    fix = (SCRIPTS / "kb_fix.py").read_text(encoding="utf-8")
+    merge = fix.split("def merge_paths")[1].split("\ndef ")[0]
+    assert "card_sources(drop.text)" in merge, \
+        "источники донора не переезжают — ссылка на задачу теряется, доверие не посчитать"
+    assert "drop.fm.get('source'" not in merge, \
+        "заметка о слиянии читает поле source, выведенное из схемы: напишет «—»"
+
+    # линтер и разбор судят одинаково: карточка, названная по предмету, — не артефакт
+    lint = (SCRIPTS / "kb_lint.py").read_text(encoding="utf-8")
+    assert "WORK_NAME" in lint, \
+        "линтер снова зовёт артефактом любую карточку из задачи, даже названную предметом"
+    sys.path.insert(0, str(SCRIPTS))
+    import kb_lint as L
+    assert L.artifact_kind("Разработка-таблицы-Х", "Разработка таблицы Х",
+                           "Sources/JIRA/PRJ-1.md", "Processes", None), \
+        "карточка, названная работой, перестала считаться артефактом"
+    assert not L.artifact_kind("Таблица-Х", "Таблица Х",
+                               "Sources/JIRA/PRJ-1.md", "Processes", None), \
+        "карточка предмета из задачи всё ещё артефакт — `agent:tasks` не сможет её вылечить"
+
+
+@test
 def test_a_named_concept_the_base_can_explain_gets_a_card(tmp: Path):
     """Понятие, которое база называет словами и умеет расшифровать, получает заготовку.
 
@@ -11489,10 +11614,17 @@ def test_relinking_adds_links_and_proves_the_text_is_untouched(tmp: Path):
         calls["n"] += 1
         return {"ok": True, "backend": 1, "model": "m", "log": [], "text": linked}
 
-    # без кандидатов ход не зовёт модель вовсе: связывать не с чем
-    st = R.relink_card(cfg, str(path), marks_only, apply=True)
+    # Без кандидатов ход не зовёт модель вовсе: связывать не с чем. Проверяем именно
+    # это, а не «нет индекса»: с 1.100.38 выборка гибридная и без индекса ищет словами
+    # — маленькая база вроде этой находит «ФЦОД» и связывается, что и правильно.
+    was = R.candidates_for
+    R.candidates_for = lambda *a, **k: []
+    try:
+        st = R.relink_card(cfg, str(path), marks_only, apply=True)
+    finally:
+        R.candidates_for = was
     assert calls["n"] == 0 and st["status"] == "пропущена", \
-        f"без индекса ход всё равно пошёл к модели: {st}"
+        f"без кандидатов ход всё равно пошёл к модели: {st}"
 
     # с кандидатами — связывает и пишет
     R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", "Подсистема платежей")]
@@ -12132,8 +12264,10 @@ def test_parsing_is_shown_what_the_base_already_has(tmp: Path):
     # «Разработка таблицы X — задача PRJ-000. В источнике прямо указано: разработка
     # таблицы X»: пересказ заголовка, который линтер потом честно зовёт артефактом.
     flat = " ".join(R.PROMPT_BUILD.split())
-    assert "задача о выполнении работы — не знание" in flat, \
+    assert "задача о выполнении работы — не сущность" in flat, \
         "разбор сделает знание из задачи о работе — в базе появятся пересказы заголовков"
+    assert "дописываются в карточку предмета" in flat, \
+        "сведения о задаче теряются: их код и ссылка нужны для доверия и таблицы связей"
     assert "карточку делай про **предмет**" in flat, \
         "не сказано, что делать, когда предмет в задаче описан"
 
@@ -12561,6 +12695,33 @@ def test_terminology_is_parsed_before_what_refers_to_it(tmp: Path):
 
 
 @test
+def test_search_quality_measures_the_search_that_answers(tmp: Path):
+    """Замер качества поиска меряет ту выдачу, которой отвечают человеку.
+
+    Он годами ходил в `kb_embed.search` — чистые вектора. А отвечает «Спросить»
+    гибридной выборкой `ctx_pack`. Датчик стоял не на том пути: показывал качество
+    индекса вместо качества ответа и не увидел поломки в сложении двух сигналов
+    (1.100.38) вовсе — R@1 держался на 0.98, пока вектора в выдаче почти не участвовали.
+
+    Три следствия перехода, каждое проверяется ниже: мерить можно и без индекса; пары
+    больше не отбираются по индексу; навигация и заготовки из выдачи убраны, потому что
+    их отсекает и сам пак — иначе замер назовёт промахом верный ответ.
+    """
+    src = (SCRIPTS / "kb_search_quality.py").read_text(encoding="utf-8")
+    take = src.split("def ranked")[1].split("\ndef ")[0]
+    assert "P.fuse(" in take, \
+        "замер снова ходит мимо той выборки, которой отвечают: он не увидит её поломки"
+    assert 'c.status or "").strip() == "index"' in take and "is_placeholder" in take, \
+        "карта содержания в выдаче замера — промах будет засчитан верному ответу"
+
+    main = src.split("def main")[1]
+    assert "cards_with_thesis().items()" in main, \
+        "пары снова отбираются по векторному индексу — карточка вне него исчезнет из замера"
+    assert "Индекса нет: меряем выдачу по словам" in main, \
+        "без индекса замер отказывается, хотя человеку в этом случае отвечают словами"
+
+
+@test
 def test_search_quality_refuses_instead_of_reporting_zero(tmp: Path):
     """Индекс собран другой моделью — это отказ, а не «R@1 0.0».
 
@@ -12639,18 +12800,20 @@ def test_search_quality_names_everyone_it_counted_as_a_miss(tmp: Path):
     # выдача: своя карточка на 1-м, на 4-м, на 7-м и не найдена вовсе
     plan = {"первая": 1, "четвёртая": 4, "седьмая": 7, "нету": 0}
 
-    def fake_search(question, cfg, model, limit=10):
+    # Подменяем ту выдачу, которой замер и меряет: с 1.100.38 это гибридная выборка,
+    # а не `kb_embed.search`. Подмена мимо неё проверяла бы код, который уже не зовут.
+    def fake_ranked(question, cfg, model, limit=10):
         pos = plan[question]
-        names = [f"чужая-{i}" for i in range(1, limit + 1)]
+        names = [f"чужая-{i}" for i in range(1, Q.TOP + 1)]
         if pos:
             names[pos - 1] = question
         return [(n, round(1.0 - i * 0.01, 4)) for i, n in enumerate(names)]
 
-    old, Q.EMB.search = Q.EMB.search, fake_search
+    old, Q.ranked = Q.ranked, fake_ranked
     try:
         res = Q.measure([(k, k) for k in plan], {}, "m", say=lambda *_: None)
     finally:
-        Q.EMB.search = old
+        Q.ranked = old
 
     assert res["R@1"] == 0.25 and res["R@5"] == 0.5, res
     missed = {name for name, _why in res["не нашлись"]}
@@ -12712,16 +12875,17 @@ def test_golden_question_is_asked_without_its_own_answer(tmp: Path):
     assert set(two) == {"Журнал-начислений", "Хранение-начислений"}, \
         f"вторая карточка строки потеряна — годной считается только одна: {two}"
 
-    # и в замере годится любая из названных
-    def fake_search(question, cfg, model, limit=10):
+    # и в замере годится любая из названных. Подменяем `ranked` — с 1.100.38 замер
+    # ходит в гибридную выборку, а не в `kb_embed.search`.
+    def fake_ranked(question, cfg, model, limit=10):
         return [("Хранение-начислений", 0.9), ("чужая", 0.8)]
 
-    old_s, Q.EMB.search = Q.EMB.search, fake_search
+    old_s, Q.ranked = Q.ranked, fake_ranked
     try:
         res = Q.measure([(two, "где хранится история начислений")], {}, "m",
                         say=lambda *_: None)
     finally:
-        Q.EMB.search = old_s
+        Q.ranked = old_s
     assert res["R@1"] == 1.0, \
         f"вторая годная карточка не засчитана — эталон меряет угадывание имени: {res}"
     assert not res["не нашлись"], res

@@ -48,6 +48,15 @@ ARTIFACT_PATTERNS = [
     (re.compile(r"(?i)^User\s+Story\b", re.U), "User Story"),
 ]
 
+# Имя, называющее РАБОТУ, а не предмет: «Разработка таблицы X», «Тестирование формы Y».
+# Отглагольное существительное в начале — тот же признак, по которому разбор отличает
+# задачу от сущности (`PROMPT_BUILD`). Держим списки в согласии: разойдутся — линтер
+# будет ругать то, что разбор считает правильным.
+WORK_NAME = re.compile(
+    r"(?i)^(?:разработ|тестирован|проработ|настройк|внедрен|доработ|создан|реализац|"
+    r"анализ|подготовк|актуализац|миграц|обновлен|исправлен|уточнен|согласован|"
+    r"проведен|выполнен|организац|форк|перенос|интеграц)\w*\b", re.U)
+
 
 
 
@@ -69,9 +78,14 @@ def artifact_kind(stem: str, title: str, src: str, section: str, jira_re) -> str
     for rx, label in ARTIFACT_PATTERNS:
         if rx.search(stem) or rx.search(title):
             return label
-    if src.startswith("Sources/JIRA/"):
-        return "задача Jira"
     if jira_re and (jira_re.match(stem) or jira_re.match(title)):
+        return "задача Jira"
+    # Источник-задача сам по себе артефактом карточку не делает. Знание о предмете часто
+    # приходит именно из задачи, и карточка предмета, названная по предмету, — законный
+    # житель базы: `agent:tasks` для того и есть, чтобы вернуть знание задачи предмету.
+    # Артефакт — карточка, названная РАБОТОЙ: её имя говорит, что кто-то что-то делает.
+    if src.startswith("Sources/JIRA/") and (WORK_NAME.match(stem.replace("-", " "))
+                                            or WORK_NAME.match(title)):
         return "задача Jira"
     return ""
 

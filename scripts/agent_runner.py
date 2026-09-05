@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:clashes` · `agent:relink` · `agent:make`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:make`
 """
 from __future__ import annotations
 
@@ -1051,6 +1051,252 @@ def report_clashes(res: dict) -> str:
 
 # ------------------------------------------------------------------ задача: двойники
 
+PROMPT_TASKS = """Ты решаешь судьбу карточки, сделанной из задачи Jira.
+
+Задача — это работа, а не предмет. «Разработать таблицу X», «Протестировать форму Y»,
+«Форкнуть репозиторий Z» — сущность здесь X, Y и Z, а не работа над ними. Знание о
+предмете должно лежать в карточке предмета и накапливаться там: сведения о задаче —
+её код, ссылка, что именно по предмету делается — часть этого знания, а не отдельная
+карточка.
+
+КАРТОЧКА:
+
+{card}
+
+{candidates}
+
+Ответь строго одним JSON-объектом.
+
+Предмет уже есть в базе (карточка из списка выше) — знание задачи дописывается в неё:
+
+{{"into": "<имя существующей карточки предмета>", "why": "<одна фраза>"}}
+
+Предмета в базе нет, но эта карточка и есть про него — её надо назвать по предмету:
+
+{{"subject": "<имя предмета: «Таблица X», а не «Разработка таблицы X»>",
+  "why": "<одна фраза>"}}
+
+Карточка говорит не о работе, а о самом предмете, и названа правильно — оставить как есть:
+
+{{"keep": true, "why": "<одна фраза: что в ней за знание>"}}
+
+Правила, они же критерии проверки:
+
+1. `into` только на карточку ИЗ СПИСКА выше, дословно её именем. Имя не из списка —
+   ответ отбрасывается целиком.
+2. Предмет — то, о чём знание, а не то, что с ним делают. Отглагольное существительное
+   в начале имени («Разработка», «Тестирование», «Проработка», «Форк») — верный признак,
+   что названа работа.
+3. Сомневаешься, один ли это предмет с карточкой из списка, — не сливай: отвечай
+   `subject` или `keep`. Слитое по ошибке разъединять придётся руками.
+"""
+
+
+def fail_why(res: dict) -> str:
+    """Почему команда не прошла — словами команды, а не «команда не прошла».
+
+    Отчёт, который прячет причину, стоит человеку целого захода вслепую: на живом
+    прогоне «переименование: команда не прошла» скрывало готовый ответ движка — имя уже
+    занято, и это слияние, а не переименование.
+    """
+    if res.get("refused"):
+        return str(res["refused"])[:200]
+    lines = [l.strip() for l in str(res.get("out") or "").splitlines() if l.strip()]
+    # Команда называет причину своей строкой «kb_fix: …» — берём её, а не хвост отчёта:
+    # хвост это середина таблицы, по которой искать нечего.
+    said = [l for l in lines if ":" in l.split(" ")[0]]
+    return (said[-1] if said else (lines[-1] if lines else "причина не названа"))[:200]
+
+
+def jira_task_cards(cwd: str) -> list:
+    """Карточки-знания, сделанные из задач Jira. Считаем тем же правилом, что линтер.
+
+    Своё правило здесь разошлось бы с линтером: он назвал бы артефактом то, что ход
+    уже разобрал, — и ошибка осталась бы висеть навсегда.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from aurora_common import KB_ROOT, card_sources, config_value, frontmatter, walk_md
+    from kb_lint import artifact_kind
+    root = os.path.join(cwd, KB_ROOT)
+    key = (config_value("project_key") or "").strip()
+    jira_re = re.compile(rf"(?i)^{re.escape(key)}-\d+") if key else None
+    out = []
+    for path in walk_md(root, skip_service=True, skip_archive=True):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        if (fm.get("kind") or "").strip().strip('"') != "knowledge":
+            continue
+        stem = os.path.basename(path)[:-3]
+        section = os.path.relpath(os.path.dirname(path), root).split(os.sep)[0]
+        kind = artifact_kind(stem, (fm.get("title") or stem).strip().strip('"'),
+                             (card_sources(text) or [""])[0], section, jira_re)
+        if kind == "задача Jira":
+            out.append(path)
+    return sorted(out)
+
+
+def near_named(cwd: str, cfg: dict, subject: str, skip: str) -> list:
+    """Карточки, которые могут оказаться тем же предметом. → [(имя, раздел, о чём)].
+
+    Сперва здесь стояло совпадение подстроки: «Таблица X» пересекается с «X». Оно и
+    находит мало, и врёт — «Реестр НДС» пересекается с «НДС», а это разные вещи. Ищем
+    той же гибридной выборкой, что отвечает в «Спросить»: слова ловят имя собственное,
+    вектора — смысл, а решает всё равно модель, глядя на найденное.
+    """
+    rows = hybrid_rank(cwd, subject, 12, skip=skip)
+    if rows:
+        return rows
+    # Индекса нет — остаётся прежнее пересечение имён: хуже, но лучше, чем ничего.
+    from aurora_common import KB_ROOT, fold_hard, walk_md
+    root = os.path.join(cwd, KB_ROOT)
+    want = fold_hard(subject)
+    out = []
+    for p in walk_md(root, skip_service=True, skip_archive=True):
+        name = os.path.basename(p)[:-3]
+        if name == skip:
+            continue
+        f = fold_hard(name)
+        if len(f) >= 4 and (f in want or want in f):
+            out.append((name, os.path.relpath(os.path.dirname(p), root), ""))
+    return out[:12]
+
+
+def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
+                    deadline: float = 0.0) -> dict:
+    """Перенести знание задачи в карточку предмета. → шаг отчёта."""
+    call = call or AG.call_role
+    from aurora_common import card_body, frontmatter
+    stem = os.path.basename(path)[:-3]
+    step = {"card": stem, "status": "оставлена", "into": "", "why": "", "backends": []}
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    body = " ".join(card_body(text).split())[:1200]
+    title = (frontmatter(text).get("title") or stem).strip().strip('"')
+    rows = [r for r in candidates_for(cwd, cfg, f"{title}. {body[:400]}")
+            if r[0] != stem]
+    r = call(cfg, "critic", [{"role": "user", "content": PROMPT_TASKS.format(
+        card=f"### {title}\n\n{body}", candidates=candidates_block(rows))}],
+        deadline=deadline or (time.time() + cfg["request_timeout"]))
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        return step
+    verdict = parse_json(r["text"]) or {}
+    step["why"] = str(verdict.get("why") or "")[:200]
+
+    into = str(verdict.get("into") or "").strip()
+    subject = str(verdict.get("subject") or "").strip()
+    if into:
+        if into not in {n for n, _s, _b in rows}:
+            step.update(status="сбой", why=f"названа карточка не из списка: «{into}»")
+            return step
+        step["into"] = into
+        step["status"] = "перенесено" if apply else "перенёс бы"
+        if apply:
+            res = run_command(cwd, "kb_fix.py", ["--dupes", "--merge", into, stem,
+                                                 "--apply", "--allow-dirty"])
+            if not res["ok"]:
+                step.update(status="сбой", why="перенос: " + fail_why(res))
+        return step
+    if subject:
+        # Имя предмета сначала спрашиваем у базы. Модель видит только список близких
+        # карточек, и предмет, до которого список не дотянулся, она объявляет новым: на
+        # живом прогоне так рядом с карточкой «ПериодыСтавки» появилась «Таблица ПериодыСтавки» —
+        # раскол одной сущности надвое, ровно то, против чего всё устройство. Карточка
+        # под этим именем есть — значит это перенос, а не переименование, и решает это
+        # движок, а не модель.
+        import build_plan as BP
+        hit = BP.find_card(subject, cwd)
+        if not hit:
+            # Имя предмета не нашлось дословно — но модель могла назвать его иначе, чем
+            # база: «Таблица ПериодыСтавки» против карточки «ПериодыСтавки». Пересечение имён — не
+            # доказательство («Реестр НДС» пересекается с «НДС», а это разные вещи»),
+            # поэтому не решаем сами, а переспрашиваем, показав именно эти карточки.
+            near = near_named(cwd, cfg, subject, stem)
+            if near:
+                r2 = call(cfg, "critic", [{"role": "user", "content": PROMPT_TASKS.format(
+                    card=f"### {title}\n\n{body}", candidates=candidates_block(near))}],
+                    deadline=deadline or (time.time() + cfg["request_timeout"]))
+                step["backends"].append(r2.get("backend"))
+                if r2["ok"]:
+                    v2 = parse_json(r2["text"]) or {}
+                    again = str(v2.get("into") or "").strip()
+                    if again in {n for n, _s, _b in near}:
+                        hit = BP.find_card(again, cwd)
+                        step["why"] = (str(v2.get("why") or step["why"]))[:200]
+        if hit and os.path.abspath(hit) != os.path.abspath(path):
+            into = os.path.basename(hit)[:-3]
+            step["into"] = into
+            step["status"] = "перенесено" if apply else "перенёс бы"
+            step["why"] = (step["why"] + " · карточка предмета уже есть — перенос").strip()
+            if apply:
+                res = run_command(cwd, "kb_fix.py", ["--dupes", "--merge", into, stem,
+                                                     "--apply", "--allow-dirty"])
+                if not res["ok"]:
+                    step.update(status="сбой", why="перенос: " + fail_why(res))
+            return step
+        step["into"] = subject
+        step["status"] = "переименована" if apply else "переименовал бы"
+        if apply:
+            res = run_command(cwd, "kb_fix.py", ["--rename", stem, subject,
+                                                 "--apply", "--allow-dirty"])
+            if not res["ok"]:
+                step.update(status="сбой", why="переименование: " + fail_why(res))
+        return step
+    return step
+
+
+def run_tasks(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Пройти по карточкам, сделанным из задач Jira, и вернуть знание предмету."""
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    todo = jira_task_cards(cwd)
+    if limit:
+        todo = todo[:limit]
+    print(f"Карточек из задач: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
+    steps, left = [], 0
+    for i, path in enumerate(todo, 1):
+        if time.time() > budget:
+            left = len(todo) - i + 1
+            steps.append({"card": "—", "status": "стоп", "into": "",
+                          "why": f"бюджет исчерпан, осталось {left}", "backends": []})
+            print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
+            break
+        if not os.path.exists(path):
+            continue          # предыдущий шаг увёл её в архив слиянием
+        st = solve_task_card(cfg, cwd, path, apply, call, deadline=budget)
+        steps.append(st)
+        print(f"  [{i}/{len(todo)}] {st['card']} → {st['status']}"
+              + (f" в «{st['into']}»" if st["into"] else "")
+              + (f" · {st['why']}" if st["why"] else ""), flush=True)
+    moved = sum(1 for st in steps if st["status"] in ("перенесено", "перенёс бы"))
+    # Переименование — такая же правка базы, как перенос. Считать только переносы значит
+    # записать имена и не закоммитить их: следующий прогон упрётся в грязное дерево.
+    renamed = sum(1 for st in steps if st["status"] in ("переименована", "переименовал бы"))
+    return {"steps": steps, "cards": len(todo), "moved": moved, "renamed": renamed,
+            "left": left, "seconds": round(time.time() - started, 1)}
+
+
+def report_tasks(res: dict, apply: bool) -> str:
+    L = [f"# Задачи Jira, осевшие карточками — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Карточек просмотрено: **{res['cards']}** · знание возвращено предмету: "
+         f"**{res['moved']}** · переименовано по предмету: **{res['renamed']}** · "
+         f"{res['seconds']} с", ""]
+    if not apply:
+        L += ["(dry-run) Ничего не записано. Применить: `--apply`.", ""]
+    L += ["Задача — это работа, а не предмет. Её код и ссылка остаются в карточке "
+          "предмета: по ним считается доверие и строится таблица связей.", ""]
+    rows = [st for st in res["steps"] if st["into"]]
+    if rows:
+        L += ["| Карточка | Куда | Почему |", "|---|---|---|"]
+        L += [f"| `{st['card']}` | `{st['into']}` | {st['why']} |" for st in rows[:40]]
+        L.append("")
+    bad = [st for st in res["steps"] if st["status"] in ("сбой", "стоп", "оставлена")]
+    if bad:
+        L += ["## Не перенесено", ""]
+        L += [f"- `{st['card']}` — {st['why'] or st['status']}" for st in bad[:20]]
+    return "\n".join(L)
+
+
 PROMPT_TWINS = """Ты решаешь судьбу карточек, которые говорят об одном и том же.
 
 Движок нашёл группу карточек с сильно совпадающим текстом. Твоя работа — сказать, **одна
@@ -1544,55 +1790,86 @@ CANDIDATES = 12         # сколько существующих карточе
 CAND_SUMMARY = 110      # длина фразы о сути в списке кандидатов
 
 
+# Гибридная выборка — та же, которой отвечает «Спросить» и собирается контекст перед
+# производством: слова с весом по редкости (IDF) плюс добавка от векторов. Своя копия
+# ранжирования разошлась бы с настоящей, поэтому берём ту.
+_HYB: dict = {}          # {корень проекта: (когда собрано, карточки ctx_pack)}
+_HYB_LOCK = threading.Lock()
+HYB_TTL = 120.0          # база меняется по ходу прогона — обзор освежаем
+
+
+def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "") -> list:
+    """[(имя, раздел, о чём)] — карточки, близкие запросу по словам И по смыслу.
+
+    Слова ловят имя собственное, вектора — смысл. Порознь каждый способ промахивается
+    по-своему: вектора не подняли карточку «ПериодыСтавки» по запросу «разработка
+    таблицы ПериодыСтавки», и модель, не увидев её, завела вторую карточку про ту же
+    таблицу.
+
+    Замер на живой базе, сорок коротких запросов с именем предмета: чистые вектора
+    довели предмет до списка 39 раз из 40, гибрид — 40 из 40. До починки шкалы
+    (`ctx_pack.fuse`) гибрид давал те же 39, но терял ДРУГУЮ карточку — это и был
+    признак, что складывались несравнимые величины, а не два взгляда на одно.
+    """
+    import ctx_pack as P
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import aurora_common as AC
+    here = os.getcwd()
+    try:
+        os.chdir(cwd or here)
+        cards = _hyb_cards(cwd or here, P)
+        close = P.semantic(query[:2000], limit * 4)
+        return _pick(P.fuse(cards, query, close), limit, skip, AC)
+    except Exception:                                          # noqa: BLE001
+        return []          # подсказка не обязана работать: без неё разбор идёт как прежде
+    finally:
+        os.chdir(here)
+
+
+def _hyb_cards(root: str, P) -> dict:
+    """Обзор базы для гибридной выборки. Собирается раз на прогон, освежается по TTL."""
+    with _HYB_LOCK:
+        got = _HYB.get(root)
+        if not got or time.time() - got[0] > HYB_TTL:
+            cards = P.load_cards()
+            P.measure_rarity(cards)
+            _HYB[root] = (time.time(), cards)
+            return cards
+        return got[1]
+
+
+def _pick(ranked: list, limit: int, skip: str, AC) -> list:
+    """Отобрать годных в кандидаты: без архива, карт содержания и пустышек."""
+    out = []
+    for weight, c in ranked:
+        if weight <= 0 or len(out) >= limit:
+            break
+        rel = c.path.replace("\\", "/")
+        # Архив и карты содержания — не кандидаты. `ctx_pack` их не отсеивает: паку они
+        # не мешают, а тут слитая карточка снова предлагалась бы как живая.
+        if "/_archive/" in rel or rel.split("/")[1:2] == ["MOC"]:
+            continue
+        if c.stem == skip or AC.is_placeholder(c.fm, c.text):
+            continue          # пустышке дополнять нечего: знания в ней нет
+        section = os.path.relpath(os.path.dirname(c.path), AC.KB_ROOT).split(os.sep)[0]
+        out.append((c.stem, section, (c.summary or "")[:CAND_SUMMARY]))
+    return out
+
+
 def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES) -> list:
     """[(имя, раздел, о чём)] — карточки базы, близкие к теме источника.
 
-    Разбор идёт вслепую: модель видит текст источника и не видит базы. Встретив сущность,
-    про которую карточка уже есть, она заводит вторую — под другим именем, потому что
-    первое занято. На живом проекте так появились двенадцать карточек об одном процессе.
+    Разбор идёт вслепую: модель видит текст источника и не видит базы. Встретив
+    сущность, про которую карточка уже есть, она заводит вторую — под другим именем,
+    потому что первое занято. На живом проекте так появились двенадцать карточек об
+    одном процессе.
 
-    Список кандидатов — это то, чего разбору не хватало, чтобы правило «карточка есть
-    сущность» стало выполнимым: увидев карточку, модель может дополнить её вместо того,
-    чтобы придумывать имя. Ищем семантически: имена в источнике и в базе называются
-    разными словами, и совпадения строк тут не будет.
-
-    Нет индекса или он собран другой моделью — возвращаем пусто и работаем как раньше:
-    кандидаты улучшают разбор, но не являются его условием.
+    Ищем той же гибридной выборкой, что отвечает в «Спросить»: слова ловят имя
+    собственное, вектора — смысл. Нет индекса или сеть недоступна — выборка идёт по
+    одним словам и список всё равно есть: подсказка улучшает разбор, но не является
+    его условием.
     """
-    try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        import kb_embed as EMB
-        import aurora_common as AC
-    except ImportError:
-        return []
-    here = os.getcwd()
-    try:
-        if cwd:
-            os.chdir(cwd)
-        idx = EMB.load_index()
-        model = (cfg.get("embed") or {}).get("model") or ""
-        if not idx.get("cards") or (idx.get("model") and idx["model"] != model):
-            return []
-        hits = EMB.search(query[:2000], cfg, model, limit=limit * 2)
-        out = []
-        for name, _score in hits:
-            path = _card_path(name)
-            if not path:
-                continue
-            text = open(path, encoding="utf-8", errors="ignore").read()
-            fm = AC.frontmatter(text)
-            if AC.is_placeholder(fm, text):
-                continue          # пустышке дополнять нечего: знания в ней нет
-            section = os.path.relpath(os.path.dirname(path), AC.KB_ROOT).split(os.sep)[0]
-            brief = (fm.get("summary") or "").strip().strip('"')[:CAND_SUMMARY]
-            out.append((name, section, brief))
-            if len(out) >= limit:
-                break
-        return out
-    except Exception:                                          # noqa: BLE001
-        return []      # подсказка не обязана работать: без неё разбор идёт как прежде
-    finally:
-        os.chdir(here)
+    return hybrid_rank(cwd, query, limit)
 
 
 # Карта «имя карточки → путь», собранная один раз на обход базы. Без неё поиск пути
@@ -1673,14 +1950,18 @@ PROMPT_BUILD = """Ты разбираешь источник на карточк
   а не про документ, в котором объект описан;
 - секции, которые знанием не являются (оглавление, история изменений, служебные
   таблицы, ссылки «см. рисунок»), просто не включай ни в одну карточку;
-- **задача о выполнении работы — не знание.** «Разработать таблицу X», «Протестировать
-  форму Y», «Форкнуть репозиторий» — это то, что кто-то делает, а не то, как устроен
-  предмет. Карточка из такой задачи выходит пересказом её заголовка: «Разработка таблицы
-  X — задача PRJ-000. В источнике прямо указано: разработка таблицы X». Знания в ней
-  нет, и линтер потом честно назовёт её артефактом в базе знаний. Если во всём источнике
-  только это — верни `empty` с причиной. Если в задаче ЕСТЬ описание предмета (как
-  устроена таблица, какие поля, откуда данные) — карточку делай про **предмет**, а не
-  про задачу: «Таблица X» вместо «Разработка таблицы X»;
+- **задача о выполнении работы — не сущность, но и не мусор.** «Разработать таблицу X»,
+  «Протестировать форму Y», «Форкнуть репозиторий Z» — сущность здесь X, Y и Z, а не
+  работа над ними. Отдельной карточкой такая задача выходит пересказом заголовка:
+  «Разработка таблицы X — задача PRJ-000. В источнике прямо указано: разработка таблицы
+  X». Знания в ней нет, и линтер честно назовёт её артефактом в базе знаний.
+  Но сведения о задаче — её код, ссылка, что по предмету делается — полезны: по ним
+  считается доверие и строится таблица связей. Поэтому они **дописываются в карточку
+  предмета**: `into` с её именем, если предмет есть в списке выше. Предмета в базе нет —
+  карточку делай про **предмет**: «Таблица X», а не «Разработка таблицы X»; если в задаче
+  есть и описание предмета (как устроена таблица, какие поля, откуда данные), оно ложится
+  в ту же карточку. Пустым (`empty`) такой источник не считается: терять привязку к
+  задаче нельзя;
 - раздел базы выбирай по существу: Concepts — понятия и правила, Processes — этапы
   и процедуры, Glossary — термины, Systems — системы и интеграции, Roles — роли,
   Statuses — статусы и их переходы, Reference — справочники и таблицы значений,
@@ -4119,11 +4400,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
-                             "twins", "clashes", "relink", "make"],
+                             "twins", "tasks", "clashes", "relink", "make"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
                          "воркер, критик, Момус; "
+                         "tasks — вернуть предмету знание задач Jira, осевших "
+                         "отдельными карточками; "
                          "ask — ответить на вопрос по базе (ничего не пишет)")
     ap.add_argument("--question", metavar="ТЕКСТ", default="",
                     help="вопрос к базе своими словами (для --task ask)")
@@ -4323,6 +4606,9 @@ def main() -> int:
     elif a.task == "twins":
         res = run_twins(cfg, cwd, a.apply, a.limit)
         text = report_twins(res, a.apply)
+    elif a.task == "tasks":
+        res = run_tasks(cfg, cwd, a.apply, a.limit)
+        text = report_tasks(res, a.apply)
     elif a.task == "clashes":
         res = run_clashes(cfg, cwd, a.limit)
         text = report_clashes(res)
@@ -4404,6 +4690,14 @@ def main() -> int:
         return 0
     if a.task == "clashes":
         return 0          # находки — не провал: их разбирает человек
+    if a.task == "tasks":
+        if a.apply and (res["moved"] or res["renamed"]):
+            done = commit_result(cwd, "agent:tasks",
+                                 f"знание задач возвращено предмету: {res['moved']}, "
+                                 f"переименовано: {res['renamed']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 0
     if a.task == "twins":
         if a.apply and res["merged"]:
             done = commit_result(cwd, "agent:twins", f"слито групп: {res['merged']}",

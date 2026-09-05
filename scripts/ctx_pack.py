@@ -309,6 +309,61 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
     return int(s)
 
 
+# Насколько близость по смыслу считается совпадением. Ниже — случайность.
+SEM_FLOOR = 0.35
+# Премия за согласие двух способов: они сошлись — карточка вернее, но премия мала,
+# иначе находка одного способа снова тонула бы под парами середняков.
+AGREE = 0.15
+
+
+def fuse(cards: dict, topic: str, close: dict | None = None) -> list:
+    """[(вес, карточка)] — слова и смысл, приведённые к одной шкале.
+
+    Гибрид складывал очки: к словам добавлялась премия за близость, не больше тридцати
+    трёх пунктов, при том что слова набирают сотни. Премия тонула, и вектора фактически
+    не участвовали. Живой промах: по запросу «разработка и тестирование: КПП» карточка
+    «КПП» не попадала в первую десятку — слова «разработка» и «тестирование» вытягивали
+    чужие карточки, где они встречаются в теле, а короткое имя из трёх букв столько
+    очков набрать не может. Вектора ставили её первой, и это ничего не меняло.
+
+    Складывать очки двух разных счётов нельзя: они несравнимы. Приводим КАЖДЫЙ к доле от
+    своего лучшего — тогда «первый по словам» и «первый по смыслу» весят одинаково — и
+    берём СИЛЬНЕЙШИЙ сигнал, а за согласие даём небольшую премию. Так карточка, которую
+    уверенно нашёл один способ, доходит до списка, даже если второй её не увидел вовсе.
+
+    Чистый RRF (сумма `1/(K + место)`) здесь замерен и отвергнут: он выбрасывает
+    величину совпадения, и карточка, уверенно найденная одним способом, разбавляется
+    парой середняков, которых оба нашли посредственно. На пробе из сорока запросов он
+    терял две карточки из сорока, эта шкала — ни одной.
+    """
+    lex = {}
+    best = 0
+    for c in cards.values():
+        w = score(c, topic)
+        if w > 0:
+            lex[c.stem] = w
+            best = max(best, w)
+    got, at = {}, {}
+    for name, w in lex.items():
+        got[name] = w / best if best else 0.0
+        at[name] = cards[name]
+    # Близость нормируется по СВОЕМУ лучшему, а не по абсолютному порогу: косинусные
+    # значения лежат в узкой полосе, и «первый по смыслу» с близостью 0.42 получал бы
+    # десятую долю там, где «первый по словам» получает единицу. Так вектора снова
+    # оказывались тише слов — ровно та болезнь, которую чиним.
+    top_sim = max((v for v in (close or {}).values() if v > SEM_FLOOR), default=0.0)
+    for name, sim in (close or {}).items():
+        card = cards.get(name)
+        if card is None or sim <= SEM_FLOOR or not top_sim:
+            continue
+        sem = sim / top_sim
+        was = got.get(name, 0.0)
+        got[name] = max(was, sem) + AGREE * min(was, sem)
+        at[name] = card
+    return sorted(((w, at[n]) for n, w in got.items()),
+                  key=lambda x: (-x[0], x[1].stem))
+
+
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             release: str, max_cards: int, close: dict | None = None) -> tuple:
     """Seed по теме → один переход по ссылкам. Возвращает (карточки, исключено по релизу)."""
@@ -321,8 +376,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")
 
-    ranked = ((score(c, topic, close), c) for c in cards.values())
-    seeds = sorted(((s, c) for s, c in ranked if s > 0), key=lambda x: (-x[0], x[1].stem))
+    seeds = fuse(cards, topic, close)
     chosen, seen, dropped = [], set(), []
     for _, c in seeds:
         if len(chosen) >= max_cards:
