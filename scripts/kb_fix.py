@@ -337,6 +337,55 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
     return renamed, stuck
 
 
+def plan_rename(cards: dict, plan: "Plan", old: str, new: str) -> tuple:
+    """Переименовать карточку: {old} → {new}. → (что вышло, почему не вышло).
+
+    Примитива «назвать карточку иначе» в ките не было: имя правил только `--names`, и
+    только по своему правилу — снять код документа. А переименовать нужно и по смыслу:
+    карточка «Разработка таблицы X» говорит о таблице X, а не о работе над ней, и место
+    ей под именем предмета.
+
+    Прежнее имя уезжает в синонимы — ровно как при снятии кода. Ни одна входящая ссылка
+    не ломается: по синониму карточка находится, и переписывать чужие тела не нужно.
+    """
+    from build_plan import card_filename          # noqa: F401  (тот же счёт имени файла)
+    hit = None
+    for path, card in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel:
+            continue
+        stem = os.path.splitext(os.path.basename(rel))[0]
+        title = (card.fm.get("title") or stem).strip().strip('"')
+        if fold_hard(stem) == fold_hard(old) or fold_hard(title) == fold_hard(old):
+            hit = (rel, card, stem, title)
+            break
+    if not hit:
+        return "", f"карточки «{old}» в базе нет"
+    rel, card, stem, title = hit
+    new_stem = normalize_title(new)
+    if not new_stem:
+        return "", f"имя «{new}» после нормализации пустое"
+    new_rel = os.path.join(os.path.dirname(rel), new_stem + ".md").replace("\\", "/")
+    if new_rel != rel and (new_rel in cards or os.path.exists(new_rel)):
+        return "", f"имя «{new_stem}» уже занято — это слияние, а не переименование"
+    head = card.text[:card.fm_end] if card.has_frontmatter else ""
+    if not head:
+        return "", "нет шапки — синонимы записать некуда"
+    keep = [c for c in (title, stem) if c and c not in card.aliases and fold_hard(c) != fold_hard(new)]
+    lines = "\n".join(f'  - "{c}"' for c in dict.fromkeys(list(card.aliases) + keep))
+    new_head = set_field(head[3:], "title", f'"{new}"')
+    new_head = re.sub(r"^aliases:.*(?:\n  - .*)*", "aliases:\n" + lines,
+                      new_head, count=1, flags=re.M)
+    if "aliases:" not in new_head:
+        new_head = new_head.rstrip("\n") + "\naliases:\n" + lines
+    rest = card.text[card.fm_end:]
+    rest = re.sub(r"^(#\s+).*$", lambda m: m.group(1) + new, rest, count=1, flags=re.M)
+    plan.write(rel, "---" + new_head + rest)
+    if new_rel != rel:
+        plan.renames.append((rel, new_rel))
+    return f"{rel} → {new_stem}.md", ""
+
+
 def plan_sections(cards: dict, plan: "Plan") -> tuple:
     """Развезти карточки по разделам, которые отвечают их типу. → (перенесено, спорных)."""
     moved, stuck = [], []
@@ -1109,11 +1158,27 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
     text = keep.text
     for a in [drop.stem] + drop.aliases:
         text = add_alias(Card(kpath, text), a)
+    # Источники донора переезжают в список выжившей. Раньше заметка о слиянии читала
+    # поле `source:`, выведенное из схемы ещё в 1.100.35, и писала «—»: на живой базе
+    # так потерялись ссылки на задачи Jira — а по ним считается доверие и строится
+    # таблица связей. Карточка — сущность: она накапливает источники, а не заменяет их.
+    from aurora_common import card_sources, sources_block
+    donor = card_sources(drop.text)
+    both = card_sources(text) + donor
+    if donor:
+        head, rest = (text[:keep.fm_end], text[keep.fm_end:]) if keep.has_frontmatter else ("", text)
+        if head:
+            new_block = sources_block(both).rstrip("\n")
+            if re.search(r"^sources:.*(?:\n  - .*)*", head, re.M):
+                head = re.sub(r"^sources:.*(?:\n  - .*)*", new_block, head, count=1, flags=re.M)
+            else:
+                head = head.rstrip("\n") + "\n" + new_block + "\n"
+            text = head + rest
     merged_body = drop.body().strip()
     if merged_body:
         text = text.rstrip("\n") + (
             f"\n\n## Слияние\n\n_Присоединено из [[{drop.stem}]] "
-            f"({TODAY}); источник карточки-донора: {drop.fm.get('source', '—')}._\n\n"
+            f"({TODAY}); источник карточки-донора: {', '.join(donor) or '—'}._\n\n"
             + merged_body + "\n")
     plan.write(kpath, text)
 
@@ -1210,6 +1275,9 @@ def main() -> int:
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
+    ap.add_argument("--rename", nargs=2, metavar=("СТАРОЕ", "НОВОЕ"),
+                    help="назвать карточку иначе: прежнее имя уходит в синонимы, "
+                         "входящие ссылки продолжают работать")
     ap.add_argument("--terms", action="store_true",
                     help="завести заготовки под понятия, названные в базе словами: "
                          "расшифровка берётся из словаря проекта, выдуманных нет")
@@ -1259,7 +1327,8 @@ def main() -> int:
         return 1
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.terms, a.merge, a.merge_all, a.set_alias, a.sections, a.names)):
+                a.stubs, a.terms, a.rename, a.merge, a.merge_all, a.set_alias, a.sections,
+                a.names)):
         ap.print_help()
         return 0
 
@@ -1344,6 +1413,12 @@ def main() -> int:
                 head.append(f"- {section}/{name}.md — ждут {refs} ссылок")
             if len(created) > 15:
                 head.append(f"- … ещё {len(created) - 15}")
+        if a.rename:
+            done, why = plan_rename(cards, plan, a.rename[0], a.rename[1])
+            if why:
+                print(f"kb_fix: переименование не сделано — {why}", file=sys.stderr)
+                return None, None, 1
+            head.append(f"## Переименование: {done}")
         if a.terms:
             made = plan_term_stubs(cards, idx, plan, a.root)
             head.append(f"## Заготовки под понятия словаря: {len(made)} новых карточек")

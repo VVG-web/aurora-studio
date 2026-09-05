@@ -163,8 +163,7 @@ def search(project: str, query: str, limit: int) -> str:
         importlib.reload(C)
         cards = C.load_cards()
         close = C.semantic(query, limit * 2)
-        ranked = sorted(((C.score(c, query, close), c) for c in cards.values()),
-                        key=lambda x: (-x[0], x[1].stem))
+        ranked = C.fuse(cards, query, close)
         rows = []
         for s, c in ranked[:limit]:
             if s <= 0:

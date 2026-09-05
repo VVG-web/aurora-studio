@@ -73,11 +73,10 @@ def rank(root: str, topic: str, semantic: bool) -> list:
         cards = P.load_cards()
         P.measure_rarity(cards)
         close = P.semantic(topic, TOP * 4) if semantic else {}
-        scored = sorted(((P.score(c, topic, close), c.stem) for c in cards.values()),
-                        key=lambda x: (-x[0], x[1]))
+        scored = P.fuse(cards, topic, close)
     finally:
         os.chdir(cwd)
-    return [(stem, s) for s, stem in scored[:TOP] if s > 0]
+    return [(c.stem, round(w, 4)) for w, c in scored[:TOP] if w > 0]
 
 
 def main() -> int:
