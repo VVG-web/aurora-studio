@@ -51,7 +51,11 @@ VECTORS = os.path.join(META, "embeddings.bin")
 INDEX = os.path.join(META, "embeddings.json")
 TODAY = date.today().isoformat()
 BATCH = 32                 # столько текстов за один запрос: шлюз отвечает ~секунду
-PIECE = 1500               # символов карточки в вектор: дальше идёт хвост, а не суть
+PIECE = 1500               # символов в одном куске карточки
+PIECE_OVERLAP = 200        # нахлёст: мысль, разрезанная границей, найдётся хотя бы раз
+MAX_PIECES = 8             # потолок кусков на карточку: свалка не должна съедать индекс
+PIECE_SEP = "¶"            # «Карточка¶2» — второй кусок; в именах карточек знака нет
+TAIL_DISCOUNT = 0.90       # скидка хвостовому куску: у длинной карточки иначе больше бросков
 
 BIN_MAGIC = b"AVEM"        # заголовок embeddings.bin v2: вектора + предфильтр
 BIN_VER = 2
@@ -84,8 +88,37 @@ def card_texts(root: str = KB_ROOT) -> dict:
                 (fm.get("summary") or "").strip('"'),
                 (fm.get("aliases") or "").strip("[]"),
             ) if x)
-            out[f[:-3]] = (head + "\n" + body(text))[:PIECE]
+            whole = body(text)
+            for i, part in enumerate(pieces(whole)):
+                # Ключ индекса — КУСОК карточки, а не карточка. Так вся длинная карточка
+                # оказывается в индексе, а не первые полторы тысячи знаков: на живой базе
+                # 56% карточек длиннее куска, а девятый дециль — впятеро длиннее, то есть
+                # больше половины базы искалось по началу и молчало об остальном.
+                #
+                # Заголовок и синонимы приписываются к КАЖДОМУ куску: иначе второй кусок
+                # теряет, о чём он вообще, и находится как безымянный абзац.
+                out[f[:-3] if i == 0 else f"{f[:-3]}{PIECE_SEP}{i}"] = \
+                    (head + "\n" + part)[:PIECE]
     return out
+
+
+def piece_owner(key: str) -> str:
+    """Имя карточки по ключу индекса: «Карточка¶2» → «Карточка»."""
+    return key.split(PIECE_SEP, 1)[0]
+
+
+def pieces(text: str) -> list:
+    """Тело карточки кусками с нахлёстом. Один кусок — карточка короче окна.
+
+    Нахлёст нужен, чтобы мысль, разрезанная границей, всё-таки нашлась целиком хотя бы
+    в одном куске. Число кусков ограничено: карточка на двести тысяч знаков — это не
+    сущность, а свалка, и заводить под неё полсотни векторов значит платить за чужую
+    ошибку разбором всей базы.
+    """
+    text = text or ""
+    step = max(1, PIECE - PIECE_OVERLAP)
+    out = [text[i:i + PIECE] for i in range(0, max(1, len(text)), step)]
+    return [p for p in out[:MAX_PIECES] if p.strip()] or [""]
 
 
 def digest(text: str) -> str:
@@ -376,6 +409,33 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
         return []
     qv = q[0]
     n = len(cards)
+    # Внутри ищем по кускам, наружу отдаём карточки: у длинной карточки кусков несколько,
+    # и близость её — лучшая из них. Просить у машины ровно `limit` кусков нельзя — они
+    # могут оказаться кусками одной карточки; берём с запасом и режем после склейки.
+    #
+    # Запас берём ТОЛЬКО когда в индексе есть куски. Индекс без них (собран до 1.100.39)
+    # ведёт себя ровно как прежде: лишний запас там ничего не находит, зато обесценивает
+    # предфильтр — он перестаёт сужать, и поиск скатывается в полный перебор.
+    want = min(n, max(limit * 3, limit + 8)) if any(
+        PIECE_SEP in k for k in cards) else limit
+
+    def by_card(scored: list) -> list:
+        """[(кусок, близость)] → [(карточка, лучшая близость)], без повторов.
+
+        Хвостовому куску — скидка. Без неё у длинной карточки просто больше попыток
+        совпасть случайно: восемь кусков — восемь бросков против одного у короткой, и
+        выдача кренится в сторону длинных. Голова карточки (заголовок, синонимы, начало
+        тела) отвечает за то, о чём карточка вообще, поэтому она без скидки.
+        """
+        best: dict = {}
+        for value, key in scored:
+            owner = piece_owner(key)
+            if key != owner:
+                value *= TAIL_DISCOUNT
+            if value > best.get(owner, -2.0):
+                best[owner] = value
+        rows = sorted(((v, nm) for nm, v in best.items()), reverse=True)
+        return [(nm, round(v, 4)) for v, nm in rows[:limit]]
 
     def full_scan() -> list:
         scored = []
@@ -383,10 +443,10 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
             off = rec["row"] * dim
             scored.append((sum(qv[k] * vectors[off + k] for k in range(dim)), name))
         scored.sort(reverse=True)
-        return [(nm, round(s, 4)) for s, nm in scored[:limit]]
+        return by_card(scored)
 
     pf = load_prefilter(dim, n) if idx.get("pf") else None
-    if pf is None or limit >= n:
+    if pf is None or want >= n:
         LAST_SEARCH.update(prefilter=False, candidates=n, total=n)
         return full_scan()
     k, axes, per_row = pf
@@ -402,8 +462,8 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
         upper.append(p + m)
         names.append(name)
     order = sorted(range(n), key=lower.__getitem__, reverse=True)
-    cands = [names[i] for i in order[:limit]]
-    rest = sorted(((upper[i], names[i]) for i in order[limit:]), reverse=True)
+    cands = [names[i] for i in order[:want]]
+    rest = sorted(((upper[i], names[i]) for i in order[want:]), reverse=True)
     exact = {}
 
     def exact_of(name: str) -> float:
@@ -417,7 +477,7 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
     pos, rounds = 0, 0
     while len(cands) < n:
         rounds += 1
-        thr = sorted((exact_of(nm) for nm in cands), reverse=True)[limit - 1]
+        thr = sorted((exact_of(nm) for nm in cands), reverse=True)[want - 1]
         grew = 0
         while pos < len(rest) and rest[pos][0] >= thr:
             cands.append(rest[pos][1])
@@ -430,7 +490,7 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
             break
     scored = sorted(((exact_of(nm), nm) for nm in cands), reverse=True)
     LAST_SEARCH.update(prefilter=True, candidates=len(exact), total=n)
-    return [(nm, round(s, 4)) for s, nm in scored[:limit]]
+    return by_card(scored)
 
 
 def main() -> int:
@@ -454,8 +514,10 @@ def main() -> int:
 
     print(f"# Семантический индекс — {TODAY}\n")
     where = cfg["embed"]["url"] or (cfg["backends"][0]["url"] if cfg["backends"] else "—")
-    print(f"Карточек в базе: {len(texts)} · в индексе: {len(idx['cards'])} "
-          f"· модель: {idx.get('model') or '—'}")
+    owners = {piece_owner(k) for k in texts}
+    in_idx = {piece_owner(k) for k in idx["cards"]}
+    print(f"Карточек в базе: {len(owners)} (кусков {len(texts)}) · в индексе: "
+          f"{len(in_idx)} (кусков {len(idx['cards'])}) · модель: {idx.get('model') or '—'}")
     print(f"Считает: {model} на {where}"
           + ("" if cfg["embed"]["url"] else " (кольцо агента — своего адреса не задано)"))
     print(f"Пересчитать: {len(stale)} · выбыло: {len(gone)}")
@@ -512,7 +574,8 @@ def main() -> int:
     if not pays:
         pf = None
     save_index(model, dim, cards, out, pf)
-    print(f"\n✅ Индекс собран: карточек {len(cards)}, размерность {dim}, модель {model}"
+    print(f"\n✅ Индекс собран: карточек {len({piece_owner(k) for k in cards})} "
+          f"(кусков {len(cards)}), размерность {dim}, модель {model}"
           + (f" · предфильтр {len(pf[0])} осей ({why})" if pf
              else f" · предфильтр не пригодился: {why}") + ".")
     print(f"   Файлы: {VECTORS} и {INDEX} (в git не идут — это производная).")

@@ -64,6 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
+from aurora_common import QUOTES  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
@@ -772,7 +773,9 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
     title = (fm.get("title") or step["card"]).strip().strip('"')
-    near = candidates_for(root, cfg, title + "\n" + thesis, limit=CANDIDATES)
+    # Заготовки в цели ссылок не берём: пустая карточка не должна обещать содержание.
+    # Разбору они, наоборот, нужны — туда знание и кладут (`_pick`).
+    near = candidates_for(root, cfg, title + "\n" + thesis, limit=CANDIDATES, stubs=False)
     near = [c for c in near if c[0] != step["card"]]
     if not near:
         step["note"] = "не с чем связывать"
@@ -937,6 +940,46 @@ PROMPT_CLASH = """Ты ищешь ПРОТИВОРЕЧИЯ между карто
               "a": "<дословная цитата из А>", "b": "<дословная цитата из Б>"}}]}}"""
 
 
+def neighbours_behind(cwd: str) -> list:
+    """[[имя карточки, имя соседа]] — карточка ссылается на соседа, а сосед изменился позже.
+
+    Знание в базе связано, а отметки были привязаны только к самой карточке: `relinked` и
+    `extracted` держат дату её собственного тезиса, `ops:gaps` сравнивает карточку с её
+    файлом-источником. Соседей не проверял никто. Поправили главную карточку — пять
+    ссылающихся на неё продолжают говорить прежнее, и расхождение всплывает у человека,
+    а не у движка.
+
+    Считается арифметикой по датам из шапок: `distilled` карточки против `updated`
+    соседа, на которого она ссылается. Ни одного обращения к модели — это очередь, а не
+    разбор; разбирает её `agent:clashes`, который умеет цитировать обе стороны.
+    """
+    from aurora_common import (KB_ROOT, frontmatter, is_placeholder, leaf_name,
+                               link_refs, walk_md)
+    root = os.path.join(cwd, KB_ROOT)
+    when, links = {}, {}
+    for path in walk_md(root, skip_service=True, skip_archive=True):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        fm = frontmatter(text)
+        stem = os.path.basename(path)[:-3]
+        if is_placeholder(fm, text):
+            continue          # у заготовки менять нечего: знания в ней нет
+        when[stem] = ((fm.get("updated") or "").strip().strip('"'),
+                      (fm.get("distilled") or "").strip().strip('"'))
+        links[stem] = {leaf_name(l.split("#")[0].strip()) for l in link_refs(text)}
+    out = []
+    for stem, refs in sorted(links.items()):
+        mine = when.get(stem, ("", ""))[1]
+        if not mine:
+            continue          # тезиса нет — сравнивать нечего
+        for other in sorted(refs):
+            if other == stem or other not in when:
+                continue
+            theirs = when[other][0]
+            if theirs and theirs > mine:
+                out.append([stem, other])
+    return out
+
+
 def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
     """[[имена карточек]] — группы, говорящие об одном. Считает `kb_twins`, порог мягче.
 
@@ -1009,9 +1052,16 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
     """Пройти по группам карточек об одном и найти противоречия. → сводка."""
     started = time.time()
     budget = started + cfg["budget_min"] * 60
-    groups = clash_groups(cwd, cfg, limit)
-    print(f"Групп об одном предмете: {len(groups)} · бюджет {cfg['budget_min']} мин",
-          flush=True)
+    # Пары «карточка и её изменившийся сосед» идут ПЕРВЫМИ: это адресный вопрос, где
+    # расхождение уже вероятно, а групп по совпадению текста в базе тысячи, и до соседей
+    # прогон доходил бы через раз. Дубликаты между двумя источниками пар отсеиваем.
+    behind = neighbours_behind(cwd)
+    groups = behind + [g for g in clash_groups(cwd, cfg, limit)
+                       if sorted(g) not in [sorted(b) for b in behind]]
+    if limit:
+        groups = groups[:limit]
+    print(f"Пар «сосед изменился»: {len(behind)} · всего групп: {len(groups)} · "
+          f"бюджет {cfg['budget_min']} мин", flush=True)
     steps = []
     for i, g in enumerate(groups, 1):
         if time.time() > budget:
@@ -1798,7 +1848,8 @@ _HYB_LOCK = threading.Lock()
 HYB_TTL = 120.0          # база меняется по ходу прогона — обзор освежаем
 
 
-def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "") -> list:
+def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "",
+                stubs: bool = True) -> list:
     """[(имя, раздел, о чём)] — карточки, близкие запросу по словам И по смыслу.
 
     Слова ловят имя собственное, вектора — смысл. Порознь каждый способ промахивается
@@ -1818,8 +1869,8 @@ def hybrid_rank(cwd: str, query: str, limit: int, skip: str = "") -> list:
     try:
         os.chdir(cwd or here)
         cards = _hyb_cards(cwd or here, P)
-        close = P.semantic(query[:2000], limit * 4)
-        return _pick(P.fuse(cards, query, close), limit, skip, AC)
+        return _pick(P.fuse(cards, query[:2000], limit=limit * 4),
+                     limit, skip, AC, stubs)
     except Exception:                                          # noqa: BLE001
         return []          # подсказка не обязана работать: без неё разбор идёт как прежде
     finally:
@@ -1838,8 +1889,19 @@ def _hyb_cards(root: str, P) -> dict:
         return got[1]
 
 
-def _pick(ranked: list, limit: int, skip: str, AC) -> list:
-    """Отобрать годных в кандидаты: без архива, карт содержания и пустышек."""
+def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
+    """Отобрать годных в кандидаты. → [(имя, раздел, о чём)].
+
+    Заготовки здесь НУЖНЫ, хотя из ответа человеку они исключены. Это разные вопросы:
+    «что показать в ответе» и «куда положить новое знание». Заготовка — имя, которое
+    база уже застолбила, и на неё уже показывают ссылки; знание о том же предмете обязано
+    лечь в неё, а не завести второе имя. Пока их отсюда выбрасывали, разбор заготовок не
+    видел и заводил рядом новую карточку — а заготовка оставалась пустой навсегда, и
+    ссылки на неё вели в никуда.
+
+    В строке кандидата заготовка помечена: модель должна понимать, что содержания там
+    нет, и решать по имени и по тем, кто на неё ссылается.
+    """
     out = []
     for weight, c in ranked:
         if weight <= 0 or len(out) >= limit:
@@ -1849,14 +1911,25 @@ def _pick(ranked: list, limit: int, skip: str, AC) -> list:
         # не мешают, а тут слитая карточка снова предлагалась бы как живая.
         if "/_archive/" in rel or rel.split("/")[1:2] == ["MOC"]:
             continue
-        if c.stem == skip or AC.is_placeholder(c.fm, c.text):
-            continue          # пустышке дополнять нечего: знания в ней нет
+        if c.stem == skip:
+            continue
+        stub = AC.is_placeholder(c.fm, c.text)
+        if stub and not stubs:
+            continue
         section = os.path.relpath(os.path.dirname(c.path), AC.KB_ROOT).split(os.sep)[0]
-        out.append((c.stem, section, (c.summary or "")[:CAND_SUMMARY]))
+        brief = (c.summary or "")[:CAND_SUMMARY]
+        if stub:
+            # Кто на неё ссылается — единственное, по чему видно, в каком смысле имя
+            # застолбили. По ним модель и решает, то же это понятие или соседнее.
+            refs = [m for m in AC.link_refs(c.text)][:6]
+            brief = ("ЗАГОТОВКА: имя занято, знания нет"
+                     + (" · ссылаются: " + ", ".join(refs) if refs else ""))
+        out.append((c.stem, section, brief))
     return out
 
 
-def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES) -> list:
+def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES,
+                   stubs: bool = True) -> list:
     """[(имя, раздел, о чём)] — карточки базы, близкие к теме источника.
 
     Разбор идёт вслепую: модель видит текст источника и не видит базы. Встретив
@@ -1869,7 +1942,7 @@ def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES) -> 
     одним словам и список всё равно есть: подсказка улучшает разбор, но не является
     его условием.
     """
-    return hybrid_rank(cwd, query, limit)
+    return hybrid_rank(cwd, query, limit, stubs=stubs)
 
 
 # Карта «имя карточки → путь», собранная один раз на обход базы. Без неё поиск пути
@@ -1909,6 +1982,13 @@ def candidates_block(rows: list) -> str:
         "«Профиль абонента» и «Профиль абонента при расторжении договора»: второе имя",
         "описывает тот же объект в частном случае, и знание о нём принадлежит первой",
         "карточке.",
+        "",
+        "Карточка, помеченная ЗАГОТОВКА, — это имя, которое база уже застолбила: на него",
+        "ссылаются, а содержания в нём нет. Если твоя секция про ЭТО понятие, верни `into`",
+        "с её именем — знание ляжет туда, куда уже ведут ссылки, и переписывать их не",
+        "придётся. Проверить помогает список «ссылаются»: посмотри, в каком смысле имя",
+        "упомянуто у них. Смысл другой — заводи свою карточку («Уплата НДС» рядом с",
+        "заготовкой «НДС»), а заготовку не трогай.",
         "",
         "Сомневаешься — заводи новую: лишнюю карточку человек сольёт, а знание, дописанное",
         "не в ту, ищи потом по всей базе.",
@@ -3676,7 +3756,6 @@ def chunks(text: str, budget: int) -> list:
     return out
 
 
-QUOTES = "## Источник (перенесено дословно)"
 FOOTER = "## История изменений"
 
 

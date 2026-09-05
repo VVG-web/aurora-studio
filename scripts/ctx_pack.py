@@ -194,6 +194,14 @@ def words(text: str) -> list:
     return out
 
 
+# Расширение запроса расшифровками из словаря проекта здесь ПРОБОВАЛОСЬ и отвергнуто по
+# замеру: на эталонных вопросах R@5 упал с 0.909 до 0.545. Причина видна в промахах —
+# расшифровка имени проекта (имя проекта → его расшифровка) есть в
+# половине карточек, и одна и та же карточка вставала первой почти на каждый вопрос.
+# Идея не безнадёжна, но подставлять расшифровку в текст запроса нельзя: она должна
+# считаться синонимом СЛОВА с меньшим весом, а не дописываться как ещё один вопрос.
+
+
 def semantic(topic: str, limit: int) -> dict:
     """{имя карточки: близость} по смыслу. Пусто — индекса нет, и это нормально.
 
@@ -279,9 +287,13 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
     for w in body:
         seen[w] = seen.get(w, 0) + 1
 
+    # Нормировка вклада тела на длину карточки (как в BM25) здесь ПРОБОВАЛАСЬ и
+    # отвергнута по замеру: на эталонных вопросах R@1 и R@5 не сдвинулись вовсе, а MRR
+    # просел с 0.665 до 0.648. Тела карточек в базе близки по длине — штрафовать нечего,
+    # и правило только перетасовывает середину выдачи.
     s, hits = 0.0, 0
     for w in ask:
-        got, part = False, 0
+        got, part = False, 0.0
         if w in head:
             part += 10; got = True
         if w in brief:
@@ -316,7 +328,8 @@ SEM_FLOOR = 0.35
 AGREE = 0.15
 
 
-def fuse(cards: dict, topic: str, close: dict | None = None) -> list:
+def fuse(cards: dict, topic: str, close: dict | None = None,
+         limit: int = 40) -> list:
     """[(вес, карточка)] — слова и смысл, приведённые к одной шкале.
 
     Гибрид складывал очки: к словам добавлялась премия за близость, не больше тридцати
@@ -336,6 +349,8 @@ def fuse(cards: dict, topic: str, close: dict | None = None) -> list:
     парой середняков, которых оба нашли посредственно. На пробе из сорока запросов он
     терял две карточки из сорока, эта шкала — ни одной.
     """
+    if close is None:
+        close = semantic(topic, limit)
     lex = {}
     best = 0
     for c in cards.values():
@@ -376,7 +391,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")
 
-    seeds = fuse(cards, topic, close)
+    seeds = fuse(cards, topic, close, limit=max_cards * 2)
     chosen, seen, dropped = [], set(), []
     for _, c in seeds:
         if len(chosen) >= max_cards:
@@ -538,7 +553,9 @@ def main() -> int:
     pct = trusted / len(cards) * 100
     bootstrap = pct < threshold()
     release = a.release if a.release is not None else current_release()
-    close = {} if a.no_semantic else semantic(a.topic, a.max_cards * 2)
+    # Близость считает `fuse` — после расширения запроса словарём. Считать её здесь
+    # значило бы искать векторами по исходному запросу, а словами по расширенному.
+    close = {} if a.no_semantic else None
     chosen, dropped = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap, release,
                               a.max_cards, close)
     jira = jira_state(a.topic)

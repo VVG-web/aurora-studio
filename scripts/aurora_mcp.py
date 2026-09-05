@@ -162,8 +162,12 @@ def search(project: str, query: str, limit: int) -> str:
         C = importlib.import_module("ctx_pack")
         importlib.reload(C)
         cards = C.load_cards()
-        close = C.semantic(query, limit * 2)
-        ranked = C.fuse(cards, query, close)
+        ranked = C.fuse(cards, query, limit=limit * 2)
+        # Близость по смыслу `fuse` спрашивает сам; здесь только говорим человеку, была
+        # ли она вообще — по наличию индекса. Спрашивать её второй раз ради подписи
+        # значило бы платить обращением к модели за одно слово в заголовке.
+        with_meaning = os.path.isfile(os.path.join("AuroraKnowledgeDB", "meta",
+                                                   "embeddings.json"))
         rows = []
         for s, c in ranked[:limit]:
             if s <= 0:
@@ -178,7 +182,7 @@ def search(project: str, query: str, limit: int) -> str:
         return (f"По запросу «{query}» база ничего не знает. Это ответ, а не сбой: "
                 "не выдумывайте знание, которого нет.")
     head = (f"Найдено карточек: {len(rows)}"
-            + (" (поиск по словам и смыслу)" if close else " (поиск по словам)"))
+            + (" (поиск по словам и смыслу)" if with_meaning else " (поиск по словам)"))
     return head + "\n\n" + "\n".join(rows) + "\n\nПолный текст: kb_card <имя>."
 
 
