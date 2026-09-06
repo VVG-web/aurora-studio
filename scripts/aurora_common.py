@@ -465,7 +465,13 @@ def link_refs(text: str) -> list:
 def rewrite_links(text: str, mapping: dict) -> str:
     """Переписать цели ссылок по карте {старая: новая}, сохранив якоря и подписи."""
     def sub(m):
-        new = mapping.get(m.group(2).strip())
+        key = m.group(2).strip()
+        if key in mapping and mapping[key] is None:
+            # Снять разметку, оставив текст: так убирают ссылку на ФАЙЛ, который
+            # карточкой не является и не станет. Имя остаётся словами — знание о том,
+            # что документ упомянут, не теряется.
+            return f"{m.group(1)}{key}{m.group(3) or ''}"
+        new = mapping.get(key)
         if not new:
             return m.group(0)
         # Экранирование черты сохраняем: `[[Имя\|подпись]]` внутри таблицы — не прихоть,

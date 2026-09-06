@@ -25,7 +25,7 @@ from aurora_common import looks_like_expansion  # noqa: F401
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
                            card_sources, config_value, clean_meaning, frontmatter,
                            is_service,
-                           link_refs, project_terms)
+                           leaf_name, link_refs, project_terms)
 
 ROOT = "AuroraKnowledgeDB"
 
@@ -356,7 +356,12 @@ def main():
             # они указывают на служебные индексы, а не на карточки
             if target.startswith("http") or "/" in target:
                 continue
-            base = target.split("#")[0].strip()
+            # Имя цели считаем ТЕМ ЖЕ правилом, что и ремонт: `leaf_name` снимает
+            # расширение. Ссылка `[[JIRA_prompt.md]]` для ремонта разрешима (он снимает
+            # `.md`), а для линтера была битой — и он звал её битой вечно, потому что
+            # чинить ремонту было нечего. Расхождение двух проверок об одном хуже любой
+            # из них: человек видит ошибку, которую ни одна команда не убирает.
+            base = leaf_name(target.split("#")[0].strip())
             if not base or base in resolvable:
                 continue
             name = os.path.basename(rel)

@@ -9976,6 +9976,42 @@ def test_the_cycle_stops_when_it_stops_converging(tmp: Path):
 
 
 @test
+def test_lint_and_repair_judge_a_link_by_the_same_rule(tmp: Path):
+    """Ремонт и линтер считают имя цели одним правилом.
+
+    Ремонт снимал расширение с цели (`leaf_name`), линтер — нет. Ссылка
+    `[[Заметка.md]]` на карточку «Заметка» для ремонта была разрешима, и он её не трогал,
+    а линтер звал битой — и звал бы вечно, потому что чинить было нечего. Расхождение
+    двух проверок об одном хуже любой из них: человек видит ошибку, которую ни одна
+    команда не убирает.
+
+    Заодно: ссылка на ФАЙЛ зеркала (`[[JIRA_prompt.md]]`, когда карточки нет, а файл
+    есть) — не битая ссылка, а неверная форма. Ремонт снимает разметку, оставляя имя
+    словами: происхождение записано в `sources:`, знание не теряется.
+    """
+    lint = (SCRIPTS / "kb_lint.py").read_text(encoding="utf-8")
+    assert "leaf_name(target.split(\"#\")[0].strip())" in lint, \
+        "линтер снова судит цель ссылки своим правилом — разойдётся с ремонтом"
+
+    fix = (SCRIPTS / "kb_fix.py").read_text(encoding="utf-8")
+    assert "\nLINK_RE = re.compile" not in fix, \
+        "у ремонта снова своя копия LINK_RE: общая умеет отличать сноску [[1]](#ftn), эта — нет"
+    assert "def source_file" in fix and "mapping[target] = None" in fix, \
+        "ссылка на файл зеркала не снимается — линтер будет звать её битой вечно"
+
+    # снятие разметки: имя остаётся словами
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import rewrite_links
+    got = rewrite_links("см. [[Файл.md]] и [[Карточка]].", {"Файл.md": None})
+    assert got == "см. Файл.md и [[Карточка]].", why(got) or "разметка снята неверно"
+
+    # сноска из выгрузки Word — не ссылка на карточку
+    from aurora_common import link_refs
+    assert "1" not in link_refs("строка 010 = сумме строк 420 и 430[[1]](#_ftn1);"), \
+        "сноска [[1]](#_ftn1) принята за ссылку — в базе появятся мнимые битые ссылки"
+
+
+@test
 def test_the_critic_does_not_reject_a_name_for_matching_the_page_title(tmp: Path):
     """Имя, совпавшее с названием страницы, — это нормальное имя карточки.
 
