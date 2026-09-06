@@ -9976,6 +9976,32 @@ def test_the_cycle_stops_when_it_stops_converging(tmp: Path):
 
 
 @test
+def test_the_critic_does_not_reject_a_name_for_matching_the_page_title(tmp: Path):
+    """Имя, совпавшее с названием страницы, — это нормальное имя карточки.
+
+    Критик отклонял имя за то, что оно «имя файла». Но в зеркале Confluence имя файла
+    И ЕСТЬ заголовок страницы, а заголовок обычно называет предмет: «Варианты расписания
+    запуска алгоритмов» — правильное имя карточки, хотя файл называется так же.
+
+    На живой базе критик отклонял его двенадцать оборотов подряд, отметка не ставилась,
+    знание в базу не попадало, а цикл маршрута не мог дойти до нуля. Лечили это обходом
+    — третьей попыткой без критика; обход убран, потому что глушить проверку значит
+    обесценить и её правоту. Исправлен критерий.
+    """
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    critic = src.split("PROMPT_BUILD_CRITIC")[1].split('"""')[1]
+    flat = " ".join(critic.split())
+    assert "СОВПАДЕНИЕ С НАЗВАНИЕМ СТРАНИЦЫ — НЕ ПОВОД ОТКЛОНИТЬ" in flat, \
+        "критик снова отклоняет имя за совпадение с именем файла"
+    assert "файловом виде" in flat, \
+        "не сказано, какое имя файла действительно негодно: с расширением, датой, версией"
+    # обход убран: третья попытка без критика больше не делается
+    build = src.split("def solve_source")[1].split("\ndef ")[0]
+    assert "use_critic = False" not in build, \
+        "проверка снова глушится после двух отказов — её правота обесценится вместе с ошибкой"
+
+
+@test
 def test_a_merge_archives_the_donor_even_when_the_name_is_taken(tmp: Path):
     """Слияние обязано убрать донора из базы, иначе оно повторится на каждом прогоне.
 
@@ -9994,8 +10020,13 @@ def test_a_merge_archives_the_donor_even_when_the_name_is_taken(tmp: Path):
     apply_body = src.split("for src, dst in plan.moves")[1].split("\ndef ")[0]
     assert "пропущен перенос" not in apply_body, \
         "перенос снова пропускается — донор останется в базе и сольётся ещё раз"
-    assert 'f"{stem}-{n}{ext}"' in apply_body, \
-        "занятое имя в архиве не обходится свободным номером"
+    assert "free_archive_name(dst)" in apply_body, \
+        "занятое имя в архиве не обходится — донор останется в базе"
+    naming = src.split("def free_archive_name")[1].split("\ndef ")[0]
+    assert "%Y%m%d-%H%M" in naming, \
+        "к занятому имени добавляется номер, а не дата-время: по нему не видно порядка"
+    assert "NAME_BYTES" in naming and "encode(\"utf-8\")" in naming, \
+        "длина имени не режется по пределу файловой системы, и не в байтах"
 
     merge = src.split("def merge_paths")[1].split("\ndef ")[0]
     assert 'f"Присоединено из [[{drop.stem}]]" in text' in merge, \
@@ -10012,8 +10043,23 @@ def test_a_merge_archives_the_donor_even_when_the_name_is_taken(tmp: Path):
     plan.moves.append((str(live), str(base / "_archive" / "Карточка.md")))
     F.apply_plan(plan)
     assert not live.exists(), "донор остался в базе — слияние повторится на каждом прогоне"
-    assert (base / "_archive" / "Карточка-2.md").exists(), \
-        why(sorted(p.name for p in (base / "_archive").iterdir())) or "архив не принял донора"
+    got = [p.name for p in (base / "_archive").iterdir() if p.name != "Карточка.md"]
+    assert len(got) == 1 and re.match(r"Карточка-\d{8}-\d{4}", got[0]), \
+        why(got) or "в архиве не дата-время, а номер: по нему не видно, когда и в каком порядке"
+    # длина режется по пределу файловой системы, и режется ОСНОВА, а не метка времени
+    long_name = base / "Concepts" / ("Длинная-" + "я" * 200 + ".md")
+    long_name.write_text("текст", encoding="utf-8")
+    (base / "_archive" / long_name.name).write_text("старая", encoding="utf-8")
+    plan2 = F.Plan()
+    plan2.moves.append((str(long_name), str(base / "_archive" / long_name.name)))
+    F.apply_plan(plan2)
+    made = [p.name for p in (base / "_archive").iterdir() if p.name.startswith("Длинная")]
+    fresh = [n for n in made if n != long_name.name]
+    assert fresh, why(made) or "длинное имя не уехало в архив"
+    assert len(fresh[0].encode("utf-8")) <= 255, \
+        f"имя в {len(fresh[0].encode('utf-8'))} байт — файловая система его не примет"
+    assert fresh[0].endswith(".md") and re.search(r"-\d{8}-\d{4}", fresh[0]), \
+        why(fresh[0]) or "обрезали хвост вместо основы: метка времени и расширение потеряны"
     assert (base / "_archive" / "Карточка.md").read_text(encoding="utf-8") == "старая", \
         "прежняя запись архива затёрта"
 
@@ -10338,15 +10384,30 @@ def test_a_named_concept_the_base_can_explain_gets_a_card(tmp: Path):
     out = run("kb_fix.py", "--terms", "--apply", "--allow-dirty", cwd=root)
     made = {p.stem for p in (root / "AuroraKnowledgeDB").rglob("*.md")}
     assert "НДС" in made, f"понятие с расшифровкой не получило карточки:\n{out.stdout[:600]}"
-    assert "ЗЗЗ" not in made, "заведено понятие, расшифровки которого база не знает"
+    # Заготовка нужна и без расшифровки: заказчик — «даже карточка только со ссылками
+    # смысл имеет». Имя занято, и видно, кто это понятие называет. Выдумывать
+    # расшифровку по-прежнему нельзя — её в теле просто нет.
+    assert "ЗЗЗ" in made, why(sorted(made)) or "понятие без расшифровки не заведено"
+    zzz = next(p for p in (root / "AuroraKnowledgeDB").rglob("ЗЗЗ.md")).read_text(
+        encoding="utf-8")
+    assert "расшифровки база пока не знает" in zzz, "заготовка молчит о том, чего в ней нет"
+    assert "[[" in zzz.split("Названо в карточках")[1], \
+        why(zzz[-200:]) or "нет ссылок на тех, кто назвал понятие — вход в тему потерян"
+    # код документа сущностью не считается: по правилу базы он живёт в синонимах
+    import build_plan as BP
+    assert BP.is_doc_code("PRJ.SYS.ERD-006") and BP.is_doc_code("US-3.6.14"), \
+        "голый код документа не опознан — под него заведут карточку"
+    assert not BP.is_doc_code("МНС-РА") and not BP.is_doc_code("ЛТК-Б"), \
+        "настоящее сокращение принято за код документа"
 
     text = next(p for p in (root / "AuroraKnowledgeDB").rglob("НДС.md")).read_text(
         encoding="utf-8")
     assert "status: placeholder" in text, \
         "расшифровка имени подана как знание — карточка попадёт в выдачу пустой"
     assert "Налог на добавленную стоимость" in text, "расшифровка из словаря потеряна"
-    assert re.search(r"Понятие названо в \d+ карточк", text), \
-        why(text) or "не сказано, в скольких карточках понятие названо"
+    named = text.split("Названо в карточках")[1]
+    assert "[[" in named or re.search(r"Понятие названо в \d+ карточк", named), \
+        why(text) or "не сказано, кто и в скольких карточках назвал понятие"
 
     # повторный прогон не заводит второй раз
     run("kb_fix.py", "--terms", "--apply", "--allow-dirty", cwd=root)

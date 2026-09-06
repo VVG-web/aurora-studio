@@ -51,7 +51,7 @@ from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
                            is_service, link_refs, rewrite_links, set_field)
-from datetime import date
+from datetime import date, datetime
 from difflib import get_close_matches
 
 ROOT = "AuroraKnowledgeDB"
@@ -751,12 +751,33 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     return created
 
 
+def mentions_of(root: str, term: str, limit: int = 20) -> list:
+    """Карточки, в тезисах которых названо понятие. → [имена].
+
+    Заготовка без расшифровки не пуста: по списку тех, кто назвал понятие, видно, в каком
+    смысле его употребляют. Это вход в тему, пока определения нет.
+    """
+    from aurora_common import QUOTES, card_body, walk_md
+    low = term.lower()
+    out = []
+    for path in sorted(walk_md(root, skip_service=True, skip_archive=True)):
+        stem = os.path.basename(path)[:-3]
+        if stem == term:
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        if low in card_body(text).split(QUOTES, 1)[0].lower():
+            out.append(stem)
+            if len(out) >= limit:
+                break
+    return out
+
+
 def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     """Завести пустышку под понятие, которое база называет словами, но карточки не имеет.
 
     Заготовки заводились только под битые ссылки — под то, что кто-то уже решил связать.
     Но чаще сущность живёт в базе безымянной строкой: `НДС` назван в 91 карточке, `ИНН`
-    в 62, `МНС` в 58 — своих карточек нет ни у одной. Знание о них размазано по чужим
+    в 62, `ЕГР` в 58 — своих карточек нет ни у одной. Знание о них размазано по чужим
     телам, по имени не находится, и связать с ними нечего: ссылке некуда вести.
 
     Заводим только те, чью расшифровку база уже знает: словарь проекта собран из
@@ -776,28 +797,38 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
         return []
     taken = {fold_hard(c.stem) for c in cards.values()}
     created = []
+    from build_plan import is_doc_code
     for name, seen in missing_cards(load_gaps(root), floor):
+        # Код документа — не сущность. «PRJ.SYS.ERD-006» это ссылка на бумагу, и по
+        # правилу базы код живёт в синонимах карточки, а не именем.
+        if is_doc_code(name):
+            continue
         meaning = terms.get(name.lower())
-        if not meaning or fold_hard(name) in taken:
+        if fold_hard(name) in taken:
             continue
         section = "Glossary" if (len(name) <= 12 and name.upper() == name) else "Concepts"
         path = os.path.join(root, section, name + ".md").replace("\\", "/")
         if path in cards or os.path.exists(path):
             continue
         taken.add(fold_hard(name))
+        # Расшифровки может не быть — карточка всё равно нужна: имя занято, и видно, кто
+        # это понятие называет. Выдумывать расшифровку по-прежнему нельзя, её просто нет.
+        where = mentions_of(root, name)
+        body = ((f"{name} — {meaning}.\n\n" if meaning else "")
+                + "_Заготовка: имя названо в базе"
+                + (" и расшифровка известна" if meaning
+                   else ", расшифровки база пока не знает")
+                + ", знания о предмете пока нет._\n"
+                + "_Наполните её при следующем разборе источника — ссылки переписывать "
+                  "не придётся._\n\n## Названо в карточках\n\n"
+                + ("\n".join(f"- [[{x}]]" for x in where) if where
+                   else f"Понятие названо в {seen} карточках базы.") + "\n")
         plan.write(path,
                    f"---\ntitle: \"{name}\"\naliases: []\n"
                    f"status: {PLACEHOLDER}\n"
                    f"type: {SECTION_TYPE.get(section, 'concept')}\n"
                    f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
-                   f"related: []\n---\n\n# {name}\n\n"
-                   f"{name} — {meaning}.\n\n"
-                   "_Заготовка: имя названо в базе и расшифровка известна, знания о "
-                   "предмете пока нет._\n_Наполните её при следующем разборе источника — "
-                   "ссылки переписывать не придётся._\n\n"
-                   f"## Названо в карточках\n\nПонятие названо в {seen} "
-                   + ("карточке" if seen % 10 == 1 and seen % 100 != 11 else "карточках")
-                   + " базы.\n")
+                   f"related: []\n---\n\n# {name}\n\n" + body)
         created.append((name, section, seen))
     return created
 
@@ -1422,6 +1453,38 @@ def check_git_guard(root: str, allow_dirty: bool) -> bool:
     return False
 
 
+# Предел длины имени файла — 255 БАЙТ почти везде (ext4, APFS, NTFS). Кириллица в UTF-8
+# занимает два байта на букву, то есть 127 букв, а не 255: имя карточки, собранное из
+# длинного заголовка, к этому пределу подходит вплотную. Считаем в байтах.
+NAME_BYTES = 255
+
+
+def free_archive_name(dst: str) -> str:
+    """Свободное имя в архиве: к занятому добавляется дата-время. → путь.
+
+    Номер («-2», «-3») ничего не говорит: по нему не видно, когда карточку убрали и в
+    каком порядке версии ложились. Дата-время говорит, и она же почти всегда уникальна.
+    Совпало и это — дописываем секунды, потом номер: важно, чтобы перенос состоялся, а
+    не чтобы имя было красивым.
+
+    Длина имени режется по пределу файловой системы. Резать надо ОСНОВУ, а не хвост:
+    хвост — это метка времени и расширение, без них имя перестанет быть уникальным.
+    """
+    if not os.path.exists(dst):
+        return dst
+    folder, name = os.path.split(dst)
+    stem, ext = os.path.splitext(name)
+    for suffix in ([datetime.now().strftime("-%Y%m%d-%H%M"),
+                    datetime.now().strftime("-%Y%m%d-%H%M%S")]
+                   + [f"-{n}" for n in range(2, 60)]):
+        room = NAME_BYTES - len((suffix + ext).encode("utf-8"))
+        cut = stem.encode("utf-8")[:max(1, room)].decode("utf-8", "ignore")
+        probe = os.path.join(folder, cut + suffix + ext)
+        if not os.path.exists(probe):
+            return probe
+    return dst
+
+
 def apply_plan(plan: Plan) -> int:
     """Записать план. Никогда не перезаписывает существующий файл при переименовании/переносе."""
     skipped = 0
@@ -1442,13 +1505,8 @@ def apply_plan(plan: Plan) -> int:
         # как защита от затирания, а на деле оставлял карточку, которую движок считает
         # заархивированной: слияние отчитывалось успехом, донор жил дальше и на следующем
         # прогоне сливался снова. На живой базе так набралось СОРОК ДЕВЯТЬ одинаковых
-        # блоков «Слияние» в одной карточке. Кладём рядом под свободным номером.
-        if os.path.exists(dst):
-            stem, ext = os.path.splitext(dst)
-            n = 2
-            while os.path.exists(f"{stem}-{n}{ext}"):
-                n += 1
-            dst = f"{stem}-{n}{ext}"
+        # блоков «Слияние» в одной карточке.
+        dst = free_archive_name(dst)
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         shutil.move(src, dst)
     return skipped

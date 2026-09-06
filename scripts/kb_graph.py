@@ -50,6 +50,7 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_body, card_sources, card_stem,  # noqa: E402
+                           walk_md,
                            frontmatter, git_guard)
 
 CONF_DIR = "Sources/Confluence"
@@ -513,9 +514,24 @@ def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
     оставляем связи с редкими соседями: ссылка на страницу, которую цитируют все, говорит
     меньше, чем ссылка на ту, которую цитируют трое.
     """
-    stats = {"карточек затронуто": 0, "связей добавлено": 0, "уже было": 0, "не влезло": 0}
+    stats = {"карточек затронуто": 0, "связей добавлено": 0, "уже было": 0,
+             "не влезло": 0, "подрезано": 0}
     degree = {k: len(v) for k, v in pairs.items()}
-    for path, others in sorted(pairs.items()):
+    # Карточка, у которой в этом прогоне новых связей нет, в `pairs` не попадает — и её
+    # разросшийся `related` никто не трогает. А рос он именно так: подрезка делалась
+    # заодно с добавлением. Берём в обход и тех, у кого накоплено больше предела.
+    todo = dict(pairs)
+    for path in walk_md(KB_DIR, skip_service=True, skip_archive=True):
+        if path in todo:
+            continue
+        try:
+            head = open(path, encoding="utf-8", errors="ignore").read(8000)
+        except OSError:
+            continue
+        m = REL_BLOCK_RE.search(head)
+        if m and len(re.findall(r"\]\(", m.group(0))) > cap:
+            todo[path] = set()
+    for path, others in sorted(todo.items()):
         text = open(path, encoding="utf-8", errors="ignore").read()
         head, rest = text.split("\n---\n", 1) if text.startswith("---\n") else (None, None)
         if head is None:
@@ -527,13 +543,25 @@ def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
                               if REL_BLOCK_RE.search(head) else ""))
         add = [n for n in want if n not in have]
         stats["уже было"] += len(want) - len(add)
-        if not add:
+        # Переписываем блок и когда добавлять нечего, но накопленного БОЛЬШЕ предела:
+        # иначе разросшийся список так и останется. Он рос годами именно потому, что
+        # подрезка делалась только заодно с добавлением.
+        if not add and len(have) <= cap:
             continue
+        if not add:
+            stats["подрезано"] += 1
         stats["карточек затронуто"] += 1
         stats["связей добавлено"] += len(add)
         if not apply:
             continue
-        block = "related:\n" + "".join(f'  - "[{n}]({n}.md)"\n' for n in sorted(have | set(add)))
+        # Предел применяется и к НАКОПЛЕННОМУ, а не только к добавляемому за прогон.
+        # Иначе список растёт вечно: каждый прогон дописывает свою порцию, а старое
+        # никто не подрезает. На живой базе так набралось 30 связей и шапка в 4492
+        # знака — длиннее, чем сама карточка, и длиннее окна, которым движок читал
+        # шапку. Оставляем тех же редких соседей: частый сосед говорит меньше.
+        by_name = {os.path.splitext(os.path.basename(k))[0]: v for k, v in degree.items()}
+        keep = sorted(sorted(have | set(add), key=lambda n: (by_name.get(n, 0), n))[:cap])
+        block = "related:\n" + "".join(f'  - "[{n}]({n}.md)"\n' for n in keep)
         m = REL_BLOCK_RE.search(head)
         new_head = (head[:m.start()] + block.rstrip("\n") + head[m.end():]) if m \
             else head.rstrip("\n") + "\n" + block.rstrip("\n")
@@ -644,7 +672,7 @@ def main() -> int:
     # у узловых карточек их закономерно больше: обрезать до тридцати значит выбрасывать
     # ровно те связи, ради которых правило и добавлено.
     ap.add_argument("--max-related", type=int, default=60, metavar="N",
-                    help="сколько связей писать в одну карточку (по умолчанию 30)")
+                    help="сколько связей писать в одну карточку (по умолчанию 60)")
     ap.add_argument("--report", dest="report_path", help="сохранить отчёт в файл")
     ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR})")
     ap.add_argument("--jira", default=JIRA_DIR, help=f"зеркало Jira ({JIRA_DIR})")
