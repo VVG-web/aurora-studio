@@ -35,6 +35,7 @@ import sys
 from datetime import date
 
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
+                           head_text,
                            card_sources, fold_hard, frontmatter, sources_block,
                            split_frontmatter, walk_md)
 
@@ -483,11 +484,7 @@ def derived_card(path: str) -> bool:
     ставилась, и цикл не мог дойти до нуля НИКОГДА. Метка машины снимает вопрос: то, что
     написал движок, не может быть для него источником.
     """
-    try:
-        with open(path, encoding="utf-8", errors="ignore") as f:
-            head = f.read(4000)
-    except OSError:
-        return False
+    head = head_text(path)
     if re.search(r"(?im)^built:\s*machine\s*$", head):
         return True
     return bool(card_sources(head))
@@ -564,7 +561,7 @@ def find_card(name: str, root: str = "") -> str:
                              or any(one_typo(fold_hard(stem), f) for f in folded)):
             fallback = path
         if not fallback:
-            text = open(path, encoding="utf-8", errors="ignore").read(4000)
+            text = head_text(path)
             if any(fold_hard(a) in folded for a in card_aliases(text)):
                 fallback = path
     return fallback
@@ -846,7 +843,7 @@ def sources_in_use() -> set:
     out = set()
     for path in walk_md(KB_ROOT, skip_service=True):
         try:
-            head = open(path, encoding="utf-8", errors="ignore").read(4000)
+            head = head_text(path)
         except Exception:  # noqa: BLE001
             continue
         for src in card_sources(head):
@@ -866,7 +863,7 @@ def card_counts() -> dict:
     out: dict = {}
     for path in walk_md(KB_ROOT, skip_service=True):
         try:
-            head = open(path, encoding="utf-8", errors="ignore").read(4000)
+            head = head_text(path)
         except Exception:  # noqa: BLE001
             continue
         # Карточка накапливает знание из нескольких источников, и каждый из них вправе

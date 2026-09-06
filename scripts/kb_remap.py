@@ -37,7 +37,7 @@ import subprocess
 import sys
 from datetime import date
 
-from aurora_common import fold
+from aurora_common import fold, head_text
 
 KB = "AuroraKnowledgeDB"
 SNAPSHOT = os.path.join(KB, "meta", "mirror_snapshot.json")
@@ -65,7 +65,7 @@ def scan_disk(mirror: str) -> dict:
             path = os.path.join(dirpath, f)
             rel = os.path.relpath(path, mirror).replace("\\", "/")
             try:
-                head = open(path, encoding="utf-8", errors="ignore").read(4000)
+                head = head_text(path)
             except Exception:
                 continue
             m = ID_RE.search(head)

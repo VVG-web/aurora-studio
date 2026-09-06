@@ -9923,6 +9923,49 @@ def test_only_one_resume_button_and_it_names_its_project(tmp: Path):
 
 
 @test
+def test_a_merge_archives_the_donor_even_when_the_name_is_taken(tmp: Path):
+    """Слияние обязано убрать донора из базы, иначе оно повторится на каждом прогоне.
+
+    Перенос в `_archive` пропускался, если файл с таким именем там уже лежал. Задумано
+    как защита от затирания, на деле — карточка, которую движок считает
+    заархивированной, оставалась в базе. Слияние отчитывалось успехом, донор жил дальше,
+    следующий прогон сливал его снова.
+
+    На живой базе так набралось **49 одинаковых блоков «Слияние»** в одной карточке: она
+    выросла со 120 738 знаков из повторов, при двух настоящих донорах.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import kb_fix as F
+
+    src = (SCRIPTS / "kb_fix.py").read_text(encoding="utf-8")
+    apply_body = src.split("for src, dst in plan.moves")[1].split("\ndef ")[0]
+    assert "пропущен перенос" not in apply_body, \
+        "перенос снова пропускается — донор останется в базе и сольётся ещё раз"
+    assert 'f"{stem}-{n}{ext}"' in apply_body, \
+        "занятое имя в архиве не обходится свободным номером"
+
+    merge = src.split("def merge_paths")[1].split("\ndef ")[0]
+    assert 'f"Присоединено из [[{drop.stem}]]" in text' in merge, \
+        "повторное слияние того же донора снова удвоит тело"
+
+    # перенос при занятом имени: файл уходит, имя получает номер
+    base = tmp / "AuroraKnowledgeDB"
+    (base / "_archive").mkdir(parents=True)
+    (base / "Concepts").mkdir(parents=True)
+    live = base / "Concepts" / "Карточка.md"
+    live.write_text("живая", encoding="utf-8")
+    (base / "_archive" / "Карточка.md").write_text("старая", encoding="utf-8")
+    plan = F.Plan()
+    plan.moves.append((str(live), str(base / "_archive" / "Карточка.md")))
+    F.apply_plan(plan)
+    assert not live.exists(), "донор остался в базе — слияние повторится на каждом прогоне"
+    assert (base / "_archive" / "Карточка-2.md").exists(), \
+        why(sorted(p.name for p in (base / "_archive").iterdir())) or "архив не принял донора"
+    assert (base / "_archive" / "Карточка.md").read_text(encoding="utf-8") == "старая", \
+        "прежняя запись архива затёрта"
+
+
+@test
 def test_a_source_judged_empty_is_done_not_pending(tmp: Path):
     """Источник с вердиктом «пусто» — разобранный, а не пропущенный.
 
