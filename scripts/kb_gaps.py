@@ -152,7 +152,12 @@ def behind_neighbour(cards: dict) -> list:
             oc = cards.get(other)
             if not oc or other == stem or oc["ph"]:
                 continue
-            theirs = (oc["fm"].get("updated") or "").strip().strip('"')
+            # Сравниваем ТЕЗИС соседа, а не дату его правки. По `updated` метрика была
+            # бесполезна: любой прогон трогает десятки карточек (доверие, связи, карты),
+            # и все ссылающиеся немедленно «отставали» — на живой базе 187 пар из
+            # ниоткуда. Знание устаревает, когда сосед сказал о себе иначе, а это
+            # `distilled`.
+            theirs = (oc["fm"].get("distilled") or "").strip().strip('"')
             if theirs and theirs > mine:
                 out.append((stem, other, mine, theirs))
     return out

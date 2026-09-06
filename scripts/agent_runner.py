@@ -1009,14 +1009,18 @@ def neighbours_behind(cwd: str) -> list:
     from aurora_common import (KB_ROOT, frontmatter, is_placeholder, leaf_name,
                                link_refs, walk_md)
     root = os.path.join(cwd, KB_ROOT)
-    when, links = {}, {}
+    when, links, checked = {}, {}, {}
     for path in walk_md(root, skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text)
         stem = os.path.basename(path)[:-3]
         if is_placeholder(fm, text):
             continue          # у заготовки менять нечего: знания в ней нет
-        when[stem] = ((fm.get("updated") or "").strip().strip('"'),
+        checked[stem] = (fm.get("neighbours") or "").strip().strip('"')
+        # Обе даты — про тезис: «когда сосед сказал о себе иначе». Дата правки
+        # (`updated`) здесь не годится, её двигает любой прогон, и метрика зашумляется
+        # до бессмысленности — на живой базе так получилось 187 пар из ниоткуда.
+        when[stem] = ((fm.get("distilled") or "").strip().strip('"'),
                       (fm.get("distilled") or "").strip().strip('"'))
         links[stem] = {leaf_name(l.split("#")[0].strip()) for l in link_refs(text)}
     out = []
@@ -1024,13 +1028,41 @@ def neighbours_behind(cwd: str) -> list:
         mine = when.get(stem, ("", ""))[1]
         if not mine:
             continue          # тезиса нет — сравнивать нечего
+        # Отметка «соседей смотрели»: до какой их даты дошли. Без неё пара, у которой
+        # противоречия нет, возвращалась бы в очередь при каждом прогоне навсегда —
+        # тот же изъян, что был у выделения и связывания. «Посмотрели и разошлись» —
+        # это результат, и его надо записать.
+        seen_upto = checked.get(stem, "")
         for other in sorted(refs):
             if other == stem or other not in when:
                 continue
             theirs = when[other][0]
-            if theirs and theirs > mine:
+            if theirs and theirs > mine and theirs > seen_upto:
                 out.append([stem, other])
     return out
+
+
+def neighbour_stamp(cwd: str, stem: str) -> str:
+    """Дата тезиса соседа — до неё карточка считается сверенной."""
+    from aurora_common import KB_ROOT, frontmatter, walk_md
+    for path in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
+        if os.path.basename(path)[:-3] == stem:
+            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
+            return (fm.get("distilled") or "").strip().strip('"')
+    return ""
+
+
+def mark_neighbours(cwd: str, stem: str, upto: str) -> None:
+    """Отметить, до какой даты тезисов соседей карточку уже сверяли."""
+    from aurora_common import KB_ROOT, walk_md, with_fields
+    if not upto:
+        return
+    for path in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
+        if os.path.basename(path)[:-3] != stem:
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        open(path, "w", encoding="utf-8").write(with_fields(text, {"neighbours": upto}))
+        return
 
 
 def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
@@ -1124,6 +1156,10 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
             break
         s = solve_clash(cfg, cwd, g, call, deadline=budget)
         steps.append(s)
+        # Пару посмотрели — записываем это, чем бы ни кончилось. Иначе те же 134 пары
+        # уходят к модели при каждом прогоне и каждый раз не находят противоречия.
+        if s["status"] not in ("сбой", "стоп") and len(g) == 2 and g in behind:
+            mark_neighbours(cwd, g[0], neighbour_stamp(cwd, g[1]))
         print(f"  [{i}/{len(groups)}] {', '.join(g[:3])} → "
               + (f"споров {len(s['clashes'])}" if s["clashes"] else s["status"]), flush=True)
     found = sum(len(s["clashes"]) for s in steps)
