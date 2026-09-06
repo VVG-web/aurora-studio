@@ -9923,6 +9923,59 @@ def test_only_one_resume_button_and_it_names_its_project(tmp: Path):
 
 
 @test
+def test_a_checked_neighbour_pair_does_not_come_back(tmp: Path):
+    """Сверенная пара «карточка и её сосед» не возвращается в очередь.
+
+    Очередь считалась по датам ПРАВКИ соседа — а её двигает любой прогон: доверие,
+    связи, карты. На живой базе так получилось 187 пар из ниоткуда. Считаем по тезису:
+    знание устаревает, когда сосед сказал о себе иначе.
+
+    И второе: пару, у которой противоречия нет, никто не отмечал — те же 134 пары шли
+    к модели при каждом прогоне и каждый раз не находили ничего. «Посмотрели и
+    разошлись» — это результат, и он записывается отметкой `neighbours`.
+    """
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    fn = src.split("def neighbours_behind")[1].split("\ndef ")[0]
+    assert 'when[stem] = ((fm.get("distilled")' in fn, \
+        "очередь снова считается по дате правки — метрика зашумится до бесполезности"
+    assert 'theirs > seen_upto' in fn, \
+        "отметка о сверке не читается — разобранные пары вернутся навсегда"
+    assert "def mark_neighbours" in src, "отметку о сверке некому поставить"
+    run_c = src.split("def run_clashes")[1].split("\ndef ")[0]
+    assert "mark_neighbours(cwd" in run_c, \
+        "разбор пары не отмечается — та же работа повторится на каждом прогоне"
+
+    gaps = (SCRIPTS / "kb_gaps.py").read_text(encoding="utf-8")
+    behind = gaps.split("def behind_neighbour")[1].split("\ndef ")[0]
+    assert 'oc["fm"].get("distilled")' in behind, \
+        "отчёт о дырах считает соседей иначе, чем ход противоречий — числа разойдутся"
+
+
+@test
+def test_the_cycle_stops_when_it_stops_converging(tmp: Path):
+    """Цикл маршрута — не бесконечный: предел мал и о нём говорят прямо.
+
+    Предохранитель стоял на 500 оборотов. Несходящийся цикл крутился часами и выглядел
+    долгим прогоном: на живой базе ОДИН источник, который движок не мог отметить
+    разобранным, держал маршрут сорок оборотов подряд, и понять это по экрану было
+    нельзя. Дюжина оборотов — уже симптом, а не работа.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "const CYCLE_LIMIT = 12;" in ui, \
+        "предохранитель снова велик — несходящийся цикл будет выглядеть долгим прогоном"
+    assert "цикл не сошёлся за" in ui, \
+        "упор в предохранитель не назван: человек не отличит его от честной работы"
+    assert "какой источник не удалось отметить" in ui, \
+        "не сказано, где искать причину — диагностика без адреса бесполезна"
+
+    # режимы ремонта, заведённые под остаток разбора, стоят в маршруте «Починить базу»
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    fix = scen.split("[fix]")[1].split("\n[")[0]
+    for flag in ("--terms", "--unparsed", "--themes", "--drop-jira"):
+        assert flag in fix, f"режим {flag} заведён, но в маршрут не попал — им не воспользуются"
+
+
+@test
 def test_a_merge_archives_the_donor_even_when_the_name_is_taken(tmp: Path):
     """Слияние обязано убрать донора из базы, иначе оно повторится на каждом прогоне.
 
@@ -10111,8 +10164,10 @@ def test_a_changed_neighbour_puts_the_card_in_the_queue(tmp: Path):
     пары `agent:clashes` — он умеет цитировать обе стороны, а решает человек.
     """
     root = make_project(tmp, git=True)
+    # Сосед переписал ТЕЗИС позже — по нему и считается устаревание. Дата правки не
+    # годится: её двигает любой прогон, и очередь зашумляется до бесполезности.
     card(root, "Concepts/Главная.md", status="draft", kind="knowledge",
-         distilled="2026-09-01", updated="2026-09-04", body="Правило изменилось.")
+         distilled="2026-09-04", updated="2026-09-04", body="Правило изменилось.")
     card(root, "Concepts/Ссылается.md", status="draft", kind="knowledge",
          distilled="2026-09-01", updated="2026-09-01",
          body="Работает по правилу из [[Главная]].")
