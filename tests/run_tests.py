@@ -1216,9 +1216,19 @@ def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
     assert "осталось: 0" in run("build_plan.py", "--status", cwd=root).stdout, \
         "оба источника должны считаться обработанными"
 
+    # Источник с ВЫНЕСЕННЫМ вердиктом «пусто» — разобранный, а не пропущенный: он не
+    # даст карточек никогда, и возвращать его в план значит гонять по нему модель вечно.
+    # Ровно из-за этого маршрут «Обновить базу» не заканчивался работой в ноль (1.100.41).
     dry = run("build_plan.py", "--reopen", cwd=root)
-    assert "Пустая" not in dry.stdout or "не дали: 1" in dry.stdout, dry.stdout[:400]
-    assert "не дали: 1" in dry.stdout, f"переоткрывать нечего:\n{dry.stdout[:400]}"
+    assert "не дали: 0" in dry.stdout, \
+        f"источник с вердиктом «пусто» снова переоткрывается:\n{dry.stdout[:400]}"
+
+    # А вот знание, ПРОПАВШЕЕ из базы, обязано вернуть источник в план: отметка
+    # «обработан» без карточек — это молчаливая потеря, ради которой `--reopen` и есть.
+    (root / "AuroraKnowledgeDB/Concepts/Из-полезной.md").unlink()
+    dry2 = run("build_plan.py", "--reopen", cwd=root)
+    assert "не дали: 1" in dry2.stdout, \
+        f"источник, чьи карточки исчезли, не вернулся:\n{dry2.stdout[:400]}"
     assert "осталось: 0" in run("build_plan.py", "--status", cwd=root).stdout, \
         "dry-run не должен править манифест"
 
@@ -1226,8 +1236,8 @@ def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
     status = run("build_plan.py", "--status", cwd=root).stdout
     assert "осталось: 1" in status, f"источник без карточек не вернулся в план:\n{status}"
     plan = run("build_plan.py", cwd=root).stdout
-    assert "Пустая" in plan and "Полезная" not in plan, \
-        "в план должен вернуться только тот, что ничего не дал"
+    assert "Полезная" in plan and "Пустая" not in plan, \
+        "в план должен вернуться тот, чьё знание пропало, а не признанный пустым"
 
     # вторая сторона той же беды: карточка есть, но разбор оборвался на середине
     big = root / "Sources/Confluence/Толстая.md"
@@ -9886,6 +9896,56 @@ def test_a_long_card_is_indexed_whole_not_just_its_beginning(tmp: Path):
         "поиск отдаёт куски вместо карточек — наружу поедут имена вида «Карточка¶2»"
     assert "want = min(n, max(limit * 3" in src, \
         "берём ровно limit кусков — они могут оказаться кусками одной карточки"
+
+
+@test
+def test_a_source_judged_empty_is_done_not_pending(tmp: Path):
+    """Источник с вердиктом «пусто» — разобранный, а не пропущенный.
+
+    `--reopen` возвращал в план любой источник, не давший карточек. Но источник,
+    который разбор честно признал пустым, карточек и не даст — никогда. Вердикт
+    записан в манифест (`empty_reason`), проверен движком, — и всё равно каждый прогон
+    маршрута брал те же страницы, гонял по ним модель и снова получал «пусто».
+
+    Отсюда и жалоба: сколько ни запускай подряд, работа не кончается. Момент «новых
+    источников нет, отработали быстро» не наступал по устройству.
+
+    Изменится файл — источник вернётся: вердикт был о прежнем тексте.
+    """
+    root = make_project(tmp)
+    src = root / "Sources" / "Confluence"
+    src.mkdir(parents=True, exist_ok=True)
+    empty, live = src / "Пустая.md", src / "Живая.md"
+    empty.write_text("# Пустая\n\n" + "х" * 300, encoding="utf-8")
+    live.write_text("# Живая\n\n" + "знание " * 60, encoding="utf-8")
+
+    sys.path.insert(0, str(SCRIPTS))
+    import build_plan as BP
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        man = {"sources": {
+            "Sources/Confluence/Пустая.md": {"cards": 0, "hash": BP.file_hash(str(empty)),
+                                             "empty_reason": "знания нет"},
+            "Sources/Confluence/Живая.md": {"cards": 0, "hash": BP.file_hash(str(live))}}}
+        # `reopen` возвращает код выхода, а не число — считаем по манифесту после записи
+        import copy
+        m1 = copy.deepcopy(man)
+        BP.reopen(m1, "", True)
+        left = set(m1["sources"])
+        assert "Sources/Confluence/Пустая.md" in left, \
+            "источник с вердиктом «пусто» переоткрыт — модель будет гонять его вечно"
+        assert "Sources/Confluence/Живая.md" not in left, \
+            why(sorted(left)) or "бесплодный источник не вернулся в план"
+
+        # текст изменился — вердикт был о прежнем, источник обязан вернуться
+        empty.write_text("# Пустая\n\nтеперь тут знание " * 20, encoding="utf-8")
+        m2 = copy.deepcopy(man)
+        BP.reopen(m2, "", True)
+        assert "Sources/Confluence/Пустая.md" not in set(m2["sources"]), \
+            "изменённый источник не вернулся — правка страницы не дойдёт до базы"
+    finally:
+        os.chdir(old)
 
 
 @test

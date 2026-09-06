@@ -919,6 +919,15 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
         changed = bool(rec.get("hash")) and rec["hash"] != file_hash(path)
         if path in known and not changed:
             continue
+        # Источник, ПРИЗНАННЫЙ ПУСТЫМ, — это разобранный источник, а не пропущенный.
+        # Вердикт вынесен, записан в манифест (`empty_reason`) и проверен: с 1.100.41
+        # движок отклоняет «пусто» там, где в тексте лежат данные. Возвращать такой в
+        # план значит гонять модель по одному и тому же вечно — ровно то, из-за чего
+        # маршрут «Обновить базу» никогда не заканчивался работой в ноль.
+        #
+        # Изменился файл — вернём: вердикт был о прежнем тексте.
+        if rec.get("empty_reason") and not changed:
+            continue
         victims.append(path)
 
     by_group: dict = {}
@@ -927,6 +936,8 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
         by_group[top] = by_group.get(top, 0) + 1
     print(f"# Переоткрыть источники — {TODAY}\n")
     print(f"Отмечено обработанными, но ни одной карточки не дали: {len(victims)}\n")
+    print("Источники с вынесенным вердиктом «пусто» сюда не входят: это разобранные "
+          "источники, а не пропущенные. Изменится файл — вернутся сами.\n")
     for g, n in sorted(by_group.items(), key=lambda kv: -kv[1]):
         print(f"- {g}: {n}")
     print("\nЗадачи Jira и готовые справочники Reference/ часто дают ноль законно — "
