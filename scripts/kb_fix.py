@@ -143,6 +143,16 @@ class Index:
         base = target.split("#")[0].strip()
         if not base:
             return None, "пусто"
+        # Решётка в ссылке — это якорь: `[[Карточка#Раздел]]`. Но она же бывает частью
+        # имени, пришедшего из источника: «Шаблон Протокола встречи (##) yyyy-MM-dd».
+        # Тогда до якоря остаётся огрызок, которого в базе нет, и ссылка числится битой
+        # при живой цели. Пробуем имя ЦЕЛИКОМ, если огрызок не нашёлся: `card_filename`
+        # решётку снимает, и свёрнутые имена сходятся.
+        if "#" in target:
+            whole = fold_hard(normalize_title(target.replace("#", "")))
+            for stem in self.by_stem:
+                if fold_hard(stem) == whole:
+                    return stem, "имя с решёткой — якорь оказался частью имени"
         leaf = leaf_name(base)
         if leaf in self.by_stem:
             return leaf, "ok"
@@ -480,8 +490,18 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
             if not leaf or leaf in idx.by_stem or leaf in idx.by_alias:
                 continue
             new, how = idx.resolve(target)
+            if not new and m.group(3):
+                # Якорь мог оказаться частью имени: «Шаблон Протокола встречи (##) дата»
+                # даёт ссылку `[[Шаблон-...-##-дата]]`, где до решётки остаётся огрызок.
+                # Имя карточки решётки не содержит (`card_filename` её снимает), поэтому
+                # пробуем имя целиком — вместе с тем, что выглядело якорем.
+                whole = (target + m.group(3)).replace("#", "-")
+                new, how = idx.resolve(whole)
+                if new:
+                    how = "якорь оказался частью имени"
+                    mapping[target + m.group(3)] = new
             if new:
-                mapping[target] = new
+                mapping.setdefault(target, new)
                 aliases_for.setdefault(new, set()).add(leaf)
                 plan.notes.append(f"  ссылка [[{target}]] → [[{new}]]  ({how})  в {path}")
             elif (path, leaf) not in reported:

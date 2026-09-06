@@ -9899,6 +9899,30 @@ def test_a_long_card_is_indexed_whole_not_just_its_beginning(tmp: Path):
 
 
 @test
+def test_only_one_resume_button_and_it_names_its_project(tmp: Path):
+    """Кнопка «Продолжить маршрут» одна, и по ней видно, к какому проекту она.
+
+    Консоль читает состояние остановленного маршрута при каждом входе и дорисовывала
+    кнопку, не убирая прежнюю. После нескольких переключений между проектами в консоли
+    висели четыре кнопки: три одинаковые и одна из другого проекта. Подпись у всех была
+    одна — «Продолжить маршрут», — и понять, какая к чему относится и какую жать, было
+    нельзя. Человек либо не жал вовсе, либо продолжал чужой маршрут.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "function dropResumeButtons()" in ui, \
+        "прежние кнопки продолжения не убираются — они будут копиться при каждом входе"
+    for where in ("async function showLastRoute", "function showOfflineResume"):
+        body = ui.split(where)[1][:400]
+        assert "dropResumeButtons()" in body, \
+            f"{where} рисует кнопку, не убрав прежнюю"
+    # каждая кнопка продолжения помечена — иначе их не найти, чтобы убрать
+    assert ui.count("resume-route") >= 4, \
+        "не все кнопки продолжения помечены классом: часть переживёт очистку"
+    assert "S.project.slug" in ui.split("async function showLastRoute")[1][:1200], \
+        "в подписи нет проекта — при двух проектах снова не понять, какая кнопка чья"
+
+
+@test
 def test_a_source_judged_empty_is_done_not_pending(tmp: Path):
     """Источник с вердиктом «пусто» — разобранный, а не пропущенный.
 
