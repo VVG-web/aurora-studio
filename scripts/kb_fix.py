@@ -60,7 +60,6 @@ MERGE_REPORT: list = []      # (слитые, отказы) — для отчё�
 ARCHIVE = os.path.join(ROOT, "_archive")
 TODAY = date.today().isoformat()
 
-LINK_RE = re.compile(r"(!?)\[\[([^\]|#]+)((?:#[^\]|]*)?)(?:\|([^\]]*))?\]\]")
 
 # Служебные файлы навигации/механики — не карточки знаний.
 # `is_service` и `rewrite_links` здесь были своими копиями и молча перекрывали импорт
@@ -471,6 +470,19 @@ def is_template_link(target: str) -> bool:
     return bool(TEMPLATE_LINK_RE.search(target))
 
 
+def source_file(name: str) -> str:
+    """Путь к файлу зеркала, если ссылка указывает на источник, а не на карточку."""
+    leaf = os.path.basename(name.strip())
+    for base in ("Sources", "Raw"):
+        if not os.path.isdir(base):
+            continue
+        for dp, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            if leaf in files:
+                return os.path.join(dp, leaf).replace("\\", "/")
+    return ""
+
+
 def plan_links(cards: dict, idx: Index, plan: Plan):
     fixed = alias_added = 0
     reported = set()
@@ -488,6 +500,14 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
                 continue
             leaf = leaf_name(target)
             if not leaf or leaf in idx.by_stem or leaf in idx.by_alias:
+                continue
+            # Ссылка на ФАЙЛ, а не на карточку: `[[JIRA_prompt.md]]` указывает на
+            # исходник в зеркале. Карточкой он не является и не станет, и чинить такую
+            # ссылку нечем — её надо снять, оставив имя словами. Происхождение файла и
+            # так записано в `sources:`, знание не теряется.
+            if target.lower().endswith(".md") and source_file(target):
+                mapping[target] = None          # None — снять разметку, оставить текст
+                plan.notes.append(f"  ссылка на файл [[{target}]] снята в {path}")
                 continue
             new, how = idx.resolve(target)
             if not new and m.group(3):
