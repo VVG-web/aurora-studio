@@ -1353,6 +1353,10 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
                 head = head.rstrip("\n") + "\n" + new_block + "\n"
             text = head + rest
     merged_body = drop.body().strip()
+    # Повторное слияние того же донора ничего не прибавляет, а тело удваивает. Раньше
+    # это и происходило: донор не уходил в архив, и каждый прогон вклеивал его снова.
+    if f"Присоединено из [[{drop.stem}]]" in text:
+        merged_body = ""
     if merged_body:
         text = text.rstrip("\n") + (
             f"\n\n## Слияние\n\n_Присоединено из [[{drop.stem}]] "
@@ -1434,10 +1438,17 @@ def apply_plan(plan: Plan) -> int:
     for src, dst in plan.moves:
         if os.path.abspath(src) == os.path.abspath(dst):
             continue
+        # Занятое имя в архиве — не повод оставить карточку в базе. Пропуск задумывался
+        # как защита от затирания, а на деле оставлял карточку, которую движок считает
+        # заархивированной: слияние отчитывалось успехом, донор жил дальше и на следующем
+        # прогоне сливался снова. На живой базе так набралось СОРОК ДЕВЯТЬ одинаковых
+        # блоков «Слияние» в одной карточке. Кладём рядом под свободным номером.
         if os.path.exists(dst):
-            print(f"  ! пропущен перенос {src} → {dst}: файл уже существует", file=sys.stderr)
-            skipped += 1
-            continue
+            stem, ext = os.path.splitext(dst)
+            n = 2
+            while os.path.exists(f"{stem}-{n}{ext}"):
+                n += 1
+            dst = f"{stem}-{n}{ext}"
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         shutil.move(src, dst)
     return skipped

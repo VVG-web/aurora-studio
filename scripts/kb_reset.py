@@ -45,6 +45,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402
+                           head_text,
                            is_service)
 
 ROOT = "AuroraKnowledgeDB"
@@ -123,12 +124,12 @@ def scan(drop_unknown: bool) -> tuple:
             rel = os.path.relpath(path, ROOT).replace("\\", "/")
             st, source_alive, machine = "", True, True
             if f.endswith(".md") and not is_service(path):
-                fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read(4000))
+                fm = frontmatter(head_text(path))
                 st = (fm.get("status") or "без статуса").strip()
                 # Источник жив, если жив хоть один из них: карточка накапливает знание
                 # из нескольких артефактов, и снос её из-за одного исчезнувшего значил бы
                 # потерю остальных четырёх.
-                srcs = card_sources(open(path, encoding="utf-8", errors="ignore").read(4000))
+                srcs = card_sources(head_text(path))
                 source_alive = any(os.path.exists(
                     os.path.join(os.path.dirname(ROOT) or ".", s)) for s in srcs)
                 machine = known_machine(fm)
