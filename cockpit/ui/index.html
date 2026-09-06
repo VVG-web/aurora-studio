@@ -693,7 +693,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.42";
+const UI_VERSION = "1.100.43";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4047,8 +4047,10 @@ async function runRoute(sc, write, resume){
   // с пропуском уже сделанного. Кнопку вешаем в `#consoleApply`: новый прогон чистит его
   // в самом начале, так что продолжить можно только один раз — дальше маршрут живёт сам.
   if (bad && S.lastRoute && S.project){
-    $("#consoleApply").append(el("button",{class:"btn sm gold",
-      onclick:()=>resumeLastRoute(S.lastRoute)}, "Продолжить маршрут"));
+    dropResumeButtons();
+    $("#consoleApply").append(el("button",{class:"btn sm gold resume-route",
+      onclick:()=>resumeLastRoute(S.lastRoute)},
+      `Продолжить «${S.lastRoute.title}» · ${S.project.slug}`));
   }
   ROUTE = null;
   // События шагов сохраняем даже на остановке: именно прерванный маршрут чаще всего и
@@ -4118,7 +4120,20 @@ async function resumeLastRoute(last){
 
 /* Кнопка «Продолжить маршрут» после перезапуска: состояние остановленного маршрута читается
    из проекта на загрузке консоли. Время остановки — часами, причина — человеческой подписью. */
+/* Кнопки «Продолжить маршрут» — ровно одна, и она про ТЕКУЩИЙ проект.
+
+   Консоль читает состояние при каждом входе и дорисовывала кнопку, не убирая прежнюю.
+   Переключился между проектами несколько раз — и в консоли висят четыре кнопки, три из
+   них одинаковые, а одна вообще из другого проекта. Понять, какая к чему относится и
+   какую жать, нельзя: подпись у всех одна. Убираем прежние перед отрисовкой и пишем в
+   подписи имя проекта — тогда путаницы не остаётся даже в чужой вкладке. */
+function dropResumeButtons(){
+  $("#consoleApply").querySelectorAll(".resume-route").forEach(b => b.remove());
+}
+
+
 async function showLastRoute(state){
+  dropResumeButtons();
   if (!state || !S.project || ROUTE !== null) return;
   // Сценарий мог пропасть из `cockpit/scenarios.txt` — продолжать нечего, кнопку не рисуем.
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
@@ -4131,16 +4146,17 @@ async function showLastRoute(state){
     : state.reason === "offline" ? "нет сети"
     : state.reason === "stopped" ? "остановлен вами"
     : "остановлен";
-  $("#consoleApply").append(el("button",{class:"btn sm gold",
+  $("#consoleApply").append(el("button",{class:"btn sm gold resume-route",
     onclick:()=>resumeLastRoute(state)},
-    `Продолжить маршрут «${state.title}» (остановлен в ${when} — ${label})`));
+    `Продолжить «${state.title}» · ${S.project.slug} · остановлен в ${when} — ${label}`));
 }
 
 // Офлайн-пауза после перезапуска вкладки: таймер жил в закрытом окне и мог прогореть.
 // Просроченный тик — продолжаем маршрут сразу (кэтч-ап); будущий — рисуем ожидание и
 // заводим таймер заново; упёршийся в лимит — только ручные «Попробовать сейчас».
 function showOfflineResume(state){
-  const holder = el("div",{class:"warn", style:"margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap"});
+  dropResumeButtons();
+  const holder = el("div",{class:"warn resume-route", style:"margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap"});
   const btn = () => el("button",{class:"btn sm gold",
     onclick:()=>{ holder.remove(); resumeLastRoute(state); }}, "Попробовать сейчас");
   const notWait = () => { if (S.project)
