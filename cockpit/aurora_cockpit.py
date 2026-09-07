@@ -1917,6 +1917,14 @@ def agent_state(project: str) -> dict:
     own = {}
     if project:
         own = {k: v for k, v in AG.load_env(Path(project) / ".env.aurora.local").items()}
+    # Китовые значения ролей отдельно: с ними форма может сказать не только «задано в
+    # проекте», но и что именно этим перекрыто.
+    kit_cfg = AG.parse_config(dict(AG.load_env(Path(KIT) / ".env.aurora.local")))
+    kit_models = {b["n"]: dict(b["models"] or {}) for b in kit_cfg["backends"]}
+    for n, models in kit_models.items():
+        base = next((x["model"] for x in kit_cfg["backends"] if x["n"] == n), "")
+        for role in ("worker", "planner", "critic", "qa"):
+            models.setdefault(role, base)
     return {
         "own": sorted(own),
         # Что подключено через MCP: панель показывает объявленное проектом, а не
@@ -1942,8 +1950,13 @@ def agent_state(project: str) -> dict:
         # не участвует вовсе. Числа «фактически: 4» для этого мало.
         "slot_split": ([[n, AG.pool(cfg).count(n)]
                         for n in sorted(set(AG.pool(cfg)))] if cfg.get("backends") else []),
+        # `kit_models` — что задано В КИТЕ, до наложения проекта. Форма показывала только
+        # слитое значение, и переопределение проекта было невидимо: человек выставлял в
+        # ките «flash на все роли», проект молча перекрывал worker на «27b», а понять это
+        # можно было лишь прочитав лог прогона. Теперь панель говорит, что кого перекрыло.
         "backends": [{"n": b["n"], "url": b["url"], "key_set": bool(b["key"]),
                       "model": b["model"], "models": b["models"],
+                      "kit_models": kit_models.get(b["n"], {}),
                       "context": b.get("context", 0),
                       "parallel": b.get("parallel", True),
                       "fallback": b.get("fallback", True),

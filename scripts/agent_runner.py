@@ -467,6 +467,9 @@ def thesis_of(text: str) -> str:
     return card_body(text).split("## Источник (перенесено дословно)", 1)[0]
 
 
+_EXTRACT_LOCK = threading.Lock()   # запись выделенных определений — по одному потоку
+
+
 def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
                  deadline: float = 0.0, prefer: int = 0) -> dict:
     """Вынести из карточки чужие определения в их собственные карточки. → шаг отчёта.
@@ -559,12 +562,17 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     if not apply:
         return step
 
-    for term, definition in made:
-        # Ссылка «перенесено из» ведёт по ИМЕНИ карточки, а не по заголовку: заголовок
-        # может содержать двоеточие, проценты и запятые, которых в имени файла нет, и
-        # такая ссылка не разрешается. Поймано на живой пересборке.
-        place_definition(root, term, definition, os.path.basename(path)[:-3])
-    open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
+    # Замок на запись: осмотр идёт в несколько потоков, и две карточки могут вынести
+    # определение ОДНОГО термина. Без замка оба потока заведут ему карточку — получится
+    # две об одном, ровно то, против чего вся накопительная механика. Модель при этом
+    # ждёт параллельно: под замком только запись, а она быстрая.
+    with _EXTRACT_LOCK:
+        for term, definition in made:
+            # Ссылка «перенесено из» ведёт по ИМЕНИ карточки, а не по заголовку:
+            # заголовок может содержать двоеточие, проценты и запятые, которых в имени
+            # файла нет, и такая ссылка не разрешается. Поймано на живой пересборке.
+            place_definition(root, term, definition, os.path.basename(path)[:-3])
+        open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
     mark_examined(path, frontmatter(open(path, encoding="utf-8", errors="ignore").read()))
     return step
 
@@ -658,22 +666,42 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> 
     if limit:
         todo = todo[:limit]
 
+    # Осмотр шёл В ОДИН ПОТОК, тогда как разбор и переосмысление — в несколько. На
+    # маленькой базе разницы не видно, на большой она решает всё: на живом проекте в
+    # 4500 карточек один оборот пересборки тратил 24 минуты из 33 именно здесь, по сто
+    # десять секунд на карточку. Работа тут та же, что у соседей: ждём ответа модели,
+    # а ждать можно параллельно.
+    #
+    # Записи под замком. Две карточки могут вынести определение ОДНОГО термина, и оба
+    # потока пойдут заводить ему карточку: без замка получится две карточки об одном —
+    # ровно то, против чего вся накопительная механика.
+    from concurrent.futures import ThreadPoolExecutor
+    slots, width = parallel_width(cfg, len(todo))
     print(f"Карточек к осмотру: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
-    steps = []
-    for i, path in enumerate(todo, 1):
+    if todo:
+        print(threads_line(cfg, width), flush=True)
+    steps, done = [], [0]
+
+    def one(idx_path):
+        i, path = idx_path
         if time.time() > budget:
-            steps.append({"card": "—", "status": "стоп", "made": [],
-                          "note": f"бюджет {cfg['budget_min']} мин исчерпан, "
-                                  f"осталось {len(todo) - i + 1}"})
-            print(f"  стоп: бюджет исчерпан, осталось {len(todo) - i + 1}", flush=True)
-            break
-        s = extract_card(cfg, path, call, apply, deadline=budget)
-        steps.append(s)
-        # Ход, который молчит несколько минут, невозможно вести по логам: он неотличим
-        # от зависшего. Остальные задачи агента печатают ход работы — эта печатает тоже.
-        made = ", ".join(s.get("made") or []) or s["status"]
-        print(f"  [{i}/{len(todo)}] {s['card']} → {made}"
-              + (f" · {s['note']}" if s.get("note") else ""), flush=True)
+            return None
+        st = extract_card(cfg, path, call, apply, deadline=budget)
+        done[0] += 1
+        made_names = ", ".join(st.get("made") or []) or st["status"]
+        print(f"  [{done[0]}/{len(todo)}] {st['card']} → {made_names}"
+              + (f" · {st['note']}" if st.get("note") else ""), flush=True)
+        return st
+
+    with ThreadPoolExecutor(max_workers=max(1, width)) as pool:
+        for st in pool.map(one, list(enumerate(todo, 1))):
+            if st is not None:
+                steps.append(st)
+    left = len(todo) - len(steps)
+    if left:
+        steps.append({"card": "—", "status": "стоп", "made": [],
+                      "note": f"бюджет {cfg['budget_min']} мин исчерпан, осталось {left}"})
+        print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
     made = sum(len(s.get("made") or []) for s in steps)
     return {"steps": steps, "cards": len(todo), "made": made,
             "seconds": round(time.time() - started, 1)}
