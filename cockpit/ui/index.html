@@ -5147,13 +5147,30 @@ async function renderAgentCard(box, scope){
           "потоков:", el("input",{class:"btn",style:"width:78px;font-weight:400",
             type:"number", value:b.width||1,
             oninput:e=>touch(pre+"WIDTH", e.target.value)}))),
+      // Под каждой ролью — та модель, которая ДЕЙСТВИТЕЛЬНО возьмёт её запрос, и
+      // откуда это значение пришло. Форма показывала только своё поле, а работало
+      // слитое: человек выставлял в ките «flash на все роли», проект молча перекрывал
+      // worker на «27b», и понять это можно было лишь прочитав лог прогона.
       el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
-        ...["worker","planner","critic","qa"].map(r =>
-          el("label",{style:"flex:1;min-width:130px"},
+        ...["worker","planner","critic","qa"].map(r => {
+          const key = pre + "MODEL_" + r.toUpperCase();
+          const own_here = own.has(key);
+          const eff = (b.models||{})[r] || b.model || "";
+          const from = !eff ? ""
+            : own_here ? "задано в проекте"
+            : (scope === "project" ? "из кита" : "задано здесь");
+          const overrides = own_here && (b.kit_models||{})[r] && (b.kit_models||{})[r] !== eff
+            ? ", перекрывает " + (b.kit_models||{})[r] + " из кита" : "";
+          return el("label",{style:"flex:1;min-width:150px"},
             el("div",{class:"muted",style:"font-size:11px"}, r),
             el("input",{class:"btn",style:"width:100%;font-weight:400;font-size:12px",
               value:(b.models||{})[r]||"", list:"models-"+n,
-              oninput:e=>touch(pre+"MODEL_"+r.toUpperCase(), e.target.value)})))));
+              placeholder: b.model ? "" : "не задано",
+              oninput:e=>touch(key, e.target.value)}),
+            el("div",{class:"muted",style:"font-size:10.5px;margin-top:2px"},
+              eff ? "работает: " + eff + " (" + from + overrides + ")"
+                  : "модель не задана — роль не поедет"));
+        })));
   };
 
   const pingBox = el("div",{});

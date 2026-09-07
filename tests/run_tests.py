@@ -9899,6 +9899,41 @@ def test_a_long_card_is_indexed_whole_not_just_its_beginning(tmp: Path):
 
 
 @test
+def test_the_panel_shows_which_model_actually_takes_the_role(tmp: Path):
+    """Под ролью видно, какая модель её возьмёт и откуда это значение.
+
+    Форма показывала только СВОЁ поле, а работало слитое: кит < проект. Человек выставлял
+    в ките «flash на все роли», проект молча перекрывал `worker` на «27b» — и понять это
+    можно было единственным способом: запустить прогон и прочитать в логе, кто ответил.
+    На живом проекте так и вышло: 326 вызовов тяжёлой модели там, где ожидали быструю.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    C = importlib.import_module("aurora_cockpit")
+
+    proj = tmp / "проект"
+    (proj / "AuroraKnowledgeDB").mkdir(parents=True)
+    (proj / ".env.aurora.local").write_text(
+        "AURORA_AGENT_BACKEND_1_MODEL_WORKER=тяжёлая\n", encoding="utf-8")
+    st = C.agent_state(str(proj))
+    b1 = next(b for b in st["backends"] if b["n"] == 1)
+    assert b1["models"].get("worker") == "тяжёлая", \
+        why(b1["models"]) or "действующая модель роли не та, что задана в проекте"
+    assert "kit_models" in b1, \
+        "панель не получает китовых значений — сказать «перекрывает» ей будет нечем"
+    assert (prefix := "AURORA_AGENT_BACKEND_1_MODEL_WORKER") in st["own"], \
+        why(st["own"]) or "не видно, что значение задано именно в проекте"
+    assert prefix  # имя переменной названо в тесте, чтобы правка ключа его сломала
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "работает: " in ui and "перекрывает " in ui, \
+        "под ролью не сказано, какая модель её возьмёт и что она перекрывает"
+    assert "модель не задана — роль не поедет" in ui, \
+        "пустая роль молчит: человек узнает о ней на прогоне"
+
+
+@test
 def test_only_one_resume_button_and_it_names_its_project(tmp: Path):
     """Кнопка «Продолжить маршрут» одна, и по ней видно, к какому проекту она.
 
