@@ -914,33 +914,52 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
     todo.sort()
     if limit:
         todo = todo[:limit]
-    print(f"Карточек к связыванию: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
 
-    steps, left = [], 0
-    for i, path in enumerate(todo, 1):
+    # Связывание шло В ОДИН ПОТОК, тогда как разбор, переосмысление и выделение — в
+    # несколько. Работа тут та же самая: ждём ответа модели, а ждать можно параллельно.
+    # На живой базе это сто десять секунд на карточку и тридцать часов на тысячу —
+    # маршрут «Пересобрать базу с нуля» на этом шаге просто не доходил до конца.
+    #
+    # Замок не нужен: поток пишет только СВОЮ карточку — тело и отметку. Соседние
+    # карточки он читает (список названных в тексте), но не трогает.
+    from concurrent.futures import ThreadPoolExecutor
+    slots, width = parallel_width(cfg, len(todo))
+    print(f"Карточек к связыванию: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
+    if todo:
+        print(threads_line(cfg, width), flush=True)
+    steps, done = [], [0]
+
+    def one(idx_path):
+        i, path = idx_path
         if time.time() > budget:
-            left = len(todo) - i + 1
-            steps.append({"card": "—", "status": "стоп", "added": 0,
-                          "note": f"бюджет исчерпан, осталось {left}",
-                          "backends": []})
-            print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
-            break
-        s = relink_card(cfg, path, call, apply, deadline=budget)
-        steps.append(s)
+            return None
+        st = relink_card(cfg, path, call, apply, deadline=budget)
         # «пропущена» здесь наравне с остальными: карточку посмотрели и решили не
         # связывать. Не отметить её значит вернуть в очередь навсегда — на живой базе
         # после полного прогона `--until-done` очередь всё равно показывала три штуки,
         # и это были ровно пропущенные.
-        if apply and s["status"] in ("связана", "нечего связывать", "отброшен",
-                                     "пропущена"):
+        if apply and st["status"] in ("связана", "нечего связывать", "отброшен",
+                                      "пропущена"):
             mark_relinked(path)
+        done[0] += 1
         # «+3» без записи читается как сделанная работа. Предпросмотр обязан говорить,
         # что он предпросмотр, в каждой строке — сводку в конце читают не всегда.
-        mark = (f"+{s['added']}" if s["added"] else s["status"])
-        if s["added"] and not apply:
+        mark = (f"+{st['added']}" if st["added"] else st["status"])
+        if st["added"] and not apply:
             mark += " (предпросмотр)"
-        print(f"  [{i}/{len(todo)}] {s['card']} → {mark}"
-              + (f" · {s['note']}" if s["note"] else ""), flush=True)
+        print(f"  [{done[0]}/{len(todo)}] {st['card']} → {mark}"
+              + (f" · {st['note']}" if st["note"] else ""), flush=True)
+        return st
+
+    with ThreadPoolExecutor(max_workers=max(1, width)) as pool:
+        for st in pool.map(one, list(enumerate(todo, 1))):
+            if st is not None:
+                steps.append(st)
+    left = len(todo) - len(steps)
+    if left:
+        steps.append({"card": "—", "status": "стоп", "added": 0,
+                      "note": f"бюджет исчерпан, осталось {left}", "backends": []})
+        print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
     added = sum(s["added"] for s in steps)
     return {"steps": steps, "cards": len(todo), "added": added, "left": left,
             "seconds": round(time.time() - started, 1)}
