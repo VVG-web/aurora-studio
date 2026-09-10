@@ -30,6 +30,11 @@ def read_config(path: Path) -> dict:
     cfg = {
         "name": "", "slug": "",
         "conf_url": "", "conf_space": "", "sync_roots": [], "web_pages": [],
+        # Настройки обхода веб-страниц. Читаются и возвращаются на место при каждой
+        # записи конфига: панель правит СПИСОК адресов, и перезапись блока целиком
+        # стирала всё остальное. На живом проекте так пропала глубина обхода — человек
+        # добавил два адреса, а зеркало молча перестало ходить по внутренним ссылкам.
+        "web_depth": "", "web_assets": "", "web_max_pages": "",
         "jira_url": "", "jira_key": "", "jira_jql": "",
         "trust_statuses": "", "assumption_statuses": "",
         "trusted_sources": "", "trusted_sections": "",
@@ -56,6 +61,12 @@ def read_config(path: Path) -> dict:
         cfg["web_pages"].append((m.group(1).strip().strip('"\''),
                                  m.group(2).strip().strip('"\'').lower()
                                  in ("true", "yes", "да")))
+    wblock = (re.search(r"(?ms)^web:\s*$(.*?)(?=^\S|\Z)", text) or [None, ""])[1]
+    for key, name in (("web_depth", "depth"), ("web_assets", "assets"),
+                      ("web_max_pages", "max_pages")):
+        m = re.search(rf"^\s+{name}\s*:\s*(\S+)", wblock, re.M)
+        if m:
+            cfg[key] = m.group(1).strip().strip('"\'')
     # sync_roots: пары page_id / title
     for m in re.finditer(r'page_id:\s*"?([^"\n]+?)"?\s*\n\s*title:\s*"?([^"\n]+?)"?\s*(?:\n|$)', cblock):
         cfg["sync_roots"].append((m.group(1).strip(), m.group(2).strip()))
@@ -116,12 +127,17 @@ def write_config(path: Path, c: dict):
             lines.append(f'      - page_id: "{pid}"\n        title: "{title}"'
                          + (f'\n        url: "{url}"' if url else ""))
         roots = "\n" + "\n".join(lines)
-    pages = "\n  pages: []"
+    pages = ""
+    for key, name in (("web_depth", "depth"), ("web_assets", "assets"),
+                      ("web_max_pages", "max_pages")):
+        if str(c.get(key) or "").strip():
+            pages += f"\n  {name}: {c[key]}"
+    pages += "\n  pages: []"
     if c.get("web_pages"):
         rows = "\n".join(f'    - url: {u}\n      trusted: {"true" if tr else "false"}'
                           for u, tr in c["web_pages"] if str(u).strip())
         if rows:
-            pages = "\n  pages:\n" + rows
+            pages = pages.replace("\n  pages: []", "\n  pages:\n" + rows)
     sources, sync_skills = source_sections(path.parent, c["slug"])
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .opencode/scripts/aurora_setup.py

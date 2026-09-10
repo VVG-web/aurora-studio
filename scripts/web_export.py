@@ -61,6 +61,12 @@ PAUSE = 0.4                  # пауза между запросами: чуж�
 ASSET_EXT = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".rtf", ".zip", ".csv",
              ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
 ASSET_DIR = "_files"         # с подчёркивания: движок не считает это карточками
+# Слова в адресе, по которым раздел опознаётся как ЛЕНТА: новости, пресс-релизы, блог.
+# Лента — поток событий, а не свод знания: «Встреча делегации» и «Назначен заместитель»
+# сущностями предметной области не являются. Признак угадывается по адресу и может быть
+# переопределён в конфиге (`feed: true|false` у страницы): у каждого сайта свои слова.
+FEED_WORDS = ("/news", "/novosti", "/press", "/pressa", "/blog", "/smi", "/anons",
+              "/sobytiya", "/events")
 
 # Сколько знаков имени файла берём от заголовка страницы. Остальное — хвост хеша адреса:
 # два разных адреса нередко дают одинаковый заголовок («Главная», «Документация»), и без
@@ -79,8 +85,10 @@ def settings_from_config(text: str) -> dict:
     Потолок страниц — не оптимизация, а предохранитель: раздел с постраничной навигацией
     ссылается сам на себя бесконечно, и обход без потолка выкачивает сайт целиком.
     """
-    body = block(text, "\nweb:", "\nprivacy:", "\natlassian:", "\nsources:",
-                 "\nknowledge:", "\nproject:")
+    # Ищем ключ и в самом начале файла: `block` берёт его по «\nweb:», и конфиг, где
+    # блок стоит первой строкой, читался бы как пустой — молча, без единого слова.
+    body = block("\n" + text, "\nweb:", "\nprivacy:", "\natlassian:", "\nsources:",
+                 "\nknowledge:", "\nproject:", "\npaths:")
     def num(key, default):
         m = re.search(rf"^\s*{key}\s*:\s*(\d+)", body, re.M)
         return int(m.group(1)) if m else default
@@ -105,23 +113,34 @@ def pages_from_config(text: str) -> list:
             - url: https://example.org/blog
               trusted: false
     """
-    body = block(text, "\nweb:", "\nprivacy:", "\natlassian:", "\nsources:",
-                  "\nknowledge:", "\nproject:")
-    out, url = [], ""
+    # «\n» + текст: `block` ищет ключ по «\nweb:», и конфиг, где блок стоит первой
+    # строкой, читался бы как пустой — молча, без единого слова.
+    body = block("\n" + text, "\nweb:", "\nprivacy:", "\natlassian:", "\nsources:",
+                 "\nknowledge:", "\nproject:", "\npaths:")
+    def yes(v: str) -> bool:
+        return v.strip().strip("\"'").lower() in ("true", "yes", "да")
+
+    out, url, trust, feed = [], "", False, None
+    def flush():
+        if url:
+            out.append((url, trust, is_feed(url, feed)))
     for line in body.splitlines():
         s = line.strip()
         m = re.match(r"^-\s*url\s*:\s*(\S+)", s)
         if m:
-            if url:
-                out.append((url, False))
-            url = m.group(1).strip().strip("\"'")
+            flush()
+            url, trust, feed = m.group(1).strip().strip("\"'"), False, None
             continue
         m = re.match(r"^-?\s*trusted\s*:\s*(\S+)", s)
         if m and url:
-            out.append((url, m.group(1).strip().strip("\"'").lower() in ("true", "yes", "да")))
-            url = ""
-    if url:
-        out.append((url, False))
+            trust = yes(m.group(1))
+            continue
+        m = re.match(r"^-?\s*feed\s*:\s*(\S+)", s)
+        if m and url:
+            # Явное указание сильнее догадки по адресу: у каждого сайта свои слова
+            # для новостного раздела, и угадать их все нельзя.
+            feed = yes(m.group(1))
+    flush()
     return out
 
 
@@ -300,13 +319,25 @@ def fetch_asset(url: str, out_dir: str, apply: bool, label: str = "") -> tuple:
     return name, ""
 
 
+def is_feed(url: str, declared=None) -> bool:
+    """Лента ли это. Явное указание в конфиге сильнее догадки по адресу."""
+    if declared is not None:
+        return bool(declared)
+    low = urllib.parse.urlparse(url).path.lower()
+    return any(w in low for w in FEED_WORDS)
+
+
 def card_text(url: str, title: str, trusted: bool, body: str, seed: str = "",
-              files: list = ()) -> str:
+              files: list = (), feed: bool = False) -> str:
     """Файл зеркала. Даты выгрузки в шапке НЕТ — иначе каждый прогон даёт дифф на всю папку."""
     head = [f'title: "{(title or url).replace(chr(34), chr(39))}"',
             f"url: {url}",
             f"trusted: {'true' if trusted else 'false'}",
             "source_kind: web"]
+    if feed:
+        # Разбор читает эту отметку и применяет к ленте строгое правило: карточка
+        # заводится только на ПРЕДМЕТ, о котором говорит заметка, а не на само событие.
+        head.append("feed: true")
     if seed and seed != url:
         # По какому адресу списка страница найдена. Нужно, чтобы снятая ссылка убирала
         # за собой ВСЁ, что с неё пришло, а не только саму страницу.
@@ -330,6 +361,64 @@ def local_links(md: str, base_url: str, saved: dict) -> str:
         name = saved.get(full)
         return f"{m.group(1)}({ASSET_DIR}/{name})" if name else m.group(0)
     return re.sub(r"(!?\[[^\]]*\])\(([^)\s]+)[^)]*\)", repl, md)
+
+
+def promote_documents(out_dir: str, apply: bool) -> int:
+    """Текст скачанного документа — такой же источник, как страница сайта.
+
+    `kb:ingest-office` кладёт расшифровку рядом с оригиналом, в `_files/`. Разбор туда не
+    заходит и не должен: папка с подчёркивания — вложения, а не источники. Но тогда закон,
+    приказ и методические рекомендации остаются в базе картинкой на диске: файл есть,
+    знания из него нет.
+
+    Поэтому расшифровку поднимаем в корень зеркала отдельной страницей. Провенанс —
+    адрес самого документа, доверие наследуется от страницы, которая на него сослалась:
+    решение о доверии человек принял для страницы, и документ с неё им же и накрыт.
+    """
+    made = 0
+    files_dir = os.path.join(out_dir, ASSET_DIR)
+    if not os.path.isdir(files_dir):
+        return 0
+    # какая страница на какое вложение ссылается и с каким доверием
+    owner: dict = {}
+    for name in sorted(os.listdir(out_dir)):
+        if not name.endswith(".md"):
+            continue
+        text = open(os.path.join(out_dir, name), encoding="utf-8", errors="ignore").read()
+        head = text.split("---", 2)[1] if text.startswith("---") else ""
+        trusted = "trusted: true" in head
+        page_url = (re.search(r"^url:\s*(\S+)", head, re.M) or [None, ""])[1]
+        for m in re.finditer(rf"\({re.escape(ASSET_DIR)}/([^)]+)\)", text):
+            owner.setdefault(m.group(1), (trusted, page_url))
+
+    for name in sorted(os.listdir(files_dir)):
+        if not name.endswith(".md"):
+            continue
+        stem = name[:-3]
+        binary = next((f for f in os.listdir(files_dir)
+                       if f.startswith(stem) and not f.endswith(".md")), "")
+        trusted, page_url = owner.get(binary, (False, ""))
+        src = open(os.path.join(files_dir, name), encoding="utf-8", errors="ignore").read()
+        body = src.split("---", 2)[2].strip() if src.startswith("---") else src.strip()
+        title = re.sub(r"-[0-9a-f]{8}$", "", stem).replace("-", " ").strip()
+        dest = os.path.join(out_dir, f"{stem}.md")
+        text = ("---\n"
+                f'title: "{title}"\n'
+                f"url: {page_url}\n"
+                f"trusted: {'true' if trusted else 'false'}\n"
+                "source_kind: web-document\n"
+                f"document: {ASSET_DIR}/{binary}\n"
+                "---\n\n"
+                f"# {title}\n\n"
+                f"> Текст документа, снятый машиной с `{binary}`. Истина — оригинал; "
+                "при верификации цитировать следует его.\n\n"
+                f"{body}\n")
+        was = open(dest, encoding="utf-8").read() if os.path.isfile(dest) else None
+        if was != text:
+            made += 1
+            if apply:
+                open(dest, "w", encoding="utf-8").write(text)
+    return made
 
 
 class WebMirror(BoardMirror):
@@ -368,10 +457,11 @@ def run(a) -> int:
           f"потолок страниц на адрес: {opt['max_pages']}\n")
     failed = files_total = 0
     seen: set = set()
-    for seed, trusted in pages:
+    for seed, trusted, feed in pages:
         queue = [(seed, 0)]
         taken = 0
-        print(f"## {seed} · {'доверенная' if trusted else 'недоверенная'}")
+        print(f"## {seed} · {'доверенная' if trusted else 'недоверенная'}"
+              + (" · лента: карточка только на предмет, не на событие" if feed else ""))
         while queue and taken < opt["max_pages"]:
             url, depth = queue.pop(0)
             if url in seen:
@@ -390,6 +480,29 @@ def run(a) -> int:
                       f"`pip install beautifulsoup4 markdownify`")
                 mirror.rows.append((url, trusted, "—", "нет библиотек разбора"))
                 continue
+            rel = slug(url, title)
+            path = os.path.join(mirror.out, rel)
+
+            def store(md: str, files: list) -> tuple:
+                text = card_text(url, title, trusted, md, seed, files, feed)
+                was = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
+                if a.apply and was != text:
+                    open(path, "w", encoding="utf-8").write(text)
+                return text, was
+
+            # Страницу записываем СРАЗУ, до вложений. Вложений у страницы бывает полтора
+            # десятка, качаются они минуты, и прогон, прерванный посередине, оставлял на
+            # диске картинки без страницы: работа сделана, а записи о ней нет. Со стороны
+            # это выглядит как «скачались одни картинки». Ссылки в этом первом варианте
+            # ведут на сайт; после вложений текст перезаписывается с локальными.
+            text, was = store(body, [])
+            status = "без изменений" if was == text else ("обновлена" if was else "новая")
+            # Говорим о странице СРАЗУ. Вложений у неё бывает полтора десятка, качаются
+            # они минуты, и шаг, молчащий всё это время, по логам неотличим от зависшего:
+            # человек видит «## раздел» и тишину, хотя страница уже на диске.
+            print(f"  {'✅' if a.apply else '(dry-run)'} [{taken + 1}/{opt['max_pages']}] "
+                  f"{url} → {rel} · {status}"
+                  + (f" · вложений к загрузке {len(assets)}" if assets else ""), flush=True)
             saved: dict = {}
             if opt["assets"]:
                 for src, label in assets:
@@ -398,26 +511,25 @@ def run(a) -> int:
                         saved[src] = name
                     elif aerr:
                         print(f"     ! вложение {src} — {aerr[:70]}")
-                body = local_links(body, url, saved)
-            rel = slug(url, title)
-            path = os.path.join(mirror.out, rel)
-            text = card_text(url, title, trusted, body, seed, list(saved.values()))
-            was = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
-            status = "без изменений" if was == text else ("обновлена" if was else "новая")
-            if a.apply and was != text:
-                open(path, "w", encoding="utf-8").write(text)
+                if saved:
+                    text, _ = store(local_links(body, url, saved), list(saved.values()))
+                    status = "без изменений" if was == text else ("обновлена" if was else "новая")
             mirror.rows.append((url, trusted, rel, status))
             files_total += len(saved)
             taken += 1
-            print(f"  {'✅' if a.apply else '(dry-run)'} [{taken}/{opt['max_pages']}] "
-                  f"{url} → {rel} · {status}"
-                  + (f" · вложений {len(saved)}" if saved else ""), flush=True)
+            if saved:
+                print(f"     вложений сохранено: {len(saved)}", flush=True)
             if depth + 1 < opt["depth"]:
                 queue += [(l, depth + 1) for l in links if l not in seen]
             time.sleep(PAUSE)
         if queue:
             print(f"  … потолок {opt['max_pages']} страниц исчерпан, "
                   f"в очереди осталось {len(queue)}")
+    # Расшифровки скачанных документов поднимаем в корень зеркала: их текст — источник
+    # знания наравне со страницей, а из `_files/` разбор его не увидит.
+    lifted = promote_documents(mirror.out, a.apply)
+    if lifted:
+        print(f"\nРасшифровок документов поднято в источники: {lifted}")
     if a.apply:
         mirror.write_state()
     keep = {r[2] for r in mirror.rows if r[2] != "—"}

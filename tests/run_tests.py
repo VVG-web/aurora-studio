@@ -12603,10 +12603,12 @@ def test_web_pages_are_their_own_source_with_their_own_trust(tmp: Path):
            '    - url: https://blog.example/post\n      trusted: false\n'
            '    - url: https://example.org/no-flag\n'
            'privacy:\n  scrub: report\n')
+    # Третьим идёт признак ленты: раздел новостей разбирается по строгому правилу —
+    # карточка на предмет, а не на событие. Здесь лент нет, и все три — False.
     pages = W.pages_from_config(cfg)
-    assert pages == [("https://law.example/nk", True),
-                     ("https://blog.example/post", False),
-                     ("https://example.org/no-flag", False)], pages
+    assert pages == [("https://law.example/nk", True, False),
+                     ("https://blog.example/post", False, False),
+                     ("https://example.org/no-flag", False, False)], pages
 
     # Имя файла: два разных адреса с одинаковым заголовком не смеют писаться в один файл —
     # заголовки страниц повторяются («Главная», «Документация»), и второй затирал бы первый.
@@ -12653,6 +12655,130 @@ def test_web_pages_are_their_own_source_with_their_own_trust(tmp: Path):
         assert cls == "raw", "папка в доверенных не сработала там, где ссылка промолчала"
     finally:
         os.chdir(cur)
+
+
+@test
+def test_a_news_item_becomes_a_card_only_when_it_has_a_subject(tmp: Path):
+    """Лента разбирается по строгому правилу: карточка на предмет, а не на событие.
+
+    Новостная заметка — хроника: «Встреча делегации», «Назначен заместитель». Завтра
+    выйдет следующая, и карточка устареет, не успев пригодиться. По правилу заказчика
+    карточка — сущность, а не документ, и событие сущностью не является.
+
+    Но лента приносит и предмет: «Пилотный проект внедрения онлайн-касс» — это порядок,
+    а не происшествие. Поэтому ленту не выключают целиком, а судят по содержанию.
+
+    Признак ставит ЗЕРКАЛО по разделу, который назвал человек, — не разбор по догадке о
+    тексте. Явное `feed:` в конфиге сильнее догадки по адресу: слова для новостного
+    раздела у каждого сайта свои.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+    R = importlib.import_module("agent_runner")
+
+    assert W.is_feed("https://a.example/news/x"), "раздел новостей не опознан лентой"
+    assert W.is_feed("https://a.example/press-centr/"), "пресс-центр не опознан лентой"
+    assert not W.is_feed("https://a.example/docs/"), "свод документов принят за ленту"
+    assert not W.is_feed("https://a.example/news/x", declared=False), \
+        "явное «не лента» в конфиге проиграло догадке по адресу"
+    assert W.is_feed("https://a.example/docs/", declared=True), \
+        "явное «лента» в конфиге проиграло догадке по адресу"
+
+    cfg = ("web:\n  pages:\n"
+           "    - url: https://a.example/news/\n      trusted: true\n"
+           "    - url: https://a.example/docs/\n      trusted: true\n"
+           "    - url: https://a.example/blog/\n      trusted: false\n      feed: false\n")
+    got = W.pages_from_config(cfg)
+    assert got == [("https://a.example/news/", True, True),
+                   ("https://a.example/docs/", True, False),
+                   ("https://a.example/blog/", False, False)], got
+
+    root = tmp / "p"
+    (root / "Sources" / "Web").mkdir(parents=True)
+    (root / "Sources/Web/zametka.md").write_text(
+        W.card_text("https://a.example/news/x", "Заметка", True, "Текст.",
+                    "https://a.example/news/", [], True), encoding="utf-8")
+    (root / "Sources/Web/prikaz.md").write_text(
+        W.card_text("https://a.example/docs/x", "Приказ", True, "Текст.",
+                    "https://a.example/docs/", [], False), encoding="utf-8")
+    assert R.source_is_feed(str(root), "Sources/Web/zametka.md"), \
+        "отметка ленты не читается разбором — правило не применится"
+    assert not R.source_is_feed(str(root), "Sources/Web/prikaz.md"), \
+        "свод документов принят за ленту: половина знания не попадёт в базу"
+
+    # Правило обязано доезжать до задания модели, а не только жить в константе.
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    blk = src[src.index("def solve_source("):src.index("\ndef judge_empty(")]
+    assert "feed_rule" in blk and "source_is_feed" in blk, \
+        "разбор не спрашивает, лента ли это — правило останется мёртвой строкой"
+    assert '"cards": []' in R.FEED_RULE, \
+        "модели не сказано, ЧТО отвечать, когда предмета в заметке нет"
+
+
+@test
+def test_a_crawled_page_survives_an_interrupted_run(tmp: Path):
+    """Страница пишется до вложений, а текст документа становится источником.
+
+    Вложений у страницы бывает полтора десятка, качаются они минуты. Пока страница
+    записывалась ПОСЛЕ них, прогон, прерванный посередине, оставлял на диске картинки
+    без страницы: работа сделана, записи о ней нет. На живом сайте так и вышло — восемь
+    фотографий и ни одной страницы, и со стороны это выглядело как «скачались одни
+    картинки».
+
+    Второе: расшифровка скачанного документа лежит в `_files/`, куда разбор не заходит
+    и не должен — папка с подчёркивания это вложения. Значит закон и приказ остались бы
+    в базе файлом на диске: он есть, знания из него нет. Расшифровку поднимаем в корень
+    зеркала отдельным источником, наследуя доверие от страницы, которая на него сослалась.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+
+    out = tmp / "Sources" / "Web"
+    (out / W.ASSET_DIR).mkdir(parents=True)
+
+    # страница-владелец: доверенная, ссылается на приказ
+    (out / "Документы-aaaaaaaa.md").write_text(
+        W.card_text("https://law.example/docs/", "Документы", True,
+                    "Список документов.\n\n[Приказ](_files/Приказ-11111111.pdf)",
+                    "https://law.example/docs/", ["Приказ-11111111.pdf"]),
+        encoding="utf-8")
+    (out / W.ASSET_DIR / "Приказ-11111111.pdf").write_bytes(b"%PDF-1.4")
+    (out / W.ASSET_DIR / "Приказ-11111111.md").write_text(
+        '---\ntitle: "Приказ-11111111"\nconverter: pandoc\n---\n\nПункт 1. Ставка налога.\n',
+        encoding="utf-8")
+    # вложение, на которое никто не ссылается: доверие не наследуется ниоткуда
+    (out / W.ASSET_DIR / "Ничей-22222222.pdf").write_bytes(b"%PDF-1.4")
+    (out / W.ASSET_DIR / "Ничей-22222222.md").write_text("Текст ничей.\n", encoding="utf-8")
+
+    made = W.promote_documents(str(out), apply=True)
+    assert made == 2, f"расшифровки не подняты в источники: {made}"
+
+    lifted = (out / "Приказ-11111111.md").read_text(encoding="utf-8")
+    assert "trusted: true" in lifted, \
+        f"документ не унаследовал доверие страницы, которая на него сослалась:\n{lifted[:300]}"
+    assert "url: https://law.example/docs/" in lifted, "провенанс потерян"
+    assert "Пункт 1. Ставка налога." in lifted, "текст документа не перенесён"
+    assert "document: _files/Приказ-11111111.pdf" in lifted, "не сказано, с какого файла снят текст"
+
+    orphan = (out / "Ничей-22222222.md").read_text(encoding="utf-8")
+    assert "trusted: false" in orphan, \
+        "документ без страницы-владельца объявлен доверенным — доверие взялось ниоткуда"
+
+    # повторный подъём ничего не меняет: прогон маршрута идёт по многу раз
+    assert W.promote_documents(str(out), apply=True) == 0, "подъём не идемпотентен"
+
+    # имя документа берётся из блока страницы, а не из кнопки «Скачать»
+    from bs4 import BeautifulSoup                                   # noqa: PLC0415
+    soup = BeautifulSoup(
+        '<div><div>ПРИКАЗ №38 О пилотном проекте'
+        '<div>Дата публикации: 21 Мая 2026<a href="/x/y.pdf">Скачать (PDF, 354.88 КБ)</a>'
+        "</div></div></div>", "html.parser")
+    label = W.link_label(soup.find("a"))
+    assert "ПРИКАЗ" in label and "Скачать" not in label, \
+        f"именем документа стала подпись кнопки: «{label}»"
+    assert W.asset_name("https://law.example/x/y.pdf", label).endswith(".pdf")
 
 
 @test

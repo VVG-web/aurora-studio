@@ -1639,7 +1639,7 @@ def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) ->
     import kb_translit as KT
     started = time.time()
     budget = started + cfg["budget_min"] * 60
-    root = os.path.join(cwd, KB_ROOT)
+    root = os.path.join(cwd, "AuroraKnowledgeDB")
     dict_path = os.path.join(root, "meta", "translit.md")
     rows = KT.read_dict(dict_path)
     todo = [path for path, stem in KT.latin_cards(root) if not rows.get(stem)]
@@ -2382,6 +2382,38 @@ def candidates_block(rows: list) -> str:
     return "\n".join(lines)
 
 
+FEED_RULE = """
+
+ОСОБОЕ ПРАВИЛО ДЛЯ ЭТОГО ИСТОЧНИКА: это ЛЕНТА (новости, пресс-релизы).
+
+Событие карточкой не становится. «Встреча делегации», «Назначен заместитель», «Принял
+участие в совещании», «Поступления за месяц» — это хроника: завтра выйдет следующая
+заметка, и карточка устареет, не успев пригодиться.
+
+Карточку заводи ТОЛЬКО если заметка вводит ПРЕДМЕТ и говорит о нём по существу: новый
+порядок, система, документ, орган, процедура, обязанность, срок. Тогда карточка
+называется предметом, а не заголовком заметки: «Пилотный проект внедрения онлайн-касс»,
+а не «1 июня стартует пилотный проект».
+
+Если предмета нет и вся заметка — событие, верни пустой список карточек: `{"cards": []}`.
+Это правильный ответ, а не отказ от работы."""
+
+
+def source_is_feed(cwd: str, source: str) -> bool:
+    """Помечен ли источник как лента. Отметку ставит зеркало при выгрузке."""
+    path = os.path.join(cwd, source)
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            head = f.read(600)
+    except OSError:
+        return False
+    if not head.startswith("---") or head.count("---") < 2:
+        return False
+    return bool(re.search(r"(?m)^feed:\s*true\s*$", head.split("---")[1]))
+
+
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.
 
 Источник: {source}
@@ -2599,9 +2631,13 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
 
     # Кандидаты из базы — впереди всего: модель должна увидеть, что карточка про эту
     # сущность уже есть, ДО того как начнёт придумывать ей имя.
+    # Лента новостей разбирается по строгому правилу: заметка о событии сущностью не
+    # является. Признак ставит зеркало (`feed: true` в шапке источника) — по разделу,
+    # который назвал человек, а не по нашей догадке о содержании.
+    feed_rule = FEED_RULE if source_is_feed(cwd, source) else ""
     cands = candidates_block(candidates_for(cwd, cfg, listing))
     prompt = cands + with_terms(PROMPT_BUILD.format(source=source, sections=listing),
-                                listing, cwd)
+                                listing, cwd) + feed_rule
     attempt, note_back = 0, ""
     while True:
         attempt += 1
@@ -5279,6 +5315,17 @@ def main() -> int:
                                  not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 0
+    if a.task == "translit":
+        # Свой вердикт: общий оракул считает разобранные КОНФЛИКТЫ, а здесь работа —
+        # переводы имён. Ноль переводов не провал: латинских имён может не остаться или
+        # все они окажутся английскими словами, которые переводить нечего.
+        if a.apply and res["translated"]:
+            done = commit_result(cwd, "agent:translit",
+                                 f"имён переведено: {res['translated']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        broken = sum(1 for s in res["steps"] if s["status"] == "сбой")
+        return 1 if broken else 0
     if a.task == "distill":
         # Свой вердикт: успех — переписанные карточки, находка — утверждения без опоры.
         made = sum(1 for s in res["steps"] if s["status"] == "переписана")
