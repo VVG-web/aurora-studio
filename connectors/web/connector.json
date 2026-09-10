@@ -1,0 +1,35 @@
+{
+  "id": "web",
+  "title": "Веб-страницы",
+  "kind": "board",
+  "role": "artifacts",
+  "since": "1.101.0",
+  "what": "Страницы по списку адресов: каждая сохраняется в кеш проекта отдельным файлом. Для каждой ссылки человек говорит, доверять ей или нет — закон и стандарт доверены, чужой блог нет.",
+  "mirror": {
+    "default_path": "Sources/Web",
+    "state": "update_log.md"
+  },
+  "run": {
+    "script": "web_export.py",
+    "command": "sync:web",
+    "skill": "web-sync"
+  },
+  "auth": {
+    "env_prefix": "WEB",
+    "what": "не нужен для открытых страниц; WEB_PERSONAL_TOKEN — если сайт просит Bearer"
+  },
+  "settings_block": "web",
+  "settings": [
+    {
+      "key": "pages",
+      "what": "список страниц: url и галочка «доверять»",
+      "required": true
+    }
+  ],
+  "requires": {
+    "python": [
+      "beautifulsoup4",
+      "markdownify"
+    ]
+  }
+}

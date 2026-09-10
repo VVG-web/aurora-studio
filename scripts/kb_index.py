@@ -216,9 +216,20 @@ def main() -> int:
     print(f"# Индексы разделов — {TODAY}\n")
     written, skipped, adopted, totals = 0, [], [], []
     base = {s: collect(os.path.join(KB_ROOT, s)) for s in sections}
+    dropped = []
     for section in sections:
         rows = base[section]
         if not rows:
+            # Раздел опустел — оглавление обязано уйти вместе с ним. Пропуск оставлял на
+            # диске файл, перечисляющий карточки, которых в базе больше нет, и починить
+            # его было нечем: следующий прогон до него снова не доходил. Трогаем только
+            # своё — оглавление с нашей меткой; написанное руками не наше.
+            target = os.path.join(KB_ROOT, section, "_index.md")
+            if os.path.isfile(target):
+                if MARK in open(target, encoding="utf-8", errors="ignore").read():
+                    dropped.append(section)
+                    if a.apply:
+                        os.remove(target)
             continue
         # имена карточек других разделов: ссылка туда — признак текста, а не оглавления
         elsewhere = {n for s, rs in base.items() if s != section for r in rs for n in r["names"]}
@@ -240,6 +251,10 @@ def main() -> int:
 
     print("| Раздел | Карточек |")
     print("|---|---|")
+    if dropped:
+        print(("✅ убраны оглавления опустевших разделов: " if a.apply
+               else "(dry-run) убрать оглавления опустевших разделов: ")
+              + ", ".join(dropped) + "\n")
     for section, n in totals:
         print(f"| {section} | {n} |")
     print(f"\nИндексов к обновлению: {written}")

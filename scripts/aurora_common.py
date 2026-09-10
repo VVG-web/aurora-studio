@@ -388,6 +388,60 @@ def card_stem(name: str) -> str:
     return base
 
 
+# Словарь имён «латиницей ↔ кириллицей» — `AuroraKnowledgeDB/meta/translit.md`. Читается
+# ОТСЮДА всеми, кому нужно найти сущность по имени: до этого словарь читал только тот
+# скрипт, который его писал, и сопоставление не влияло ни на что. Одно понятие под двумя
+# написаниями продолжало жить двумя карточками, а ссылка кириллицей до транслитерованной
+# карточки не доходила — под неё заводилась пустышка.
+_TRANSLIT_ROW = re.compile(r"^\|\s*([^|\n]+?)\s*\|\s*([^|\n]*?)\s*\|", re.M)
+_TRANSLIT_CACHE: dict = {}
+
+
+def translit_map(root: str = "") -> dict:
+    """{имя латиницей: имя кириллицей} — только заполненные строки словаря.
+
+    Пустая правая колонка означает «перевод ещё не сделан»: такую строку не отдаём, иначе
+    поиск начнёт находить пустое имя. Кеш по пути словаря — функцию зовут в обходах базы,
+    и перечитывать файл на каждую карточку незачем.
+    """
+    path = os.path.join(root or "", KB_ROOT, "meta", "translit.md")
+    key = os.path.abspath(path)
+    stamp = os.path.getmtime(path) if os.path.isfile(path) else 0
+    hit = _TRANSLIT_CACHE.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    out: dict = {}
+    if stamp:
+        try:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            text = ""
+        for lat, cyr in _TRANSLIT_ROW.findall(text):
+            lat, cyr = lat.strip(), cyr.strip()
+            if not lat or lat.startswith("-") or lat.lower() == "латиницей":
+                continue
+            if cyr and re.search(r"[а-яА-ЯёЁ]", cyr):
+                out[lat] = cyr
+    _TRANSLIT_CACHE[key] = (stamp, out)
+    return out
+
+
+def translit_names(name: str, root: str = "") -> set:
+    """Все написания одного понятия: само имя плюс пара из словаря — в обе стороны.
+
+    Обновляют сущность по имени, а имя у неё бывает двух видов. Искать только по тому,
+    как написали в тексте, значит завести второй экземпляр той же сущности рядом.
+    """
+    m = translit_map(root)
+    out = {name}
+    if name in m:
+        out.add(m[name])
+    back = {v: k for k, v in m.items()}
+    if name in back:
+        out.add(back[name])
+    return out
+
+
 def is_service(path: str) -> bool:
     """Служебный файл базы (индексы, манифесты, meta) — не карточка знаний."""
     base = os.path.basename(path)
@@ -563,11 +617,21 @@ def inbound_counts(root: str, skip_nav: bool = False) -> dict:
     сирот всегда ноль. На живой базе так и вышло — `ops:stats` рапортовал «сирот 0»,
     пока 34 карточки из 74 висели на одной сгенерированной навигации, а карта
     «Брошенные» в той же базе честно перечисляла 26.
+
+    Служебные файлы не считаются НИКОГДА. Журнал прогона, упомянувший карточку,
+    связью не является: он живёт неделю и уезжает по сроку хранения, а карточка
+    остаётся. На живой базе этот недосчёт держал 32 карточки завышенными по весу, и
+    четыре из них — брошенные — не попадали в карту брошенных, потому что на них
+    «ссылался» протокол разбора.
     """
     nav = ("/MOC/", "/_index", "/index.md")
-    stems = {os.path.splitext(os.path.basename(p))[0] for p in walk_md(root)}
+    meta = lambda p: "/meta/" in p.replace("\\", "/") or "/_meta/" in p.replace("\\", "/")
+    stems = {os.path.splitext(os.path.basename(p))[0]
+             for p in walk_md(root) if not meta(p)}
     counts: dict = {}
     for path in walk_md(root):
+        if meta(path):
+            continue
         if skip_nav and any(x in path.replace("\\", "/") for x in nav):
             continue
         self_stem = os.path.splitext(os.path.basename(path))[0]
@@ -651,7 +715,13 @@ def is_placeholder(fm: dict, text: str = "") -> bool:
     """
     if (fm.get("status") or "").strip().strip('"') == PLACEHOLDER:
         return True
-    return "заготовка" in (fm.get("tags") or "") or STUB_BODY in (text or "")
+    # Строку-заготовку ищем ТОЛЬКО в своей части карточки. Дословный текст источника и
+    # подвал истории написаны не нами: там эта строка остаётся навсегда — её перенесло
+    # накопление знания или сохранила история правок. Поиск по всему файлу держал
+    # выросшую карточку пустышкой вечно: у неё уже и тезис, и сорок связей, и
+    # `status: knowledge`, а из поиска и контекста она выведена как «знания нет».
+    own = (text or "").split(QUOTES, 1)[0].split("## История изменений", 1)[0]
+    return "заготовка" in (fm.get("tags") or "") or STUB_BODY in own
 
 
 def load_cards(root: str = KB_ROOT, skip_service: bool = True,

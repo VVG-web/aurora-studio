@@ -35,7 +35,7 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (SERVICE_STATUS, card_sources, frontmatter,  # noqa: E402
+from aurora_common import (SERVICE_STATUS, card_sources, config_list, frontmatter,  # noqa: E402
                            split_frontmatter, walk_md,
                            with_fields)
 
@@ -68,11 +68,57 @@ def task_status(root: str) -> dict:
     return out
 
 
-def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set) -> tuple:
-    """(класс, основание словами) для источника карточки."""
+def declared_trust(src: str):
+    """True / False / None — что о доверии сказал сам файл зеркала.
+
+    None значит «не сказал ничего»: так ведут себя зеркала, где доверие считается не по
+    объявлению, а по статусу связанной задачи. Читаем ровно две первые строки шапки —
+    файл зеркала бывает в мегабайт, а ответ лежит вверху.
+    """
+    if not os.path.isfile(src):
+        return None
+    try:
+        with open(src, encoding="utf-8", errors="ignore") as f:
+            if f.readline().strip() != "---":
+                return None
+            for _ in range(12):
+                line = f.readline()
+                if not line or line.strip() == "---":
+                    return None
+                m = re.match(r"^trusted\s*:\s*(\S+)", line.strip())
+                if m:
+                    return m.group(1).strip().strip("\"'").lower() in ("true", "yes", "да")
+    except OSError:
+        return None
+    return None
+
+
+def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
+                 docs: tuple = ()) -> tuple:
+    """(класс, основание словами) для источника карточки.
+
+    `docs` — доверенные источники из конфига проекта (`trusted_sources`). Документ —
+    закон, госконтракт, техническое задание, справочник — доверен по своей природе, как
+    и файл, связанный с задачей в доверенном статусе: подтверждать его нечем и незачем.
+    Правило знало ровно один путь — `Raw/`, — а ключ конфига, которым объявляют остальные,
+    не читал никто: его писала настройка проекта и правила панель, и на этом всё.
+    """
     src = (src or "").replace("\\", "/")
     if src.startswith("Raw/"):
         return "raw", "первоисточник в Raw/ — подписанный документ, доверие по определению"
+    # Модуль-документ мог объявить доверие прямо в файле зеркала — так делает `sync:web`,
+    # где галочку ставит человек на КАЖДУЮ ссылку: закон и стандарт доверены, чужой блог
+    # с пересказом нет. Спрашиваем сам источник, а не гадаем по совпадению пути.
+    said = declared_trust(src)
+    if said is True:
+        return "raw", "источник объявлен доверенным при подключении ссылки — доверие по определению"
+    if said is False:
+        return "draft", "источник подключён как недоверенный: галочка «доверять» не стоит"
+    for d in docs:
+        d = d.replace("\\", "/").strip().rstrip("/")
+        if d and (src == d or src.startswith(d + "/")):
+            return "raw", (f"источник в «{d}» — объявлен доверенным в конфиге проекта "
+                           f"(`trusted_sources`), доверие по определению")
     direct = table.get("direct", {}).get(src) or []
     indirect = table.get("indirect", {}).get(src) or []
     rows = [(r["key"], r["why"], "прямая") for r in direct] or \
@@ -143,6 +189,12 @@ def main() -> int:
     statuses = task_status(root)
     trust = config_statuses("trust_statuses")
     draft = config_statuses("assumption_statuses")
+    # Документы, объявленные доверенными в конфиге проекта. `Raw/` встроен правилом —
+    # это папка первоисточников; всё остальное (зеркало Confluence, отдельная папка
+    # договоров, справочники) объявляет проект, потому что у каждого оно своё.
+    docs = tuple(config_list("trusted_sources"))
+    if docs:
+        print(f"Доверенные источники из конфига: {', '.join(docs)}\n")
     if not trust:
         print("В конфиге пуст `atlassian.jira.trust_statuses` — по какому статусу задачи "
               "считать источник доверенным, движку неизвестно.\n"
@@ -174,7 +226,7 @@ def main() -> int:
             # готовых. Иначе доказанный источник вытянул бы в знание всё, что к нему
             # приписали.
             srcs = card_sources(text) or [""]
-            judged = [source_class(s, table, statuses, trust, draft) for s in srcs]
+            judged = [source_class(s, table, statuses, trust, draft, docs) for s in srcs]
             cls, why = min(judged, key=lambda cw: CLASS_RANK.get(cw[0], 0))
             if len(judged) > 1:
                 why += f" (слабейший из {len(judged)} источников)"

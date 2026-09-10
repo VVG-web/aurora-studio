@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:make`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:relink` · `agent:make`
 """
 from __future__ import annotations
 
@@ -67,6 +67,52 @@ import agent_core as AG  # noqa: E402
 from aurora_common import QUOTES  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
+
+# Сколько журналов на задачу держим. Журнал нужен ради точки отката и вердикта оракула,
+# а откат старше недели бесполезен: поверх давно легли другие коммиты. На живой базе
+# таких файлов накопилось 381 против 392 живых карточек — половина стала протоколом.
+KEEP_RUNS = 30
+EMPTY_LOG = "_пустые.md"
+
+
+def tree_fingerprint(cwd: str) -> str:
+    """Отпечаток дерева: коммит плюс список изменённых файлов.
+
+    Нужен, чтобы отличить прогон, который что-то сделал, от прогона, который прошёл
+    вхолостую. Считать по счётчикам отчёта нельзя: у каждой задачи они свои, и стоит
+    появиться новой — правило молча перестанет работать. Дерево же говорит правду
+    одинаково для всех: работа агента — это изменённые файлы, других следов у неё нет.
+    """
+    head = git("rev-parse", "HEAD", cwd=cwd)[1].strip()
+    return head + "\n" + git("status", "--porcelain", cwd=cwd)[1]
+
+
+def note_empty_run(runs: Path, stamp: str, task: str) -> None:
+    """Холостой прогон — строкой в общий файл, а не отдельным журналом.
+
+    Маршрут гоняет одни и те же задачи оборот за оборотом, и каждый оборот, которому
+    нечего делать, писал полноценный файл «переписано: 0 · осталось: 0». Сто двадцать
+    три таких файла из трёхсот восьмидесяти одного. Знать, что прогон был и был пустым,
+    полезно; заводить под это карточку в базе — нет.
+    """
+    path = runs / EMPTY_LOG
+    if not path.exists():
+        path.write_text("# Холостые прогоны\n\nПрогон был, работы не нашлось. "
+                        "Отдельный журнал такому не заводится.\n\n", encoding="utf-8")
+    with open(path, "a", encoding="utf-8") as f:
+        day, hhmm = stamp.split("_")
+        f.write(f"- {day} {hhmm[:2]}:{hhmm[2:]} · {task} — работы не нашлось\n")
+
+
+def prune_runs(runs: Path, task: str) -> int:
+    """Оставить последние KEEP_RUNS журналов задачи, остальные удалить."""
+    old = sorted(runs.glob(f"*_{task}.md"))[:-KEEP_RUNS]
+    for f in old:
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    return len(old)
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
@@ -295,6 +341,27 @@ def _bp_flag(args: list, flag: str, default: str = "") -> str:
 LOCK = os.path.join(".opencode", "state", "agent.lock")
 
 
+def pid_alive(pid: int) -> bool:
+    """Жив ли процесс. Отказ в правах — ЖИВ.
+
+    `os.kill(pid, 0)` отвечает тремя способами: тишиной (жив), `ProcessLookupError`
+    (мёртв) и `PermissionError` (жив, но сигналить ему нам не дано — процесс чужой).
+    Все три — `OSError`, и один общий `except` записывал чужой процесс в мёртвые:
+    замок снимался, и второй пишущий прогон заходил в базу поверх первого. Ровно это и
+    случается с прогоном, чей родитель ушёл, — процесс усыновляет системный, а сигналить
+    ему обычному пользователю нельзя.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def writing_lock(cwd: str, task: str):
     """Замок на пишущий прогон агента. → (взят ли, чем занято). Снимать `release_lock`.
 
@@ -313,10 +380,8 @@ def writing_lock(cwd: str, task: str):
         with open(path, encoding="utf-8") as f:
             held = json.load(f)
         pid = int(held.get("pid") or 0)
-        alive = pid > 0 and (os.kill(pid, 0) is None)
+        alive = pid > 0 and pid_alive(pid)
     except (OSError, ValueError, TypeError):
-        alive, held = False, {}
-    except ProcessLookupError:
         alive, held = False, {}
     if alive:
         return False, (f"уже идёт пишущий прогон: {held.get('task')} "
@@ -384,7 +449,8 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
                                         _bp_flag(args, "--sections"),
                                         _bp_flag(args, "--to", _DEFAULT_CARD_SECTION),
                                         "--apply" in args, _bp_flag(args, "--summary"),
-                                        _bp_flag(args, "--paras"), root=cwd)
+                                        _bp_flag(args, "--paras"), root=cwd,
+                                        by=_bp_flag(args, "--by"))
             elif "--append" in args:
                 # Дополнение идёт тем же путём, что и сборка: один процесс, без chdir.
                 # Замок общий с `--card` — обе операции пишут карточки, и параллельные
@@ -1511,6 +1577,114 @@ PROMPT_TWINS = """Ты решаешь судьбу карточек, котор�
 {{"merge": false, "why": "<чем они отличаются, одна фраза>"}}"""
 
 
+PROMPT_TRANSLIT = """Карточка названа латиницей, а её содержание — на русском. Это
+транслит: русское имя записали латинскими буквами при выгрузке из источника.
+
+Верни имя ПО-РУССКИ — то, как это понятие называют в тексте.
+
+Имя карточки: {stem}
+Заголовок:    {title}
+Начало текста:
+{body}
+
+Правила:
+- код артефакта, номер и латинскую аббревиатуру оставь как есть: «SPR-001-Statusy-tarifa»
+  → «SPR-001 Статусы тарифа», а не «СПР-001 Статусы тарифа»;
+- если имя НЕ транслит, а английские слова или идентификатор («SystemId», «Epic 3»,
+  «DevOps»), переводить нечего — верни пустую строку;
+- ничего не придумывай: имя обязано быть тем же понятием, а не пересказом.
+
+Ответ — строго JSON: {{"cyrillic": "<имя по-русски или пустая строка>"}}"""
+
+
+def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> dict:
+    """Спросить у модели русское имя для транслитерованной карточки. → шаг отчёта."""
+    from aurora_common import card_body, frontmatter
+    call = call or AG.call_role
+    stem = os.path.basename(path)[:-3]
+    step = {"stem": stem, "cyrillic": "", "status": "пропущена", "why": "", "backends": []}
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    fm = frontmatter(text)
+    title = (fm.get("title") or stem).strip().strip('"')
+    body = " ".join(card_body(text).split())[:600]
+    r = call(cfg, "worker", [{"role": "user", "content": PROMPT_TRANSLIT.format(
+        stem=stem, title=title, body=body)}],
+        deadline=deadline or (time.time() + cfg["request_timeout"]))
+    step["backends"].append((r.get("backend"), r.get("model")))
+    if not r["ok"]:
+        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        return step
+    said = str((parse_json(r["text"]) or {}).get("cyrillic") or "").strip()
+    if not said:
+        step.update(status="не транслит", why="английские слова или идентификатор")
+        return step
+    if not re.search(r"[а-яА-ЯёЁ]", said):
+        step.update(status="сбой", why=f"в ответе нет кириллицы: «{said[:60]}»")
+        return step
+    step.update(status="переведено", cyrillic=said)
+    return step
+
+
+def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Заполнить словарь имён для карточек, названных транслитом. → сводка.
+
+    Словарь заполнялся человеком, и потому не заполнялся: на живой базе в нём было ноль
+    строк при девяти транслитерованных карточках. Перевод — работа со смыслом, её делает
+    модель; переименование по заполненному словарю остаётся за `kb:translit --rename`.
+
+    Пара пишется в словарь, а не сразу в имя файла: по ней ищут сущность и те места,
+    которые ничего не переименовывают, — ссылка кириллицей обязана находить карточку,
+    названную латиницей, ещё до всякого переименования.
+    """
+    import kb_translit as KT
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    root = os.path.join(cwd, KB_ROOT)
+    dict_path = os.path.join(root, "meta", "translit.md")
+    rows = KT.read_dict(dict_path)
+    todo = [path for path, stem in KT.latin_cards(root) if not rows.get(stem)]
+    total = min(len(todo), limit or cfg["max_steps"])
+    say(f"Карточек с латинским именем без перевода: {len(todo)} · в этот прогон: {total}")
+    steps = []
+    for i, path in enumerate(todo[:total], 1):
+        if time.time() > budget:
+            steps.append({"stem": "", "cyrillic": "", "status": "стоп",
+                          "why": f"бюджет {cfg['budget_min']} мин исчерпан", "backends": []})
+            break
+        st = solve_translit(cfg, path, call, deadline=budget)
+        steps.append(st)
+        say(f"  {progress(i, total, started)} · {st['stem']} → "
+            + (st["cyrillic"] or st["status"]) + where(st))
+        if st["status"] == "переведено":
+            rows[st["stem"]] = st["cyrillic"]
+    if apply and steps:
+        KT.write_dict(rows, dict_path)
+    done = sum(1 for s in steps if s["status"] == "переведено")
+    return {"steps": steps, "cards": len(todo), "translated": done,
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_translit(res: dict, apply: bool) -> str:
+    L = [f"# Словарь имён — {datetime.now():%Y-%m-%d %H:%M}", "",
+         f"Карточек латиницей: **{res['cards']}** · переведено: **{res['translated']}** "
+         f"· {res['seconds']} с", ""]
+    if not apply:
+        L += ["(dry-run) Словарь не записан. Применить: `--apply`.", ""]
+    L += ["Пара пишется в словарь, а не сразу в имя файла: по словарю сущность находят и "
+          "те места, которые ничего не переименовывают. Ссылка кириллицей обязана "
+          "находить карточку, названную латиницей, ещё до переименования. Переименовать "
+          "по заполненному словарю: `kb:translit --rename --apply`.", ""]
+    for s in res["steps"][:80]:
+        if s["status"] == "переведено":
+            L.append(f"- `{s['stem']}` → **{s['cyrillic']}**")
+        elif s["stem"]:
+            L.append(f"- `{s['stem']}` — {s['status']}"
+                     + (f": {s['why']}" if s["why"] else ""))
+        else:
+            L.append(f"- {s['status']}: {s['why']}")
+    return "\n".join(L)
+
+
 def twin_groups(cwd: str, min_score: float = 0.6, limit: int = 0) -> list:
     """Группы карточек-двойников по содержимому. Считает `kb_twins`, здесь — разбор."""
     # `--limit 0` обязателен: отчёт по умолчанию печатает сорок групп, а читаем мы именно
@@ -1530,7 +1704,71 @@ def twin_groups(cwd: str, min_score: float = 0.6, limit: int = 0) -> list:
     if cur:
         groups.append(cur)
     groups = [g for g in groups if len(g) > 1]
+    groups = [g for g in groups if not decided_apart(cwd, g)]
     return groups[:limit] if limit else groups
+
+
+def decided_apart(cwd: str, group: list) -> bool:
+    """Группу уже разбирали и признали разными сущностями? Тогда не спрашиваем снова.
+
+    Похожесть по тексту никуда не девается, поэтому одна и та же группа выпадала в
+    очередь каждый оборот маршрута и каждый раз стоила вызова модели. Вердикт записан
+    в самих карточках — значит, и очередь читает его оттуда.
+    """
+    import build_plan as BP
+    for name in group:
+        path = BP.find_card(name, cwd)
+        if not path:
+            return False
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        if not apart_names(text) >= {n for n in group if n != name}:
+            return False
+    return True
+
+
+APART_HEAD = "## Не путать"
+
+
+def apart_names(text: str) -> set:
+    """Кого карточка уже объявила «не путать» — по разделу с вердиктом."""
+    if APART_HEAD not in text:
+        return set()
+    tail = text.split(APART_HEAD, 1)[1].split("\n## ", 1)[0]
+    return set(re.findall(r"\[\[([^\]|#]+)", tail))
+
+
+def mark_apart(cwd: str, group: list, why: str) -> int:
+    """Записать в сами карточки, что они об РАЗНЫХ сущностях, и почему. → сколько задето.
+
+    Вердикт «оставлены раздельно» жил только в журнале прогона. Журнал живёт неделю, а
+    карточка — всё время проекта, и следующий прогон спрашивал модель ровно о той же
+    группе заново. Хуже того: человек, открывший карточку, не видел, что вопрос уже
+    разбирали, — и разбирал его в третий раз. Решение о сущности принадлежит сущности.
+    """
+    import build_plan as BP
+    touched = 0
+    for name in group:
+        path = BP.find_card(name, cwd)
+        if not path:
+            continue
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        others = [n for n in group if n != name]
+        if apart_names(text) >= set(others):
+            continue
+        line = ", ".join(f"[[{n}]]" for n in others)
+        block = f"\n\n{APART_HEAD}\n\n{line} — другие сущности." + (f" {why}" if why else "")
+        if APART_HEAD in text:
+            head, rest = text.split(APART_HEAD, 1)
+            body, tail = (rest.split("\n## ", 1) + [""])[:2]
+            text = head + APART_HEAD + body.rstrip() + f"\n\n{line} — другие сущности." \
+                   + (f" {why}" if why else "") + ("\n\n## " + tail if tail else "\n")
+        else:
+            text = text.rstrip() + block + "\n"
+        # В `related:` лезть не надо: граф берёт связи и из тела тоже, а шапку с
+        # блочным списком легко испортить. Вики-ссылка в разделе — уже ребро графа.
+        open(path, "w", encoding="utf-8").write(text)
+        touched += 1
+    return touched
 
 
 def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
@@ -1574,6 +1812,8 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
     verdict = parse_json(r["text"]) or {}
     step["why"] = str(verdict.get("why") or "")[:200]
     if not verdict.get("merge"):
+        if apply:
+            step["apart"] = mark_apart(cwd, group, step["why"])
         return step
     keep = str(verdict.get("keep") or "").strip()
     if keep not in group:
@@ -1609,12 +1849,15 @@ def run_twins(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
         steps.append(solve_twins(cfg, cwd, g, apply, call, deadline=budget))
     merged = sum(1 for s in steps if s["status"] in ("слито", "слил бы"))
     return {"steps": steps, "groups": len(groups), "merged": merged,
+            "apart": sum(s.get("apart") or 0 for s in steps),
             "seconds": round(time.time() - started, 1)}
 
 
 def report_twins(res: dict, apply: bool) -> str:
     L = [f"# Двойники по содержимому — {datetime.now():%Y-%m-%d %H:%M}", "",
-         f"Групп: **{res['groups']}** · слито: **{res['merged']}** · {res['seconds']} с", ""]
+         f"Групп: **{res['groups']}** · слито: **{res['merged']}**"
+         + (f" · разведено с записью в карточки: **{res['apart']}**" if res.get("apart") else "")
+         + f" · {res['seconds']} с", ""]
     if not apply:
         L += ["(dry-run) Ничего не слито. Применить: `--apply`.", ""]
     L += ["Решает модель, а не человек: вопрос «одна это сущность или разные» решается по "
@@ -1918,6 +2161,12 @@ def where(step: dict) -> str:
     tail = f" · {step['tps']} ток/с" if step.get("tps") else ""
     rest = f" (+{len(used) - 1} на проверке)" if len(used) > 1 else ""
     return f"  [{model} · бэкенд №{n}{tail}{rest}]"
+
+
+def used_model(step: dict) -> str:
+    """Имя модели, ответившей на шаге. Пусто — если ответа не было."""
+    used = step.get("backends") or []
+    return str(used[-1][1]) if used and len(used[-1]) > 1 else ""
 
 
 def build_left(cwd: str) -> tuple:
@@ -2434,6 +2683,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                     "--sections", str(card["sections"])]
         else:
             args = ["--card", str(card["title"]), "--source", source,
+                    "--by", used_model(step),
                     "--sections", str(card["sections"]),
                     "--to", str(card.get("to") or "Concepts")]
             if card.get("summary"):
@@ -4175,7 +4425,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     найти выборкой и не подать в контекст. Такому нужна не переработка, а границы —
     их предлагает планировщик, а текст режет движок дословно.
     """
-    from aurora_common import frontmatter, walk_md
+    from aurora_common import card_body, frontmatter, walk_md
     started = time.time()
     budget = started + cfg["budget_min"] * 60
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
@@ -4190,6 +4440,16 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             # он снимает `distilled`. Сравнивать хеши здесь значило бы переписывать
             # тезис по СТАРОМУ тексту в карточке — вызов впустую и тот же тезис.
             if (fm.get("distilled") or "").strip():
+                continue
+            # Вердикт «знания нет» — это результат, и он записан в карточке. Не читать
+            # его значит спрашивать модель об одном и том же каждый оборот маршрута: на
+            # живом прогоне одна такая карточка держала весь цикл обновления
+            # двенадцать оборотов подряд при пустой очереди источников.
+            if (fm.get("distill_empty") or "").strip():
+                continue
+            # Пустое тело модели показывать незачем: сказать по нему она может ровно
+            # одно — «знания нет», и это будет стоить вызова. Решаем механикой.
+            if not card_body(text).strip():
                 continue
             todo.append(p)
         elif kind in ("dictionary", "document") and window:
@@ -4287,12 +4547,29 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             + (f": {step['note'][:100]}" if step["note"] else "") + where(step))
         if step.get("unsupported"):
             unsupported += step["unsupported"]
+        if apply and step["status"] == "знания нет":
+            # Вердикт — тоже результат. Не записав его, движок спрашивает модель об
+            # одном и том же каждый оборот маршрута. Отдельным полем, а не `distilled`:
+            # тезиса у карточки нет, и говорить обратное нельзя — по `distilled` идут
+            # связывание, вынос определений и замер качества поиска. Разбор снимает это
+            # поле вместе с `distilled`, когда переносит новый текст источника: текст
+            # изменился — вопрос задаётся заново.
+            from aurora_common import with_fields
+            # Сначала прочитать, потом открыть на запись. Обратный порядок в одной
+            # строке обнуляет файл до того, как его прочтут: `open(..., "w")` считается
+            # раньше аргумента. Проверено — карточка теряется целиком.
+            was = open(path, encoding="utf-8", errors="ignore").read()
+            open(path, "w", encoding="utf-8").write(
+                with_fields(was, {"distill_empty": TODAY_STR}))
+            return
         if apply and step.get("split"):
             apply_split(path, step)
             return
         if apply and step.get("head") is not None:
             from aurora_common import with_fields
             fields = {"distilled": TODAY_STR}
+            if by := used_model(step):
+                fields["distilled_by"] = f'"{by}"'   # тезис пишет модель — назовём её
             if step.get("unsupported"):
                 fields["unsupported"] = str(step["unsupported"])
             text = "---" + step["head"] + "\n---" + step["body"]
@@ -4677,7 +4954,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
-                             "twins", "tasks", "clashes", "relink", "make"],
+                             "twins", "tasks", "clashes", "relink", "translit", "make"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
@@ -4819,6 +5096,7 @@ def main() -> int:
         return 0 if res["ok"] else 1
 
     cp = checkpoint(cwd, f"agent:{a.task}", a.apply and not a.no_checkpoint)
+    before = tree_fingerprint(cwd)
     if a.apply and not cp["ok"]:
         print(f"agent_runner: {cp['why']}. Записывать без отката нельзя — "
               "закоммитьте работу или запустите без --apply.", file=sys.stderr)
@@ -4877,6 +5155,9 @@ def main() -> int:
     elif a.task == "distill":
         res = run_distill(cfg, cwd, a.apply, a.limit, momus=not a.no_momus)
         text = report_distill(res, a.apply)
+    elif a.task == "translit":
+        res = run_translit(cfg, cwd, a.apply, a.limit)
+        text = report_translit(res, a.apply)
     elif a.task == "extract":
         res = run_extract(cfg, cwd, a.apply, a.limit)
         text = report_extract(res, a.apply)
@@ -4951,8 +5232,16 @@ def main() -> int:
     runs = Path(cwd) / RUNS_DIR
     runs.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
-    print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
+    # Предпросмотр журнал получает всегда: ради него его и запускают. Молчим только о
+    # прогоне в записи, который ничего не изменил, — рассказывать о нём нечего.
+    if a.apply and tree_fingerprint(cwd) == before:
+        note_empty_run(runs, stamp, a.task)
+        print(f"\nРаботы не нашлось — отмечено в {RUNS_DIR}/{EMPTY_LOG}")
+    else:
+        (runs / f"{stamp}_{a.task}.md").write_text(text + "\n", encoding="utf-8")
+        print(f"\nЖурнал прогона: {RUNS_DIR}/{stamp}_{a.task}.md")
+        if dropped := prune_runs(runs, a.task):
+            print(f"Журналов старше последних {KEEP_RUNS} удалено: {dropped}")
 
     if a.task == "relink":
         # Заходы петли коммитятся по одному, поэтому здесь остаётся только журнал. Брать

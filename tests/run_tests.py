@@ -1104,13 +1104,22 @@ def test_build_slices_source_and_assembles_card(tmp: Path):
 
     run("build_plan.py", "--card", "Алгоритм приёма", "--source",
         "Sources/Confluence/Страница.md", "--sections", "1,2", "--to", "Processes",
-        "--apply", cwd=root)
+        "--by", "qwen3.8-flash", "--apply", cwd=root)
     made = root / "AuroraKnowledgeDB/Processes/Алгоритм-приёма.md"
     assert made.is_file(), "имя файла собрано не по правилу build.md"
     text = made.read_text(encoding="utf-8")
     assert "type: process" in text, text[:300]
+    # Модель-автор — свойство карточки, а не журнала прогона: журналы удаляются по сроку
+    # хранения, и сравнить разбор на двух моделях потом оказывается не на чем.
+    assert 'built_by: "qwen3.8-flash"' in text, f"модель-автор не записана:\n{text[:400]}"
     assert card_srcs(text) == ["Sources/Confluence/Страница.md"], text[:300]
     assert "поля запроса" in text and "шаг за шагом" in text, "тело секций не перенесено"
+    plain = run("build_plan.py", "--card", "Приём без автора", "--source",
+                "Sources/Confluence/Страница.md", "--sections", "1", "--to", "Processes",
+                "--apply", cwd=root)
+    assert plain.returncode == 0, plain.stdout + plain.stderr
+    bare = (root / "AuroraKnowledgeDB/Processes/Приём-без-автора.md").read_text(encoding="utf-8")
+    assert "built_by" not in bare, "без --by в шапке появилось пустое поле"
     assert "версии страницы" not in text, "перенесена секция, которую не просили"
 
     # Повтор из того же источника — не конфликт, а второй проход по обновлённой
@@ -6121,6 +6130,15 @@ def test_two_writing_runs_do_not_share_one_base(tmp: Path):
     ar.release_lock(str(root))
     assert lock.is_file(), "чужой замок снят — дверь второму писателю снова открыта"
 
+    # Процесс, которому нам не дано сигналить, — ЖИВ, а не мёртв. Системный процесс
+    # усыновляет любой прогон, чей родитель ушёл; записав его в мёртвые, движок снимал
+    # замок и пускал второго писателя в базу.
+    held["pid"] = 1
+    lock.write_text(_j.dumps(held), encoding="utf-8")
+    got_sys, busy_sys = ar.writing_lock(str(root), "distill")
+    assert not got_sys, "замок чужого процесса снят: отказ в правах принят за смерть"
+    assert "идёт пишущий прогон" in busy_sys, busy_sys
+
     # Мёртвый процесс базу не запирает.
     held["pid"] = 99999999
     lock.write_text(_j.dumps(held), encoding="utf-8")
@@ -9854,9 +9872,30 @@ def test_parsing_sees_the_stubs_so_knowledge_lands_in_them(tmp: Path):
         "лишь по тегу и осталась бы невидимой навсегда"
     assert "split(QUOTES, 1)[0]" in grew, \
         "судит по всему телу: строка-заготовка живёт в дословном источнике вечно"
-    assert "STUB_MARK.search(body)" in grew, \
-        "тезис «это заготовка, знаний нет» длиннее порога — карточка выйдет в выдачу пустой"
+    # Проверяем ПОВЕДЕНИЕ, а не текст кода. Раньше здесь стояла строка «в функции есть
+    # STUB_MARK.search(body)» — и она сломалась, как только вето по всему телу заменили
+    # на построчное. Утверждение же осталось прежним: тезис «это заготовка, знаний нет»
+    # длиннее порога, и по длине его от знания не отличить, поэтому карточку он вырасти
+    # не даёт. А служебная строка рядом с настоящим знанием — даёт.
+    def _grew(body: str) -> bool:
+        text = f'---\ntitle: "X"\nstatus: placeholder\n---\n\n# X\n\n{body}\n'
+        return kf.outgrew_placeholder(kf.Card("AuroraKnowledgeDB/Concepts/X.md", text))
 
+    import kb_fix as kf
+    assert not _grew("_Заготовка: ссылка на это понятие уже есть, знания пока нет._"), \
+        "пустышка со служебной строкой объявлена выросшей"
+    proza = ("X — заготовка понятия, в которой ссылка уже есть, а знаний пока нет. "
+             "Наполните её при следующем разборе источника, ссылки переписывать не придётся. "
+             "Пока карточка существует только чтобы ссылка не была битой.")
+    assert len(proza) > kf.FILLED_CHARS, "фикстура короче порога — проверка ничего не ловит"
+    assert not _grew(proza), \
+        "тезис «это заготовка, знаний нет» длиннее порога — карточка выйдет в выдаче пустой"
+    assert _grew("_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n\n"
+                 "Доверенность — сущность ER.AS.MRP: TRUE в ER.AS.MRP.IsMachineRead означает "
+                 "машинно-читаемую доверенность, FALSE — бумажную. Уникальность для бумажной "
+                 "— ER.AS.MRP.Id, для МЧД — ER.AS.MRP.DocNumber."), \
+        ("служебная строка держит пустышкой карточку с готовым знанием: её не убирает никто, "
+         "и на живой базе так стояли 105 карточек")
 
 @test
 def test_a_long_card_is_indexed_whole_not_just_its_beginning(tmp: Path):
@@ -12488,6 +12527,322 @@ def test_twins_are_found_by_text_not_by_name(tmp: Path):
 
 
 @test
+def test_one_concept_is_found_under_both_spellings(tmp: Path):
+    """Ссылка кириллицей находит карточку, названную транслитом, — по словарю имён.
+
+    Источники приходят с разными именами: часть по-русски, часть транслитом. Карточка
+    наследует имя источника, в тексте соседей то же понятие названо кириллицей, и до
+    транслитерованной карточки ссылка не доходит: ремонт объявляет её битой и заводит
+    под неё пустышку. Одно понятие, две карточки, ни одной связи.
+
+    Пара пишется в словарь один раз. До этой версии словарь читал ТОЛЬКО тот скрипт,
+    который его писал, — и сопоставление не влияло ни на что: ни поиск сущности при
+    разборе, ни разрешение ссылок словаря не спрашивали.
+
+    Незаполненная строка переводом не считается: иначе поиск начал бы находить пустое имя.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    BP = importlib.import_module("build_plan")
+
+    root = make_project(tmp)
+    (root / "AuroraKnowledgeDB" / "meta").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB" / "meta" / "translit.md").write_text(
+        "| Латиницей | Кириллицей | Добавлено | Кем |\n|---|---|---|---|\n"
+        "| SPR-001-Statusy-tarifa | SPR-001 Статусы тарифа | 2026-09-10 | kb:translit |\n"
+        "| SPR-009-Rezultat-proverki |  | 2026-09-10 | kb:translit |\n", encoding="utf-8")
+    card(root, "Concepts/SPR-001-Statusy-tarifa.md", status="draft",
+         body="Справочник статусов тарифа.")
+
+    cur = os.getcwd()
+    os.chdir(root)
+    try:
+        m = AC.translit_map()
+        assert m == {"SPR-001-Statusy-tarifa": "SPR-001 Статусы тарифа"}, m
+        assert AC.translit_names("SPR-001 Статусы тарифа") == \
+            {"SPR-001 Статусы тарифа", "SPR-001-Statusy-tarifa"}, "пара не читается в обе стороны"
+        assert BP.find_card("SPR-001 Статусы тарифа"), \
+            "поиск сущности не нашёл карточку по кириллице — разбор заведёт вторую о том же"
+        assert BP.find_card("SPR-001-Statusy-tarifa"), "поиск сломан для собственного имени"
+    finally:
+        os.chdir(cur)
+
+    cards = {str(p): __import__("kb_fix").Card(str(p), p.read_text(encoding="utf-8"))
+             for p in (root / "AuroraKnowledgeDB" / "Concepts").glob("*.md")}
+    os.chdir(root)
+    try:
+        idx = __import__("kb_fix").Index(cards)
+        name, how = idx.resolve("SPR-001 Статусы тарифа")
+        assert name == "SPR-001-Statusy-tarifa", f"ссылка кириллицей не разрешилась: {name} ({how})"
+        assert "словарь" in how, f"разрешилось не по словарю, а случайно: {how}"
+    finally:
+        os.chdir(cur)
+
+
+@test
+def test_web_pages_are_their_own_source_with_their_own_trust(tmp: Path):
+    """Веб-страницы — отдельный источник со своим доверием на каждую ссылку.
+
+    Страница из интернета и страница корпоративной вики приходят из разных мест и
+    доверяются по разным правилам: задаче доверие даёт её статус, документу — тот, кто
+    его подключил. Поэтому список веб-ссылок не смешивается с корнями Confluence, а
+    галочка «доверять» стоит у КАЖДОЙ ссылки: закон и стандарт доверены, чужой блог нет.
+
+    Галочка уходит в шапку сохранённого файла, и класс доверия читается оттуда — так он
+    остаётся свойством источника, а не выводится из совпадения пути на диске.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+    T = importlib.import_module("kb_trust")
+
+    cfg = ('project:\n  name: X\n'
+           'web:\n  pages:\n'
+           '    - url: https://law.example/nk\n      trusted: true\n'
+           '    - url: https://blog.example/post\n      trusted: false\n'
+           '    - url: https://example.org/no-flag\n'
+           'privacy:\n  scrub: report\n')
+    pages = W.pages_from_config(cfg)
+    assert pages == [("https://law.example/nk", True),
+                     ("https://blog.example/post", False),
+                     ("https://example.org/no-flag", False)], pages
+
+    # Имя файла: два разных адреса с одинаковым заголовком не смеют писаться в один файл —
+    # заголовки страниц повторяются («Главная», «Документация»), и второй затирал бы первый.
+    a = W.slug("https://a.example/x", "Документация")
+    b = W.slug("https://b.example/y", "Документация")
+    assert a != b, f"разные адреса дали одно имя файла: {a}"
+
+    # В шапке НЕТ даты выгрузки: иначе каждый прогон давал бы дифф на всю папку.
+    text = W.card_text("https://law.example/nk", "НК РФ", True, "Статья 1.")
+    assert "trusted: true" in text and "url: https://law.example/nk" in text, text
+    import datetime as _dt
+    assert _dt.date.today().isoformat() not in text, \
+        "дата выгрузки в шапке — каждый синк будет давать ложный дифф на всю папку"
+
+    mirror = tmp / "Sources" / "Web"
+    mirror.mkdir(parents=True)
+    (mirror / "zakon.md").write_text(text, encoding="utf-8")
+    (mirror / "blog.md").write_text(
+        W.card_text("https://blog.example/post", "Пост", False, "Мнение."), encoding="utf-8")
+    (mirror / "molchit.md").write_text('---\ntitle: "Без отметки"\n---\n\nТекст.\n',
+                                       encoding="utf-8")
+    empty = {"direct": {}, "indirect": {}}
+    cur = os.getcwd()
+    os.chdir(tmp)
+    try:
+        cls, why = T.source_class("Sources/Web/zakon.md", empty, {}, set(), set())
+        assert cls == "raw", f"объявленная доверенной страница не признана: {cls} — {why}"
+        cls, why = T.source_class("Sources/Web/blog.md", empty, {}, set(), set())
+        assert cls == "draft", f"снятая галочка не сделала источник черновым: {cls} — {why}"
+        assert "галочка" in why, f"основание не объясняет, откуда решение: {why}"
+        cls, _ = T.source_class("Sources/Web/molchit.md", empty, {}, set(), set())
+        assert cls == "unknown", "источник, ничего не сказавший о доверии, стал доверенным"
+
+        # Снятая галочка СИЛЬНЕЕ общей отметки папки. Папку зеркала легко внести в
+        # `trusted_sources` целиком — и тогда блог, которому человек отказал в доверии,
+        # молча стал бы знанием. Решение о конкретной ссылке принято позже и точнее, чем
+        # решение о папке, поэтому оно и побеждает.
+        cls, why = T.source_class("Sources/Web/blog.md", empty, {}, set(), set(),
+                                  ("Sources/Web",))
+        assert cls == "draft", \
+            f"общая отметка папки перебила снятую галочку ссылки: {cls} — {why}"
+        cls, _ = T.source_class("Sources/Web/molchit.md", empty, {}, set(), set(),
+                                ("Sources/Web",))
+        assert cls == "raw", "папка в доверенных не сработала там, где ссылка промолчала"
+    finally:
+        os.chdir(cur)
+
+
+@test
+def test_a_document_is_trusted_wherever_the_project_keeps_it(tmp: Path):
+    """Документ доверен по своей природе, а не по тому, лежит ли он в `Raw/`.
+
+    Закон, госконтракт, техническое задание, справочник — источники, подтверждать которые
+    нечем и незачем: они и есть подтверждение. Правило знало ровно один путь — `Raw/`, —
+    а ключ конфига `trusted_sources`, которым проект объявляет остальные, не читал никто:
+    его писала настройка проекта и правила панель, и на этом всё. На живой базе из-за
+    этого 224 карточки, собранные из зеркала документов, остались черновиками.
+
+    Совпадение — по границе пути: объявленный `Sources/Confluence` не делает доверенным
+    соседний `Sources/Confluence-2`.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    T = importlib.import_module("kb_trust")
+    empty = {"direct": {}, "indirect": {}}
+
+    cls, why = T.source_class("Raw/contract/ГК.md", empty, {}, set(), set())
+    assert cls == "raw", f"первоисточник в Raw/ перестал быть доверенным: {cls} — {why}"
+
+    cls, _ = T.source_class("Sources/Confluence/Стр.md", empty, {}, set(), set())
+    assert cls == "unknown", "необъявленный источник стал доверенным сам собой"
+
+    cls, why = T.source_class("Sources/Confluence/Стр.md", empty, {}, set(), set(),
+                              ("Sources/Confluence",))
+    assert cls == "raw", f"объявленный доверенным источник не признан: {cls} — {why}"
+    assert "конфиге" in why, f"основание не называет, откуда взято доверие: {why}"
+
+    cls, _ = T.source_class("Sources/Confluence-2/Стр.md", empty, {}, set(), set(),
+                            ("Sources/Confluence",))
+    assert cls == "unknown", "доверие протекло на соседний путь с тем же началом"
+
+
+@test
+def test_run_journals_do_not_count_as_links(tmp: Path):
+    """Журнал прогона, упомянувший карточку, связью не является.
+
+    Счёт входящих ссылок обходил базу вместе со служебными файлами — единственное место
+    в движке, где `meta/` не отсекался. Журналы разбора живут неделю и уезжают по сроку
+    хранения, а карточка остаётся; на живом проекте четыре брошенные карточки не попали
+    в карту брошенных именно потому, что «на них ссылался» протокол разбора.
+
+    Оглавления при этом связью остаются: `_index.md` — навигация базы, а не служебная
+    запись движка, и присутствие в оглавлении для веса карточки честно.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+
+    root = make_project(tmp)
+    card(root, "Concepts/Одинокая.md", status="draft", body="Знание о предмете.")
+    card(root, "Concepts/Соседка.md", status="draft", body="Про [[Одинокая]] здесь сказано.")
+    runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "2026-09-09_2300_distill.md").write_text(
+        "# Прогон\n\n- переписана [[Одинокая]]\n", encoding="utf-8")
+    (root / "AuroraKnowledgeDB" / "Concepts" / "_index.md").write_text(
+        "---\ntitle: \"_index\"\n---\n\n- [[Одинокая]]\n", encoding="utf-8")
+
+    kb = str(root / "AuroraKnowledgeDB")
+    only_cards = AC.inbound_counts(kb, skip_nav=True)
+    assert only_cards.get("Одинокая") == 1, \
+        f"журнал прогона засчитан как связь: {only_cards.get('Одинокая')} вместо 1"
+
+    with_nav = AC.inbound_counts(kb)
+    assert with_nav.get("Одинокая") == 2, \
+        f"оглавление перестало считаться связью: {with_nav.get('Одинокая')} вместо 2"
+
+
+@test
+def test_idle_run_leaves_a_line_not_a_journal(tmp: Path):
+    """Прогон, ничего не изменивший, не заводит отдельный журнал.
+
+    Маршрут гоняет одни и те же задачи оборот за оборотом, и каждый холостой оборот писал
+    полноценный файл «переписано: 0 · осталось: 0». На живом проекте таких файлов набралось
+    123 из 381 — половина базы стала протоколом собственных прогонов.
+
+    Журналы к тому же не копятся бесконечно: точка отката, которой больше нескольких
+    десятков прогонов, бесполезна — поверх давно легли другие коммиты.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AR = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    runs = root / "AuroraKnowledgeDB" / "meta" / "agent-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+
+    AR.note_empty_run(runs, "2026-09-09_2320", "distill")
+    AR.note_empty_run(runs, "2026-09-09_2325", "twins")
+    assert not list(runs.glob("*_distill.md")), "холостой прогон завёл отдельный журнал"
+    text = (runs / AR.EMPTY_LOG).read_text(encoding="utf-8")
+    assert "2026-09-09 23:20 · distill" in text, f"время не читается: {text}"
+    marks = [l for l in text.splitlines() if l.startswith("- ")]
+    assert len(marks) == 2, f"отмечены не оба холостых прогона: {marks}"
+    assert marks[1].endswith("twins — работы не нашлось"), marks[1]
+
+    for i in range(AR.KEEP_RUNS + 5):
+        (runs / f"2026-09-{i % 28 + 1:02d}_{i:02d}00_distill.md").write_text("x", encoding="utf-8")
+    (runs / "2026-09-01_0100_twins.md").write_text("x", encoding="utf-8")
+    dropped = AR.prune_runs(runs, "distill")
+    assert dropped == 5, f"удалено {dropped}, ждали 5"
+    assert len(list(runs.glob("*_distill.md"))) == AR.KEEP_RUNS
+    assert list(runs.glob("*_twins.md")), "чистка задела журналы другой задачи"
+
+
+@test
+def test_verdict_kept_apart_lives_in_the_cards(tmp: Path):
+    """«Это разные сущности» записывается в карточки, а не только в журнал прогона.
+
+    Похожесть по тексту никуда не девается: группа выпадала в очередь двойников каждый
+    оборот маршрута и каждый раз стоила вызова модели, а человек, открывший карточку, не
+    видел, что вопрос уже разбирали. Решение о сущности принадлежит сущности.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AR = importlib.import_module("agent_runner")
+
+    root = make_project(tmp)
+    card(root, "Concepts/Признаки-ФЛ.md", status="knowledge", body="Признаки постановки ФЛ.")
+    card(root, "Concepts/Признаки-ЮЛ.md", status="knowledge", body="Признаки постановки ЮЛ.")
+    group = ["Признаки-ФЛ", "Признаки-ЮЛ"]
+
+    assert not AR.decided_apart(str(root), group), "вердикт найден там, где его не писали"
+    assert AR.mark_apart(str(root), group, "Один про ФЛ, другой про ЮЛ.") == 2
+    assert AR.decided_apart(str(root), group), "записанный вердикт не читается обратно"
+    assert AR.mark_apart(str(root), group, "ещё раз") == 0, "запись не идемпотентна"
+
+    text = (root / "AuroraKnowledgeDB" / "Concepts" / "Признаки-ФЛ.md").read_text(encoding="utf-8")
+    assert "[[Признаки-ЮЛ]]" in text and "Один про ФЛ" in text, text
+    assert "Признаки постановки ФЛ." in text, "тело карточки пострадало"
+
+
+@test
+def test_a_card_without_a_body_never_reaches_the_model(tmp: Path):
+    """Пустая карточка не попадает в очередь тезисов, а вердикт «знания нет» записывается.
+
+    На живом прогоне ОДНА карточка в 187 байт — только шапка, тела нет — держала весь
+    маршрут «Обновить базу» двенадцать оборотов при пустой очереди источников: каждый
+    оборот её отдавали модели, получали «знания нет» и не записывали ответ.
+
+    Отметка отдельная, не `distilled`: тезиса у карточки нет, а по `distilled` идут
+    связывание, вынос определений и замер качества поиска. Разбор снимает её вместе с
+    `distilled`, когда переносит новый текст источника.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+
+    root = make_project(tmp)
+    empty = root / "AuroraKnowledgeDB" / "Concepts" / "Пустая.md"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_text('---\ntitle: "Пустая"\nstatus: draft\nkind: knowledge\n---\n',
+                     encoding="utf-8")
+    card(root, "Concepts/Живая.md", status="draft", kind="knowledge",
+         body="НДС считается по ставке 20 процентов от налоговой базы.")
+
+    def queue() -> list:
+        out = []
+        for p in AC.walk_md(str(root / "AuroraKnowledgeDB"), skip_service=True,
+                            skip_archive=True):
+            text = open(p, encoding="utf-8", errors="ignore").read()
+            fm = AC.frontmatter(text)
+            if (fm.get("kind") or "").strip().strip('"') != "knowledge":
+                continue
+            if (fm.get("distilled") or "").strip() or (fm.get("distill_empty") or "").strip():
+                continue
+            if not AC.card_body(text).strip():
+                continue
+            out.append(os.path.basename(p)[:-3])
+        return sorted(out)
+
+    assert queue() == ["Живая"], f"пустая карточка пошла к модели: {queue()}"
+
+    live = root / "AuroraKnowledgeDB" / "Concepts" / "Живая.md"
+    was = live.read_text(encoding="utf-8")
+    live.write_text(AC.with_fields(was, {"distill_empty": "2026-09-09"}), encoding="utf-8")
+    assert "НДС считается" in live.read_text(encoding="utf-8"), \
+        "запись вердикта обнулила карточку"
+    assert queue() == [], f"после вердикта карточку спросят снова: {queue()}"
+
+    text = live.read_text(encoding="utf-8")
+    live.write_text(re.sub(r"^distill_empty:.*$\n?", "", text, flags=re.M), encoding="utf-8")
+    assert queue() == ["Живая"], "после нового текста источника вопрос не задаётся заново"
+
+
+@test
 def test_one_translation_per_name_is_remembered(tmp: Path):
     """Транслит в имени переводится один раз, и перевод переиспользуется.
 
@@ -12977,17 +13332,26 @@ def test_merging_twins_is_decided_by_the_model(tmp: Path):
                             ).read_text(encoding="utf-8"), \
         "проигравшая осталась живой карточкой — знание по-прежнему в двух местах"
 
-    # «разные» исполняется так же строго: ничего не трогаем
+    # «Разные» — тоже решение, и оно записывается в сами карточки. Тело при этом не
+    # трогают: слияния не было, знание остаётся там, где лежало. Раньше вердикт жил
+    # только в журнале прогона, журнал удалялся по сроку хранения, и следующий оборот
+    # маршрута спрашивал модель о той же паре заново — а человек, открывший карточку,
+    # не видел, что вопрос уже разбирали.
     card(root, "Concepts/Смена-профиля.md", status="draft", kind="knowledge", body=same * 3)
     def says_no(c, role, messages, **kw):
         return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
             {"merge": False, "why": "объект и действие над ним"}, ensure_ascii=False)}
-    before = (root / "AuroraKnowledgeDB/Concepts/Смена-профиля.md").read_text(encoding="utf-8")
+    moved = root / "AuroraKnowledgeDB/Concepts/Смена-профиля.md"
     st = R.solve_twins(cfg, str(root), ["Профиль-абонента", "Смена-профиля"],
                        apply=True, call=says_no)
     assert st["status"] == "оставлено" and "действие" in st["why"], st
-    assert (root / "AuroraKnowledgeDB/Concepts/Смена-профиля.md").read_text(
-        encoding="utf-8") == before, "карточка тронута вопреки решению «разные»"
+    after = moved.read_text(encoding="utf-8")
+    assert same.strip()[:40] in after, "тело карточки пострадало от решения «разные»"
+    assert "[[Профиль-абонента]]" in after and "действие" in after, \
+        f"вердикт «разные сущности» не записан в карточку:\n{after[:400]}"
+    assert R.decided_apart(str(root), ["Профиль-абонента", "Смена-профиля"]), \
+        "записанный вердикт не читается обратно — пара вернётся в очередь"
+    assert st.get("apart") == 2, f"не сказано, скольким карточкам записан вердикт: {st}"
 
     # Группы читаются из отчёта `kb:twins`: разбор чужого вывода молча вернул бы пустой
     # список, и весь ход стал бы бездействием, неотличимым от «двойников нет».
@@ -13002,9 +13366,21 @@ def test_merging_twins_is_decided_by_the_model(tmp: Path):
     assert "groups if not a.limit else" in twins, \
         "ноль в --limit не значит «все» — ход прочитает пустой отчёт"
 
+    # Пара, которую уже развели вердиктом, в очередь не возвращается — это проверено
+    # выше. Значит для проверки РАЗБОРА отчёта нужна пара, о которой ещё не судили:
+    # иначе тест ловил бы не разбор, а фильтр, и падал бы на верной работе движка.
+    card(root, "Concepts/Профиль-тарифный.md", status="draft", kind="knowledge", body=same * 3)
+    card(root, "Concepts/Профиль-услуг.md", status="draft", kind="knowledge", body=same * 3)
+
     groups = R.twin_groups(str(root))
     assert groups, "группы не прочитаны из отчёта — ход будет молча ничего не делать"
-    assert any("Профиль-абонента" in g for g in groups), groups
+    assert any("Профиль-тарифный" in g for g in groups), \
+        f"нерешённая пара не попала в очередь: {groups}"
+    # Разведённая пара не возвращается САМА ПО СЕБЕ. Внутри большей группы, где о
+    # соседях ещё не судили, она законно появляется снова: вопрос «Профиль-тарифный —
+    # то же, что Профиль-абонента?» вердиктом о другой паре не закрыт.
+    assert not any(set(g) == {"Профиль-абонента", "Смена-профиля"} for g in groups), \
+        f"разведённая вердиктом пара вернулась в очередь отдельной группой: {groups}"
     assert all(len(g) > 1 for g in groups), f"группа из одной карточки — не группа: {groups}"
 
     # названная не из группы — сбой, а не «сольём что-нибудь»

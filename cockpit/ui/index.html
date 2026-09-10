@@ -693,7 +693,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.100.45";
+const UI_VERSION = "1.101.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4604,6 +4604,10 @@ async function renderProject(){
     scrub: get("scrub","report"), threshold: get("verified_threshold_pct","20"),
     // важно принимать не только цифры: корень, который не удалось разрешить, всё равно
     // должен показаться в форме — иначе «сохранено», а строки нет, и человек в тупике
+    // Веб-страницы — СВОЙ список, не смешанный с корнями Confluence: это разные
+    // источники, и доверяются они по разным правилам. У каждой ссылки своя галочка.
+    web_pages: [...(cfgRaw.text.matchAll(/-\s*url:\s*(\S+)\s*\n\s*trusted:\s*(\S+)/g))]
+      .map(m => ({url: m[1], trusted: /^(true|yes|да)$/i.test(m[2])})),
     sync_roots: [...(cfgRaw.text.matchAll(/page_id:\s*"?([^"\n]+?)"?\s*\n\s*title:\s*"?([^"\n]+?)"?\s*$/gm))]
       .map(m=>({page_id:m[1], title:m[2]})),
   };
@@ -4633,6 +4637,32 @@ async function renderProject(){
   };
   drawRoots();
 
+  // Веб-страницы — отдельный блок. Ссылка в интернете и страница корпоративной вики
+  // приходят из разных мест, настраиваются порознь и доверяются по разным правилам:
+  // у задачи доверие считается по статусу, у документа — объявляется тем, кто его
+  // подключил. Поэтому галочка «доверять» стоит у КАЖДОЙ ссылки, а не у модуля.
+  const webBox = el("div",{});
+  const drawWeb = () => {
+    webBox.innerHTML = "";
+    A.web_pages.forEach((w, i) => webBox.append(el("div",{class:"row",style:"margin-bottom:8px"},
+      watch(el("input",{class:"btn mono",style:"flex:1;min-width:200px;font-weight:400",
+        placeholder:"https://…", value:w.url,
+        oninput:e=>w.url=e.target.value}), "form", "«Настройки проекта»"),
+      el("label",{class:"muted",style:"font-size:12px;display:flex;align-items:center;gap:6px",
+        title:"Закон, стандарт, официальный регламент — доверять. Блог, пересказ, форум — нет."},
+        watch(el("input",{type:"checkbox", checked: w.trusted ? "" : null,
+          onchange:e=>w.trusted=e.target.checked}), "form", "«Настройки проекта»"),
+        "доверять"),
+      el("button",{class:"btn sm danger",title:"убрать",
+        onclick:()=>{A.web_pages.splice(i,1); drawWeb();
+                     setDirty("form","«Настройки проекта»",true);}},"✕"))));
+    webBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
+      onclick:()=>{A.web_pages.push({url:"",trusted:false}); drawWeb();
+                   setDirty("form","«Настройки проекта»",true);}},
+      "+ добавить веб-страницу"));
+  };
+  drawWeb();
+
   box.append(el("div",{class:"card",style:"padding:20px"},
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 14px"},
       "Те же вопросы, что задаёт setup в терминале. Записывает их сам setup — панель " +
@@ -4655,6 +4685,11 @@ async function renderProject(){
     inp("assumption_statuses","Статусы задач «это ещё предположение»",
         "Бэклог, Сделать, Аналитика",
         "карточка получает draft — знанием она пока не является"),
+    el("div",{class:"sep"}),
+    el("div",{class:"muted",style:"font-size:12px;margin:0 0 6px"},
+      "Веб-страницы · сохраняются в кеш проекта Sources/Web. Доверие — у каждой ссылки своё: "
+      + "закон и стандарт доверены, чужой блог нет"),
+    webBox,
     el("div",{class:"sep"}),
     inp("trusted_sources","Доверенные источники","Raw/contract, Raw/customer, Raw/project",
         "карточка из подписанного документа доверенная сразу: решения не требует"),

@@ -37,7 +37,7 @@ from datetime import date
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
                            card_sources, fold_hard, frontmatter, sources_block,
-                           split_frontmatter, walk_md)
+                           split_frontmatter, translit_names, walk_md)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 TODAY = date.today().isoformat()
@@ -54,6 +54,11 @@ GROUPS = [
     ("Raw/customer", os.path.join("Raw", "customer")),
     ("Raw/contract", os.path.join("Raw", "contract")),
     ("Confluence", os.path.join("Sources", "Confluence")),
+    # Веб-страницы — такой же документ, как страница вики: их наливает `sync:web` по
+    # списку адресов, который задал человек. Вложения лежат в `_files/` и в план не
+    # идут — обход выше пропускает папки с подчёркивания: картинка и приказ не источник
+    # для разбора, а то, на что ссылается разобранная страница.
+    ("Web", os.path.join("Sources", "Web")),
     # Задач Jira здесь НЕТ, и это правило заказчика, а не настройка. Задача — это
     # работа, а не сущность: карточка из неё выходит пересказом заголовка, а описание у
     # большинства пустое (на живом проекте 40 задач из 78 дали ноль карточек и только
@@ -564,7 +569,14 @@ def find_card(name: str, root: str = "") -> str:
     в длинном имени — это опечатка, а не другое понятие.
     """
     base = os.path.join(root, KB_ROOT) if root else KB_ROOT
-    want = {name, card_filename(name)}
+    # Одно понятие живёт под двумя написаниями: «SPR-001-Statusy-tarifa» из источника и
+    # «SPR-001 Статусы тарифа» в тексте соседних карточек. Пара записана в словаре имён,
+    # и искать надо по обоим — иначе разбор не найдёт существующую карточку и заведёт
+    # рядом вторую о том же. Словарь читается общей функцией: своего разбора у каждого
+    # места быть не должно.
+    want = set()
+    for n in translit_names(name, root):
+        want |= {n, card_filename(n)}
     folded = {fold_hard(x) for x in want}
     fallback = ""
     for path in walk_md(base, skip_service=True, skip_archive=True):
@@ -601,7 +613,8 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -
     источником: разнести обратно можно механически, и видно, откуда что.
 
     Что происходит с шапкой: `sources` пополняется, `source_synced` обновляется,
-    `distilled` снимается. Последнее обязательно — тезис написан по прежнему тексту, а
+    `distilled` и `distill_empty` снимаются. Последнее обязательно — тезис написан
+    или отвергнут по прежнему тексту, а
     знания стало больше; `agent:distill` перепишет его по всему накопленному, назвав
     расхождения между источниками, если они есть.
 
@@ -651,6 +664,10 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -
                     if re.search(rf"^{key}:", new_head, re.M)
                     else new_head.rstrip("\n") + f"\n{key}: {val}")
     new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+    # Вместе с тезисом снимается и вердикт «знания нет»: он вынесен по
+    # ПРЕЖНЕМУ тексту, а текста стало больше. Оставить его значило бы
+    # закрыть карточке дорогу к тезису навсегда.
+    new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
 
     print(f"{'✅ дописано' if apply else '(dry-run) дописать'}: {path} · "
           f"источник {source} · {len(body)} симв. · источников теперь {len(srcs)}")
@@ -711,6 +728,10 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) 
             if re.search(rf"^{key}:", new_head, re.M) else new_head.rstrip("\n") + f"\n{key}: {val}"
     # тезис написан по прежнему тексту: снимаем отметку, `agent:distill` перепишет
     new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+    # Вместе с тезисом снимается и вердикт «знания нет»: он вынесен по
+    # ПРЕЖНЕМУ тексту, а текста стало больше. Оставить его значило бы
+    # закрыть карточке дорогу к тезису навсегда.
+    new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
     print(f"{'✅ обновлён источник' if apply else '(dry-run) обновить источник'}: {path} · "
           f"{len(body)} симв.")
     if apply:
@@ -718,9 +739,20 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) 
     return 0
 
 
+def by_line(model: str) -> str:
+    """Строка `built_by:` — какая модель разбирала источник на карточки.
+
+    Раньше это знание жило только в журнале прогона, а журналы удаляются по сроку
+    хранения. Сравнить разбор на двух моделях оказалось не на чем: из полутора тысяч
+    карточек сопоставить удалось двадцать три. Модель — свойство того, как карточка
+    сделана, и место ему в карточке.
+    """
+    return f'built_by: "{model}"\n' if model else ""
+
+
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
                summary: str = "", paras: str = "", root: str = "",
-               append_to: str = "") -> int:
+               append_to: str = "", by: str = "") -> int:
     """Собрать карточку из указанных секций источника: текст переносится дословно.
 
     `root` — откуда читать файл, когда текущая папка процесса не корень проекта (так
@@ -835,7 +867,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}'
             f'{sources_block([source])}'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
-            f"built: machine\nrelated: []\n---\n\n# {title}\n\n{body}\n")
+            f"built: machine\n{by_line(by)}related: []\n---\n\n# {title}\n\n{body}\n")
     print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
           f"{len(body)} симв.")
     if not apply:
@@ -1071,6 +1103,8 @@ def main() -> int:
                     help="раскадровка источника: его секции с размерами и превью")
     ap.add_argument("--slice-chars", type=int, default=110, metavar="N",
                     help="сколько текста секции показывать (агенту нужно больше человека)")
+    ap.add_argument("--by", default="", metavar="МОДЕЛЬ",
+                    help="какая модель разобрала источник — уйдёт в `built_by:` карточки")
     ap.add_argument("--card", metavar="TITLE",
                     help="собрать карточку из секций источника (--from, --sections)")
     ap.add_argument("--append", metavar="КАРТОЧКА", default="",
@@ -1122,7 +1156,7 @@ def main() -> int:
             print("build_plan: для --card нужен --source <источник>", file=sys.stderr)
             return 1
         return build_card(a.card, a.src, a.sections, a.to, a.apply, a.summary,
-                          a.paras)
+                          a.paras, by=a.by)
     if a.thin or (a.reopen and a.thin):
         return thin_report(manifest, a.group or "", a.reopen and a.apply)
     if a.reopen:

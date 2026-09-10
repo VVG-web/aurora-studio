@@ -106,6 +106,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `sync:sources` | какие модули источников установлены и какие зеркала подключены (`sources_registry.py`) | `references/maintenance.md` |
 | `sync:confluence` | зеркало Confluence → `Sources/Confluence/` (модуль `confluence-dc`) | `references/maintenance.md` |
 | `sync:jira` | зеркало Jira → `Sources/JIRA/` (модуль `jira-dc`) | `references/maintenance.md` |
+| `sync:web` | страницы по списку адресов → `Sources/Web/` (модуль `web`); доверие — галочкой на каждую ссылку | `references/maintenance.md` |
 | `sync:jira-status` | обратный поток: статусы задач → кандидаты в `req_status`, работа без требований (`jira_status.py`) | `references/maintenance.md` |
 | `sync:audit` | целостность зеркал: missing / orphan / collision / протухшее состояние; обходит все подключённые модули | `references/maintenance.md` |
 | `sync:diff` (`diff`) | дрейф: источник изменился после сверки (сравнение хешей, скрипт) | `references/maintenance.md` |
@@ -166,6 +167,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `agent:tasks` | задача Jira, осевшая карточкой: знание о работе возвращается карточке предмета, где по коду задачи считается доверие | `references/maintenance.md` |
 | `agent:clashes` | противоречия между карточками об одном: обе стороны цитируются дословно, кто прав — решает человек | `references/maintenance.md` |
 | `agent:relink` | расставить связи в готовых тезисах, не переписывая текст: движок доказывает, что изменилась только разметка | `references/build.md` |
+| `agent:translit` | заполнить словарь имён «латиницей ↔ кириллицей» для карточек, названных транслитом: по словарю сущность находится под обоими написаниями ещё до переименования | `references/maintenance.md` |
 | `agent:make` | произвести артефакт по типу из реестра проекта: обогащение базой, план с вопросами к аналитику, воркер, критик, Момус. Этапы отмечены в шапке документа — после обрыва производство продолжается с той же точки | `references/workflows.md` |
 | `agent:aliases` | разобрать конфликты синонимов: уточнить там, где карточки разные, отложить человеку настоящие дубли | `references/maintenance.md` |
 | `agent:ask` | спросить базу своими словами: движок собирает контекст, модель отвечает только по карточкам и ставит ссылку на каждое утверждение. Ответ проверяет **Момус** (роль `qa`); разговор пишется в `meta/ask/` и уходит в git | `references/retrieval.md` |

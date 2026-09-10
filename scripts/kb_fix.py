@@ -50,7 +50,8 @@ from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            frontmatter,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
-                           is_service, link_refs, rewrite_links, set_field)
+                           is_service, link_refs, rewrite_links, set_field,
+                           translit_names)
 from datetime import date, datetime
 from difflib import get_close_matches
 
@@ -157,6 +158,15 @@ class Index:
             return leaf, "ok"
         if leaf in self.by_alias:
             return os.path.splitext(os.path.basename(self.by_alias[leaf]))[0], "alias"
+        # Словарь имён: ссылка кириллицей на карточку, названную транслитом (и наоборот).
+        # Пара записана человеком один раз; не спросив словарь, ремонт объявлял ссылку
+        # битой при живой цели — и заводил под неё пустышку. Одно понятие, две карточки.
+        for other in translit_names(leaf) - {leaf}:
+            if other in self.by_stem:
+                return other, "словарь имён: латиница ↔ кириллица"
+            if other in self.by_alias:
+                return (os.path.splitext(os.path.basename(self.by_alias[other]))[0],
+                        "словарь имён: латиница ↔ кириллица (по синониму)")
         for cand, how in ((fix_mixed_script(leaf), "гомоглифы"),
                           (normalize_title(leaf), "нормализация"),
                           (normalize_title(fix_mixed_script(leaf)), "нормализация+гомоглифы")):
@@ -1178,18 +1188,34 @@ def outgrew_placeholder(c: "Card") -> bool:
     # там навсегда: карточка, наполненная знанием, продолжала считаться пустышкой и не
     # выходила из-под запрета на выдачу. На живой базе так стояли 60 заготовок из 60.
     body = card_body(c.text).split(QUOTES, 1)[0]
-    # Мало убрать служебную строку: `agent:distill` пишет тезис и заготовке — «X —
-    # заготовка понятия, знаний пока нет, наполните при следующем разборе». Двести
-    # знаков прозы о том, что знания нет, по длине не отличаются от знания, и карточка
-    # вышла бы в выдачу пустой. Поэтому смотрим, не говорит ли текст сам, что он
-    # заготовка, — тем же признаком, которым это решают расшифровки.
-    if STUB_BODY in body or STUB_MARK.search(body):
-        return False
     # Заголовок и раздел «Упоминается в» — служебная часть пустышки, она есть всегда.
     own = re.sub(r"(?ms)^##\s*Упоминается в.*$", "", body)
     own = re.sub(r"(?m)^#.*$", "", own)
     own = re.sub(r"(?m)^\s*-\s*\[\[[^\]]*\]\]\s*$", "", own)
+    # Речь о пустоте выбрасывается ПОСТРОЧНО, а не ветирует карточку целиком. Тут три
+    # разных текста, и все содержат слово «заготовка»: служебная строка от `--stubs`,
+    # тезис `agent:distill` про заготовку («X — понятие, на которое есть ссылка, а знаний
+    # пока нет») и замечание модели о том, что пометка осталась. Вето по всему телу
+    # означало, что ЛЮБАЯ из этих строк держит карточку пустышкой навсегда — даже когда
+    # рядом лежит тысяча знаков готового знания. На живой базе так стояли 105 карточек,
+    # и в одной модель прямо написала: «в карточке остаётся пометка о заготовке, но в
+    # источнике приведено описание сущности». Убрав такие строки, судим по остальному:
+    # у настоящей пустышки не остаётся ничего, у наполненной — её знание.
+    own = "\n".join(l for l in own.splitlines() if not STUB_MARK.search(l))
     return len(" ".join(own.split())) >= FILLED_CHARS
+
+
+def drop_stub_line(text: str) -> str:
+    """Убрать служебную строку-заготовку из своей части карточки.
+
+    Оставлять её в наполненной карточке нельзя не только из-за статуса: строка утверждает
+    «знания пока нет» рядом с знанием, и это читает и человек, и модель. В дословный текст
+    источника и в подвал истории не лезем — там она чужая запись, а не наше утверждение.
+    """
+    head, sep, tail = text.partition(QUOTES)
+    head = re.sub(r"(?m)^.*" + re.escape(STUB_BODY) + r".*$\n?", "", head)
+    head = re.sub(r"\n{3,}", "\n\n", head)
+    return head + sep + tail
 
 
 def plan_frontmatter(cards: dict, plan: Plan):
@@ -1218,6 +1244,7 @@ def plan_frontmatter(cards: dict, plan: Plan):
             fixed = re.sub(r"(?m)^status:\s*" + PLACEHOLDER + r"\s*$", "status: draft",
                            base, count=1)
             fixed = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", fixed, count=1)
+            fixed = drop_stub_line(fixed)
             if fixed != base:
                 plan.file_writes[path] = fixed
                 base, probe = fixed, Card(path, fixed)
@@ -1825,14 +1852,21 @@ def main() -> int:
         if len(plan.notes) > 400:
             out.append(f"  … ещё {len(plan.notes) - 400} строк")
     if plan.unresolved:
-        out += ["", "## Не решается автоматически (нужен человек)", ""] + plan.unresolved[:200]
+        # НЕ «нужен человек». Ссылка, которой не на что указывать, — это ненаписанная
+        # карточка, и заводят её `--stubs` и `--terms` тем же ремонтом. На живом прогоне
+        # из 230 таких ссылок следующий же шаг закрыл 223: называть их работой человека
+        # значит отдавать ему то, что кнопка делает за пять секунд.
+        out += ["", "## Ссылки без карточки: заводятся шагами `--stubs` и `--terms`", ""]
+        out += plan.unresolved[:200]
         if len(plan.unresolved) > 200:
             out.append(f"  … ещё {len(plan.unresolved) - 200} строк")
 
     out += ["", "## Итог", ""]
     if applied:
         out += [f"- проходов записи: {passes}",
-                f"- нерешённых ссылок (осталось человеку): {len(plan.unresolved)}"]
+                f"- ссылок без карточки: {len(plan.unresolved)}"
+                + (" — заведите заготовки: `--stubs --terms --apply`"
+                   if plan.unresolved else "")]
         if skipped_total:
             out.append(f"- пропущено из-за коллизий имён: {skipped_total} (разберите через --merge)")
     else:

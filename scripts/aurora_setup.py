@@ -29,7 +29,7 @@ def read_config(path: Path) -> dict:
     """Достаёт известные скалярные ключи и sync_roots из aurora.config.yaml."""
     cfg = {
         "name": "", "slug": "",
-        "conf_url": "", "conf_space": "", "sync_roots": [],
+        "conf_url": "", "conf_space": "", "sync_roots": [], "web_pages": [],
         "jira_url": "", "jira_key": "", "jira_jql": "",
         "trust_statuses": "", "assumption_statuses": "",
         "trusted_sources": "", "trusted_sections": "",
@@ -50,6 +50,12 @@ def read_config(path: Path) -> dict:
     cblock = cm.group(1) if cm else ""
     cfg["conf_url"] = (re.search(r'base_url:\s*"?([^"\n]+)', cblock) or [None, ""])[1].strip() if cblock else ""
     cfg["conf_space"] = (re.search(r'space:\s*"?([^"\n]+)', cblock) or [None, ""])[1].strip() if cblock else ""
+    # web: пары url / галочка доверия. Список свой, не смешанный с корнями Confluence:
+    # это разные источники, и доверие у них считается по разным правилам.
+    for m in re.finditer(r"-\s*url\s*:\s*(\S+)\s*\n\s*trusted\s*:\s*(\S+)", text):
+        cfg["web_pages"].append((m.group(1).strip().strip('"\''),
+                                 m.group(2).strip().strip('"\'').lower()
+                                 in ("true", "yes", "да")))
     # sync_roots: пары page_id / title
     for m in re.finditer(r'page_id:\s*"?([^"\n]+?)"?\s*\n\s*title:\s*"?([^"\n]+?)"?\s*(?:\n|$)', cblock):
         cfg["sync_roots"].append((m.group(1).strip(), m.group(2).strip()))
@@ -110,6 +116,12 @@ def write_config(path: Path, c: dict):
             lines.append(f'      - page_id: "{pid}"\n        title: "{title}"'
                          + (f'\n        url: "{url}"' if url else ""))
         roots = "\n" + "\n".join(lines)
+    pages = "\n  pages: []"
+    if c.get("web_pages"):
+        rows = "\n".join(f'    - url: {u}\n      trusted: {"true" if tr else "false"}'
+                          for u, tr in c["web_pages"] if str(u).strip())
+        if rows:
+            pages = "\n  pages:\n" + rows
     sources, sync_skills = source_sections(path.parent, c["slug"])
     text = f"""# Aurora project configuration (committed). Schema version 1.
 # Отредактировать в любой момент: python3 .opencode/scripts/aurora_setup.py
@@ -146,6 +158,13 @@ atlassian:
     assumption_statuses: [{c['assumption_statuses']}]
   auth:
     mode: mcp_user
+
+# Веб-страницы: свой список, отдельный от корней Confluence. Страница из интернета и
+# страница корпоративной вики приходят из разных мест и доверяются по разным правилам.
+# Задаче доверие даёт её статус, документу — тот, кто его подключил, поэтому галочка
+# `trusted` стоит у КАЖДОЙ ссылки. Она уходит в шапку сохранённого файла, и `kb:trust`
+# читает её оттуда.
+web:{pages}
 
 paths:
   knowledge_db: AuroraKnowledgeDB
@@ -250,6 +269,13 @@ def run_answers(target: Path, answers: dict) -> int:
                   "в адресе вида …/pages/viewpage.action?pageId=NNN — либо откройте страницу "
                   "через «…» → Page Information, либо дайте панели разрешить ссылку.",
                   file=sys.stderr)
+    if "web_pages" in answers:
+        # Пустая строка адреса — человек добавил поле и передумал: молча выбрасываем.
+        # Галочка приходит как есть: «не отмечено» — это осознанное «не доверять», а не
+        # отсутствие ответа, и превращать её в доверие нельзя ни при каких условиях.
+        c["web_pages"] = [(str(w.get("url") or "").strip(), bool(w.get("trusted")))
+                          for w in (answers["web_pages"] or [])
+                          if str(w.get("url") or "").strip()]
     if c["scrub"] not in ("off", "report", "mask"):
         c["scrub"] = "report"
     reconcile_sync_skills(target, c["slug"])
