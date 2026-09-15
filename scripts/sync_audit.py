@@ -303,6 +303,23 @@ def audit_wiki(src: dict, stale_days: int, out: list, stats: dict) -> int:
     return problems
 
 
+def superseded_documents(files: dict) -> list:
+    """[(файл, чем заменён)] — поднятые расшифровки с `superseded_by:` в шапке.
+
+    Убранное в папку с подчёркивания (`_outdated/`) уже разобрано человеком: звать его снова
+    «перевести карточки и убрать в архив» значит советовать сделанное.
+    """
+    out = []
+    for rel, full in sorted(files.items()):
+        if rel.split("/")[0].startswith("_") or not is_promoted_document(full):
+            continue
+        head = open(full, encoding="utf-8", errors="ignore").read(800)
+        m = re.search(r"^superseded_by:[ \t]*(\S+)", head, re.M)
+        if m:
+            out.append((rel, m.group(1)))
+    return out
+
+
 def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
     """Плоская доска: ключ задачи — имя файла, состояние — список ключей."""
     root, state_name = src["path"], src["state"]
@@ -361,14 +378,7 @@ def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
     # Документ, заменённый новой версией (`superseded_by:` в шапке поднятой расшифровки).
     # Доверие у старой версии сохранено, но знание стоит перевести на новую — это не
     # поломка зеркала, поэтому в число проблем не идёт.
-    replaced = []
-    for rel, full in files.items():
-        if not is_promoted_document(full):
-            continue
-        head = open(full, encoding="utf-8", errors="ignore").read(800)
-        m = re.search(r"^superseded_by:[ \t]*(\S+)", head, re.M)
-        if m:
-            replaced.append((rel, m.group(1)))
+    replaced = superseded_documents(files)
     if replaced:
         cited_old = set(cited_by_cards(root, [r for r, _n in replaced]))
         out.append(f"### Документ заменён новой версией ({len(replaced)})\n")

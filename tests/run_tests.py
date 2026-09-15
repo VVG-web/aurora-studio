@@ -5109,8 +5109,15 @@ def test_a_newer_document_version_keeps_trust_and_marks_the_old_one(tmp: Path):
     assert "trusted: true" in lone and "url: https://law.example/old/" in lone, \
         "документ без страницы потерял прежнее решение о доверии"
     assert W.promote_documents(str(out), apply=True) == 0, "подъём не идемпотентен"
-    assert "заменён новой версией" in (SCRIPTS / "sync_audit.py").read_text(encoding="utf-8"), \
-        "проверка зеркал не называет заменённые документы"
+    A = importlib.import_module("sync_audit")
+    (out / "_outdated").mkdir()
+    shutil.copy(out / "Протокол-43a2f2c7.md", out / "_outdated" / "Протокол-43a2f2c7.md")
+    got = A.superseded_documents({
+        "Протокол-43a2f2c7.md": str(out / "Протокол-43a2f2c7.md"),
+        "_outdated/Протокол-43a2f2c7.md": str(out / "_outdated" / "Протокол-43a2f2c7.md"),
+        "Протокол-2f73494b.md": str(out / "Протокол-2f73494b.md")})
+    assert got == [("Протокол-43a2f2c7.md", "Протокол-2f73494b.md")], \
+        f"проверка зеркал не называет заменённый документ или зовёт уже убранный в архив: {got}"
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
     assert "sync:web" in scen
 
