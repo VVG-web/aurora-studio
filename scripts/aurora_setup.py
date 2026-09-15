@@ -37,7 +37,7 @@ def read_config(path: Path) -> dict:
         "web_depth": "", "web_assets": "", "web_max_pages": "",
         "jira_url": "", "jira_key": "", "jira_jql": "",
         "trust_statuses": "", "assumption_statuses": "",
-        "trusted_sources": "",
+        "trusted_sources": "", "trusted_branches": "",
         "threshold": "20",
     }
     if not path.is_file():
@@ -82,7 +82,7 @@ def read_config(path: Path) -> dict:
         cfg[key] = m.group(1).strip() if m else ""
     vm = re.search(r"\nverify:(.*?)(?:\n[a-z_]+:|\Z)", text, re.S)
     vblock = vm.group(1) if vm else ""
-    for key in ("trusted_sources",):
+    for key in ("trusted_sources", "trusted_branches"):
         m = re.search(rf'{key}:\s*\[([^\]]*)\]', vblock, re.M) if vblock else None
         cfg[key] = m.group(1).strip() if m else ""
     cfg["threshold"] = scalar("verified_threshold_pct", "20")
@@ -155,6 +155,65 @@ def sub_blocks(block: str) -> list:
     return subs
 
 
+def fill_trust_defaults(text: str) -> tuple:
+    """(текст, что записано) — значения доверия по умолчанию в конфиг проекта.
+
+    Правятся только пустые списки и отсутствующие ключи доверия: всё, что проект задал сам,
+    и остальной текст конфига остаются как были. Ключ `verify.trusted_sections`, который
+    никто не читал, убирается. Повторный вызов ничего не меняет.
+    """
+    from aurora_common import TRUST_DEFAULTS, yaml_list
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    done = []
+    kept = [ln for ln in lines if not re.match(r"^\s+trusted_sections\s*:", ln)]
+    if len(kept) != len(lines):
+        lines = kept
+        done.append("trusted_sections убран")
+
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    def block(head: str, level: int):
+        """(начало, конец) блока `head:` на отступе level; None — блока нет."""
+        for i, line in enumerate(lines):
+            if line.rstrip() == " " * level + head + ":":
+                j = i + 1
+                while j < len(lines) and (not lines[j].strip() or indent(lines[j]) > level):
+                    j += 1
+                while j > i + 1 and not lines[j - 1].strip():
+                    j -= 1
+                return i, j
+        return None
+
+    for key, parent, level in (("trust_statuses", "jira", 2), ("assumption_statuses", "jira", 2),
+                               ("trusted_sources", "verify", 0), ("trusted_branches", "verify", 0)):
+        value = f"{key}: [{yaml_list(TRUST_DEFAULTS[key])}]"
+        at = next((i for i, ln in enumerate(lines) if re.match(rf"^\s*{key}\s*:", ln)), None)
+        if at is not None:
+            m = re.match(rf"^(\s*){key}\s*:\s*\[\s*\]\s*(#.*)?$", lines[at].rstrip("\n"))
+            if m:
+                lines[at] = f"{m.group(1)}{value}\n"
+                done.append(key)
+            continue
+        where = block(parent, level)
+        if where is None and parent == "verify":
+            stop = next((i for i, ln in enumerate(lines) if ln.startswith("privacy:")), len(lines))
+            if stop == len(lines):
+                if lines and lines[-1].strip():
+                    lines.append("\n")
+                lines.append("verify:\n")
+            else:
+                lines[stop:stop] = ["verify:\n", "\n"]
+            where = block("verify", 0)
+        if where is None:
+            continue          # блока jira нет — статусы задачи задавать не к чему
+        lines.insert(where[1], " " * (level + 2) + value + "\n")
+        done.append(key)
+    return "".join(lines), done
+
+
 # Ключи, которые движок больше не читает: форма их не пишет и из прежнего конфига не
 # переносит. `verify.trusted_sections` форма писала, а не читал никто — доверие наследуется
 # от источника, а не от раздела базы (решение 15.09.2026).
@@ -195,6 +254,13 @@ def carry_unmanaged(old: str, new: str) -> str:
 
 
 def write_config(path: Path, c: dict):
+    # Поля доверия пустыми не пишутся: пустое поле — значения по умолчанию, и в конфиг они
+    # попадают явно, чтобы настройку было видно и её правили, а не угадывали.
+    from aurora_common import TRUST_DEFAULTS, yaml_list
+    c = dict(c)
+    for key, values in TRUST_DEFAULTS.items():
+        if not str(c.get(key) or "").strip():
+            c[key] = yaml_list(values)
     roots = "[]"
     if c["sync_roots"]:
         lines = []
@@ -268,11 +334,12 @@ paths:
 
 verify:
   # Доверие по происхождению (`kb:trust`): что собрано из договора, ТЗ, материалов
-  # заказчика или ветки вики с описанием системы, пересказывает уже решённое. Пусто —
-  # по умолчанию: Raw/contract, Raw/customer, Raw/project, Raw/dictionaries и ветки
-  # модели данных, алгоритмов, схем логики, НСИ, глоссария, GUI, ролей и форматов данных.
-  # Пустые статусы задач выше — тоже умолчание. Явный список заменяет умолчание целиком.
+  # заказчика или ветки вики с описанием системы, пересказывает уже решённое.
+  # trusted_sources — папки и файлы по пути; trusted_branches — верхние ветки вики по
+  # названию (целым словом, приставки не мешают). Значения по умолчанию записаны при
+  # настройке — правьте под проект; пустой список снова означает значения по умолчанию.
   trusted_sources: [{c['trusted_sources']}]
+  trusted_branches: [{c['trusted_branches']}]
 
 privacy:
   # Режим kb:scrub — свойство контура, а не вкуса.
@@ -348,7 +415,7 @@ def run_answers(target: Path, answers: dict) -> int:
             c[key] = str(answers[key]).strip()
     # Поля доверия очищаются: пустой список — настройка по умолчанию, и человек, стерев
     # поле, возвращается к ней. Прочие поля пустой ответ не трогает, как и раньше.
-    for key in ("trust_statuses", "assumption_statuses", "trusted_sources"):
+    for key in ("trust_statuses", "assumption_statuses", "trusted_sources", "trusted_branches"):
         if key in answers:
             c[key] = str(answers[key] or "").strip()
     if "sync_roots" in answers:

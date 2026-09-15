@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.111.0";
+const UI_VERSION = "1.111.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4765,6 +4765,7 @@ async function renderProject(){
     trust_statuses: (cfgRaw.text.match(/trust_statuses:\s*\[([^\]]*)\]/)||[])[1]||"",
     assumption_statuses: (cfgRaw.text.match(/assumption_statuses:\s*\[([^\]]*)\]/)||[])[1]||"",
     trusted_sources: (cfgRaw.text.match(/trusted_sources:\s*\[([^\]]*)\]/)||[])[1]||"",
+    trusted_branches: (cfgRaw.text.match(/trusted_branches:\s*\[([^\]]*)\]/)||[])[1]||"",
     scrub: get("scrub","report"), threshold: get("verified_threshold_pct","20"),
     // важно принимать не только цифры: корень, который не удалось разрешить, всё равно
     // должен показаться в форме — иначе «сохранено», а строки нет, и человек в тупике
@@ -4844,10 +4845,10 @@ async function renderProject(){
     inp("jira_key","Jira: ключ проекта","PROJ"),
     inp("jira_jql","Jira: JQL по умолчанию","project = PROJ ORDER BY updated DESC"),
     inp("trust_statuses","Статусы задач, дающие доверие",
-        'пусто — по умолчанию: Закрыто, Разработка, Тестирование, "Тестирование - готово", "Разработка - готово", "Code Review"',
+        'пусто — значения по умолчанию: Закрыто, Разработка, Тестирование, "Тестирование - готово", "Разработка - готово", "Code Review"',
         "kb:trust даёт knowledge: все связанные задачи в этих статусах"),
     inp("assumption_statuses","Статусы задач «это ещё предположение»",
-        'пусто — по умолчанию: Аналитика, Анализ, Сделать, Бэклог, "Аналитика - готово", "В работе"',
+        'пусто — значения по умолчанию: Аналитика, Анализ, Сделать, Бэклог, "Аналитика - готово", "В работе"',
         "карточка получает draft — знанием она пока не является"),
     el("div",{class:"sep"}),
     el("div",{class:"muted",style:"font-size:12px;margin:0 0 6px"},
@@ -4855,9 +4856,12 @@ async function renderProject(){
       + "закон и стандарт доверены, чужой блог нет"),
     webBox,
     el("div",{class:"sep"}),
-    inp("trusted_sources","Доверенные источники",
-        "пусто — по умолчанию: Raw/contract, Raw/customer, Raw/project, Raw/dictionaries и ветки вики: модель данных, алгоритмы, схемы логики, НСИ, глоссарий, GUI, роли, форматы данных",
-        "карточка из подписанного документа или описания системы доверенная сразу: решения не требует"),
+    inp("trusted_sources","Доверенные источники · папки и файлы по пути",
+        "пусто — значения по умолчанию: Raw/contract, Raw/customer, Raw/project, Raw/dictionaries",
+        "карточка из подписанного документа доверенная сразу: решения не требует"),
+    inp("trusted_branches","Доверенные ветки вики · по названию",
+        "пусто — значения по умолчанию: Логическая модель, Алгоритмы, Схемы описания логики, Нормативно-справочная информация, НСИ, Справочники, Глоссарий, GUI, Ролевая модель, Описание форматов данных",
+        "ветка, в имени которой название стоит целым словом, описывает систему и доверена"),
     el("div",{class:"sep"}),
     el("label",{style:"display:block;margin-bottom:12px"},
       el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},

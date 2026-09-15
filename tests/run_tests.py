@@ -5623,45 +5623,86 @@ def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
 
 
 @test
-def test_empty_trust_settings_mean_the_reference_defaults(tmp: Path):
-    """Пустая настройка доверия — умолчание эталонного проекта, а не «доверять нечему».
+def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
+    """Значения доверия по умолчанию — обычная настройка проекта, записанная в конфиг.
 
     Живой случай: у проекта статусы задач и доверенные источники остались пустыми, и вся вики
-    получила «класс не определён» — 23 % доверия при тех же задачах и документах, что у
-    соседа с 77 %. Решение заказчика 15.09: как у эталона, для всех проектов; явный список
-    проекта заменяет умолчание целиком. Карточка, чья опора — сама задача, берёт её статус.
+    получила «класс не определён» — 23 % доверия. Решение заказчика 15.09: одна настройка по
+    умолчанию для всех проектов. Её пишут шаблон, форма и обновление движка — там, где список
+    пуст или ключа нет; заданное проектом не трогается. Пустой список движок читает как те же
+    значения. Карточка, чья опора — сама задача, берёт её статус.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     AC = importlib.import_module("aurora_common")
+    S = importlib.import_module("aurora_setup")
     U = importlib.import_module("kb_trust")
+
+    empty = ('project:\n  name: "T"\n\natlassian:\n  jira:\n    project_key: "T"\n'
+             '    trust_statuses: []\n    assumption_statuses: []   # старый комментарий\n'
+             '  auth:\n    mode: mcp_user\n\nverify:\n  trusted_sources: []\n'
+             '  trusted_sections: [Glossary]\n\nprivacy:\n  scrub: report\n')
+    new, done = S.fill_trust_defaults(empty)
+    assert "trust_statuses: [Закрыто, Разработка, Тестирование" in new and '"Code Review"' in new, new
+    assert "assumption_statuses: [Аналитика, Анализ" in new, new
+    assert "trusted_sources: [Raw/contract, Raw/customer" in new and "trusted_branches: [" in new, new
+    assert "trusted_sections" not in new, "мёртвый ключ остался в конфиге"
+    assert "mode: mcp_user" in new and "scrub: report" in new, f"задет чужой текст конфига:\n{new}"
+    assert S.fill_trust_defaults(new)[1] == [], "повторное обновление снова правит конфиг"
+
+    bare = ('project:\n  name: "T"\n\natlassian:\n  jira:\n    project_key: "T"\n'
+            '  auth:\n    mode: mcp_user\n\nprivacy:\n  scrub: report\n')
+    new, _ = S.fill_trust_defaults(bare)
+    jira = new.split("  jira:\n", 1)[1].split("  auth:", 1)[0]
+    assert "trust_statuses: [" in jira and "assumption_statuses: [" in jira, \
+        f"статусы записаны не в блок jira:\n{new}"
+    assert "verify:" in new and new.index("verify:") < new.index("privacy:"), \
+        f"раздел verify не на месте:\n{new}"
+
+    own = empty.replace("trust_statuses: []", "trust_statuses: [Готово]").replace(
+        "trusted_sources: []", "trusted_sources: [Raw/мой]")
+    new, _ = S.fill_trust_defaults(own)
+    assert "trust_statuses: [Готово]" in new and "trusted_sources: [Raw/мой]" in new, \
+        "обновление переписало настройку, которую проект задал сам"
+    tpl = (KIT / "templates/aurora.config.yaml.template").read_text(encoding="utf-8")
+    assert S.fill_trust_defaults(tpl)[1] == [], \
+        "шаблон нового проекта расходится со значениями по умолчанию"
+
+    (tmp / "u").mkdir()
+    up = make_project(tmp / "u")
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_update.py"), str(up), "--apply"],
+                        capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stdout[-800:] + cp.stderr[-800:]
+    cfg_text = (up / "aurora.config.yaml").read_text(encoding="utf-8")
+    assert "trust_statuses: [Закрыто" in cfg_text and "trusted_branches: [" in cfg_text, \
+        f"обновление движка не записало значения доверия в конфиг:\n{cfg_text}"
+
     root = make_project(tmp)
     conf = root / "Sources" / "Confluence"
     for name in ("Раздел_-_Алгоритмы", "Логическая_модель_(ERD)",
                  "Нормативно-справочная_информация_(НСИ)", "Контракты", "Протоколы_встреч", "_архив"):
         (conf / name).mkdir(parents=True, exist_ok=True)
     (conf / "Глоссарий.md").write_text("# Глоссарий\n", encoding="utf-8")
-    got = AC.default_trusted_sources(str(root))
-    for need in ("Raw/contract", "Raw/customer", "Sources/Confluence/Раздел_-_Алгоритмы",
-                 "Sources/Confluence/Логическая_модель_(ERD)",
-                 "Sources/Confluence/Нормативно-справочная_информация_(НСИ)",
-                 "Sources/Confluence/Глоссарий.md"):
-        assert need in got, f"умолчание не взяло {need}: {got}"
+    got = AC.trusted_branch_sources(str(root))
+    for need in ("Раздел_-_Алгоритмы", "Логическая_модель_(ERD)",
+                 "Нормативно-справочная_информация_(НСИ)", "Глоссарий.md"):
+        assert f"Sources/Confluence/{need}" in got, f"ветка не узнана по названию: {need} · {got}"
     for no in ("Контракты", "Протоколы_встреч", "_архив"):
         assert f"Sources/Confluence/{no}" not in got, f"ветка хода работ стала доверенной: {no}"
-    assert AC.branch_kind("GUI_-_Экранные_формы") == "gui"
-    assert not AC.branch_kind("Полный_перечень_работ"), "вид ветки узнан по куску слова"
+    assert AC.branch_kind("GUI_-_Экранные_формы") == "GUI"
+    assert not AC.branch_kind("Полный_перечень_работ"), "название узнано по куску слова"
+    assert AC.trusted_branch_sources(str(root), ("Контракты",)) == ["Sources/Confluence/Контракты"]
 
     cfg = root / "aurora.config.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace(
         '    project_key: "T"\n',
         '    project_key: "T"\n    trust_statuses: []\n    assumption_statuses: []\n')
-        + "verify:\n  trusted_sources: []\n", encoding="utf-8")
+        + "verify:\n  trusted_sources: []\n  trusted_branches: []\n", encoding="utf-8")
     cur = os.getcwd()
     os.chdir(root)
     try:
         assert U.config_statuses("trust_statuses") == set(), \
-            "пустой список прочитан как список из пустой строки — умолчание не включится"
+            "пустой список прочитан как список из пустой строки — значения по умолчанию не включатся"
     finally:
         os.chdir(cur)
     cls, why = U.source_class("Sources/JIRA/PRJ-2.md", {"direct": {}, "indirect": {}},
@@ -5685,19 +5726,19 @@ def test_empty_trust_settings_mean_the_reference_defaults(tmp: Path):
         card(root, f"Concepts/{name}.md", status=status, kind="knowledge",
              sources=f'\n  - "{src}"', body=f"{name} — знание.")
     r = run("kb_trust.py", "--apply", cwd=root)
-    out = r.stdout if isinstance(r.stdout, str) else r.stdout.decode("utf-8", "ignore")
-    assert "по умолчанию" in out, f"пересчёт не сказал, что взял умолчание:\n{out}"
+    assert "значения по умолчанию" in r.stdout, f"пересчёт не сказал, что взял значения по умолчанию:\n{r.stdout}"
     text = lambda n: (root / f"AuroraKnowledgeDB/Concepts/{n}.md").read_text(encoding="utf-8")
     assert "status: knowledge" in text("Алгоритм"), "ветка алгоритмов не доверена по умолчанию"
     assert "status: knowledge" in text("Итог"), "статус «Закрыто» не дал доверия по умолчанию"
     assert "status: draft" in text("Спор"), "статус «Анализ» не признан предположением по умолчанию"
     assert "status: knowledge" in text("Опора"), "карточка с опорой на задачу не взяла её статус"
 
-    cfg.write_text(cfg.read_text(encoding="utf-8").replace("trusted_sources: []",
-                                                           "trusted_sources: [Raw/contract]"),
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace("trusted_branches: []",
+                                                           "trusted_branches: [Глоссарий]"),
                    encoding="utf-8")
     run("kb_trust.py", "--apply", cwd=root)
-    assert "status: draft" in text("Алгоритм"), "явный список проекта не заменил умолчание"
+    assert "status: draft" in text("Алгоритм"), \
+        "заданный проектом список веток не заменил значения по умолчанию"
 
 
 @test
@@ -5705,7 +5746,7 @@ def test_settings_form_drops_the_dead_trust_key_and_clears_to_defaults(tmp: Path
     """Форма не пишет и не переносит `trusted_sections`; очищенное поле доверия — умолчание.
 
     Ключ форма писала, а не читал ни один скрипт: доверие наследуется от источника, а не от
-    раздела базы. Поле доверия, которое человек стёр, должно вернуть настройку по умолчанию —
+    раздела базы. Поле доверия, которое человек стёр, должно вернуть значения по умолчанию —
     пустой ответ формы раньше молча оставлял прежний список.
     """
     import contextlib
@@ -5729,8 +5770,9 @@ def test_settings_form_drops_the_dead_trust_key_and_clears_to_defaults(tmp: Path
     with contextlib.redirect_stdout(io.StringIO()):
         A.run_answers(root, {"trust_statuses": "", "trusted_sources": " "})
     text = cfg.read_text(encoding="utf-8")
-    assert "trust_statuses: []" in text and "trusted_sources: []" in text, \
-        f"очищенное поле не вернуло настройку по умолчанию:\n{text}"
+    assert "trust_statuses: [Закрыто, Разработка, Тестирование" in text \
+        and "trusted_sources: [Raw/contract, Raw/customer" in text and "trusted_branches: [" in text, \
+        f"очищенное поле не вернуло значения по умолчанию:\n{text}"
     for rel in ("cockpit/ui/index.html", "templates/aurora.config.yaml.template"):
         assert "trusted_sections" not in (KIT / rel).read_text(encoding="utf-8"), \
             f"{rel} всё ещё предлагает мёртвый ключ"

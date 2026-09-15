@@ -323,6 +323,27 @@ def refresh_gitignore(target: Path) -> list:
         return []
 
 
+def config_defaults(target: Path, ignore: list) -> tuple:
+    """(новый текст, что записать) — значения доверия по умолчанию для конфига проекта.
+
+    Настройка доверия по умолчанию — обычная настройка проекта, и видно её должно быть в
+    `aurora.config.yaml`, а не угадывать по поведению движка. Пишется только туда, где
+    список пуст или ключа нет; заданное проектом не трогается.
+    """
+    from fnmatch import fnmatch
+    cfg = target / "aurora.config.yaml"
+    if not cfg.is_file() or any(fnmatch("aurora.config.yaml", p) for p in ignore):
+        return "", []
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        from aurora_setup import fill_trust_defaults
+    except Exception:                                    # noqa: BLE001
+        return "", []
+    text = cfg.read_text(encoding="utf-8")
+    new, done = fill_trust_defaults(text)
+    return (new, done) if new != text else ("", [])
+
+
 def run(target: Path, apply: bool, structure_only: bool = False):
     if not (target / "AuroraKnowledgeDB").is_dir():
         print(f"⚠️  {target} не похоже на проект Aurora (нет AuroraKnowledgeDB/).", file=sys.stderr)
@@ -362,8 +383,9 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     writes = [c for c in changes if c.kind == "write"]
     seeds = [c for c in changes if c.kind == "seed-new"]
     retired = [r for r in retired_paths() if (target / r).is_file()]
+    cfg_text, cfg_done = config_defaults(target, ignored)
 
-    if not changes and not new_dirs and not retired:
+    if not changes and not new_dirs and not retired and not cfg_done:
         print("✅ Движок и структура уже актуальны — изменений нет.")
         if apply and pv != kv:
             stamp_version(target, kv)
@@ -392,6 +414,9 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         for r in retired:
             print(f"  − {r}")
 
+    if cfg_done:
+        print(f"\nКонфиг проекта — значения доверия по умолчанию: {', '.join(cfg_done)}")
+
     if not apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply, чтобы применить.")
         return 0
@@ -408,6 +433,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
             dst.chmod(0o755)     # без бита исполнения двойной щелчок не сработает
     for r in retired:
         (target / r).unlink()
+    if cfg_done:
+        (target / "aurora.config.yaml").write_text(cfg_text, encoding="utf-8")
     (target / ".opencode").mkdir(parents=True, exist_ok=True)
     (target / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
     refreshed = refresh_hooks(target)
@@ -417,6 +444,7 @@ def run(target: Path, apply: bool, structure_only: bool = False):
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
           + (f", хук обновлён ({refreshed})" if refreshed else "")
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
+          + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
           + f". Версия → {kv}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
     if seeds:

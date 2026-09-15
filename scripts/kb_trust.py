@@ -19,9 +19,9 @@
 Одна задача-черновик перевешивает десять готовых: содержание ещё поменяется. Прямая связь
 сильнее косвенной — если прямая говорит «готово», трассировку не спрашиваем.
 
-Пустой список статусов или источников в конфиге — настройка по умолчанию, та же, что у
-эталонного проекта (`aurora_common.TRUST_STATUSES_DEFAULT` и соседи). Явный список проекта
-заменяет умолчание целиком.
+Статусы задач, доверенные источники и доверенные ветки вики — настройка проекта в
+`aurora.config.yaml`. Значения по умолчанию пишут туда настройка и обновление движка
+(`aurora_common.TRUST_DEFAULTS`); пустой список читается как те же значения.
 
 Понижение класса не стирает знание: тело остаётся, а в подвал пишется строка «класс
 понижен такого-то числа, задача вернулась в работу». Знание не перестало существовать —
@@ -40,9 +40,10 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
-                           TRUST_STATUSES_DEFAULT, card_sources, config_list,
-                           default_trusted_sources, frontmatter, is_placeholder,
-                           split_frontmatter, walk_md, with_fields)
+                           TRUST_STATUSES_DEFAULT, TRUSTED_BRANCHES_DEFAULT,
+                           TRUSTED_SOURCES_DEFAULT, card_sources, config_list, frontmatter,
+                           is_placeholder, split_frontmatter, trusted_branch_sources,
+                           walk_md, with_fields)
 
 TODAY = date.today().isoformat()
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
@@ -225,21 +226,27 @@ def main() -> int:
     # это папка первоисточников; всё остальное (зеркало Confluence, отдельная папка
     # договоров, справочники) объявляет проект, потому что у каждого оно своё.
     docs = tuple(config_list("trusted_sources"))
-    # Пустой список — настройка по умолчанию (решение 15.09.2026), а не «доверять нечему».
-    # Раньше пустые статусы останавливали пересчёт, а пустые источники оставляли всю вики
-    # без класса.
+    kinds = tuple(config_list("trusted_branches"))
+    # Пустой список читается как значения по умолчанию (решение 15.09.2026), а не как
+    # «доверять нечему»: пустые статусы останавливали пересчёт, пустые источники оставляли
+    # всю вики без класса. В конфиг значения записывают `aurora update` и форма настроек.
     by_default = []
     if not trust:
         trust = {s.casefold() for s in TRUST_STATUSES_DEFAULT}
-        by_default.append("статусы доверия")
+        by_default.append("trust_statuses")
     if not draft:
         draft = {s.casefold() for s in ASSUMPTION_STATUSES_DEFAULT}
-        by_default.append("статусы предположения")
+        by_default.append("assumption_statuses")
     if not docs:
-        docs = tuple(default_trusted_sources(root))
-        by_default.append("доверенные источники")
+        docs = TRUSTED_SOURCES_DEFAULT
+        by_default.append("trusted_sources")
+    if not kinds:
+        kinds = TRUSTED_BRANCHES_DEFAULT
+        by_default.append("trusted_branches")
     if by_default:
-        print(f"Не заданы в конфиге, взяты по умолчанию: {', '.join(by_default)}.")
+        print(f"В конфиге пусто: {', '.join(by_default)} — применены значения по умолчанию. "
+              "Записать их в конфиг: `aurora update` или форма настроек.")
+    docs = tuple(docs) + tuple(b for b in trusted_branch_sources(root, kinds) if b not in docs)
     print(f"Доверенные источники: {', '.join(docs)}\n")
 
     counts, changes, moved, refreshed = {}, [], 0, 0

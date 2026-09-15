@@ -633,48 +633,55 @@ def config_list(key: str) -> list:
     return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
 
 
-# Настройка доверия по умолчанию — решение заказчика 15.09.2026: как у эталонного проекта,
-# и для всех проектов. Пустой список в конфиге значит «по умолчанию», а не «доверять
-# нечему»: проект, где статусы и источники забыли заполнить, получал «класс не определён» на
-# всю вики и 23 % доверия при тех же задачах и тех же документах, что у соседа с 77 %.
-# Явный список проекта сильнее умолчания и заменяет его целиком.
+# Настройка доверия по умолчанию (решение заказчика 15.09.2026). Это обычная настройка
+# проекта: значения пишутся в `aurora.config.yaml` шаблоном нового проекта, формой настроек и
+# обновлением движка — там, где список пуст или ключа нет, — и дальше их видно и их правят.
+# Пустой список движок читает как эти же значения, чтобы проект, ещё не обновлённый, не
+# остался без доверия: иначе вся вики получает «класс не определён» — на живом проекте 23 %.
 TRUST_STATUSES_DEFAULT = ("Закрыто", "Разработка", "Тестирование", "Тестирование - готово",
                           "Разработка - готово", "Code Review")
 ASSUMPTION_STATUSES_DEFAULT = ("Аналитика", "Анализ", "Сделать", "Бэклог",
                                "Аналитика - готово", "В работе")
-TRUSTED_RAW_DEFAULT = ("Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries")
-# Верхние ветки вики, которые описывают систему, а не ход работ: модель данных, алгоритмы,
-# схемы логики, справочники, глоссарий, экранные формы, роли, форматы данных. Узнаются по
-# смыслу имени: приставки и скобки у каждого заказчика свои («XX_-_Алгоритмы»,
-# «Логическая_модель_(ERD)»). Истории, протоколы встреч, контракты и методология сюда не
-# входят — у эталона они не доверены, и проект объявляет их сам.
-TRUSTED_BRANCH_KINDS = ("логическая модель", "алгоритмы", "схемы описания логики",
-                        "нормативно-справочная информация", "нси", "справочники",
-                        "глоссарий", "gui", "ролевая модель", "описание форматов данных")
+TRUSTED_SOURCES_DEFAULT = ("Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries")
+# Верхние ветки вики, доверенные по названию (`verify.trusted_branches`): описание системы, а
+# не ход работ. Название ищется в имени ветки целым словом — приставки и скобки у каждого
+# заказчика свои («XX_-_Алгоритмы», «Логическая_модель_(ERD)»).
+TRUSTED_BRANCHES_DEFAULT = ("Логическая модель", "Алгоритмы", "Схемы описания логики",
+                            "Нормативно-справочная информация", "НСИ", "Справочники",
+                            "Глоссарий", "GUI", "Ролевая модель", "Описание форматов данных")
+TRUST_DEFAULTS = {"trust_statuses": TRUST_STATUSES_DEFAULT,
+                  "assumption_statuses": ASSUMPTION_STATUSES_DEFAULT,
+                  "trusted_sources": TRUSTED_SOURCES_DEFAULT,
+                  "trusted_branches": TRUSTED_BRANCHES_DEFAULT}
 
 
-def branch_kind(name: str) -> str:
-    """Вид верхней ветки зеркала вики по её имени; пусто — ветка не описание системы."""
+def yaml_list(values) -> str:
+    """Содержимое списка для конфига: значение с пробелом, дефисом или запятой — в кавычках."""
+    return ", ".join(f'"{v}"' if re.search(r"[\s,-]", v) else v for v in values)
+
+
+def branch_kind(name: str, kinds=TRUSTED_BRANCHES_DEFAULT) -> str:
+    """Какое из названий `kinds` носит верхняя ветка зеркала вики; пусто — ни одно."""
     stem = name[:-3] if name.endswith(".md") else name
     plain = re.sub(r"[_\s]+", " ", stem).casefold()
-    for kind in TRUSTED_BRANCH_KINDS:
-        if re.search(rf"(?<!\w){re.escape(kind)}(?!\w)", plain):
+    for kind in kinds:
+        k = re.sub(r"[_\s]+", " ", kind.strip()).casefold()
+        if k and re.search(rf"(?<!\w){re.escape(k)}(?!\w)", plain):
             return kind
     return ""
 
 
-def default_trusted_sources(root: str = ".") -> list:
-    """Доверенные источники по умолчанию: папки первоисточников и ветки-описания системы.
+def trusted_branch_sources(root: str = ".", kinds=TRUSTED_BRANCHES_DEFAULT) -> list:
+    """Верхние ветки зеркала вики, в имени которых стоит одно из доверенных названий.
 
-    Ветки ищутся при каждом вызове, а не записываются в конфиг: новая ветка вики, пришедшая
-    синком, получает доверие сразу, без правки настроек.
+    Ветки ищутся при каждом вызове: новая ветка, пришедшая синком, доверена сразу, без
+    правки настроек.
     """
-    out = list(TRUSTED_RAW_DEFAULT)
     base = os.path.join(root, "Sources", "Confluence")
-    if os.path.isdir(base):
-        out += [f"Sources/Confluence/{n}" for n in sorted(os.listdir(base))
-                if not n.startswith((".", "_")) and branch_kind(n)]
-    return out
+    if not os.path.isdir(base):
+        return []
+    return [f"Sources/Confluence/{n}" for n in sorted(os.listdir(base))
+            if not n.startswith((".", "_")) and branch_kind(n, kinds)]
 
 
 def inbound_counts(root: str, skip_nav: bool = False) -> dict:
