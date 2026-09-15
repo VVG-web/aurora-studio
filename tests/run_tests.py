@@ -5241,6 +5241,278 @@ console.log(JSON.stringify({
 
 
 @test
+def test_route_counts_its_own_steps_and_resumes_inside_the_lap(tmp: Path):
+    """Счётчик маршрута не прибавляет повторы цикла, а продолжение встаёт туда, где стоял.
+
+    Живой случай: после трёх оборотов «Обновить базу» панель показывала «шаг 36 из 20» —
+    исправление 1.100.41 развело счёт только внутри оборота. И продолжение после остановки
+    всегда начинало цикл с первого шага первого оборота: в маршруте, где вся работа в цикле,
+    это читалось и работало как запуск заново.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    run = ui[ui.index("async function runRoute("):ui.index("async function resumeLastRoute(")]
+    assert "if (st.cycle) ROUTE.inLap = st.cycleIdx; else ROUTE.done++;" in run, \
+        "шаги цикла снова идут в общий счёт маршрута — вернётся «шаг 36 из 20»"
+    assert "cycleIdx: inCycle ? ++cycleIdx : 0" in run, "у шага цикла нет номера в обороте"
+    assert "routeCycle = (ROUTE.lap && !ROUTE.stalled)" in run and "cycleAt: routeCycle" in run, \
+        "остановленный маршрут не запоминает, на каком шаге оборота встал"
+    assert "st.cycleIdx < CYCLE_AT.inLap" in run, "продолжение не пропускает пройденные шаги оборота"
+    assert "if (CYCLE_AT && ROUTE.lap === 1) continue;" in run, \
+        "неполный оборот продолжения меряет остаток и может объявить застой или конец работы"
+    assert "done: routeDoneSigs(), cycleAt:" in run, \
+        "ожидание сети сохраняет состояние без сделанного — продолжение после перезапуска начнёт сначала"
+    resume = ui[ui.index("async function resumeLastRoute("):ui.index("function dropResumeButtons(")]
+    assert "cycleAt: last.cycleAt" in resume, "кнопка «Продолжить» не передаёт место в обороте"
+    assert "done: state.done || [], cycleAt: state.cycleAt || null" in ui, \
+        "«не ждать сеть» затирает сделанное в состоянии маршрута"
+
+
+@test
+def test_model_json_is_found_inside_reasoning_and_trailing_text(tmp: Path):
+    """JSON в ответе модели находится, даже когда вокруг рассуждение и скобки.
+
+    Жадный шаблон «от первой `{` до последней `}`» ломался на обычном ответе: рассуждение
+    с фигурными скобками перед объектом или пояснение со скобкой после него. На живом
+    проекте так падала страница-лента на каждом обороте, и маршрут вставал застоем.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    assert R.parse_json('Думаю {так}. Ответ: {"cards": [], "empty": "нет знания"} — всё}') \
+        == {"cards": [], "empty": "нет знания"}, "объект после рассуждения со скобками не найден"
+    assert R.parse_json('<think>{"x": 1}</think>\n```json\n{"verdict": "ok"}\n```') \
+        == {"verdict": "ok"}, "рассуждение в <think> принято за ответ"
+    assert R.parse_json('{"a": {"b": 1}} и ещё скобка }') == {"a": {"b": 1}}, \
+        "хвост со скобкой ломает разбор"
+    assert R.parse_json("ответа нет") is None and R.parse_json("") is None
+
+
+@test
+def test_unparsed_answer_is_asked_again_and_then_parked(tmp: Path):
+    """Неразобранный ответ модели переспрашивается, а упорно сбойный источник откладывается.
+
+    Источник, на который модель дважды не дала разбираемого ответа, оставался в плане:
+    «осталось» не убывало, и маршрут «Обновить базу» вставал застоем четыре прогона подряд.
+    Сбой по содержанию учитывается, после двух подряд на тот же текст план откладывает
+    источник; изменился файл — источник возвращается сам.
+    """
+    from unittest.mock import patch
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    import agent_runner as R
+
+    root = make_project(tmp)
+    src_rel = "Sources/Confluence/Лента.md"
+    src = root / src_rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# Лента\n\n## Заметка\n\n" + "Текст заметки о предмете. " * 20 + "\n",
+                   encoding="utf-8")
+    cfg = parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://test",
+                        "AURORA_AGENT_BACKEND_1_MODEL": "test"})
+    sections = [(1, "Заметка", 500, "превью")]
+    calls = []
+
+    def bad(cfg_, role, messages, **k):
+        calls.append(role)
+        return {"ok": True, "text": "Рассуждаю о ленте, объект не получился", "backend": 1,
+                "model": "m", "log": []}
+
+    with patch("agent_runner.read_sections", return_value=sections):
+        step = R.solve_source(cfg, str(root), "Confluence", src_rel, True, False, call=bad)
+    assert calls.count("worker") == 2, f"неразобранный ответ не переспрошен: {calls}"
+    assert step["status"] == "сбой" and step.get("content_fail"), step
+    assert "начало ответа: «Рассуждаю о ленте" in step["note"], \
+        f"в отчёте нет начала ответа — сбой нечем разобрать: {step['note']}"
+
+    answers = iter(["не JSON", '{"cards": [{"title": "Заметка-о-предмете", "sections": "1", '
+                               '"to": "Concepts"}]}'])
+
+    def second_try(cfg_, role, messages, **k):
+        return {"ok": True, "text": next(answers), "backend": 1, "model": "m", "log": []}
+
+    with patch("agent_runner.read_sections", return_value=sections):
+        step = R.solve_source(cfg, str(root), "Confluence", src_rel, True, False, call=second_try)
+    assert step["status"] == "разобран", f"переспрос не спас разбираемый со второго раза ответ: {step}"
+
+    other = root / "Sources/Confluence/Другая.md"
+    other.write_text("# Другая\n\n" + "Содержательный текст страницы. " * 20, encoding="utf-8")
+
+    def left():
+        out = run("build_plan.py", "--status", cwd=root).stdout
+        return int(re.search(r"осталось:\s*(\d+)", out).group(1)), out
+    before, _ = left()
+    run("build_plan.py", "--failed", "Sources/Confluence/Другая.md", "--note", "сбой", cwd=root)
+    assert left()[0] == before, "один сбой уже откладывает источник — модель могла ошибиться случайно"
+    run("build_plan.py", "--failed", "Sources/Confluence/Другая.md", "--note", "сбой", cwd=root)
+    n, out = left()
+    assert n == before - 1 and "отложено: 1" in out and "Другая.md" in out, \
+        f"два сбоя подряд не отложили источник — цикл снова встанет:\n{out}"
+    other.write_text(other.read_text(encoding="utf-8") + "\nНовый абзац.\n", encoding="utf-8")
+    assert left()[0] == before, "изменённый источник остался отложенным — новый текст не разберут"
+    run("build_plan.py", "--failed", "Sources/Confluence/Другая.md", "--note", "сбой", cwd=root)
+    run("build_plan.py", "--failed", "Sources/Confluence/Другая.md", "--note", "сбой", cwd=root)
+    run("build_plan.py", "--retry-failed", cwd=root)
+    assert left()[0] == before, "--retry-failed не вернул отложенный источник в план"
+
+    code = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    body = code[code.index("def run_build("):code.index("def verdict_build(")]
+    assert body.count("defer_if_content_fail(cwd, source, step, apply)") == 2, \
+        "сбой разбора учитывается не в обеих ветках разбора — в одном потоке или в нескольких"
+
+
+@test
+def test_relink_stops_when_gateways_do_not_answer(tmp: Path):
+    """Связывание останавливается после трёх сбоев подряд, а остаток ждёт следующий прогон.
+
+    Живой случай: второй заход связывания потратил двадцать минут на двадцать карточек и не
+    сделал ни одной — слот шлюза был занят, и каждая карточка ждала пятиминутного срока.
+    """
+    from unittest.mock import patch
+    sys.path.insert(0, str(KIT / "scripts"))
+    from agent_core import parse_config
+    import agent_runner as R
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB" / "Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    for i in range(8):
+        (kb / f"К{i}.md").write_text(
+            f'---\ntitle: "К{i}"\nkind: knowledge\nstatus: draft\ndistilled: 2026-09-01\n---\n\n'
+            f"# К{i}\n\nТезис карточки номер {i} о предмете.\n", encoding="utf-8")
+    cfg = parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://test",
+                        "AURORA_AGENT_BACKEND_1_MODEL": "test"})
+    seen = []
+
+    def busy(cfg_, path, call, apply, deadline=None):
+        seen.append(path)
+        return {"card": os.path.basename(path), "status": "сбой", "added": 0, "backends": [1],
+                "note": "№1: слот занят (/slots) — дальше по кольцу; никто не уложился в срок"}
+
+    with patch("agent_runner.relink_card", busy):
+        res = R.run_relink(cfg, str(root), True)
+    assert res["gateways_down"], f"предохранитель не сработал: {res}"
+    assert len(seen) <= R.FAILS_IN_A_ROW + 1, f"после трёх сбоев подряд связывание шло дальше: {len(seen)}"
+    assert res["left"] >= 8 - len(seen) and "свяжет следующий прогон" in res["steps"][-1]["note"], res
+    assert not any("relinked:" in p.read_text(encoding="utf-8") for p in kb.glob("*.md")), \
+        "карточка без связей отмечена связанной — из очереди она выпала бы навсегда"
+    loop = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    loop = loop[loop.index('elif a.task == "relink" and a.until_done and a.apply:'):]
+    assert 'if res.get("gateways_down"):' in loop[:3000], \
+        "заходы связывания продолжаются, когда шлюзы уже не отвечают"
+
+
+@test
+def test_lint_reads_golden_questions_not_engine_reports(tmp: Path):
+    """«Контрольный вопрос без карточки» — только из эталона, не из отчётов движка в meta/.
+
+    Живой случай: из 20 «пропавших контрольных вопросов» часть была ссылками отчёта
+    `meta/gaps.md` — отчёт о дырах выдавался за потерянный эталон.
+    """
+    root = make_project(tmp)
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "gaps.md").write_text("# Дыры\n\n- [[Карточка-которой-нет-в-отчёте]]\n", encoding="utf-8")
+    (meta / "golden_questions.md").write_text(
+        "# Эталон\n\n| 1 | Вопрос? | Ответ | [[Пропавшая-карточка-эталона]] |\n", encoding="utf-8")
+    out = run("kb_lint.py", cwd=root, expect_rc=None).stdout
+    assert "Пропавшая-карточка-эталона" in out, "пропажа цели эталона перестала замечаться"
+    assert "Карточка-которой-нет-в-отчёте" not in out, \
+        f"ссылка отчёта движка названа контрольным вопросом:\n{out[:800]}"
+
+
+@test
+def test_health_report_names_panel_commands(tmp: Path):
+    """Отчёт о здоровье называет команды панели, а не пути к скриптам.
+
+    Живой случай: «Дальше» предлагал `python3 .opencode/scripts/kb_queue.py` — скрипта нет в
+    движке вовсе, а человек нажимает кнопку, а не набирает python3.
+    """
+    src = (KIT / "scripts/aurora_stats.py").read_text(encoding="utf-8")
+    tail = src[src.index('"## Дальше"'):src.index("def append_metrics(")]
+    assert "python3 .opencode/scripts" not in tail and "kb_queue" not in tail, tail[:400]
+    for cmd in ("`ops:todo`", "`kb:lint`", "`kb:repair`", "`sync:audit`"):
+        assert cmd in tail, f"в «Дальше» нет {cmd}"
+
+
+@test
+def test_document_maps_of_vanished_sources_are_removed(tmp: Path):
+    """Карта документа, который больше не даёт карточек, уходит; руками писанная остаётся.
+
+    Живой случай: карта удалённых доавроровских карточек держала пятнадцать битых ссылок —
+    её не порождали, значит и не переписывали, и линтер звал её ссылки битыми вечно.
+    """
+    root = make_project(tmp)
+    moc = root / "AuroraKnowledgeDB" / "MOC"
+    moc.mkdir(parents=True, exist_ok=True)
+    for name in ("Первая", "Вторая"):
+        card(root, f"Concepts/{name}.md", "Текст карточки о предмете.",
+             source="Sources/Confluence/Живой.md", status="draft")
+    gen = "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_moc.py — ручные правки будут потеряны. -->"
+    (moc / "Документ--Удалённый.md").write_text(
+        f'---\ntitle: "Документ · Удалённый"\n---\n\n{gen}\n\n- [[Карточки-больше-нет]]\n',
+        encoding="utf-8")
+    (moc / "Документ--Ручной.md").write_text("# Карта руками\n\n- [[Первая]]\n", encoding="utf-8")
+
+    dry = run("kb_moc.py", "--by-source", cwd=root, expect_rc=None).stdout
+    assert "уйдёт карта документа без карточек" in dry and (moc / "Документ--Удалённый.md").exists(), \
+        f"предпросмотр не называет устаревшую карту или уже удалил её:\n{dry[:600]}"
+    run("kb_moc.py", "--by-source", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
+    assert not (moc / "Документ--Удалённый.md").exists(), \
+        "карта документа без карточек осталась и продолжает ссылаться в пустоту"
+    assert (moc / "Документ--Ручной.md").exists(), "удалена карта, написанная руками"
+    assert (moc / "Документ--Живой.md").exists(), "карта живого документа не собрана"
+
+
+@test
+def test_audit_reads_the_web_mirror_and_its_lifted_documents(tmp: Path):
+    """Аудит понимает состояние веб-зеркала, а расшифровки документов не зовёт сиротами.
+
+    Живой случай: аудит писал «нет update_log.md», глядя на файл из сорока строк, — он
+    понимал только строки задач Jira. А веб-модуль называл «лишними» десять законов и
+    приказов, поднятых из вложений, и `--prune` снёс бы каждый, на который ещё не сослалась
+    карточка.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    SC = importlib.import_module("sources_core")
+    A = importlib.import_module("sync_audit")
+
+    web = tmp / "Sources" / "Web"
+    (web / "_files").mkdir(parents=True)
+    (web / "Новости-1a2b3c4d.md").write_text(
+        '---\ntitle: "Новости"\nurl: https://example.org/news/\ntrusted: true\n'
+        "source_kind: web\n---\n\n# Новости\n", encoding="utf-8")
+    (web / "Закон-5e6f7a8b.md").write_text(
+        '---\ntitle: "Закон"\nurl: https://example.org/docs/\ntrusted: true\n'
+        "source_kind: web-document\ndocument: _files/Закон-5e6f7a8b.pdf\n---\n\n# Закон\n",
+        encoding="utf-8")
+    (web / "_files" / "Закон-5e6f7a8b.md").write_text(
+        '---\ntitle: "Закон"\nconverted_from: "_files/Закон-5e6f7a8b.pdf"\n---\n\nтекст\n',
+        encoding="utf-8")
+    (web / "update_log.md").write_text(
+        "<!-- Web sync state — генерируется web_export.py, не править руками -->\n"
+        "**Sync Date:** 2026-09-15\n**Pages:** 1\n\n| # | URL | Trusted | Local Path | Status |\n"
+        "|---|---|---|---|---|\n| 1 | https://example.org/news/ | да | Новости-1a2b3c4d.md | обновлена |\n",
+        encoding="utf-8")
+
+    assert SC.is_promoted_document(str(web / "Закон-5e6f7a8b.md")), "поднятый документ не узнан"
+    assert not SC.is_promoted_document(str(web / "Новости-1a2b3c4d.md")), "страница принята за документ"
+    rows, latest = A.parse_board_state(str(web), "update_log.md")
+    assert [k for k, _d in rows] == ["Новости-1a2b3c4d"] and latest == "2026-09-15", \
+        f"состояние веб-зеркала не прочитано: {rows}, {latest}"
+    out, stats = [], {}
+    A.audit_board({"id": "Web", "path": str(web), "state": "update_log.md", "command": "sync:web"},
+                  14, out, stats)
+    assert stats["Web"].get("orphan") == 0 and stats["Web"].get("missing") == 0, \
+        "расшифровки документов или вложения названы сиротами:\n" + "\n".join(out)
+
+    code = (KIT / "scripts/web_export.py").read_text(encoding="utf-8")
+    assert "and not is_promoted_document(os.path.join(mirror.out, r))" in code \
+        and "is_promoted_document, report_stale" in code, \
+        "веб-модуль снова считает поднятые документы лишними файлами"
+
+
+@test
 def test_running_command_survives_a_page_reload(tmp: Path):
     """Работающая команда видна после перезагрузки страницы, и второй запуск переспрашивают.
 
@@ -6351,10 +6623,16 @@ def test_a_clear_refusal_is_not_a_dead_provider(tmp: Path):
                        (401, "Invalid authentication credentials"),
                        (404, "The model does not exist")):
         A.DOWN.clear()
+        started = time.time()
         r = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
                         transport=refuse(code, text), deadline=time.time() + 5,
                         sleep=lambda s: None)
         assert not r["ok"], f"отказ {code} принят за успех"
+        # Внятный отказ ожиданием не лечится: вызов обязан закончиться сразу, а не гонять
+        # тот же запрос по кругу до срока. Прежде этот тест сам шёл девять минут — ровно
+        # столько кольцо переспрашивало сервер, уже сказавший «нет».
+        assert time.time() - started < 3, \
+            f"HTTP {code} переспрашивается по кругу до срока — это опрос впустую"
         assert 1 not in A.DOWN, (
             f"HTTP {code} посадил живой шлюз в карантин на 15 минут — а он ответил за "
             "0.05 с, и ожидание тут ничего не чинит")
@@ -6365,9 +6643,12 @@ def test_a_clear_refusal_is_not_a_dead_provider(tmp: Path):
     # А молчание — по-прежнему карантин: мёртвого не спрашивают на каждом источнике.
     A.DOWN.clear()
     dead = lambda kind, b, payload, timeout: (None, None, "Connection refused", 0.0)
-    A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=dead,
-                deadline=time.time() + 5, sleep=lambda s: None)
+    started = time.time()
+    r = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=dead,
+                    deadline=time.time() + 5, sleep=lambda s: None)
     assert 1 in A.DOWN, "молчащий провайдер обязан попадать в карантин"
+    assert time.time() - started < 3 and "повторять незачем" in " ".join(r["log"]), \
+        "шлюз в карантине дольше вызова всё равно ждут до конца срока"
 
 
 @test

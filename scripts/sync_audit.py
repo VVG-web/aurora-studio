@@ -42,12 +42,15 @@ from datetime import date, datetime
 import sources_registry as R
 from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guard,
                            split_frontmatter, walk_md, with_fields)
-from sources_core import ASSET_DIR_RE, SERVICE_RE, cited_by_cards, nfc
+from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
+                          is_promoted_document, nfc)
 
 TODAY = date.today()
 
 ROW_RE = re.compile(r"^\|\s*[^|]*\|\s*(\d{4,})\s*\|([^|]*)\|\s*([^|]+?)\s*\|\s*([A-Z_]+)?\s*\|")
 JIRA_ROW_RE = re.compile(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|([^|]*)\|\s*([^|]+?)\s*\|")
+# Строка состояния веб-зеркала: номер, адрес, доверие, файл, статус. Ключ — имя файла.
+WEB_ROW_RE = re.compile(r"^\|\s*\d+\s*\|\s*https?://[^|]+\|[^|]*\|\s*([^|/]+?\.md)\s*\|")
 # page_id пишется в шапке зеркала (`page_id: 12345`); `- **ID:** 12345` — формат
 # прежнего синк-скилла, он ещё встречается в старых проектах
 ID_IN_FILE_RE = re.compile(r"^\s*(?:page_id:\s*|-\s*\*\*ID:\*\*\s*)(\d{4,})", re.M)
@@ -124,9 +127,14 @@ def parse_board_state(root: str, state_name: str):
     rows, latest = [], None
     for line in open(log, encoding="utf-8", errors="ignore"):
         m = JIRA_ROW_RE.match(line)
-        if not m:
+        web = None if m else WEB_ROW_RE.match(line)
+        if not m and not web:
+            # Веб-зеркало ведёт дату синка в шапке, а не в строках. Аудит понимал только
+            # строки задач Jira и писал «нет update_log.md», глядя на файл из сорока строк.
+            if line.startswith("**Sync Date:**") and (d := DATE_RE.search(line)):
+                latest = max(latest or d.group(1), d.group(1))
             continue
-        key = m.group(1)
+        key = m.group(1) if m else os.path.splitext(web.group(1).strip())[0]
         # дату ищем во всей строке: у прежнего LLM-лога и у нового состояния разные колонки
         d = DATE_RE.search(line)
         if d:
@@ -303,7 +311,14 @@ def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
         return 0
     rows, latest = parse_board_state(root, state_name)
     files = disk_files(root)
-    keys_on_disk = {os.path.splitext(os.path.basename(rel))[0].upper(): rel for rel in files}
+    # Вложения страниц и поднятые из них расшифровки документов — содержимое зеркала, но не
+    # выгруженные страницы: строки в состоянии у них нет и быть не должно. Папка вложений у
+    # веб-модуля — `_files/`, а `ASSET_DIR_RE` знает только `X_assets/` из Confluence; по
+    # соглашению движка папка с подчёркивания — не источники (так их пропускает и план).
+    keys_on_disk = {os.path.splitext(os.path.basename(rel))[0].upper(): rel
+                    for rel, full in files.items()
+                    if not ASSET_DIR_RE.search(rel) and not rel.split("/")[0].startswith("_")
+                    and not is_promoted_document(full)}
     out.append(f"## {src['id']} ({root})\n")
     if not rows:
         if not files:

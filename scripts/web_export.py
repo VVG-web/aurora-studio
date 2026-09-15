@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
-                          report_stale, verify)
+                          is_promoted_document, report_stale, verify)
 
 DEFAULT_OUT = "Sources/Web"
 TIMEOUT = 30
@@ -559,7 +559,8 @@ def run(a) -> int:
         mirror.write_state()
     keep = {r[2] for r in mirror.rows if r[2] != "—"}
     extra = [r for r in mirror.disk_rels(only_md=False)
-             if os.path.basename(r) not in keep and not r.startswith(ASSET_DIR)]
+             if os.path.basename(r) not in keep and not r.startswith(ASSET_DIR)
+             and not is_promoted_document(os.path.join(mirror.out, r))]
     if extra:
         cited = cited_by_cards(mirror.out, extra)
         report_stale("web", extra, mirror.out)

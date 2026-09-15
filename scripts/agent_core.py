@@ -851,6 +851,13 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     order = ring_order(cfg, prefer)
     while time.time() < deadline:
         ring += 1
+        # Может ли следующий круг дать другой ответ. Внятный отказ (400/401/404), запрос
+        # длиннее окна, роль без модели ожиданием не лечатся — а движок круг за кругом
+        # спрашивал живой сервер о том, на что тот уже ответил «нет», до конца срока и
+        # сверх него, с паузой в десять секунд: десятки пустых запросов на один вызов.
+        # Надежда есть, только если кто-то занят, молчит по сроку, ответил пусто или
+        # выйдет из карантина раньше, чем кончится этот вызов.
+        can_recover = False
         for b in order:
             model = role_model(b, role)
             if not model:
@@ -863,9 +870,11 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             if until > time.time():
                 log.append(f"№{b['n']}: не отвечал, вернёмся через "
                            f"{int(until - time.time())} с (кнопка снимает сразу)")
+                can_recover = can_recover or until < deadline
                 continue
             if busy(b, transport):
                 log.append(f"№{b['n']}: слот занят (/slots) — дальше по кольцу")
+                can_recover = True
                 continue
             # Режем под ЭТОТ бэкенд. Накладные расходы шаблона меряем построением
             # пустого сообщения: так вызывающему не нужно считать их самому и ошибаться.
@@ -933,6 +942,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             grant = max(0.5, min(FAIR_SHARE * req_timeout, left))
             if not sem.acquire(timeout=grant):
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
+                can_recover = True
                 continue
             try:
                 attempts += 1
@@ -966,6 +976,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         # написала сам ответ, и её объявили недоступной. В карантин
                         # сажаем лишь того, от кого давно ничего не слышали.
                         slow += 1
+                        can_recover = True
                         fresh = time.time() - LAST_OK.get(b["n"], 0) < DOWN_FOR
                         if not fresh:
                             DOWN[b["n"]] = time.time() + DOWN_FOR
@@ -983,6 +994,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                            if finish == "length" and reasoning else
                            "пустой ответ — вероятно, chat-шаблон на сервере")
                     log.append(f"№{b['n']} {model}: {why}")
+                    can_recover = True
                     continue
                 DOWN.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
@@ -998,6 +1010,10 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             finally:
                 sem.release()
             continue
+        if not can_recover:
+            log.append("круг не оставил надежды: отказы внятные или шлюзы в карантине "
+                       "дольше этого вызова — повторять незачем")
+            break
         if time.time() + RING_PAUSE >= deadline:
             break
         log.append(f"круг {ring} неудачен — пауза {RING_PAUSE} с, снова с первого")

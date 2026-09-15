@@ -1007,12 +1007,23 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
     if todo:
         print(threads_line(cfg, width), flush=True)
     steps, done = [], [0]
+    # Сбои подряд — это шлюз, а не карточки: так же, как у тезисов. На живом прогоне второй
+    # заход связывания потратил двадцать минут на двадцать карточек и не сделал ни одной —
+    # слот шлюза был занят, и каждая ждала до пятиминутного срока. Остаток ждёт следующего
+    # прогона в очереди: карточка без отметки `relinked` из неё не выпадает.
+    fails, fails_lock = {"row": 0, "tripped": False}, threading.Lock()
 
     def one(idx_path):
         i, path = idx_path
-        if time.time() > budget:
+        if time.time() > budget or fails["tripped"]:
             return None
         st = relink_card(cfg, path, call, apply, deadline=budget)
+        with fails_lock:
+            fails["row"] = fails["row"] + 1 if st["status"] == "сбой" else 0
+            if fails["row"] >= FAILS_IN_A_ROW and not fails["tripped"]:
+                fails["tripped"] = True
+                print(f"  {FAILS_IN_A_ROW} сбоя подряд — останавливаюсь: это шлюз, а не "
+                      f"карточки ({st['note'][:120]})", flush=True)
         # «пропущена» здесь наравне с остальными: карточку посмотрели и решили не
         # связывать. Не отметить её значит вернуть в очередь навсегда — на живой базе
         # после полного прогона `--until-done` очередь всё равно показывала три штуки,
@@ -1036,12 +1047,14 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
                 steps.append(st)
     left = len(todo) - len(steps)
     if left:
-        steps.append({"card": "—", "status": "стоп", "added": 0,
-                      "note": f"бюджет исчерпан, осталось {left}", "backends": []})
-        print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
+        why = (f"шлюзы не отвечают — {FAILS_IN_A_ROW} сбоя подряд, остаток {left} "
+               "свяжет следующий прогон" if fails["tripped"]
+               else f"бюджет исчерпан, осталось {left}")
+        steps.append({"card": "—", "status": "стоп", "added": 0, "note": why, "backends": []})
+        print(f"  стоп: {why}", flush=True)
     added = sum(s["added"] for s in steps)
     return {"steps": steps, "cards": len(todo), "added": added, "left": left,
-            "seconds": round(time.time() - started, 1)}
+            "gateways_down": fails["tripped"], "seconds": round(time.time() - started, 1)}
 
 
 def mark_relinked(path: str) -> None:
@@ -1983,15 +1996,24 @@ PROMPT_CRITIC = """Ты проверяешь решение по конфлик�
 {{"ok": false, "why": "<что не так, одна фраза>", "better": "distinct|duplicate"}}"""
 
 def parse_json(text: str) -> dict | None:
-    """Достать JSON из ответа модели: она любит обрамлять его текстом или ```-оградой."""
+    """Достать JSON из ответа модели: она любит обрамлять его текстом или ```-оградой.
+
+    Жадный шаблон «от первой `{` до последней `}`» ломался ровно на тех ответах, которые
+    модель пишет чаще всего: рассуждение с фигурными скобками перед ответом, пояснение со
+    скобкой после него. На живом проекте так падала страница-лента на каждом обороте, и
+    маршрут вставал. Объект ищем разбором с каждой `{` — первый целый словарь и есть ответ.
+    """
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except ValueError:
-        return None
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, _end = decoder.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
 
 
 def card_excerpt(cwd: str, rel: str, chars: int = 700) -> str:
@@ -2180,6 +2202,23 @@ def used_model(step: dict) -> str:
     """Имя модели, ответившей на шаге. Пусто — если ответа не было."""
     used = step.get("backends") or []
     return str(used[-1][1]) if used and len(used[-1]) > 1 else ""
+
+
+def defer_if_content_fail(cwd: str, source: str, step: dict, apply: bool) -> None:
+    """Учесть сбой разбора по содержанию: после нескольких подряд план отложит источник.
+
+    Источник, на который модель раз за разом не даёт разбираемого ответа, оставался в
+    плане навсегда: «осталось» не убывало, и маршрут вставал застоем на каждом обороте.
+    На живом проекте так одна страница-лента держала «Обновить базу» четыре прогона
+    подряд. Сбой связи сюда не идёт — он не про источник, и откладывать его нельзя.
+    Пишет только главный поток: учёт сбоев — отдельный файл, с манифестом не гоняется.
+    """
+    if not apply or not step.get("content_fail"):
+        return
+    r = run_command(cwd, "build_plan.py", ["--failed", source, "--note", step["note"][:300]])
+    last = ((r.get("out") or "").strip().splitlines() or [""])[-1]
+    if last:
+        say(f"      {last}")
 
 
 def build_left(cwd: str) -> tuple:
@@ -2664,7 +2703,17 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         step["degraded"] = step["degraded"] or r["backend"] != 1
         plan = parse_json(r["text"])
         if not plan or not (plan.get("cards") or plan.get("empty")):
-            step.update(status="сбой", note="ответ модели не разобран как JSON")
+            # Неразобранный ответ — не приговор источнику: модель чаще всего завернула JSON
+            # в рассуждение. Переспрашиваем один раз, прямо назвав, что не так. И кладём в
+            # отчёт начало ответа: без него сбой нельзя разобрать — ни человеку, ни нам.
+            if attempt < 2:
+                note_back = ("\n\nПРОШЛЫЙ ОТВЕТ НЕ РАЗОБРАН: нужен ровно один JSON-объект "
+                             "по схеме выше — без рассуждений, пояснений и текста вокруг.")
+                continue
+            sample = re.sub(r"\s+", " ", r["text"] or "").strip()[:160]
+            step.update(status="сбой", note="ответ модели не разобран как JSON"
+                        + (f" · начало ответа: «{sample}»" if sample else " · ответ пуст"))
+            step["content_fail"] = True
             return step
         if plan.get("empty"):
             break
@@ -2677,6 +2726,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                  if (c.get("title") or c.get("into")) and c.get("sections")]
         if not cards:
             step.update(status="сбой", note="карточки предложены без имени или секций")
+            step["content_fail"] = True
             return step
         why, from_check = check_cards(cards, sections), True
         if not why and use_critic:
@@ -3004,6 +3054,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             steps.append(step)
             say(f"      → {step['status']}"
                 + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+            defer_if_content_fail(cwd, source, step, apply)
             if step["status"] == "сбой" and (why := note_failure(step)):
                 # Причина остановки — строка в журнале, а не молчаливый break: иначе
                 # человек видит оборванный прогон и не знает, кто его оборвал.
@@ -3024,6 +3075,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                         f"{source.rsplit('/', 1)[-1][:60]} …")
                     say(f"      → {step['status']}"
                         + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
+                    defer_if_content_fail(cwd, source, step, apply)
                     if time.time() > budget:
                         stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
                     elif len(steps) >= cfg["max_steps"]:
@@ -5246,6 +5298,12 @@ def main() -> int:
                           not a.no_checkpoint)
             if not res["left"]:
                 say(f"\n=== связаны все тезисы: заходов {batch}")
+                break
+            if res.get("gateways_down"):
+                # Предохранитель в заходе уже сработал: следующий заход упрётся в те же
+                # занятые слоты и снова прождёт по сроку на каждую карточку.
+                say(f"\n=== заход {batch}: шлюзы не отвечают — {FAILS_IN_A_ROW} сбоя подряд. "
+                    f"Останавливаюсь, остаток {res['left']} свяжет следующий прогон")
                 break
             passed = res["cards"] - res["left"]
             if passed <= 0:

@@ -267,11 +267,14 @@ def render(s: dict) -> str:
         L += ["", "⚠️ Поставляемые документы, собранные на непроверенных карточках:"]
         L += [f"  - {name}: {weak} из {total} оснований ниже verified"
               for name, weak, total in s["risky_deliverables"][:10]]
+    # Команды называются так, как их нажимают в панели. Здесь стояли пути к скриптам, и
+    # один из них вёл к `kb_queue.py`, которого в движке нет вовсе: «очередь верификации»
+    # ушла вместе с приёмкой человеком, а строка отчёта осталась.
     L += ["", "## Дальше", "",
-          "- очередь верификации: `python3 .opencode/scripts/kb_queue.py`",
-          "- механические ошибки: `python3 .opencode/scripts/kb_lint.py`",
-          "- ремонт: `python3 .opencode/scripts/kb_fix.py --all`",
-          "- целостность зеркал: `python3 .opencode/scripts/sync_audit.py`"]
+          "- что осталось сделать и почему это не кнопка: `ops:todo`",
+          "- механические ошибки: `kb:lint`",
+          "- ремонт: `kb:repair`",
+          "- целостность зеркал: `sync:audit`"]
     return "\n".join(L)
 
 

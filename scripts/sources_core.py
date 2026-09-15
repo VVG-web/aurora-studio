@@ -448,6 +448,23 @@ def drop_empty_dirs(root: str) -> int:
     return gone
 
 
+def is_promoted_document(path: str) -> bool:
+    """Файл зеркала — расшифровка скачанного документа, поднятая из вложений, а не страница.
+
+    У такой расшифровки нет строки в состоянии синка: её не выгружали, а подняли. Считать
+    её лишней значило звать закон и приказ мусором, а `--prune` снёс бы каждый, на который
+    ещё не сослалась карточка. Признак ставит сам подъём — `source_kind: web-document`.
+    """
+    if not path.endswith(".md"):
+        return False
+    try:
+        head = open(path, encoding="utf-8", errors="ignore").read(1500)
+    except OSError:
+        return False
+    parts = head.split("---", 2)
+    return head.startswith("---") and len(parts) > 2 and "source_kind: web-document" in parts[1]
+
+
 def report_stale(kind: str, extra: list, out_dir: str) -> None:
     """Одинаковый рассказ про лишние файлы: их всегда сначала показывают, потом удаляют."""
     print(f"\nЛишние файлы в зеркале ({len(extra)}) — {kind}:")

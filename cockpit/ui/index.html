@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.107.0";
+const UI_VERSION = "1.108.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3851,13 +3851,14 @@ async function runRoute(sc, write, resume){
   // недоступной командой внутри него.
   const raw = sc.steps.filter(st=>!st.manual);
   const steps = [];
-  let inCycle = false;
+  let inCycle = false, cycleIdx = 0;
   for (const st of raw){
-    if (st.cycle === "цикл:"){ inCycle = true; continue; }
+    if (st.cycle === "цикл:"){ inCycle = true; cycleIdx = 0; continue; }
     if (st.cycle === "конец цикла"){ inCycle = false; continue; }
     const r = S.state.commands.find(x=>x.cmd===st.cmd);
     if (!r || !r.runnable) continue;
-    steps.push({cmd:st.cmd, why:st.why, cycle:inCycle,
+    // Номер шага внутри оборота — по нему продолжение находит место остановки.
+    steps.push({cmd:st.cmd, why:st.why, cycle:inCycle, cycleIdx: inCycle ? ++cycleIdx : 0,
                 args:(st.flags||[]).filter(f=>write || f!=="--apply")});
   }
   const writes = steps.filter(st=>st.args.includes("--apply"));
@@ -3899,6 +3900,12 @@ async function runRoute(sc, write, resume){
   // гоняются заново. Список переносим и сохраняем в состоянии маршрута — тогда он
   // переживает и перезапуск панели.
   const CARRIED = new Set(SKIP_SIGS || []);
+  // Где встал прошлый маршрут внутри оборота. Цикл при продолжении шёл с первого шага
+  // первого оборота, а в «Обновить базу» почти вся работа — в цикле: продолжение
+  // выглядело и работало как запуск заново. Шаги оборота до места остановки уже прошли.
+  const CYCLE_AT = (resume && resume.cycleAt && resume.cycleAt.inLap > 1) ? resume.cycleAt : null;
+  const routeDoneSigs = () => [...CARRIED, ...stepEvents.filter(e=>e.rc===0)
+                                  .map(e=>e.cmd + " " + (e.args||[]).join(" "))];
   // Офлайн-эпизод продолжается после перезапуска: `attempts` из сохранённого состояния
   // переносим в первый эпизод текущего прогона (не сбрасываем счёт); дальше — с нуля.
   let offlineCarry = (resume && typeof resume.attempts === "number") ? resume.attempts : 0;
@@ -3941,6 +3948,7 @@ async function runRoute(sc, write, resume){
         project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
           runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
           write:S.lastRoute&&S.lastRoute.write, reason:"offline", step: st.cmd,
+          done: routeDoneSigs(), cycleAt: st.cycle ? {lap: ROUTE.lap, inLap: st.cycleIdx} : null,
           attempts: cy.attempt, nextRetryAt: cy.nextRetryAt, at: new Date().toISOString()}})}); };
     const holder = el("div",{class:"warn", style:"margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap"});
     out.append(holder);
@@ -4019,8 +4027,17 @@ async function runRoute(sc, write, resume){
         `  ↳ шаг ${ROUTE.done}/${ROUTE.total} пропущен: «${st.cmd}» уже выполнен в прошлой попытке`));
       return {rc:0, skipped:true, lines:[]};
     }
-    ROUTE.done++;
-    if (ROUTE.lap) ROUTE.inLap = (ROUTE.inLap % ROUTE.cycleSize) + 1;
+    if (CYCLE_AT && st.cycle && ROUTE.lap === 1 && st.cycleIdx < CYCLE_AT.inLap){
+      ROUTE.inLap = st.cycleIdx;
+      drawRouteBar(st.cmd);
+      out.append(el("div",{class:"dim"},
+        `  ↳ шаг ${st.cycleIdx}/${ROUTE.cycleSize} оборота пропущен: «${st.cmd}» прошёл до остановки`));
+      return {rc:0, skipped:true, lines:[]};
+    }
+    // Шаги цикла в счёт маршрута не идут: `total` — это шаги ВНЕ цикла, а цикл повторяется.
+    // Исправление из 1.100.41 развело счёт только внутри оборота, а общий счётчик по-прежнему
+    // прибавлял повторы — после цикла панель показывала «шаг 36 из 20».
+    if (st.cycle) ROUTE.inLap = st.cycleIdx; else ROUTE.done++;
     drawRouteBar(st.cmd);
     const lap = ROUTE.lap ? ` · оборот ${ROUTE.lap}` : "";
     const where = ROUTE.lap ? `шаг ${ROUTE.inLap} из ${ROUTE.cycleSize} в обороте`
@@ -4090,6 +4107,9 @@ async function runRoute(sc, write, resume){
         if (failed(rc)){ ROUTE.failed = steps[k].cmd; break outer; }
         Object.assign(kinds, leftByKind(lines));
       }
+      // Первый оборот продолжения неполный: часть его шагов пропущена, и остаток по нему
+      // не считается — «ноль» или «не убыло» здесь сказали бы о пропуске, а не о работе.
+      if (CYCLE_AT && ROUTE.lap === 1) continue;
       const names = Object.keys(kinds);
       const left = names.length ? names.reduce((s, k) => s + kinds[k], 0) : null;
       if (left === null){
@@ -4151,7 +4171,9 @@ async function runRoute(sc, write, resume){
   // Причина остановки — для файла маршрута; считается до `ROUTE = null`, где поля гаснут.
   const routeReason = ROUTE.stalled ? "stall" : ROUTE.stopped ? "stopped"
     : ROUTE.failed ? "failed" : "stopped",
-        routeDone = ROUTE.done;
+        routeDone = ROUTE.done,
+        // Застой гоняет цикл заново: работа не двигалась, и начинать с середины оборота незачем.
+        routeCycle = (ROUTE.lap && !ROUTE.stalled) ? {lap: ROUTE.lap, inLap: ROUTE.inLap} : null;
   drawRouteBar(null);
   if (ROUTE.stalled){
     $("#consoleCmd").textContent = `${sc.title} — остановлен (застой)`;
@@ -4212,6 +4234,7 @@ async function runRoute(sc, write, resume){
       ? {project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
            runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
            write:S.lastRoute&&S.lastRoute.write, reason:routeReason, step:routeDone,
+           cycleAt: routeCycle,
            done:[...CARRIED, ...stepEvents.filter(e=>e.rc===0)
                               .map(e=>e.cmd + " " + (e.args||[]).join(" "))],
            at:new Date().toISOString()}}
@@ -4260,7 +4283,7 @@ async function resumeLastRoute(last){
   ((ev&&ev.steps)||[]).forEach(st=>{
     if (st.rc===0) sigs.add(st.cmd+" "+(st.args||[]).join(" "));
   });
-  runRoute(sc2, last.write, {skipSigs: sigs, attempts: last.attempts});
+  runRoute(sc2, last.write, {skipSigs: sigs, attempts: last.attempts, cycleAt: last.cycleAt});
 }
 
 /* Кнопка «Продолжить маршрут» после перезапуска: состояние остановленного маршрута читается
@@ -4309,6 +4332,7 @@ function showOfflineResume(state){
         body: JSON.stringify({project:S.project.path, state:{
           scId:state.scId, runId:state.runId, title:state.title, write:state.write,
           reason:"stopped", step:state.step, attempts:state.attempts||0,
+          done: state.done || [], cycleAt: state.cycleAt || null,
           nextRetryAt:null, at:new Date().toISOString()}})});
     holder.remove(); };
   if (state.attempts >= ROUTE_OFFLINE_TRIES){

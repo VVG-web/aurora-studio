@@ -372,14 +372,55 @@ def is_terminology(path: str) -> bool:
     return bool(TERMS_SOURCE.search(path.replace("\\", "/")))
 
 
-def state(manifest: dict, path: str, size: int) -> tuple:
-    """→ (состояние, число карточек): новый | изменён | обработан."""
+# Сбои разбора по содержанию: модель раз за разом не дала разбираемого ответа на один и
+# тот же текст. Такой источник оставался в плане навсегда — «осталось» не убывало, и
+# маршрут вставал застоем на каждом обороте. Учёт — отдельным файлом, а не в манифесте:
+# манифест пишут потоки разбора, учёт сбоев — главный поток, и гонки у них нет.
+FAILURES = os.path.join(KB_ROOT, "meta", "build_failures.json")
+DEFER_AFTER = 2
+
+
+def load_failures() -> dict:
+    try:
+        with open(FAILURES, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record_failure(path: str, note: str) -> int:
+    """Учесть сбой. → сколько раз подряд не разобран ЭТОТ текст источника."""
+    path = path.replace("\\", "/")
+    data = load_failures()
+    digest = file_hash(path)
+    rec = data.get(path) or {}
+    count = int(rec.get("count", 0)) + 1 if rec.get("hash") == digest else 1
+    data[path] = {"hash": digest, "count": count, "note": note[:300], "at": TODAY}
+    os.makedirs(os.path.dirname(FAILURES), exist_ok=True)
+    with open(FAILURES, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
+    return count
+
+
+def deferred(path: str, failures: dict) -> dict:
+    """Запись об откладывании, если она ещё про ЭТОТ текст. Файл изменился — пробуем снова."""
+    rec = failures.get(path) or {}
+    if int(rec.get("count", 0)) >= DEFER_AFTER and rec.get("hash") == file_hash(path):
+        return rec
+    return {}
+
+
+def state(manifest: dict, path: str, size: int, failures: dict | None = None) -> tuple:
+    """→ (состояние, число карточек): новый | изменён | обработан | отложен."""
     rec = (manifest.get("sources") or {}).get(path) or {}
+    if rec and rec.get("hash") == file_hash(path):
+        return "обработан", int(rec.get("cards", 0))
+    if failures and deferred(path, failures):
+        return "отложен", int(rec.get("cards", 0))
     if not rec:
         return "новый", 0
-    if rec.get("hash") != file_hash(path):
-        return "изменён", int(rec.get("cards", 0))
-    return "обработан", int(rec.get("cards", 0))
+    return "изменён", int(rec.get("cards", 0))
 
 
 def task_prompt(num: int, part: list, total: int = 0) -> str:
@@ -1227,6 +1268,10 @@ def main() -> int:
     ap.add_argument("--group", metavar="NAME",
                     help="ограничить --reopen группой (Confluence, JIRA, Raw/project, …)")
     ap.add_argument("--apply", action="store_true", help="записать (для --reopen)")
+    ap.add_argument("--failed", metavar="FILE", help=argparse.SUPPRESS)  # агент: учесть сбой
+    ap.add_argument("--note", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="вернуть в план источники, отложенные после сбоев разбора")
     a = ap.parse_args()
 
     if not os.path.isdir(KB_ROOT):
@@ -1238,6 +1283,17 @@ def main() -> int:
 
     if a.done:
         return mark_done(manifest, a.done, a.cards, a.empty)
+    if a.failed:
+        n = record_failure(a.failed, a.note)
+        print(f"⏸ {a.failed}: разбор не удался {n} раза подряд — отложен до изменения файла"
+              if n >= DEFER_AFTER else f"сбой разбора учтён: {a.failed} ({n} из {DEFER_AFTER})")
+        return 0
+    if a.retry_failed:
+        n = len(load_failures())
+        if os.path.isfile(FAILURES):
+            os.remove(FAILURES)
+        print(f"✅ Возвращено в план источников, отложенных после сбоев: {n}")
+        return 0
 
     if a.slice:
         return slice_report(a.slice, a.slice_chars)
@@ -1258,20 +1314,30 @@ def main() -> int:
     if a.reopen:
         return reopen(manifest, a.group or "", a.apply)
 
+    failures = load_failures()
     items = sources()
-    rows = [(g, p, s, *state(manifest, p, s)) for g, p, s in items]
-    todo = [r for r in rows if r[3] != "обработан"]
+    rows = [(g, p, s, *state(manifest, p, s, failures)) for g, p, s in items]
+    # Отложенный — не «осталось»: по нему маршрут мерит, двигается ли работа, и один
+    # неразбираемый источник держал бы цикл вечно. Но и не «обработано» — он назван ниже.
+    parked = [r for r in rows if r[3] == "отложен"]
+    todo = [r for r in rows if r[3] not in ("обработан", "отложен")]
     done = [r for r in rows if r[3] == "обработан"]
     cards_total = sum(r[4] for r in done)
 
     print(f"# План извлечения — {TODAY}\n")
     print(f"Источников: {len(rows)} · обработано: {len(done)} "
-          f"({cards_total} карточек) · осталось: {len(todo)}")
+          f"({cards_total} карточек) · осталось: {len(todo)}"
+          + (f" · отложено: {len(parked)}" if parked else ""))
+    for _g, path, _s, _st, _c in parked:
+        rec = failures.get(path) or {}
+        print(f"  ⏸ {path}: разбор не удался {rec.get('count')} раза подряд — "
+              f"{str(rec.get('note', ''))[:140]}. Вернётся сам, когда изменится файл; "
+              "сразу — `kb:build --retry-failed`")
     by_group = {}
     for g, _p, s, st, _c in rows:
         d = by_group.setdefault(g, {"всего": 0, "осталось": 0, "объём": 0})
         d["всего"] += 1
-        if st != "обработан":
+        if st not in ("обработан", "отложен"):
             d["осталось"] += 1
             d["объём"] += s
     print()

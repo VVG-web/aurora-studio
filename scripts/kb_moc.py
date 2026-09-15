@@ -316,8 +316,22 @@ def main() -> int:
                     "складываются обратно в исходный документ.")
             open(path, "w", encoding="utf-8").write(render(name, note, items))
             written += 1
+        # Карта документа, который больше не даёт карточек, обязана уйти: её не порождают,
+        # значит и не переписывают, и она вечно ссылается на то, чего в базе нет. На живом
+        # проекте карта удалённых доавроровских карточек держала пятнадцать битых ссылок.
+        produced = {re.sub(r"[^\w\- ]", "", "Документ · " + os.path.basename(s)
+                           .removesuffix(".md")).strip().replace(" ", "-") + ".md" for s in big}
+        stale = [os.path.join(MOC_DIR, f) for f in
+                 (sorted(os.listdir(MOC_DIR)) if os.path.isdir(MOC_DIR) else [])
+                 if f.startswith("Документ--") and f not in produced
+                 and machine_made(os.path.join(MOC_DIR, f))]
+        for path in stale:
+            if a.apply:
+                os.remove(path)
+            print(f"  {'убрана' if a.apply else 'уйдёт'} карта документа без карточек: {path}")
         if a.apply:
-            print(f"\n✅ Карт по документам записано: {written}")
+            print(f"\n✅ Карт по документам записано: {written}"
+                  + (f" · убрано устаревших: {len(stale)}" if stale else ""))
         else:
             print("\n(dry-run) Ничего не записано. Собрать карты: `--by-source --apply`")
         return 0
