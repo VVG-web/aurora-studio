@@ -240,11 +240,51 @@ def suggest(cards: dict, groups: list, links: dict, big: int = 8) -> list:
     return out
 
 
+# Код артефакта в тексте карточки: история, критерии приёмки, требование, спецификация,
+# эпик. Заготовка под такой код — пустышка без знания; но сам код связывает карточки: пять
+# карточек, упомянувших одну историю или один эпик, говорят об одном. Индекс кода
+# сохраняет эту связь, не притворяясь знанием (решение заказчика 15.09).
+CODE_IN_TEXT_RE = re.compile(r"(?<![\w.\-])(US|AC|REQ|SPEC|[Ee]pic|EPIC|[Ээ]пик)[\s\-_.]?"
+                             r"(\d+(?:\.\d+)*)(?!\w)")
+CODE_NAME_RE = re.compile(r"^(?:US|AC|REQ|SPEC|Epic)-\d+(?:\.\d+)*$")
+
+
+def canonical_code(prefix: str, number: str) -> str:
+    """«Epic 3», «Эпик 3», «EPIC-3» → «Epic-3»; «us 4.4.4» → «US-4.4.4»."""
+    pre = "Epic" if prefix.lower() in ("epic", "эпик") else prefix.upper()
+    return f"{pre}-{number}"
+
+
+def is_stub(c: dict) -> bool:
+    return c["status"] == "placeholder" or "заготовка" in c["tags"]
+
+
+def code_mentions(cards: dict) -> dict:
+    """{код: {"mentions": {карточки}, "variants": {написания}, "linked": ссылались ли}}."""
+    out: dict = {}
+    for stem, c in cards.items():
+        if is_stub(c):
+            continue                     # пустышка ничего не упоминает — в ней нет знания
+        linked = {t.split("|")[0].split("#")[0].strip() for t in LINK_RE.findall(c["text"])}
+        for m in CODE_IN_TEXT_RE.finditer(c["text"]):
+            code = canonical_code(m.group(1), m.group(2))
+            rec = out.setdefault(code, {"mentions": set(), "variants": set(), "linked": False})
+            if code != stem:
+                rec["mentions"].add(stem)
+            rec["variants"].add(m.group(0))
+            if m.group(0) in linked or code in linked:
+                rec["linked"] = True
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Карты содержания базы знаний")
     ap.add_argument("--apply", action="store_true", help="записать MOC/*.md (иначе dry-run)")
     ap.add_argument("--suggest", action="store_true",
                     help="показать, что ещё просится в отдельную карту (ничего не пишет)")
+    ap.add_argument("--by-code", action="store_true",
+                    help="индекс на каждый код артефакта (US, AC, REQ, SPEC, Epic): карточки, "
+                         "где он упоминается, — связь по одной истории, требованию, эпику")
     ap.add_argument("--by-source", action="store_true",
                     help="карта на каждый разобранный документ: куда разошлись его "
                          "карточки (принадлежность документу после атомизации)")
@@ -282,6 +322,58 @@ def main() -> int:
                 print(f"   {hint}")
             print()
         print("Добавили строку в `moc_groups.txt` — соберите карты: `kb:moc --apply`.")
+        return 0
+    if a.by_code:
+        found = code_mentions(cards)
+        # Индекс нужен коду, на который ссылаются (иначе ссылка битая), или который связывает
+        # хотя бы две карточки: код из одной карточки ничего не связывает.
+        wanted = {code: rec for code, rec in found.items()
+                  if rec["mentions"] and (rec["linked"] or len(rec["mentions"]) >= 2)}
+        stubs = sorted(code for code in wanted if code in cards and is_stub(cards[code]))
+        taken = sorted(code for code in wanted if code in cards and not is_stub(cards[code]))
+        write = {code: rec for code, rec in wanted.items() if code not in cards}
+        print(f"# Индекс кодов артефактов — {TODAY}\n")
+        print(f"Кодов в тексте карточек: **{len(found)}** · индексов: **{len(write)}** "
+              f"(код связывает две карточки и больше или на него ссылаются)\n")
+        produced, written = set(), 0
+        for code, rec in sorted(write.items()):
+            fname = code + ".md"
+            produced.add(fname)
+            if not a.apply:
+                continue
+            path = os.path.join(MOC_DIR, fname)
+            if os.path.isfile(path) and not machine_made(path):
+                print(f"  ⚠️  {path} написан руками — не трогаю")
+                continue
+            items = [cards[s] for s in rec["mentions"] if s in cards]
+            note = (f"Код артефакта `{code}`. Здесь карточки, в которых он упоминается — "
+                    "ссылкой или текстом: их связывает одна история, одно требование или один "
+                    "эпик. Знания в индексе нет, он ведёт к карточкам, где оно есть.")
+            text = render(code, note, items)
+            variants = sorted(v for v in rec["variants"] if v != code)
+            text = text.replace("tags: [moc]\n", "tags: [moc, код]\naliases: ["
+                                + ", ".join(f'"{v}"' for v in variants) + "]\n", 1)
+            os.makedirs(MOC_DIR, exist_ok=True)
+            open(path, "w", encoding="utf-8").write(text)
+            written += 1
+        stale = [f for f in (sorted(os.listdir(MOC_DIR)) if os.path.isdir(MOC_DIR) else [])
+                 if f.endswith(".md") and CODE_NAME_RE.match(f[:-3]) and f not in produced
+                 and machine_made(os.path.join(MOC_DIR, f))]
+        for f in stale:
+            if a.apply:
+                os.remove(os.path.join(MOC_DIR, f))
+            print(f"  {'убран' if a.apply else 'уйдёт'} индекс кода без упоминаний: MOC/{f}")
+        if stubs:
+            print(f"\nПод {len(stubs)} кодами ещё лежат пустышки — индекс займёт их имя после "
+                  f"уборки: `kb:repair --drop-code-stubs`. Например: {', '.join(stubs[:6])}")
+        if taken:
+            print(f"\nИмя кода занято карточкой со знанием — она сама узел, индекс не нужен: "
+                  f"{', '.join(taken[:6])}")
+        if a.apply:
+            print(f"\n✅ Индексов кодов записано: {written}"
+                  + (f" · убрано устаревших: {len(stale)}" if stale else ""))
+        else:
+            print("\n(dry-run) Ничего не записано. Собрать индексы: `--by-code --apply`")
         return 0
     if a.by_source:
         # Атомарная карточка теряет то, частью чего она была. Ссылка `source:` это

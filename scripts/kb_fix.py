@@ -941,11 +941,12 @@ def plan_drop_jira(cards: dict, plan: Plan) -> list:
 def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
     """Убрать в архив заготовки под голые коды артефактов. → [имя].
 
-    Тот же случай, что карточки из задач Jira: код `US-4.4.4` называет бумагу, а не
-    сущность, и пустышка под него только обещает содержание. Уходят ТОЛЬКО пустышки —
-    карточка с кодом в имени, в которой есть знание, остаётся: её имя чинит `--names`.
-    Ссылки на снятые коды становятся текстом: код в тексте полезен читателю, а битая
-    ссылка — нет. Не удаляем, а архивируем: перенос обратим.
+    Код `US-4.4.4` называет бумагу, а не сущность, и пустышка под него только обещает
+    содержание. Но ссылка на код — это связь: карточки, упомянувшие одну историю или один
+    эпик, говорят об одном. Поэтому ссылки остаются как есть, а вести они будут на индекс
+    кода, который собирает `kb:moc --by-code` (решение заказчика 15.09: сначала ссылки
+    становились текстом, и связь между карточками терялась). Уходят ТОЛЬКО пустышки —
+    карточка с кодом в имени, в которой есть знание, остаётся. Архив, а не удаление.
     """
     dropped = []
     for path, c in sorted(cards.items()):
@@ -957,16 +958,6 @@ def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
         plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                              os.path.basename(rel)).replace("\\", "/")))
         dropped.append(c.stem)
-    gone = set(dropped)
-    if gone:
-        link = re.compile(r"\[\[([^\]|#]+)(#[^\]|]*)?(?:\|([^\]]*))?\]\]")
-        for path, c in sorted(cards.items()):
-            if c.stem in gone:
-                continue
-            new = link.sub(lambda m: (m.group(3) or m.group(1)).strip()
-                           if leaf_name(m.group(1).strip()) in gone else m.group(0), c.text)
-            if new != c.text:
-                plan.write(path, new)
     return dropped
 
 
@@ -1799,7 +1790,7 @@ def main() -> int:
                          "это работа, а не сущность (правило заказчика)")
     ap.add_argument("--drop-code-stubs", action="store_true",
                     help="убрать в архив заготовки под голые коды артефактов (US, AC, REQ, "
-                         "SPEC, Epic): код — ссылка на бумагу, а не понятие")
+                         "SPEC, Epic); ссылки остаются и ведут на индекс кода (kb:moc --by-code)")
     ap.add_argument("--rename", nargs=2, metavar=("СТАРОЕ", "НОВОЕ"),
                     help="назвать карточку иначе: прежнее имя уходит в синонимы, "
                          "входящие ссылки продолжают работать")
@@ -1960,8 +1951,8 @@ def main() -> int:
                 head.append(f"- … ещё {len(gone) - 20}")
         if a.drop_code_stubs:
             codes = plan_drop_code_stubs(cards, plan)
-            head.append(f"## Заготовки под коды артефактов: {len(codes)} в архив, "
-                        "ссылки на них — текстом")
+            head.append(f"## Заготовки под коды артефактов: {len(codes)} в архив; ссылки "
+                        "остаются — индекс кода соберёт `kb:moc --by-code`")
             for name in codes[:20]:
                 head.append(f"- {name}")
             if len(codes) > 20:

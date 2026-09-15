@@ -5664,12 +5664,26 @@ def test_artifact_codes_get_no_stubs_and_expansions_come_from_cards(tmp: Path):
          status="placeholder", tags="[заготовка]")
     card(root, "Concepts/AC-4.4.md", "Критерии приёмки реестра: " + "поле заполнено. " * 10,
          status="draft")
+    card(root, "Concepts/Экспорт.md", "Экспорт относится к US-4.4.4 и к [[Epic 3]].", status="draft")
+    card(root, "Concepts/Отчёт.md", "Отчёт тоже из Эпик 3: этап внедрения.", status="draft")
     run("kb_fix.py", "--drop-code-stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
     assert (kb / "_archive" / "US-4.4.4.md").exists() and not (kb / "Concepts" / "US-4.4.4.md").exists(), \
         "пустышка под код артефакта осталась в базе"
     assert (kb / "Concepts" / "AC-4.4.md").exists(), "карточка с содержанием убрана вместе с пустышками"
-    text = (kb / "Concepts" / "Реестр.md").read_text(encoding="utf-8")
-    assert "US-4.4.4" in text and "[[US-4.4.4]]" not in text, "ссылка на снятый код осталась битой"
+    assert "[[US-4.4.4]]" in (kb / "Concepts" / "Реестр.md").read_text(encoding="utf-8"), \
+        "ссылка на код снята — связь между карточками одной истории потеряна"
+
+    # Индекс кода: связь по одной истории и одному эпику сохраняется, ссылки не битые.
+    run("kb_moc.py", "--by-code", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
+    us = (kb / "MOC" / "US-4.4.4.md").read_text(encoding="utf-8")
+    assert "[[Реестр|" in us and "[[Экспорт|" in us and "status: index" in us, \
+        f"индекс кода не ведёт к карточкам, где код упомянут:\n{us}"
+    epic = (kb / "MOC" / "Epic-3.md").read_text(encoding="utf-8")
+    assert '"Epic 3"' in epic and '"Эпик 3"' in epic and "[[Отчёт|" in epic, \
+        f"написания эпика не собраны в один индекс:\n{epic}"
+    lint = run("kb_lint.py", cwd=root, expect_rc=None).stdout
+    assert "[[US-4.4.4]]" not in lint and "[[Epic 3]]" not in lint, \
+        f"ссылка на код не нашла индекс:\n{lint[:800]}"
 
 
 @test
