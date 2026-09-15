@@ -85,8 +85,10 @@ Templates/  TemplatesCommon/  Prompts/
 ```
 
 Folder list is fixed by the engine (`structure_dirs.txt`) and identical in every Aurora
-project — projects don't add their own artifact types; non-standard material lives in
-`Workspaces/<task>/`.
+project; non-standard material lives in `Workspaces/<task>/`. A folder that belongs to one
+project only (legacy content, attachments) is declared in that project's
+`aurora.config.yaml` (`paths` → `extra_structure_dirs`): doctor accepts it there and
+nowhere else.
 
 Install report: `Artifacts/reports/YYYY-MM-DD_report_aurora-install.md`.
 

@@ -228,6 +228,33 @@ def body(text: str) -> str:
     return rest[nl + 1:] if nl != -1 else ""
 
 
+def with_sources(text: str, paths: list) -> str:
+    """Дописать источники в шапку, сохранив прежние. Файл целиком; тело не меняется.
+
+    Список источников — многострочное поле, а `with_fields` ставит однострочные:
+    `set_field` заменил бы строку `sources:` и оставил её пункты висеть ниже. Здесь
+    прежний список снимается целиком и пишется объединённый — в порядке появления, без
+    повторов. Старая одиночная запись `source:` переезжает в список.
+    """
+    have = card_sources(text)
+    want = list(dict.fromkeys(have + [p.replace("\\", "/").strip()
+                                      for p in paths if p and p.strip()]))
+    if want == have and not re.search(r"(?m)^source:", text.split("\n---", 2)[0]):
+        return text
+    head, rest = split_frontmatter(text)
+    if head is None:
+        raise ValueError("карточка без шапки: источники писать некуда")
+    head = re.sub(r"(?m)^sources:[^\n]*\n(?:[ \t]+-[^\n]*\n?)*", "", head + "\n")
+    head = re.sub(r"(?m)^source:[^\n]*\n?", "", head)
+    head = head.rstrip("\n") + "\n" + sources_block(want).rstrip("\n")
+    out = "---" + head + rest
+    if body(out) != body(text):
+        raise AssertionError("запись источников тронула тело карточки")
+    if card_sources(out) != want:
+        raise AssertionError("источники не легли в шапку")
+    return out
+
+
 def set_field(head: str, key: str, value: str) -> str:
     """Проставить/заменить поле в шапке (head — без разделителей)."""
     if re.search(rf"^{key}:", head, re.M):

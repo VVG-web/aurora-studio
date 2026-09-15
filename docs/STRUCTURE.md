@@ -5,7 +5,7 @@ Aurora/
 ├── README.md
 ├── LICENSE
 ├── VERSION                  # версия движка (semver)
-├── structure_dirs.txt       # ФИКСИРОВАННАЯ схема папок проекта (единый источник правды)
+├── structure_dirs.txt       # схема папок, общая для всех проектов (свои — extra_structure_dirs)
 ├── engine_manifest.txt      # что именно обновляет `aurora.py update`
 ├── aurora.py                # точка входа: new/setup/update + обслуживание
 ├── scripts/

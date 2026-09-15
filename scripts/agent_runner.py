@@ -632,12 +632,17 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     # определение ОДНОГО термина. Без замка оба потока заведут ему карточку — получится
     # две об одном, ровно то, против чего вся накопительная механика. Модель при этом
     # ждёт параллельно: под замком только запись, а она быстрая.
+    # Вынесенное знание пришло из тех же документов, что и донор. Без этого новая карточка
+    # заводилась с `sources: []`, не доверялась никогда и переживала снос базы.
+    from aurora_common import card_sources
+    donor = card_sources(text)
     with _EXTRACT_LOCK:
         for term, definition in made:
             # Ссылка «перенесено из» ведёт по ИМЕНИ карточки, а не по заголовку:
             # заголовок может содержать двоеточие, проценты и запятые, которых в имени
             # файла нет, и такая ссылка не разрешается. Поймано на живой пересборке.
-            place_definition(root, term, definition, os.path.basename(path)[:-3])
+            place_definition(root, term, definition, os.path.basename(path)[:-3],
+                             donor_sources=donor)
         open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
     mark_examined(path, frontmatter(open(path, encoding="utf-8", errors="ignore").read()))
     return step
@@ -658,7 +663,8 @@ def mark_examined(path: str, fm: dict) -> None:
     open(path, "w", encoding="utf-8").write(with_fields(text, {"extracted": stamp}))
 
 
-def place_definition(root: str, term: str, definition: str, came_from: str) -> str:
+def place_definition(root: str, term: str, definition: str, came_from: str,
+                     donor_sources: "list | None" = None) -> str:
     """Положить перенесённое определение в карточку термина. → путь.
 
     Три случая, и ни в одном текст не пропадает: карточки нет — заводим; лежит пустышка
@@ -667,7 +673,8 @@ def place_definition(root: str, term: str, definition: str, came_from: str) -> s
     значило бы потерять знание при переезде.
     """
     from aurora_common import (KB_ROOT, PLACEHOLDER, card_body, card_filename,
-                               frontmatter, is_placeholder, set_field)
+                               frontmatter, is_placeholder, set_field, sources_block,
+                               with_sources)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import build_plan as BP
 
@@ -680,7 +687,8 @@ def place_definition(root: str, term: str, definition: str, came_from: str) -> s
         os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path, "w", encoding="utf-8").write(
             f'---\ntitle: "{term}"\naliases: []\nstatus: draft\ntype: concept\n'
-            f'kind: knowledge\nsources: []\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
+            f'kind: knowledge\n{sources_block(donor_sources or [])}'
+            f'created: {TODAY_STR}\nupdated: {TODAY_STR}\n'
             f'built: machine\nrelated: []\n---\n\n# {term}\n\n{line}\n\n{note}\n')
         return path
 
@@ -691,14 +699,19 @@ def place_definition(root: str, term: str, definition: str, came_from: str) -> s
         head, _sep, _rest = text.partition("\n---\n")
         new_head = set_field(head[3:] if head.startswith("---") else head,
                              "status", "draft")
-        open(existing, "w", encoding="utf-8").write(
-            "---" + new_head + "\n---\n\n" + f"# {term}\n\n{line}\n\n{note}\n")
+        # Снимаем ОБА признака: `is_placeholder` читает и тег. Со снятым одним статусом
+        # карточка с определением оставалась пустышкой — вне поиска и вне доли доверия.
+        new_head = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", new_head)
+        filled = "---" + new_head + "\n---\n\n" + f"# {term}\n\n{line}\n\n{note}\n"
+        open(existing, "w", encoding="utf-8").write(with_sources(filled, donor_sources or []))
         return existing
     body = card_body(text)
     if line in body:
         return existing          # это же определение там уже есть — второй раз не кладём
+    # Дописанное знание пришло из документов донора — ими же пополняется происхождение:
+    # карточка накапливает все источники, из которых наполнена (Т-5).
     open(existing, "w", encoding="utf-8").write(
-        text.rstrip("\n") + f"\n\n{line}\n\n{note}\n")
+        with_sources(text.rstrip("\n") + f"\n\n{line}\n\n{note}\n", donor_sources or []))
     return existing
 
 
@@ -4461,7 +4474,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     найти выборкой и не подать в контекст. Такому нужна не переработка, а границы —
     их предлагает планировщик, а текст режет движок дословно.
     """
-    from aurora_common import card_body, frontmatter, walk_md
+    from aurora_common import card_body, frontmatter, is_placeholder, walk_md
     started = time.time()
     budget = started + cfg["budget_min"] * 60
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
@@ -4472,6 +4485,12 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         fm = frontmatter(text)
         kind = (fm.get("kind") or "").strip().strip('"')
         if kind == "knowledge":
+            # Заготовке писать тезис не из чего: в ней «знаний пока нет». Модель всё равно
+            # писала — пересказывала пустоту своими словами, служебная строка, по которой
+            # движок узнаёт пустышку, исчезала, а вызов был оплачен впустую. Остальные шаги
+            # агента заготовки пропускали; этот — нет.
+            if is_placeholder(fm, text):
+                continue
             # Признак «тезис устарел» ставит разбор: перенеся новый текст источника,
             # он снимает `distilled`. Сравнивать хеши здесь значило бы переписывать
             # тезис по СТАРОМУ тексту в карточке — вызов впустую и тот же тезис.

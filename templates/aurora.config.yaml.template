@@ -64,6 +64,10 @@ paths:
   knowledge_db: AuroraKnowledgeDB
   sources_confluence: Sources/Confluence
   sources_jira: Sources/JIRA
+  # Свои структурные папки проекта вне схемы движка: наследие прежней базы, вложения,
+  # особый раздел. Doctor принимает их в этом проекте и только в нём; общая для всех
+  # проектов схема меняется выпуском кита. Например: [AuroraKnowledgeDB/media]
+  extra_structure_dirs: []
 
 verify:
   # Доверие по происхождению (`kb:verify --by-source`). Карточка, собранная из договора,

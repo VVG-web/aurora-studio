@@ -1417,7 +1417,10 @@ def health(project: str) -> dict:
             trace = json.loads(read_text(tp, limit=20_000))
         except ValueError:
             trace = {}
-    return {"stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
+    # Чей это результат — называет сам ответ. Счёт идёт секундами, проект за это время
+    # меняют, и страница без этой метки показывала замечания одного проекта под именем другого.
+    return {"project": project,
+            "stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
             "build": build_progress(project), "agent": last_agent_run(project),
             "sources": sources(project), "runs": read_runlog(project),
             "trace": trace, "todo": todo_count(project),
@@ -1805,6 +1808,45 @@ def write_route_state(project: str, state) -> dict:
         return {"ok": False, "error": str(ex)}
 
 
+def project_activity(project: str) -> dict:
+    """Что с проектом прямо сейчас — отметка на карточке Мостика.
+
+    Работа видна только в «Консоли» выбранного проекта, и по Мостику не понять, где
+    обновление идёт, а где встало. Следа три, и все дешёвые: Мостик спрашивает их
+    каждые несколько секунд.
+      running — задания этой панели, которые ещё не кончились;
+      agent   — замок пишущего прогона агента в проекте. Живой pid — прогон идёт, даже
+                запущенный мимо панели (терминал, второе окно); мёртвый — прогон
+                оборвался, не сняв замок;
+      route   — последний остановленный маршрут: его шаги не пойдут, пока человек не
+                нажмёт «Продолжить».
+    Команду, которая замка не берёт (синк, линтер) и запущена из терминала, отсюда не
+    видно: следа в проекте она не оставляет.
+    """
+    from agent_runner import LOCK as AGENT_LOCK, pid_alive
+    with JOBS_LOCK:
+        running = sorted(({"id": j["id"], "cmd": j["cmd"], "args": j["args"],
+                           "started": j["started"]}
+                          for j in JOBS.values()
+                          if not j["done"] and j["project"] == project),
+                         key=lambda j: j["started"])
+    agent = None
+    lock = os.path.join(project, AGENT_LOCK)
+    try:
+        with open(lock, encoding="utf-8") as f:
+            held = json.load(f)
+        pid = int(held.get("pid") or 0)
+        agent = {"task": str(held.get("task") or ""), "pid": pid,
+                 "since": str(held.get("since") or ""), "at": os.path.getmtime(lock),
+                 "alive": pid > 0 and pid_alive(pid)}
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    st = read_route_state(project)
+    route = ({k: st.get(k) for k in ("title", "step", "reason", "at", "attempts", "nextRetryAt")}
+             if st else None)
+    return {"running": running, "agent": agent, "route": route}
+
+
 def clear_route_state(project: str) -> dict:
     """Маршрут прошёл целиком — «продолжить» больше нечего. Отсутствия файла не ошибка:
     свежий проект ещё ни разу не останавливал маршрут."""
@@ -1925,6 +1967,7 @@ def agent_state(project: str) -> dict:
         base = next((x["model"] for x in kit_cfg["backends"] if x["n"] == n), "")
         for role in ("worker", "planner", "critic", "qa"):
             models.setdefault(role, base)
+    ocr = cfg.get("ocr") or {}
     return {
         "own": sorted(own),
         # Что подключено через MCP: панель показывает объявленное проектом, а не
@@ -1960,10 +2003,35 @@ def agent_state(project: str) -> dict:
                       "context": b.get("context", 0),
                       "parallel": b.get("parallel", True),
                       "fallback": b.get("fallback", True),
-                      "width": b.get("width", 1)} for b in cfg["backends"]],
+                      "width": b.get("width", 1),
+                      # Чат и вектора — разные кольца: шлюз может держать только одно из
+                      # двух. Форме это нужно, чтобы не предлагать чат-модели там, где
+                      # поднят лишь сервис векторов, и наоборот.
+                      "chat": b.get("chat", True),
+                      "embed_model": b.get("embed_model", ""),
+                      "embed_url": b.get("embed_url", ""),
+                      # Зрячая модель — третье кольцо, устроено как вектора: шлюз может
+                      # держать только её, и тогда в чатовое кольцо он не берётся.
+                      "ocr_model": b.get("ocr_model", ""),
+                      "ocr_url": b.get("ocr_url", "")} for b in cfg["backends"]],
         # Ключ наружу не отдаём никогда — только «заполнен или нет», как и у бэкендов.
         "embed": {"url": cfg["embed"]["url"], "model": cfg["embed"]["model"],
-                  "key_set": bool(cfg["embed"]["key"])},
+                  "key_set": bool(cfg["embed"]["key"]),
+                  "fallback": bool(cfg["embed"].get("fallback")),
+                  # Кольцо векторов целиком: человек должен видеть, куда ПОЙДЁТ запрос,
+                  # а не только то, что он вписал в поля. Ключи сюда не попадают.
+                  "ring": [{"url": r["url"], "n": r["n"], "why": r["why"]}
+                           for r in AG.embed_ring(cfg)]},
+        # Распознавание сканов — своё кольцо. Модель не названа — путь выключен, и форма
+        # должна сказать это прямо, а не показать пустое кольцо как «всё настроено».
+        # Проект на движке до 1.104.0 кольца не знает: без проверки весь экран настроек
+        # падал бы на одном отсутствующем имени — так уже пропадали блоки MCP.
+        "ocr": {"url": ocr.get("url", ""), "model": ocr.get("model", ""),
+                "key_set": bool(ocr.get("key")),
+                "fallback": bool(ocr.get("fallback")),
+                "dpi": ocr.get("dpi", 130), "max_pages": ocr.get("max_pages", 60),
+                "ring": [{"url": r["url"], "n": r["n"], "why": r["why"]}
+                         for r in (AG.ocr_ring(cfg) if hasattr(AG, "ocr_ring") else [])]},
         "venv": {"ok": venv_ok, "version": venv_ver, "path": str(AG.VENV)},
     }
 
@@ -2341,6 +2409,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"app": "aurora-cockpit", "kit": kit_version(),
                             "pid": os.getpid()})
         elif u.path == "/api/state":
+            projects = find_projects(self.server.roots)
+            # Опрос отметок Мостика идёт по этому списку: обход папок стоит полсекунды,
+            # а отметки спрашивают каждые пять.
+            self.server.seen_projects = [p["path"] for p in projects]
+            for p in projects:
+                p["activity"] = project_activity(p["path"])
             self.send_json({
                 "kit": {"version": kit_version(), "path": KIT},
                 # `stale_process` живёт ВНУТРИ `ui`: панель читает его как `ui.stale_process`,
@@ -2351,8 +2425,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ui": {"version": ui_version(),
                        "behind": ui_version() != kit_version(),
                        "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED},
-                "projects": find_projects(self.server.roots),
-                "projects": find_projects(self.server.roots),
+                "projects": projects,
                 "env": environment(),
                 "commands": registry(),
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
@@ -2590,6 +2663,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"нет файла {rel}"}, 404)
                 return
             self.send_json({"path": rel, "text": read_text(full)})
+        elif u.path == "/api/activity":
+            # Отметки на карточках Мостика: что идёт и что встало в каждом проекте.
+            self.send_json({"projects": {path: project_activity(path) for path
+                                         in getattr(self.server, "seen_projects", [])}})
         elif u.path == "/api/jobs":
             # Что сейчас выполняется в этом проекте. Задание живёт в процессе панели, а
             # консоль — в открытой странице: перезагрузили её, и работающая команда

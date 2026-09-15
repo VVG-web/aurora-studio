@@ -36,7 +36,7 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (SERVICE_STATUS, card_sources, config_list, frontmatter,  # noqa: E402
-                           split_frontmatter, walk_md,
+                           is_placeholder, split_frontmatter, walk_md,
                            with_fields)
 
 TODAY = date.today().isoformat()
@@ -208,6 +208,13 @@ def main() -> int:
         fm = frontmatter(text)
         was = (fm.get("status") or "").strip()
         if head is None or was in (SERVICE_STATUS, "deprecated"):
+            continue
+        # Заготовка знания не содержит: доверять в ней нечему, и класс ей не положен.
+        # Раньше она шла общим путём — источников нет, значит «unknown», значит `draft`, — и
+        # `status: placeholder` переписывался на `draft` каждым прогоном. Пустышка держалась
+        # на одном теге, а его снимал ремонт: на живом проекте 571 заготовка из 632 числилась
+        # черновиком и уходила в поиск и в долю доверия.
+        if is_placeholder(fm, text):
             continue
         # Исправление человека сильнее статуса задачи в Jira. Карточка выведена из
         # источника, но человек сказал про неё своё слово и положил это слово в `Raw/` —

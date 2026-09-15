@@ -14,11 +14,14 @@
 
 **Чего скрипт не касается:** всего, что лежит за пределами `AuroraKnowledgeDB/` —
 `Sources/`, `Raw/`, `Artifacts/`, `Deliverables/`, `Workspaces/`, `Templates/`, `Prompts/`
-остаются как были. Внутри базы уцелеют два файла, которые знанием не являются:
+остаются как были. Внутри базы уцелеет то, что знанием не является и из источников
+не выводится:
 
   .obsidian/                настройки хранилища: вид, плагины, открытые вкладки
   meta/aurora_version.txt   отметка версии движка — по ней панель, `doctor` и `update`
                             понимают, что в проекте установлено
+  meta/ask/                 разговоры вкладки «Спросить»: вопросы аналитика и ответы
+                            базы, в любом режиме сброса
 
 Заново из источников выведется не всё. `kb:build` читает `Reference/`, `Raw/project`,
 `Raw/customer`, `Raw/contract`, `Sources/Confluence`, `Sources/JIRA` — значит `Decisions/`
@@ -54,6 +57,11 @@ TODAY = datetime.now().strftime("%Y-%m-%d_%H%M")
 # Не знание, а обвязка базы: из источников не выводится, но и содержимым базы не является.
 # Версию движка отсюда читают панель, `doctor` и `update`.
 KEEP = ("meta/aurora_version.txt",)
+# Разговоры «Спросить» — журнал работы аналитика, а не содержимое базы. Лежат в `meta/`,
+# и сброс считал их служебными файлами, которые «соберутся заново»: живая пересборка
+# снесла девять разговоров за месяц, и вкладка открылась пустой. Пересборка их не вернёт,
+# а `--drop-unknown` просит снести карточки неизвестного происхождения, не журнал.
+CONVERSATIONS = "meta/ask/"
 # Правила и проверки базы: их пишет человек, и `manifest.json` к ним не относится — он
 # уходит всегда, иначе `kb:build` считает источники разобранными и план выйдет пустым.
 HANDMADE_META = ("conventions.md", "golden_questions.md", "lint_baseline.txt")
@@ -97,6 +105,8 @@ def survives(rel: str, source_alive: bool, machine: bool, status: str,
     """
     if rel in KEEP:
         return "обвязка базы: отметка версии движка"
+    if rel.startswith(CONVERSATIONS):
+        return "разговоры с базой: вопросы и ответы вкладки «Спросить»"
     if drop_unknown:
         return ""      # просили снести всё — значит и правила базы тоже
     if rel.split("/")[0] == "meta" and os.path.basename(rel) in HANDMADE_META:
@@ -205,7 +215,8 @@ def main() -> int:
     print(f"# Сброс базы знаний — {TODAY}\n")
     print(f"Режим: {'полный, включая неизвестное' if a.drop_unknown else 'всё, что соберётся заново'}")
     print(f"К удалению: {len(drop)} файлов (карточек {len(cards)}) · остаётся: {len(keep)}")
-    print("Не тронутся: .obsidian/ (настройки хранилища) и meta/aurora_version.txt, "
+    print("Не тронутся: .obsidian/ (настройки хранилища), meta/aurora_version.txt и "
+          "разговоры meta/ask/, "
           "а за пределами базы — ничего: Sources/, Raw/, Artifacts/, Deliverables/, "
           "Workspaces/, Templates/, Prompts/.\n")
     if statuses:
@@ -235,7 +246,8 @@ def main() -> int:
         # обвязку базы уже назвали выше — здесь только рукотворное
         seen = {}
         for path, why in keep:
-            if os.path.relpath(path, ROOT).replace("\\", "/") not in KEEP:
+            rel = os.path.relpath(path, ROOT).replace("\\", "/")
+            if rel not in KEEP and not rel.startswith(CONVERSATIONS):
                 seen[why] = seen.get(why, 0) + 1
         if seen:
             print("Остаётся — пересборка это не вернёт:")

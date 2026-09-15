@@ -116,11 +116,21 @@ def raw_config() -> dict:
     return merged
 
 
+# Сколько номеров бэкендов просматривать. Не «сколько их бывает», а докуда искать:
+# номера идут с пропусками, и предел нужен, чтобы поиск был конечным.
+BACKEND_MAX = 16
+
+
 def parse_config(env: dict) -> dict:
     """env-словарь → конфигурация агента. Чистая функция: тесты кормят её напрямую."""
     backends = []
-    n = 1
-    while env.get(f"AURORA_AGENT_BACKEND_{n}_URL"):
+    # Номера идут с пропусками: чат может стоять на №2, а вектора на №4, и третьего
+    # шлюза не быть вовсе. Прежний цикл «пока есть следующий номер» останавливался на
+    # первой дыре — объявленный №4 становился невидимым, а человек видел бы «шлюз
+    # настроен, но не используется» без единой подсказки почему.
+    for n in range(1, BACKEND_MAX + 1):
+        if not env.get(f"AURORA_AGENT_BACKEND_{n}_URL"):
+            continue
         prefix = f"AURORA_AGENT_BACKEND_{n}_"
         models = {r: env.get(prefix + "MODEL_" + r.upper(), "") for r in ROLES}
         backends.append({
@@ -145,8 +155,31 @@ def parse_config(env: dict) -> dict:
             # 0 — ширина не объявлена: такой бэкенд делит с другими общий потолок.
             # Объявленная ширина — жёсткий предел этого шлюза, потолок её не поднимает.
             "width": max(0, int(env.get(prefix + "WIDTH", "0") or 0)),
+            # Какая модель ВЕКТОРОВ поднята на этом шлюзе. Объявляется отдельно от чата:
+            # чат и эмбеддинги часто живут на одном адресе, но модель у них разная, и
+            # «шлюз отвечает» ещё не значит «вектора посчитает». Пусто — шлюз векторов не
+            # считает и в кольцо эмбеддингов не берётся.
+            "embed_model": (env.get(prefix + "EMBED_MODEL", "") or "").strip(),
+            # Адрес сервиса векторов, если он не совпадает с чатовым (TEI на своём порту).
+            "embed_url": ((env.get(prefix + "EMBED_URL", "") or env[prefix + "URL"])
+                          .rstrip("/")),
+            # Какая ЗРЯЧАЯ модель поднята на этом шлюзе — ею читаются сканы. Третья
+            # независимая величина рядом с чатом и векторами: на одном адресе живут три
+            # разные модели, и «шлюз отвечает» не значит «картинку прочитает». Пусто —
+            # в кольцо распознавания шлюз не берётся.
+            "ocr_model": (env.get(prefix + "OCR_MODEL", "") or "").strip(),
+            # Адрес сервиса распознавания, если он не совпадает с чатовым.
+            "ocr_url": ((env.get(prefix + "OCR_URL", "") or env[prefix + "URL"]).rstrip("/")),
+            # Умеет ли шлюз ЧАТ. Поднятый только под вектора или только под распознавание
+            # (объявлена их модель и не объявлено ни одной чат-модели) в чатовое кольцо не
+            # берётся: вызов ушёл бы на сервер без чат-модели и вернулся «Missing model
+            # field», а выглядело бы это как отказ живого шлюза. Прежние настройки не
+            # меняются: бэкенд без объявленных эмбеддинга и распознавания остаётся чатовым.
+            "chat": bool((env.get(prefix + "MODEL", "") or "").strip()
+                         or any((v or "").strip() for v in models.values())
+                         or not ((env.get(prefix + "EMBED_MODEL", "") or "").strip()
+                                 or (env.get(prefix + "OCR_MODEL", "") or "").strip())),
         })
-        n += 1
     # Эмбеддинги живут своей жизнью: их часто держат отдельным сервисом (TEI, свой vLLM),
     # у него другой адрес и другой ключ. По умолчанию — та же модель, что у чата: в
     # инфраструктуре, где всё на одном шлюзе, настраивать нечего.
@@ -154,11 +187,36 @@ def parse_config(env: dict) -> dict:
         "url": (env.get("AURORA_EMBED_URL") or "").rstrip("/"),
         "key": env.get("AURORA_EMBED_KEY", ""),
         "model": env.get("AURORA_EMBED_MODEL") or env.get("AURORA_AGENT_EMBED_MODEL") or "bge-m3",
+        # Считать ли вектора на других шлюзах, когда основной молчит. По умолчанию нет:
+        # вектора разных моделей лежат в разных пространствах, и подмена модели портит
+        # поиск МОЛЧА — индекс остаётся, выдача перестаёт находить. Включённый запасной
+        # берёт только шлюз, объявивший ТУ ЖЕ модель (`BACKEND_<n>_EMBED_MODEL`); шлюз с
+        # другой моделью не берётся никогда, шаг честно отказывается.
+        "fallback": str(env.get("AURORA_EMBED_FALLBACK", "0")).strip().lower()
+                    not in ("0", "", "false", "no"),
+    }
+    # Распознавание сканов — тоже своя модель и часто свой шлюз. По умолчанию НЕ объявлено:
+    # пока модель не названа, путь распознавания выключен и скан честно остаётся
+    # неразобранным. Умолчания тут быть не может: угаданное имя модели даёт не отказ, а
+    # связную выдумку в транскрипте первоисточника.
+    ocr = {
+        "url": (env.get("AURORA_OCR_URL") or "").rstrip("/"),
+        "key": env.get("AURORA_OCR_KEY", ""),
+        "model": (env.get("AURORA_OCR_MODEL") or "").strip(),
+        # Плотность отрисовки страницы. 130 точек на дюйм — рабочая середина: текст читается,
+        # а страница А4 весит около 190 КБ, и запрос не упирается в потолок шлюза.
+        "dpi": max(72, int(env.get("AURORA_OCR_DPI", "130") or 130)),
+        # Потолок страниц на файл: распознавание — это вызов модели на КАЖДУЮ страницу,
+        # и трёхсотстраничный скан молча съел бы часы.
+        "max_pages": max(1, int(env.get("AURORA_OCR_MAX_PAGES", "60") or 60)),
+        "fallback": str(env.get("AURORA_OCR_FALLBACK", "0")).strip().lower()
+                    not in ("0", "", "false", "no"),
     }
     ADAPTER["name"] = env.get("AURORA_AGENT_ADAPTER", "pydantic_ai")
     ADAPTER["fallback_why"] = ""
     return {
         "embed": embed,
+        "ocr": ocr,
         "adapter": ADAPTER["name"],
         "thinking": env.get("AURORA_AGENT_THINKING", "1") not in ("0", "false", "no"),
         # Рассуждения по ролям. Замер на живом шлюзе: пересказ карточки в тезис с
@@ -620,7 +678,7 @@ def ring_order(cfg: dict, prefer: int = 0) -> list:
     ради пропускной способности, не обязан подменять упавшего — иначе весь поток заданий
     сойдётся на одной модели, и параллельность обернётся очередью.
     """
-    backends = cfg["backends"]
+    backends = [b for b in cfg["backends"] if b.get("chat", True)]
     if not prefer:
         return backends
     mine = [b for b in backends if b["n"] == prefer]
@@ -652,7 +710,8 @@ def pool(cfg: dict) -> list:
     `AURORA_AGENT_PARALLEL`. Так поведение прежних настроек сохраняется: кто поставил
     только потолок, получает ровно его.
     """
-    usable = [b for b in cfg["backends"] if b.get("parallel", True)] or cfg["backends"][:1]
+    chat = [b for b in cfg["backends"] if b.get("chat", True)]
+    usable = [b for b in chat if b.get("parallel", True)] or chat[:1]
     cap = cfg.get("parallel", 1)
     if cap == AUTO:
         # Каждый шлюз даёт то, что про себя объявил; не объявивший даёт один. Это не
@@ -1198,30 +1257,119 @@ def cmd_ping(as_json: bool) -> int:
     return 0 if alive else 1
 
 
-def embed_probe(cfg: dict) -> str:
-    """Живы ли эмбеддинги. Отдельной строкой: их часто держат отдельным сервисом.
+def embed_ring(cfg: dict) -> list:
+    """Куда ходить за ВЕКТОРАМИ, по порядку. Кольцо своё, от чатового не зависит.
 
-    Проверять их вместе с чатом нельзя — модель для векторов другая, и «шлюз отвечает»
-    ещё не значит «векторный поиск работает». Проверка не обязательна: без эмбеддингов
-    выборка идёт по словам, и это рабочее состояние, а не поломка.
+    Чат и эмбеддинги живут на разных шлюзах: модель чата может работать на втором
+    бэкенде, а вектора считаться на четвёртом. Поэтому кольцо векторов строится по
+    объявлению `BACKEND_<n>_EMBED_MODEL`, а не по тому, кто держит чат.
+
+    Порядок: свой сервис векторов (`AURORA_EMBED_URL`), если задан, затем шлюзы,
+    объявившие ТУ ЖЕ модель. Шлюз с другой моделью не берётся никогда: его вектора лежат
+    в другом пространстве, и в общий индекс им нельзя — поиск после подмены не падает, а
+    тихо перестаёт находить. Ничего не объявлено — поведение прежнее: кольцо чата (в
+    инфраструктуре с одним шлюзом настраивать нечего).
+
+    `AURORA_EMBED_FALLBACK` управляет только переходом к СЛЕДУЮЩЕМУ векторному шлюзу:
+    выключен — работаем на первом и честно отказываемся, если он молчит.
     """
     e = cfg.get("embed") or {}
-    url = e.get("url") or (cfg["backends"][0]["url"] if cfg["backends"] else "")
-    if not url:
+    model = (e.get("model") or "").strip().lower()
+    ring, seen = [], set()
+
+    def add(url: str, key: str, n: int, why: str) -> None:
+        url = (url or "").rstrip("/")
+        if not url or url in seen:
+            return
+        seen.add(url)
+        ring.append({"url": url, "key": key or "", "n": n, "why": why})
+
+    if e.get("url"):
+        add(e["url"], e.get("key", ""), 0, "свой сервис векторов")
+    for b in cfg.get("backends") or []:
+        if model and (b.get("embed_model") or "").strip().lower() == model:
+            add(b.get("embed_url") or b["url"], b.get("key", ""), b["n"],
+                f"шлюз №{b['n']}: объявлена {e.get('model')}")
+    if not ring:
+        for b in cfg.get("backends") or []:
+            add(b["url"], b.get("key", ""), b["n"], "кольцо агента (векторных шлюзов не объявлено)")
+    return ring if e.get("fallback") else ring[:1]
+
+
+def ocr_ring(cfg: dict) -> list:
+    """Куда ходить за РАСПОЗНАВАНИЕМ сканов, по порядку. Кольцо своё, как у векторов.
+
+    Устроено зеркально эмбеддингам: шлюз объявляет зрячую модель
+    (`AURORA_AGENT_BACKEND_<n>_OCR_MODEL`, при нужде свой адрес `_OCR_URL`), а общее имя
+    модели задаёт `AURORA_OCR_MODEL`. Порядок: свой сервис распознавания, затем шлюзы,
+    объявившие ТУ ЖЕ модель.
+
+    Отличие от векторов одно, и оно намеренное: в кольцо чата этот путь НЕ проваливается.
+    Текстовая модель, получив картинку, не отказывается — она отвечает связной выдумкой,
+    и выдумка в транскрипте первоисточника хуже пустого файла. Ничего не объявлено —
+    кольцо пустое, распознавание выключено, файл остаётся неразобранным и отчёт это скажет.
+    """
+    o = cfg.get("ocr") or {}
+    model = (o.get("model") or "").strip().lower()
+    if not model:
+        return []
+    ring, seen = [], set()
+
+    def add(url: str, key: str, n: int, why: str) -> None:
+        url = (url or "").rstrip("/")
+        if not url or url in seen:
+            return
+        seen.add(url)
+        ring.append({"url": url, "key": key or "", "n": n, "why": why})
+
+    if o.get("url"):
+        add(o["url"], o.get("key", ""), 0, "свой сервис распознавания")
+    for b in cfg.get("backends") or []:
+        if (b.get("ocr_model") or "").strip().lower() == model:
+            add(b.get("ocr_url") or b["url"], b.get("key", ""), b["n"],
+                f"шлюз №{b['n']}: объявлена {o.get('model')}")
+    return ring if o.get("fallback") else ring[:1]
+
+
+def embed_probe(cfg: dict) -> str:
+    """Живо ли кольцо векторов. Отдельной строкой: у него свои шлюзы и своя модель.
+
+    Проверять вектора вместе с чатом нельзя: «шлюз отвечает» не значит «вектора
+    посчитает» — модель другая, а с раздельными кольцами это может быть и другой сервер.
+    Проверка не обязательна: без эмбеддингов выборка идёт по словам, это рабочий режим.
+
+    Первая строка начинается с «✅ Эмбеддинги» или «✗ Эмбеддинги» — по ней панель узнаёт
+    состояние; ниже перечислено кольцо целиком, с размерностью ответа каждого шлюза.
+    """
+    e = cfg.get("embed") or {}
+    ring = embed_ring(cfg)
+    if not ring:
         return "Эмбеддинги: адреса нет — поиск пойдёт по словам (это рабочий режим)."
-    st, body, err, dt = http_json(url + "/embeddings",
-                                  {"model": e.get("model"), "input": ["проверка связи"]},
-                                  e.get("key") or (cfg["backends"][0]["key"]
-                                                   if not e.get("url") and cfg["backends"] else ""),
-                                  20)
-    vec = ((body or {}).get("data") or [{}])[0].get("embedding") if st == 200 else None
-    where = url + (" (кольцо агента)" if not e.get("url") else "")
-    if vec:
-        return (f"✅ Эмбеддинги: {e.get('model')} на {where} · размерность {len(vec)} "
-                f"· {dt:.1f} с. Индекс: `kb:embed --apply`.")
-    return (f"✗ Эмбеддинги: {e.get('model')} на {where} — {err or 'пустой ответ'}.\n"
-            "   Поиск будет работать по словам. Свой сервис векторов задаётся "
-            "переменными AURORA_EMBED_URL / AURORA_EMBED_KEY / AURORA_EMBED_MODEL.")
+    model, lines, alive, dims = e.get("model"), [], 0, set()
+    for end_point in ring:
+        st, body, err, dt = http_json(end_point["url"] + "/embeddings",
+                                      {"model": model, "input": ["проверка связи"]},
+                                      end_point["key"], 20)
+        vec = ((body or {}).get("data") or [{}])[0].get("embedding") if st == 200 else None
+        if vec:
+            alive += 1
+            dims.add(len(vec))
+            lines.append(f"   ✅ {end_point['url']} — {end_point['why']} · размерность "
+                         f"{len(vec)} · {dt:.1f} с")
+        else:
+            lines.append(f"   ✗ {end_point['url']} — {end_point['why']} · "
+                         f"{err or 'пустой ответ'}")
+    head = (f"✅ Эмбеддинги: {model} · живых шлюзов {alive} из {len(ring)}. "
+            "Индекс: `kb:embed --apply`." if alive else
+            f"✗ Эмбеддинги: {model} — не ответил ни один шлюз кольца. "
+            "Поиск будет работать по словам.")
+    # Разные размерности в одном кольце — это разные модели под одним именем. Вектора
+    # таких шлюзов в общий индекс не лягут (`kb_embed` их отбрасывает), и знать об этом
+    # надо ДО прогона, а не по проседанию выдачи.
+    if len(dims) > 1:
+        head += (f"\n   ⚠️ шлюзы кольца отдают разную размерность {sorted(dims)} — это "
+                 "разные модели. В индекс попадут только совпадающие с ним.")
+    return "\n".join([head] + lines)
 
 
 def venv_status() -> tuple:

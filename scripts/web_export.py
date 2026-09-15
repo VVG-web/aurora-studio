@@ -189,6 +189,17 @@ def fetch(url: str, token: str = "") -> tuple:
     return ("" if err else raw.decode(enc, errors="replace")), err
 
 
+# Есть ли чем разбирать HTML. Проверяется ОДИН раз и здесь, а не угадывается по пустому
+# результату: пустая страница и отсутствующая библиотека — разные беды с разным лечением,
+# и одно сообщение на оба случая отправляло человека ставить уже установленные пакеты.
+try:
+    import bs4 as _bs4                     # noqa: F401
+    import markdownify as _markdownify     # noqa: F401
+    HAVE_PARSER = True
+except ImportError:                        # модуль всё равно грузится: отчёт скажет, чего нет
+    HAVE_PARSER = False
+
+
 def to_markdown(html: str, base_url: str = "") -> tuple:
     """(заголовок, markdown, внутренние ссылки, вложения).
 
@@ -203,8 +214,17 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
         return "", "", [], []
     soup = BeautifulSoup(html, "html.parser")
     title = (soup.title.get_text().strip() if soup.title else "")
-    for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "form"]):
+    for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
         tag.decompose()
+    # Форму НЕ выбрасываем целиком. На ASP.NET WebForms вся страница лежит внутри одного
+    # `<form runat="server">`, и прежнее правило «убрать form» стирало документ до нуля:
+    # на живой странице nalog.gov.ru в форме было 22 393 знака текста, а движок получал
+    # пустое тело и сообщал «нет beautifulsoup4/markdownify» — то есть врал о причине.
+    # Убираем только органы управления, текст формы оставляем на месте.
+    for tag in soup(["input", "select", "textarea", "button"]):
+        tag.decompose()
+    for form in soup.find_all("form"):
+        form.unwrap()
     main = soup.find("main") or soup.find("article") or soup.body or soup
 
     host = urllib.parse.urlparse(base_url).netloc
@@ -476,9 +496,14 @@ def run(a) -> int:
             title, body, links, assets = to_markdown(html, url)
             if not body:
                 failed += 1
-                print(f"  ✗ {url} — нет beautifulsoup4/markdownify: "
-                      f"`pip install beautifulsoup4 markdownify`")
-                mirror.rows.append((url, trusted, "—", "нет библиотек разбора"))
+                why = ("нет beautifulsoup4/markdownify: `pip install beautifulsoup4 markdownify`"
+                       if not HAVE_PARSER else
+                       "страница пришла без текста: содержимое рисует JS либо сайт отдал "
+                       "заглушку вместо документа")
+                print(f"  ✗ {url} — {why}")
+                mirror.rows.append((url, trusted, "—",
+                                    "нет библиотек разбора" if not HAVE_PARSER
+                                    else "страница без текста"))
                 continue
             rel = slug(url, title)
             path = os.path.join(mirror.out, rel)

@@ -103,6 +103,60 @@ def split_doc_code(title: str) -> tuple:
     return rest, [m.group(1).strip(" .:-\u2014")]
 
 
+# Идентификатор модели данных: ER.Сущность или ER.Сущность.Поле. Сегменты — латиница и
+# цифры без дефисов: первый дефис после пути уже отделяет человеческую подпись.
+ER_PATH_RE = re.compile(r"(?i:er)(?:\.[A-Za-z0-9]+)+")
+ER_LABELED_RE = re.compile(r"^((?i:er)(?:\.[A-Za-z0-9]+)+)[-_ ]+(.*[А-Яа-яЁё].*)$")
+
+
+def split_er_label(title: str) -> tuple:
+    """«ER.AS.PDFD-Уведомление-о-статусе» → («ER.AS.PDFD», ['Уведомление о статусе']).
+
+    Код ER — адрес сущности в модели данных, и он же её имя; подпись — синоним, по которому
+    сущность находят. Это обратно правилу для кодов документов (`split_doc_code`): там код —
+    номер бумаги и уходит в синонимы, здесь код — идентичность (Т-73, Т-74). Голый путь
+    поля (`ER.AS.Acc.OGRN`) и всё, что не начинается с ER, возвращается как есть.
+    """
+    m = ER_LABELED_RE.match((title or "").strip())
+    if not m:
+        return (title or "").strip(), []
+    label = re.sub(r"[-_\s]+", " ", m.group(2)).strip(" .:—")
+    if len(label) < 3:
+        return (title or "").strip(), []
+    return m.group(1), [label]
+
+
+def find_er_card(code: str, root: str = "") -> str:
+    """Карточка с кодом ER — точно по имени, иначе точно по синониму. Пусто — нет такой."""
+    base = os.path.join(root, KB_ROOT) if root else KB_ROOT
+    by_alias = ""
+    for path in walk_md(base, skip_service=True, skip_archive=True):
+        if os.path.basename(path)[:-3] == code:
+            return path
+        if not by_alias and code in card_aliases(head_text(path)):
+            by_alias = path
+    return by_alias
+
+
+def add_er_labels(path: str, labels: list) -> None:
+    """Дописать подписи сущности ER в синонимы карточки; остальное не трогать."""
+    if not labels:
+        return
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    new = [x for x in labels if x not in set(card_aliases(text))]
+    head, rest = split_frontmatter(text)
+    if not new or head is None:
+        return
+    items = "".join(f'\n  - "{x}"' for x in new)
+    if re.search(r"(?m)^aliases:\s*\[\s*\]\s*$", head):
+        head = re.sub(r"(?m)^aliases:\s*\[\s*\]\s*$", lambda _m: "aliases:" + items, head, count=1)
+    elif re.search(r"(?m)^aliases:[ \t]*$", head):
+        head = re.sub(r"(?m)^aliases:[ \t]*$", lambda _m: "aliases:" + items, head, count=1)
+    else:
+        head = head.rstrip("\n") + "\naliases:" + items
+    open(path, "w", encoding="utf-8").write("---" + head + "\n---" + rest)
+
+
 SECTION_TYPE = {
     "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
     "Systems": "system", "Roles": "role", "Statuses": "status-model",
@@ -216,6 +270,19 @@ def sources() -> list:
             for f in sorted(files):
                 if not f.endswith(".md") or f in SKIP or f.startswith("~"):
                     continue
+                # Документ и его машинная расшифровка — один источник, а не два.
+                # `kb:ingest-office` кладёт `X.converted.md` рядом с оригиналом, а
+                # текстовая копия `X.md` бывает уже сделана. Разбирались обе, и знание
+                # раздваивалось: «Вопросы от бизнеса» дали девять параллельных карточек и
+                # две группы двойников. Правило заказчика: есть копия — машинную не
+                # разбирать. Машинная расшифровка PDF к тому же теряет содержание: у одного
+                # документа она вышла в три с половиной раза короче копии.
+                # Копия обязана быть годным источником сама (тот же порог, что ниже):
+                # пропустив расшифровку при пустой копии, потеряли бы документ целиком.
+                if f.endswith(".converted.md"):
+                    copy = os.path.join(dirpath, f[: -len(".converted.md")] + ".md")
+                    if os.path.isfile(copy) and os.path.getsize(copy) >= 200:
+                        continue
                 path = os.path.join(dirpath, f).replace("\\", "/")
                 # Карточка, собранная из справочника, ложится рядом с ним — и попадала
                 # в план новым источником. План рос от собственной работы: разобрал
@@ -568,6 +635,12 @@ def find_card(name: str, root: str = "") -> str:
     и источник был потерян целиком при том, что нужная карточка лежала рядом. Одна буква
     в длинном имени — это опечатка, а не другое понятие.
     """
+    code, _labels = split_er_label(name)
+    if ER_PATH_RE.fullmatch(code):
+        # Код ER сравнивается ТОЧНО. Поправка на опечатку, которая ниже прощает букву в
+        # длинном имени, здесь слила бы разные сущности: в одной модели данных рядом
+        # живут ER.AS.CCS и ER.AS.CCr — разные справочники. Полный путь и есть имя (Т-73).
+        return find_er_card(code, root)
     base = os.path.join(root, KB_ROOT) if root else KB_ROOT
     # Одно понятие живёт под двумя написаниями: «SPR-001-Statusy-tarifa» из источника и
     # «SPR-001 Статусы тарифа» в тексте соседних карточек. Пара записана в словаре имён,
@@ -822,7 +895,29 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             title, append_to = append_to, ""
         else:
             old_text = open(target, encoding="utf-8", errors="ignore").read()
-            return append_card(target, old_text, body, source, apply)
+            rc = append_card(target, old_text, body, source, apply)
+            if rc == 0 and apply:
+                add_er_labels(target, split_er_label(append_to)[1])
+            return rc
+
+    # Сущность модели данных называется кодом, подпись уходит в синонимы (Т-74). Разрез
+    # делается ДО имени файла: иначе файл назывался бы полной формой, а шапка — кодом.
+    # Одинаковый код — это одна сущность по определению, поэтому готовая карточка с тем же
+    # кодом не повод отказать, а место, куда знание дописывается. Модель, называя сущность
+    # полной формой, не может знать, что карточка уже заведена: на живой базе один код
+    # приходил с двумя разными подписями, а четыре кода совпали с уже заведёнными полями.
+    title, er_labels = split_er_label(title)
+    if er_labels:
+        target = find_card(title, root)
+        if target:
+            old_text = open(target, encoding="utf-8", errors="ignore").read()
+            if source in card_sources(old_text):
+                rc = refresh_card(target, old_text, body, source, apply)
+            else:
+                rc = append_card(target, old_text, body, source, apply)
+            if rc == 0 and apply:
+                add_er_labels(target, er_labels)
+            return rc
 
     safe = card_filename(title)
     path = os.path.join(KB_ROOT, into, safe + ".md")
@@ -857,6 +952,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # умещается в оглавление на пару десятков тысяч токенов.
     # Код документа из имени — в синонимы: карточка знания называется по объекту.
     title, codes = split_doc_code(title)
+    codes = er_labels + codes          # подпись сущности ER — синоним (Т-74)
     head_summary = f'summary: "{summary.strip()}"\n' if summary.strip() else ""
     codes_list = ("\n" + "\n".join(f'  - "{c}"' for c in codes)) if codes else " []"
     # Источники списком с самого рождения карточки. Одно поле `source:` держало ровно

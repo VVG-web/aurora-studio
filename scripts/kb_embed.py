@@ -200,20 +200,25 @@ def normalize(vec: list) -> list:
 
 
 def endpoints(cfg: dict) -> list:
-    """Куда ходить за векторами: свой сервис эмбеддингов либо кольцо бэкендов агента.
+    """Куда ходить за векторами. Правило одно и живёт в `agent_core.embed_ring`.
 
-    Отдельный адрес нужен там, где эмбеддинги подняты своим сервисом — он и модель знает
-    одну, и ключа может не требовать. Не задан — берём то же кольцо, что и чат: в
-    инфраструктуре с одним шлюзом настраивать нечего.
+    Свой сервис векторов либо кольцо чата, а при включённом `AURORA_EMBED_FALLBACK` —
+    ещё и шлюзы, объявившие ТУ ЖЕ модель. Своего разбора здесь быть не должно: два места
+    с одним вопросом дают два разных ответа, и это уже случалось в движке со «служебным
+    файлом».
     """
-    own = (cfg.get("embed") or {}).get("url")
-    if own:
-        return [{"url": own, "key": (cfg["embed"] or {}).get("key", ""), "n": 0}]
-    return cfg["backends"]
+    return AG.embed_ring(cfg)
 
 
 def embed(texts: list, cfg: dict, model: str) -> list:
-    """Вектора для списка текстов. Идём по кольцу бэкендов, как остальной агент."""
+    """Вектора для списка текстов. Идём по кольцу, как остальной агент.
+
+    Размерность ответа сверяется с индексом. Шлюз может ответить «200 OK» и отдать вектора
+    ДРУГОЙ модели — под тем же именем или из другого пространства; лечь в общий индекс им
+    нельзя: поиск после этого не падает, а тихо перестаёт находить. Такой ответ
+    отбрасывается, и работа идёт к следующему шлюзу кольца.
+    """
+    want_dim = load_index().get("dim") or 0
     out = []
     for i in range(0, len(texts), BATCH):
         chunk = texts[i:i + BATCH]
@@ -223,8 +228,15 @@ def embed(texts: list, cfg: dict, model: str) -> list:
                                               {"model": model, "input": chunk},
                                               backend["key"], cfg["request_timeout"])
             if st == 200 and (data.get("data") or []):
-                got = [normalize(d["embedding"]) for d in
-                       sorted(data["data"], key=lambda d: d.get("index", 0))]
+                vecs = [normalize(d["embedding"]) for d in
+                        sorted(data["data"], key=lambda d: d.get("index", 0))]
+                dim = len(vecs[0]) if vecs else 0
+                if want_dim and dim != want_dim:
+                    print(f"  бэкенд {backend['url']}: размерность {dim} вместо {want_dim} — "
+                          "это другая модель векторов, в общий индекс её нельзя",
+                          file=sys.stderr)
+                    continue
+                got = vecs
                 break
             print(f"  бэкенд {backend['url']}: {err or 'пустой ответ'}", file=sys.stderr)
         if got is None or len(got) != len(chunk):
@@ -513,13 +525,15 @@ def main() -> int:
     gone = [n for n in idx["cards"] if n not in texts]
 
     print(f"# Семантический индекс — {TODAY}\n")
-    where = cfg["embed"]["url"] or (cfg["backends"][0]["url"] if cfg["backends"] else "—")
+    ring = AG.embed_ring(cfg)
+    where = ring[0]["url"] if ring else "—"
     owners = {piece_owner(k) for k in texts}
     in_idx = {piece_owner(k) for k in idx["cards"]}
     print(f"Карточек в базе: {len(owners)} (кусков {len(texts)}) · в индексе: "
           f"{len(in_idx)} (кусков {len(idx['cards'])}) · модель: {idx.get('model') or '—'}")
     print(f"Считает: {model} на {where}"
-          + ("" if cfg["embed"]["url"] else " (кольцо агента — своего адреса не задано)"))
+          + (f" ({ring[0]['why']})" if ring else "")
+          + (f" · запасных в кольце: {len(ring) - 1}" if len(ring) > 1 else ""))
     print(f"Пересчитать: {len(stale)} · выбыло: {len(gone)}")
     pf = load_prefilter(idx["dim"], len(idx["cards"])) if idx["cards"] else None
     print(f"Предфильтр: {pf[0]} осей" if pf else "Предфильтр: — (полный перебор)")

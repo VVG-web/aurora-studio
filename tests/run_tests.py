@@ -329,6 +329,37 @@ def test_stats_counts_questions_and_acceptance(tmp: Path):
 
 
 @test
+def test_trust_share_counts_only_what_can_be_checked(tmp: Path):
+    """Доля доверенного — среди карточек со знанием: без заготовок и служебных файлов.
+
+    В знаменателе лежали пустышки и `README.md` базы. На живом проекте 632 пустышки из 1657
+    карточек держали долю ниже 40 % при любом качестве знания, а потолок при полном доверии
+    был 48 %: показатель, который не может дойти до ста, ничего не сообщает.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Знание.md", status="knowledge", kind="knowledge",
+         body="Проверенное знание о предмете.")
+    card(root, "Concepts/Черновик.md", status="draft", kind="knowledge",
+         body="Непроверенное знание о предмете.")
+
+    def share():
+        cp = run("aurora_stats.py", "--json", cwd=root)
+        s = json.loads(cp.stdout[cp.stdout.index("{"):cp.stdout.rindex("}") + 1])
+        return s["pct_verified"], s["trust_total"], s["stubs"]
+
+    pct, base, stubs = share()
+    for i in range(3):
+        card(root, f"Concepts/Пустышка-{i}.md", status="placeholder", tags="[заготовка]",
+             body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._")
+    (root / "AuroraKnowledgeDB/README.md").write_text("# База знаний\n\nОписание базы.\n",
+                                                      encoding="utf-8")
+    pct2, base2, stubs2 = share()
+    assert stubs2 == stubs + 3, "заготовки перестали считаться — счётчик пустышек сломан"
+    assert base2 == base, f"заготовки или служебный файл попали в знаменатель доли: {base} → {base2}"
+    assert pct2 == pct, f"доля доверенного поехала от пустышек и README: {pct} → {pct2}"
+
+
+@test
 def test_lint_validates_question_cards(tmp: Path):
     root = make_project(tmp)
     card(root, "Questions/Q-002-Плохой.md", type="question", q_id="Q-002", q_status="answered")
@@ -2202,6 +2233,105 @@ def test_ask_tab_names_the_model_and_lets_you_pick_it(tmp: Path):
 
 
 @test
+def test_ask_tab_refills_the_model_list_and_names_a_failure(tmp: Path):
+    """Выбор модели и история «Спросить» переживают сбой запроса и называют его.
+
+    Живой случай: вкладка открылась без истории и с пустым выбором модели. Список моделей
+    отмечался собранным до ответа сервера, поэтому один неудачный запрос оставлял выбор
+    пустым до перезагрузки страницы, а сбой чтения истории выглядел как «разговоров пока
+    нет». Собирался список к тому же один раз и при смене проекта показывал модели прошлого.
+
+    Проверяем поведение, а не строки: функции страницы выполняются в node на заглушках
+    DOM и сервера.
+    """
+    import shutil
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'id="askBackendNote"' in ui, "сбою списка моделей негде показаться"
+
+    def fn(name):
+        start = ui.index(f"async function {name}(")
+        depth, i = 0, ui.index("{", start)
+        while True:
+            depth += {"{": 1, "}": -1}.get(ui[i], 0)
+            if depth == 0:
+                return ui[start:i + 1]
+            i += 1
+
+    engine = shutil.which("node") or shutil.which("deno")
+    assert engine, "нет ни node, ни deno — поведение вкладки проверить нечем"
+    harness = """
+const el = (tag, attrs, ...kids) => ({tag, value: attrs && attrs.value,
+  textContent: kids.map(k => typeof k === "string" ? k : (k && k.textContent) || "").join("")});
+const select = () => ({options: [{value: "0", textContent: "по кольцу"}], value: "0", dataset: {},
+  append(o){ this.options.push(o); },
+  remove(i){ const [o] = this.options.splice(i, 1);
+             if (o && o.value === this.value) this.value = this.options[0].value; }});
+const box = () => ({kids: [], replaceChildren(...k){ this.kids = k; },
+  append(...k){ this.kids.push(...k); },
+  get text(){ return this.kids.map(k => k.textContent).join(" | "); }});
+const DOM = {askBackend: select(), askBackendNote: {hidden: true, textContent: ""},
+             askHistory: box()};
+const $ = q => DOM[q.slice(1)];
+let S = {project: null}, THREAD = null, calls = 0;
+const replies = [];
+const api = async () => { calls++; const r = replies.shift(); if (r instanceof Error) throw r; return r; };
+function openThread(){}
+FUNCS
+(async () => {
+  const sel = DOM.askBackend, note = DOM.askBackendNote, res = {};
+  const opts = () => sel.options.map(o => o.value).join(",");
+  const said = () => note.hidden ? "" : note.textContent;
+  S.project = {path: "/p/A"};
+  replies.push(new Error("Failed to fetch"));
+  await fillAskBackends();
+  res.failed = {opts: opts(), note: said()};
+  replies.push({backends: [{n: 1, models: {worker: "m1"}}, {n: 2, model: "m2"}]});
+  await fillAskBackends();
+  res.retried = {opts: opts(), note: said()};
+  const before = calls; await fillAskBackends(); res.sameProjectCalls = calls - before;
+  sel.value = "2"; S.project = {path: "/p/B"};
+  replies.push({backends: [{n: 2, model: "m2b"}, {n: 3, model: "m3"}]});
+  await fillAskBackends();
+  res.switched = {opts: opts(), value: sel.value,
+                  labels: sel.options.map(o => o.textContent).join(",")};
+  S.project = {path: "/p/C"}; replies.push({backends: []});
+  await fillAskBackends();
+  res.empty = {opts: opts(), note: said()};
+  replies.push({error: "проект не найден среди обнаруженных"});
+  await renderAskHistory(); res.historyError = DOM.askHistory.text;
+  replies.push({threads: []});
+  await renderAskHistory(); res.historyEmpty = DOM.askHistory.text;
+  console.log(JSON.stringify(res));
+})();
+"""
+    src = tmp / "ask_tab.js"
+    src.write_text(harness.replace("FUNCS", fn("fillAskBackends") + "\n" + fn("renderAskHistory")),
+                   encoding="utf-8")
+    cmd = ([engine, str(src)] if engine.endswith("node")
+           else [engine, "run", "--quiet", str(src)])
+    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), \
+        f"функции вкладки не выполнились:\n{(cp.stderr or cp.stdout)[:800]}"
+    r = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert r["failed"]["opts"] == "0" and "не загружены" in r["failed"]["note"], \
+        f"сбой запроса моделей прошёл молча: {r['failed']}"
+    assert r["retried"]["opts"] == "0,1,2" and not r["retried"]["note"], \
+        f"после сбоя список не собрался заново — выбор пуст до перезагрузки: {r['retried']}"
+    assert r["sameProjectCalls"] == 0, \
+        "модели того же проекта запрашиваются заново при каждом открытии вкладки"
+    assert r["switched"]["opts"] == "0,2,3" and "m2b" in r["switched"]["labels"], \
+        f"при смене проекта в выборе остались модели прошлого: {r['switched']}"
+    assert r["switched"]["value"] == "2", \
+        "смена проекта сбросила выбор модели, которая есть и в новом проекте"
+    assert r["empty"]["opts"] == "0" and "нет моделей" in r["empty"]["note"], \
+        f"пустая настройка агента не названа: {r['empty']}"
+    assert "Историю не прочитать" in r["historyError"] and "не найден" in r["historyError"], \
+        f"сбой чтения истории выдан за пустую историю: {r['historyError']}"
+    assert "Разговоров пока нет" in r["historyEmpty"], \
+        f"пустая история не названа: {r['historyEmpty']}"
+
+
+@test
 def test_fallback_provider_gets_a_fair_chance(tmp: Path):
     """Запасной провайдер получает своё время, а не пять секунд на исходе дедлайна.
 
@@ -2249,6 +2379,91 @@ def test_fallback_provider_gets_a_fair_chance(tmp: Path):
     assert 'id="retryPrimary"' in ui and "/api/agent/retry-primary" in ui, \
         "кнопки «Вернуться на основного» нет в консоли"
     assert "/api/agent/retry-primary" in srv, "сервер не знает такого пути"
+
+
+def _js_function(ui: str, head: str) -> str:
+    """Тело функции верхнего уровня из index.html: до первой закрывающей скобки в нулевом столбце."""
+    start = ui.index(head)
+    return ui[start:ui.index("\n}\n", start)]
+
+
+@test
+def test_project_settings_page_draws_every_block(tmp: Path):
+    """«Настройки проекта» дорисовываются до конца: MCP, конфиг, агент с ролями, виды.
+
+    Живая жалоба: «модели и роли LLM и MCP выводились на странице настройки проекта сразу
+    после разделения, потом пропали». Блок MCP обходил серверы как массив, а сервер отдаёт
+    их объектом «имя → настройка», как в самом mcp.json. У объекта нет forEach: исключение
+    обрывало отрисовку, и всё ниже — полный текст конфига, карточка агента с моделями по
+    ролям, виды артефактов — молча не появлялось. С экрана это читалось как «так задумано».
+    """
+    import re as _re
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    body = _js_function(ui, "async function renderProject(")
+    blocks = ['"MCP-серверы · "', '"aurora.config.yaml · полный текст"',
+              'renderAgentCard(box, "project")', "renderKinds(box)"]
+    for b in blocks:
+        assert b in body, f"на странице настроек проекта нет блока {b}"
+    where = [body.index(b) for b in blocks]
+    assert where == sorted(where), "блоки страницы настроек проекта переставлены"
+    assert "Object.entries(mcp.mcpServers" in body, \
+        "серверы MCP обходятся не как объект — страница оборвётся на первом же проекте"
+    # Тот же класс ошибки в любом месте панели: метод массива у заглушки-объекта. Законно,
+    # когда скобку открыл Object.keys/values/entries, — тогда метод вызывается у массива.
+    stub = []
+    for m in _re.finditer(r"\|\|\s*\{\}\s*\)\s*\.(?:forEach|map|filter|some|every|reduce|find)\(", ui):
+        depth, i = 0, m.start()
+        while i > 0:
+            i -= 1
+            if ui[i] == ")":
+                depth += 1
+            elif ui[i] == "(":
+                if not depth:
+                    break
+                depth -= 1
+        if not _re.search(r"Object\.(?:keys|values|entries)\s*$", ui[max(0, i - 24):i]):
+            stub.append(ui[max(0, i - 24):m.end()].strip())
+    assert not stub, f"метод массива у объекта-заглушки оборвёт отрисовку: {stub}"
+
+    card = _js_function(ui, "async function renderAgentCard(")
+    assert '["worker","planner","critic","qa"]' in card, "в карточке агента нет моделей по ролям"
+    # падение отрисовки обязано выйти на экран, а не прятаться в консоли
+    assert 'addEventListener("unhandledrejection"' in ui and 'addEventListener("error"' in ui, \
+        "исключение на странице снова пройдёт молча"
+
+    root = make_project(tmp)
+    a = ck.agent_state(str(root))
+    assert a.get("target", "").endswith(".env.aurora.local") and "own" in a and "mcp" in a, \
+        f"карточке агента проекта нечего показать: {sorted(a)}"
+
+
+@test
+def test_health_lands_on_the_project_it_was_counted_for(tmp: Path):
+    """Замечания проекта показываются под его именем, а не под именем выбранного позже.
+
+    Живая жалоба: «кокпит пишет, что в проекте нет .env.aurora.local — куда он потерялся?
+    Его потеря — проблема». Файл лежал на месте с июля; замечание принадлежало соседнему
+    проекту-стенду, у которого файла действительно нет. Здоровье считается секундами,
+    человек успевает сменить проект, и ответ, пришедший позже, ложился в текущий.
+    """
+    import re as _re
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+    root = make_project(tmp)
+    assert ck.health(str(root)).get("project") == str(root), \
+        "ответ здоровья не называет свой проект — странице не по чему отличить чужой"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    helper = _js_function(ui, "function takeHealth(")
+    assert "S.project.path === p.path" in helper, "помощник не сверяет, выбран ли ещё проект"
+    rest = ui.replace(helper, "")
+    raw = _re.findall(r"S\.health\s*=\s*(?!null\b)[\w.]+", rest)
+    assert not raw, f"здоровье присваивается мимо takeHealth — вернётся подпись чужим именем: {raw}"
+    assert "S.health.project !== S.project.path" in _js_function(ui, "function renderHealth("), \
+        "renderHealth рисует ответ чужого проекта"
 
 
 @test
@@ -2538,6 +2753,63 @@ def test_trust_is_computed_from_task_status(tmp: Path):
     # понижение не стирает знание, а записывает причину в подвал
     got = U.note_downgrade("тело карточки\n", "knowledge", "draft", "задача вернулась")
     assert "тело карточки" in got and "класс изменён" in got and U.FOOTER in got
+
+
+@test
+def test_trust_leaves_placeholders_alone(tmp: Path):
+    """Заготовке класс доверия не положен, и её статус `kb:trust` не переписывает.
+
+    Заготовка шла общим путём: источников нет — «unknown» — `draft`. Статус `placeholder`
+    переписывался на `draft` каждым прогоном, пустышка держалась на одном теге, а его снимал
+    ремонт. На живом проекте так 571 заготовка из 632 числилась черновиком и уходила в поиск
+    и в долю доверия как знание, которого в ней нет.
+    """
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text((cfg.read_text(encoding="utf-8") if cfg.exists() else "")
+                   + "\ntrust_statuses: [Закрыто]\n", encoding="utf-8")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    card(root, "Concepts/Пустышка.md", status="placeholder", tags="[заготовка]",
+         body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._")
+    card(root, "Concepts/Знание.md", status="draft", kind="knowledge",
+         sources='\n  - "Raw/contract/ГК.md"', body="Знание — положение договора.")
+
+    run("kb_trust.py", "--apply", cwd=root)
+    stub = (root / "AuroraKnowledgeDB/Concepts/Пустышка.md").read_text(encoding="utf-8")
+    real = (root / "AuroraKnowledgeDB/Concepts/Знание.md").read_text(encoding="utf-8")
+    assert "status: placeholder" in stub, f"kb:trust переписал статус заготовки:\n{stub[:300]}"
+    assert "trust:" not in stub, "заготовке назначен класс доверия — доверять в ней нечему"
+    assert "status: knowledge" in real, \
+        "знание из Raw/ перестало доверяться — правка задела соседей"
+
+
+@test
+def test_filling_a_placeholder_by_extraction_clears_both_marks(tmp: Path):
+    """Вынос, наполнивший пустышку, снимает оба признака и приносит источник донора.
+
+    При наполнении ставился `status: draft`, а тег `заготовка` оставался — и `is_placeholder`
+    по тегу продолжал считать карточку пустышкой: вне поиска и вне доли доверия, хотя
+    определение в ней уже лежит. На живом проекте так стояли 8 карточек терминов.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    AC = importlib.import_module("aurora_common")
+
+    root = make_project(tmp)
+    card(root, "Concepts/ТК.md", status="placeholder", tags="[заготовка]", kind="knowledge",
+         body="_Заготовка: ссылка на это понятие уже есть, знания пока нет._")
+    path = R.place_definition(str(root), "ТК", "ТК — zip-архив с вложенными документами.",
+                              "Модель-контейнера-документов",
+                              donor_sources=["Sources/Confluence/Контейнер.md"])
+    text = open(path, encoding="utf-8").read()
+    assert not AC.is_placeholder(AC.frontmatter(text), text), \
+        f"наполненная выносом карточка осталась пустышкой:\n{text[:300]}"
+    assert card_srcs(text) == ["Sources/Confluence/Контейнер.md"], \
+        f"источник донора не лёг в наполненную карточку: {card_srcs(text)}"
+    assert "zip-архив с вложенными документами" in text, "определение не перенесено"
 
 
 
@@ -4473,6 +4745,43 @@ def test_cards_are_distilled_side_by_side(tmp: Path):
 
 
 @test
+def test_distill_does_not_write_theses_for_placeholders(tmp: Path):
+    """Заготовке тезис не пишется: писать не из чего, а пересказ пустоты её маскирует.
+
+    `agent:distill` единственный из шагов агента брал пустышку: модель пересказывала «знаний
+    пока нет» своими словами, служебная строка `_Заготовка:` исчезала, вызов был оплачен
+    впустую, а ремонт затем принимал пересказ за знание и снимал отметку. На живом проекте
+    все 159 пустышек, ушедших в поиск как знание, прошли через этот шаг.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    kb = tmp / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True)
+    (kb / "Знание.md").write_text(
+        '---\ntitle: "Знание"\nkind: knowledge\nstatus: draft\n---\n\nтело знания\n',
+        encoding="utf-8")
+    (kb / "Пустышка.md").write_text(
+        '---\ntitle: "Пустышка"\nkind: knowledge\nstatus: placeholder\ntags: [заготовка]\n'
+        '---\n\n_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n\n'
+        '## Упоминается в\n\n- [[Знание]]\n', encoding="utf-8")
+    asked = []
+
+    def spy(cfg, role, messages, **kw):
+        asked.append(" ".join(m.get("content") for m in messages
+                              if isinstance(m.get("content"), str)))
+        return {"ok": True, "text": "ТЕЗИС: тезис\nОПОРА: цитата", "backend": 1,
+                "model": "тест", "seconds": 0.1, "tps": 10, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    res = R.run_distill(cfg, str(tmp), apply=False, limit=10, momus=False, call=spy)
+    assert len(res["steps"]) == 1, f"тезис писался заготовке: шагов {len(res['steps'])}"
+    assert not any("_Заготовка:" in a for a in asked), \
+        "модели отдали пустышку — вызов оплачен впустую, а пересказ снимет с неё отметку"
+
+
+@test
 def test_reset_keeps_only_what_it_cannot_identify(tmp: Path):
     """«Нет источника» ≠ «писал человек». Оставляем только НЕОПОЗНАННОЕ — и говорим об этом.
 
@@ -4784,6 +5093,151 @@ def test_panel_asks_only_endpoints_the_server_has(tmp: Path):
              if m.group(1).startswith("/api")}
     missing = sorted(asked - known)
     assert not missing, f"страница просит пути, которых у сервера нет: {missing}"
+
+
+@test
+def test_bridge_knows_what_runs_and_what_stopped(tmp: Path):
+    """Сервер называет по проекту, что идёт и что встало: задания, замок агента, маршрут.
+
+    Проектов на машине несколько, а работа была видна только в «Консоли» выбранного:
+    человек не понимал, для какого проекта обновление идёт, а для какого остановилось.
+    Отметка на карточке Мостика строится из трёх следов, и каждый проверяем по отдельности:
+    мёртвый pid в замке — это оборванный прогон, а не идущий.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    quiet, busy = tmp / "quiet", tmp / "busy"
+    for d in (quiet, busy):
+        (d / ".opencode/state").mkdir(parents=True)
+    assert ck.project_activity(str(quiet)) == {"running": [], "agent": None, "route": None}, \
+        "у тихого проекта нашлась работа, которой нет"
+
+    ck.JOBS.clear()
+    try:
+        ck.JOBS["a"] = {"id": "a", "cmd": "agent:build", "args": ["--apply"], "project": str(busy),
+                        "out": [], "started": 100.0, "done": False, "rc": None}
+        ck.JOBS["b"] = {"id": "b", "cmd": "kb:lint", "args": [], "project": str(busy),
+                        "out": [], "started": 50.0, "done": True, "rc": 0}
+        ck.JOBS["c"] = {"id": "c", "cmd": "sync:jira", "args": [], "project": str(quiet),
+                        "out": [], "started": 90.0, "done": False, "rc": None}
+        act = ck.project_activity(str(busy))
+    finally:
+        ck.JOBS.clear()
+    assert [j["cmd"] for j in act["running"]] == ["agent:build"], \
+        f"в идущих не то: закончившееся или чужое задание — {act['running']}"
+
+    lock = busy / ".opencode/state/agent.lock"
+    lock.write_text(json.dumps({"pid": os.getpid(), "task": "agent:build", "since": "17:55:00"}),
+                    encoding="utf-8")
+    agent = ck.project_activity(str(busy))["agent"]
+    assert agent and agent["alive"] and agent["task"] == "agent:build", \
+        f"живой прогон агента вне панели не виден: {agent}"
+
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    lock.write_text(json.dumps({"pid": gone.pid, "task": "agent:distill", "since": "03:10:00"}),
+                    encoding="utf-8")
+    agent = ck.project_activity(str(busy))["agent"]
+    assert agent and not agent["alive"] and agent["task"] == "agent:distill", \
+        f"оборванный прогон выдан за идущий: {agent}"
+
+    lock.write_text("{порван", encoding="utf-8")
+    assert ck.project_activity(str(busy))["agent"] is None, "порванный замок уронил отметку"
+
+    (busy / ".opencode/state/last_route.json").write_text(json.dumps(
+        {"scId": "update", "runId": "r1", "title": "Обновить базу", "write": True,
+         "reason": "offline", "step": "agent:build", "attempts": 1,
+         "nextRetryAt": 1789401064942, "at": "2026-09-14T15:36:04.942Z"}), encoding="utf-8")
+    route = ck.project_activity(str(busy))["route"]
+    assert route and route["title"] == "Обновить базу" and route["reason"] == "offline" \
+        and route["step"] == "agent:build", f"остановленный маршрут не назван: {route}"
+
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'p["activity"] = project_activity(p["path"])' in srv, \
+        "Мостик рисуется без отметок до первого опроса"
+    assert srv.count('"projects": find_projects(self.server.roots)') == 0, \
+        "/api/state снова обходит папки проектов в ответе — и, может быть, дважды"
+
+
+@test
+def test_bridge_card_says_what_runs_and_what_stopped(tmp: Path):
+    """Карточка проекта на Мостике отмечает идущую, остановленную и оборванную работу.
+
+    Функция отметки чистая — от ответа сервера и часов, — поэтому выполняем её в node на
+    живых случаях: два задания панели, агент из терминала, оборванный замок, маршрут,
+    остановленный человеком и ждущий сеть.
+    """
+    import shutil
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    start = ui.index("function activityChips(")
+    depth, i = 0, ui.index("{", start)
+    while True:
+        depth += {"{": 1, "}": -1}.get(ui[i], 0)
+        if depth == 0:
+            break
+        i += 1
+    func = ui[start:i + 1]
+    assert "drawActivity();" in ui and "/api/activity" in ui, \
+        "отметка посчитана, но на карточку не выводится или не обновляется"
+
+    engine = shutil.which("node") or shutil.which("deno")
+    assert engine, "нет ни node, ни deno — отметку карточки проверить нечем"
+    harness = func + """
+const now = Date.parse("2026-09-14T18:00:00Z");
+const at = now / 1000;
+const route = {title: "Обновить базу", step: "agent:build", reason: "stopped",
+               at: "2026-09-14T15:36:04Z"};
+console.log(JSON.stringify({
+  none: activityChips(null, now),
+  quiet: activityChips({running: [], agent: null, route: null}, now),
+  running: activityChips({running: [{cmd: "agent:build", args: ["--apply"], started: at - 600},
+                                    {cmd: "kb:lint", args: [], started: at - 60}],
+                          agent: {task: "agent:build", pid: 1, alive: true}, route}, now),
+  outside: activityChips({running: [], agent: {task: "agent:build", pid: 42, since: "17:55:00",
+                                                alive: true, at}, route: null}, now),
+  broken: activityChips({running: [], agent: {task: "agent:build", pid: 42, since: "17:55:00",
+                                               alive: false, at: at - 3600}, route: null}, now),
+  stopped: activityChips({running: [], agent: {task: "agent:build", pid: 42, alive: false, at},
+                          route}, now),
+  waiting: activityChips({running: [], agent: null, route: {title: "Обновить базу",
+    step: "agent:build", reason: "offline", nextRetryAt: now + 600000}}, now),
+  gaveUp: activityChips({running: [], agent: null, route: {title: "Пересобрать базу с нуля",
+    step: 3, reason: "offline", nextRetryAt: now - 600000}}, now),
+}));
+"""
+    src = tmp / "chips.js"
+    src.write_text(harness, encoding="utf-8")
+    cmd = [engine, str(src)] if engine.endswith("node") else [engine, "run", "--quiet", str(src)]
+    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), \
+        f"функция отметки не выполнилась:\n{(cp.stderr or cp.stdout)[:800]}"
+    r = json.loads(cp.stdout.strip().splitlines()[-1])
+
+    assert r["none"] == [] and r["quiet"] == [], f"тихому проекту нарисована отметка: {r['quiet']}"
+    [run_] = r["running"]
+    assert "live" in run_["cls"] and "идёт: agent:build" in run_["text"] \
+        and "ещё 1" in run_["text"] and "10 мин" in run_["text"], \
+        f"идущие задания панели не названы: {run_}"
+    assert "Обновить базу" in run_["title"], "за идущим заданием потерян остановленный маршрут"
+    [out] = r["outside"]
+    assert "live" in out["cls"] and "вне панели" in out["text"], \
+        f"прогон агента из терминала не отмечен: {out}"
+    [br] = r["broken"]
+    assert br["cls"] == "bad" and "оборван: agent:build" in br["text"], \
+        f"оборванный прогон не отмечен: {br}"
+    [st] = r["stopped"]
+    assert st["cls"] == "warn" and "маршрут остановлен: «Обновить базу»" in st["text"], \
+        f"остановленный маршрут не отмечен: {st}"
+    assert "шаг agent:build" in st["title"] and "остановлен вами" in st["title"] \
+        and "оборвался" in st["title"], f"в подсказке нет шага, причины или замка: {st['title']}"
+    assert "маршрут ждёт сеть" in r["waiting"][0]["text"], \
+        f"маршрут, который повторит попытку сам, выдан за остановленный: {r['waiting']}"
+    [gu] = r["gaveUp"]
+    assert "маршрут остановлен" in gu["text"] and "нет сети" in gu["title"] \
+        and "шаг 3" not in gu["title"], f"маршрут без повтора назван неверно: {gu}"
 
 
 @test
@@ -6878,7 +7332,7 @@ def test_panel_admits_it_is_running_old_code(tmp: Path):
     ни разу: сервер клал признак рядом с `ui`, а панель читала его внутри `ui`.
     """
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
-    block = src[src.index('"ui": {'):src.index('"projects": find_projects')]
+    block = src[src.index('"ui": {'):src.index('"projects": projects,')]
     assert "stale_process" in block, \
         "признак «процесс старее файлов» лежит не там, где его читает панель"
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
@@ -8283,14 +8737,59 @@ def test_doctor_accepts_folders_declared_by_artifacts(tmp: Path):
     (root / "Своя-папка-вне-схемы").mkdir()
 
     ck.kinds_write(str(root), {"pr": {"title": "ПР", "template": "Templates/pr.md",
-                                      "out": "Deliverables/drafts"}})
-    assert (root / "Deliverables" / "drafts").is_dir()
+                                      "out": "Deliverables/opz"}})
+    assert (root / "Deliverables" / "opz").is_dir()
 
     out = run("aurora_doctor.py", cwd=root, expect_rc=None).stdout
-    assert "Deliverables/drafts" not in out, \
+    assert "Deliverables/opz" not in out, \
         "папка из реестра артефактов объявлена нарушением схемы"
     assert "Своя-папка-вне-схемы" in out, \
         "папка, которую никто не объявлял, перестала замечаться — проверка ослабла"
+
+
+@test
+def test_doctor_accepts_folders_the_project_declared(tmp: Path):
+    """Своя папка проекта, объявленная в конфиге, законна здесь — и только здесь.
+
+    У проекта бывает папка, которой нет у других: наследие прежней базы, вложения. Добавить
+    её в схему кита значит завести пустую такую же во всех проектах; объявление в
+    `aurora.config.yaml` делает её законной в одном проекте. Необъявленная папка при этом
+    ловится как прежде, а путь за пределы проекта объявлением не считается.
+    """
+    root = make_project(tmp)
+    media = root / "AuroraKnowledgeDB" / "media"
+    media.mkdir(parents=True, exist_ok=True)
+    (media / "Схема.png.md").write_text('---\ntitle: "Схема.png"\n---\n', encoding="utf-8")
+    (root / "AuroraKnowledgeDB" / "Необъявленная").mkdir()
+
+    def schema_errors() -> str:
+        out = run("aurora_doctor.py", cwd=root, expect_rc=None).stdout
+        return " ".join(l for l in out.splitlines() if "вне схемы движка" in l)
+
+    assert "AuroraKnowledgeDB/media" in schema_errors(), \
+        "необъявленная папка не замечена — проверка слепа ещё до объявления"
+
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8")
+                   + "\nextra_structure_dirs: [AuroraKnowledgeDB/media, ../за-пределами]\n",
+                   encoding="utf-8")
+    after = schema_errors()
+    assert "AuroraKnowledgeDB/media" not in after, \
+        f"папка, объявленная проектом, названа нарушением схемы: {after}"
+    assert "AuroraKnowledgeDB/Необъявленная" in after, \
+        "необъявленная папка перестала замечаться — объявление ослабило проверку целиком"
+
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    D = importlib.import_module("aurora_doctor")
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        declared = D.project_dirs()
+    finally:
+        os.chdir(cwd)
+    assert "AuroraKnowledgeDB/media" in declared and not any(".." in p for p in declared), \
+        f"путь за пределы проекта принят объявлением: {declared}"
 
 
 @test
@@ -8313,9 +8812,9 @@ def test_artifact_kinds_are_declared_and_editable(tmp: Path):
 
     r = ck.kinds_write(str(root), {
         "pr": {"title": "Проектное решение", "template": "Templates/pr.md",
-               "out": "Deliverables/drafts"}})
+               "out": "Deliverables/work"}})
     assert r.get("ok"), r
-    assert (root / "Deliverables" / "drafts").is_dir(), \
+    assert (root / "Deliverables" / "work").is_dir(), \
         "папка результата не создана — объявили и не найдём в момент записи"
 
     kinds = MK.read_kinds(str(root))
@@ -8324,7 +8823,7 @@ def test_artifact_kinds_are_declared_and_editable(tmp: Path):
 
     # несуществующий шаблон объявить можно, но команда об этом скажет
     ck.kinds_write(str(root), {"pr": {"title": "П", "template": "Templates/нет.md",
-                                      "out": "Deliverables/drafts"}})
+                                      "out": "Deliverables/work"}})
     bad = MK.check(str(root), MK.read_kinds(str(root)))
     assert bad and "шаблона нет" in bad[0][1], bad
 
@@ -8352,7 +8851,8 @@ def test_embeddings_are_configured_separately(tmp: Path):
 
     same = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://gateway/v1",
                             "AURORA_AGENT_BACKEND_1_KEY": "k"})
-    assert same["embed"] == {"url": "", "key": "", "model": "bge-m3"}, same["embed"]
+    assert same["embed"] == {"url": "", "key": "", "model": "bge-m3",
+                             "fallback": False}, same["embed"]
     assert E.endpoints(same)[0]["url"] == "http://gateway/v1", "не взято кольцо агента"
 
     own = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://gateway/v1",
@@ -8370,6 +8870,66 @@ def test_embeddings_are_configured_separately(tmp: Path):
         "панель приняла постороннюю переменную"
     assert not (ck.agent_write_env(str(tmp), {"AURORA_EMBED_MODEL": "e5-large"}).get("error")), \
         "панель не приняла настройку эмбеддингов"
+
+
+@test
+def test_embedding_ring_is_independent_from_the_chat_ring(tmp: Path):
+    """Чат и вектора — на разных шлюзах, и номера шлюзов идут с пропусками.
+
+    Живая просьба: «llm работает на backend 2, embedding на backend 4». Прежде это было
+    невозможно дважды. Кольцо векторов строилось из чатового: задан свой адрес — ровно
+    один адрес без запасного, не задан — всё кольцо чата, включая шлюзы, которые векторов
+    не считают. А разбор настроек шёл циклом «пока есть следующий номер» и обрывался на
+    первой дыре: объявленный №4 без №3 не читался вовсе, и человек видел бы настроенный
+    шлюз, который нигде не используется, без единой подсказки почему.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    AG = importlib.import_module("agent_core")
+    E = importlib.import_module("kb_embed")
+
+    env = {"AURORA_AGENT_BACKEND_2_URL": "http://chat2/v1",
+           "AURORA_AGENT_BACKEND_2_MODEL": "27b",
+           "AURORA_AGENT_BACKEND_4_URL": "http://vec4/v1",
+           "AURORA_AGENT_BACKEND_4_EMBED_MODEL": "bge-m3",
+           "AURORA_AGENT_BACKEND_5_URL": "http://vec5/v1",
+           "AURORA_AGENT_BACKEND_5_EMBED_MODEL": "e5-large",
+           "AURORA_EMBED_MODEL": "bge-m3"}
+    cfg = AG.parse_config(env)
+    assert [b["n"] for b in cfg["backends"]] == [2, 4, 5], \
+        f"пропуск в нумерации потерял шлюз: {[b['n'] for b in cfg['backends']]}"
+    assert AG.pool(cfg) == [2] and [b["n"] for b in AG.ring_order(cfg)] == [2], \
+        "векторный шлюз взят в кольцо чата — вызов уйдёт на сервер без чат-модели"
+    assert [r["n"] for r in E.endpoints(cfg)] == [4], \
+        "кольцо векторов строится не самостоятельно"
+
+    on = AG.parse_config({**env, "AURORA_EMBED_FALLBACK": "1"})
+    assert [r["n"] for r in E.endpoints(on)] == [4], \
+        "шлюз с ДРУГОЙ моделью взят в кольцо: его вектора в общий индекс не лягут"
+    both = AG.parse_config({**env, "AURORA_EMBED_FALLBACK": "1",
+                            "AURORA_AGENT_BACKEND_6_URL": "http://vec6/v1",
+                            "AURORA_AGENT_BACKEND_6_EMBED_MODEL": "bge-m3",
+                            "AURORA_EMBED_URL": "http://tei/v1"})
+    assert [r["url"] for r in E.endpoints(both)] == \
+        ["http://tei/v1", "http://vec4/v1", "http://vec6/v1"], E.endpoints(both)
+
+    # Вектор чужой размерности не ложится в индекс молча: поиск после такой подмены не
+    # падает, а перестаёт находить — и чинить пошли бы базу, а не настройку.
+    saved_index, saved_http = E.load_index, AG.http_json
+    try:
+        E.load_index = lambda: {"dim": 4, "cards": {"a": {}}, "model": "bge-m3"}
+        AG.http_json = lambda url, payload, key, timeout: (
+            200, {"data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}]}, "", 0.1)
+        assert E.embed(["текст"], on, "bge-m3") == [], \
+            "вектор другой размерности принят — индекс испорчен молча"
+    finally:
+        E.load_index, AG.http_json = saved_index, saved_http
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "AURORA_EMBED_FALLBACK" in ui and 'pre+"EMBED_MODEL"' in ui, \
+        "в панели нечем объявить модель векторов и запасной путь"
+    assert "backendBlock(1), backendBlock(2), backendBlock(3)" not in ui, \
+        "блоки шлюзов снова жёстко три — четвёртый негде объявить"
 
 
 @test
@@ -9616,6 +10176,38 @@ def test_kb_reset_keep_handmade_spares_what_has_no_source(tmp: Path):
     # снести и невосстановимое можно, но только по явному ключу
     run("kb_reset.py", "--drop-unknown", "--apply", "--allow-dirty", cwd=root)
     assert not (kb / "Decisions/DR-001.md").exists(), "--drop-unknown не снёс журнал решений"
+
+
+@test
+def test_reset_keeps_conversations_with_the_base(tmp: Path):
+    """Сброс базы не трогает разговоры «Спросить» ни в каком режиме.
+
+    Живой случай: пересборка с нуля снесла девять разговоров за месяц. Сброс считал всё
+    в `meta/` служебным — «соберётся заново», — а разговор из источников не выводится:
+    это журнал вопросов аналитика, и после сброса вкладка открылась пустой.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    talk = kb / "meta/ask/2026-08-19_1803-что-такое-проект.md"
+    talk.parent.mkdir(parents=True, exist_ok=True)
+    talk.write_text('---\ntype: ask-thread\ntitle: "Что такое проект"\n'
+                    'created: 2026-08-19 18:05\nmode: evaluate\n---\n\n'
+                    '### Вопрос · 2026-08-19 18:05\n\nЧто это?\n\n### Ответ\n\nСистема.\n',
+                    encoding="utf-8")
+    (kb / "meta/manifest.json").write_text('{"sources": {}}', encoding="utf-8")
+
+    dry = run("kb_reset.py", cwd=root)
+    spared = dry.stdout.split("Не тронутся:")[-1].split("\n")[0]
+    assert "meta/ask/" in spared, f"сброс не говорит, что разговоры останутся:\n{dry.stdout[:600]}"
+
+    run("kb_reset.py", "--apply", "--allow-dirty", cwd=root)
+    assert talk.exists(), "сброс по умолчанию снёс разговор с базой — пересборка его не вернёт"
+    assert not (kb / "meta/manifest.json").exists(), \
+        "учёт извлечения остался — kb:build сочтёт источники разобранными"
+
+    run("kb_reset.py", "--drop-unknown", "--apply", "--allow-dirty", cwd=root)
+    assert talk.exists(), ("--drop-unknown снёс разговор: флаг просит снести карточки "
+                           "неизвестного происхождения, а не журнал вопросов")
 
 
 @test
@@ -11088,6 +11680,120 @@ def test_office_ingest_converts_and_is_idempotent(tmp: Path):
     cp2 = run("office_ingest.py", cwd=root)
     assert "пропущено (не изменились): 1" in cp2.stdout, "повторный запуск переделывает работу"
 
+
+@test
+def test_scan_without_text_layer_is_not_passed_off_as_converted(tmp: Path):
+    """Скан без текстового слоя — это НЕ разобранный файл, и он должен дойти до распознавания.
+
+    Регрессия с живого проекта: PDF на 2,8 МБ (16 страниц сканов) давал транскрипт на
+    54 знака. Встроенный конвертер собирал строку из маркеров `<!-- стр. N -->`, проверял
+    её через `text.strip()` — маркеры непустые! — и объявлял конвертацию удавшейся. Файл
+    получал отметку в шапке, переставал быть кандидатом на распознавание, а в базу шёл
+    пустой документ. Судить надо по тексту СТРАНИЦ, а не по склейке с разметкой.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    OI = importlib.import_module("office_ingest")
+
+    assert OI._pages_or_none(["", "   ", "\n"]) is None, \
+        "страницы без текста склеились в «транскрипт» — скан снова выдаётся за разобранный"
+    got = OI._pages_or_none(["", "Статья 1. Текст.", ""])
+    assert got and "Статья 1" in got and "<!-- стр. 2 -->" in got, \
+        f"страница с текстом потерялась или потеряла нумерацию: {got!r}"
+
+    names = [n for n, _fn in OI.CONVERTERS]
+    assert names.index("ocr") > names.index("builtin-pdf"), \
+        "распознавание стоит раньше парсеров — вызовы модели там, где текст лежит в файле"
+    assert names.index("ocr") < names.index("plain"), "распознавание должно успевать до plain"
+
+    # `--no-ocr` и оффлайн: каскад обязан честно отказать, а не выдумать пустой транскрипт
+    scan = tmp / "скан.pdf"
+    scan.write_bytes(b"%PDF-1.4\n% not a real pdf\n")
+    text, conv = OI.convert(str(scan), "auto", use_ocr=False)
+    assert text is None and conv is None, f"нечитаемый PDF выдан за разобранный: {conv!r}"
+
+
+@test
+def test_ocr_ring_is_separate_and_never_falls_back_to_chat(tmp: Path):
+    """Кольцо распознавания — третье, независимое: не чат и не вектора.
+
+    Зрячая модель, чат-модель и модель векторов живут на разных шлюзах. Главное отличие
+    от эмбеддингов: в кольцо чата распознавание НЕ проваливается. Текстовая модель,
+    получив картинку, не отказывается — она отвечает связной выдумкой, и выдумка в
+    транскрипте первоисточника хуже пустого файла.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from agent_core import embed_ring, ocr_ring, parse_config, pool
+
+    cfg = parse_config({
+        "AURORA_AGENT_BACKEND_1_URL": "http://chat/v1", "AURORA_AGENT_BACKEND_1_MODEL": "qwen",
+        "AURORA_AGENT_BACKEND_4_URL": "http://vision/v1",
+        "AURORA_AGENT_BACKEND_4_OCR_MODEL": "glm-ocr",
+        "AURORA_AGENT_BACKEND_5_URL": "http://vec/v1",
+        "AURORA_AGENT_BACKEND_5_EMBED_MODEL": "bge-m3",
+        "AURORA_OCR_MODEL": "glm-ocr", "AURORA_EMBED_MODEL": "bge-m3",
+    })
+    assert pool(cfg) == [1], f"зрячий и векторный шлюзы попали в чатовое кольцо: {pool(cfg)}"
+    assert [r["n"] for r in ocr_ring(cfg)] == [4], \
+        f"кольцо распознавания собралось не по объявлению OCR_MODEL: {ocr_ring(cfg)}"
+    assert [r["n"] for r in embed_ring(cfg)] == [5], "кольца векторов и распознавания смешались"
+    assert next(b for b in cfg["backends"] if b["n"] == 4)["chat"] is False, \
+        "шлюз, объявивший только зрение, считается чатовым — вызов уйдёт на сервер без чат-модели"
+
+    # Модель не названа — путь выключен. Умолчания тут быть не может: угаданное имя даёт
+    # не отказ, а выдумку в транскрипте.
+    off = parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://chat/v1",
+                        "AURORA_AGENT_BACKEND_1_MODEL": "qwen"})
+    assert ocr_ring(off) == [], "распознавание включилось само и пошло в чатовый шлюз"
+
+    # Панель показывает и пишет ключи распознавания. Выпуск 1.104.0 ушёл без этого: кольцо
+    # существовало только в файле настроек, панель о нём не знала и честно писала «отстала
+    # от ядра». Человек не видит, что путь выключен, и ищет, почему скан остался пустым.
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for key in ('pre+"OCR_MODEL"', 'pre+"OCR_URL"', '"AURORA_OCR_MODEL"',
+                '"AURORA_OCR_FALLBACK"', '"AURORA_OCR_DPI"', '"AURORA_OCR_MAX_PAGES"'):
+        assert key in ui, f"панель не пишет {key} — кольцо распознавания не настроить из формы"
+    assert "выключено: модель не названа" in ui, \
+        "форма показывает пустое кольцо распознавания как настроенное"
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"ocr_model"' in srv and '"ocr":' in srv, \
+        "сервер панели не отдаёт настройки распознавания — форме нечего показать"
+    assert 'hasattr(AG, "ocr_ring")' in srv, \
+        "проект на движке до 1.104.0 уронит весь экран настроек на отсутствующем ocr_ring"
+
+
+@test
+def test_page_wrapped_in_form_is_not_erased(tmp: Path):
+    """Страница внутри `<form>` — это документ, а не форма ввода.
+
+    Регрессия с nalog.gov.ru: на ASP.NET WebForms весь документ лежит внутри одного
+    `<form runat="server">`. Правило «выбросить form» стирало страницу до нуля, и движок
+    сообщал «нет beautifulsoup4/markdownify» — то есть врал о причине: библиотеки стояли,
+    а человек шёл ставить их заново. Органы управления убираем, текст оставляем.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+
+    html = ("<html><head><title>Закон</title></head><body>"
+            "<form id='MainForm' action='./'>"
+            "<input type='text' name='q'><button>Найти</button>"
+            "<h1>Национальная система</h1><p>Обеспечительный платёж вносится заранее.</p>"
+            "<a href='https://x.example/doc'>Документ</a>"
+            "</form></body></html>")
+    title, body, links, _assets = W.to_markdown(html, "https://x.example/page")
+    assert title == "Закон", f"заголовок потерян: {title!r}"
+    assert "Обеспечительный платёж вносится заранее" in body, \
+        f"текст внутри формы стёрт — страница приходит пустой: {body!r}"
+    assert "Найти" not in body, "кнопка формы попала в документ как текст"
+    assert "https://x.example/doc" in links, "ссылки внутри формы потеряны для обхода"
+
+    assert hasattr(W, "HAVE_PARSER"), "нет признака «библиотеки разбора на месте»"
+    src = (SCRIPTS / "web_export.py").read_text(encoding="utf-8")
+    assert "страница пришла без текста" in src, \
+        "пустая страница и отсутствующая библиотека снова описываются одним сообщением"
+
+
 @test
 def test_build_parallel_executes_concurrently(tmp: Path):
     """T4: run_build при «одновременно» = 2 и пуле из 2 — два источника сразу.
@@ -12008,6 +12714,97 @@ def test_a_filled_placeholder_stops_being_one(tmp: Path):
 
 
 @test
+def test_a_retold_placeholder_stays_one_and_a_lost_mark_returns(tmp: Path):
+    """Пересказ пустоты — не знание: отметка не снимается, а потерянная возвращается.
+
+    Живой проект, 1.104.0. `agent:distill` писал пустышке «тезис» — пересказывал её
+    служебные строки: «Карточка упоминается в [[X]].», «Раздел источника: «Упоминается в».»
+    Правило наполнения отсекало `- [[X]]`, но не пересказ, и четыре таких строки перевешивали
+    порог: 62 пустышки за один прогон ремонта ушли в поиск как знание.
+
+    Обратный ремонт: карточка без источника, где кроме слов о пустоте ничего нет, получает
+    отметку назад. Короткое настоящее определение и карточка с источником остаются знанием.
+    Вынесенная карточка, заведённая с `sources: []`, получает источники донора.
+    """
+    root = make_project(tmp)
+    retold = ("{name} — заготовка: ссылка на это понятие уже есть, знаний пока нет.\n"
+              "В источнике есть: «Наполните её при следующем разборе источника — ссылки "
+              "переписывать не придётся».\n"
+              "Раздел источника: «Упоминается в».\n"
+              "Карточка упоминается в [[Карточка-заказа.-Основные-элементы]].\n"
+              "Карточка упоминается в [[Карточка-заказа.-Блок-Доставка]].\n"
+              "Карточка упоминается в [[Карточка-заказа.-Поле-номер-версии]].\n"
+              "Карточка упоминается в [[ER-Sta-Accepted]].")
+    card(root, "Concepts/Пересказанная.md", status="placeholder", tags="[заготовка]",
+         kind="knowledge", body=retold.format(name="Пересказанная"))
+    card(root, "Concepts/Потерявшая.md", status="draft", tags="[]", kind="knowledge",
+         body=retold.format(name="Потерявшая"))
+    card(root, "Concepts/ТК.md", status="draft", kind="knowledge",
+         body="ТК — zip-архив, содержащий вложенные документы.")
+    card(root, "Concepts/С-источником.md", status="draft", kind="knowledge",
+         sources='\n  - "Sources/Confluence/Стр.md"', body=retold.format(name="С-источником"))
+    card(root, "Concepts/Донор.md", status="draft", kind="knowledge",
+         sources='\n  - "Sources/Confluence/Алгоритм.md"',
+         body="Донор — алгоритм расчёта, из которого вынесено определение [[Вынесенная]].")
+    card(root, "Concepts/Вынесенная.md", status="draft", kind="knowledge", sources="[]",
+         body="Вынесенная — единственная версия с номером регистрации.\n\n"
+              "_Перенесено из [[Донор]]._")
+    # Формулировки служебной речи, снятые с живого проекта: фильтр по фразам пропускал их все.
+    card(root, "Concepts/Потерявшая-2.md", status="draft", tags="[]", kind="knowledge",
+         body="Её нужно заполнить при следующем разборе источника, и ссылки переписывать "
+              "не придётся.\nПонятие упоминается в [[Первая-карточка]].\n"
+              "Ссылка на это понятие уже есть.\nНазвано в карточках:\n"
+              "- Отправка-начислений-и-сторно-по-счёту-в-учётную-систему\n"
+              "[[Вторая-карточка]]\nРасшифровки база пока не знает.\n"
+              "Знания о предмете пока нет.")
+    # «Упоминается в» внутри знания — знание: в строке есть предмет.
+    card(root, "Concepts/ГОСТ-термин.md", status="placeholder", tags="[заготовка]",
+         kind="knowledge",
+         body="Термин упоминается в ГОСТ Р 1.2-2016 и означает порядок пересчёта сумм по "
+              "курсу валюты договора на дату регистрации документа в системе.")
+    # Пустышка, наполненная выносом: одна фраза короче порога, но это знание.
+    card(root, "Concepts/Термин-из-выноса.md", status="placeholder", tags="[заготовка]",
+         kind="knowledge",
+         body="Термин-из-выноса — zip-архив с документами.\n\n_Перенесено из [[Донор]]._")
+    # Пустышка говорит о себе своим именем и называет соседей без скобок ссылки.
+    card(root, "Concepts/ER Acc ID.md", status="draft", tags="[]", kind="knowledge",
+         body="ER Acc ID — понятие, на которое уже есть ссылка, но о котором пока нет знаний.\n"
+              "ER Acc ID упоминается в ALG-3.18_Получение_остатка_по_клиентам_из_учётной_системы.\n"
+              "Ссылка на это понятие уже существует.\n"
+              "Следующее наполнение предусмотрено при следующем разборе источника.\n"
+              "Далее в перечне: Проверка-установки-криптопровайдера.\n"
+              "Упоминается в SPR-031 ([[SPR-031-Справочник-единиц]]).")
+
+    run("kb_fix.py", "--frontmatter", "--apply", "--allow-dirty", cwd=root)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    read = lambda n: (kb / f"{n}.md").read_text(encoding="utf-8")  # noqa: E731
+
+    assert "status: placeholder" in read("Пересказанная"), \
+        f"пересказ пустоты принят за знание — пустышка ушла в поиск:\n{read('Пересказанная')[:400]}"
+    assert "status: placeholder" in read("Потерявшая"), \
+        f"пустышке, потерявшей отметку, она не вернулась:\n{read('Потерявшая')[:400]}"
+    assert "status: draft" in read("ТК"), "короткое настоящее определение объявлено пустышкой"
+    assert "status: draft" in read("С-источником"), \
+        "карточку с источником объявили пустышкой — знание из документа ушло из поиска"
+    assert card_srcs(read("Вынесенная")) == ["Sources/Confluence/Алгоритм.md"], \
+        f"вынесенной карточке не вернулся источник донора: {card_srcs(read('Вынесенная'))}"
+    body_before = read("Вынесенная").split("\n---", 1)[1]
+    assert "единственная версия с номером регистрации" in body_before, \
+        "возврат источника тронул тело карточки"
+    assert "status: placeholder" in read("Потерявшая-2"), \
+        f"служебная речь другими словами принята за знание:\n{read('Потерявшая-2')[:500]}"
+    assert "status: draft" in read("ГОСТ-термин"), \
+        "знание со словами «упоминается в» объявлено служебной речью — оно ушло из поиска"
+    moved = read("Термин-из-выноса")
+    assert "status: draft" in moved and "tags: [заготовка]" not in moved, \
+        f"пустышка, наполненная выносом, осталась пустышкой:\n{moved[:300]}"
+    assert card_srcs(moved) == ["Sources/Confluence/Алгоритм.md"], \
+        f"наполненной выносом карточке не вернулся источник донора: {card_srcs(moved)}"
+    assert "status: placeholder" in read("ER Acc ID"), \
+        f"своё имя и неоформленные ссылки приняты за знание:\n{read('ER Acc ID')[:500]}"
+
+
+@test
 def test_the_panel_recognises_the_ratchet_by_its_escape(_t):
     """Панель узнаёт храповик по названию его обхода, а не по тексту отказа.
 
@@ -12655,6 +13452,124 @@ def test_web_pages_are_their_own_source_with_their_own_trust(tmp: Path):
         assert cls == "raw", "папка в доверенных не сработала там, где ссылка промолчала"
     finally:
         os.chdir(cur)
+
+
+@test
+def test_an_er_entity_is_named_by_its_code_and_found_by_its_label(tmp: Path):
+    """Код ER — адрес в модели данных и он же имя; подпись сущности — синоним (Т-73, Т-74).
+
+    ER.Сущность.Поле — как «таблица.поле» в SQL: ER.AB.KPP и ER.ACT.KPP разные поля, и
+    укоротить путь до последнего сегмента значит описать одноимённые поля всех таблиц как
+    одно. Сущность с подписью (ER.AS.PDFD-Уведомление-…) называется кодом, подпись уходит в
+    синонимы — обратно правилу для кодов документов, где код номер бумаги.
+
+    Одинаковый код — одна сущность по определению. На живой базе один код приходил с двумя
+    подписями, а четыре кода совпали с уже заведёнными карточками: отказ «карточка уже
+    есть» терял бы знание, а поиск с поправкой на опечатку слил бы ER.AS.CCS и ER.AS.CCr —
+    разные справочники.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    BP = importlib.import_module("build_plan")
+
+    assert BP.split_er_label("ER.AS.PDFD-Уведомление-о-статусе-PDF-документа") == \
+        ("ER.AS.PDFD", ["Уведомление о статусе PDF документа"])
+    assert BP.split_er_label("ER.AS.Acc.OGRN") == ("ER.AS.Acc.OGRN", []), "голый путь поля изменён"
+    assert BP.split_er_label("ER.AnalyticalBalanceLog-Core-ЖурналБаланса") == \
+        ("ER.AnalyticalBalanceLog", ["Core ЖурналБаланса"]), "подпись с латинского начала не отделена"
+    assert BP.split_er_label("AC-3.4.2 Отправка начислений")[1] == [], "код документа принят за ER"
+
+    root = make_project(tmp)
+    d = root / "Raw" / "customer"
+    d.mkdir(parents=True, exist_ok=True)
+    para = "Уведомление формируется при смене статуса документа и отправляется заявителю. " * 4
+    (d / "model.md").write_text(para + "\n", encoding="utf-8")
+    (d / "model2.md").write_text(para.replace("заявителю", "в налоговый орган") + "\n",
+                                 encoding="utf-8")
+
+    def make(name, src):
+        return run("build_plan.py", "--card", name, "--source", src, "--sections", "1",
+                   "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
+
+    cp = make("ER.AS.PDFD-Уведомление-о-статусе-PDF-документа", "Raw/customer/model.md")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    concepts = root / "AuroraKnowledgeDB" / "Concepts"
+    card_path = concepts / "ER.AS.PDFD.md"
+    assert card_path.is_file(), f"карточка названа не кодом: {sorted(x.name for x in concepts.glob('*.md'))}"
+    text = card_path.read_text(encoding="utf-8")
+    assert 'title: "ER.AS.PDFD"' in text, text[:300]
+    assert "Уведомление о статусе PDF документа" in text.split("---")[1], "подпись не ушла в синонимы"
+
+    # тот же код из другого источника — та же сущность: знание копится в одной карточке
+    cp = make("ER.AS.PDFD-Статус-PDF", "Raw/customer/model2.md")
+    assert cp.returncode == 0, "одинаковый код из другого источника дал отказ:\n" + cp.stdout + cp.stderr
+    files = sorted(x.name for x in (root / "AuroraKnowledgeDB").rglob("ER.AS.PDFD*.md"))
+    assert files == ["ER.AS.PDFD.md"], f"одна сущность разошлась по карточкам: {files}"
+    text = card_path.read_text(encoding="utf-8")
+    assert {"Raw/customer/model.md", "Raw/customer/model2.md"} <= set(card_srcs(text)), \
+        "знание второго источника не накопилось в карточке сущности"
+    head = text.split("---")[1]
+    assert "Статус PDF" in head and "Уведомление о статусе PDF документа" in head, \
+        f"вторая подпись не добавлена в синонимы:\n{head}"
+    assert "Уведомление формируется" in text, "дописывание синонима испортило тело карточки"
+
+    # поле — полный путь, ничего не срезается
+    cp = make("ER.AS.Acc.OGRN", "Raw/customer/model.md")
+    assert (concepts / "ER.AS.Acc.OGRN.md").is_file(), cp.stdout + cp.stderr
+
+    # поиск: по полной форме и по подписи — в ту же карточку; буква кода — другая сущность
+    card(root, "Concepts/ER.AS.CCS.md", status="draft", body="Справочник CCS.")
+    kb = str(root)
+    assert BP.find_card("ER.AS.PDFD-Уведомление-о-статусе-PDF-документа", kb).endswith("ER.AS.PDFD.md"), \
+        "полная форма не находит карточку сущности — накопление заведёт дубль"
+    assert BP.find_card("Уведомление о статусе PDF документа", kb).endswith("ER.AS.PDFD.md"), \
+        "сущность не находится по подписи"
+    assert BP.find_card("ER.AS.CCr", kb) == "", \
+        "код ER сопоставлен с опечаткой: ER.AS.CCr слит с ER.AS.CCS — это разные сущности"
+
+
+@test
+def test_a_machine_transcript_is_not_parsed_when_a_copy_exists(tmp: Path):
+    """Документ и его машинная расшифровка — один источник, а не два.
+
+    `kb:ingest-office` кладёт `X.converted.md` рядом с оригиналом, а текстовая копия
+    `X.md` бывает уже сделана. Разбирались обе — и знание раздваивалось: на живой
+    пересборке один документ дал девять параллельных карточек и две группы двойников.
+    Правило заказчика: есть копия — машинную расшифровку не разбирать.
+
+    Копия обязана быть годным источником сама. Пропустив расшифровку при пустой копии,
+    мы потеряли бы документ целиком — копию отсечёт порог размера, а расшифровку
+    отсекло бы это правило.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    BP = importlib.import_module("build_plan")
+
+    root = make_project(tmp)
+    d = root / "Raw" / "customer"
+    d.mkdir(parents=True, exist_ok=True)
+    text = "Порядок возврата обеспечительного платежа после проверки декларации. " * 8
+    (d / "Полный.md").write_text(text, encoding="utf-8")            # копия есть
+    (d / "Полный.converted.md").write_text(text, encoding="utf-8")
+    (d / "Одинокий.converted.md").write_text(text, encoding="utf-8")  # копии нет
+    (d / "Пустой.md").write_text("—", encoding="utf-8")               # копия негодная
+    (d / "Пустой.converted.md").write_text(text, encoding="utf-8")
+
+    cur = os.getcwd()
+    os.chdir(root)
+    try:
+        got = {os.path.basename(p) for _g, p, _s in BP.sources()}
+    finally:
+        os.chdir(cur)
+
+    assert "Полный.md" in got, "копия документа выпала из плана"
+    assert "Полный.converted.md" not in got, \
+        "машинная расшифровка разбирается рядом с копией — знание раздвоится"
+    assert "Одинокий.converted.md" in got, \
+        "расшифровка без копии выпала из плана — документ потерян"
+    assert "Пустой.converted.md" in got, \
+        "расшифровку отсекли из-за пустой копии — документ потерян целиком"
+    assert "Пустой.md" not in got, "пустая копия попала в план"
 
 
 @test
@@ -13312,7 +14227,7 @@ def test_extraction_moves_text_and_never_loses_it(tmp: Path):
               "хранит остатки по каждому лицевому счёту за расчётный период. "
               "Сверка проводится ежедневно.")
     card(root, "Concepts/Аналитический-баланс.md", status="draft", kind="knowledge",
-         distilled="2026-09-01", body=thesis)
+         distilled="2026-09-01", sources='\n  - "Sources/Confluence/Баланс.md"', body=thesis)
     path = root / "AuroraKnowledgeDB/Concepts/Аналитический-баланс.md"
 
     def fake(cfg, role, messages, **kw):
@@ -13335,6 +14250,10 @@ def test_extraction_moves_text_and_never_loses_it(tmp: Path):
     body = made.read_text(encoding="utf-8")
     assert definition in body, "определение переехало не дословно"
     assert "Аналитический-баланс" in body, "не сказано, откуда перенесено"
+    # Происхождение переезжает вместе со знанием: без него карточка не доверялась никогда и
+    # переживала снос базы — на живом проекте так завелись 32 карточки.
+    assert card_srcs(body) == ["Sources/Confluence/Баланс.md"], \
+        f"вынесенная карточка не унаследовала источник донора: {card_srcs(body)}"
 
     # ход печатает работу по мере её выполнения: молчащий несколько минут шаг
     # неотличим от зависшего, и вести прогон по логам становится нечем

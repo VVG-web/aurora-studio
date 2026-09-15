@@ -84,6 +84,7 @@ scripts/sync_audit.py    => .opencode/scripts/sync_audit.py
 scripts/aurora_stats.py  => .opencode/scripts/aurora_stats.py
 scripts/aurora_todo.py       => .opencode/scripts/aurora_todo.py
 scripts/office_ingest.py => .opencode/scripts/office_ingest.py
+scripts/web_export.py    => .opencode/scripts/web_export.py
 scripts/jira_status.py   => .opencode/scripts/jira_status.py
 scripts/aurora_hooks.py  => .opencode/scripts/aurora_hooks.py
 scripts/aurora_setup.py  => .opencode/scripts/aurora_setup.py

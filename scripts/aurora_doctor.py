@@ -24,7 +24,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import RETIRED_FIELDS
+from aurora_common import RETIRED_FIELDS, config_list
 from pathlib import Path
 
 ROOT = Path.cwd()
@@ -125,6 +125,29 @@ def artifact_dirs() -> dict:
         path = (rec.get("out") or "").strip().strip('"').rstrip("/")
         if path and not os.path.isabs(path):
             out[path] = kind
+    return out
+
+
+def project_dirs() -> dict:
+    """{папка: "проект"} — структурные папки, которые проект объявил своими.
+
+    Схема движка одна на все проекты и меняется выпуском кита. Но у проекта бывает своя
+    папка, которой нет у других: наследие прежней базы, вложения, особый раздел. Добавить её
+    в схему кита значит завести пустую такую же во всех проектах; переложить в `Workspaces/`
+    — сломать ссылки на её содержимое. Объявление в `aurora.config.yaml`
+    (`extra_structure_dirs: [...]`) — такое же основание для папки, как реестр артефактов:
+    законна в этом проекте и только в нём. Абсолютные пути и выход за пределы проекта не
+    принимаются: это объявление папки, а не лазейка в проверке.
+    """
+    out = {}
+    for raw in config_list("extra_structure_dirs"):
+        path = raw.replace("\\", "/").strip()
+        if not path or path.startswith("/") or os.path.isabs(path):
+            continue
+        path = path.strip("/")
+        if not path or ".." in path.split("/"):
+            continue
+        out[path] = "проект"
     return out
 
 
@@ -253,13 +276,18 @@ def check_structure(verbose: bool = False):
 
     mirrors = mirror_owners()
     artifacts = artifact_dirs()
-    known = set(schema) | set(mirrors) | set(artifacts)
+    declared = project_dirs()
+    known = set(schema) | set(mirrors) | set(artifacts) | set(declared)
     known_tops = {p.split("/")[0] for p in known}
     missing = [d for d in schema if not (ROOT / d).is_dir()]
     for path, module in sorted(mirrors.items()):
         if not (ROOT / path).is_dir():
             warns.append(f"модуль {module} заявил зеркало {path}/, а папки нет "
                          "(создать: aurora.py update <проект> --structure-only --apply)")
+    for path in sorted(declared):
+        if not (ROOT / path).is_dir():
+            warns.append(f"в aurora.config.yaml объявлена своя папка {path}/ "
+                         "(extra_structure_dirs), а на диске её нет — уберите из списка или создайте")
     if missing:
         warns.append(f"не хватает {len(missing)} стандартных папок "
                      f"(создать: aurora.py update <проект> --structure-only --apply)")
@@ -305,15 +333,18 @@ def check_structure(verbose: bool = False):
         empty = [n for n in extra_top if not any((ROOT / n).rglob("*"))]
         note = f" (пустые: {', '.join(empty)})" if empty else ""
         errors.append(f"папки верхнего уровня вне схемы движка: {', '.join(extra_top)}{note} "
-                      "→ перенесите содержимое в Workspaces/<задача>/, удалите пустое "
-                      "либо закройте .gitignore, если это служебное")
+                      "→ перенесите содержимое в Workspaces/<задача>/, удалите пустое, "
+                      "закройте .gitignore, если это служебное, либо объявите своей папкой "
+                      "проекта: paths → extra_structure_dirs в aurora.config.yaml")
     if stale:
         errors.append(f"закрыты .gitignore, но лежат в индексе git: {', '.join(stale)} "
                       "→ правило не действует задним числом, уберите из индекса: "
                       f"git rm -r --cached {' '.join(stale)}")
     if extra_sub:
         errors.append(f"структурные папки вне схемы движка: {', '.join(extra_sub)} "
-                      "→ либо стандартный тип, либо Workspaces/<задача>/; новый тип — только релизом kit'а")
+                      "→ либо стандартный тип, либо Workspaces/<задача>/, либо своя папка этого "
+                      "проекта — объявите её в aurora.config.yaml (paths → extra_structure_dirs); "
+                      "новый тип для всех проектов — только релизом kit'а")
     if unclaimed:
         warns.append(f"зеркала без модуля: {', '.join(unclaimed)} → подключите модуль "
                      "в aurora.config.yaml (sources:) или перенесите выгрузку в Raw/; "
@@ -324,6 +355,9 @@ def check_structure(verbose: bool = False):
         if allowed_by_ignore:
             lines.append(f"    вне схемы, но закрыты .gitignore (допустимо): "
                          f"{', '.join(allowed_by_ignore)}")
+        if declared:
+            lines.append(f"    вне схемы, но объявлены проектом (extra_structure_dirs): "
+                         f"{', '.join(sorted(declared))}")
     return errors, warns, lines
 
 
@@ -419,7 +453,10 @@ def main() -> int:
         _cfg = _ag.parse_config(_ag.raw_config())
         if _cfg["backends"]:
             _ok, _v = _ag.venv_status()
-            print(f"агент: бэкендов {len(_cfg['backends'])} · адаптер {_cfg['adapter']}"
+            _chat = [b for b in _cfg["backends"] if b.get("chat", True)]
+            _vec = _ag.embed_ring(_cfg)
+            print(f"агент: шлюзов чата {len(_chat)} · векторных {len(_vec)}"
+                  f" · адаптер {_cfg['adapter']}"
                   + (f" ({_v})" if _ok else " — venv не установлен, stdlib-фолбэк")
                   + " · проверить: agent:ping")
         else:

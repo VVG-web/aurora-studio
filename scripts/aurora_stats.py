@@ -28,7 +28,7 @@ from datetime import date
 
 from aurora_common import (TRUSTED, card_sources, config_value, frontmatter,
                            inbound_counts,
-                           is_placeholder,
+                           is_placeholder, is_service,
                            SERVICE_STATUS, link_targets, load_cards, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
@@ -49,7 +49,10 @@ def collect() -> dict:
     expired, no_owner, missing_source, stubs = [], [], [], []
     for path in walk_md(ROOT):
         base = os.path.basename(path)
-        if base.startswith("_") or base == "index.md" or "/meta/" in path:
+        # Служебный файл — не карточка: оглавления, манифесты, `README.md` базы, meta. Здесь
+        # был свой список, и `README.md` попадал в долю доверенного как недоверенная
+        # карточка. Правило одно на движок — `is_service`.
+        if is_service(path):
             continue
         try:
             text = open(path, encoding="utf-8", errors="ignore").read()
@@ -72,17 +75,24 @@ def collect() -> dict:
         # не диагноз: черновик из-за задачи в работе и черновик из-за отсутствия связей
         # лечатся по-разному, и вести человека они должны в разные места.
         kinds[(fm.get("kind") or "").strip().strip('"') or "(нет kind)"] += 1
-        why = (fm.get("trust_basis") or "").strip().strip('"').lower()
-        if status in TRUSTED or status == "knowledge":
-            trust_why["доверенные"] += 1
-        elif "связей" in why or "не найден" in why:
-            trust_why["связей с задачами нет"] += 1
-        elif why:
-            trust_why["задачи ещё в работе"] += 1
-        else:
-            trust_why["доверие не считалось"] += 1
-        if is_placeholder(fm, text):
+        stub = is_placeholder(fm, text)
+        cards[path]["stub"] = stub
+        if stub:
+            # Заготовка знания не содержит — доверять в ней нечему, и в долю доверенного она
+            # не входит ни числителем, ни знаменателем. Раньше входила знаменателем: на
+            # живом проекте 632 пустышки из 1657 карточек держали долю ниже 40 % при любом
+            # качестве знания, а потолок при полном доверии был 48 %.
             stubs.append(stem)
+        else:
+            why = (fm.get("trust_basis") or "").strip().strip('"').lower()
+            if status in TRUSTED or status == "knowledge":
+                trust_why["доверенные"] += 1
+            elif "связей" in why or "не найден" in why:
+                trust_why["связей с задачами нет"] += 1
+            elif why:
+                trust_why["задачи ещё в работе"] += 1
+            else:
+                trust_why["доверие не считалось"] += 1
         sections[section] += 1
         if status in TRUSTED:
             rb = (fm.get("review_by") or "").strip()
@@ -105,8 +115,12 @@ def collect() -> dict:
                if not c["archived"] and inbound.get(c["stem"], 0) == 0]
 
     total = len(cards)
-    trusted = sum(v for k, v in statuses.items() if k in TRUSTED)
-    pct = round(trusted / total * 100, 1) if total else 0.0
+    # Доля доверенного — среди карточек, в которых есть что проверять: без заготовок и
+    # служебных файлов. `total` остаётся составом базы, `trust_total` — знаменатель доли.
+    checkable = [c for c in cards.values() if not c.get("stub")]
+    trust_total = len(checkable)
+    trusted = sum(1 for c in checkable if (c["fm"].get("status") or "").strip() in TRUSTED)
+    pct = round(trusted / trust_total * 100, 1) if trust_total else 0.0
 
     reqs = [c for c in cards.values() if c["section"] == "Requirements"]
     req_status = Counter((c["fm"].get("req_status") or "—").strip() for c in reqs)
@@ -171,6 +185,7 @@ def collect() -> dict:
 
     return {
         "date": TODAY, "total": total, "trusted": trusted, "pct_verified": pct,
+        "trust_total": trust_total,
         "stubs": len(stubs),
         "threshold": threshold(), "bootstrap": pct < threshold(),
         "statuses": dict(statuses.most_common()), "sections": dict(sections.most_common()),
@@ -194,12 +209,14 @@ def render(s: dict) -> str:
     L = [f"# Здоровье базы — {s['date']}", ""]
     mode = ("BOOTSTRAP (непроверенные карточки допускаются в контекст с пометкой)"
             if s["bootstrap"] else "строгий ретрив (только verified)")
-    L += [f"**Карточек:** {s['total']} · **verified:** {s['trusted']} "
+    L += [f"**Карточек:** {s['total']} · **verified:** {s['trusted']} из "
+          f"{s.get('trust_total', s['total'])} без заготовок и служебных "
           f"({s['pct_verified']} %, порог {s['threshold']} %) · **режим:** {mode}"]
     if s.get("stubs"):
-        # Заготовка принимается, но знанием не является: без этой строки доля льстит
+        # Заготовка знанием не является и в долю доверенного не входит. Строка нужна, чтобы
+        # было видно, сколько имён ещё ждут знания: доля о них ничего не говорит.
         L += [f"Заготовок в базе (имя есть, содержания нет): **{s['stubs']}** — "
-              f"ждут наполнения при следующем разборе источника"]
+              f"в долю доверенного не входят, ждут наполнения при следующем разборе источника"]
     L += [""]
     L += ["| Статус | Карточек |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in s["statuses"].items()]
@@ -267,7 +284,8 @@ def append_metrics(s: dict) -> None:
         return
     share = (f"{s['artifacts_month_based_on']}/{s['artifacts_month']}"
              if s["artifacts_month"] else "—")
-    row = (f"| {MONTH} | {s['pct_verified']}% ({s['trusted']}/{s['total']}) | {share} | — | — | "
+    row = (f"| {MONTH} | {s['pct_verified']}% ({s['trusted']}/{s.get('trust_total', s['total'])}) "
+           f"| {share} | — | — | "
            f"авто-замер aurora_stats |")
     with open(METRICS, "a", encoding="utf-8") as f:
         if not text.endswith("\n"):

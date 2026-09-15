@@ -162,6 +162,12 @@ code.tick{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;bord
 .tower .path{font:11px var(--mono);color:var(--text-muted);word-break:break-all;
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tower .foot{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;position:relative}
+/* Работа в проекте идёт прямо сейчас: мигающая точка отличает её от статичных чипов. */
+.tower .foot .act{display:contents}
+.chip.live::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;
+  animation:blink 1.4s ease-in-out infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.chip.live::before{animation:none}}
 .ring{--p:0;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;
   background:conic-gradient(var(--primary) calc(var(--p)*1%), var(--surface-2) 0);
   position:relative;flex:none}
@@ -593,6 +599,7 @@ tr:last-child td{border-bottom:0}
             <select id="askBackend" style="font:inherit;margin-left:6px">
               <option value="0">по кольцу (основная, при отказе — запасная)</option>
             </select></label>
+          <span id="askBackendNote" hidden style="font-size:12.5px;color:var(--danger)"></span>
           <span class="muted" style="font-size:12.5px">Ctrl+Enter — спросить</span>
           <span class="row-right">
             <button class="btn" id="askExport" hidden
@@ -693,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.101.0";
+const UI_VERSION = "1.107.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -725,6 +732,22 @@ function toast(msg, kind="ok"){
   $("#toasts").append(t);
   setTimeout(()=>{ t.style.opacity=0; setTimeout(()=>t.remove(),250); }, 4200);
 }
+
+// Исключение в отрисовке не должно проходить молча. Страница настроек проекта обрывалась
+// на блоке MCP, и карточка агента с моделями и ролями просто не появлялась: с экрана это
+// читалось как «так задумано», а не как поломка, и прожило двенадцать дней.
+let LAST_FAULT = "";
+function showFault(msg){
+  msg = String(msg || "неизвестная ошибка");
+  if (msg === LAST_FAULT) return;                 // одна поломка — одно сообщение
+  LAST_FAULT = msg;
+  setTimeout(()=>{ if (LAST_FAULT === msg) LAST_FAULT = ""; }, 5000);
+  console.error("Сбой на странице:", msg);
+  toast("Сбой на странице: " + msg + " — часть экрана могла не отрисоваться", "err");
+}
+window.addEventListener("error", e => showFault(e.message));
+window.addEventListener("unhandledrejection", e =>
+  showFault(e.reason && (e.reason.message || e.reason)));
 
 
 /* ---------------- языки ---------------- */
@@ -1640,6 +1663,7 @@ function show(view){
   S.view = view;
   $$(".view").forEach(v=>v.classList.toggle("on", v.id === "view-"+view));
   $$("nav button").forEach(b=>b.setAttribute("aria-current", String(b.dataset.view===view)));
+  if (view==="overview") refreshActivity();
   if (view==="health") renderHealth();
   if (view==="mirrors") renderMirrors();
   if (view==="install") renderInstall();
@@ -1758,12 +1782,88 @@ async function boot(){
 }
 
 /* ---------------- мостик ---------------- */
+// Что с проектом прямо сейчас — отметка на карточке. Работа видна только в «Консоли»
+// выбранного проекта, и по Мостику было не понять, где обновление идёт, а где встало.
+// Чистая функция от ответа сервера и часов: её проверяют без страницы.
+function activityChips(act, now){
+  if (!act) return [];
+  const clock = ms => new Date(ms).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  const stamp = ms => new Date(ms).toLocaleString("ru-RU",
+    {day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
+  const short = s => { s = String(s || ""); return s.length > 30 ? s.slice(0, 29) + "…" : s; };
+  const running = act.running || [], agent = act.agent, route = act.route;
+  const routeNote = route ? ` Остановлен маршрут «${route.title || "без названия"}».` : "";
+  // Идущее важнее остановленного: задание могло как раз продолжить этот маршрут.
+  if (running.length){
+    const mins = Math.max(0, Math.round((now/1000 - running[0].started) / 60));
+    return [{cls:"ok live",
+      text: `идёт: ${running[0].cmd}` + (running.length > 1 ? ` и ещё ${running.length - 1}` : "")
+            + (mins ? ` · ${mins} мин` : " · только что"),
+      title: running.map(r => `${r.cmd} ${(r.args||[]).join(" ")}`.trim()
+               + ` — с ${clock(r.started * 1000)}`).join("\n")
+             + "\nЗапущено этой панелью, вывод — в «Консоли» проекта." + routeNote}];
+  }
+  if (agent && agent.alive) return [{cls:"ok live",
+    text: `идёт: ${short(agent.task || "агент")} · вне панели`,
+    title: `Пишущий прогон агента: pid ${agent.pid}, с ${agent.since || "—"}. `
+           + "Запущен не этой панелью — из терминала или другого окна." + routeNote}];
+  const lockNote = agent
+    ? ` Прогон ${agent.task || "агента"} (pid ${agent.pid}) оборвался, не сняв замок.` : "";
+  if (route){
+    const labels = {stall:"застой", failed:"ошибка", offline:"нет сети", stopped:"остановлен вами"};
+    const waiting = route.reason === "offline" && route.nextRetryAt > now;
+    return [{cls:"warn",
+      text: (waiting ? "маршрут ждёт сеть: " : "маршрут остановлен: ") + `«${short(route.title)}»`,
+      title: `«${route.title || "без названия"}»`
+             + (typeof route.step === "string" ? ` · шаг ${route.step}` : "")
+             + ` — ${labels[route.reason] || "остановлен"}`
+             + (route.at ? ` · ${stamp(Date.parse(route.at))}` : "") + "."
+             + (waiting ? ` Повтор в ${clock(route.nextRetryAt)}, если вкладка с маршрутом открыта.` : "")
+             + " Продолжить — в «Консоли» проекта." + lockNote}];
+  }
+  if (agent) return [{cls:"bad",
+    text: `оборван: ${short(agent.task || "прогон агента")}`,
+    title: `Прогон ${agent.task || "агента"} (pid ${agent.pid}, с ${agent.since || "—"}) `
+           + `завершился не сам: процесса нет, а замок остался (${stamp(agent.at * 1000)}). `
+           + "Вывод — в «Консоли» проекта; следующий прогон снимет замок сам."}];
+  return [];
+}
+function drawActivity(){
+  if (!S.state) return;
+  $$("#towers .act").forEach(box=>{
+    const p = S.state.projects.find(x => x.path === box.dataset.path);
+    box.replaceChildren(...activityChips(p && p.activity, Date.now())
+      .map(c => el("span",{class:"chip " + c.cls, title:c.title}, c.text)));
+  });
+}
+async function refreshActivity(){
+  if (!S.state) return;
+  let d = null;
+  try { d = await api("/api/activity", {quiet:true}); } catch (e) { return; }
+  if (!d || !d.projects) return;
+  S.state.projects.forEach(p => { if (p.path in d.projects) p.activity = d.projects[p.path]; });
+  drawActivity();
+}
+const ACTIVITY_POLL_MS = 5000;
+setInterval(() => { if (S.view === "overview" && !document.hidden) refreshActivity(); },
+            ACTIVITY_POLL_MS);
+
+// Здоровье считается секундами, а проект за это время успевают сменить. Ответ по одному
+// проекту, записанный прямо в S.health, показывался под именем другого: панель писала
+// «нет .env.aurora.local» у проекта, где файл на месте, — это было замечание соседнего,
+// чей ответ пришёл позже. Результат всегда ложится своему проекту, а текущим становится,
+// только если этот проект всё ещё выбран.
+function takeHealth(p, h){
+  p.health = h;
+  if (S.project && S.project.path === p.path){ S.health = h; return true; }
+  return false;
+}
 async function prefetchHealth(){
   // последовательно: stats на большой базе занимает секунды, параллель только мешает
   for (const p of S.state.projects){
     if (p.health) continue;
     const h = await api("/api/health?project="+encodeURIComponent(p.path), {quiet:true});
-    if (h && h.stats){ p.health = h; if (S.project && S.project.path===p.path) S.health = h;
+    if (h && h.stats){ takeHealth(p, h);
       renderOverview(); renderProjBadge(); }
   }
   const total = S.state.projects.reduce((a,p)=>a + (p.health?.doctor.errors.length||0), 0);
@@ -1810,6 +1910,7 @@ function renderOverview(){
     const errs = h ? h.doctor.errors.length : null;
     const lintBad = h && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
     const why = auraWhy(p);
+    const act = el("span",{class:"act"}); act.dataset.path = p.path;
     const t = el("button",{class:"card tower", style:`--aura:${aura(p)}`,
         title: (why.color === "green" ? "Зелёный: " : "До зелёного: ")
                + why.todo.map(x=>(x.bad ? "✗ " : "✓ ") + x.text).join(" · "),
@@ -1834,10 +1935,12 @@ function renderOverview(){
         p.git_branch ? el("span",{class:"chip mono"}, p.git_branch) : null,
         p.dirty ? el("span",{class:"chip warn"}, p.dirty + " не в git")
                 : el("span",{class:"chip ok"},"дерево чисто"),
+        act,
       ));
     t.id = "tower-"+p.slug;
     box.append(t);
   });
+  drawActivity();
   const g = $("#globalMetrics"); g.innerHTML="";
   g.append(
     metric(S.state.projects.length, "проектов на движке", "", "ok"),
@@ -1913,7 +2016,9 @@ async function pick(p, go=true){
   if (go) show("health");
   S.health = null; renderHealth();
   const h = await api("/api/health?project=" + encodeURIComponent(p.path));
-  S.health = h; p.health = h;
+  // Пока считалось, человек мог выбрать другой проект: его экран дорисует свой pick,
+  // а этот ответ только ложится своему проекту.
+  if (!takeHealth(p, h)) return;
   renderHealth(); renderOverview(); renderProjBadge();
   // Зеркала рисуются из того же здоровья. Пока оно считалось, вкладка показывала
   // «выберите проект» — и оставалась такой навсегда: перерисовать её было некому,
@@ -1973,8 +2078,7 @@ $("#refreshHealth").onclick = ()=>{
   busy($("#refreshHealth"), async ()=>{
     const p = S.project;
     const h = await api("/api/health?project=" + encodeURIComponent(p.path));
-    if (!h || !h.stats) return;
-    S.health = h; p.health = h;
+    if (!h || !h.stats || !takeHealth(p, h)) return;
     renderHealth(); renderOverview(); renderProjBadge(); navBadges(p, h);
     stamp("#healthStamp");
     toast("Показатели пересчитаны: " + p.name, "ok");
@@ -2051,7 +2155,7 @@ function baseCards(h, st){
       sub: Object.entries(why).filter(([n])=>n!=="доверенные")
              .map(([n,v])=>`${v} — ${n}`).join(" · ")
            || "почему остальные нет — не посчитано: движок проекта старее 1.93",
-      hint:"Доверие вычисляется по статусам связанных задач, а не присваивается человеком",
+      hint:"Доля доверенных среди карточек, в которых есть что проверять: заготовки без знания и служебные файлы не считаются. Доверие вычисляется по источникам и статусам связанных задач, а не присваивается человеком",
       go: goRoute("update","Обновить базу")}),
     // Пустой `kinds` — это «движок проекта старый и типов не считает», а не «у всех
     // проставлен». Разница между «не измеряли» и «в порядке» — та самая догадка,
@@ -2179,7 +2283,10 @@ function baseCards(h, st){
 function renderHealth(){
   const box = $("#healthBody");
   if (!S.project){ box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
-  if (!S.health){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(8)+'</div>'; return; }
+  // Ответ сам называет свой проект. Чужой не рисуем ни при каком порядке присваиваний:
+  // замечание соседнего проекта под этим именем читается как поломка этого.
+  const foreign = S.health && S.health.project && S.health.project !== S.project.path;
+  if (!S.health || foreign){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(8)+'</div>'; return; }
   const h = S.health, st = h.stats || {};
   box.innerHTML = "";
 
@@ -2402,8 +2509,9 @@ function renderSourceModules(src){
       {project:S.project.path, modules:picked})});
     if (!r || r.error) return;
     toast("Список зеркал сохранён в aurora.config.yaml", "ok");
-    const h = await api("/api/health?project=" + encodeURIComponent(S.project.path));
-    if (h && h.stats){ S.health = h; S.project.health = h; navBadges(S.project, h); }
+    const p = S.project;
+    const h = await api("/api/health?project=" + encodeURIComponent(p.path));
+    if (h && h.stats && takeHealth(p, h)) navBadges(p, h);
     renderMirrors();
   };
   return el("div",{},
@@ -3171,15 +3279,30 @@ $("#askExport").onclick = ()=>{
 // и качество, и человек должен видеть, чей ответ читает. Здесь же — выбор модели вручную
 // (когда сравнивают ответы), живая проверка основной и возврат на неё.
 async function fillAskBackends(){
-  const sel = $("#askBackend");
-  if (!sel || sel.dataset.filled) return;
-  const a = await api("/api/agent" + (S.project ? "?project=" + encodeURIComponent(S.project.path) : ""),
-                      {quiet:true});
-  (a && a.backends || []).forEach(b=>{
+  const sel = $("#askBackend"), note = $("#askBackendNote");
+  if (!sel) return;
+  // Модели у каждого проекта свои: список, собранный для прошлого проекта, врёт о текущем.
+  // И собранным он считается только после ответа сервера. Раньше отметка ставилась
+  // до ответа, и один сбой запроса оставлял в выборе одно «по кольцу» до перезагрузки.
+  const project = S.project ? S.project.path : "";
+  if (sel.dataset.project === project) return;
+  const say = msg => { if (note){ note.textContent = msg; note.hidden = !msg; } };
+  let a;
+  try {
+    a = await api("/api/agent" + (project ? "?project=" + encodeURIComponent(project) : ""),
+                  {quiet:true});
+  } catch (e) { a = {error: String(e && e.message || e)}; }
+  if (!a || a.error) return say("модели не загружены: " + ((a && a.error) || "сервер не ответил")
+                                + " — откройте вкладку ещё раз");
+  const rows = a.backends || [], was = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
+  rows.forEach(b=>{
     const worker = (b.models && b.models.worker) || b.model || "—";
     sel.append(el("option",{value:String(b.n)}, `№${b.n} · ${worker}`));
   });
-  sel.dataset.filled = "1";
+  if ([...sel.options].some(o=>o.value === was)) sel.value = was;
+  if (rows.length) sel.dataset.project = project; else delete sel.dataset.project;
+  say(rows.length ? "" : "в настройке агента нет моделей — задайте их в «Настройки проекта»");
 }
 
 $("#askPing").onclick = async (e)=>{
@@ -3207,9 +3330,17 @@ async function renderAskHistory(){
   const box = $("#askHistory");
   if (!S.project) return box.replaceChildren(
     el("div",{class:"muted"}, "Выберите проект на Мостике."));
-  const d = await api("/api/ask/threads?project=" + encodeURIComponent(S.project.path),
-                      {quiet:true});
-  const rows = (d && d.threads) || [];
+  let d;
+  try {
+    d = await api("/api/ask/threads?project=" + encodeURIComponent(S.project.path),
+                  {quiet:true});
+  } catch (e) { d = {error: String(e && e.message || e)}; }
+  // Сбой чтения — не «разговоров нет»: пустой список без причины человек принимает за
+  // потерю истории и ищет её не там.
+  if (!d || d.error) return box.replaceChildren(el("div",{class:"muted"},
+    "Историю не прочитать: " + ((d && d.error) || "сервер не ответил")
+    + ". Откройте вкладку ещё раз; повторится — перезапустите панель."));
+  const rows = d.threads || [];
   box.replaceChildren();
   if (!rows.length) return box.append(el("div",{class:"muted"},
     "Разговоров пока нет. Первый появится после вопроса — и придёт всем, кто "
@@ -4088,8 +4219,9 @@ async function runRoute(sc, write, resume){
     api("/api/route/state", {method:"POST", quiet:true, body: JSON.stringify(body)});
   }
   if (S.project){ const p = S.project;
-    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
-      renderOverview(); renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность");});
+    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
+      renderOverview();
+      if (mine){ renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность"); }});
     // Шаги маршрута пишут в базу, но коммитит только агент — и только своё. Остальное
     // остаётся незафиксированным, и следующий прогон смешает свою работу с этой.
     // Панель git-операций не делает: это решение человека. Но молчать о них нечестно.
@@ -4279,8 +4411,9 @@ async function poll(id, since, label){
   }
   // журнал пишет сервер — перечитываем его вместе со здоровьем, а не ведём копию в вкладке
   if (S.project) { const p = S.project;
-    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{S.health=h;p.health=h;
-      if (S.view==="health") renderHealth(); renderOverview(); stamp("#healthStamp");
+    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
+      renderOverview(); if (!mine) return;
+      if (S.view==="health") renderHealth(); stamp("#healthStamp");
       renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность");}); }
 }
 /* Код возврата в Авроре означает три разных вещи, и красить их одинаково — врать.
@@ -4777,7 +4910,10 @@ async function renderProject(){
   box.append(el("h2",{},"MCP-серверы · " + S.project.name));
   const mcp = await api("/api/mcp?project=" + encodeURIComponent(S.project.path));
   const M = {list:[]};
-  (mcp.mcpServers || {}).forEach((cfg, name) => M.list.push({
+  // Серверы приходят объектом «имя → настройка», как в самом mcp.json. У объекта нет
+  // forEach: обход падал исключением, и страница обрывалась молча — вместе со списком
+  // серверов пропадали полный текст конфига и карточка агента с моделями и ролями.
+  Object.entries(mcp.mcpServers || {}).forEach(([name, cfg]) => M.list.push({
     name, command: cfg.command || "", args: (cfg.args||[]).join(" "), url: cfg.url || "", hasEnv: !!cfg.hasEnv }));
   const mcpBox = el("div",{});
   const drawMcp = () => {
@@ -5182,6 +5318,39 @@ async function renderAgentCard(box, scope){
           "потоков:", el("input",{class:"btn",style:"width:78px;font-weight:400",
             type:"number", value:b.width||1,
             oninput:e=>touch(pre+"WIDTH", e.target.value)}))),
+      // Вектора — своё кольцо. Шлюз может держать только их: объявите модель, и он
+      // войдёт в кольцо эмбеддингов, не попав в чатовое. Пусто — шлюз векторов не считает.
+      el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;margin:2px 0 6px"},
+        el("label",{style:"flex:1;min-width:170px"},
+          el("div",{class:"muted",style:"font-size:11px"},"модель векторов на этом шлюзе"),
+          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
+            value:b.embed_model||"", placeholder:"например bge-m3",
+            oninput:e=>touch(pre+"EMBED_MODEL", e.target.value)})),
+        el("label",{style:"flex:1;min-width:170px"},
+          el("div",{class:"muted",style:"font-size:11px"},"адрес векторов (пусто — тот же)"),
+          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
+            value:(b.embed_url && b.embed_url !== b.url) ? b.embed_url : "",
+            placeholder:"как у чата",
+            oninput:e=>touch(pre+"EMBED_URL", e.target.value)})),
+        b.chat === false
+          ? el("span",{class:"chip",title:"чат-модель не объявлена — в кольцо чата не берётся"},
+              b.ocr_model && !b.embed_model ? "только распознавание"
+              : b.ocr_model ? "вектора и распознавание" : "только вектора")
+          : null),
+      // Распознавание сканов — третье кольцо, устроено как вектора. Пусто — шлюз сканы
+      // не читает; в чатовое кольцо этот путь не проваливается никогда.
+      el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;margin:2px 0 6px"},
+        el("label",{style:"flex:1;min-width:170px"},
+          el("div",{class:"muted",style:"font-size:11px"},"зрячая модель на этом шлюзе"),
+          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
+            value:b.ocr_model||"", placeholder:"например glm-ocr",
+            oninput:e=>touch(pre+"OCR_MODEL", e.target.value)})),
+        el("label",{style:"flex:1;min-width:170px"},
+          el("div",{class:"muted",style:"font-size:11px"},"адрес распознавания (пусто — тот же)"),
+          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
+            value:(b.ocr_url && b.ocr_url !== b.url) ? b.ocr_url : "",
+            placeholder:"как у чата",
+            oninput:e=>touch(pre+"OCR_URL", e.target.value)}))),
       // Под каждой ролью — та модель, которая ДЕЙСТВИТЕЛЬНО возьмёт её запрос, и
       // откуда это значение пришло. Форма показывала только своё поле, а работало
       // слитое: человек выставлял в ките «flash на все роли», проект молча перекрывал
@@ -5221,7 +5390,14 @@ async function renderAgentCard(box, scope){
     el("div",{class:"warnbox",style:"margin-bottom:12px"},
       "Сохраняется: ", el("b",{}, a.target_label), el("br",{}),
       el("span",{class:"mono",style:"font-size:11.5px"}, a.target)),
-    backendBlock(1), backendBlock(2), backendBlock(3),
+    // Блоков столько, сколько шлюзов объявлено, плюс один пустой для следующего.
+    // Жёсткие три не давали объявить четвёртый — а вектора могут жить именно на нём,
+    // и человеку негде было это записать.
+    ...(() => {
+      const have = (a.backends || []).map(b => b.n);
+      const nums = [...new Set([...have, 1, 2, 3])].sort((x, y) => x - y);
+      return [...nums, Math.max(3, ...nums) + 1].map(backendBlock);
+    })(),
     // Вектора часто живут отдельным сервисом: своя модель, свой адрес, иногда без
     // ключа. Пусто — берётся кольцо агента; в инфраструктуре с одним шлюзом настраивать
     // нечего, а при переезде не приходится править файлы руками.
@@ -5239,7 +5415,51 @@ async function renderAgentCard(box, scope){
           oninput:e=>touch("AURORA_EMBED_URL", e.target.value)})),
         el("label",{},"ключ ", el("input",{class:"btn mono",style:"width:150px",
           type:"password", placeholder:(a.embed&&a.embed.key_set)?"задан — оставьте пустым":"нет",
-          oninput:e=>touch("AURORA_EMBED_KEY", e.target.value)})))),
+          oninput:e=>touch("AURORA_EMBED_KEY", e.target.value)}))),
+      el("label",{class:"row",style:"gap:6px;margin-top:10px"},
+        el("input",{type:"checkbox", checked:(a.embed&&a.embed.fallback)?"":null,
+          onchange:e=>touch("AURORA_EMBED_FALLBACK", e.target.checked?"1":"0")}),
+        "считать вектора на запасных шлюзах, если первый молчит"),
+      el("div",{class:"muted",style:"font-size:12px;margin-top:4px"},
+        "Берётся только шлюз, объявивший ТУ ЖЕ модель: вектора разных моделей лежат в "
+        + "разных пространствах, и подмена испортила бы поиск молча — он не падает, "
+        + "а перестаёт находить."),
+      el("div",{class:"muted mono",style:"font-size:11.5px;margin-top:6px"},
+        "кольцо: " + (((a.embed&&a.embed.ring)||[]).map(r=>r.url + " — " + r.why).join("  →  ")
+                      || "—"))),
+    // Распознавание сканов. Модель не названа — путь выключен, и форма говорит это прямо:
+    // угадывать имя нельзя, угаданная модель даёт не отказ, а выдумку в транскрипте.
+    el("div",{style:"border-top:1px solid var(--line);margin:14px 0 10px;padding-top:12px"},
+      el("div",{style:"font-weight:700;margin-bottom:4px"},"Распознавание сканов — PDF без текста"),
+      el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
+        "Сюда доходит только PDF, из которого ни один парсер не достал ни знака. Нужна зрячая "
+        + "модель: текстовая на картинку отвечает выдумкой, поэтому в чат этот путь не уходит. "
+        + "Разбор: kb:ingest-office."),
+      el("div",{class:"row",style:"gap:10px;flex-wrap:wrap"},
+        el("label",{},"модель ", el("input",{class:"btn mono",style:"width:150px",
+          value:(a.ocr&&a.ocr.model)||"", placeholder:"glm-ocr",
+          oninput:e=>touch("AURORA_OCR_MODEL", e.target.value)})),
+        el("label",{},"адрес ", el("input",{class:"btn mono",style:"width:260px",
+          value:(a.ocr&&a.ocr.url)||"", placeholder:"шлюз, объявивший модель",
+          oninput:e=>touch("AURORA_OCR_URL", e.target.value)})),
+        el("label",{},"ключ ", el("input",{class:"btn mono",style:"width:150px",
+          type:"password", placeholder:(a.ocr&&a.ocr.key_set)?"задан — оставьте пустым":"нет",
+          oninput:e=>touch("AURORA_OCR_KEY", e.target.value)})),
+        el("label",{},"dpi ", el("input",{class:"btn",style:"width:64px",
+          value:(a.ocr&&a.ocr.dpi)||130,
+          oninput:e=>touch("AURORA_OCR_DPI", e.target.value)})),
+        el("label",{},"страниц ≤ ", el("input",{class:"btn",style:"width:64px",
+          value:(a.ocr&&a.ocr.max_pages)||60,
+          oninput:e=>touch("AURORA_OCR_MAX_PAGES", e.target.value)}))),
+      el("label",{class:"row",style:"gap:6px;margin-top:10px"},
+        el("input",{type:"checkbox", checked:(a.ocr&&a.ocr.fallback)?"":null,
+          onchange:e=>touch("AURORA_OCR_FALLBACK", e.target.checked?"1":"0")}),
+        "распознавать на запасных шлюзах, если первый молчит"),
+      el("div",{class:"muted mono",style:"font-size:11.5px;margin-top:6px"},
+        (a.ocr && a.ocr.model)
+          ? "кольцо: " + ((a.ocr.ring||[]).map(r=>r.url + " — " + r.why).join("  →  ")
+                          || "ни один шлюз не объявил эту модель — сканы останутся неразобранными")
+          : "выключено: модель не названа")),
     el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;margin:6px 0 12px"},
       el("label",{class:"row",style:"gap:6px"},
         el("input",{type:"checkbox", checked:a.thinking?"":null,

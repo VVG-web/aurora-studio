@@ -16,7 +16,7 @@ git и читается любой IDE:
       opz:
         title: "Описание постановки задачи"
         template: Templates/proektnoe_reshenie_template.md
-        out: Deliverables/drafts
+        out: Deliverables/work
 
   python3 .opencode/scripts/make_kinds.py            # таблица: тип → шаблон → папка
   python3 .opencode/scripts/make_kinds.py --kind ac  # один тип, машинно (для ассистента)
