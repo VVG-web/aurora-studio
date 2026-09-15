@@ -383,6 +383,51 @@ def local_links(md: str, base_url: str, saved: dict) -> str:
     return re.sub(r"(!?\[[^\]]*\])\(([^)\s]+)[^)]*\)", repl, md)
 
 
+SUPERSEDED: list = []          # (старая расшифровка, новая) — для вывода после подъёма
+VERSION_TAIL_RE = re.compile(r"-[0-9a-f]{8}$")
+
+
+def convert_documents(out_dir: str, apply: bool) -> int:
+    """Скачанный документ сразу получает текст. → сколько переведено (или будет).
+
+    Перевод в текст делал отдельный шаг `kb:ingest-office`, и только для `Raw/`. Документ,
+    который сайт выложил заново, оставался в `_files/` файлом без расшифровки: подъём его не
+    видел, знание из него не бралось, а старая версия теряла страницу-владельца. Переводим тем
+    же конвертером; сканы без текстового слоя не распознаём — это дорого и медленно, их берёт
+    `kb:ingest-office`.
+    """
+    files_dir = os.path.join(out_dir, ASSET_DIR)
+    if not os.path.isdir(files_dir):
+        return 0
+    try:
+        import office_ingest as OI                                   # noqa: PLC0415
+    except Exception:                                                # noqa: BLE001
+        return 0
+    made = 0
+    for name in sorted(os.listdir(files_dir)):
+        src = os.path.join(files_dir, name)
+        if not os.path.isfile(src) or os.path.splitext(name)[1].lower() not in OI.SUPPORTED:
+            continue
+        dst = OI.transcript_path(src)
+        digest = OI.sha(src)
+        if OI.existing_hash(dst) == digest:
+            continue
+        if not apply:
+            made += 1
+            continue
+        try:
+            text, conv = OI.convert(src, "auto", use_ocr=False)
+        except Exception as e:                                       # noqa: BLE001
+            text, conv = None, f"{e}"
+        if not text:
+            print(f"     ! документ {name} не переведён в текст: {conv or 'нет конвертера'}")
+            continue
+        with open(dst, "w", encoding="utf-8") as fh:
+            fh.write(OI.render(src, text, conv, digest))
+        made += 1
+    return made
+
+
 def promote_documents(out_dir: str, apply: bool) -> int:
     """Текст скачанного документа — такой же источник, как страница сайта.
 
@@ -396,6 +441,7 @@ def promote_documents(out_dir: str, apply: bool) -> int:
     решение о доверии человек принял для страницы, и документ с неё им же и накрыт.
     """
     made = 0
+    SUPERSEDED.clear()
     files_dir = os.path.join(out_dir, ASSET_DIR)
     if not os.path.isdir(files_dir):
         return 0
@@ -417,17 +463,43 @@ def promote_documents(out_dir: str, apply: bool) -> int:
         stem = name[:-3]
         binary = next((f for f in os.listdir(files_dir)
                        if f.startswith(stem) and not f.endswith(".md")), "")
-        trusted, page_url = owner.get(binary, (False, ""))
+        dest = os.path.join(out_dir, f"{stem}.md")
+        superseded = ""
+        if binary in owner:
+            trusted, page_url = owner[binary]
+        else:
+            # Страница больше не ссылается на этот файл. Чаще всего это новая версия: сайт
+            # выложил документ под тем же именем с другим хвостом, и страница ведёт уже на
+            # него. Решение о доверии принято для страницы и накрывает обе версии, а старая
+            # получает отметку, чем заменена. Раньше она молча становилась «не доверять» с
+            # пустым адресом, и карточки падали в черновики с основанием «галочка не стоит».
+            family = VERSION_TAIL_RE.sub("", stem)
+            newer = sorted(f for f in owner
+                           if VERSION_TAIL_RE.sub("", os.path.splitext(f)[0]) == family)
+            prev = open(dest, encoding="utf-8", errors="ignore").read(800) \
+                if os.path.isfile(dest) else ""
+            was_trusted = re.search(r"^trusted:[ \t]*(\S+)", prev, re.M)
+            was_url = re.search(r"^url:[ \t]*(\S*)[ \t]*$", prev, re.M)
+            if newer:
+                trusted, page_url = owner[newer[-1]]
+                superseded = os.path.splitext(newer[-1])[0] + ".md"
+                SUPERSEDED.append((f"{stem}.md", superseded))
+            elif was_trusted:
+                # Страницы нет, но решение о доверии уже было принято — сохраняем его.
+                trusted = was_trusted.group(1).strip().lower() == "true"
+                page_url = was_url.group(1) if was_url else ""
+            else:
+                trusted, page_url = False, ""
         src = open(os.path.join(files_dir, name), encoding="utf-8", errors="ignore").read()
         body = src.split("---", 2)[2].strip() if src.startswith("---") else src.strip()
         title = re.sub(r"-[0-9a-f]{8}$", "", stem).replace("-", " ").strip()
-        dest = os.path.join(out_dir, f"{stem}.md")
         text = ("---\n"
                 f'title: "{title}"\n'
                 f"url: {page_url}\n"
                 f"trusted: {'true' if trusted else 'false'}\n"
                 "source_kind: web-document\n"
-                f"document: {ASSET_DIR}/{binary}\n"
+                + (f"superseded_by: {superseded}\n" if superseded else "")
+                + f"document: {ASSET_DIR}/{binary}\n"
                 "---\n\n"
                 f"# {title}\n\n"
                 f"> Текст документа, снятый машиной с `{binary}`. Истина — оригинал; "
@@ -552,9 +624,15 @@ def run(a) -> int:
                   f"в очереди осталось {len(queue)}")
     # Расшифровки скачанных документов поднимаем в корень зеркала: их текст — источник
     # знания наравне со страницей, а из `_files/` разбор его не увидит.
+    converted = convert_documents(mirror.out, a.apply)
+    if converted:
+        print(f"\nДокументов переведено в текст: {converted}")
     lifted = promote_documents(mirror.out, a.apply)
     if lifted:
         print(f"\nРасшифровок документов поднято в источники: {lifted}")
+    for old, new in SUPERSEDED:
+        print(f"  документ заменён новой версией: {old} → {new} — доверие старой сохранено, "
+              "карточки стоит перевести на новую")
     if a.apply:
         mirror.write_state()
     keep = {r[2] for r in mirror.rows if r[2] != "—"}

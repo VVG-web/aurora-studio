@@ -5058,6 +5058,64 @@ def test_the_panel_script_actually_parses(tmp: Path):
 
 
 @test
+def test_a_newer_document_version_keeps_trust_and_marks_the_old_one(tmp: Path):
+    """Сайт выложил новую версию документа — старая не теряет доверие молча, новая получает текст.
+
+    Живой случай: страница «Документы» стала ссылаться на новые файлы, старые остались в
+    `_files/`, и подъём расшифровок записал им пустой адрес и «не доверять». Восемь карточек
+    стали черновиками с основанием «галочка не стоит», хотя галочку никто не снимал, а новые
+    версии не получили текста: перевод делал отдельный шаг, и только для Raw/.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+    out = tmp / "Sources" / "Web"
+    files = out / W.ASSET_DIR
+    files.mkdir(parents=True)
+    (out / "Документы-aaaaaaaa.md").write_text(
+        W.card_text("https://law.example/docs/", "Документы", True,
+                    "Список.\n\n[Протокол](_files/Протокол-2f73494b.txt)",
+                    "https://law.example/docs/", ["Протокол-2f73494b.txt"]), encoding="utf-8")
+    (files / "Протокол-43a2f2c7.txt").write_text("Старая версия протокола.\n", encoding="utf-8")
+    (files / "Протокол-43a2f2c7.md").write_text(
+        '---\ntitle: "Протокол-43a2f2c7"\nconverted_from: "x"\nconverter: plain\n'
+        'source_hash: 0\n---\n\nСтарая версия протокола.\n', encoding="utf-8")
+    (out / "Протокол-43a2f2c7.md").write_text(
+        '---\ntitle: "Протокол"\nurl: https://law.example/docs/\ntrusted: true\n'
+        'source_kind: web-document\ndocument: _files/Протокол-43a2f2c7.txt\n---\n\nСтарая.\n',
+        encoding="utf-8")
+    (files / "Протокол-2f73494b.txt").write_text("Новая версия протокола, пункт 2.\n",
+                                                 encoding="utf-8")
+    (files / "Ничей-22222222.txt").write_text("Ничей.\n", encoding="utf-8")
+    (files / "Ничей-22222222.md").write_text(
+        '---\nconverted_from: "x"\nsource_hash: 0\n---\n\nНичей.\n', encoding="utf-8")
+    (out / "Ничей-22222222.md").write_text(
+        '---\ntitle: "Ничей"\nurl: https://law.example/old/\ntrusted: true\n'
+        'source_kind: web-document\ndocument: _files/Ничей-22222222.txt\n---\n\nНичей.\n',
+        encoding="utf-8")
+
+    assert W.convert_documents(str(out), apply=True) >= 1, "скачанный документ не получил текста"
+    fresh = files / "Протокол-2f73494b.md"
+    assert fresh.is_file() and "Новая версия протокола" in fresh.read_text(encoding="utf-8"), \
+        "новая версия документа осталась файлом без расшифровки"
+    W.promote_documents(str(out), apply=True)
+    new = (out / "Протокол-2f73494b.md").read_text(encoding="utf-8")
+    assert "trusted: true" in new and "url: https://law.example/docs/" in new, new[:300]
+    old = (out / "Протокол-43a2f2c7.md").read_text(encoding="utf-8")
+    assert "trusted: true" in old and "url: https://law.example/docs/" in old, \
+        f"старая версия потеряла доверие и адрес:\n{old[:300]}"
+    assert "superseded_by: Протокол-2f73494b.md" in old, f"не сказано, чем заменён документ:\n{old[:300]}"
+    lone = (out / "Ничей-22222222.md").read_text(encoding="utf-8")
+    assert "trusted: true" in lone and "url: https://law.example/old/" in lone, \
+        "документ без страницы потерял прежнее решение о доверии"
+    assert W.promote_documents(str(out), apply=True) == 0, "подъём не идемпотентен"
+    assert "заменён новой версией" in (SCRIPTS / "sync_audit.py").read_text(encoding="utf-8"), \
+        "проверка зеркал не называет заменённые документы"
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    assert "sync:web" in scen
+
+
+@test
 def test_fix_button_is_offered_only_for_what_repair_can_fix(tmp: Path):
     """«Починить» зовёт, только когда есть что чинить; линтер и ремонт судят одинаково.
 

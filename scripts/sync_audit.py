@@ -358,6 +358,25 @@ def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
         out.append(f"### MISSING ({len(missing)})\n" + ", ".join(missing[:60]) + "\n")
     if orphans:
         out.append(f"### ORPHAN ({len(orphans)})\n" + ", ".join(orphans[:60]) + "\n")
+    # Документ, заменённый новой версией (`superseded_by:` в шапке поднятой расшифровки).
+    # Доверие у старой версии сохранено, но знание стоит перевести на новую — это не
+    # поломка зеркала, поэтому в число проблем не идёт.
+    replaced = []
+    for rel, full in files.items():
+        if not is_promoted_document(full):
+            continue
+        head = open(full, encoding="utf-8", errors="ignore").read(800)
+        m = re.search(r"^superseded_by:[ \t]*(\S+)", head, re.M)
+        if m:
+            replaced.append((rel, m.group(1)))
+    if replaced:
+        cited_old = set(cited_by_cards(root, [r for r, _n in replaced]))
+        out.append(f"### Документ заменён новой версией ({len(replaced)})\n")
+        for rel, new in replaced[:30]:
+            out.append(f"- {rel} → {new}"
+                       + (" · на старую ссылаются карточки" if rel in cited_old else ""))
+        out.append("  Перевести карточки на новую версию (`sources:`), старую убрать в "
+                   "`_files/_outdated/`.\n")
     return problems
 
 
