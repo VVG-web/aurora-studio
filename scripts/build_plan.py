@@ -34,6 +34,7 @@ import re
 import sys
 from datetime import date
 
+from sources_core import SERVICE_RE  # noqa: E402
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
                            card_sources, fold_hard, frontmatter, sources_block,
@@ -269,6 +270,12 @@ def sources() -> list:
                 continue
             for f in sorted(files):
                 if not f.endswith(".md") or f in SKIP or f.startswith("~"):
+                    continue
+                # Правила и промпты прежних синков лежат в зеркале рядом со страницами, но
+                # говорят о выгрузке, а не о проекте: из правил перевода вики в Markdown
+                # сборка сделала девять «требований». Список служебных имён общий с выгрузкой
+                # и аудитом; в Raw/ он не действует — там документ заказчика.
+                if root.replace("\\", "/").startswith("Sources/") and SERVICE_RE.search(f):
                     continue
                 # Документ и его машинная расшифровка — один источник, а не два.
                 # `kb:ingest-office` кладёт `X.converted.md` рядом с оригиналом, а

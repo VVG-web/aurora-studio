@@ -5623,6 +5623,202 @@ def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
 
 
 @test
+def test_empty_trust_settings_mean_the_reference_defaults(tmp: Path):
+    """Пустая настройка доверия — умолчание эталонного проекта, а не «доверять нечему».
+
+    Живой случай: у проекта статусы задач и доверенные источники остались пустыми, и вся вики
+    получила «класс не определён» — 23 % доверия при тех же задачах и документах, что у
+    соседа с 77 %. Решение заказчика 15.09: как у эталона, для всех проектов; явный список
+    проекта заменяет умолчание целиком. Карточка, чья опора — сама задача, берёт её статус.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    U = importlib.import_module("kb_trust")
+    root = make_project(tmp)
+    conf = root / "Sources" / "Confluence"
+    for name in ("Раздел_-_Алгоритмы", "Логическая_модель_(ERD)",
+                 "Нормативно-справочная_информация_(НСИ)", "Контракты", "Протоколы_встреч", "_архив"):
+        (conf / name).mkdir(parents=True, exist_ok=True)
+    (conf / "Глоссарий.md").write_text("# Глоссарий\n", encoding="utf-8")
+    got = AC.default_trusted_sources(str(root))
+    for need in ("Raw/contract", "Raw/customer", "Sources/Confluence/Раздел_-_Алгоритмы",
+                 "Sources/Confluence/Логическая_модель_(ERD)",
+                 "Sources/Confluence/Нормативно-справочная_информация_(НСИ)",
+                 "Sources/Confluence/Глоссарий.md"):
+        assert need in got, f"умолчание не взяло {need}: {got}"
+    for no in ("Контракты", "Протоколы_встреч", "_архив"):
+        assert f"Sources/Confluence/{no}" not in got, f"ветка хода работ стала доверенной: {no}"
+    assert AC.branch_kind("GUI_-_Экранные_формы") == "gui"
+    assert not AC.branch_kind("Полный_перечень_работ"), "вид ветки узнан по куску слова"
+
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace(
+        '    project_key: "T"\n',
+        '    project_key: "T"\n    trust_statuses: []\n    assumption_statuses: []\n')
+        + "verify:\n  trusted_sources: []\n", encoding="utf-8")
+    cur = os.getcwd()
+    os.chdir(root)
+    try:
+        assert U.config_statuses("trust_statuses") == set(), \
+            "пустой список прочитан как список из пустой строки — умолчание не включится"
+    finally:
+        os.chdir(cur)
+    cls, why = U.source_class("Sources/JIRA/PRJ-2.md", {"direct": {}, "indirect": {}},
+                              {"PRJ-2": "Анализ"}, {"закрыто"}, {"анализ"})
+    assert cls == "draft" and "сама задача" in why, (cls, why)
+
+    jira = root / "Sources" / "JIRA"
+    jira.mkdir(parents=True, exist_ok=True)
+    (jira / "PRJ-1.md").write_text('---\nkey: "PRJ-1"\nstatus: "Закрыто"\n---\n', encoding="utf-8")
+    (jira / "PRJ-2.md").write_text('---\nkey: "PRJ-2"\nstatus: "Анализ"\n---\n', encoding="utf-8")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text(json.dumps({"direct": {
+        "Sources/Confluence/Протоколы_встреч/Итог.md": [{"key": "PRJ-1", "why": "ключ"}],
+        "Sources/Confluence/Протоколы_встреч/Спор.md": [{"key": "PRJ-2", "why": "ключ"}]},
+        "indirect": {}}, ensure_ascii=False), encoding="utf-8")
+    for name, status, src in (("Алгоритм", "draft", "Sources/Confluence/Раздел_-_Алгоритмы/Расчёт.md"),
+                              ("Итог", "draft", "Sources/Confluence/Протоколы_встреч/Итог.md"),
+                              ("Спор", "knowledge", "Sources/Confluence/Протоколы_встреч/Спор.md"),
+                              ("Опора", "draft", "Sources/JIRA/PRJ-1.md")):
+        card(root, f"Concepts/{name}.md", status=status, kind="knowledge",
+             sources=f'\n  - "{src}"', body=f"{name} — знание.")
+    r = run("kb_trust.py", "--apply", cwd=root)
+    out = r.stdout if isinstance(r.stdout, str) else r.stdout.decode("utf-8", "ignore")
+    assert "по умолчанию" in out, f"пересчёт не сказал, что взял умолчание:\n{out}"
+    text = lambda n: (root / f"AuroraKnowledgeDB/Concepts/{n}.md").read_text(encoding="utf-8")
+    assert "status: knowledge" in text("Алгоритм"), "ветка алгоритмов не доверена по умолчанию"
+    assert "status: knowledge" in text("Итог"), "статус «Закрыто» не дал доверия по умолчанию"
+    assert "status: draft" in text("Спор"), "статус «Анализ» не признан предположением по умолчанию"
+    assert "status: knowledge" in text("Опора"), "карточка с опорой на задачу не взяла её статус"
+
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace("trusted_sources: []",
+                                                           "trusted_sources: [Raw/contract]"),
+                   encoding="utf-8")
+    run("kb_trust.py", "--apply", cwd=root)
+    assert "status: draft" in text("Алгоритм"), "явный список проекта не заменил умолчание"
+
+
+@test
+def test_settings_form_drops_the_dead_trust_key_and_clears_to_defaults(tmp: Path):
+    """Форма не пишет и не переносит `trusted_sections`; очищенное поле доверия — умолчание.
+
+    Ключ форма писала, а не читал ни один скрипт: доверие наследуется от источника, а не от
+    раздела базы. Поле доверия, которое человек стёр, должно вернуть настройку по умолчанию —
+    пустой ответ формы раньше молча оставлял прежний список.
+    """
+    import contextlib
+    import io
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("aurora_setup")
+    root = tmp / "проект"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text('project:\n  name: "П"\n  slug: "P"\n\natlassian:\n  jira:\n'
+                   '    project_key: "P"\n    trust_statuses: [Закрыто]\n\n'
+                   'verify:\n  trusted_sources: [Raw/contract]\n'
+                   '  trusted_sections: [Glossary, Reference]\n', encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        A.run_answers(root, {"name": "П"})
+    text = cfg.read_text(encoding="utf-8")
+    assert "trusted_sections" not in text, f"форма перенесла ключ, который никто не читает:\n{text}"
+    assert "trust_statuses: [Закрыто]" in text and "trusted_sources: [Raw/contract]" in text, \
+        f"форма потеряла заданные списки доверия:\n{text}"
+    with contextlib.redirect_stdout(io.StringIO()):
+        A.run_answers(root, {"trust_statuses": "", "trusted_sources": " "})
+    text = cfg.read_text(encoding="utf-8")
+    assert "trust_statuses: []" in text and "trusted_sources: []" in text, \
+        f"очищенное поле не вернуло настройку по умолчанию:\n{text}"
+    for rel in ("cockpit/ui/index.html", "templates/aurora.config.yaml.template"):
+        assert "trusted_sections" not in (KIT / rel).read_text(encoding="utf-8"), \
+            f"{rel} всё ещё предлагает мёртвый ключ"
+
+
+@test
+def test_trace_ignores_service_files_short_names_and_hubs(tmp: Path):
+    """Трассировка не связывает всё со всем: служебный файл, подстрока, общее имя, узел.
+
+    Живой случай: состояние синка перечисляло все страницы, короткие имена справочников
+    («Пол», «МНС») находились внутри других слов, а глоссарий упоминали все — и у каждого
+    косвенного артефакта набиралось 33 задачи из 34. Одна из них всегда была в анализе, и
+    закон оказывался черновиком из-за подзадачи про контракт.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    T = importlib.import_module("kb_trace_table")
+    root = make_project(tmp)
+    jira, conf = root / "Sources/JIRA", root / "Sources/Confluence"
+    jira.mkdir(parents=True, exist_ok=True)
+    conf.mkdir(parents=True, exist_ok=True)
+    (jira / "PRJ-1.md").write_text(
+        '---\nkey: "PRJ-1"\ntitle: "US-1.1. Экран"\nstatus: "Анализ"\n---\n', encoding="utf-8")
+    page = lambda rel, title, body: ((conf / rel).parent.mkdir(parents=True, exist_ok=True),
+                                     (conf / rel).write_text(f'---\ntitle: "{title}"\n---\n\n{body}\n',
+                                                             encoding="utf-8"))
+    page("US-1.1-Экран.md", "US-1.1. Экран", "Экран.")
+    page("Алгоритм.md", "Алгоритм", "см. US-1.1-Экран")
+    page("Термин.md", "Термин", "употреблён на экране US-1.1-Экран")
+    names = [f"Страница-{i:02d}" for i in range(25)]
+    for n in names:
+        page(f"{n}.md", n, "Термин встречается и здесь. Полный текст.")
+    page("Пол.md", "Пол", "см. US-1.1-Экран")
+    page("Сирота.md", "Сирота", "Полный список без ссылок.")
+    page("А/index.md", "Ветка А", "Оглавление.")
+    page("Б/index.md", "Ветка Б", "см. US-1.1-Экран")
+    page("Ссылка-на-оглавление.md", "Ссылка на оглавление", "см. index")
+    (conf / "sync_state.md").write_text(
+        "<!-- Confluence sync state — генерируется, не править руками -->\n| Title |\n|---|\n"
+        + "".join(f"| {n} |\n" for n in names + ["US-1.1-Экран", "Сирота", "Термин"]),
+        encoding="utf-8")
+
+    _tasks, arts = T.collect(str(root))
+    assert not any(a["path"].endswith("sync_state.md") for a in arts), "состояние синка стало артефактом"
+    t = T.build(str(root))
+    ind = {k.split("Sources/Confluence/", 1)[-1]: v for k, v in t["indirect"].items()}
+    assert "Алгоритм.md" in ind and ind["Алгоритм.md"][0]["depth"] == 1, f"прямой сосед потерян: {ind}"
+    assert "Пол.md" in ind, "страница с коротким именем потеряла свою связь"
+    assert "Сирота.md" not in ind, "подстрока «Пол» внутри «Полный» связала чужую страницу"
+    assert "Ссылка-на-оглавление.md" not in ind, "имя двух файлов (index) принято за адрес"
+    assert "Страница-00.md" not in ind, "трассировка прошла через страницу-узел"
+    assert any(h.endswith("Термин.md") for h in t["hubs"]), f"узел не распознан: {t['hubs']}"
+
+
+@test
+def test_build_plan_skips_sync_instructions_in_mirrors(tmp: Path):
+    """Правила и промпты прежних синков в зеркале — не источник знаний о проекте.
+
+    Живой случай: из правил перевода вики и задач в Markdown сборка сделала девять карточек и
+    разложила их по требованиям проекта. Выгрузка и аудит эти файлы узнавали, план сборки —
+    нет. В Raw/ правило не действует: там слово в имени не делает документ служебным.
+    """
+    root = make_project(tmp)
+    body = "Правило оформления. " * 40
+    conf = root / "Sources/Confluence"
+    conf.mkdir(parents=True, exist_ok=True)
+    for name in ("confluence-to-md-rules.md", "Confluence_prompt.md", "Алгоритм_расчёта.md"):
+        (conf / name).write_text(f"# {name}\n\n{body}\n", encoding="utf-8")
+    raw = root / "Raw/customer"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "Business_rules.md").write_text(f"# Правила бизнеса\n\n{body}\n", encoding="utf-8")
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    cur = os.getcwd()
+    os.chdir(root)
+    try:
+        B = importlib.import_module("build_plan")
+        got = [p for _g, p, _s in B.sources()]
+    finally:
+        os.chdir(cur)
+    assert any(p.endswith("Алгоритм_расчёта.md") for p in got), f"страница вики выпала из плана: {got}"
+    for bad in ("confluence-to-md-rules.md", "Confluence_prompt.md"):
+        assert not any(p.endswith(bad) for p in got), f"инструкция синка попала в план: {bad}"
+    assert any(p.endswith("Business_rules.md") for p in got), \
+        "документ заказчика выпал из плана из-за слова в имени"
+
+
+@test
 def test_artifact_codes_get_no_stubs_and_expansions_come_from_cards(tmp: Path):
     """Под голый код артефакта заготовка не заводится, а расшифровка берётся из карточек.
 

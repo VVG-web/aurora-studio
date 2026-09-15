@@ -19,6 +19,10 @@
 Одна задача-черновик перевешивает десять готовых: содержание ещё поменяется. Прямая связь
 сильнее косвенной — если прямая говорит «готово», трассировку не спрашиваем.
 
+Пустой список статусов или источников в конфиге — настройка по умолчанию, та же, что у
+эталонного проекта (`aurora_common.TRUST_STATUSES_DEFAULT` и соседи). Явный список проекта
+заменяет умолчание целиком.
+
 Понижение класса не стирает знание: тело остаётся, а в подвал пишется строка «класс
 понижен такого-то числа, задача вернулась в работу». Знание не перестало существовать —
 оно перестало быть подтверждённым, и это разные вещи.
@@ -35,14 +39,16 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (SERVICE_STATUS, card_sources, config_list, frontmatter,  # noqa: E402
-                           is_placeholder, split_frontmatter, walk_md,
-                           with_fields)
+from aurora_common import (ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
+                           TRUST_STATUSES_DEFAULT, card_sources, config_list,
+                           default_trusted_sources, frontmatter, is_placeholder,
+                           split_frontmatter, walk_md, with_fields)
 
 TODAY = date.today().isoformat()
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
+TASK_KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 
 def config_statuses(key: str) -> set:
@@ -51,7 +57,10 @@ def config_statuses(key: str) -> set:
         return set()
     m = re.search(rf"^\s*{key}\s*:\s*\[([^\]]*)\]",
                   open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
-    return {x.strip().strip('"\'').casefold() for x in m.group(1).split(",")} if m else set()
+    # Пустые элементы отбрасываются: `trust_statuses: []` давал множество из одной пустой
+    # строки, и проверка «список пуст» его не видела — умолчание не включалось никогда.
+    return {x.strip().strip('"\'').casefold() for x in m.group(1).split(",")
+            if x.strip().strip('"\'')} if m else set()
 
 
 def task_status(root: str) -> dict:
@@ -114,6 +123,19 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
         return "raw", "источник объявлен доверенным при подключении ссылки — доверие по определению"
     if said is False:
         return "draft", "источник подключён как недоверенный: галочка «доверять» не стоит"
+    # Источник — сама задача: карточка приводит задачу Jira как опору. Трассировка связывает
+    # задачи с артефактами, а не задачу с собой, и такой источник получал «связей с задачами
+    # нет», хотя статус лежит прямо в нём.
+    own = os.path.splitext(os.path.basename(src))[0]
+    if own in statuses and TASK_KEY_RE.match(own):
+        st = statuses[own]
+        if st.casefold() in trust:
+            return "trusted", f"источник — сама задача {own} в доверенном статусе «{st}»"
+        if st.casefold() in draft:
+            return "draft", (f"источник — сама задача {own} в статусе «{st}» — постановка "
+                             "ещё меняется")
+        return "unknown", (f"источник — задача {own}, её статус «{st or 'неизвестен'}» не "
+                           "отнесён ни к доверенным, ни к черновым")
     direct = table.get("direct", {}).get(src) or []
     for d in docs:
         d = d.replace("\\", "/").strip().rstrip("/")
@@ -203,13 +225,22 @@ def main() -> int:
     # это папка первоисточников; всё остальное (зеркало Confluence, отдельная папка
     # договоров, справочники) объявляет проект, потому что у каждого оно своё.
     docs = tuple(config_list("trusted_sources"))
-    if docs:
-        print(f"Доверенные источники из конфига: {', '.join(docs)}\n")
+    # Пустой список — настройка по умолчанию (решение 15.09.2026), а не «доверять нечему».
+    # Раньше пустые статусы останавливали пересчёт, а пустые источники оставляли всю вики
+    # без класса.
+    by_default = []
     if not trust:
-        print("В конфиге пуст `atlassian.jira.trust_statuses` — по какому статусу задачи "
-              "считать источник доверенным, движку неизвестно.\n"
-              "Заполните список в aurora.config.yaml, затем повторите.")
-        return 0
+        trust = {s.casefold() for s in TRUST_STATUSES_DEFAULT}
+        by_default.append("статусы доверия")
+    if not draft:
+        draft = {s.casefold() for s in ASSUMPTION_STATUSES_DEFAULT}
+        by_default.append("статусы предположения")
+    if not docs:
+        docs = tuple(default_trusted_sources(root))
+        by_default.append("доверенные источники")
+    if by_default:
+        print(f"Не заданы в конфиге, взяты по умолчанию: {', '.join(by_default)}.")
+    print(f"Доверенные источники: {', '.join(docs)}\n")
 
     counts, changes, moved, refreshed = {}, [], 0, 0
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):

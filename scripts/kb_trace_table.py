@@ -21,6 +21,14 @@
 артефакт → третий, у которого есть прямая связь. Дальше связь размывается настолько, что
 доверять ей нельзя: через три перехода в большой базе связано всё со всем.
 
+Сосед — страница, чьё имя или заголовок упомянуты в тексте **целым словом**. Служебные файлы
+зеркала (`sync_state.md`, журналы, промпты и правила прежних синков) в таблицу не входят:
+список страниц в состоянии синка связывал каждую страницу с каждой, и у любого артефакта
+набиралось 33 задачи из 34 — одна из них всегда в анализе, и класс доверия терял смысл.
+Имя, общее для двух файлов (`index`), адресом не считается. Через страницу, с которой связан
+больше чем каждый двадцатый артефакт (глоссарий, частый термин), трассировка не идёт: такая
+страница — словарь, а не зависимость.
+
 Таблица лежит в `AuroraKnowledgeDB/meta/trace/` — в базе, а не в `Sources/`: зеркало
 перезаписывает синк и чистит `--prune`, и таблица жила бы там до первой уборки. Рядом
 человекочитаемый свод `MOC/Трассировка.md`: это надо уметь открыть в Obsidian, а не только
@@ -40,6 +48,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import frontmatter, walk_md  # noqa: E402
+try:
+    from sources_core import SERVICE_RE
+except Exception:                                    # noqa: BLE001
+    SERVICE_RE = re.compile(r"(sync_state|update_log|sync_paths|sync_report|_prompt|_template|"
+                            r"_example|-rules|_rules|SYNC_|FINAL_SYNC|README)", re.I)
 
 try:
     import sources_registry as REG
@@ -55,6 +68,10 @@ TABLE = os.path.join(OUT_DIR, "trace.json")
 SUMMARY = os.path.join(OUT_DIR, "trace-summary.json")
 MOC = os.path.join("AuroraKnowledgeDB", "MOC", "Трассировка.md")
 DEPTH = 2                       # переходов по артефактам: дальше связь ничего не значит
+MIN_NAME = 3                    # короче трёх букв — слог, а не имя страницы
+HUB_SHARE, HUB_MIN = 20, 20     # узел: соседей больше каждого двадцатого артефакта, но не меньше 20
+# Файл, который начинается с пометки генерации, пишет машина: список, журнал, свод.
+GENERATED_RE = re.compile(r"\A\s*<!--[^>]*?(не править руками|генерируется)", re.I)
 
 # Номер истории: префикс при сравнении отбрасывается, значим только сам номер.
 NUM = re.compile(r"(?i)\b(?:US|AC|ALG|SPEC|REQ)?[\s._-]?(\d+(?:\.\d+){1,3})\b")
@@ -97,7 +114,13 @@ def collect(root: str = ".") -> tuple:
         if not os.path.isdir(full):
             continue
         for p in walk_md(full):
+            # Служебный файл зеркала — не артефакт и не задача. Состояние синка перечисляет
+            # все страницы и через имена связывало каждую с каждой.
+            if SERVICE_RE.search(os.path.basename(p)):
+                continue
             side = read_side(p)
+            if GENERATED_RE.match(side["text"]):
+                continue
             # Путь в таблице — как в карточке: относительно корня проекта. Иначе `./` от
             # обхода не совпадёт с `source:` карточки, и таблица окажется бесполезной,
             # оставаясь при этом внешне правильной.
@@ -146,26 +169,52 @@ def direct(tasks: list, arts: list) -> dict:
 
 
 def art_links(arts: list) -> dict:
-    """{артефакт: {артефакты, на которые он ссылается}} — по именам файлов зеркала."""
-    by_name = {os.path.splitext(os.path.basename(a["path"]))[0]: a["path"] for a in arts}
+    """{артефакт: {соседи}} — страницы, чьё имя или заголовок упомянуты целым словом.
+
+    Подстрока не годится: «Пол» есть в «Полный», «МНС» — в «МНС_РА», и короткое имя
+    справочника связывало с собой полбазы. Имя двух файлов сразу (`index` у каждой ветки)
+    не адрес — по нему не понять, о каком файле речь.
+    """
+    names: dict = {}
+    for a in arts:
+        stem = os.path.splitext(os.path.basename(a["path"]))[0]
+        for n in {stem, unq(a["fm"].get("title"))}:
+            if len(n) >= MIN_NAME:
+                names.setdefault(n, set()).add(a["path"])
+    names = {n: next(iter(p)) for n, p in names.items() if len(p) == 1}
     out = {a["path"]: set() for a in arts}
     for a in arts:
-        for name, path in by_name.items():
-            if path != a["path"] and name and name in a["text"]:
-                # Связь считается в обе стороны. «Алгоритм упомянут в критериях приёмки»
-                # и «критерии упоминают алгоритм» — одно и то же отношение, записанное с
-                # разных концов; направление ссылки в вики говорит о том, кто писал текст,
-                # а не о том, что от чего зависит.
-                out[a["path"]].add(path)
-                out.setdefault(path, set()).add(a["path"])
+        text = a["text"]
+        for name, path in names.items():
+            if path == a["path"] or name not in text:
+                continue
+            if not re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text):
+                continue
+            # Связь считается в обе стороны. «Алгоритм упомянут в критериях приёмки»
+            # и «критерии упоминают алгоритм» — одно и то же отношение, записанное с
+            # разных концов; направление ссылки в вики говорит о том, кто писал текст,
+            # а не о том, что от чего зависит.
+            out[a["path"]].add(path)
+            out[path].add(a["path"])
     return out
 
 
-def indirect(direct_map: dict, links: dict, depth: int = DEPTH) -> dict:
-    """{артефакт: [(ключ, путь трассировки, глубина)]} — связь через соседей."""
+def hubs(links: dict) -> set:
+    """Узлы — страницы, связанные больше чем с каждым двадцатым артефактом."""
+    cut = max(HUB_MIN, len(links) // HUB_SHARE)
+    return {k for k, v in links.items() if len(v) > cut}
+
+
+def indirect(direct_map: dict, links: dict, depth: int = DEPTH,
+             hubs: frozenset = frozenset()) -> dict:
+    """{артефакт: [(ключ, путь трассировки, глубина)]} — связь через соседей.
+
+    Через узел (`hubs`) путь не идёт и от узла не начинается: узел связан со всем, и путь
+    через него доказывает лишь то, что оба конца упоминают один термин.
+    """
     out: dict = {}
     for start in links:
-        if start in direct_map:
+        if start in direct_map or start in hubs:
             continue
         seen, front, found = {start}, [(start, [start])], {}
         for step in range(1, depth + 1):
@@ -179,7 +228,7 @@ def indirect(direct_map: dict, links: dict, depth: int = DEPTH) -> dict:
                     if nb in direct_map:
                         for key, _why in direct_map[nb]:
                             found.setdefault(key, (trail, step))
-                    else:
+                    elif nb not in hubs:
                         nxt.append((nb, trail))
             front = nxt
             if not front:
@@ -193,8 +242,10 @@ def indirect(direct_map: dict, links: dict, depth: int = DEPTH) -> dict:
 def build(root: str = ".") -> dict:
     tasks, arts = collect(root)
     dmap = direct(tasks, arts)
-    imap = indirect(dmap, art_links(arts))
-    return {"date": TODAY, "tasks": len(tasks), "artifacts": len(arts),
+    links = art_links(arts)
+    hub = hubs(links)
+    imap = indirect(dmap, links, hubs=hub)
+    return {"date": TODAY, "tasks": len(tasks), "artifacts": len(arts), "hubs": sorted(hub),
             "direct": {k: [{"key": key, "why": why} for key, why in v]
                        for k, v in dmap.items()},
             "indirect": {k: [{"key": key, "trail": tr, "depth": d} for key, tr, d in v]
@@ -211,7 +262,11 @@ def render_moc(t: dict) -> str:
          f"{len(t['direct'])} · косвенных: {len(t['indirect'])} · собрано {t['date']}_", "",
          "Прямая связь — совпавший номер или ссылка. Косвенная — трассировка через "
          "артефакты, до двух переходов. Класс доверия карточки считается по этой таблице: "
-         "`kb:trust`.", "", "## Прямые связи", "", "| Артефакт | Задачи | Чем доказано |",
+         "`kb:trust`.", ""] + ([
+             "Страницы-узлы, через которые трассировка не идёт: "
+             + ", ".join("/".join(h.split("/")[-2:]) for h in t["hubs"][:30]) + ".", ""]
+            if t.get("hubs") else []) + [
+         "## Прямые связи", "", "| Артефакт | Задачи | Чем доказано |",
          "|---|---|---|"]
     for path, rows in sorted(t["direct"].items())[:400]:
         keys = ", ".join(r["key"] for r in rows[:4])
@@ -240,6 +295,7 @@ def main() -> int:
     print(f"Задач в зеркале: {t['tasks']} · артефактов: {t['artifacts']}")
     print(f"Артефактов с прямой связью: {len(t['direct'])}")
     print(f"Артефактов со связью через трассировку: {len(t['indirect'])}")
+    print(f"Страниц-узлов, через которые трассировка не идёт: {len(t['hubs'])}")
     orphan = t["artifacts"] - len(t["direct"]) - len(t["indirect"])
     print(f"Без связи с задачами: {orphan} — их класс доверия будет «unknown»")
     if not a.apply:

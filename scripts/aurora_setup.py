@@ -37,7 +37,7 @@ def read_config(path: Path) -> dict:
         "web_depth": "", "web_assets": "", "web_max_pages": "",
         "jira_url": "", "jira_key": "", "jira_jql": "",
         "trust_statuses": "", "assumption_statuses": "",
-        "trusted_sources": "", "trusted_sections": "",
+        "trusted_sources": "",
         "threshold": "20",
     }
     if not path.is_file():
@@ -82,7 +82,7 @@ def read_config(path: Path) -> dict:
         cfg[key] = m.group(1).strip() if m else ""
     vm = re.search(r"\nverify:(.*?)(?:\n[a-z_]+:|\Z)", text, re.S)
     vblock = vm.group(1) if vm else ""
-    for key in ("trusted_sources", "trusted_sections"):
+    for key in ("trusted_sources",):
         m = re.search(rf'{key}:\s*\[([^\]]*)\]', vblock, re.M) if vblock else None
         cfg[key] = m.group(1).strip() if m else ""
     cfg["threshold"] = scalar("verified_threshold_pct", "20")
@@ -155,6 +155,12 @@ def sub_blocks(block: str) -> list:
     return subs
 
 
+# Ключи, которые движок больше не читает: форма их не пишет и из прежнего конфига не
+# переносит. `verify.trusted_sections` форма писала, а не читал никто — доверие наследуется
+# от источника, а не от раздела базы (решение 15.09.2026).
+RETIRED = {("verify", "trusted_sections")}
+
+
 def carry_unmanaged(old: str, new: str) -> str:
     """Перенести из прежнего конфига всё, чего шаблон настройки не пишет.
 
@@ -179,7 +185,7 @@ def carry_unmanaged(old: str, new: str) -> str:
         if not was:
             continue
         have = {k for k, _b in sub_blocks(block)}
-        lost = [b for k, b in sub_blocks(was) if k not in have]
+        lost = [b for k, b in sub_blocks(was) if k not in have and (key, k) not in RETIRED]
         if lost and block in out:
             out = out.replace(block, block.rstrip("\n") + "\n" + "\n".join(lost), 1)
     extra = [b.strip("\n") for k, b in top_blocks(old) if k not in have_top]
@@ -261,11 +267,12 @@ paths:
   sources_jira: Sources/JIRA
 
 verify:
-  # Доверие по происхождению (`kb:verify --by-source`): что собрано из договора, ТЗ или
-  # материалов заказчика, пересказывает уже подписанный документ; словарь и справочники —
-  # не выводы, а именование. Что считать таким источником, решает проект.
+  # Доверие по происхождению (`kb:trust`): что собрано из договора, ТЗ, материалов
+  # заказчика или ветки вики с описанием системы, пересказывает уже решённое. Пусто —
+  # по умолчанию: Raw/contract, Raw/customer, Raw/project, Raw/dictionaries и ветки
+  # модели данных, алгоритмов, схем логики, НСИ, глоссария, GUI, ролей и форматов данных.
+  # Пустые статусы задач выше — тоже умолчание. Явный список заменяет умолчание целиком.
   trusted_sources: [{c['trusted_sources']}]
-  trusted_sections: [{c['trusted_sections']}]
 
 privacy:
   # Режим kb:scrub — свойство контура, а не вкуса.
@@ -336,10 +343,14 @@ def run_answers(target: Path, answers: dict) -> int:
     cfg_path = target / "aurora.config.yaml"
     c = read_config(cfg_path)
     for key in ("name", "slug", "conf_url", "conf_space", "jira_url", "jira_key",
-                "jira_jql", "scrub", "threshold", "trust_statuses", "assumption_statuses",
-                "trusted_sources", "trusted_sections"):
+                "jira_jql", "scrub", "threshold"):
         if key in answers and str(answers[key]).strip():
             c[key] = str(answers[key]).strip()
+    # Поля доверия очищаются: пустой список — настройка по умолчанию, и человек, стерев
+    # поле, возвращается к ней. Прочие поля пустой ответ не трогает, как и раньше.
+    for key in ("trust_statuses", "assumption_statuses", "trusted_sources"):
+        if key in answers:
+            c[key] = str(answers[key] or "").strip()
     if "sync_roots" in answers:
         roots, unresolved = [], []
         for item in answers["sync_roots"] or []:
