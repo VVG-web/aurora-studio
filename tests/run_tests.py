@@ -2495,10 +2495,18 @@ def test_one_button_ends_with_what_is_left_to_the_human(tmp: Path):
     assert "sync:confluence" in ucmds and "agent:build" in ucmds and "kb:trust" in ucmds, \
         "«Обновить» не берёт новое из источников и не доводит его до знания"
 
+    lint_step = next(st for st in route["steps"] if st.get("cmd") == "kb:lint")
+    assert "--residue" in (lint_step.get("flags") or []), \
+        "«Починить базу» не запоминает остаток — кнопка «Починить» снова будет висеть вечно"
+
     root = make_project(tmp, git=True)
-    card(root, "Concepts/Понятие.md", "тело", status="imported", type="concept")
+    card(root, "Concepts/Понятие.md", "См. [[Нет-такой-карточки]].", status="draft", type="concept")
+    run("kb_lint.py", "--residue", cwd=root)
     out = run("aurora_todo.py", cwd=root).stdout
-    assert "Принять знание: 1 карточек" in out, f"остаток приёмки не назван:\n{out}"
+    assert "Принять" not in out and "Приёмка" not in out, \
+        f"в остатке снова приёмка — принимать карточки человеку не нужно:\n{out}"
+    assert "починка их не берёт" in out and "Нет-такой-карточки" in out, \
+        f"остаток починки не назван поимённо:\n{out}"
     assert "не чинится кнопкой" in out, "не сказано, почему остаток нельзя автоматизировать"
 
 
@@ -5047,6 +5055,64 @@ def test_the_panel_script_actually_parses(tmp: Path):
     cp = subprocess.run(cmd, capture_output=True, text=True)
     assert cp.returncode == 0, ("скрипт панели не разбирается — в браузере не выполнится "
                                 f"ни одна строка:\n{(cp.stderr or cp.stdout)[:800]}")
+
+
+@test
+def test_fix_button_is_offered_only_for_what_repair_can_fix(tmp: Path):
+    """«Починить» зовёт, только когда есть что чинить; линтер и ремонт судят одинаково.
+
+    Живой случай: после «Починить базу» оставалось 19 ошибок, которых не убирала ни одна
+    команда — ссылки из архива, образец `[[...]]`, ссылки на шаблоны проекта, имя-определение,
+    файл в своей папке проекта без типа, — и кнопка «Починить» висела после каждой починки.
+    """
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Термин.md", "Термин — понятие.", status="draft", type="concept")
+    card(root, "Concepts/Ссылки.md",
+         "См. [[Термин-—-важное-понятие,-которое-объясняет-всё|термин]], шаблон "
+         "[[spec_template]], образец [[...]] и [[Нет-такой-карточки]].",
+         status="draft", type="concept")
+    card(root, "_archive/Старое.md", "Когда-то: [[Пропавшее-давно]].", status="deprecated",
+         type="concept")
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates" / "spec_template.md").write_text("# шаблон\n", encoding="utf-8")
+    media = root / "AuroraKnowledgeDB" / "media"
+    media.mkdir(parents=True, exist_ok=True)
+    (media / "схема.png.md").write_text('---\ntitle: "схема.png"\nstatus: draft\n---\n\nСхема.\n',
+                                        encoding="utf-8")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8")
+                   + "paths:\n  extra_structure_dirs: [AuroraKnowledgeDB/media]\n", encoding="utf-8")
+
+    before = run("kb_lint.py", cwd=root).stdout
+    assert "Пропавшее-давно" not in before, "ссылка из архива названа ошибкой — ремонт архив не трогает"
+    assert "[[...]]" not in before, "образец из шаблона назван битой ссылкой — ремонт судит его иначе"
+    assert "схема.png.md: нет type" not in before, "своя папка проекта требует типа, которого в схеме нет"
+
+    run("kb_fix.py", "--links", "--apply", "--allow-dirty", cwd=root)
+    text = (root / "AuroraKnowledgeDB/Concepts/Ссылки.md").read_text(encoding="utf-8")
+    assert "[[Термин|термин]]" in text, f"имя-определение не сведено к термину:\n{text}"
+    assert "[[spec_template]]" not in text and "spec_template" in text, \
+        f"ссылка на шаблон проекта не снята:\n{text}"
+    term = (root / "AuroraKnowledgeDB/Concepts/Термин.md").read_text(encoding="utf-8")
+    assert "важное-понятие" not in term, "фраза-определение записана в синонимы термина"
+
+    r = run("kb_lint.py", "--residue", cwd=root)
+    assert "нового после починки: 0" in r.stdout and "Нет-такой-карточки" in r.stdout, r.stdout
+    card(root, "Concepts/Новая.md", "См. [[Ещё-одна-пропажа]].", status="draft", type="concept")
+    r = run("kb_lint.py", "--summary", cwd=root)
+    m = re.search(r"нового после починки: (\d+)", r.stdout)
+    assert m and int(m.group(1)) > 0, f"новая ошибка не отличена от остатка: {r.stdout}"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'fresh ? goRoute("fix","Починить базу")' in ui and '"Что решить вам"' in ui, \
+        "Мостик снова зовёт «Починить» при любой ошибке, а не при новой"
+    assert 'sc.id === "fix" ? null : fixButton(f.what)' in ui, \
+        "итог «Починить базу» предлагает запустить ремонт, который только что прошёл"
+    assert "шагов: ${s.times}" in ui, "итог маршрута повторяет одну строку на каждый шаг"
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'lint_info["fresh"]' in src, "сервер панели не отдаёт число новых ошибок"
 
 
 @test

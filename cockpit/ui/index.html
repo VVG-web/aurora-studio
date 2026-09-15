@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.111.1";
+const UI_VERSION = "1.112.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2154,6 +2154,9 @@ function baseCards(h, st){
   const noKind = k["(нет kind)"] || 0;
   const orphans = kinds["карточки без связей"] || 0;
   const broken = kinds["битые ссылки"] || 0;
+  // «Починить» зовём, только когда есть что чинить: последний шаг «Починить базу» запоминает
+  // остаток, и то, что починке не по силам, ведёт к списку решений, а не к той же кнопке.
+  const fresh = lint.fresh ?? lint.errors ?? 0;
   const trace = h.trace || {};
   const cards = [
     metricCard({title:"Состав базы", value: st.total ?? "—",
@@ -2180,7 +2183,8 @@ function baseCards(h, st){
       sub: orphans ? `${orphans} карточек без связей · ${broken} битых ссылок`
                    : broken ? `${broken} битых ссылок` : "до каждой карточки можно дойти",
       tone: (orphans + broken) ? "warn" : "",
-      go: (orphans + broken) ? goRoute("fix","Починить базу") : null}),
+      go: !(orphans + broken) ? null : fresh ? goRoute("fix","Починить базу")
+                                            : goCmd("ops:todo",[],"Что решить вам")}),
     metricCard({title:"Трассировка", value: trace.direct != null
         ? (trace.direct + (trace.indirect||0)) : "—",
       sub: trace.direct != null
@@ -2188,9 +2192,11 @@ function baseCards(h, st){
         : "не строилась: `ops:trace-table`",
       go: goCmd("ops:trace-table",["--apply"],"Построить таблицу")}),
     metricCard({title:"Ошибки базы", value: lint.errors ?? "—",
-      sub: Object.entries(kinds).slice(0,3).map(([n,v])=>`${v} ${n}`).join(" · ") || "нет",
+      sub: ((lint.errors||0) && !fresh ? "починка их не берёт — ждут вашего решения · " : "")
+           + (Object.entries(kinds).slice(0,3).map(([n,v])=>`${v} ${n}`).join(" · ") || "нет"),
       tone: (lint.errors||0) ? "warn" : "",
-      go: (lint.errors||0) ? goRoute("fix","Починить базу") : null}),
+      go: !(lint.errors||0) ? null : fresh ? goRoute("fix","Починить базу")
+                                          : goCmd("ops:todo",[],"Что решить вам")}),
     metricCard({title:"Свежесть", value: b.left != null ? b.left : "—",
       sub: b.left != null
         ? `источников не разобрано из ${b.total} · разобрано ${b.pct}%`
@@ -4204,13 +4210,24 @@ async function runRoute(sc, write, resume){
             + "без вреда.")
           : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
   }
+  // Одна команда бывает шагом маршрута несколько раз (в «Починить базу» — семь ремонтов).
+  // Семь одинаковых строк «нашла, что чинить» ничего не сообщают — даём одну, с числом шагов.
+  const once = new Map();
   summary.filter(s=>s.rc===1).forEach(s=>{
+    const was = once.get(s.cmd);
+    if (was){ was.times++; was.found.push(...s.found); }
+    else once.set(s.cmd, {cmd:s.cmd, times:1, found:[...s.found]});
+  });
+  [...once.values()].forEach(s=>{
     out.append(el("div",{class:"warn"},
-      `  ${s.cmd} — нашла, что чинить (это не ошибка маршрута):`));
+      `  ${s.cmd} — нашла, что чинить (это не ошибка маршрута)`
+      + (s.times > 1 ? ` · шагов: ${s.times}` : "") + ":"));
     if (!s.found.length)
       out.append(el("div",{class:"dim"}, "      подробности выше в выводе шага"));
     s.found.forEach(f=>{
-      const btn = fixButton(f.what);
+      // В самой «Починить базу» кнопка «Починить: kb:repair» — круг: ремонт только что прошёл,
+      // и остаток ему не по силам.
+      const btn = sc.id === "fix" ? null : fixButton(f.what);
       out.append(el("div",{class:"dim row",style:"gap:10px;align-items:center"},
         el("span",{style:"flex:1"},
           `      ${f.what}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : "")),

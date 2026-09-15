@@ -543,6 +543,40 @@ def link_refs(text: str) -> list:
     return [m.group(2).strip() for m in LINK_RE.finditer(text)]
 
 
+# Образец имени в шаблоне: `[[...]]`, `[[{{протокол}}]]`, `[[<имя>]]`. Такая ссылка не битая,
+# а показательная: объясняет автору, что сюда подставить. Правило общее для ремонта и линтера:
+# пока линтер звал образец битой ссылкой, а ремонт его пропускал, ошибка жила вечно, и
+# «Починить базу» звала к себе после каждой починки.
+TEMPLATE_LINK_RE = re.compile(r"\.\.\.|\{\{|<[^>]*>")
+PROJECT_FILE_DIRS = ("Templates", "TemplatesCommon", "Prompts")
+
+
+def is_template_link(target: str) -> bool:
+    """Образец имени в шаблоне, а не ссылка на карточку."""
+    return bool(TEMPLATE_LINK_RE.search(target))
+
+
+def project_file(name: str, root: str = ".") -> str:
+    """Путь к шаблону или промпту проекта, если ссылка указывает на него, а не на карточку.
+
+    Эти файлы лежат вне базы: Obsidian по ссылке их не откроет, карточкой они не станут.
+    """
+    leaf = os.path.basename((name or "").strip())
+    if not leaf:
+        return ""
+    want = {leaf, leaf + ".md"}
+    for base in PROJECT_FILE_DIRS:
+        full = os.path.join(root, base)
+        if not os.path.isdir(full):
+            continue
+        for dp, dirs, files in os.walk(full):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            hit = want & set(files)
+            if hit:
+                return os.path.join(dp, sorted(hit)[0]).replace("\\", "/")
+    return ""
+
+
 def rewrite_links(text: str, mapping: dict) -> str:
     """Переписать цели ссылок по карте {старая: новая}, сохранив якоря и подписи."""
     def sub(m):

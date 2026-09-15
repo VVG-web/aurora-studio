@@ -1381,6 +1381,11 @@ def health(project: str) -> dict:
     lint_info = {"cards": int(m.group(1)), "errors": int(m.group(2))} if m else {"raw": lint[:300]}
     lint_info["kinds"] = {k.strip(): int(n)
                           for k, n in re.findall(r"^## (.+?):\s*(\d+)\s*$", lint, re.M)}
+    # Сколько ошибок появилось после последней «Починить базу». Нет остатка — починку не
+    # запускали, и новым считается всё.
+    mf = re.search(r"нового после починки: (\d+)", lint)
+    if "errors" in lint_info:
+        lint_info["fresh"] = int(mf.group(1)) if mf else lint_info["errors"]
     baseline = read_text(os.path.join(project, "AuroraKnowledgeDB", "meta", "lint_baseline.txt")).strip()
     lint_info["baseline"] = int(baseline) if baseline.isdigit() else None
 

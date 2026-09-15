@@ -19,12 +19,12 @@
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 import argparse
-import os, re, sys, collections
+import json, os, re, sys, collections
 
 from aurora_common import looks_like_expansion  # noqa: F401
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
-                           card_sources, config_value, clean_meaning, frontmatter,
-                           is_service,
+                           card_sources, config_list, config_value, clean_meaning,
+                           frontmatter, is_service, is_template_link,
                            leaf_name, link_refs, project_terms)
 
 ROOT = "AuroraKnowledgeDB"
@@ -180,6 +180,9 @@ def main():
                     help="перечислить все находки, а не первые примеры (для очереди приёмки)")
     ap.add_argument("--summary", action="store_true",
                     help="только итоговая строка: карточек и ошибок")
+    ap.add_argument("--residue", action="store_true",
+                    help="запомнить нынешние ошибки как остаток после починки (последний шаг "
+                         "«Починить базу»): панель зовёт «Починить», только если появилось новое")
     ap.add_argument("--only", nargs="+", metavar="ПУТЬ", default=None,
                     help="судить только эти файлы (базу всё равно читаем целиком: без "
                          "неё не проверить ссылки). Так работает pre-commit: за чужие "
@@ -257,6 +260,10 @@ def main():
                     "карточки, и второй уровень с тем же именем прячет карточки от "
                     "оглавления и от ссылок по имени. Перенесите их уровнем выше")
 
+    # Папки, которые проект объявил своими (`paths → extra_structure_dirs`): типа в схеме у
+    # них нет, и требовать его не с чего.
+    declared = {d.replace("\\", "/").split("/", 2)[1] for d in config_list("extra_structure_dirs")
+                if d.replace("\\", "/").startswith(ROOT + "/") and "/" in d.replace("\\", "/")}
     # Словарь проекта читается один раз: он нужен проверке расшифровок ниже.
     terms = project_terms(ROOT)
     for rel, (fm, text) in cards.items():
@@ -276,8 +283,11 @@ def main():
             else:
                 actual, expected = (fm.get("type") or "").strip(), SECTION_TYPE.get(section)
                 if not actual:
-                    errors.append(f"{rel}: нет type: — раздел {section} ждёт "
-                                  f"`{expected or "тип из frontmatter.md"}`")
+                    # Своя папка проекта типа в схеме не имеет: ошибку «нет type» здесь не
+                    # убрал бы ни ремонт, ни человек — ставить нечего.
+                    if expected or section not in declared:
+                        errors.append(f"{rel}: нет type: — раздел {section} ждёт "
+                                      f"`{expected or "тип из frontmatter.md"}`")
                 elif actual not in known_types:
                     errors.append(f"{rel}: тип `{actual}` вне схемы (frontmatter.md)")
                 elif expected and actual != expected:
@@ -353,11 +363,20 @@ def main():
         # нечем: переписать журнал значит подделать отчёт о работе.
         if "/meta/agent-runs/" in rel or rel.startswith("meta/agent-runs/"):
             continue
+        # Архив выведен из базы, и ремонт его не трогает. Ссылка из архивной карточки в
+        # никуда — не долг базы: считать её ошибкой значит держать то, что ни одна команда
+        # не уберёт, и звать «Починить» после каждой починки.
+        if "/_archive/" in rel or rel.startswith("_archive/"):
+            continue
 
         for target in link_refs(text):
             # ссылки с путём внутри (Concepts/_index) исторически не проверяются:
             # они указывают на служебные индексы, а не на карточки
             if target.startswith("http") or "/" in target:
+                continue
+            # Образец в шаблоне (`[[...]]`, `[[{{имя}}]]`) — подсказка автору, а не ссылка.
+            # Ремонт пропускает его тем же правилом, и линтер обязан судить так же.
+            if is_template_link(target):
                 continue
             # Имя цели считаем ТЕМ ЖЕ правилом, что и ремонт: `leaf_name` снимает
             # расширение. Ссылка `[[JIRA_prompt.md]]` для ремонта разрешима (он снимает
@@ -478,7 +497,24 @@ def main():
         print(f"kb_lint: карточек {n}, ошибок {len(errors)} "
               f"(судим только переданные файлы: {len(only)})")
     else:
-        print(f"kb_lint: карточек {n}, ошибок {len(errors)}")
+        # Остаток после починки. Последний шаг «Починить базу» запоминает ошибки, которые
+        # ей не по силам; дальше итог говорит, сколько появилось нового. Панель зовёт
+        # «Починить», только когда новое есть, — иначе кнопка висела вечно: остаток не
+        # убирается починкой по определению.
+        residue_path = os.path.join(ROOT, "meta", "lint_residue.json")
+        fresh = None
+        if args.residue:
+            os.makedirs(os.path.dirname(residue_path), exist_ok=True)
+            with open(residue_path, "w", encoding="utf-8") as fh:
+                json.dump(sorted(errors), fh, ensure_ascii=False, indent=1)
+        if os.path.isfile(residue_path):
+            try:
+                left = set(json.load(open(residue_path, encoding="utf-8")))
+                fresh = sum(1 for e in errors if e not in left)
+            except (OSError, ValueError):
+                fresh = None
+        print(f"kb_lint: карточек {n}, ошибок {len(errors)}"
+              + (f" · нового после починки: {fresh}" if fresh is not None else ""))
     if summary or not errors:
         return 1 if errors else 0
 

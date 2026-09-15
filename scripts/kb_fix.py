@@ -50,8 +50,8 @@ from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            frontmatter,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
-                           is_service, link_refs, rewrite_links, set_field,
-                           translit_names)
+                           is_service, is_template_link, link_refs, project_file,
+                           rewrite_links, set_field, translit_names, TEMPLATE_LINK_RE)
 from datetime import date, datetime
 from difflib import get_close_matches
 
@@ -463,21 +463,7 @@ class Plan:
 # а не строкой в отчёте, которую легко счесть успехом.
 SET_ALIAS_FAILED: list = []
 
-TEMPLATE_LINK_RE = re.compile(r"\.\.\.|\{\{|<[^>]*>")
-
-
-def is_template_link(target: str) -> bool:
-    """Образец имени в шаблоне: `[[...]]`, `[[{{протокол}}]]`, `[[Statuses/...]]`.
-
-    Имя нарочно не `is_placeholder`: так теперь зовётся карточка-пустышка, и два разных
-    смысла под одним именем уже однажды столкнулись — импорт молча перекрыл локальную
-    функцию, и ремонт упал на живом прогоне.
-
-    Такая ссылка не битая, а показательная: она объясняет автору карточки, что сюда надо
-    подставить. Чинить нечем, и каждый прогон ремонта она возвращалась в «осталось
-    человеку» — от этого работа выглядела несходящейся.
-    """
-    return bool(TEMPLATE_LINK_RE.search(target))
+# Образец имени в шаблоне — правило общее с линтером: `aurora_common.is_template_link`.
 
 
 def source_file(name: str) -> str:
@@ -519,6 +505,13 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
                 mapping[target] = None          # None — снять разметку, оставить текст
                 plan.notes.append(f"  ссылка на файл [[{target}]] снята в {path}")
                 continue
+            # Ссылка на шаблон или промпт проекта (`[[spec_template]]`): файл лежит вне базы,
+            # Obsidian его не откроет, карточкой он не станет. Снимаем разметку, имя остаётся
+            # словами — как со ссылкой на файл зеркала.
+            if project_file(target):
+                mapping[target] = None
+                plan.notes.append(f"  ссылка на шаблон проекта [[{target}]] снята в {path}")
+                continue
             new, how = idx.resolve(target)
             if not new and m.group(3):
                 # Якорь мог оказаться частью имени: «Шаблон Протокола встречи (##) дата»
@@ -530,9 +523,20 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
                 if new:
                     how = "якорь оказался частью имени"
                     mapping[target + m.group(3)] = new
+            definition = False
+            if not new:
+                # Имя-определение: «МНС — налоговый орган …, ответственный за …» стало целью
+                # ссылки целиком. Термин — часть до тире, и если карточка на него есть, ссылка
+                # ведёт к ней. Синонимом такое имя не заводим: это фраза, а не имя.
+                head = re.split(r"-[—–]-| [—–] ", target, maxsplit=1)[0].strip()
+                if head and head != target:
+                    cand, _how = idx.resolve(head)
+                    if cand:
+                        new, how, definition = cand, "имя-определение сведено к термину", True
             if new:
                 mapping.setdefault(target, new)
-                aliases_for.setdefault(new, set()).add(leaf)
+                if not definition:
+                    aliases_for.setdefault(new, set()).add(leaf)
                 plan.notes.append(f"  ссылка [[{target}]] → [[{new}]]  ({how})  в {path}")
             elif (path, leaf) not in reported:
                 reported.add((path, leaf))
