@@ -2144,6 +2144,12 @@ def kinds_write(project: str, kinds: dict) -> dict:
     bad = [k for k in kinds if not re.fullmatch(r"[a-z][a-z0-9\-]{1,30}", k)]
     if bad:
         return {"error": "имя типа — латиница, цифры и дефис: " + ", ".join(bad[:3])}
+    # Папку результата создаём ниже сразу — значит, проверяем её до записи, а не после:
+    # путь к файлу в этом поле давал каталог с именем файла.
+    for kind, rec in sorted(kinds.items()):
+        why = AG_KINDS.out_problem(str((rec or {}).get("out") or ""))
+        if why:
+            return {"error": f"вид «{kind}»: папка результата — {why}"}
     lines = ["artifacts:"]
     for kind in sorted(kinds):
         rec = kinds[kind] or {}

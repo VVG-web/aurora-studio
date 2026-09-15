@@ -257,6 +257,42 @@ def privacy_mode() -> str:
     return m.group(1) if m else "report"
 
 
+FILE_LIKE_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{1,4}$")
+
+
+def sort_extra(paths: list) -> tuple:
+    """Разобрать папки вне схемы по случаям. → (путь файла, пустые, прочие).
+
+    Одно сообщение на все случаи вводило в заблуждение. Каталог `Artifacts/Реестр.md`
+    назывался «структурной папкой» с советом узаконить его, хотя это имя файла, принятое
+    за папку. Пустая папка, которой нет даже в git, числилась блокером. Разные случаи
+    лечатся по-разному — и называются по-разному.
+    """
+    file_like, empty, other = [], [], []
+    for rel in paths:
+        path = ROOT / rel
+        if FILE_LIKE_RE.search(path.name):
+            file_like.append(rel)
+        elif not any(f.is_file() and not f.name.startswith(".") for f in path.rglob("*")):
+            empty.append(rel)
+        else:
+            other.append(rel)
+    return file_like, empty, other
+
+
+def nearest_standard(rel: str, schema) -> str:
+    """Стандартная папка с тем же или близким именем: `Deliverables/drafts` → `Artifacts/drafts`."""
+    import difflib
+    by_name: dict = {}
+    for d in schema:
+        by_name.setdefault(d.rstrip("/").split("/")[-1].lower(), d)
+    name = rel.rstrip("/").split("/")[-1].lower()
+    if name in by_name and by_name[name] != rel:
+        return by_name[name]
+    close = difflib.get_close_matches(name, list(by_name), n=1, cutoff=0.8)
+    return by_name[close[0]] if close else ""
+
+
 def check_structure(verbose: bool = False):
     """Сверить фактические папки с фиксированной схемой движка.
 
@@ -329,22 +365,36 @@ def check_structure(verbose: bool = False):
                       " → на Linux/CI это станет разными папками; почините: "
                       "git mv <имя> <имя>_tmp && git mv <имя>_tmp <Имя>")
 
-    if extra_top:
-        empty = [n for n in extra_top if not any((ROOT / n).rglob("*"))]
-        note = f" (пустые: {', '.join(empty)})" if empty else ""
-        errors.append(f"папки верхнего уровня вне схемы движка: {', '.join(extra_top)}{note} "
-                      "→ перенесите содержимое в Workspaces/<задача>/, удалите пустое, "
+    top_file, top_empty, top_other = sort_extra(extra_top)
+    sub_file, sub_empty, sub_other = sort_extra(extra_sub)
+    if top_file or sub_file:
+        errors.append(f"путь файла принят за папку: {', '.join(top_file + sub_file)} → такой "
+                      "каталог появляется, когда в «папке результата» вида документа стоит путь "
+                      "к файлу; перенесите содержимое в стандартную папку и удалите каталог")
+    if top_empty or sub_empty:
+        warns.append(f"пустые папки вне схемы движка: {', '.join(top_empty + sub_empty)} "
+                     "→ удалите: пустая папка в git не попадает, а схему путает")
+    if top_other:
+        errors.append(f"папки верхнего уровня вне схемы движка: {', '.join(top_other)} "
+                      "→ перенесите содержимое в Workspaces/<задача>/, "
                       "закройте .gitignore, если это служебное, либо объявите своей папкой "
                       "проекта: paths → extra_structure_dirs в aurora.config.yaml")
     if stale:
         errors.append(f"закрыты .gitignore, но лежат в индексе git: {', '.join(stale)} "
                       "→ правило не действует задним числом, уберите из индекса: "
                       f"git rm -r --cached {' '.join(stale)}")
-    if extra_sub:
-        errors.append(f"структурные папки вне схемы движка: {', '.join(extra_sub)} "
-                      "→ либо стандартный тип, либо Workspaces/<задача>/, либо своя папка этого "
-                      "проекта — объявите её в aurora.config.yaml (paths → extra_structure_dirs); "
-                      "новый тип для всех проектов — только релизом kit'а")
+    if sub_other:
+        named = []
+        for rel in sub_other:
+            near = nearest_standard(rel, schema)
+            named.append(f"{rel} (ближе всего стандартная {near})" if near else rel)
+        # Сначала — стандартная папка и Workspaces; объявить свою — последний выход, а не
+        # первый: подсказка «объявите» на мусорной папке узаконивает мусор.
+        errors.append(f"структурные папки вне схемы движка: {', '.join(named)} "
+                      "→ перенесите содержимое в стандартную папку или в Workspaces/<задача>/; "
+                      "если папка нужна именно этому проекту — объявите её в aurora.config.yaml "
+                      "(paths → extra_structure_dirs); новый тип для всех проектов — только "
+                      "релизом kit'а")
     if unclaimed:
         warns.append(f"зеркала без модуля: {', '.join(unclaimed)} → подключите модуль "
                      "в aurora.config.yaml (sources:) или перенесите выгрузку в Raw/; "

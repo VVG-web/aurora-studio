@@ -5513,6 +5513,249 @@ def test_audit_reads_the_web_mirror_and_its_lifted_documents(tmp: Path):
 
 
 @test
+def test_settings_form_keeps_what_it_does_not_manage(tmp: Path):
+    """Сохранение формы настроек не стирает то, чего шаблон настройки не знает.
+
+    Живой случай: форма собирала конфиг заново по шаблону, и при добавлении веб-страницы
+    пропали реестр из десяти видов документов (`artifacts:`) и настройки отчёта (`reports:`).
+    Объявленная папка проекта (`paths → extra_structure_dirs`) ушла бы следующей.
+    """
+    import contextlib
+    import io
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("aurora_setup")
+    root = tmp / "проект"
+    root.mkdir()
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(
+        'aurora:\n  version: 1\n\nproject:\n  name: "Старое имя"\n  slug: "P"\n'
+        '  owner: "Отдел анализа"\n\npaths:\n  knowledge_db: AuroraKnowledgeDB\n'
+        "  extra_structure_dirs: [AuroraKnowledgeDB/media]\n\n# Виды документов проекта\n"
+        'artifacts:\n  opz:\n    title: "ОПЗ"\n    out: "Deliverables/work"\n\n'
+        "reports:\n  analyst:\n    year: 2026\n", encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        A.run_answers(root, {"name": "Новое имя"})
+    text = cfg.read_text(encoding="utf-8")
+    assert 'name: "Новое имя"' in text, "форма не записала то, что правила"
+    for need in ("extra_structure_dirs: [AuroraKnowledgeDB/media]", "# Виды документов проекта",
+                 "artifacts:", "  opz:", 'out: "Deliverables/work"', "reports:", "year: 2026",
+                 'owner: "Отдел анализа"'):
+        assert need in text, f"сохранение формы стёрло «{need}»:\n{text}"
+    for section in ("artifacts:", "paths:", "reports:", "project:"):
+        assert text.count("\n" + section) == 1, f"раздел {section} удвоился:\n{text}"
+    with contextlib.redirect_stdout(io.StringIO()):
+        A.run_answers(root, {})
+    assert cfg.read_text(encoding="utf-8") == text, "повторное сохранение формы меняет конфиг"
+
+
+@test
+def test_result_folder_is_a_folder_not_a_file_path(tmp: Path):
+    """Папка результата вида документа не может быть путём к файлу.
+
+    Живой случай: в поле папки стоял `Artifacts/Activity_Epic_US.md`, движок создал каталог
+    с именем файла и сложил туда копию реестра и свою работу, а doctor звал его структурной
+    папкой вне схемы.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    MK = importlib.import_module("make_kinds")
+    ck = importlib.import_module("aurora_cockpit")
+    R = importlib.import_module("agent_runner")
+    assert "путь к файлу" in MK.out_problem("Artifacts/Activity_Epic_US.md")
+    assert MK.out_problem("/abs/Deliverables") and MK.out_problem("../чужое")
+    assert not MK.out_problem("Deliverables/work") and not MK.out_problem("Artifacts/us/v1.2"), \
+        "обычная папка названа файлом"
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates" / "b.md").write_text("шаблон", encoding="utf-8")
+    bad = ck.kinds_write(str(root), {"backlog": {"title": "Бэклог", "template": "Templates/b.md",
+                                                  "out": "Artifacts/Activity_Epic_US.md"}})
+    assert "error" in bad and not (root / "Artifacts" / "Activity_Epic_US.md").exists(), \
+        f"панель приняла путь к файлу и создала каталог с его именем: {bad}"
+    assert ck.kinds_write(str(root), {"pr": {"title": "ПР", "template": "Templates/b.md",
+                                             "out": "Deliverables/work"}}).get("ok")
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace('out: "Deliverables/work"',
+                                                           'out: "Artifacts/Реестр.md"'),
+                   encoding="utf-8")
+    assert any("путь к файлу" in why for _k, why in MK.check(str(root), MK.read_kinds(str(root)))), \
+        "реестр видов не замечает путь к файлу в папке результата"
+    spec = R.make_spec(str(root), "pr")
+    assert "путь к файлу" in spec.get("error", ""), f"агент изготовления возьмёт такой вид в работу: {spec}"
+
+
+@test
+def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
+    """Задача Jira в статусе-предположении сильнее доверенной папки — при прямой связи.
+
+    Решение заказчика 15.09: доверие наследуется от источника, но документ, прямо связанный
+    с задачей, чья постановка ещё меняется, говорит о нерешённом. Через трассировку одна
+    широкая задача понизила бы сотни карточек, поэтому косвенная связь класс не трогает.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    U = importlib.import_module("kb_trust")
+    folder = "Sources/Confluence/Архитектура"
+    table = {"direct": {f"{folder}/A.md": [{"key": "PRJ-9", "why": "ключ"}],
+                        f"{folder}/B.md": [{"key": "PRJ-1", "why": "ключ"}]},
+             "indirect": {f"{folder}/C.md": [{"key": "PRJ-9", "trail": ["C", "A"], "depth": 1}]}}
+    st = {"PRJ-1": "Закрыто", "PRJ-9": "Бэклог"}
+    trust, draft, docs = {"закрыто"}, {"бэклог"}, (folder,)
+    cls, why = U.source_class(f"{folder}/A.md", table, st, trust, draft, docs)
+    assert cls == "draft" and "PRJ-9" in why and "сильнее папки" in why, (cls, why)
+    assert U.source_class(f"{folder}/B.md", table, st, trust, draft, docs)[0] == "raw", \
+        "задача в доверенном статусе понизила документ из доверенной папки"
+    assert U.source_class(f"{folder}/C.md", table, st, trust, draft, docs)[0] == "raw", \
+        "косвенная связь понизила документ — одна широкая задача уронит сотни карточек"
+    assert U.source_class(f"{folder}/D.md", table, st, trust, draft, docs)[0] == "raw"
+
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    fix = scen[scen.index("[fix]"):]
+    fix = fix[:fix.index("\n[", 1)]
+    for need in ("ops:trace-table |", "kb:trust |", "--drop-code-stubs"):
+        assert need in fix, f"в «Починить базу» нет шага {need}"
+    assert fix.index("kb:trust |") < fix.index("kb:embed |"), "доверие пересчитывается после индекса"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "`источники ${h.build.pct}%`" in ui, "на карточке Мостика нет второго числа — разбора источников"
+
+
+@test
+def test_artifact_codes_get_no_stubs_and_expansions_come_from_cards(tmp: Path):
+    """Под голый код артефакта заготовка не заводится, а расшифровка берётся из карточек.
+
+    Решения заказчика: заготовки под US/AC/Epic запрещены так же, как карточки из задач Jira
+    (решения DR — предмет знания); расшифровку сокращения можно брать из текста самих
+    карточек, если она сходится по первым буквам слов.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    F = importlib.import_module("kb_fix")
+    for code in ("US-4.4.4", "AC-4.4", "REQ-044", "SPEC-012", "Epic 3", "Epic-3", "Эпик 2.1"):
+        assert F.ARTIFACT_CODE_RE.match(code), f"код артефакта не узнан: {code}"
+    for name in ("DR-0012", "ER.AS.KSM", "ПП-АРМ", "US-3.6.6 Получение сальдо"):
+        assert not F.ARTIFACT_CODE_RE.match(name), f"не код артефакта принят за код: {name}"
+    assert F.acronym_fits("ЭСФ", "электронный счёт-фактура")
+    assert F.acronym_fits("FTA", "Federal Tax Authority")
+    assert F.acronym_fits("НДС", "налог на добавленную стоимость")
+    assert not F.acronym_fits("НДС", "см. раздел 3")
+
+    class C:
+        def __init__(self, text):
+            self.text = text
+    got = F.expansions_from_cards({
+        "a": C("Счёт ЭСФ (электронный счёт-фактура) выставляется продавцом."),
+        "b": C("Документ принимает Federal Tax Authority (FTA) в течение дня."),
+        "c": C("НДС (см. раздел 3) начисляется отдельно.")})
+    assert got.get("эсф") == "электронный счёт-фактура" and got.get("fta") == "Federal Tax Authority", got
+    assert "ндс" not in got, f"пояснение в скобках принято за расшифровку: {got}"
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    card(root, "Concepts/Реестр.md", "Реестр описан в [[US-4.4.4]] и связан с [[Новое-понятие]].",
+         status="draft")
+    run("kb_fix.py", "--stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
+    assert (kb / "Concepts" / "Новое-понятие.md").exists(), "заготовка под понятие не заведена"
+    assert not list(kb.rglob("US-4.4.4.md")), "под код истории заведена заготовка"
+
+    card(root, "Concepts/US-4.4.4.md", "_Заготовка: имя названо в базе, знания пока нет._",
+         status="placeholder", tags="[заготовка]")
+    card(root, "Concepts/AC-4.4.md", "Критерии приёмки реестра: " + "поле заполнено. " * 10,
+         status="draft")
+    run("kb_fix.py", "--drop-code-stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
+    assert (kb / "_archive" / "US-4.4.4.md").exists() and not (kb / "Concepts" / "US-4.4.4.md").exists(), \
+        "пустышка под код артефакта осталась в базе"
+    assert (kb / "Concepts" / "AC-4.4.md").exists(), "карточка с содержанием убрана вместе с пустышками"
+    text = (kb / "Concepts" / "Реестр.md").read_text(encoding="utf-8")
+    assert "US-4.4.4" in text and "[[US-4.4.4]]" not in text, "ссылка на снятый код осталась битой"
+
+
+@test
+def test_faq_question_is_one_section_and_a_card_fills_its_shadow_stub(tmp: Path):
+    """Вопрос FAQ — одна секция целиком, а знание дописывается в заготовку из другого раздела.
+
+    Живые случаи: склейка коротких секций уносила заголовок «Вопрос 5» в хвост предыдущего
+    вопроса, и ответ на него не попал ни в одну карточку. И путь `--card` заводил знание в
+    своём разделе рядом с пустой заготовкой того же имени — шесть таких пар на проекте.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    BP = importlib.import_module("build_plan")
+    text = ("# FAQ\n\n**Вопрос 1. Сроки оформления**\n\n**Проблема:**\n\n"
+            + "Описание проблемы первого вопроса. " * 3 + "\n\n**Вопросы:**\n\n- "
+            + "Как быть в таком случае? " * 5 + '\n\n**<span class="mark">Ответ:</span>**\n\n'
+            "**Да, оформлять необходимо.**\n\n**Вопрос 2. Навигационные пломбы**\n\n**Проблема:**\n\n"
+            "С 11 февраля начался этап применения пломб.\n\n**Вопросы:**\n\n- "
+            + "Будет ли исключение из системы? " * 5 + '\n\n**<span class="mark">Ответ:</span>**\n\n'
+            "**Исключения не предусматриваются.**\n")
+    secs = {t.split(".")[0]: b for t, b in BP.sections(text) if t.startswith("Вопрос")}
+    assert set(secs) == {"Вопрос 1", "Вопрос 2"}, f"вопросы нарезаны не по одному: {list(secs)}"
+    assert "Да, оформлять" in secs["Вопрос 1"] and "пломб" not in secs["Вопрос 1"], \
+        "начало следующего вопроса уехало в хвост предыдущего"
+    assert "Исключения не предусматриваются" in secs["Вопрос 2"], "ответ оторван от своего вопроса"
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    card(root, "Glossary/ПП-АРМ.md", "_Заготовка: имя названо в базе, знания о предмете пока нет._",
+         status="placeholder", tags="[заготовка]")
+    src = root / "Sources" / "Confluence" / "ПП.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# ПП АРМ\n\n## Назначение\n\n" + "Подсистема принимает документы. " * 12 + "\n",
+                   encoding="utf-8")
+    run("build_plan.py", "--card", "ПП АРМ", "--source", "Sources/Confluence/ПП.md",
+        "--sections", "1", "--to", "Systems", "--apply", cwd=root, expect_rc=None)
+    assert not (kb / "Systems" / "ПП-АРМ.md").exists(), "рядом с заготовкой заведена вторая карточка"
+    got = (kb / "Glossary" / "ПП-АРМ.md").read_text(encoding="utf-8")
+    assert "Подсистема принимает документы" in got, "знание не дописано в существующую карточку"
+    assert "status: placeholder" not in got and "_Заготовка:" not in got, \
+        "наполненная карточка осталась заготовкой — её не найдут в поиске"
+
+
+@test
+def test_golden_targets_are_proposed_not_rewritten(tmp: Path):
+    """Переезд цели эталона предлагается списком, а переписываются только принятые строки.
+
+    Эталон — измерительный прибор: прибор, который сам подгоняется под базу, перестаёт ловить
+    деградацию (решение заказчика 15.09). Кандидата ищут по тексту вопроса и ответа.
+    """
+    import contextlib
+    import io
+    from unittest.mock import patch
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    Q = importlib.import_module("kb_search_quality")
+    root = make_project(tmp)
+    card(root, "Concepts/Движение-платежа.md", "Платёж проходит путь от банка до казначейства.",
+         status="knowledge")
+    gold = root / "AuroraKnowledgeDB" / "meta" / "golden_questions.md"
+    gold.parent.mkdir(parents=True, exist_ok=True)
+    gold.write_text("# Эталон\n\n| # | Вопрос | Эталон | Карточки |\n|---|---|---|---|\n"
+                    "| 1 | Какой путь проходит платёж? | от банка до казначейства | [[Путь-платежа-ОП]] |\n"
+                    "| 2 | Что такое реестр деклараций? | список поданных деклараций | [[Реестр-НД]] |\n",
+                    encoding="utf-8")
+    before = gold.read_text(encoding="utf-8")
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        with patch("kb_search_quality.ranked", return_value=[("Движение-платежа", 0.9)]):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                Q.golden_remap({}, "m", set(), False)
+            assert gold.read_text(encoding="utf-8") == before, "предложение переписало эталон само"
+            assert "Путь-платежа-ОП" in buf.getvalue() and "Движение-платежа" in buf.getvalue(), \
+                f"предложение не названо: {buf.getvalue()[:400]}"
+            with contextlib.redirect_stdout(io.StringIO()):
+                Q.golden_remap({}, "m", {1}, True)
+    finally:
+        os.chdir(cwd)
+    text = gold.read_text(encoding="utf-8")
+    assert "| 1 | Какой путь проходит платёж? | от банка до казначейства | [[Движение-платежа]] |" in text, text
+    assert "[[Реестр-НД]]" in text, "переписана строка, которую человек не принимал"
+
+
+@test
 def test_running_command_survives_a_page_reload(tmp: Path):
     """Работающая команда видна после перезагрузки страницы, и второй запуск переспрашивают.
 
@@ -10298,10 +10541,68 @@ def test_structure_spots_ignored_but_tracked(tmp: Path):
 def test_doctor_enforces_fixed_structure(tmp: Path):
     root = make_project(tmp)
     (root / "Artifacts" / "мои-схемы").mkdir()
+    (root / "Artifacts" / "мои-схемы" / "схема.md").write_text("схема", encoding="utf-8")
     (root / "СвояПапка").mkdir()
     cp = run("aurora_doctor.py", "--structure", cwd=root)
     assert "СвояПапка" in cp.stdout and "мои-схемы" in cp.stdout, "самодеятельные папки не пойманы"
     assert cp.returncode == 1, "нарушение схемы должно быть ошибкой"
+    # Пустая папка в git не попадает и знаний не держит: это предупреждение «удалите»,
+    # а не блокер (решение заказчика 15.09).
+    warn = [l for l in cp.stdout.splitlines() if l.startswith("WARN") and "СвояПапка" in l]
+    assert warn and "удалите" in warn[0], f"пустая папка не названа предупреждением:\n{cp.stdout}"
+
+
+@test
+def test_doctor_names_each_kind_of_folder_outside_the_schema(tmp: Path):
+    """Каталог с именем файла, пустая папка и чужая папка называются каждый своим случаем.
+
+    Живой случай на проекте: `Artifacts/Activity_Epic_US.md/`, пустые `Artifacts/backlog` и
+    `Deliverables/drafts` — все трое шли одним блокером «структурные папки вне схемы» с
+    советом объявить их своими, то есть узаконить мусор.
+    """
+    root = make_project(tmp)
+    (root / "Artifacts" / "Реестр.md").mkdir()
+    (root / "Artifacts" / "Реестр.md" / "работа.md").write_text("текст", encoding="utf-8")
+    (root / "Artifacts" / "backlog").mkdir()
+    (root / "Deliverables" / "drafts").mkdir()
+    (root / "Deliverables" / "drafts" / "черновик.md").write_text("текст", encoding="utf-8")
+    cp = run("aurora_doctor.py", "--structure", cwd=root, expect_rc=None)
+    errs = [l for l in cp.stdout.splitlines() if l.startswith("ERROR")]
+    warns = [l for l in cp.stdout.splitlines() if l.startswith("WARN")]
+    assert any("путь файла принят за папку" in l and "Artifacts/Реестр.md" in l for l in errs), \
+        f"каталог с именем файла не назван своим случаем:\n{cp.stdout}"
+    assert any("Artifacts/backlog" in l and "удалите" in l for l in warns) \
+        and not any("Artifacts/backlog" in l for l in errs), "пустая папка осталась блокером"
+    other = next((l for l in errs if "Deliverables/drafts" in l), "")
+    assert "ближе всего стандартная Artifacts/drafts" in other, \
+        f"не названа ближайшая стандартная папка: {other}"
+    assert other.index("стандартную папку") < other.index("extra_structure_dirs"), \
+        "совет объявить свою папку стоит раньше совета перенести в стандартную"
+
+
+@test
+def test_trust_basis_is_written_even_when_status_stays(tmp: Path):
+    """Т-68: вердикт доверия пишется в карточку и при прежнем статусе — и только при перемене.
+
+    Карточка, которая была знанием и осталась им, основания не получала, и статистика звала
+    это «доверие не считалось». А запись на каждом прогоне трогала бы всю базу.
+    """
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text((cfg.read_text(encoding="utf-8") if cfg.exists() else "")
+                   + "\ntrust_statuses: [Закрыто]\n", encoding="utf-8")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    card(root, "Concepts/Положение.md", status="knowledge", kind="knowledge",
+         sources='\n  - "Raw/contract/ГК.md"', body="Положение договора о сроках.")
+    path = root / "AuroraKnowledgeDB/Concepts/Положение.md"
+    run("kb_trust.py", "--apply", cwd=root)
+    first = path.read_text(encoding="utf-8")
+    assert "status: knowledge" in first and "trust: raw" in first and "trust_basis:" in first, \
+        f"основание не записано при неизменном статусе:\n{first[:400]}"
+    run("kb_trust.py", "--apply", cwd=root)
+    assert path.read_text(encoding="utf-8") == first, "повторный пересчёт переписал неизменившуюся карточку"
 
 
 @test

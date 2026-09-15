@@ -108,6 +108,27 @@ def read_kinds(root: str = ".") -> dict:
     return kinds
 
 
+def out_problem(out: str) -> str:
+    """Что не так с папкой результата. Пусто — годится.
+
+    Живой случай: у вида документа в поле папки стоял `Artifacts/Activity_Epic_US.md`, и
+    движок создал каталог с именем файла, сложив туда копию реестра и свою работу. Doctor
+    потом звал его «структурной папкой вне схемы». Правило одно на всех, кто создаёт папку
+    результата: реестр, панель при записи видов, агент изготовления.
+    """
+    out = (out or "").strip().strip('"').replace("\\", "/").rstrip("/")
+    if not out:
+        return ""
+    if os.path.isabs(out) or re.match(r"^[A-Za-z]:", out):
+        return "путь абсолютный, а папка результата лежит внутри проекта"
+    if ".." in out.split("/"):
+        return "путь выходит за пределы проекта"
+    if re.search(r"\.[A-Za-z][A-Za-z0-9]{1,4}$", out.split("/")[-1]):
+        return (f"«{out}» — путь к файлу, а не папка: движок создал бы каталог с именем "
+                "файла")
+    return ""
+
+
 def check(root: str, kinds: dict) -> list:
     """[(тип, что не так)] — объявленное, но не существующее на диске."""
     bad = []
@@ -120,6 +141,8 @@ def check(root: str, kinds: dict) -> list:
             bad.append((kind, f"шаблона нет на диске: {tpl}"))
         if not out:
             bad.append((kind, "не указана папка результата"))
+        elif out_problem(out):
+            bad.append((kind, out_problem(out)))
         elif not os.path.isdir(os.path.join(root, out)):
             bad.append((kind, f"папки результата нет: {out}/"))
     return bad

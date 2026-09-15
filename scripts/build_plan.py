@@ -517,6 +517,34 @@ MIN_SECTION = 200          # короче — подпись под картин
 ATOMIC_MAX = 12_000     # символов: длиннее — это не атом, а нечитанный документ
 
 
+# «Вопрос 5. …» — заголовок вопроса в документе вопросов и ответов. Внутри вопроса свои
+# жирные подзаголовки («Проблема», «Вопросы», «Ответ») и жирные строки ответа, и порознь
+# они короче порога: склейка приклеивала их назад, к соседу, — и заголовок следующего
+# вопроса уезжал в хвост предыдущего. На живом проекте так «Вопрос 5» о навигационных
+# пломбах оказался в карточке о возврате обеспечительного платежа, а ответ на него — ни в
+# одной карточке.
+QUESTION_HEAD_RE = re.compile(r"^(?:Вопрос|Question)\s*№?\s*\d+[.):]?\s", re.I)
+
+
+def group_questions(out: list) -> list:
+    """Секции документа вопросов и ответов → по одной на вопрос: всё до следующего «Вопрос N.»."""
+    def clean(t: str) -> str:
+        return re.sub(r"<[^>]+>", "", t or "").strip()
+    if sum(1 for t, _b in out if QUESTION_HEAD_RE.match(clean(t))) < 2:
+        return out
+    grouped: list = []
+    in_question = False
+    for t, b in out:
+        if QUESTION_HEAD_RE.match(clean(t)):
+            grouped.append([t, b])
+            in_question = True
+        elif in_question:
+            grouped[-1][1] = (grouped[-1][1] + f"\n\n**{t}**" + (f"\n\n{b}" if b else "")).strip()
+        else:
+            grouped.append([t, b])
+    return [(t, b) for t, b in grouped]
+
+
 def sections(text: str) -> list:
     """[(заголовок, тело)] — источник, разрезанный по его собственной структуре.
 
@@ -548,6 +576,7 @@ def sections(text: str) -> list:
             buf.append(line)
     if title:
         out.append((title, "\n".join(buf).strip()))
+    out = group_questions(out)
     # Короткая секция ПРИСОЕДИНЯЕТСЯ к соседней, а не выбрасывается. Порог заводился,
     # чтобы не плодить карточки из огрызков, — но он молча терял содержимое: на живом
     # источнике «Расписание запуска алгоритмов» таблица с алгоритмом, периодичностью и
@@ -667,7 +696,7 @@ QUOTES_MARK = "## Источник (перенесено дословно)"
 FOOTER_MARK = "## История изменений"
 
 
-def find_card(name: str, root: str = "") -> str:
+def find_card(name: str, root: str = "", exact: bool = False) -> str:
     """Путь карточки по имени или синониму. Пусто — такой карточки нет.
 
     Сравниваем и «свёрнуто» — без учёта регистра и разделителей, — и прощаем опечатку в
@@ -697,8 +726,11 @@ def find_card(name: str, root: str = "") -> str:
         stem = os.path.basename(path)[:-3]
         if stem in want:
             return path
+        # `exact` — без поправки на опечатку: заводя НОВУЮ карточку, дописывать в соседа
+        # с похожим именем нельзя — это другое понятие, пока не доказано обратное.
         if not fallback and (fold_hard(stem) in folded
-                             or any(one_typo(fold_hard(stem), f) for f in folded)):
+                             or (not exact and any(one_typo(fold_hard(stem), f)
+                                                   for f in folded))):
             fallback = path
         if not fallback:
             text = head_text(path)
@@ -864,6 +896,27 @@ def by_line(model: str) -> str:
     return f'built_by: "{model}"\n' if model else ""
 
 
+def stub_text(text: str) -> bool:
+    """Карточка — заготовка без знания? Определение одно на движок: `is_placeholder`."""
+    from aurora_common import frontmatter as _fm, is_placeholder as _stub
+    return _stub(_fm(text), text)
+
+
+def unmark_placeholder(path: str) -> None:
+    """Снять с наполненной карточки оба признака заготовки и служебные строки пустышки.
+
+    Снимаем ОБА признака — статус и тег: `is_placeholder` читает и то и другое, и со
+    снятым одним карточка знания по-прежнему числилась бы пустышкой.
+    """
+    from aurora_common import with_fields
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    text = with_fields(text, {"status": "draft"})
+    text = re.sub(r"(?m)^tags:\s*\[заготовка\]\s*$", "tags: []", text, count=1)
+    text = "\n".join(line for line in text.split("\n")
+                     if not line.startswith(("_Заготовка:", "_Наполните её")))
+    open(path, "w", encoding="utf-8").write(text)
+
+
 def build_card(title: str, source: str, spec: str, into: str, apply: bool,
                summary: str = "", paras: str = "", root: str = "",
                append_to: str = "", by: str = "") -> int:
@@ -936,9 +989,12 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             title, append_to = append_to, ""
         else:
             old_text = open(target, encoding="utf-8", errors="ignore").read()
+            was_stub = stub_text(old_text)
             rc = append_card(target, old_text, body, source, apply)
             if rc == 0 and apply:
                 add_er_labels(target, split_er_label(append_to)[1])
+                if was_stub:
+                    unmark_placeholder(target)
             return rc
 
     # Сущность модели данных называется кодом, подпись уходит в синонимы (Т-74). Разрез
@@ -959,6 +1015,25 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             if rc == 0 and apply:
                 add_er_labels(target, er_labels)
             return rc
+
+    # Заготовка-тень: карточка с этим именем уже есть в ДРУГОМ разделе. Путь `--card` искал
+    # только в своём: рядом с пустой заготовкой в Glossary рождалось знание в Systems,
+    # заготовка оставалась пустой навсегда, а знание — без входящих ссылок. На живом проекте
+    # таких пар было шесть. Карточка — сущность: знание дописывается в неё, а не рядом.
+    own = os.path.join(root, KB_ROOT, into, card_filename(title) + ".md") if root \
+        else os.path.join(KB_ROOT, into, card_filename(title) + ".md")
+    elsewhere = find_card(title, root, exact=True)
+    if elsewhere and os.path.normpath(elsewhere) != os.path.normpath(own):
+        old_text = open(elsewhere, encoding="utf-8", errors="ignore").read()
+        was_stub = stub_text(old_text)
+        if source in card_sources(old_text):
+            rc = refresh_card(elsewhere, old_text, body, source, apply)
+        else:
+            rc = append_card(elsewhere, old_text, body, source, apply)
+        if rc == 0 and apply and was_stub:
+            unmark_placeholder(elsewhere)
+        print(f"  ↳ «{title}» уже есть: {elsewhere} — знание дописано туда, а не рядом")
+        return rc
 
     safe = card_filename(title)
     path = os.path.join(KB_ROOT, into, safe + ".md")

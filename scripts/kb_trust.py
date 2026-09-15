@@ -114,12 +114,22 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
         return "raw", "источник объявлен доверенным при подключении ссылки — доверие по определению"
     if said is False:
         return "draft", "источник подключён как недоверенный: галочка «доверять» не стоит"
+    direct = table.get("direct", {}).get(src) or []
     for d in docs:
         d = d.replace("\\", "/").strip().rstrip("/")
         if d and (src == d or src.startswith(d + "/")):
+            # Задача сильнее папки (решение заказчика 15.09.2026). Папка объявляет доверие
+            # документу по его природе, но документ, ПРЯМО связанный с задачей, чья
+            # постановка ещё меняется, говорит о том, что ещё не решено. Только прямая
+            # связь: через трассировку одна широкая задача понизила бы сотни карточек.
+            open_task = next(((r["key"], statuses.get(r["key"], "")) for r in direct
+                              if statuses.get(r["key"], "").casefold() in draft), None)
+            if open_task:
+                return "draft", (f"источник в доверенной «{d}», но прямо связан с задачей "
+                                 f"{open_task[0]} в статусе «{open_task[1]}» — задача "
+                                 "сильнее папки: постановка ещё меняется")
             return "raw", (f"источник в «{d}» — объявлен доверенным в конфиге проекта "
                            f"(`trusted_sources`), доверие по определению")
-    direct = table.get("direct", {}).get(src) or []
     indirect = table.get("indirect", {}).get(src) or []
     rows = [(r["key"], r["why"], "прямая") for r in direct] or \
            [(r["key"], " → ".join(r["trail"]), f"трассировка, глубина {r['depth']}")
@@ -201,7 +211,7 @@ def main() -> int:
               "Заполните список в aurora.config.yaml, затем повторите.")
         return 0
 
-    counts, changes, moved = {}, [], 0
+    counts, changes, moved, refreshed = {}, [], 0, 0
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
         head, rest = split_frontmatter(text)
@@ -240,6 +250,19 @@ def main() -> int:
         counts[cls] = counts.get(cls, 0) + 1
         now = wanted_status(cls)
         if now == was:
+            # Т-68: вердикт записывается в предмет решения и при прежнем статусе. Раньше
+            # карточка, которая была черновиком и осталась им, основания не получала, и
+            # статистика звала это «доверие не считалось». Пишем, только если класс или
+            # основание действительно изменились: иначе каждый прогон трогал бы всю базу.
+            basis = " ".join(why[:200].split())
+            had = " ".join((fm.get("trust_basis") or "").strip().strip('"').split())
+            if (fm.get("trust") or "").strip() == cls and had == basis:
+                continue
+            refreshed += 1
+            if a.apply:
+                open(path, "w", encoding="utf-8").write(with_fields(
+                    text, {"trust": cls, "trust_basis": f'"{why[:200]}"',
+                           "trust_checked": TODAY}))
             continue
         moved += 1
         changes.append((os.path.relpath(path, root), was or "(нет)", now, why))
@@ -261,6 +284,8 @@ def main() -> int:
     for k in ("raw", "trusted", "draft", "unknown"):
         print(f"| {k} | {counts.get(k, 0)} |")
     print(f"\nСменят статус: {moved}")
+    print(f"Основание доверия {'обновлено' if a.apply else 'обновится'} без смены статуса: "
+          f"{refreshed}")
     for rel, was, now, why in changes[:12]:
         print(f"  - {rel}: {was} → {now} — {why[:90]}")
     if len(changes) > 12:

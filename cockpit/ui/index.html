@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.108.0";
+const UI_VERSION = "1.109.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1932,6 +1932,14 @@ function renderOverview(){
         h ? el("span",{class:"chip "+(lintBad?"bad":"")},
               h.lint.errors + " ошибок линтера")
           : el("span",{class:"chip muted"},"линтер…"),
+        // Второе число рядом с долей доверия: сколько источников уже разобрано. Доверие
+        // считается по знанию, разбор — по документам, и одно без другого читается криво:
+        // высокая доля доверия при половине неразобранных источников — не «почти готово».
+        h && h.build && h.build.total
+          ? el("span",{class:"chip "+((h.build.left||0) ? "warn" : "ok"),
+                title:`разобрано источников ${h.build.total - (h.build.left||0)} из ${h.build.total}`},
+               `источники ${h.build.pct}%`)
+          : null,
         p.git_branch ? el("span",{class:"chip mono"}, p.git_branch) : null,
         p.dirty ? el("span",{class:"chip warn"}, p.dirty + " не в git")
                 : el("span",{class:"chip ok"},"дерево чисто"),

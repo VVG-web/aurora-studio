@@ -234,6 +234,81 @@ def golden_pairs(root: str = KB_ROOT) -> list:
     return out
 
 
+def golden_rows() -> tuple:
+    """([(индекс строки, номер, вопрос, эталон, [карточки])], строки файла)."""
+    try:
+        lines = open(GOLDEN, encoding="utf-8", errors="ignore").read().split("\n")
+    except OSError:
+        return [], []
+    rows = []
+    for i, line in enumerate(lines):
+        if "|" not in line or "[[" not in line:
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or not cells[0].strip("# ").isdigit():
+            continue
+        texts = [c for c in cells[1:] if "[[" not in c]
+        q = next((c for c in texts if len(c) >= 12), "")
+        answer = " ".join(c for c in texts if c != q)
+        cards = [c.strip() for c in re.findall(r"\[\[([^\]|#]+)", line)]
+        rows.append((i, int(cells[0].strip("# ")), q, answer, cards))
+    return rows, lines
+
+
+def golden_remap(cfg: dict, model: str, accept: set, apply: bool) -> int:
+    """Предложить, куда переехали пропавшие цели эталона; записать — только принятые строки.
+
+    Эталон — измерительный прибор: прибор, который сам подгоняется под базу, перестаёт
+    ловить деградацию. Поэтому ссылки не переписываются сами (решение заказчика 15.09).
+    Кандидаты ищутся по тексту вопроса И эталонного ответа — по имени карточки нельзя:
+    похожесть имени даёт промахи вроде «ЛКИ» → «ЛК».
+    """
+    rows, lines = golden_rows()
+    alive = set()
+    for path in walk_md(KB_ROOT, skip_service=True, skip_archive=True):
+        head = open(path, encoding="utf-8", errors="ignore").read(4000)
+        if not is_placeholder(frontmatter(head), head):
+            alive.add(os.path.basename(path)[:-3])
+    proposals = []
+    for i, num, q, answer, cards in rows:
+        lost = [c for c in cards if c not in alive]
+        if not lost or not q:
+            continue
+        hits = ranked(f"{q} {answer}".strip(), cfg, model)
+        candidates = [n for n, _s in hits if n in alive and n not in cards][:3]
+        proposals.append((i, num, q, lost, candidates))
+    print(f"# Эталон: куда переехали цели — {TODAY}\n")
+    if not proposals:
+        print("Все цели эталона живы — переписывать нечего.")
+        return 0
+    print("| № | Вопрос | Пропала | Кандидаты (первый — предложение) |")
+    print("|---|---|---|---|")
+    for _i, num, q, lost, candidates in proposals:
+        print(f"| {num} | {q[:70]} | {', '.join(lost)} | "
+              f"{', '.join(candidates) or '— не нашлось'} |")
+    if not (apply and accept):
+        print("\nПроверьте предложения глазами: подходит ли первый кандидат как ответ на вопрос.\n"
+              "Принять выбранные строки: `ops:search-quality --golden-remap --accept 3,7 --apply`.")
+        return 0
+    changed = []
+    for i, num, _q, lost, candidates in proposals:
+        if num not in accept or not candidates:
+            continue
+        line = lines[i]
+        for name in lost:
+            line = re.sub(r"\[\[" + re.escape(name) + r"(\|[^\]]*)?\]\]",
+                          f"[[{candidates[0]}]]", line)
+        lines[i] = line
+        changed.append(num)
+    if changed:
+        with open(GOLDEN, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    missed = sorted(accept - set(changed))
+    print(f"\n✅ Переписаны строки эталона: {', '.join(map(str, changed)) or 'ни одной'}"
+          + (f" · без кандидата или без пропажи: {', '.join(map(str, missed))}" if missed else ""))
+    return 0
+
+
 def history() -> dict:
     try:
         with open(HISTORY, encoding="utf-8") as f:
@@ -265,6 +340,11 @@ def main() -> int:
                     help="ещё и эталонные вопросы из meta/golden_questions.md")
     ap.add_argument("--apply", action="store_true",
                     help="записать замер в историю meta/search-quality.json")
+    ap.add_argument("--golden-remap", action="store_true",
+                    help="предложить, куда переехали пропавшие цели эталона (пишет только "
+                         "строки из --accept вместе с --apply)")
+    ap.add_argument("--accept", default="", metavar="N,M",
+                    help="номера строк эталона, для которых принять предложенный переезд")
     a = ap.parse_args()
 
     if not os.path.isdir(KB_ROOT):
@@ -294,6 +374,10 @@ def main() -> int:
               "ноль вместо качества. Пересоберите индекс (`kb:embed --apply`) либо верните\n"
               "в AURORA_EMBED_MODEL ту модель, которой он собран.", file=sys.stderr)
         return 1
+
+    if a.golden_remap:
+        return golden_remap(cfg, model, {int(x) for x in a.accept.split(",") if x.strip().isdigit()},
+                            a.apply)
 
     print(f"# Качество поиска — {TODAY}\n")
 

@@ -699,6 +699,13 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
     return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа", True
 
 
+# Голый код артефакта проекта: история, критерии приёмки, требование, спецификация, эпик.
+# Заготовка под него — бумага вместо знания: на живом проекте 57 из 61 карточки с именем
+# артефакта были пустышками «US-…», «AC-…», «Epic N», заведёнными под ссылку из текста.
+# Решения (DR) — предмет знания проекта, их правило не трогает (решение заказчика 15.09).
+ARTIFACT_CODE_RE = re.compile(r"^(?:US|AC|REQ|SPEC|(?i:epic|эпик))[\s\-_.]*\d+(?:\.\d+)*$")
+
+
 def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     """Завести карточку-заготовку под каждую ссылку, которой не на что указывать.
 
@@ -736,6 +743,8 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
                 continue          # образец имени из шаблона (DR-NNNN, SPEC-…), не понятие
             if fold_hard(leaf) in taken:
                 continue          # та же карточка, набранная с другими разделителями
+            if ARTIFACT_CODE_RE.match(leaf):
+                continue          # код артефакта — ссылка на бумагу, а не понятие
             wanted.setdefault(leaf, []).append(c.stem)
 
     created = []
@@ -802,6 +811,44 @@ def mentions_of(root: str, term: str, limit: int = 20) -> list:
     return out
 
 
+_SMALL_WORDS = {"и", "в", "во", "на", "по", "о", "об", "для", "с", "со", "к", "от", "из",
+                "за", "of", "the", "and", "for", "on", "in", "to"}
+
+
+def acronym_fits(abbr: str, expansion: str) -> bool:
+    """Расшифровка складывается в сокращение по первым буквам слов. → да/нет."""
+    words = [w for w in re.split(r"[\s\-‐–]+", expansion.strip())
+             if w and w.lower() not in _SMALL_WORDS]
+    return len(words) >= 2 and "".join(w[0] for w in words).upper() == abbr.upper()
+
+
+def expansions_from_cards(cards: dict) -> dict:
+    """{сокращение в нижнем регистре: расшифровка} — записанное в самих карточках.
+
+    Правило заказчика от 05.09: если в тексте написано «ЭСФ (электронный счёт-фактура)» или
+    «Federal Tax Authority (FTA)», это факт из источника, а не догадка, — он годится для
+    заготовки, даже когда словаря проекта нет. На проекте с двумя карточками глоссария все
+    34 названных понятия уходили без карточек. Берём только то, что сходится по первым
+    буквам слов: «НДС (см. раздел 3)» расшифровкой не станет.
+    """
+    out: dict = {}
+    after = re.compile(r"(?<![\w-])([A-ZА-ЯЁ]{2,8})\s*\(([^()\n]{4,90})\)")
+    before = re.compile(r"((?:[A-Za-zА-Яа-яЁё][\w-]*\s+){1,7}[A-Za-zА-Яа-яЁё][\w-]*)"
+                        r"\s*\(([A-ZА-ЯЁ]{2,8})\)")
+    for c in cards.values():
+        for abbr, exp in after.findall(c.text):
+            if acronym_fits(abbr, exp):
+                out.setdefault(abbr.lower(), exp.strip())
+        for exp, abbr in before.findall(c.text):
+            words = exp.split()
+            for n in range(2, min(len(words), len(abbr) + 3) + 1):
+                cand = " ".join(words[-n:])
+                if acronym_fits(abbr, cand):
+                    out.setdefault(abbr.lower(), cand)
+                    break
+    return out
+
+
 def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     """Завести пустышку под понятие, которое база называет словами, но карточки не имеет.
 
@@ -823,7 +870,8 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     from aurora_common import project_terms
 
     terms = {k.lower(): v for k, v in project_terms(root).items()}
-    if not terms:
+    mined = expansions_from_cards(cards)
+    if not terms and not mined:
         return []
     taken = {fold_hard(c.stem) for c in cards.values()}
     created = []
@@ -833,7 +881,7 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
         # правилу базы код живёт в синонимах карточки, а не именем.
         if is_doc_code(name):
             continue
-        meaning = terms.get(name.lower())
+        meaning = terms.get(name.lower()) or mined.get(name.lower(), "")
         if fold_hard(name) in taken:
             continue
         section = "Glossary" if (len(name) <= 12 and name.upper() == name) else "Concepts"
@@ -887,6 +935,38 @@ def plan_drop_jira(cards: dict, plan: Plan) -> list:
         plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                              os.path.basename(rel)).replace("\\", "/")))
         dropped.append((c.stem, ", ".join(srcs[:3])))
+    return dropped
+
+
+def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
+    """Убрать в архив заготовки под голые коды артефактов. → [имя].
+
+    Тот же случай, что карточки из задач Jira: код `US-4.4.4` называет бумагу, а не
+    сущность, и пустышка под него только обещает содержание. Уходят ТОЛЬКО пустышки —
+    карточка с кодом в имени, в которой есть знание, остаётся: её имя чинит `--names`.
+    Ссылки на снятые коды становятся текстом: код в тексте полезен читателю, а битая
+    ссылка — нет. Не удаляем, а архивируем: перенос обратим.
+    """
+    dropped = []
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel:
+            continue
+        if not ARTIFACT_CODE_RE.match(c.stem) or not is_placeholder(c.fm, c.text):
+            continue
+        plan.moves.append((rel, os.path.join(ROOT, "_archive",
+                                             os.path.basename(rel)).replace("\\", "/")))
+        dropped.append(c.stem)
+    gone = set(dropped)
+    if gone:
+        link = re.compile(r"\[\[([^\]|#]+)(#[^\]|]*)?(?:\|([^\]]*))?\]\]")
+        for path, c in sorted(cards.items()):
+            if c.stem in gone:
+                continue
+            new = link.sub(lambda m: (m.group(3) or m.group(1)).strip()
+                           if leaf_name(m.group(1).strip()) in gone else m.group(0), c.text)
+            if new != c.text:
+                plan.write(path, new)
     return dropped
 
 
@@ -1717,6 +1797,9 @@ def main() -> int:
     ap.add_argument("--drop-jira", action="store_true",
                     help="убрать в архив карточки, сделанные из задач Jira: задача — "
                          "это работа, а не сущность (правило заказчика)")
+    ap.add_argument("--drop-code-stubs", action="store_true",
+                    help="убрать в архив заготовки под голые коды артефактов (US, AC, REQ, "
+                         "SPEC, Epic): код — ссылка на бумагу, а не понятие")
     ap.add_argument("--rename", nargs=2, metavar=("СТАРОЕ", "НОВОЕ"),
                     help="назвать карточку иначе: прежнее имя уходит в синонимы, "
                          "входящие ссылки продолжают работать")
@@ -1769,7 +1852,8 @@ def main() -> int:
         return 1
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.terms, a.rename, a.drop_jira, a.unparsed, a.themes,
+                a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs,
+                a.unparsed, a.themes,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
         ap.print_help()
@@ -1874,6 +1958,14 @@ def main() -> int:
                 head.append(f"- {name} ← {srcs}")
             if len(gone) > 20:
                 head.append(f"- … ещё {len(gone) - 20}")
+        if a.drop_code_stubs:
+            codes = plan_drop_code_stubs(cards, plan)
+            head.append(f"## Заготовки под коды артефактов: {len(codes)} в архив, "
+                        "ссылки на них — текстом")
+            for name in codes[:20]:
+                head.append(f"- {name}")
+            if len(codes) > 20:
+                head.append(f"- … ещё {len(codes) - 20}")
         if a.rename:
             done, why = plan_rename(cards, plan, a.rename[0], a.rename[1])
             if why:

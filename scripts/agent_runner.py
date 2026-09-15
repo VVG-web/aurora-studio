@@ -3572,6 +3572,9 @@ def make_spec(cwd: str, kind: str) -> dict:
         return {"error": f"шаблона нет на диске: {rec['template']}"}
     if not rec.get("out"):
         return {"error": f"у типа «{kind}» не указана папка результата — некуда класть"}
+    why = MK.out_problem(rec["out"])
+    if why:
+        return {"error": f"у типа «{kind}» папка результата не годится: {why}"}
     return rec
 
 
@@ -3834,6 +3837,11 @@ def write_artifact(cwd: str, st: dict) -> str:
     готовое тоже нельзя — оно уедет заказчику.
     """
     spec, stages = st["spec"], st["stages"]
+    import make_kinds as MK
+    why = MK.out_problem(spec["out"])
+    if why:
+        # Сессия могла начаться до проверки в make_spec — каталог с именем файла не создаём.
+        raise ValueError(f"папка результата не годится: {why}")
     out_dir = os.path.join(cwd, spec["out"])
     os.makedirs(out_dir, exist_ok=True)
     title = (st["idea"].strip().splitlines() or ["документ"])[0][:80]

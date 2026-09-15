@@ -115,6 +115,79 @@ def source_sections(target: Path, slug: str) -> tuple:
     return "\n".join(src) + "\n", "\n".join(skills)
 
 
+def top_blocks(text: str) -> list:
+    """[(ключ, текст)] — разделы верхнего уровня вместе с комментариями над ними."""
+    blocks, key, buf, pending = [], None, [], []
+    for line in text.splitlines():
+        m = re.match(r"^([A-Za-z_][\w-]*)\s*:", line)
+        if m:
+            if key is not None:
+                blocks.append((key, "\n".join(buf).rstrip("\n")))
+            key, buf, pending = m.group(1), pending + [line], []
+        elif key is not None and line.startswith((" ", "\t", "-")):
+            buf.extend(pending)
+            pending = []
+            buf.append(line)
+        else:
+            pending.append(line)
+    if key is not None:
+        blocks.append((key, "\n".join(buf).rstrip("\n")))
+    return blocks
+
+
+def sub_blocks(block: str) -> list:
+    """[(ключ, текст)] — ключи второго уровня раздела с их вложенным содержимым."""
+    subs, key, buf, pending = [], None, [], []
+    for line in block.splitlines()[1:]:
+        m = re.match(r"^  ([A-Za-z_][\w-]*)\s*:", line)
+        if m:
+            if key is not None:
+                subs.append((key, "\n".join(buf).rstrip("\n")))
+            key, buf, pending = m.group(1), pending + [line], []
+        elif key is not None and re.match(r"^(   |\t|  -)", line):
+            buf.extend(pending)
+            pending = []
+            buf.append(line)
+        else:
+            pending.append(line)
+    if key is not None:
+        subs.append((key, "\n".join(buf).rstrip("\n")))
+    return subs
+
+
+def carry_unmanaged(old: str, new: str) -> str:
+    """Перенести из прежнего конфига всё, чего шаблон настройки не пишет.
+
+    Настройка собирает конфиг заново по шаблону, и всё, что шаблону неизвестно, пропадало
+    при первом же сохранении формы: на живом проекте так ушли реестр из десяти видов
+    документов (`artifacts:`) и настройки отчёта (`reports:`), а объявленная папка проекта
+    (`paths → extra_structure_dirs`) пропала бы у следующего. Шаблон знает то, что правит
+    форма; остальное — чужое, и форма не вправе его стирать.
+
+    Разделы, которых нет в шаблоне, переносятся целиком в конец файла; ключи второго
+    уровня, которых нет в разделе шаблона, — в конец своего раздела. Повторная запись даёт
+    тот же текст.
+    """
+    if not old.strip():
+        return new
+    new_blocks = top_blocks(new)
+    have_top = {k for k, _b in new_blocks}
+    old_map = dict(top_blocks(old))
+    out = new
+    for key, block in new_blocks:
+        was = old_map.get(key)
+        if not was:
+            continue
+        have = {k for k, _b in sub_blocks(block)}
+        lost = [b for k, b in sub_blocks(was) if k not in have]
+        if lost and block in out:
+            out = out.replace(block, block.rstrip("\n") + "\n" + "\n".join(lost), 1)
+    extra = [b.strip("\n") for k, b in top_blocks(old) if k not in have_top]
+    if extra:
+        out = out.rstrip("\n") + "\n\n" + "\n\n".join(extra) + "\n"
+    return out
+
+
 def write_config(path: Path, c: dict):
     roots = "[]"
     if c["sync_roots"]:
@@ -206,7 +279,8 @@ privacy:
 bootstrap:
   verified_threshold_pct: {c['threshold']}
 """
-    path.write_text(text, encoding="utf-8")
+    old_text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    path.write_text(carry_unmanaged(old_text, text), encoding="utf-8")
 
 
 # ---------- интерактив ----------
