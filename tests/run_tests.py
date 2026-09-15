@@ -5733,7 +5733,8 @@ def test_golden_targets_are_proposed_not_rewritten(tmp: Path):
     gold.parent.mkdir(parents=True, exist_ok=True)
     gold.write_text("# Эталон\n\n| # | Вопрос | Эталон | Карточки |\n|---|---|---|---|\n"
                     "| 1 | Какой путь проходит платёж? | от банка до казначейства | [[Путь-платежа-ОП]] |\n"
-                    "| 2 | Что такое реестр деклараций? | список поданных деклараций | [[Реестр-НД]] |\n",
+                    "| 2 | Что такое реестр деклараций? | список поданных деклараций | [[Реестр-НД]] |\n"
+                    "| 3 | Как движется платёж по счетам? | от банка до казначейства | [[Старое-имя]], [[Ещё-старое]] |\n",
                     encoding="utf-8")
     before = gold.read_text(encoding="utf-8")
     cwd = os.getcwd()
@@ -5747,12 +5748,14 @@ def test_golden_targets_are_proposed_not_rewritten(tmp: Path):
             assert "Путь-платежа-ОП" in buf.getvalue() and "Движение-платежа" in buf.getvalue(), \
                 f"предложение не названо: {buf.getvalue()[:400]}"
             with contextlib.redirect_stdout(io.StringIO()):
-                Q.golden_remap({}, "m", {1}, True)
+                Q.golden_remap({}, "m", {1, 3}, True)
     finally:
         os.chdir(cwd)
     text = gold.read_text(encoding="utf-8")
     assert "| 1 | Какой путь проходит платёж? | от банка до казначейства | [[Движение-платежа]] |" in text, text
     assert "[[Реестр-НД]]" in text, "переписана строка, которую человек не принимал"
+    assert "| 3 | Как движется платёж по счетам? | от банка до казначейства | [[Движение-платежа]] |" in text, \
+        f"несколько пропавших целей переехали в одну карточку повтором ссылок:\n{text}"
 
 
 @test

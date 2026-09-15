@@ -298,6 +298,10 @@ def golden_remap(cfg: dict, model: str, accept: set, apply: bool) -> int:
         for name in lost:
             line = re.sub(r"\[\[" + re.escape(name) + r"(\|[^\]]*)?\]\]",
                           f"[[{candidates[0]}]]", line)
+        # Пропавших целей в строке бывает несколько, и все переезжают в одну карточку:
+        # без свёртки ячейка читалась как «[[X]], [[X]], [[X]]».
+        target = re.escape(f"[[{candidates[0]}]]")
+        line = re.sub(rf"{target}(?:\s*,\s*{target})+", f"[[{candidates[0]}]]", line)
         lines[i] = line
         changed.append(num)
     if changed:
