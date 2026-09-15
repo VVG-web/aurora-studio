@@ -331,7 +331,18 @@ def main() -> int:
                   if rec["mentions"] and (rec["linked"] or len(rec["mentions"]) >= 2)}
         stubs = sorted(code for code in wanted if code in cards and is_stub(cards[code]))
         taken = sorted(code for code in wanted if code in cards and not is_stub(cards[code]))
-        write = {code: rec for code, rec in wanted.items() if code not in cards}
+        # Код, который уже синоним карточки со знанием, — у него есть узел: карточку назвали
+        # по предмету, а код ушёл в синонимы. Индекс с таким именем перехватил бы ссылку у
+        # карточки: на живом проекте так совпали 25 индексов из 200.
+        from aurora_common import aliases as card_aliases
+        alias_owner: dict = {}
+        for stem, c in cards.items():
+            if not is_stub(c):
+                for al in card_aliases(c["text"]):
+                    alias_owner.setdefault(al, stem)
+        named = sorted(code for code in wanted if code not in cards and code in alias_owner)
+        write = {code: rec for code, rec in wanted.items()
+                 if code not in cards and code not in alias_owner}
         print(f"# Индекс кодов артефактов — {TODAY}\n")
         print(f"Кодов в тексте карточек: **{len(found)}** · индексов: **{len(write)}** "
               f"(код связывает две карточки и больше или на него ссылаются)\n")
@@ -350,7 +361,8 @@ def main() -> int:
                     "ссылкой или текстом: их связывает одна история, одно требование или один "
                     "эпик. Знания в индексе нет, он ведёт к карточкам, где оно есть.")
             text = render(code, note, items)
-            variants = sorted(v for v in rec["variants"] if v != code)
+            variants = sorted(v for v in rec["variants"]
+                              if v != code and v not in alias_owner and v not in cards)
             text = text.replace("tags: [moc]\n", "tags: [moc, код]\naliases: ["
                                 + ", ".join(f'"{v}"' for v in variants) + "]\n", 1)
             os.makedirs(MOC_DIR, exist_ok=True)
@@ -369,6 +381,9 @@ def main() -> int:
         if taken:
             print(f"\nИмя кода занято карточкой со знанием — она сама узел, индекс не нужен: "
                   f"{', '.join(taken[:6])}")
+        if named:
+            print(f"\nКод уже синоним карточки со знанием — ссылка ведёт в неё, индекс не нужен: "
+                  f"{len(named)} (например {', '.join(named[:4])})")
         if a.apply:
             print(f"\n✅ Индексов кодов записано: {written}"
                   + (f" · убрано устаревших: {len(stale)}" if stale else ""))

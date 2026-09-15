@@ -5673,6 +5673,12 @@ def test_artifact_codes_get_no_stubs_and_expansions_come_from_cards(tmp: Path):
     assert "[[US-4.4.4]]" in (kb / "Concepts" / "Реестр.md").read_text(encoding="utf-8"), \
         "ссылка на код снята — связь между карточками одной истории потеряна"
 
+    # Код, который уже синоним карточки со знанием, индекса не получает: узел у него есть.
+    card(root, "Concepts/Экспорт-реестра.md", "Выгрузка реестра в учётную систему.",
+         status="draft", aliases='["US-7.1"]')
+    card(root, "Concepts/Сверка.md", "Сверка идёт после US-7.1.", status="draft")
+    card(root, "Concepts/Отчёт-сверки.md", "Отчёт строится по итогам US-7.1.", status="draft")
+
     # Индекс кода: связь по одной истории и одному эпику сохраняется, ссылки не битые.
     run("kb_moc.py", "--by-code", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
     us = (kb / "MOC" / "US-4.4.4.md").read_text(encoding="utf-8")
@@ -5684,6 +5690,10 @@ def test_artifact_codes_get_no_stubs_and_expansions_come_from_cards(tmp: Path):
     lint = run("kb_lint.py", cwd=root, expect_rc=None).stdout
     assert "[[US-4.4.4]]" not in lint and "[[Epic 3]]" not in lint, \
         f"ссылка на код не нашла индекс:\n{lint[:800]}"
+    assert not (kb / "MOC" / "US-7.1.md").exists(), \
+        "индекс заведён под код, который уже синоним карточки со знанием, — он перехватит ссылку"
+    moc_errors = [l for l in lint.splitlines() if "/MOC/" in l and "артефакт в знаниях" in l]
+    assert not moc_errors, f"служебный индекс кода назван артефактом в знаниях: {moc_errors[:3]}"
 
 
 @test

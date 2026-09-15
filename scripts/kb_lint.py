@@ -265,8 +265,11 @@ def main():
         stem = os.path.splitext(os.path.basename(rel))[0]
         section = os.path.relpath(os.path.dirname(rel), ROOT).split(os.sep)[0]
         if not (stem.startswith("_") or section in ("meta", ".") or section.startswith("_")):
-            kind = artifact_kind(stem, fm.get("title", stem),
-                                 (card_sources(text) or [""])[0], section, jira_re)
+            # Служебный индекс (`status: index`) назван кодом нарочно: индекс кода артефакта
+            # ведёт к карточкам, где код упомянут, и знанием себя не выдаёт. Звать его
+            # «артефактом в знаниях» — ложная тревога: на живом проекте их было 211.
+            kind = "" if status.strip() == "index" else artifact_kind(
+                stem, fm.get("title", stem), (card_sources(text) or [""])[0], section, jira_re)
             if kind:
                 errors.append(f"{rel}: артефакт в знаниях — это {kind}, "
                               f"а не дистиллированное знание")
