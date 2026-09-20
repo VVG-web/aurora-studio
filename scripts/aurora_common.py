@@ -629,27 +629,83 @@ def git_guard(path: str, allow_dirty: bool, what: str = "операция") -> b
 
 # ------------------------------------------------------------------- конфиг
 
-def child_env(**extra) -> dict:
-    """Окружение для дочернего процесса: без чужих отладочных переменных аллокатора.
+ENV_FILE = ".env.aurora.local"       # файл настроек движка: кит, затем проект
+
+
+def load_env(path) -> dict:
+    """Пары `КЛЮЧ=значение` из файла настроек движка. Одна на всех: настройку читают и
+    агент, и панель, и дочерние процессы — разойтись в прочтении им нельзя."""
+    p = os.fspath(path)
+    if not os.path.isfile(p):
+        return {}
+    out = {}
+    for line in open(p, encoding="utf-8", errors="ignore").read().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def child_env(project: str = "", **extra) -> dict:
+    """Окружение дочернего процесса: без отладочного мусора, с настройками движка.
 
     macOS печатает в stderr «MallocStackLogging: can't turn off…» каждому процессу, у
     которого в окружении осталась переменная от отладчика или IDE. Сообщение не наше и
     ни на что не влияет, но врезается в строку прогресса и в вывод команд — человек
     видит чужую ошибку там, где движок отчитывается о работе.
+
+    Ключи `AURORA_*` из файла настроек движка (кит, затем проект) доезжают до команды:
+    написанное в настройках обязано работать и в терминале, и при запуске из панели.
+    Переменная, заданная прямо в оболочке, сильнее файла. Секреты (токены синков) в
+    окружение команд не кладём: их читают сами скрипты, и лишняя копия в окружении —
+    лишний способ их обронить.
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
+    kit = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for base in (kit, project or os.getcwd()):
+        for k, v in load_env(os.path.join(base, ENV_FILE)).items():
+            if k.startswith("AURORA_") and k not in os.environ:
+                env[k] = v
     env.update(extra)
     return env
 
 
+# Скаляр конфига читает ОДНА функция на весь движок: настройка, панель, синки, отчёт.
+# Три формы записи: 'одинарные кавычки' (внутри `''` — это кавычка), "двойные" и без
+# кавычек. Одинарные — единственный способ хранить значение с `"` внутри (JQL с датой
+# вида created >= "2026-11-01"). Пока у каждого читателя была своя копия правила, такая
+# строка читалась то так, то никак: поле «JQL по умолчанию» после сохранения выглядело
+# пустым, а `sync:jira` молча уходил на запрос по умолчанию.
+def yaml_scalar(text: str, key: str, default: str = "") -> str:
+    """Значение простого поля YAML из готового текста."""
+    m = re.search(
+        rf"""^\s*{re.escape(key)}\s*:\s*(?:'((?:[^'\n]|'')*)'|"([^"\n]*)"|([^"\n#]+?))\s*$""",
+        text, re.M)
+    if m:
+        if m.group(1) is not None:
+            return m.group(1).replace("''", "'").strip()
+        return (m.group(2) if m.group(2) is not None else m.group(3)).strip()
+    # Конфиги, записанные до 1.113.2: кавычки внутри значения ломали строку, и читает её
+    # только снятие крайних кавычек целиком — иначе прежний JQL пришлось бы вводить заново.
+    m = re.search(rf'^\s*{re.escape(key)}\s*:\s*"(.+)"\s*$', text, re.M)
+    return m.group(1).strip() if m else default
+
+
+def yaml_str(value: str) -> str:
+    """Скаляр для ЗАПИСИ в конфиг: обычно в двойных кавычках, а при `"` внутри — в
+    YAML-одинарных (там `"` легален, а `'` удваивается)."""
+    s = str(value)
+    return f'"{s}"' if '"' not in s else "'" + s.replace("'", "''") + "'"
+
+
 def config_value(key: str, default: str = "") -> str:
-    """Значение простого поля из aurora.config.yaml (без PyYAML)."""
+    """Значение простого поля из aurora.config.yaml текущего проекта."""
     cfg = "aurora.config.yaml"
     if not os.path.isfile(cfg):
         return default
-    m = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$',
-                  open(cfg, encoding="utf-8", errors="ignore").read(), re.M)
-    return m.group(1).strip() if m else default
+    return yaml_scalar(open(cfg, encoding="utf-8", errors="ignore").read(), key, default)
 
 
 

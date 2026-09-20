@@ -1560,7 +1560,18 @@ def test_setup_form_saves_jql_with_quotes(tmp: Path):
         "старый испорченный конфиг не воскрес"
     assert sources_core.scalar(legacy, "default_jql") == jql, \
         "sources_core.py не читает старый испорченный конфиг"
-    # reports/analyst/paths.py держит свою копию scalar — проверяется так же
+    # панель: сервер разбирает конфиг тем же правилом и отдаёт форме готовые значения
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+    assert ck.config_value(cfg, "default_jql") == jql, \
+        "сервер панели читает JQL иначе — в форме снова будет пусто"
+    vals = ck.config_values(cfg)
+    assert vals["default_jql"] == jql and vals["project_key"] == "PRJ", \
+        f"форма получает не те значения: {vals}"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "cfgRaw.values" in ui, "панель снова разбирает конфиг своей копией правила"
+    assert "(?:'((?:[^'" not in ui, "в панели снова своя копия правила разбора конфига"
+    # reports/analyst/paths.py зовёт то же правило — проверяется так же
     import importlib.util as _ilu
     spec = _ilu.spec_from_file_location("analyst_paths", KIT / "reports/analyst/paths.py")
     apaths = _ilu.module_from_spec(spec)
@@ -1570,19 +1581,11 @@ def test_setup_form_saves_jql_with_quotes(tmp: Path):
     new_line = "    default_jql: " + aurora_setup.yaml_str(jql)
     assert apaths.scalar(new_line, "default_jql") == jql, \
         "отчёт не читает JQL в одинарных кавычках"
-    # aurora_cockpit.py — читатель карточек проектов; та же пара форм плюс наследие
-    sys.path.insert(0, str(KIT / "cockpit"))
-    import aurora_cockpit as _ck
-    assert _ck.config_value(legacy, "default_jql") == jql, \
+    # панель — такой же читатель: обе формы записи плюс наследие
+    assert ck.config_value(legacy, "default_jql") == jql, \
         "панель не читает старый испорченный конфиг"
-    assert _ck.config_value(new_line, "default_jql") == jql, \
+    assert ck.config_value(new_line, "default_jql") == jql, \
         "панель не читает JQL в одинарных кавычках"
-    # парсер формы настроек в index.html зеркалит читателей: три формы и наследие
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    assert "(?:'((?:[^'" in ui and ".replace(/''/g" in ui, \
-        "форма настроек не читает одинарные кавычки"
-    assert "const legacy = cfgRaw.text" in ui, \
-        "форма настроек не воскрешает конфиг, испорченный записью до 1.113.2"
 
 
 @test
@@ -15999,9 +16002,8 @@ def test_pagerank_prefers_the_hub_among_relevant(tmp: Path):
          status="knowledge", kind="knowledge")
     card(root, "Concepts/Записка-про-тему.md", "Правило учёта работает одинаково во всех разделах.",
          status="knowledge", kind="knowledge")
-    card(root, "MOC/Карта-понятий.md",
-         '---\ntitle: "Карта-понятий"\ntype: moc\nstatus: index\n---\n\n# Карта\n\n'
-         "Оглавление без знания о правиле.\n", encoding="utf-8")
+    card(root, "MOC/Карта-понятий.md", "Оглавление без знания о правиле.",
+         type="moc", status="index")
     for i in range(6):      # хаб — тот, на кого ссылаются
         card(root, f"Concepts/Частный-случай-{i}.md",
              f"Частный случай номер {i}, смотри [[Ядро-темы]].",
@@ -16055,6 +16057,86 @@ def test_collapsed_neighbor_carries_gist_not_body(tmp: Path):
     assert "УНИКАЛЬНОЕ-ТЕЛО-СОСЕДА" not in slim, "свёрнутый сосед уехал телом"
     assert "Суть соседа одной строкой" in slim, "у свёрнутого соседа потерялась суть"
     assert len(slim) < len(full), "свёртка не уменьшила пак"
+
+
+@test
+def test_config_scalar_rule_lives_in_one_place(tmp: Path):
+    """Правило чтения скаляра конфига — одно и живёт в одном файле.
+
+    Живой случай: копий правила было пять (настройка, синки, панель, шаг отчёта и разбор
+    на JS), и JQL с датой в кавычках читался то так, то никак — поле формы выглядело
+    пустым. Разные прочтения одного конфига хуже любого из них: человек видит одно,
+    команда работает по другому.
+    """
+    import re as _re
+    sources = sorted((KIT / "scripts").glob("*.py")) + [
+        KIT / "cockpit/aurora_cockpit.py", KIT / "reports/analyst/paths.py"]
+    rule = "(?:'((?:[^'"
+    holders = [p.name for p in sources if rule in p.read_text(encoding="utf-8")]
+    assert holders == ["aurora_common.py"], \
+        f"правило разбора скаляра скопировано в {holders} — менять придётся во всех"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert rule not in ui and "cfgRaw.values" in ui, \
+        "панель держит свою копию правила на JS вместо разобранных значений с сервера"
+
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    SC = importlib.import_module("sources_core")
+    AS = importlib.import_module("aurora_setup")
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("analyst_paths", KIT / "reports/analyst/paths.py")
+    apaths = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(apaths)
+    # все читатели обязаны звать именно её — сверяем поведением на всех трёх формах
+    sample = ("    a: 'дата >= \"2026-11-01\"'\n    b: \"обычное\"\n    c: голое\n"
+              "    d: 'кавычка '' внутри'\n")
+    for name, fn in (("sources_core", SC.scalar), ("aurora_setup", AS.yaml_scalar),
+                     ("панель", ck.config_value), ("отчёт", apaths.scalar)):
+        for key, want in (("a", 'дата >= "2026-11-01"'), ("b", "обычное"),
+                          ("c", "голое"), ("d", "кавычка ' внутри")):
+            assert fn(sample, key) == want, f"{name} читает {key} иначе: {fn(sample, key)!r}"
+    assert AC.yaml_str('дата >= "2026-11-01"').startswith("'"), \
+        "значение с двойной кавычкой записано не в одинарных — читатели его потеряют"
+
+
+@test
+def test_engine_settings_reach_commands_but_secrets_do_not(tmp: Path):
+    """Ключи `AURORA_*` из файла настроек доезжают до команды, токены — нет.
+
+    В документации ретрива сказано: `AURORA_RETRIEVAL` можно задать в настройках движка.
+    Пока окружение дочернего процесса копировалось как есть, написанное там не работало
+    при запуске из панели — настройка, которой нельзя пользоваться, хуже её отсутствия.
+    Секретам в окружении команд делать нечего: их читают сами скрипты.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    (root / AC.ENV_FILE).write_text(
+        "AURORA_RETRIEVAL=pagerank=0\nJIRA_PERSONAL_TOKEN=секрет\n", encoding="utf-8")
+    env = AC.child_env(str(root))
+    assert env.get("AURORA_RETRIEVAL") == "pagerank=0", \
+        "настройка движка не дошла до команды — документация обещает несбыточное"
+    assert "JIRA_PERSONAL_TOKEN" not in env, \
+        "в окружение команды уехал токен: лишняя копия секрета — лишний способ его обронить"
+    os.environ["AURORA_RETRIEVAL"] = "pagerank=0.5"
+    try:
+        assert AC.child_env(str(root))["AURORA_RETRIEVAL"] == "pagerank=0.5", \
+            "файл перебил переменную оболочки — ближняя к запуску настройка должна побеждать"
+    finally:
+        os.environ.pop("AURORA_RETRIEVAL", None)
+    panel = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "child_env(project" in panel, \
+        "панель запускает команды без настроек проекта — файл настроек снова не доедет"
+    # опечатка в переменной окружения не проходит молча
+    card(root, "Concepts/Любая.md", "Любое знание.", status="knowledge", kind="knowledge")
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "ctx_pack.py"), "любая", "--no-log"],
+                        cwd=str(root), capture_output=True, text=True,
+                        env={**os.environ, "AURORA_RETRIEVAL": "pagerannk=1"})
+    assert "pagerannk" in cp.stderr, f"опечатка в переменной прошла молча:\n{cp.stderr[:300]}"
 
 
 @test

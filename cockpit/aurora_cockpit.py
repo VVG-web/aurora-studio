@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlparse
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
-from aurora_common import child_env            # noqa: E402  — путь до scripts добавлен выше
+from aurora_common import child_env, yaml_scalar   # noqa: E402  — путь до scripts добавлен выше
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -1070,21 +1070,25 @@ def read_text(path: str, limit: int = 400_000) -> str:
         return ""
 
 
+# Поля формы настроек, которые панель показывает скалярами. Разбирает их движок
+# (`aurora_common.yaml_scalar`), а не копия правила на JS: у формы и у синков должно
+# быть одно прочтение конфига, иначе сохранённое значение видно по-разному.
+FORM_SCALARS = ("name", "slug", "base_url", "space", "project_key", "default_jql",
+                "scrub", "verified_threshold_pct")
+
+
 def config_value(text: str, key: str, default: str = "") -> str:
-    # Три формы: 'одинарные кавычки' (внутри '' — это кавычка), "двойные", без кавычек.
-    # Одинарные — единственный способ хранить значение с `"` внутри (JQL с датой
-    # вида created >= "2026-11-01"): в двойных кавычках такая строка не читалась.
-    m = re.search(
-        rf"""^\s*{key}\s*:\s*(?:'((?:[^'\n]|'')*)'|"([^"\n]*)"|([^"\n#]+?))\s*$""",
-        text, re.M)
-    if m:
-        if m.group(1) is not None:
-            return m.group(1).replace("''", "'").strip()
-        return (m.group(2) if m.group(2) is not None else m.group(3)).strip()
-    # Конфиги, записанные до 1.113.2: кавычки внутри значения ломали строку, и её читает
-    # только снятие крайних кавычек целиком — иначе старый JQL пришлось бы вводить заново.
-    m = re.search(rf'^\s*{key}\s*:\s*"(.+)"\s*$', text, re.M)
-    return m.group(1).strip() if m else default
+    """Скаляр конфига — общим правилом движка."""
+    return yaml_scalar(text, key, default)
+
+
+def config_values(text: str) -> dict:
+    """Скаляры формы настроек. `base_url` в конфиге два — у вики и у Jira, поэтому адрес
+    Jira достаётся из её блока отдельным ключом."""
+    out = {k: config_value(text, k) for k in FORM_SCALARS}
+    jira = text.split("\n  jira:", 1)[1].split("\n  auth:", 1)[0] if "\n  jira:" in text else ""
+    out["jira_base_url"] = config_value(jira, "base_url") if jira else ""
+    return out
 
 
 def project_card(path: str) -> dict:
@@ -2296,7 +2300,7 @@ def start_job(project: str, cmd: str, extra: list) -> str:
             # вываливала всё разом. Человек в это время не знает, работает она или висит.
             # Заодно вычищаем Malloc*-переменные отладчика: их предупреждения врезаются
             # в строку прогресса и читаются как ошибка движка.
-            env = child_env(PYTHONUNBUFFERED="1")
+            env = child_env(project, PYTHONUNBUFFERED="1")
             mark_running(job["id"], cmd, project, True)
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2463,8 +2467,9 @@ class Handler(BaseHTTPRequestHandler):
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
-            self.send_json({"text": read_text(os.path.join(project, "aurora.config.yaml")),
-                            "path": "aurora.config.yaml"})
+            cfg_text = read_text(os.path.join(project, "aurora.config.yaml"))
+            self.send_json({"text": cfg_text, "path": "aurora.config.yaml",
+                            "values": config_values(cfg_text)})
         elif u.path == "/api/mcp":
             # MCP-серверы проекта (`<project>/mcp.json`). Панель читает только метаданные:
             # имя, command, args, url — и флаг `hasEnv`. Значения `env` (токены) панель в

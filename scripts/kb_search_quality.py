@@ -402,7 +402,9 @@ def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> in
     переспрашивать шлюз на каждый вариант значит мерить сеть, а не алгоритм.
     """
     import ctx_pack as P
-    ranked("", cfg, model)          # прогрев: обзор базы собирается один раз
+    # Прогрев: обзор базы собирается один раз. Близость передаём пустой — иначе прогрев
+    # спросил бы шлюз пустым запросом, а замер заявлен как «сеть в него не входит».
+    ranked("", cfg, model, {})
     questions = list(dict.fromkeys(q for _n, q in pairs + golden))
     closes = {}
     for i, q in enumerate(questions, 1):

@@ -122,7 +122,13 @@ def _retrieval_env() -> None:
     global _RETRIEVAL_ENV_DONE
     if not _RETRIEVAL_ENV_DONE:
         _RETRIEVAL_ENV_DONE = True
-        configure_retrieval(os.environ.get("AURORA_RETRIEVAL", ""))
+        bad = configure_retrieval(os.environ.get("AURORA_RETRIEVAL", ""))
+        if bad:
+            # Переключатель, который не сработал, выглядит как применившийся — молчать о
+            # таком нельзя. В отличие от флага, прогон не останавливаем: переменная могла
+            # прийти из чужого профиля, а выборка обязана работать.
+            print(f"ctx_pack: AURORA_RETRIEVAL — неизвестные ключи: {', '.join(bad)} "
+                  f"(есть: {', '.join(RETRIEVAL)})", file=sys.stderr)
 
 
 _GRAPH: dict = {"key": None, "back": {}, "rank": {}}

@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.114.0";
+const UI_VERSION = "1.114.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4770,20 +4770,17 @@ async function renderProject(){
   // 2. настройка проекта формой — те же вопросы, что задаёт setup в терминале
   box.append(el("h2",{},"Проект · " + S.project.name));
   const cfgRaw = await api("/api/config?project=" + encodeURIComponent(S.project.path));
-  // Скаляр в трёх формах: 'одинарные кавычки' (внутри '' — это кавычка), "двойные",
-  // без кавычек. JQL с датой (created >= "2026-11-01") хранится в одинарных: в двойных
-  // строка ломалась, и поле после сохранения выглядело пустым.
+  // Скаляры конфига приходят с сервера уже разобранными движком: своей копии правила
+  // у панели нет — иначе формы записи YAML («JQL с датой в кавычках») читались бы в
+  // форме и в синках по-разному.
   const get = (k, d="") => {
-    const m = cfgRaw.text && cfgRaw.text.match(new RegExp("^\\s*"+k+"\\s*:\\s*(?:'((?:[^'\\n]|'')*)'|\"([^\"\\n]*)\"|([^\"\\n#]+?))\\s*$","m"));
-    if (m) return (m[1] !== undefined ? m[1].replace(/''/g, "'") : (m[2] !== undefined ? m[2] : m[3])).trim();
-    // конфиги, записанные до 1.113.2: кавычки внутри значения ломали строку — снимаем крайние
-    const legacy = cfgRaw.text && cfgRaw.text.match(new RegExp('^\\s*'+k+'\\s*:\\s*"(.+)"\\s*$',"m"));
-    return legacy ? legacy[1].trim() : d;
+    const v = cfgRaw.values ? cfgRaw.values[k] : "";
+    return (v === undefined || v === null || v === "") ? d : String(v).trim();
   };
   const A = {
     name: get("name"), slug: get("slug"),
     conf_url: get("base_url"), conf_space: get("space"),
-    jira_url: (cfgRaw.text.split("jira:")[1]||"").match(/base_url:\s*"?([^"\n]+)/)?.[1]?.trim() || "",
+    jira_url: get("jira_base_url"),
     jira_key: get("project_key"), jira_jql: get("default_jql"),
     trust_statuses: (cfgRaw.text.match(/trust_statuses:\s*\[([^\]]*)\]/)||[])[1]||"",
     assumption_statuses: (cfgRaw.text.match(/assumption_statuses:\s*\[([^\]]*)\]/)||[])[1]||"",

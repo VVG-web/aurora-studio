@@ -45,7 +45,7 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from aurora_common import child_env
+from aurora_common import child_env, load_env
 
 TODAY = date.today().isoformat()
 ROLES = ("worker", "planner", "critic", "qa")
@@ -77,19 +77,6 @@ def _roots() -> tuple:
     cwd = Path.cwd()
     project = cwd if (cwd / "aurora.config.yaml").is_file() else None
     return root, project
-
-
-def load_env(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    out = {}
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
 
 
 def raw_config() -> dict:

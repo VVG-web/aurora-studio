@@ -17,6 +17,11 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts"))
+from aurora_common import yaml_scalar as _yaml_scalar  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -26,20 +31,12 @@ def config_text(path: str) -> str:
 
 
 def scalar(text: str, key: str, default: str = "") -> str:
-    # Три формы: 'одинарные кавычки' (внутри '' — это кавычка), "двойные", без кавычек.
-    # Одинарные — единственный способ хранить значение с `"` внутри (JQL с датой
-    # вида created >= "2026-11-01"): в двойных кавычках такая строка не читалась.
-    m = re.search(
-        rf"""^\s*{re.escape(key)}\s*:\s*(?:'((?:[^'\n]|'')*)'|"([^"\n]*)"|([^"\n#]+?))\s*$""",
-        text, re.M)
-    if m:
-        if m.group(1) is not None:
-            return m.group(1).replace("''", "'").strip()
-        return (m.group(2) if m.group(2) is not None else m.group(3)).strip()
-    # Конфиги, записанные до 1.113.2: кавычки внутри значения ломали строку, и её читает
-    # только снятие крайних кавычек целиком — иначе старый JQL пришлось бы вводить заново.
-    m = re.search(rf'^\s*{re.escape(key)}\s*:\s*"(.+)"\s*$', text, re.M)
-    return m.group(1).strip() if m else default
+    """Скаляр конфига — общим правилом движка (`scripts/aurora_common.py`).
+
+    Шаги отчёта лежат отдельно от движка, но читать конфиг обязаны так же: путь до
+    `scripts/` от этого файла одинаков и в ките, и в проекте (`../../scripts`).
+    """
+    return _yaml_scalar(text, key, default)
 
 
 def section(text: str, key: str, indent: int = 0) -> str:
