@@ -25,6 +25,31 @@ from pathlib import Path
 
 # ---------- лёгкий разбор нашего фиксированного YAML (без PyYAML) ----------
 
+# Скаляр читается в трёх формах: 'одинарные кавычки' (внутри '' — это кавычка),
+# "двойные" и без кавычек. Одинарные — единственный способ хранить значение с `"`
+# внутри: JQL с датой вида created >= "2026-11-01" в двойных кавычках ломал строку,
+# и ни один читатель конфига её не разбирал — поле после сохранения выглядело пустым.
+def yaml_scalar(text: str, key: str, default: str = "") -> str:
+    m = re.search(
+        rf"""^\s*{re.escape(key)}\s*:\s*(?:'((?:[^'\n]|'')*)'|"([^"\n]*)"|([^"\n#]+?))\s*$""",
+        text, re.M)
+    if m:
+        if m.group(1) is not None:
+            return m.group(1).replace("''", "'").strip()
+        return (m.group(2) if m.group(2) is not None else m.group(3)).strip()
+    # Конфиги, записанные до 1.113.2: кавычки внутри значения ломали строку, и её читает
+    # только снятие крайних кавычек целиком — иначе старый JQL пришлось бы вводить заново.
+    m = re.search(rf'^\s*{re.escape(key)}\s*:\s*"(.+)"\s*$', text, re.M)
+    return m.group(1).strip() if m else default
+
+
+def yaml_str(s: str) -> str:
+    """Скаляр для записи в конфиг: обычно в двойных кавычках, а при `"` внутри —
+    в YAML-одинарных (там `"` легален, а `'` удваивается)."""
+    s = str(s)
+    return f'"{s}"' if '"' not in s else "'" + s.replace("'", "''") + "'"
+
+
 def read_config(path: Path) -> dict:
     """Достаёт известные скалярные ключи и sync_roots из aurora.config.yaml."""
     cfg = {
@@ -45,8 +70,7 @@ def read_config(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
 
     def scalar(key, default=""):
-        m = re.search(rf'^\s*{re.escape(key)}\s*:\s*"?([^"\n#]+?)"?\s*$', text, re.M)
-        return m.group(1).strip() if m else default
+        return yaml_scalar(text, key, default)
 
     cfg["name"] = scalar("name")
     cfg["slug"] = scalar("slug")
@@ -75,7 +99,7 @@ def read_config(path: Path) -> dict:
     jblock = jm.group(1) if jm else ""
     cfg["jira_url"] = (re.search(r'base_url:\s*"?([^"\n]+)', jblock) or [None, ""])[1].strip() if jblock else ""
     cfg["jira_key"] = (re.search(r'project_key:\s*"?([^"\n]+)', jblock) or [None, ""])[1].strip() if jblock else ""
-    cfg["jira_jql"] = (re.search(r'default_jql:\s*"?([^"\n]+?)"?\s*$', jblock, re.M) or [None, ""])[1].strip() if jblock else ""
+    cfg["jira_jql"] = yaml_scalar(jblock, "default_jql") if jblock else ""
     for key in ("trust_statuses", "assumption_statuses"):
         # список читаем как есть, вместе с кавычками: статусы бывают с дефисом и пробелом
         m = re.search(rf'{key}:\s*\[([^\]]*)\]', jblock, re.M) if jblock else None
@@ -314,7 +338,7 @@ atlassian:
   jira:
     base_url: "{c['jira_url']}"
     project_key: "{c['jira_key']}"
-    default_jql: "{c['jira_jql']}"
+    default_jql: {yaml_str(c['jira_jql'])}
     trust_statuses: [{c['trust_statuses']}]
     assumption_statuses: [{c['assumption_statuses']}]
   auth:

@@ -129,13 +129,16 @@ def rank_of(names, hits: list) -> int:
     return 0
 
 
-def ranked(question: str, cfg: dict, model: str) -> list:
+def ranked(question: str, cfg: dict, model: str, close: dict | None = None) -> list:
     """[(имя, вес)] — выдача ТОЙ ЖЕ выборкой, которой отвечают человеку.
 
     Замер годами мерил `kb_embed.search` — чистые вектора. А отвечает «Спросить»
     гибридной выборкой `ctx_pack`: слова с весом по редкости плюс близость по смыслу.
     Датчик стоял не на том пути: он показывал качество индекса, а не качество ответа, и
     поломка в сложении двух сигналов (1.100.38) была ему не видна вовсе.
+
+    `close` — посчитанная заранее близость по смыслу: бенчмарк сравнивает варианты
+    ретрива пачкой, и переспрашивать шлюз на каждый вариант значит мерить сеть.
     """
     import ctx_pack as P
     global _CARDS
@@ -148,7 +151,7 @@ def ranked(question: str, cfg: dict, model: str) -> list:
     # промах там, где человеку ответили верно, — на живой базе карточку обошла страница
     # «Пустышки», то есть навигация, которую в ответ всё равно не подставят.
     out = []
-    for w, c in P.fuse(_CARDS, question, limit=TOP * 4):
+    for w, c in P.fuse(_CARDS, question, close, limit=TOP * 4):
         if (c.status or "").strip() == "index" or is_placeholder(c.fm, c.text):
             continue
         out.append((c.stem, round(w, 4)))
@@ -160,13 +163,13 @@ def ranked(question: str, cfg: dict, model: str) -> list:
 _CARDS = None            # обзор базы для выборки: собирается один раз на прогон
 
 
-def measure(pairs: list, cfg: dict, model: str, say=print) -> dict:
+def measure(pairs: list, cfg: dict, model: str, say=print, closes: dict | None = None) -> dict:
     """Прогнать самопоиск по парам (имя, вопрос). → сводка."""
     ranks, margins, misses = [], [], []
     for i, (names, question) in enumerate(pairs, 1):
         ok = {names} if isinstance(names, str) else set(names)
         label = " / ".join(sorted(ok))
-        hits = ranked(question, cfg, model)
+        hits = ranked(question, cfg, model, (closes or {}).get(question))
         if not hits:
             misses.append((label, "поиск ничего не вернул"))
             ranks.append(0)
@@ -313,6 +316,141 @@ def golden_remap(cfg: dict, model: str, accept: set, apply: bool) -> int:
     return 0
 
 
+# Пресеты бенчмарка. Каждый — дельта к дефолтам `ctx_pack.RETRIEVAL`; «base» — сам
+# дефолт, и сравнение всегда идёт против него. Свой вариант собирается прямо в строке:
+# `--compare "base,hop_related=1+pagerank=0.25"`.
+COMPARE_PRESETS = {
+    "related": {"hop_related": True},
+    "backlinks": {"hop_backlinks": True},
+    "collapsed": {"neighbor_full": False},
+    "pagerank": {"pagerank": 0.25},
+}
+
+
+def parse_variant(spec: str) -> tuple:
+    """«related+pagerank=0.3» → (имя, {переопределения}). Неизвестный ключ — ошибка."""
+    import ctx_pack as P
+    name, overrides = [], {}
+    for part in spec.split("+"):
+        part = part.strip()
+        if not part:
+            continue
+        if part == "base":
+            name.append(part)       # дефолты ctx_pack.RETRIEVAL, без дельты
+        elif part in COMPARE_PRESETS:
+            name.append(part)
+            overrides.update(COMPARE_PRESETS[part])
+        elif "=" in part:
+            key, raw = (x.strip() for x in part.split("=", 1))
+            if key not in P.RETRIEVAL:
+                raise ValueError(f"неизвестный ключ ретрива: {key}")
+            if isinstance(P.RETRIEVAL[key], bool):
+                overrides[key] = raw.lower() in ("1", "true", "yes", "on", "вкл")
+            else:
+                overrides[key] = float(raw)
+            name.append(f"{key}={raw}")
+        else:
+            raise ValueError(f"неизвестный вариант: {part} "
+                             f"(пресеты: {', '.join(COMPARE_PRESETS)})")
+    return "+".join(name) or "base", overrides
+
+
+def pack_measure(pairs: list, closes: dict, max_cards: int = 40) -> dict:
+    """Замер СБОРКИ пака: находит ли пак цель, во что это обходится по объёму.
+
+    Ранжирование (`measure`) показывает верх выдачи, но не то, что уедет модели:
+    соседи по ссылкам в выдачу не входят, а в пак попадают. Метрики:
+
+      находка    цель оказалась в паке (совпадением ИЛИ переходом по ссылке)
+      символов   средний объём собранного пака
+      соседей    среднее число карточек, вошедших переходом, а не совпадением
+      цель телом цель в паке полным текстом, а не свёрнутым соседом
+    """
+    import ctx_pack as P
+    global _CARDS
+    if _CARDS is None:
+        _CARDS = P.load_cards()
+        P.measure_rarity(_CARDS)
+    cards = _CARDS
+    trusted = sum(1 for c in cards.values() if c.status in P.TRUSTED)
+    bootstrap = (trusted / len(cards) * 100) < P.threshold() if cards else False
+    release = P.current_release()
+    statuses = P.MODE_STATUSES["generate"]
+    hits, chars, neighs, full = [], [], [], 0
+    for names, q in pairs:
+        ok = {names} if isinstance(names, str) else set(names)
+        chosen, _dropped, neighbors = P.collect(cards, q, statuses, bootstrap, release,
+                                                max_cards, closes.get(q))
+        hits.append(bool(ok & {c.stem for c in chosen}))
+        if ok & {c.stem for c in chosen if c.stem not in neighbors}:
+            full += 1
+        chars.append(sum(len(P.render_block(
+            c, collapsed=(c.stem in neighbors and not P.RETRIEVAL["neighbor_full"])))
+            for c in chosen))
+        neighs.append(len(neighbors))
+    n = len(pairs) or 1
+    return {"находка": round(sum(hits) / n, 3),
+            "символов": int(statistics.mean(chars)) if chars else 0,
+            "соседей": round(statistics.mean(neighs), 1) if neighs else 0,
+            "цель телом": round(full / n, 3)}
+
+
+def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> int:
+    """A/B-прогон вариантов ретрива на одной выборке. Ничего не записывает.
+
+    Близость по смыслу считается ОДИН раз на вопрос и делится между вариантами:
+    переспрашивать шлюз на каждый вариант значит мерить сеть, а не алгоритм.
+    """
+    import ctx_pack as P
+    ranked("", cfg, model)          # прогрев: обзор базы собирается один раз
+    questions = list(dict.fromkeys(q for _n, q in pairs + golden))
+    closes = {}
+    for i, q in enumerate(questions, 1):
+        closes[q] = P.semantic(q, TOP * 4)
+        if i % 25 == 0:
+            print(f"  вектора: {i}/{len(questions)}", flush=True)
+    saved = dict(P.RETRIEVAL)
+    rows = []
+    try:
+        for spec in specs:
+            name, overrides = parse_variant(spec)
+            P.RETRIEVAL.clear()
+            P.RETRIEVAL.update(saved)
+            P.RETRIEVAL.update(overrides)
+            res = measure(pairs, cfg, model, say=lambda *_: None, closes=closes)
+            pack = pack_measure(pairs, closes)
+            row = {"вариант": name, **{k: res[k] for k in ("R@1", "R@5", "MRR", "запас")},
+                   **pack}
+            if golden:
+                g = measure(golden, cfg, model, say=lambda *_: None, closes=closes)
+                row["эталон R@1"] = g["R@1"]
+            rows.append(row)
+    finally:
+        P.RETRIEVAL.clear()
+        P.RETRIEVAL.update(saved)
+
+    keys = ["R@1", "R@5", "MRR", "запас", "находка", "цель телом", "символов", "соседей"]
+    if golden:
+        keys.append("эталон R@1")
+    print("\n| Вариант | " + " | ".join(keys) + " |")
+    print("|---|" + "---:|" * len(keys))
+    for row in rows:
+        print(f"| {row['вариант']} | " + " | ".join(str(row.get(k, "—")) for k in keys)
+              + " |")
+    base = rows[0] if rows else {}
+    drift = []
+    for row in rows[1:]:
+        d = [f"{row['вариант']}: R@1 {row['R@1'] - base['R@1']:+.3f}, "
+             f"MRR {row['MRR'] - base['MRR']:+.3f}, "
+             f"находка {row['находка'] - base['находка']:+.3f}, "
+             f"символов {row['символов'] - base['символов']:+d}"]
+        drift.append(" · ".join(d))
+    if drift:
+        print("\nРазница с base:\n" + "\n".join("- " + x for x in drift))
+    print("\n(dry-run) Бенчмарк ничего не записывает: это стенд сравнения, не история.")
+    return 0
+
+
 def history() -> dict:
     try:
         with open(HISTORY, encoding="utf-8") as f:
@@ -347,8 +485,10 @@ def main() -> int:
     ap.add_argument("--golden-remap", action="store_true",
                     help="предложить, куда переехали пропавшие цели эталона (пишет только "
                          "строки из --accept вместе с --apply)")
-    ap.add_argument("--accept", default="", metavar="N,M",
-                    help="номера строк эталона, для которых принять предложенный переезд")
+    ap.add_argument("--compare", default="", metavar="ВАРИАНТЫ",
+                    help="A/B-замер вариантов ретрива через запятую: base, related, "
+                         "backlinks, collapsed, pagerank или свои k=v+k=v. "
+                         "Ничего не записывает")
     a = ap.parse_args()
 
     if not os.path.isdir(KB_ROOT):
@@ -404,6 +544,20 @@ def main() -> int:
         pairs = rng.sample(sorted(pairs), a.sample)
     else:
         pairs = sorted(pairs)
+
+    if a.compare:
+        specs = [s.strip() for s in a.compare.split(",") if s.strip()]
+        if not specs or specs[0] not in ("base",):
+            specs = ["base"] + [s for s in specs if s != "base"]
+        gp = golden_pairs() if a.golden else []
+        alive = {os.path.basename(p)[:-3]
+                 for p in walk_md(KB_ROOT, skip_service=True, skip_archive=True)}
+        gp = [(tuple(n for n in names if n in alive), q)
+              for names, q in gp if any(n in alive for n in names)]
+        print(f"# Бенчмарк вариантов ретрива — {TODAY}\n")
+        print(f"Самопоиск: {len(pairs)} карточек"
+              + (f" · эталонных вопросов: {len(gp)}" if gp else ""))
+        return compare(specs, pairs, gp, cfg, model)
 
     print(f"Самопоиск: {len(pairs)} карточек с тезисом"
           + (f" (в векторном индексе {len(idx['cards'])})" if idx.get("cards")

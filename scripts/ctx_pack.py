@@ -35,7 +35,7 @@ import sys
 from datetime import date
 
 from aurora_common import (TRUSTED, Card as BaseCard, body, frontmatter,
-                           is_placeholder, link_targets, walk_md)
+                           is_placeholder, link_targets, related_targets, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
@@ -64,6 +64,123 @@ PREAMBLE = (
     "оценки, не факт. deprecated — история, не применять.\n"
     "Противоречие двух knowledge-карточек — это ошибка базы, о которой надо сообщить.\n"
 )
+
+
+# Переключатели ретрива — единая точка настройки для ВСЕХ потребителей контекста:
+# `ctx:context`, `agent:ask`, `agent:make`, MCP `search` и подсказка разбора в
+# agent_runner читают этот словарь, поэтому менять поведение надо здесь, а не копиями
+# ранжирования по местам. Каждый переключатель взвешен на живой базе командой
+# `ops:search-quality --compare` (см. numbers в CHANGELOG); дефолт — победившая
+# комбинация, а не первое пришедшее решение. Переопределение: env AURORA_RETRIEVAL
+# или флаг `--retrieval` в формате «hop_related=1,pagerank=0.25».
+RETRIEVAL = {
+    "hop_links": True,        # соседи по wiki-ссылкам [[...]] из тела карточки
+    "hop_related": False,     # + связи из поля `related:` (их пишет kb:links --cards)
+    "hop_backlinks": False,   # + карточки, которые ссылаются на найденную
+    "neighbor_full": True,    # сосед в паке целиком; False — свёрнутый (шапка + суть)
+    # Замер на живой базе (2038 карточек, 200 самопоиск + 18 эталонных, 2026-09):
+    # pagerank=0.25 → R@1 +0.010, MRR +0.005 при +0.5% символов; 0.15 слабее,
+    # 0.5 уже хуже (0.925/0.96) — центральность начинает перетягивать релевантность.
+    # Хоп по related:/бэклинкам и свёртка соседей дали нулевую дельту — оставлены
+    # выключенными, флаги сохранены для будущих замеров (multi-hop не внедряли:
+    # раз графовый хоп не добавляет новых карточек в топ, углублять его бессмысленно).
+    "pagerank": 0.25,         # вес графовой центральности в fuse: 0 — выключено
+}
+_RETRIEVAL_ENV_DONE = False
+
+
+def configure_retrieval(spec: str) -> list:
+    """Применить «k=v,k=v» к RETRIEVAL. → список ошибок (пустой — всё принято).
+
+    Строка приходит из env или флага: ни одна не должна молча не сработать — опечатка
+    в имени ключа иначе выглядит как «применилось», а замер сравнивает не те варианты.
+    """
+    bad = []
+    for kv in (spec or "").split(","):
+        kv = kv.strip()
+        if not kv:
+            continue
+        if "=" not in kv:
+            bad.append(kv)
+            continue
+        key, raw = (x.strip() for x in kv.split("=", 1))
+        if key not in RETRIEVAL:
+            bad.append(key)
+            continue
+        if isinstance(RETRIEVAL[key], bool):
+            RETRIEVAL[key] = raw.lower() in ("1", "true", "yes", "on", "вкл")
+        else:
+            try:
+                RETRIEVAL[key] = float(raw)
+            except ValueError:
+                bad.append(kv)
+    return bad
+
+
+def _retrieval_env() -> None:
+    """AURORA_RETRIEVAL применяется один раз на процесс, при первой выборке."""
+    global _RETRIEVAL_ENV_DONE
+    if not _RETRIEVAL_ENV_DONE:
+        _RETRIEVAL_ENV_DONE = True
+        configure_retrieval(os.environ.get("AURORA_RETRIEVAL", ""))
+
+
+_GRAPH: dict = {"key": None, "back": {}, "rank": {}}
+
+
+def _graph(cards: dict) -> tuple:
+    """(входящие {цель: [источники]}, pagerank {имя: 0..1}) по уже прочитанным карточкам.
+
+    Граф считается из того же обзора базы, который использует выборка, — диск
+    перечитывать нельзя: сборка контекста делает десятки поисков за один вопрос.
+    Рёбра — wiki-ссылки тела и поле `related:`: это одна и та же связь, записанная
+    руками и движком соответственно; считать только первую значит видеть половину графа.
+    Ключ кеша включает вес pagerank: при смене варианта замера граф пересчитывается.
+    """
+    key = (len(cards), sum(len(c.text) for c in cards.values()),
+           round(RETRIEVAL["pagerank"], 4))
+    if _GRAPH["key"] == key:
+        return _GRAPH["back"], _GRAPH["rank"]
+    edges = {}
+    for name, c in cards.items():
+        edges[name] = {t for t in link_targets(c.text) + related_targets(c.text)
+                       if t in cards and t != name}
+    back: dict = {}
+    for src, outs in edges.items():
+        for t in outs:
+            back.setdefault(t, []).append(src)
+    rank = _pagerank(sorted(cards), edges) if RETRIEVAL["pagerank"] > 0 else {}
+    _GRAPH.update(key=key, back=back, rank=rank)
+    return back, rank
+
+
+def _pagerank(names: list, edges: dict, damping: float = 0.85, iters: int = 30) -> dict:
+    """PageRank степенным методом, stdlib. Нормирован к лучшему узлу (0..1).
+
+    Свой, а не из библиотеки: движок без зависимостей, а граф базы (тысячи узлов)
+    считается тридцатью проходами по рёбрам за доли секунды. Висячие узлы (без
+    исходящих рёбер) раздают вес всем — общей суммой, а не перебором, иначе
+    квадрат по числу карточек.
+    """
+    n = len(names)
+    if not n:
+        return {}
+    pr = {x: 1.0 / n for x in names}
+    for _ in range(iters):
+        dangling = sum(pr[x] for x in names if not edges.get(x))
+        base = (1.0 - damping) / n + damping * dangling / n
+        new = {x: base for x in names}
+        for src in names:
+            outs = edges.get(src)
+            if not outs:
+                continue
+            share = pr[src] / len(outs)
+            for t in outs:
+                new[t] += damping * share
+        pr = new
+    top = max(pr.values()) or 1.0
+    return {x: v / top for x, v in pr.items()}
+
 
 
 
@@ -260,6 +377,36 @@ def weight(word: str) -> float:
     return 1.2
 
 
+def _word_profile(card: "Card") -> tuple:
+    """(заголовок, суть, алиасы, теги, {слово тела: число}) — разбор карточки по словам.
+
+    Токенизация тела — самая дорогая часть score(), а бенчмарк и агентские прогоны
+    спрашивают выборку пачками по одному обзору базы. Кешируем разбор на объекте
+    карточки; от перезаписи текста страхует отпечаток (длина + crc32): карточки
+    движок не правит по месту, но кеш, который не видит замену, — это ловушка.
+    """
+    import zlib
+    stamp = (len(card.text), zlib.crc32(card.text.encode("utf-8", errors="ignore")))
+    prof = getattr(card, "_wp", None)
+    if prof is not None and prof[0] == stamp:
+        return prof[1]
+    # Имя карточки — не текст, а склейка слов дефисами: «AC-4.4.1-Просмотр-реестра-Заявок»
+    # это одно слово для `words()` и ноль совпадений для запроса «просмотр реестра».
+    # Поэтому имя перед разбором разжимаем, а тело — нет: в прозе «бизнес-процесс» это
+    # один термин, и рвать его значило бы находить его по слову «процесс».
+    head = set(words(card.stem.replace("-", " ").replace("_", " "))
+               + words(card.title.replace("-", " ").replace("_", " ")))
+    brief = set(words(card.summary))
+    alias = {w for a in card.aliases for w in words(a)}
+    tag = set(words(card.tags))
+    seen: dict = {}
+    for w in words(card.text):
+        seen[w] = seen.get(w, 0) + 1
+    prof = (stamp, (head, brief, alias, tag, seen))
+    card._wp = prof
+    return prof[1]
+
+
 def score(card: Card, topic: str, close: dict | None = None) -> int:
     """Насколько карточка отвечает теме: заголовок > алиас > теги > тело.
 
@@ -273,19 +420,7 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
         return 0
     # Одна фраза о сути весит почти как заголовок: она написана про смысл карточки,
     # а не про то, как её назвали в источнике.
-    # Имя карточки — не текст, а склейка слов дефисами: «AC-4.4.1-Просмотр-реестра-Заявок»
-    # это одно слово для `words()` и ноль совпадений для запроса «просмотр реестра».
-    # Поэтому имя перед разбором разжимаем, а тело — нет: в прозе «бизнес-процесс» это
-    # один термин, и рвать его значило бы находить его по слову «процесс».
-    head = set(words(card.stem.replace("-", " ").replace("_", " "))
-               + words(card.title.replace("-", " ").replace("_", " ")))
-    brief = set(words(card.summary))
-    alias = {w for a in card.aliases for w in words(a)}
-    tag = set(words(card.tags))
-    body = words(card.text)
-    seen = {}
-    for w in body:
-        seen[w] = seen.get(w, 0) + 1
+    head, brief, alias, tag, seen = _word_profile(card)
 
     # Нормировка вклада тела на длину карточки (как в BM25) здесь ПРОБОВАЛАСЬ и
     # отвергнута по замеру: на эталонных вопросах R@1 и R@5 не сдвинулись вовсе, а MRR
@@ -319,7 +454,6 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
         if sim > 0.35:
             s += int((sim - 0.35) * 60)
     return int(s)
-
 
 # Насколько близость по смыслу считается совпадением. Ниже — случайность.
 SEM_FLOOR = 0.35
@@ -375,13 +509,29 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
         was = got.get(name, 0.0)
         got[name] = max(was, sem) + AGREE * min(was, sem)
         at[name] = card
+    _retrieval_env()
+    if RETRIEVAL["pagerank"] > 0:
+        # Центральность узла — мультипликативный буст К РЕЛЕВАНТНЫМ, а не третий
+        # сигнал в max(): сигнал не зависит от запроса, и аддитивный вес вытаскивал бы
+        # хабы (MOC, словари) в выдачу по любой теме. Карточка без совпадения по
+        # запросу остаётся с нулём — граф только переставляет найденное.
+        _back, rank = _graph(cards)
+        w = RETRIEVAL["pagerank"]
+        for name in list(got):
+            got[name] *= 1.0 + w * rank.get(name, 0.0)
     return sorted(((w, at[n]) for n, w in got.items()),
                   key=lambda x: (-x[0], x[1].stem))
 
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             release: str, max_cards: int, close: dict | None = None) -> tuple:
-    """Seed по теме → один переход по ссылкам. Возвращает (карточки, исключено по релизу)."""
+    """Seed по теме → один переход по ссылкам. → (карточки, исключено по релизу, соседи).
+
+    «Соседи» — имена карточек, вошедших переходом, а не совпадением с запросом: при
+    свёрнутом режиме (`neighbor_full=0`) они попадают в пак сутью, а не телом.
+    """
+    _retrieval_env()
+
     def allowed(c: Card) -> bool:
         # Заготовка проходит приёмку (утверждений в ней нет — не верить нечему), но в
         # контексте она пустое место: имя без содержания только съедает бюджет пака.
@@ -404,9 +554,21 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
         seen.add(c.stem)
         chosen.append(c)
 
-    # один переход по связям — так пак получает термины и соседей темы
+    # Один переход по связям — так пак получает термины и соседей темы. Источников
+    # перехода три, и порядок не случаен: ссылка в теле — авторская и точечная;
+    # `related:` — выведена движком и потому шумнее (списки по тридцать имён);
+    # входящая — самая широкая. При упоре в max_cards сначала кончатся последние.
+    back = _graph(cards)[0] if RETRIEVAL["hop_backlinks"] else {}
+    neighbors = set()
     for c in list(chosen):
-        for link in c.links():
+        ordered = []
+        if RETRIEVAL["hop_links"]:
+            ordered += link_targets(c.text)
+        if RETRIEVAL["hop_related"]:
+            ordered += related_targets(c.text)
+        if RETRIEVAL["hop_backlinks"]:
+            ordered += back.get(c.stem, [])
+        for link in ordered:
             if len(chosen) >= max_cards:
                 break
             nb = cards.get(link)
@@ -416,6 +578,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
                 continue
             seen.add(nb.stem)
             chosen.append(nb)
+            neighbors.add(nb.stem)
 
     # справочник аббревиатур — в каждый пак (retrieval.md)
     for c in cards.values():
@@ -423,7 +586,7 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             if c.stem not in seen:
                 seen.add(c.stem)
                 chosen.insert(0, c)
-    return chosen, dropped
+    return chosen, dropped, neighbors
 
 
 def jira_state(topic: str, limit: int = JIRA_ROWS) -> list:
@@ -477,6 +640,22 @@ def jira_block(rows: list) -> list:
     return out
 
 
+def render_block(c: "Card", collapsed: bool = False) -> str:
+    """Блок карточки в паке. Свёрнутый сосед — шапка доверия и суть, без тела.
+
+    Заголовок блока — ИМЯ КАРТОЧКИ, а не её title: по нему на неё ссылаются
+    (`[[имя]]`), и по нему же читающий сопоставляет ссылку с источником. Пока в
+    заголовке стоял title, ссылка «[[Заявка-0]]» не сходилась с блоком «## Заявка 0»,
+    и всякое настоящее основание выглядело выдумкой.
+    """
+    name = f"{c.stem}" + (f" — {c.title}" if c.title and c.title != c.stem else "")
+    if not collapsed:
+        return f"\n---\n\n## {name}\n\n{c.header()}\n\n{body(c.text).strip()}\n"
+    gist = c.summary or first_sentence(c.text)
+    return (f"\n---\n\n## {name}\n\n{c.header()}\n\n{gist}\n\n"
+            f"_Сосед темы по ссылке; полный текст — в карточке [[{c.stem}]]._\n")
+
+
 def order(cards: list) -> list:
     rank = {"canonical": 1, "verified": 1}   # canonical — легаси-синоним
     return sorted(cards, key=lambda c: (c.expired, rank.get(c.status, 2), c.stem))
@@ -508,10 +687,20 @@ def main() -> int:
     ap.add_argument("--no-log", action="store_true", help="не писать в meta/usage.log")
     ap.add_argument("--no-semantic", action="store_true",
                     help="только слова: не спрашивать семантический индекс (kb:embed)")
+    ap.add_argument("--retrieval", default="", metavar="k=v,…",
+                    help="переключатели ретрива на этот запуск: hop_related=1, "
+                         "hop_backlinks=1, neighbor_full=0, pagerank=0.25")
     ap.add_argument("--index", action="store_true",
                     help="оглавление базы вместо пака: строка на карточку "
                          "(имя · тип · статус · суть · путь) — модель выбирает сама")
     a = ap.parse_args()
+
+    _retrieval_env()
+    bad = configure_retrieval(a.retrieval)
+    if bad:
+        print(f"ctx_pack: неизвестные ключи --retrieval: {', '.join(bad)} "
+              f"(есть: {', '.join(RETRIEVAL)})", file=sys.stderr)
+        return 1
 
     if not os.path.isdir(ROOT):
         print(f"ctx_pack: нет {ROOT}/ — запускайте из корня проекта", file=sys.stderr)
@@ -556,8 +745,8 @@ def main() -> int:
     # Близость считает `fuse` — после расширения запроса словарём. Считать её здесь
     # значило бы искать векторами по исходному запросу, а словами по расширенному.
     close = {} if a.no_semantic else None
-    chosen, dropped = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap, release,
-                              a.max_cards, close)
+    chosen, dropped, neighbors = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap,
+                                         release, a.max_cards, close)
     jira = jira_state(a.topic)
     if not chosen and not jira:
         print(f"ctx_pack: по теме «{a.topic}» ничего не найдено. "
@@ -605,12 +794,8 @@ def main() -> int:
 
     used, total = [], 0
     for c in chosen:
-        # Заголовок блока — ИМЯ КАРТОЧКИ, а не её title: по нему на неё ссылаются
-        # (`[[имя]]`), и по нему же читающий сопоставляет ссылку с источником. Пока в
-        # заголовке стоял title, ссылка «[[Заявка-0]]» не сходилась с блоком «## Заявка 0»,
-        # и всякое настоящее основание выглядело выдумкой.
-        name = f"{c.stem}" + (f" — {c.title}" if c.title and c.title != c.stem else "")
-        block = f"\n---\n\n## {name}\n\n{c.header()}\n\n{body(c.text).strip()}\n"
+        block = render_block(c, collapsed=(c.stem in neighbors
+                                           and not RETRIEVAL["neighbor_full"]))
         if a.budget and total + len(block) > a.budget:
             out.append(f"\n> ⚠️ Бюджет {a.budget} символов исчерпан: не вошло "
                        f"{len(chosen) - len(used)} карточек ({', '.join(x.stem for x in chosen[len(used):][:5])}…)")

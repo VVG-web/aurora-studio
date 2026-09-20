@@ -26,7 +26,19 @@ def config_text(path: str) -> str:
 
 
 def scalar(text: str, key: str, default: str = "") -> str:
-    m = re.search(rf'^\s*{re.escape(key)}\s*:\s*"?([^"\n#]+?)"?\s*$', text, re.M)
+    # Три формы: 'одинарные кавычки' (внутри '' — это кавычка), "двойные", без кавычек.
+    # Одинарные — единственный способ хранить значение с `"` внутри (JQL с датой
+    # вида created >= "2026-11-01"): в двойных кавычках такая строка не читалась.
+    m = re.search(
+        rf"""^\s*{re.escape(key)}\s*:\s*(?:'((?:[^'\n]|'')*)'|"([^"\n]*)"|([^"\n#]+?))\s*$""",
+        text, re.M)
+    if m:
+        if m.group(1) is not None:
+            return m.group(1).replace("''", "'").strip()
+        return (m.group(2) if m.group(2) is not None else m.group(3)).strip()
+    # Конфиги, записанные до 1.113.2: кавычки внутри значения ломали строку, и её читает
+    # только снятие крайних кавычек целиком — иначе старый JQL пришлось бы вводить заново.
+    m = re.search(rf'^\s*{re.escape(key)}\s*:\s*"(.+)"\s*$', text, re.M)
     return m.group(1).strip() if m else default
 
 

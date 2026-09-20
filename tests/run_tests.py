@@ -1520,6 +1520,72 @@ def test_setup_accepts_answers_as_form(tmp: Path):
 
 
 @test
+def test_setup_form_saves_jql_with_quotes(tmp: Path):
+    """JQL с датой (created >= "2026-11-01") раньше ломал конфиг: писался в двойных
+    кавычках без экранирования, и ни один читатель такую строку не разбирал — поле
+    «JQL по умолчанию» выглядело пустым после сохранения, а sync:jira молча уходил
+    на запрос по умолчанию. Пишем такое значение в YAML-одинарных кавычках."""
+    root = make_project(tmp)
+    (root / "aurora.config.yaml").write_text(
+        'project:\n  name: "T"\n  slug: T\n', encoding="utf-8")
+    jql = ("project = PRJ AND type in (Story,История,'BA-SA Task','Инцидент') "
+           'AND (created >= "2026-11-01")')
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_setup.py"),
+                         "--target", str(root), "--json", "-"],
+                        input=json.dumps({"jira_key": "PRJ", "jira_jql": jql},
+                                         ensure_ascii=False),
+                        capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stderr[:400]
+    cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
+    line = next(l for l in cfg.splitlines() if l.strip().startswith("default_jql:"))
+    assert line.strip().startswith("default_jql: '"), \
+        f"JQL с кавычками записан без защиты — читатели его не разберут: {line.strip()}"
+    assert "''BA-SA Task''" in line, "одинарные кавычки внутри значения не удвоены"
+    # round-trip всеми читателями: setup (pre-fill формы) и движковый scalar (sync:jira)
+    sys.path.insert(0, str(SCRIPTS))
+    import aurora_setup, sources_core
+    got = aurora_setup.read_config(root / "aurora.config.yaml")["jira_jql"]
+    assert got == jql, f"setup читает другое значение: {got!r}"
+    jblock = sources_core.block(cfg, "jira:", "auth:")
+    assert sources_core.scalar(jblock, "default_jql") == jql, \
+        "sources_core.py не читает JQL — sync:jira уйдёт на запрос по умолчанию"
+    # простые значения пишутся и читаются по-прежнему (обратная совместимость)
+    assert 'project_key: "PRJ"' in cfg, "обычное значение потеряло двойные кавычки"
+    assert aurora_setup.yaml_scalar('    x: "обычное"', "x") == "обычное"
+    assert aurora_setup.yaml_scalar("    x: голое", "x") == "голое"
+    # строка, испорченная записью до 1.113.2, читается снятием крайних кавычек:
+    # иначе введённый раньше JQL пришлось бы набирать заново
+    legacy = f'    default_jql: "{jql}"'
+    assert aurora_setup.yaml_scalar(legacy, "default_jql") == jql, \
+        "старый испорченный конфиг не воскрес"
+    assert sources_core.scalar(legacy, "default_jql") == jql, \
+        "sources_core.py не читает старый испорченный конфиг"
+    # reports/analyst/paths.py держит свою копию scalar — проверяется так же
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("analyst_paths", KIT / "reports/analyst/paths.py")
+    apaths = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(apaths)
+    assert apaths.scalar(legacy, "default_jql") == jql, \
+        "отчёт не читает старый испорченный конфиг"
+    new_line = "    default_jql: " + aurora_setup.yaml_str(jql)
+    assert apaths.scalar(new_line, "default_jql") == jql, \
+        "отчёт не читает JQL в одинарных кавычках"
+    # aurora_cockpit.py — читатель карточек проектов; та же пара форм плюс наследие
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as _ck
+    assert _ck.config_value(legacy, "default_jql") == jql, \
+        "панель не читает старый испорченный конфиг"
+    assert _ck.config_value(new_line, "default_jql") == jql, \
+        "панель не читает JQL в одинарных кавычках"
+    # парсер формы настроек в index.html зеркалит читателей: три формы и наследие
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "(?:'((?:[^'" in ui and ".replace(/''/g" in ui, \
+        "форма настроек не читает одинарные кавычки"
+    assert "const legacy = cfgRaw.text" in ui, \
+        "форма настроек не воскрешает конфиг, испорченный записью до 1.113.2"
+
+
+@test
 def test_cockpit_reads_token_state_and_writes_config(tmp: Path):
     """Панель: «токен заполнен» не должно быть ложью, а правка конфига — с резервной копией."""
     sys.path.insert(0, str(KIT / "cockpit"))
@@ -15870,6 +15936,168 @@ def test_common_templates_folder_is_part_of_the_schema(tmp: Path):
     # и на свежем проекте папка появляется вместе с содержимым
     root = make_project(tmp)
     assert (root / "TemplatesCommon").is_dir(), "папки нет в разложенном проекте"
+
+
+@test
+def test_related_and_backlinks_join_the_hop_only_when_asked(tmp: Path):
+    """Переход за соседом идёт по трём источникам, и каждый включается явно.
+
+    Связь в базе записана дважды: автором — wiki-ссылкой в теле, движком
+    (`kb:links --cards`) — markdown-ссылкой в поле `related:`. Ретрив читал только
+    первую: выведенные связи были в карточках, но в пак не попадали, а входящие ссылки
+    не работали вовсе. Каждый источник — за своим флагом, потому что шум у них разный:
+    `related:` на живой базе тащит списки по тридцать имён, входящие ещё шире.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Заявочный-контур.md",
+         "Заявочный контур принимает заявку и ведёт её по статусам.",
+         status="knowledge", kind="knowledge")
+    card(root, "Concepts/Связь-из-related.md",
+         "Связанное знание, до которого иначе не дойти.",
+         status="knowledge", kind="knowledge")
+    card(root, "Concepts/Ссылающаяся-карточка.md",
+         "Эта карточка опирается на [[Заявочный-контур]] в своём тексте.",
+         status="knowledge", kind="knowledge")
+    # related: пишется markdown-ссылками — тем же форматом, что кладёт kb:links --cards
+    a = root / "AuroraKnowledgeDB/Concepts/Заявочный-контур.md"
+    text = a.read_text(encoding="utf-8")
+    a.write_text(text.replace("---\n\n", 'related:\n  - "[Связь-из-related]'
+                                         '(Связь-из-related.md)"\n---\n\n', 1),
+                 encoding="utf-8")
+
+    base = run("ctx_pack.py", "заявочный контур", "--no-log", cwd=root).stdout
+    assert "Заявочный-контур" in base, "seed по теме не найден"
+    assert "Связь-из-related" not in base, "related: попал в пак без флага"
+    assert "Ссылающаяся-карточка" not in base, "входящая ссылка попала в пак без флага"
+
+    rel = run("ctx_pack.py", "заявочный контур", "--no-log",
+              "--retrieval", "hop_related=1", cwd=root).stdout
+    assert "Связь-из-related" in rel, "флаг hop_related не подтянул соседа из related:"
+    assert "Ссылающаяся-карточка" not in rel, "hop_related включил и входящие — флаги смешаны"
+
+    back = run("ctx_pack.py", "заявочный контур", "--no-log",
+               "--retrieval", "hop_backlinks=1", cwd=root).stdout
+    assert "Ссылающаяся-карточка" in back, "флаг hop_backlinks не подтянул ссылающуюся"
+    assert "Связь-из-related" not in back, "hop_backlinks включил и related: — флаги смешаны"
+
+
+@test
+def test_pagerank_prefers_the_hub_among_relevant(tmp: Path):
+    """Центральность узла переставляет НАЙДЕННОЕ и не вытаскивает хабы без совпадения.
+
+    Графовый вес не зависит от запроса, поэтому он — мультипликативный буст к
+    релевантным, а не самостоятельный сигнал: аддитивный вес ставил бы карту содержания
+    первой по любой теме. Проверяем оба края: при равных словах хаб выше сироты, а
+    карточка без совпадения не появляется вовсе, сколько бы на неё ни ссылались.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    P = importlib.import_module("ctx_pack")
+
+    root = make_project(tmp)
+    card(root, "Concepts/Ядро-темы.md", "Правило учёта работает одинаково во всех разделах.",
+         status="knowledge", kind="knowledge")
+    card(root, "Concepts/Записка-про-тему.md", "Правило учёта работает одинаково во всех разделах.",
+         status="knowledge", kind="knowledge")
+    card(root, "MOC/Карта-понятий.md",
+         '---\ntitle: "Карта-понятий"\ntype: moc\nstatus: index\n---\n\n# Карта\n\n'
+         "Оглавление без знания о правиле.\n", encoding="utf-8")
+    for i in range(6):      # хаб — тот, на кого ссылаются
+        card(root, f"Concepts/Частный-случай-{i}.md",
+             f"Частный случай номер {i}, смотри [[Ядро-темы]].",
+             status="knowledge", kind="knowledge")
+
+    cwd = os.getcwd()
+    saved = dict(P.RETRIEVAL)
+    try:
+        os.chdir(root)
+        importlib.reload(P)
+        cards = P.load_cards()
+        P.measure_rarity(cards)
+        P.RETRIEVAL["pagerank"] = 0.0
+        plain = [c.stem for _w, c in P.fuse(cards, "правило учёта", {}, limit=6)]
+        assert "Карта-понятий" not in plain, "хаб без совпадения с запросом попал в выдачу"
+        P.RETRIEVAL["pagerank"] = 1.0
+        boosted = [c.stem for _w, c in P.fuse(cards, "правило учёта", {}, limit=6)]
+        assert boosted[0] == "Ядро-темы", \
+            f"при равных словах первым обязан быть хаб, а не {boosted[0]}"
+        assert "Карта-понятий" not in boosted, "буст вытащил нерелевантный хаб в выдачу"
+    finally:
+        os.chdir(cwd)
+        P.RETRIEVAL.clear()
+        P.RETRIEVAL.update(saved)
+        importlib.reload(P)
+
+
+@test
+def test_collapsed_neighbor_carries_gist_not_body(tmp: Path):
+    """Свёрнутый сосед — шапка доверия и суть, а не полный текст.
+
+    Сосед по ссылке нужен модели как обещание «есть такое знание», а не как ещё тысяча
+    знаков: сорок полных соседей съедали бюджет пака раньше, чем в него входили seed'ы.
+    При neighbor_full=0 тело соседа не уезжает, а указатель на него остаётся.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Главная-мысль.md",
+         "Загадочный приём описан здесь. Смотри также [[Соседняя-мысль]].",
+         status="knowledge", kind="knowledge")
+    card(root, "Concepts/Соседняя-мысль.md",
+         "УНИКАЛЬНОЕ-ТЕЛО-СОСЕДА: подробности, которые не должны уехать свёрнутыми. "
+         + "Длинное тело соседа. " * 40,
+         status="knowledge", kind="knowledge", summary='"Суть соседа одной строкой"')
+
+    full = run("ctx_pack.py", "загадочный приём", "--no-log", cwd=root).stdout
+    assert "УНИКАЛЬНОЕ-ТЕЛО-СОСЕДА" in full, "по умолчанию сосед едет целиком"
+
+    slim = run("ctx_pack.py", "загадочный приём", "--no-log",
+               "--retrieval", "neighbor_full=0", cwd=root).stdout
+    assert "Соседняя-мысль" in slim, "свёрнутый сосед пропал из пака совсем"
+    assert "УНИКАЛЬНОЕ-ТЕЛО-СОСЕДА" not in slim, "свёрнутый сосед уехал телом"
+    assert "Суть соседа одной строкой" in slim, "у свёрнутого соседа потерялась суть"
+    assert len(slim) < len(full), "свёртка не уменьшила пак"
+
+
+@test
+def test_compare_benchmarks_variants_offline(tmp: Path):
+    """Бенчмарк вариантов ретрива гоняется без сети и ничего не записывает.
+
+    Векторного шлюза в фикстуре нет — близость по смыслу честно пуста, и стенд мерит
+    словесную половину гибрида, а не отказывает. Без этого теста сравнение вариантов
+    проверялось бы только руками на живой базе — ровно то, чего бенчмарк заводился
+    не допустить.
+    """
+    root = make_project(tmp)
+    for i in range(4):
+        card(root, f"Concepts/Приём-номер-{i}.md",
+             f"Приём номер {i} — это способ вести учёт заявок в контуре проекта. "
+             f"Тезис карточки написан своими словами и достаточно длинный для замера.",
+             status="knowledge", kind="knowledge", distilled="2026-01-01")
+
+    cp = run("kb_search_quality.py", "--compare", "base,related", "--sample", "0",
+             cwd=root, expect_rc=0)
+    assert "| base |" in cp.stdout and "| related |" in cp.stdout, \
+        f"таблица сравнения не собралась:\n{cp.stdout[:600]}"
+    assert "Бенчмарк вариантов" in cp.stdout
+    hist = root / "AuroraKnowledgeDB/meta/search-quality.json"
+    assert not hist.exists(), "бенчмарк пишет в историю замеров — это стенд, не прогон"
+
+    bad = run("kb_search_quality.py", "--compare", "base,nosuchkey=1", cwd=root)
+    assert bad.returncode != 0 or "неизвестн" in (bad.stdout + bad.stderr), \
+        "опечатка в имени ключа прошла молча — варианты сравнивались не те"
+
+
+@test
+def test_retrieval_flag_rejects_unknown_keys(tmp: Path):
+    """--retrieval с опечаткой в ключе — отказ, а не молчаливый пропуск.
+
+    Переключатель, который не сработал, выглядит как применившийся: замер сравнивает
+    не те варианты, и вывод бенчмарка врёт. Поэтому неизвестный ключ — ошибка запуска.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Любая.md", "Любое знание.", status="knowledge", kind="knowledge")
+    cp = run("ctx_pack.py", "любая", "--retrieval", "hop_relaited=1", cwd=root)
+    assert cp.returncode == 1, "опечатка в ключе --retrieval не отклонена"
+    assert "hop_relaited" in cp.stderr, "отказ не назвал неизвестный ключ"
 
 
 # ------------------------------------------------------------------- smoke-мета-тесты
