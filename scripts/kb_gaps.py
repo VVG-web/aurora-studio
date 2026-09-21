@@ -42,7 +42,7 @@ from aurora_common import (KB_ROOT, QUOTES, aliases, card_body,  # noqa: E402
                            frontmatter, is_placeholder, leaf_name, link_refs,
                            related_targets, walk_md)
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 # Кандидат в сущности — аббревиатура или код: заглавные буквы, цифры, дефис.
 TERM_RE = re.compile(r"\b([А-ЯЁA-Z][А-ЯЁA-Z0-9]{1,}(?:[-_.][А-ЯЁA-Z0-9]+)*)\b")

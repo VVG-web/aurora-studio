@@ -34,7 +34,7 @@ from datetime import date
 
 CONFIG = "aurora.config.yaml"
 ENV_LOCAL = ".env.aurora.local"
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 KB_ROOT = "AuroraKnowledgeDB"
 
 # Служебные файлы зеркала — не страницы и не задачи: промпты, правила, шаблоны и

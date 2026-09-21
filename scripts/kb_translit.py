@@ -43,7 +43,7 @@ from aurora_common import (KB_ROOT, card_filename, frontmatter,  # noqa: E402
                            rewrite_links, walk_md)
 
 DICT_PATH = os.path.join(KB_ROOT, "meta", "translit.md")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 # Строка словаря: латиница | кириллица | дата | кем.
 ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|", re.M)

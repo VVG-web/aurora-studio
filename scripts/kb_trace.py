@@ -33,7 +33,7 @@ from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targ
 
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 REQ_DIR = "AuroraKnowledgeDB/Requirements"
 SPEC_DIR = "AuroraKnowledgeDB/Specs"
@@ -319,7 +319,7 @@ def requirements() -> int:
         for dp, _, _ in os.walk("AuroraKnowledgeDB")) else "`Raw/contract/`"
     hdr = (
         "# Трассировка требований — сквозная таблица\n\n"
-        f"> 🤖 **Генерируется** скриптом `.opencode/scripts/aurora_trace.py` ({datetime.date.today().isoformat()}). "
+        f"> 🤖 **Генерируется** скриптом `.opencode/scripts/aurora_trace.py` ({TODAY}). "
         "Ручные правки будут потеряны — меняйте карточки требований (поле `epics:`).\n"
         f"> Источники: договор и ТЗ проекта (реестр — {registry}, решение об источнике — DR); "
         "реестр историй — `Raw/project/Activity_Epic_US.md`.\n\n"

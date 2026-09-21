@@ -33,7 +33,7 @@ from aurora_common import (TRUSTED, card_sources, config_value, frontmatter,
 
 ROOT = "AuroraKnowledgeDB"
 METRICS = os.path.join(ROOT, "meta", "metrics.md")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 MONTH = TODAY[:7]
 
 

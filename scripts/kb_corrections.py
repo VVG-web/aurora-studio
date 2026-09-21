@@ -38,7 +38,7 @@ from aurora_common import frontmatter, is_service, split_frontmatter, with_field
 
 KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 MARK = "## Исправления человеком"
 
 

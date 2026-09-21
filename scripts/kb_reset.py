@@ -52,7 +52,8 @@ from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402
                            is_service)
 
 ROOT = "AuroraKnowledgeDB"
-TODAY = datetime.now().strftime("%Y-%m-%d_%H%M")
+from aurora_common import utc_slug  # noqa: E402
+TODAY = utc_slug("%Y-%m-%d_%H%M")   # отметка копии — в UTC, как у всех записей
 
 # Не знание, а обвязка базы: из источников не выводится, но и содержимым базы не является.
 # Версию движка отсюда читают панель, `doctor` и `update`.

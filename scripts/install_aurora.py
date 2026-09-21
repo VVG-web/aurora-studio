@@ -27,7 +27,7 @@ from datetime import date
 from pathlib import Path
 
 KIT_ROOT = Path(__file__).resolve().parents[1]
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 def manifest_pairs() -> list:
     """[(файл в kit, путь в проекте)] из engine_manifest.txt — тот же список, по которому

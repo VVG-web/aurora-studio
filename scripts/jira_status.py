@@ -38,7 +38,7 @@ from aurora_common import (KB_ROOT, as_list, frontmatter, git_guard, set_field,
 MIRROR = os.path.join("Sources", "JIRA")
 US_DIR = os.path.join("Artifacts", "us")
 REQ_DIR = os.path.join(KB_ROOT, "Requirements")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 DONE = {"done", "closed", "resolved", "закрыто", "закрыта", "завершено", "выполнено",
         "готово", "тестирование - готово", "testing - ready", "аналитика - готово"}

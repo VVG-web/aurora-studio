@@ -49,7 +49,7 @@ from aurora_common import KB_ROOT, body, frontmatter, is_placeholder  # noqa: E4
 META = os.path.join(KB_ROOT, "meta")
 VECTORS = os.path.join(META, "embeddings.bin")
 INDEX = os.path.join(META, "embeddings.json")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 BATCH = 32                 # столько текстов за один запрос: шлюз отвечает ~секунду
 PIECE = 1500               # символов в одном куске карточки
 PIECE_OVERLAP = 200        # нахлёст: мысль, разрезанная границей, найдётся хотя бы раз

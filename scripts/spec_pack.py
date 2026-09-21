@@ -31,7 +31,7 @@ from datetime import date
 from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, link_targets, walk_md)
 
 OUT_DIR = os.path.join("Deliverables", "work", "spec-packs")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 
 def anchor(name: str) -> str:

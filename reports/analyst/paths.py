@@ -21,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts"))
-from aurora_common import yaml_scalar as _yaml_scalar  # noqa: E402
+from aurora_common import local_now as _local_now, yaml_scalar as _yaml_scalar  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -117,7 +117,7 @@ def year() -> int:
     if env.strip().isdigit():
         return int(env)
     raw = scalar(_analyst(), "year", "")
-    return int(raw) if raw.strip().isdigit() else datetime.date.today().year
+    return int(raw) if raw.strip().isdigit() else _local_now().year
 
 
 def configured_years() -> list:

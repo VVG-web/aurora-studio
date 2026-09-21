@@ -44,7 +44,9 @@ from urllib.parse import parse_qs, urlparse
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
-from aurora_common import child_env, yaml_scalar   # noqa: E402  — путь до scripts добавлен выше
+# путь до scripts добавлен выше
+from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
+                           utc_slug, utc_stamp, yaml_scalar)
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -587,7 +589,7 @@ def graph_state(project: str, rebuild: bool = False) -> dict:
         # прежняя. Потерять рабочий граф из-за неудачной кнопки хуже, чем показать
         # вчерашний.
         data["stale_reason"] = why
-    data["when"] = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M")
+    data["when"] = mtime_stamp(path)
     return data
 
 
@@ -1330,8 +1332,7 @@ def versions(project: str, report_id: str) -> list:
             continue
         out.append({"stamp": os.path.splitext(name)[0],
                     "size": os.path.getsize(full),
-                    "when": datetime.fromtimestamp(
-                        os.path.getmtime(full)).strftime("%Y-%m-%d %H:%M")})
+                    "when": mtime_stamp(full)})
     return sorted(out, key=lambda x: x["stamp"], reverse=True)
 
 
@@ -1349,7 +1350,7 @@ def keep_version(project: str, report_id: str, output: str) -> list:
     if not os.path.isfile(src):
         return versions(project, report_id)
     folder = history_dir(project, report_id)
-    stamp = datetime.fromtimestamp(os.path.getmtime(src)).strftime("%Y-%m-%d_%H%M")
+    stamp = utc_slug("%Y-%m-%d_%H%M", os.path.getmtime(src))
     dst = os.path.join(folder, stamp + ".html")
     if not os.path.isfile(dst):
         try:
@@ -1466,7 +1467,7 @@ def retrieval_state(project: str) -> dict:
         data = json.loads(read_text(path, limit=2_000_000))
     except ValueError:
         return {}
-    return {"when": datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d"),
+    return {"when": mtime_stamp(path),
             "queries": len(data)}
 
 
@@ -1492,7 +1493,7 @@ def ping_state(project: str, out: str = "", rc: int = 0) -> dict:
         alive = len(re.findall(r"^✅ №\d", out, re.M))
         dead = len(re.findall(r"^✗ №\d", out, re.M))
         embed = bool(re.search(r"^✅ Эмбеддинги", out, re.M))
-        state = {"when": datetime.now().strftime("%Y-%m-%d %H:%M"), "rc": rc,
+        state = {"when": utc_stamp(), "rc": rc,
                  "alive": alive, "dead": dead, "embed": bool(embed),
                  "tail": "\n".join(out.strip().splitlines()[-12:])}
         try:
@@ -1534,8 +1535,7 @@ def unfinished(project: str) -> dict:
             if "checked: —" not in head and "drafted: —" not in head \
                     and "reviewed: —" not in head:
                 continue          # цепочка пройдена
-            days = int((_dt.datetime.now()
-                        - _dt.datetime.fromtimestamp(os.path.getmtime(path))).days)
+            days = int((time.time() - os.path.getmtime(path)) // 86400)
             stage = next((s for s in ("enriched", "planned", "drafted", "reviewed", "checked")
                           if f"{s}: —" in head), "?")
             out.append({"path": os.path.relpath(path, project), "days": days,
@@ -1715,7 +1715,7 @@ def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> N
     от каждого прогона, превратится в источник конфликтов при слиянии веток.
     """
     runs = read_runlog(project)
-    runs[cmd] = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "rc": rc,
+    runs[cmd] = {"at": utc_stamp(), "rc": rc,
                  "kit": kit_version(), "who": who(project), "line": line,
                  # Сколько заняло в прошлый раз — единственный честный ответ на вопрос
                  # «это повисло или так и надо»: у команд разброс от секунды до часа.
@@ -2287,7 +2287,7 @@ def start_job(project: str, cmd: str, extra: list) -> str:
 
     path = script_path(project, row["script"])
     job_id = secrets.token_hex(8)
-    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + job_id[:6]
+    run_id = utc_slug() + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
            "out": [], "started": time.time(), "done": False, "run_id": run_id}
     with JOBS_LOCK:
@@ -3273,7 +3273,7 @@ def mark_running(job_id: str, name: str, project: str, on: bool) -> None:
         rows = {}
     if on:
         rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
-                        "since": datetime.now().strftime("%H:%M")}
+                        "since": utc_stamp()}
     else:
         rows.pop(job_id, None)
     try:
@@ -3356,7 +3356,7 @@ def main() -> int:
             print("Панель не перезапущена: сейчас идёт работа.\n", file=sys.stderr)
             for row in busy.values():
                 print(f"  {row.get('cmd')} · проект {row.get('project') or '—'} · "
-                      f"с {row.get('since')}", file=sys.stderr)
+                      f"с {local_view(row.get('since'))}", file=sys.stderr)
             print("\nПерезапуск убьёт эти прогоны: их вывод идёт в панель, и без неё они\n"
                   "останавливаются на первой же строке. Дождитесь конца или, если это\n"
                   "осознанное решение: aurora.py cockpit --restart --force",

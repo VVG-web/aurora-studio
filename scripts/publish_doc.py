@@ -246,7 +246,8 @@ def stamp(text: str, pid: str, commit: str, ver: str = "", url: str = "") -> str
     head, rest = split_frontmatter(text)
     if head is None:
         head, rest = "\n", "\n---\n\n" + text.lstrip("\n")
-    for key, value in (("confluence_page_id", pid), ("published", date.today().isoformat()),
+    from aurora_common import utc_today
+    for key, value in (("confluence_page_id", pid), ("published", utc_today()),
                        ("published_version", str(ver)), ("published_url", url or "—"),
                        ("published_commit", commit or "—")):
         head = set_field(head, key, value)

@@ -113,7 +113,9 @@ def prune_runs(runs: Path, task: str) -> int:
         except OSError:
             pass
     return len(old)
-TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+from aurora_common import (local_now, local_view, utc_label, utc_slug,  # noqa: E402
+                           utc_stamp, utc_today)
+TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
 # ASK_ECHO больше нет: обрезание ответа до 700 знаков было ценой текстового пересказа
@@ -225,7 +227,7 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
                                               if dirty else "")}
     if dirty:
         git("add", "-A", cwd=cwd)
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        stamp = utc_label()
         rc, _o, err = git("commit", "--no-verify", "-m",
                           f"checkpoint: перед агентом {task} · {stamp}", cwd=cwd)
         if rc != 0:
@@ -385,12 +387,12 @@ def writing_lock(cwd: str, task: str):
         alive, held = False, {}
     if alive:
         return False, (f"уже идёт пишущий прогон: {held.get('task')} "
-                       f"(pid {held.get('pid')}, с {held.get('since')})")
+                       f"(pid {held.get('pid')}, с {local_view(held.get('since'))})")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"pid": os.getpid(), "task": task,
-                       "since": datetime.now().strftime("%H:%M:%S")}, f, ensure_ascii=False)
+                       "since": utc_stamp()}, f, ensure_ascii=False)
     except OSError:
         return True, ""          # не смогли записать замок — работать это не мешает
     return True, ""
@@ -787,7 +789,7 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> 
 
 
 def report_extract(res: dict, apply: bool) -> str:
-    L = [f"# Выделение сущностей — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Выделение сущностей — {utc_label()}", "",
          f"Просмотрено карточек: **{res['cards']}** · вынесено определений: "
          f"**{res['made']}** · {res['seconds']} с", ""]
     if not apply:
@@ -1071,7 +1073,7 @@ def mark_relinked(path: str) -> None:
 
 
 def report_relink(res: dict, apply: bool) -> str:
-    L = [f"# Связывание тезисов — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Связывание тезисов — {utc_label()}", "",
          f"Карточек просмотрено: **{res['cards']}** · связей поставлено: "
          f"**{res['added']}** · {res['seconds']} с", ""]
     if not apply:
@@ -1307,7 +1309,7 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
 
 
 def report_clashes(res: dict) -> str:
-    L = [f"# Противоречия в базе — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Противоречия в базе — {utc_label()}", "",
          f"Групп об одном предмете: **{res['groups']}** · найдено споров: "
          f"**{res['found']}** · {res['seconds']} с", "",
          "Противоречие — это когда обе карточки нельзя считать верными одновременно. "
@@ -1555,7 +1557,7 @@ def run_tasks(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
 
 
 def report_tasks(res: dict, apply: bool) -> str:
-    L = [f"# Задачи Jira, осевшие карточками — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Задачи Jira, осевшие карточками — {utc_label()}", "",
          f"Карточек просмотрено: **{res['cards']}** · знание возвращено предмету: "
          f"**{res['moved']}** · переименовано по предмету: **{res['renamed']}** · "
          f"{res['seconds']} с", ""]
@@ -1691,7 +1693,7 @@ def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) ->
 
 
 def report_translit(res: dict, apply: bool) -> str:
-    L = [f"# Словарь имён — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Словарь имён — {utc_label()}", "",
          f"Карточек латиницей: **{res['cards']}** · переведено: **{res['translated']}** "
          f"· {res['seconds']} с", ""]
     if not apply:
@@ -1880,7 +1882,7 @@ def run_twins(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
 
 
 def report_twins(res: dict, apply: bool) -> str:
-    L = [f"# Двойники по содержимому — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Двойники по содержимому — {utc_label()}", "",
          f"Групп: **{res['groups']}** · слито: **{res['merged']}**"
          + (f" · разведено с записью в карточки: **{res['apart']}**" if res.get("apart") else "")
          + f" · {res['seconds']} с", ""]
@@ -3352,17 +3354,17 @@ def append_turn(path: Path, question: str, answer: str, note: str, mode: str) ->
     основанием завести карточку.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
+    now = utc_label()
     if not path.is_file():
         head = ["---", "type: ask-thread", f'title: "{question[:80].replace(chr(34), "")}"',
-                f"created: {now:%Y-%m-%d %H:%M}", f"mode: {mode}", "---", "",
+                f"created: {now}", f"mode: {mode}", "---", "",
                 f"# Разговор с базой — {question[:80]}", "",
                 "_Журнал диалога: вопросы аналитика и ответы модели по карточкам базы. "
                 "Файл ведёт панель (`agent:ask`), править его руками незачем — но читать "
                 "можно и в Obsidian._", ""]
         path.write_text("\n".join(head), encoding="utf-8")
     with open(path, "a", encoding="utf-8") as f:
-        f.write(f"\n### Вопрос · {now:%Y-%m-%d %H:%M}\n\n{question}\n"
+        f.write(f"\n### Вопрос · {now}\n\n{question}\n"
                 f"\n### Ответ · {note}\n\n{answer}\n")
     return path
 
@@ -3518,7 +3520,7 @@ PROMPT_MAKE_CRITIC = """Проверь документ «{title}» на соо�
 
 def make_session_dir(cwd: str, kind: str) -> Path:
     """Папка сессии производства. Живёт в Workspaces: это работа, а не знание."""
-    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    stamp = utc_slug("%Y-%m-%d_%H%M%S")
     d = Path(cwd) / "Workspaces" / f"{kind}-{stamp}"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -3766,7 +3768,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
 
 def report_make(res: dict) -> str:
     """Отчёт производства. Панель разбирает его же, поэтому формат стабилен."""
-    L = [f"# Артефакт · {datetime.now():%Y-%m-%d %H:%M}", "", f"Сессия: `{res['sid']}`", ""]
+    L = [f"# Артефакт · {utc_label()}", "", f"Сессия: `{res['sid']}`", ""]
     if res.get("stage") == "planning":
         L += ["Планировщик спрашивает — ответьте, и он продолжит. На каждый вопрос есть "
               "рекомендация: с ней можно согласиться одним словом.", ""]
@@ -4121,7 +4123,7 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
 
 
 def report_ask(res: dict, question: str, cfg: dict) -> str:
-    L = [f"# Ответ базы — {datetime.now():%Y-%m-%d %H:%M}", "", f"**Вопрос:** {question}", ""]
+    L = [f"# Ответ базы — {utc_label()}", "", f"**Вопрос:** {question}", ""]
     if not res["ok"]:
         L += [f"✗ Ответа нет: {res.get('why', 'причина неизвестна')}", "",
               "Если пак пуст — база про это не знает: заведите вопрос (`kb:question`) "
@@ -4731,7 +4733,7 @@ def report_distill(res: dict, apply: bool) -> str:
     bad = [s for s in res["steps"] if s["status"] == "сбой"]
     long = [s for s in res["steps"] if s["status"] == "слишком длинная"]
     parted = [s for s in made if s.get("parts")]
-    L = [f"# Агент · тезисы карточек — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Агент · тезисы карточек — {utc_label()}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · переписано: {len(made)} · "
          f"без знания: {len(empty)} · сбоев: {len(bad)} · осталось: {res['left']}", ""]
     if parted:
@@ -4925,7 +4927,7 @@ def verdict(res: dict, apply: bool) -> tuple:
 
 def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str:
     ok, why = verdict_build(res, apply)
-    L = [f"# Агент · сборка базы — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Агент · сборка базы — {utc_label()}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
          f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
          (f"Партия {res['partition']}" if res["partition"] else "По плану подряд")
@@ -5014,7 +5016,7 @@ def adapter_lines(cfg: dict, res: dict) -> list:
 
 def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str:
     ok, why = verdict(res, apply)
-    L = [f"# Агент · синонимы — {datetime.now():%Y-%m-%d %H:%M}", "",
+    L = [f"# Агент · синонимы — {utc_label()}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · критик: "
          f"{'да' if use_critic else 'нет'} · адаптер: {cfg['adapter']}",
          f"Конфликтов в работе: {res['total_conflicts']} · время: {res['seconds']} с"
@@ -5138,7 +5140,7 @@ def main() -> int:
     # Список разговоров — чтение файлов проекта: ни модели, ни настроенного агента для
     # него не нужно, и требовать их значило бы прятать историю за настройкой шлюза.
     if a.threads:
-        print(f"# Разговоры с базой — {datetime.now():%Y-%m-%d}\n")
+        print(f"# Разговоры с базой — {local_now():%Y-%m-%d}\n")
         rows = threads(cwd)
         if not rows:
             print("Разговоров пока нет. Первый появится после `agent:ask`.")
@@ -5174,7 +5176,7 @@ def main() -> int:
         if not a.question:
             print("agent_runner: нужен --question «текст вопроса»", file=sys.stderr)
             return 1
-        path = thread_path(cwd, a.thread or f"{datetime.now():%Y-%m-%d_%H%M}-{slug(a.question)}")
+        path = thread_path(cwd, a.thread or f"{utc_slug('%Y-%m-%d_%H%M')}-{slug(a.question)}")
         history = read_thread(path) if a.thread else []
         if a.thread and not history:
             print(f"agent_runner: разговора «{a.thread}» нет — уточнять нечего. "
@@ -5352,7 +5354,7 @@ def main() -> int:
 
     runs = Path(cwd) / RUNS_DIR
     runs.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    stamp = utc_slug("%Y-%m-%d_%H%M")
     # Предпросмотр журнал получает всегда: ради него его и запускают. Молчим только о
     # прогоне в записи, который ничего не изменил, — рассказывать о нём нечего.
     if a.apply and tree_fingerprint(cwd) == before:

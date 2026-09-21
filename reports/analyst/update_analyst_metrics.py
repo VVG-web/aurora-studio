@@ -22,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
+from aurora_common import parse_time  # noqa: E402
 from paths import DATA_DIR
 
 YEAR = paths.YEAR
@@ -52,7 +53,10 @@ for key, issue in full_status.items():
 
                 # Извлекаем ISO-неделю
                 try:
-                    dt = datetime.fromisoformat(date_str)
+                    dt = parse_time(date_str)
+                    if dt is None:
+                        raise ValueError(date_str)
+                    dt = dt.astimezone()     # неделя — по часам системы
                 except ValueError:
                     break
                 # Фильтра по году здесь не было вовсе. На проекте, живущем один год,

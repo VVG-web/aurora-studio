@@ -41,7 +41,7 @@ from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            split_frontmatter, translit_names, walk_md)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [

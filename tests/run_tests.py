@@ -5372,14 +5372,17 @@ def test_bridge_card_says_what_runs_and_what_stopped(tmp: Path):
     """
     import shutil
     ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    start = ui.index("function activityChips(")
-    depth, i = 0, ui.index("{", start)
-    while True:
-        depth += {"{": 1, "}": -1}.get(ui[i], 0)
-        if depth == 0:
-            break
-        i += 1
-    func = ui[start:i + 1]
+    def extract(name):
+        start = ui.index(f"function {name}(")
+        depth, i = 0, ui.index("{", start)
+        while True:
+            depth += {"{": 1, "}": -1}.get(ui[i], 0)
+            if depth == 0:
+                break
+            i += 1
+        return ui[start:i + 1]
+    # отметка показывает время общим помощником панели — он едет в проверку вместе с ней
+    func = extract("histWhen") + "\n" + extract("activityChips")
     assert "drawActivity();" in ui and "/api/activity" in ui, \
         "отметка посчитана, но на карточку не выводится или не обновляется"
 
@@ -7918,8 +7921,8 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     at = src.index("def start_job(")
     sj = src[at:at + 4000]
-    assert 'time.strftime("%Y%m%d-%H%M%S") + "-" + job_id[:6]' in sj, \
-        "у прогона нет id — архив не соберётся в хронологию"
+    assert 'utc_slug() + "-" + job_id[:6]' in sj, \
+        "у прогона нет id в UTC — архив не соберётся в хронологию"
     assert '"run_id": run_id' in sj, "задание не помнит id своего архива"
     assert 'os.path.join(runs_dir(project), run_id)' in sj and '"console.log"' in sj, \
         "вывод прогона не пишется на диск"
@@ -16137,6 +16140,62 @@ def test_engine_settings_reach_commands_but_secrets_do_not(tmp: Path):
                         cwd=str(root), capture_output=True, text=True,
                         env={**os.environ, "AURORA_RETRIEVAL": "pagerannk=1"})
     assert "pagerannk" in cp.stderr, f"опечатка в переменной прошла молча:\n{cp.stderr[:300]}"
+
+
+@test
+def test_time_is_recorded_in_utc_and_shown_in_local_time(tmp: Path):
+    """Время фиксируется в UTC одним правилом, а показывается по часовому поясу системы.
+
+    Живой случай: в одном журнале стояли местные часы, UTC и время Jira без зоны (выгрузка
+    отчёта срезала смещение «+0300»), и сравнить записи между собой было нельзя. Теперь
+    «сейчас» движок берёт только в `aurora_common`, а показ переводит время в местное.
+    """
+    import re as _re
+    from datetime import datetime as _dt, timezone as _tz
+    files = (sorted((KIT / "scripts").glob("*.py")) + sorted((KIT / "scripts/agents").glob("*.py"))
+             + [KIT / "cockpit/aurora_cockpit.py"] + sorted((KIT / "reports/analyst").glob("*.py")))
+    naive = _re.compile(r"datetime\.now\(\)|datetime\.datetime\.now\(\)|date\.today\(\)|"
+                        r"datetime\.date\.today\(\)|time\.strftime\(|utcnow\(|"
+                        r"\.fromtimestamp\([^)]*\)\.strftime")
+    offenders = [f"{p.relative_to(KIT)}:{i}" for p in files if p.name != "aurora_common.py"
+                 for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+                 if naive.search(line) and not line.lstrip().startswith("#")]
+    assert not offenders, \
+        f"время берётся мимо общего правила (aurora_common) — запись уйдёт в местных часах: {offenders[:8]}"
+
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("aurora_common")
+    assert _re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", A.utc_stamp()), A.utc_stamp()
+    assert A.utc_label().endswith(" UTC") and _re.fullmatch(r"\d{8}-\d{6}Z", A.utc_slug())
+    # Jira пишет смещение без двоеточия — его нельзя срезать, его надо учесть
+    assert A.utc_stamp(A.parse_time("2026-09-17T17:39:52.000+0300")) == "2026-09-17T14:39:52Z", \
+        "время Jira переведено в UTC неверно — смещение сервера потеряно"
+    assert A.utc_stamp(A.parse_time("2026-09-21 10:15 UTC")) == "2026-09-21T10:15:00Z"
+    # запись без зоны — прежняя, сделанная по местному времени
+    legacy = A.parse_time("2026-09-15 14:48")
+    assert legacy.astimezone().strftime("%Y-%m-%d %H:%M") == "2026-09-15 14:48", \
+        "прежняя местная запись прочитана со сдвигом"
+    # показ — в часовом поясе системы
+    want = _dt(2026, 9, 21, 10, 15, 3, tzinfo=_tz.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+    assert A.local_view("2026-09-21T10:15:03Z") == want, "показ не перевёл UTC в местное время"
+    assert A.local_view("22:17") == "22:17", "не-время испорчено показом"
+    # неделя отчёта — по часам системы: одна функция на все шаги
+    y, w, _d = _dt(2026, 9, 20, 22, 30, tzinfo=_tz.utc).astimezone().isocalendar()
+    assert A.local_week("2026-09-20T22:30:00Z") == (y, w), "неделя посчитана не по часам системы"
+    for step in ("make_analyst_metrics.py", "verify_weekly_by_person.py"):
+        src = (KIT / "reports/analyst" / step).read_text(encoding="utf-8")
+        assert "local_week(ts)" in src, f"{step} считает неделю своей копией правила"
+    fetch = (KIT / "reports/analyst/fetch_full.py").read_text(encoding="utf-8")
+    assert '_utc(h.get("created", ""))' in fetch and "[:19]" not in fetch, \
+        "выгрузка отчёта снова срезает смещение Jira"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert ' UTC$/, "$1T$2Z")' in ui, "панель не понимает отметку «… UTC» из заголовков журналов"
+    assert "(\\d{2})(Z?)/.exec(runId" in ui, "панель читает имя прогона в UTC как местное время"
+    for shown in ('histWhen(r.since)', 'histWhen(h.ping.when)', 'histWhen(h.retrieval.when)',
+                  'histWhen(v.when)', 'histWhen(t.at)', 'histWhen(agent.since)'):
+        assert shown in ui, f"панель показывает сырую отметку без перевода в местное время: {shown}"
 
 
 @test

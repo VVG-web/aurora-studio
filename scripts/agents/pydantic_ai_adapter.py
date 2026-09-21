@@ -78,7 +78,8 @@ def log_outbound(root: str, server: str, query: str, verdict: str) -> None:
             "Последние сто запросов к серверам с `outbound: true`: ушедшие и "
             "заблокированные. Файл ведёт движок, правки будут потеряны.\n\n"
             "| Когда | Сервер | Вердикт | Запрос |\n|---|---|---|---|\n")
-    row = (f"| {datetime.datetime.now():%Y-%m-%d %H:%M} | {server} | {verdict} | "
+    from aurora_common import utc_label
+    row = (f"| {utc_label()} | {server} | {verdict} | "
            f"{(query or '').replace('|', '/')[:200]} |\n")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

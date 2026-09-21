@@ -41,7 +41,7 @@ ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
 RELEASES = os.path.join(ROOT, "meta", "releases.md")
 JIRA_MIRROR = os.path.join("Sources", "JIRA")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 # «US-4.7.2», «US 4.7.2», «4.7.2» в вопросе — номер истории; «PRJ-480» — ключ задачи
 STORY_NUM = re.compile(r"(?i)\b(?:US|AC|ALG)?[\s._-]?(\d+(?:\.\d+){1,3})\b")
 ISSUE_KEY = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")

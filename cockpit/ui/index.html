@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.114.1";
+const UI_VERSION = "1.115.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -897,7 +897,7 @@ async function renderGraph(rebuild){
                       + (rebuild ? "&rebuild=1" : ""), {quiet:true});
   if (d.error){ note.textContent = d.error; return; }
   G.data = d;
-  $("#graphStamp").textContent = t("graph.when", {when: d.when || "—"});
+  $("#graphStamp").textContent = t("graph.when", {when: d.when ? histWhen(d.when) : "—"});
   // Пересчёт сорвался, а картинка прежняя — сказать вслух. Молча показанный вчерашний
   // граф человек примет за сегодняшний и построит на нём решение.
   if (d.stale_reason) toast(t("graph.stale", {why: d.stale_reason}), "warn");
@@ -1805,7 +1805,7 @@ function activityChips(act, now){
   }
   if (agent && agent.alive) return [{cls:"ok live",
     text: `идёт: ${short(agent.task || "агент")} · вне панели`,
-    title: `Пишущий прогон агента: pid ${agent.pid}, с ${agent.since || "—"}. `
+    title: `Пишущий прогон агента: pid ${agent.pid}, с ${agent.since ? histWhen(agent.since) : "—"}. `
            + "Запущен не этой панелью — из терминала или другого окна." + routeNote}];
   const lockNote = agent
     ? ` Прогон ${agent.task || "агента"} (pid ${agent.pid}) оборвался, не сняв замок.` : "";
@@ -1823,7 +1823,7 @@ function activityChips(act, now){
   }
   if (agent) return [{cls:"bad",
     text: `оборван: ${short(agent.task || "прогон агента")}`,
-    title: `Прогон ${agent.task || "агента"} (pid ${agent.pid}, с ${agent.since || "—"}) `
+    title: `Прогон ${agent.task || "агента"} (pid ${agent.pid}, с ${agent.since ? histWhen(agent.since) : "—"}) `
            + `завершился не сам: процесса нет, а замок остался (${stamp(agent.at * 1000)}). `
            + "Вывод — в «Консоли» проекта; следующий прогон снимет замок сам."}];
   return [];
@@ -2208,7 +2208,7 @@ function baseCards(h, st){
     metricCard({title:"Связь с моделями",
       value: (h.ping && h.ping.when) ? `${h.ping.alive}/${h.ping.alive + h.ping.dead}` : "—",
       sub: (h.ping && h.ping.when)
-        ? `проверено ${h.ping.when}` + (h.ping.dead ? ` · не отвечают: ${h.ping.dead}` : "")
+        ? `проверено ${histWhen(h.ping.when)}` + (h.ping.dead ? ` · не отвечают: ${h.ping.dead}` : "")
         : "не проверялась — связь живая, её смотрят по кнопке",
       tone: (h.ping && h.ping.dead) ? "warn" : "",
       hint:"Живая проверка каждого бэкенда. Делается по кнопке: это сетевые запросы",
@@ -2232,7 +2232,7 @@ function baseCards(h, st){
     metricCard({title:"Выборка",
       value: (h.retrieval && h.retrieval.when) ? h.retrieval.queries : "—",
       sub: (h.retrieval && h.retrieval.when)
-        ? `запросов · проверено ${h.retrieval.when}`
+        ? `запросов · проверено ${histWhen(h.retrieval.when)}`
         : "не проверялась: порядок карточек меняется незаметно",
       hint:"Какие карточки приходят первыми по реальным запросам и что изменилось",
       go: goCmd("ops:retrieval",[],"Проверить выдачу")}),
@@ -2653,7 +2653,7 @@ function renderCommands(){
             kindChip(r.kind),
             writes?el("span",{class:"chip warn"},"пишет"):null,
             outward?el("span",{class:"chip gold"},"наружу"):null,
-            el("span",{class:"chip"},"с "+r.since),
+            el("span",{class:"chip"},"с "+histWhen(r.since)),
             mark ? el("span",{class:"chip "+mark.cls, title:
               `последний запуск: ${last.label} — ${mark.what}, код ${last.rc}, ядро ${last.kit||"?"}`},
               mark.what + " · " + histWhen(last.at)) : null),
@@ -3109,14 +3109,14 @@ function reportCard(r){
       for (const v of hist){
         list.append(el("div", {class:"list-item"},
           el("div", {style:"flex:1"},
-            el("span", {class:"mono", style:"font-size:12.5px"}, v.when),
+            el("span", {class:"mono", style:"font-size:12.5px"}, histWhen(v.when)),
             el("span", {class:"muted", style:"font-size:12px;margin-left:8px"}, kb(v.size))),
           el("a", {class:"btn", target:"_blank",
             href:`/api/report/file?project=${encodeURIComponent(S.project.path)}`
                  + `&id=${encodeURIComponent(r.id)}&stamp=${encodeURIComponent(v.stamp)}`
                  + `&t=${encodeURIComponent(TOKEN)}`}, "Открыть"),
           el("button", {class:"btn", onclick:async ()=>{
-            if (!confirm(`Удалить версию от ${v.when}? Вернуть её будет неоткуда.`)) return;
+            if (!confirm(`Удалить версию от ${histWhen(v.when)}? Вернуть её будет неоткуда.`)) return;
             const res = await api("/api/report/forget", {method:"POST", body: JSON.stringify(
               {project:S.project.path, id:r.id, stamp:v.stamp})});
             if (!res.error){ hist.splice(hist.indexOf(v), 1); draw(); toast("версия удалена"); }
@@ -3383,10 +3383,10 @@ async function openThread(id){
   d.turns.slice().reverse().forEach(t=>{
     const card = el("div",{class:"card",style:"padding:18px;margin-top:14px"},
       el("div",{style:"font-weight:700"}, t.q),
-      el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, t.at || ""),
+      el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, histWhen(t.at)),
       el("div",{class:"ansbody",style:"margin-top:10px;white-space:pre-wrap",
                 html: mdLite(t.a)}));
-    card.dataset.q = t.q; card.dataset.a = t.a; card.dataset.at = t.at || "";
+    card.dataset.q = t.q; card.dataset.a = t.a; card.dataset.at = histWhen(t.at);
     box.append(card);
   });
   drawThreadHint();
@@ -4551,7 +4551,11 @@ function lastRun(cmd){ return runs()[cmd]; }
 /* Список переживает сессии, поэтому одного времени мало: без даты «14:20» назавтра
    означает что угодно. Сегодняшнее показываем часами, вчерашнее — с датой. */
 function histWhen(iso){
-  const d = new Date(iso);
+  // Движок хранит время в UTC: «…Z» в записях и «… UTC» в заголовках журналов. Обе формы
+  // приводим к одной и показываем в часовом поясе системы; запись без зоны — прежняя,
+  // местная, её браузер и так читает как местную.
+  const s = String(iso || "").replace(/^(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d(?::\d\d)?) UTC$/, "$1T$2Z");
+  const d = new Date(s);
   if (isNaN(d)) return iso || "";
   const hm = d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
   return d.toDateString()===new Date().toDateString() ? hm
@@ -4573,11 +4577,12 @@ function fmtDur(sec){
   return Math.floor(sec / 60) + "м " + (sec % 60) + "с";
 }
 
-// «Когда» архивного прогона — по его имени: первый отрезок id это локальное время старта.
+// «Когда» архивного прогона — по его имени: первый отрезок id это время старта
 function archiveWhen(runId){
-  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(runId || "");
+  // С «Z» — UTC (так движок пишет имена прогонов теперь), без — прежнее имя по местному времени.
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(Z?)/.exec(runId || "");
   if (!m) return runId || "";
-  return histWhen(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}`);
+  return histWhen(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${m[7]}`);
 }
 
 // Полные выводы прошлых прогонов .opencode/runs. Живут отдельной секцией под журналом и

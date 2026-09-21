@@ -59,7 +59,7 @@ try:
 except Exception:                                    # noqa: BLE001
     REG = None
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 OUT_DIR = os.path.join("AuroraKnowledgeDB", "meta", "trace")
 TABLE = os.path.join(OUT_DIR, "trace.json")
 # Сводка отдельным файлом: сама таблица на живом проекте весит двадцать

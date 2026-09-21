@@ -32,7 +32,7 @@ from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatt
 
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 
 def find_card(stem: str) -> str | None:

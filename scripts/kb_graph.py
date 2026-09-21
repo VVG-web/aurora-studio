@@ -60,7 +60,7 @@ OUT_MOC = "AuroraKnowledgeDB/MOC/Связи.md"
 # оставляет десятки настоящих кандидатов, 0.85 — сотни соседей и ни одного решения.
 LOOK_ALIKE = 0.93
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 # «US-4.4.2», «US 4.4.2», «us_4.4.2», «AC-3.6.19»: разделитель не значим, регистр тоже.
 STORY_RE = re.compile(r"\b(US|AC)[ ._-]?(\d+(?:\.\d+)+)", re.I)

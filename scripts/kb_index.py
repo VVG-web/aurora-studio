@@ -42,7 +42,7 @@ from datetime import date
 
 from aurora_common import KB_ROOT, frontmatter, walk_md
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 MARK = "<!-- generated: kb_index.py — правки будут потеряны -->"
 WIKI = re.compile(r"\[\[([^\]|#]+)")
 STUB = "Индекс раздела. Карточек:"   # заготовка установщика — наш файл

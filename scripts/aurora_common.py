@@ -17,7 +17,94 @@ import subprocess
 import unicodedata
 from datetime import date
 
-TODAY = date.today().isoformat()
+from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
+
+
+# Время — ОДНО правило на движок: фиксируем в UTC, показываем в часовом поясе системы.
+# Журналы, замеры, файлы состояния и имена прогонов пишутся в UTC с явной пометкой зоны
+# («…Z» в машинных записях, «UTC» в заголовках для человека); терминал и панель переводят
+# время в местное. Пока каждый скрипт брал «сейчас» по-своему, в одном журнале стояли и
+# местные часы, и UTC, и время Jira без зоны — сравнить их между собой было нельзя.
+def utc_now() -> _datetime:
+    return _datetime.now(_timezone.utc)
+
+
+def utc_today() -> str:
+    """Сегодняшняя дата в UTC — так движок датирует записи."""
+    return utc_now().date().isoformat()
+
+
+def utc_stamp(when=None) -> str:
+    """Машинная отметка: 2026-09-21T10:15:03Z."""
+    return _as_utc(when).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def utc_label(when=None) -> str:
+    """Отметка для человека в файле: «2026-09-21 10:15 UTC» — зона названа явно."""
+    return _as_utc(when).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def utc_slug(fmt: str = "%Y%m%d-%H%M%S", when=None) -> str:
+    """Отметка для имени файла или папки: по умолчанию 20260921-101503Z."""
+    return _as_utc(when).strftime(fmt) + "Z"
+
+
+def mtime_stamp(path: str) -> str:
+    """Время изменения файла — машинной отметкой в UTC."""
+    return utc_stamp(os.path.getmtime(path))
+
+
+def parse_time(value):
+    """Отметка времени движка или источника → datetime с зоной; None — это не время.
+
+    Понимает «…Z», смещения «+03:00» и «+0300» (так пишет Jira), метку «… UTC» из
+    заголовков журналов и число секунд. Запись без зоны — прежняя, сделанная по местному
+    времени: так её и читаем.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return _datetime.fromtimestamp(value, _timezone.utc)
+    if isinstance(value, _datetime):
+        return value if value.tzinfo else value.astimezone()
+    s = str(value).strip()
+    if s.endswith(" UTC"):
+        s = s[:-4] + "Z"
+    s = re.sub(r"Z$", "+00:00", s)
+    s = re.sub(r"([+-]\d\d)(\d\d)$", r"\1:\2", s)
+    try:
+        dt = _datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.astimezone()
+
+
+def local_now() -> _datetime:
+    """«Сейчас» в часовом поясе системы — только для ПОКАЗА человеку, не для записи."""
+    return _datetime.now().astimezone()
+
+
+def local_view(value, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Показ отметки в часовом поясе системы; не время — возвращается как есть."""
+    dt = parse_time(value)
+    return dt.astimezone().strftime(fmt) if dt else ("" if value is None else str(value))
+
+
+def local_week(value):
+    """(ISO-год, ISO-неделя) отметки по часам системы — неделя та, какой её видит человек."""
+    dt = parse_time(value)
+    if not dt:
+        return None
+    year, week, _day = dt.astimezone().isocalendar()
+    return year, week
+
+
+def _as_utc(when=None) -> _datetime:
+    dt = utc_now() if when is None else parse_time(when)
+    return (dt or utc_now()).astimezone(_timezone.utc)
+
+
+TODAY = utc_today()
 KB_ROOT = "AuroraKnowledgeDB"
 # `canonical` убран из схемы в 1.10.0 (ступень не использовалась ни в одном
 # проекте). Читаем его как синоним `verified`: старые базы не должны разом

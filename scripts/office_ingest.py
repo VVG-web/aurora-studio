@@ -40,7 +40,7 @@ import zipfile
 from datetime import date
 from xml.etree import ElementTree as ET
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".opencode", ".cursor", ".claude"}
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"

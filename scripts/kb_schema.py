@@ -32,7 +32,7 @@ from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_FIELDS, RETIRED_STATUS,
                            is_service, set_field, split_frontmatter, walk_md)
 
 CURRENT = 6
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 # Разделы базы → тип карточки: та же таблица, по которой достраивает тип `kb:repair`.
 SECTION_TYPE = {

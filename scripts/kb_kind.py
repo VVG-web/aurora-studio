@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, split_frontmatter,  # noqa: E402
                            walk_md, with_fields)
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 KB = "AuroraKnowledgeDB"
 KINDS = ("dictionary", "document", "knowledge")
 

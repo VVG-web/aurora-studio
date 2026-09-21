@@ -45,7 +45,8 @@ from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guar
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
-TODAY = date.today()
+from aurora_common import utc_today  # noqa: E402
+TODAY = date.fromisoformat(utc_today())   # дата в UTC, как у всех записей
 
 ROW_RE = re.compile(r"^\|\s*[^|]*\|\s*(\d{4,})\s*\|([^|]*)\|\s*([^|]+?)\s*\|\s*([A-Z_]+)?\s*\|")
 JIRA_ROW_RE = re.compile(r"^\|\s*([A-Z][A-Z0-9]+-\d+)\s*\|([^|]*)\|\s*([^|]+?)\s*\|")

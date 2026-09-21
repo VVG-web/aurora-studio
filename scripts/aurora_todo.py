@@ -26,6 +26,8 @@ import sys
 from datetime import date
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from aurora_common import local_now  # noqa: E402 — показ человеку: по часам системы
 RESIDUE = os.path.join("AuroraKnowledgeDB", "meta", "lint_residue.json")
 
 # Разделы отчёта линтера, где решает человек, — с тем, что именно решать.
@@ -162,7 +164,7 @@ def main() -> int:
                      "Кнопка «Разобрать всё» доводит план до конца сама — это часы, "
                      "но не ваше время.", "маршрут «Разобрать всё»"))
 
-    print(f"# Что осталось человеку — {date.today().isoformat()}\n")
+    print(f"# Что осталось человеку — {local_now():%Y-%m-%d}\n")
     if trust_total:
         print(f"База: {cards} карточек · доверено {trusted} из {trust_total} "
               f"({trusted / trust_total * 100:.1f} %). Доверие считает движок по источникам — "

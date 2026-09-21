@@ -51,7 +51,7 @@ from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
                            is_service, is_template_link, link_refs, project_file,
-                           rewrite_links, set_field, translit_names, TEMPLATE_LINK_RE)
+                           rewrite_links, set_field, translit_names, TEMPLATE_LINK_RE, utc_slug)
 from datetime import date, datetime
 from difflib import get_close_matches
 
@@ -59,7 +59,7 @@ ROOT = "AuroraKnowledgeDB"
 JSON_ONLY = -7               # сигнал main: машинный вывод напечатан, отчёт не собираем
 MERGE_REPORT: list = []      # (слитые, отказы) — для отчёта после прогона
 ARCHIVE = os.path.join(ROOT, "_archive")
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 
 # Служебные файлы навигации/механики — не карточки знаний.
@@ -1735,8 +1735,8 @@ def free_archive_name(dst: str) -> str:
         return dst
     folder, name = os.path.split(dst)
     stem, ext = os.path.splitext(name)
-    for suffix in ([datetime.now().strftime("-%Y%m%d-%H%M"),
-                    datetime.now().strftime("-%Y%m%d-%H%M%S")]
+    for suffix in (["-" + utc_slug("%Y%m%d-%H%M"),
+                    "-" + utc_slug("%Y%m%d-%H%M%S")]
                    + [f"-{n}" for n in range(2, 60)]):
         room = NAME_BYTES - len((suffix + ext).encode("utf-8"))
         cut = stem.encode("utf-8")[:max(1, room)].decode("utf-8", "ignore")

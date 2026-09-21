@@ -31,6 +31,9 @@ import argparse, difflib, json, re, shutil, subprocess, sys
 from pathlib import Path
 from datetime import date
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from aurora_common import utc_today  # noqa: E402 — дата в UTC, одна на движок
+
 def find_kit() -> Path:
     """Где лежит kit. Копия этого скрипта живёт и в проекте — она обновлять не умеет.
 
@@ -97,8 +100,8 @@ def fill(text: str, f: dict) -> str:
                 .replace("{{PROJECT_SLUG}}", f["slug"])
                 .replace("{{JIRA_KEY}}", f["jira"])
                 .replace("{{CONFLUENCE_SPACE}}", f["space"])
-                .replace("{{DATE}}", date.today().isoformat())
-                .replace("{{YEAR}}", str(date.today().year)))
+                .replace("{{DATE}}", utc_today())
+                .replace("{{YEAR}}", utc_today()[:4]))
 
 
 # ---------- разбор манифеста ----------

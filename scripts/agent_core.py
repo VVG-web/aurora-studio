@@ -47,7 +47,7 @@ from pathlib import Path
 
 from aurora_common import child_env, load_env
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 

@@ -34,7 +34,12 @@ KIT = Path(__file__).resolve().parents[1]
 QA = KIT / "Development" / "QA"
 CASES, SCEN, RUNS = QA / "cases", QA / "scenarios", QA / "runs"
 TEMPLATES = KIT / "skills" / "aurora-dev" / "references"
-TODAY = date.today().isoformat()
+try:
+    from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+except ImportError:
+    # Вне кита движка рядом нет — и контур разработки там всё равно откажет («не кит»).
+    # Своей даты не заводим: правило времени одно, и оно в aurora_common.
+    TODAY = ""
 
 
 def is_kit() -> bool:

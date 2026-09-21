@@ -45,7 +45,7 @@ from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402
 ROOT = "AuroraKnowledgeDB"
 MOC_DIR = os.path.join(ROOT, "MOC")
 GROUPS_FILE = "moc_groups.txt"
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 GENERATED = "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_moc.py — ручные правки будут потеряны. -->"
 LINK_RE = re.compile(r"\[\[([^\]|#]+)")
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\.md\)")

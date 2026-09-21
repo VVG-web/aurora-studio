@@ -13,6 +13,7 @@ from datetime import datetime
 # Add scripts directory to path to import paths module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
+from aurora_common import local_now, utc_stamp  # noqa: E402
 from paths import DATA_DIR
 
 BASE_URL = paths.confluence()["base_url"]
@@ -21,7 +22,7 @@ OUTPUT_FILE = os.path.join(DATA_DIR, "confluence_raw_metadata.json")
 
 def log(msg: str):
     """Log to stderr"""
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", file=sys.stderr)
+    print(f"[{local_now():%H:%M:%S}] {msg}", file=sys.stderr)
     sys.stderr.flush()
 
 def read_auth_header() -> str:
@@ -174,7 +175,7 @@ def main():
     output = {
         "total_count": len(metadata_list),
         "space_key": SPACE_KEY,
-        "collection_timestamp": datetime.now().isoformat(),
+        "collection_timestamp": utc_stamp(),
         "pages": metadata_list
     }
     

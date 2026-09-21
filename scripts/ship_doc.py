@@ -36,7 +36,7 @@ from aurora_common import (KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
 
 WORK = "Deliverables/work"
 RELEASED = "Deliverables/released"
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 
 def git_commit() -> str:

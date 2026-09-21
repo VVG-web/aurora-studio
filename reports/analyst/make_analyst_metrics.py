@@ -53,39 +53,25 @@ for stage, sset in STAGE_OF.items():
 # ---------------------------------------------------------------------------
 # Утилиты
 # ---------------------------------------------------------------------------
+from aurora_common import local_week, parse_time  # noqa: E402 — правило времени одно на движок
+
+
 def iso_week(ts):
-    """Вернуть ISO-неделю как строку 'WW' (00-padded)."""
-    d = None
-    for c in [ts, ts[:10]]:
-        try:
-            d = datetime.date.fromisoformat(c[:10])
-            break
-        except Exception:
-            pass
-    if d is None:
-        return None
-    return f"{d.isocalendar()[1]:02d}"
+    """ISO-неделя 'WW' отметки — по часам системы (`aurora_common.local_week`)."""
+    w = local_week(ts)
+    return f"{w[1]:02d}" if w else None
+
 
 def iso_year(ts):
-    """Вернуть ISO-год."""
-    d = None
-    for c in [ts, ts[:10]]:
-        try:
-            d = datetime.date.fromisoformat(c[:10])
-            break
-        except Exception:
-            pass
-    if d is None:
-        return None
-    return d.isocalendar()[0]
+    """ISO-год отметки — по часам системы."""
+    w = local_week(ts)
+    return w[0] if w else None
 
 
 def to_dt(ts):
-    """datetime из timestamp."""
-    try:
-        return datetime.datetime.fromisoformat(ts.replace("Z", ""))
-    except Exception:
-        return None
+    """datetime из отметки — местное время без зоны: длительности считаются между такими."""
+    dt = parse_time(ts)
+    return dt.astimezone().replace(tzinfo=None) if dt else None
 
 from assignee_resolver import AssigneeResolver, load_synced_assignees
 

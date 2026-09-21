@@ -43,7 +43,7 @@ KB = "AuroraKnowledgeDB"
 SNAPSHOT = os.path.join(KB, "meta", "mirror_snapshot.json")
 DEFAULT_MIRROR = "Sources/Confluence"
 STATE = "sync_state.md"
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 ID_RE = re.compile(r"^\s*(?:page_id:\s*|-\s*\*\*ID:\*\*\s*)(\d{4,})\s*$", re.M)
 JIRA_KEY_RE = re.compile(r"\*\*Key\*\*\s*\|\s*([A-Z][A-Z0-9]+-\d+)"

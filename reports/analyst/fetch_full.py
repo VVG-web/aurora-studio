@@ -6,6 +6,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
 from paths import DATA_DIR
+from aurora_common import parse_time, utc_stamp  # noqa: E402
+
+
+def _utc(value: str) -> str:
+    """Время из Jira (со смещением её сервера) — в UTC. Срезать смещение, как раньше,
+    значило записать местные часы сервера без зоны: сравнить их с чем-то ещё нельзя."""
+    dt = parse_time(value)
+    return utc_stamp(dt) if dt else ""
 
 BASE = paths.jira()["base_url"] + "/rest/api/2"
 TOK = os.environ.get("JIRA_PERSONAL_TOKEN")
@@ -97,7 +105,7 @@ for res in results:
     responsible_history = []
     for h in res.get("changelog", {}).get("histories", []):
         author = (h.get("author") or {}).get("displayName", "")
-        at = h.get("created", "")[:19]
+        at = _utc(h.get("created", ""))
         for item in h.get("items", []):
             fld = item.get("field")
             entry = {"at": at, "author": author, "from": (item.get("fromString") or "").strip(), "to": (item.get("toString") or "").strip()}
@@ -114,7 +122,7 @@ for res in results:
         "assignee_now": (f.get("assignee") or {}).get("displayName"),
         "email": (f.get("assignee") or {}).get("emailAddress"),
         "issuetype": (f.get("issuetype") or {}).get("name"),
-        "updated": f.get("updated", "")[:19],
+        "updated": _utc(f.get("updated", "")),
         "status_history": status_history,
         "assignee_history": assignee_history,
         "responsible_now": user_name(f.get(RESPONSIBLE_ID)) if RESPONSIBLE_ID else None,

@@ -18,6 +18,7 @@ import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
+from aurora_common import local_now, utc_label, utc_stamp  # noqa: E402
 
 YEAR = paths.YEAR
 PROJECT = paths.PROJECT_NAME
@@ -178,7 +179,7 @@ YEAR_DATA = {str(y): prepare(y) for y in YEARS}
 # Текущая ISO-неделя: она ещё идёт, и её столбик заведомо неполный. Тренд по ней не
 # считаем — иначе последняя точка каждый раз тянет линию вниз просто потому, что
 # сегодня среда.
-_today = datetime.date.today()
+_today = local_now().date()
 _iso = _today.isocalendar()
 partial = {"year": _iso[0], "week": f"{_iso[1]:02d}"}
 
@@ -540,6 +541,12 @@ td.max-val{color:#f87171;font-weight:600}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 const DATA = __DATA__;
+// Время сборки хранится в UTC; показываем по часовому поясу системы того, кто открыл отчёт.
+document.querySelectorAll("time[data-utc]").forEach(t => {
+  const d = new Date(t.dataset.utc);
+  if (!isNaN(d)) t.textContent = d.toLocaleString("ru-RU", {day: "2-digit", month: "2-digit",
+    year: "numeric", hour: "2-digit", minute: "2-digit"});
+});
 let currentPctl = 95;
 
 // Chart.js по умолчанию рисует подписи тёмно-серым — на тёмном фоне их не видно
@@ -1532,7 +1539,7 @@ html = html_template
 for mark, value in (("__PROJECT__", PROJECT),
                     ("__YEAR__", str(YEAR)),
                     ("__SOURCES__", sources or "Jira &amp; Confluence"),
-                    ("__BUILT_AT__", datetime.datetime.now().strftime("%d.%m.%Y %H:%M"))):
+                    ("__BUILT_AT__", f'<time data-utc="{utc_stamp()}">{utc_label()}</time>')):
     html = html.replace(mark, value)
 html = html.replace("__DATA__", json.dumps(DATA, ensure_ascii=False).replace("</", "<\\/"))
 

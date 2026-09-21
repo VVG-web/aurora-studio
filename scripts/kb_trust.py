@@ -45,7 +45,7 @@ from aurora_common import (ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa:
                            is_placeholder, split_frontmatter, trusted_branch_sources,
                            walk_md, with_fields)
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"

@@ -168,7 +168,8 @@ def main() -> int:
               "окружение.", file=sys.stderr)
         return 1
 
-    print(f"# Живая проверка связи — {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    from aurora_common import local_now
+    print(f"# Живая проверка связи — {local_now():%Y-%m-%d %H:%M:%S}\n")
     print("Опрашиваю каждый шлюз сейчас. Карантин `agent:ping` здесь не действует:\n"
           "эта проверка не читает отметок, она спрашивает сервер.\n")
 

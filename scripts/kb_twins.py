@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, card_body, inbound_counts,  # noqa: E402
                            is_placeholder, load_cards)
 
-TODAY = date.today().isoformat()
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 SHINGLE = 8          # длина куска в словах
 SKETCH = 96          # сколько наименьших хешей держим от карточки
 MIN_WORDS = 60       # короче — сравнивать нечего: совпадут случайно
