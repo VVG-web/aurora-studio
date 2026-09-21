@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
                            utc_slug, utc_stamp, yaml_scalar)
+import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -2463,6 +2464,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(health(project))
+        elif u.path == "/api/git/head":
+            # Точка, от которой итог маршрута посчитает изменения базы.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json({"head": RS.git_head(project)})
         elif u.path == "/api/config":
             project = q.get("project", [""])[0]
             if not self._known(project):
@@ -2731,6 +2738,16 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             self.send_json({"error": "тело запроса не разобрано"}, 400)
+            return
+        if u.path == "/api/run/summary":
+            # Итог маршрута складывает движок (`run_summary`) — тот же составитель, что у
+            # одиночного агента: панель своих счётов не ведёт.
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(RS.route(project, payload.get("since", ""),
+                                    float(payload.get("seconds") or 0),
+                                    payload.get("steps") or []))
             return
         if u.path == "/api/config":
             project = payload.get("project", "")

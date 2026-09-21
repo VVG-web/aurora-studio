@@ -700,7 +700,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.115.0";
+const UI_VERSION = "1.116.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3475,7 +3475,7 @@ async function attachJob(id){
   for (;;){
     const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
     if (!d || d.error) { $("#consoleRc").textContent = "задание не найдено"; return; }
-    (d.lines||[]).forEach(l=>out.append(el("div",{class:"dim"}, l)));
+    (d.lines||[]).forEach(l=>consoleLine(out, l));
     watchScroll(out); stickToBottom(out); since = d.next;
     $("#consoleCmd").textContent = d.cmd + " " + (d.args||[]).join(" ");
     if (d.done){
@@ -3590,7 +3590,7 @@ async function runStep(cmd, args){
           + "маршрут дальше не идёт: следующие шаги пошли бы по неизвестному состоянию."));
         return {rc:2, lines};      // код 2 — маршрут останавливается, и это правильно
       }
-      (d.lines||[]).forEach(l=>{ lines.push(l); out.append(el("div",{class:"dim"}, l)); });
+      (d.lines||[]).forEach(l=>{ lines.push(l); consoleLine(out, l); });
       if (d.lines && d.lines.length){ lastLineAt = Date.now(); silenceShown = false; }
       watchScroll(out); stickToBottom(out);
       since = d.next;
@@ -3860,6 +3860,10 @@ async function publishArtifact(){
 async function runRoute(sc, write, resume){
   if (!S.project) return toast("Сначала выберите проект","warn");
   if (await busyElsewhere(sc.title)) return;
+  // Итог прогона считает изменения базы от этой точки — по git, чтобы учесть и шаги-скрипты.
+  const routeHead = ((await api("/api/git/head?project=" + encodeURIComponent(S.project.path),
+                               {quiet:true})) || {}).head || "";
+  const routeStarted = Date.now();
   // Блок «цикл:» повторяется партиями: разобрали, осмыслили, связали, закоммитили — и
   // снова. Разметка сохраняется до фильтрации, иначе граница блока потеряется вместе с
   // недоступной командой внутри него.
@@ -4081,7 +4085,8 @@ async function runRoute(sc, write, resume){
                     duration_s: Math.round((stepEnd - stepStart) / 1000),
                     rc: res.rc});
     summary.push({cmd:st.cmd, rc:res.rc, skipped:res.skipped,
-                  found: res.rc === 1 ? findings(res.lines||[]) : []});
+                  found: res.rc === 1 ? findings(res.lines||[]) : [],
+                  summ: parseSummaries(res.lines||[])});
     // rc 1 с признаком сети — пауза ожидания, а не «нашла, что чинить»: маршрут остаётся
     // на этом шаге. Цикл решает по флагу `ended`; обычный успех/отказ проходят как раньше.
     const cyc = (res.rc === 1 && looksOffline(res.lines||[])) ? await waitNetworkCycle(st) : null;
@@ -4210,6 +4215,13 @@ async function runRoute(sc, write, resume){
             + "без вреда.")
           : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
   }
+  // Итог прогона: время, модель, документы, карточки, ошибки. Составляет его движок
+  // (`run_summary`) — тот же, что печатает итог одиночного агента: правило одно.
+  const totals = await api("/api/run/summary", {method:"POST", quiet:true, body: JSON.stringify({
+    project: S.project.path, since: routeHead, seconds: (Date.now() - routeStarted) / 1000,
+    steps: summary.map(s=>({cmd: s.cmd, rc: s.rc, summary: s.summ || []}))})});
+  ((totals && totals.lines) || []).forEach((l, i)=>out.append(el("div",
+    {class: i ? "dim" : "ok", style: i ? "white-space:pre" : "margin-top:12px"}, l)));
   // Одна команда бывает шагом маршрута несколько раз (в «Починить базу» — семь ремонтов).
   // Семь одинаковых строк «нашла, что чинить» ничего не сообщают — даём одну, с числом шагов.
   const once = new Map();
@@ -4408,6 +4420,7 @@ async function poll(id, since, label){
   let outLines = d.lines||[];
   if (!since){ CONSOLE_LINES = []; POLL_LAST_OUT = Date.now(); POLL_SILENT = false; }
   (d.lines||[]).forEach(l=>{
+    if (String(l).startsWith(SUMMARY_MARK)) return;   // машинная строка итога — для панели
     CONSOLE_LINES.push(l);
     /* Красили по вхождению слова: путь к файлу, в имени которого есть «ошибки»,
        становился красным, хотя ничего не сломалось. Красим только сообщения самого
@@ -4550,6 +4563,18 @@ function lastRun(cmd){ return runs()[cmd]; }
 
 /* Список переживает сессии, поэтому одного времени мало: без даты «14:20» назавтра
    означает что угодно. Сегодняшнее показываем часами, вчерашнее — с датой. */
+// Итог прогона агент печатает и для человека, и одной машинной строкой для панели: её
+// консоль не показывает, а итог маршрута собирает из неё числа шагов.
+const SUMMARY_MARK = "AURORA-SUMMARY ";
+function parseSummaries(lines){
+  return (lines||[]).filter(l=>String(l).startsWith(SUMMARY_MARK)).map(l=>{
+    try { return JSON.parse(String(l).slice(SUMMARY_MARK.length)); } catch(e){ return null; }
+  }).filter(Boolean);
+}
+function consoleLine(out, l){
+  if (!String(l).startsWith(SUMMARY_MARK)) out.append(el("div",{class:"dim"}, l));
+}
+
 function histWhen(iso){
   // Движок хранит время в UTC: «…Z» в записях и «… UTC» в заголовках журналов. Обе формы
   // приводим к одной и показываем в часовом поясе системы; запись без зоны — прежняя,

@@ -16199,6 +16199,122 @@ def test_time_is_recorded_in_utc_and_shown_in_local_time(tmp: Path):
 
 
 @test
+def test_run_summary_counts_everything_the_human_asked(tmp: Path):
+    """В конце прогона — время, токены и скорость, документы, карточки и ошибки по видам.
+
+    Просьба заказчика: итоговое время всего прогона, потраченные токены, средняя скорость
+    генерации, сколько документов обработано, пропущено и не разобрано, сколько карточек
+    создано, дополнено и удалено, сколько не удалось создать или обновить, сколько и каких
+    ошибок было. Раньше в конце стояло «пройден: 28 шагов», остальное — ищи в выводе.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    RS = importlib.import_module("run_summary")
+    steps = [{"source": "a", "status": "разобран"}, {"source": "b", "status": "разобран по абзацам"},
+             {"source": "c", "status": "пропущена"},
+             {"source": "d", "status": "сбой", "note": "шлюз не ответил"},
+             {"source": "e", "status": "сбой", "content_fail": True},
+             {"card": "X", "status": "сбой", "why": "ответ пустой"}]
+    usage = {"calls": 10, "failed": 1, "tokens_in": 1000, "tokens_out": 400, "gen_seconds": 8.0,
+             "errors": {"модель не уложилась в срок": 1}}
+    s = RS.from_agent(steps, usage, 125.0, {"created": 3, "updated": 5, "deleted": 2})
+    assert (s["docs_done"], s["docs_skipped"], s["docs_failed"]) == (2, 1, 2), s
+    assert s["cards_failed"] == 1 and s["cards_created"] == 3 and s["cards_deleted"] == 2, s
+    text = "\n".join(RS.render(s))
+    for need in ("Время: 2 мин 5 с", "токенов 1 400", "50.0 ток/с", "обработано 2", "пропущено 1",
+                 "не удалось разобрать 2", "создано 3", "обновлено/дополнено 5", "удалено 2",
+                 "не удалось создать/обновить 1", "Ошибки: 4", "модель не уложилась в срок — 1",
+                 "карточка не записана", "сбой: шлюз не ответил — 1", "сбой: ответ пустой — 1"):
+        assert need in text, f"в итоге нет «{need}»:\n{text}"
+    assert RS.parse(["шум", RS.emit(s)]) == [s], "машинная строка итога не читается обратно"
+
+    # изменения базы — по git: создание, правка, удаление, перенос в архив; служебное не в счёт
+    repo = tmp / "repo"
+    kb = repo / "AuroraKnowledgeDB"
+    for rel in ("Concepts/A.md", "Concepts/B.md", "Concepts/C.md", "Concepts/D.md"):
+        (kb / rel).parent.mkdir(parents=True, exist_ok=True)
+        (kb / rel).write_text("# " + rel + "\n", encoding="utf-8")
+    g = lambda *args: subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True)
+    g("init", "-q"); g("add", "-A")
+    g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "база")
+    since = RS.git_head(str(repo))
+    (kb / "Concepts/A.md").write_text("# A\n\nдополнено\n", encoding="utf-8")        # обновлена
+    (kb / "Concepts/B.md").unlink()                                                  # удалена
+    (kb / "_archive").mkdir()
+    g("mv", "AuroraKnowledgeDB/Concepts/C.md", "AuroraKnowledgeDB/_archive/C.md")     # в архив
+    (kb / "Concepts/E.md").write_text("# E\n", encoding="utf-8")                     # создана
+    (kb / "MOC").mkdir()
+    (kb / "MOC/Карта.md").write_text("# карта\n", encoding="utf-8")                  # служебное
+    delta = RS.kb_delta(str(repo), since)
+    assert delta == {"created": 1, "updated": 1, "deleted": 2}, f"изменения базы посчитаны неверно: {delta}"
+
+    got = RS.route(str(repo), since, 3600, [
+        {"cmd": "agent:build", "rc": 0, "summary": [s]}, {"cmd": "kb:repair", "rc": 2, "summary": []}])
+    lines = "\n".join(got["lines"])
+    assert got["lines"][0] == "■ Итог прогона" and "Время: 1 ч 0 мин" in lines, lines
+    assert "шаг kb:repair не отработал (код 2) — 1" in lines, "упавший шаг не попал в ошибки"
+    assert "создано 1 · обновлено/дополнено 1 · удалено 2" in lines, \
+        f"карточки маршрута посчитаны не по git, а суммой шагов:\n{lines}"
+    assert RS.route(str(tmp), "", 1, [])["data"]["cards_known"] is False, \
+        "без git изменения базы выданы за посчитанные"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "/api/git/head?project=" in ui and '"/api/run/summary"' in ui, \
+        "маршрут в панели не собирает итог прогона"
+    assert ui.count("consoleLine(out, l)") >= 2 and "startsWith(SUMMARY_MARK)) return;" in ui, \
+        "машинная строка итога показывается человеку в консоли"
+    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "RS.route(project" in srv and "RS.git_head(project)" in srv, \
+        "итог маршрута собирает не движок — у панели появился бы свой счёт"
+    ar = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert "print(RS.emit(summ))" in ar and "RS.render(summ" in ar, "агент не печатает итог прогона"
+    assert "scripts/run_summary.py" in (KIT / "engine_manifest.txt").read_text(encoding="utf-8"), \
+        "модуль итога не доедет до проектов"
+
+
+@test
+def test_model_usage_is_counted_for_the_run_summary(tmp: Path):
+    """Токены, скорость генерации и неудачные вызовы модели считаются там, где модель зовут.
+
+    Считать их по отчётам шагов нельзя: у каждой задачи отчёт свой, и новая задача молча
+    выпала бы из счёта. Вызов модели один на движок — там и счётчик.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib, time as _t
+    AG = importlib.import_module("agent_core")
+    AG.DOWN.clear()
+    AG.USAGE.update(calls=0, failed=0, tokens_in=0, tokens_out=0, gen_seconds=0.0, errors={})
+
+    def good(kind, b, payload, timeout):
+        if kind == "slots":
+            return 200, {"slots_idle": 1}, "", 0.0
+        return 200, {"choices": [{"message": {"content": "ответ"}}],
+                     "usage": {"prompt_tokens": 100, "completion_tokens": 50}}, "", 2.0
+
+    cfg = {"backends": [{"n": 1, "url": "http://a", "key": "", "model": "m", "models": {}}],
+           "request_timeout": 100, "thinking": False}
+    r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                     transport=good, deadline=_t.time() + 5, sleep=lambda s: None)
+    assert r["ok"], r
+    u = AG.USAGE
+    assert (u["calls"], u["tokens_in"], u["tokens_out"]) == (1, 100, 50), f"токены не посчитаны: {u}"
+    assert u["gen_seconds"] > 0, "время генерации не посчитано — средней скорости не будет"
+
+    def dead(kind, b, payload, timeout):
+        if kind == "slots":
+            return 200, {"slots_idle": 1}, "", 0.0
+        return 0, {}, "TimeoutError: timed out", 0.05
+
+    AG.DOWN.clear()
+    r = AG.call_role(cfg, "worker", [{"role": "user", "content": "?"}],
+                     transport=dead, deadline=_t.time() + 0.3, sleep=lambda s: None)
+    assert not r["ok"]
+    assert AG.USAGE["failed"] == 1 and sum(AG.USAGE["errors"].values()) == 1, \
+        f"неудачный вызов модели не попал в ошибки итога: {AG.USAGE}"
+    AG.DOWN.clear()
+
+
+@test
 def test_compare_benchmarks_variants_offline(tmp: Path):
     """Бенчмарк вариантов ретрива гоняется без сети и ничего не записывает.
 

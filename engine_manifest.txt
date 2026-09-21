@@ -49,6 +49,7 @@ scripts/kb_lint.py       => .opencode/scripts/kb_lint.py
 # только молча.
 scripts/kb_embed.py      => .opencode/scripts/kb_embed.py
 scripts/kb_search_quality.py => .opencode/scripts/kb_search_quality.py
+scripts/run_summary.py       => .opencode/scripts/run_summary.py
 scripts/kb_translit.py   => .opencode/scripts/kb_translit.py
 scripts/kb_twins.py      => .opencode/scripts/kb_twins.py
 scripts/kb_gaps.py       => .opencode/scripts/kb_gaps.py

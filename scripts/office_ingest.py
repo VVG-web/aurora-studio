@@ -465,6 +465,14 @@ def main() -> int:
     elif done:
         print("\nДальше: `/aurora-vault ingest-raw <транскрипт>` — извлечь карточки-кандидаты.")
         print("Оригиналы не изменялись: доказательство — они, транскрипт помечен как машинный.")
+    if failed and not a.dry_run:
+        # В итог маршрута — только неудачи: успешный перевод в текст ещё не разбор документа,
+        # и считать его «обработанным» значило бы посчитать один документ дважды.
+        import run_summary as RS
+        s = RS.empty()
+        s["docs_failed"] = len(failed)
+        s["errors"]["документ не переведён в текст: нет подходящего конвертера"] = len(failed)
+        print(RS.emit(s))
     return 1 if failed else 0
 
 

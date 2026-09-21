@@ -5212,8 +5212,12 @@ def main() -> int:
             print("Уточнить, не теряя контекст: `agent:ask --thread " + p.stem + "`")
         return 0 if res["ok"] else 1
 
+    t_start = time.time()
     cp = checkpoint(cwd, f"agent:{a.task}", a.apply and not a.no_checkpoint)
     before = tree_fingerprint(cwd)
+    import run_summary as RS
+    head0 = RS.git_head(cwd)       # изменения базы за прогон считаются от этой точки
+    steps_all: list = []           # шаги всех партий: у петель res — только последняя
     if a.apply and not cp["ok"]:
         print(f"agent_runner: {cp['why']}. Записывать без отката нельзя — "
               "закоммитьте работу или запустите без --apply.", file=sys.stderr)
@@ -5233,6 +5237,7 @@ def main() -> int:
             say(f"\n=== партия {batch} · осталось источников: {left_before} · "
                 f"до конца окна {human_time(max(0, deadline - time.time()))}")
             res = run_build(cfg, cwd, a.apply, a.critic, a.limit, a.partition)
+            steps_all += res.get("steps", [])
             texts.append(report_build(res, cp, a.apply, a.critic, cfg))
             if a.apply:
                 commit_result(cwd, "agent:build",
@@ -5301,6 +5306,7 @@ def main() -> int:
             say(f"\n=== заход {batch} · до конца окна "
                 f"{human_time(max(0, deadline - time.time()))}")
             res = run_relink(cfg, cwd, True, a.limit)
+            steps_all += res.get("steps", [])
             relink_loop = (batch, relink_loop[1] + res["added"])
             texts.append(report_relink(res, True))
             commit_result(cwd, "agent:relink",
@@ -5351,6 +5357,15 @@ def main() -> int:
         res = run_aliases(cfg, cwd, a.apply, a.critic, a.limit)
         text = report(res, cp, a.apply, a.critic, cfg)
     print(text)
+
+    # Итог прогона — один составитель на движок (`run_summary`): тот же складывает итог
+    # маршрута в панели. Машинную строку панель читает и человеку не показывает.
+    summ = RS.from_agent(steps_all or res.get("steps", []), AG.USAGE, time.time() - t_start,
+                         RS.kb_delta(cwd, head0) if a.apply else None)
+    summary_lines = RS.render(summ, f"Итог прогона agent:{a.task}")
+    print("\n" + "\n".join(summary_lines))
+    print(RS.emit(summ))
+    text += "\n\n" + "\n".join(summary_lines)
 
     runs = Path(cwd) / RUNS_DIR
     runs.mkdir(parents=True, exist_ok=True)

@@ -524,6 +524,20 @@ DOWN_FOR = 900        # столько не трогаем провайдера,
 # «не отвечал», и человек пойдёт искать обрыв связи вместо строки в настройках.
 SPEAKS_CLEARLY = frozenset({400, 401, 403, 404, 422})
 DOWN: dict = {}       # {номер бэкенда: когда пробовать снова} — живёт в процессе прогона
+
+# Обращения к модели за процесс — для итога прогона (`run_summary`): сколько токенов ушло, с
+# какой скоростью шла генерация и сколько вызовов не удалось — по видам. Вызовы идут из
+# нескольких потоков, поэтому счётчик под замком.
+USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
+               "errors": {}}
+_USAGE_LOCK = threading.Lock()
+
+
+def _note_failure(kind: str) -> None:
+    with _USAGE_LOCK:
+        USAGE["calls"] += 1
+        USAGE["failed"] += 1
+        USAGE["errors"][kind] = USAGE["errors"].get(kind, 0) + 1
 LAST_OK: dict = {}    # {номер: когда он в последний раз ОТВЕТИЛ} — тоже в процессе
 RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
@@ -833,6 +847,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
         log.append("человек попросил вернуться на основного — отметки сняты")
 
     if not cfg["backends"]:
+        _note_failure("бэкенды модели не настроены")
         return {"ok": False, "log": ["бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
 
     order = ring_order(cfg, prefer)
@@ -987,6 +1002,11 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 LAST_OK[b["n"]] = time.time()
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
+                with _USAGE_LOCK:
+                    USAGE["calls"] += 1
+                    USAGE["tokens_in"] += int(usage.get("prompt_tokens") or 0)
+                    USAGE["tokens_out"] += out_tokens
+                    USAGE["gen_seconds"] += dt if out_tokens else 0.0
                 return {"ok": True, "text": text, "reasoning": reasoning, "backend": b["n"],
                         "seen": seen_chars, "cut": cut_chars,
                         "model": model, "seconds": round(dt, 2), "waited": round(waited, 1),
@@ -1012,6 +1032,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                    "Лечится AURORA_AGENT_REQUEST_TIMEOUT, а не ожиданием")
     else:
         log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
+    _note_failure("модель не уложилась в срок" if attempts and slow == attempts
+                  else "модель не ответила осмысленно")
     return {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts)}
 
 
