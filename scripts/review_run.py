@@ -46,10 +46,10 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from aurora_common import utc_label, utc_slug  # noqa: E402 — время одно на движок
 
 TEMPLATE = "review_v2.0.md"
 REVIEWS = "Artifacts/reviews"
@@ -635,7 +635,8 @@ def review_page(cfg: dict, cl: dict, reader: Reader, page_id: str, *, profile: s
 # ------------------------------------------------------------------ отчёт
 
 def _now() -> str:
-    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+    # Время в отчёте — в UTC с пометкой, как у журналов движка; местное показывает панель.
+    return utc_label()
 
 
 def fmt(x: float) -> str:
@@ -923,7 +924,7 @@ def main() -> int:
                           slots=AG.pool(cfg))
         report = render(rec, cl)
         if args.apply:
-            stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+            stamp = utc_slug("%Y-%m-%d_%H%M")
             out = Path(REVIEWS) / f"{stamp}_review_{rec.get('code') or pid}.md"
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(report, encoding="utf-8")
@@ -942,7 +943,7 @@ def main() -> int:
         if dropped:
             print(f"Отсеяно по заголовку (не история и не алгоритм): {len(dropped)} — "
                   + "; ".join(t for _p, t in dropped[:5]) + (" …" if len(dropped) > 5 else ""))
-    name = args.name or datetime.now().strftime("%Y-%m-%d_%H%M")
+    name = args.name or utc_slug("%Y-%m-%d_%H%M")
     bdir = Path(REVIEWS) / f"batch_{name}"
     known = done_keys(bdir / "results.jsonl")
     # Пропускаем только то, что оценено той же версией шаблона и на ту же дату: сменили

@@ -224,6 +224,7 @@ needed for the requested command (progressive disclosure, keep context small).
 | `make:create <тип> <тема>` (`create`) | сгенерировать артефакт в `Artifacts/<тип>/` — **только стандартный тип**. Ручной путь: основной — `agent:make` | `references/workflows.md` |
 | `make:kinds` | реестр артефактов проекта: шаблон, папка, промпт, правило «без технологий» и граница чистовика. Объявляется в `aurora.config.yaml`, читается ассистентом через MCP (`artifact_spec`) | `references/workflows.md` |
 | `make:review <US/AC>` (`review`) | проверка качества артефакта против базы знаний | `references/workflows.md` |
+| `make:review-auto` (`review-auto`) | ревью истории или алгоритма без человека (`review_run.py`): модель отвечает «да / нет / н/п / не определить» на закрытый чек-лист `TemplatesCommon/review_v2.0.md`, прогоны голосуют по каждому вопросу, оценку и вердикт считает скрипт. `--page` — отчёт по странице с подсказками, `--cql` или `--pages-file` с `--as-of` — ретроспектива пакета со сводкой; `--apply` пишет в `Artifacts/reviews/` | `references/workflows.md` |
 | `make:spec <тема>` (`spec`) | собрать спецификацию фичи из REQ и карточек со статусом `knowledge` (SDD) | `references/workflows.md` |
 | `make:spec-pack <SPEC-NNN>` (`spec-pack`) | бандл спеки: основания, DR, аббревиатуры, DoR-риски — сборка скриптом (`spec_pack.py`) | `references/workflows.md` |
 | `make:validate <SPEC> <объект>` (`validate`) | сверить реализацию/тесты подрядчика со сценариями спеки | `references/workflows.md` |
