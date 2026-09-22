@@ -41,7 +41,7 @@ import subprocess
 import sys
 import unicodedata
 
-from aurora_common import (LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            sources_block,
                            RETIRED_STATUS, STUB_MARK,
                            STUB_BODY, Card as BaseCard, card_body, card_sources,
@@ -1404,9 +1404,54 @@ def drop_stub_line(text: str) -> str:
     return head + sep + tail
 
 
+FALSE_REDISTILL_RE = re.compile(
+    r"^- \d{4}-\d{2}-\d{2}: тезис пересобран — источник изменился.*?\n"
+    r"  <details><summary>прежний тезис</summary>\n\n(?P<was>.*?)\n\n  </details>\n?",
+    re.M | re.S)
+
+
+def drop_false_redistill(text: str) -> tuple:
+    """Снять записи «тезис пересобран», где «прежний тезис» — сам источник. → (текст, n).
+
+    До 1.118.0 первый тезис карточки шёл как пересборка: тело, только что перенесённое
+    разбором, принималось за прежний тезис. В историю ложилась запись «источник
+    изменился» с тем, что модель «нашла изменившимся», сравнив текст с самим собой, а под
+    «прежним тезисом» — весь источник ещё раз: карточка вдвое толще, и вторая копия
+    попадала в поиск. Снимаем только такие записи — где прежний тезис совпадает с
+    дословным текстом этой же карточки или целиком в него входит. Настоящая пересборка
+    хранит настоящий тезис и остаётся.
+    """
+    if FOOTER not in text or QUOTES not in text:
+        return text, 0
+    body, foot = text.split(FOOTER, 1)
+    source = " ".join(body.split(QUOTES, 1)[1].split())
+    dropped = 0
+
+    def one(m):
+        nonlocal dropped
+        was = "\n".join(line[2:] if line.startswith("  ") else line
+                        for line in m.group("was").splitlines())
+        was = " ".join(was.split())
+        # Совпал с источником — или целиком входит в него: источник у карточки потом
+        # дорастает (слияния, «перенесено из»). Тезис модель пишет своими словами, и
+        # дословным куском источника в сотни знаков он не бывает; а если бы и был,
+        # запись ничего не хранит — этот текст и так лежит в карточке.
+        if source and was and (was == source or (len(was) >= 200 and was in source)):
+            dropped += 1
+            return ""
+        return m.group(0)
+
+    foot = FALSE_REDISTILL_RE.sub(one, foot)
+    if not dropped:
+        return text, 0
+    if not foot.strip():
+        return body.rstrip() + "\n", dropped
+    return body + FOOTER + foot, dropped
+
+
 def plan_frontmatter(cards: dict, plan: Plan):
     from aurora_common import with_fields, with_sources
-    created = patched = selfsame = filled = restored = donor_src = 0
+    created = patched = selfsame = filled = restored = donor_src = false_history = 0
     by_stem = {c.stem: c for c in cards.values()}
     for path, c in cards.items():
         if is_service(path):
@@ -1458,6 +1503,11 @@ def plan_frontmatter(cards: dict, plan: Plan):
                 plan.file_writes[path] = fixed
                 base, probe = fixed, Card(path, fixed)
                 restored += 1
+        fixed, dropped = drop_false_redistill(base)
+        if dropped:
+            plan.file_writes[path] = fixed
+            base, probe = fixed, Card(path, fixed)
+            false_history += 1
         section = os.path.relpath(os.path.dirname(path), ROOT).split(os.sep)[0]
         new_text = ensure_frontmatter(probe, section)
         if new_text == base:
@@ -1468,6 +1518,9 @@ def plan_frontmatter(cards: dict, plan: Plan):
         else:
             created += 1
             plan.notes.append(f"  создан frontmatter: {path}")
+    if false_history:
+        plan.notes.append(f"  снята ложная история «тезис пересобран» (первый тезис до "
+                          f"1.118.0, источник в карточке дважды): {false_history}")
     if restored:
         plan.notes.append(f"  пустышки без знания, потерявшие отметку, — отметка возвращена: "
                           f"{restored}")

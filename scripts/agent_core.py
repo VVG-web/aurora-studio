@@ -800,6 +800,45 @@ def looks_like_timeout(err) -> bool:
     return "timeout" in s or "timed out" in s
 
 
+# Сколько выходных токенов занимает рассуждение с ответом на длинной карточке. Замер
+# PRJ-A 22.09.2026 без обрыва: 7–26 тыс. — 160–470 с при ~50 ток/с под нагрузкой шлюза.
+THINK_TOKENS = 30000
+THINK_CAP = 4.0        # не дольше стольких `request_timeout`: зависший шлюз не держит слот вечно
+
+
+def role_thinks(cfg: dict, role: str) -> bool:
+    """Рассуждает ли роль: своя настройка роли, иначе общая. Правило одно на движок."""
+    own = (cfg.get("thinking_roles") or {}).get(role, "")
+    return (own not in ("0", "false", "no")) if own != "" else bool(cfg.get("thinking", True))
+
+
+def request_timeout_for(cfg: dict, think: bool) -> float:
+    """Срок одного запроса. С рассуждениями — по скорости шлюза, а не жёсткий.
+
+    `request_timeout` задуман сторожем от зависшего шлюза, а стал обрывать работу: на
+    PRJ-A половина тезисов с рассуждениями не укладывалась в 300 с — рассуждение длиной
+    7–26 тыс. токенов обрывалось на середине, выбрасывалось и начиналось заново, или
+    уходило на запасную машину с другой моделью, или карточка падала «сбоем» до
+    следующего оборота. Три четверти времени тезисов уходило в оборванные попытки.
+
+    Скорость — средняя по уже сделанным вызовам этого прогона; пока их нет — два срока.
+    Сверху — `THINK_CAP` сроков: сторож от зависшего шлюза остаётся.
+    """
+    base = float(cfg["request_timeout"])
+    if not think:
+        return base
+    with _USAGE_LOCK:
+        tokens, secs = USAGE["tokens_out"], USAGE["gen_seconds"]
+    tps = tokens / secs if secs >= 60 and tokens else 0.0
+    need = THINK_TOKENS / tps if tps else base * 2
+    return round(min(base * THINK_CAP, max(base, need)), 1)
+
+
+def call_budget(cfg: dict, role: str) -> float:
+    """Срок вызова роли — для дедлайнов шагов, которые зовут модель."""
+    return request_timeout_for(cfg, role_thinks(cfg, role))
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
@@ -831,17 +870,12 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     начать: параллельный прогон раздаёт задания по слотам, и каждое идёт на свой шлюз.
     """
     transport = transport or default_transport
-    if thinking is None:
-        # Роль сказала своё — слушаем её; молчит — общая настройка.
-        own = (cfg.get("thinking_roles") or {}).get(role, "")
-        think = (own not in ("0", "false", "no")) if own != "" else cfg["thinking"]
-    else:
-        think = thinking
+    think = role_thinks(cfg, role) if thinking is None else thinking
     # Предел на ОДИН запрос. Обычно общий из настройки, но вызывающий вправе поднять его
     # там, где уже знает цену работы: Момус читает тот же пак плюс ответ, и на модели,
     # которой ответ дался за пять минут, проверка в те же пять минут не укладывается
     # никогда. Дедлайн этого не решает — запрос всё равно режется по `request_timeout`.
-    req_timeout = float(request_timeout or cfg["request_timeout"])
+    req_timeout = float(request_timeout or request_timeout_for(cfg, think))
     deadline = deadline or (time.time() + req_timeout)
     log, waited, ring = [], 0.0, 0
     slow = 0                    # сколько попыток кончилось молчанием по сроку

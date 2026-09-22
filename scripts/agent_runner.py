@@ -584,7 +584,7 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     title = (fm.get("title") or step["card"]).strip().strip('"')
     r = call(cfg, "planner", [{"role": "user", "content": with_terms(
         PROMPT_EXTRACT.format(title=title, thesis=thesis[:8000], known=known),
-        thesis, root)}], deadline=deadline or (time.time() + cfg["request_timeout"]),
+        thesis, root)}], deadline=deadline or (time.time() + AG.call_budget(cfg, "planner")),
         prefer=prefer)
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
@@ -594,7 +594,20 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     if plan is None:
         step.update(status="сбой", note="модель ответила не JSON")
         return step
+    step.update(apply_extract_plan(root, path, text, thesis, plan, apply))
+    return step
 
+
+def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
+                       apply: bool) -> dict:
+    """Перенести чужие определения по плану модели. → {status, made, note}.
+
+    Одно правило на движок: план даёт и отдельный осмотр (`agent:extract`), и тезис,
+    написанный одним проходом (`agent:distill`). Перенос — механика: кусок ищется в тезисе
+    подстрокой и переезжает посимвольно; не нашёлся — перенос отменяется целиком.
+    """
+    from aurora_common import card_sources, frontmatter
+    out = {"status": "", "made": [], "note": ""}
     new_thesis, made = thesis, []
     for item in plan[:EXTRACT_LIMIT]:
         term = str(item.get("term") or "").strip()
@@ -605,8 +618,8 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
         if definition not in new_thesis:
             # Кусок не найден дословно: модель его пересказала. Молча взять похожее
             # значило бы переписать знание под видом переноса.
-            step["note"] = (step["note"] + f"; «{term}»: определение не найдено дословно"
-                            ).strip("; ")
+            out["note"] = (out["note"] + f"; «{term}»: определение не найдено дословно"
+                           ).strip("; ")
             continue
         # «Термин (расшифровка)» заменяется целиком на ссылку. Иначе от конструкции
         # остаются скобки, и в тексте выходит «введена УСН ([[УСН]])» — имя дважды и
@@ -621,15 +634,15 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
         made.append((term, definition))
 
     if not made:
-        step["status"] = "нечего выносить"
+        out["status"] = "нечего выносить"
         if apply:
-            mark_examined(path, fm)
-        return step
+            mark_examined(path, frontmatter(text))
+        return out
 
-    step["made"] = [term for term, _d in made]
-    step["status"] = "вынесено" if apply else "вынес бы"
+    out["made"] = [term for term, _d in made]
+    out["status"] = "вынесено" if apply else "вынес бы"
     if not apply:
-        return step
+        return out
 
     # Замок на запись: осмотр идёт в несколько потоков, и две карточки могут вынести
     # определение ОДНОГО термина. Без замка оба потока заведут ему карточку — получится
@@ -637,7 +650,6 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     # ждёт параллельно: под замком только запись, а она быстрая.
     # Вынесенное знание пришло из тех же документов, что и донор. Без этого новая карточка
     # заводилась с `sources: []`, не доверялась никогда и переживала снос базы.
-    from aurora_common import card_sources
     donor = card_sources(text)
     with _EXTRACT_LOCK:
         for term, definition in made:
@@ -648,7 +660,7 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
                              donor_sources=donor)
         open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
     mark_examined(path, frontmatter(open(path, encoding="utf-8", errors="ignore").read()))
-    return step
+    return out
 
 
 def mark_examined(path: str, fm: dict) -> None:
@@ -866,12 +878,26 @@ def strip_links(text: str) -> str:
     По нему сверяется, что модель ТОЛЬКО расставила связи. Сравнение посимвольное после
     схлопывания пробелов: перенос строки внутри абзаца — не правка текста, а вёрстка.
     """
-    plain = re.sub(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]",
-                   lambda m: (m.group(2) or m.group(1)), text)
-    return " ".join(plain.split())
+    return " ".join(plain_links(text).split())
 
 
-def named_here(thesis: str, cwd: str, skip: str) -> list:
+def plain_links(text: str, readable: bool = False) -> str:
+    """Текст со ссылками, развёрнутыми в слова; строки на месте.
+
+    `readable` — для чтения: имя-ссылка без подписи читается словами («Отчет-по-НДС» →
+    «Отчет по НДС»). Так тезис читает Момус: ссылку проверил движок (выдуманные снимаются,
+    `drop_invented_links`), а судить Момусу — факты. Видя разметку, он считал саму ссылку
+    утверждением без опоры: на замере PRJ-A 22.09.2026 — больше половины его находок.
+    """
+    def word(m):
+        if m.group(2):
+            return m.group(2)
+        return m.group(1).replace("-", " ") if readable else m.group(1)
+    return re.sub(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]", word, text)
+
+
+def named_here(thesis: str, cwd: str, skip: str,
+               why: str = "НАЗВАНА В ТЕКСТЕ — связь обязательна") -> list:
     """[(имя, раздел, о чём)] — карточки, чьё ИМЯ прямо названо в этом тезисе.
 
     Механика надёжнее модели там, где надо заметить строку. На живой базе тридцать две
@@ -882,27 +908,49 @@ def named_here(thesis: str, cwd: str, skip: str) -> list:
     Порог длины имени в пять букв — тот же, что у `ops:gaps`: короткое имя совпадает
     случайно («ЭСФ» внутри «ЭСФДок»), и такая связь была бы выдумана движком.
     """
-    from aurora_common import KB_ROOT, frontmatter, is_placeholder, walk_md
     low = " " + " ".join(thesis.lower().split()) + " "
     out = []
-    for p2 in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
-        stem = os.path.basename(p2)[:-3]
-        if stem == skip or len(stem) < 5:
+    for stem, section, names in _card_names(cwd):
+        if stem == skip:
             continue
-        text = open(p2, encoding="utf-8", errors="ignore").read()
-        fm = frontmatter(text)
-        if is_placeholder(fm, text):
-            continue          # пустая карточка не должна обещать содержание
-        names = {stem, (fm.get("title") or "").strip().strip('"')}
         hit = next((n for n in names if len(n) >= 5 and n.lower() in low), "")
         if not hit:
             hit = next((n for n in names
                         if len(n) >= 5 and n.replace("-", " ").lower() in low), "")
         if hit:
+            out.append((stem, section, why))
+    return out[:20]
+
+
+_NAMES: dict = {}        # {корень проекта: (когда собрано, [(имя, раздел, {написания})])}
+_NAMES_LOCK = threading.Lock()
+
+
+def _card_names(cwd: str) -> list:
+    """Имена карточек базы для `named_here`. Собирается раз на прогон, освежается по TTL.
+
+    Список читал с диска всю базу на КАЖДУЮ карточку: 1786 файлов — две секунды чистого
+    процессора, и под общим замком интерпретатора потоки ждали их по очереди.
+    """
+    from aurora_common import KB_ROOT, frontmatter, is_placeholder, walk_md
+    with _NAMES_LOCK:
+        got = _NAMES.get(cwd)
+        if got and time.time() - got[0] <= HYB_TTL:
+            return got[1]
+        rows = []
+        for p2 in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
+            stem = os.path.basename(p2)[:-3]
+            if len(stem) < 5:
+                continue
+            text = open(p2, encoding="utf-8", errors="ignore").read()
+            fm = frontmatter(text)
+            if is_placeholder(fm, text):
+                continue          # пустая карточка не должна обещать содержание
             section = os.path.relpath(os.path.dirname(p2),
                                       os.path.join(cwd, KB_ROOT)).split(os.sep)[0]
-            out.append((stem, section, "НАЗВАНА В ТЕКСТЕ — связь обязательна"))
-    return out[:20]
+            rows.append((stem, section, {stem, (fm.get("title") or "").strip().strip('"')}))
+        _NAMES[cwd] = (time.time(), rows)
+        return rows
 
 
 def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
@@ -949,12 +997,11 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
     if not near:
         step["note"] = "не с чем связывать"
         return step
-    listing = "КАРТОЧКИ БАЗЫ, НА КОТОРЫЕ МОЖНО ССЫЛАТЬСЯ:\n\n" + "\n".join(
-        f"  {n}" + (f" — {b}" if b else "") for n, _sec, b in near)
+    listing = links_block(near)
 
     r = call(cfg, "worker", [{"role": "user", "content": PROMPT_RELINK.format(
         title=title, thesis=thesis, known=listing)}],
-        deadline=deadline or (time.time() + cfg["request_timeout"]))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
         step.update(status="сбой", note="; ".join(r["log"][-2:]))
@@ -1262,7 +1309,7 @@ def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0
 
     r = call(cfg, "qa", [{"role": "user", "content": PROMPT_CLASH.format(
         group="\n\n".join(rows))}],
-        deadline=deadline or (time.time() + cfg["request_timeout"]))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "qa")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
         step.update(status="сбой", why="; ".join(r["log"][-2:]))
@@ -1467,7 +1514,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
             if r[0] != stem]
     r = call(cfg, "critic", [{"role": "user", "content": PROMPT_TASKS.format(
         card=f"### {title}\n\n{body}", candidates=candidates_block(rows))}],
-        deadline=deadline or (time.time() + cfg["request_timeout"]))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
         step.update(status="сбой", why="; ".join(r["log"][-2:]))
@@ -1507,7 +1554,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
             if near:
                 r2 = call(cfg, "critic", [{"role": "user", "content": PROMPT_TASKS.format(
                     card=f"### {title}\n\n{body}", candidates=candidates_block(near))}],
-                    deadline=deadline or (time.time() + cfg["request_timeout"]))
+                    deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
                 step["backends"].append(r2.get("backend"))
                 if r2["ok"]:
                     v2 = parse_json(r2["text"]) or {}
@@ -1649,7 +1696,7 @@ def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> di
     body = " ".join(card_body(text).split())[:600]
     r = call(cfg, "worker", [{"role": "user", "content": PROMPT_TRANSLIT.format(
         stem=stem, title=title, body=body)}],
-        deadline=deadline or (time.time() + cfg["request_timeout"]))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")))
     step["backends"].append((r.get("backend"), r.get("model")))
     if not r["ok"]:
         step.update(status="сбой", why="; ".join(r["log"][-2:]))
@@ -1844,7 +1891,7 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
 
     r = call(cfg, "critic", [{"role": "user", "content": PROMPT_TWINS.format(
         group="\n\n".join(rows))}],
-        deadline=deadline or (time.time() + cfg["request_timeout"]))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
         step.update(status="сбой", why="; ".join(r["log"][-2:]))
@@ -2480,6 +2527,19 @@ def _card_path(stem: str) -> str:
     return _PATHS.get(stem, "")
 
 
+def links_block(rows: list) -> str:
+    """Список карточек, на которые можно ссылаться, — для тезиса и связывания.
+
+    Не `candidates_block`: тот написан для разбора источников и велит «вернуть `into`»,
+    если секция про ту же сущность. Тезис получал его до 1.118.0 — и модель честно
+    отвечала «into: <имя>» первой строкой тезиса.
+    """
+    if not rows:
+        return ""
+    return "КАРТОЧКИ БАЗЫ, НА КОТОРЫЕ МОЖНО ССЫЛАТЬСЯ:\n\n" + "\n".join(
+        f"  {n}" + (f" — {b}" if b else "") for n, _sec, b in rows) + "\n\n"
+
+
 def candidates_block(rows: list) -> str:
     """Блок для промпта. Пусто — блока нет вовсе: пустой список сбивает с толку."""
     if not rows:
@@ -3103,7 +3163,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 "alias": "—", "status": "стоп", "backends": [], "degraded": False,
                 "note": "остановлено до начала работы"}
         step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
-                            deadline=min(budget, time.time() + cfg["request_timeout"]))
+                            deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
         return index, (group, source, _kb), step
 
     def note_failure(step) -> str:
@@ -3129,7 +3189,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             say(f"  {progress(len(steps), total, started)} · поток 1 · "
                 f"{source.rsplit('/', 1)[-1][:60]} …")
             step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
-                                deadline=min(budget, time.time() + cfg["request_timeout"]))
+                                deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
             steps.append(step)
             say(f"      → {step['status']}"
                 + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
@@ -3264,16 +3324,9 @@ PROMPT_DISTILL = """Ты превращаешь перенесённый тек�
    это находка, а не шум, и разбирать его человеку.
 4. Пиши по-русски, от 3 до 15 строк. Если в тексте знания нет вовсе (одна вёрстка,
    пустая таблица) — верни ровно `ПУСТО`.
-5. **Связывай.** Упомянул сущность, у которой ЕСТЬ карточка в списке выше, — поставь
-   `[[Имя карточки]]` прямо в тексте, слитно с фразой: «данные приходят из [[ФЦОД]]».
-   Связь — часть мысли, а не украшение: карточка без связей не находится и не читается,
-   а знание, которое ни с чем не связано, никто не найдёт.
-
-   Ссылайся ТОЛЬКО на карточки из списка. Имя пиши буква в букву, как в списке. Карточки
-   в списке нет — не выдумывай ссылку и не изобретай имя: просто назови сущность словами.
-   Выдуманная ссылка ведёт в никуда и плодит пустые карточки.
-
-   На саму себя карточка не ссылается.
+5. Ссылок `[[…]]` не ставь: связи расставит отдельный проход, который не может
+   изменить ни слова. Не отсылай к карточкам и документам, которых нет в тексте выше, —
+   никаких «см.», «согласно», «не путать с»: тезис говорит только то, что сказал источник.
 
 Верни только текст тезиса, без заголовков и пояснений."""
 
@@ -4161,7 +4214,7 @@ MOMUS_CAP = 2.0       # но не больше стольких `request_timeout
 
 def momus_timeout(cfg: dict, answered_in: float) -> float:
     """Сколько дать проверке, зная, во сколько обошёлся ответ. → секунды на запрос."""
-    base = float(cfg["request_timeout"])
+    base = AG.call_budget(cfg, "qa")
     if answered_in <= 0:
         return base
     return round(min(base * MOMUS_CAP, max(base, answered_in * MOMUS_SHARE)), 1)
@@ -4392,7 +4445,7 @@ def chunks(text: str, budget: int) -> list:
     return out
 
 
-FOOTER = "## История изменений"
+from aurora_common import FOOTER  # noqa: E402 — граница истории одна на движок
 
 
 def plan_split(cfg: dict, title: str, text: str, call, deadline: float,
@@ -4460,7 +4513,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         quotes, footer = quotes.split(FOOTER, 1)
         footer = FOOTER + footer
     title = os.path.splitext(os.path.basename(path))[0]
-    deadline = deadline or (time.time() + cfg["request_timeout"])
+    deadline = deadline or (time.time() + AG.call_budget(cfg, "worker"))
     kind = (AG.frontmatter_of(text).get("kind") or "").strip().strip('"') \
         if hasattr(AG, "frontmatter_of") else ""
     if not kind:
@@ -4513,7 +4566,13 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # в том же состоянии больше нет. Просим сразу и новый тезис, и строку «что изменилось»:
     # одним вызовом дешевле, а главное — модель в этот момент видит оба текста, тогда как
     # механическая разница на переформатированной странице даст «изменилось всё».
-    was_thesis = (source_part or "").strip()
+    # Тезис был, только если у карточки есть раздел дословного текста: его заводит сам
+    # тезис. Карточка, которую разбор только что перенёс, этого раздела не имеет — всё её
+    # тело и есть источник. До 1.118.0 оно принималось за «прежний тезис»: каждый первый
+    # тезис шёл как пересборка — без списка карточек для ссылок, с источником в запросе
+    # дважды и с ложной записью «источник изменился», куда источник копировался третий
+    # раз. На PRJ-A так прошли все 399 карточек с тезисом.
+    was_thesis = (source_part or "").strip() if QUOTES in body else ""
     changed = ""
     if len(parts) == 1 and was_thesis:
         a = once(with_terms(PROMPT_REDISTILL.format(
@@ -4527,9 +4586,11 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         changed = (m[1].strip() if len(m) > 1 else "")
         step["redistilled"] = True
     elif len(parts) == 1:
-        near = candidates_block(candidates_for(root, cfg, title + "\n" + parts[0][:1500]))
-        a = once(near + with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]),
-                                   parts[0], root))
+        # Тезис — без списка карточек. Замер PRJ-A 22.09.2026: получив список, модель
+        # начинает ссылаться на карточки как на источники («согласно …», «описано в …»),
+        # и строгий Момус находит в тезисах втрое больше утверждений без опоры. Связи
+        # ставит отдельный проход, где движок доказывает, что текст не изменился.
+        a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]), parts[0], root))
         if not a["ok"]:
             step.update(status="сбой", note="; ".join(a["log"][-2:]))
             return step
@@ -4576,7 +4637,8 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if momus:
         # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
         # это проверкой целого было бы той же тихой потерей, только в проверке.
-        mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»", thesis, call, prefer)
+        mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»",
+                       plain_links(thesis, readable=True), call, prefer)
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
             step["unsupported"] = step.get("unsupported", 0) + mo["unsupported"]
@@ -4702,7 +4764,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             busy += 1
         try:
             return path, distill_card(cfg, path, call=call, momus=momus,
-                                      deadline=min(budget, time.time() + cfg["request_timeout"]),
+                                      deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
                                       prefer=prefer)
         except Exception as e:                              # noqa: BLE001
             # Одна нечитаемая карточка не должна ронять ночной прогон: сбой становится
@@ -4915,7 +4977,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                                          "одной паре меняет картину для следующих"))
             say(f"  {progress(len(steps), total, started)} · 1 поток · «{alias[:50]}» …")
             step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
-                                  deadline=min(budget, time.time() + cfg["request_timeout"]))
+                                  deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
             steps.append(step)
             say(f"      → {step['status']}"
                 + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
@@ -4981,7 +5043,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 if stop.is_set() or time.time() > budget or len(steps) >= cfg["max_steps"]:
                     break
                 step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
-                                      deadline=min(budget, time.time() + cfg["request_timeout"]))
+                                      deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
                 with progress_lock:
                     if stop.is_set() or time.time() > budget or len(steps) >= cfg["max_steps"]:
                         return

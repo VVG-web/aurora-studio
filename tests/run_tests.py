@@ -3477,7 +3477,10 @@ def test_long_source_is_not_silently_cut(tmp: Path):
         "короткую карточку зачем-то разрезали"
 
     seen.clear()
-    mid = R.distill_card(cfg, str(card("Средняя.md", para * 12)), call=fake, momus=False)
+    # «Средняя» — два с половиной окна, а не число абзацев: окно под текст зависит от
+    # длины задания, и задание, ставшее длиннее, не должно ломать смысл проверки.
+    mid_paras = max(1, int(2.5 * budget / len(para)))
+    mid = R.distill_card(cfg, str(card("Средняя.md", para * mid_paras)), call=fake, momus=False)
     assert mid["status"] == "переписана" and mid.get("parts") == 3, \
         f"текст на три захода обработан неверно: {mid}"
     assert max(seen) <= budget + len(R.PROMPT_DISTILL_PART) + 500, \
@@ -13603,8 +13606,18 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
     import importlib
     R = importlib.import_module("agent_runner")
 
-    cfg = {"request_timeout": 300}
+    cfg = {"request_timeout": 300, "thinking": False}
     assert R.momus_timeout(cfg, 0) == 300, "без замера ответа берём настройку как была"
+    # Момус с рассуждениями — от срока рассуждающего вызова (1.118.0): до 24 тыс. токенов
+    # проверки на PRJ-A, больше 300 с под нагрузкой шлюза.
+    A = importlib.import_module("agent_core")
+    saved = dict(A.USAGE)
+    try:
+        A.USAGE.update(tokens_out=0, gen_seconds=0.0)
+        assert R.momus_timeout({"request_timeout": 300}, 0) == 600, \
+            "рассуждающему Момусу дан срок без рассуждений — проверка оборвётся на середине"
+    finally:
+        A.USAGE.clear(); A.USAGE.update(saved)
     assert R.momus_timeout(cfg, 40) == 300, "быстрый ответ не должен УРЕЗАТЬ проверку"
     assert R.momus_timeout(cfg, 280) == 420, "медленный ответ не поднял предел проверки"
     assert R.momus_timeout(cfg, 5000) == 600, "потолок не держит: человек ждёт ответа"
@@ -14134,7 +14147,17 @@ def test_relinking_runs_pass_after_pass_without_burning_a_pass_to_count(tmp: Pat
 
 @test
 def test_the_thesis_writes_its_own_links(tmp: Path):
-    """Связи ставит тот, кто пишет тезис, — но только на существующие карточки.
+    """Тезис пишется без ссылок; выдуманная ссылка, если всё же появилась, снимается.
+
+    История: сначала связи ставил движок узко, и 232 карточки из 291 были без единой
+    ссылки. Тогда тезису дали список карточек — и с 1.94.1 до 1.118.0 он его всё равно не
+    получал: первый тезис по ошибке шёл как пересборка, без списка. Когда ошибку
+    исправили, замер PRJ-A 22.09.2026 показал цену списка: модель ссылается на карточки
+    как на источники («согласно …», «описано в …»), и строгий Момус находит в тезисах
+    втрое больше утверждений без опоры. Связи ставит `agent:relink` — там движок
+    доказывает, что текст не изменился ни на символ.
+
+    Ниже — прежняя история решения; она объясняет, зачем снимаются выдуманные ссылки.
 
     Правило было обратным: «не выдумывай ссылки, связи расставляет движок». Движок
     расставлял их узко — по ключам требований и номерам историй, — и на живой базе
@@ -14154,17 +14177,18 @@ def test_the_thesis_writes_its_own_links(tmp: Path):
     importlib.reload(R)
 
     flat = " ".join(R.PROMPT_DISTILL.split())
-    assert "Связывай" in flat, "тезису не велено связывать — база останется кучей"
-    assert "ТОЛЬКО на карточки из списка" in flat, \
-        "не сказано, что ссылаться можно лишь на существующие: пойдут ссылки в никуда"
-    assert "не выдумывай ссылки на другие карточки" not in flat.lower(), \
-        "прежний запрет остался — правила спорят друг с другом"
-
+    assert "Ссылок `[[…]]` не ставь" in flat and "согласно" in flat, \
+        "тезису снова велено ссылаться — пойдут отсылки к карточкам, которых нет в источнике"
     src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
-    assert "candidates_block(candidates_for(root, cfg, title" in src, \
-        "тезис не получает список карточек — связывать ему не с чем"
+    first = src.split("    elif len(parts) == 1:\n")[1].split("    else:\n")[0]
+    assert "candidates_block(" not in first and "links_block(" not in first, \
+        "первый тезис снова получает список карточек — вернутся отсылки без опоры"
     assert "drop_invented_links(thesis, root)" in src, \
         "выдуманные ссылки не снимаются — ремонт заведёт под них пустышки"
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    upd = scen.split("[update]")[1].split("\n[")[0]
+    assert upd.index("agent:distill") < upd.index("agent:relink"), \
+        "связывание не идёт после тезисов — связей в базе не будет вовсе"
 
     root = make_project(tmp)
     card(root, "Concepts/ФЦОД.md", status="draft", body="Подсистема обработки платежей.")
@@ -16544,6 +16568,113 @@ def test_thinking_advice_matches_the_measurement(tmp: Path):
     skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
     assert "втрое больше" in skill and "Момус без рассуждений" in skill, \
         "навык не говорит, чем платят за выключенные рассуждения"
+
+
+@test
+def test_first_thesis_is_not_a_redistill_and_false_history_is_repaired(tmp: Path):
+    """Первый тезис — не «пересборка»; ложная история первых тезисов снимается ремонтом.
+
+    Живой случай, PRJ-A 22.09.2026: все 399 карточек с тезисом прошли первый тезис как
+    пересборку. Карточка, которую разбор только что перенёс, не имеет раздела дословного
+    текста, и всё её тело принималось за «прежний тезис»: модель получала источник дважды
+    и не получала списка карточек для ссылок, а в историю ложилась запись «источник
+    изменился» с источником под «прежним тезисом» — карточка вдвое толще, 1,44 млн знаков
+    дублей на базу.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    A = importlib.import_module("agent_core")
+    root = make_project(tmp)
+    source = "Реестр отчётов показывает отчёты налогоплательщика за выбранный период. " * 4
+    fresh = card(root, "Concepts/Реестр-отчётов.md", status="draft", kind="knowledge",
+                 body=source)
+    old_thesis = "Реестр отчётов — перечень отчётов плательщика за период."
+    card(root, "Concepts/Реестр-решений.md", status="draft", kind="knowledge",
+         body=old_thesis + "\n\n" + R.QUOTES + "\n" + source.replace("отчёт", "решени"))
+    asked = {}
+
+    def fake(cfg, role, messages, **kw):
+        text = " ".join(m.get("content") or "" for m in messages)
+        key = "пересборка" if "изменился, и тезис надо пересобрать" in text else "первый"
+        asked.setdefault(key, []).append(text)
+        answer = ("Реестр решений — перечень решений.\nИЗМЕНИЛОСЬ:\nуточнён состав."
+                  if key == "пересборка" else
+                  "Реестр отчётов — перечень отчётов за период.")
+        return {"ok": True, "text": answer, "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    R.run_distill(cfg, str(root), apply=True, limit=5, momus=False, call=fake)
+    assert len(asked.get("первый", [])) == 1 and len(asked.get("пересборка", [])) == 1, \
+        f"первый тезис и пересборка перепутаны: { {k: len(v) for k, v in asked.items()} }"
+    assert "Реестр отчётов показывает" in asked["первый"][0]
+    text = fresh.read_text(encoding="utf-8")
+    assert "тезис пересобран" not in text, "первому тезису записана ложная история"
+    assert text.count("Реестр отчётов показывает отчёты") == 4, \
+        "источник лёг в карточку не один раз"
+    kept = (root / "AuroraKnowledgeDB/Concepts/Реестр-решений.md").read_text(encoding="utf-8")
+    assert "тезис пересобран" in kept and old_thesis in kept, \
+        "настоящая пересборка потеряла историю и прежний тезис"
+
+    # ремонт: ложная запись (прежний тезис — сам источник) снимается, настоящая остаётся
+    body = "# Карточка\n\n" + source.strip()
+    false = ("Тезис.\n\n" + R.QUOTES + "\n" + body + "\n\n" + R.FOOTER + "\n\n"
+             "- 2026-08-23: тезис пересобран — источник изменился (`Sources/a.md`). "
+             "Добавлены шаги.\n  <details><summary>прежний тезис</summary>\n\n"
+             + "\n".join("  " + l for l in body.splitlines()) + "\n\n  </details>\n")
+    card(root, "Concepts/Ложная-история.md", status="draft", kind="knowledge",
+         distilled="2026-08-23", body=false)
+    run("kb_fix.py", "--frontmatter", "--apply", cwd=root)
+    fixed = (root / "AuroraKnowledgeDB/Concepts/Ложная-история.md").read_text(encoding="utf-8")
+    assert "тезис пересобран" not in fixed and R.FOOTER not in fixed, \
+        "ложная история первого тезиса осталась"
+    assert fixed.count("Реестр отчётов показывает отчёты") == 4 and "Тезис." in fixed, \
+        "ремонт задел тезис или сам источник"
+    again = (root / "AuroraKnowledgeDB/Concepts/Реестр-решений.md").read_text(encoding="utf-8")
+    assert "тезис пересобран" in again, "ремонт снял настоящую историю пересборки"
+
+
+@test
+def test_thinking_calls_get_a_deadline_that_fits_the_thinking(tmp: Path):
+    """Срок вызова с рассуждениями — по скорости шлюза, а не жёсткие 300 с.
+
+    Замер PRJ-A 22.09.2026 без обрыва: рассуждение с тезисом — 7–26 тыс. токенов, 160–470 с
+    при ~50 ток/с под нагрузкой. Жёсткий срок в 300 с обрывал половину тезисов на
+    середине: работа выбрасывалась, попытка шла заново, уходила на запасную машину с
+    другой моделью или карточка падала «сбоем» до следующего оборота. На 16 карточках
+    вызовы тезиса шли 8200 с, из них генерации — 2000.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("agent_core")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_REQUEST_TIMEOUT": "300"})
+    saved = dict(A.USAGE)
+    try:
+        A.USAGE.update(tokens_out=0, gen_seconds=0.0)
+        assert A.request_timeout_for(cfg, False) == 300, "срок без рассуждений изменился"
+        assert A.request_timeout_for(cfg, True) == 600, "без замера скорости — два срока"
+        A.USAGE.update(tokens_out=50 * 600, gen_seconds=600.0)        # 50 ток/с
+        assert A.request_timeout_for(cfg, True) == 600, "срок не по скорости шлюза"
+        A.USAGE.update(tokens_out=5 * 600, gen_seconds=600.0)         # 5 ток/с — шлюз еле жив
+        assert A.request_timeout_for(cfg, True) == 1200, \
+            "у срока нет потолка — зависший шлюз держал бы слот вечно"
+        A.USAGE.update(tokens_out=500 * 600, gen_seconds=600.0)       # быстрый шлюз
+        assert A.request_timeout_for(cfg, True) == 300, "срок стал короче настроенного"
+        off = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                              "AURORA_AGENT_THINKING_WORKER": "0"})
+        assert A.call_budget(off, "worker") == off["request_timeout"], \
+            "роли без рассуждений дан срок рассуждающей"
+    finally:
+        A.USAGE.clear(); A.USAGE.update(saved)
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert 'time.time() + cfg["request_timeout"])' not in src, \
+        "срок шага снова жёсткий — рассуждение оборвётся на середине"
+    core = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
+    assert "request_timeout or request_timeout_for(cfg, think)" in core, \
+        "вызов модели берёт срок мимо общего правила"
 
 
 @test
