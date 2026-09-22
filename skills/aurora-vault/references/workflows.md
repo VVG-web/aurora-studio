@@ -240,6 +240,15 @@ Confluence быть не должно.
 3. Do NOT touch the cards themselves (see build.md lifecycle rule 2). Group findings by
    owner so each analyst gets their re-verification list.
 
+## review-auto — ревью без человека по закрытому чек-листу
+
+`make:review-auto` (`review_run.py`). Модель не ставит оценку: она отвечает «да / нет / н/п /
+не определить» на вопросы чек-листа из `TemplatesCommon/review_v2.0.md`, три независимых
+прогона голосуют по каждому вопросу, оценку и вердикт считает скрипт. Подходит, когда нужна
+воспроизводимая оценка: аналитик проверяет свою историю перед передачей (`--page`, отчёт с
+подсказками, что исправить) или команда оценивает архив (`--cql`, `--as-of`, сводка в
+`Artifacts/reviews/batch_<имя>/`). Правка вопросов — только новой версией шаблона.
+
 ## review <US|AC|page> — проверка качества артефакта
 
 Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.

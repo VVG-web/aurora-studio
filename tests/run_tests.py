@@ -16720,6 +16720,220 @@ def test_retrieval_flag_rejects_unknown_keys(tmp: Path):
     assert "hop_relaited" in cp.stderr, "отказ не назвал неизвестный ключ"
 
 
+def _review_module():
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    rr = importlib.import_module("review_run")
+    importlib.reload(rr)
+    return rr
+
+
+def _review_checklist(rr):
+    return rr.load_checklist(str(KIT / "scaffold/TemplatesCommon/review_v2.0.md"))
+
+
+class _FakeReader:
+    """Confluence без сети: страницы из словаря, номер — ключ."""
+
+    def __init__(self, pages: dict, as_of: str = ""):
+        self.pages, self.as_of, self.base = pages, as_of, "https://wiki"
+
+    def page(self, pid):
+        return dict(self.pages.get(pid) or {"id": pid, "status": "missing"})
+
+    def resolve(self, kind, target):
+        if kind == "id":
+            return target, "ok"
+        return "", "missing"
+
+
+def _answer(cl, profile, override=None):
+    """Ответ модели: все вопросы «yes», кроме переопределённых."""
+    checks = {c["id"]: {"v": "yes", "evidence": "", "fix": ""}
+              for c in cl["profiles"][profile] if c["decider"] != "код"}
+    for cid, v in (override or {}).items():
+        checks[cid] = v
+    return json.dumps({"profile": profile, "checks": checks, "split": ""}, ensure_ascii=False)
+
+
+@test
+def test_review_checklist_lives_in_the_template(tmp: Path):
+    """Чек-лист, веса, словарь и правила для модели читаются из шаблона — одна копия.
+
+    Две копии вопросов (в шаблоне для человека и в коде для скрипта) разошлись бы на
+    первой правке: человек читает одно, а оценку считают по другому.
+    """
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    assert cl["version"] == "2.0", cl["version"]
+    assert len(cl["profiles"]["us"]) >= 20 and len(cl["profiles"]["alg"]) >= 20
+    for prof in cl["profiles"].values():
+        ids = [c["id"] for c in prof]
+        assert len(ids) == len(set(ids)), "идентификаторы вопросов повторяются"
+        for c in prof:
+            assert c["severity"] in rr.WEIGHT and c["question"] and c["fix"], c
+            assert c["decider"] in ("модель", "код", "код+модель"), c
+            assert not c["when"].startswith("то же условие"), \
+                "ссылка на условие не раскрыта — модель не поймёт, о чём речь"
+    assert {"Оценочные без критерия", "Рабочие пометки"} <= set(cl["lexicon"]), cl["lexicon"]
+    assert "Одинаковый текст" in cl["rules"] and "JSON" in cl["rules"], "правила не прочитаны"
+
+
+@test
+def test_review_score_is_computed_by_code(tmp: Path):
+    """Оценку и вердикт считает код по ответам; «нет» без доказательства не принимается."""
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    ids = [c["id"] for c in cl["profiles"]["us"] if c["decider"] != "код"]
+    got = rr.parse_answer(_answer(cl, "us", {"US-09": {"v": "no", "evidence": ""}}), ids)
+    assert got["checks"]["US-09"]["v"] == "unknown", "«нет» без цитаты принят"
+    fenced = "```json\n" + _answer(cl, "us", {"US-09": {"v": "нет", "evidence": "шаг 3"}}) + "\n```"
+    assert rr.parse_answer(fenced, ids)["checks"]["US-09"]["v"] == "no", "ответ в ограде не разобран"
+    assert rr.parse_answer("не JSON вовсе", ids) is None
+
+    l0 = rr.layer0("Чистый текст без пометок.", cl["lexicon"], [])
+    ok = {"ok": True, **rr.parse_answer(_answer(cl, "us"), ids)}
+    ans = rr.vote(cl, "us", [ok, ok, ok], l0)
+    res = rr.score(cl, "us", ans, False, True, 3)
+    assert res["score"] == 10.0 and res["verdict"] == "готова к передаче", res
+
+    # одно мелкое «нет»: 10 × 52/53 = 9,81 → округление вниз 9,8
+    minor = {"ok": True, **rr.parse_answer(
+        _answer(cl, "us", {"US-09": {"v": "no", "evidence": "шаг 3: таблица t_doc"}}), ids)}
+    res = rr.score(cl, "us", rr.vote(cl, "us", [minor] * 3, l0), False, True, 3)
+    assert res["score"] == 9.8 and res["verdict"] == "готова к передаче", res
+
+    # важное «нет» закрывает ворота при любом итоге
+    major = {"ok": True, **rr.parse_answer(
+        _answer(cl, "us", {"US-10": {"v": "no", "evidence": "AC п.2"}}), ids)}
+    res = rr.score(cl, "us", rr.vote(cl, "us", [major] * 3, l0), False, True, 3)
+    assert res["verdict"] == "доработать" and res["score"] >= 9.0, res
+
+    # «н/п» на вопрос «всегда» недопустим — становится «не определено» и держит ворота
+    na = {"ok": True, **rr.parse_answer(_answer(cl, "us", {"US-12": {"v": "na"}}), ids)}
+    ans = rr.vote(cl, "us", [na] * 3, l0)
+    assert ans["US-12"]["v"] == "unknown", ans["US-12"]
+    assert rr.score(cl, "us", ans, False, True, 3)["verdict"] == "доработать"
+
+    # голосование: 2 из 3 — принято, но вопрос неустойчив
+    ans = rr.vote(cl, "us", [ok, ok, major], l0)
+    assert ans["US-10"]["v"] == "yes" and not ans["US-10"]["stable"], ans["US-10"]
+    assert rr.needs_more(cl, "us", ans, rr.score(cl, "us", ans, False, True, 3)), \
+        "неустойчивый важный вопрос не вызвал дополнительных прогонов"
+
+    # голосование лагерями: «да» и «н/п» — один лагерь, воздержание не перевешивает двух
+    # согласных. Первый боевой прогон дал ничьи 2:2 на восьми вопросах из-за буквального счёта.
+    def run_with(v, ev=""):
+        return {"ok": True, **rr.parse_answer(_answer(cl, "us", {"US-20": {"v": v, "evidence": ev}}), ids)}
+    ans = rr.vote(cl, "us", [run_with("yes"), run_with("na"), run_with("na")], l0)
+    assert ans["US-20"]["v"] == "na" and ans["US-20"]["stable"], ans["US-20"]
+    ans = rr.vote(cl, "us", [run_with("yes"), run_with("yes"), run_with("unknown"),
+                             run_with("unknown")], l0)
+    assert ans["US-20"]["v"] == "yes" and not ans["US-20"]["stable"], ans["US-20"]
+    ans = rr.vote(cl, "us", [run_with("yes"), run_with("no", "п.3"), run_with("unknown")], l0)
+    assert ans["US-20"]["v"] == "unknown" and ans["US-20"]["tie"], "ничья не распознана"
+
+    # рабочие пометки решает код, а не модель
+    l0 = rr.layer0("Шаг 2 ??? уточнить", cl["lexicon"], [])
+    ans = rr.vote(cl, "us", [ok] * 3, l0)
+    assert ans["US-23"]["v"] == "no" and ans["US-23"]["votes"] == "код", ans["US-23"]
+
+    # неполное чтение обязательной страницы не даёт пройти
+    res = rr.score(cl, "us", rr.vote(cl, "us", [ok] * 3, rr.layer0("", cl["lexicon"], [])),
+                   True, True, 3)
+    assert res["verdict"] == "доработать" and "обязательная" in " ".join(res["reasons"])
+
+
+@test
+def test_review_page_runs_without_a_human(tmp: Path):
+    """Страница → прочтение связей → прогоны → голосование → отчёт, без единого вопроса.
+
+    Ссылка на ещё не созданную страницу — предусловие «сделать», не дефект и не пробел
+    в чтении. Закрытая по правам обязательная страница — пробел: ворота закрыты.
+    """
+    rr = _review_module()
+    cl = _review_checklist(rr)
+    view = ('<h2>Предусловия US</h2><a href="/pages/viewpage.action?pageId=20">Форма</a>'
+            '<a class="createlink" href="/pages/createpage.action?spaceKey=S&amp;title=ALG-9">ALG-9</a>'
+            '<h2>Описание</h2><p>Как оператор</p>')
+    # ссылки на версии самой страницы («История изменений»), профили и личные пространства —
+    # не артефакты: первый боевой прогон принял четыре такие ссылки за удалённые страницы
+    noise = ('<a class="view-historical-version-trigger" href="/pages/viewpage.action?pageId=99">v. 20</a>'
+             '<a href="/display/~ivanov">Иванов</a>'
+             '<a href="/users/viewuserprofile.action?username=x">x</a>')
+    assert rr.links_with_sections(noise, "https://wiki") == [], "служебные ссылки приняты за артефакты"
+    main = {"id": "10", "status": "ok", "title": "US-1.2.3. Приём заявки", "url": "u", "version": 4,
+            "text": "Как оператор я хочу...", "links": rr.links_with_sections(view, "https://wiki"),
+            "author": "А. Автор", "modified": "2025-05-02", "created": "2025-01-10"}
+    form = {"id": "20", "status": "ok", "title": "Экранная форма", "text": "поле ИНН обязательно",
+            "links": [], "version": 2}
+    calls = []
+
+    def fake(cfg_, role, messages, **kw):
+        calls.append(role)
+        msgs = stub_messages(messages, kw)
+        assert "Экранная форма" in msgs[1]["content"], "связанная страница не попала в промпт"
+        assert "ещё не создана" in msgs[1]["content"], "будущая страница не объяснена модели"
+        return {"ok": True, "text": _answer(cl, "us"), "model": "m", "seen": 1, "cut": 0}
+
+    cfg = {"request_timeout": 5}
+    rec = rr.review_page(cfg, cl, _FakeReader({"10": main, "20": form}), "10", runs=3,
+                         call=fake)
+    assert len(calls) == 3, f"прогонов {len(calls)}, ждали 3 (без эскалации)"
+    assert rec["verdict"] == "готова к передаче" and rec["score"] == 10.0, rec
+    assert not rec["incomplete"], "будущая страница посчитана пробелом в чтении"
+    assert rec["code"] == "US-1.2.3" and rec["profile"] == "us"
+    report = rr.render(rec, cl)
+    assert "| Версия шаблона ревью | 2.0 (`review_v2.0.md`) |" in report, "версия шаблона не в итоге"
+    assert report.startswith("---\ntype: review"), "у отчёта не одна шапка"
+
+    # обязательная форма закрыта правами → неполное ревью, ворота закрыты
+    locked = {"10": main, "20": {"id": "20", "status": "forbidden"}}
+    rec = rr.review_page(cfg, cl, _FakeReader(locked), "10", runs=3,
+                         call=lambda *a, **k: {"ok": True, "text": _answer(cl, "us"),
+                                               "model": "m", "seen": 1, "cut": 0})
+    assert rec["incomplete"] and rec["verdict"] == "доработать", rec["verdict"]
+
+
+@test
+def test_review_batch_resumes_and_summarizes(tmp: Path):
+    """Сводка пакета пересчитывается из журнала целиком и переживает обрыв."""
+    rr = _review_module()
+    bdir = tmp / "batch_x"
+    bdir.mkdir()
+    base = {"status": "ok", "profile": "us", "template_version": "2.0", "as_of": "",
+            "coverage": 1.0, "unknown": 0, "unstable": 0, "runs": 3, "good_runs": 3,
+            "failed": {"critical": 0, "major": 0, "minor": 0}}
+    rows = [dict(base, page_id="1", code="US-1", score=9.8, verdict="готова к передаче",
+                 modified="2025-02-01", author="А",
+                 answers={"US-09": {"v": "no", "stable": True}}),
+            dict(base, page_id="2", code="US-2", score=6.0, verdict="доработать",
+                 modified="2025-08-01", author="Б",
+                 answers={"US-09": {"v": "no", "stable": False}, "US-10": {"v": "yes", "stable": True}}),
+            {"page_id": "3", "status": "forbidden", "verdict": "не оценено", "reasons": ["страница: forbidden"]}]
+    (bdir / "results.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows),
+                                        encoding="utf-8")
+    keys = rr.done_keys(bdir / "results.jsonl")
+    assert set(keys) == {"1", "2"}, "непрочитанную страницу не повторят при продолжении"
+    md = rr.summarize(bdir)
+    assert "Прошли порог | 1 из 2" in md, md
+    assert "2025-Q1" in md and "2025-Q3" in md, "нет разбивки по кварталам"
+    assert "| US-09 | 2 | 100% |" in md, "частые дефекты посчитаны неверно"
+    assert "Устойчивость чек-листа" in md and "| US-09 | 1 | 50% |" in md, md
+    assert "По авторам" not in md, "авторская разбивка должна включаться явно"
+    assert (bdir / "summary.csv").is_file()
+
+
+@test
+def test_review_engine_is_wired_into_the_kit(tmp: Path):
+    """Команда в реестре, скрипт в манифесте, шаблон в поставке."""
+    reg = (KIT / "commands.txt").read_text(encoding="utf-8")
+    assert "make:review-auto" in reg and "review_run.py" in reg, "команды нет в реестре"
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert "scripts/review_run.py" in man, "движок ревью не едет в проекты"
+    assert (KIT / "scaffold/TemplatesCommon/review_v2.0.md").is_file()
+
+
 # ------------------------------------------------------------------- smoke-мета-тесты
 # Не являются инвариантами (имена *_smoke_* исключены из рекурсии subprocess).
 @test

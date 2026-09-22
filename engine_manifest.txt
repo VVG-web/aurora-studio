@@ -78,6 +78,7 @@ scripts/kb_reset.py      => .opencode/scripts/kb_reset.py
 scripts/kb_moc.py        => .opencode/scripts/kb_moc.py
 moc_groups.txt           => .opencode/moc_groups.txt
 scripts/publish_doc.py   => .opencode/scripts/publish_doc.py
+scripts/review_run.py    => .opencode/scripts/review_run.py
 scripts/kit_commands.py  => .opencode/scripts/kit_commands.py
 scripts/kb_supersede.py  => .opencode/scripts/kb_supersede.py
 scripts/ctx_pack.py      => .opencode/scripts/ctx_pack.py
