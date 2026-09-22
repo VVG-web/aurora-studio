@@ -57,6 +57,7 @@ import os
 import re
 import subprocess
 import sys
+import itertools
 import threading
 import time
 from datetime import datetime
@@ -717,11 +718,17 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
     return existing
 
 
-def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
-    """Пройти по карточкам знания и вынести из них чужие определения. → сводка."""
+def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
+                window_min: float = 0) -> dict:
+    """Пройти по карточкам знания и вынести из них чужие определения. → сводка.
+
+    `window_min` — окно вместо бюджета шага (`--until-done`): очередь осмотра проходится
+    за один запуск целиком, а не бюджетом по двадцать минут на оборот маршрута.
+    """
     from aurora_common import frontmatter, is_placeholder, walk_md
     started = time.time()
-    budget = started + cfg["budget_min"] * 60
+    minutes = window_min or cfg["budget_min"]
+    budget = started + minutes * 60
     todo = []
     for path in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
                         skip_archive=True):
@@ -758,7 +765,9 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> 
     # ровно то, против чего вся накопительная механика.
     from concurrent.futures import ThreadPoolExecutor
     slots, width = parallel_width(cfg, len(todo))
-    print(f"Карточек к осмотру: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
+    print(f"Карточек к осмотру: {len(todo)} · "
+          + (f"окно {human_time(minutes * 60)}" if window_min
+             else f"бюджет {cfg['budget_min']} мин"), flush=True)
     if todo:
         print(threads_line(cfg, width), flush=True)
     steps, done = [], [0]
@@ -767,7 +776,10 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> 
         i, path = idx_path
         if time.time() > budget:
             return None
-        st = extract_card(cfg, path, call, apply, deadline=budget)
+        # Срок карточки — не срок окна: в окне на двенадцать часов лежащий шлюз держал
+        # бы одну карточку до утра. Два срока запроса — с запасом на круг по кольцу.
+        st = extract_card(cfg, path, call, apply,
+                          deadline=min(budget, time.time() + 2 * cfg["request_timeout"]))
         done[0] += 1
         made_names = ", ".join(st.get("made") or []) or st["status"]
         print(f"  [{done[0]}/{len(todo)}] {st['card']} → {made_names}"
@@ -781,7 +793,7 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> 
     left = len(todo) - len(steps)
     if left:
         steps.append({"card": "—", "status": "стоп", "made": [],
-                      "note": f"бюджет {cfg['budget_min']} мин исчерпан, осталось {left}"})
+                      "note": f"время ({human_time(minutes * 60)}) вышло, осталось {left}"})
         print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
     made = sum(len(s.get("made") or []) for s in steps)
     return {"steps": steps, "cards": len(todo), "made": made,
@@ -2165,6 +2177,71 @@ OFFLINE_SIGNS = ("timed out", "timeout", "connection error", "connection refused
                  "name or service not known", "ssl", "network is unreachable")
 OFFLINE_WAIT = 300          # секунд между попытками достучаться: VPN поднимают минутами
 OFFLINE_TRIES = 24          # два часа ожидания; дольше — это не обрыв, а выключенный шлюз
+
+
+def until_done(cwd: str, a, task: str, run_batch, report, headline, passed) -> dict:
+    """Заходы до конца очереди — одно правило для задач, чья очередь — карточки.
+
+    Каждый заход со своим коммитом: откатывается любой, прерванный прогон не теряет
+    сделанного. Между заходами очередь пересчитывает сам заход — обходом файлов, даром.
+    Стоп — когда очередь пуста, когда шлюзы легли, когда заход не прошёл ни одной
+    карточки (обрыв связи — ждём и продолжаем с того же места) и когда закрылось окно.
+
+    `run_batch()` → ответ захода с `left` и `steps`; `passed(res)` — сколько карточек
+    заход прошёл. → {res: последний, results: все, batches: заходов, texts: отчёты}.
+    """
+    deadline = time.time() + a.hours * 3600
+    batch, texts, waits, results = 0, [], 0, []
+    while True:
+        batch += 1
+        say(f"\n=== заход {batch} · до конца окна "
+            f"{human_time(max(0, deadline - time.time()))}")
+        res = run_batch()
+        results.append(res)
+        texts.append(report(res))
+        commit_result(cwd, f"agent:{task}", f"заход {batch}: {headline(res)}",
+                      not a.no_checkpoint)
+        if not res["left"]:
+            say(f"\n=== очередь пройдена: заходов {batch}")
+            break
+        if res.get("gateways_down"):
+            # Предохранитель в заходе уже сработал: следующий заход упрётся в те же
+            # занятые слоты и снова прождёт по сроку на каждую карточку.
+            say(f"\n=== заход {batch}: шлюзы не отвечают — {FAILS_IN_A_ROW} сбоя подряд. "
+                f"Останавливаюсь, остаток {res['left']} доделает следующий прогон")
+            break
+        if passed(res) <= 0:
+            # Ни одной карточки за заход — это не «мало работы», а стоп. Обрыв связи
+            # лечится ожиданием, как у первичной сборки: очередь держит отметки, поэтому
+            # продолжаем ровно с той же карточки.
+            if looks_offline(res) and waits < OFFLINE_TRIES and time.time() < deadline:
+                waits += 1
+                say(f"\n=== связь потеряна (попытка {waits} из {OFFLINE_TRIES}): "
+                    f"жду {OFFLINE_WAIT // 60} мин и продолжаю с той же карточки")
+                time.sleep(OFFLINE_WAIT)
+                continue
+            say(f"\n=== заход {batch} не прошёл ни одной карточки"
+                + (f", связь не вернулась за {waits * OFFLINE_WAIT // 60} мин"
+                   if waits else "") + ": останавливаюсь, разбираться человеку")
+            break
+        waits = 0
+        if time.time() > deadline:
+            say(f"\n=== окно {a.hours} ч закрылось: заходов {batch}, "
+                f"осталось карточек {res['left']}")
+            break
+        checkpoint(cwd, f"agent:{task}", not a.no_checkpoint)
+    return {"res": res, "results": results, "batches": batch, "texts": texts}
+
+
+def distill_every(cfg: dict) -> int:
+    """Через сколько записанных тезисов фиксировать проход до конца очереди.
+
+    Проход идёт часами, и прерванный не должен терять сделанного. Коммит на каждую
+    карточку засорил бы историю сотнями записей; раз в четыре ширины пула — это минуты
+    работы и не больше нескольких десятков коммитов на всю очередь.
+    """
+    width = len(AG.pool(cfg)) if (cfg.get("parallel") or 1) > 1 else 1
+    return max(cfg["max_steps"], 4 * width)
 
 
 def looks_offline(res: dict) -> bool:
@@ -4527,18 +4604,13 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     return step
 
 
-def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True,
-                call=None) -> dict:
-    """Тезисы для карточек `knowledge`; словари и документы — только режем, если не влезают.
+def distill_queue(cfg: dict, cwd: str) -> list:
+    """Очередь переосмысления: карточки знания без тезиса и словари, переросшие окно.
 
-    Тело словаря и документа модель не переписывает никогда — это смысл самих типов. Но
-    словарь на сорок тысяч знаков не работает ни как словарь, ни как карточка: его не
-    найти выборкой и не подать в контекст. Такому нужна не переработка, а границы —
-    их предлагает планировщик, а текст режет движок дословно.
+    Очередь собирается обходом файлов и стоит даром — поэтому заходы до конца очереди
+    пересчитывают её между заходами сами, а итог называет настоящий остаток.
     """
     from aurora_common import card_body, frontmatter, is_placeholder, walk_md
-    started = time.time()
-    budget = started + cfg["budget_min"] * 60
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
     todo = []
     for p in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
@@ -4574,10 +4646,39 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             src = text.split(QUOTES, 1)[-1]
             if len(src) > window * MAX_PARTS:
                 todo.append(p)
-    total = min(len(todo), limit or cfg["max_steps"])
+    # Порядок — по имени, как у связывания и выноса: обход папок отдаёт файлы как придётся,
+    # и один и тот же прогон брал бы карточки в разном порядке от машины к машине.
+    todo.sort()
+    return todo
+
+
+def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True,
+                call=None, skip: set | None = None, window_s: float = 0,
+                commit=None, commit_every: int = 0) -> dict:
+    """Тезисы для карточек `knowledge`; словари и документы — только режем, если не влезают.
+
+    Тело словаря и документа модель не переписывает никогда — это смысл самих типов. Но
+    словарь на сорок тысяч знаков не работает ни как словарь, ни как карточка: его не
+    найти выборкой и не подать в контекст. Такому нужна не переработка, а границы —
+    их предлагает планировщик, а текст режет движок дословно.
+
+    `skip` — карточки, которые этот прогон уже пробовал: заходы до конца очереди
+    (`--until-done`) не берут в следующий заход то, что в прошлом не вышло по содержанию.
+    Иначе упавшая карточка вставала бы в голову каждого захода и съедала его.
+
+    `window_s` — окно вместо бюджета шага: вся очередь за один проход (`--until-done`).
+    `commit(n)` зовётся каждые `commit_every` записанных карточек — проход на часы не
+    держит сделанное незафиксированным.
+    """
+    started = time.time()
+    budget = started + (window_s or cfg["budget_min"] * 60)
+    todo = [p for p in distill_queue(cfg, cwd) if p not in (skip or ())]
+    total = min(len(todo), limit) if limit else (
+        len(todo) if window_s else min(len(todo), cfg["max_steps"]))
     say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "
-        f"бюджет {cfg['budget_min']} мин")
+        + (f"окно {human_time(window_s)}" if window_s else f"бюджет {cfg['budget_min']} мин"))
     steps, unsupported = [], 0
+    tried: list = []
     # Карточки независимы: тезис одной не зависит от тезиса другой, и каждая — это
     # ожидание ответа шлюза, а не работа машины. Последовательный проход держит один
     # запрос в воздухе, тогда как шлюз обслуживает несколько; на 1359 карточках разница
@@ -4654,9 +4755,14 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             "---" + set_field(head, "status", "index") + "\n---" + body)
         step["note"] += f"; разрезана на {len(made)}"
 
+    written = [0]
+
     def finish(path, step):
         nonlocal unsupported
         steps.append(step)
+        tried.append(path)
+        if apply and step.get("head") is not None and commit and commit_every:
+            written[0] += 1          # коммит — ниже, когда тезис уже записан
         say(f"  {progress(done, total, started)}"
             + (f" · потоков {busy}/{width}" if width > 1 else " · в один поток")
             + f" · {os.path.basename(path)}"
@@ -4691,6 +4797,8 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 fields["unsupported"] = str(step["unsupported"])
             text = "---" + step["head"] + "\n---" + step["body"]
             open(path, "w", encoding="utf-8").write(with_fields(text, fields))
+            if commit and commit_every and written[0] % commit_every == 0:
+                commit(written[0])
 
     def keep_going(step) -> bool:
         """Сбой за сбоем — признак мёртвого шлюза, а не плохих карточек."""
@@ -4715,16 +4823,33 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             if not keep_going(step):
                 break
     else:
-        from concurrent.futures import ThreadPoolExecutor
+        # В работе столько карточек, сколько слотов; ответ пишется, как только пришёл.
+        # Прежний `ex.map` отдавал ответы по порядку — готовый тезис ждал записи, пока
+        # допишется медленная соседка, — а остановка по «трём сбоям подряд» выходила из
+        # `with`, который доигрывал ВСЮ партию в лежащий шлюз и выбрасывал ответы. Теперь
+        # при остановке новых карточек не берём, а начатые дописываем: они уже оплачены.
+        from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
         say(threads_line(cfg, width))
+        queue = iter(jobs)
+        stop = False
         with ThreadPoolExecutor(max_workers=width) as ex:
-            for path, step in ex.map(one, jobs):
-                done += 1
-                finish(path, step)
-                if not keep_going(step):
-                    break
+            flying = {ex.submit(one, job) for job in itertools.islice(queue, width)}
+            while flying:
+                ready, flying = wait(flying, return_when=FIRST_COMPLETED)
+                for fut in ready:
+                    path, step = fut.result()
+                    done += 1
+                    finish(path, step)
+                    if not stop and not keep_going(step):
+                        stop = True
+                if not stop:
+                    flying |= {ex.submit(one, job)
+                               for job in itertools.islice(queue, width - len(flying))}
     return {"steps": steps, "left": len(todo) - len(steps), "unsupported": unsupported,
-            "seconds": round(time.time() - started, 1)}
+            "seconds": round(time.time() - started, 1), "tried": tried,
+            # Предохранитель сработал — заходы до конца очереди встают, как у связывания:
+            # следующий заход упёрся бы в тот же лежащий шлюз.
+            "gateways_down": in_a_row >= FAILS_IN_A_ROW}
 
 
 def report_distill(res: dict, apply: bool) -> str:
@@ -5116,7 +5241,9 @@ def main() -> int:
     ap.add_argument("--until-done", action="store_true",
                     help="работать заходами, пока работа не кончится: для build — пока "
                          "не кончатся источники (первичная сборка: часы, можно на ночь), "
-                         "для relink — пока не свяжутся все тезисы")
+                         "для relink — пока не свяжутся все тезисы, для distill — пока "
+                         "у всех карточек не будет тезиса, для extract — осмотреть всю "
+                         "очередь в окне --hours, а не в бюджете шага")
     ap.add_argument("--hours", type=float, default=12.0, metavar="Ч",
                     help="потолок времени для --until-done (по умолчанию 12)")
     ap.add_argument("--no-checkpoint", action="store_true",
@@ -5224,6 +5351,7 @@ def main() -> int:
         return 1
 
     relink_loop = (0, 0)          # заходов и связей за прогон: пусто — петли не было
+    distill_loop = 0              # заходов переосмысления: 0 — петли не было
     if a.task == "build" and a.until_done:
         # Первичная сборка: три года проекта — это полторы тысячи источников, а партия
         # агента ограничена нарочно (обозримый прогон, обозримый откат). Девяносто
@@ -5274,14 +5402,57 @@ def main() -> int:
                 break
             cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
         text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
+    elif a.task == "distill" and a.until_done and a.apply:
+        # Очередь тезисов — заходами до конца, а не по пятнадцать карточек за оборот
+        # маршрута. Живой случай, PRJ-A 21.09.2026: 576 карточек без тезиса, по
+        # пятнадцать за оборот в семнадцать минут — десять часов «Обновить базу».
+        tried: set = set()
+        end = time.time() + a.hours * 3600
+        every = distill_every(cfg)
+
+        def distill_step():
+            # Заход — вся оставшаяся очередь в оставшемся окне; следующий заход бывает
+            # только после обрыва связи. Фиксация — по ходу, каждые `every` тезисов.
+            r = run_distill(cfg, cwd, True, a.limit, momus=not a.no_momus, skip=tried,
+                            window_s=max(60.0, end - time.time()),
+                            commit=lambda n: commit_result(
+                                cwd, "agent:distill", f"тезисов по ходу прохода: {n}",
+                                not a.no_checkpoint),
+                            commit_every=every)
+            # Не вышедшее по содержанию в этом прогоне больше не берём; упавшее по
+            # связи — берём снова, когда связь вернётся.
+            for path, st in zip(r["tried"], r["steps"]):
+                if not (st["status"] == "сбой" and looks_offline({"steps": [st]})):
+                    tried.add(path)
+            return r
+
+        loop = until_done(cwd, a, "distill", distill_step,
+                          lambda r: report_distill(r, True),
+                          lambda r: "тезисов: " + str(sum(1 for s in r["steps"]
+                                                          if s["status"] == "переписана")),
+                          lambda r: sum(1 for s in r["steps"] if s["status"] != "сбой"))
+        steps_all += [s for r in loop["results"] for s in r["steps"]]
+        # Отчёт — за весь прогон, остаток — настоящий: не вышедшие карточки остались
+        # в очереди, и маршрут должен о них знать.
+        res = {"steps": list(steps_all),
+               "unsupported": sum(r["unsupported"] for r in loop["results"]),
+               "left": len(distill_queue(cfg, cwd)),
+               "seconds": round(sum(r["seconds"] for r in loop["results"]), 1)}
+        distill_loop = loop["batches"]
+        text = report_distill(res, True)
     elif a.task == "distill":
+        if a.until_done and not a.apply:
+            print("agent_runner: --until-done без --apply зациклится: предпросмотр не "
+                  "пишет тезисов, и очередь не убывает. Делаю один заход.",
+                  file=sys.stderr)
         res = run_distill(cfg, cwd, a.apply, a.limit, momus=not a.no_momus)
         text = report_distill(res, a.apply)
     elif a.task == "translit":
         res = run_translit(cfg, cwd, a.apply, a.limit)
         text = report_translit(res, a.apply)
     elif a.task == "extract":
-        res = run_extract(cfg, cwd, a.apply, a.limit)
+        res = run_extract(cfg, cwd, a.apply, a.limit,
+                          window_min=a.hours * 60 if a.until_done else 0)
         text = report_extract(res, a.apply)
     elif a.task == "twins":
         res = run_twins(cfg, cwd, a.apply, a.limit)
@@ -5299,50 +5470,14 @@ def main() -> int:
         # такой запуск честно гонял модель по всей очереди двадцать минут впустую,
         # ничего не записывая. Половина ночи ушла в мусор. Очередь же считается обходом
         # файлов и стоит даром — поэтому здесь она пересчитывается сама, между заходами.
-        deadline = time.time() + a.hours * 3600
-        batch, texts, waits = 0, [], 0
-        while True:
-            batch += 1
-            say(f"\n=== заход {batch} · до конца окна "
-                f"{human_time(max(0, deadline - time.time()))}")
-            res = run_relink(cfg, cwd, True, a.limit)
-            steps_all += res.get("steps", [])
-            relink_loop = (batch, relink_loop[1] + res["added"])
-            texts.append(report_relink(res, True))
-            commit_result(cwd, "agent:relink",
-                          f"заход {batch}: связей поставлено: {res['added']}",
-                          not a.no_checkpoint)
-            if not res["left"]:
-                say(f"\n=== связаны все тезисы: заходов {batch}")
-                break
-            if res.get("gateways_down"):
-                # Предохранитель в заходе уже сработал: следующий заход упрётся в те же
-                # занятые слоты и снова прождёт по сроку на каждую карточку.
-                say(f"\n=== заход {batch}: шлюзы не отвечают — {FAILS_IN_A_ROW} сбоя подряд. "
-                    f"Останавливаюсь, остаток {res['left']} свяжет следующий прогон")
-                break
-            passed = res["cards"] - res["left"]
-            if passed <= 0:
-                # Ни одной карточки за заход — это не «мало работы», а стоп. Обрыв связи
-                # лечится ожиданием, как у первичной сборки: отметка держит дату тезиса,
-                # поэтому продолжаем ровно с той же карточки.
-                if looks_offline(res) and waits < OFFLINE_TRIES and time.time() < deadline:
-                    waits += 1
-                    say(f"\n=== связь потеряна (попытка {waits} из {OFFLINE_TRIES}): "
-                        f"жду {OFFLINE_WAIT // 60} мин и продолжаю с той же карточки")
-                    time.sleep(OFFLINE_WAIT)
-                    continue
-                say(f"\n=== заход {batch} не прошёл ни одной карточки"
-                    + (f", связь не вернулась за {waits * OFFLINE_WAIT // 60} мин"
-                       if waits else "") + ": останавливаюсь, разбираться человеку")
-                break
-            waits = 0
-            if time.time() > deadline:
-                say(f"\n=== окно {a.hours} ч закрылось: заходов {batch}, "
-                    f"осталось карточек {res['left']}")
-                break
-            cp = checkpoint(cwd, "agent:relink", not a.no_checkpoint)
-        text = "\n\n---\n\n".join(texts[-3:])
+        loop = until_done(cwd, a, "relink", lambda: run_relink(cfg, cwd, True, a.limit),
+                          lambda r: report_relink(r, True),
+                          lambda r: f"связей поставлено: {r['added']}",
+                          lambda r: r["cards"] - r["left"])
+        res = loop["res"]
+        steps_all += [s for r in loop["results"] for s in r.get("steps", [])]
+        relink_loop = (loop["batches"], sum(r["added"] for r in loop["results"]))
+        text = "\n\n---\n\n".join(loop["texts"][-3:])
     elif a.task == "relink":
         if a.until_done and not a.apply:
             print("agent_runner: --until-done без --apply зациклится: предпросмотр не "
@@ -5432,9 +5567,10 @@ def main() -> int:
         # Свой вердикт: успех — переписанные карточки, находка — утверждения без опоры.
         made = sum(1 for s in res["steps"] if s["status"] == "переписана")
         if a.apply:
-            done = commit_result(cwd, "agent:distill",
-                                 f"тезисов: {made}, без опоры: {res['unsupported']}",
-                                 not a.no_checkpoint)
+            head = (f"журнал прогона: заходов {distill_loop}, тезисов: {made}, "
+                    f"без опоры: {res['unsupported']}" if distill_loop
+                    else f"тезисов: {made}, без опоры: {res['unsupported']}")
+            done = commit_result(cwd, "agent:distill", head, not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 0 if made and not res["unsupported"] else 1
     # Сборка со своей петлёй коммитит каждую партию сама — итоговый коммит был бы вторым.

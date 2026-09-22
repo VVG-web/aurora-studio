@@ -33,6 +33,7 @@ import argparse
 import array
 import hashlib
 import json
+import math
 import os
 import random
 import struct
@@ -56,6 +57,13 @@ PIECE_OVERLAP = 200        # нахлёст: мысль, разрезанная 
 MAX_PIECES = 8             # потолок кусков на карточку: свалка не должна съедать индекс
 PIECE_SEP = "¶"            # «Карточка¶2» — второй кусок; в именах карточек знака нет
 TAIL_DISCOUNT = 0.90       # скидка хвостовому куску: у длинной карточки иначе больше бросков
+
+# Скалярное произведение — самая частая арифметика поиска: запрос сверяется с каждым
+# куском индекса, 5558 кусков × 1024 измерения на живой базе PRJ-A. Генератор по
+# измерениям стоил секунду на запрос, и под общим замком интерпретатора шестнадцать
+# потоков переосмысления ждали его по очереди. `math.sumprod` (Python 3.12+) считает то
+# же на C в шесть раз быстрее; на старом Python — `map(mul)`, втрое быстрее генератора.
+dot = getattr(math, "sumprod", None) or (lambda a, b: sum(map(mul, a, b)))
 
 BIN_MAGIC = b"AVEM"        # заголовок embeddings.bin v2: вектора + предфильтр
 BIN_VER = 2
@@ -365,7 +373,7 @@ def prefilter_pays_off(out: array.array, dim: int, rows: int, pf) -> tuple:
     seen = []
     for r in probes:
         qv = out[r * dim:(r + 1) * dim]
-        qproj = [sum(a[j] * qv[j] for j in range(dim)) for a in axes]
+        qproj = [dot(a, qv) for a in axes]
         qperp = max(0.0, sum(x * x for x in qv) - sum(x * x for x in qproj)) ** 0.5
         lower = []
         for i in range(rows):
@@ -449,11 +457,13 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
         rows = sorted(((v, nm) for nm, v in best.items()), reverse=True)
         return [(nm, round(v, 4)) for v, nm in rows[:limit]]
 
+    rows = memoryview(vectors)      # срез без копии: сверка читает вектор на месте
+
     def full_scan() -> list:
         scored = []
         for name, rec in cards.items():
             off = rec["row"] * dim
-            scored.append((sum(qv[k] * vectors[off + k] for k in range(dim)), name))
+            scored.append((dot(qv, rows[off:off + dim]), name))
         scored.sort(reverse=True)
         return by_card(scored)
 
@@ -482,7 +492,7 @@ def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
         v = exact.get(name)
         if v is None:
             off = cards[name]["row"] * dim
-            v = sum(qv[j] * vectors[off + j] for j in range(dim))
+            v = dot(qv, rows[off:off + dim])
             exact[name] = v
         return v
 
@@ -567,8 +577,15 @@ def main() -> int:
     old = load_vectors(old_dim, len(idx["cards"])) if keep else array.array("f")
     fresh = embed([texts[n] for n in stale], cfg, model) if stale else []
     if stale and not fresh:
-        print("kb_embed: вектора не получены — индекс не тронут", file=sys.stderr)
-        return 2
+        # Код 1, а не 2: шлюз векторов не ответил — это не поломка шага, а связь. Индекс —
+        # производная, прежний цел и работает, досчитает следующий `kb:embed`. Код 2
+        # маршрут понимает как «команда не отработала» и встаёт: «Обновить базу» PRJ-A
+        # 21.09.2026 остановился так на мигнувшем шлюзе — проверка после остановки нашла
+        # шлюз живым. На код 1 с признаком обрыва связи маршрут ждёт сеть и повторяет
+        # шаг, без признака — идёт дальше.
+        print("kb_embed: вектора не получены — индекс не тронут, досчитает следующий "
+              "запуск", file=sys.stderr)
+        return 1
 
     dim = len(fresh[0]) if fresh else old_dim
     out, cards = array.array("f"), {}

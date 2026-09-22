@@ -5598,10 +5598,13 @@ def test_relink_stops_when_gateways_do_not_answer(tmp: Path):
     assert res["left"] >= 8 - len(seen) and "свяжет следующий прогон" in res["steps"][-1]["note"], res
     assert not any("relinked:" in p.read_text(encoding="utf-8") for p in kb.glob("*.md")), \
         "карточка без связей отмечена связанной — из очереди она выпала бы навсегда"
-    loop = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
-    loop = loop[loop.index('elif a.task == "relink" and a.until_done and a.apply:'):]
-    assert 'if res.get("gateways_down"):' in loop[:3000], \
-        "заходы связывания продолжаются, когда шлюзы уже не отвечают"
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    loop = src[src.index('elif a.task == "relink" and a.until_done and a.apply:'):]
+    assert 'until_done(cwd, a, "relink"' in loop[:3000], \
+        "заходы связывания идут мимо общего цикла заходов"
+    shared = src.split("def until_done(")[1].split("\ndef ")[0]
+    assert 'if res.get("gateways_down"):' in shared, \
+        "заходы продолжаются, когда шлюзы уже не отвечают"
 
 
 @test
@@ -14100,16 +14103,19 @@ def test_relinking_runs_pass_after_pass_without_burning_a_pass_to_count(tmp: Pat
     loop = src.split('a.task == "relink" and a.until_done and a.apply')[1].split("elif a.task ==")[0]
     assert 'run_relink(cfg, cwd, True, a.limit)' in loop, \
         "заход внутри петли идёт без записи — очередь не убудет, петля не кончится"
-    assert 'commit_result(cwd, "agent:relink"' in loop, \
+    assert 'until_done(cwd, a, "relink"' in loop, "связывание идёт мимо общего цикла заходов"
+    # Петля заходов одна на движок (`until_done`): её правила проверяются там.
+    shared = src.split("def until_done(")[1].split("\ndef ")[0]
+    assert 'commit_result(cwd, f"agent:{task}"' in shared, \
         "заходы не коммитятся по отдельности — откатить можно будет только всё сразу"
     # После петли остаётся закоммитить журнал. Живой прогон дал ему заголовок последнего
     # захода — «связей поставлено: 10» на коммите, где нет ни одной из этих связей.
     tail = src.split("Журнал прогона")[1].split("if a.task == \"clashes\"")[0]
     assert "журнал прогона: заходов" in tail, \
         "коммит журнала говорит о последнем заходе, а содержит весь прогон"
-    assert "looks_offline(res)" in loop, \
+    assert "looks_offline(res)" in shared, \
         "обрыв связи останавливает ночной прогон вместо ожидания"
-    assert 'res["left"]' in loop and "run_relink" in loop, \
+    assert 'res["left"]' in shared and "run_relink" in loop, \
         "петля берёт остаток не из ответа прогона"
     # предпросмотр отметок не ставит: очередь не убывает, петля крутилась бы вечно
     guard = src.split('elif a.task == "relink":')[1][:400]
@@ -16312,6 +16318,232 @@ def test_model_usage_is_counted_for_the_run_summary(tmp: Path):
     assert AG.USAGE["failed"] == 1 and sum(AG.USAGE["errors"].values()) == 1, \
         f"неудачный вызов модели не попал в ошибки итога: {AG.USAGE}"
     AG.DOWN.clear()
+
+
+@test
+def test_distill_drains_the_queue_in_one_pass_and_keeps_paid_answers(tmp: Path):
+    """Тезисы — вся очередь за один проход; остановка не выбрасывает оплаченных ответов.
+
+    Живой случай, PRJ-A 21.09.2026: «Обновить базу» шёл десять часов. Переосмысление брало
+    по пятнадцать карточек за оборот маршрута, оборот ждал самую медленную из них, а каждый
+    оборот заново гонял разбор, типы, вектора, связи и карты — 576 карточек без тезиса это
+    тридцать пять оборотов. После «трёх сбоев подряд» выход из пула доигрывал всю партию в
+    лежащий шлюз и выбрасывал ответы.
+    """
+    import time as _t
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    def base(name, n):
+        root = tmp / name
+        kb = root / "AuroraKnowledgeDB/Concepts"
+        kb.mkdir(parents=True)
+        for i in range(n):
+            (kb / f"К{i:02d}.md").write_text(
+                f'---\nid: X{i}\ntitle: "К{i:02d}"\nkind: knowledge\nstatus: knowledge\n'
+                f'---\n\nтело-{i:02d}-конец\n', encoding="utf-8")
+        return root
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m", "AURORA_AGENT_PARALLEL": "4"})
+
+    def card_of(messages):
+        import re as _re
+        text = " ".join(m.get("content") or "" for m in messages)
+        return int(_re.search(r"тело-(\d\d)-конец", text).group(1))
+
+    # 1. Окно вместо бюджета: вся очередь за проход, фиксация по ходу
+    commits = []
+
+    def fine(cfg_, role, messages, prefer=0, **kw):
+        _t.sleep(0.01)
+        return {"ok": True, "text": "Тезис карточки.", "backend": 1, "model": "m", "tps": 9,
+                "log": []}
+
+    root = base("all", 40)
+    res = R.run_distill(cfg, str(root), apply=True, limit=0, momus=False, call=fine,
+                        window_s=60, commit=commits.append, commit_every=10)
+    assert len(res["steps"]) == 40 and res["left"] == 0, \
+        f"проход до конца очереди остановился на {len(res['steps'])} из 40 — снова обороты"
+    assert commits == [10, 20, 30, 40], f"проход не фиксирует сделанное по ходу: {commits}"
+    assert all("distilled:" in p.read_text(encoding="utf-8")
+               for p in (root / "AuroraKnowledgeDB/Concepts").glob("*.md"))
+    assert R.distill_queue(cfg, str(root)) == [], "очередь не опустела после записи тезисов"
+
+    # 2. Остановка: новых не берём, начатые дописываем
+    asked = []
+
+    def flaky(cfg_, role, messages, prefer=0, **kw):
+        i = card_of(messages)
+        asked.append(i)
+        if i < 3:
+            return {"ok": False, "log": ["№1: connection refused"]}
+        _t.sleep(0.3)                      # в воздухе, когда остальные уже упали
+        return {"ok": True, "text": "Тезис карточки.", "backend": 1, "model": "m", "tps": 9,
+                "log": []}
+
+    root = base("stop", 12)
+    res = R.run_distill(cfg, str(root), apply=True, limit=12, momus=False, call=flaky)
+    assert res["gateways_down"], "три сбоя подряд не названы остановкой шлюза"
+    # Три быстрых сбоя приходят раньше медленных ответов; до третьего пул вправе взять
+    # по карточке на каждый освободившийся слот, после — ни одной.
+    assert len(asked) <= 4 + R.FAILS_IN_A_ROW - 1, \
+        f"после остановки пул брал новые карточки: {sorted(asked)}"
+    started = [i for i in asked if i >= 3]
+    assert started and all(
+        "distilled:" in (root / f"AuroraKnowledgeDB/Concepts/К{i:02d}.md").read_text(
+            encoding="utf-8") for i in started), \
+        "начатая до остановки карточка выброшена — ответ оплачен впустую"
+
+    # 3. Заход не берёт снова то, что уже пробовал
+    root = base("skip", 5)
+    first = sorted(R.distill_queue(cfg, str(root)))[:2]
+    res = R.run_distill(cfg, str(root), apply=False, limit=5, momus=False, call=fine,
+                        skip=set(first))
+    assert len(res["steps"]) == 3, "заход снова взял карточки, которые этот прогон уже пробовал"
+
+    # 4. В движке: ветка до конца очереди — общий цикл заходов, проход в окне
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    branch = src.split('elif a.task == "distill" and a.until_done and a.apply:')[1] \
+        .split('elif a.task == "distill":')[0]
+    assert 'until_done(cwd, a, "distill"' in branch and "window_s=" in branch \
+        and "commit_every=" in branch, "тезисы до конца очереди идут мимо общего цикла"
+    assert '"left": len(distill_queue(cfg, cwd))' in branch, \
+        "итог прохода называет не настоящий остаток — маршрут не узнает о невышедших"
+
+
+@test
+def test_update_route_takes_theses_and_definitions_in_one_lap(tmp: Path):
+    """«Обновить базу» и «Пересобрать» проходят очередь тезисов и выноса за оборот.
+
+    Цикл маршрута держит обороты, пока движок говорит, что работа есть. Тезисы шли по
+    пятнадцать, вынос определений — в бюджете двадцать минут: оборотов было столько же,
+    сколько партий, и каждый повторял разбор, вектора, связи и карты.
+    """
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    for tag in ("[update]", "[rebuild]"):
+        part = scen.split(tag)[1].split("\n[")[0]
+        cycle = part.split("цикл:")[1].split("конец цикла")[0]
+        for cmd in ("agent:distill", "agent:extract"):
+            line = next(l for l in cycle.splitlines() if l.startswith(cmd))
+            assert "--until-done" in line and "--apply" in line, \
+                f"в маршруте {tag} {cmd} снова идёт партиями по обороту: {line}"
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert "window_min=a.hours * 60 if a.until_done else 0" in src, \
+        "вынос определений в --until-done по-прежнему в бюджете шага"
+    sys.path.insert(0, str(KIT / "scripts"))
+    import inspect
+    import agent_runner as R
+    body = inspect.getsource(R.run_extract)
+    assert "min(budget, time.time() + 2 * cfg[\"request_timeout\"])" in body, \
+        "в окне на двенадцать часов одна карточка ждала бы лежащий шлюз до утра"
+    guard = src.split('elif a.task == "distill":')[1][:400]
+    assert "a.until_done and not a.apply" in guard, \
+        "«Посмотреть» маршрут снимает --apply: предпросмотр не пишет, и очередь не убудет"
+
+
+@test
+def test_embed_gateway_hiccup_does_not_stop_the_route(tmp: Path):
+    """Шлюз векторов не ответил — шаг не поломан: код 1, индекс цел, маршрут идёт дальше.
+
+    Живой случай, PRJ-A 21.09.2026: `kb:embed` вернул 2 на мигнувшем шлюзе, и маршрут
+    «Обновить базу» встал с «команда не отработала», хотя индекс — производная и прежний
+    работал. Проверка после остановки нашла шлюз живым.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "Карточка.md").write_text('---\ntitle: "Карточка"\nkind: knowledge\n---\n\nзнание\n',
+                                    encoding="utf-8")
+    # В изоляции движок читает из окружения только `AURORA_AGENT_*`: шлюз векторов —
+    # кольцо чата, первый бэкенд. Порт 9 закрыт — отказ приходит сразу.
+    env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
+           "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1",
+           "AURORA_AGENT_REQUEST_TIMEOUT": "5"}
+    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/kb_embed.py"), "--apply"],
+                        cwd=str(root), capture_output=True, text=True, env=env, timeout=120)
+    assert cp.returncode == 1, \
+        f"сбой шлюза векторов снова останавливает маршрут: код {cp.returncode}\n{cp.stderr[-400:]}"
+    assert "индекс не тронут" in cp.stderr, f"сбой не назван человеку:\n{cp.stderr[-400:]}"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "const failed = rc => rc >= 2 || rc < 0;" in ui, \
+        "маршрут считает поломкой не то, что раньше: код 1 шага не должен его останавливать"
+
+
+@test
+def test_candidate_search_does_each_piece_of_work_once(tmp: Path):
+    """Подбор кандидатов: тот же результат без лишнего счёта процессора.
+
+    Замер на PRJ-A 21.09.2026: подбор кандидатов для одной карточки — от 2 до 10 секунд
+    чистого процессора. Запрос сверялся с 5558 кусками индекса генератором по 1024
+    измерениям, а разбор запроса на слова повторялся для каждой из 1808 карточек. Под общим
+    замком интерпретатора потоки переосмысления ждали этот счёт по очереди. После правки —
+    те же 40 выдач из 40, в три раза быстрее.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    import random
+    from operator import mul
+    E = importlib.import_module("kb_embed")
+    P = importlib.import_module("ctx_pack")
+    rnd = random.Random(7)
+    a = [rnd.uniform(-1, 1) for _ in range(1024)]
+    b = [rnd.uniform(-1, 1) for _ in range(1024)]
+    assert abs(E.dot(a, b) - sum(map(mul, a, b))) < 1e-9, "скалярное произведение считает не то"
+    src = (KIT / "scripts/kb_embed.py").read_text(encoding="utf-8")
+    assert "for k in range(dim)" not in src and "for j in range(dim)" not in src, \
+        "сверка с индексом снова идёт генератором по измерениям"
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    for i in range(30):
+        (kb / f"Предмет-{i}.md").write_text(
+            f'---\ntitle: "Предмет {i}"\nkind: knowledge\n---\n\nреестр налогоплательщиков {i}\n',
+            encoding="utf-8")
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        cards = P.load_cards()
+        topic = "реестр налогоплательщиков и отчёт по НДС"
+        calls = []
+        real = P.words
+
+        def counting(text):
+            if text == topic:
+                calls.append(1)
+            return real(text)
+
+        P.words = counting
+        try:
+            got = P.fuse(cards, topic, close={}, limit=10)
+        finally:
+            P.words = real
+        best = max(P.score(c, topic) for c in cards.values())
+        top = P.score(got[0][1], topic) if got else None
+    finally:
+        os.chdir(here)
+    assert len(calls) == 1, f"запрос разбирается на слова {len(calls)} раз на один поиск"
+    assert top == best, "первой в выдаче стоит не лучшая по словам карточка"
+
+
+@test
+def test_thinking_advice_matches_the_measurement(tmp: Path):
+    """Совет «выключите рассуждения у пересказа — не хуже» замер не подтвердил.
+
+    Замер PRJ-A 21.09.2026 с перекрёстной проверкой: тезисы без рассуждений приукрашивают
+    («возможен вариант» → «исключительно»), и строгий Момус находит в них втрое больше
+    утверждений без опоры. Момус без рассуждений не нашёл ни одного из девяти. Совет в
+    ките обязан говорить это, иначе по нему выключат рассуждения и испортят базу.
+    """
+    for rel in ("skills/aurora-vault/SKILL.md", "scripts/agent_core.py", "commands.txt",
+                "cockpit/ui/index.html"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "тезис выходит не хуже" not in text and "в 11 раз быстрее и не хуже" not in text, \
+            f"{rel}: снова обещано, что без рассуждений тезис не хуже"
+    skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
+    assert "втрое больше" in skill and "Момус без рассуждений" in skill, \
+        "навык не говорит, чем платят за выключенные рассуждения"
 
 
 @test

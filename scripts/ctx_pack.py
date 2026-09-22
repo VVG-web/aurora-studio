@@ -413,7 +413,8 @@ def _word_profile(card: "Card") -> tuple:
     return prof[1]
 
 
-def score(card: Card, topic: str, close: dict | None = None) -> int:
+def score(card: Card, topic: str, close: dict | None = None,
+          ask: list | None = None) -> int:
     """Насколько карточка отвечает теме: заголовок > алиас > теги > тело.
 
     Считаем по СЛОВАМ, а не по фразе целиком. Пока сравнивалась вся строка, живой
@@ -421,7 +422,10 @@ def score(card: Card, topic: str, close: dict | None = None) -> int:
     ни с чем и пак собирался из трёх случайных карточек: фраза целиком не встречается
     в базе никогда, а слова из неё — на каждой второй странице.
     """
-    ask = words(topic)
+    # `ask` — запрос, уже разобранный на слова. Выборка сверяет ОДИН запрос со всеми
+    # карточками базы, и разбирать его заново на каждой — это 1808 одинаковых разборов
+    # на поиск: половина процессорного времени подбора кандидатов на живой базе.
+    ask = words(topic) if ask is None else ask
     if not ask:
         return 0
     # Одна фраза о сути весит почти как заголовок: она написана про смысл карточки,
@@ -493,8 +497,9 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
         close = semantic(topic, limit)
     lex = {}
     best = 0
+    ask = words(topic)
     for c in cards.values():
-        w = score(c, topic)
+        w = score(c, topic, ask=ask)
         if w > 0:
             lex[c.stem] = w
             best = max(best, w)
