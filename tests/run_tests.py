@@ -14180,7 +14180,7 @@ def test_relinking_runs_pass_after_pass_without_burning_a_pass_to_count(tmp: Pat
     assert 'a.task == "relink" and a.until_done and a.apply' in src, \
         "у связывания нет своей петли — заходы снова придётся гонять скриптом снаружи"
     loop = src.split('a.task == "relink" and a.until_done and a.apply')[1].split("elif a.task ==")[0]
-    assert 'run_relink(cfg, cwd, True, a.limit)' in loop, \
+    assert 'run_relink(cfg, cwd, True, a.limit' in loop, \
         "заход внутри петли идёт без записи — очередь не убудет, петля не кончится"
     assert 'until_done(cwd, a, "relink"' in loop, "связывание идёт мимо общего цикла заходов"
     # Петля заходов одна на движок (`until_done`): её правила проверяются там.
@@ -17383,6 +17383,286 @@ def test_a_route_says_why_a_step_did_not_start_and_saves_its_tail(tmp: Path):
         "результат маршрута после цикла не фиксируется"
     assert "skip_ratchet:true" in tail and "не зафиксирован" in tail, \
         "фиксация хвоста встанет на храповике или провалится молча"
+
+
+@test
+def test_a_rejected_relink_answer_gets_a_second_try_and_stays_queued(tmp: Path):
+    """Отброшенный ответ связывания — повтор с указанием места правки, а не отметка «связано».
+
+    Черновик находок PRJ-A 22.09.2026, №34: ответ, где модель заодно поправила текст,
+    отбрасывался, а карточка получала отметку `relinked` и больше в очередь не
+    возвращалась — без единой связи (23 из 187). 1.122.0 переносит связи такого ответа в
+    исходный тезис; здесь — случай, когда переносить нечего.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    want, have = R.first_diff("Сверка проводится ежедневно в полночь",
+                              "Сверка проводится еженедельно в полночь")
+    assert "ежедневно" in want and "еженедельно" in have, (want, have)
+
+    root = make_project(tmp)
+    thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию. Сверка "
+              "проводится ежедневно и фиксируется в журнале операций. ") * 2
+    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Подсистема обработки платежей. " * 6)
+    first = card(root, "Concepts/Баланс.md", status="draft", kind="knowledge",
+                 distilled="2026-09-01", body=thesis)
+    second = card(root, "Concepts/Сверка.md", status="draft", kind="knowledge",
+                  distilled="2026-09-01", body=thesis)
+    cfg = {"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+           "thinking_roles": {}, "thinking": False, "backends": [], "parallel": 1}
+    rewritten = thesis.replace("ежедневно", "еженедельно")       # правка без единой ссылки
+    linked = thesis.replace("из ФЦОД", "из [[ФЦОД]]", 1)
+    seen = []
+
+    def learns(c, role, messages, **kw):
+        seen.append(messages)
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": rewritten if len(messages) == 1 else linked}
+
+    def stubborn(c, role, messages, **kw):
+        seen.append(messages)
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": rewritten}
+
+    was = R.candidates_for
+    R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", "Подсистема платежей")]
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        st = R.relink_card(cfg, str(first), learns, apply=True)
+        assert st["status"] == "связана" and "второй попытки" in st["note"], st
+        assert len(seen) == 2 and len(seen[1]) == 3, "повтора не было или он без прошлого ответа"
+        again = seen[1][-1]["content"]
+        assert "ежедневно" in again and "еженедельно" in again, \
+            "повтор не показывает модели, где она разошлась с тезисом"
+        assert "из [[ФЦОД]] по расписанию" in first.read_text(encoding="utf-8")
+        R.mark_relinked(str(first))           # отметку ставит заход, а не карточка
+
+        seen.clear()
+        res = R.run_relink(cfg, str(root), True, call=stubborn)
+        stuck = [s for s in res["steps"] if s["status"] == "отброшен"]
+        assert [s["card"] for s in stuck] == ["Сверка"], res["steps"]
+        assert len(seen) == 2, f"на отказ ушло вызовов: {len(seen)}, а не два"
+        assert "relinked:" not in second.read_text(encoding="utf-8"), \
+            "отброшенная карточка отмечена связанной — из очереди она уйдёт без связей"
+        assert res["rejected"] == [str(second)], res["rejected"]
+        # в этом прогоне её больше не берут, в следующем — берут
+        again_res = R.run_relink(cfg, str(root), True, call=stubborn, skip=set(res["rejected"]))
+        assert again_res["cards"] == 0, "отброшенную гоняют по второму кругу в том же прогоне"
+        assert R.run_relink(cfg, str(root), False, call=stubborn)["cards"] == 1, \
+            "отброшенная карточка выпала из очереди"
+    finally:
+        os.chdir(here)
+        R.candidates_for = was
+
+
+@test
+def test_relinking_keeps_the_source_section_on_its_own_line(tmp: Path):
+    """Связывание не приклеивает заголовок дословного текста к тезису; ремонт расклеивает.
+
+    Найдено при сверке 23.09.2026: связывание писало ответ модели после `strip()` и теряло
+    пустые строки перед «## Источник (перенесено дословно)». Заголовок прилипал к последней
+    фразе тезиса — на PRJ-A у 269 карточек, по четырём проектам 833. Движок раздел находит
+    подстрокой, но человек и Markdown видят дословный текст продолжением тезиса.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    import aurora_common as AC
+    root = make_project(tmp, git=False)
+    thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию. Сверка "
+              "проводится ежедневно и фиксируется в журнале операций. ") * 2
+    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Подсистема обработки платежей. " * 6)
+    path = card(root, "Concepts/Баланс.md", status="draft", kind="knowledge",
+                distilled="2026-09-01",
+                body=thesis.strip() + "\n\n" + AC.QUOTES + "\n\nИсходный абзац источника.\n")
+    linked = thesis.strip().replace("из ФЦОД", "из [[ФЦОД]]", 1)
+    was = R.candidates_for
+    R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", "Подсистема платежей")]
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        st = R.relink_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+                            "thinking_roles": {}, "thinking": False, "backends": []},
+                           str(path), lambda *a, **k: {"ok": True, "backend": 1, "model": "m",
+                                                       "log": [], "text": linked + "\n"},
+                           apply=True)
+    finally:
+        os.chdir(here)
+        R.candidates_for = was
+    assert st["status"] == "связана", st
+    text = path.read_text(encoding="utf-8")
+    assert "журнале операций.\n\n" + AC.QUOTES in text, \
+        f"заголовок раздела прилип к тезису: {text[-200:]!r}"
+
+    # ремонт уже склеенных: заголовок — с новой строки, текст не меняется
+    glued = card(root, "Concepts/Склеенная.md", status="draft", kind="knowledge",
+                 distilled="2026-09-01",
+                 body="Тезис о склеенной карточке, достаточно длинный для проверки."
+                      + AC.QUOTES + "\n\nИсходный абзац.\n")
+    cp = run("kb_fix.py", "--frontmatter", "--apply", "--allow-dirty", cwd=root)
+    fixed = glued.read_text(encoding="utf-8")
+    assert "для проверки.\n\n" + AC.QUOTES in fixed, fixed
+    assert "раздел дословного текста снова с новой строки" in cp.stdout, cp.stdout[-800:]
+    assert AC.unglue_quotes(fixed)[1] == 0, "ремонт не довёл до неподвижной точки"
+
+
+@test
+def test_extract_finds_the_term_card_in_another_word_form(tmp: Path):
+    """Вынос кладёт определение в карточку того же термина в другой форме слова.
+
+    Черновик находок PRJ-A 22.09.2026, №25: вынос заводил двойников рядом с уже
+    заведёнными и в одном проходе — термин приходит в той форме, в какой назван в тексте.
+    Сверка 23.09 по четырём проектам нашла таких групп семь («Заявители» и «Заявитель»,
+    «НАЛОГЕ», «НАЛОГОВ» и «НАЛОГУ»); ложных среди них не было. Отчёт двойников их теперь
+    называет, а автоматическое слияние не трогает: решает человек.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    BP = importlib.import_module("build_plan")
+    R = importlib.import_module("agent_runner")
+    assert BP.term_key("Заявители") == BP.term_key("Заявитель")
+    assert BP.term_key("Итоговые расчёты") == BP.term_key("Итоговый-расчёт")
+    assert BP.term_key("Статус НП") != BP.term_key("Статус НО"), "короткие слова потеряны"
+    assert BP.term_key("Корректируемый ЭСФ") != BP.term_key("Корректировочный ЭСФ"), \
+        "ключ склеил разные понятия"
+
+    root = make_project(tmp, git=False)
+    card(root, "Concepts/Заявитель.md", status="draft", kind="knowledge",
+         body="Заявитель — лицо, подающее заявку на регистрацию.")
+    assert R.definition_link(str(root), "заявители") == "[[Заявитель|заявители]]"
+    got = R.place_definition(str(root), "заявители", "Заявители подают заявки через портал.",
+                             "Донор")
+    assert got.endswith("Concepts/Заявитель.md"), f"заведён двойник: {got}"
+    assert "подают заявки через портал" in Path(got).read_text(encoding="utf-8")
+    # в одном проходе: вторая форма того же термина едет в только что заведённую карточку
+    first = R.place_definition(str(root), "Текущие расчёты", "Текущие расчёты — расчёты "
+                               "за открытый период.", "Донор")
+    second = R.place_definition(str(root), "текущий расчёт", "Текущий расчёт пересчитывается "
+                                "ночью.", "Донор")
+    assert first == second, f"одно понятие в двух карточках: {first} и {second}"
+
+    # отчёт двойников называет группу, слияние по правилу её не трогает
+    sys.path.insert(0, str(SCRIPTS))
+    card(root, "Concepts/Заявители.md", status="draft", kind="knowledge",
+         body="Заявители — физические и юридические лица.")
+    cp = run("kb_fix.py", "--dupes", cwd=root)
+    assert "одно понятие в разных формах слова" in cp.stdout and "Заявители.md" in cp.stdout, \
+        cp.stdout[-1200:]
+    cp = run("kb_fix.py", "--merge-all", cwd=root)
+    assert "формы одного слова — проверьте" in cp.stdout, cp.stdout[-1200:]
+
+
+@test
+def test_extract_does_not_say_the_same_thing_twice(tmp: Path):
+    """Вынос не повторяет ни связку, ни имя термина рядом со ссылкой на него.
+
+    Найдено при сверке 23.09.2026 по истории PRJ-A: «Закрытие расхождений описывается как
+    Закрытие расхождений описывается как [[…]]» (модель вернула в `keep` текст, который и
+    так стоит перед определением) и «Автоматические связи [[Автоматические связи]]» (термин
+    остался перед ссылкой на себя). Пример из самого задания выноса давал «подсистемы
+    ФЦОД, [[ФЦОД]]» вместо задуманного «подсистемы [[ФЦОД]]».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=False)
+    cases = [
+        ("Закрытие расхождений описывается как отбор нужных расхождений и возврат к реестру.",
+         {"term": "Порядок закрытия", "definition": "отбор нужных расхождений и возврат к реестру",
+          "keep": "Закрытие расхождений описывается как"},
+         "Закрытие расхождений описывается как [[Порядок-закрытия|Порядок закрытия]]."),
+        ("Автоматические связи между НП на ГС имеют описание и список связей.",
+         {"term": "Автоматические связи", "definition": "между НП на ГС имеют описание и список связей",
+          "keep": ""},
+         "[[Автоматические-связи|Автоматические связи]]."),
+        ("Баланс получает информацию из подсистемы ФЦОД, которая является частью проекта МинФин.",
+         {"term": "ФЦОД", "definition": "которая является частью проекта МинФин", "keep": ""},
+         "Баланс получает информацию из подсистемы [[ФЦОД]]."),
+        ("Отчёт уходит в НОФЦОД, которая является частью проекта МинФин.",
+         {"term": "ФЦОД", "definition": "которая является частью проекта МинФин", "keep": ""},
+         "Отчёт уходит в НОФЦОД, [[ФЦОД]]."),
+    ]
+    for i, (thesis, item, want) in enumerate(cases):
+        path = card(root, f"Concepts/Донор-{i}.md", status="draft", kind="knowledge",
+                    distilled="2026-09-01", body=thesis)
+        text = path.read_text(encoding="utf-8")
+        R.apply_extract_plan(str(root), str(path), text, thesis, [item], True)
+        got = path.read_text(encoding="utf-8")
+        assert want in got, f"случай {i}: ждали «{want}»\n{got[-300:]}"
+
+
+@test
+def test_our_own_queue_is_not_a_dead_backend(tmp: Path):
+    """Срок, истёкший, пока к бэкенду висят наши же запросы, — очередь, а не карантин.
+
+    Черновик находок PRJ-A 22.09.2026, №11: №2 ещё ни разу не ответил за прогон, а движок
+    держал к нему десятки запросов на один слот; первый же истёкший срок сажал его в
+    карантин на 15 минут. Мёртвый сервер по-прежнему уходит в карантин — последним
+    запросом волны, когда наших к нему больше не висит.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a",
+                          "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_REQUEST_TIMEOUT": "300"})
+
+    def silent(kind, b, payload, timeout):
+        if kind == "slots":
+            return (404, None, "нет /slots", 0.0)
+        return (None, None, "TimeoutError: timed out", timeout)
+
+    A.DOWN.clear(); A.LAST_OK.clear(); A.INFLIGHT.clear()
+    A.INFLIGHT[1] = 3                       # ещё три наших запроса к №1 в сети
+    try:
+        r = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=silent,
+                        deadline=time.time() + 3, sleep=lambda s: None, request_timeout=2)
+    finally:
+        A.INFLIGHT.clear()
+    assert not r["ok"] and 1 not in A.DOWN, "очередь из наших же запросов принята за смерть"
+    assert any("наших запросов" in l for l in r["log"]), r["log"]
+
+    A.DOWN.clear()
+    r = A.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=silent,
+                    deadline=time.time() + 3, sleep=lambda s: None, request_timeout=2)
+    assert 1 in A.DOWN, "молчащий без наших запросов рядом больше не уходит в карантин"
+    assert A.INFLIGHT.get(1, 0) == 0, f"счёт запросов в сети не вернулся к нулю: {A.INFLIGHT}"
+    A.DOWN.clear()
+
+
+@test
+def test_the_build_oracle_does_not_blame_new_cards_for_having_no_links_yet(tmp: Path):
+    """Оракул разбора не считает ухудшением карточки, которым связи поставит следующий шаг.
+
+    Черновик находок PRJ-A 22.09.2026, №6: «ошибок в базе стало больше: 10 → 13», и разбор
+    вышел с кодом 1. Сверка линтером до и после показала единственную разницу — «карточки
+    без связей: 214 → 217», три только что заведённые карточки. Связи им ставит
+    `agent:relink` дальше по маршруту.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=False)
+    card(root, "Concepts/Баланс.md", status="draft", kind="knowledge",
+         body="Баланс получает данные из [[ФЦОД]].")
+    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge",
+         body="Подсистема платежей, питает [[Баланс]].")
+    was_all, was = R.lint_errors(str(root)), R.lint_errors(str(root), orphans=False)
+    assert was >= 0, "оракул не прочёл счёт линтера"
+    card(root, "Concepts/Новая.md", status="draft", kind="knowledge",
+         body="Только что разобранная карточка, связей у неё ещё нет.")
+    assert R.lint_errors(str(root)) == was_all + 1, "линтер перестал видеть карточку без связей"
+    assert R.lint_errors(str(root), orphans=False) == was, \
+        "оракул разбора считает новую карточку без связей ухудшением базы"
+    card(root, "Concepts/Битая.md", status="draft", kind="knowledge",
+         body="Ссылается на [[Нет-такой-карточки]] и на [[Баланс]].")
+    assert R.lint_errors(str(root), orphans=False) > was, "оракул разбора ослеп к битым ссылкам"
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    run = src[src.index("def run_build("):src.index("def verdict_build(")]
+    assert run.count("lint_errors(cwd, orphans=False)") == 2, "разбор считает оракул по-старому"
 
 
 @test

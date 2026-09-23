@@ -746,6 +746,35 @@ def find_card(name: str, root: str = "", exact: bool = False) -> str:
     return fallback
 
 
+def term_key(name: str) -> str:
+    """Ключ термина: регистр, ё/е, разделители и окончания слов не различают.
+
+    «Заявители» и «Заявитель», «Итоговые расчёты» и «Итоговый-расчёт» — одно понятие в
+    разных формах слова. Окончания отрезает то же правило, что у поиска по базе
+    (`ctx_pack.norm`), но короткие слова остаются: «Статус НП» и «Статус НО» — разное.
+    Беглую гласную («узел» — «узлы») ключ не ловит: для этого нужна морфология.
+    Замер 23.09.2026 по 3 400 карточкам четырёх проектов: семь групп, все — одно понятие.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ctx_pack import norm
+    words = re.findall(r"\w+", (name or "").lower().replace("ё", "е").replace("_", " "), re.U)
+    return " ".join(norm(w) for w in words)
+
+
+def find_by_term_key(name: str, root: str = "") -> str:
+    """Карточка того же термина в другой форме слова (по имени или синониму). Пусто — нет."""
+    want = term_key(name)
+    if not want:
+        return ""
+    base = os.path.join(root, KB_ROOT) if root else KB_ROOT
+    for path in walk_md(base, skip_service=True, skip_archive=True):
+        if term_key(os.path.basename(path)[:-3]) == want:
+            return path
+        if any(term_key(a) == want for a in card_aliases(head_text(path))):
+            return path
+    return ""
+
+
 def one_typo(a: str, b: str, floor: int = 8) -> bool:
     """Имена различаются ровно одним символом. Короткие не сравниваем — там это разное.
 

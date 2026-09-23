@@ -1468,8 +1468,9 @@ def drop_false_redistill(text: str) -> tuple:
 
 
 def plan_frontmatter(cards: dict, plan: Plan):
-    from aurora_common import with_fields, with_sources
+    from aurora_common import unglue_quotes, with_fields, with_sources
     created = patched = selfsame = filled = restored = donor_src = false_history = 0
+    unglued = 0
     by_stem = {c.stem: c for c in cards.values()}
     for path, c in cards.items():
         if is_service(path):
@@ -1526,6 +1527,12 @@ def plan_frontmatter(cards: dict, plan: Plan):
             plan.file_writes[path] = fixed
             base, probe = fixed, Card(path, fixed)
             false_history += 1
+        # Заголовок раздела дословного текста, прилипший к тезису (связывание до 1.123.0).
+        fixed, glued = unglue_quotes(base)
+        if glued:
+            plan.file_writes[path] = fixed
+            base, probe = fixed, Card(path, fixed)
+            unglued += 1
         section = os.path.relpath(os.path.dirname(path), ROOT).split(os.sep)[0]
         new_text = ensure_frontmatter(probe, section)
         if new_text == base:
@@ -1536,6 +1543,9 @@ def plan_frontmatter(cards: dict, plan: Plan):
         else:
             created += 1
             plan.notes.append(f"  создан frontmatter: {path}")
+    if unglued:
+        plan.notes.append(f"  раздел дословного текста снова с новой строки (заголовок прилип к "
+                          f"тезису при связывании до 1.123.0): {unglued}")
     if false_history:
         plan.notes.append(f"  снята ложная история «тезис пересобран» (первый тезис до "
                           f"1.118.0, источник в карточке дважды): {false_history}")
@@ -1552,13 +1562,19 @@ def plan_frontmatter(cards: dict, plan: Plan):
     return created, patched
 
 
+WORD_FORMS = "одно понятие в разных формах слова"
+
+
 def find_dupes(cards: dict):
-    """Группы двойников: по свёрнутому имени, по общим alias, по одинаковому title."""
-    by_fold, by_alias, by_title = {}, {}, {}
+    """Группы двойников: по свёрнутому имени, по общим alias, по одинаковому title и по
+    ключу термина — одно имя в разных формах слова («Заявители» и «Заявитель»)."""
+    from build_plan import term_key
+    by_fold, by_alias, by_title, by_key = {}, {}, {}, {}
     for path, c in cards.items():
         if is_service(path) or "/_archive/" in path:
             continue
         by_fold.setdefault(fold(c.stem), []).append(path)
+        by_key.setdefault(term_key(c.stem), []).append(path)
         for a in c.aliases:
             by_alias.setdefault(fold(a), set()).add(path)
         t = (c.fm.get("title") or "").strip()
@@ -1579,6 +1595,10 @@ def find_dupes(cards: dict):
         add("общий alias", list(v))
     for k, v in by_title.items():
         add("одинаковый title", list(v))
+    for k, v in by_key.items():
+        # Группа, где имена совпадают и без окончаний, уже названа выше как «имя».
+        if k and len({fold(cards[p].stem) for p in v}) > 1:
+            add(WORD_FORMS, v)
     return groups
 
 
@@ -1660,6 +1680,11 @@ def plan_merge_all(cards: dict, plan: Plan) -> tuple:
         # Такие не сливаем: это работа `kb:repair --aliases`, там уточняют синоним.
         if kind == "общий alias":
             refused.append((kind, live, "общий синоним — это не обязательно один предмет"))
+            continue
+        # Формы одного слова — почти всегда одно понятие, но не всегда: «Отчет по НДС» в
+        # понятиях и «Отчеты по НДС» в системах могут оказаться разными вещами. Решает человек.
+        if kind == WORD_FORMS:
+            refused.append((kind, live, "формы одного слова — проверьте, одно ли это понятие"))
             continue
         keep, drops, why = pick_winner(cards, live, inbound)
         if not keep:

@@ -688,8 +688,23 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
         if paren in new_thesis:
             new_thesis = new_thesis.replace(paren, (keep + " " if keep else "") + link, 1)
         else:
+            at = new_thesis.find(definition)
+            start, before = at, new_thesis[:at]
+            # «Связка», повторяющая текст прямо перед определением, — эхо, а не связка: она и
+            # так остаётся в тексте. Вставленная ещё раз, она дала на PRJ-A 22.09 «Закрытие
+            # расхождений описывается как Закрытие расхождений описывается как [[…]]».
+            if keep and " ".join(before.split()).endswith(" ".join(keep.split())):
+                keep = ""
+            # Термин прямо перед своим определением уходит вместе с ним, как в «термин
+            # (расшифровка)»: иначе «Автоматические связи [[Автоматические связи]]» — имя
+            # дважды. Так же и пример из самого задания: «подсистемы ФЦОД, которая является…»
+            # давал «подсистемы ФЦОД, [[ФЦОД]]», а задуман «подсистемы [[ФЦОД]]».
+            named = re.search(r"(?<!\w)«?" + re.escape(term) + r"»?[\s,—–:-]*$", before)
+            if named and not keep:
+                start = named.start()
             replacement = (keep + " " if keep else "") + link
-            new_thesis = new_thesis.replace(definition, replacement, 1)
+            tail = new_thesis[at + len(definition):]
+            new_thesis = new_thesis[:start] + replacement + tail
         made.append((term, definition))
 
     if not made:
@@ -750,12 +765,21 @@ def canon_term(term: str) -> str:
     return term
 
 
+def term_card(root: str, term: str) -> str:
+    """Карточка термина для выноса: по имени и синонимам, затем в другой форме слова.
+
+    Вынос заводил двойников в одном проходе и рядом с уже заведёнными: термин приходит в
+    той форме, в какой назван в тексте («заявители», «текущего расчёта»). → путь или пусто.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+    return BP.find_card(term, root) or BP.find_by_term_key(term, root)
+
+
 def definition_link(root: str, term: str) -> str:
     """`[[Имя-карточки|термин]]` — на ту карточку, куда `place_definition` положит знание."""
     from aurora_common import card_filename
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import build_plan as BP
-    existing = BP.find_card(term, root)
+    existing = term_card(root, term)
     target = (os.path.basename(existing)[:-3] if existing
               else card_filename(canon_term(term)))
     return f"[[{target}]]" if target == term else f"[[{target}|{term}]]"
@@ -777,7 +801,7 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
     import build_plan as BP
 
     base = os.path.join(root, KB_ROOT)
-    existing = BP.find_card(term, root)
+    existing = term_card(root, term)
     line = definition.strip()
     note = f"_Перенесено из [[{came_from}]]._"
     if not existing:
@@ -972,6 +996,29 @@ PROMPT_RELINK = """Ты расставляешь связи в готовом т
 
 Верни только текст, без пояснений вокруг."""
 
+PROMPT_RELINK_AGAIN = """Ответ отброшен: движок снял с него разметку, сравнил с исходным тезисом, и
+текст не совпал. Первое расхождение:
+
+  в тезисе: …{want}…
+  у тебя:   …{have}…
+
+Верни исходный тезис ещё раз — буква в букву, как он дан выше, — и только вставь `[[…]]`.
+Сомневаешься в ссылке — не ставь её: текст без изменений тоже правильный ответ.
+
+Верни только текст, без пояснений вокруг."""
+
+
+def first_diff(want: str, have: str, around: int = 40) -> tuple:
+    """Первое расхождение двух текстов — кусками вокруг него. → (из первого, из второго).
+
+    Повтору связывания мало сказать «текст изменён»: модель не видит, где именно, и
+    правит снова. Кусок вокруг первого расхождения показывает место.
+    """
+    i = next((k for k, (x, y) in enumerate(zip(want, have)) if x != y),
+             min(len(want), len(have)))
+    a = max(0, i - around // 2)
+    return want[a:i + around], have[a:i + around]
+
 
 def strip_links(text: str) -> str:
     """Текст без разметки ссылок: `[[Имя|подпись]]` → `подпись`, `[[Имя]]` → `Имя`.
@@ -1135,9 +1182,10 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
         return step
     listing = links_block(near)
 
-    r = call(cfg, "worker", [{"role": "user", "content": PROMPT_RELINK.format(
-        title=title, thesis=thesis, known=listing)}],
-        deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")), prefer=prefer)
+    ask = [{"role": "user", "content": PROMPT_RELINK.format(
+        title=title, thesis=thesis, known=listing)}]
+    r = call(cfg, "worker", ask,
+             deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")), prefer=prefer)
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
         step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
@@ -1154,12 +1202,32 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
         # их в исходный тезис механикой (`rescue_links`). Раньше такой ответ выбрасывался
         # целиком, а карточка получала отметку «связано» без единой связи: на прогоне PRJ-A
         # 22.09.2026 — 23 карточки из 187.
-        saved, moved = rescue_links(got, thesis)
-        if not moved:
-            step.update(status="отброшен", note="текст изменён, а не только размечен")
+        fixed, moved = rescue_links(got, thesis)
+        usable = moved > 0
+        note = f"ответ менял текст — связи перенесены в исходный: {moved}"
+        if not usable:
+            # Переносить нечего — один повтор с указанием места правки, а не отказ сразу:
+            # модель не видит, где разошлась с тезисом, и без подсказки правит снова.
+            want, have = first_diff(strip_links(thesis), strip_links(got))
+            r2 = call(cfg, "worker", ask + [
+                {"role": "assistant", "content": got},
+                {"role": "user", "content": PROMPT_RELINK_AGAIN.format(want=want, have=have)}],
+                deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")),
+                prefer=prefer)
+            step["backends"].append(r2.get("backend"))
+            again = (r2.get("text") or "").strip() if r2.get("ok") else ""
+            if again and strip_links(again) == strip_links(thesis):
+                fixed, usable, note = again, True, "текст выправлен со второй попытки"
+            elif again:
+                fixed, moved = rescue_links(again, thesis)
+                usable = moved > 0
+                note = f"текст изменён дважды — связи перенесены в исходный: {moved}"
+        if not usable:
+            step.update(status="отброшен",
+                        note="текст изменён, а не только размечен (дважды) — ждёт следующего прогона")
             return step
-        got = saved
-        step["note"] = f"ответ менял текст — связи перенесены в исходный: {moved}"
+        got = fixed
+        step["note"] = note
     before = len(re.findall(r"\[\[", thesis))
     after = len(re.findall(r"\[\[", got))
     if after <= before:
@@ -1174,12 +1242,22 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
         return step
     step["status"] = "связана" if apply else "связал бы"
     if apply:
-        open(path, "w", encoding="utf-8").write(text.replace(whole, head + got, 1))
+        # Ответ модели обрезан (`strip`), а за тезисом в карточке идёт раздел дословного
+        # текста: хвост пустых строк возвращаем, иначе заголовок прилипает к последней фразе.
+        from aurora_common import unglue_quotes
+        tail = whole[len(whole.rstrip()):]
+        written, _n = unglue_quotes(text.replace(whole, head + got + tail, 1))
+        open(path, "w", encoding="utf-8").write(written)
     return step
 
 
-def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
-    """Пройти по карточкам знания и расставить связи в готовых тезисах."""
+def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
+               skip=None) -> dict:
+    """Пройти по карточкам знания и расставить связи в готовых тезисах.
+
+    `skip` — карточки, отброшенные уже в этом прогоне: следующий заход их не берёт, а
+    очередь держит их до следующего прогона. → ответ захода; `rejected` — отброшенные.
+    """
     from aurora_common import frontmatter, is_placeholder, link_refs, walk_md
     started = time.time()
     budget = started + cfg["budget_min"] * 60
@@ -1194,6 +1272,8 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
             continue                      # тезиса ещё нет — связывать нечего
         if (fm.get("relinked") or "").strip() == (fm.get("distilled") or "").strip():
             continue                      # уже связывали по этому тезису
+        if skip and path in skip:
+            continue                      # отброшена в этом прогоне — ждёт следующего
         todo.append(path)
     todo.sort()
     if limit:
@@ -1211,7 +1291,7 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
     print(f"Карточек к связыванию: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
     if todo:
         print(threads_line(cfg, width), flush=True)
-    steps, done = [], [0]
+    steps, done, rejected = [], [0], []
     # Сбои подряд — это шлюз, а не карточки: так же, как у тезисов. На живом прогоне второй
     # заход связывания потратил двадцать минут на двадцать карточек и не сделал ни одной —
     # слот шлюза был занят, и каждая ждала до пятиминутного срока. Остаток ждёт следующего
@@ -1237,9 +1317,13 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
         # связывать. Не отметить её значит вернуть в очередь навсегда — на живой базе
         # после полного прогона `--until-done` очередь всё равно показывала три штуки,
         # и это были ровно пропущенные.
-        if apply and st["status"] in ("связана", "нечего связывать", "отброшен",
-                                      "пропущена"):
+        # «Отброшен» — нет: связей нет, а работа не сделана. С отметкой карточка уходила из
+        # очереди без единой связи (PRJ-A 22.09.2026 — 23 из 187). Теперь она ждёт
+        # следующего прогона; в этом её не берут снова (`skip`).
+        if apply and st["status"] in ("связана", "нечего связывать", "пропущена"):
             mark_relinked(path)
+        if st["status"] == "отброшен":
+            rejected.append(path)
         done[0] += 1
         # «+3» без записи читается как сделанная работа. Предпросмотр обязан говорить,
         # что он предпросмотр, в каждой строке — сводку в конце читают не всегда.
@@ -1263,7 +1347,8 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
         print(f"  стоп: {why}", flush=True)
     added = sum(s["added"] for s in steps)
     return {"steps": steps, "cards": len(todo), "added": added, "left": left,
-            "gateways_down": fails["tripped"], "seconds": round(time.time() - started, 1)}
+            "gateways_down": fails["tripped"], "seconds": round(time.time() - started, 1),
+            "rejected": rejected}
 
 
 def mark_relinked(path: str) -> None:
@@ -1297,9 +1382,10 @@ def report_relink(res: dict, apply: bool) -> str:
     if bad:
         L += ["## Не сделано", ""]
         L += [f"- `{s['card']}` — {s['note'] or s['status']}" for s in bad[:20]]
-        L += ["", "«Текст изменён, а не только размечен» — модель поправила формулировку "
-              "вместо расстановки ссылок. Отброшено намеренно: связи не стоят того, "
-              "чтобы ради них менялось знание."]
+        L += ["", "«Текст изменён, а не только размечен» — модель дважды поправила "
+              "формулировку вместо расстановки ссылок, и перенести её связи в исходный "
+              "текст не удалось. Отброшено намеренно: связи не стоят того, чтобы ради них "
+              "менялось знание. Карточка остаётся в очереди и вернётся следующим прогоном."]
     return "\n".join(L)
 
 
@@ -2170,10 +2256,23 @@ def lint_conflicts(cwd: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def lint_errors(cwd: str) -> int:
-    r = run_command(cwd, "kb_lint.py", ["--summary"])
+def lint_errors(cwd: str, orphans: bool = True) -> int:
+    """Ошибок базы по линтеру. `orphans=False` — без «карточек без связей».
+
+    Разбор заводит карточки, а связи им ставит следующий шаг (`agent:relink`): новая
+    карточка сразу после разбора без связей по замыслу. Оракул разбора считал её ухудшением
+    базы — на PRJ-A 22.09.2026 «ошибок стало больше: 10 → 13» ровно на три заведённые
+    карточки, и разбор выходил с кодом 1 при чистой работе.
+    """
+    r = run_command(cwd, "kb_lint.py", ["--summary"] if orphans else [])
     m = re.search(r"ошибок (\d+)", r["out"])
-    return int(m.group(1)) if m else -1
+    if not m:
+        return -1
+    n = int(m.group(1))
+    if not orphans:
+        o = re.search(r"карточки без связей:\s*(\d+)", r["out"])
+        n -= int(o.group(1)) if o else 0
+    return n
 
 
 PROMPT_WORKER = """Ты разбираешь конфликт синонимов в базе знаний проекта.
@@ -3320,7 +3419,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
               partition: int = 1, call=None) -> dict:
     started = time.time()
     budget = started + cfg["budget_min"] * 60
-    (before_left, before_done), before_errors = build_left(cwd), lint_errors(cwd)
+    (before_left, before_done), before_errors = build_left(cwd), lint_errors(cwd, orphans=False)
     sources = read_partition(cwd, partition)
     if limit:
         sources = sources[:limit]
@@ -3418,7 +3517,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build",
             "before": {"left": before_left, "done": before_done, "errors": before_errors},
             "after": {"left": after_left, "done": after_done,
-                      "errors": lint_errors(cwd) if apply else before_errors},
+                      "errors": lint_errors(cwd, orphans=False) if apply else before_errors},
             "total": len(sources), "partition": partition, "limited": bool(limit),
             "stopped": stopped,
             "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
@@ -3428,7 +3527,8 @@ def verdict_build(res: dict, apply: bool) -> tuple:
     """Оракул сборки: разобранное посчитал движок, а не модель.
 
     Успех — не «агент отчитался», а «источников в плане стало меньше ровно на столько,
-    сколько он объявил разобранными, и ошибок в базе не прибавилось».
+    сколько он объявил разобранными, и ошибок в базе не прибавилось». Карточки без связей
+    не считаются: их связывает следующий шаг (`lint_errors(orphans=False)`).
     """
     done = [s for s in res["steps"] if s["status"] in ("разобран", "разобрал бы",
                                                        "пусто — отмечено", "отметил бы пустым")]
@@ -5734,7 +5834,16 @@ def main() -> int:
         # такой запуск честно гонял модель по всей очереди двадцать минут впустую,
         # ничего не записывая. Половина ночи ушла в мусор. Очередь же считается обходом
         # файлов и стоит даром — поэтому здесь она пересчитывается сама, между заходами.
-        loop = until_done(cwd, a, "relink", lambda: run_relink(cfg, cwd, True, a.limit),
+        rejected: set = set()
+
+        def relink_step():
+            # Отброшенную в этом прогоне следующий заход не берёт: второй отказ подряд на
+            # той же модели почти гарантирован, а вызов с рассуждением стоит минуты.
+            r = run_relink(cfg, cwd, True, a.limit, skip=rejected)
+            rejected.update(r["rejected"])
+            return r
+
+        loop = until_done(cwd, a, "relink", relink_step,
                           lambda r: report_relink(r, True),
                           lambda r: f"связей поставлено: {r['added']}",
                           lambda r: r["cards"] - r["left"])

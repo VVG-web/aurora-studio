@@ -552,6 +552,9 @@ RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 # а сервер один.
 _SEM: dict = {}        # {№ бэкенда: threading.Semaphore}
 _SEM_LOCK = threading.Lock()
+# Сколько наших запросов сейчас в сети у каждого бэкенда. Молчание по сроку, пока к нему же
+# висят другие наши запросы, — очередь на его стороне, а не смерть (см. карантин в call_role).
+INFLIGHT: dict = {}
 
 
 def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
@@ -998,6 +1001,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
                 can_recover = True
                 continue
+            with _SEM_LOCK:
+                INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 0) + 1
             try:
                 attempts += 1
                 st, body, err, dt = transport("chat", b, payload,
@@ -1032,11 +1037,18 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         slow += 1
                         can_recover = True
                         fresh = time.time() - LAST_OK.get(b["n"], 0) < DOWN_FOR
-                        if not fresh:
+                        # Наши же запросы к нему ещё висят — значит, он стоит в очереди, которую
+                        # мы сами и создали. На PRJ-A 22.09.2026 первый же срок у №2, не успевшего
+                        # ответить (83 потока на один слот), сажал его в карантин на 15 минут.
+                        with _SEM_LOCK:
+                            ours = INFLIGHT.get(b["n"], 1) - 1
+                        if not fresh and not ours:
                             DOWN[b["n"]] = time.time() + DOWN_FOR
                         log.append(f"№{b['n']} {model}: не уложился в {int(req_timeout)} с"
                                    + (" (но отвечал только что — карантин не ставлю)"
-                                      if fresh else ""))
+                                      if fresh else
+                                      f" (к нему ещё {ours} наших запросов — это очередь, "
+                                      f"карантин не ставлю)" if ours else ""))
                     else:
                         DOWN[b["n"]] = time.time() + DOWN_FOR
                         log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
@@ -1067,6 +1079,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         "tokens_out": out_tokens,
                         "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0}
             finally:
+                with _SEM_LOCK:
+                    INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 1) - 1
                 sem.release()
             continue
         if not can_recover:
