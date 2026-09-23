@@ -1,0 +1,61 @@
+/* name: Редакция
+   for: 1.121.0
+   about: Разворот журнала: тёплая бумага, засечки в заголовках и числах, воздух и
+          линейки вместо коробок. Для долгого чтения справки и разбора отчётов. */
+
+:root{
+  --bg:#F6F3EC; --surface-1:#FFFDF8; --surface-2:#EFEADE;
+  --border:#DFD7C8; --border-strong:#C6BBA6;
+  --text:#1B1A17; --text-muted:#6B6557;
+  --primary:#1F6F4A; --accent:#63489F; --gold:#87640A;
+  --tier-imported:#7A7365; --tier-draft:#27548F; --tier-inreview:#8F5B05;
+  --tier-verified:#1F6F4A; --tier-deprecated:#63489F;
+  --danger:#AA3129; --corruption:#63489F;
+  --console-bg:#1B1A17; --console-ink:#EFE8D9;
+
+  --sans:'Golos Text',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --display:'Literata',Georgia,"Times New Roman",serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  /* Скруглений почти нет: в наборе с засечками круглый угол читается как чужой. */
+  --radius:4px; --radius-sm:3px; --radius-xs:2px;
+  --card-border-w:1px; --card-radius:4px; --card-shadow:none;
+  --glow:0 0 0 1px color-mix(in oklab,var(--primary) 30%,transparent);
+  --shadow-pop:0 24px 60px -24px rgba(27,26,23,.45);
+  --shadow-toast:0 14px 34px -18px rgba(27,26,23,.5);
+
+  --btn-radius:2px; --btn-weight:600; --btn-pad:7px 13px;
+  --btn-primary-bg:var(--primary); --btn-primary-ink:#FFFDF8;
+  --btn-primary-border:var(--primary);
+
+  --chip-radius:2px; --chip-bg:transparent; --chip-weight:500;
+  --dot-size:8px; --dot-radius:0; --dot-rotate:0deg;
+
+  --nav-item-radius:2px; --nav-item-active-bg:transparent;
+  --nav-marker-w:2px; --nav-marker-glow:none; --nav-marker:var(--text);
+  --nav-bg:color-mix(in oklab,var(--surface-2) 60%,transparent);
+  --header-bg:color-mix(in oklab,var(--surface-1) 92%,transparent);
+
+  --tile-rail-w:3px; --tile-aura-opacity:0; --tile-lift:0px;
+
+  /* Заголовок и числа — одним голосом: это главная примета разворота. */
+  --h1-font:var(--display); --h1-size:26px; --h1-weight:700; --h1-ls:-.015em;
+  --h2-transform:uppercase; --h2-ls:.18em; --h2-weight:700;
+  --eyebrow-ls:.2em;
+  --num-font:'Literata',Georgia,serif;
+
+  --canvas-texture:none;
+}
+
+:root[data-theme="dark"]{
+  --bg:#141519; --surface-1:#1B1C21; --surface-2:#23242B;
+  --border:#2F313A; --border-strong:#3E414D;
+  --text:#F1EDE5; --text-muted:#A39D91;
+  --primary:#6FC99E; --accent:#B49BEA; --gold:#E0BE6B;
+  --tier-imported:#9A9488; --tier-draft:#8FB2E8; --tier-inreview:#E5B25C;
+  --tier-verified:#6FC99E; --tier-deprecated:#B49BEA;
+  --danger:#F0796E; --corruption:#B49BEA;
+  --console-bg:#0D0E11; --console-ink:#EDE6D8;
+  --btn-primary-ink:#141519;
+  --nav-marker:var(--primary);
+}

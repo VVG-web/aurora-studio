@@ -1,0 +1,13 @@
+{
+  "id": "about",
+  "name": { "ru": "О проекте", "en": "About" },
+  "about": {
+    "ru": "Версия, репозиторий, автор, лицензия, последние выпуски и обновление кита.",
+    "en": "Version, repository, author, licence, latest releases and updating the kit."
+  },
+  "group": "machine",
+  "order": 50,
+  "needs": [],
+  "commands": [],
+  "for": "1.121.0"
+}

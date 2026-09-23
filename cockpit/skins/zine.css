@@ -1,73 +1,84 @@
-/* name: Зин
-   for: 1.119.1
+/* name: Зин 2.0
+   for: 1.121.0
    about: Бумага в точку, чернильные рамки и жёсткие тени без размытия, заголовки
-          капсом золотом. Требования — docs/skin-zine-requirements.md. */
+          капсом золотом. Оформление по умолчанию. Требования — docs/skin-zine-requirements.md. */
+
+/* Скин правит только значения. Приёмы — толщина рамки, жёсткая тень, капс заголовка,
+   форма точки статуса — задаются токенами компонентов, а не переопределением селекторов
+   разметки: правка вёрстки больше не ломает оформление молча. */
 
 :root{
-  --bg:#EFE6D3; --surface-1:#F8F1E2; --surface-2:#E7DCC5; --border:#16150F;
-  --text:#16150F; --text-muted:#6E6552;
-  --primary:#1E8A46; --accent:#C2410C; --gold:#D98A00;
-  --tier-imported:#8A8272; --tier-draft:#2E6FC8; --tier-inreview:#D98A00;
-  --tier-verified:#1E8A46; --tier-deprecated:#6B45C0;
-  --danger:#C62828; --corruption:#A32A8C;
-  --glow:4px 4px 0 var(--zine-ink);      /* свечения нет: приподнятая бумага */
-  --radius:12px;
-  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:"Helvetica Neue",Helvetica,Arial,-apple-system,sans-serif;
-  --aura-1:transparent; --aura-2:transparent;
+  /* ── палитра: бумага и чернила ── */
+  --bg:#EFE6D3; --surface-1:#F9F2E3; --surface-2:#E7DCC5;
+  --border:#16150F; --border-strong:#16150F;
+  --text:#16150F; --text-muted:#6B6250;
+  --primary:#1C7F41; --accent:#C2410C; --gold:#D9A21B;
+  --tier-imported:#7A7364; --tier-draft:#27548F; --tier-inreview:#96590A;
+  --tier-verified:#1C7F41; --tier-deprecated:#6B45C0;
+  --danger:#B0261F; --corruption:#8E2478;
   --console-bg:#16150F; --console-ink:#F0E7D2;
-  /* собственные токены скина */
-  --zine-ink:#16150F; --zine-dot:rgba(22,21,15,.13); --zine-shadow:4px 4px 0 #16150F;
-  --zine-emboss:#16150F;   /* подложка заголовка: всегда темнее золота */
+
+  /* собственные величины скина */
+  --zine-ink:#16150F; --zine-emboss:#16150F; --zine-dot:rgba(22,21,15,.13);
+
+  /* ── шрифты ── */
+  --sans:'Golos Text',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --display:'Unbounded','Golos Text',system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  /* ── приёмы ── */
+  --radius:12px; --radius-sm:8px; --radius-xs:5px;
+  --glow:4px 4px 0 var(--zine-ink);
+  --shadow-pop:6px 6px 0 var(--zine-ink);
+  --shadow-toast:4px 4px 0 var(--zine-ink);
+
+  /* граница либо есть, либо её нет: одна толщина, один цвет, тень со сдвигом */
+  --card-border-w:2.5px; --card-radius:12px; --card-shadow:4px 4px 0 var(--zine-ink);
+
+  /* кнопка приподнята над бумагой и вдавливается при нажатии.
+     Капса здесь больше нет: когда все кнопки набраны капсом, главное действие
+     неотличимо от второстепенного, а длинная подпись перестаёт читаться. */
+  --btn-weight:700; --btn-transform:none; --btn-ls:.01em;
+  --btn-shadow:2px 2px 0 var(--zine-ink); --btn-hover-shift:1px;
+  --btn-hover-border:var(--zine-ink);
+  --btn-primary-bg:var(--gold); --btn-primary-border:var(--zine-ink);
+  --btn-primary-ink:#16150F;
+
+  --chip-radius:8px; --chip-weight:600; --chip-ink:var(--text);
+  --dot-size:8px; --dot-radius:1px; --dot-rotate:0deg; --dot-ring:0 0 0 1.2px var(--zine-ink);
+
+  --nav-item-radius:8px; --nav-item-active-bg:var(--gold); --nav-item-active-ink:#16150F;
+  --nav-marker-w:0; --nav-marker-glow:none; --nav-bg:var(--surface-2);
+  --header-bg:var(--surface-2); --header-blur:none;
+
+  /* плитка проекта: цветная полоса слева вместо размытого пятна */
+  --tile-rail-w:9px; --tile-aura-opacity:0; --tile-lift:-2px;
+
+  /* заголовок виден с середины комнаты; капс — только у него и у подзаголовка раздела */
+  --h1-font:var(--display); --h1-size:19px; --h1-weight:800; --h1-transform:uppercase;
+  --h1-ls:.005em; --h1-ink:var(--gold); --h1-shadow:2px 2px 0 var(--zine-emboss);
+  --h2-transform:uppercase; --h2-ls:.04em; --h2-weight:800;
+
+  --field-bg:var(--surface-1); --field-border:var(--zine-ink);
+  --console-radius:12px;
+
+  /* бумага в точку вместо двух пятен света */
+  --canvas-texture:radial-gradient(var(--zine-dot) 1.3px, transparent 1.4px);
+  --canvas-texture-size:18px 18px;
 }
+
 :root[data-theme="dark"]{
-  --bg:#16150F; --surface-1:#201E16; --surface-2:#2B281E; --border:#EFE6D3;
+  --bg:#16150F; --surface-1:#211F17; --surface-2:#2B281E;
+  --border:#EFE6D3; --border-strong:#EFE6D3;
   --text:#F2EADA; --text-muted:#A79C84;
   --primary:#5BC47E; --accent:#E8794A; --gold:#F0B429;
   --tier-imported:#9A9080; --tier-draft:#79A9E8; --tier-inreview:#F0B429;
   --tier-verified:#5BC47E; --tier-deprecated:#A98BE8;
   --danger:#E86C6C; --corruption:#D470BE;
-  --console-bg:#0D0C08; --console-ink:#F0E7D2;
-  --zine-ink:#EFE6D3; --zine-dot:rgba(239,230,211,.10);
-  --zine-shadow:4px 4px 0 rgba(0,0,0,.75); --zine-emboss:#000;
+  --console-bg:#0C0B07; --console-ink:#F0E7D2;
+  --zine-ink:#EFE6D3; --zine-emboss:#000000; --zine-dot:rgba(239,230,211,.10);
+  --card-shadow:4px 4px 0 rgba(0,0,0,.75);
+  --shadow-pop:6px 6px 0 rgba(0,0,0,.75);
+  --nav-item-active-ink:#16150F;
+  --btn-primary-ink:#16150F;
 }
-
-/* ---- приёмы, а не только цвета: скин подключается последним и может править вид ---- */
-
-/* бумага в точку вместо двух пятен света */
-body::before{background-image:radial-gradient(var(--zine-dot) 1.3px, transparent 1.4px);
-  background-size:18px 18px;background-position:-9px -9px}
-
-/* рамка либо есть, либо её нет: одна толщина, один цвет, тень со сдвигом */
-.card,.console,.palette,.drawer,.toast,.warnbox{border-width:2.5px;border-color:var(--zine-ink);
-  box-shadow:var(--zine-shadow)}
-.btn,.kbd,.chip{border-width:2px;border-color:var(--zine-ink)}
-.btn{box-shadow:2px 2px 0 var(--zine-ink);text-transform:uppercase;letter-spacing:.04em;
-  font-weight:700;font-size:12.5px}
-.btn:hover{transform:translate(1px,1px);box-shadow:1px 1px 0 var(--zine-ink)}
-.btn:disabled{box-shadow:none;transform:none}
-.chip{border-radius:8px;font-weight:600;color:var(--text)}
-/* поля ввода носят класс кнопки — но капс в JQL или пути ломает само значение */
-input.btn,select.btn,.palette input,textarea{text-transform:none;letter-spacing:0;font-weight:400}
-
-/* заголовок виден с середины комнаты */
-h1{text-transform:uppercase;font-weight:900;letter-spacing:.01em;color:var(--gold);
-  text-shadow:2px 2px 0 var(--zine-emboss)}
-h2{text-transform:uppercase;letter-spacing:.04em;font-weight:800}
-.metric .val{font-weight:800}
-
-/* шапка и меню — плотные полосы бумаги */
-header,:root[data-theme="light"] header{background:var(--surface-2);backdrop-filter:none;
-  border-bottom:2.5px solid var(--zine-ink)}
-nav,:root[data-theme="light"] nav{background:var(--surface-2);
-  border-right:2.5px solid var(--zine-ink)}
-nav button[aria-current="true"]{background:var(--gold);color:var(--zine-ink);
-  border:2px solid var(--zine-ink);box-shadow:2px 2px 0 var(--zine-ink)}
-nav button[aria-current="true"]::before{display:none}
-.brand small{font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em}
-.brand svg{filter:none}
-
-/* плитка проекта: цветная полоса слева вместо размытого пятна */
-.tower{border-left:9px solid var(--aura,var(--primary))}
-.tower::after{display:none}
-.projbadge .dot{border-radius:2px;box-shadow:none;border:1.5px solid var(--zine-ink)}

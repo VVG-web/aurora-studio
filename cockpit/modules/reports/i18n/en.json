@@ -1,0 +1,22 @@
+{
+  "_about": "Strings of the Reports section. Keys are prefixed with reports. so modules never fight over names.",
+  "reports.title": "Reports",
+  "reports.about": "Ready-made project dashboards. Built from Jira and Confluence exports into a single self-contained HTML file — hand it to anyone, it opens as a file. What goes into a report is set in the reports: section of the config and in the settings files: the team roster and the event calendar are kept by a human.",
+  "reports.pick_project": "Pick a project on the Bridge.",
+  "reports.built": "Built {when} · {size} · {path}",
+  "reports.never": "Never built yet",
+  "reports.gap_roster": "no roster at {path} — roles in the report will be empty",
+  "reports.gap_events": "no event calendar at {path} — the chart will have no bands",
+  "reports.gap_cache": "nothing in the export cache: the first build will call Jira and Confluence, which needs tokens in .env.aurora.local",
+  "reports.build": "Build",
+  "reports.rebuild": "Rebuild",
+  "reports.recalc": "Recompute without fetching",
+  "reports.recalc_hint": "Recompute from data already exported, without calling Jira and Confluence",
+  "reports.open": "Open",
+  "reports.history": "Earlier versions: {n}",
+  "reports.history_about": "Kept automatically on every new build. Useful when a fresh build comes out broken, and to compare the numbers with last time.",
+  "reports.delete": "Delete",
+  "reports.delete_ask": "Delete the version from {when}? There is nowhere to get it back from.",
+  "reports.deleted": "version deleted",
+  "reports.done": "Report built"
+}

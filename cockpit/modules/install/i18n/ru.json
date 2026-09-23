@@ -1,0 +1,20 @@
+{
+  "_about": "Строки раздела «Установка».",
+  "install.title": "Что доустановить",
+  "install.about": "Панель проверяет окружение машины и готовность проекта. У каждой строки сказано, какие команды без неё не работают.",
+  "install.have": "✓ есть",
+  "install.missing": "нет",
+  "install.enables": "Включает: {what}",
+  "install.project_ready": "Готовность проекта · {name}",
+  "install.fix": "Починить",
+  "install.env_file": "Файл доступов .env.aurora.local",
+  "install.env_file_what": "Токены Confluence/Jira для скриптов синка. Панель видит только «заполнено/пусто».",
+  "install.conf_token": "Токен Confluence",
+  "install.jira_token": "Токен Jira",
+  "install.engine_ok": "Движок актуален",
+  "install.engine_what": "в проекте {engine}, в kit {kit}",
+  "install.ratchet": "Храповик линтера",
+  "install.ratchet_what": "git-хук не даёт числу ошибок расти",
+  "install.structure": "Структура и конфиг",
+  "install.structure_ok": "схема папок совпадает с движком"
+}

@@ -76,6 +76,7 @@ DOC_ROOTS = ("docs", "skills/aurora-vault", "CHANGELOG.md", "commands.txt", "REA
 # ------------------------------------------------------------------- скины
 
 SKINS_DIR = os.path.join(KIT, "cockpit", "skins")
+MODULES_DIR = os.path.join(KIT, "cockpit", "modules")
 
 
 def skins() -> list:
@@ -110,6 +111,88 @@ def skin_css(skin_id: str) -> str:
     name = os.path.basename(skin_id) + ".css"
     path = os.path.join(SKINS_DIR, name)
     return read_text(path, limit=200_000) if os.path.isfile(path) else ""
+
+
+# ------------------------------------------------------------------- модули панели
+
+# Порядок групп в меню. Группа, которой нет в списке, уезжает в конец: манифест с
+# опечаткой не должен прятать раздел, он должен быть заметен.
+MODULE_GROUPS = ("machine", "project", "engine")
+MODULE_FILES = {".html": "text/html", ".js": "text/javascript",
+                ".css": "text/css", ".json": "application/json",
+                ".svg": "image/svg+xml"}
+
+
+def modules() -> list:
+    """Разделы панели, подключаемые папкой, — тем же приёмом, что и скины.
+
+    Папка с `module.json` в `cockpit/modules/` появляется в меню сама: ни сервер, ни
+    разметку панели править не нужно. Манифест объявляет имя (на каждом языке), группу
+    меню, порядок, нужен ли разделу выбранный проект и какие команды движка он зовёт —
+    последнее нужно, чтобы по реестру было видно, кто чем пользуется.
+
+    Битый или чужой манифест не роняет панель: такой модуль просто не поднимается, а
+    причина уезжает в ответ — панель покажет её строкой, а не пустым меню.
+    """
+    out = []
+    if not os.path.isdir(MODULES_DIR):
+        return out
+    for name in sorted(os.listdir(MODULES_DIR)):
+        man = os.path.join(MODULES_DIR, name, "module.json")
+        if not os.path.isfile(man):
+            continue
+        try:
+            with open(man, encoding="utf-8") as f:
+                m = json.load(f)
+        except (OSError, ValueError) as e:
+            out.append({"id": name, "error": f"манифест не разобран ({e})"})
+            continue
+        if m.get("id") != name:
+            out.append({"id": name, "error": "в манифесте другой id — папка и id обязаны совпадать"})
+            continue
+        title = m.get("name") or {}
+        if not isinstance(title, dict) or not title.get(DEFAULT_LANG):
+            out.append({"id": name, "error": "нет имени раздела на языке по умолчанию"})
+            continue
+        ver = str(m.get("for") or kit_version())
+        out.append({
+            "id": name,
+            "name": title,
+            "group": m.get("group") if m.get("group") in MODULE_GROUPS else "project",
+            "order": int(m.get("order") or 100),
+            "needs": [x for x in (m.get("needs") or []) if x in ("project", "kit")],
+            "commands": list(m.get("commands") or []),
+            "for": ver,
+            "behind": minor(ver) != minor(kit_version()),
+            "about": m.get("about", {}),
+        })
+    out.sort(key=lambda m: (MODULE_GROUPS.index(m.get("group", "project"))
+                            if m.get("group") in MODULE_GROUPS else len(MODULE_GROUPS),
+                            m.get("order", 100), m["id"]))
+    return out
+
+
+def module_file(mod_id: str, rel: str) -> str:
+    """Файл внутри папки модуля. Путь наружу не принимается — как у скинов и вендора."""
+    base = inside(MODULES_DIR, os.path.basename(mod_id or ""))
+    if not base or not os.path.isdir(base):
+        return ""
+    full = inside(base, rel)
+    ext = os.path.splitext(full)[1].lower() if full else ""
+    return full if full and ext in MODULE_FILES and os.path.isfile(full) else ""
+
+
+def module_strings(mod_id: str, lang: str) -> dict:
+    """Строки модуля на одном языке. Нет файла — пусто, это не ошибка."""
+    path = module_file(mod_id, os.path.join("i18n", os.path.basename(lang) + ".json"))
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, str) and not k.startswith("_")}
 
 
 
@@ -645,7 +728,18 @@ def i18n_catalogue(lang: str) -> dict:
                 base = {**json.load(f), **data}
         except (OSError, ValueError):
             pass
-    return {"lang": lang, "strings": base, "languages": languages(),
+    # Строки модулей приезжают в том же каталоге: раздел несёт свои надписи сам, а
+    # панель собирает их в один словарь при запуске. Ключ ядра главнее одноимённого
+    # ключа модуля — иначе чужой раздел мог бы переписать надписи всей панели.
+    strings = {}
+    for m in modules():
+        if m.get("error"):
+            continue
+        strings.update(module_strings(m["id"], DEFAULT_LANG))
+        if lang != DEFAULT_LANG:
+            strings.update(module_strings(m["id"], lang))
+    strings.update(base)
+    return {"lang": lang, "strings": strings, "languages": languages(),
             "default": DEFAULT_LANG, "warning": warning}
 
 
@@ -2389,6 +2483,25 @@ class Handler(BaseHTTPRequestHandler):
                     ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json",
                     ".wasm": "application/wasm"}
 
+    def send_module(self, rel: str):
+        """Разметка, скрипт и строки модуля. Свой код, но путь проверяем как у чужого."""
+        mod, _, tail = rel.partition("/")
+        full = module_file(mod, tail) if tail else ""
+        if not full:
+            self.send_error(404)
+            return
+        with open(full, "rb") as f:
+            body = f.read()
+        ext = os.path.splitext(full)[1].lower()
+        self.send_response(200)
+        self.send_header("Content-Type", MODULE_FILES[ext] + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        # Модуль — наш код и меняется вместе с китом: кэшировать его нельзя, иначе
+        # после обновления человек получит старый раздел и новое ядро.
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_static(self, base: str, rel: str):
         """Файл из вендоренной папки. Путь проверяем так же, как файлы проекта."""
         full = inside(base, rel)
@@ -2649,6 +2762,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"scenarios": scenarios()})
         elif u.path == "/api/skins":
             self.send_json({"skins": skins()})
+        elif u.path == "/api/modules":
+            self.send_json({"modules": modules()})
+        elif u.path.startswith("/modules/"):
+            self.send_module(u.path[len("/modules/"):])
         elif u.path == "/api/skin":
             css = skin_css(q.get("id", [""])[0])
             body = css.encode("utf-8")

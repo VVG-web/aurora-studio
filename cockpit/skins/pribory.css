@@ -1,0 +1,56 @@
+/* name: Приборы
+   for: 1.121.0
+   about: Тихая рубка: полуночный фон, волосяные линии вместо рамок, цвет только на
+          статусе. Свечение оставлено единственному живому процессу. Самая плотная. */
+
+:root{
+  --bg:#090D14; --surface-1:#0F141E; --surface-2:#141B27;
+  --border:#1C2433; --border-strong:#2A3446;
+  --text:#E7EDF6; --text-muted:#8B98AD;
+  --primary:#31DCC0; --accent:#A97BFF; --gold:#F0C452;
+  --tier-imported:#7C8AA0; --tier-draft:#8FB8FF; --tier-inreview:#FFB547;
+  --tier-verified:#31DCC0; --tier-deprecated:#A97BFF;
+  --danger:#FF5F6E; --corruption:#A97BFF;
+  --console-bg:#05080E; --console-ink:#CFE6E0;
+
+  --sans:'Onest',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --display:'Onest',system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  --radius:10px; --radius-sm:7px; --radius-xs:5px;
+
+  /* Рамки почти нет: поверхность отделяется тоном, а не линией. Отсюда и плотность —
+     на экран помещается больше, не превращаясь в решётку. */
+  --card-border-w:1px; --card-radius:10px; --card-shadow:none;
+
+  --btn-radius:7px; --btn-weight:500; --btn-pad:7px 13px;
+  --btn-primary-bg:color-mix(in oklab,var(--primary) 16%,var(--surface-2));
+
+  --chip-radius:7px; --chip-weight:500;
+  --dot-size:8px; --dot-radius:2px; --dot-rotate:0deg;
+
+  --nav-item-active-bg:transparent; --nav-marker-w:3px;
+  --nav-bg:color-mix(in oklab,var(--surface-1) 55%,transparent);
+
+  --tile-rail-w:3px; --tile-aura-opacity:0; --tile-lift:-2px;
+
+  --h1-weight:600; --h1-size:21px; --h1-ls:-.015em;
+  --h2-weight:600;
+
+  /* Полотно ровное: свечение в этом скине несёт смысл, и фон его не разбавляет. */
+  --canvas-texture:none;
+}
+
+:root[data-theme="light"]{
+  --bg:#F3F5F9; --surface-1:#FFFFFF; --surface-2:#EBEFF6;
+  --border:#DDE3EC; --border-strong:#C7D0DE;
+  --text:#0F1620; --text-muted:#57647A;
+  --primary:#0A7F6C; --accent:#6B3CC0; --gold:#82620A;
+  --tier-imported:#5B6879; --tier-draft:#2A57A8; --tier-inreview:#8F5B05;
+  --tier-verified:#0A7F6C; --tier-deprecated:#6B3CC0;
+  --danger:#C22C39; --corruption:#6B3CC0;
+  --console-bg:#0B111B; --console-ink:#D6EBE6;
+  --card-shadow:0 1px 2px rgba(16,24,40,.06);
+  --header-bg:color-mix(in oklab,#FFFFFF 88%,transparent);
+  --nav-bg:color-mix(in oklab,#FFFFFF 70%,transparent);
+}

@@ -1,0 +1,65 @@
+/* name: Единорог
+   for: 1.121.0
+   about: Карамель и круглые углы, сердечки вместо ромбов в статусах. Плотность и
+          шкала доверия те же, контраст AA держится — скин меняет вид, а не смысл. */
+
+/* Этот скин заведён как проверка контракта: если карамельное оформление собирается
+   одними токенами, без единой правки разметки, значит токенов хватает. */
+
+:root{
+  --bg:#FFF6FB; --surface-1:#FFFFFF; --surface-2:#FDEEF7;
+  --border:#F2DAE9; --border-strong:#E6C4DA;
+  --text:#2C2138; --text-muted:#6B5C7B;
+  --primary:#0E7D5E; --accent:#C92A63; --gold:#96690A;
+  --tier-imported:#75688A; --tier-draft:#3556C4; --tier-inreview:#A2650A;
+  --tier-verified:#0E7D5E; --tier-deprecated:#7040BE;
+  --danger:#C92A63; --corruption:#7040BE;
+  --console-bg:#2A2038; --console-ink:#F7E8F5;
+
+  --sans:'Nunito',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --display:'Comfortaa','Nunito',system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+
+  --radius:18px; --radius-sm:12px; --radius-xs:8px;
+  --card-border-w:1px; --card-radius:18px;
+  --card-shadow:0 10px 24px -16px rgba(120,60,140,.55);
+  --shadow-pop:0 30px 70px -24px rgba(120,60,140,.5);
+  --shadow-toast:0 16px 34px -18px rgba(120,60,140,.5);
+  --glow:0 0 0 3px color-mix(in oklab,var(--primary) 22%,transparent);
+
+  --btn-radius:999px; --btn-weight:700; --btn-pad:8px 16px;
+  --btn-primary-bg:var(--primary); --btn-primary-ink:#FFFFFF;
+  --btn-primary-border:var(--primary);
+
+  --chip-radius:999px; --chip-weight:600;
+  /* Точка статуса — сердце. Цвет по-прежнему несёт смысл, а форма только развлекает. */
+  --dot-size:11px; --dot-radius:0; --dot-rotate:0deg;
+  --dot-clip:path("M5.5 10C5.5 10 .6 6.4 .6 3.7A2.5 2.5 0 0 1 5.5 2.7 2.5 2.5 0 0 1 10.4 3.7C10.4 6.4 5.5 10 5.5 10Z");
+
+  --nav-item-radius:999px; --nav-item-active-bg:var(--surface-2);
+  --nav-marker-w:4px; --nav-marker-glow:none;
+  --nav-bg:color-mix(in oklab,var(--surface-2) 45%,transparent);
+  --header-bg:color-mix(in oklab,#FFFFFF 90%,transparent);
+
+  --tile-rail-w:6px; --tile-aura-opacity:.10; --tile-lift:-3px;
+
+  --h1-font:var(--display); --h1-size:22px; --h1-weight:700; --h1-ls:0;
+  --h2-weight:700;
+
+  /* два очень мягких пятна: блеск, который не мешает читать числа */
+  --aura-1:rgba(201,42,99,.07); --aura-2:rgba(112,64,190,.07);
+}
+
+:root[data-theme="dark"]{
+  --bg:#1B1425; --surface-1:#251D31; --surface-2:#2E243D;
+  --border:#3B3050; --border-strong:#4C3E63;
+  --text:#F7EEF9; --text-muted:#BBA8CB;
+  --primary:#51E3BA; --accent:#FF87B0; --gold:#F5CE7A;
+  --tier-imported:#B3A5C2; --tier-draft:#9DB4FF; --tier-inreview:#FFC46B;
+  --tier-verified:#51E3BA; --tier-deprecated:#C9A6FF;
+  --danger:#FF87B0; --corruption:#C9A6FF;
+  --console-bg:#140E1C; --console-ink:#F3E4F4;
+  --btn-primary-ink:#1B1425;
+  --header-bg:color-mix(in oklab,var(--surface-1) 88%,transparent);
+  --aura-1:rgba(255,135,176,.10); --aura-2:rgba(201,166,255,.10);
+}

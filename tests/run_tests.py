@@ -55,6 +55,22 @@ def run(script: str, *args, cwd: Path, expect_rc=None) -> subprocess.CompletedPr
     return cp
 
 
+def panel_sources() -> str:
+    """Панель целиком: ядро плюс все модули.
+
+    Раздел панели переехал из одного файла в папку (`cockpit/modules/<id>/`), и проверка
+    «панель умеет X» обязана смотреть туда же. Иначе она ловит переезд вместо дефекта:
+    строка ушла в каталог модуля, а тест говорит, что возможность пропала.
+    """
+    parts = [(KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")]
+    mods = KIT / "cockpit" / "modules"
+    if mods.is_dir():
+        for f in sorted(mods.rglob("*")):
+            if f.suffix in (".html", ".js", ".json") and f.is_file():
+                parts.append(f.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 def stub_messages(messages, kw):
     """Сообщения так, как собрал бы их `call_role`. Для заглушек вместо `call`.
 
@@ -1071,7 +1087,7 @@ def test_copy_button_takes_the_task_without_its_frame(tmp: Path):
     строка адресована человеку у панели; попав в чат, она даёт ассистенту указание,
     которое к нему не относится, а линейки просто съедают контекст.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     fn = ui[ui.index("function assistantTasks(lines){"):ui.index("let LAST_TASKS = [];")]
     assert "рамка в тело не идёт" in fn, "границы блока снова режутся по старому правилу"
     # тело начинается после ВТОРОЙ линейки — той, что под заголовком
@@ -1333,7 +1349,7 @@ def test_cockpit_roots_are_not_fixed_to_kit_neighbours(tmp: Path):
         os.environ["HOME"] = old_home
         importlib.reload(ck)
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "Где панель ищет проекты" in ui and "/api/roots" in ui, \
         "корни должны правиться из панели, а не только флагом при запуске"
 
@@ -1471,7 +1487,7 @@ def test_confluence_ref_parsing(tmp: Path):
     assert "pageId=https://" not in cfg, "в конфиг попал бессмысленный адрес"
 
     # форма читает корни любого вида, иначе неразрешённая строка исчезает с экрана
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'page_id:\\s*"?([^"\\n]+?)"?' in ui, \
         "панель читает только числовые page_id — нечисловая строка пропадёт из формы"
 
@@ -1479,7 +1495,7 @@ def test_confluence_ref_parsing(tmp: Path):
 @test
 def test_cockpit_warns_about_unsaved_settings(tmp: Path):
     """Панель обязана предупредить, что уход со страницы потеряет введённое."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     # блоки настройки помечают правки и подсвечивают свою кнопку
     for key, label in (("form", "«Настройки проекта»"), ("tokens", "«Доступы»"),
                        ("yaml", "«aurora.config.yaml»"), ("new", "«Подключить новый проект»")):
@@ -1568,7 +1584,7 @@ def test_setup_form_saves_jql_with_quotes(tmp: Path):
     vals = ck.config_values(cfg)
     assert vals["default_jql"] == jql and vals["project_key"] == "PRJ", \
         f"форма получает не те значения: {vals}"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "cfgRaw.values" in ui, "панель снова разбирает конфиг своей копией правила"
     assert "(?:'((?:[^'" not in ui, "в панели снова своя копия правила разбора конфига"
     # reports/analyst/paths.py зовёт то же правило — проверяется так же
@@ -2075,7 +2091,7 @@ def test_retire_cleans_templates_too(tmp: Path):
 @test
 def test_cockpit_ui_version_tracks_kit(tmp: Path):
     """Панель не должна молча отстать от ядра: отставший интерфейс выглядит рабочим."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     m = re.search(r'const UI_VERSION = "([^"]+)"', ui)
     assert m, "в панели не объявлена версия UI_VERSION"
     kit = (KIT / "VERSION").read_text(encoding="utf-8").strip()
@@ -2093,7 +2109,7 @@ def test_cockpit_ui_version_tracks_kit(tmp: Path):
 @test
 def test_cockpit_apply_is_reachable(tmp: Path):
     """Пишущую команду нужно уметь применить: панель без «Применить» умеет только dry-run."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'id="consoleApply"' in ui, "в консоли нет места для кнопки «Применить»"
     assert "PENDING_APPLY" in ui, "панель не помнит предпросмотр — применять нечего"
     # признак жил в RUN, а RUN пересоздаётся при каждом открытии ящика: кнопка на нём
@@ -2181,7 +2197,7 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert '"/api/runlog"' in src, "у журнала нет своего маршрута — он едет внутри здоровья"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "function assistantTasks" in ui and "task.label" in ui, \
         "задания ассистенту из консоли нечем забрать в буфер"
     assert "S.health && S.health.runs" in ui, "панель снова читает историю из браузера"
@@ -2222,14 +2238,16 @@ def test_cockpit_marks_command_outcome(tmp: Path):
     doctor с ошибками и аудит с расхождениями отрабатывают штатно и возвращают 1;
     не пустивший git-гейт возвращает 2. Отметка у команды должна их различать.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     m = re.search(r"function rcMark\(rc\)\{(.*?)\n\}", ui, re.S)
     assert m, "нет единой трактовки кода возврата — цвета разъедутся по экранам"
     body = m.group(1)
     assert '"ok"' in body and '"warn"' in body and '"bad"' in body, \
         "исходов по-прежнему два: «успех» и «всё плохо»"
     assert "rc === 1" in body, "код 1 не отделён от настоящего сбоя"
-    assert "lastRun(r.cmd)" in ui, "в списке команд не видно итога последнего запуска"
+    # Список команд уехал в раздел-папку: журнал он спрашивает через ctx.
+    assert ("lastRun(r.cmd)" in ui or "ctx.runs.last(r.cmd)" in ui), \
+        "в списке команд не видно итога последнего запуска"
 
 
 @test
@@ -2283,7 +2301,7 @@ def test_ask_tab_names_the_model_and_lets_you_pick_it(tmp: Path):
     исполнителе, медленный ответ запасной выглядел как ответ основной — и человек делал
     выводы о базе по ответу другой модели.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     for need, why in (('id="askBackend"', "нет выбора модели"),
                       ('id="askWho"', "не видно, кто ответил"),
                       ('id="askPing"', "нельзя проверить основную модель"),
@@ -2314,7 +2332,7 @@ def test_ask_tab_refills_the_model_list_and_names_a_failure(tmp: Path):
     DOM и сервера.
     """
     import shutil
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'id="askBackendNote"' in ui, "сбою списка моделей негде показаться"
 
     def fn(name):
@@ -2443,7 +2461,7 @@ def test_fallback_provider_gets_a_fair_chance(tmp: Path):
     AG.RETRY_FLAG.write_text("", encoding="utf-8")
     assert AG.retry_primary_asked() and not AG.DOWN, "кнопка не вернула основного в строй"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert 'id="retryPrimary"' in ui and "/api/agent/retry-primary" in ui, \
         "кнопки «Вернуться на основного» нет в консоли"
@@ -2469,7 +2487,7 @@ def test_project_settings_page_draws_every_block(tmp: Path):
     import re as _re
     sys.path.insert(0, str(KIT / "cockpit"))
     import aurora_cockpit as ck
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     body = _js_function(ui, "async function renderProject(")
     blocks = ['"MCP-серверы · "', '"aurora.config.yaml · полный текст"',
@@ -2525,14 +2543,16 @@ def test_health_lands_on_the_project_it_was_counted_for(tmp: Path):
     assert ck.health(str(root)).get("project") == str(root), \
         "ответ здоровья не называет свой проект — странице не по чему отличить чужой"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     helper = _js_function(ui, "function takeHealth(")
     assert "S.project.path === p.path" in helper, "помощник не сверяет, выбран ли ещё проект"
     rest = ui.replace(helper, "")
     raw = _re.findall(r"S\.health\s*=\s*(?!null\b)[\w.]+", rest)
     assert not raw, f"здоровье присваивается мимо takeHealth — вернётся подпись чужим именем: {raw}"
-    assert "S.health.project !== S.project.path" in _js_function(ui, "function renderHealth("), \
-        "renderHealth рисует ответ чужого проекта"
+    # Экран здоровья переехал в раздел-модуль: сторож тот же, зовётся иначе.
+    assert ("S.health.project !== S.project.path" in ui
+            or "h.project !== ctx.project.path" in ui), \
+        "экран здоровья рисует ответ чужого проекта"
 
 
 @test
@@ -2744,7 +2764,7 @@ def test_acceptance_machinery_is_gone(tmp: Path):
     assert not (KIT / "scripts/kb_verify.py").exists(), "скрипт приёмки на месте"
     cmds = (KIT / "commands.txt").read_text(encoding="utf-8")
     assert "kb:verify" not in cmds and "kb:queue" not in cmds, "команды приёмки в реестре"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "renderReview" not in ui and 'id="view-review"' not in ui, "вкладка приёмки в панели"
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert "/api/review" not in srv, "сервер всё ещё отдаёт очередь приёмки"
@@ -2967,7 +2987,7 @@ def test_buttons_stay_on_the_right_when_the_row_wraps(tmp: Path):
     стать длинным или окну узким — кнопки уезжают вниз и прижимаются влево. Правая группа
     с `margin-left:auto` держится справа на любой строке.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "flex-wrap:wrap" in ui, "разметка изменилась: перенос строк больше не включён"
     assert "margin-left:auto" in ui and ".row-right{" in ui, \
         "нет правой группы — при переносе кнопки окажутся слева внизу"
@@ -2987,7 +3007,7 @@ def test_the_all_in_one_route_looks_different_from_the_dangerous_one(tmp: Path):
     себя остальные, второй сносит содержимое базы вместе с принятым доверием — и цена
     ошибки у них разная на порядок.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert '.card.route-all{' in ui and '.card.route-danger{' in ui, \
         "у маршрутов нет разного оформления"
     assert 'sc.id === "all" ? "route-all"' in ui and '"rebuild" ? "route-danger"' in ui, \
@@ -3008,7 +3028,7 @@ def test_hidden_really_hides_in_the_panel(tmp: Path):
     как раз такой. Панель прячет так семь элементов, поэтому проверяем правило, а не один
     экран.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert re.search(r"\[hidden\]\{display:none ?!important\}", ui), \
         "нет правила [hidden]{display:none !important} — сокрытие держится на UA-стилях"
     # у элементов, которые панель прячет, свой display есть — значит правило не «на всякий»
@@ -3774,7 +3794,7 @@ def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
         "неподнятый сервер уронит прогон — а он может быть просто выключен"
 
     # и это видно человеку: настроил или нет
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "MCP-серверы проекта" in ui and "не объявлены" in ui, \
         "панель молчит про MCP — человек не узнает ни что подключено, ни что это норма"
 
@@ -3852,7 +3872,7 @@ def test_the_panel_never_stores_mcp_secrets(tmp: Path):
     assert '"env": cfg.get("env")' not in block, \
         "GET-маршрут отдаёт значения env браузеру"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "MCP-серверы · " in ui, "нет раздела MCP-серверов"
     assert '"/api/mcp?project="' in ui and '"/api/mcp",{method:"POST"' in ui, \
         "раздел не ходит через /api/mcp"
@@ -3884,7 +3904,7 @@ def test_publishing_does_not_overwrite_someone_elses_edit(tmp: Path):
     assert "def artifact_files(" in srv and '"/api/artifacts"' in srv, \
         "панель не умеет показать, что уже создано по типу"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "async function publishArtifact(" in ui, "нет публикации из панели"
     assert 'cmd:"ship:publish"' in ui, "публикация идёт мимо движка"
     assert 'f.status === "draft"' in ui, \
@@ -4331,7 +4351,7 @@ def test_artifact_is_a_production_recipe_not_a_template(tmp: Path):
     assert (root / "Artifacts/ac").is_dir(), "папка результата не создана"
 
     # и форма показывает ровно те поля, что знает движок
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     for f in ("prompt", "publish_url", "mcp"):
         assert f'field("{f}"' in ui, f"поля {f} нет в форме — настроить его будет негде"
     assert 'tfield("labels"' in ui and 'tfield("assignee"' in ui, \
@@ -4351,7 +4371,7 @@ def test_kit_and_project_settings_are_separate(tmp: Path):
     и всё остальное помечается «из кита». Без этой пометки человек правит унаследованное
     значение, считая его своим.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
 
     assert 'data-view="project"' in ui and 'id="view-project"' in ui, \
@@ -4635,7 +4655,7 @@ def test_dashboards_say_what_they_measured(tmp: Path):
     И вторая половина: у плитки должен быть смысл и адрес. Число без действия — это
     сообщение, которое некуда отнести.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "function metricCard(" in ui and "function baseCards(" in ui, \
         "нет панели с плитками здоровья базы"
     assert "function sourceCards(" in ui, "нет панели здоровья источников"
@@ -4766,7 +4786,7 @@ def test_route_progress_is_visible_from_any_tab(tmp: Path):
     сколько ждать. Полоса живёт в шапке, пустует, когда ничего не идёт, и по клику
     возвращает в консоль.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'id="routeBar"' in ui, "нет полосы хода в шапке"
     assert "function drawRouteBar(" in ui, "полосу нечем обновлять"
     assert ui.count("drawRouteBar(") >= 3, \
@@ -4922,7 +4942,7 @@ def test_console_stops_chasing_the_bottom_when_you_scroll_up(tmp: Path):
     450 мс возвращает его в конец. Слежение включается обратно само, когда он домотает
     вниз, и кнопкой «↓ вывод продолжается».
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "function stickToBottom(" in ui and "function watchScroll(" in ui, \
         "нет отдельной прокрутки со слежением"
     assert 'box.dataset.follow === "0"' in ui, "прокрутка не спрашивает, смотрит ли человек конец"
@@ -5030,7 +5050,7 @@ def test_a_route_will_not_run_on_two_engine_versions(tmp: Path):
     assert "version_gap(" in run_block and 'payload.get("route")' in run_block, \
         "проверка версии не стоит на запуске шага маршрута"
     # страница обязана помечать шаги маршрута — иначе серверу нечего проверять
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     step = ui.split("async function runStep(")[1][:600]
     assert "route:true" in step, "шаг маршрута не помечен как шаг маршрута"
 
@@ -5112,7 +5132,7 @@ def test_the_panel_script_actually_parses(tmp: Path):
     дефект прожил недели.
     """
     import shutil
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     js = "\n".join(m.group(1) for m in
                    re.finditer(r"<script[^>]*>(.*?)</script>", ui, re.S))
     assert js.strip(), "в панели не осталось скрипта — разметка изменилась неузнаваемо"
@@ -5240,8 +5260,10 @@ def test_fix_button_is_offered_only_for_what_repair_can_fix(tmp: Path):
     m = re.search(r"нового после починки: (\d+)", r.stdout)
     assert m and int(m.group(1)) > 0, f"новая ошибка не отличена от остатка: {r.stdout}"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
-    assert 'fresh ? goRoute("fix","Починить базу")' in ui and '"Что решить вам"' in ui, \
+    ui = panel_sources()
+    assert ('fresh ? goRoute("fix","Починить базу")' in ui
+            or 'fresh ? ctx.ui.goRoute("fix"' in ui) \
+        and ('"Что решить вам"' in ui or "health.go_decide" in ui), \
         "Мостик снова зовёт «Починить» при любой ошибке, а не при новой"
     assert 'sc.id === "fix" ? null : fixButton(f.what)' in ui, \
         "итог «Починить базу» предлагает запустить ремонт, который только что прошёл"
@@ -5260,7 +5282,7 @@ def test_finding_carries_a_button_not_a_riddle(tmp: Path):
     показа требовало кода 0, тогда как записывать надо как раз после кода 1 («отработала
     и нашла, что чинить»). Человек ушёл искать флаг, которого в панели нет.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "if (rc<=1 && PENDING_APPLY" in ui, \
         "команда, вернувшая 1, снова осталась без кнопки «Применить»"
     assert "const FIX_RUN" in ui and "function fixButton" in ui, \
@@ -5288,7 +5310,7 @@ def test_panel_asks_only_endpoints_the_server_has(tmp: Path):
     в маршруте сломалось. Опечатка в пути не видна ни глазами, ни при запуске: страница
     просто получает 404 и молчит либо пугает.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     known = set(re.findall(r'u\.path == "([^"]+)"', srv))
     assert "/api/state" in known, "разбор путей сервера сломался — тест перестал что-то проверять"
@@ -5374,7 +5396,7 @@ def test_bridge_card_says_what_runs_and_what_stopped(tmp: Path):
     остановленный человеком и ждущий сеть.
     """
     import shutil
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     def extract(name):
         start = ui.index(f"function {name}(")
         depth, i = 0, ui.index("{", start)
@@ -5455,7 +5477,7 @@ def test_route_counts_its_own_steps_and_resumes_inside_the_lap(tmp: Path):
     всегда начинало цикл с первого шага первого оборота: в маршруте, где вся работа в цикле,
     это читалось и работало как запуск заново.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     run = ui[ui.index("async function runRoute("):ui.index("async function resumeLastRoute(")]
     assert "if (st.cycle) ROUTE.inLap = st.cycleIdx; else ROUTE.done++;" in run, \
         "шаги цикла снова идут в общий счёт маршрута — вернётся «шаг 36 из 20»"
@@ -5827,7 +5849,7 @@ def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
     for need in ("ops:trace-table |", "kb:trust |", "--drop-code-stubs"):
         assert need in fix, f"в «Починить базу» нет шага {need}"
     assert fix.index("kb:trust |") < fix.index("kb:embed |"), "доверие пересчитывается после индекса"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "`источники ${h.build.pct}%`" in ui, "на карточке Мостика нет второго числа — разбора источников"
 
 
@@ -6254,7 +6276,7 @@ def test_running_command_survives_a_page_reload(tmp: Path):
         "живые задания проекта отбираются неверно: чужое или завершённое попало в список"
     ck.JOBS.clear()
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "/api/jobs?project=" in ui, "панель не спрашивает, что выполняется прямо сейчас"
     assert 'id="consoleLive"' in ui and "function attachJob" in ui, \
         "к работающему заданию нельзя подключиться — его вывод потерян навсегда"
@@ -6267,18 +6289,21 @@ def test_running_command_survives_a_page_reload(tmp: Path):
 @test
 def test_cockpit_can_recount_metrics(tmp: Path):
     """Базу правят не только команды панели — числа нужно уметь пересчитать и вручную."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     for btn, page in (("refreshHealth", "«Здоровье»"), ("refreshOverview", "«Мостик»")):
         assert f'id="{btn}"' in ui, f"на странице {page} нет кнопки пересчёта"
-        assert f'$("#{btn}").onclick' in ui, f"кнопка пересчёта на {page} ничего не делает"
-    assert 'stamp("#healthStamp")' in ui and 'stamp("#overviewStamp")' in ui, \
+        # Раздел-модуль вешает обработчик на свой узел (`ctx.$("#…")`), ядро — на общий.
+        assert (f'$("#{btn}").onclick' in ui or f'ctx.$("#{btn}")' in ui), \
+            f"кнопка пересчёта на {page} ничего не делает"
+    assert ('stamp("#healthStamp")' in ui or 'ctx.$("#healthStamp")' in ui) \
+        and 'stamp("#overviewStamp")' in ui, \
         "нет отметки времени: по числам не понять, до работы они посчитаны или после"
 
 
 @test
 def test_cockpit_warns_when_project_engine_lags(tmp: Path):
     """Флаги панель берёт из kit'а, а запускает движок проекта — расхождение нужно назвать."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "S.project.behind && !r.from_kit" in ui, \
         "ящик команды не предупреждает, что флаги из kit'а, а движок проекта другой"
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
@@ -6300,7 +6325,7 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
     ck = importlib.import_module("aurora_cockpit")
     importlib.reload(ck)
     rows = ck.registry()
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     assert "ENGINE_CMDS" in ui and "isEngineCmd" in ui, \
         "в панели нет правила, что считать движковой командой"
@@ -6308,7 +6333,10 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
     assert engine, "движковые команды пропали из реестра панели"
 
     # «Команды» показывают всё, кроме движковых, — и не требуют исключений по одной
-    assert "S.state.commands.filter(r => !isEngineCmd(r))" in ui, \
+    # Список команд уехал в раздел-папку и зовёт то же правило через ctx: важно, что
+    # правило одно на панель, а не то, как называется переменная рядом с ним.
+    assert ("S.state.commands.filter(r => !isEngineCmd(r))" in ui
+            or "ctx.state.commands.filter(r => !ctx.isEngineCmd(r))" in ui), \
         "общий список команд фильтруется не по общему правилу"
     # «Разработка» показывает ровно движковые
     assert "(S.state.commands || []).filter(isEngineCmd)" in ui, \
@@ -6318,7 +6346,9 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
     titles = {"kit", "sync", "kb", "ctx", "make", "ship", "ops", "dev", "agent"}
     lost = [r["cmd"] for r in rows if r["ns"] not in titles]
     assert not lost, f"команды вне известных групп — в панели им нет места: {lost}"
-    assert "agent:" in ui and 'agent:"' in ui, "группа agent не подписана в «Командах»"
+    # Подписи групп уехали в каталог раздела «Команды»: проверяем ключ, а не форму
+    # записи объекта, которой больше нет.
+    assert "commands.ns.agent" in ui, "группа agent не подписана в «Командах»"
 
     # у каждой запускаемой команды есть исполнитель на диске
     for r in rows:
@@ -6720,7 +6750,7 @@ def test_panel_offers_the_fix_where_editing_is_forbidden(tmp: Path):
     теряется и запрет, и след. Кнопка «Исправить» стоит ровно там, где карточка открыта
     только на чтение.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'id="fileFix"' in ui and "function correctCard" in ui, \
         "на карточке нет кнопки «Исправить»"
     assert 'startsWith("AuroraKnowledgeDB/") && !!F.ro' in ui, \
@@ -6787,7 +6817,7 @@ def test_panel_says_how_many_requests_actually_go(tmp: Path):
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert '"slots": len(AG.pool(cfg))' in src, \
         "панель считает параллельность своим способом, а не тем же, что движок"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "фактически: " in ui and "обрезает потоки шлюзов" in ui, \
         "человеку не сказано, сколько запросов уйдёт на самом деле"
 
@@ -7127,7 +7157,7 @@ def test_graph_and_files_link_both_ways_and_can_be_read(tmp: Path):
     все базы не бывает. Решать за человека, что ему не нужен большой граф, мы не вправе:
     порог обязан быть предупреждением с проходом, а не запретом.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     assert 'id="fileGraph"' in ui and "function showOnGraph(" in ui, \
         "из файла нельзя попасть на граф — связь односторонняя"
@@ -7194,7 +7224,7 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     assert 'AURORA_COCKPIT_TOKEN' in src, \
         "после перезапуска из панели открытая вкладка перестанет работать: токен другой"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'id="consoleStop"' in ui and "/api/job/stop" in ui, "нет кнопки «Прервать»"
     # Кнопка нужна ОБОИМ способам опроса. Она висела только на одиночном запуске, а
     # маршрут — то, что идёт часами, — опрашивает задание своим циклом, и там её не было.
@@ -7523,7 +7553,7 @@ def test_a_flaky_gateway_is_not_a_dead_one(tmp: Path):
     Пятнадцать минут — верная пауза для лежащего шлюза и вредная для мигающего. Отличать
     их можно по тому, что шаг напечатал о сделанном: есть работа — есть связь.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     assert "ROUTE_FLAKY_RETRY_MS" in ui, \
         "нет короткой паузы для мигающего шлюза — маршрут снова будет стоять при живых бэкендах"
@@ -7790,7 +7820,7 @@ def test_resuming_a_route_continues_instead_of_starting_over(tmp: Path):
     3. Сигнатуры сделанного брались только из `events.jsonl` последней попытки, а он у
        каждой попытки свой — на третьей попытке работа первой считалась несделанной.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     skip = ui[ui.index("if (SKIP_SIGS && !st.cycle && SKIP_SIGS.has(sig)){"):]
     skip = skip[:skip.index("return {rc:0, skipped:true")]
@@ -7949,7 +7979,7 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
         "шаги маршрута не сохраняются строкой на шаг"
     assert '"/api/run/logs"' in src and '"/api/run/file"' in src, "нет маршрутов архива"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     for token in ("function renderArchiveBox(", "function archiveWhen(", "function rtime(",
                   "function fmtDur(", 'id="exportMd"', "Продолжить маршрут",
                   "const SILENCE_MS = 120000;", '"/api/run/logs?project="',
@@ -7972,7 +8002,7 @@ def test_a_stalled_route_is_an_stop_not_a_pass(tmp: Path):
     ставит ROUTE.stalled, баннер его честно называет, а продолжение пропускает только шаги
     с кодом ровно 0 — код 1 («отработала и нашла, что чинить») повторять надо.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "ROUTE.stalled = true" in ui, \
         "застой не помечен флагом — не отличить его от прохода и не дать «Продолжить»"
     assert "ROUTE.failed || ROUTE.stalled" in ui, \
@@ -8031,7 +8061,7 @@ def test_a_stopped_route_survives_a_panel_restart(tmp: Path):
     assert src.count('"/api/route/state"') >= 2, \
         "эндпоинт состояния маршрута только с одной стороны (нужны GET и POST)"
     assert "last_route.json" in src, "эндпоинт не знает имени файла состояния"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert '"/api/route/state?project="' in ui, \
         "вкладка «Консоль» не читает состояние остановленного маршрута при загрузке"
     assert '"/api/route/state", {method:"POST"' in ui, \
@@ -8050,7 +8080,7 @@ def test_a_stalled_route_stops_honestly_and_resume_skips_only_success(tmp: Path)
     остановка и остановка по застою определяют причину в одной ветке; стоп цикла по
     требованию выставляет оба флага разом.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     assert "ROUTE.stalled = true;" in ui, \
         "флаг застоя не ставится — по нему отличается «застой» от «пройден»"
@@ -8086,7 +8116,7 @@ def test_a_route_waits_for_the_network_like_the_engine(tmp: Path):
     выйти из ожидания руками («Попробовать сейчас» / «не ждать»).
     """
     engine = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     m = re.search(r"OFFLINE_SIGNS\s*=\s*[\[(](.*?)[\])]", engine, re.S)
     assert m, "в agent_runner не найден список OFFLINE_SIGNS"
@@ -8141,7 +8171,7 @@ def test_a_failed_command_can_be_retried_as_the_next_attempt(tmp: Path):
     `cmd`/`args`. Дополнено инвариантом хранения: файл состояния маршрута лежит в общей
     папке проекта, рядом с UI-тестами, а не разъехался.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
 
     assert "S.lastStep = {cmd:r.cmd, args, n, failed:false, job:res.job};" in ui, \
         "fire не запоминает шаг попытки с полем failed"
@@ -8179,7 +8209,7 @@ def test_file_tree_is_a_tree_and_says_what_it_hides(tmp: Path):
     Дерево обязано быть деревом: девять папок верхнего уровня вместо плоского списка
     полных путей. Свёрнутый список из 382 путей — та же стена, только другой формы.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "function treeOf(" in ui and "node.dirs" in ui, \
         "дерево осталось плоским списком путей"
     assert "SHOW_LIMIT" in ui and "files.shown" in ui, \
@@ -8309,7 +8339,7 @@ def test_reports_keep_their_previous_versions(tmp: Path):
     out.unlink()
     assert ck.keep_version(str(root), "analyst", str(out)) == ck.versions(str(root), "analyst")
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "Прежние версии" in ui and "/api/report/forget" in ui, \
         "историю негде посмотреть и нечем почистить"
     assert "stamp=" in ui, "старую версию нельзя открыть"
@@ -8333,7 +8363,7 @@ def test_panel_admits_it_is_running_old_code(tmp: Path):
     block = src[src.index('"ui": {'):src.index('"projects": projects,')]
     assert "stale_process" in block, \
         "признак «процесс старее файлов» лежит не там, где его читает панель"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "S.state.ui.stale_process" in ui, "панель перестала проверять устаревший процесс"
     assert 'self.send_header("Cache-Control", "no-store")' in src, \
         "страница кэшируется: обновление кита останется невидимым до очистки кэша"
@@ -8355,7 +8385,7 @@ def test_route_works_until_the_work_is_done_and_saves_each_lap(tmp: Path):
     коммита прерванная работа осталась бы незафиксированной, а двенадцать команд движка
     не работают по грязному дереву — следующий запуск встал бы на первом шаге.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     at = ui.index("const leftByKind = lines =>")
     fn = ui[at:at + 700]
     assert "Источников в плане" in fn and "осталось:" in fn, \
@@ -9056,7 +9086,7 @@ def test_graph_is_a_way_into_the_card(tmp: Path):
     окрестность показывается вместо всей базы, а тяжёлый расчёт живёт в кэше с
     отметкой времени — экран, который открывается несколько секунд, открывать перестанут.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'data-view="graph"' in ui and 'id="view-graph"' in ui, "раздела графа нет"
     assert 'if (view==="graph") renderGraph();' in ui, "переход в раздел ничего не рисует"
     assert "openPath(d.path)" in ui, "клик по узлу никуда не ведёт"
@@ -9121,7 +9151,7 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     сначала показать **чистовик** — ровно то, что уйдёт: граница производства в тексте
     невидима, а «Допущения» на странице у заказчика читаются как часть спецификации.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "Документ: `" in ui and "openPath(done)" in ui, \
         "готовый артефакт не открывается в редакторе"
     assert 'S.view === "work"' in ui, \
@@ -9137,7 +9167,8 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     assert "function publishTarget" in ui, \
         "кнопка публикации видна там, где публикация не применима"
     # «Незаконченные» обязаны заканчиваться действием, а не списком.
-    assert 'onclick:()=>openPath(x.path)' in ui, \
+    assert ('onclick:()=>openPath(x.path)' in ui
+            or 'onclick: () => ctx.openPath(x.path)' in ui), \
         "список незаконченных не ведёт в документ — станет счётчиком, на который не смотрят"
 
     sys.path.insert(0, str(KIT / "cockpit"))
@@ -9173,9 +9204,11 @@ def test_choosing_a_project_refills_the_screen_you_are_standing_on(tmp: Path):
     в `pick()`, двумя строками выше. Значит одного комментария мало: нужна проверка,
     которая не даст добавить следующий экран с той же дырой.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     pick = ui[ui.index("async function pick("):ui.index("async function pick(") + 3000]
-    for call in ("renderMirrors()", "fillMakeKinds()", "renderFiles()"):
+    # «Зеркала» и «Здоровье» уехали в разделы-папки: их перерисовывает `refreshModules()`,
+    # и теперь это правило для всех модулей сразу, а не список, который надо помнить.
+    for call in ("refreshModules()", "fillMakeKinds()", "renderFiles()"):
         assert call in pick, f"выбор проекта не перерисовывает экран: нет {call}"
 
     # Пустой список обязан объяснять себя. И он не имеет права чиститься до того, как
@@ -9204,7 +9237,7 @@ def test_default_language_does_not_depend_on_the_network(tmp: Path):
     не ответил — и вместо надписей человек видит имена ключей. Хуже того, запрос стоял
     первым в загрузке, то есть отказ по нему ставил под угрозу весь экран.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert '"__AURORA_I18N__"' in ui, "в странице нет места под каталог по умолчанию"
     assert "const RU = " in ui and "s = RU[key]" in ui, \
         "нет отката на русский, когда в другом языке ключа нет"
@@ -9271,8 +9304,15 @@ def test_interface_language_is_a_file_not_a_rewrite(tmp: Path):
     assert 'if (d.warning) toast(' in (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8"), \
         "сервер назвал поломку, а панель её не показывает"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "data-i18n" in ui and "function applyI18n" in ui, "разметка не умеет переводиться"
+    # Возврат на язык по умолчанию обязан вернуть и строки: каталог живёт в одной
+    # переменной, и без сброса панель оставалась на прошлом языке до перезагрузки.
+    back = ui[ui.index("async function loadI18n("):]
+    back = back[:back.index("\n}\n")]
+    assert "I18N = RU;" in back, "возврат на русский не возвращает строки"
+    # Список языков приезжает и тому, кто сидит на русском, иначе уйти с него некуда.
+    assert '"/api/i18n?lang=ru"' in back, "список языков спрашивают только не с русского"
     assert "await loadI18n();" in ui, "строки грузятся после первой отрисовки — экран моргнёт"
     i18n_dir = KIT / "cockpit/i18n"
     assert (i18n_dir / "ru.json").is_file(), "каталог языка не файлом рядом с темами"
@@ -9309,7 +9349,7 @@ def test_editor_ships_prebuilt_and_pruned(tmp: Path):
     assert size < 14_000_000, f"вендор разросся: {size // 1_000_000} МБ (ждали ~10)"
 
     assert not (KIT / "package.json").exists(), "в ките завелась сборка"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "/vendor/vditor" in ui, "панель не знает, откуда брать редактор"
     assert "cdn.jsdelivr" not in ui and "unpkg.com" not in ui, \
         "панель тянет библиотеку из интернета — в закрытом контуре это пустой экран"
@@ -9331,7 +9371,7 @@ def test_save_button_compares_text_not_a_touched_flag(tmp: Path):
     «трогали» загорелся бы сам, и защита от дифа на весь файл исчезла бы молча — а в
     git-базе такой диф означает, что настоящую правку в нём не найти.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "function wholeText()" in ui and 'F.dirty = wholeText() !== F.orig;' in ui, \
         "признак изменений берётся не из сравнения текста целого документа"
     # Шапка правится отдельно от тела — значит и сравнивать надо документ целиком,
@@ -9363,7 +9403,7 @@ def test_save_button_compares_text_not_a_touched_flag(tmp: Path):
 @test
 def test_files_section_is_reachable_and_explains_itself(tmp: Path):
     """Раздел «Файлы» — место, куда человек идёт искать документ, а не запускать программу."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert 'data-view="files"' in ui and 'id="view-files"' in ui, "раздела нет"
     # После «Продуктивности»: к файлам возвращаются часто, но начинают не с них.
     assert ui.index('data-view="work"') < ui.index('data-view="files"') < ui.index('data-view="ask"'), \
@@ -9923,7 +9963,7 @@ def test_embedding_ring_is_independent_from_the_chat_ring(tmp: Path):
     finally:
         E.load_index, AG.http_json = saved_index, saved_http
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "AURORA_EMBED_FALLBACK" in ui and 'pre+"EMBED_MODEL"' in ui, \
         "в панели нечем объявить модель векторов и запасной путь"
     assert "backendBlock(1), backendBlock(2), backendBlock(3)" not in ui, \
@@ -9940,7 +9980,7 @@ def test_agent_card_writes_where_it_reads(tmp: Path):
     показывала прежнее: человек нажимал «Сохранить» и видел, что всё сбросилось, — а
     настройка тем временем меняла один проект вместо машины.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     card = ui[ui.index("async function renderAgentCard"):]
     card = card[:card.index("\n/* ")] if "\n/* " in card else card
 
@@ -10797,7 +10837,7 @@ def test_agent_wired_into_engine(tmp: Path):
     ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     for route in ("/api/agent", "/api/agent/env", "/api/agent/ping", "/api/agent/venv"):
         assert route in ck, f"в панели нет ручки {route}"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "renderAgentCard" in ui and "Проверить соединение" in ui, \
         "в Настройке нет раздела «Агент»"
     assert "target_label" in ui, "цель записи (кит или проект) не показывается человеку"
@@ -10815,7 +10855,7 @@ def test_dev_section_hides_behind_seven_taps(tmp: Path):
     команды `dev:` относятся к самому движку и аналитику не дают ничего. Открытый по
     умолчанию раздел был бы шумом в интерфейсе у всех, кроме одного человека.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "DEV_TAPS = 7" in ui, "число нажатий должно быть названо константой"
     assert 'localStorage.setItem("aurora-dev"' in ui, "выбор не переживёт перезагрузку"
     assert 'id="devNav"' in ui and "hidden" in ui, "пункт меню должен быть скрыт по умолчанию"
@@ -11613,7 +11653,7 @@ def test_the_panel_shows_which_model_actually_takes_the_role(tmp: Path):
         why(st["own"]) or "не видно, что значение задано именно в проекте"
     assert prefix  # имя переменной названо в тесте, чтобы правка ключа его сломала
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "работает: " in ui and "перекрывает " in ui, \
         "под ролью не сказано, какая модель её возьмёт и что она перекрывает"
     assert "модель не задана — роль не поедет" in ui, \
@@ -11630,7 +11670,7 @@ def test_only_one_resume_button_and_it_names_its_project(tmp: Path):
     одна — «Продолжить маршрут», — и понять, какая к чему относится и какую жать, было
     нельзя. Человек либо не жал вовсе, либо продолжал чужой маршрут.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "function dropResumeButtons()" in ui, \
         "прежние кнопки продолжения не убираются — они будут копиться при каждом входе"
     for where in ("async function showLastRoute", "function showOfflineResume"):
@@ -11682,7 +11722,7 @@ def test_the_cycle_stops_when_it_stops_converging(tmp: Path):
     разобранным, держал маршрут сорок оборотов подряд, и понять это по экрану было
     нельзя. Дюжина оборотов — уже симптом, а не работа.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "const CYCLE_LIMIT = 12;" in ui, \
         "предохранитель снова велик — несходящийся цикл будет выглядеть долгим прогоном"
     assert "цикл не сошёлся за" in ui, \
@@ -12805,7 +12845,7 @@ def test_ocr_ring_is_separate_and_never_falls_back_to_chat(tmp: Path):
     # Панель показывает и пишет ключи распознавания. Выпуск 1.104.0 ушёл без этого: кольцо
     # существовало только в файле настроек, панель о нём не знала и честно писала «отстала
     # от ядра». Человек не видит, что путь выключен, и ищет, почему скан остался пустым.
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     for key in ('pre+"OCR_MODEL"', 'pre+"OCR_URL"', '"AURORA_OCR_MODEL"',
                 '"AURORA_OCR_FALLBACK"', '"AURORA_OCR_DPI"', '"AURORA_OCR_MAX_PAGES"'):
         assert key in ui, f"панель не пишет {key} — кольцо распознавания не настроить из формы"
@@ -13942,7 +13982,7 @@ def test_the_bridge_updates_every_lagging_project_at_once(tmp: Path):
         encoding="utf-8").strip() == ck.kit_version(), "версия не проставлена"
 
     # и кнопка на Мостике действительно ведёт сюда, а не в раздел «Версия»
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "async function updateAllProjects()" in ui, "на Мостике нет обработчика"
     assert "/api/update-all" in ui, "кнопка не зовёт ручку массового обновления"
     assert "Нажмите, чтобы обновить все" in ui, \
@@ -16108,7 +16148,7 @@ def test_config_scalar_rule_lives_in_one_place(tmp: Path):
     holders = [p.name for p in sources if rule in p.read_text(encoding="utf-8")]
     assert holders == ["aurora_common.py"], \
         f"правило разбора скаляра скопировано в {holders} — менять придётся во всех"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert rule not in ui and "cfgRaw.values" in ui, \
         "панель держит свою копию правила на JS вместо разобранных значений с сервера"
 
@@ -16220,12 +16260,16 @@ def test_time_is_recorded_in_utc_and_shown_in_local_time(tmp: Path):
     assert '_utc(h.get("created", ""))' in fetch and "[:19]" not in fetch, \
         "выгрузка отчёта снова срезает смещение Jira"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert ' UTC$/, "$1T$2Z")' in ui, "панель не понимает отметку «… UTC» из заголовков журналов"
     assert "(\\d{2})(Z?)/.exec(runId" in ui, "панель читает имя прогона в UTC как местное время"
-    for shown in ('histWhen(r.since)', 'histWhen(h.ping.when)', 'histWhen(h.retrieval.when)',
-                  'histWhen(v.when)', 'histWhen(t.at)', 'histWhen(agent.since)'):
-        assert shown in ui, f"панель показывает сырую отметку без перевода в местное время: {shown}"
+    # Переводчик один, зовут его по-разному: в ядре напрямую, в модуле — через ctx.fmt.
+    # `r.since` из этого списка убран намеренно: в реестре это версия движка
+    # («1.3.0»), а не время. Формат времени превращал её в дату 3 января.
+    for shown in ('h.ping.when', 'h.retrieval.when',
+                  'v.when', 't.at', 'agent.since'):
+        assert f"histWhen({shown})" in ui or f"fmt.when({shown})" in ui, \
+            f"панель показывает сырую отметку без перевода в местное время: {shown}"
 
 
 @test
@@ -16288,7 +16332,7 @@ def test_run_summary_counts_everything_the_human_asked(tmp: Path):
     assert RS.route(str(tmp), "", 1, [])["data"]["cards_known"] is False, \
         "без git изменения базы выданы за посчитанные"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "/api/git/head?project=" in ui and '"/api/run/summary"' in ui, \
         "маршрут в панели не собирает итог прогона"
     assert ui.count("consoleLine(out, l)") >= 2 and "startsWith(SUMMARY_MARK)) return;" in ui, \
@@ -16489,7 +16533,7 @@ def test_embed_gateway_hiccup_does_not_stop_the_route(tmp: Path):
     assert cp.returncode == 1, \
         f"сбой шлюза векторов снова останавливает маршрут: код {cp.returncode}\n{cp.stderr[-400:]}"
     assert "индекс не тронут" in cp.stderr, f"сбой не назван человеку:\n{cp.stderr[-400:]}"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = panel_sources()
     assert "const failed = rc => rc >= 2 || rc < 0;" in ui, \
         "маршрут считает поломкой не то, что раньше: код 1 шага не должен его останавливать"
 
@@ -16956,6 +17000,181 @@ def test_smoke_runs_only_invariants(_t):
     for name in INVARIANTS:
         assert name in cp.stdout, (name, cp.stdout)
     assert "aliases serial fallback without parallelism" not in cp.stdout, cp.stdout
+
+@test
+def test_cockpit_modules_are_folders(tmp: Path):
+    """Раздел панели — папка: манифест, разметка, скрипт, строки. Без правки сервера.
+
+    Тем же приёмом подключается скин. Проверяем, что реестр собирается, путь наружу
+    папки модуля не принимается и обязательные файлы на месте: раздел без разметки или
+    без скрипта поднимется пустым экраном, и человек решит, что сломалась панель.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    mods = ck.modules()
+    assert mods, "ни одного модуля — переезд разделов в папки откатился?"
+    for m in mods:
+        assert not m.get("error"), f"модуль {m['id']}: {m.get('error')}"
+        assert m["group"] in ck.MODULE_GROUPS, f"модуль {m['id']}: чужая группа меню"
+        assert m["name"].get("ru"), f"модуль {m['id']} без русского имени"
+        assert not m["behind"], \
+            f"модуль {m['id']} собран под {m['for']}, а ядро {ck.kit_version()}"
+        for need in m["needs"]:
+            assert need in ("project", "kit"), f"модуль {m['id']}: непонятное needs={need}"
+        for f in ("view.html", "view.js", "module.json"):
+            assert ck.module_file(m["id"], f), f"модуль {m['id']}: нет {f}"
+        # Команды, которые раздел зовёт, обязаны быть в реестре: кнопка, ведущая в
+        # никуда, — тот же дефект, что шаг сценария с несуществующей командой.
+        known = {r["cmd"] for r in ck.registry()}
+        for cmd in m["commands"]:
+            assert cmd in known, f"модуль {m['id']} зовёт несуществующую команду {cmd}"
+
+    # Путь наружу папки модуля и чужие расширения не принимаются.
+    assert ck.module_file("reports", "../../VERSION") == "", "модуль читается вне своей папки"
+    assert ck.module_file("../skins", "zine.css") == "", "имя модуля с путём наружу"
+    assert ck.module_file("reports", "module.json.bak") == "", "отдан файл неизвестного типа"
+
+    # Порядок меню детерминирован: группы по списку, внутри — по order.
+    order = [(ck.MODULE_GROUPS.index(m["group"]), m["order"], m["id"]) for m in mods]
+    assert order == sorted(order), "реестр модулей отдан не в порядке меню"
+
+
+@test
+def test_cockpit_module_strings_live_in_catalogues(tmp: Path):
+    """Ни одной русской строки в коде раздела: надписи живут в каталогах.
+
+    Проверка ровно та, ради которой каталоги и заводились: строка, забытая в коде,
+    переводится только правкой кода, и перевод раздела выглядит сделанным, пока кто-то
+    не откроет его на другом языке.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    for m in ck.modules():
+        mid = m["id"]
+        ru = json.loads(Path(ck.module_file(mid, "i18n/ru.json")).read_text(encoding="utf-8"))
+        keys = {k for k in ru if not k.startswith("_")}
+        assert keys, f"модуль {mid}: пустой каталог строк"
+        for k in keys:
+            assert k.startswith(mid + "."), \
+                f"модуль {mid}: ключ {k} не своего имени — разделы начнут спорить за ключи"
+
+        js = Path(ck.module_file(mid, "view.js")).read_text(encoding="utf-8")
+        html = Path(ck.module_file(mid, "view.html")).read_text(encoding="utf-8")
+        used = set(re.findall(r'\bt\("([a-z][\w.]+)"', js))
+        used |= set(re.findall(r'data-i18n(?:-ph)?="([^"]+)"', html))
+        # Ключ бывает собран из куска (`t("commands.ns." + ns)`) или лежит в таблице
+        # раздела: начало ключа покрывает весь набор, а литерал — сам себя.
+        used |= set(re.findall(r'"(%s\.[\w.]+)"' % re.escape(mid), js))
+        missing = sorted(u for u in used if not u.endswith(".") and u not in keys)
+        assert not missing, f"модуль {mid}: спрашивает ключи, которых нет в каталоге: {missing}"
+
+        # Русский текст в строковых литералах кода — то, что переезд и убирает.
+        # Комментарии остаются русскими: это объяснение для того, кто правит код.
+        # Отдельный случай — ключи данных движка («битые ссылки» — имя вида ошибки из
+        # lint, а не надпись). Их не переводят, но и спутать с забытой надписью нельзя:
+        # такая строка помечается в коде словами «данные движка».
+        body = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+        body = re.sub(r"^\s*//.*$", "", body, flags=re.M)
+        forgotten = []
+        for line in body.splitlines():
+            if "данные движка" in line:
+                continue
+            for lit in re.findall(r'"[^"\n]*"|\'[^\'\n]*\'', line.split("//")[0]):
+                if re.search("[а-яА-ЯёЁ]", lit):
+                    forgotten.append(lit)
+        assert not forgotten, \
+            f"модуль {mid}: русский текст остался в коде, а не в каталоге: {forgotten[:3]}"
+
+        # Перевод полон: иначе английский экран наполовину русский, и это не видно,
+        # пока не откроешь.
+        en_path = ck.module_file(mid, "i18n/en.json")
+        assert en_path, f"модуль {mid}: нет английского каталога"
+        en = json.loads(Path(en_path).read_text(encoding="utf-8"))
+        lack = sorted(k for k in keys if not str(en.get(k, "")).strip())
+        assert not lack, f"модуль {mid}: без перевода остались {lack[:5]}"
+
+
+@test
+def test_cockpit_serves_module_catalogues_together(tmp: Path):
+    """Панель получает строки ядра и модулей одним каталогом, ключ ядра — главнее."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    ru = ck.i18n_catalogue("ru")["strings"]
+    core = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+    for k in core:
+        if not k.startswith("_"):
+            assert ru[k] == core[k], f"ключ ядра {k} перебит модулем"
+    for m in ck.modules():
+        mod_ru = json.loads(Path(ck.module_file(m["id"], "i18n/ru.json")).read_text(encoding="utf-8"))
+        for k, v in mod_ru.items():
+            if not k.startswith("_"):
+                assert ru.get(k) == v, f"строка модуля {m['id']} не доехала до панели: {k}"
+
+    en = ck.i18n_catalogue("en")
+    assert en["lang"] == "en", "английский каталог не собрался"
+    assert en["strings"].get("files.title") != core["files.title"], \
+        "английский каталог отдал русские строки"
+
+
+@test
+def test_cockpit_core_mounts_modules_and_keeps_menu(tmp: Path):
+    """Ядро умеет поднимать раздел из папки, а меню собирается по группам и порядку."""
+    # Здесь нужен именно монолит: проверяем, что переехавший раздел из него ушёл.
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")  # noqa: PANEL
+
+    for needed in ("async function loadModules", "async function mountModule",
+                   "function moduleCtx", "/api/modules", "navgroup"):
+        assert needed in ui, f"в панели нет «{needed}» — модули не поднимутся"
+    assert "if (MODULES.has(view)) mountModule(view" in ui, \
+        "маршрутизация не знает про модули"
+    # Каждая кнопка меню объявляет порядок: модуль встаёт между своими, а не в конец.
+    buttons = re.findall(r'<button data-view="([a-z]+)"([^>]*)>', ui)
+    for view, rest in buttons:
+        assert 'data-order="' in rest, f"кнопка «{view}» без data-order — модулю некуда встать"
+    # Разделы, переехавшие в папки, из монолита убраны целиком.
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    for m in ck.modules():
+        assert f'id="view-{m["id"]}"' not in ui, \
+            f"раздел {m['id']} остался и в монолите, и в папке — путь раздвоился"
+
+
+@test
+def test_cockpit_scripts_parse(tmp: Path):
+    """Скрипты панели и разделов разбираются без ошибок.
+
+    Опечатка в разделе не видна ни одному другому тесту: панель откроется, а раздел
+    молча не поднимется — человек решит, что его убрали. node на машине может не быть
+    (кит обходится стандартной библиотекой Python), тогда проверка пропускается.
+    """
+    node = shutil.which("node")
+    if not node:
+        return
+
+    def check(name: str, code: str, module: bool):
+        f = tmp / (name + (".mjs" if module else ".js"))
+        f.write_text(code, encoding="utf-8")
+        cp = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+        assert cp.returncode == 0, f"{name} не разбирается:\n{cp.stderr.strip()[:800]}"
+
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    # Ядро — один инлайновый скрипт; токен и каталог строк сервер подставляет при выдаче,
+    # поэтому для разбора ставим на их место заглушки.
+    body = ui.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    body = body.replace("__AURORA_TOKEN__", "x").replace('"__AURORA_I18N__"', "{}")
+    check("core", body, module=False)
+
+    mods = KIT / "cockpit" / "modules"
+    for view in sorted(mods.glob("*/view.js")):
+        check(view.parent.name, view.read_text(encoding="utf-8"), module=True)
+
 
 SMOKE = "--smoke" in sys.argv
 NO_INVARIANTS = "--no-invariants" in sys.argv

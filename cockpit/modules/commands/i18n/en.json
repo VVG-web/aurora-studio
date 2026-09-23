@@ -1,0 +1,21 @@
+{
+  "_about": "Strings of the Commands section.",
+  "commands.title": "Commands",
+  "commands.about": "The engine registry. A script is deterministic mechanics, run by the panel. A model is work with meaning: the panel shows the procedure, the assistant performs it.",
+  "commands.search": "Search commands…",
+  "commands.count": "{shown} of {total}",
+  "commands.writes": "writes",
+  "commands.outward": "outbound",
+  "commands.since": "since {v}",
+  "commands.last_hint": "last run: {label} — {what}, code {rc}, engine {kit}",
+  "commands.run": "Run",
+  "commands.procedure": "Procedure",
+  "commands.ns.kit": "kit: the engine and the project",
+  "commands.ns.sync": "sync: mirrors of external systems",
+  "commands.ns.kb": "kb: extracting knowledge and its life",
+  "commands.ns.ctx": "ctx: using knowledge",
+  "commands.ns.make": "make: producing artifacts",
+  "commands.ns.ship": "ship: outward",
+  "commands.ns.ops": "ops: management and reporting",
+  "commands.ns.agent": "agent: the built-in agent"
+}

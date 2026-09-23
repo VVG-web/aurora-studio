@@ -1,0 +1,20 @@
+{
+  "id": "install",
+  "name": {
+    "ru": "Установка",
+    "en": "Install"
+  },
+  "about": {
+    "ru": "Чего не хватает на машине и в проекте, с указанием, какие команды без этого не работают.",
+    "en": "What is missing on the machine and in the project, and which commands do not work without it."
+  },
+  "group": "machine",
+  "order": 20,
+  "needs": [],
+  "commands": [
+    "kit:update",
+    "kit:hooks",
+    "kit:doctor"
+  ],
+  "for": "1.121.0"
+}

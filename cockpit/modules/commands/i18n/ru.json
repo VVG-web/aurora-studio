@@ -1,0 +1,21 @@
+{
+  "_about": "Строки раздела «Команды».",
+  "commands.title": "Команды",
+  "commands.about": "Реестр движка. Скрипт — детерминированная механика, её запускает панель. Модель — работа со смыслом: панель показывает процедуру, выполняет ассистент.",
+  "commands.search": "Поиск по командам…",
+  "commands.count": "{shown} из {total}",
+  "commands.writes": "пишет",
+  "commands.outward": "наружу",
+  "commands.since": "с {v}",
+  "commands.last_hint": "последний запуск: {label} — {what}, код {rc}, ядро {kit}",
+  "commands.run": "Запустить",
+  "commands.procedure": "Процедура",
+  "commands.ns.kit": "kit: движок и проект",
+  "commands.ns.sync": "sync: зеркала внешних систем",
+  "commands.ns.kb": "kb: извлечение и жизнь знания",
+  "commands.ns.ctx": "ctx: использование знаний",
+  "commands.ns.make": "make: производство артефактов",
+  "commands.ns.ship": "ship: наружу",
+  "commands.ns.ops": "ops: управление и отчётность",
+  "commands.ns.agent": "agent: встроенный агент"
+}

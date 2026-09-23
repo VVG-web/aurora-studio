@@ -1,0 +1,17 @@
+{
+  "_about": "Strings of the Version and migration section.",
+  "version.title": "Version and migration",
+  "version.about": "The engine inside a project is updated from the kit by a whitelist (engine_manifest.txt). Project content is never touched.",
+  "version.pick_project": "Pick a project.",
+  "version.in_project": "In the project",
+  "version.in_kit": "In the kit",
+  "version.behind": "behind",
+  "version.current": "up to date",
+  "version.preview": "Preview the update",
+  "version.whats_new": "What's new",
+  "version.warn": "An update rewrites only the files from engine_manifest.txt: the skill, the scripts, the folder schema. Your templates and prompts are not touched — the new version is placed next to them as .new. After applying it, make a commit: that way it is visible what exactly the engine changed.",
+  "version.migration": "Migrating a foreign project",
+  "version.structure_only": "Create the missing schema folders without touching the engine",
+  "version.structure": "Show folders outside the schema: their contents move to Workspaces/",
+  "version.open": "Open"
+}

@@ -1,0 +1,13 @@
+{
+  "id": "reference",
+  "name": { "ru": "Справка", "en": "Help" },
+  "about": {
+    "ru": "Документация фреймворка с оглавлением: слева что открыть, справа текст.",
+    "en": "Framework documentation with a table of contents: what to open on the left, the text on the right."
+  },
+  "group": "machine",
+  "order": 40,
+  "needs": [],
+  "commands": [],
+  "for": "1.121.0"
+}

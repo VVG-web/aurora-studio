@@ -1,0 +1,13 @@
+{
+  "id": "mirrors",
+  "name": { "ru": "Зеркала", "en": "Mirrors" },
+  "about": {
+    "ru": "Состояние зеркал Confluence и Jira, токены и цепочка синк → аудит → дрейф.",
+    "en": "State of the Confluence and Jira mirrors, tokens and the sync → audit → drift chain."
+  },
+  "group": "project",
+  "order": 100,
+  "needs": ["project"],
+  "commands": ["sync:audit", "sync:diff", "sync:jira-status", "kit:remap-sources"],
+  "for": "1.121.0"
+}

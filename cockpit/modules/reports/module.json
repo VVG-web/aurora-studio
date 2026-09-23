@@ -1,0 +1,13 @@
+{
+  "id": "reports",
+  "name": { "ru": "Отчёты", "en": "Reports" },
+  "about": {
+    "ru": "Готовые дашборды по проекту: собираются из выгрузок Jira и Confluence.",
+    "en": "Ready-made project dashboards, built from Jira and Confluence exports."
+  },
+  "group": "project",
+  "order": 80,
+  "needs": ["project"],
+  "commands": ["ops:report"],
+  "for": "1.121.0"
+}

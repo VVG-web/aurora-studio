@@ -1,0 +1,12 @@
+<div class="row">
+  <h1 id="healthTitle" data-i18n="health.title">Здоровье базы</h1>
+  <div class="row-right">
+    <span class="chip" id="healthStamp" hidden></span>
+    <button class="btn sm" id="refreshHealth" data-i18n="health.refresh"
+      data-i18n-title="health.refresh_hint">↻ Обновить</button>
+  </div>
+</div>
+<p class="sub" data-i18n="health.about">Числа считает движок (stats --json, lint, doctor,
+  audit), панель только показывает. Любая плитка кликабельна: ведёт к команде, которая с
+  этим работает.</p>
+<div id="healthBody"></div>

@@ -1,0 +1,20 @@
+{
+  "_about": "Strings of the Install section.",
+  "install.title": "What to install",
+  "install.about": "The panel checks the machine environment and the readiness of the project. Every line says which commands do not work without it.",
+  "install.have": "✓ present",
+  "install.missing": "missing",
+  "install.enables": "Enables: {what}",
+  "install.project_ready": "Project readiness · {name}",
+  "install.fix": "Fix",
+  "install.env_file": "Credentials file .env.aurora.local",
+  "install.env_file_what": "Confluence/Jira tokens for the sync scripts. The panel only sees «set» or «empty».",
+  "install.conf_token": "Confluence token",
+  "install.jira_token": "Jira token",
+  "install.engine_ok": "Engine is up to date",
+  "install.engine_what": "in the project {engine}, in the kit {kit}",
+  "install.ratchet": "Lint ratchet",
+  "install.ratchet_what": "the git hook keeps the error count from growing",
+  "install.structure": "Structure and config",
+  "install.structure_ok": "the folder schema matches the engine"
+}

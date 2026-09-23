@@ -4,9 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aurora Cockpit</title>
+<!-- Шрифты панели лежат в ките (`cockpit/vendor/fonts`) и отдаются тем же сервером:
+     контур закрытый, наружу панель не ходит ни за чем. Не пришли — системный стек
+     в конце каждого списка держит панель читаемой. -->
+<link rel="stylesheet" href="/vendor/fonts/fonts.css">
 <style>
-/* Оформление вынесено в скины: cockpit/skins/*.css. Здесь — запасной набор токенов
-   на случай, если скин не загрузился: панель должна остаться читаемой всегда. */
+/* ОФОРМЛЕНИЕ ПАНЕЛИ — ТРИ СЛОЯ ТОКЕНОВ.
+
+   1. Палитра живёт в скине (`cockpit/skins/*.css`): только значения, никаких селекторов.
+      Здесь — запасной набор на случай, если скин не загрузился: панель обязана остаться
+      читаемой всегда.
+   2. Смысл — имена, которыми пользуется разметка: фон, поверхность, текст, уровни
+      доверия, шаг сетки, шкала кеглей, радиусы, тени, длительности.
+   3. Токены компонентов — то, чем скин меняет приём, а не цвет: толщина рамки карточки,
+      тень кнопки, форма точки статуса, регистр заголовка. Компонент читает только их.
+
+   Правило, ради которого всё это заведено: скин не трогает селекторы разметки. Пока он
+   их трогал (`zine.css` переопределял два десятка правил), любая правка вёрстки молча
+   ломала оформление, и узнать об этом можно было только глазами. */
+
+/* ── Слой 1 · запасная палитра (скин перекроет) ───────────────────────────── */
 :root{
   --bg:#0A0F1E; --surface-1:#111A30; --surface-2:#17223D; --border:#263353;
   --text:#EAF0FA; --text-muted:#93A0BC;
@@ -14,21 +31,101 @@
   --tier-imported:#8592A8; --tier-draft:#9DC0FF; --tier-inreview:#FFA62B;
   --tier-verified:#2EE6C8; --tier-deprecated:#6E63C9;
   --danger:#FF4D5E; --corruption:#B24BFF;
-  --glow:0 0 0 1px rgba(46,230,200,.35), 0 0 24px -6px rgba(46,230,200,.55);
-  --radius:14px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
-  --aura-1:rgba(255,77,163,.10); --aura-2:rgba(46,230,200,.10);
   --console-bg:#060B17; --console-ink:#CFE9E3;
+  --aura-1:transparent; --aura-2:transparent;
 }
+
+/* ── Слой 2 · смысл ───────────────────────────────────────────────────────── */
+:root{
+  /* Линия сильнее обычной: рамка карточки в скинах, где граница либо есть, либо её нет. */
+  --border-strong:var(--border);
+
+  /* Шрифты. Файлы лежат в `cockpit/vendor/fonts`, подключены в шапке страницы; если
+     шрифт не пришёл, системный стек в конце списка держит панель читаемой. */
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --display:var(--sans);
+
+  /* Шкала кеглей: шесть ступеней на всю панель. Размер вне шкалы — повод завести токен,
+     а не написать число в правиле. */
+  --text-xs:11px; --text-sm:12.5px; --text-md:13.5px; --text-lg:15px;
+  --text-xl:21px; --text-2xl:27px;
+
+  /* Шаг сетки: отступы кратны четырём, иначе плотность экрана плывёт от раздела к разделу. */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:22px; --sp-6:30px;
+
+  --radius:14px; --radius-sm:10px; --radius-xs:6px; --radius-pill:999px;
+  --glow:0 0 0 1px color-mix(in oklab,var(--primary) 35%,transparent),
+         0 0 24px -6px color-mix(in oklab,var(--primary) 55%,transparent);
+  --shadow-card:none;
+  --shadow-pop:0 30px 80px -20px rgba(0,0,0,.7);
+  --shadow-toast:0 18px 40px -18px rgba(0,0,0,.8);
+
+  --motion-fast:.16s; --motion-slow:.24s;
+
+  /* Фактура полотна: два пятна света по умолчанию. Скин заменяет их бумагой в точку
+     или гасит вовсе — это одно свойство, а не переопределение `body::before`. */
+  --canvas-texture:
+    radial-gradient(900px 500px at 78% -12%, var(--aura-1), transparent 60%),
+    radial-gradient(760px 460px at 8% 0%, var(--aura-2), transparent 62%);
+  --canvas-texture-size:auto;
+}
+
+/* ── Слой 3 · токены компонентов ──────────────────────────────────────────── */
+:root{
+  /* карточка */
+  --card-bg:var(--surface-1); --card-border:var(--border); --card-border-w:1px;
+  --card-radius:var(--radius); --card-shadow:var(--shadow-card);
+
+  /* кнопка */
+  --btn-bg:var(--surface-2); --btn-border:var(--border); --btn-ink:var(--text);
+  --btn-radius:var(--radius-sm); --btn-weight:600; --btn-shadow:none;
+  --btn-transform:none; --btn-ls:normal; --btn-pad:8px 14px;
+  --btn-primary-bg:color-mix(in oklab,var(--primary) 18%,var(--surface-2));
+  --btn-primary-border:color-mix(in oklab,var(--primary) 55%,var(--border));
+  --btn-primary-ink:var(--text);
+  --btn-hover-border:color-mix(in oklab,var(--primary) 45%,var(--border));
+  --btn-hover-shift:0;
+
+  /* чип статуса и сама точка: форма — тоже приём скина */
+  --chip-bg:var(--surface-2); --chip-border-w:1px; --chip-radius:var(--radius-pill);
+  --chip-weight:400; --chip-ink:var(--text-muted);
+  --dot-size:7px; --dot-radius:2px; --dot-rotate:45deg; --dot-clip:none; --dot-ring:none;
+
+  /* меню */
+  --nav-bg:color-mix(in oklab,var(--surface-1) 35%,transparent);
+  --nav-item-radius:var(--radius-sm);
+  --nav-item-active-bg:var(--surface-2); --nav-item-active-ink:var(--text);
+  --nav-marker-w:3px; --nav-marker:var(--primary); --nav-marker-glow:0 0 12px var(--primary);
+
+  /* шапка */
+  --header-bg:color-mix(in oklab,var(--surface-1) 72%,transparent);
+  --header-blur:blur(10px);
+
+  /* плитка проекта: полоса тяжести слева и — если скин захочет — пятно ауры */
+  --tile-rail-w:4px; --tile-aura-opacity:0; --tile-lift:-3px;
+
+  /* заголовки */
+  --h1-font:var(--display); --h1-size:var(--text-xl); --h1-weight:800;
+  --h1-transform:none; --h1-ls:-.01em; --h1-ink:var(--text); --h1-shadow:none;
+  --h2-transform:none; --h2-weight:700; --h2-ls:.01em;
+  --eyebrow-ls:.16em;
+
+  /* числа: у части скинов цифры набираются не моноширинным, а своим начертанием */
+  --num-font:var(--mono);
+
+  /* поля ввода и терминальные блоки */
+  --field-bg:var(--surface-1); --field-border:var(--border);
+  --console-radius:var(--radius);
+}
+
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--text);font:15px/1.5 var(--sans);
+body{background:var(--bg);color:var(--text);font:var(--text-lg)/1.5 var(--sans);
   -webkit-font-smoothing:antialiased;overflow:hidden}
 body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:
-    radial-gradient(900px 500px at 78% -12%, var(--aura-1), transparent 60%),
-    radial-gradient(760px 460px at 8% 0%, var(--aura-2), transparent 62%);}
-button,input,select{font:inherit;color:inherit}
+  background-image:var(--canvas-texture);background-size:var(--canvas-texture-size)}
+button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer;background:none;border:0}
 a{color:var(--primary)}
 ::-webkit-scrollbar{width:10px;height:10px}
@@ -37,12 +134,14 @@ a{color:var(--primary)}
 /* ---------------- каркас ---------------- */
 #app{position:relative;z-index:1;display:grid;grid-template-columns:236px 1fr;
   grid-template-rows:56px 1fr;height:100%}
-header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;
-  border-bottom:1px solid var(--border);background:rgba(17,26,48,.72);backdrop-filter:blur(10px)}
-:root[data-theme="light"] header{background:rgba(255,255,255,.8)}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.14em;font-size:13px}
-.brand svg{filter:drop-shadow(0 0 6px rgba(46,230,200,.6))}
-.brand small{font-weight:600;letter-spacing:.02em;color:var(--text-muted);font-size:11px}
+header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 var(--sp-5);
+  border-bottom:var(--card-border-w) solid var(--border);background:var(--header-bg);
+  backdrop-filter:var(--header-blur)}
+:root[data-theme="light"] header{background:var(--header-bg)}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--display);
+  font-weight:800;letter-spacing:.14em;font-size:var(--text-sm)}
+.brand svg{filter:drop-shadow(0 0 6px color-mix(in oklab,var(--primary) 60%,transparent))}
+.brand small{font-weight:600;letter-spacing:.02em;color:var(--text-muted);font-size:var(--text-xs)}
 .brand small.stale{color:var(--tier-inreview);border-bottom:1px dashed currentColor;cursor:help}
 /* Что бы ни делала половина экранов, они делают это с одним конкретным проектом —
    и он должен быть виден всегда, а не только на Мостике. */
@@ -52,8 +151,8 @@ header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;
 .projbadge .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .projbadge.none{font-weight:500;color:var(--text-muted);border-style:dashed}
 .stalebar{border:1px solid color-mix(in oklab,var(--tier-inreview) 45%,var(--border));
-  background:color-mix(in oklab,var(--tier-inreview) 10%,transparent);border-radius:12px;
-  padding:12px 15px;font-size:13px;margin-bottom:18px}
+  background:color-mix(in oklab,var(--tier-inreview) 10%,transparent);border-radius:var(--radius-sm);
+  padding:var(--sp-3) var(--sp-4);font-size:var(--text-md);margin-bottom:var(--sp-5)}
 /* Браузерное правило `[hidden]{display:none}` живёт в UA-стилях, а любой авторский
    `display` его перебивает — независимо от специфичности. Поэтому кнопка `nav button`
    (`display:flex`) с атрибутом hidden оставалась на экране: «Скрыть раздел» ставила
@@ -62,71 +161,93 @@ header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;
    ошибок, и она обязана быть !important: иначе спор с авторскими правилами повторится. */
 [hidden]{display:none !important}
 .spacer{flex:1}
-.kbd{font:11px var(--mono);border:1px solid var(--border);border-radius:6px;
+.kbd{font:var(--text-xs) var(--mono);border:1px solid var(--border);border-radius:var(--radius-xs);
   padding:3px 7px;color:var(--text-muted);background:var(--surface-2)}
-nav{border-right:1px solid var(--border);padding:14px 10px;overflow:auto;background:rgba(17,26,48,.35)}
-:root[data-theme="light"] nav{background:rgba(255,255,255,.55)}
-nav .group{font-size:10px;letter-spacing:.16em;color:var(--text-muted);
-  text-transform:uppercase;margin:14px 8px 6px}
+nav{border-right:var(--card-border-w) solid var(--border);padding:var(--sp-3) 10px;
+  overflow:auto;background:var(--nav-bg)}
+:root[data-theme="light"] nav{background:var(--nav-bg)}
+nav .group{font-size:10px;letter-spacing:var(--eyebrow-ls);color:var(--text-muted);
+  text-transform:uppercase;margin:var(--sp-3) var(--sp-2) 6px}
 nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
-  padding:9px 10px;border-radius:10px;color:var(--text-muted);font-size:14px;position:relative}
+  padding:9px 10px;border-radius:var(--nav-item-radius);color:var(--text-muted);
+  font-size:var(--text-md);position:relative}
 nav button:hover{background:var(--surface-2);color:var(--text)}
-nav button[aria-current="true"]{background:var(--surface-2);color:var(--text);font-weight:600}
+nav button[aria-current="true"]{background:var(--nav-item-active-bg);
+  color:var(--nav-item-active-ink);font-weight:600}
 nav button[aria-current="true"]::before{content:"";position:absolute;left:-10px;top:9px;bottom:9px;
-  width:3px;border-radius:0 3px 3px 0;background:var(--primary);box-shadow:0 0 12px var(--primary)}
-nav .count{margin-left:auto;font:11px var(--mono);padding:1px 6px;border-radius:20px;
-  background:var(--surface-1);border:1px solid var(--border)}
+  width:var(--nav-marker-w);border-radius:0 3px 3px 0;background:var(--nav-marker);
+  box-shadow:var(--nav-marker-glow)}
+nav .count{margin-left:auto;font:var(--text-xs) var(--mono);padding:1px 6px;
+  border-radius:var(--radius-pill);background:var(--surface-1);border:1px solid var(--border)}
 nav .count:empty{display:none}
 nav .count.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
-main{overflow:auto;padding:22px 26px 60px;scroll-behavior:smooth}
+.navgroup{display:contents}
+main{overflow:auto;padding:var(--sp-5) var(--sp-6) 60px;scroll-behavior:smooth}
 .view{display:none;animation:rise .22s ease}
 .view.on{display:block}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-h1{font-size:23px;font-weight:800;letter-spacing:-.01em;margin:0 0 4px}
-h2{font-size:15px;font-weight:700;margin:26px 0 12px;letter-spacing:.01em}
-.sub{color:var(--text-muted);font-size:13px;margin:0 0 18px;max-width:70ch}
+h1{font-family:var(--h1-font);font-size:var(--h1-size);font-weight:var(--h1-weight);
+  letter-spacing:var(--h1-ls);text-transform:var(--h1-transform);color:var(--h1-ink);
+  text-shadow:var(--h1-shadow);margin:0 0 var(--sp-1)}
+h2{font-size:var(--text-lg);font-weight:var(--h2-weight);margin:var(--sp-6) 0 var(--sp-3);
+  letter-spacing:var(--h2-ls);text-transform:var(--h2-transform)}
+.sub{color:var(--text-muted);font-size:var(--text-md);margin:0 0 var(--sp-5);max-width:70ch}
 
 /* ---------------- элементы ---------------- */
-.card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius)}
-.grid{display:grid;gap:14px}
+.card{background:var(--card-bg);border:var(--card-border-w) solid var(--card-border);
+  border-radius:var(--card-radius);box-shadow:var(--card-shadow)}
+.grid{display:grid;gap:var(--sp-3)}
 .tiles{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
 .metrics{grid-template-columns:repeat(auto-fill,minmax(178px,1fr))}
-.metric{padding:14px 15px;position:relative;overflow:hidden;text-align:left;width:100%;
-  transition:transform .18s,border-color .18s,box-shadow .18s}
-.metric:hover{transform:translateY(-2px);border-color:color-mix(in oklab,var(--primary) 40%,var(--border))}
-.metric .val{font:700 27px/1.1 var(--mono);letter-spacing:-.02em}
-.metric .lbl{color:var(--text-muted);font-size:12px;margin-top:5px}
-.metric .hint{font-size:11px;color:var(--text-muted);margin-top:8px;opacity:.85}
+.metric{padding:var(--sp-3) var(--sp-4);position:relative;overflow:hidden;text-align:left;
+  width:100%;transition:transform var(--motion-fast),border-color var(--motion-fast),
+  box-shadow var(--motion-fast)}
+.metric:hover{transform:translateY(-2px);border-color:var(--btn-hover-border)}
+.metric .val{font:700 var(--text-2xl)/1.1 var(--num-font);letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums}
+.metric .lbl{color:var(--text-muted);font-size:var(--text-sm);margin-top:5px}
+.metric .hint{font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--sp-2);opacity:.85}
 .metric.warn .val{color:var(--tier-inreview)} .metric.bad .val{color:var(--danger)}
 .metric.ok .val{color:var(--primary)} .metric.drift .val{color:var(--corruption)}
-.chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;padding:3px 9px;
-  border-radius:999px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-muted)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-xs);padding:3px 9px;
+  border-radius:var(--chip-radius);border:var(--chip-border-w) solid var(--border);
+  background:var(--chip-bg);color:var(--chip-ink);font-weight:var(--chip-weight)}
 .chip.tier{color:var(--text)}
-.chip .dot{width:7px;height:7px;border-radius:2px;transform:rotate(45deg)}
+/* Точка статуса: цвет несёт смысл, форму задаёт скин — ромб, квадрат или сердце. */
+.chip .dot{width:var(--dot-size);height:var(--dot-size);border-radius:var(--dot-radius);
+  transform:rotate(var(--dot-rotate));clip-path:var(--dot-clip);box-shadow:var(--dot-ring)}
 .chip.ok{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 40%,var(--border))}
 .chip.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
 .chip.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
 .chip.gold{color:var(--gold);border-color:color-mix(in oklab,var(--gold) 45%,var(--border))}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:10px;
-  border:1px solid var(--border);background:var(--surface-2);font-size:13.5px;font-weight:600;
-  transition:.16s}
-.btn:hover{border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
-.btn:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-.btn.primary{background:color-mix(in oklab,var(--primary) 18%,var(--surface-2));
-  border-color:color-mix(in oklab,var(--primary) 55%,var(--border));color:var(--text)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:var(--btn-pad);
+  border-radius:var(--btn-radius);border:var(--card-border-w) solid var(--btn-border);
+  background:var(--btn-bg);color:var(--btn-ink);font-size:var(--text-md);
+  font-weight:var(--btn-weight);text-transform:var(--btn-transform);letter-spacing:var(--btn-ls);
+  box-shadow:var(--btn-shadow);transition:var(--motion-fast)}
+.btn:hover{border-color:var(--btn-hover-border);
+  transform:translate(var(--btn-hover-shift),var(--btn-hover-shift))}
+.btn:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--primary);
+  outline-offset:2px}
+.btn.primary{background:var(--btn-primary-bg);border-color:var(--btn-primary-border);
+  color:var(--btn-primary-ink)}
 .btn.primary:hover{box-shadow:var(--glow)}
 .btn.gold{background:color-mix(in oklab,var(--gold) 16%,var(--surface-2));
   border-color:color-mix(in oklab,var(--gold) 55%,var(--border))}
 .btn.danger{border-color:color-mix(in oklab,var(--danger) 50%,var(--border));color:var(--danger)}
-.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none;transform:none}
 /* Несохранённые правки: кнопка меняет цвет на «золото» — тот же код, что у необратимых
    действий, потому что смысл тот же: без нажатия работа пропадёт. */
 .btn.unsaved{background:color-mix(in oklab,var(--gold) 22%,var(--surface-2));
   border-color:var(--gold);color:var(--text);animation:pulse 2.2s ease-in-out infinite}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in oklab,var(--gold) 40%,transparent)}
   50%{box-shadow:0 0 0 6px transparent}}
-.unsaved-badge{color:var(--gold);font-size:12px;font-weight:600}
-.btn.sm{padding:5px 10px;font-size:12.5px;border-radius:8px}
+.unsaved-badge{color:var(--gold);font-size:var(--text-sm);font-weight:600}
+.btn.sm{padding:5px 10px;font-size:var(--text-sm);border-radius:var(--radius-sm)}
+/* Поля ввода носят класс кнопки, но капс и разрядка ломают само значение — путь, JQL,
+   имя файла. Поэтому у полей приём кнопки снимается токеном, а не правкой скина. */
+input.btn,select.btn,textarea.btn{text-transform:none;letter-spacing:normal;font-weight:400;
+  background:var(--field-bg);border-color:var(--field-border)}
 .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 /* Кнопки справа. `.spacer{flex:1}` работает, только пока строка НЕ перенеслась: стоит
    заголовку команды стать длинным или окну — узким, как распорка остаётся на первой
@@ -144,26 +265,34 @@ h2{font-size:15px;font-weight:700;margin:26px 0 12px;letter-spacing:.01em}
 .card.route-danger{border-color:color-mix(in oklab,var(--danger) 50%,var(--border));
   background:color-mix(in oklab,var(--danger) 5%,transparent)}
 .chip.accent{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
-.chip.warn{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
 .mono{font-family:var(--mono)}
-code.tick{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:5px;
-  color:var(--text)}
+code.tick{font:var(--text-sm) var(--mono);background:var(--surface-2);padding:1px 5px;
+  border-radius:var(--radius-xs);color:var(--text)}
 .muted{color:var(--text-muted)}
-.sep{height:1px;background:var(--border);margin:18px 0}
+.sep{height:1px;background:var(--border);margin:var(--sp-5) 0}
 
 /* плитка проекта */
-.tower{padding:16px;text-align:left;position:relative;overflow:hidden;transition:.2s}
-.tower:hover{transform:translateY(-3px)}
+.tower{padding:var(--sp-4);text-align:left;position:relative;overflow:hidden;
+  transition:transform var(--motion-slow)}
+.tower:hover{transform:translateY(var(--tile-lift))}
+/* Тяжесть проблем читается боковым зрением: сплошная полоса слева, а не размытое пятно.
+   Пятно осталось приёмом скина — `--tile-aura-opacity` включает его обратно. */
+.tower::before{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--tile-rail-w);
+  background:var(--aura,var(--text-muted))}
 .tower::after{content:"";position:absolute;inset:-40% -30% auto auto;width:180px;height:180px;
-  border-radius:50%;filter:blur(38px);opacity:.55;background:var(--aura,var(--primary));
-  transition:opacity .25s}
-.tower:hover::after{opacity:.85}
-.tower .name{font-weight:700;font-size:15.5px;margin-bottom:2px}
-.tower .path{font:11px var(--mono);color:var(--text-muted);word-break:break-all;
+  border-radius:50%;filter:blur(38px);opacity:var(--tile-aura-opacity);
+  background:var(--aura,var(--primary));transition:opacity var(--motion-slow)}
+.tower:hover::after{opacity:calc(var(--tile-aura-opacity) * 1.5)}
+.tower .name{font-weight:700;font-size:var(--text-lg);margin-bottom:2px}
+.tower .path{font:var(--text-xs) var(--mono);color:var(--text-muted);
   max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tower .foot{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;position:relative}
-/* Работа в проекте идёт прямо сейчас: мигающая точка отличает её от статичных чипов. */
+/* Чипы переносятся, а не обрезаются: «линтер…» вместо «линтер 29» — это потерянное число. */
+.tower .foot{display:flex;gap:var(--sp-2);margin-top:var(--sp-4);flex-wrap:wrap;position:relative}
 .tower .foot .act{display:contents}
+/* Длинная подпись («маршрут остановлен: …») переносится, а не срезается краем плитки:
+   на узком экране срез съедал как раз ту часть, ради которой чип и показан. */
+.tower .chip{max-width:100%;white-space:normal;text-align:left}
+/* Работа в проекте идёт прямо сейчас: мигающая точка отличает её от статичных чипов. */
 .chip.live::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;
   animation:blink 1.4s ease-in-out infinite}
 @keyframes blink{50%{opacity:.25}}
@@ -172,66 +301,70 @@ code.tick{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;bord
   background:conic-gradient(var(--primary) calc(var(--p)*1%), var(--surface-2) 0);
   position:relative;flex:none}
 .ring::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--surface-1)}
-.ring span{position:relative;z-index:1;font:700 12px var(--mono)}
+.ring span{position:relative;z-index:1;font:700 var(--text-sm) var(--num-font)}
 
 /* таблицы и списки */
-table{width:100%;border-collapse:collapse;font-size:13.5px}
-th{text-align:left;font-weight:600;color:var(--text-muted);font-size:11px;
-  text-transform:uppercase;letter-spacing:.1em;padding:8px 12px;border-bottom:1px solid var(--border)}
-td{padding:10px 12px;border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent);
+table{width:100%;border-collapse:collapse;font-size:var(--text-md)}
+th{text-align:left;font-weight:600;color:var(--text-muted);font-size:var(--text-xs);
+  text-transform:uppercase;letter-spacing:.1em;padding:var(--sp-2) var(--sp-3);
+  border-bottom:1px solid var(--border)}
+td{padding:10px var(--sp-3);border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent);
   vertical-align:top}
 tr:last-child td{border-bottom:0}
 .scroll-x{overflow-x:auto}
-.list-item{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;
+.list-item{display:flex;gap:var(--sp-3);align-items:flex-start;padding:var(--sp-3) var(--sp-4);
   border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent)}
 .list-item:last-child{border-bottom:0}
 
 /* консоль */
-.console{background:var(--console-bg);border:1px solid var(--border);border-radius:var(--radius);
-  font:12.5px/1.65 var(--mono);padding:14px 16px;min-height:220px;max-height:52vh;overflow:auto;
+.console{background:var(--console-bg);border:var(--card-border-w) solid var(--card-border);
+  border-radius:var(--console-radius);font:var(--text-sm)/1.65 var(--mono);
+  padding:var(--sp-4);min-height:220px;max-height:52vh;overflow:auto;
   white-space:pre-wrap;word-break:break-word;color:var(--console-ink)}
 .console-wrap{position:relative}
 .console-tail{position:absolute;right:14px;bottom:12px;z-index:2;box-shadow:0 2px 10px rgba(0,0,0,.35)}
-.metric.clickable{cursor:pointer;transition:border-color .12s,transform .12s}
+.metric.clickable{cursor:pointer;transition:border-color var(--motion-fast),transform var(--motion-fast)}
 .metric.clickable:hover{border-color:var(--primary);transform:translateY(-1px)}
-.routebar{background:var(--primary);color:#fff;border-color:transparent;font-weight:600}
+.routebar{background:var(--primary);color:var(--bg);border-color:transparent;font-weight:600}
 .routebar .rb-dim{opacity:.75;font-weight:400}
 .console .err{color:var(--danger)} .console .ok{color:var(--primary)}
-.console .warn{color:var(--tier-inreview)} .console .dim{color:#6D7F98}
+.console .warn{color:var(--tier-inreview)} .console .dim{opacity:.6}
 
 /* модалка / палитра */
 .overlay{position:fixed;inset:0;background:rgba(4,8,18,.62);backdrop-filter:blur(3px);
   display:none;align-items:flex-start;justify-content:center;padding-top:12vh;z-index:50}
 .overlay.on{display:flex}
-.palette{width:min(680px,92vw);background:var(--surface-1);border:1px solid var(--border);
-  border-radius:16px;box-shadow:0 30px 80px -20px rgba(0,0,0,.7);overflow:hidden}
-.palette input{width:100%;padding:16px 18px;background:transparent;border:0;
-  border-bottom:1px solid var(--border);font-size:16px;outline:0}
+.palette{width:min(680px,92vw);background:var(--card-bg);
+  border:var(--card-border-w) solid var(--card-border);border-radius:var(--radius);
+  box-shadow:var(--shadow-pop);overflow:hidden}
+.palette input{width:100%;padding:var(--sp-4) 18px;background:transparent;border:0;
+  border-bottom:1px solid var(--border);font-size:16px;outline:0;
+  text-transform:none;letter-spacing:normal}
 .palette .results{max-height:52vh;overflow:auto}
 .palette .res{display:flex;gap:10px;align-items:center;width:100%;padding:11px 18px;text-align:left}
 .palette .res:hover,.palette .res.sel{background:var(--surface-2)}
-.palette .res .nm{font-weight:600;font-size:13.5px}
-.palette .res .ds{color:var(--text-muted);font-size:12px;flex:1;overflow:hidden;
+.palette .res .nm{font-weight:600;font-size:var(--text-md)}
+.palette .res .ds{color:var(--text-muted);font-size:var(--text-sm);flex:1;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
-.drawer{width:min(560px,94vw);max-height:80vh;overflow:auto;background:var(--surface-1);
-  border:1px solid var(--border);border-radius:16px;padding:22px 24px;
-  box-shadow:0 30px 80px -20px rgba(0,0,0,.7)}
-.flagline{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13.5px}
+.drawer{width:min(560px,94vw);max-height:80vh;overflow:auto;background:var(--card-bg);
+  border:var(--card-border-w) solid var(--card-border);border-radius:var(--radius);
+  padding:var(--sp-5) var(--sp-6);box-shadow:var(--shadow-pop)}
+.flagline{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:var(--text-md)}
 .flagline input{accent-color:var(--primary)}
-.note{font-size:12.5px;line-height:1.45;color:var(--text-muted);
+.note{font-size:var(--text-sm);line-height:1.45;color:var(--text-muted);
   border-left:2px solid var(--border);padding:2px 0 2px 10px}
 .note.warn{border-color:var(--tier-inreview)}
-.warnbox{border:1px solid color-mix(in oklab,var(--gold) 45%,var(--border));
-  background:color-mix(in oklab,var(--gold) 10%,transparent);border-radius:12px;padding:12px 14px;
-  font-size:13px;margin:14px 0}
+.warnbox{border:var(--card-border-w) solid color-mix(in oklab,var(--gold) 45%,var(--border));
+  background:color-mix(in oklab,var(--gold) 10%,transparent);border-radius:var(--radius-sm);
+  padding:var(--sp-3) var(--sp-4);font-size:var(--text-md);margin:var(--sp-3) 0}
 .dangerbox{border-color:color-mix(in oklab,var(--danger) 45%,var(--border));
   background:color-mix(in oklab,var(--danger) 10%,transparent)}
 
 /* тосты */
 #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:10px;z-index:80}
-.toast{padding:11px 15px;border-radius:12px;border:1px solid var(--border);
-  background:var(--surface-1);font-size:13.5px;box-shadow:0 18px 40px -18px rgba(0,0,0,.8);
-  animation:rise .2s ease}
+.toast{padding:11px 15px;border-radius:var(--radius-sm);
+  border:var(--card-border-w) solid var(--card-border);background:var(--card-bg);
+  font-size:var(--text-md);box-shadow:var(--shadow-toast);animation:rise .2s ease}
 .toast.ok{border-color:color-mix(in oklab,var(--primary) 50%,var(--border))}
 .toast.err{border-color:color-mix(in oklab,var(--danger) 50%,var(--border))}
 .toast.warn{border-color:color-mix(in oklab,var(--tier-inreview) 50%,var(--border))}
@@ -240,15 +373,17 @@ tr:last-child td{border-bottom:0}
 .doc{max-width:80ch;font-size:14.5px}
 .doc h1{font-size:22px;margin:22px 0 10px} .doc h2{font-size:17px;margin:24px 0 8px}
 .doc h3{font-size:15px;margin:18px 0 6px} .doc p{margin:10px 0}
-.doc code{font:12.5px var(--mono);background:var(--surface-2);padding:2px 5px;border-radius:5px}
-.doc pre{background:var(--console-bg);border:1px solid var(--border);border-radius:10px;
+.doc code{font:var(--text-sm) var(--mono);background:var(--surface-2);padding:2px 5px;
+  border-radius:var(--radius-xs)}
+.doc pre{background:var(--console-bg);border:1px solid var(--border);border-radius:var(--radius-sm);
   padding:12px 14px;overflow-x:auto}
 .doc pre code{background:none;padding:0;color:var(--console-ink)}
 .doc table{margin:12px 0} .doc li{margin:4px 0}
-.doc blockquote{border-left:3px solid var(--primary);margin:12px 0;padding:2px 14px;color:var(--text-muted)}
+.doc blockquote{border-left:3px solid var(--primary);margin:12px 0;padding:2px 14px;
+  color:var(--text-muted)}
 
 .skel{background:linear-gradient(90deg,var(--surface-1),var(--surface-2),var(--surface-1));
-  background-size:200% 100%;animation:sh 1.2s infinite;border-radius:10px;height:74px}
+  background-size:200% 100%;animation:sh 1.2s infinite;border-radius:var(--radius-sm);height:74px}
 @keyframes sh{to{background-position:-200% 0}}
 .spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--primary);
   border-radius:50%;display:inline-block;animation:sp .7s linear infinite}
@@ -277,13 +412,47 @@ tr:last-child td{border-bottom:0}
    а не оформление панели. Сбрасываем на поддереве редактора, чужой код не трогаем. */
 #vditor, #vditor *{text-transform:none !important; letter-spacing:normal !important;
   font-variant:normal !important}
-#vditor .vditor-reset{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
-  "Helvetica Neue",Arial,sans-serif}
+#vditor .vditor-reset{font-family:var(--sans)}
 #vditor .vditor-reset h1,#vditor .vditor-reset h2,#vditor .vditor-reset h3,
 #vditor .vditor-reset h4{color:inherit; font-weight:600}
 
-@media (max-width:860px){#app{grid-template-columns:64px 1fr}nav .label,nav .group,nav .count{display:none}
-  nav button{justify-content:center}main{padding:16px}}
+/* ---------------- узкий экран ----------------
+   Раньше здесь была одна ступень на 860 px: меню сжималось до 64 px и прятало подписи.
+   Иконок в меню нет, поэтому на телефоне оставался столбик пустых кнопок, а шапка не
+   помещалась в строку. Теперь меню на узком экране становится горизонтальной лентой
+   с подписями, а шапка переносится. Проверено от 320 px. */
+@media (max-width:980px){
+  #app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}
+  header{position:sticky;top:0;z-index:20;flex-wrap:wrap;gap:var(--sp-2);
+    padding:var(--sp-2) var(--sp-3)}
+  header .spacer{flex-basis:100%;height:0}
+  nav{display:flex;gap:6px;align-items:center;overflow-x:auto;overflow-y:hidden;
+    border-right:0;border-bottom:var(--card-border-w) solid var(--border);
+    padding:var(--sp-2) var(--sp-3);scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{width:auto;white-space:nowrap;padding:6px 11px}
+  nav button[aria-current="true"]::before{left:0;right:0;top:auto;bottom:-6px;width:auto;
+    height:var(--nav-marker-w);border-radius:3px 3px 0 0}
+  nav .group{margin:0 var(--sp-1) 0 var(--sp-2);font-size:9px;white-space:nowrap;opacity:.75}
+  nav .count{margin-left:6px}
+  main{padding:var(--sp-4) var(--sp-4) 48px}
+  .console{max-height:44vh}
+  #consoleCmd{max-width:min(40ch,60vw)}
+  /* Файлы: дерево и редактор столбиком — ползунок ширины на телефоне бесполезен.
+     Ширину списка тянут мышью, и JS пишет её прямо в стиль элемента: на узком экране
+     это значение приходится перебивать, иначе дерево занимает весь экран. */
+  #filesSplit{display:none}
+  #filesPanel{flex:1 1 100% !important;width:auto !important;max-height:34vh}
+}
+@media (max-width:560px){
+  .brand{font-size:var(--text-xs);letter-spacing:.1em}
+  .brand small{display:none}
+  .projbadge{max-width:18ch}
+  main{padding:var(--sp-3) var(--sp-3) 40px}
+  .tiles,.metrics{grid-template-columns:1fr}
+  .drawer{padding:var(--sp-4)}
+  #toasts{right:10px;left:10px;bottom:10px}
+}
 </style>
 <style id="skin"></style>
 </head>
@@ -311,29 +480,30 @@ tr:last-child td{border-bottom:0}
 
   <nav>
     <div class="group">Машина</div>
-    <button data-view="overview" aria-current="true" aria-label="Мостик: все проекты"><span class="label">Мостик</span></button>
-    <button data-view="install" aria-label="Установка компонентов"><span class="label">Установка</span><span class="count" id="navInstall"></span></button>
-    <button data-view="setup" aria-label="Настройка кита и машины"><span class="label">Настройка кита</span></button>
-    <button data-view="reference" aria-label="Справка"><span class="label">Справка</span></button>
-    <button data-view="about" aria-label="О проекте"><span class="label">О проекте</span></button>
+    <!-- Группа — контейнер, а не просто заголовок: модуль встаёт в неё по манифесту,
+         на своё место по `order`. `display:contents` оставляет кнопки прямыми детьми
+         меню, поэтому и лента на узком экране, и столбец на широком не меняются. -->
+    <div class="navgroup" data-group="machine">
+    <button data-view="overview" data-order="10" aria-current="true" aria-label="Мостик: все проекты"><span class="label">Мостик</span></button>
+    <button data-view="setup" data-order="30" aria-label="Настройка кита и машины"><span class="label">Настройка кита</span></button>
+    </div>
     <div class="group">Проект</div>
     <!-- Маршруты и работа по базе живут здесь, а не в «Машине»: каждый их шаг —
          команда в выбранном проекте. В группе машины они выглядели общесистемными,
          и человек открывал их, не выбрав проект. -->
-    <button data-view="health" aria-label="Здоровье базы"><span class="label">Здоровье</span><span class="count" id="navHealth"></span></button>
-    <button data-view="project" aria-label="Настройки проекта"><span class="label">Настройки проекта</span></button>
-    <button data-view="quickstart" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
-    <button data-view="work" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
-    <button data-view="files" aria-label="Файлы проекта"><span class="label" data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
-    <button data-view="graph" aria-label="Граф базы знаний"><span class="label" data-i18n="nav.graph">Граф</span></button>
-    <button data-view="ask" aria-label="Спросить базу"><span class="label">Спросить</span></button>
-    <button data-view="reports" aria-label="Отчёты"><span class="label">Отчёты</span></button>
-    <button data-view="commands" aria-label="Команды"><span class="label">Команды</span><span class="count" id="navCmds"></span></button>
-    <button data-view="mirrors" aria-label="Зеркала"><span class="label">Зеркала</span><span class="count" id="navMirrors"></span></button>
-    <button data-view="version" aria-label="Версия и миграция"><span class="label">Версия</span><span class="count" id="navVersion"></span></button>
-    <button data-view="console" aria-label="Консоль"><span class="label">Консоль</span></button>
+    <div class="navgroup" data-group="project">
+    <button data-view="project" data-order="20" aria-label="Настройки проекта"><span class="label">Настройки проекта</span></button>
+    <button data-view="quickstart" data-order="30" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
+    <button data-view="work" data-order="40" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
+    <button data-view="files" data-order="50" aria-label="Файлы проекта"><span class="label" data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
+    <button data-view="graph" data-order="60" aria-label="Граф базы знаний"><span class="label" data-i18n="nav.graph">Граф</span></button>
+    <button data-view="ask" data-order="70" aria-label="Спросить базу"><span class="label">Спросить</span></button>
+    <button data-view="console" data-order="120" aria-label="Консоль"><span class="label">Консоль</span></button>
+    </div>
     <div class="group" id="devGroup" hidden>Движок</div>
-    <button data-view="dev" id="devNav" hidden aria-label="Разработка движка"><span class="label">Разработка</span></button>
+    <div class="navgroup" data-group="engine">
+      <button data-view="dev" data-order="10" id="devNav" hidden aria-label="Разработка движка"><span class="label">Разработка</span></button>
+    </div>
   </nav>
 
   <main>
@@ -352,58 +522,6 @@ tr:last-child td{border-bottom:0}
       <div class="grid tiles" id="towers"></div>
       <h2>Сводка по машине</h2>
       <div class="grid metrics" id="globalMetrics"></div>
-    </section>
-
-    <!-- ЗДОРОВЬЕ -->
-    <section class="view" id="view-health">
-      <div class="row">
-        <h1 id="healthTitle">Здоровье базы</h1>
-        <div class="row-right">
-          <span class="chip" id="healthStamp" hidden></span>
-          <button class="btn sm" id="refreshHealth"
-            title="Пересчитать показатели проекта">↻ Обновить</button>
-        </div>
-      </div>
-      <p class="sub">Числа считает движок (<span class="mono">stats --json</span>,
-        <span class="mono">lint</span>, <span class="mono">doctor</span>, <span class="mono">audit</span>),
-        панель только показывает. Любая плитка кликабельна: ведёт к команде, которая с этим работает.</p>
-      <div id="healthBody"></div>
-    </section>
-
-    <!-- КОМАНДЫ -->
-    <section class="view" id="view-commands">
-      <h1>Команды</h1>
-      <p class="sub">Реестр движка. <b>Скрипт</b> — детерминированная механика, её запускает панель.
-        <b>Модель</b> — работа со смыслом: панель показывает процедуру, выполняет ассистент.</p>
-      <div class="row" style="margin-bottom:14px">
-        <input id="cmdSearch" placeholder="Поиск по командам…" class="btn" style="flex:1;min-width:220px;font-weight:400">
-        <span class="chip" id="cmdCount"></span>
-      </div>
-      <div id="cmdList"></div>
-    </section>
-
-    <!-- ЗЕРКАЛА -->
-    <section class="view" id="view-mirrors">
-      <h1>Зеркала внешних систем</h1>
-      <p class="sub">Confluence и Jira выгружаются в <span class="mono">Sources/</span> детерминированными
-        скриптами. Зеркало — объект работы, а не знание: карточки ссылаются на него через <span class="mono">source:</span>.</p>
-      <div id="mirrorsBody"></div>
-    </section>
-
-    <!-- УСТАНОВКА -->
-    <section class="view" id="view-install">
-      <h1>Что доустановить</h1>
-      <p class="sub">Панель проверяет окружение машины и готовность проекта. У каждой строки сказано,
-        какие команды без неё не работают.</p>
-      <div id="installBody"></div>
-    </section>
-
-    <!-- ВЕРСИЯ -->
-    <section class="view" id="view-version">
-      <h1>Версия и миграция</h1>
-      <p class="sub">Движок в проекте обновляется из kit'а по белому списку
-        (<span class="mono">engine_manifest.txt</span>). Контент проекта не трогается никогда.</p>
-      <div id="versionBody"></div>
     </section>
 
     <!-- КОНСОЛЬ -->
@@ -475,15 +593,6 @@ tr:last-child td{border-bottom:0}
       <div id="setupBody"></div>
     </section>
 
-    <!-- ОТЧЁТЫ -->
-    <section class="view" id="view-reports">
-      <h1>Отчёты</h1>
-      <p class="sub">Готовые дашборды по проекту. Собираются из выгрузок Jira и Confluence,
-        получаются одним самодостаточным HTML — его можно отдать кому угодно, он откроется
-        файлом. Что попадёт в отчёт, задаётся в секции <span class="mono">reports:</span>
-        конфига и в файлах настроек: ростер команды и календарь событий ведёт человек.</p>
-      <div id="reportsBody"></div>
-    </section>
 
     <!-- СПРОСИТЬ БАЗУ -->
     <!-- ГРАФ -->
@@ -668,20 +777,6 @@ tr:last-child td{border-bottom:0}
       <div id="devBody"></div>
     </section>
 
-    <section class="view" id="view-about">
-      <h1>О проекте</h1>
-      <div id="aboutBody"></div>
-    </section>
-
-    <!-- СПРАВКА -->
-    <section class="view" id="view-reference">
-      <h1>Справка</h1>
-      <p class="sub">Документация фреймворка. Слева — что открыть, справа — текст.</p>
-      <div class="row" style="align-items:flex-start;gap:18px">
-        <div class="card" style="width:250px;flex:none;overflow:hidden" id="docList"></div>
-        <div class="doc" id="docBody" style="flex:1;min-width:0">Выберите документ.</div>
-      </div>
-    </section>
   </main>
 </div>
 
@@ -700,7 +795,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.119.1";
+const UI_VERSION = "1.121.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -796,7 +891,18 @@ async function loadI18n(){
   const lang = localStorage.getItem("aurora-lang") || "ru";
   S.lang = "ru"; S.langs = [{id:"ru", name:"Русский", keys:Object.keys(RU).length}];
   document.documentElement.lang = "ru";
-  if (lang === "ru") { applyI18n(); return; }   // русский уже в странице — ходить некуда
+  if (lang === "ru"){
+    // Вернуться на русский — значит вернуть и строки: `I18N` держит каталог прошлого
+    // языка, и без этой строки панель оставалась английской до перезагрузки страницы.
+    I18N = RU;
+    applyI18n();   // русский уже в странице — за строками ходить некуда
+    // А вот за СПИСКОМ языков — нужно: пока его не спрашивали, переключатель показывал
+    // один русский, и уйти с него было некуда. Дефект дремал, пока язык был один.
+    api("/api/i18n?lang=ru", {quiet:true}).then(d => {
+      if (d && d.languages && d.languages.length > 1){ S.langs = d.languages; drawLangPicker(); }
+    });
+    return;
+  }
   // За другим языком идём по сети, но её отказ не должен ломать загрузку панели:
   // не ответила — остаёмся на русском и говорим об этом, а не показываем пустые экраны.
   try {
@@ -816,12 +922,12 @@ async function loadI18n(){
   applyI18n();
 }
 
-function applyI18n(){
+function applyI18n(root = document){
   // Разметка помечена `data-i18n`; новые экраны пишутся сразу так, старые переезжают
   // тогда, когда их и так правят. Разовый вынос 982 строк — правка, которая трогает
   // каждый экран и не даёт человеку ничего видимого.
-  $$("[data-i18n]").forEach(n => { const v = I18N[n.dataset.i18n]; if (v) n.textContent = v; });
-  $$("[data-i18n-ph]").forEach(n => { const v = I18N[n.dataset.i18nPh]; if (v) n.placeholder = v; });
+  $$("[data-i18n]", root).forEach(n => { const v = I18N[n.dataset.i18n]; if (v) n.textContent = v; });
+  $$("[data-i18n-ph]", root).forEach(n => { const v = I18N[n.dataset.i18nPh]; if (v) n.placeholder = v; });
 }
 
 async function loadModels(n, btn){
@@ -861,6 +967,8 @@ function drawLangPicker(){
     localStorage.setItem("aurora-lang", sel.value);
     await loadI18n();
     drawLangPicker();
+    relabelModules();      // подписи разделов в меню
+    await refreshModules();   // и содержимое тех, что уже подняты
     toast("язык интерфейса: " + sel.options[sel.selectedIndex].text.split(" · ")[0]);
   };
 }
@@ -1656,7 +1764,7 @@ addEventListener("beforeunload", e => {
 });
 
 /* ---------------- навигация ---------------- */
-function show(view){
+function show(view, payload){
   // уход из «Настройки» с незаписанными правками — единственное место, где панель
   // может молча потерять введённое: всё остальное она либо пишет сразу, либо не пишет
   if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;
@@ -1664,14 +1772,8 @@ function show(view){
   $$(".view").forEach(v=>v.classList.toggle("on", v.id === "view-"+view));
   $$("nav button").forEach(b=>b.setAttribute("aria-current", String(b.dataset.view===view)));
   if (view==="overview") refreshActivity();
-  if (view==="health") renderHealth();
-  if (view==="mirrors") renderMirrors();
-  if (view==="install") renderInstall();
   if (view==="setup"){ renderSetup(); drawLangPicker(); }
   if (view==="project") renderProject();
-  if (view==="version") renderVersion();
-  if (view==="commands") renderCommands();
-  if (view==="reference") renderReference();
   if (view==="quickstart") renderQuick();
   if (view==="work") renderQuick("продуктивность");
   if (view==="work") fillMakeKinds();
@@ -1679,7 +1781,6 @@ function show(view){
   if (view==="graph") renderGraph();
   if (view==="ask"){ $("#askText")?.focus(); renderAskHistory(); drawThreadHint();
                      drawAskExport(); fillAskBackends(); }
-  if (view==="reports") renderReports();
   if (view==="console"){
     renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs();
     // Маршрут мог остановиться в прошлой сессии: состояние читаем из проекта и, если сейчас
@@ -1689,7 +1790,7 @@ function show(view){
         .then(d=>{ showLastRoute(d && d.state); });
     }
   }   // журнал, задание и то, что идёт прямо сейчас
-  if (view==="about") renderAbout();
+  if (MODULES.has(view)) mountModule(view, payload);
   if (view==="dev") renderDev();
   location.hash = view + (S.project ? "|" + S.project.slug : "");
 }
@@ -1722,19 +1823,27 @@ function tapAbout(){
   }
 }
 
-$$("nav button").forEach(b=>b.onclick=()=>{
-  if (b.dataset.view === "about") tapAbout();
-  if (["health","commands","mirrors","version","reports"].includes(b.dataset.view) && !S.project){
-    toast("Сначала выберите проект на Мостике","warn"); show("overview"); return;
+function navClick(b){
+  const view = b.dataset.view;
+  if (view === "about") tapAbout();
+  // Нужен ли разделу проект, говорит его манифест (`needs`), а не список в коде ядра:
+  // список приходилось править при каждом переезде, и однажды он остался пустым
+  // массивом — истинным, отчего ЛЮБОЙ раздел стал требовать проект и уводить на Мостик.
+  const needsProject = (MODULES.get(view)?.manifest.needs || []).includes("project");
+  if (needsProject && !S.project){
+    toast("Сначала выберите проект на Мостике", "warn"); show("overview"); return;
   }
-  show(b.dataset.view);
-});
+  show(view);
+}
+$$("nav button").forEach(b => b.onclick = () => navClick(b));
 $("#themeBtn").onclick = ()=>{
   const now = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = now;
   localStorage.setItem("aurora-theme", now);
 };
-document.documentElement.dataset.theme = localStorage.getItem("aurora-theme") || "dark";
+// Выбор человека главнее; пока его нет — берём системный, а не тёмную наугад.
+document.documentElement.dataset.theme = localStorage.getItem("aurora-theme")
+  || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
 
 /* ---------------- загрузка ---------------- */
 async function boot(){
@@ -1767,14 +1876,13 @@ async function boot(){
       el("button",{class:"btn", style:"margin-left:8px", onclick:restartPanel},
         "Перезапустить панель")));
   }
-  $("#navCmds").textContent = S.state.commands.length;
+  setBadge("commands", S.state.commands.length);
   const missing = S.state.env.items.filter(i=>!i.ok).length;
-  const ni = $("#navInstall");
-  ni.textContent = missing || "";
-  ni.classList.toggle("bad", missing>0);
+  setBadge("install", missing || "", missing > 0);
   renderOverview();
   renderHistory();
   loadSkins();
+  await loadModules();   // меню собрано целиком до того, как адрес вернёт нас в раздел
   prefetchHealth();
   const [v, slug] = (location.hash.slice(1)||"").split("|");
   if (slug){ const p = S.state.projects.find(p=>p.slug===slug); if (p) await pick(p, false); }
@@ -1911,7 +2019,7 @@ function renderOverview(){
     const lintBad = h && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
     const why = auraWhy(p);
     const act = el("span",{class:"act"}); act.dataset.path = p.path;
-    const t = el("button",{class:"card tower", style:`--aura:${aura(p)}`,
+    const tile = el("button",{class:"card tower", style:`--aura:${aura(p)}`,
         title: (why.color === "green" ? "Зелёный: " : "До зелёного: ")
                + why.todo.map(x=>(x.bad ? "✗ " : "✓ ") + x.text).join(" · "),
         "aria-label":`Проект ${p.name}, движок ${p.engine}`, onclick:()=>pick(p)},
@@ -1928,10 +2036,12 @@ function renderOverview(){
         // и клик «выбрать проект» уходит в никуда или в соседний проект.
         h ? el("span",{class:"chip "+(errs?"bad":"ok")},
               errs ? errs + " блокер" + (errs>1?"ов":"") : "doctor чист")
-          : el("span",{class:"chip muted"},"считаю…"),
+          // Пока считается: спиннер вместо многоточия — «считаю…» рядом с числами
+          // читается как обрезанное значение, а не как состояние.
+          : el("span",{class:"chip"}, el("span",{class:"spin"}), " " + t("overview.counting")),
         h ? el("span",{class:"chip "+(lintBad?"bad":"")},
               h.lint.errors + " ошибок линтера")
-          : el("span",{class:"chip muted"},"линтер…"),
+          : null,
         // Второе число рядом с долей доверия: сколько источников уже разобрано. Доверие
         // считается по знанию, разбор — по документам, и одно без другого читается криво:
         // высокая доля доверия при половине неразобранных источников — не «почти готово».
@@ -1945,8 +2055,8 @@ function renderOverview(){
                 : el("span",{class:"chip ok"},"дерево чисто"),
         act,
       ));
-    t.id = "tower-"+p.slug;
-    box.append(t);
+    tile.id = "tower-"+p.slug;
+    box.append(tile);
   });
   drawActivity();
   const g = $("#globalMetrics"); g.innerHTML="";
@@ -2019,24 +2129,24 @@ async function pick(p, go=true){
   // здоровье зовёт несколько команд и занимает секунды. Поставить его после — значит
   // не отвязать вовсе.
   S.runs = null; loadRuns();
-  $("#healthTitle").textContent = "Здоровье базы · " + p.name;
   renderProjBadge();
   if (go) show("health");
-  S.health = null; renderHealth();
+  S.health = null; refreshModules();
   const h = await api("/api/health?project=" + encodeURIComponent(p.path));
   // Пока считалось, человек мог выбрать другой проект: его экран дорисует свой pick,
   // а этот ответ только ложится своему проекту.
   if (!takeHealth(p, h)) return;
-  renderHealth(); renderOverview(); renderProjBadge();
-  // Зеркала рисуются из того же здоровья. Пока оно считалось, вкладка показывала
-  // «выберите проект» — и оставалась такой навсегда: перерисовать её было некому,
-  // человек видел пустоту при выбранном проекте и уходил искать поломку.
-  renderMirrors();
+  renderOverview(); renderProjBadge();
+  // Зеркала, установка и версия рисуются из того же здоровья. Пока оно считалось, вкладка
+  // показывала «выберите проект» — и оставалась такой навсегда: перерисовать её было
+  // некому, человек видел пустоту при выбранном проекте и уходил искать поломку. Теперь
+  // это разделы-модули, и ядро перерисовывает все поднятые разом.
+  refreshModules();
   // Настройки проекта — тоже про выбранный проект: без перерисовки вкладка осталась бы
   // с чужими значениями, а правка ушла бы не туда.
   if (S.view === "project") renderProject();
   // журнал запусков — свой у каждого проекта; его отметки стоят и в командах, и в сценариях
-  renderCommands(); renderHistory(); renderQuick(); renderQuick("продуктивность");
+  renderHistory(); renderQuick(); renderQuick("продуктивность");
   // Список артефактов и дерево файлов — тоже про выбранный проект. Наполнял их только
   // переход на вкладку, поэтому выбор проекта, сделанный СТОЯ на «Продуктивности» или
   // «Файлах», оставлял экран пустым навсегда: перерисовать его было некому. Ровно та же
@@ -2045,23 +2155,41 @@ async function pick(p, go=true){
   fillMakeKinds();
   if (S.view === "files") renderFiles();
   navBadges(p, h);
-  stamp("#healthStamp");
   // Пришли в проект, а в нём что-то уже идёт — сказать сразу. Молчание здесь стоило
   // человеку второго маршрута поверх первого.
   liveJobs().then(js=>{ if (js.length){ drawLiveJobs();
     toast(`В проекте выполняется ${js.length === 1 ? "команда" : "команд: " + js.length}`
           + `: ${js[0].cmd} — консоль покажет вывод`, "warn"); }});
 }
+// Отметка у пункта меню. Раздел мог уже переехать в папку — у модуля кнопка своя
+// (`nav-<id>`), у встроенного прежняя (`navMirrors`). Считает отметки по-прежнему ядро:
+// числа приходят из здоровья проекта, а раздел, в который не заходили, ещё не загружен
+// и сам про себя ничего сказать не может.
+function setBadge(view, text, bad){
+  const n = $("#nav-" + view)
+        || $("#nav" + view.charAt(0).toUpperCase() + view.slice(1));
+  if (!n) return;
+  n.textContent = text || "";
+  n.classList.toggle("bad", !!bad);
+}
+
 function navBadges(p, h){
   const errs = h.doctor.errors.length;
-  $("#navHealth").textContent = errs || "";
-  $("#navHealth").classList.toggle("bad", errs>0);
+  setBadge("health", errs || "", errs > 0);
   const mm = Object.values(h.mirrors||{}).reduce(
     (n, x)=> n + (x.no_state ? 1 : (x.missing||0) + (x.orphan||0)), 0);
-  $("#navMirrors").textContent = mm || "";
-  $("#navMirrors").classList.toggle("bad", mm>0);
-  $("#navVersion").textContent = p.behind ? "!" : "";
-  $("#navVersion").classList.toggle("bad", !!p.behind);
+  setBadge("mirrors", mm || "", mm > 0);
+  setBadge("version", p.behind ? "!" : "", !!p.behind);
+}
+
+// Пересчёт здоровья по требованию раздела: раздел не ходит в api сам, потому что
+// результат нужен не только ему — от него зависят отметки в меню и Мостик.
+async function reloadHealth(){
+  const p = S.project;
+  if (!p) return null;
+  const h = await api("/api/health?project=" + encodeURIComponent(p.path));
+  if (h && h.stats && takeHealth(p, h)) navBadges(p, h);
+  return S.health;
 }
 
 /* ---------------- пересчёт показателей ---------------- */
@@ -2081,17 +2209,6 @@ async function busy(btn, fn){
   btn.innerHTML = ""; btn.append(el("span",{class:"spin"}), " Считаю…");
   try { await fn(); } finally { btn.disabled = false; btn.innerHTML = was; }
 }
-$("#refreshHealth").onclick = ()=>{
-  if (!S.project){ toast("Сначала выберите проект на Мостике","warn"); return; }
-  busy($("#refreshHealth"), async ()=>{
-    const p = S.project;
-    const h = await api("/api/health?project=" + encodeURIComponent(p.path));
-    if (!h || !h.stats || !takeHealth(p, h)) return;
-    renderHealth(); renderOverview(); renderProjBadge(); navBadges(p, h);
-    stamp("#healthStamp");
-    toast("Показатели пересчитаны: " + p.name, "ok");
-  });
-};
 $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
   // перечитываем и карточки проектов: ветка, незакоммиченное и версия движка меняются
   // ровно от той же работы, что и числа базы
@@ -2103,8 +2220,8 @@ $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
   S.health = null;
   renderOverview(); renderProjBadge();
   await prefetchHealth();
-  if (S.project && S.project.health){ navBadges(S.project, S.project.health); stamp("#healthStamp"); }
-  if (S.view==="health") renderHealth();
+  if (S.project && S.project.health) navBadges(S.project, S.project.health);
+  refreshModules();
   stamp("#overviewStamp");
   toast("Показатели пересчитаны: проектов " + st.projects.length, "ok");
 });
@@ -2148,530 +2265,21 @@ const goCmd = (cmd, args, label) => ({label, act: async () => {
   if (res.job) poll(res.job, 0, line);
 }});
 
-function baseCards(h, st){
-  const lint = h.lint || {}, kinds = lint.kinds || {}, b = h.build || {};
-  const k = st.kinds || {}, why = st.trust_why || {};
-  const noKind = k["(нет kind)"] || 0;
-  const orphans = kinds["карточки без связей"] || 0;
-  const broken = kinds["битые ссылки"] || 0;
-  // «Починить» зовём, только когда есть что чинить: последний шаг «Починить базу» запоминает
-  // остаток, и то, что починке не по силам, ведёт к списку решений, а не к той же кнопке.
-  const fresh = lint.fresh ?? lint.errors ?? 0;
-  const trace = h.trace || {};
-  const cards = [
-    metricCard({title:"Состав базы", value: st.total ?? "—",
-      sub: `знание ${st.statuses?.knowledge ?? st.trusted ?? 0} · черновики ${st.statuses?.draft ?? 0}`,
-      hint:"Сколько карточек в базе, не считая служебных карт и оглавлений"}),
-    metricCard({title:"Доверие", value: (st.pct_verified ?? 0) + "%",
-      sub: Object.entries(why).filter(([n])=>n!=="доверенные")
-             .map(([n,v])=>`${v} — ${n}`).join(" · ")
-           || "почему остальные нет — не посчитано: движок проекта старее 1.93",
-      hint:"Доля доверенных среди карточек, в которых есть что проверять: заготовки без знания и служебные файлы не считаются. Доверие вычисляется по источникам и статусам связанных задач, а не присваивается человеком",
-      go: goRoute("update","Обновить базу")}),
-    // Пустой `kinds` — это «движок проекта старый и типов не считает», а не «у всех
-    // проставлен». Разница между «не измеряли» и «в порядке» — та самая догадка,
-    // выданная за факт, за которую мы уже платили дважды.
-    metricCard({title:"Типы карточек",
-      value: Object.keys(k).length ? (st.total ?? 0) - noKind : "—",
-      sub: !Object.keys(k).length ? "не измерялись: движок проекта старее 1.93"
-           : noKind ? `${noKind} без типа — неизвестно, кому править тело`
-                    : "у всех проставлен",
-      tone: noKind ? "warn" : "",
-      go: Object.keys(k).length && noKind
-          ? goCmd("kb:kind",["--apply"],"Проставить типы") : null}),
-    metricCard({title:"Связи", value: orphans + broken,
-      sub: orphans ? `${orphans} карточек без связей · ${broken} битых ссылок`
-                   : broken ? `${broken} битых ссылок` : "до каждой карточки можно дойти",
-      tone: (orphans + broken) ? "warn" : "",
-      go: !(orphans + broken) ? null : fresh ? goRoute("fix","Починить базу")
-                                            : goCmd("ops:todo",[],"Что решить вам")}),
-    metricCard({title:"Трассировка", value: trace.direct != null
-        ? (trace.direct + (trace.indirect||0)) : "—",
-      sub: trace.direct != null
-        ? `прямых ${trace.direct} · через трассировку ${trace.indirect||0} · без связи ${trace.orphan||0}`
-        : "не строилась: `ops:trace-table`",
-      go: goCmd("ops:trace-table",["--apply"],"Построить таблицу")}),
-    metricCard({title:"Ошибки базы", value: lint.errors ?? "—",
-      sub: ((lint.errors||0) && !fresh ? "починка их не берёт — ждут вашего решения · " : "")
-           + (Object.entries(kinds).slice(0,3).map(([n,v])=>`${v} ${n}`).join(" · ") || "нет"),
-      tone: (lint.errors||0) ? "warn" : "",
-      go: !(lint.errors||0) ? null : fresh ? goRoute("fix","Починить базу")
-                                          : goCmd("ops:todo",[],"Что решить вам")}),
-    metricCard({title:"Свежесть", value: b.left != null ? b.left : "—",
-      sub: b.left != null
-        ? `источников не разобрано из ${b.total} · разобрано ${b.pct}%`
-        : "план не строился",
-      tone: (b.left||0) ? "warn" : "",
-      go: (b.left||0) ? goRoute("update","Обновить базу") : null}),
-    // Связь и индекс — здоровье не базы, а того, чем она обслуживается. Без них
-    // «поиск по смыслу» тихо вырождается в поиск по словам, и заметить это нельзя.
-    metricCard({title:"Связь с моделями",
-      value: (h.ping && h.ping.when) ? `${h.ping.alive}/${h.ping.alive + h.ping.dead}` : "—",
-      sub: (h.ping && h.ping.when)
-        ? `проверено ${histWhen(h.ping.when)}` + (h.ping.dead ? ` · не отвечают: ${h.ping.dead}` : "")
-        : "не проверялась — связь живая, её смотрят по кнопке",
-      tone: (h.ping && h.ping.dead) ? "warn" : "",
-      hint:"Живая проверка каждого бэкенда. Делается по кнопке: это сетевые запросы",
-      go: {label:"Проверить связь", act: async () => {
-        toast("проверяю связь…","ok");
-        const r = await api("/api/agent/ping?project=" + encodeURIComponent(S.project.path));
-        S.health.ping = r; renderHealth();
-        toast(r.dead ? `не отвечают: ${r.dead}` : "все бэкенды отвечают", r.dead?"warn":"ok");
-      }}}),
-    metricCard({title:"Семантический индекс",
-      value: (h.index && h.index.built) ? (h.index.missing + h.index.stale) : "—",
-      sub: !(h.index && h.index.built)
-        ? "не собран: поиск идёт только по словам"
-        : `не в индексе ${h.index.missing} · устарели ${h.index.stale} · модель ${h.index.model}`,
-      tone: (h.index && h.index.built && (h.index.missing + h.index.stale)) ? "warn" : "",
-      hint:"«Не в индексе» лечится пересборкой; «устарели» значит, что поиск по смыслу "
-           + "отвечает по старому тексту",
-      go: goCmd("kb:embed",["--apply"],"Пересобрать индекс")}),
-    // Ранжирование — то, на чём стоит и ответ базы, и обогащение перед производством.
-    // Менять его вслепую нельзя, а «стало лучше» — не проверка.
-    metricCard({title:"Выборка",
-      value: (h.retrieval && h.retrieval.when) ? h.retrieval.queries : "—",
-      sub: (h.retrieval && h.retrieval.when)
-        ? `запросов · проверено ${histWhen(h.retrieval.when)}`
-        : "не проверялась: порядок карточек меняется незаметно",
-      hint:"Какие карточки приходят первыми по реальным запросам и что изменилось",
-      go: goCmd("ops:retrieval",[],"Проверить выдачу")}),
-    // Файл артефакта рождается сразу после обогащения — значит брошенная работа
-    // остаётся видимой. Удалять её движок не должен: срок автоудаления никто не
-    // подберёт правильно, а потеря необратима.
-    metricCard({title:"Незаконченные",
-      value: (h.unfinished && h.unfinished.count) || 0,
-      sub: (h.unfinished && h.unfinished.count)
-        ? `документов не прошли цепочку · старшему ${h.unfinished.oldest} дн.`
-        : "все начатые документы доведены до конца",
-      tone: (h.unfinished && h.unfinished.count) ? "warn" : "",
-      hint:"Производство начато и не закончено. Продолжить можно с той же точки",
-      go: (h.unfinished && h.unfinished.count) ? {label:"Посмотреть список", act: () => {
-        const box = $("#healthBody");
-        const list = el("div",{class:"card",style:"padding:18px;margin-bottom:14px"},
-          el("h2",{style:"margin-top:0"},"Незаконченные документы"),
-          el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
-            "Цепочка остановилась на названном этапе. Продолжается с той же точки — "
-            + "заново разбирать и переспрашивать не придётся."),
-          ...h.unfinished.items.map(x => el("div",{class:"list-item"},
-            el("span",{class:"chip"}, x.kind),
-            el("div",{style:"flex:1"},
-              el("div",{class:"mono",style:"font-size:12.5px"}, x.path),
-              el("div",{class:"muted",style:"font-size:12px"},
-                `остановилось на «${x.stopped}» · ${x.days} дн. назад`)),
-            // Список без перехода — это отчёт, а не находка: человек всё равно пойдёт
-            // искать файл руками, и плитка станет счётчиком, на который не смотрят.
-            el("button",{class:"btn", onclick:()=>openPath(x.path)}, "Открыть"))));
-        box.prepend(list); list.scrollIntoView({behavior:"smooth", block:"center"});
-      }} : null}),
-    metricCard({title:"Исправления человеком",
-      value: (h.corrections && h.corrections.count) || 0,
-      sub: (h.corrections && h.corrections.ask)
-        ? `под вопросом ${h.corrections.ask}: источник обновился позже исправления`
-        : "поверх источников, применяются при каждой сборке",
-      tone: (h.corrections && h.corrections.ask) ? "warn" : "",
-      go: (h.corrections && h.corrections.ask) ? {label:"Разобрать", act: () => {
-        const box = $("#healthBody");
-        const list = el("div",{class:"card",style:"padding:18px;margin-bottom:14px"},
-          el("h2",{style:"margin-top:0"},"Исправления под вопросом"),
-          el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
-            "Источник изменился после того, как человек написал исправление. "
-            + "Противоречие видит только человек: прочитайте обе версии и решите. "
-            + "Пока не решили, исправление продолжает действовать — снимать проверенное "
-            + "по подозрению значит менять его на неподтверждённое."),
-          ...h.corrections.items.map(x => el("div",{class:"list-item"},
-            el("div",{style:"flex:1"},
-              el("div",{class:"mono",style:"font-size:12.5px"}, x.name),
-              el("div",{class:"muted",style:"font-size:12px"}, "карточка: " + x.card)),
-            el("button",{class:"btn", onclick:()=>openPath(
-              "Raw/corrections/" + x.name + ".md")}, "Открыть исправление"))));
-        box.prepend(list); list.scrollIntoView({behavior:"smooth", block:"center"});
-      }} : null}),
-    metricCard({title:"Остаток человеку", value: h.todo != null ? h.todo : "—",
-      sub:"то, что кнопкой не решается",
-      go: goCmd("ops:todo",[],"Посмотреть список")}),
-  ];
-  return el("div",{class:"grid metrics",style:"margin-bottom:14px"}, ...cards);
-}
-
-function renderHealth(){
-  const box = $("#healthBody");
-  if (!S.project){ box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
-  // Ответ сам называет свой проект. Чужой не рисуем ни при каком порядке присваиваний:
-  // замечание соседнего проекта под этим именем читается как поломка этого.
-  const foreign = S.health && S.health.project && S.health.project !== S.project.path;
-  if (!S.health || foreign){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(8)+'</div>'; return; }
-  const h = S.health, st = h.stats || {};
-  box.innerHTML = "";
-
-  // Что мешает зелёному — прямо в «Здоровье», а не только подсказкой на Мостике:
-  // человек приходит сюда именно с вопросом «я всё сделал, почему не зелёное».
-  const why = auraWhy(S.project);
-  box.append(el("div",{class:"card",style:"padding:16px;margin-bottom:14px"},
-    el("div",{class:"row"},
-      el("span",{class:"chip " + (why.color === "green" ? "ok" : why.color === "red" ? "bad" : "warn")},
-        why.color === "green" ? "зелёный" : why.color === "red" ? "красный" : "янтарный"),
-      el("b",{}, why.color === "green"
-        ? "Проект в порядке — все условия выполнены"
-        : "До зелёного осталось")),
-    ...why.todo.map(x=>el("div",{class:"list-item"},
-      el("span",{class:"chip " + (x.bad ? "bad" : "ok")}, x.bad ? "✗" : "✓"),
-      el("div",{}, x.text))),
-    el("div",{class:"muted",style:"font-size:12.5px;margin-top:8px"},
-      "Ошибки линтера не обязаны быть нулевыми: храповик держит планку на достигнутом. "
-      + "Зелёный означает «не стало хуже», а не «идеально».")));
-
-  box.append(baseCards(h, st));
-  const strip = el("div",{class:"card",style:"padding:16px;margin-bottom:14px"},
-    el("div",{style:"font-weight:700;margin-bottom:10px"},"Статусы карточек"),
-    statusBar(st.statuses||{}));
-  box.append(strip);
-
-  // Сборка базы — то, чем человек занят каждый день. Раньше дашборд показывал здоровье
-  // уже собранного и молчал о том, сколько осталось собрать: узнать это можно было
-  // только запустив kb:build и прочитав его отчёт.
-  const b = h.build || {}, ag = h.agent || {}, kinds = (h.lint && h.lint.kinds) || {};
-  const conflicts = kinds["одинаковые alias у разных карточек"] || 0;
-  const brokenLinks = kinds["битые ссылки"] || 0;
-  // Числа сборки переехали в плитки наверху: «Свежесть», «Связи», «Ошибки базы».
-  // Держать их дважды значит показывать одно и то же разными словами, а человек будет
-  // искать, которое из двух настоящее.
-  if (b.total){
-    if (ag.file){
-      const chip = ag.ok ? "ok" : "warn";
-      box.append(el("div",{class:"card",style:"padding:12px 16px;margin-top:-4px"},
-        el("div",{class:"list-item"},
-          el("span",{class:"chip "+chip}, ag.ok ? "агент: успех" : "агент: с оговорками"),
-          el("div",{},
-            el("div",{}, "Последний прогон · " + ag.task + " · " + (ag.why || "—")),
-            el("div",{class:"muted",style:"font-size:12.5px;margin-top:3px"},
-              "AuroraKnowledgeDB/meta/agent-runs/" + ag.file
-              + (ag.left ? " · осталось конфликтов: " + ag.left : ""))))));
-    }
-  }
-
-  const lintBad = h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
-  box.append(el("h2",{},"Механика базы"));
-  box.append(el("div",{class:"grid metrics"},
-    metric(h.lint.errors ?? "—", "ошибок линтера",
-      h.lint.baseline!==null ? "храповик: "+h.lint.baseline : "базовой линии нет",
-      lintBad?"bad":(h.lint.errors?"warn":"ok"), ()=>openRun("kb:lint")),
-    metric(st.missing_source_count ?? "—","битых источников","source: ведёт в никуда",
-      st.missing_source_count?"bad":"ok", ()=>openRun("kit:remap-sources")),
-    // Плитки про срок годности и владельца сняты вместе с приёмкой: доверие
-    // вычисляется по статусам задач, и ни того ни другого у него нет.
-    metric(st.stubs ?? "—","заготовок","карточка заведена под ссылку, знания в ней нет",
-      st.stubs?"warn":"ok", ()=>openRun("kb:repair")),
-  ));
-
-  box.append(el("h2",{},"Требования и поставка"));
-  box.append(el("div",{class:"grid metrics"},
-    metric(st.req_total ?? 0,"требований","REQ в базе","ok",()=>openRun("ops:trace")),
-    metric(st.req_agreed_no_jira ?? 0,"согласованы без задач","трассировка не заведена",
-      st.req_agreed_no_jira?"warn":"ok", ()=>openRun("sync:jira-status")),
-    metric(st.questions_open ?? 0,"открытых вопросов",
-      (st.questions_overdue_count?st.questions_overdue_count+" просрочено":"к заказчику"),
-      st.questions_overdue_count?"bad":"warn"),
-    metric(st.specs?.total ?? 0,"спецификаций","бандл — make:spec-pack","ok",()=>openRun("make:spec-pack")),
-    metric(st.artifacts_with_based_on ?? 0,"артефактов с основаниями",
-      "из " + (st.artifacts_total ?? 0) + " всего","ok"),
-    metric((st.risky_deliverables||[]).length,"рискованных поставок",
-      "собраны на непроверенном",(st.risky_deliverables||[]).length?"bad":"ok"),
-  ));
-
-  if (h.doctor.errors.length || h.doctor.warns.length){
-    box.append(el("h2",{},"Готовность проекта"));
-    const c = el("div",{class:"card"});
-    h.doctor.errors.forEach(e=>c.append(el("div",{class:"list-item"},
-      el("span",{class:"chip bad"},"блокер"), el("div",{}, e))));
-    h.doctor.warns.forEach(w=>c.append(el("div",{class:"list-item"},
-      el("span",{class:"chip warn"},"замечание"), el("div",{}, w))));
-    box.append(c);
-  } else {
-    box.append(el("h2",{},"Готовность проекта"));
-    box.append(el("div",{class:"card",style:"padding:22px;display:flex;gap:12px;align-items:center"},
-      el("span",{class:"chip ok"},"✓ чисто"),
-      el("div",{}, "doctor не нашёл ни блокеров, ни замечаний.")));
-  }
-}
-function statusBar(statuses){
-  const order = ["verified","in-review","draft","imported","deprecated"];
-  const color = {verified:"--tier-verified","in-review":"--tier-inreview",draft:"--tier-draft",
-    imported:"--tier-imported",deprecated:"--tier-deprecated"};
-  const total = Object.values(statuses).reduce((a,b)=>a+b,0) || 1;
-  const bar = el("div",{style:"display:flex;height:12px;border-radius:8px;overflow:hidden;background:var(--surface-2)"});
-  const legend = el("div",{class:"row",style:"margin-top:12px"});
-  const keys = [...order.filter(k=>statuses[k]), ...Object.keys(statuses).filter(k=>!order.includes(k))];
-  keys.forEach(k=>{
-    const v = statuses[k]; if (!v) return;
-    const c = color[k] ? `var(${color[k]})` : "var(--tier-imported)";
-    bar.append(el("div",{style:`width:${v/total*100}%;background:${c}`,title:`${k}: ${v}`}));
-    legend.append(el("span",{class:"chip tier"},
-      el("span",{class:"dot",style:`background:${c}`}), `${k} · ${v}`));
-  });
-  return el("div",{}, bar, legend);
-}
-
-/* ---------------- зеркала ---------------- */
-// Здоровье источников: сколько привезли и сколько из привезённого стало знанием.
-// Целостность зеркала (missing/orphan) говорит, что синк отработал; она ничего не
-// говорит о том, дошло ли привезённое до базы — а это и есть главный вопрос.
-function sourceCards(sh){
-  const names = Object.keys(sh);
-  if (!names.length)
-    return el("div",{class:"card",style:"padding:18px;margin-bottom:14px"},
-      el("div",{class:"muted"},
-        "Ни в Sources/, ни в Raw/ документов нет — базе не из чего собираться."));
-  const cards = names.map(name => {
-    const v = sh[name];
-    const pct = v.total ? Math.round(v.parsed * 100 / v.total) : 0;
-    return metricCard({
-      title: name,
-      value: pct + "%",
-      sub: `разобрано ${v.parsed} из ${v.total}`
-           + (v.left ? ` · ждут ${v.left}` : "")
-           + (v.archived ? ` · в архиве ${v.archived}` : ""),
-      tone: v.left ? "warn" : "",
-      hint: "Доля документов источника, из которых уже собраны карточки",
-      go: v.left ? goRoute("update","Обновить базу") : null});
-  });
-  return el("div",{},
-    el("h2",{style:"margin-top:0"},"Что из источников стало знанием"),
-    el("div",{class:"grid metrics",style:"margin-bottom:18px"}, ...cards));
-}
-
-function renderMirrors(){
-  const box = $("#mirrorsBody");
-  if (!S.project){ box.innerHTML='<div class="card" style="padding:24px">Выберите проект на Мостике.</div>'; return; }
-  // Считается несколько секунд: сказать «нет данных» при выбранном проекте — соврать.
-  if (!S.health){ box.innerHTML = '<div class="grid metrics">'+'<div class="skel"></div>'.repeat(2)+'</div>'; return; }
-  const m = S.health.mirrors || {}, p = S.project;
-  const src = S.health.sources || {installed:[], instances:[]};
-  box.innerHTML = "";
-  box.append(sourceCards(S.health.source_health || {}));
-  // Что за зеркала есть, панель не решает: список даёт реестр подключённых модулей
-  const card = (inst) => {
-    // до 1.28 аудит называл разделы по продукту («Jira»), а не по id зеркала («JIRA»)
-    const key = Object.keys(m).find(k=>k.toLowerCase()===inst.id.toLowerCase());
-    const data = m[key], man = src.installed.find(x=>x.id===inst.module) || {};
-    const tokenOk = !inst.env_prefix || (p.tokens||[]).includes(inst.env_prefix);
-    const bad = data && (data.no_state || data.missing || data.orphan);
-    // зеркало без файла состояния сверить не с чем: показываем это прямо, а не нулями
-    const numbers = data && data.no_state
-      ? el("div",{class:"row"},
-          el("span",{class:"chip bad"},"состояние синка не ведётся"),
-          el("span",{class:"chip"}, data.files + " файлов на диске"))
-      : data ? el("div",{class:"row"},
-          el("span",{class:"chip "+(data.missing?"bad":"ok")}, "MISSING " + data.missing),
-          el("span",{class:"chip "+(data.orphan?"bad":"ok")}, "ORPHAN " + data.orphan),
-          data.age_days!=null ? el("span",{class:"chip"},"синк " + data.age_days + " дн. назад") : null)
-      : el("div",{class:"chip"},"зеркало пустое");
-    return el("div",{class:"card",style:"padding:18px"},
-      el("div",{class:"row"}, el("b",{}, inst.id + " · " + (inst.title||inst.module)),
-        el("span",{class:"chip "+(tokenOk?"ok":"warn")}, tokenOk?"токен есть":"токена нет")),
-      el("p",{class:"muted",style:"font-size:13px;margin:10px 0"},
-        (man.what||"") + " Папка: " + inst.path + "."),
-      numbers,
-      el("div",{class:"row",style:"margin-top:14px"},
-        inst.command ? el("button",{class:"btn sm primary", disabled: tokenOk?null:"",
-          onclick:()=>openRun(inst.command)}, "Синхронизировать") : null,
-        el("button",{class:"btn sm", onclick:()=>openRun("sync:audit")}, "Проверить целостность"),
-        bad ? el("span",{class:"chip warn"},"есть расхождения — сначала аудит") : null,
-        inst.kind ? null : el("span",{class:"chip bad"},"модуль не установлен")));
-  };
-  if (!src.instances.length)
-    box.append(el("div",{class:"warnbox"},
-      "Подключённых зеркал нет. Выберите модули ниже — они появятся в Sources/."));
-  else
-    box.append(el("div",{class:"grid",style:"grid-template-columns:repeat(auto-fit,minmax(320px,1fr))"},
-      src.instances.map(card)));
-  box.append(renderSourceModules(src));
-  box.append(el("h2",{},"Дальше по цепочке"));
-  box.append(el("div",{class:"card"},
-    ["sync:audit","sync:diff","sync:jira-status","kit:remap-sources"].map(c=>{
-      const row = S.state.commands.find(x=>x.cmd===c); if(!row) return null;
-      return el("div",{class:"list-item"},
-        el("span",{class:"chip mono"}, c),
-        el("div",{style:"flex:1",html:tick(row.what)}),
-        el("button",{class:"btn sm",onclick:()=>openRun(c)},"Запустить"));
-    })));
-  if (!p.has_env)
-    box.append(el("div",{class:"warnbox"},
-      "Файла .env.aurora.local нет — синк работать не будет. Образец: aurora.env.local.example, " +
-      "нужны CONFLUENCE_PERSONAL_TOKEN и JIRA_PERSONAL_TOKEN (те же, что в mcp-atlassian)."));
-}
-
-/* Выбор модулей источников: что из установленного подключено к проекту. */
-function renderSourceModules(src){
-  const on = new Set(src.instances.map(i=>i.module));
-  const rows = src.installed.map(man=>{
-    const box = el("input",{type:"checkbox", checked: on.has(man.id)?"":null});
-    box.dataset.module = man.id;
-    return el("label",{class:"list-item",style:"cursor:pointer"}, box,
-      el("div",{style:"flex:1"},
-        el("b",{}, man.title||man.id),
-        el("div",{class:"muted",style:"font-size:12px"},
-          `${man.kind} · ${man.mirror.default_path} · ${man.what||""}`)),
-      el("span",{class:"chip mono"}, man.id));
-  });
-  const wrap = el("div",{class:"card"}, ...rows);
-  const save = el("button",{class:"btn sm primary"},"Сохранить выбор");
-  save.onclick = async ()=>{
-    const picked = [...wrap.querySelectorAll("input[type=checkbox]")]
-      .filter(b=>b.checked).map(b=>b.dataset.module);
-    const r = await api("/api/sources", {method:"POST", body: JSON.stringify(
-      {project:S.project.path, modules:picked})});
-    if (!r || r.error) return;
-    toast("Список зеркал сохранён в aurora.config.yaml", "ok");
-    const p = S.project;
-    const h = await api("/api/health?project=" + encodeURIComponent(p.path));
-    if (h && h.stats && takeHealth(p, h)) navBadges(p, h);
-    renderMirrors();
-  };
-  return el("div",{},
-    el("h2",{},"Модули источников"),
-    el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
-      "Отмеченные модули наливают свои папки в Sources/. Снять отметку — папка останется " +
-      "на диске (данные панель не удаляет), но станет ничьей: doctor об этом скажет. " +
-      "Папку нового зеркала заведёт обновление движка."),
-    wrap, el("div",{class:"row",style:"margin-top:12px"}, save));
-}
-
-/* ---------------- установка ---------------- */
-function renderInstall(){
-  const box = $("#installBody"); box.innerHTML = "";
-  const e = S.state.env;
-  box.append(el("div",{class:"row",style:"margin-bottom:14px"},
-    el("span",{class:"chip ok"},"Python " + e.python),
-    el("span",{class:"chip"},"kit " + S.state.kit.version),
-    el("span",{class:"chip mono"}, S.state.kit.path)));
-  const c = el("div",{class:"card"});
-  e.items.forEach(i=>{
-    c.append(el("div",{class:"list-item"},
-      el("span",{class:"chip "+(i.ok?"ok":"warn"),style:"flex:none"}, i.ok?"✓ есть":"нет"),
-      el("div",{style:"flex:1;min-width:0"},
-        el("div",{style:"font-weight:600"}, i.name),
-        el("div",{class:"muted",style:"font-size:12.5px;margin-top:2px"}, "Включает: " + i.enables),
-        i.ok?null:el("div",{class:"mono",style:"font-size:12px;margin-top:6px;color:var(--text-muted)"}, i.install))));
-  });
-  box.append(c);
-
-  if (S.project){
-    box.append(el("h2",{},"Готовность проекта · " + S.project.name));
-    const p = S.project, pc = el("div",{class:"card"});
-    const line = (ok, name, what, cmd) => el("div",{class:"list-item"},
-      el("span",{class:"chip "+(ok?"ok":"warn"),style:"flex:none"}, ok?"✓":"нет"),
-      el("div",{style:"flex:1"}, el("div",{style:"font-weight:600"},name),
-        el("div",{class:"muted",style:"font-size:12.5px"},what)),
-      cmd ? el("button",{class:"btn sm",onclick:()=>openRun(cmd)},"Починить") : null);
-    pc.append(line(p.has_env, "Файл доступов .env.aurora.local",
-      "Токены Confluence/Jira для скриптов синка. Панель видит только «заполнено/пусто»."));
-    pc.append(line(p.confluence_token, "Токен Confluence", "sync:confluence, ship:publish"));
-    pc.append(line(p.jira_token, "Токен Jira", "sync:jira, sync:jira-status"));
-    pc.append(line(!p.behind, "Движок актуален", "в проекте " + p.engine + ", в kit " + p.kit, "kit:update"));
-    if (S.health){
-      pc.append(line(S.health.lint.baseline !== null, "Храповик линтера",
-        "git-хук не даёт числу ошибок расти", "kit:hooks"));
-      pc.append(line(!S.health.doctor.errors.length, "Структура и конфиг",
-        S.health.doctor.errors[0] || "схема папок совпадает с движком", "kit:structure"));
-    }
-    box.append(pc);
-  }
-}
-
-/* ---------------- версия ---------------- */
-function renderVersion(){
-  const box = $("#versionBody"); box.innerHTML="";
-  const p = S.project;
-  if (!p){ box.innerHTML='<div class="card" style="padding:24px">Выберите проект.</div>'; return; }
-  box.append(el("div",{class:"card",style:"padding:20px"},
-    el("div",{class:"row"},
-      el("div",{}, el("div",{class:"muted",style:"font-size:12px"},"В проекте"),
-        el("div",{class:"mono",style:"font-size:24px;font-weight:700"}, p.engine)),
-      el("div",{style:"font-size:22px;color:var(--text-muted)"},"→"),
-      el("div",{}, el("div",{class:"muted",style:"font-size:12px"},"В kit"),
-        el("div",{class:"mono",style:"font-size:24px;font-weight:700;color:var(--gold)"}, p.kit)),
-      el("div",{class:"spacer"}),
-      p.behind ? el("span",{class:"chip warn"},"отстаёт") : el("span",{class:"chip ok"},"актуально")),
-    el("div",{class:"row",style:"margin-top:18px"},
-      el("button",{class:"btn primary",onclick:()=>openRun("kit:update")},"Предпросмотр обновления"),
-      el("button",{class:"btn sm",onclick:()=>openDoc("CHANGELOG.md")},"Что нового"))));
-  box.append(el("div",{class:"warnbox"},
-    "Обновление переписывает только файлы из engine_manifest.txt: скилл, скрипты, схему папок. " +
-    "Ваши шаблоны и промпты не трогаются — новая версия кладётся рядом как .new. " +
-    "После применения сделайте коммит: так видно, что именно поменял движок."));
-  box.append(el("h2",{},"Миграция чужого проекта"));
-  box.append(el("div",{class:"card"},
-    el("div",{class:"list-item"}, el("span",{class:"chip mono"},"kit:update --structure-only"),
-      el("div",{style:"flex:1"},"Создать недостающие папки схемы, не трогая движок"),
-      el("button",{class:"btn sm",onclick:()=>openRun("kit:update",["--structure-only"])},"Открыть")),
-    el("div",{class:"list-item"}, el("span",{class:"chip mono"},"kit:structure"),
-      el("div",{style:"flex:1"},"Показать папки вне схемы: их содержимое переносится в Workspaces/"),
-      el("button",{class:"btn sm",onclick:()=>openRun("kit:structure")},"Открыть")),
-    el("div",{class:"list-item"}, el("span",{class:"chip mono"},"kb:retire"),
-      el("div",{style:"flex:1"},"Убрать поля, выведенные из схемы (audience, confirmed_by)"),
-      el("button",{class:"btn sm",onclick:()=>openRun("kb:retire")},"Открыть"))));
-}
-
-/* ---------------- команды ---------------- */
-function kindChip(kind){
-  if (kind==="скрипт") return el("span",{class:"chip ok"},"скрипт");
-  if (kind==="модель") return el("span",{class:"chip"},"модель");
-  return el("span",{class:"chip warn"},"скрипт+модель");
-}
 // Команды движка живут в скрытом разделе «Разработка»: в общем списке они были бы
 // шумом — аналитик их не запускает, а показать одно и то же в двух местах значит
 // разойтись при первой же правке.
 const ENGINE_CMDS = ["kit:skills"];
 const isEngineCmd = r => r.ns === "dev" || ENGINE_CMDS.includes(r.cmd);
 
-function renderCommands(){
-  const q = ($("#cmdSearch").value||"").toLowerCase().trim();
-  const all = S.state.commands.filter(r => !isEngineCmd(r));
-  const rows = all.filter(r=>!q ||
-    (r.cmd+" "+r.alias+" "+r.what+" "+r.impl).toLowerCase().includes(q));
-  $("#cmdCount").textContent = rows.length + " из " + all.length;
-  const box = $("#cmdList"); box.innerHTML="";
-  const groups = {};
-  rows.forEach(r=>(groups[r.ns] ||= []).push(r));
-  const titles = {kit:"kit: движок и проект", sync:"sync: зеркала внешних систем",
-    kb:"kb: извлечение и жизнь знания", ctx:"ctx: использование знаний",
-    make:"make: производство артефактов", ship:"ship: наружу", ops:"ops: управление и отчётность",
-    agent:"agent: встроенный агент"};
-  Object.entries(groups).forEach(([ns, list])=>{
-    box.append(el("h2",{}, titles[ns]||ns));
-    const c = el("div",{class:"card"});
-    list.forEach(r=>{
-      const writes = r.flags.includes("--apply");
-      const outward = ["sync:confluence","sync:jira","ship:publish","ship:export"].includes(r.cmd);
-      const last = lastRun(r.cmd), mark = last ? rcMark(last.rc) : null;
-      c.append(el("div",{class:"list-item"},
-        el("div",{style:"flex:1;min-width:0"},
-          el("div",{class:"row",style:"gap:8px"},
-            el("span",{class:"mono",style:"font-weight:700"}, r.cmd),
-            r.alias?el("span",{class:"muted",style:"font-size:12px"},"("+r.alias+")"):null,
-            kindChip(r.kind),
-            writes?el("span",{class:"chip warn"},"пишет"):null,
-            outward?el("span",{class:"chip gold"},"наружу"):null,
-            el("span",{class:"chip"},"с "+histWhen(r.since)),
-            mark ? el("span",{class:"chip "+mark.cls, title:
-              `последний запуск: ${last.label} — ${mark.what}, код ${last.rc}, ядро ${last.kit||"?"}`},
-              mark.what + " · " + histWhen(last.at)) : null),
-          el("div",{class:"muted",style:"font-size:13px;margin-top:5px",html:tick(r.what)}),
-          r.flags.length?el("div",{class:"mono",style:"font-size:11.5px;color:var(--text-muted);margin-top:6px"},
-            r.flags.join(" ")):null),
-        r.runnable
-          ? el("button",{class:"btn sm primary",onclick:()=>openRun(r.cmd)},"Запустить")
-          : el("button",{class:"btn sm",onclick:()=>openDoc("skills/aurora-vault/references/"+r.impl)},"Процедура")));
-    });
-    box.append(c);
-  });
+// Чип исполнителя: скрипт, модель или скрипт с моделью. Живёт в ядре, потому что его
+// показывают двое — список команд и окно запуска. Уехал в раздел — и окно запуска
+// перестало открываться вовсе: ошибка, которую видно только при нажатии.
+function kindChip(kind){
+  if (kind === "скрипт") return el("span",{class:"chip ok"}, t("kind.script"));   // данные движка
+  if (kind === "модель") return el("span",{class:"chip"}, t("kind.model"));       // данные движка
+  return el("span",{class:"chip warn"}, t("kind.both"));
 }
-$("#cmdSearch").addEventListener("input", renderCommands);
 
-/* ---------------- запуск ---------------- */
-// Пояснения к флагам приходят из --help скриптов. Здесь только то, чего в --help
-// нет и быть не должно: предупреждение о последствиях.
 const DANGER_FLAGS = {
   "--apply": "запишет изменения в файлы проекта — они попадут в git diff",
   "--allow-dirty": "снимает защиту: при незакоммиченных правках откат станет невозможен",
@@ -3044,115 +2652,6 @@ const ago = ts => {
 };
 const kb = b => b >= 1048576 ? (b/1048576).toFixed(1) + " МБ" : Math.round(b/1024) + " КБ";
 
-async function renderReports(){
-  const box = $("#reportsBody");
-  if (!S.project){
-    box.innerHTML = '<div class="card" style="padding:24px">Выберите проект на Мостике.</div>';
-    return;
-  }
-  box.innerHTML = '<div class="grid metrics"><div class="skel"></div></div>';
-  const d = await api("/api/report?project=" + encodeURIComponent(S.project.path));
-  box.innerHTML = "";
-  if (d.error) return;
-  for (const r of (d.reports || [])) box.append(reportCard(r));
-}
-
-function reportCard(r){
-  const built = r.output.exists;
-  const card = el("div", {class:"card", style:"padding:18px"});
-  card.append(el("div", {class:"row", style:"justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap"},
-    el("h2", {style:"font-size:16px"}, r.title),
-    el("span", {class:"chip"}, `${r.project} · ${r.year}`)));
-
-  card.append(el("div", {class:"muted", style:"font-size:13px;margin:6px 0 14px"},
-    built ? `Собран ${ago(r.output.mtime)} · ${kb(r.output.size)} · ${r.output.path}`
-          : "Ещё не собирался"));
-
-  // Чего не хватает — говорим до нажатия, а не ошибкой в консоли после.
-  const gaps = [];
-  if (!r.roster.exists)
-    gaps.push(`нет ростера ${r.roster.path} — роли в отчёте будут пустыми`);
-  if (!r.events.exists)
-    gaps.push(`нет календаря событий ${r.events.path} — полос на графике не будет`);
-  if (!r.cached)
-    gaps.push("выгрузок в кэше нет: первый сбор пойдёт в Jira и Confluence, "
-              + "для этого нужны токены в .env.aurora.local");
-  if (gaps.length)
-    card.append(el("ul", {class:"muted", style:"font-size:12.5px;margin:0 0 14px 18px"},
-      gaps.map(g => el("li", {}, g))));
-
-  const row = el("div", {class:"row", style:"gap:10px;flex-wrap:wrap"});
-  row.append(el("button", {class:"btn primary", onclick:()=>buildReport(r, false)},
-    built ? "Пересобрать" : "Собрать"));
-  // Пересчёт по уже выгруженному: правка ростера или событий не требует похода в Jira,
-  // а поход занимает минуты.
-  if (r.cached)
-    row.append(el("button", {class:"btn", onclick:()=>buildReport(r, true),
-      title:"Пересчитать по уже выгруженным данным, без обращения к Jira и Confluence"},
-      "Пересчитать без выгрузки"));
-  if (built)
-    row.append(el("a", {class:"btn", target:"_blank",
-      href:`/api/report/file?project=${encodeURIComponent(S.project.path)}`
-           + `&id=${encodeURIComponent(r.id)}&t=${encodeURIComponent(TOKEN)}`},
-      "Открыть"));
-  card.append(row);
-
-  // История версий. Отчёт собирается в один и тот же файл, и каждая сборка затирает
-  // прежний: ошибка в выгрузке или в ростере — и сравнить показатели с прошлой неделей
-  // уже не с чем. Копия делается сама при взгляде на вкладку, потому что отчёт собирают
-  // и кнопкой, и маршрутом, и из терминала.
-  const hist = r.history || [];
-  if (hist.length){
-    const list = el("div", {style:"margin-top:6px"});
-    const draw = () => {
-      list.innerHTML = "";
-      for (const v of hist){
-        list.append(el("div", {class:"list-item"},
-          el("div", {style:"flex:1"},
-            el("span", {class:"mono", style:"font-size:12.5px"}, histWhen(v.when)),
-            el("span", {class:"muted", style:"font-size:12px;margin-left:8px"}, kb(v.size))),
-          el("a", {class:"btn", target:"_blank",
-            href:`/api/report/file?project=${encodeURIComponent(S.project.path)}`
-                 + `&id=${encodeURIComponent(r.id)}&stamp=${encodeURIComponent(v.stamp)}`
-                 + `&t=${encodeURIComponent(TOKEN)}`}, "Открыть"),
-          el("button", {class:"btn", onclick:async ()=>{
-            if (!confirm(`Удалить версию от ${histWhen(v.when)}? Вернуть её будет неоткуда.`)) return;
-            const res = await api("/api/report/forget", {method:"POST", body: JSON.stringify(
-              {project:S.project.path, id:r.id, stamp:v.stamp})});
-            if (!res.error){ hist.splice(hist.indexOf(v), 1); draw(); toast("версия удалена"); }
-          }}, "Удалить")));
-      }
-    };
-    draw();
-    card.append(el("details", {style:"margin-top:12px"},
-      el("summary", {class:"sub", style:"cursor:pointer"},
-        `Прежние версии: ${hist.length}`),
-      el("div", {class:"muted", style:"font-size:12px;margin:6px 0"},
-        "Сохраняются сами при каждой новой сборке. Пригодятся, если свежая сборка вышла "
-        + "испорченной, и чтобы сравнить показатели с прошлым разом."),
-      list));
-  }
-  return card;
-}
-
-async function buildReport(r, skipFetch){
-  if (await busyElsewhere(r.cmd)) return;
-  const args = skipFetch ? ["--skip-fetch"] : [];
-  const line = (r.cmd + " " + args.join(" ")).trim();
-  // Сборка идёт минутами (первая — с походом в Jira), и смотреть на неё человек будет
-  // в консоли: готовим её так же, как это делает запуск команды из «Команд».
-  show("console");
-  $("#consoleApply").innerHTML = "";
-  $("#consoleOut").innerHTML = "";
-  $("#consoleCmd").textContent = line;
-  $("#consoleRc").textContent = "выполняется…";
-  $("#consoleRc").className = "chip";
-  const res = await runStep(r.cmd, args);
-  $("#consoleRc").textContent = res.rc === 0 ? "готово" : "код " + res.rc;
-  $("#consoleRc").className = "chip " + (res.rc === 0 ? "ok" : "err");
-  if (res.rc === 0) toast("Отчёт собран", "ok");
-  renderReports();
-}
 
 /* ---------------- спросить базу ----------------
 
@@ -4281,7 +3780,7 @@ async function runRoute(sc, write, resume){
   if (S.project){ const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
       renderOverview();
-      if (mine){ renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность"); }});
+      if (mine){ renderHistory(); refreshModules(); renderQuick(); renderQuick("продуктивность"); }});
     // Шаги маршрута пишут в базу, но коммитит только агент — и только своё. Остальное
     // остаётся незафиксированным, и следующий прогон смешает свою работу с этой.
     // Панель git-операций не делает: это решение человека. Но молчать о них нечестно.
@@ -4475,8 +3974,8 @@ async function poll(id, since, label){
   if (S.project) { const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
       renderOverview(); if (!mine) return;
-      if (S.view==="health") renderHealth(); stamp("#healthStamp");
-      renderHistory(); renderCommands(); renderQuick(); renderQuick("продуктивность");}); }
+      refreshModules();
+      renderHistory(); refreshModules(); renderQuick(); renderQuick("продуктивность");}); }
 }
 /* Код возврата в Авроре означает три разных вещи, и красить их одинаково — врать.
    0 — сделано; 1 — команда отработала и нашла, что чинить (doctor с ошибками, аудит с
@@ -4534,9 +4033,10 @@ function drawTaskButton(){
   }
 }
 function rcMark(rc){
-  return rc === 0 ? {cls:"ok", what:"успех"}
-    : rc === 1 ? {cls:"warn", what:"есть что поправить"}
-    : {cls:"bad", what:"не сработала"};
+  // Код 1 — это «нашла, что чинить», а не «сломалась»: красить их одинаково — врать.
+  return rc === 0 ? {cls:"ok", what:t("run.ok")}
+    : rc === 1 ? {cls:"warn", what:t("run.warn")}
+    : {cls:"bad", what:t("run.bad")};
 }
 /* Журнал запусков живёт в проекте (`.opencode/run_log.md`) и ездит по git вместе с ним:
    «когда последний раз обновляли зеркала» — вопрос ко всей команде, а не к одному
@@ -5133,6 +4633,144 @@ async function applySkin(id){
   }
 }
 
+/* ---------------- модули ----------------
+   Раздел панели — папка в `cockpit/modules/<id>/`: манифест, разметка, скрипт, строки.
+   Ядро знает о модуле ровно три вещи: где он в меню, нужен ли ему выбранный проект и
+   как его показать. Внутрь модуля ядро не смотрит, модуль в ядро ходит только через ctx —
+   поэтому раздел можно выключить, заменить или написать свой, не трогая панель.
+
+   Разметка и скрипт приезжают по требованию: раздел, в который не заходили, не стоит
+   ни одного запроса и ни одного байта разобранного кода. */
+const MODULES = new Map();
+
+function moduleTitle(m){
+  return (m.name && (m.name[S.lang] || m.name.ru)) || m.id;
+}
+
+async function loadModules(){
+  // Старый процесс сервера про модули не знает: файлы на диске новые, а отвечает
+  // прежний код. Панель обязана подняться и в этом виде — с полосой «обновилась на
+  // диске, работает прежним процессом» и кнопкой перезапуска, а не с пустым экраном.
+  let d = null;
+  try { d = await api("/api/modules", {quiet:true}); }
+  catch (e){ console.warn("разделы не спрошены:", e.message); return; }
+  for (const m of (d && d.modules) || []){
+    if (m.error){
+      // Молча пропасть раздел не имеет права: человек ищет кнопку, которой нет, и
+      // решает, что сломалась панель.
+      toast(t("modules.broken", {id: m.id, why: m.error}), "err");
+      continue;
+    }
+    MODULES.set(m.id, {manifest: m, mod: null, section: null});
+    addModuleNav(m);
+    if (m.behind)
+      console.warn(`модуль ${m.id} собран под ядро ${m["for"]}, установлено ${S.state.kit.version}`);
+  }
+}
+
+function addModuleNav(m){
+  const group = $(`.navgroup[data-group="${m.group}"]`) || $('.navgroup[data-group="project"]');
+  if (!group || $(`nav button[data-view="${m.id}"]`)) return;
+  const btn = el("button", {"data-view": m.id, "data-order": m.order, "aria-label": moduleTitle(m)},
+    el("span", {class:"label"}, moduleTitle(m)),
+    el("span", {class:"count", id:"nav-" + m.id}));
+  btn.onclick = () => navClick(btn);
+  const after = $$("button", group).find(b => Number(b.dataset.order || 999) > m.order);
+  group.insertBefore(btn, after || null);
+}
+
+// Всё, чем ядро делится с разделом. Список короткий намеренно: чем шире вход, тем
+// сильнее модуль прирастает к панели и тем меньше смысла в самой папке.
+function moduleCtx(id, root){
+  return {
+    id, root,
+    t, el, api, toast,
+    $: (sel) => $(sel, root),
+    $$: (sel) => $$(sel, root),
+    token: TOKEN,
+    show, run: runStep, runWatched, busyElsewhere, openRun, openDoc, reloadHealth,
+    fmt: {ago, kb, when: histWhen, esc, tick, md},
+    // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
+    // перехода к маршруту — иначе в каждом разделе они разъедутся.
+    ui: {metricCard, metric, goRoute, goCmd, kindChip},
+    openPath, isEngineCmd,
+    // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
+    // нескольких разделах сразу, и считать её каждому по-своему нельзя.
+    runs: {last: lastRun, mark: rcMark},
+    // Цвет проекта и его причина считаются в ядре: тот же ответ нужен Мостику.
+    aura: auraWhy,
+    get project(){ return S.project; },
+    get state(){ return S.state; },
+    get health(){ return S.health; },
+    get lang(){ return S.lang; },
+  };
+}
+
+async function mountModule(id, payload){
+  const rec = MODULES.get(id);
+  if (!rec) return;
+  if (!rec.mod){
+    try{
+      const url = f => `/modules/${id}/${f}?t=${encodeURIComponent(TOKEN)}`;
+      const r = await fetch(url("view.html"));
+      if (!r.ok) throw new Error("нет разметки (" + r.status + ")");
+      rec.section = el("section", {class:"view", id:"view-" + id, html: await r.text()});
+      $("main").append(rec.section);
+      applyI18n(rec.section);
+      const mod = await import(url("view.js"));
+      rec.mod = mod.default || mod;
+      await rec.mod.mount?.(moduleCtx(id, rec.section));
+    }catch(e){
+      rec.mod = null;
+      if (rec.section){ rec.section.remove(); rec.section = null; }
+      toast(t("modules.failed", {id, why: e.message}), "err");
+      return;
+    }
+  }
+  rec.section.classList.toggle("on", S.view === id);
+  // Груз переходa: «открой справку на этом документе», «покажи карточку на
+  // графе». Без него раздел пришлось бы дёргать через глобальную переменную.
+  await rec.mod.refresh?.(moduleCtx(id, rec.section), payload);
+}
+
+// Данные сменились — выбрали проект, пересчитали здоровье, сохранили настройку. Разделы,
+// уже поднятые в этой вкладке, обязаны перерисоваться сами: раздел, открытый до выбора
+// проекта, иначе остаётся с «выберите проект» навсегда, и перерисовать его некому.
+async function refreshModules(){
+  for (const [id, rec] of MODULES){
+    if (!rec.mod) continue;
+    // Упавший раздел не уносит остальные: иначе одна ошибка в одном экране оставляет
+    // всю панель с вчерашними числами, и причину видно только в консоли браузера.
+    try { await rec.mod.refresh?.(moduleCtx(id, rec.section)); }
+    catch (e){ showFault(`раздел «${id}»: ${e.message}`); }
+  }
+}
+
+// Подписи разделов в меню живут в манифесте, а не в каталоге строк: сменили язык —
+// перечитываем их, иначе меню останется на прежнем языке до перезагрузки страницы.
+function relabelModules(){
+  for (const [id, rec] of MODULES){
+    const label = $(`nav button[data-view="${id}"] .label`);
+    if (label) label.textContent = moduleTitle(rec.manifest);
+  }
+}
+
+// Запуск, за которым человек смотрит в консоли. Вынесено из «Отчётов»: так же ведёт
+// себя любой раздел, откуда запускают долгую команду, — консоль одна на панель.
+async function runWatched(cmd, args = []){
+  if (await busyElsewhere(cmd)) return {rc: -1, busy: true};
+  show("console");
+  $("#consoleApply").innerHTML = "";
+  $("#consoleOut").innerHTML = "";
+  $("#consoleCmd").textContent = (cmd + " " + args.join(" ")).trim();
+  $("#consoleRc").textContent = "выполняется…";
+  $("#consoleRc").className = "chip";
+  const res = await runStep(cmd, args);
+  $("#consoleRc").textContent = res.rc === 0 ? "готово" : "код " + res.rc;
+  $("#consoleRc").className = "chip " + (res.rc === 0 ? "ok" : "err");
+  return res;
+}
+
 /* ---------------- быстрый старт ---------------- */
 // Какие маршруты человек развернул: решение принимает он, и оно должно пережить
 // перерисовку от прихода здоровья или прогона команды.
@@ -5656,137 +5294,9 @@ async function renderAgentCard(box, scope){
 }
 
 /* ---------------- о проекте ---------------- */
-async function renderAbout(){
-  const box = $("#aboutBody"); box.innerHTML = '<span class="spin"></span>';
-  const a = await api("/api/about");
-  box.innerHTML = "";
-  box.append(el("p",{class:"sub"},
-    "Aurora Studio — git-native фреймворк работы со знаниями для аналитиков. " +
-    "База знаний на markdown-карточках со статусами доверия, зеркала Confluence и Jira, " +
-    "производство артефактов из проверенного знания, трассировка требований до приёмки. " +
-    "Движок без внешних зависимостей: только стандартная библиотека Python."));
-  // Навыки — часть поставки, а не приложение к ней: одну инструкцию читают и модель
-  // внутри панели, и ассистент в чате. Разойтись двум копиям негде, потому что копия одна.
-  box.append(el("p",{class:"sub"},
-    "В поставке три навыка: ", el("b",{},"aurora-vault"), " — работа с базой знаний, ",
-    el("b",{},"aurora-dev"), " — разработка самого движка, ", el("b",{},"aurora-grill"),
-    " — разбор замысла по дереву решений: раунды вопросов с рекомендациями, пока не "
-    + "останется молчаливых допущений. Последний ведёт планировщик перед производством "
-    + "артефакта, и он же доступен ассистенту в чате. Ставятся командой ",
-    el("span",{class:"mono"},"kit:skills"), " в общий каталог агента."));
-
-  const facts = el("div",{class:"grid metrics"},
-    metric(a.kit, "версия kit", "панель " + a.ui, "ok"),
-    metric(a.commands, "команд в реестре", "kit:list — справочник", "ok"),
-    metric(a.commit || "—", "коммит", a.commit_date || "", "ok"),
-    metric(a.license, "лицензия", "свободное использование", "ok"));
-  box.append(facts);
-
-  box.append(el("h2",{},"Репозиторий"));
-  const repo = el("div",{class:"card"},
-    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"адрес"),
-      a.repo ? el("a",{href:a.repo,target:"_blank",rel:"noreferrer",style:"flex:1"}, a.repo)
-             : el("span",{class:"muted",style:"flex:1"},"удалённого репозитория нет")),
-    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"ветка"),
-      el("span",{class:"mono",style:"flex:1"}, a.branch || "—")),
-    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"автор"),
-      el("span",{style:"flex:1"}, a.author)),
-    el("div",{class:"list-item"}, el("span",{class:"chip",style:"flex:none"},"на диске"),
-      el("span",{class:"mono",style:"flex:1;word-break:break-all"}, a.path)));
-  box.append(repo);
-
-  box.append(el("h2",{},"Обновление kit из репозитория"));
-  const upd = el("div",{class:"card",style:"padding:20px"});
-  upd.append(el("p",{class:"muted",style:"font-size:13px;margin:0 0 12px"},
-    "Панель умеет подтянуть новую версию самого фреймворка. Только перемотка вперёд: " +
-    "слияние с чужими правками кнопкой в браузере — не то, что стоит делать вслепую. " +
-    "После обновления панель надо перезапустить: сервер работает со старого кода."));
-  const status = el("div",{class:"row",style:"margin-bottom:12px"},
-    el("span",{class:"muted",style:"font-size:13px"},"состояние не проверено"));
-  const incoming = el("div",{});
-  upd.append(status, incoming, el("div",{class:"row"},
-    el("button",{class:"btn primary",onclick:async e=>{
-      e.target.disabled = true; e.target.textContent = "Проверяю…";
-      const st = await api("/api/kit/status");
-      e.target.disabled = false; e.target.textContent = "Проверить обновления";
-      status.innerHTML = ""; incoming.innerHTML = "";
-      if (st.error) return status.append(el("span",{class:"chip bad"}, st.error));
-      status.append(
-        el("span",{class:"chip"}, "ветка " + st.branch),
-        el("span",{class:"chip "+(st.behind?"warn":"ok")},
-          st.behind ? `отстаёт на ${st.behind}` : "актуально"),
-        st.dirty ? el("span",{class:"chip bad"}, `${st.dirty} незакоммичено`) : null,
-        st.ahead ? el("span",{class:"chip"}, `свои коммиты: ${st.ahead}`) : null);
-      if (st.incoming && st.incoming.length){
-        incoming.append(el("div",{class:"muted",style:"font-size:12px;margin:10px 0 4px"},
-          "что приедет:"));
-        st.incoming.forEach(l => incoming.append(
-          el("div",{class:"mono",style:"font-size:12px;color:var(--text-muted)"}, l)));
-      }
-      $("#kitPull").disabled = !st.behind || !!st.dirty;
-    }},"Проверить обновления"),
-    el("button",{class:"btn gold",id:"kitPull",disabled:"",onclick:async e=>{
-      if (!confirm("Обновить kit из репозитория?\n\nПосле обновления панель нужно " +
-                   "перезапустить, чтобы сервер подхватил новый код.")) return;
-      e.target.disabled = true; e.target.textContent = "Обновляю…";
-      const r = await api("/api/kit/update",{method:"POST",body:"{}"});
-      e.target.textContent = "Обновить kit";
-      if (r.ok){
-        toast(r.already ? "Уже актуально" : "Обновлено до " + r.version, "ok");
-        renderAbout();
-      }
-    }},"Обновить kit")));
-  box.append(upd);
-
-  if (a.releases && a.releases.length){
-    box.append(el("h2",{},"Последние версии"));
-    const c = el("div",{class:"card"});
-    a.releases.forEach(r => c.append(el("div",{class:"list-item"},
-      el("span",{class:"mono",style:"font-weight:600;flex:none;width:70px"}, r.split(" ")[0]),
-      el("div",{style:"flex:1"}, r.split(" ").slice(1).join(" ").replace(/^—\s*/,"")))));
-    c.append(el("div",{class:"list-item"},
-      el("button",{class:"btn sm",onclick:()=>openDoc("CHANGELOG.md")},"Вся история изменений")));
-    box.append(c);
-  }
-}
-
-/* ---------------- справка ---------------- */
-const DOCS = [
-  ["docs/readme/README.md","Документация: с чего начать"],
-  ["docs/readme/01-overview.md","1. Обзор фреймворка"],
-  ["docs/readme/02-quickstart.md","2. Лёгкий старт"],
-  ["docs/readme/03-team-rules.md","3. Регламент команды"],
-  ["docs/readme/04-practice.md","4. Практика: команды и промпты"],
-  ["docs/readme/05-gardening.md","5. Уход за базой"],
-  ["docs/readme/06-sdd.md","6. Spec-Driven Development"],
-  ["skills/aurora-vault/SKILL.md","Скилл: команды и инварианты"],
-  ["docs/commands.md","Справочник всех команд"],
-  ["docs/roadmap.md","Концепция и дорожная карта"],
-  ["skills/aurora-vault/references/workflows.md","Рабочие процедуры"],
-  ["skills/aurora-vault/references/maintenance.md","Обслуживание базы"],
-  ["skills/aurora-vault/references/frontmatter.md","Схема карточки"],
-  ["skills/aurora-vault/references/retrieval.md","Сборка контекста"],
-  ["skills/aurora-vault/references/build.md","Извлечение знаний"],
-  ["skills/aurora-vault/references/migration.md","Миграция проекта"],
-  ["docs/control-panel-ui-requirements.md","Требования к этой панели"],
-  ["CHANGELOG.md","История версий kit"],
-];
-function renderReference(){
-  const list = $("#docList");
-  if (list.children.length) return;
-  DOCS.forEach(([path,title])=>list.append(
-    el("button",{class:"list-item",style:"width:100%;text-align:left",onclick:()=>openDoc(path)},
-      el("div",{}, el("div",{style:"font-weight:600;font-size:13.5px"},title),
-        el("div",{class:"mono",style:"font-size:11px;color:var(--text-muted);overflow:hidden;"+
-          "text-overflow:ellipsis;white-space:nowrap"},path)))));
-}
-async function openDoc(path){
-  show("reference"); renderReference();
-  const body = $("#docBody");
-  body.innerHTML = '<span class="spin"></span>';
-  const d = await api("/api/doc?path="+encodeURIComponent(path));
-  body.innerHTML = d.text ? md(d.text) : "Не удалось открыть " + esc(path);
-  body.scrollIntoView({block:"start"});
+// Открыть документ — это переход в справку с именем файла: сам показ делает раздел.
+function openDoc(path){
+  show("reference", {doc: path});
 }
 function md(src){
   if (src.startsWith("---")){            // YAML-шапка документа читателю не нужна
@@ -5825,12 +5335,17 @@ function md(src){
 /* ---------------- палитра ⌘K ---------------- */
 let PAL = {items:[], sel:0};
 function openPalette(){
+  // Разделы берём из меню, а не из списка рядом: список приходилось править при каждом
+  // переезде раздела в папку, и он молча расходился — пункт вёл в никуда или пропадал.
+  // Заодно подписи приходят на текущем языке: меню их уже знает.
   PAL.items = [
-    ...[["Мостик","overview"],["Здоровье","health"],["Команды","commands"],["Зеркала","mirrors"],
-        ["Установка","install"],["Настройка проекта","setup"],["Подключить новый проект","setup"],
-        ["Быстрый старт","quickstart"],["О проекте","about"],["Обновить kit","about"],
-        ["Версия","version"],["Консоль","console"],["Справка","reference"]]
-      .map(([n,v])=>({nm:n, ds:"раздел панели", go:()=>show(v)})),
+    ...$$("nav button").filter(b => !b.hidden).map(b => ({
+      nm: b.querySelector(".label").textContent,
+      ds: t("palette.section"),
+      go: () => navClick(b)})),
+    // Два действия, которых в меню нет: это не разделы, а то, зачем в них заходят.
+    {nm: t("palette.new_project"), ds: t("palette.section"), go: () => show("setup")},
+    {nm: t("palette.update_kit"), ds: t("palette.section"), go: () => show("about")},
     ...S.state.projects.map(p=>({nm:p.name, ds:"проект · "+p.path, go:()=>pick(p)})),
     ...S.state.commands.map(c=>({nm:c.cmd, ds:c.what, go:()=>openRun(c.cmd)})),
   ];

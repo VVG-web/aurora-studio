@@ -1,0 +1,15 @@
+{
+  "id": "health",
+  "name": { "ru": "Здоровье", "en": "Health" },
+  "about": {
+    "ru": "Метрики базы: состав, доверие, связи, ошибки, свежесть и остаток человеку.",
+    "en": "Base metrics: contents, trust, links, errors, freshness and what is left for a human."
+  },
+  "group": "project",
+  "order": 10,
+  "needs": ["project"],
+  "commands": ["kb:lint", "kb:repair", "kb:embed", "kb:kind", "ops:trace", "ops:trace-table",
+               "ops:todo", "ops:retrieval", "make:spec-pack", "sync:jira-status",
+               "kit:remap-sources"],
+  "for": "1.121.0"
+}

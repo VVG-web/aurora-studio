@@ -1,0 +1,13 @@
+{
+  "id": "commands",
+  "name": { "ru": "Команды", "en": "Commands" },
+  "about": {
+    "ru": "Весь реестр движка: исполнитель, модификаторы, версия появления, последний запуск.",
+    "en": "The whole engine registry: executor, modifiers, version introduced, last run."
+  },
+  "group": "project",
+  "order": 90,
+  "needs": ["project"],
+  "commands": [],
+  "for": "1.121.0"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "version",
+  "name": {
+    "ru": "Версия",
+    "en": "Version"
+  },
+  "about": {
+    "ru": "Движок проекта против кита, предпросмотр обновления и миграция чужого проекта.",
+    "en": "The project engine against the kit, update preview and migration of a foreign project."
+  },
+  "group": "project",
+  "order": 110,
+  "needs": [
+    "project"
+  ],
+  "commands": [
+    "kit:update",
+    "kit:doctor"
+  ],
+  "for": "1.121.0"
+}
