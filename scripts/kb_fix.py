@@ -50,7 +50,7 @@ from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            frontmatter,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
-                           is_service, is_template_link, link_refs, project_file,
+                           is_service, link_refs, not_a_card_link, project_file,
                            rewrite_links, set_field, translit_names, TEMPLATE_LINK_RE, utc_slug)
 from datetime import date, datetime
 from difflib import get_close_matches
@@ -355,6 +355,24 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
             plan.renames.append((path, new_rel))
         renamed.append((rel, clean))
         taken.add(new_rel)
+    # Имя с разметкой ссылки (`[`, `]`, `|`) — до 1.122.0 `card_filename` её пропускал: на
+    # такую карточку не ведёт ни одна ссылка. Переименовываем по общему правилу имени;
+    # заголовок остаётся прежним — в шапке скобки безвредны.
+    for path, card in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/meta/" in rel:
+            continue
+        stem = os.path.splitext(os.path.basename(rel))[0]
+        if not any(ch in stem for ch in "[]|") or rel in [r for r, _n in renamed]:
+            continue
+        new_stem = normalize_title(stem)
+        new_rel = os.path.join(os.path.dirname(rel), new_stem + ".md").replace("\\", "/")
+        if not new_stem or new_rel in taken or os.path.exists(new_rel):
+            stuck.append((rel, f"имя «{new_stem}» уже занято — это слияние, а не переименование"))
+            continue
+        plan.renames.append((path, new_rel))
+        renamed.append((rel, new_stem))
+        taken.add(new_rel)
     return renamed, stuck
 
 
@@ -463,7 +481,7 @@ class Plan:
 # а не строкой в отчёте, которую легко счесть успехом.
 SET_ALIAS_FAILED: list = []
 
-# Образец имени в шаблоне — правило общее с линтером: `aurora_common.is_template_link`.
+# Образец имени в шаблоне — правило общее с линтером: `aurora_common.not_a_card_link`.
 
 
 def source_file(name: str) -> str:
@@ -492,7 +510,7 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         mapping, aliases_for = {}, {}
         for m in LINK_RE.finditer(c.text):
             target = m.group(2).strip()
-            if target.startswith("http") or is_template_link(target):
+            if target.startswith("http") or not_a_card_link(target):
                 continue
             leaf = leaf_name(target)
             if not leaf or leaf in idx.by_stem or leaf in idx.by_alias:

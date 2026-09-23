@@ -795,7 +795,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.121.0";
+const UI_VERSION = "1.122.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3071,13 +3071,17 @@ async function runStep(cmd, args){
   if (!r || !r.runnable) return {rc:0, skipped:true, lines:[]};
   const res = await api("/api/run", {method:"POST", body: JSON.stringify(
     {project: (isEngineCmd(r) ? "" : S.project.path), cmd, args, route:true})});
-  if (!res.job){
-    // Сервер отказал маршруту (например, движок проекта отстал от кита). Причина уже
-    // показана человеку; шагу остаётся вернуть код 2, чтобы маршрут встал здесь, а не
-    // прошёл половину пути по половине движка.
-    return {rc:2, lines:[]};
-  }
   const out = $("#consoleOut");
+  if (!res.job){
+    // Сервер отказал маршруту (например, движок проекта отстал от кита). Шагу остаётся
+    // вернуть код 2, чтобы маршрут встал здесь, а не прошёл половину пути по половине
+    // движка. Причина — в консоль и в события шага, а не только во всплывающее окно на
+    // четыре секунды: в PRJ-A 21.09 sync:confluence дважды «не отработал» с кодом 2, и
+    // по архиву нельзя было понять, что команда даже не запускалась.
+    const why = "шаг не запущен: " + (res.error || "панель отказала без объяснения");
+    out.append(el("div",{class:"err"}, "■ " + why));
+    return {rc:2, lines:[why], refused: why};
+  }
   let since = 0, lines = [];
   let lastLineAt = Date.now(), silenceShown = false;   // слежение за тишиной шага, см. SILENCE_MS
   armStop(res.job);
@@ -3582,7 +3586,8 @@ async function runRoute(sc, write, resume){
                     start: new Date(stepStart).toISOString(),
                     end: new Date(stepEnd).toISOString(),
                     duration_s: Math.round((stepEnd - stepStart) / 1000),
-                    rc: res.rc});
+                    rc: res.rc, ...(res.refused ? {note: res.refused} : {})});
+    if (res.refused) ROUTE.refused = res.refused;
     summary.push({cmd:st.cmd, rc:res.rc, skipped:res.skipped,
                   found: res.rc === 1 ? findings(res.lines||[]) : [],
                   summ: parseSummaries(res.lines||[])});
@@ -3709,10 +3714,29 @@ async function runRoute(sc, write, resume){
       bad ? (ROUTE.stopped
           ? `■ Маршрут прерван вами на «${bad}». Сделанное зафиксировано: запускайте снова, `
             + "пройденные шаги повторяются без вреда."
-          : `■ Маршрут остановлен на «${bad}»: команда не отработала. `
+          : `■ Маршрут остановлен на «${bad}»: `
+            + (ROUTE.refused ? ROUTE.refused + ". " : "команда не отработала. ")
             + "Разберитесь с ней и запустите маршрут снова — пройденные шаги повторяются "
             + "без вреда.")
           : `■ Маршрут «${sc.title}» пройден целиком: ${ROUTE.done} шагов.`));
+  }
+  // Хвост маршрута — в git, как и каждый оборот. Шаги после цикла (карты, оглавления,
+  // трассировка, доверие) пишут в базу, а фиксировался только оборот: в PRJ-A 22.09 после
+  // «пройден» в проекте осталось 163 незакоммиченных файла. Следующий прогон смешал бы их
+  // со своей работой, а первый же чекпойнт агента записал бы их «работой человека».
+  // Остановленный маршрут фиксируем тоже: сообщение об остановке обещает, что сделанное
+  // сохранено.
+  if (write && S.project){
+    const how = ROUTE.stalled ? "остановлен: застой"
+      : bad ? `остановлен на «${bad}»` : "пройден";
+    const saved = await api("/api/git/commit", {method:"POST", quiet:true,
+      body: JSON.stringify({project:S.project.path, skip_ratchet:true,
+        message:`Аврора: маршрут «${sc.title}» ${how}`})});
+    if (saved.ok)
+      out.append(el("div",{class:"dim"}, `  результат маршрута зафиксирован: ${saved.commit}`));
+    else if (!/нечего фиксировать/.test(saved.error || ""))
+      out.append(el("div",{class:"warn"},
+        `  результат маршрута не зафиксирован: ${saved.error || "?"}`));
   }
   // Итог прогона: время, модель, документы, карточки, ошибки. Составляет его движок
   // (`run_summary`) — тот же, что печатает итог одиночного агента: правило одно.
@@ -3781,9 +3805,9 @@ async function runRoute(sc, write, resume){
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
       renderOverview();
       if (mine){ renderHistory(); refreshModules(); renderQuick(); renderQuick("продуктивность"); }});
-    // Шаги маршрута пишут в базу, но коммитит только агент — и только своё. Остальное
-    // остаётся незафиксированным, и следующий прогон смешает свою работу с этой.
-    // Панель git-операций не делает: это решение человека. Но молчать о них нечестно.
+    // Результат маршрута панель фиксирует сама (см. выше). Не прошла фиксация — храповик,
+    // занятый git — и незакоммиченное остаётся: следующий прогон смешает свою работу с
+    // этой, и молчать об этом нечестно.
     // Эндпоинт с проектами один и тот же — `/api/state`. Здесь стоял `/api/projects`,
     // которого у сервера нет: вместо предупреждения о незакоммиченной работе человек
     // получал всплывающее «неизвестный маршрут» в конце каждого пишущего маршрута.

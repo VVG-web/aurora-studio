@@ -506,6 +506,15 @@ def insights(pairs: dict, cards: dict) -> dict:
             "big": big, "label": label}
 
 
+def overflow_note(cap: int) -> str:
+    """Что значит «не влезло» — число без объяснения читалось как потеря связей
+    (PRJ-A 22.09.2026: «не влезло: 127»)."""
+    return (f"«Не влезло» — связи сверх предела {cap} на карточку (--max-related): "
+            "оставлены редкие соседи, частые отброшены — ссылка на страницу, которую цитируют "
+            "все, говорит меньше. Знание не теряется: отброшенные соседи по-прежнему находятся "
+            "поиском и картами.")
+
+
 def apply_card_links(pairs: dict, apply: bool, cap: int) -> dict:
     """Дописать `related:` карточкам. Ничего не удаляем: чужие связи — не наши.
 
@@ -795,6 +804,8 @@ def main() -> int:
         print(f"- карточек в графе: {len(pairs)}")
         for k, v in st.items():
             print(f"- {k}: {v}")
+        if st.get("не влезло"):
+            print("\n" + overflow_note(a.max_related))
         if not a.apply:
             print("\n(dry-run) Ничего не записано. Применить: --cards --apply")
         return 0

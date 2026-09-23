@@ -1910,10 +1910,11 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
     """
     # Публичная инфраструктура — не «чужой контур». Правило написано против адресов
     # заказчика, утёкших в открытую поставку; CDN с библиотекой графиков и сайты
-    # стандартов таким адресом не являются. NEUTRAL-HOSTS-ALLOW
+    # стандартов таким адресом не являются. Сайт лицензии шрифтов (1.121.0,
+    # cockpit/vendor/fonts/OFL.txt) — тоже: текст лицензии правке не подлежит. NEUTRAL-HOSTS-ALLOW
     allow = {"example.com", "example.ru", "example.org", "example", "localhost",
              "127.0.0.1", "github.com", "www.apache.org", "www.python.org",
-             "schemas.openxmlformats.org", "cdn.jsdelivr.net"}
+             "schemas.openxmlformats.org", "cdn.jsdelivr.net", "openfontlicense.org"}
     def ok(host: str) -> bool:
         h = host.lower().rstrip(".")
         if h in allow or any(h.endswith("." + a) for a in allow):
@@ -4723,7 +4724,10 @@ def test_each_backend_declares_what_it_is_for(tmp: Path):
         "бэкенд без объявленной ширины перестал делить общий потолок — прежние настройки мертвы"
 
     # кольцо: своё задание идёт на свой шлюз, подменяют только запасные
-    assert [b["n"] for b in A.ring_order(cfg)] == [1, 2, 3], "обычный порядок кольца изменился"
+    # Без `prefer` — первый и объявленные запасными: `FALLBACK=0` у третьего — запрет подмены,
+    # и одиночный вызов его слушает (PRJ-A 22.09: вынос и связывание гнали работу на такой).
+    assert [b["n"] for b in A.ring_order(cfg)] == [1, 2], \
+        "бэкенд с FALLBACK=0 снова подменяет упавшего в вызове без prefer"
     assert [b["n"] for b in A.ring_order(cfg, 3)] == [3, 1, 2], "вызов не начался со своего шлюза"
     assert [b["n"] for b in A.ring_order(cfg, 1)] == [1, 2], \
         "третий подменяет упавшего, хотя запасным не объявлен"
@@ -5611,7 +5615,7 @@ def test_relink_stops_when_gateways_do_not_answer(tmp: Path):
                         "AURORA_AGENT_BACKEND_1_MODEL": "test"})
     seen = []
 
-    def busy(cfg_, path, call, apply, deadline=None):
+    def busy(cfg_, path, call, apply, deadline=None, prefer=0):
         seen.append(path)
         return {"card": os.path.basename(path), "status": "сбой", "added": 0, "backends": [1],
                 "note": "№1: слот занят (/slots) — дальше по кольцу; никто не уложился в срок"}
@@ -7231,7 +7235,10 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     assert "function armStop(" in ui, "управление кнопкой размазано по двум циклам"
     # Окно — на весь runStep, а не на «сколько было»: F5 легально добавил в цикл шага
     # слежение за тишиной, и функция выросла. Иллюзия «кнопка пропала» от короткого среза.
-    step = ui[ui.index("async function runStep("):ui.index("async function runStep(") + 2200]
+    # Срез — до конца функции: в 1.122.0 отказ сервера стал печататься в консоль, runStep
+    # снова вырос, и фиксированное окно в 2200 знаков потеряло конец функции.
+    at = ui.index("async function runStep(")
+    step = ui[at:ui.index("\n}\n", at)]
     assert "armStop(res.job)" in step, "у шага маршрута нет кнопки «Прервать»"
     assert "armStop(null)" in step, "кнопка остаётся висеть после конца шага"
     assert "ROUTE.stopped" in ui, \
@@ -13609,8 +13616,13 @@ def test_a_slow_backend_is_not_a_dead_one(tmp: Path):
     assert ok["ok"], ok["log"]
     assert A.LAST_OK.get(1), "успешный ответ не отмечен — судить о свежести будет нечем"
 
+    # Срок запроса — явно и короткий. Пауза между кругами здесь пустышка, а срок вызова идёт
+    # по настоящим часам и продлевается на долю запасного (`FAIR_SHARE` от срока запроса):
+    # со сроком по умолчанию тест крутил кольцо вхолостую шесть минут, а с 1.122.0
+    # (срок без замера скорости — потолок) крутил бы двенадцать.
     slow = A.call_role(cfg, "qa", [{"role": "user", "content": "проверь"}],
-                       transport=flaky, deadline=time.time() + 3, sleep=lambda s: None)
+                       transport=flaky, deadline=time.time() + 3, sleep=lambda s: None,
+                       request_timeout=2)
     assert not slow["ok"], "таймаут принят за ответ"
     assert 1 not in A.DOWN, (
         "бэкенд, ответивший секунду назад, посажен в карантин на 15 минут из-за одного "
@@ -13654,7 +13666,7 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
     saved = dict(A.USAGE)
     try:
         A.USAGE.update(tokens_out=0, gen_seconds=0.0)
-        assert R.momus_timeout({"request_timeout": 300}, 0) == 600, \
+        assert R.momus_timeout({"request_timeout": 300}, 0) == 1200, \
             "рассуждающему Момусу дан срок без рассуждений — проверка оборвётся на середине"
     finally:
         A.USAGE.clear(); A.USAGE.update(saved)
@@ -14112,7 +14124,8 @@ def test_relinking_adds_links_and_proves_the_text_is_untouched(tmp: Path):
     assert st3["status"] != "отброшен", \
         f"карточка с уже стоявшей ссылкой отвергнута: {st3}"
 
-    # правка текста под видом разметки — отброшена целиком
+    # правка текста под видом разметки: формулировка модели не пишется НИКОГДА; её связи
+    # переносятся в исходный текст (1.122.0 — раньше ответ отбрасывался вместе со связями)
     card(root, "Concepts/Другая.md", status="draft", kind="knowledge",
          distilled="2026-09-01", body=thesis)
     other = root / "AuroraKnowledgeDB/Concepts/Другая.md"
@@ -14123,9 +14136,22 @@ def test_relinking_adds_links_and_proves_the_text_is_untouched(tmp: Path):
                 "text": linked.replace("ежедневно", "еженедельно")}
 
     st2 = R.relink_card(cfg, str(other), rewrites, apply=True)
-    assert st2["status"] == "отброшен" and "текст изменён" in st2["note"], st2
-    assert other.read_text(encoding="utf-8") == before, \
+    after = other.read_text(encoding="utf-8")
+    assert "еженедельно" not in after and "ежедневно" in after, \
         "правка формулировки записана под видом расстановки ссылок"
+    assert st2["status"] == "связана" and "ответ менял текст" in st2["note"], st2
+    assert R.strip_links(after) == R.strip_links(before), "перенос связей изменил текст"
+
+    # а ответ, чьи связи в исходном тексте не находятся, отбрасывается целиком
+    card(root, "Concepts/Третья.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", body=thesis)
+    third = root / "AuroraKnowledgeDB/Concepts/Третья.md"
+    was = third.read_text(encoding="utf-8")
+    st4 = R.relink_card(cfg, str(third),
+                        lambda *a, **k: {"ok": True, "backend": 1, "model": "m", "log": [],
+                                         "text": "Совсем другой текст про [[ФЦОД-2]]."}, apply=True)
+    assert st4["status"] == "отброшен" and "текст изменён" in st4["note"], st4
+    assert third.read_text(encoding="utf-8") == was, "отброшенный ответ что-то записал"
 
     # отметка держит дату тезиса: перепишут тезис — карточка вернётся сама
     R.mark_relinked(str(path))
@@ -16297,9 +16323,15 @@ def test_run_summary_counts_everything_the_human_asked(tmp: Path):
     text = "\n".join(RS.render(s))
     for need in ("Время: 2 мин 5 с", "токенов 1 400", "50.0 ток/с", "обработано 2", "пропущено 1",
                  "не удалось разобрать 2", "создано 3", "обновлено/дополнено 5", "удалено 2",
-                 "не удалось создать/обновить 1", "Ошибки: 4", "модель не уложилась в срок — 1",
+                 "не удалось создать/обновить 1", "Ошибки: 3", "неудачных 1",
                  "карточка не записана", "сбой: шлюз не ответил — 1", "сбой: ответ пустой — 1"):
         assert need in text, f"в итоге нет «{need}»:\n{text}"
+    # Неудачный вызов модели — не ошибка прогона, пока есть шаги: его повторяют, и он в строке
+    # модели. Иначе один сбой считался дважды (PRJ-A 22.09.2026: «Ошибки: 198» при 99 карточках).
+    assert "модель не уложилась в срок" not in text.split("Ошибки:")[1], \
+        f"неудачный вызов модели посчитан ошибкой рядом с упавшим шагом:\n{text}"
+    alone = "\n".join(RS.render(RS.from_agent([], usage, 5.0, None)))
+    assert "модель не уложилась в срок — 1" in alone, "без шагов причина неудачи вызова пропала"
     assert RS.parse(["шум", RS.emit(s)]) == [s], "машинная строка итога не читается обратно"
 
     # изменения базы — по git: создание, правка, удаление, перенос в архив; служебное не в счёт
@@ -16317,17 +16349,21 @@ def test_run_summary_counts_everything_the_human_asked(tmp: Path):
     (kb / "_archive").mkdir()
     g("mv", "AuroraKnowledgeDB/Concepts/C.md", "AuroraKnowledgeDB/_archive/C.md")     # в архив
     (kb / "Concepts/E.md").write_text("# E\n", encoding="utf-8")                     # создана
+    (kb / "Concepts/D.md").write_text("---\nextracted: 2026-09-22\n---\n# Concepts/D.md\n",
+                                      encoding="utf-8")                              # только шапка
     (kb / "MOC").mkdir()
     (kb / "MOC/Карта.md").write_text("# карта\n", encoding="utf-8")                  # служебное
     delta = RS.kb_delta(str(repo), since)
-    assert delta == {"created": 1, "updated": 1, "deleted": 2}, f"изменения базы посчитаны неверно: {delta}"
+    assert delta == {"created": 1, "updated": 1, "marked": 1, "deleted": 2}, \
+        f"изменения базы посчитаны неверно (правка одной шапки — не правка знания): {delta}"
 
     got = RS.route(str(repo), since, 3600, [
         {"cmd": "agent:build", "rc": 0, "summary": [s]}, {"cmd": "kb:repair", "rc": 2, "summary": []}])
     lines = "\n".join(got["lines"])
     assert got["lines"][0] == "■ Итог прогона" and "Время: 1 ч 0 мин" in lines, lines
     assert "шаг kb:repair не отработал (код 2) — 1" in lines, "упавший шаг не попал в ошибки"
-    assert "создано 1 · обновлено/дополнено 1 · удалено 2" in lines, \
+    assert "создано 1 · обновлено/дополнено 1 · удалено 2" in lines \
+        and "служебных отметок 1" in lines, \
         f"карточки маршрута посчитаны не по git, а суммой шагов:\n{lines}"
     assert RS.route(str(tmp), "", 1, [])["data"]["cards_known"] is False, \
         "без git изменения базы выданы за посчитанные"
@@ -16503,7 +16539,7 @@ def test_update_route_takes_theses_and_definitions_in_one_lap(tmp: Path):
     import inspect
     import agent_runner as R
     body = inspect.getsource(R.run_extract)
-    assert "min(budget, time.time() + 2 * cfg[\"request_timeout\"])" in body, \
+    assert 'min(budget, time.time() + AG.call_budget(cfg, "planner"))' in body, \
         "в окне на двенадцать часов одна карточка ждала бы лежащий шлюз до утра"
     guard = src.split('elif a.task == "distill":')[1][:400]
     assert "a.until_done and not a.apply" in guard, \
@@ -16699,7 +16735,8 @@ def test_thinking_calls_get_a_deadline_that_fits_the_thinking(tmp: Path):
     try:
         A.USAGE.update(tokens_out=0, gen_seconds=0.0)
         assert A.request_timeout_for(cfg, False) == 300, "срок без рассуждений изменился"
-        assert A.request_timeout_for(cfg, True) == 600, "без замера скорости — два срока"
+        assert A.request_timeout_for(cfg, True) == 1200, \
+            "без замера скорости срок не потолок — днём первые длинные тезисы оборвутся"
         A.USAGE.update(tokens_out=50 * 600, gen_seconds=600.0)        # 50 ток/с
         assert A.request_timeout_for(cfg, True) == 600, "срок не по скорости шлюза"
         A.USAGE.update(tokens_out=5 * 600, gen_seconds=600.0)         # 5 ток/с — шлюз еле жив
@@ -16719,6 +16756,633 @@ def test_thinking_calls_get_a_deadline_that_fits_the_thinking(tmp: Path):
     core = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
     assert "request_timeout or request_timeout_for(cfg, think)" in core, \
         "вызов модели берёт срок мимо общего правила"
+
+
+@test
+def test_an_undeclared_backend_gets_one_slot_when_others_declare_width(tmp: Path):
+    """Бэкенд без объявленной ширины не получает весь остаток потолка, если ширину объявили другим.
+
+    Живой случай, PRJ-A 22.09.2026: у №1 объявлено 16, общий потолок 99, в параллель включили
+    №2 — сервер llama.cpp с одним слотом, ширина не объявлена. `pool()` отдал ему 99 − 16 = 83
+    потока: очередь на его стороне, 99 карточек подряд упали по сроку, переосмысление встало.
+    Кто объявил ширину хоть одному шлюзу, знает свои серверы: про необъявленный он ничего не
+    сказал — ему один слот. Кто не объявил ширину никому, получает прежний раздел потолка.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_WIDTH": "16",
+                          "AURORA_AGENT_BACKEND_2_URL": "http://b", "AURORA_AGENT_BACKEND_2_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_2_PARALLEL": "1", "AURORA_AGENT_PARALLEL": "99"})
+    slots = A.pool(cfg)
+    assert slots.count(1) == 16 and slots.count(2) == 1, \
+        f"необъявленный бэкенд получил остаток потолка: №2 × {slots.count(2)}"
+    A._SEM.clear()
+    b2 = [b for b in cfg["backends"] if b["n"] == 2][0]
+    assert A._slot_semaphore(b2, cfg)._value == 1, "канал к необъявленному шире одного запроса"
+    A._SEM.clear()
+    # потолок меньше суммы — необъявленный не пролезает сверх потолка
+    tight = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                            "AURORA_AGENT_BACKEND_1_WIDTH": "4",
+                            "AURORA_AGENT_BACKEND_2_URL": "http://b", "AURORA_AGENT_BACKEND_2_MODEL": "m",
+                            "AURORA_AGENT_PARALLEL": "4"})
+    assert A.pool(tight) == [1, 1, 1, 1], f"потолок нарушен: {A.pool(tight)}"
+    # прежние настройки: ширину не объявил никто — делят потолок
+    old = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_2_URL": "http://b", "AURORA_AGENT_BACKEND_2_MODEL": "m",
+                          "AURORA_AGENT_PARALLEL": "6"})
+    assert sorted(A.pool(old)) == [1, 1, 1, 2, 2, 2], f"прежний раздел потолка сломан: {A.pool(old)}"
+
+
+@test
+def test_extract_and_relink_hand_out_work_by_slots(tmp: Path):
+    """Вынос и связывание раздают задания по слотам пула, как переосмысление.
+
+    Живой случай, PRJ-A 22.09.2026: `run_extract` и `run_relink` звали карточку без `prefer`.
+    Все потоки начинали с первого шлюза, а кольцо без `prefer` тянуло №3, которому в настройке
+    запрещены и параллель, и подмена. Связывание в итоге упёрлось в свою же перегрузку.
+    Срок карточки выноса был фиксированным (2 × request_timeout = 600 с) и обрывал рассуждение.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    thesis = ("Реестр налогоплательщиков хранит сведения о каждом плательщике и его статусе. "
+              "Реестр обновляется ежедневно из подсистемы учёта и сверяется с отчётами. " * 3)
+    for i in range(6):
+        card(root, f"Concepts/Карточка-{i}.md", status="draft", kind="knowledge",
+             distilled="2026-09-01", body=thesis)
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_WIDTH": "2",
+                          "AURORA_AGENT_BACKEND_2_URL": "http://b", "AURORA_AGENT_BACKEND_2_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_2_WIDTH": "2", "AURORA_AGENT_PARALLEL": "4"})
+    seen = {"extract": [], "relink": []}
+    deadlines = []
+    import threading as _th
+    lock = _th.Lock()
+
+    def fake(kind):
+        def call(cfg_, role, messages, prefer=0, deadline=None, **kw):
+            with lock:
+                seen[kind].append(prefer)
+                if kind == "extract":
+                    deadlines.append(deadline)
+            text = '{"extract": []}' if kind == "extract" else "нет"
+            return {"ok": True, "text": text, "backend": prefer or 1, "model": "m", "log": []}
+        return call
+
+    import time as _t
+    t0 = _t.time()
+    R.run_extract(cfg, str(root), False, call=fake("extract"))
+    R.run_relink(cfg, str(root), False, call=fake("relink"))
+    for kind in ("extract", "relink"):
+        got = set(seen[kind])
+        assert got == {1, 2}, f"{kind}: задания не розданы по слотам пула — prefer {sorted(got)}"
+    budget = A.call_budget(cfg, "planner")
+    assert all(d and d - t0 >= budget - 5 for d in deadlines), \
+        "срок карточки выноса короче срока рассуждающего вызова — длинное рассуждение оборвётся"
+
+
+@test
+def test_parallel_build_keeps_the_console(tmp: Path):
+    """Перехват вывода build_plan действует для своего потока и не глушит процесс.
+
+    Живой случай, PRJ-A 22.09.2026: разбор в 7 потоков, `redirect_stdout` на весь процесс —
+    подмены переплелись, и весь дальнейший вывод ушёл в чужой брошенный буфер: консоль
+    оборвалась на 5 строках из ~40, пропали отчёт, итог и «Источников в плане: 7 → 0».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib, io, threading, time as _t
+    R = importlib.import_module("agent_runner")
+    real = io.StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = real
+    bufs = {}
+    try:
+        def worker(n):
+            out, err = io.StringIO(), io.StringIO()
+            for k in range(20):
+                with R.capture_this_thread(out, err):
+                    print(f"поток {n} внутри {k}")
+                    _t.sleep(0.001)
+                print(f"поток {n} снаружи {k}", file=sys.stderr)
+            bufs[n] = out.getvalue()
+
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(7)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        print("после разбора — итог прогона")
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+    text = real.getvalue()
+    assert "после разбора — итог прогона" in text, "вывод процесса после разбора пропал"
+    assert all(text.count(f"поток {n} снаружи") == 20 for n in range(7)), \
+        "строки прогресса потоков потерялись"
+    assert "внутри" not in text, "перехваченный вывод просочился в консоль"
+    for n, got in bufs.items():
+        assert got.count(f"поток {n} внутри") == 20 and "снаружи" not in got, \
+            f"буфер потока {n} получил чужой вывод"
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    body = src.split("def run_build_plan(")[1].split("\ndef ")[0]
+    assert "redirect_stdout" not in body and "capture_this_thread(out, err)" in body, \
+        "build_plan снова перехватывается на весь процесс"
+
+
+@test
+def test_slow_answers_do_not_trip_the_dead_gateway_breaker(tmp: Path):
+    """«Не уложился в срок» — живой шлюз: предохранитель «3 сбоя подряд» его не считает.
+
+    Живой случай, PRJ-A 22.09.2026: связывание само загрузило обе локальные машины, ответы
+    пошли медленно — и предохранитель «это шлюз, а не карточки» остановил шаг, оставив 428
+    карточек без связей. А причина сбоя в отчёте была одна на всех — «дедлайн исчерпан»:
+    что ответил каждый шлюз, по журналам было не восстановить.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+
+    note = R.model_fail_note({"log": ["№1 m: не уложился в 600 с", "№3: слот занят (/slots) — дальше по кольцу",
+                                      "круг 1 неудачен — пауза 10 с, снова с первого",
+                                      "дедлайн исчерпан: ни один бэкенд не ответил осмысленно"]})
+    assert "№1 m: не уложился в 600 с" in note and "№3: слот занят" in note and "дедлайн исчерпан" in note, \
+        f"причина сбоя не называет бэкенды: {note}"
+
+    def base(name, n):
+        root = tmp / name
+        kb = root / "AuroraKnowledgeDB/Concepts"
+        kb.mkdir(parents=True)
+        for i in range(n):
+            (kb / f"К{i:02d}.md").write_text(
+                f'---\ntitle: "К{i:02d}"\nkind: knowledge\nstatus: knowledge\n'
+                f'distilled: 2026-09-01\n---\n\n' + "Тезис карточки про реестр. " * 12 + f"{i}\n",
+                encoding="utf-8")
+        return root
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def slow(cfg_, role, messages, **kw):
+        return {"ok": False, "timed_out": True,
+                "log": ["№1 m: не уложился в 600 с", "никто не уложился в срок: 600 с на запрос"]}
+
+    def dead(cfg_, role, messages, **kw):
+        return {"ok": False, "log": ["№1: connection refused"]}
+
+    # переосмысление: карточки без тезиса
+    root = tmp / "d"
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True)
+    for i in range(8):
+        (kb / f"К{i}.md").write_text(f'---\ntitle: "К{i}"\nkind: knowledge\nstatus: knowledge\n'
+                                     f'---\n\nтело {i}\n', encoding="utf-8")
+    res = R.run_distill(cfg, str(root), apply=False, limit=8, momus=False, call=slow)
+    assert len(res["steps"]) == 8 and not res["gateways_down"], \
+        f"медленные ответы остановили переосмысление: пройдено {len(res['steps'])} из 8"
+    assert all(s.get("slow") for s in res["steps"]), "сбой по сроку не помечен медленным"
+    res = R.run_distill(cfg, str(root), apply=False, limit=8, momus=False, call=dead)
+    assert res["gateways_down"] and len(res["steps"]) <= R.FAILS_IN_A_ROW, \
+        "лежащий шлюз больше не останавливает переосмысление"
+
+    # связывание
+    res = R.run_relink(cfg, str(base("r1", 8)), False, call=slow)
+    assert not res["gateways_down"], "медленные ответы остановили связывание"
+    res = R.run_relink(cfg, str(base("r2", 8)), False, call=dead)
+    assert res["gateways_down"], "лежащий шлюз больше не останавливает связывание"
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    assert '["log"][-2:]' not in src, "причина сбоя снова берётся последними строками журнала"
+
+
+@test
+def test_relink_keeps_links_when_the_model_also_edited_the_text(tmp: Path):
+    """Модель поставила связи и заодно поправила текст — связи переносятся в исходный тезис.
+
+    Живой случай, PRJ-A 22.09.2026: 23 из 187 ответов связывания отброшены целиком («текст
+    изменён»), а карточка всё равно получала отметку «связано» и больше в очередь не
+    возвращалась — без единой связи. Текст по-прежнему не меняется ни на символ.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    thesis = "Данные приходят из ФЦОД по расписанию. Итоговый ЭСФ считается ночью."
+    got = "Данные поступают из [[ФЦОД]] по расписанию. [[Итоговый-ЭСФ|Итоговый ЭСФ]] считается ночью."
+    out, n = R.rescue_links(got, thesis)
+    assert n == 2 and out == ("Данные приходят из [[ФЦОД]] по расписанию. "
+                              "[[Итоговый-ЭСФ|Итоговый ЭСФ]] считается ночью."), out
+    assert R.strip_links(out) == R.strip_links(thesis), "перенос связей изменил текст"
+    # середина слова и уже стоящая ссылка — не трогаем
+    out, n = R.rescue_links("[[НДС]] и [[Реестр]]", "НДСный учёт; [[Реестр]] есть")
+    assert n == 0 and out == "НДСный учёт; [[Реестр]] есть", out
+
+    root = make_project(tmp)
+    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Подсистема обработки платежей. " * 6)
+    path = card(root, "Concepts/Баланс.md", status="draft", kind="knowledge", distilled="2026-09-01",
+                body=("Аналитический баланс получает данные из ФЦОД по расписанию и хранит остатки "
+                      "по каждому лицевому счёту за период. ") * 2)
+
+    def fake(cfg, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": ("Аналитический баланс берёт данные из [[ФЦОД]] по расписанию и хранит остатки "
+                         "по каждому лицевому счёту за период. ") * 2}
+
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        step = R.relink_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+                              "thinking_roles": {}, "thinking": False, "backends": []},
+                             str(path), fake, apply=True)
+    finally:
+        os.chdir(here)
+    assert step["status"] == "связана" and step["added"] >= 1, step
+    text = path.read_text(encoding="utf-8")
+    assert "из [[ФЦОД]] по расписанию" in text and "берёт данные" not in text, \
+        "в карточку попал изменённый моделью текст или связь не перенесена"
+
+
+@test
+def test_extracted_definition_links_to_the_card_it_lands_in(tmp: Path):
+    """Вынос ставит ссылку на имя заведённой карточки; имена — по канону; скобки не ломают ссылки.
+
+    Живой случай, PRJ-A 22.09.2026: вынос ставил `[[Итоговый ЭСФ]]` при карточке
+    «Итоговый-ЭСФ» (26 битых ссылок до хвоста маршрута), заводил «текущий-расчёт» со строчной,
+    а карточка «…тип Option[String]» с «]» в имени осталась без единой ссылки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    AC = importlib.import_module("aurora_common")
+
+    assert R.canon_term("текущий расчёт") == "Текущий расчёт"
+    assert R.canon_term("vat_report") == "vat_report", "регистр идентификатора из кода испорчен"
+    assert "[" not in AC.card_filename("Семантика полей тип Option[String]") \
+        and "|" not in AC.card_filename("а|б"), "имя карточки пропускает разметку ссылки"
+
+    root = make_project(tmp)
+    d1 = "синтетическая сущность для расчёта расхождений по периоду"
+    d2 = "результат расчёта на текущую дату по всем записям реестра"
+    thesis = ("Расчёт расхождений использует Итоговый ЭСФ, " + d1 + ". Ведётся текущий расчёт, "
+              + d2 + ". Результаты сверяются с отчётами налогоплательщиков ежедневно.")
+    card(root, "Processes/Расчет.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         sources='\n  - "Sources/Confluence/Расчет.md"', body=thesis)
+    path = root / "AuroraKnowledgeDB/Processes/Расчет.md"
+    plan = [{"term": "Итоговый ЭСФ", "definition": d1, "keep": ""},
+            {"term": "текущий расчёт", "definition": d2, "keep": ""}]
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        text = path.read_text(encoding="utf-8")
+        got = R.apply_extract_plan(str(root), str(path), text, R.thesis_of(text), plan, True)
+    finally:
+        os.chdir(here)
+    assert sorted(got["made"]) == ["Итоговый ЭСФ", "текущий расчёт"], got
+    left = path.read_text(encoding="utf-8")
+    assert "[[Итоговый-ЭСФ|Итоговый ЭСФ]]" in left and "[[Текущий-расчёт|текущий расчёт]]" in left, \
+        f"ссылка ведёт не на имя заведённой карточки:\n{left}"
+    new = root / "AuroraKnowledgeDB/Concepts/Текущий-расчёт.md"
+    assert new.is_file(), "русское понятие заведено со строчной"
+    assert '"текущий расчёт"' in new.read_text(encoding="utf-8"), "прежнее написание не ушло в синонимы"
+    lint = run("kb_lint.py", cwd=root).stdout
+    assert "Итоговый ЭСФ]]" not in lint and "текущий расчёт]]" not in lint, \
+        f"вынос оставил битые ссылки:\n{lint[-800:]}"
+
+    # ремонт: уже заведённая карточка со скобками получает имя по правилу
+    card(root, "Concepts/Тип-Option[String].md", status="draft", kind="knowledge",
+         body="Поле может быть пустым.")
+    run("kb_fix.py", "--names", "--apply", cwd=root)
+    names = {p.name for p in (root / "AuroraKnowledgeDB/Concepts").glob("*.md")}
+    assert "Тип-Option-String.md" in names and "Тип-Option[String].md" not in names, \
+        f"карточка со скобками в имени не переименована: {sorted(names)}"
+
+    flat = " ".join(R.PROMPT_EXTRACT.split())
+    assert "значения статусов" in flat and "коды задач и историй" in flat, \
+        "задание выноса снова не отличает сущность от статуса и кода"
+
+
+@test
+def test_a_data_literal_in_brackets_is_not_a_link(tmp: Path):
+    """`[[01804201710137, 1, 0.5, Seller]]` из таблицы выгрузки — данные, а не ссылка.
+
+    Живой случай, PRJ-A 22.09.2026: строка SQL-выгрузки, перенесённая из источника дословно,
+    дала четыре «битые ссылки»; линтер звал их ошибкой, ремонт не брал — и база оставалась
+    «с ошибками» после каждой починки. Правило одно для линтера и ремонта.
+    """
+    root = make_project(tmp)
+    card(root, "Processes/Выгрузка.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Сверка идёт по [[Реестр]].\n\n|2 |2021-02-10 |[[01804201710137, 1, 0.500000000000000000, Seller]] |[] |\n")
+    card(root, "Concepts/Реестр.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body="Реестр плательщиков. См. [[Выгрузка]].")
+    out = run("kb_lint.py", cwd=root).stdout
+    assert "01804201710137" not in out, f"литерал данных назван битой ссылкой:\n{out[-600:]}"
+    fix = run("kb_fix.py", "--links", cwd=root).stdout
+    assert "01804201710137" not in fix, "ремонт пытается чинить литерал данных как ссылку"
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    assert not AC.not_a_card_link("US-2.1.25") and not AC.not_a_card_link("1._Алгоритмы"), \
+        "обычное имя карточки принято за литерал данных"
+
+
+@test
+def test_the_thesis_is_checked_by_the_primary_judge_not_its_own_slot(tmp: Path):
+    """Тезис, написанный на слоте №2, проверяет основной шлюз, а не тот же №2.
+
+    Живой случай, PRJ-A 22.09.2026: Момус получал `prefer` тезиса, и тезис 27b с коротким
+    рассуждением судила та же 27b — самопроверка.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    kb = tmp / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True)
+    p = kb / "К.md"
+    p.write_text('---\ntitle: "К"\nkind: knowledge\nstatus: knowledge\n---\n\nРеестр хранит сведения.\n',
+                 encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://a", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_2_URL": "http://b", "AURORA_AGENT_BACKEND_2_MODEL": "m"})
+    asked = []
+
+    def fake(cfg_, role, messages, prefer=0, **kw):
+        asked.append((role, prefer))
+        text = "ВЕРДИКТ: ЧИСТО" if role == "qa" else "Реестр хранит сведения."
+        return {"ok": True, "text": text, "backend": prefer or 1, "model": "m", "log": []}
+
+    R.distill_card(cfg, str(p), call=fake, momus=True, prefer=2)
+    roles = dict(asked)
+    assert roles.get("worker") == 2, f"тезис пошёл не на свой слот: {asked}"
+    assert roles.get("qa") == 0, f"проверка пошла на слот, который писал тезис: {asked}"
+
+
+@test
+def test_extract_tells_the_cycle_how_many_cards_wait_for_a_thesis(tmp: Path):
+    """Вынос сообщает остаток переосмысления вместе с карточками, которые он сам завёл.
+
+    Живой случай, PRJ-A 22.09.2026: переосмысление отчиталось «осталось 0», после него вынос
+    завёл две карточки, и цикл маршрута счёл работу законченной — две карточки остались без
+    тезиса до следующего прогона. Цикл берёт последний «· осталось: N» оборота.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib, json as _json, re as _re
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    definition = "которая является частью проекта обработки платежей"
+    thesis = ("Аналитический баланс получает информацию из подсистемы ФЦОД, " + definition +
+              ". Баланс обновляется по факту поступления платежа и хранит остатки по счетам. "
+              "Сверка проводится ежедневно.")
+    card(root, "Concepts/Баланс.md", status="draft", kind="knowledge", distilled="2026-09-01",
+         body=thesis)
+    plan = _json.dumps({"extract": [{"term": "ФЦОД", "definition": definition, "keep": ""}]},
+                       ensure_ascii=False)
+
+    def fake(cfg, role, messages, **kw):
+        return {"ok": True, "text": plan, "backend": 1, "model": "m", "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://x/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        res = R.run_extract(cfg, str(root), True, call=fake)
+    finally:
+        os.chdir(here)
+    rep = R.report_extract(res, True)
+    m = _re.search(r"·\s*осталось:\s*(\d+)", rep)
+    assert m and int(m.group(1)) == 1, f"вынос не сказал, что новая карточка ждёт тезиса:\n{rep[:400]}"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "/·\\s*осталось:\\s*(\\d+)/" in ui, "цикл маршрута читает остаток по другому образцу"
+
+
+@test
+def test_until_done_names_the_real_remainder(tmp: Path):
+    """Остановка заходов называет настоящий остаток очереди, а не остаток захода.
+
+    Живой случай, PRJ-A 22.09.2026: «остаток 379 доделает следующий прогон» при 478 карточках в
+    очереди — в сообщение шёл остаток захода, который не берёт уже пробованные карточки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib, io, contextlib, types
+    R = importlib.import_module("agent_runner")
+    a = types.SimpleNamespace(hours=1.0, no_checkpoint=True)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        R.until_done(str(tmp), a, "distill",
+                     lambda: {"left": 379, "steps": [{"status": "сбой"}], "gateways_down": True},
+                     lambda r: "", lambda r: "", lambda r: 0, remaining=lambda: 478)
+    said = err.getvalue()
+    assert "остаток 478" in said and "379" not in said, f"назван остаток захода, а не очереди:\n{said}"
+
+
+@test
+def test_update_route_prunes_the_mirror_only_after_a_clean_export(tmp: Path):
+    """«Обновить базу» убирает из зеркала удалённые страницы — но только после чистой выгрузки.
+
+    Живой случай, PRJ-A 22.09.2026: синк без `--prune` оставлял зеркала удалённых страниц, и
+    аудит каждый прогон находил те же ORPHAN 2. Но «лишнее» — это то, чего не нашёл обход:
+    упала загрузка страницы — её поддерево выглядит удалённым. Такое чистить нельзя.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    C = importlib.import_module("confluence_export")
+    assert C.prune_allowed(["a.md", "b.md"], 1064, 0) == (True, ""), "обычная чистка запрещена"
+    ok, why = C.prune_allowed(["a.md"], 1064, 3)
+    assert not ok and "ошибками" in why, "чистка после выгрузки с ошибками разрешена"
+    ok, why = C.prune_allowed(["x.md"] * 300, 1064, 0)
+    assert not ok and "слишком много" in why, "массовая чистка разрешена без человека"
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    upd = scen.split("[update]")[1].split("\n[")[0]
+    line = next(l for l in upd.splitlines() if l.startswith("sync:confluence"))
+    assert line.rstrip().endswith("| --prune"), f"маршрут не убирает зеркала удалённых страниц: {line}"
+
+
+@test
+def test_web_sync_without_pages_says_one_line(tmp: Path):
+    """`sync:web` в проекте без веб-страниц — одна строка, а не образец конфига на каждом прогоне.
+
+    Живой случай, PRJ-A 22.09.2026: шаг стоит в «Обновить базу» и в каждом прогоне печатал
+    двенадцать строк образца настройки. Образец переехал в `--help`.
+    """
+    root = make_project(tmp)
+    out = run("web_export.py", "--apply", cwd=root).stdout.strip()
+    assert len(out.splitlines()) == 1 and "нечего" in out, f"шаг без страниц шумит:\n{out}"
+    helptext = run("web_export.py", "--help", cwd=root).stdout
+    assert "pages:" in helptext and "trusted: true" in helptext, "образец блока пропал из --help"
+
+
+@test
+def test_source_maps_report_and_rewrite_only_what_changed(tmp: Path):
+    """`kb:moc --by-source` печатает и переписывает только изменившиеся карты документов.
+
+    Живой случай, PRJ-A 22.09.2026: шаг идёт в каждом обороте маршрута и каждый раз печатал
+    таблицу всех 305 документов; а дата сборки в карте делала «изменёнными» все карты каждый
+    новый день — сотни правок в git без единой новой ссылки.
+    """
+    root = make_project(tmp)
+    for i in range(3):
+        card(root, f"Concepts/Карта-{i}.md", status="draft", kind="knowledge",
+             source='"Sources/Confluence/Док.md"', body=f"Знание {i}.")
+    first = run("kb_moc.py", "--by-source", "--apply", cwd=root).stdout
+    assert "| Док.md | 3 |" in first, first
+    maps = list((root / "AuroraKnowledgeDB/MOC").glob("Документ--*.md"))
+    assert len(maps) == 1
+    # на следующий день — та же карта с другой датой: не изменение
+    text = maps[0].read_text(encoding="utf-8")
+    import re as _re
+    maps[0].write_text(_re.sub(r"^updated: \S+$", "updated: 2000-01-01", text, flags=_re.M),
+                       encoding="utf-8")
+    again = run("kb_moc.py", "--by-source", "--apply", cwd=root).stdout
+    assert "| Док.md |" not in again and "без изменений: 1" in again, \
+        f"неизменившаяся карта снова напечатана или переписана:\n{again}"
+    assert "2000-01-01" in maps[0].read_text(encoding="utf-8"), "карта переписана ради одной даты"
+
+
+@test
+def test_an_empty_build_plan_costs_nothing(tmp: Path):
+    """Разбор с пустым планом — холостой шаг без чекпойнта, оракула и коммитов.
+
+    Живой случай, PRJ-A 22.09.2026: «Источников в работе: 0», но ~100 с (линтер всей базы до
+    и после) и два коммита на каждый оборот маршрута; а чекпойнт перед каждым шагом агента
+    коммитил один журнал запусков панели как «работу человека».
+    """
+    root = make_project(tmp, git=True)
+    g = lambda *args: subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+    # как в настоящем проекте: кеш интерпретатора закрыт .gitignore
+    (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    g("add", "-A"); g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "gitignore")
+    count = lambda: len(g("log", "--oneline").stdout.splitlines())
+    before = count()
+    env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
+           "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
+    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/agent_runner.py"),
+                         "--task", "build", "--apply", "--critic"],
+                        cwd=str(root), capture_output=True, text=True, env=env, timeout=300)
+    assert cp.returncode == 0, cp.stderr[-600:]
+    assert "Источников в плане: 0 → 0" in cp.stdout, \
+        f"цикл маршрута не узнает, что источников не осталось:\n{cp.stdout[-400:]}"
+    assert count() == before, "холостой разбор сделал коммиты"
+    assert "Оракул" not in cp.stdout, "холостой разбор гонял оракула"
+
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    log = root / ".opencode/run_log.md"
+    log.write_text("| kb:kind | 2026-09-22 | 0 |\n", encoding="utf-8")
+    got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["ok"] and got["committed"] == 0 and count() == before, \
+        f"чекпойнт закоммитил журнал запусков панели как работу человека: {got}"
+    (root / "AuroraKnowledgeDB/Concepts").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB/Concepts/Правка.md").write_text("# Правка\n", encoding="utf-8")
+    got = R.checkpoint(str(root), "agent:distill", True)
+    assert got["committed"] == 2 and count() == before + 1, \
+        f"настоящая работа человека не зафиксирована: {got}"
+
+
+@test
+def test_twins_do_not_compare_generated_maps(tmp: Path):
+    """Двойников ищут среди карточек знания, а не среди порождённых карт и индексов MOC/.
+
+    Живой случай, PRJ-A 22.09.2026: `agent:twins` разбирал пары индексов кодов («Epic-10» /
+    «US-10.1») — списки чужих карточек, похожие друг на друга списком, — вызов модели на каждую.
+    """
+    root = make_project(tmp)
+    body = "\n".join(f"- [[Карточка-знания-номер-{i}]] — описание пункта {i} списка" for i in range(40))
+    for name in ("US-6.1.4", "US-6.1.8"):
+        card(root, f"MOC/{name}.md", status="index", kind="document", body=body)
+    out = run("kb_twins.py", "--min", "0.3", "--limit", "0", cwd=root).stdout
+    assert "US-6.1.4" not in out and "US-6.1.8" not in out, \
+        f"карты содержания сравниваются как двойники:\n{out[-500:]}"
+
+
+@test
+def test_card_links_explain_what_did_not_fit(tmp: Path):
+    """`kb:links --cards` объясняет «не влезло», а не бросает голое число.
+
+    Живой случай, PRJ-A 22.09.2026: «не влезло: 127» без пояснения читалось как потеря связей.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    G = importlib.import_module("kb_graph")
+    root = make_project(tmp)
+    paths = {n: card(root, f"Concepts/{n}.md", status="draft", kind="knowledge", body=f"Про {n}.")
+             for n in ("А", "Б", "В", "Г")}
+    rel = lambda n: os.path.join("AuroraKnowledgeDB", "Concepts", n + ".md")
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        st = G.apply_card_links({rel("А"): {rel("Б"), rel("В"), rel("Г")}}, False, 1)
+    finally:
+        os.chdir(here)
+    assert st["не влезло"] == 2, st
+    assert "сверх предела 1 на карточку" in G.overflow_note(1)
+    src = (SCRIPTS / "kb_graph.py").read_text(encoding="utf-8")
+    assert 'if st.get("не влезло"):\n            print("\\n" + overflow_note(a.max_related))' in src, \
+        "число «не влезло» печатается без объяснения"
+
+
+@test
+def test_a_step_that_fails_to_start_leaves_a_trace(tmp: Path):
+    """Команда, упавшая на самом запуске, оставляет причину в архиве прогона.
+
+    Живой случай, PRJ-A 21.09: kb:embed и дважды sync:confluence встали с кодом 2 — ни
+    строки вывода, ни папки прогона. Папка архива заводилась только у запустившегося
+    процесса, а причина отказа жила в памяти панели до её перезапуска.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    root = make_project(tmp, git=False)
+    real_popen, real_running = ck.subprocess.Popen, ck.RUNNING
+
+    def broken(*a, **kw):
+        raise OSError("интерпретатор не найден")
+
+    ck.subprocess.Popen = broken
+    ck.RUNNING = str(tmp / "running.json")     # настоящий список заданий кита не трогаем
+    try:
+        jid = ck.start_job(str(root), "kb:lint", [])
+        job = ck.JOBS[jid]
+        for _ in range(200):
+            if job["done"]:
+                break
+            time.sleep(0.05)
+    finally:
+        ck.subprocess.Popen, ck.RUNNING = real_popen, real_running
+    assert job["done"] and job["rc"] == 2, f"упавший запуск не завершил задание: {job}"
+    assert any("команда не запустилась" in l and "интерпретатор не найден" in l
+               for l in job["out"]), f"причина не показана: {job['out']}"
+    log = Path(ck.runs_dir(str(root))) / job["run_id"] / "console.log"
+    assert log.is_file(), "упавший запуск не оставил папки прогона"
+    text = log.read_text(encoding="utf-8")
+    assert "интерпретатор не найден" in text and "Traceback" in text, \
+        f"в архиве нет причины и места падения: {text!r}"
+
+
+@test
+def test_a_route_says_why_a_step_did_not_start_and_saves_its_tail(tmp: Path):
+    """Отказ сервера виден в консоли и в событиях шага; результат маршрута зафиксирован.
+
+    Отказ маршруту (движок проекта отстал от кита) показывался всплывающим окном на четыре
+    секунды, а в консоли и в итоге стояло «команда не отработала» — хотя команда даже не
+    запускалась. И хвост: шаги после цикла (карты, оглавления, трассировка, доверие) не
+    фиксировались — в PRJ-A 22.09 после «пройден» осталось 163 незакоммиченных файла.
+    """
+    ui = panel_sources()
+    step = ui[ui.index("async function runStep("):ui.index("const FIX_RUN = {")]
+    refuse = step[step.index("if (!res.job)"):step.index("let since = 0")]
+    assert "res.error" in refuse and "out.append(" in refuse, \
+        "причина отказа не попадает в консоль"
+    assert "refused: why" in refuse and "rc:2" in refuse, \
+        "отказ неотличим от упавшей команды"
+    run = ui[ui.index("async function runRoute("):ui.index("async function resumeLastRoute(")]
+    assert "note: res.refused" in run, "в событиях шага нет причины отказа"
+    assert "ROUTE.refused ?" in run, "итог маршрута говорит «не отработала» вместо причины"
+    tail = run[run.index("const bad = ROUTE.failed"):run.index("ROUTE = null;")]
+    assert '"/api/git/commit"' in tail and "if (write && S.project)" in tail, \
+        "результат маршрута после цикла не фиксируется"
+    assert "skip_ratchet:true" in tail and "не зафиксирован" in tail, \
+        "фиксация хвоста встанет на храповике или провалится молча"
 
 
 @test

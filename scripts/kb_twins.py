@@ -139,8 +139,14 @@ def main() -> int:
         print(f"kb_twins: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
 
+    # Карты содержания и индексы кодов (MOC/) порождает `kb:moc`: они перечисляют чужие
+    # карточки, и две карты по соседним кодам похожи списком, а не знанием. На PRJ-A
+    # 22.09.2026 модель разбирала пары «Epic-10 / US-10.1», «US-6.1.4 / US-6.1.8» —
+    # вызов с рассуждениями на каждую, и все с ответом «разные артефакты».
+    moc = os.sep + "MOC" + os.sep
     cards = {p: c for p, c in load_cards().items()
-             if not is_placeholder(c.fm, c.text) and c.status != "deprecated"}
+             if not is_placeholder(c.fm, c.text) and c.status != "deprecated"
+             and moc not in os.sep + os.path.normpath(p) + os.sep}
     raw = {}
     for path, c in cards.items():
         s = shingles(card_body(c.text))

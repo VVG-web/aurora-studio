@@ -209,6 +209,9 @@ def git(*args: str, cwd: str = ".") -> tuple:
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
+ENGINE_JOURNALS = {".opencode/run_log.md"}
+
+
 def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
     """Зафиксировать работу человека до прогона агента.
 
@@ -221,6 +224,12 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
     if rc != 0:
         return {"ok": False, "why": "проект не под git — отката не будет", "sha": ""}
     dirty = git("status", "--porcelain", cwd=cwd)[1]
+    # Журнал запусков панели — не работа человека: он меняется после каждого шага, и
+    # чекпойнт перед каждым agent:* коммитил только его («работа человека
+    # зафиксирована» — на PRJ-A 22.09.2026 четверть коммитов прогона). Он уйдёт со
+    # следующим настоящим коммитом.
+    if dirty and all(l[3:].strip().strip('"') in ENGINE_JOURNALS for l in dirty.splitlines()):
+        dirty = ""
     if not enabled:
         sha = git("rev-parse", "HEAD", cwd=cwd)[1]
         return {"ok": True, "sha": sha, "committed": 0,
@@ -413,6 +422,53 @@ def release_lock(cwd: str) -> None:
         pass
 
 
+class _ThreadRoutedStream:
+    """`sys.stdout`/`sys.stderr`, перехват которых действует для одного потока.
+
+    `contextlib.redirect_stdout` подменяет поток вывода всему процессу. Разбор идёт в
+    несколько потоков, и подмены переплетались: поток восстанавливал «прежним» буфер
+    соседа, и дальше весь вывод процесса уходил в брошенный буфер. На прогоне PRJ-A
+    22.09.2026 консоль разбора оборвалась на пятой строке из сорока — без отчёта, итога и
+    строки «Источников в плане», по которой маршрут считает остаток цикла.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._local = threading.local()
+
+    def _target(self):
+        return getattr(self._local, "buf", None) or self._real
+
+    def write(self, s):
+        return self._target().write(s)
+
+    def flush(self):
+        return self._target().flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+_ROUTE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def capture_this_thread(out, err):
+    """Вывод ЭТОГО потока — в `out`/`err`; остальные потоки печатают как печатали."""
+    with _ROUTE_LOCK:
+        if not isinstance(sys.stdout, _ThreadRoutedStream):
+            sys.stdout = _ThreadRoutedStream(sys.stdout)
+        if not isinstance(sys.stderr, _ThreadRoutedStream):
+            sys.stderr = _ThreadRoutedStream(sys.stderr)
+        so, se = sys.stdout, sys.stderr
+    prev = (getattr(so._local, "buf", None), getattr(se._local, "buf", None))
+    so._local.buf, se._local.buf = out, err
+    try:
+        yield
+    finally:
+        so._local.buf, se._local.buf = prev
+
+
 def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
     """build_plan.py в-процессе: те же побочные эффекты, без Popen. → как run_command.
 
@@ -440,7 +496,7 @@ def run_build_plan(cwd: str, args: list, timeout: int = 300) -> dict:
 
     out, err = io.StringIO(), io.StringIO()
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with capture_this_thread(out, err):
             if "--card" in args:
                 # Путь источника остаётся ОТНОСИТЕЛЬНЫМ: он уходит в `source:` карточки
                 # и по нему потом сверяется отметка «разобрано». Читать от корня проекта
@@ -588,7 +644,7 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
         prefer=prefer)
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     plan = (parse_json(r["text"]) or {}).get("extract")
     if plan is None:
@@ -625,11 +681,14 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
         # остаются скобки, и в тексте выходит «введена УСН ([[УСН]])» — имя дважды и
         # пустая скобка. Так и вышло на первом живом прогоне.
         paren = f"{term} ({definition})"
+        # Ссылка ведёт на имя карточки, которую перенос найдёт или заведёт, а подпись —
+        # слово из текста. Раньше ставилось `[[Итоговый ЭСФ]]` при карточке «Итоговый-ЭСФ»:
+        # до хвоста маршрута база жила с битыми ссылками (на PRJ-A 22.09 — 26 штук).
+        link = definition_link(root, term)
         if paren in new_thesis:
-            new_thesis = new_thesis.replace(paren, (keep + " " if keep else "")
-                                            + f"[[{term}]]", 1)
+            new_thesis = new_thesis.replace(paren, (keep + " " if keep else "") + link, 1)
         else:
-            replacement = (keep + " " if keep else "") + f"[[{term}]]"
+            replacement = (keep + " " if keep else "") + link
             new_thesis = new_thesis.replace(definition, replacement, 1)
         made.append((term, definition))
 
@@ -678,6 +737,30 @@ def mark_examined(path: str, fm: dict) -> None:
     open(path, "w", encoding="utf-8").write(with_fields(text, {"extracted": stamp}))
 
 
+def canon_term(term: str) -> str:
+    """Имя понятия для новой карточки: русское слово — с заглавной, идентификатор — как есть.
+
+    Вынос заводил «текущий-расчёт», «корректировочный-счет-фактура» — имена со строчной,
+    каких в базе больше нет. Латиница со строчной (`vat_report`, `kafka-connect`) — это
+    имена из кода и схем, их регистр — часть имени, трогать его нельзя.
+    """
+    term = (term or "").strip()
+    if term and term[0].isalpha() and term[0].islower() and "а" <= term[0].lower() <= "я":
+        return term[0].upper() + term[1:]
+    return term
+
+
+def definition_link(root: str, term: str) -> str:
+    """`[[Имя-карточки|термин]]` — на ту карточку, куда `place_definition` положит знание."""
+    from aurora_common import card_filename
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+    existing = BP.find_card(term, root)
+    target = (os.path.basename(existing)[:-3] if existing
+              else card_filename(canon_term(term)))
+    return f"[[{target}]]" if target == term else f"[[{target}|{term}]]"
+
+
 def place_definition(root: str, term: str, definition: str, came_from: str,
                      donor_sources: "list | None" = None) -> str:
     """Положить перенесённое определение в карточку термина. → путь.
@@ -698,10 +781,15 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
     line = definition.strip()
     note = f"_Перенесено из [[{came_from}]]._"
     if not existing:
-        path = os.path.join(base, "Concepts", card_filename(term) + ".md")
+        # Имя — по канону (`canon_term`), а прежнее написание — синонимом: по нему термин
+        # назван в тексте, и искать его будут так же.
+        name = canon_term(term)
+        path = os.path.join(base, "Concepts", card_filename(name) + ".md")
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        alias = f'aliases: ["{term}"]' if name != term else "aliases: []"
+        term = name
         open(path, "w", encoding="utf-8").write(
-            f'---\ntitle: "{term}"\naliases: []\nstatus: draft\ntype: concept\n'
+            f'---\ntitle: "{term}"\n{alias}\nstatus: draft\ntype: concept\n'
             f'kind: knowledge\n{sources_block(donor_sources or [])}'
             f'created: {TODAY_STR}\nupdated: {TODAY_STR}\n'
             f'built: machine\nrelated: []\n---\n\n# {term}\n\n{line}\n\n{note}\n')
@@ -789,9 +877,15 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
         if time.time() > budget:
             return None
         # Срок карточки — не срок окна: в окне на двенадцать часов лежащий шлюз держал
-        # бы одну карточку до утра. Два срока запроса — с запасом на круг по кольцу.
+        # бы одну карточку до утра. Но и не фиксированные два `request_timeout`: вынос
+        # рассуждает, и срок ему — по правилу рассуждающего вызова (`AG.call_budget`).
+        # На прогоне PRJ-A 22.09 фиксированные 600 с дали 16 сбоев «никто не уложился».
+        # Задание идёт на свой слот, как у переосмысления: без `prefer` все потоки
+        # начинали с первого шлюза, а кольцо без `prefer` тянуло и тех, кому подмена
+        # запрещена.
         st = extract_card(cfg, path, call, apply,
-                          deadline=min(budget, time.time() + 2 * cfg["request_timeout"]))
+                          deadline=min(budget, time.time() + AG.call_budget(cfg, "planner")),
+                          prefer=slots[(i - 1) % len(slots)] if len(slots) > 1 else 0)
         done[0] += 1
         made_names = ", ".join(st.get("made") or []) or st["status"]
         print(f"  [{done[0]}/{len(todo)}] {st['card']} → {made_names}"
@@ -808,7 +902,12 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
                       "note": f"время ({human_time(minutes * 60)}) вышло, осталось {left}"})
         print(f"  стоп: бюджет исчерпан, осталось {left}", flush=True)
     made = sum(len(s.get("made") or []) for s in steps)
+    # Сколько карточек ждёт тезиса ПОСЛЕ выноса — вместе с теми, что вынос сам завёл. Цикл
+    # маршрута берёт последний «остаток» оборота; переосмысление сообщает его до выноса, и
+    # на PRJ-A 22.09.2026 цикл счёл работу законченной, оставив две только что заведённые
+    # карточки без тезиса до следующего прогона.
     return {"steps": steps, "cards": len(todo), "made": made,
+            "distill_left": len(distill_queue(cfg, cwd)) if apply else None,
             "seconds": round(time.time() - started, 1)}
 
 
@@ -816,6 +915,8 @@ def report_extract(res: dict, apply: bool) -> str:
     L = [f"# Выделение сущностей — {utc_label()}", "",
          f"Просмотрено карточек: **{res['cards']}** · вынесено определений: "
          f"**{res['made']}** · {res['seconds']} с", ""]
+    if res.get("distill_left") is not None:
+        L += [f"Ждут тезиса, вместе с заведёнными выносом · осталось: {res['distill_left']}", ""]
     if not apply:
         L += ["(dry-run) Ничего не записано. Применить: `--apply`.", ""]
     L += ["Чужое определение — когда внутри рассказа об одном объекте попутно объясняется "
@@ -953,8 +1054,43 @@ def _card_names(cwd: str) -> list:
         return rows
 
 
+_LINK_ANY = re.compile(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
+
+
+def rescue_links(got: str, thesis: str) -> tuple:
+    """Связи из ответа, где модель заодно изменила текст, — в исходный тезис. → (текст, n).
+
+    Для каждой ссылки ответа ищем её подпись в исходном тезисе дословно, по границе слова и
+    вне уже стоящих ссылок, и оборачиваем первое вхождение. Текст знания не меняется ни на
+    символ — меняется только разметка, как и положено связыванию. Не нашлась подпись — эта
+    связь не переносится.
+    """
+    out, moved = thesis, 0
+    for m in _LINK_ANY.finditer(got):
+        target = m.group(1).strip()
+        label = (m.group(2) or m.group(1)).strip()
+        if not target or not label:
+            continue
+        taken = [(x.start(), x.end()) for x in _LINK_ANY.finditer(out)]
+        pos = -1
+        for hit in re.finditer(re.escape(label), out):
+            a, b = hit.start(), hit.end()
+            if any(s <= a < e for s, e in taken):
+                continue
+            if (a and out[a - 1].isalnum()) or (b < len(out) and out[b].isalnum()):
+                continue          # середина слова — не упоминание
+            pos = a
+            break
+        if pos < 0:
+            continue
+        link = f"[[{target}]]" if label == target else f"[[{target}|{label}]]"
+        out = out[:pos] + link + out[pos + len(label):]
+        moved += 1
+    return out, moved
+
+
 def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
-                deadline: float = 0.0) -> dict:
+                deadline: float = 0.0, prefer: int = 0) -> dict:
     """Расставить связи в готовом тезисе. Текст не меняется. → шаг отчёта.
 
     Отдельный ход, а не пересборка тезиса: тексты уже написаны и проверены Момусом,
@@ -1001,10 +1137,10 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
 
     r = call(cfg, "worker", [{"role": "user", "content": PROMPT_RELINK.format(
         title=title, thesis=thesis, known=listing)}],
-        deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")))
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")), prefer=prefer)
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     got = (r["text"] or "").strip()
     if not got:
@@ -1014,8 +1150,16 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
     # Сравнивать ответ без разметки с исходником в разметке нельзя: карточка, где ссылка
     # уже стояла, отвергалась бы всегда — так и вышло на живой базе, восемь из восьми.
     if strip_links(got) != strip_links(thesis):
-        step.update(status="отброшен", note="текст изменён, а не только размечен")
-        return step
+        # Модель поменяла текст — ответ как текст не годится, но её связи годятся: переносим
+        # их в исходный тезис механикой (`rescue_links`). Раньше такой ответ выбрасывался
+        # целиком, а карточка получала отметку «связано» без единой связи: на прогоне PRJ-A
+        # 22.09.2026 — 23 карточки из 187.
+        saved, moved = rescue_links(got, thesis)
+        if not moved:
+            step.update(status="отброшен", note="текст изменён, а не только размечен")
+            return step
+        got = saved
+        step["note"] = f"ответ менял текст — связи перенесены в исходный: {moved}"
     before = len(re.findall(r"\[\[", thesis))
     after = len(re.findall(r"\[\[", got))
     if after <= before:
@@ -1078,9 +1222,13 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> d
         i, path = idx_path
         if time.time() > budget or fails["tripped"]:
             return None
-        st = relink_card(cfg, path, call, apply, deadline=budget)
+        # Задание — на свой слот, как у переосмысления и выноса (см. там).
+        st = relink_card(cfg, path, call, apply, deadline=budget,
+                         prefer=slots[(i - 1) % len(slots)] if len(slots) > 1 else 0)
         with fails_lock:
-            fails["row"] = fails["row"] + 1 if st["status"] == "сбой" else 0
+            # «Не уложился в срок» — шлюз жив и отвечает, просто долго: это не отказ, и
+            # такой сбой счёт «подряд» не растит (см. `dead_fail`).
+            fails["row"] = fails["row"] + 1 if dead_fail(st) else 0
             if fails["row"] >= FAILS_IN_A_ROW and not fails["tripped"]:
                 fails["tripped"] = True
                 print(f"  {FAILS_IN_A_ROW} сбоя подряд — останавливаюсь: это шлюз, а не "
@@ -1312,7 +1460,7 @@ def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0
         deadline=deadline or (time.time() + AG.call_budget(cfg, "qa")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     found = (parse_json(r["text"]) or {}).get("clashes")
     if found is None:
@@ -1431,6 +1579,35 @@ PROMPT_TASKS = """Ты решаешь судьбу карточки, сдела�
 """
 
 
+def dead_fail(step: dict) -> bool:
+    """Сбой, который говорит о лежащем шлюзе, а не о медленном ответе.
+
+    Предохранитель «три сбоя подряд — это шлюз, а не карточки» срабатывал и на «не уложился
+    в срок»: на прогоне PRJ-A 22.09.2026 связывание само загрузило обе локальные машины,
+    ответы пошли медленно — и предохранитель остановил шаг, оставив 428 карточек. Медленный
+    ответ — это живой шлюз; такой сбой идёт в отчёт карточкой, а не в счёт отказов.
+    """
+    return step.get("status") == "сбой" and not step.get("slow")
+
+
+def model_fail_note(r: dict) -> str:
+    """Почему не вышел вызов модели — что ответил каждый бэкенд и чем кончилось.
+
+    Раньше в отчёт шла последняя пара строк журнала вызова, а там почти всегда общее
+    «дедлайн исчерпан: ни один бэкенд не ответил осмысленно». На прогоне PRJ-A
+    22.09.2026 99 карточек упали с этой строкой, и по журналам нельзя было понять, что
+    сказал каждый шлюз. Берём строки про бэкенды (они начинаются с «№») и итог.
+    """
+    log = [str(l) for l in (r.get("log") or []) if str(l).strip()]
+    per = []
+    for line in log:
+        if line.startswith("№") and line not in per:
+            per.append(line)
+    tail = log[-1] if log else "причина не названа"
+    parts = per[-3:] + ([tail] if tail not in per else [])
+    return "; ".join(parts)[:500]
+
+
 def fail_why(res: dict) -> str:
     """Почему команда не прошла — словами команды, а не «команда не прошла».
 
@@ -1517,7 +1694,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
         deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     verdict = parse_json(r["text"]) or {}
     step["why"] = str(verdict.get("why") or "")[:200]
@@ -1699,7 +1876,7 @@ def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> di
         deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")))
     step["backends"].append((r.get("backend"), r.get("model")))
     if not r["ok"]:
-        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     said = str((parse_json(r["text"]) or {}).get("cyrillic") or "").strip()
     if not said:
@@ -1894,7 +2071,7 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
         deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why="; ".join(r["log"][-2:]))
+        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     verdict = parse_json(r["text"]) or {}
     step["why"] = str(verdict.get("why") or "")[:200]
@@ -2114,7 +2291,7 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
                               PROMPT_WORKER.format(alias=alias, cards=listing)}],
              deadline=deadline)
     if not r["ok"]:
-        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     step["backends"].append((r["backend"], r["model"]))
     step["tps"] = r.get("tps") or step.get("tps") or 0
@@ -2226,7 +2403,8 @@ OFFLINE_WAIT = 300          # секунд между попытками дос�
 OFFLINE_TRIES = 24          # два часа ожидания; дольше — это не обрыв, а выключенный шлюз
 
 
-def until_done(cwd: str, a, task: str, run_batch, report, headline, passed) -> dict:
+def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
+               remaining=None) -> dict:
     """Заходы до конца очереди — одно правило для задач, чья очередь — карточки.
 
     Каждый заход со своим коммитом: откатывается любой, прерванный прогон не теряет
@@ -2235,8 +2413,14 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed) -> d
     карточки (обрыв связи — ждём и продолжаем с того же места) и когда закрылось окно.
 
     `run_batch()` → ответ захода с `left` и `steps`; `passed(res)` — сколько карточек
-    заход прошёл. → {res: последний, results: все, batches: заходов, texts: отчёты}.
+    заход прошёл. `remaining()` — настоящий остаток очереди для сообщений об остановке, когда
+    `left` захода его не равен (заход не берёт уже пробованные): на PRJ-A 22.09.2026 было
+    «остаток 379 доделает следующий прогон» при 478 в очереди.
+    → {res: последний, results: все, batches: заходов, texts: отчёты}.
     """
+    def left_now(res):
+        return remaining() if remaining else res["left"]
+
     deadline = time.time() + a.hours * 3600
     batch, texts, waits, results = 0, [], 0, []
     while True:
@@ -2255,7 +2439,7 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed) -> d
             # Предохранитель в заходе уже сработал: следующий заход упрётся в те же
             # занятые слоты и снова прождёт по сроку на каждую карточку.
             say(f"\n=== заход {batch}: шлюзы не отвечают — {FAILS_IN_A_ROW} сбоя подряд. "
-                f"Останавливаюсь, остаток {res['left']} доделает следующий прогон")
+                f"Останавливаюсь, остаток {left_now(res)} доделает следующий прогон")
             break
         if passed(res) <= 0:
             # Ни одной карточки за заход — это не «мало работы», а стоп. Обрыв связи
@@ -2274,7 +2458,7 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed) -> d
         waits = 0
         if time.time() > deadline:
             say(f"\n=== окно {a.hours} ч закрылось: заходов {batch}, "
-                f"осталось карточек {res['left']}")
+                f"осталось карточек {left_now(res)}")
             break
         checkpoint(cwd, f"agent:{task}", not a.no_checkpoint)
     return {"res": res, "results": results, "batches": batch, "texts": texts}
@@ -2835,7 +3019,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         r = call(cfg, "worker", [{"role": "user", "content": prompt + note_back}],
                  deadline=deadline)
         if not r["ok"]:
-            step.update(status="сбой", note="; ".join(r["log"][-2:]))
+            step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
             return step
         step["backends"].append((r["backend"], r["model"]))
         step["tps"] = r.get("tps") or step.get("tps") or 0
@@ -3056,7 +3240,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
              trim=(whole, lambda part: [{"role": "user", "content": with_terms(
                  PROMPT_NO_SECTIONS.format(source=source, text=part), part, cwd)}]))
     if not r["ok"]:
-        step.update(status="сбой", note="; ".join(r["log"][-2:]))
+        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
     step["backends"].append((r["backend"], r["model"]))
     step["tps"] = r.get("tps") or step.get("tps") or 0
@@ -3559,6 +3743,9 @@ PROMPT_EXTRACT = """Ты читаешь карточку знания и ище�
    меняй падеж и не дописывай точку.
 2. Выделяй только **самостоятельные сущности**: систему, документ, роль, понятие. Не
    выделяй свойства объекта карточки, условия, сроки и шаги процесса — они про неё саму.
+   Не сущности и потому не выделяются: значения статусов и полей («Отсутствует FORM-02»),
+   коды задач и историй (US 6.1.13, PROJ-120), названия страниц и инструкций («How to
+   demo») — это подписи и адреса, а не предметная область.
 3. Не трогай то, что и так ссылка (`[[…]]`), и то, ради чего карточка написана: её
    собственное определение остаётся в ней.
 4. Если сущность уже есть в базе (список выше), всё равно верни её: движок допишет
@@ -3800,7 +3987,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                  tools=True,
                  guard_text=[st["idea"], st["pack"]] + re.findall(r"^## (.+)$", st["pack"], re.M))
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
+            return {"ok": False, "sid": sid, "why": model_fail_note(r)}
         ans = parse_json(r["text"]) or {}
         questions = ans.get("questions") or []
         plan = (ans.get("plan") or "").strip()
@@ -3854,7 +4041,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             extra=prompt_extra, pack=st["pack"],
             agnostic=AGNOSTIC_WRITE if agnostic else "")}], deadline=deadline)
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": "; ".join(r["log"][-2:])}
+            return {"ok": False, "sid": sid, "why": model_fail_note(r)}
         st["draft"] = (r["text"] or "").strip()
         if not st["draft"]:
             return {"ok": False, "sid": sid, "why": "воркер вернул пустой документ"}
@@ -4137,7 +4324,7 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
              history=turns_as_messages(history))
     if not a["ok"]:
         return {"ok": False, "answer": "", "cards": cards, "seconds": round(time.time() - started, 1),
-                "why": "; ".join(a["log"][-2:])}
+                "why": model_fail_note(a)}
     text = (a["text"] or "").strip()
     links = classify_links(text, cards, pack, cwd)
     out = {"ok": True, "answer": text, "cards": cards, "total": total,
@@ -4220,6 +4407,13 @@ def momus_timeout(cfg: dict, answered_in: float) -> float:
     return round(min(base * MOMUS_CAP, max(base, answered_in * MOMUS_SHARE)), 1)
 
 
+# Проверка тезиса идёт с основного шлюза кольца, а не со слота, который тезис писал. Раньше
+# Момус получал тот же `prefer`: тезис qwen3.8-27b с коротким рассуждением судила та же 27b —
+# самопроверка (PRJ-A 22.09.2026: «без опоры» у неё 1 из 8 против 17 % у основного). Судья с
+# коротким рассуждением пропускает утверждения без опоры (замер 22.09).
+MOMUS_PREFER = 0
+
+
 def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
               prefer: int = 0, answered_in: float = 0.0) -> dict:
     """Момус: вторая модель разбирает ответ по утверждениям и ищет то, что без опоры.
@@ -4240,7 +4434,7 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
         pack=pack, question=question, answer=answer)}],
         deadline=time.time() + rt, prefer=prefer, request_timeout=rt)
     if not v["ok"]:
-        return {"ok": False, "why": "; ".join(v["log"][-2:]), "seconds": 0.0,
+        return {"ok": False, "why": model_fail_note(v), "seconds": 0.0,
                 "timed_out": bool(v.get("timed_out")), "given": rt}
     text = (v["text"] or "").strip()
     m = re.search(r"ВЕРДИКТ:\s*(ЧИСТО|БЕЗ ОПОРЫ\s*(\d+))", text, re.I)
@@ -4578,7 +4772,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         a = once(with_terms(PROMPT_REDISTILL.format(
             title=title, was=was_thesis[:4000], body=parts[0]), parts[0], root))
         if not a["ok"]:
-            step.update(status="сбой", note="; ".join(a["log"][-2:]))
+            step.update(status="сбой", note=model_fail_note(a), slow=bool(a.get("timed_out")))
             return step
         raw = (a["text"] or "").strip()
         m = re.split(r"^\s*ИЗМЕНИЛОСЬ:\s*$", raw, maxsplit=1, flags=re.M)
@@ -4592,7 +4786,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # ставит отдельный проход, где движок доказывает, что текст не изменился.
         a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]), parts[0], root))
         if not a["ok"]:
-            step.update(status="сбой", note="; ".join(a["log"][-2:]))
+            step.update(status="сбой", note=model_fail_note(a), slow=bool(a.get("timed_out")))
             return step
         thesis = (a["text"] or "").strip()
     else:
@@ -4604,14 +4798,14 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             r = once(with_terms(PROMPT_DISTILL_PART.format(
                 n=i, total=len(parts), title=title, body=chunk), chunk, root))
             if not r["ok"]:
-                step.update(status="сбой", note=f"часть {i}: " + "; ".join(r["log"][-2:]))
+                step.update(status="сбой", note=f"часть {i}: " + model_fail_note(r), slow=bool(r.get("timed_out")))
                 return step
             piece = (r["text"] or "").strip()
             if piece and not piece.upper().startswith("ПУСТО"):
                 notes.append(piece)
                 if momus:
                     mp = run_momus(cfg, chunk, f"Выписка из части {i} «{title}»", piece,
-                                   call, prefer)
+                                   call, MOMUS_PREFER)
                     if mp.get("ok") and not mp.get("clean"):
                         step["unsupported"] = step.get("unsupported", 0) + mp["unsupported"]
         if not notes:
@@ -4620,7 +4814,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         j = once(PROMPT_DISTILL_JOIN.format(total=len(parts), title=title,
                                             parts="\n\n".join(notes)))
         if not j["ok"]:
-            step.update(status="сбой", note="свод частей: " + "; ".join(j["log"][-2:]))
+            step.update(status="сбой", note="свод частей: " + model_fail_note(j), slow=bool(j.get("timed_out")))
             return step
         thesis = (j["text"] or "").strip()
 
@@ -4638,7 +4832,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
         # это проверкой целого было бы той же тихой потерей, только в проверке.
         mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»",
-                       plain_links(thesis, readable=True), call, prefer)
+                       plain_links(thesis, readable=True), call, MOMUS_PREFER)
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
             step["unsupported"] = step.get("unsupported", 0) + mo["unsupported"]
@@ -4865,7 +5059,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     def keep_going(step) -> bool:
         """Сбой за сбоем — признак мёртвого шлюза, а не плохих карточек."""
         nonlocal in_a_row
-        in_a_row = in_a_row + 1 if step["status"] == "сбой" else 0
+        in_a_row = in_a_row + 1 if dead_fail(step) else 0
         if in_a_row >= FAILS_IN_A_ROW:
             say(f"  {FAILS_IN_A_ROW} сбоя подряд — останавливаюсь: это шлюз, а не "
                 f"карточки. Проверьте `agent:ping`")
@@ -5402,6 +5596,13 @@ def main() -> int:
         return 0 if res["ok"] else 1
 
     t_start = time.time()
+    if a.task == "build" and not a.partition and build_left(cwd)[0] == 0:
+        # Пустой план — холостой шаг: ни чекпойнта, ни оракула (линтер всей базы до и
+        # после), ни журнала с коммитом. Раньше такой разбор стоил ~100 с и два коммита
+        # на КАЖДЫЙ оборот маршрута (PRJ-A 22.09.2026). Строку плана печатаем: по ней цикл
+        # маршрута считает, сколько источников осталось.
+        print("Источников в плане: 0 → 0 · разбирать нечего")
+        return 0
     cp = checkpoint(cwd, f"agent:{a.task}", a.apply and not a.no_checkpoint)
     before = tree_fingerprint(cwd)
     import run_summary as RS
@@ -5492,7 +5693,8 @@ def main() -> int:
                           lambda r: report_distill(r, True),
                           lambda r: "тезисов: " + str(sum(1 for s in r["steps"]
                                                           if s["status"] == "переписана")),
-                          lambda r: sum(1 for s in r["steps"] if s["status"] != "сбой"))
+                          lambda r: sum(1 for s in r["steps"] if s["status"] != "сбой"),
+                          remaining=lambda: len(distill_queue(cfg, cwd)))
         steps_all += [s for r in loop["results"] for s in r["steps"]]
         # Отчёт — за весь прогон, остаток — настоящий: не вышедшие карточки остались
         # в очереди, и маршрут должен о них знать.

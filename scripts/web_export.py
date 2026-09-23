@@ -531,13 +531,11 @@ def run(a) -> int:
     cfg = config_text()
     pages = pages_from_config(cfg)
     if not pages:
-        print("web_export: в конфиге нет ни одной страницы.\n"
-              "Блок должен выглядеть так:\n\n"
-              "  web:\n    depth: 2          # идти ли по внутренним ссылкам\n"
-              "    assets: true      # скачивать картинки и документы\n"
-              "    pages:\n      - url: https://example.org/razdel/\n"
-              "        trusted: true\n\n"
-              "Правится в панели: «Настройки проекта» → «Веб-страницы».")
+        # Одна строка, а не образец конфига: шаг стоит в маршруте «Обновить базу», и в
+        # проекте без веб-страниц образец из двенадцати строк печатался на каждом прогоне.
+        # Образец блока — в `--help`.
+        print("web_export: веб-страниц в конфиге нет — выгружать нечего "
+              "(добавить: «Настройки проекта» → «Веб-страницы»; образец блока — --help)")
         return 0
     opt = settings_from_config(cfg)
     token = os.environ.get("WEB_PERSONAL_TOKEN", "") or os.environ.get("WEB_PAT", "")
@@ -662,7 +660,15 @@ def run(a) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Веб-страницы в кеш проекта")
+    ap = argparse.ArgumentParser(
+        description="Веб-страницы в кеш проекта",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Блок в aurora.config.yaml:\n\n"
+               "  web:\n    depth: 2          # идти ли по внутренним ссылкам\n"
+               "    assets: true      # скачивать картинки и документы\n"
+               "    pages:\n      - url: https://example.org/razdel/\n"
+               "        trusted: true\n\n"
+               "Правится в панели: «Настройки проекта» → «Веб-страницы».")
     ap.add_argument("--out", default=DEFAULT_OUT, help=f"папка зеркала (по умолчанию {DEFAULT_OUT})")
     ap.add_argument("--apply", action="store_true", help="записать файлы")
     ap.add_argument("--prune", action="store_true", help="убрать файлы снятых ссылок")

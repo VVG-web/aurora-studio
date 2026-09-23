@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 import threading
 import time
+import traceback
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2389,7 +2390,18 @@ def start_job(project: str, cmd: str, extra: list) -> str:
         JOBS[job_id] = job
 
     def worker():
+        run_log = None
         try:
+            # Архив прогона — до запуска, а не после. Раньше папка появлялась только у
+            # запустившегося процесса, и шаг, упавший на самом запуске, не оставлял ничего:
+            # в PRJ-A 21.09 kb:embed и дважды sync:confluence встали с кодом 2 без вывода
+            # и без журнала — разобрать, что случилось, было не по чему.
+            run_cdir = os.path.join(runs_dir(project), run_id)
+            try:
+                os.makedirs(run_cdir, exist_ok=True)
+                run_log = open(os.path.join(run_cdir, "console.log"), "w", encoding="utf-8")
+            except OSError:
+                run_log = None
             # Python буферизует stdout, когда на том конце не терминал: длинная команда
             # (синк на семьсот страниц, прогон агента) молчала минутами, а потом
             # вываливала всё разом. Человек в это время не знает, работает она или висит.
@@ -2401,12 +2413,6 @@ def start_job(project: str, cmd: str, extra: list) -> str:
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1)
             job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
-            run_cdir = os.path.join(runs_dir(project), run_id)
-            try:
-                os.makedirs(run_cdir, exist_ok=True)
-                run_log = open(os.path.join(run_cdir, "console.log"), "w", encoding="utf-8")
-            except OSError:
-                run_log = None
             for line in p.stdout:
                 with JOBS_LOCK:
                     job["out"].append(line.rstrip("\n"))
@@ -2418,18 +2424,26 @@ def start_job(project: str, cmd: str, extra: list) -> str:
                         run_log.flush()
                     except OSError:
                         pass
+            p.wait()
+            job["rc"] = p.returncode
+        except Exception as e:
+            # Причина — и на экран, и в архив: код 2 без единой строки не разобрать.
+            note = f"cockpit: команда не запустилась — {type(e).__name__}: {e}"
+            with JOBS_LOCK:
+                job["out"].append(note)
+            if run_log is not None:
+                try:
+                    run_log.write(note + "\n" + traceback.format_exc())
+                except OSError:
+                    pass
+            job["rc"] = 2       # команда не отработала вовсе — это не «нашла, что чинить»
+        finally:
             if run_log is not None:
                 try:
                     run_log.close()
                 except OSError:
                     pass
                 trim_runs(project)
-            p.wait()
-            job["rc"] = p.returncode
-        except Exception as e:
-            job["out"].append(f"cockpit: {e}")
-            job["rc"] = 2       # команда не отработала вовсе — это не «нашла, что чинить»
-        finally:
             job["done"] = True
             job["finished"] = time.time()
             mark_running(job["id"], cmd, project, False)

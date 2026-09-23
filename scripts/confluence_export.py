@@ -749,6 +749,27 @@ class Exporter(WikiMirror):
 
 # ---------------------------------------------------------------------- main
 
+PRUNE_SHARE = 0.10     # больше этой доли зеркала «лишним» — это не удалённые страницы
+
+
+def prune_allowed(stale: list, records: int, failed: int) -> tuple:
+    """Можно ли убрать лишние файлы зеркала без человека. → (да/нет, почему нет).
+
+    Маршрут «Обновить базу» зовёт синк с `--prune`: без этого удалённая в Confluence
+    страница оставалась в зеркале навсегда, и аудит находил её на каждом прогоне (PRJ-A
+    22.09.2026 — ORPHAN 2 раз за разом). Но «лишнее» — это то, чего не нашёл обход. Упала
+    загрузка страницы — не обойдено всё её поддерево, и оно выглядит удалённым. Поэтому
+    чистим только после выгрузки без ошибок и только когда лишнего немного: большая доля
+    — это сменившийся список корней или сбой, и решать тут человеку.
+    """
+    if failed:
+        return False, f"выгрузка прошла с ошибками ({failed}) — недокачанное выглядело бы удалённым"
+    if len(stale) > max(20, PRUNE_SHARE * max(1, records)):
+        return False, (f"лишних {len(stale)} из {records} — слишком много для удалённых страниц; "
+                       "проверьте корни в aurora.config.yaml и уберите руками")
+    return True, ""
+
+
 def drop_nested_roots(api: Api, roots: list) -> tuple:
     """Убрать корни, которые уже лежат внутри других корней.
 
@@ -840,7 +861,10 @@ def main() -> int:
           + (f" · ошибок: {exp.failed}" if exp.failed else ""))
     if stale:
         report_stale("страниц больше нет или они переехали", stale, out)
-        if a.prune:
+        ok, why = prune_allowed(stale, len(exp.records), exp.failed) if a.prune else (False, "")
+        if a.prune and not ok:
+            print(f"Не убираю: {why}")
+        elif a.prune:
             gone = exp.prune(stale)
             empty = drop_empty_dirs(out)
             print(f"Удалено: {gone} (карточки с `source:` на них найдёт aurora_stats.py)"

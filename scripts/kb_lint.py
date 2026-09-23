@@ -24,7 +24,7 @@ import json, os, re, sys, collections
 from aurora_common import looks_like_expansion  # noqa: F401
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
                            card_sources, config_list, config_value, clean_meaning,
-                           frontmatter, is_service, is_template_link,
+                           frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
 
 ROOT = "AuroraKnowledgeDB"
@@ -376,7 +376,7 @@ def main():
                 continue
             # Образец в шаблоне (`[[...]]`, `[[{{имя}}]]`) — подсказка автору, а не ссылка.
             # Ремонт пропускает его тем же правилом, и линтер обязан судить так же.
-            if is_template_link(target):
+            if not_a_card_link(target):
                 continue
             # Имя цели считаем ТЕМ ЖЕ правилом, что и ремонт: `leaf_name` снимает
             # расширение. Ссылка `[[JIRA_prompt.md]]` для ремонта разрешима (он снимает

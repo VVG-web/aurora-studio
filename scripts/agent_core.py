@@ -685,7 +685,11 @@ def ring_order(cfg: dict, prefer: int = 0) -> list:
     """
     backends = [b for b in cfg["backends"] if b.get("chat", True)]
     if not prefer:
-        return backends
+        # Первый — всегда; остальные — только объявленные запасными. `FALLBACK=0` — это
+        # запрет человека подменять упавшего, и одиночный вызов обязан его слушать так же,
+        # как параллельный: на прогоне PRJ-A 22.09 вынос и связывание звали без `prefer`
+        # и гнали работу на №3, которому запрещены и параллель, и подмена.
+        return [b for i, b in enumerate(backends) if i == 0 or b.get("fallback", True)]
     mine = [b for b in backends if b["n"] == prefer]
     return mine + [b for b in backends if b["n"] != prefer and b.get("fallback", True)]
 
@@ -711,9 +715,12 @@ def pool(cfg: dict) -> list:
     llama.cpp один. Объявленная ширина это **предел** шлюза: общий потолок её не
     поднимает, потому что потолок про нагрузку на прогон, а ширина про сервер.
 
-    Ширина не объявлена — бэкенд делит с такими же общий потолок
-    `AURORA_AGENT_PARALLEL`. Так поведение прежних настроек сохраняется: кто поставил
-    только потолок, получает ровно его.
+    Ширина не объявлена ни у кого — бэкенды делят общий потолок `AURORA_AGENT_PARALLEL`.
+    Так поведение прежних настроек сохраняется: кто поставил только потолок, получает
+    ровно его. Но если ширину объявил хоть один шлюз, человек знает свои серверы, а про
+    необъявленный не сказал ничего — такому один слот, а не весь остаток потолка. Иначе
+    включённый в параллель сервер llama.cpp с одним слотом получил 83 потока из 99
+    (PRJ-A 22.09.2026): очередь на его стороне, и 99 карточек подряд упали по сроку.
     """
     chat = [b for b in cfg["backends"] if b.get("chat", True)]
     usable = [b for b in chat if b.get("parallel", True)] or chat[:1]
@@ -730,6 +737,10 @@ def pool(cfg: dict) -> list:
             slots += [b["n"]] * b["width"]
     slots = slots[:cap]
     free = [b for b in usable if not b.get("width")]
+    if len(free) < len(usable):
+        # Ширину объявили другим — необъявленному по слоту, в пределах потолка.
+        slots += [b["n"] for b in free][:max(0, cap - len(slots))]
+        return slots or [1]
     i = 0
     while len(slots) < cap and free:
         slots.append(free[i % len(free)]["n"])
@@ -821,7 +832,7 @@ def request_timeout_for(cfg: dict, think: bool) -> float:
     уходило на запасную машину с другой моделью, или карточка падала «сбоем» до
     следующего оборота. Три четверти времени тезисов уходило в оборванные попытки.
 
-    Скорость — средняя по уже сделанным вызовам этого прогона; пока их нет — два срока.
+    Скорость — средняя по уже сделанным вызовам этого прогона; пока их нет — потолок.
     Сверху — `THINK_CAP` сроков: сторож от зависшего шлюза остаётся.
     """
     base = float(cfg["request_timeout"])
@@ -830,7 +841,10 @@ def request_timeout_for(cfg: dict, think: bool) -> float:
     with _USAGE_LOCK:
         tokens, secs = USAGE["tokens_out"], USAGE["gen_seconds"]
     tps = tokens / secs if secs >= 60 and tokens else 0.0
-    need = THINK_TOKENS / tps if tps else base * 2
+    # Скорости ещё нет (начало прогона) — потолок, а не два срока: днём на PRJ-A 22.09.2026
+    # два срока (600 с) оборвали 2 из первых 15 тезисов. Первая же минута генерации даёт
+    # замер, и срок встаёт по нему.
+    need = THINK_TOKENS / tps if tps else base * THINK_CAP
     return round(min(base * THINK_CAP, max(base, need)), 1)
 
 

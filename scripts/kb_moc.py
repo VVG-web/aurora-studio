@@ -160,6 +160,18 @@ def machine_made(path: str) -> bool:
         return False
 
 
+_DATED = re.compile(r"^updated: \S+$|· собрано \S+$", re.M)
+
+
+def undated(text: str) -> str:
+    """Карта без даты сборки: день перегенерации — не изменение карты.
+
+    Иначе каждый новый день все карты документов (305 на PRJ-A) переписывались ради одной
+    даты — в git сотни правок, в которых нет ни одной новой ссылки.
+    """
+    return _DATED.sub("", text)
+
+
 def render(name: str, note: str, items: list, kind: str = "moc") -> str:
     """Карта содержания: шапка карточки, пояснение, список ссылок по алфавиту."""
     # `index` — служебный статус: файл собирается командой и перезаписывается целиком.
@@ -403,26 +415,35 @@ def main() -> int:
         print(f"# Карты по документам — {TODAY}\n")
         print(f"Разобранных документов, давших больше одной карточки: **{len(big)}** "
               f"(всего карточек в них {sum(len(v) for v in big.values())})\n")
+        # В таблицу — только карты, которые меняются. Шаг идёт в каждом обороте маршрута, и
+        # таблица всех документов (305 строк на PRJ-A 22.09.2026) печаталась снова и снова,
+        # хотя менялись единицы; заодно не переписываем файл, который и так такой.
         print("| Документ | Карточек | Файл карты |")
         print("|---|---|---|")
-        written = 0
+        written = same = 0
         for src in sorted(big):
             items = sorted(big[src], key=lambda c: c["title"].lower())
             name = "Документ · " + os.path.basename(src).removesuffix(".md")
             fname = re.sub(r"[^\w\- ]", "", name).strip().replace(" ", "-") + ".md"
-            print(f"| {os.path.basename(src)} | {len(items)} | MOC/{fname} |")
-            if not a.apply:
-                continue
             path = os.path.join(MOC_DIR, fname)
             if os.path.isfile(path) and not machine_made(path):
                 print(f"  ⚠️  {path} написан руками — не трогаю")
                 continue
-            os.makedirs(MOC_DIR, exist_ok=True)
             note = (f"Карточки, извлечённые из одного документа: `{src}`. Каждая "
                     "атомарна и читается сама по себе; эта карта показывает, как они "
                     "складываются обратно в исходный документ.")
-            open(path, "w", encoding="utf-8").write(render(name, note, items))
+            text = render(name, note, items)
+            old = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
+            if old is not None and undated(old) == undated(text):
+                same += 1
+                continue
+            print(f"| {os.path.basename(src)} | {len(items)} | MOC/{fname} |")
+            if not a.apply:
+                continue
+            os.makedirs(MOC_DIR, exist_ok=True)
+            open(path, "w", encoding="utf-8").write(text)
             written += 1
+        print(f"\nКарт всего: {len(big)} · без изменений: {same}")
         # Карта документа, который больше не даёт карточек, обязана уйти: её не порождают,
         # значит и не переписывают, и она вечно ссылается на то, чего в базе нет. На живом
         # проекте карта удалённых доавроровских карточек держала пятнадцать битых ссылок.
