@@ -1,8 +1,9 @@
 /* О проекте — раздел-модуль.
 
-   Здесь же живёт обновление самого кита из репозитория: только перемотка вперёд и
-   только по чистому дереву. Слияние с чужими правками кнопкой в браузере — не то, что
-   стоит делать вслепую. */
+   Здесь же живёт обновление самой Aurora: одна кнопка, без git и ручных архивов. Кит
+   узнаёт новую версию на GitHub сам, обновляется (клон — через git, установка из архива —
+   новым архивом, заменённое — копией) и перезапускает панель. Человеку не показываем ни
+   веток, ни коммитов: только «у вас такая, доступна такая, вот что нового». */
 
 export function mount(ctx){
   ctx.root.dataset.module = "about";
@@ -57,48 +58,62 @@ export async function refresh(ctx){
 function updateCard(ctx){
   const {t, el} = ctx;
   const card = el("div", {class:"card", style:"padding:20px"});
-  card.append(el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("about.update_why")));
-  const status = el("div", {class:"row", style:"margin-bottom:12px"},
-    el("span", {class:"muted", style:"font-size:13px"}, t("about.not_checked")));
-  const incoming = el("div", {});
-
-  const pull = el("button", {class:"btn gold", disabled:""}, t("about.pull"));
-  pull.onclick = async () => {
-    if (!confirm(t("about.pull_ask"))) return;
-    pull.disabled = true; pull.textContent = t("about.pulling");
-    const r = await ctx.api("/api/kit/update", {method:"POST", body:"{}"});
-    pull.textContent = t("about.pull");
-    if (r.ok){
-      ctx.toast(r.already ? t("about.already") : t("about.updated", {v: r.version}), "ok");
-      await refresh(ctx);
+  const draw = async (fresh) => {
+    card.innerHTML = "";
+    card.append(el("div", {class:"muted", style:"font-size:13px"},
+      el("span", {class:"spin"}), " ", t("about.checking")));
+    const st = await ctx.api("/api/kit/status" + (fresh ? "?fresh=1" : ""), {quiet:true})
+      .catch(() => null);
+    card.innerHTML = "";
+    const again = el("button", {class:"btn sm", onclick: () => draw(true)}, t("about.check_again"));
+    if (!st || st.error){
+      card.append(el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"},
+        (st && st.error) || t("about.no_answer")), again);
+      return;
     }
-  };
-
-  const check = el("button", {class:"btn primary"}, t("about.check"));
-  check.onclick = async () => {
-    check.disabled = true; check.textContent = t("about.checking");
-    const st = await ctx.api("/api/kit/status");
-    check.disabled = false; check.textContent = t("about.check");
-    status.innerHTML = ""; incoming.innerHTML = "";
-    if (st.error) return status.append(el("span", {class:"chip bad"}, st.error));
-    status.append(
-      el("span", {class:"chip"}, t("about.branch_is", {branch: st.branch})),
-      el("span", {class:"chip " + (st.behind ? "warn" : "ok")},
-        st.behind ? t("about.behind", {n: st.behind}) : t("about.current")),
-      st.dirty ? el("span", {class:"chip bad"}, t("about.dirty", {n: st.dirty})) : null,
-      st.ahead ? el("span", {class:"chip"}, t("about.ahead", {n: st.ahead})) : null);
-    if (st.incoming && st.incoming.length){
-      incoming.append(el("div", {class:"muted", style:"font-size:12px;margin:10px 0 4px"},
-        t("about.incoming")));
-      st.incoming.forEach(l => incoming.append(
-        el("div", {class:"mono", style:"font-size:12px;color:var(--text-muted)"}, l)));
+    if (!st.newer){
+      card.append(el("div", {class:"row"},
+        el("span", {class:"chip ok"}, t("about.latest", {v: st.installed})),
+        el("div", {class:"spacer"}), again));
+      return;
     }
-    // Обновляемся только вперёд и только по чистому дереву: иначе кнопка обещает то,
-    // чего сделать не сможет.
-    pull.disabled = !st.behind || !!st.dirty;
+    card.append(el("div", {style:"font-size:18px;font-weight:600;margin-bottom:6px"},
+      t("about.available", {v: st.latest, have: st.installed})));
+    if (st.notes && st.notes.length){
+      card.append(el("div", {class:"muted", style:"font-size:12px;margin:10px 0 4px"},
+        t("about.whats_new")));
+      st.notes.forEach(n => card.append(el("div", {style:"font-size:13px;margin:2px 0"}, "• " + n)));
+    }
+    card.append(el("p", {class:"muted", style:"font-size:13px;margin:12px 0"}, t("about.update_how")));
+    const result = el("div", {});
+    const go = el("button", {class:"btn gold"}, t("about.update_to", {v: st.latest}));
+    if (st.busy && st.busy.length){
+      go.disabled = true;
+      result.append(el("div", {class:"warnbox"}, t("about.busy", {what: st.busy.join(", ")})));
+    }
+    go.onclick = async () => {
+      if (!confirm(t("about.update_ask", {v: st.latest}))) return;
+      go.disabled = true; go.textContent = t("about.updating");
+      const r = await ctx.api("/api/kit/update", {method:"POST", body:"{}", quiet:true})
+        .catch(() => null);
+      if (!r || r.error){
+        go.disabled = false; go.textContent = t("about.update_to", {v: st.latest});
+        result.innerHTML = "";
+        result.append(el("div", {class:"warnbox"}, (r && r.error) || t("about.no_answer")));
+        return;
+      }
+      if (r.already){ ctx.toast(t("about.already"), "ok"); return draw(true); }
+      // Итог показывает уже новая панель: эта сейчас перезапустится.
+      try {
+        localStorage.setItem("aurora-kit-updated",
+          JSON.stringify({from: r.from, to: r.to, notes: r.notes || []}));
+      } catch (e) { /* не сохранилось — обновление от этого не хуже */ }
+      go.textContent = t("about.restarting");
+      await ctx.restartPanel({patient: true, progress: text => { go.textContent = text; }});
+    };
+    card.append(el("div", {class:"row"}, go, el("div", {class:"spacer"}), again), result);
   };
-
-  card.append(status, incoming, el("div", {class:"row"}, check, pull));
+  draw(false);
   return card;
 }
 

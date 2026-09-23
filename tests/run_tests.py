@@ -1914,7 +1914,8 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
     # cockpit/vendor/fonts/OFL.txt) — тоже: текст лицензии правке не подлежит. NEUTRAL-HOSTS-ALLOW
     allow = {"example.com", "example.ru", "example.org", "example", "localhost",
              "127.0.0.1", "github.com", "www.apache.org", "www.python.org",
-             "schemas.openxmlformats.org", "cdn.jsdelivr.net", "openfontlicense.org"}
+             "schemas.openxmlformats.org", "cdn.jsdelivr.net", "openfontlicense.org",
+             "raw.githubusercontent.com"}   # обновление кита читает VERSION с GitHub (1.124.0)
     def ok(host: str) -> bool:
         h = host.lower().rstrip(".")
         if h in allow or any(h.endswith("." + a) for a in allow):
@@ -17663,6 +17664,207 @@ def test_the_build_oracle_does_not_blame_new_cards_for_having_no_links_yet(tmp: 
     src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
     run = src[src.index("def run_build("):src.index("def verdict_build(")]
     assert run.count("lint_errors(cwd, orphans=False)") == 2, "разбор считает оракул по-старому"
+
+
+@test
+def test_unfinished_sections_open_together_with_the_dev_section(tmp: Path):
+    """«Граф» и «Отчёты» ещё в разработке: в меню их нет, пока не открыта «Разработка».
+
+    Просьба пользователя 23.09.2026: скрыть их так же, как «Разработку», и открывать вместе
+    с ней — семью нажатиями на «О проекте». Встроенный раздел помечается в разметке
+    (`data-devonly`), модуль — полем `"dev": true` в манифесте; по адресу страницы в
+    закрытый раздел не попасть, кнопка «На графе» в файлах тоже спрятана.
+    """
+    ui = panel_sources()
+    graph = re.search(r'<button data-view="graph"[^>]*>', ui).group(0)
+    assert "data-devonly" in graph and "hidden" in graph, f"граф виден в меню: {graph}"
+    nav = ui[ui.index("function showDevNav("):ui.index("function tapAbout(")]
+    assert 'nav button[data-devonly]' in nav, "разделы в разработке не открываются с «Разработкой»"
+    assert "if (m.dev)" in ui and "btn.hidden = !devSectionsOn()" in ui, \
+        "модуль с `dev` попадает в меню сразу"
+    show = ui[ui.index("function show(view"):ui.index("let ABOUT_TAPS")]
+    assert "devOnlyView(view) && !devSectionsOn()" in show, "в закрытый раздел пускает адрес страницы"
+    assert '$("#fileGraph").hidden = !inKb || !devSectionsOn()' in ui, \
+        "кнопка «На графе» ведёт в закрытый раздел"
+
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    mods = {m["id"]: m for m in ck.modules()}
+    assert mods["reports"].get("dev") is True, "«Отчёты» не помечены разделом в разработке"
+    assert not any(m.get("dev") for i, m in mods.items() if i != "reports"), \
+        "в разработку попали готовые разделы"
+    readme = (KIT / "cockpit/modules/README.md").read_text(encoding="utf-8")
+    assert "| `dev` |" in readme, "поле `dev` не описано в контракте модулей"
+
+
+def _cockpit_on(kit: Path):
+    """Модуль панели, направленный на пробный кит: KIT, список прогонов и дом — во временной папке."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    saved = (ck.KIT, ck.RUNNING, ck._http_get, os.environ.get("HOME"), dict(ck.CACHE))
+    ck.KIT, ck.RUNNING = str(kit), str(kit / "running.json")
+    ck.CACHE.pop("kit_status", None)
+    os.environ["HOME"] = str(kit.parent / "home")
+
+    def restore():
+        ck.KIT, ck.RUNNING, ck._http_get = saved[0], saved[1], saved[2]
+        if saved[3] is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved[3]
+        ck.CACHE.clear()
+        ck.CACHE.update(saved[4])
+    return ck, restore
+
+
+@test
+def test_the_kit_updates_itself_from_an_archive_install(tmp: Path):
+    """Кит, скачанный архивом, обновляется из панели одной кнопкой — без git и ручных архивов.
+
+    Просьба пользователя 23.09.2026: коллега скачал Aurora архивом с GitHub, и кнопка
+    обновления отвечала ему «kit не под git». Теперь кит узнаёт версию по VERSION на
+    GitHub, скачивает архив и заменяет файлы поставки; личное не трогает, заменённое
+    копирует, устаревшее из прошлой поставки убирает, во время прогона не обновляется.
+    """
+    import io
+    import zipfile
+    kit = tmp / "aurora-studio"
+    for rel, body in {"VERSION": "1.0.0\n", "scripts/a.py": "old\n", "scripts/gone.py": "x\n",
+                      "local/private_terms.txt": "СЕКРЕТ\n", ".env.test": "TOKEN=1\n",
+                      "mine.txt": "моё\n"}.items():
+        (kit / rel).parent.mkdir(parents=True, exist_ok=True)
+        (kit / rel).write_text(body, encoding="utf-8")
+    (kit / ".aurora-install.json").write_text(json.dumps(
+        {"version": "1.0.0", "files": ["VERSION", "scripts/a.py", "scripts/gone.py"]}), encoding="utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("aurora-studio-master/VERSION", "1.1.0\n")
+        z.writestr("aurora-studio-master/scripts/a.py", "new\n")
+        info = zipfile.ZipInfo("aurora-studio-master/scripts/new.sh")
+        info.external_attr = (0o100755 << 16)
+        z.writestr(info, "#!/bin/sh\n")
+        z.writestr("aurora-studio-master/CHANGELOG.md", "# CHANGELOG\n")
+    changelog = "# CHANGELOG\n\n## 1.1.0 — обновление одной кнопкой\n\n## 1.0.0 — начало\n"
+    ck, restore = _cockpit_on(kit)
+
+    def fake_get(url, limit, timeout=20):
+        if url.endswith("/VERSION"):
+            return b"1.1.0\n"
+        if url.endswith("/CHANGELOG.md"):
+            return changelog.encode("utf-8")
+        assert "codeload.github.com/VVG-web/aurora-studio/zip/refs/heads/master" in url, url
+        return buf.getvalue()
+
+    ck._http_get = fake_get
+    try:
+        st = ck.kit_update_status(fresh=True)
+        assert st["mode"] == "archive" and st["newer"] and st["latest"] == "1.1.0", st
+        assert st["notes"] == ["1.1.0 — обновление одной кнопкой"], st["notes"]
+        (kit / "running.json").write_text(json.dumps({"j": {"cmd": "agent:distill"}}), encoding="utf-8")
+        busy = ck.kit_update()
+        assert "agent:distill" in busy.get("error", ""), f"обновление пошло во время прогона: {busy}"
+        (kit / "running.json").write_text("{}", encoding="utf-8")
+        r = ck.kit_update()
+    finally:
+        restore()
+    assert r.get("ok") and r["from"] == "1.0.0" and r["to"] == "1.1.0" and r["restart"], r
+    assert (kit / "VERSION").read_text().strip() == "1.1.0"
+    assert (kit / "scripts/a.py").read_text() == "new\n", "файл поставки не заменён"
+    assert os.access(kit / "scripts/new.sh", os.X_OK), "исполняемый файл потерял права"
+    assert not (kit / "scripts/gone.py").exists(), "устаревший файл прошлой поставки остался"
+    assert (kit / "local/private_terms.txt").read_text() == "СЕКРЕТ\n", "тронуто личное"
+    assert (kit / ".env.test").read_text() == "TOKEN=1\n", "тронуты личные настройки"
+    assert (kit / "mine.txt").exists(), "убран чужой файл, которого не было в прошлой поставке"
+    backup = Path(r["backup"])
+    assert (backup / "scripts/a.py").read_text() == "old\n" and (backup / "scripts/gone.py").exists(), \
+        "заменённое и убранное не сохранены копией"
+    assert "scripts/new.sh" in json.loads((kit / ".aurora-install.json").read_text())["files"]
+
+
+@test
+def test_the_kit_updates_itself_as_a_clone_even_after_a_history_rewrite(tmp: Path):
+    """Клон обновляется из панели и тогда, когда историю на GitHub переписали.
+
+    23.09.2026 историю публичного репозитория переписали (убирали внутреннее название), и
+    у каждого клона она «разошлась»: прежняя кнопка (`pull --ff-only`) отказывала.
+    Коммиты, пришедшие с GitHub, не своя работа — их сохраняем в запасную ветку и встаём на
+    новую историю. Свои коммиты кнопкой не трогаем никогда.
+    """
+    def git(cwd, *a):
+        r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                           cwd=str(cwd), capture_output=True, text=True)
+        assert r.returncode == 0, (a, r.stderr)
+        return r.stdout.strip()
+
+    up = tmp / "upstream"
+    up.mkdir()
+    git(up, "init", "-q", "-b", "master")
+    (up / "VERSION").write_text("1.0.0\n")
+    (up / "CHANGELOG.md").write_text("## 1.0.0 — начало\n")
+    git(up, "add", "-A")
+    git(up, "commit", "-q", "-m", "1.0.0")
+    kit = tmp / "kit"
+    git(tmp, "clone", "-q", str(up), str(kit))
+    (up / "VERSION").write_text("1.1.0\n")
+    (up / "CHANGELOG.md").write_text("## 1.1.0 — вперёд\n\n## 1.0.0 — начало\n")
+    git(up, "commit", "-q", "-am", "1.1.0")
+    ck, restore = _cockpit_on(kit)
+    try:
+        r = ck.kit_update()
+        assert r.get("ok") and r["to"] == "1.1.0" and r["how"] == "git", r
+        # история на GitHub переписана: тот же 1.1.0 другим коммитом, поверх — 1.2.0
+        git(up, "commit", "-q", "--amend", "-m", "1.1.0 (переписан)")
+        (up / "VERSION").write_text("1.2.0\n")
+        git(up, "commit", "-q", "-am", "1.2.0")
+        r = ck.kit_update()
+        assert r.get("ok") and r["to"] == "1.2.0", r
+        assert any("aurora-backup/1.1.0-" in n for n in r["notes"]), r["notes"]
+        assert "aurora-backup/1.1.0-" in git(kit, "branch", "--list", "aurora-backup/*")
+        # свой коммит в ките — кнопка отказывается, ничего не трогая
+        (up / "VERSION").write_text("1.3.0\n")
+        git(up, "commit", "-q", "--amend", "-am", "1.3.0, история снова переписана")
+        (kit / "mine.txt").write_text("своё\n")
+        git(kit, "add", "mine.txt")
+        git(kit, "commit", "-q", "-m", "своя правка")
+        head = git(kit, "rev-parse", "HEAD")
+        r = ck.kit_update()
+        assert "свои коммиты" in r.get("error", ""), r
+        assert git(kit, "rev-parse", "HEAD") == head, "свой коммит потерян"
+    finally:
+        restore()
+
+
+@test
+def test_the_panel_offers_the_kit_update_itself(tmp: Path):
+    """Панель сама говорит о новой версии и после обновления перезапускается без человека."""
+    ui = panel_sources()
+    boot = ui[ui.index("async function boot("):]
+    assert "checkKitUpdate()" in boot[:4000], "панель не проверяет новую версию при старте"
+    check = ui[ui.index("async function checkKitUpdate("):]
+    assert 'setBadge("about"' in check and "aurora-kit-told" in check and "aurora-kit-updated" in check, \
+        "новая версия не отмечена в меню, или напоминание повторяется, или итог обновления теряется"
+    ctx = ui[ui.index("function moduleCtx("):ui.index("function moduleCtx(") + 1200]
+    assert "restartPanel" in ctx, "раздел не может перезапустить панель после обновления"
+    about = (KIT / "cockpit/modules/about/view.js").read_text(encoding="utf-8")
+    assert '"/api/kit/update"' in about and "ctx.restartPanel(" in about, \
+        "после обновления панель не перезапускается сама"
+    for word in ("branch_is", "ahead", "dirty", "incoming"):
+        assert f"about.{word}" not in about, f"человеку снова показывают git: about.{word}"
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "kit_update_status(fresh=" in src and "kit_update()" in src, "маршруты не ведут в новое обновление"
+    assert ".aurora-install.json" in (KIT / ".gitignore").read_text(encoding="utf-8")
+    # Первый старт новой версии собирает реестр команд — на нагруженной машине полторы
+    # минуты (замер 23.09.2026). Страница ждёт по лёгкому `/api/ping` и говорит, чего ждёт;
+    # новая панель собирает реестр сразу, в фоне и один раз.
+    restart = ui[ui.index("async function restartPanel("):ui.index("async function checkKitUpdate(")]
+    assert '"/api/ping' in restart and "p.ready" in restart and "opts.patient" in restart, \
+        "после обновления страница ждёт по тяжёлому /api/state или сдаётся через 20 секунд"
+    assert "patient: true" in about, "обновление перезапускает панель без терпения к первому старту"
+    assert "threading.Thread(target=registry" in src and "_REGISTRY_LOCK" in src, \
+        "реестр собирается на первом запросе страницы, а не сразу и не один раз"
+    assert '"/api/ping"' in src and "registry_ready()" in src
 
 
 @test

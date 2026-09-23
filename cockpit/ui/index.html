@@ -496,7 +496,7 @@ tr:last-child td{border-bottom:0}
     <button data-view="quickstart" data-order="30" aria-label="Быстрый старт"><span class="label">Быстрый старт</span></button>
     <button data-view="work" data-order="40" aria-label="Продуктивность"><span class="label">Продуктивность</span></button>
     <button data-view="files" data-order="50" aria-label="Файлы проекта"><span class="label" data-i18n="nav.files">Файлы</span><span class="count" id="navFiles"></span></button>
-    <button data-view="graph" data-order="60" aria-label="Граф базы знаний"><span class="label" data-i18n="nav.graph">Граф</span></button>
+    <button data-view="graph" data-order="60" data-devonly hidden aria-label="Граф базы знаний"><span class="label" data-i18n="nav.graph">Граф</span></button>
     <button data-view="ask" data-order="70" aria-label="Спросить базу"><span class="label">Спросить</span></button>
     <button data-view="console" data-order="120" aria-label="Консоль"><span class="label">Консоль</span></button>
     </div>
@@ -795,7 +795,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.123.0";
+const UI_VERSION = "1.124.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -864,9 +864,12 @@ function t(key, vars){
   return s;
 }
 
-async function restartPanel(){
+async function restartPanel(opts = {}){
   // Токен новый процесс получает от текущего, поэтому открытая вкладка продолжит
   // работать: адрес тот же, и после подъёма достаточно перечитать страницу.
+  // `patient` — после обновления кита: первый старт новой версии собирает реестр команд
+  // (на нагруженной машине — больше минуты), и ждать надо дольше, говоря, чего ждём.
+  const say = opts.progress || (text => toast(text));
   const busy = await api("/api/jobs", {quiet:true});
   const live = (busy && busy.jobs || []).filter(j => !j.done);
   if (live.length && !confirm(
@@ -875,16 +878,49 @@ async function restartPanel(){
     return;
   const d = await api("/api/restart", {method:"POST", quiet:true, body:"{}"});
   if (d && d.error) return toast(d.error, "err");
-  toast("панель поднимается…");
-  // Ждём, пока новый процесс ответит, и перечитываем страницу.
-  for (let i = 0; i < 40; i++){
-    await new Promise(ok => setTimeout(ok, 500));
+  say("панель поднимается…");
+  const started = Date.now(), limit = (opts.patient ? 300 : 60) * 1000;
+  let told = "";
+  await new Promise(ok => setTimeout(ok, 1500));      // прежний процесс ещё отвечает
+  while (Date.now() - started < limit){
     try {
-      const r = await fetch("/api/state?t=" + encodeURIComponent(TOKEN));
-      if (r.ok){ location.reload(); return; }
+      const r = await fetch("/api/ping?t=" + encodeURIComponent(TOKEN));
+      const p = r.ok ? await r.json() : null;
+      if (p && p.ready){ location.reload(); return; }
+      if (p){
+        const text = `собираю список команд новой версии… ${Math.round((Date.now() - started) / 1000)} с`;
+        if (opts.progress || !told){ say(text); told = text; }
+      }
     } catch (e) { /* ещё не поднялась */ }
+    await new Promise(ok => setTimeout(ok, 1000));
   }
-  toast("панель не поднялась за 20 секунд — посмотрите терминал", "err");
+  toast(`панель не поднялась за ${limit / 60000} мин — посмотрите терминал`, "err");
+}
+
+/* Новая версия Aurora. Проверку делает сервер (раз в шесть часов, без git у человека), а
+   панель ставит отметку на «О проекте» и один раз на версию говорит об этом словами:
+   отложившего обновление не надо встречать напоминанием при каждом входе. Здесь же — итог
+   обновления: его показывает уже перезапущенная панель, старая до него не доживает. */
+async function checkKitUpdate(){
+  let done = null;
+  try {
+    done = JSON.parse(localStorage.getItem("aurora-kit-updated") || "null");
+    localStorage.removeItem("aurora-kit-updated");
+  } catch (e) { done = null; }
+  if (done){
+    toast(`Aurora обновлена: ${done.from} → ${done.to}`, "ok");
+    (done.notes || []).forEach(n => toast(n));
+  }
+  const st = await api("/api/kit/status", {quiet:true}).catch(() => null);
+  if (!st || st.error || !st.newer){ setBadge("about", ""); return; }
+  setBadge("about", "↑");
+  let told = "";
+  try { told = localStorage.getItem("aurora-kit-told") || ""; } catch (e) {}
+  if (told !== st.latest){
+    try { localStorage.setItem("aurora-kit-told", st.latest); } catch (e) {}
+    toast(`Доступна новая версия Aurora ${st.latest} (у вас ${st.installed}). `
+          + "Обновить — одной кнопкой в разделе «О проекте».");
+  }
 }
 
 async function loadI18n(){
@@ -1376,7 +1412,7 @@ async function openFile(f){
   // навигации: посмотрел карточку, захотел увидеть окружение — иди искать её в графе
   // руками.
   const inKb = (d.path || "").startsWith("AuroraKnowledgeDB/") && d.path.endsWith(".md");
-  $("#fileGraph").hidden = !inKb;
+  $("#fileGraph").hidden = !inKb || !devSectionsOn();   // граф — раздел в разработке
   if (inKb) $("#fileGraph").onclick = () => showOnGraph(d.path);
   $("#fileRename").hidden = !!F.ro;
   $("#fileDelete").hidden = !!F.ro || (d.path || "").startsWith("AuroraKnowledgeDB/");
@@ -1768,6 +1804,8 @@ function show(view, payload){
   // уход из «Настройки» с незаписанными правками — единственное место, где панель
   // может молча потерять введённое: всё остальное она либо пишет сразу, либо не пишет
   if (S.view === "setup" && view !== "setup" && !confirmLeave()) return;
+  // Раздел в разработке закрыт — в него не попасть и по адресу страницы или ссылке.
+  if (devOnlyView(view) && !devSectionsOn()) view = "overview";
   S.view = view;
   $$(".view").forEach(v=>v.classList.toggle("on", v.id === "view-"+view));
   $$("nav button").forEach(b=>b.setAttribute("aria-current", String(b.dataset.view===view)));
@@ -1799,10 +1837,21 @@ const DEV_TAPS = 7;                       // столько же, сколько
 
 function devOn(){ return localStorage.getItem("aurora-dev") === "1"; }
 
+// Разделы в разработке открываются вместе с «Разработкой»: те же семь нажатий на «О
+// проекте», та же кнопка «Скрыть». Встроенный раздел помечен `data-devonly` в разметке,
+// модуль — полем `"dev": true` в манифесте.
+function devSectionsOn(){ return devOn() && !!(S.state && S.state.dev_available); }
+
+function devOnlyView(view){
+  return view === "dev" || !!$(`nav button[data-view="${view}"][data-devonly]`)
+    || !!(MODULES.get(view) && MODULES.get(view).manifest.dev);
+}
+
 function showDevNav(){
-  const on = devOn() && S.state && S.state.dev_available;
+  const on = devSectionsOn();
   $("#devNav").hidden = !on;
   $("#devGroup").hidden = !on;
+  $$("nav button[data-devonly]").forEach(b => { b.hidden = !on; });
 }
 
 function tapAbout(){
@@ -1814,12 +1863,13 @@ function tapAbout(){
   clearTimeout(ABOUT_TIMER);
   ABOUT_TIMER = setTimeout(()=>{ ABOUT_TAPS = 0; }, 3000);   // пауза сбрасывает счёт
   const left = DEV_TAPS - ABOUT_TAPS;
-  if (left > 0 && ABOUT_TAPS >= 3) toast(`Ещё ${left} — и откроется раздел разработки`);
+  if (left > 0 && ABOUT_TAPS >= 3) toast(`Ещё ${left} — и откроются разделы в разработке`);
   if (left <= 0){
     localStorage.setItem("aurora-dev", "1");
     ABOUT_TAPS = 0;
     showDevNav();
-    toast("Раздел «Разработка» открыт. Убрать — кнопкой в самом разделе.", "ok");
+    toast("Открыты разделы в разработке: «Разработка», «Граф», «Отчёты». Убрать — "
+          + "кнопкой «Скрыть разделы» в «Разработке».", "ok");
   }
 }
 
@@ -1883,6 +1933,7 @@ async function boot(){
   renderHistory();
   loadSkins();
   await loadModules();   // меню собрано целиком до того, как адрес вернёт нас в раздел
+  checkKitUpdate();      // новая версия Aurora — отметкой на «О проекте», не окном поверх работы
   prefetchHealth();
   const [v, slug] = (location.hash.slice(1)||"").split("|");
   if (slug){ const p = S.state.projects.find(p=>p.slug===slug); if (p) await pick(p, false); }
@@ -4698,6 +4749,10 @@ function addModuleNav(m){
   const btn = el("button", {"data-view": m.id, "data-order": m.order, "aria-label": moduleTitle(m)},
     el("span", {class:"label"}, moduleTitle(m)),
     el("span", {class:"count", id:"nav-" + m.id}));
+  if (m.dev){            // раздел в разработке — виден вместе с «Разработкой»
+    btn.dataset.devonly = "";
+    btn.hidden = !devSectionsOn();
+  }
   btn.onclick = () => navClick(btn);
   const after = $$("button", group).find(b => Number(b.dataset.order || 999) > m.order);
   group.insertBefore(btn, after || null);
@@ -4713,6 +4768,7 @@ function moduleCtx(id, root){
     $$: (sel) => $$(sel, root),
     token: TOKEN,
     show, run: runStep, runWatched, busyElsewhere, openRun, openDoc, reloadHealth,
+    restartPanel,
     fmt: {ago, kb, when: histWhen, esc, tick, md},
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
     // перехода к маршруту — иначе в каждом разделе они разъедутся.
@@ -4953,8 +5009,8 @@ async function renderDev(){
       el("button",{class:"btn sm danger", onclick:()=>{
         localStorage.removeItem("aurora-dev");
         showDevNav(); show("about");
-        toast("Раздел скрыт. Вернуть — снова семь нажатий на «О проекте».");
-      }},"Скрыть раздел"))));
+        toast("Разделы в разработке скрыты. Вернуть — снова семь нажатий на «О проекте».");
+      }},"Скрыть разделы"))));
 
   if (!cmds.length){
     box.append(el("div",{class:"card",style:"padding:20px"},

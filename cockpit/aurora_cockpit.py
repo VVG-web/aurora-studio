@@ -166,6 +166,9 @@ def modules() -> list:
             "for": ver,
             "behind": minor(ver) != minor(kit_version()),
             "about": m.get("about", {}),
+            # Раздел в разработке: в меню только вместе с «Разработкой» (семь нажатий на
+            # «О проекте»).
+            "dev": m.get("dev") is True,
         })
     out.sort(key=lambda m: (MODULE_GROUPS.index(m.get("group", "project"))
                             if m.get("group") in MODULE_GROUPS else len(MODULE_GROUPS),
@@ -953,49 +956,275 @@ def about() -> dict:
     }
 
 
-def kit_git_status() -> dict:
-    """Есть ли в репозитории kit'а что-то новое и можно ли обновиться без потерь."""
-    def git(*args):
-        return subprocess.run(["git", "-C", KIT, *args], capture_output=True,
-                              text=True, timeout=120)
-    if not os.path.isdir(os.path.join(KIT, ".git")):
-        return {"error": "kit не под git — обновление из репозитория недоступно"}
-    fetch = git("fetch", "--quiet")
-    if fetch.returncode != 0:
-        return {"error": "не удалось связаться с репозиторием: "
-                         + (fetch.stderr.strip()[-200:] or "нет сети")}
-    branch = git("branch", "--show-current").stdout.strip() or "master"
-    counts = git("rev-list", "--left-right", "--count", f"{branch}...origin/{branch}").stdout.split()
-    ahead, behind = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (0, 0)
-    dirty = [l for l in git("status", "--porcelain").stdout.splitlines()
-             if l.strip() and "__pycache__" not in l]
-    log = git("log", "--oneline", f"HEAD..origin/{branch}").stdout.splitlines()[:10]
-    return {"branch": branch, "ahead": ahead, "behind": behind,
-            "dirty": len(dirty), "incoming": log, "version": kit_version()}
+# Откуда кит берёт новую версию. Клон знает свой адрес сам (`origin`); кит, скачанный
+# архивом, git не знает — тогда адрес отсюда. Свой форк — переменная AURORA_KIT_REPO.
+KIT_REPO = "https://github.com/VVG-web/aurora-studio"
+KIT_BRANCH = "master"
+KIT_STATUS_TTL = 6 * 3600        # проверка — раз в шесть часов, а не на каждый вход
+# Чего обновление не касается никогда: личное и рабочее, чего в поставке нет.
+KIT_KEEP = ("local/", "Development/", ".git/", ".env", "cockpit/.")
+INSTALL_MANIFEST = ".aurora-install.json"   # что поставил архив — чтобы убрать устаревшее
 
 
-def kit_pull() -> dict:
-    """Обновление kit'а из репозитория. Только перемотка вперёд: слияние с чужими
-    правками — не то, что стоит делать кнопкой в браузере."""
-    st = kit_git_status()
-    if st.get("error"):
+def _kit_git(*args, timeout: int = 120):
+    return subprocess.run(["git", "-C", KIT, *args], capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def _vt(v: str) -> tuple:
+    """«1.123.0» → (1, 123, 0): версии сравниваются числами, а не строками."""
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3]) or (0,)
+
+
+def _http_get(url: str, limit: int, timeout: int = 20) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "aurora-cockpit"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("ответ больше ожидаемого")
+    return data
+
+
+def kit_repo() -> tuple:
+    """(владелец/репозиторий, ветка, веб-адрес) — откуда брать новую версию."""
+    url = os.environ.get("AURORA_KIT_REPO", "")
+    if not url and os.path.isdir(os.path.join(KIT, ".git")):
+        r = _kit_git("remote", "get-url", "origin", timeout=15)
+        url = r.stdout.strip() if r.returncode == 0 else ""
+    m = re.search(r"github\.com[:/]+([^/\s]+/[^/\s]+?)(?:\.git)?/?$", url or "") \
+        or re.search(r"github\.com/([^/]+/[^/]+)$", KIT_REPO)
+    return m.group(1), KIT_BRANCH, f"https://github.com/{m.group(1)}"
+
+
+def _notes_since(changelog: str, installed: str) -> list:
+    """Заголовки выпусков новее установленного — «что нового» человеческими словами."""
+    out = []
+    for line in changelog.splitlines():
+        if not line.startswith("## "):
+            continue
+        head = line[3:].strip()
+        if _vt(head) > _vt(installed):
+            out.append(head)
+        elif _vt(head) != (0,):
+            break                     # CHANGELOG идёт от новых к старым
+    return out[:15]
+
+
+def kit_update_status(fresh: bool = False) -> dict:
+    """Есть ли новая версия кита: установленная, последняя, что нового.
+
+    Спрашивает сам кит — человеку не нужно знать ни про git, ни про ветки. Клон узнаёт
+    версию через `git fetch`, кит из архива — по файлу VERSION на GitHub. Ответ живёт
+    шесть часов: панель проверяет при каждом старте, а сеть трогает редко.
+    """
+    installed = kit_version()
+    cached = CACHE.get("kit_status")
+    if (cached and not fresh and cached.get("installed") == installed
+            and time.time() - cached.get("at", 0) < KIT_STATUS_TTL):
+        return cached
+    slug, branch, web = kit_repo()
+    git_mode = os.path.isdir(os.path.join(KIT, ".git"))
+    st = {"installed": installed, "mode": "git" if git_mode else "archive", "repo": web,
+          "at": time.time()}
+    try:
+        if git_mode:
+            branch = _kit_git("branch", "--show-current", timeout=15).stdout.strip() or branch
+            f = _kit_git("fetch", "--quiet", "origin", branch)
+            if f.returncode != 0:
+                raise OSError((f.stderr or "").strip()[-200:] or "нет сети")
+            latest = _kit_git("show", f"origin/{branch}:VERSION").stdout.strip()
+            changelog = _kit_git("show", f"origin/{branch}:CHANGELOG.md").stdout
+        else:
+            raw = f"https://raw.githubusercontent.com/{slug}/{branch}"
+            latest = _http_get(raw + "/VERSION", 100).decode("utf-8", "replace").strip()
+            changelog = _http_get(raw + "/CHANGELOG.md", 5_000_000).decode("utf-8", "replace")
+    except Exception as e:
+        st["error"] = f"не удалось узнать версию на GitHub: {str(e)[:200] or type(e).__name__}"
         return st
-    if st["dirty"]:
-        return {"error": f"в kit'е {st['dirty']} незакоммиченных файлов — "
-                         "обновление затрёт их. Сначала закоммитьте или отмените правки"}
-    if not st["behind"]:
-        return {"ok": True, "already": True, "version": kit_version()}
-    r = subprocess.run(["git", "-C", KIT, "pull", "--ff-only"], capture_output=True,
-                       text=True, timeout=180)
+    if not latest:
+        st["error"] = "на GitHub не нашлось файла VERSION — обновляться не из чего"
+        return st
+    newer = _vt(latest) > _vt(installed)
+    st.update(latest=latest, newer=newer,
+              notes=_notes_since(changelog, installed) if newer else [],
+              busy=sorted({r.get("cmd", "") for r in running_now().values()}))
+    CACHE["kit_status"] = st
+    return st
+
+
+def _came_from_upstream(branch: str) -> bool:
+    """Все коммиты кита когда-то пришли с GitHub — своих правок в истории нет.
+
+    Так бывает, когда историю на GitHub переписали (23.09.2026 из неё убирали внутреннее
+    название): у клона она «разошлась», хотя человек ничего своего не делал. Узнаём это
+    по журналу ссылки `origin/<ветка>`: текущая вершина — предок одной из прежних.
+    """
+    tips = _kit_git("reflog", "show", "--format=%H", f"refs/remotes/origin/{branch}").stdout.split()
+    return any(_kit_git("merge-base", "--is-ancestor", "HEAD", sha).returncode == 0
+               for sha in tips[:300])
+
+
+def _update_git(st: dict) -> dict:
+    branch = _kit_git("branch", "--show-current", timeout=15).stdout.strip()
+    if not branch:
+        return {"error": "кит не на ветке (detached HEAD) — обновите его через git вручную"}
+    up = f"origin/{branch}"
+    if _kit_git("merge-base", "--is-ancestor", "HEAD", up).returncode == 0:
+        rewrite = False
+    elif _came_from_upstream(branch):
+        rewrite = True
+    else:
+        return {"error": "в ките есть свои коммиты, которых нет на GitHub, — обновление "
+                         "кнопкой их бы потеряло. Обновите кит через git вручную"}
+    notes = []
+    dirty = [l for l in _kit_git("status", "--porcelain", "--untracked-files=no").stdout.splitlines()
+             if l.strip()]
+    if dirty:
+        msg = f"aurora: правки перед обновлением до {st['latest']}"
+        if _kit_git("stash", "push", "-m", msg).returncode != 0:
+            return {"error": f"в ките изменены файлы ({len(dirty)}), и отложить их не вышло — "
+                             "обновите через git вручную"}
+        notes.append(f"ваши правки в файлах кита ({len(dirty)}) отложены: git stash «{msg}»")
+    if rewrite:
+        keep = f"aurora-backup/{st['installed']}-{utc_slug()}"
+        _kit_git("branch", keep, "HEAD")
+        r = _kit_git("reset", "--hard", up)
+        notes.append(f"история на GitHub была переписана — прежнее состояние кита сохранено "
+                     f"в ветке {keep}")
+    else:
+        r = _kit_git("merge", "--ff-only", up)
     if r.returncode != 0:
         return {"error": (r.stderr or r.stdout).strip()[-400:]}
-    CACHE.pop("registry", None)
-    return {"ok": True, "version": kit_version(), "log": r.stdout.strip().splitlines()[-8:]}
+    return {"ok": True, "how": "git", "notes": notes}
+
+
+def _update_archive(st: dict) -> dict:
+    """Кит из архива: скачать новую версию и заменить файлы поставки.
+
+    Заменяется только то, что есть в архиве, — это и есть поставка. Личное (`local/`,
+    `.env*`, `Development/`) в архив не попадает и не трогается. Каждый заменённый или
+    убранный файл сначала копируется в `~/.aurora/kit-backup/<версия>-<время>/`: откатиться
+    можно, скопировав его обратно. VERSION пишется последним — оборванное обновление
+    повторяется с начала.
+    """
+    import io
+    import zipfile
+    slug, branch, _web = kit_repo()
+    try:
+        blob = _http_get(f"https://codeload.github.com/{slug}/zip/refs/heads/{branch}",
+                         300_000_000, timeout=180)
+        z = zipfile.ZipFile(io.BytesIO(blob))
+    except zipfile.BadZipFile:
+        return {"error": "GitHub отдал не архив — попробуйте позже"}
+    except Exception as e:
+        return {"error": f"не удалось скачать новую версию: {str(e)[:200]}"}
+    files = {}
+    for info in z.infolist():
+        parts = info.filename.split("/", 1)
+        if info.is_dir() or len(parts) != 2 or not parts[1]:
+            continue
+        rel = parts[1]
+        if rel.startswith("/") or ".." in rel.split("/"):
+            return {"error": f"в архиве подозрительный путь: {rel[:120]}"}
+        if not rel.startswith(KIT_KEEP):
+            files[rel] = info
+    if "VERSION" not in files:
+        return {"error": "в скачанном архиве нет VERSION — это не кит Авроры"}
+    new_ver = z.read(files["VERSION"]).decode("utf-8", "replace").strip()
+    if _vt(new_ver) <= _vt(st["installed"]):
+        return {"ok": True, "already": True}
+    backup = os.path.join(os.path.expanduser("~"), ".aurora", "kit-backup",
+                          f"{st['installed']}-{utc_slug()}")
+    saved = []
+
+    def keep_copy(rel: str) -> None:
+        dst = os.path.join(backup, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(os.path.join(KIT, rel), dst)
+        saved.append(rel)
+
+    try:
+        old = json.loads(read_text(os.path.join(KIT, INSTALL_MANIFEST)) or "{}").get("files", [])
+    except ValueError:
+        old = []
+    changed = added = removed = 0
+    for rel in sorted(files, key=lambda r: r == "VERSION"):     # VERSION — последним
+        data = z.read(files[rel])
+        dst = os.path.join(KIT, rel)
+        if os.path.isfile(dst):
+            with open(dst, "rb") as f:
+                if f.read() == data:
+                    continue
+            keep_copy(rel)
+            changed += 1
+        else:
+            added += 1
+        os.makedirs(os.path.dirname(dst) or KIT, exist_ok=True)
+        tmp = dst + ".aurora-new"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        if (files[rel].external_attr >> 16) & 0o111:
+            os.chmod(tmp, 0o755)
+        os.replace(tmp, dst)
+    # Убираем только то, что прошлый архив поставил сам, а новый уже не везёт. Без списка
+    # прошлой поставки не убираем ничего: чужой файл в папке кита — не наш.
+    for rel in old:
+        if rel not in files and not rel.startswith(KIT_KEEP) \
+                and os.path.isfile(os.path.join(KIT, rel)):
+            keep_copy(rel)
+            os.remove(os.path.join(KIT, rel))
+            removed += 1
+    with open(os.path.join(KIT, INSTALL_MANIFEST), "w", encoding="utf-8") as f:
+        json.dump({"version": new_ver, "files": sorted(files)}, f, ensure_ascii=False)
+    return {"ok": True, "how": "archive", "changed": changed, "added": added,
+            "removed": removed, "backup": backup if saved else "",
+            "notes": ([f"заменённые файлы сохранены в {backup}"] if saved else [])}
+
+
+def kit_update() -> dict:
+    """Обновить кит до последней версии с GitHub — одной кнопкой, без git и архивов вручную.
+
+    Клон обновляется через git (история, переписанная на GitHub, не мешает — прежнее
+    состояние уходит в запасную ветку), кит из архива — новым архивом. Во время прогона не
+    обновляемся: прогон идёт кодом кита. После обновления панель перезапускает себя сама.
+    """
+    busy = running_now()
+    if busy:
+        names = ", ".join(sorted({r.get("cmd", "?") for r in busy.values()}))
+        return {"error": f"сейчас идёт: {names} — обновление оборвало бы прогон. "
+                         "Дождитесь конца или прервите его"}
+    st = kit_update_status(fresh=True)
+    if st.get("error"):
+        return st
+    if not st["newer"]:
+        return {"ok": True, "already": True, "version": st["installed"]}
+    r = _update_git(st) if st["mode"] == "git" else _update_archive(st)
+    if r.get("ok") and not r.get("already"):
+        CACHE.pop("registry", None)
+        CACHE.pop("kit_status", None)
+        r.update({"from": st["installed"], "to": kit_version(), "restart": True})
+    return r
 
 
 # --------------------------------------------------------------- реестр команд
 
+# Сборка реестра — десятки секунд (`--help` у каждого скрипта), и два запроса подряд не
+# должны собирать его дважды: первый старт после обновления кита шёл полторы минуты.
+_REGISTRY_LOCK = threading.RLock()
+
+
 def registry() -> list:
+    """Реестр команд; сборку разделяют все потоки — см. `_registry`."""
+    with _REGISTRY_LOCK:
+        return _registry()
+
+
+def registry_ready() -> bool:
+    """Реестр уже собран — панель отвечает быстро (для ожидания после перезапуска)."""
+    return "registry" in CACHE
+
+
+def _registry() -> list:
     """Команды из `commands.txt`; модификаторы — из `--help` самих скриптов.
 
     Kit могли обновить, пока панель работает: тогда в реестре появляются новые команды и
@@ -2560,9 +2789,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guarded(q):
             return
         if u.path == "/api/ping":
-            # по этому ответу второй запуск узнаёт свою же панель, а не чужую программу
+            # По этому ответу второй запуск узнаёт свою же панель, а не чужую программу.
+            # `ready` — реестр собран: по нему страница ждёт перезапуска. `/api/state` для
+            # этого не годится — он сам собирает реестр и висит, пока не соберёт.
             self.send_json({"app": "aurora-cockpit", "kit": kit_version(),
-                            "pid": os.getpid()})
+                            "pid": os.getpid(), "ready": registry_ready()})
         elif u.path == "/api/state":
             projects = find_projects(self.server.roots)
             # Опрос отметок Мостика идёт по этому списку: обход папок стоит полсекунды,
@@ -2818,7 +3049,7 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path.startswith("/vendor/"):
             self.send_static(VENDOR_DIR, u.path[len("/vendor/"):])
         elif u.path == "/api/kit/status":
-            self.send_json(kit_git_status())
+            self.send_json(kit_update_status(fresh=(q.get("fresh") or [""])[0] == "1"))
         elif u.path == "/api/doc":
             rel = os.path.normpath(q.get("path", [""])[0]).lstrip("/")
             if not any(rel == r or rel.startswith(r.rstrip("/") + "/") for r in DOC_ROOTS):
@@ -2991,7 +3222,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(git_push(project, payload.get("remote", "")))
             return
         if u.path == "/api/kit/update":
-            self.send_json(kit_pull())
+            self.send_json(kit_update())
             return
         if u.path == "/api/confluence/resolve":
             project = payload.get("project", "")
@@ -3560,6 +3791,9 @@ def main() -> int:
     print("Адрес одноразовый: токен живёт в памяти процесса, при перезапуске меняется.")
     print("Остановить — Ctrl+C.")
     write_session(a.port, url)
+    # Реестр собираем сразу, в фоне: после обновления кита его кэш недействителен, и без
+    # этого первый же запрос страницы висел, пока `--help` обходил все скрипты.
+    threading.Thread(target=registry, daemon=True).start()
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
