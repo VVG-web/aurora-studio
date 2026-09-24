@@ -76,14 +76,20 @@ def used_in(module: str = "") -> set:
     Нужно обе стороны: ключ в каталоге без употребления — мусор, который переводят зря;
     употребление без ключа — надпись, которая на экране покажется именем ключа.
     """
-    files = [UI] if not module else [os.path.join(MODULES, module, n)
-                                     for n in ("view.html", "view.js")]
+    if module:
+        # Все файлы раздела, а не только `view.*`: у раздела бывает общий с близнецом
+        # кусок («Быстрый старт» и «Продуктивность» рисуют один список маршрутов).
+        base = os.path.join(MODULES, module)
+        files = [os.path.join(r, f) for r, _d, fs in os.walk(base) for f in fs
+                 if f.endswith((".js", ".html"))]
+    else:
+        files = [UI]
     keys = set()
     for path in files:
         if not os.path.isfile(path):
             continue
         text = open(path, encoding="utf-8", errors="ignore").read()
-        keys |= set(re.findall(r'data-i18n(?:-ph)?="([^"]+)"', text))
+        keys |= set(re.findall(r'data-i18n(?:-ph|-title|-aria|-html)?="([^"]+)"', text))
         keys |= set(re.findall(r'\bt\("([a-z][\w.]+)"', text))
         # Ключ бывает не написан целиком: имя документа лежит в таблице раздела
         # (`["docs/…", "reference.doc.start"]`), а имя группы собирается из куска
@@ -171,12 +177,19 @@ def main() -> int:
             bad = True
             troubles.append(f"{title}: ключи не своего имени — " + ", ".join(f"`{k}`" for k in alien[:6]))
         # Начало ключа — не ключ: «commands.ns.» покрывает весь набор имён групп.
-        lost = sorted(u for u in used if not u.endswith(".") and u not in base_keys)
+        # Ключ ядра в разделе — не пропажа: общие надписи («Отмена», итог запуска,
+        # список маршрутов) живут в каталоге ядра и переводятся один раз.
+        core_keys = keys_of(load(BASE)) if mod else set()
+        lost = sorted(u for u in used
+                      if not u.endswith(".") and u not in base_keys and u not in core_keys)
         if lost:
             bad = True
             troubles.append(f"{title}: спрашивает ключи, которых нет в `{BASE}` — "
                             + ", ".join(f"`{k}`" for k in lost[:6]))
-        stray = sorted(k for k in base_keys if not covers(used, k)) if used else []
+        # Ключ ядра могут спрашивать разделы (общие надписи вроде списка маршрутов):
+        # «лишним» он считается, только если его не спрашивает никто.
+        asked = used if mod else set().union(used, *(used_in(m) for m in module_ids()))
+        stray = sorted(k for k in base_keys if not covers(asked, k)) if used else []
         if stray:
             troubles.append(f"{title}: в каталоге есть, а раздел не спрашивает — "
                             + ", ".join(f"`{k}`" for k in stray[:6]))

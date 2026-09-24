@@ -1,0 +1,14 @@
+{
+  "id": "graph",
+  "name": { "ru": "Граф", "en": "Graph" },
+  "about": {
+    "ru": "Карточки и связи между ними: способ дойти до карточки, а не отчёт.",
+    "en": "Cards and the links between them: a way to reach a card, not a report."
+  },
+  "group": "project",
+  "order": 60,
+  "needs": ["project"],
+  "commands": ["kb:links", "kb:map"],
+  "dev": true,
+  "for": "1.126.0"
+}

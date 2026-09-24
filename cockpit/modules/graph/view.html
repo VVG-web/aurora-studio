@@ -1,0 +1,33 @@
+<h1 data-i18n="graph.title">Граф базы</h1>
+<p class="sub" data-i18n="graph.about">Карточки и связи между ними — то, что в базе
+  написано: ссылки в тексте и поле related. Способ дойти до карточки, а не отчёт:
+  сообщества, мосты и острова считает kb:map.</p>
+<div class="card" style="padding:12px;margin-bottom:10px">
+  <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+    <input id="graphFind" data-i18n-ph="graph.find" placeholder="Карточка, от которой смотрим"
+      style="flex:1;min-width:220px;font:inherit;padding:8px;border-radius:8px" list="graphList">
+    <datalist id="graphList"></datalist>
+    <label class="sub" style="display:flex;gap:6px;align-items:center">
+      <span data-i18n="graph.depth">Ступеней</span>
+      <select id="graphDepth" style="font:inherit;padding:4px 6px;border-radius:8px">
+        <option value="1">1</option><option value="2" selected>2</option>
+        <option value="3">3</option><option value="4">4</option>
+        <option value="5">5</option><option value="6">6</option>
+        <option value="8">8</option><option value="99" data-i18n="graph.depth_all">все</option>
+      </select>
+    </label>
+    <label class="sub" style="display:flex;gap:4px;align-items:center">
+      <span data-i18n="graph.spread">Разброс</span>
+      <button class="btn" id="graphOut" style="padding:2px 8px" data-i18n-title="graph.spread_out">+</button>
+      <span id="graphSpreadNow" class="mono" style="min-width:34px;text-align:center"></span>
+      <button class="btn" id="graphIn" style="padding:2px 8px" data-i18n-title="graph.spread_in">−</button>
+    </label>
+    <button class="btn" id="graphAll" data-i18n="graph.all">Показать всю базу</button>
+    <button class="btn" id="graphRebuild" data-i18n="graph.rebuild">Пересчитать</button>
+    <span class="sub" id="graphStamp"></span>
+  </div>
+</div>
+<div class="card" style="padding:0;overflow:hidden">
+  <div id="graphBox" style="height:62vh;min-height:380px"></div>
+</div>
+<div class="sub" id="graphNote" style="margin-top:8px"></div>

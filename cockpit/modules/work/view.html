@@ -1,0 +1,27 @@
+<h1 data-i18n="work.title">Продуктивность</h1>
+<p class="sub" data-i18n="work.about">Работа, ради которой база и нужна: написать
+  артефакт, проверить чужую историю, собрать закрывающий документ и передать его наружу.
+  Обслуживание самой базы — на вкладке «Быстрый старт».</p>
+<p class="sub" data-i18n="work.outcome">В итоге: готовый документ в папке своего типа,
+  собранный на проверенном знании и помнящий, на чём собран (based_on). База при этом не
+  меняется — здесь её читают.</p>
+<!-- Производство артефакта: тип из реестра проекта, задача своими словами, дальше
+     цепочка с человеком посередине. Диалог живёт здесь же — уходить в другое место
+     за ответом на вопрос планировщика значило бы потерять нить. -->
+<div class="card" style="padding:18px;margin-bottom:16px" id="makeCard">
+  <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+    <label style="flex:none">
+      <div class="muted" style="font-size:12px;margin-bottom:3px" data-i18n="work.what">Что делаем</div>
+      <select class="btn" id="makeKind" style="font-weight:400;min-width:220px"></select>
+    </label>
+    <div class="spacer"></div>
+    <button class="btn primary" id="makeGo" data-i18n="work.make">Создать артефакт</button>
+    <button class="btn" id="makePublish" data-i18n="work.publish">Опубликовать…</button>
+  </div>
+  <div class="muted" id="makeSpec" style="font-size:12px;margin:8px 0 10px"></div>
+  <textarea id="makeIdea" class="btn" rows="3" data-i18n-ph="work.idea_ph"
+            placeholder="Задача своими словами: под какую фичу или требование делаем документ"
+            style="width:100%;font-weight:400;resize:vertical"></textarea>
+  <div id="makeDialog" style="margin-top:12px"></div>
+</div>
+<div id="workBody"></div>

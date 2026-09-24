@@ -1,0 +1,13 @@
+{
+  "id": "quickstart",
+  "name": { "ru": "Быстрый старт", "en": "Routines" },
+  "about": {
+    "ru": "Рутина по сценариям: обслуживание базы шагами сверху вниз.",
+    "en": "Routine work by scenarios: maintaining the base step by step."
+  },
+  "group": "project",
+  "order": 30,
+  "needs": ["project"],
+  "commands": [],
+  "for": "1.126.0"
+}

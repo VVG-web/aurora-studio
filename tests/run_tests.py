@@ -61,8 +61,15 @@ def panel_sources() -> str:
     Раздел панели переехал из одного файла в папку (`cockpit/modules/<id>/`), и проверка
     «панель умеет X» обязана смотреть туда же. Иначе она ловит переезд вместо дефекта:
     строка ушла в каталог модуля, а тест говорит, что возможность пропала.
+
+    По той же причине сюда входят и каталоги строк ядра (`cockpit/i18n/*.json`): надпись
+    живёт там, а не в коде, и проверка «человеку сказано то-то» обязана читать её оттуда.
     """
     parts = [(KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")]
+    lang = KIT / "cockpit" / "i18n"
+    if lang.is_dir():
+        for f in sorted(lang.glob("*.json")):
+            parts.append(f.read_text(encoding="utf-8"))
     mods = KIT / "cockpit" / "modules"
     if mods.is_dir():
         for f in sorted(mods.rglob("*")):
@@ -1093,7 +1100,7 @@ def test_copy_button_takes_the_task_without_its_frame(tmp: Path):
     # тело начинается после ВТОРОЙ линейки — той, что под заголовком
     assert "while (from < lines.length && !lines[from].startsWith(TASK_EDGE)) from++;" in fn, \
         "начало тела ищется не от заголовка вниз"
-    assert 'toast(task.label + " — скопировано' in ui, \
+    assert 't("task.copied", {label: task.label})' in ui, \
         "подпись в уведомлении врёт про партию там, где партий нет"
 
 
@@ -2216,7 +2223,8 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
         assert call in entry, \
             f"на входе в «Консоль» не восстанавливается {call}: журнал, задание и то, " \
             f"что идёт прямо сейчас"
-    assert ui.count("lastRun(") >= 3, \
+    # Разделы спрашивают журнал через ctx (`ctx.runs.last`), ядро — напрямую: считаем оба.
+    assert ui.count("lastRun(") + ui.count("runs.last(") >= 3, \
         "отметка последнего запуска стоит не везде: команды, сценарии, журнал"
 
 
@@ -2330,25 +2338,26 @@ def test_ask_tab_refills_the_model_list_and_names_a_failure(tmp: Path):
     пустым до перезагрузки страницы, а сбой чтения истории выглядел как «разговоров пока
     нет». Собирался список к тому же один раз и при смене проекта показывал модели прошлого.
 
-    Проверяем поведение, а не строки: функции страницы выполняются в node на заглушках
-    DOM и сервера.
+    Проверяем поведение, а не строки: раздел — модуль ES, его функции выполняются в node
+    на заглушках `ctx` (строки он спрашивает по ключу, ключи сверяем с каталогом).
     """
-    import shutil
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
     ui = panel_sources()
     assert 'id="askBackendNote"' in ui, "сбою списка моделей негде показаться"
 
-    def fn(name):
-        start = ui.index(f"async function {name}(")
-        depth, i = 0, ui.index("{", start)
-        while True:
-            depth += {"{": 1, "}": -1}.get(ui[i], 0)
-            if depth == 0:
-                return ui[start:i + 1]
-            i += 1
+    engine = shutil.which("node")
+    if not engine:
+        return            # без node поведение вкладки проверить нечем — пропускаем
 
-    engine = shutil.which("node") or shutil.which("deno")
-    assert engine, "нет ни node, ни deno — поведение вкладки проверить нечем"
+    view = ck.module_file("ask", "view.js")
+    assert view, "раздел «Спросить» не найден среди модулей"
+    ru = json.loads(Path(ck.module_file("ask", "i18n/ru.json")).read_text(encoding="utf-8"))
+
     harness = """
+import {fillBackends, renderHistory} from "MODULE";
 const el = (tag, attrs, ...kids) => ({tag, value: attrs && attrs.value,
   textContent: kids.map(k => typeof k === "string" ? k : (k && k.textContent) || "").join("")});
 const select = () => ({options: [{value: "0", textContent: "по кольцу"}], value: "0", dataset: {},
@@ -2360,50 +2369,56 @@ const box = () => ({kids: [], replaceChildren(...k){ this.kids = k; },
   get text(){ return this.kids.map(k => k.textContent).join(" | "); }});
 const DOM = {askBackend: select(), askBackendNote: {hidden: true, textContent: ""},
              askHistory: box()};
-const $ = q => DOM[q.slice(1)];
-let S = {project: null}, THREAD = null, calls = 0;
+let calls = 0;
 const replies = [];
-const api = async () => { calls++; const r = replies.shift(); if (r instanceof Error) throw r; return r; };
-function openThread(){}
-FUNCS
+// Строку раздел спрашивает по ключу: заглушка возвращает сам ключ, и проверка видит,
+// ЧТО сказано, не завися от формулировки.
+const ctx = {
+  t: (k, vars) => k + (vars ? ":" + JSON.stringify(vars) : ""),
+  el, $: q => DOM[q.slice(1)],
+  api: async () => { calls++; const r = replies.shift(); if (r instanceof Error) throw r; return r; },
+  toast(){}, project: null,
+};
 (async () => {
   const sel = DOM.askBackend, note = DOM.askBackendNote, res = {};
   const opts = () => sel.options.map(o => o.value).join(",");
   const said = () => note.hidden ? "" : note.textContent;
-  S.project = {path: "/p/A"};
+  ctx.project = {path: "/p/A"};
   replies.push(new Error("Failed to fetch"));
-  await fillAskBackends();
+  await fillBackends(ctx);
   res.failed = {opts: opts(), note: said()};
   replies.push({backends: [{n: 1, models: {worker: "m1"}}, {n: 2, model: "m2"}]});
-  await fillAskBackends();
+  await fillBackends(ctx);
   res.retried = {opts: opts(), note: said()};
-  const before = calls; await fillAskBackends(); res.sameProjectCalls = calls - before;
-  sel.value = "2"; S.project = {path: "/p/B"};
+  const before = calls; await fillBackends(ctx); res.sameProjectCalls = calls - before;
+  sel.value = "2"; ctx.project = {path: "/p/B"};
   replies.push({backends: [{n: 2, model: "m2b"}, {n: 3, model: "m3"}]});
-  await fillAskBackends();
+  await fillBackends(ctx);
   res.switched = {opts: opts(), value: sel.value,
                   labels: sel.options.map(o => o.textContent).join(",")};
-  S.project = {path: "/p/C"}; replies.push({backends: []});
-  await fillAskBackends();
+  ctx.project = {path: "/p/C"}; replies.push({backends: []});
+  await fillBackends(ctx);
   res.empty = {opts: opts(), note: said()};
   replies.push({error: "проект не найден среди обнаруженных"});
-  await renderAskHistory(); res.historyError = DOM.askHistory.text;
+  await renderHistory(ctx); res.historyError = DOM.askHistory.text;
   replies.push({threads: []});
-  await renderAskHistory(); res.historyEmpty = DOM.askHistory.text;
+  await renderHistory(ctx); res.historyEmpty = DOM.askHistory.text;
   console.log(JSON.stringify(res));
 })();
 """
-    src = tmp / "ask_tab.js"
-    src.write_text(harness.replace("FUNCS", fn("fillAskBackends") + "\n" + fn("renderAskHistory")),
-                   encoding="utf-8")
-    cmd = ([engine, str(src)] if engine.endswith("node")
-           else [engine, "run", "--quiet", str(src)])
-    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    src = tmp / "ask_tab.mjs"
+    src.write_text(harness.replace("MODULE", view), encoding="utf-8")
+    cp = subprocess.run([engine, str(src)], capture_output=True, text=True, timeout=60)
     assert cp.returncode == 0 and cp.stdout.strip(), \
-        f"функции вкладки не выполнились:\n{(cp.stderr or cp.stdout)[:800]}"
+        f"функции раздела не выполнились:\n{(cp.stderr or cp.stdout)[:800]}"
     r = json.loads(cp.stdout.strip().splitlines()[-1])
-    assert r["failed"]["opts"] == "0" and "не загружены" in r["failed"]["note"], \
-        f"сбой запроса моделей прошёл молча: {r['failed']}"
+
+    def says(text, key):
+        assert key in ru, f"раздел просит ключ, которого нет в каталоге: {key}"
+        assert key in text, f"сказано не то: ждали {key}, получили {text!r}"
+
+    assert r["failed"]["opts"] == "0", f"сбой запроса моделей оставил список: {r['failed']}"
+    says(r["failed"]["note"], "ask.models_failed")
     assert r["retried"]["opts"] == "0,1,2" and not r["retried"]["note"], \
         f"после сбоя список не собрался заново — выбор пуст до перезагрузки: {r['retried']}"
     assert r["sameProjectCalls"] == 0, \
@@ -2412,12 +2427,12 @@ FUNCS
         f"при смене проекта в выборе остались модели прошлого: {r['switched']}"
     assert r["switched"]["value"] == "2", \
         "смена проекта сбросила выбор модели, которая есть и в новом проекте"
-    assert r["empty"]["opts"] == "0" and "нет моделей" in r["empty"]["note"], \
-        f"пустая настройка агента не названа: {r['empty']}"
-    assert "Историю не прочитать" in r["historyError"] and "не найден" in r["historyError"], \
-        f"сбой чтения истории выдан за пустую историю: {r['historyError']}"
-    assert "Разговоров пока нет" in r["historyEmpty"], \
-        f"пустая история не названа: {r['historyEmpty']}"
+    assert r["empty"]["opts"] == "0", f"пустая настройка агента оставила модели: {r['empty']}"
+    says(r["empty"]["note"], "ask.models_empty")
+    says(r["historyError"], "ask.history_failed")
+    assert "не найден" in r["historyError"], \
+        f"причина сбоя чтения истории потеряна: {r['historyError']}"
+    says(r["historyEmpty"], "ask.history_empty")
 
 
 @test
@@ -2492,7 +2507,7 @@ def test_project_settings_page_draws_every_block(tmp: Path):
     ui = panel_sources()
 
     body = _js_function(ui, "async function renderProject(")
-    blocks = ['"MCP-серверы · "', '"aurora.config.yaml · полный текст"',
+    blocks = ['t("mcp.title"', 't("yaml.title")',
               'renderAgentCard(box, "project")', "renderKinds(box)"]
     for b in blocks:
         assert b in body, f"на странице настроек проекта нет блока {b}"
@@ -3014,7 +3029,10 @@ def test_the_all_in_one_route_looks_different_from_the_dangerous_one(tmp: Path):
         "у маршрутов нет разного оформления"
     assert 'sc.id === "all" ? "route-all"' in ui and '"rebuild" ? "route-danger"' in ui, \
         "классы не привязаны к конкретным маршрутам"
-    assert "★ всё сразу" in ui and "⚠ сносит базу" in ui, \
+    # Подписи уехали в каталог: список маршрутов рисует раздел-модуль, строки общие.
+    routes_ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+    assert "★" in routes_ru.get("routes.all_in_one", "") \
+       and "⚠" in routes_ru.get("routes.danger", ""), \
         "нет подписи, объясняющей, чем эти маршруты отличаются"
     assert 'kind === "route-danger" ? "danger" : "primary"' in ui, \
         "у опасного маршрута кнопка того же цвета, что у обычного"
@@ -3907,7 +3925,8 @@ def test_publishing_does_not_overwrite_someone_elses_edit(tmp: Path):
         "панель не умеет показать, что уже создано по типу"
 
     ui = panel_sources()
-    assert "async function publishArtifact(" in ui, "нет публикации из панели"
+    assert "async function publish(ctx)" in ui and '"ship:publish"' in ui, \
+        "нет публикации из панели"
     assert 'cmd:"ship:publish"' in ui, "публикация идёт мимо движка"
     assert 'f.status === "draft"' in ui, \
         "непройденная цепочка публикуется молча — команда увидит непроверенное как чистовик"
@@ -4393,7 +4412,7 @@ def test_kit_and_project_settings_are_separate(tmp: Path):
         "форма не помечает унаследованные поля"
 
     # общая настройка называется общей: подпись пункта меню тоже часть ответа
-    assert 'class="label">Настройка кита<' in ui, \
+    assert 'data-i18n="nav.setup">Настройка кита<' in ui, \
         "пункт меню по-прежнему называется «Настройка» — по имени не отличить от проектной"
 
     # смена проекта перерисовывает вкладку: иначе на ней остаются чужие значения
@@ -5272,7 +5291,8 @@ def test_fix_button_is_offered_only_for_what_repair_can_fix(tmp: Path):
         "Мостик снова зовёт «Починить» при любой ошибке, а не при новой"
     assert 'sc.id === "fix" ? null : fixButton(f.what)' in ui, \
         "итог «Починить базу» предлагает запустить ремонт, который только что прошёл"
-    assert "шагов: ${s.times}" in ui, "итог маршрута повторяет одну строку на каждый шаг"
+    assert 't("route.found_times", {n: s.times})' in ui, \
+        "итог маршрута повторяет одну строку на каждый шаг"
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
@@ -5412,7 +5432,11 @@ def test_bridge_card_says_what_runs_and_what_stopped(tmp: Path):
             i += 1
         return ui[start:i + 1]
     # отметка показывает время общим помощником панели — он едет в проверку вместе с ней
-    func = extract("histWhen") + "\n" + extract("activityChips")
+    # Надписи отметки живут в каталоге строк, а берёт их `t()` — в проверку едут оба,
+    # иначе вместо отметки получится имя ключа, и тест поймает переезд вместо дефекта.
+    ru = (KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8")
+    func = (f"const I18N = {ru}, RU = I18N, S = {{lang: 'ru'}};\n"
+            + extract("t") + "\n" + extract("histWhen") + "\n" + extract("activityChips"))
     assert "drawActivity();" in ui and "/api/activity" in ui, \
         "отметка посчитана, но на карточку не выводится или не обновляется"
 
@@ -5855,7 +5879,8 @@ def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
         assert need in fix, f"в «Починить базу» нет шага {need}"
     assert fix.index("kb:trust |") < fix.index("kb:embed |"), "доверие пересчитывается после индекса"
     ui = panel_sources()
-    assert "`источники ${h.build.pct}%`" in ui, "на карточке Мостика нет второго числа — разбора источников"
+    assert 't("overview.sources", {pct: h.build.pct})' in ui, \
+        "на карточке Мостика нет второго числа — разбора источников"
 
 
 @test
@@ -6344,7 +6369,7 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
             or "ctx.state.commands.filter(r => !ctx.isEngineCmd(r))" in ui), \
         "общий список команд фильтруется не по общему правилу"
     # «Разработка» показывает ровно движковые
-    assert "(S.state.commands || []).filter(isEngineCmd)" in ui, \
+    assert "(ctx.state.commands || []).filter(ctx.isEngineCmd)" in ui, \
         "раздел разработки собирается не по тому же правилу"
 
     # ни одна команда не потерялась и не показана дважды
@@ -6362,7 +6387,7 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
                 f"{r['cmd']}: панель предложит запуск, а файла нет — {r['script']}"
 
     # порядок в разделе разработки перечисляет реальные команды, а не выдуманные
-    dev_block = ui[ui.index("async function renderDev"):]
+    dev_block = (KIT / "cockpit/modules/dev/view.js").read_text(encoding="utf-8")
     order = re.search(r"const order = \[(.*?)\];", dev_block, re.S).group(1)
     named = re.findall(r'"([\w:-]+)"', order)
     known = {r["cmd"] for r in rows}
@@ -7164,9 +7189,11 @@ def test_graph_and_files_link_both_ways_and_can_be_read(tmp: Path):
     """
     ui = panel_sources()
 
-    assert 'id="fileGraph"' in ui and "function showOnGraph(" in ui, \
+    # «На графе» стало переходом в раздел с именем карточки: раздел сам её найдёт.
+    assert 'id="fileGraph"' in ui and 'show("graph", {card:' in ui, \
         "из файла нельзя попасть на граф — связь односторонняя"
-    assert "openPath(d.path)" in ui, "из графа перестало открываться в файл"
+    assert "ctx.openPath(evt.target.data().path)" in ui, \
+        "из графа перестало открываться в файл"
 
     # Ширину списка тянут мышью: имена карточек длинные и у каждого проекта свои.
     assert 'id="filesSplit"' in ui and "col-resize" in ui, \
@@ -7177,7 +7204,7 @@ def test_graph_and_files_link_both_ways_and_can_be_read(tmp: Path):
         "шрифт в списке файлов не уменьшен — длинные имена не помещаются в строку"
 
     # Разброс и ступени.
-    assert "GRAPH_SPREAD" in ui and "function setSpread(" in ui, \
+    assert '"aurora-graph-spread"' in ui and "function setSpread(" in ui, \
         "расстоянием между узлами нельзя управлять"
     assert 'id="graphOut"' in ui and 'id="graphIn"' in ui, "нет плюса и минуса у разброса"
     assert '"aurora-graph-spread"' in ui, "разброс не запоминается"
@@ -7835,7 +7862,7 @@ def test_resuming_a_route_continues_instead_of_starting_over(tmp: Path):
     assert "ROUTE.done++" in skip, (
         "пропущенный шаг не увеличивает счётчик — продолжение после семи сделанных шагов "
         "покажет «шаг 1 из N», и человек прочтёт это как «началось заново»")
-    assert "${ROUTE.done}/${ROUTE.total}" in skip, \
+    assert 't("route.skip_step", {step: ROUTE.done, of: ROUTE.total' in skip, \
         "строка пропуска не называет номер шага: непонятно, сколько уже позади"
 
     # Смотрим только маршрут: у одиночной команды и у подключения к прогону очистка
@@ -8183,7 +8210,7 @@ def test_a_failed_command_can_be_retried_as_the_next_attempt(tmp: Path):
 
     assert "S.lastStep = {cmd:r.cmd, args, n, failed:false, job:res.job};" in ui, \
         "fire не запоминает шаг попытки с полем failed"
-    assert ui.count('"попытка " + n + ": "') >= 2, \
+    assert ui.count('t("run.attempt", {n})') >= 2, \
         "метка номера попытки не в обеих точках (fire и retryStep)"
     assert "prev.failed && prev.cmd === r.cmd" in ui, \
         "счёт попыток не привязан к тому же шагу с прошлого провала"
@@ -8401,19 +8428,19 @@ def test_route_works_until_the_work_is_done_and_saves_each_lap(tmp: Path):
     # Виды работы считаются РАЗДЕЛЬНО. Сложенные в один максимум, они врали: разбор
     # добавляет карточки, переосмысление их разбирает, суммарный остаток стоит — и цикл
     # объявлял гонку застоем. На живой базе он так и встал на 814.
-    assert "out.источники" in fn and "out.карточки" in fn, \
+    assert 'out["источники"]' in fn and 'out["карточки"]' in fn, \
         "остатки разных видов работы слиты в одно число"
     cycle0 = ui[ui.index("for (ROUTE.lap = 1"):ui.index("ROUTE.lap = 0;")]
     assert "const moved = names.filter" in cycle0, \
         "цикл встаёт, когда не убыл общий остаток, а не когда не сдвинулось ничего"
-    assert "разбор рождает карточки быстрее" in cycle0, \
+    assert 't("route.grew"' in cycle0, \
         "гонка разбора с переосмыслением не названа человеку числами"
 
     cycle = ui[ui.index("for (ROUTE.lap = 1"):ui.index("ROUTE.lap = 0;")]
     assert '"/api/git/commit"' in cycle, "оборот не фиксируется — прерванный прогон пропадёт"
     assert "skip_ratchet:true" in cycle, \
         "фиксация оборота упрётся в храповик: ночной прогон встанет посреди базы"
-    assert "не зафиксировано" in cycle, \
+    assert 't("route.lap_unsaved"' in cycle, \
         "неудачная фиксация проходит молча — человек решит, что работа сохранена"
     assert "CYCLE_LIMIT" in ui, "у цикла нет предохранителя"
 
@@ -9095,19 +9122,22 @@ def test_graph_is_a_way_into_the_card(tmp: Path):
     отметкой времени — экран, который открывается несколько секунд, открывать перестанут.
     """
     ui = panel_sources()
-    assert 'data-view="graph"' in ui and 'id="view-graph"' in ui, "раздела графа нет"
-    assert 'if (view==="graph") renderGraph();' in ui, "переход в раздел ничего не рисует"
-    assert "openPath(d.path)" in ui, "клик по узлу никуда не ведёт"
+    assert '"id": "graph"' in ui and 'id="graphBox"' in ui, "раздела графа нет"
+    # Граф — раздел-папка: его поднимает и перерисовывает общий код разделов, а не
+    # строчка в `show()`. Проверяем то же самое там, где оно теперь живёт.
+    assert "export function mount(" in (KIT / "cockpit/modules/graph/view.js")\
+        .read_text(encoding="utf-8"), "переход в раздел ничего не рисует"
+    assert "ctx.openPath(evt.target.data().path)" in ui, "клик по узлу никуда не ведёт"
     assert "function neighbourhood(" in ui, "показывается вся база сразу"
     assert "graph.toobig" in ui, "клубок из всей базы не объяснён человеку"
     # Порог обязан считаться по тому, что реально идёт в раскладку. На живой базе у
     # карточки-концентратора 556 соседей на первой ступени и 938 на второй: окрестность
     # оказывается почти всей базой, раскладка вешает вкладку, и человек видит зависшую
     # панель вместо графа. Защита «только для показа всей базы» здесь не срабатывала.
-    assert "if (nodes.length > GRAPH_LIMIT" in ui, \
+    assert "if (nodes.length > LIMIT" in ui, \
         "порог привязан к режиму, а не к числу узлов на экране"
     assert "graph.hub" in ui, "огромная окрестность не объяснена — выглядит как зависание"
-    assert "function ensureCyto" in ui and "CYTO_READY" in ui, \
+    assert "function ensureCyto" in ui and "let CYTO = null;" in ui, \
         "библиотека графа грузится при старте панели"
     assert "/vendor/cytoscape/dist/cytoscape.min.js" in ui, "граф не знает, откуда взять библиотеку"
     assert 'node[draft = 1]' in ui, \
@@ -9162,7 +9192,7 @@ def test_finished_artifact_lands_in_the_editor_with_a_publish_button(tmp: Path):
     ui = panel_sources()
     assert "Документ: `" in ui and "openPath(done)" in ui, \
         "готовый артефакт не открывается в редакторе"
-    assert 'S.view === "work"' in ui, \
+    assert 'ctx.view === "work"' in ui, \
         "документ открывается поверх экрана, на который человек уже ушёл"
     assert "function publishFromEditor" in ui and "/api/files/clean" in ui, \
         "публикация из редактора не показывает чистовик"
@@ -9216,18 +9246,23 @@ def test_choosing_a_project_refills_the_screen_you_are_standing_on(tmp: Path):
     pick = ui[ui.index("async function pick("):ui.index("async function pick(") + 3000]
     # «Зеркала» и «Здоровье» уехали в разделы-папки: их перерисовывает `refreshModules()`,
     # и теперь это правило для всех модулей сразу, а не список, который надо помнить.
-    for call in ("refreshModules()", "fillMakeKinds()", "renderFiles()"):
+    # Виды артефактов и маршруты — теперь разделы-папки: их перерисовывает refreshModules.
+    for call in ("refreshModules()", "renderFiles()"):
         assert call in pick, f"выбор проекта не перерисовывает экран: нет {call}"
 
     # Пустой список обязан объяснять себя. И он не имеет права чиститься до того, как
     # стало чем наполнять: один сорвавшийся запрос стирал настроенные виды артефактов,
     # и это выглядело как «настройки пропали».
-    at = ui.index("async function fillMakeKinds(")
-    fill = ui[at:at + 1800]
-    assert "сначала выберите проект" in fill, "пустой список молчит о причине"
+    # Список видов наполняет раздел «Продуктивность» — он же и объясняет пустоту.
+    work = (KIT / "cockpit/modules/work/view.js").read_text(encoding="utf-8")
+    ru = (KIT / "cockpit/modules/work/i18n/ru.json").read_text(encoding="utf-8")
+    at = work.index("async function fillKinds(")
+    fill = work[at:at + 1800]
+    assert "work.pick_project_first" in fill and "сначала выберите проект" in ru, \
+        "пустой список молчит о причине"
     assert fill.index("if (!Object.keys(kinds).length)") < fill.rindex('sel.innerHTML = ""'), \
         "список чистится раньше, чем известно, есть ли чем наполнить"
-    assert "не объявлено ни одного вида" in fill, \
+    assert "work.kinds_none" in fill and "не объявлено ни одного вида" in ru, \
         "проект без артефактов неотличим от сорвавшегося запроса"
 
     # Дерево тоже: пустое место человек читает как «файлов нет», а не «ещё читаю».
@@ -9414,7 +9449,12 @@ def test_files_section_is_reachable_and_explains_itself(tmp: Path):
     ui = panel_sources()
     assert 'data-view="files"' in ui and 'id="view-files"' in ui, "раздела нет"
     # После «Продуктивности»: к файлам возвращаются часто, но начинают не с них.
-    assert ui.index('data-view="work"') < ui.index('data-view="files"') < ui.index('data-view="ask"'), \
+    orders = {m["id"]: m["order"] for m in __import__("json").loads(
+        subprocess.run([sys.executable, "-c",
+            "import sys, json; sys.path.insert(0, %r); import aurora_cockpit as ck;"
+            " print(json.dumps(ck.modules()))" % str(KIT / "cockpit")],
+            capture_output=True, text=True).stdout)}
+    assert orders["work"] < 50 < orders["ask"], \
         "раздел «Файлы» стоит не после «Продуктивности»"
     assert 'if (view==="files") renderFiles();' in ui, "переход в раздел ничего не рисует"
     for handler in ('$("#fileSave")?.addEventListener', '$("#fileSearch")?.addEventListener',
@@ -10866,9 +10906,14 @@ def test_dev_section_hides_behind_seven_taps(tmp: Path):
     ui = panel_sources()
     assert "DEV_TAPS = 7" in ui, "число нажатий должно быть названо константой"
     assert 'localStorage.setItem("aurora-dev"' in ui, "выбор не переживёт перезагрузку"
-    assert 'id="devNav"' in ui and "hidden" in ui, "пункт меню должен быть скрыт по умолчанию"
+    assert 'btn.dataset.devonly' in ui and "btn.hidden = !devSectionsOn()" in ui, \
+        "пункт меню должен быть скрыт по умолчанию"
     assert "Скрыть раздел" in ui, "раздел нельзя закрыть обратно"
-    assert "renderDev" in ui and 'id="view-dev"' in ui, "нет самого раздела"
+    # Раздел разработки — папка `cockpit/modules/dev/`: разметку и код он держит у себя,
+    # а ядро поднимает его тем же способом, что и остальные.
+    dev = KIT / "cockpit/modules/dev"
+    assert (dev / "view.html").is_file() and "export function mount(" \
+        in (dev / "view.js").read_text(encoding="utf-8"), "нет самого раздела"
 
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
@@ -16294,7 +16339,7 @@ def test_time_is_recorded_in_utc_and_shown_in_local_time(tmp: Path):
     # `r.since` из этого списка убран намеренно: в реестре это версия движка
     # («1.3.0»), а не время. Формат времени превращал её в дату 3 января.
     for shown in ('h.ping.when', 'h.retrieval.when',
-                  'v.when', 't.at', 'agent.since'):
+                  'v.when', 'turn.at', 'agent.since'):
         assert f"histWhen({shown})" in ui or f"fmt.when({shown})" in ui, \
             f"панель показывает сырую отметку без перевода в местное время: {shown}"
 
@@ -17382,7 +17427,7 @@ def test_a_route_says_why_a_step_did_not_start_and_saves_its_tail(tmp: Path):
     tail = run[run.index("const bad = ROUTE.failed"):run.index("ROUTE = null;")]
     assert '"/api/git/commit"' in tail and "if (write && S.project)" in tail, \
         "результат маршрута после цикла не фиксируется"
-    assert "skip_ratchet:true" in tail and "не зафиксирован" in tail, \
+    assert "skip_ratchet:true" in tail and 't("route.not_saved"' in tail, \
         "фиксация хвоста встанет на храповике или провалится молча"
 
 
@@ -17676,8 +17721,9 @@ def test_unfinished_sections_open_together_with_the_dev_section(tmp: Path):
     закрытый раздел не попасть, кнопка «На графе» в файлах тоже спрятана.
     """
     ui = panel_sources()
-    graph = re.search(r'<button data-view="graph"[^>]*>', ui).group(0)
-    assert "data-devonly" in graph and "hidden" in graph, f"граф виден в меню: {graph}"
+    # «Граф» с 1.125.0 — раздел-папка, и в разработке он значится манифестом (ниже).
+    # Разметка по-прежнему умеет прятать встроенный раздел: приём остаётся для тех,
+    # кто ещё не переехал.
     nav = ui[ui.index("function showDevNav("):ui.index("function tapAbout(")]
     assert 'nav button[data-devonly]' in nav, "разделы в разработке не открываются с «Разработкой»"
     assert "if (m.dev)" in ui and "btn.hidden = !devSectionsOn()" in ui, \
@@ -17691,8 +17737,10 @@ def test_unfinished_sections_open_together_with_the_dev_section(tmp: Path):
     import importlib
     ck = importlib.import_module("aurora_cockpit")
     mods = {m["id"]: m for m in ck.modules()}
-    assert mods["reports"].get("dev") is True, "«Отчёты» не помечены разделом в разработке"
-    assert not any(m.get("dev") for i, m in mods.items() if i != "reports"), \
+    unfinished = ("reports", "graph", "dev")
+    for mod in unfinished:
+        assert mods[mod].get("dev") is True, f"«{mod}» не помечен разделом в разработке"
+    assert not any(m.get("dev") for i, m in mods.items() if i not in unfinished), \
         "в разработку попали готовые разделы"
     readme = (KIT / "cockpit/modules/README.md").read_text(encoding="utf-8")
     assert "| `dev` |" in readme, "поле `dev` не описано в контракте модулей"
@@ -18177,6 +18225,14 @@ def test_cockpit_modules_are_folders(tmp: Path):
         for cmd in m["commands"]:
             assert cmd in known, f"модуль {m['id']} зовёт несуществующую команду {cmd}"
 
+    # Раздел грузится модулем ES и тянет соседние файлы относительным импортом — тот
+    # уходит без токена. Значит файлы раздела обязаны отдаваться без него, иначе раздел,
+    # разделённый на файлы, молча не поднимется.
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    guard = src[src.index("def guarded("):src.index("def send_json(")]
+    assert 'self.path.startswith("/modules/")' in guard, \
+        "файлы раздела требуют токена — относительный импорт внутри раздела не пройдёт"
+
     # Путь наружу папки модуля и чужие расширения не принимаются.
     assert ck.module_file("reports", "../../VERSION") == "", "модуль читается вне своей папки"
     assert ck.module_file("../skins", "zine.css") == "", "имя модуля с путём наружу"
@@ -18208,14 +18264,20 @@ def test_cockpit_module_strings_live_in_catalogues(tmp: Path):
             assert k.startswith(mid + "."), \
                 f"модуль {mid}: ключ {k} не своего имени — разделы начнут спорить за ключи"
 
-        js = Path(ck.module_file(mid, "view.js")).read_text(encoding="utf-8")
+        # Читаем все файлы раздела: у близнецов бывает общий кусок разметки экрана.
+        folder = Path(ck.module_file(mid, "view.js")).parent
+        js = "\n".join(f.read_text(encoding="utf-8") for f in sorted(folder.glob("*.js")))
         html = Path(ck.module_file(mid, "view.html")).read_text(encoding="utf-8")
         used = set(re.findall(r'\bt\("([a-z][\w.]+)"', js))
-        used |= set(re.findall(r'data-i18n(?:-ph)?="([^"]+)"', html))
+        used |= set(re.findall(r'data-i18n(?:-ph|-title|-aria|-html)?="([^"]+)"', html))
         # Ключ бывает собран из куска (`t("commands.ns." + ns)`) или лежит в таблице
         # раздела: начало ключа покрывает весь набор, а литерал — сам себя.
         used |= set(re.findall(r'"(%s\.[\w.]+)"' % re.escape(mid), js))
-        missing = sorted(u for u in used if not u.endswith(".") and u not in keys)
+        # Ключ ядра разделу доступен: общие надписи переводятся один раз и живут там.
+        core = {k for k in json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+                if not k.startswith("_")}
+        missing = sorted(u for u in used
+                         if not u.endswith(".") and u not in keys and u not in core)
         assert not missing, f"модуль {mid}: спрашивает ключи, которых нет в каталоге: {missing}"
 
         # Русский текст в строковых литералах кода — то, что переезд и убирает.
@@ -18242,6 +18304,80 @@ def test_cockpit_module_strings_live_in_catalogues(tmp: Path):
         en = json.loads(Path(en_path).read_text(encoding="utf-8"))
         lack = sorted(k for k in keys if not str(en.get(k, "")).strip())
         assert not lack, f"модуль {mid}: без перевода остались {lack[:5]}"
+
+
+@test
+def test_cockpit_core_strings_live_in_catalogues(tmp: Path):
+    """Ядро панели переводится целиком: ни одной надписи в коде и разметке.
+
+    Разделы эту проверку уже проходят, а ядро — Мостик, консоль, маршруты, настройки,
+    карточка агента — держало текст прямо в коде. Английский язык от этого выглядел
+    сделанным, пока человек не открывал экран: меню и заголовки переводились, а всё,
+    ради чего в раздел заходят, оставалось русским. Живая жалоба 24.09.2026.
+
+    Исключений ровно два, и оба видны глазами:
+      • слова самого движка (`"битые ссылки"` — имя вида находки, а не надпись) —
+        такая строка помечается в коде словами «данные движка»;
+      • сообщения в консоль браузера — их читает тот, кто правит код, а не человек.
+    """
+    src = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+
+    # ── 1. каталоги ядра сходятся между собой ──────────────────────────────
+    ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+    en = json.loads((KIT / "cockpit/i18n/en.json").read_text(encoding="utf-8"))
+    keys = {k for k in ru if not k.startswith("_")}
+    lack = sorted(k for k in keys if not str(en.get(k, "")).strip())
+    assert not lack, f"ядро: без английского остались {lack[:5]} (всего {len(lack)})"
+
+    # ── 2. код ядра ────────────────────────────────────────────────────────
+    body = "\n".join(re.findall(r"<script[^>]*>(.*?)</script>", src, re.S))
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)       # пояснения остаются русскими
+    forgotten = []
+    for line in body.splitlines():
+        if "данные движка" in line or re.search(r"\bconsole\.\w+\(", line):
+            continue
+        code = line.split("//")[0]
+        if code.strip().startswith("//"):
+            continue
+        for lit in re.findall(r'"[^"\n]*"|\'[^\'\n]*\'|`[^`\n]*`', code):
+            if re.search("[а-яА-ЯёЁ]", lit):
+                forgotten.append(lit.strip())
+    assert not forgotten, \
+        f"надписи остались в коде ядра ({len(forgotten)}): {forgotten[:4]}"
+
+    # ── 3. разметка страницы ───────────────────────────────────────────────
+    markup = src[src.index("<body"):src.index("<script>")]
+    markup = re.sub(r"<!--.*?-->", "", markup, flags=re.S)
+    # Абзац с разметкой внутри переводится целиком (`data-i18n-html`): цветные слова
+    # и моноширинные имена файлов внутри него — часть той же надписи.
+    while True:
+        m = re.search(r"<(\w+)[^>]*data-i18n-html[^>]*>", markup)
+        if not m:
+            break
+        close = markup.index(f"</{m.group(1)}>", m.end())
+        markup = markup[:m.start()] + markup[close:]
+
+    ru_text = re.compile("[а-яА-ЯёЁ]")
+    naked = []
+    for m in re.finditer(r"<([a-z][\w-]*)((?:[^<>\"]|\"[^\"]*\")*)>", markup, re.S):
+        attrs = m.group(2)
+        for attr, key in (("title", "data-i18n-title"), ("placeholder", "data-i18n-ph"),
+                          ("aria-label", "data-i18n-aria")):
+            v = re.search(r'(?<![\w-])' + attr + r'="([^"]*)"', attrs)
+            if v and ru_text.search(v.group(1)) and key not in attrs:
+                naked.append(f"<{m.group(1)} {attr}=…{v.group(1)[:30]}>")
+        tail = markup[m.end():]
+        text = tail[:tail.index("<")] if "<" in tail else tail
+        if ru_text.search(text) and "data-i18n" not in attrs:
+            naked.append(f"<{m.group(1)}>{text.strip()[:40]}")
+    assert not naked, f"надписи остались в разметке ({len(naked)}): {naked[:4]}"
+
+    # ── 4. язык не забыт в помощниках ──────────────────────────────────────
+    # Дата и время собираются локалью языка, а не всегда русской: «14 сент.» на
+    # английском экране выглядит как недоделка, потому что ею и является.
+    left = body.replace('S.lang === "en" ? "en-GB" : "ru-RU"', "").replace(
+        'const loc = S.lang === "en" ? "en-GB" : "ru-RU"', "")
+    assert '"ru-RU"' not in left, "где-то осталась жёсткая русская локаль времени"
 
 
 @test
@@ -18320,6 +18456,44 @@ def test_cockpit_scripts_parse(tmp: Path):
     mods = KIT / "cockpit" / "modules"
     for view in sorted(mods.glob("*/view.js")):
         check(view.parent.name, view.read_text(encoding="utf-8"), module=True)
+
+
+@test
+def test_fields_are_readable_in_both_themes(tmp: Path):
+    """Поле ввода и выпадающий список читаются в обеих темах.
+
+    Живая жалоба 24.09.2026: в тёмной теме поля с выпадающим меню светлые, а текст в них
+    светлый — не видно ничего. Причина в том, что цвет текста наследуется от панели, а фон
+    поля рисует браузер по своему усмотрению. Правило должно быть общим, а не по классу:
+    половина списков в панели заведена без класса, и «покрасили те, что помним» — это ровно
+    то, как дефект и появился.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    css = ui[ui.index("<style>"):ui.index("</style>")]
+
+    assert 'color-scheme:dark' in css and 'color-scheme:light' in css, \
+        "браузеру не сказано, какие рисовать системные части: раскрытый список останется светлым"
+
+    rule = [l for l in css.splitlines() if l.startswith("input:not([type=checkbox])")]
+    assert rule, "нет общего правила для полей — красить их по классу значит забыть половину"
+    block = css[css.index(rule[0]):]
+    block = block[:block.index("}") + 1]
+    for need in ("background:var(--field-bg)", "color:var(--text)"):
+        assert need in block, f"поле без {need}: в одной из тем оно станет нечитаемым"
+    assert "option{background:var(--surface-1);color:var(--text)}" in css, \
+        "строки раскрытого списка не покрашены"
+
+    # Токены поля обязаны быть у каждого скина: иначе «покрасили» значит «в одном скине».
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    base = css[css.index("--field-bg"):]
+    assert "--field-bg:var(--surface-1)" in base, "у поля нет значения по умолчанию"
+    for skin in ck.skins():
+        text = ck.skin_css(skin["id"])
+        if "--field-bg" in text:
+            assert "--field-border" in text, \
+                f"скин {skin['id']} задал фон поля, но не его рамку"
 
 
 SMOKE = "--smoke" in sys.argv

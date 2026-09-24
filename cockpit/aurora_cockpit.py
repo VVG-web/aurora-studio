@@ -2703,6 +2703,12 @@ class Handler(BaseHTTPRequestHandler):
         # нет — это чужой код, тот же самый у всех, и петлевой интерфейс уже проверен.
         if self.path.startswith("/vendor/"):
             return True
+        # Файлы раздела — по той же причине. Раздел грузится модулем ES и тянет свои
+        # соседние файлы сам (`import "./routes.js"`), а относительный импорт уходит без
+        # запроса-строки: подписать его нечем. Данных проекта в этих файлах нет — это наш
+        # код, одинаковый у всех; всё, что отдаёт данные, остаётся под токеном.
+        if self.path.startswith("/modules/"):
+            return True
         tok = (query.get("t", [""])[0] or self.headers.get("X-Aurora-Token", ""))
         if not secrets.compare_digest(tok, TOKEN):
             self.send_json({"error": "нет токена сессии — откройте адрес из консоли"}, 403)

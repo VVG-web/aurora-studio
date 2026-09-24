@@ -1,0 +1,13 @@
+{
+  "id": "work",
+  "name": { "ru": "Продуктивность", "en": "Production" },
+  "about": {
+    "ru": "Производство артефактов из проверенного знания и передача их наружу.",
+    "en": "Producing artifacts from verified knowledge and handing them outward."
+  },
+  "group": "project",
+  "order": 40,
+  "needs": ["project"],
+  "commands": ["agent:make", "ship:publish"],
+  "for": "1.126.0"
+}

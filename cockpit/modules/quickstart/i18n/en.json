@@ -1,0 +1,6 @@
+{
+  "_about": "Strings of the Routines section. The shared route list is translated in the core catalogue (routes.*).",
+  "quickstart.title": "Routines",
+  "quickstart.about": "Routine work by scenario, not by alphabet: go through the steps top to bottom. Steps marked «human» are not run by the panel — that is work for you or the assistant. Scenarios live in cockpit/scenarios.txt and are edited as plain text.",
+  "quickstart.outcome": "The outcome: the base is filled with cards from the sources and put in order. New cards arrive as drafts — trust is not assigned to them, kb:trust computes it from the statuses of related tasks. While tasks are in progress the trusted share stays low, and that is normal."
+}

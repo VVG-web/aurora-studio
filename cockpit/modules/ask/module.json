@@ -1,0 +1,13 @@
+{
+  "id": "ask",
+  "name": { "ru": "Спросить", "en": "Ask" },
+  "about": {
+    "ru": "Вопрос своими словами: движок собирает контекст из карточек, модель отвечает только по ним.",
+    "en": "A question in your own words: the engine assembles context from cards, the model answers from them only."
+  },
+  "group": "project",
+  "order": 70,
+  "needs": ["project"],
+  "commands": ["agent:ask"],
+  "for": "1.126.0"
+}

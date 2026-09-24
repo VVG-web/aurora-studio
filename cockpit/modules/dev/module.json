@@ -1,0 +1,15 @@
+{
+  "id": "dev",
+  "name": { "ru": "Разработка", "en": "Development" },
+  "about": {
+    "ru": "Контур разработки самого движка: прогон сценариев, покрытие изменений, тест-кейсы.",
+    "en": "The engine's own development loop: scenario runs, change coverage, test cases."
+  },
+  "group": "engine",
+  "order": 10,
+  "needs": ["kit"],
+  "commands": ["dev:qa-run", "dev:qa-cover", "dev:qa-gap", "dev:qa-list", "dev:qa-check",
+               "dev:qa-new", "kit:skills"],
+  "dev": true,
+  "for": "1.126.0"
+}

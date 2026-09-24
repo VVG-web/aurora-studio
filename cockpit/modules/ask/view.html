@@ -1,0 +1,47 @@
+<h1 data-i18n="ask.title">Спросить базу</h1>
+<p class="sub" data-i18n="ask.about">Вопрос своими словами. Движок соберёт контекст из
+  карточек, модель ответит только по ним и поставит ссылку на каждое утверждение.
+  Карточки не правятся — но разговор сохраняется в базу проекта (meta/ask/) и уходит в
+  git вместе с ней: что спрашивала команда и что база ответила, видно всем.</p>
+<div class="card" style="padding:16px">
+  <div class="row" style="gap:10px;align-items:flex-start">
+    <textarea id="askText" rows="3" data-i18n-ph="ask.placeholder"
+      placeholder="Например: что происходит с обеспечением, если документ аннулирован до ввоза?"
+      style="flex:1;min-width:0;font:inherit;padding:10px;border-radius:10px"></textarea>
+    <button class="btn primary" id="askGo" data-i18n="ask.go">Спросить</button>
+  </div>
+  <div class="row" style="gap:14px;margin-top:10px">
+    <label class="muted" style="font-size:13px"><span data-i18n="ask.context">Контекст:</span>
+      <select id="askMode" style="font:inherit;margin-left:6px">
+        <option value="generate" data-i18n="ask.mode_generate">только проверенное</option>
+        <option value="evaluate" data-i18n="ask.mode_evaluate">всё, включая черновики</option>
+        <option value="ask" data-i18n="ask.mode_ask">проверенное + история решений</option>
+      </select></label>
+    <label class="muted" style="font-size:13px"><span data-i18n="ask.model">Модель:</span>
+      <select id="askBackend" style="font:inherit;margin-left:6px">
+        <option value="0" data-i18n="ask.ring">по кольцу (основная, при отказе — запасная)</option>
+      </select></label>
+    <span id="askBackendNote" hidden style="font-size:12.5px;color:var(--danger)"></span>
+    <span class="muted" style="font-size:12.5px" data-i18n="ask.hint_enter">Ctrl+Enter — спросить</span>
+    <span class="row-right">
+      <button class="btn" id="askExport" hidden data-i18n="ask.export"
+              data-i18n-title="ask.export_hint">В .md</button>
+      <button class="btn" id="askNew" hidden data-i18n="ask.new">Новый разговор</button></span>
+  </div>
+  <div class="row" style="gap:10px;margin-top:10px">
+    <span class="chip mono" id="askWho" data-i18n-title="ask.who_hint">модель: —</span>
+    <span class="row-right">
+      <button class="btn sm" id="askPing" data-i18n="ask.ping"
+              data-i18n-title="ask.ping_hint">Проверить основную</button>
+      <button class="btn sm" id="askPrimary" data-i18n="ask.primary"
+              data-i18n-title="ask.primary_hint">Вернуться на основную</button>
+    </span>
+  </div>
+  <div id="askThreadHint" class="muted" style="font-size:12.5px;margin-top:8px" hidden></div>
+</div>
+<div id="askBody"></div>
+<h2 style="margin-top:22px" data-i18n="ask.history_title">История вопросов</h2>
+<p class="sub" data-i18n="ask.history_about">Общая на всю команду: разговоры лежат в базе
+  и приходят с синхронизацией. Откройте разговор, чтобы прочитать его целиком и задать
+  уточняющий вопрос — модель увидит, о чём речь.</p>
+<div id="askHistory"></div>

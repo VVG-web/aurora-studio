@@ -1,0 +1,11 @@
+{
+  "_about": "Strings of the engine Development section.",
+  "dev.title": "Development",
+  "dev.about": "The development loop of the engine itself: running scenarios, coverage of changes, creating test cases. The commands run in the kit tree — the project selected on the Bridge has nothing to do with them.",
+  "dev.where": "Cases and scenarios live in Development/QA — a folder closed by .gitignore. The working regimen is in the aurora-dev skill.",
+  "dev.hide": "Hide the sections",
+  "dev.hidden": "Sections in development are hidden. To bring them back — seven taps on «About» again.",
+  "dev.not_from_kit": "There are no development commands: the panel was not started from the kit.",
+  "dev.run": "Run",
+  "dev.note": "A scenario run starts with the automated tests and stops at the first failure: running scenarios on a broken build is pointless."
+}
