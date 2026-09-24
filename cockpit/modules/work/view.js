@@ -47,6 +47,7 @@ function drawRefs(ctx){
       style: "gap:6px;align-items:center;display:inline-flex"},
     t(REF_KEY[r.kind]) + " " + r.label,
     el("button", {class: "btn sm", style: "padding:0 6px;min-height:0", title: t("work.ref_remove"),
+      "data-help": "work.help.ref_remove",
       onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }}, "×"))));
 }
 
@@ -224,7 +225,7 @@ function drawMake(ctx, lines){
   const done = (text.match(/Документ: `([^`]+)`/) || [])[1];           // данные движка
   if (done && /Момус|checked/.test(text) && !/Планировщик спрашивает/.test(text)){   // данные движка
     box.append(el("div", {class: "row", style: "gap:10px;margin-top:10px"},
-      el("button", {class: "btn primary", onclick: () => ctx.openPath(done)},
+      el("button", {class: "btn primary", "data-help": "work.help.open_done", onclick: () => ctx.openPath(done)},
         t("work.open_in_editor"))));
     // Открываем сами: человек просил, чтобы готовый документ сразу оказывался в
     // редакторе. Кнопка рядом — на случай, если он уже ушёл на другой экран.
@@ -234,11 +235,12 @@ function drawMake(ctx, lines){
     const ans = el("textarea", {class: "btn", rows: 3, placeholder: t("work.answers_ph"),
       style: "width:100%;font-weight:400;margin-top:10px;resize:vertical"});
     box.append(ans, el("div", {class: "row", style: "gap:10px;margin-top:8px"},
-      el("button", {class: "btn primary", onclick: async () => {
+      el("button", {class: "btn primary", "data-help": "work.help.answer", onclick: async () => {
         const l = await makeCall(ctx, ["--session", MAKE.sid, "--answers", ans.value.trim()]);
         if (l) drawMake(ctx, l);
       }}, t("work.answer")),
-      el("button", {class: "btn", title: t("work.enough_hint"), onclick: async () => {
+      el("button", {class: "btn", title: t("work.enough_hint"), "data-help": "work.help.enough",
+        onclick: async () => {
         const l = await makeCall(ctx, ["--session", MAKE.sid, "--enough"]);
         if (l) drawMake(ctx, l);
       }}, t("work.enough"))));
@@ -285,7 +287,7 @@ async function publish(ctx){
     el("div", {style: "font-weight:700;margin-bottom:8px"}, t("work.publish_title")),
     sel, hint, note,
     el("div", {class: "row", style: "gap:10px;margin-top:10px"},
-      el("button", {class: "btn primary", onclick: async () => {
+      el("button", {class: "btn primary", "data-help": "work.help.publish_go", onclick: async () => {
         const f = files.find(x => x.rel === sel.value) || {};
         if (f.status === "draft" && !confirm(t("work.publish_draft_ask"))) return;
         ctx.show("console");
@@ -293,7 +295,7 @@ async function publish(ctx){
           {project: ctx.project.path, cmd: "ship:publish", args: [f.rel, "--apply"]})});
         if (res.job) ctx.poll(res.job, 0, "ship:publish " + f.rel);
       }}, t("work.publish_go")),
-      el("button", {class: "btn", onclick: () => {
+      el("button", {class: "btn", "data-help": "work.help.copy_task", onclick: () => {
         const f = files.find(x => x.rel === sel.value) || {};
         const task = t("work.publish_task", {rel: f.rel})
           + (note.value.trim() ? "\n" + t("work.publish_task_note", {note: note.value.trim()}) : "")

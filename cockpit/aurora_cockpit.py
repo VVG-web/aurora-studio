@@ -259,16 +259,24 @@ def why_readonly(rel: str, text: str = "") -> str:
     return ""
 
 
-def file_tree(project: str, limit: int = 4000) -> dict:
+FILES_LIMIT = 20000     # строк дерева в ответе: на живых проектах 2–4,5 тыс. файлов
+
+
+def file_tree(project: str, limit: int = FILES_LIMIT) -> dict:
     """Дерево проекта как есть, с пометками. Скрывать нечего: проводник, который что-то
-    прячет, заставляет лезть в системный — а мы ровно от этого и уходим."""
+    прячет, заставляет лезть в системный — а мы ровно от этого и уходим.
+
+    Файлы считаются все, даже когда строк в ответе меньше: счётчик у раздела — это число
+    файлов проекта, а не длина списка. До 1.130.0 обход обрывался на 4000-м файле, и у
+    проектов на 4 014 и 4 449 файлов счётчик стоял на 4000, а хвост дерева не было видно.
+    """
     root = os.path.realpath(project)
     # Папки инструментов в дереве проекта не нужны: `.claude`, `.ruff_cache`,
     # `.playwright-mcp` — чужой кэш, он и в git не едет. Отсеивали только файлы с точки
     # и `.git*`, и в живом проекте набралось 22 файла чужого мусора среди двух тысяч
     # карточек.
     skip = {"__pycache__", "node_modules", ".DS_Store"}
-    rows, cut = [], False
+    rows, cut, total = [], False, 0
     for cur, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in skip and not d.startswith("."))
         rel_dir = os.path.relpath(cur, root).replace("\\", "/")
@@ -278,9 +286,10 @@ def file_tree(project: str, limit: int = 4000) -> dict:
             if name in skip or name.startswith("."):
                 continue
             rel = f"{rel_dir}/{name}" if rel_dir else name
+            total += 1
             if len(rows) >= limit:
                 cut = True
-                break
+                continue
             ext = os.path.splitext(name)[1].lower()
             try:
                 size = os.path.getsize(os.path.join(cur, name))
@@ -289,9 +298,7 @@ def file_tree(project: str, limit: int = 4000) -> dict:
             rows.append({"path": rel, "dir": rel_dir, "name": name, "size": size,
                          "text": ext in TEXT_EXT and size <= MAX_EDIT,
                          "readonly": why_readonly(rel)})
-        if cut:
-            break
-    return {"root": root, "files": rows, "truncated": cut, "count": len(rows),
+    return {"root": root, "files": rows, "truncated": cut, "count": len(rows), "total": total,
             "recent": recent(project), "create_dirs": create_dirs(project)}
 
 
@@ -1045,7 +1052,10 @@ def kit_update_status(fresh: bool = False) -> dict:
         st["error"] = "на GitHub не нашлось файла VERSION — обновляться не из чего"
         return st
     newer = _vt(latest) > _vt(installed)
-    st.update(latest=latest, newer=newer,
+    # Установленная новее, чем в git, — выпуск не опубликован: он есть только на этой
+    # машине, и пользователи его не получат. Автору это надо видеть, а не читать
+    # «установлена последняя версия».
+    st.update(latest=latest, newer=newer, unpublished=_vt(installed) > _vt(latest),
               notes=_notes_since(changelog, installed) if newer else [],
               busy=sorted({r.get("cmd", "") for r in running_now().values()}))
     CACHE["kit_status"] = st

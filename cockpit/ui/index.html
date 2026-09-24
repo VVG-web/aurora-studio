@@ -206,6 +206,9 @@ h2{font-size:var(--text-lg);font-weight:var(--h2-weight);margin:var(--sp-6) 0 va
 .sub{color:var(--text-muted);font-size:var(--text-md);margin:0 0 var(--sp-5);max-width:70ch}
 
 /* ---------------- элементы ---------------- */
+.help-tip{position:fixed;z-index:2000;max-width:380px;padding:10px 12px;border-radius:10px;background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);box-shadow:0 10px 28px rgba(0,0,0,.22);font-size:var(--text-sm);line-height:1.45;pointer-events:none}
+.help-tip b{display:block;margin-bottom:2px}
+.help-tip .k{color:var(--text-muted);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;margin-top:8px}
 .card{background:var(--card-bg);border:var(--card-border-w) solid var(--card-border);
   border-radius:var(--card-radius);box-shadow:var(--card-shadow)}
 .grid{display:grid;gap:var(--sp-3)}
@@ -660,18 +663,18 @@ tr:last-child td{border-bottom:0}
               <span id="fileRO" class="pill" hidden></span>
               <span id="fileGit" class="pill"></span>
               <span style="flex:1"></span>
-              <select id="fileMode" style="font:inherit;padding:4px 6px;border-radius:8px">
+              <select id="fileMode" data-help="help.files.fileMode" style="font:inherit;padding:4px 6px;border-radius:8px">
                 <option value="sv" data-i18n="editor.mode_sv">Разметка и вид</option>
                 <option value="wysiwyg" data-i18n="editor.mode_wysiwyg">Как в Word</option>
               </select>
-              <button class="btn" id="fileFolder" data-i18n="files.reveal_folder">Показать в папке</button>
-              <button class="btn" id="fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
-              <button class="btn" id="fileRename" data-i18n="files.rename">Переименовать</button>
-              <button class="btn" id="fileDelete" data-i18n="files.delete">Удалить</button>
-              <button class="btn" id="fileGraph" hidden data-i18n="files.on_graph">На графе</button>
-              <button class="btn" id="fileFix" hidden data-i18n="editor.correct">Исправить</button>
-              <button class="btn" id="filePub" hidden data-i18n="editor.publish">Опубликовать</button>
-              <button class="btn primary" id="fileSave" disabled data-i18n="editor.save">Сохранить</button>
+              <button class="btn" id="fileFolder" data-help="help.files.fileFolder" data-i18n="files.reveal_folder">Показать в папке</button>
+              <button class="btn" id="fileOpen" data-help="help.files.fileOpen" data-i18n="files.reveal_open">Открыть системным</button>
+              <button class="btn" id="fileRename" data-help="help.files.fileRename" data-i18n="files.rename">Переименовать</button>
+              <button class="btn" id="fileDelete" data-help="help.files.fileDelete" data-i18n="files.delete">Удалить</button>
+              <button class="btn" id="fileGraph" data-help="help.files.fileGraph" hidden data-i18n="files.on_graph">На графе</button>
+              <button class="btn" id="fileFix" data-help="help.files.fileFix" hidden data-i18n="editor.correct">Исправить</button>
+              <button class="btn" id="filePub" data-help="help.files.filePub" hidden data-i18n="editor.publish">Опубликовать</button>
+              <button class="btn primary" id="fileSave" data-help="help.files.fileSave" disabled data-i18n="editor.save">Сохранить</button>
             </div>
             <details id="fileFm" hidden style="margin-bottom:8px">
               <summary class="sub" style="cursor:pointer" data-i18n="editor.frontmatter">Шапка документа</summary>
@@ -711,7 +714,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.129.0";
+const UI_VERSION = "1.130.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -728,6 +731,41 @@ const el = (tag, attrs={}, ...kids)=>{
     n.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   return n;
 };
+// Подсказка к кнопке: что делает, пример использования и пример результата. Появляется
+// после паузы наведения, а не сразу: мимолётная мышь не должна засыпать экран облачками,
+// а тот, кто задержался над кнопкой, как раз и не понял, что она делает. Текст — в
+// каталогах строк (`<ключ>.what`, `.how`, `.result`), кнопке достаточно `data-help`.
+const HELP_DELAY = 2000;
+let helpTimer = null, helpBox = null;
+function hideHelp(){
+  clearTimeout(helpTimer); helpTimer = null;
+  if (helpBox){ helpBox.remove(); helpBox = null; }
+}
+function showHelp(node){
+  const key = node.dataset.help;
+  if (!key || !document.body.contains(node) || t(key + ".what") === key + ".what") return;
+  hideHelp();
+  helpBox = el("div", {class:"help-tip", role:"tooltip"},
+    el("b", {}, t(key + ".what")),
+    el("div", {class:"k"}, t("help.example")), el("div", {}, t(key + ".how")),
+    el("div", {class:"k"}, t("help.result")), el("div", {}, t(key + ".result")));
+  document.body.append(helpBox);
+  const r = node.getBoundingClientRect(), b = helpBox.getBoundingClientRect();
+  const top = (r.bottom + 8 + b.height <= innerHeight) ? r.bottom + 8 : Math.max(8, r.top - 8 - b.height);
+  const left = Math.min(Math.max(8, r.left), innerWidth - b.width - 8);
+  helpBox.style.top = top + "px"; helpBox.style.left = left + "px";
+}
+document.addEventListener("mouseover", e => {
+  const node = e.target.closest && e.target.closest("[data-help]");
+  if (!node || node.contains(e.relatedTarget)) return;
+  hideHelp();
+  helpTimer = setTimeout(() => showHelp(node), HELP_DELAY);
+});
+document.addEventListener("mouseout", e => {
+  const node = e.target.closest && e.target.closest("[data-help]");
+  if (node && !node.contains(e.relatedTarget)) hideHelp();
+});
+["mousedown", "keydown", "wheel", "scroll"].forEach(ev => document.addEventListener(ev, hideHelp, true));
 const tick = s => esc(s).replace(/`([^`]+)`/g, '<code class="tick">$1</code>');
 const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const api = async (path, opts={}) => {
@@ -984,10 +1022,11 @@ async function renderFiles(){
   F.recent = d.recent || [];
   F.createDirs = d.create_dirs || [];
   F.changed = new Set(((S.git && S.git.dirty) || []).map(r => r.path));
-  $("#navFiles").textContent = F.files.length || "";
+  // Счётчик — все файлы проекта, а не длина списка: список бывает короче.
+  $("#navFiles").textContent = d.total || F.files.length || "";
   drawFilters();
   drawTree();
-  if (d.truncated) toast(t("files.truncated", {n:d.count}), "warn");
+  if (d.truncated) toast(t("files.truncated", {n:d.count, total:d.total}), "warn");
 }
 
 const SHOW_LIMIT = 600;      // столько рисуем зараз: 1500 кнопок — 89 метров прокрутки
@@ -1093,6 +1132,7 @@ function drawFilters(){
   for (const name of Object.keys(FILTERS)){
     const n = F.files.filter(FILTERS[name]).length;
     const b = el("button",{class:"btn", style:"font-size:12px;padding:3px 8px",
+      "data-help": "help.files.filter_" + name,
       onclick:()=>{ F.filter = name; drawFilters(); drawTree(); }},
       t("files.filter." + name) + (name === "all" ? "" : " " + n));
     if (F.filter === name) b.setAttribute("aria-current", "true");
@@ -1100,7 +1140,7 @@ function drawFilters(){
   }
   box.append(el("span",{style:"flex:1"}),
     el("button",{class:"btn", style:"font-size:12px;padding:3px 8px",
-      onclick:newFile}, t("files.add")));
+      "data-help": "help.files.add", onclick:newFile}, t("files.add")));
 }
 
 async function newFile(){
@@ -1474,15 +1514,16 @@ async function drawGit(){
     const msg = el("input",{id:"gitMsg", placeholder:t("git.message"),
       style:"flex:1;min-width:180px;font:inherit;padding:6px 8px;border-radius:8px"});
     const row = el("div",{class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"}, msg,
-      el("button",{class:"btn primary", onclick:()=>doCommit(false)}, t("git.commit")),
-      el("button",{class:"btn", onclick:()=>doCommit(true),
-        title:t("git.ratchet_anyway")}, t("git.commit_anyway")));
+      el("button",{class:"btn primary", "data-help": "help.files.git_commit",
+        onclick:()=>doCommit(false)}, t("git.commit")),
+      el("button",{class:"btn", "data-help": "help.files.git_commit_anyway",
+        onclick:()=>doCommit(true), title:t("git.ratchet_anyway")}, t("git.commit_anyway")));
     if (g.remotes && g.remotes.length)
-      row.append(el("button",{class:"btn", onclick:doPush}, t("git.push")));
+      row.append(el("button",{class:"btn", "data-help": "help.files.git_push", onclick:doPush}, t("git.push")));
     box.append(row);
   } else if (g.remotes && g.remotes.length && g.ahead){
     box.append(el("div",{class:"row", style:"gap:8px;margin-top:8px"},
-      el("button",{class:"btn", onclick:doPush}, t("git.push"))));
+      el("button",{class:"btn", "data-help": "help.files.git_push", onclick:doPush}, t("git.push"))));
   }
 }
 

@@ -17785,8 +17785,9 @@ def test_empty_cards_that_hold_nothing_go_to_the_archive(tmp: Path):
     Проверка карточек, где нет ничего, кроме служебного (PRJ-B и PRJ-C 24.09.2026): заготовки
     под ссылки прежних карточек, на которые никто больше не ссылается; заготовки под
     «сокращения» «НАЛОГОВ», «ГОДА», «WHERE» — слова из заголовков, набранных прописными;
-    пустая заметка «схема.png.md», которую Obsidian заводит по щелчку на картинке. Заготовку
-    с отметками человека (`owner`, `verified`) ремонт не трогает.
+    пустая заметка «схема.png.md», которую Obsidian заводит по щелчку на картинке. Заготовку,
+    в которую уже пришло знание (есть источник), ремонт не трогает. Поля `owner`/`verified`
+    не защищают: их ставила машинная «приёмка», а не человек.
     """
     root = make_project(tmp)
     kb = root / "AuroraKnowledgeDB"
@@ -17795,7 +17796,8 @@ def test_empty_cards_that_hold_nothing_go_to_the_archive(tmp: Path):
     link_mark = "_Заготовка: ссылка на это понятие уже есть, знания пока нет._"
     term_mark = "_Заготовка: имя названо в базе, расшифровки база пока не знает, знания нет._"
     for name, mark, extra in (("Забытая", link_mark, ""), ("Нужная", link_mark, ""),
-                              ("Проверенная", link_mark, "owner: \"@человек\"\n"),
+                              ("Наполненная", link_mark, "sources:\n  - \"Sources/Web/x.md\"\n"),
+                              ("Принятая-машиной", link_mark, "owner: \"@git\"\nverified_basis: \"x\"\n"),
                               ("НАЛОГОВ", term_mark, ""), ("ОКТМО", term_mark, "")):
         (kb / "Concepts" / f"{name}.md").write_text(
             stub.format(n=name, mark=mark, extra=extra), encoding="utf-8")
@@ -17816,14 +17818,232 @@ def test_empty_cards_that_hold_nothing_go_to_the_archive(tmp: Path):
     cp = run("kb_fix.py", "--stale-stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=0)
     left = {p.stem for p in (kb / "Concepts").glob("*.md")}
     archived = {p.stem for p in (kb / "_archive").glob("*.md")}
-    assert {"Забытая", "НАЛОГОВ", "схема.png"} <= archived, f"{archived}\n{cp.stdout}"
-    assert {"Нужная", "Проверенная", "ОКТМО"} <= left, f"убрана нужная карточка: {left}"
+    assert {"Забытая", "НАЛОГОВ", "схема.png", "Принятая-машиной"} <= archived, \
+        f"{archived}\n{cp.stdout}"
+    assert {"Нужная", "Наполненная", "ОКТМО"} <= left, f"убрана нужная карточка: {left}"
     text = (kb / "Concepts/Сводка-0.md").read_text(encoding="utf-8")
     assert "[[НАЛОГОВ" not in text and "[[Нужная]]" in text, \
         f"ссылка на убранное слово осталась — ремонт ссылок завёл бы его снова:\n{text}"
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
     fix = scen.split("[fix]")[1].split("\n[")[0]
     assert "--stale-stubs" in fix, "«Починить базу» не убирает пустые карточки"
+
+
+@test
+def test_a_human_correction_is_the_highest_truth(tmp: Path):
+    """Исправление человека доходит до карточки и до тезиса и переживает разбор.
+
+    Проверка 24.09.2026: механизм не сработал ни разу. На PRJ-C человек положил в
+    `Raw/corrections/` два документа, переведённых из docx: без `corrects:` и со
+    `status: draft` от перевода — оба молча пропускались. Тезис писался только по тексту
+    источника, а исправление лежало в хвосте карточки; второе исправление той же карточки
+    заменяло первое; раздел исправлений в карточке без истории читался текстом источника,
+    и замена его блока стирала слово человека.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    root = make_project(tmp)
+    src = "Sources/Confluence/Баланс.md"
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / src).write_text("# Баланс\n\nБаланс считается раз в сутки.\n", encoding="utf-8")
+    card(root, "Concepts/Аналитический-баланс.md",
+         "Аналитический баланс — учёт в сутки.\n\n## Источник (перенесено дословно)\n\n"
+         f"### {src}\n\nБаланс считается раз в сутки.\n\n## История изменений\n\n- 2026-09-01: создана",
+         kind="knowledge", status="knowledge", distilled="2026-09-20", sources=f'\n  - "{src}"')
+    corr = root / "Raw/corrections"
+    corr.mkdir(parents=True, exist_ok=True)
+    (corr / "Чем отличается аналитический баланс.md").write_text(
+        "---\ntitle: \"Чем отличается аналитический баланс\"\nconverter: pandoc\n"
+        "converted: 2026-09-14\nstatus: draft\n---\n\n> ⚙️ **Машинная конвертация.** …\n\n"
+        "# Чем отличается аналитический баланс\n\n## Коротко\n\n"
+        "Аналитический баланс обновляется сразу после платежа, а не раз в сутки.\n",
+        encoding="utf-8")
+    run("kb_corrections.py", "--new", "Аналитический-баланс", "--text",
+        "Сальдо показывается в рублях.", cwd=root, expect_rc=0)
+    cp = run("kb_corrections.py", "--apply", cwd=root, expect_rc=0)
+    path = root / "AuroraKnowledgeDB/Concepts/Аналитический-баланс.md"
+    text = path.read_text(encoding="utf-8")
+    assert "сразу после платежа" in text and "в рублях" in text, f"исправление не дошло:\n{cp.stdout}"
+    assert text.index("## Исправления человеком") < text.index("## История изменений"), \
+        "раздел исправлений не перед историей"
+    assert "distilled:" not in text, "тезис писали без исправления — отметка должна сняться"
+    doc = (corr / "Чем отличается аналитический баланс.md").read_text(encoding="utf-8")
+    assert "Аналитический-баланс" in doc and "corrects_found: auto" in doc, \
+        "куда ушло исправление, в документе не записано"
+    again = run("kb_corrections.py", "--apply", cwd=root, expect_rc=0).stdout
+    assert "Записано в карточки: 0" in again, "повторное применение переписало карточку"
+    # разбор обновляет блок источника — исправление остаётся
+    B = importlib.import_module("build_plan")
+    B.refresh_card(str(path), path.read_text(encoding="utf-8"), "Баланс считается раз в час.",
+                   src, True, str(root))
+    text = path.read_text(encoding="utf-8")
+    assert "раз в час" in text and "сразу после платежа" in text, \
+        f"замена блока источника стёрла слово человека:\n{text}"
+    # тезис пишется с исправлением, и раздел остаётся на месте
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    seen = []
+
+    def fake(cfg_, role, messages, **kw):
+        seen.append(messages[0]["content"])
+        return {"ok": True, "text": "ТЕЗИС:\nАналитический баланс обновляется сразу "
+                                    "(исправление человека).\n\nИЗМЕНИЛОСЬ:\nЧастота.",
+                "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    R.run_distill(cfg, str(root), apply=True, limit=3, momus=False, call=fake)
+    assert seen and "ИСПРАВЛЕНИЕ ЧЕЛОВЕКА" in seen[0] and "сразу после платежа" in seen[0], \
+        "модель пишет тезис, не видя исправления"
+    done = path.read_text(encoding="utf-8")
+    assert "## Исправления человеком" in done and "тезис пересобран" in done
+    assert done.index("## Исправления человеком") < done.index("## История изменений")
+    # поля старой машинной «приёмки» — не подпись человека
+    F = importlib.import_module("kb_fix")
+    head = ('title: "x"\nowner: "@кто-то"\nverified: 2026-08-05\nreview_by: 2026-11-03\n'
+            'verified_hash: ab\nverified_basis: "заготовка: имя пришло из карточек"\n')
+    kept = F.drop_retired(head)
+    assert "owner" not in kept and "verified" not in kept and "review_by" not in kept, kept
+    task = 'title: "Вопрос"\nowner: "@аналитик"\n'
+    assert F.drop_retired(task) == task, "у вопроса снят ответственный"
+
+
+@test
+def test_meeting_transcripts_reach_the_base_marked_as_meetings(tmp: Path):
+    """Стенограмма встречи разбирается в базу, и каждая карточка помечена «из встречи».
+
+    Решение пользователя 24.09.2026: знание, сказанное только на встречах, в базу не
+    попадало (PRJ-B — 16 стенограмм вне разбора). Теперь попадает, но сказанное в разговоре
+    не должно читаться записанным в документе: пометку ставит движок, тезис её не теряет, а
+    утверждения из встречи модель помечает датой.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    B = importlib.import_module("build_plan")
+    root = make_project(tmp)
+    src = "Raw/meetings/2026-09-11/Запись экрана 2026-09-09 в 15_39_25_1/transcript.md"
+    (root / src).parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[0:00:00] [SPEAKER_01] Слышно меня?", "[0:00:03] [SPEAKER_02] Да, слышно.",
+             "[0:00:05] [SPEAKER_01] Реестр деклараций сортируется по дате подачи.",
+             "[0:00:09] [SPEAKER_01] Новые сверху, по двадцать строк.",
+             "[0:00:14] [SPEAKER_02] Ставка пени снижена до 0,1 процента в день.",
+             "[0:00:20] [SPEAKER_01] Хорошо, до связи."]
+    (root / src).write_text("---\ntitle: \"transcript\"\n---\n\n# transcript\n\n"
+                            + "\n".join(lines) + "\n", encoding="utf-8")
+    assert any(g == "Встречи" for g, _ in B.GROUPS), "стенограммы вне плана разбора"
+    card(root, "Concepts/Пени.md", "Пени начисляются за каждый день просрочки.",
+         kind="knowledge", status="knowledge")
+
+    def fake(cfg_, role, messages, **kw):
+        text = messages[0]["content"]
+        if "стенограммы встречи" in text:
+            assert "[3] [0:00:05] [SPEAKER_01] Реестр деклараций" in text, text[:800]
+            return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+                {"parts": [{"title": "Реестр деклараций", "from": 3, "to": 3,
+                            "to_section": "Concepts"},
+                           {"into": "Пени", "from": 4, "to": 4}]}, ensure_ascii=False)}
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "tps": 9,
+                "text": "Реестр деклараций сортируется по дате подачи (встреча 09.09.2026)."}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    step = R.solve_meeting(cfg, str(root), "Встречи", src, True, call=fake)
+    assert step["status"] == "разобран", step
+    reg = root / "AuroraKnowledgeDB/Concepts/Реестр-деклараций.md"
+    text = reg.read_text(encoding="utf-8")
+    assert "по дате подачи" in text and "Новые сверху" in text and "Слышно" not in text, text
+    assert "> 🎙 Из встречи: 09.09.2026 15:39" in text, f"нет пометки встречи:\n{text}"
+    pen = (root / "AuroraKnowledgeDB/Concepts/Пени.md").read_text(encoding="utf-8")
+    assert "0,1 процента" in pen and "🎙 Из встречи" in pen, pen
+    man = json.loads((root / "AuroraKnowledgeDB/meta/manifest.json").read_text(encoding="utf-8"))
+    assert man["sources"][src]["cards"] == 2, man["sources"]
+    # тезис: дата встречи в задании, пометка на месте
+    seen = []
+
+    def fake_d(cfg_, role, messages, **kw):
+        seen.append(messages[0]["content"])
+        return fake(cfg_, role, messages, **kw)
+
+    (root / "AuroraKnowledgeDB/Concepts/Реестр-деклараций.md").write_text(
+        text.replace("built: machine", "built: machine\nkind: knowledge"), encoding="utf-8")
+    R.run_distill(cfg, str(root), apply=True, limit=5, momus=False, call=fake_d)
+    assert any("встреча 09.09.2026 15:39" in x for x in seen), "дату встречи модель не видела"
+    done = reg.read_text(encoding="utf-8")
+    assert done.count("> 🎙 Из встречи") == 1 and "(встреча 09.09.2026)" in done, done
+    assert done.index("🎙 Из встречи") < done.index("## Источник (перенесено дословно)")
+
+
+@test
+def test_about_shows_the_version_in_git_and_an_unpublished_release(tmp: Path):
+    """«О проекте» показывает версию в git всегда и называет неопубликованный выпуск.
+
+    Просьба пользователя 24.09.2026: по версии в git пользователь узнаёт об обновлении, а
+    автор — что новая версия не опубликована и живёт только у него. Раньше установленная
+    новее опубликованной читалась «установлена последняя версия».
+    """
+    kit = tmp / "aurora-studio"
+    kit.mkdir()
+    (kit / "VERSION").write_text("1.2.0\n", encoding="utf-8")
+    ck, restore = _cockpit_on(kit)
+    ck._http_get = lambda url, limit, timeout=20: (b"1.1.0\n" if url.endswith("/VERSION")
+                                                  else b"# CHANGELOG\n")
+    try:
+        st = ck.kit_update_status(fresh=True)
+    finally:
+        restore()
+    assert st["latest"] == "1.1.0" and st["unpublished"] and not st["newer"], st
+    js = (KIT / "cockpit/modules/about/view.js").read_text(encoding="utf-8")
+    assert "st.unpublished" in js and 't("about.in_git"' in js, "карточка не показывает версию в git"
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/modules/about/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert {"about.in_git", "about.installed", "about.unpublished"} <= set(cat), lang
+
+
+@test
+def test_buttons_explain_themselves_after_a_pause(tmp: Path):
+    """Кнопки «Продуктивности», «Файлов» и «Графа» объясняют себя после паузы наведения.
+
+    Просьба пользователя 24.09.2026: подсказка — что кнопка делает, пример использования
+    и пример результата, — и появляется через несколько секунд, а не сразу.
+    """
+    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert "const HELP_DELAY = 2000" in html and "function showHelp" in html, "механизма подсказок нет"
+    view = html.split('id="view-files"')[1].split("</section>")[0]
+    ids = re.findall(r'id="(file\w+)"[^>]*data-help="([^"]+)"', view)
+    assert len(ids) >= 9, f"не у всех кнопок «Файлов» есть подсказка: {ids}"
+    keys = {k for _i, k in ids} | {k for k in re.findall(r'"data-help": "(help\.files\.[\w.]+)"', html)
+                                   if not k.endswith("_")}
+    keys |= {"help.files.filter_" + n for n in ("all", "changed", "base", "artifacts", "drafts")}
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/i18n/{lang}.json").read_text(encoding="utf-8"))
+        miss = [f"{k}.{p}" for k in keys for p in ("what", "how", "result") if f"{k}.{p}" not in cat]
+        assert not miss and "help.example" in cat, f"{lang}: {miss}"
+    for mod, need in (("work", ("makeGo", "makePublish", "makeAttach", "makeKind")),
+                      ("graph", ("graphAll", "graphRebuild", "graphOut", "graphIn", "graphDepth"))):
+        v = (KIT / f"cockpit/modules/{mod}/view.html").read_text(encoding="utf-8")
+        for bid in need:
+            assert re.search(rf'id="{bid}"[^>]*data-help=', v), f"{mod}: у {bid} нет подсказки"
+
+
+@test
+def test_files_counter_counts_every_file(tmp: Path):
+    """Счётчик у «Файлов» — все файлы проекта, а не длина списка.
+
+    Живой случай 24.09.2026: обход дерева обрывался на 4000-м файле, и у проектов на 4 014 и
+    4 449 файлов счётчик стоял на 4000, а хвост дерева не было видно вовсе.
+    """
+    proj = tmp / "p"
+    for i in range(30):
+        (proj / "d").mkdir(parents=True, exist_ok=True)
+        (proj / "d" / f"f{i:02}.md").write_text("x", encoding="utf-8")
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    d = ck.file_tree(str(proj), limit=10)
+    assert d["total"] == 30 and d["count"] == 10 and d["truncated"], d
+    assert ck.FILES_LIMIT >= 20000, "предел списка снова мал для живых проектов"
+    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert '$("#navFiles").textContent = d.total' in html, "счётчик снова считает длину списка"
 
 
 @test
@@ -19087,8 +19307,15 @@ def test_cockpit_module_strings_live_in_catalogues(tmp: Path):
         # Ключ ядра разделу доступен: общие надписи переводятся один раз и живут там.
         core = {k for k in json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
                 if not k.startswith("_")}
-        missing = sorted(u for u in used
-                         if not u.endswith(".") and u not in keys and u not in core)
+        # Подсказка кнопки (`data-help`) — приставка трёх ключей: что делает, пример и
+        # результат. Считается найденной, только если в каталоге есть все три.
+        helps = set(re.findall(r'data-help="([^"]+)"', html)) | set(
+            re.findall(r'"data-help":\s*"([^"]+)"', js))
+        missing = sorted({h for h in helps for part in ("what", "how", "result")
+                          if f"{h}.{part}" not in keys and f"{h}.{part}" not in core})
+        used -= helps
+        missing += sorted(u for u in used
+                          if not u.endswith(".") and u not in keys and u not in core)
         assert not missing, f"модуль {mid}: спрашивает ключи, которых нет в каталоге: {missing}"
 
         # Русский текст в строковых литералах кода — то, что переезд и убирает.

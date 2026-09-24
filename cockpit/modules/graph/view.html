@@ -9,7 +9,7 @@
     <datalist id="graphList"></datalist>
     <label class="sub" style="display:flex;gap:6px;align-items:center">
       <span data-i18n="graph.depth">Ступеней</span>
-      <select id="graphDepth" style="font:inherit;padding:4px 6px;border-radius:8px">
+      <select id="graphDepth" data-help="graph.help.depth" style="font:inherit;padding:4px 6px;border-radius:8px">
         <option value="1">1</option><option value="2" selected>2</option>
         <option value="3">3</option><option value="4">4</option>
         <option value="5">5</option><option value="6">6</option>
@@ -18,12 +18,12 @@
     </label>
     <label class="sub" style="display:flex;gap:4px;align-items:center">
       <span data-i18n="graph.spread">Разброс</span>
-      <button class="btn" id="graphOut" style="padding:2px 8px" data-i18n-title="graph.spread_out">+</button>
+      <button class="btn" id="graphOut" data-help="graph.help.spread_out" style="padding:2px 8px" data-i18n-title="graph.spread_out">+</button>
       <span id="graphSpreadNow" class="mono" style="min-width:34px;text-align:center"></span>
-      <button class="btn" id="graphIn" style="padding:2px 8px" data-i18n-title="graph.spread_in">−</button>
+      <button class="btn" id="graphIn" data-help="graph.help.spread_in" style="padding:2px 8px" data-i18n-title="graph.spread_in">−</button>
     </label>
-    <button class="btn" id="graphAll" data-i18n="graph.all">Показать всю базу</button>
-    <button class="btn" id="graphRebuild" data-i18n="graph.rebuild">Пересчитать</button>
+    <button class="btn" id="graphAll" data-help="graph.help.all" data-i18n="graph.all">Показать всю базу</button>
+    <button class="btn" id="graphRebuild" data-help="graph.help.rebuild" data-i18n="graph.rebuild">Пересчитать</button>
     <span class="sub" id="graphStamp"></span>
   </div>
 </div>

@@ -31,5 +31,8 @@
   "about.update_ask": "Update Aurora to {v}?\n\nThe panel will restart on its own — a couple of seconds.",
   "about.updating": "Downloading and updating…",
   "about.restarting": "Restarting the panel…",
-  "about.busy": "Running now: {what}. The update will wait until the run ends."
+  "about.busy": "Running now: {what}. The update will wait until the run ends.",
+  "about.in_git": "In git ({where})",
+  "about.installed": "Installed here",
+  "about.unpublished": "Version {v} is not published: git has {git}, the new one exists only here"
 }

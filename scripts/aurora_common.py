@@ -977,6 +977,133 @@ class Card:
 QUOTES = "## Источник (перенесено дословно)"
 # Раздел истории тезиса: под ним — записи «тезис пересобран» с прежним тезисом.
 FOOTER = "## История изменений"
+# Слово человека о карточке (`kb:correct`): стоит между дословным текстом источников и
+# историей. Правда с высшим приоритетом — тезис пишется с ней, а разбор и замена блоков
+# источника её не касаются: это не текст источника.
+CORRECTIONS = "## Исправления человеком"
+
+
+def split_tail(after_quotes: str) -> tuple:
+    """Раздел дословного текста → (текст источников, хвост карточки).
+
+    Хвост начинается исправлениями человека или историей изменений — тем, что раньше.
+    Раньше границей считалась только история, и исправление, дописанное в карточку без
+    истории, читалось куском текста последнего источника: замена этого блока свежей
+    страницей стирала слово человека до следующего `kb:correct`.
+    """
+    cut = [i for i in (after_quotes.find(CORRECTIONS), after_quotes.find(FOOTER)) if i >= 0]
+    if not cut:
+        return after_quotes, ""
+    i = min(cut)
+    return after_quotes[:i], after_quotes[i:]
+
+
+# Стенограммы встреч. Сказанное в разговоре — не записанное в документе: оно попадает в
+# базу, но всегда с пометкой, откуда взято (решение пользователя 24.09.2026).
+MEETINGS_DIR = "Raw/meetings"
+MEETING_MARK = "> 🎙 Из встречи"
+_TURN_RE = re.compile(r"^\[\d+:\d{2}:\d{2}\]\s*\[([^\]]+)\]")
+
+
+def is_meeting(path: str) -> bool:
+    """Источник — стенограмма встречи."""
+    return (path or "").replace("\\", "/").lstrip("./").startswith(MEETINGS_DIR + "/")
+
+
+def meeting_label(path: str) -> str:
+    """Когда была встреча — из имени файла или папки. Не видно — имя стенограммы."""
+    p = (path or "").replace("\\", "/")
+    m = re.search(r"(\d{4})(\d{2})(\d{2})_(\d{2})-(\d{2})", p) \
+        or re.search(r"(\d{4})-(\d{2})-(\d{2}) в (\d{2})_(\d{2})", p)
+    if m:
+        y, mo, d, h, mi = m.groups()
+        return f"{d}.{mo}.{y} {h}:{mi}"
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", p)
+    if m:
+        return f"{m.group(3)}.{m.group(2)}.{m.group(1)}"
+    return os.path.splitext(os.path.basename(p))[0]
+
+
+def meeting_turns(raw: str) -> list:
+    """Стенограмма → реплики, дословно и по порядку. Нумерация одна на планировщик и разбор.
+
+    Форматов два. Запись экрана — строка на фразу: «[0:00:05] [SPEAKER_04] текст»; подряд
+    идущие фразы одного говорящего склеиваются в одну реплику. Прочие — абзацы
+    «SPEAKER_02⏎текст» через пустую строку. Шапка, плашка перевода и заголовки — не речь.
+    """
+    body = re.sub(r"(?s)\A---\n.*?\n---\n", "", raw or "")
+    lines = [l for l in body.splitlines()
+             if not l.startswith(("> ⚙️", "# ")) and not l.startswith("Transcription for")]
+    if sum(1 for l in lines if _TURN_RE.match(l)) >= 3:
+        turns, who = [], None
+        for l in lines:
+            m = _TURN_RE.match(l)
+            if m and m.group(1) == who and turns:
+                turns[-1] += "\n" + l
+            elif m:
+                turns.append(l)
+                who = m.group(1)
+            elif l.strip() and turns:
+                turns[-1] += "\n" + l
+        units = [t.strip() for t in turns if t.strip()]
+    else:
+        units = [p.strip() for p in re.split(r"\n\s*\n", "\n".join(lines)) if p.strip()]
+    # Расшифровка без разметки говорящих бывает одной строкой на весь разговор (на PRJ-B —
+    # 117 тыс. знаков): кусок такого размера не выбрать границей темы. Режем по концам
+    # предложений — текст при этом не меняется ни на знак.
+    out = []
+    for u in units:
+        if len(u) <= TURN_MAX:
+            out.append(u)
+            continue
+        piece = ""
+        for sent in re.split(r"(?<=[.!?…])\s+", u):
+            if piece and len(piece) + len(sent) > TURN_PIECE:
+                out.append(piece)
+                piece = ""
+            piece = f"{piece} {sent}".strip()
+        if piece:
+            out.append(piece)
+    return out
+
+
+TURN_MAX = 3000       # реплика длиннее — не реплика, а нерасчленённый текст
+TURN_PIECE = 1200     # до скольки знаков собирать куски такого текста
+
+
+def with_meeting_mark(text: str) -> str:
+    """Карточка с пометкой «из встречи», если среди её источников есть стенограмма.
+
+    Пометку ставит движок, а не модель, и ставит всегда: тезис, разбор и ремонт её
+    восстанавливают. Стоит в своей части карточки — сразу перед дословным текстом, а у
+    карточки без него — под заголовком. Источников-встреч нет — пометка снимается.
+    """
+    lines = [l for l in (text or "").split("\n") if not l.startswith(MEETING_MARK)]
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text) if len(lines) != len((text or "").split("\n")) else text
+    meets = [s for s in card_sources(text) if is_meeting(s)]
+    if not meets:
+        return text
+    when = ", ".join(dict.fromkeys(meeting_label(s) for s in meets))
+    mark = (f"{MEETING_MARK}: {when} — сказано в разговоре, а не записано в документе. "
+            f"Стенограмм{'а' if len(meets) == 1 else 'ы'}: "
+            + ", ".join(f"`{s}`" for s in meets) + ".")
+    if QUOTES in text:
+        before, _m, after = text.partition(QUOTES)
+        return before.rstrip() + "\n\n" + mark + "\n\n" + QUOTES + after
+    m = re.search(r"^# .+$", text, re.M)
+    if m:
+        return text[:m.end()] + "\n\n" + mark + "\n" + text[m.end():]
+    return mark + "\n\n" + text
+
+
+def corrections_of(text: str) -> str:
+    """Текст раздела «Исправления человеком» без заголовка. Пусто — исправлений нет."""
+    if CORRECTIONS not in (text or ""):
+        return ""
+    block = text.split(CORRECTIONS, 1)[1]
+    m = re.search(r"\n## ", block)
+    return (block[:m.start()] if m else block).strip()
 
 _GLUED_QUOTES = re.compile(r"(?<=\S)[ \t]*(?=" + re.escape(QUOTES) + ")")
 

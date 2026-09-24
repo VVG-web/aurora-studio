@@ -38,7 +38,8 @@ from sources_core import SERVICE_RE  # noqa: E402
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
                            card_sources, fold_hard, frontmatter, sources_block,
-                           split_frontmatter, translit_names, walk_md)
+                           split_frontmatter, split_tail, translit_names, walk_md,
+                           is_meeting, meeting_turns, with_meeting_mark)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -60,6 +61,10 @@ GROUPS = [
     # идут — обход выше пропускает папки с подчёркивания: картинка и приказ не источник
     # для разбора, а то, на что ссылается разобранная страница.
     ("Web", os.path.join("Sources", "Web")),
+    # Стенограммы встреч — последними: сказанное в разговоре чаще уточняет уже известное,
+    # и дописывать его есть куда, когда документы разобраны. Каждая карточка из встречи
+    # несёт пометку об этом (`with_meeting_mark`) — решение пользователя 24.09.2026.
+    ("Встречи", os.path.join("Raw", "meetings")),
     # Задач Jira здесь НЕТ, и это правило заказчика, а не настройка. Задача — это
     # работа, а не сущность: карточка из неё выходит пересказом заголовка, а описание у
     # большинства пустое (на живом проекте 40 задач из 78 дали ноль карточек и только
@@ -820,18 +825,13 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
     if QUOTES_MARK not in rest:
         # У карточки нет раздела с дословным текстом (её писал человек). Заводим раздел,
         # не трогая написанного: его текст остаётся первым, наш ложится под него.
-        before, tail = rest.rstrip(), ""
-        if FOOTER_MARK in rest:
-            before, _m, tail = rest.partition(FOOTER_MARK)
-            before, tail = before.rstrip(), FOOTER_MARK + tail
+        before, tail = split_tail(rest)
+        before = before.rstrip()
         new_rest = (before + "\n\n" + QUOTES_MARK + "\n\n" + block
                     + ("\n" + tail.strip() + "\n" if tail.strip() else ""))
     else:
         before, _m, after = rest.partition(QUOTES_MARK)
-        tail = ""
-        if FOOTER_MARK in after:
-            after, _m2, tail = after.partition(FOOTER_MARK)
-            tail = FOOTER_MARK + tail
+        after, tail = split_tail(after)
         blocks = split_source_blocks(after)
         was = own_block(blocks, source, srcs, root)
         same = bool(was) and same_text(blocks[was], body)
@@ -873,8 +873,8 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
         return 0
     # `head` уже содержит открывающее `---`: так его отдаёт partition. Дописать своё
     # значило бы получить `------` в первой строке — шапку после этого не читает никто.
-    open(path, "w", encoding="utf-8").write(
-        (new_head + "\n---\n\n" if head else "") + new_rest.lstrip("\n"))
+    open(path, "w", encoding="utf-8").write(with_meeting_mark(
+        (new_head + "\n---\n\n" if head else "") + new_rest.lstrip("\n")))
     return 0
 
 
@@ -1021,7 +1021,7 @@ def retarget_card(text: str, moves: dict, root: str = "") -> tuple:
     new_rest = rest
     if QUOTES_MARK in rest:
         before, _m, after = rest.partition(QUOTES_MARK)
-        quoted, m2, tail = after.partition(FOOTER_MARK)
+        quoted, tail = split_tail(after)
         blocks = split_source_blocks(quoted)
         # Кто из экземпляров одной страницы остаётся: подписанный нынешним путём, а из
         # равных — поздний (дописан последним, значит, свежее).
@@ -1068,15 +1068,16 @@ def retarget_card(text: str, moves: dict, root: str = "") -> tuple:
                 del out[FIRST_PARSE]
         if info["renamed"] or info["dropped"]:
             quoted_new = "\n\n".join(f"### {k}\n\n{b}" for k, b in out.items())
-            tail_txt = (FOOTER_MARK + tail) if m2 else ""
+            tail_txt = tail
             if info["dropped"]:
                 what = ", ".join("первого разбора" if d == FIRST_PARSE else f"`{d}`"
                                  for d in info["dropped"])
                 line = (f"- {TODAY}: убран второй экземпляр дословного текста той же "
                         f"страницы ({what}) — страница переехала или была разобрана "
                         "повторно")
-                tail_txt = (tail_txt.rstrip() + "\n" + line) if tail_txt \
-                    else FOOTER_MARK + "\n\n" + line
+                tail_txt = (tail_txt.rstrip() + "\n" + line) if FOOTER_MARK in tail_txt \
+                    else ((tail_txt.rstrip() + "\n\n") if tail_txt.strip() else "") \
+                    + FOOTER_MARK + "\n\n" + line
             new_rest = (before.rstrip() + "\n\n" + QUOTES_MARK + "\n\n" + quoted_new + "\n"
                         + ("\n" + tail_txt.strip() + "\n" if tail_txt.strip() else ""))
 
@@ -1110,8 +1111,7 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool,
         print(f"(уже собрана из этого же источника, раздела с текстом нет) {path}")
         return 0
     before, _m, after = rest.partition(QUOTES_MARK)
-    quoted, _m2, tail = after.partition(FOOTER_MARK)
-    tail = FOOTER_MARK + tail if _m2 else ""
+    quoted, tail = split_tail(after)
     blocks = split_source_blocks(quoted)
     if len(card_sources(old_text)) > 1 or set(blocks) - {FIRST_PARSE}:
         return append_card(path, old_text, body, source, apply, root)
@@ -1133,7 +1133,7 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool,
     print(f"{'✅ обновлён источник' if apply else '(dry-run) обновить источник'}: {path} · "
           f"{len(body)} симв.")
     if apply:
-        open(path, "w", encoding="utf-8").write(new_head + "\n---\n" + new_rest)
+        open(path, "w", encoding="utf-8").write(with_meeting_mark(new_head + "\n---\n" + new_rest))
     return 0
 
 
@@ -1197,7 +1197,10 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         # Границы для такого предлагает планировщик — по описи абзацев, а не по тексту, —
         # а сюда приходят номерами. Текст всё равно переносит движок: дословность не
         # зависит от того, кто выбрал границу.
-        blocks = [x for x in re.split(r"\n\s*\n", raw) if x.strip()]
+        # У стенограммы встречи единица — реплика, а не абзац: запись экрана идёт строкой
+        # на фразу без пустых строк. Нумерация та же, что видел планировщик (`meeting_turns`).
+        blocks = (meeting_turns(raw) if is_meeting(source)
+                  else [x for x in re.split(r"\n\s*\n", raw) if x.strip()])
         secs = [(title, b) for b in blocks]
         spec = paras
     else:
@@ -1339,7 +1342,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         return 0
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        f.write(card)
+        f.write(with_meeting_mark(card))
     return 0
 
 

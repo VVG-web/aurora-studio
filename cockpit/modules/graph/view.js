@@ -125,7 +125,7 @@ function draw(ctx){
     note.append(document.createTextNode(G.focus
       ? ctx.t("graph.hub", {id: G.focus, n: nodes.length, depth})
       : ctx.t("graph.toobig", {n: nodes.length})), " ",
-      ctx.el("button", {class: "btn", style: "margin-left:6px", onclick(){
+      ctx.el("button", {class: "btn", style: "margin-left:6px", "data-help": "graph.help.anyway", onclick(){
         G.anyway = true; draw(ctx); G.anyway = false;
       }}, ctx.t("graph.anyway")));
     if (G.cy){ G.cy.destroy(); G.cy = null; }

@@ -34,12 +34,13 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter, is_service, split_frontmatter, with_fields  # noqa: E402
+from aurora_common import (CORRECTIONS, FOOTER, aliases as card_aliases,  # noqa: E402
+                           frontmatter, head_text, is_service, split_frontmatter, with_fields)
 
 KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-MARK = "## Исправления человеком"
+MARK = CORRECTIONS
 
 
 def cards() -> dict:
@@ -84,13 +85,58 @@ def corrections() -> list:
         text = open(path, encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text) or {}
         body = body_of(text)
+        raw = (fm.get("corrects") or "").strip()
+        owners = re.findall(r"\[\[([^\]|#]+)", raw) or (
+            [raw.strip('"[]')] if raw.strip('"[]') else [])
+        # Действует всё, что не снято. Документ, положенный в папку руками и переведённый
+        # из docx, приходит со `status: draft` от перевода — и до 1.130.0 молча не
+        # применялся вовсе: на PRJ-C два таких исправления не дошли ни до одной карточки.
+        status = "archived" if (fm.get("status") or "").strip().strip('"') == "archived" \
+            else "active"
         out.append({"path": path, "name": os.path.splitext(f)[0],
-                    "owner": (fm.get("corrects") or "").strip().strip('"[]'),
-                    "created": (fm.get("created") or "").strip(),
-                    "status": (fm.get("status") or "active").strip(),
+                    "owners": owners, "owner": owners[0] if owners else "",
+                    "title": (fm.get("title") or os.path.splitext(f)[0]).strip().strip('"'),
+                    "created": (fm.get("created") or fm.get("converted") or "").strip(),
+                    "status": status,
                     "why": (fm.get("archived_reason") or "").strip(),
                     "text": body})
     return out
+
+
+def resolve_owners(c: dict, known: dict) -> list:
+    """Какие карточки исправляет документ, у которого `corrects:` не указан. → [имена].
+
+    Человек кладёт в `Raw/corrections/` готовый документ — «Чем отличается аналитический
+    баланс от баланса по КБК ОП», — не заполняя шапку. Карточки находим по их именам и
+    синонимам в заголовке документа, в той же форме слова (`term_key`): «баланса» и
+    «баланс» — одно понятие. Имя из одного короткого слова не годится: «ОП» стоит где
+    угодно. Берём самые длинные совпадения, не перекрывающие друг друга. Найденное
+    записывается в документ (`corrects`, `corrects_found: auto`), чтобы человек видел,
+    куда ушло его слово, и мог поправить.
+    """
+    from build_plan import term_key
+    heads = [c["title"]] + re.findall(r"^#\s+(.+)$", c["text"], re.M)
+    hay = " " + " ".join(term_key(h) for h in heads) + " "
+    names: dict = {}
+    for name, paths in known.items():
+        if len(paths) != 1:
+            continue
+        for n in [name] + card_aliases(head_text(paths[0])):
+            k = term_key(n)
+            if k and (len(k.split()) >= 2 or len(k) >= 6):
+                names.setdefault(k, name)
+    found, taken = [], []
+    for k in sorted(names, key=len, reverse=True):
+        at = hay.find(" " + k + " ")
+        if at < 0:
+            continue
+        span = (at, at + len(k) + 2)
+        if any(a < span[1] and span[0] < b for a, b in taken):
+            continue
+        taken.append(span)
+        if names[k] not in found:
+            found.append(names[k])
+    return found
 
 
 def slug(name: str) -> str:
@@ -144,6 +190,8 @@ def cmd_new(owner: str, text: str) -> int:
 def state_of(c: dict, known: dict, ask: set) -> str:
     if c["status"] == "archived":
         return "в архиве"
+    if not c["owners"]:
+        return "карточка не указана — найдётся по заголовку при применении"
     if c["owner"] not in known:
         return "осиротела"
     if c["name"] in ask:
@@ -161,7 +209,7 @@ def questioned(known: dict) -> dict:
     for c in corrections():
         if c["status"] != "active" or c["owner"] not in known:
             continue
-        card = known[c["owner"]][0]
+        card = known[c["owner"]][0]   # повод один на исправление: первый владелец
         fm = frontmatter(open(card, encoding="utf-8", errors="ignore").read()) or {}
         synced = (fm.get("source_synced") or "").strip()
         if synced and c["created"] and synced > c["created"]:
@@ -170,28 +218,58 @@ def questioned(known: dict) -> dict:
     return out
 
 
-def apply_one(card_path: str, c: dict) -> bool:
-    """Записать исправление в карточку. → изменилась ли она."""
+def said_of(c: dict) -> str:
+    """Текст исправления для карточки: без плашки перевода и без своего заголовка.
+
+    Заголовки опускаются ниже раздела: `##` внутри исправления иначе читался бы концом
+    раздела «Исправления человеком», и хвост слова человека уезжал бы в чужой раздел.
+    """
+    lines = [l for l in c["text"].splitlines() if not l.startswith("> ⚙️")]
+    said = "\n".join(lines).strip()
+    said = re.sub(r"^#\s+" + re.escape(c["title"]) + r"\s*\n+", "", said)
+    said = re.sub(r"^#\s+Исправление:.*\n+", "", said)
+    return re.sub(r"^(#{1,3})(\s)", lambda m: "#" * (len(m.group(1)) + 3) + m.group(2),
+                  said, flags=re.M).strip()
+
+
+def apply_block(card_path: str, cs: list) -> bool:
+    """Записать в карточку раздел со всеми исправлениями её. → изменилась ли она.
+
+    Раздел один на карточку и собирается из ВСЕХ действующих исправлений: до 1.130.0
+    второе исправление той же карточки заменяло первое. Стоит перед историей изменений —
+    вне дословного текста источников, который разбор меняет. Новый или изменённый текст
+    исправления снимает отметку тезиса: тезис пишется с исправлением, и переписать его
+    надо сейчас, а не когда случайно изменится источник.
+    """
     text = open(card_path, encoding="utf-8", errors="ignore").read()
-    head, rest = split_frontmatter(text)
+    head, _rest = split_frontmatter(text)
     body = body_of(text)
-    # Свой заголовок корректировки в карточку не тащим: там уже есть заголовок карточки,
-    # а второй H1 внутри документа читается как начало другого документа.
-    said = re.sub(r"^#\s+.*\n+", "", c["text"]).strip()
-    block = (f"{MARK}\n\n> Источник исправления: [[{c['name']}]] · {c['created']}\n\n"
-             f"{said}\n")
-    # Блок один: повторный прогон заменяет его целиком, а не копит копии.
+    parts = [f"> Источник исправления: [[{c['name']}]] · {c['created'] or '—'}\n\n{said_of(c)}"
+             for c in cs]
+    block = f"{MARK}\n\n" + "\n\n".join(parts) + "\n"
+    was = ""
     if MARK in body:
-        body = re.sub(rf"{re.escape(MARK)}[\s\S]*?(?=\n## |\Z)", block, body, count=1)
+        start = body.index(MARK)
+        m = re.search(r"\n## ", body[start + len(MARK):])
+        end = start + len(MARK) + m.start() if m else len(body)
+        was = body[start:end].strip()
+        body = (body[:start].rstrip() + "\n\n" + body[end:].lstrip("\n")).strip()
+    if was == block.strip():
+        return False
+    if FOOTER in body:
+        before, _m, after = body.partition(FOOTER)
+        body = before.rstrip() + "\n\n" + block + "\n" + FOOTER + after
     else:
         body = body.rstrip() + "\n\n" + block
-    new = ("---" + head + "\n---\n\n" + body + "\n") if head is not None else body
+    new = ("---" + head + "\n---\n\n" + body.rstrip() + "\n") if head is not None else body
     # Поля — только через `with_fields`: он собирает файл сам и проверяет, что тело не
     # тронуто, а поле встало в шапку. Ровно на этом месте движок дважды портил базу,
     # собирая разделители «почти правильно».
-    new = with_fields(new, {"corrected_by": f'"[[{c["name"]}]]"', "updated": TODAY})
-    if new == text:
-        return False
+    names = ", ".join(f"[[{c['name']}]]" for c in cs)
+    new = with_fields(new, {"corrected_by": f'"{names}"', "updated": TODAY})
+    fm_end = new.find("\n---", 3)
+    new = (re.sub(r"(?m)^(distilled|distill_empty):.*\n", "", new[:fm_end + 1])
+           + new[fm_end + 1:])
     open(card_path, "w", encoding="utf-8").write(new)
     return True
 
@@ -270,7 +348,8 @@ def main() -> int:
         print("|---|---|---|")
         for c in rows:
             print(f"| `{c['name']}` | {c['owner'] or '—'} | {state_of(c, known, ask)} |")
-        orphans = [c for c in rows if c["status"] == "active" and c["owner"] not in known]
+        orphans = [c for c in rows if c["status"] == "active" and c["owners"]
+                   and c["owner"] not in known]
         if orphans:
             print(f"\n## Осиротели: {len(orphans)}\n")
             for c in orphans:
@@ -285,23 +364,37 @@ def main() -> int:
         return 0
 
     changed, skipped = [], []
+    by_card: dict = {}
     for c in rows:
         if c["status"] != "active":
             continue
-        if c["owner"] not in known:
-            skipped.append((c["name"], "нет карточки-владельца"))
-            continue
-        doubt = ambiguous(c["owner"], known)
-        if doubt:
-            skipped.append((c["name"], doubt.replace("\n  ", " ")))
-            continue
+        if not c["owners"]:
+            c["owners"] = resolve_owners(c, known)
+            if not c["owners"]:
+                skipped.append((c["name"], "не понять, какую карточку исправляет: укажите "
+                                           "в шапке `corrects: \"[[Имя карточки]]\"`"))
+                continue
+            raw = open(c["path"], encoding="utf-8", errors="ignore").read()
+            listed = "[" + ", ".join(f'"[[{n}]]"' for n in c["owners"]) + "]"
+            open(c["path"], "w", encoding="utf-8").write(
+                with_fields(raw, {"corrects": listed, "corrects_found": "auto"}))
+        for owner in c["owners"]:
+            if owner not in known:
+                skipped.append((c["name"], f"нет карточки «{owner}»"))
+                continue
+            doubt = ambiguous(owner, known)
+            if doubt:
+                skipped.append((c["name"], doubt.replace("\n  ", " ")))
+                continue
+            by_card.setdefault(known[owner][0], []).append(c)
+    for card, cs in sorted(by_card.items()):
         # Одна кривая карточка не имеет права остановить все исправления: до 1.99.0
         # карточка без шапки роняла прогон трассировкой, и остальные не применялись.
         try:
-            if apply_one(known[c["owner"]][0], c):
-                changed.append((c["name"], known[c["owner"]][0]))
+            if apply_block(card, cs):
+                changed.extend((c["name"], card) for c in cs)
         except (ValueError, AssertionError, OSError) as e:
-            skipped.append((c["name"], f"карточка не принимает поле: {e}"))
+            skipped.extend((c["name"], f"карточка не принимает поле: {e}") for c in cs)
     print(f"# Исправления применены — {TODAY}\n")
     print(f"Записано в карточки: {len(changed)}")
     for name, path in changed:

@@ -3212,6 +3212,9 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                  use_critic: bool, call=None, deadline: float | None = None) -> dict:
     """Разобрать один источник на карточки. → шаг для отчёта."""
     call = call or AG.call_role
+    from aurora_common import is_meeting
+    if is_meeting(source):
+        return solve_meeting(cfg, cwd, group, source, apply, call)
     step = {"alias": source.rsplit("/", 1)[-1], "source": source, "group": group,
             "status": "", "note": "", "backends": [], "degraded": False}
     sections = read_sections(cwd, source)
@@ -3413,6 +3416,147 @@ def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply:
     if made and apply:
         run_command(cwd, "build_plan.py", ["--done", source])
     return made
+
+
+MEETING_WINDOW = 14000     # знаков живой речи в одном окне планировщика
+MEETING_THREADS = 4        # окон одной встречи в работе одновременно
+
+PROMPT_MEETING = """Ты планировщик. Перед тобой часть {part} из {parts} стенограммы встречи
+«{source}» (встреча {when}). Реплики пронумерованы; вернуть нужно только номера — текст
+перенесёт движок дословно.
+
+{candidates}
+{turns}
+
+Найди в этой части знание по предмету проекта: решения, факты о процессах, системах и
+данных, требования, ответы на вопросы. Верни JSON:
+{{"parts": [{{"title": "Название карточки", "from": 12, "to": 18, "to_section": "Concepts"}},
+            {{"into": "Имя существующей карточки", "from": 30, "to": 34}}]}}
+
+Правила:
+• карточка — одно понятие, правило или сущность; название — то, как его будут искать,
+  на языке встречи и его буквами;
+• речь о сущности, карточка которой есть в списке выше, — `into` с её именем вместо
+  `title`: знание о ней копится в одной карточке;
+• границы — номера реплик этой части, не пересекаются; тема может занимать много реплик;
+• раздел: Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference, Requirements;
+• приветствия, организационное («слышно?», «переключите экран»), шутки и рассуждения
+  вслух — не знание, их не бери;
+• знания нет — верни {{"parts": []}}."""
+
+
+def num_ranges(nums) -> str:
+    """{1,2,3,7,8} → «1-3,7-8»: границы реплик для `build_plan --paras`."""
+    out, run = [], []
+    for n in sorted(set(nums)):
+        if run and n == run[-1] + 1:
+            run.append(n)
+            continue
+        if run:
+            out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else str(run[0]))
+        run = [n]
+    if run:
+        out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else str(run[0]))
+    return ",".join(out)
+
+
+def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
+                  call=None) -> dict:
+    """Разобрать стенограмму встречи на карточки. → шаг для отчёта.
+
+    До 1.130.0 стенограммы в разбор не шли вовсе: знание, сказанное только на встречах,
+    в базу не попадало (PRJ-B — 16 стенограмм). Общий путь для источника без заголовков
+    не годится: запись экрана — строка на фразу без пустых строк, а опись по первым словам
+    реплик темы разговора не показывает. Поэтому стенограмма делится на реплики
+    (`meeting_turns`), планировщик читает её окнами живого текста и называет темы номерами
+    реплик, а текст переносит движок дословно. Записи в одну карточку склеиваются по всей
+    встрече: блок источника в карточке один. Пометку «из встречи» ставит движок.
+    """
+    from aurora_common import meeting_label, meeting_turns
+    from concurrent.futures import ThreadPoolExecutor
+    call = call or AG.call_role
+    step = {"alias": source.rsplit("/", 1)[-1], "source": source, "group": group,
+            "status": "", "note": "", "backends": [], "degraded": False}
+    try:
+        raw = (Path(cwd) / source).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        step.update(status="сбой", note="стенограмма не читается")
+        return step
+    turns = meeting_turns(raw)
+    when = meeting_label(source)
+    windows, start, size = [], 0, 0
+    for i, t in enumerate(turns):
+        if size and size + len(t) > MEETING_WINDOW:
+            windows.append((start, i))
+            start, size = i, 0
+        size += len(t)
+    if turns:
+        windows.append((start, len(turns)))
+
+    def plan(k_win):
+        k, (a, b) = k_win
+        text = "\n\n".join(f"[{n}] {turns[n - 1]}" for n in range(a + 1, b + 1))
+        cands = candidates_block(candidates_for(cwd, cfg, text[:4000]))
+        r = call(cfg, "planner", [{"role": "user", "content": with_terms(PROMPT_MEETING.format(
+            part=k + 1, parts=len(windows), source=source, when=when, candidates=cands,
+            turns=text), text, cwd)}], deadline=time.time() + AG.call_budget(cfg, "planner"))
+        rows = []
+        if r["ok"]:
+            for row in (parse_json(r["text"]) or {}).get("parts") or []:
+                try:
+                    lo, hi = int(row["from"]), int(row["to"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if a + 1 <= lo <= hi <= b:
+                    rows.append({"title": str(row.get("title") or "").strip(),
+                                 "into": str(row.get("into") or "").strip(),
+                                 "to": str(row.get("to_section") or "Concepts").strip(),
+                                 "sections": f"{lo}-{hi}"})
+        return r, rows
+
+    with ThreadPoolExecutor(max_workers=max(1, min(MEETING_THREADS, len(windows)))) as pool:
+        done = list(pool.map(plan, list(enumerate(windows))))
+    failed = [r for r, _rows in done if not r["ok"]]
+    for r, _rows in done:
+        if r["ok"]:
+            step["backends"].append((r["backend"], r["model"]))
+    if failed:
+        # Часть встречи не прочитана — отмечать её разобранной нельзя: недочитанное
+        # выпало бы из плана навсегда. Источник вернётся в следующем обороте.
+        step.update(status="сбой", note=f"окон встречи не прочитано: {len(failed)} из "
+                    f"{len(windows)} — " + model_fail_note(failed[0]))
+        return step
+    cards = [dict(row, title=row["title"] if not row["into"] else "")
+             for _r, rows in done for row in rows if row["title"] or row["into"]]
+    made = []
+    for card in merge_same_target(cards):
+        spec = num_ranges(section_set(card["sections"]))
+        into = card.get("into") or ""
+        args = (["--append", into, "--source", source, "--paras", spec] if into else
+                ["--card", card["title"], "--source", source, "--paras", spec,
+                 "--to", card.get("to") or "Concepts", "--by", used_model(step)])
+        if apply:
+            args.append("--apply")
+        res = run_build_plan(cwd, args)
+        if not res["ok"] and not into and "--append" in (res.get("out") or ""):
+            args = ["--append", card["title"], "--source", source, "--paras", spec] \
+                + (["--apply"] if apply else [])
+            res = run_build_plan(cwd, args)
+            into = card["title"]
+        if res["ok"]:
+            made.append(f"«{into or card['title']}» ← реплики {spec}")
+    if apply:
+        res = (run_build_plan(cwd, ["--done", source, "--cards", str(len(made))]) if made else
+               run_build_plan(cwd, ["--done", source, "--empty",
+                                    "стенограмма встречи без знания по предмету проекта"]))
+        if not res["ok"]:
+            step.update(status="сбой", note="отметка не поставлена: "
+                        + (res.get("why") or res["out"][:200]))
+            return step
+    step.update(status="разобран" if made else "пусто — отмечено",
+                note=f"встреча {when} · окон {len(windows)} · реплик {len(turns)}"
+                     + (" · " + "; ".join(made[:6]) if made else ""))
+    return step
 
 
 def has_facts(text: str) -> str:
@@ -3706,6 +3850,26 @@ PROMPT_REDISTILL = """Источник карточки «{title}» измени
 <одна-две фразы: что в знании стало другим против прежнего тезиса. Если по сути ничего
 не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>"""
 
+
+HUMAN_LEAD = """ИСПРАВЛЕНИЕ ЧЕЛОВЕКА — непреложная правда с высшим приоритетом. Человек сказал
+это о карточке сам, поверх источников. Где текст источника ему противоречит, прав человек:
+в тезисе стоит его версия. Каждое утверждение, взятое из исправления, заканчивай пометкой
+«(исправление человека)». Ничего из исправления не выбрасывай.
+
+{text}
+
+ТЕКСТ ИСТОЧНИКОВ:
+
+"""
+
+MEETING_LEAD = """СТЕНОГРАММА ВСТРЕЧИ. Блоки с подписью `Raw/meetings/…` — речь участников
+встречи: сказано в разговоре, а не записано в документе.
+{dates}
+Бери оттуда только утверждения по существу — решения, факты, требования, ответы — и каждое
+такое утверждение заканчивай пометкой «(встреча ДД.ММ.ГГГГ)» с датой этой встречи.
+Оговорки, шутки и рассуждения вслух — не знание.
+
+"""
 
 PROMPT_DISTILL = """Ты превращаешь перенесённый текст источника в карточку знания.
 
@@ -4958,12 +5122,16 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # `rest` начинается с закрывающего «\n---» шапки — в тело он не входит. Без этого
     # разделитель уезжает внутрь раздела «Источник», и в файле оказывается три «---».
     body = body[4:] if body.startswith("\n---") else body
+    # Пометка встречи — служебная строка движка, не тезис и не источник.
+    from aurora_common import MEETING_MARK, card_sources as _srcs_of, is_meeting
+    body = "\n".join(l for l in body.split("\n") if not l.startswith(MEETING_MARK))
+    from aurora_common import meeting_label
+    meetings = [x for x in _srcs_of(text) if is_meeting(x)]
     source_part = body.split(QUOTES)[0] if QUOTES in body else body
     quotes = body.split(QUOTES, 1)[1] if QUOTES in body else source_part
-    footer = ""
-    if FOOTER in quotes:
-        quotes, footer = quotes.split(FOOTER, 1)
-        footer = FOOTER + footer
+    # Хвост — исправления человека и история: ни то ни другое не текст источника.
+    from aurora_common import split_tail, corrections_of
+    quotes, footer = split_tail(quotes)
     title = os.path.splitext(os.path.basename(path))[0]
     deadline = deadline or (time.time() + AG.call_budget(cfg, "worker"))
     kind = (AG.frontmatter_of(text).get("kind") or "").strip().strip('"') \
@@ -4984,11 +5152,19 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                              f"разрежьте руками (`kb:split`)")
         return step
     src = quotes.strip()
+    # Слово человека идёт в задание первым и с высшим приоритетом. До 1.130.0 тезис писался
+    # только по тексту источника: исправление лежало в карточке, а тезис ему противоречил,
+    # и Момус называл сказанное человеком «утверждением без опоры».
+    human = corrections_of(footer)
+    lead = (HUMAN_LEAD.format(text=human) if human else "") \
+        + (MEETING_LEAD.format(dates="\n".join(
+            f"- `{x}` — встреча {meeting_label(x)}" for x in meetings)) if meetings else "")
     # Раньше здесь стояло `[:12000]` — молчаливое обрезание. Всё, что дальше, в тезис не
     # попадало, и об этом никто не узнавал: ни отчёт, ни карточка. Теперь режем по
     # объявленному окну и говорим, когда текст не влезает целиком.
-    budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + len(title) + 200)
-    parts = chunks(src, budget)
+    budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + len(title) + 200
+                              + len(lead))
+    parts = [lead + p for p in chunks(src, budget)]
     if len(parts) > MAX_PARTS:
         # Пересказывать такой объём нельзя — но и отдавать человеку с советом «разрежьте»
         # значит оставить ему работу, которую машина умеет. Границы предлагает
@@ -5105,8 +5281,12 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                 + (changed or "что именно изменилось, модель не назвала") + "\n"
                 + "  <details><summary>прежний тезис</summary>\n\n"
                 + "\n".join("  " + l for l in was_thesis.splitlines()) + "\n\n  </details>")
-        footer = ((footer.rstrip() + "\n" + line + "\n") if footer.strip()
-                  else f"{FOOTER}\n\n{line}\n")
+        if FOOTER in footer:
+            footer = footer.rstrip() + "\n" + line + "\n"
+        else:
+            # В хвосте могут стоять одни исправления человека — история заводится после них.
+            footer = ((footer.rstrip() + "\n\n") if footer.strip() else "") \
+                + f"{FOOTER}\n\n{line}\n"
     new_body = ("\n\n" + thesis.strip() + "\n\n" + QUOTES + "\n" + quotes.rstrip()
                 + ("\n\n" + footer.strip() + "\n" if footer.strip() else "\n"))
     # Файл собирается ровно из тех частей, на которые его разобрали: «---» + шапка + тело.
@@ -5310,7 +5490,9 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             if step.get("unsupported"):
                 fields["unsupported"] = str(step["unsupported"])
             text = "---" + step["head"] + "\n---" + step["body"]
-            open(path, "w", encoding="utf-8").write(with_fields(text, fields))
+            # Пометку встречи ставит движок: тезис переписан — она на месте.
+            from aurora_common import with_meeting_mark
+            open(path, "w", encoding="utf-8").write(with_meeting_mark(with_fields(text, fields)))
             if commit and commit_every and written[0] % commit_every == 0:
                 commit(written[0])
 

@@ -225,14 +225,27 @@ SECTION_TYPE = {
 # а модель продолжает исправно проставлять, пока видит их в чужих карточках.
 
 
+# Поля машинной «приёмки» 1.21–1.73: движок сам ставил `verified`, `owner` (имя из git),
+# `review_by` и подпись `verified_basis`/`verified_hash` — на PRJ-C так «принято» 423
+# карточки за прогон. Приёмку сняли, поля остались и читаются как подпись человека, хотя
+# человек карточку не подписывал: механизма такого нет, его слово — исправление в
+# `Raw/corrections/`. Снимаем набор целиком там, где стоит машинная подпись; `owner` у
+# вопросов и задач (кто отвечает) — другое поле, его это не касается.
+ACCEPTANCE_FIELDS = ("owner", "verified", "review_by", "verified_hash", "verified_basis",
+                     "verified_by")
+ACCEPTANCE_MARK = ("verified_basis", "verified_hash")
+
+
 def drop_retired(head: str) -> str:
     """Убрать поля вне схемы и перевести легаси-статус в действующий."""
     lines = []
+    keys = {line.split(":", 1)[0].strip() for line in head.split("\n")}
+    machine_accepted = bool(keys & set(ACCEPTANCE_MARK))
     # split, а не splitlines: последний перевод строки в шапке значим, иначе чистка
     # одного поля переписывает пустую строку в сотнях карточек, которых не касалась
     for line in head.split("\n"):
         key = line.split(":", 1)[0].strip()
-        if key in RETIRED_FIELDS:
+        if key in RETIRED_FIELDS or (machine_accepted and key in ACCEPTANCE_FIELDS):
             continue
         if key == "status":
             val = line.split(":", 1)[1].strip().strip('"\'')
@@ -871,7 +884,6 @@ def expansions_from_cards(cards: dict) -> dict:
     return out
 
 
-LINK_STUB = "_Заготовка: ссылка на это понятие уже есть"   # заготовка под ссылку
 TERM_STUB = "_Заготовка: имя названо в базе"               # заготовка под имя в тексте
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
 
@@ -1022,19 +1034,17 @@ def plan_stale_stubs(cards: dict, plan: Plan, root: str) -> list:
             continue
         title = (c.fm.get("title") or "").strip().strip('"')
         own = c.body().split(QUOTES, 1)[0]
-        # Только машинная заготовка: статус `placeholder`, метка в своей части, и человек
-        # её не трогал. На PRJ-C у «заготовок» по тегу стоят `owner` и `verified` — это
-        # решение человека, а не мусор движка.
-        machine = ((c.fm.get("status") or "").strip().strip('"') == PLACEHOLDER
-                   and not (c.fm.get("verified") or c.fm.get("owner")))
+        # Заготовка — по единому признаку движка (статус или тег). Источников у неё нет:
+        # появились — значит, знание уже пришло, и это не заготовка, а недоснятая метка.
+        stub = is_placeholder(c.fm, c.text) and not card_sources(c.text)
         why = ""
         if title.lower().endswith(IMAGE_EXT) and not c.body().strip():
             why = "пустая заметка под картинку"
-        elif machine and LINK_STUB in own:
+        elif stub and TERM_STUB not in own:
             names = {c.stem, title, *c.aliases} - {""}
             if not any(fold_hard(n) in inbound for n in names):
                 why = "никто не ссылается"
-        elif machine and TERM_STUB in own and c.stem.isalpha() and c.stem.lower() in words:
+        elif stub and TERM_STUB in own and c.stem.isalpha() and c.stem.lower() in words:
             why = "обычное слово, а не сокращение"
             unlink[c.stem] = None
         if not why:
@@ -1049,6 +1059,26 @@ def plan_stale_stubs(cards: dict, plan: Plan, root: str) -> list:
             if new != base:
                 plan.write(path, new)
     return gone
+
+
+def plan_meeting_marks(cards: dict, plan: Plan) -> int:
+    """Пометка «из встречи» на каждой карточке со стенограммой в источниках. → сколько.
+
+    Пометку ставят разбор и тезис при записи, но карточку пишут и другие шаги. Сказанное в
+    разговоре не должно читаться записанным в документе ни на одном шаге (решение
+    пользователя 24.09.2026) — поэтому хвост маршрута сверяет её по всей базе.
+    """
+    from aurora_common import with_meeting_mark
+    fixed = 0
+    for path, c in cards.items():
+        if is_service(path.replace("\\", "/")) or "/_archive/" in path:
+            continue
+        base = plan.file_writes.get(path, c.text)
+        new = with_meeting_mark(base)
+        if new != base:
+            plan.write(path, new)
+            fixed += 1
+    return fixed
 
 
 def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
@@ -1956,6 +1986,8 @@ def main() -> int:
     ap.add_argument("--drop-jira", action="store_true",
                     help="убрать в архив карточки, сделанные из задач Jira: задача — "
                          "это работа, а не сущность (правило заказчика)")
+    ap.add_argument("--meetings", action="store_true",
+                    help="пометка «из встречи» на каждой карточке со стенограммой в источниках")
     ap.add_argument("--stale-stubs", action="store_true",
                     help="убрать в архив пустые карточки, которые ничего не держат: "
                          "заготовки без ссылок, слова прописными, заметки под картинки")
@@ -2014,7 +2046,7 @@ def main() -> int:
         return 1
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs,
+                a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs, a.meetings,
                 a.unparsed, a.themes,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
@@ -2120,6 +2152,9 @@ def main() -> int:
                 head.append(f"- {name} ← {srcs}")
             if len(gone) > 20:
                 head.append(f"- … ещё {len(gone) - 20}")
+        if a.meetings:
+            n = plan_meeting_marks(cards, plan)
+            head.append(f"## Пометка «из встречи»: поставлена или обновлена в {n} карточках")
         if a.stale_stubs:
             stale = plan_stale_stubs(cards, plan, a.root)
             head.append(f"## Пустые карточки, которые ничего не держат: {len(stale)} в архив")

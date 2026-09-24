@@ -12,11 +12,11 @@
   <div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
     <label style="flex:none">
       <div class="muted" style="font-size:12px;margin-bottom:3px" data-i18n="work.what">Что делаем</div>
-      <select class="btn" id="makeKind" style="font-weight:400;min-width:220px"></select>
+      <select class="btn" id="makeKind" data-help="work.help.kind" style="font-weight:400;min-width:220px"></select>
     </label>
     <div class="spacer"></div>
-    <button class="btn primary" id="makeGo" data-i18n="work.make">Создать артефакт</button>
-    <button class="btn" id="makePublish" data-i18n="work.publish">Опубликовать…</button>
+    <button class="btn primary" id="makeGo" data-help="work.help.go" data-i18n="work.make">Создать артефакт</button>
+    <button class="btn" id="makePublish" data-help="work.help.publish" data-i18n="work.publish">Опубликовать…</button>
   </div>
   <div class="muted" id="makeSpec" style="font-size:12px;margin:8px 0 10px"></div>
   <!-- Поле задачи понимает упоминания: `@` — файл или папка проекта и MCP-сервер, `/` —
@@ -29,7 +29,7 @@
          style="position:absolute;left:0;right:0;z-index:20;max-height:260px;overflow:auto;padding:4px"></div>
   </div>
   <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-    <button class="btn sm" id="makeAttach" data-i18n="work.attach">Приложить файл</button>
+    <button class="btn sm" id="makeAttach" data-help="work.help.attach" data-i18n="work.attach">Приложить файл</button>
     <input type="file" id="makeFile" multiple hidden>
     <span class="muted" style="font-size:12px" data-i18n="work.refs_hint">@ — файл или папка
       проекта, / — навык; приложить можно текстовый файл (.md, .txt, .json, .py…)</span>

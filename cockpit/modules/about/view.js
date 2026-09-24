@@ -71,6 +71,20 @@ function updateCard(ctx){
         (st && st.error) || t("about.no_answer")), again);
       return;
     }
+    // Версия в git видна всегда: по ней пользователь узнаёт об обновлении, а автор — что
+    // выпуск ещё не опубликован и живёт только у него (установленная новее, чем в git).
+    const where = st.repo ? st.repo.replace(/^https?:\/\//, "") : "git";
+    card.append(el("div", {class:"row", style:"gap:18px;flex-wrap:wrap;margin-bottom:10px"},
+      el("div", {}, el("div", {class:"muted", style:"font-size:12px"}, t("about.in_git", {where})),
+        el("div", {style:"font-size:20px;font-weight:600"}, st.latest)),
+      el("div", {}, el("div", {class:"muted", style:"font-size:12px"}, t("about.installed")),
+        el("div", {style:"font-size:20px;font-weight:600"}, st.installed))));
+    if (st.unpublished){
+      card.append(el("div", {class:"row"},
+        el("span", {class:"chip warn"}, t("about.unpublished", {v: st.installed, git: st.latest})),
+        el("div", {class:"spacer"}), again));
+      return;
+    }
     if (!st.newer){
       card.append(el("div", {class:"row"},
         el("span", {class:"chip ok"}, t("about.latest", {v: st.installed})),
