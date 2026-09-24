@@ -10,5 +10,5 @@
   "needs": ["project"],
   "commands": ["ops:report"],
   "dev": true,
-  "for": "1.126.0"
+  "for": "1.126.1"
 }
