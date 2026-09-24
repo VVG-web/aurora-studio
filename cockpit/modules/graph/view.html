@@ -22,11 +22,36 @@
       <span id="graphSpreadNow" class="mono" style="min-width:34px;text-align:center"></span>
       <button class="btn" id="graphIn" data-help="graph.help.spread_in" style="padding:2px 8px" data-i18n-title="graph.spread_in">−</button>
     </label>
+    <label class="sub" style="display:flex;gap:4px;align-items:center">
+      <span data-i18n="graph.font">Шрифт</span>
+      <button class="btn" id="graphFontDown" style="padding:2px 8px" data-help="graph.help.font_down">A−</button>
+      <span id="graphFontNow" class="mono" style="min-width:34px;text-align:center"></span>
+      <button class="btn" id="graphFontUp" style="padding:2px 8px" data-help="graph.help.font_up">A+</button>
+    </label>
     <button class="btn" id="graphAll" data-help="graph.help.all" data-i18n="graph.all">Показать всю базу</button>
     <button class="btn" id="graphRebuild" data-help="graph.help.rebuild" data-i18n="graph.rebuild">Пересчитать</button>
     <span class="sub" id="graphStamp"></span>
   </div>
 </div>
+<details class="card" id="graphTiers" style="padding:10px 12px;margin-bottom:10px">
+  <summary class="sub" style="cursor:pointer" data-i18n="graph.tiers">Уровни подписей по числу связей</summary>
+  <p class="sub" style="margin:8px 0" data-i18n="graph.tiers_about">Подпись узла зависит от
+    того, сколько у карточки связей в показанном графе: у самых связанных — жирно и крупнее,
+    у средних — обычным, у наименее связанных — самым мелким шрифтом.</p>
+  <div class="row" style="gap:16px;align-items:center;flex-wrap:wrap">
+    <label class="sub" style="display:flex;gap:6px;align-items:center">
+      <span data-i18n="graph.tier_many">«Много связей» — верхние</span>
+      <input id="graphTierTop" type="number" min="0" max="100" step="1" style="width:64px;font:inherit;padding:4px 6px;border-radius:8px"
+        data-help="graph.help.tier_top"> %
+    </label>
+    <label class="sub" style="display:flex;gap:6px;align-items:center">
+      <span data-i18n="graph.tier_few">«Мало связей» — нижние</span>
+      <input id="graphTierLow" type="number" min="0" max="100" step="1" style="width:64px;font:inherit;padding:4px 6px;border-radius:8px"
+        data-help="graph.help.tier_low"> %
+    </label>
+    <span class="sub" id="graphTierNow"></span>
+  </div>
+</details>
 <div class="card" style="padding:0;overflow:hidden">
   <div id="graphBox" style="height:62vh;min-height:380px"></div>
 </div>

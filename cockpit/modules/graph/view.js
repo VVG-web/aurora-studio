@@ -15,6 +15,59 @@ const G = {data: null, cy: null, focus: "", anyway: false, fitKey: ""};
 // разброс. Человек крутит его сам, значение запоминается.
 let SPREAD = parseFloat(localStorage.getItem("aurora-graph-spread") || "1") || 1;
 
+// Размер подписей — отдельно от масштаба: приблизить граф значит увеличить и узлы, и
+// расстояния, а читать мешают только буквы. Крутится своими кнопками, запоминается.
+let FONT = parseFloat(localStorage.getItem("aurora-graph-font") || "1") || 1;
+
+// Уровни подписей по числу связей (просьба пользователя 24.09.2026): верхние TOP % узлов
+// по числу связей — «много», нижние LOW % — «мало», остальные — «средне». Пороги — по
+// распределению в показанном графе, а не числами из головы: у сорока карточек и у
+// четырёхсот «много связей» — разное. Настраивается на панели графа.
+let TIERS = (() => {
+  try { return Object.assign({top: 10, low: 40},
+                             JSON.parse(localStorage.getItem("aurora-graph-tiers") || "{}")); }
+  catch (e) { return {top: 10, low: 40}; }
+})();
+
+/** Уровень подписи каждого узла. degree — {id: число связей}. → {tiers, hi, lo}.
+ *  Одинаковое число связей — всегда один уровень: читающий граф сравнивает размеры, и две
+ *  карточки с одной связью, подписанные по-разному, врали бы ему. Поэтому граница уровня
+ *  встаёт между группами узлов с равным числом связей — та, что ближе к заданной доле:
+ *  верхние `top` % — «много», нижние `low` % — «мало». Разброса нет — все «средне». */
+export function degreeTiers(degree, top, low){
+  const ids = Object.keys(degree);
+  const n = ids.length;
+  const counts = {};
+  ids.forEach(id => { counts[degree[id]] = (counts[degree[id]] || 0) + 1; });
+  const values = Object.keys(counts).map(Number).sort((a, b) => a - b);
+  const pick = (order, want) => {       // значение-граница, при котором доля ближе к want
+    if (want <= 0) return null;
+    let best = null, bestGap = want, cum = 0;   // «никого» — тоже вариант
+    for (const v of order){
+      cum += counts[v];
+      const gap = Math.abs(cum - want);
+      if (gap < bestGap){ best = v; bestGap = gap; }
+    }
+    return best;
+  };
+  const clamp = v => Math.max(0, Math.min(100, v));
+  let hi = pick([...values].reverse(), n * clamp(top) / 100);
+  let lo = pick(values, n * clamp(low) / 100);
+  if (hi !== null && lo !== null && hi <= lo){
+    // Доли перекрылись на узком разбросе: «много» остаётся за верхней группой, а «мало»
+    // уходит на ступень ниже неё — или исчезает, если ниже ничего нет.
+    const below = values.filter(v => v < hi);
+    lo = below.length ? below[below.length - 1] : null;
+  }
+  if (hi !== null && hi === values[0]) hi = null;   // у всех поровну — выделять некого
+  const out = {};
+  for (const id of ids){
+    const d = degree[id];
+    out[id] = (hi !== null && d >= hi) ? "many" : ((lo !== null && d <= lo) ? "few" : "mid");
+  }
+  return {tiers: out, hi, lo};
+}
+
 let CYTO = null;
 function ensureCyto(ctx){
   if (CYTO) return CYTO;
@@ -48,7 +101,24 @@ export function mount(ctx){
     draw(ctx);
   });
   ctx.$("#graphRebuild").addEventListener("click", () => load(ctx, true));
+  ctx.$("#graphFontUp").addEventListener("click", () => setFont(ctx, FONT * 1.2));
+  ctx.$("#graphFontDown").addEventListener("click", () => setFont(ctx, FONT / 1.2));
+  const top = ctx.$("#graphTierTop"), low = ctx.$("#graphTierLow");
+  top.value = TIERS.top; low.value = TIERS.low;
+  const onTiers = () => {
+    TIERS = {top: clampPct(top.value, 10), low: clampPct(low.value, 40)};
+    try { localStorage.setItem("aurora-graph-tiers", JSON.stringify(TIERS)); } catch (e) {}
+    restyle(ctx);
+  };
+  top.addEventListener("change", onTiers);
+  low.addEventListener("change", onTiers);
   setSpread(ctx, SPREAD);
+  setFont(ctx, FONT);
+}
+
+function clampPct(v, dflt){
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : dflt;
 }
 
 export async function refresh(ctx, payload){
@@ -133,29 +203,19 @@ function draw(ctx){
     return;
   }
   if (G.cy){ G.cy.destroy(); G.cy = null; }
-  const css = getComputedStyle(document.body);
-  const ink = css.getPropertyValue("--text").trim() || "#ddd";
-  const line = css.getPropertyValue("--border").trim() || "#555";
-  const hot = css.getPropertyValue("--accent").trim() || "#e0a33e";
+  const degree = Object.fromEntries(nodes.map(n => [n.id, 0]));
+  for (const e of edges){ degree[e.from]++; degree[e.to]++; }
+  G.degree = degree;
+  const res = degreeTiers(degree, TIERS.top, TIERS.low);
+  const tiers = res.tiers;
   G.cy = cytoscape({
     container: box,
     elements: [
       ...nodes.map(n => ({data: {id: n.id, label: n.title || n.id, path: n.path,
                                  draft: n.status === "draft" ? 1 : 0,
-                                 me: n.id === G.focus ? 1 : 0}})),
+                                 me: n.id === G.focus ? 1 : 0, tier: tiers[n.id]}})),
       ...edges.map(e => ({data: {id: e.from + "→" + e.to, source: e.from, target: e.to}}))],
-    style: [
-      {selector: "node", style: {"background-color": line, "label": "data(label)",
-        "color": ink, "font-size": "9px", "width": 10, "height": 10,
-        "text-max-width": "120px", "text-wrap": "ellipsis"}},
-      // Черновик виден отдельно: строить на нём требования нельзя, и это должно быть
-      // заметно до того, как человек откроет карточку.
-      {selector: "node[draft = 1]", style: {"background-color": "#8a8a8a",
-        "border-width": 1, "border-style": "dashed", "border-color": line}},
-      {selector: "node[me = 1]", style: {"background-color": hot, "width": 16,
-        "height": 16, "font-size": "11px", "font-weight": "bold"}},
-      {selector: "edge", style: {"width": 1, "line-color": line,
-        "curve-style": "haystack", "opacity": 0.55}}],
+    style: sheet(),
     // `fit: false` намеренно: с автоподгонкой раскладка всегда вписывается в окно, и
     // «развести узлы» гасится обратным масштабированием — человек жмёт «+», а картинка
     // не меняется. Первый показ подгоняем сами, дальше масштаб в руках человека.
@@ -181,6 +241,58 @@ function draw(ctx){
     ? ctx.t("graph.around", {id: G.focus, n: nodes.length, depth})
     : ctx.t("graph.counts", {nodes: G.data.nodes.length, edges: G.data.edges.length,
                              orphans: G.data.orphans});
+  tierNote(ctx, res);
+}
+
+// Стиль узлов: размер букв — от уровня подписи и от ручки «Шрифт». Узлы и связи от
+// шрифта не зависят — меняются только подписи, раскладка остаётся.
+function sheet(){
+  const css = getComputedStyle(document.body);
+  const ink = css.getPropertyValue("--text").trim() || "#ddd";
+  const line = css.getPropertyValue("--border").trim() || "#555";
+  const hot = css.getPropertyValue("--accent").trim() || "#e0a33e";
+  const px = v => (Math.round(v * FONT * 10) / 10) + "px";
+  return [
+    {selector: "node", style: {"background-color": line, "label": "data(label)",
+      "color": ink, "font-size": px(9), "width": 10, "height": 10,
+      "text-max-width": "120px", "text-wrap": "ellipsis"}},
+    {selector: "node[tier = 'many']", style: {"font-size": px(13), "font-weight": "bold",
+      "text-max-width": "180px"}},
+    {selector: "node[tier = 'few']", style: {"font-size": px(6.5)}},
+    // Черновик виден отдельно: строить на нём требования нельзя, и это должно быть
+    // заметно до того, как человек откроет карточку.
+    {selector: "node[draft = 1]", style: {"background-color": "#8a8a8a",
+      "border-width": 1, "border-style": "dashed", "border-color": line}},
+    {selector: "node[me = 1]", style: {"background-color": hot, "width": 16,
+      "height": 16, "font-size": px(13), "font-weight": "bold"}},
+    {selector: "edge", style: {"width": 1, "line-color": line,
+      "curve-style": "haystack", "opacity": 0.55}}];
+}
+
+// Шрифт и уровни меняют только стиль: граф не перекладывается, человек не теряет место.
+function restyle(ctx){
+  if (!G.cy || !G.degree) return;
+  const res = degreeTiers(G.degree, TIERS.top, TIERS.low);
+  G.cy.batch(() => G.cy.nodes().forEach(n => n.data("tier", res.tiers[n.id()])));
+  G.cy.style(sheet());
+  tierNote(ctx, res);
+}
+
+function tierNote(ctx, res){
+  const box = ctx.$("#graphTierNow");
+  if (!box) return;
+  const c = {many: 0, mid: 0, few: 0};
+  Object.values(res.tiers).forEach(v => { c[v] = (c[v] || 0) + 1; });
+  box.textContent = ctx.t("graph.tier_now", {...c,
+    hi: res.hi === null ? "—" : res.hi, lo: res.lo === null ? "—" : res.lo});
+}
+
+function setFont(ctx, v){
+  FONT = Math.max(0.5, Math.min(3, Math.round(v * 100) / 100));
+  try { localStorage.setItem("aurora-graph-font", String(FONT)); } catch (e) {}
+  const box = ctx.$("#graphFontNow");
+  if (box) box.textContent = "×" + FONT.toFixed(1);
+  if (G.cy) G.cy.style(sheet());
 }
 
 function setSpread(ctx, v){

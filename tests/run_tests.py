@@ -18047,6 +18047,46 @@ def test_files_counter_counts_every_file(tmp: Path):
 
 
 @test
+def test_graph_labels_scale_and_follow_the_link_distribution(tmp: Path):
+    """«Граф»: шрифт подписей крутится отдельно от масштаба, подписи — трёх уровней.
+
+    Просьба пользователя 24.09.2026: увеличивать и уменьшать только шрифт названий узлов; у
+    самых связанных (верхние 10 %) — жирно и крупнее, у наименее связанных (нижние 40 %) —
+    самым мелким шрифтом; доли — по распределению числа связей и настраиваются на панели.
+    Узлы с одинаковым числом связей — всегда один уровень.
+    """
+    view = (KIT / "cockpit/modules/graph/view.html").read_text(encoding="utf-8")
+    for bid in ("graphFontUp", "graphFontDown", "graphTierTop", "graphTierLow"):
+        assert re.search(rf'id="{bid}"[^>]*data-help=', view), f"нет {bid} или его подсказки"
+    js = (KIT / "cockpit/modules/graph/view.js").read_text(encoding="utf-8")
+    assert "function setFont" in js and "G.cy.style(sheet())" in js, "шрифт перекладывает граф"
+    assert "node[tier = 'many']" in js and "node[tier = 'few']" in js
+    node = shutil.which("node")
+    if not node:
+        return
+    fn = re.search(r"export function degreeTiers[\s\S]*?\n}\n", js).group(0).replace("export ", "")
+    probe = fn + textwrap.dedent("""
+        const cnt = r => { const c = {many: 0, mid: 0, few: 0};
+                           Object.values(r.tiers).forEach(v => c[v]++); return c; };
+        const d = {}; for (let i = 0; i < 100; i++) d["x" + i] = i;
+        const t = {}; for (let i = 0; i < 10; i++) t["a" + i] = 1;
+        t.hub = 9; t.b = 2; t.c = 2;
+        console.log(JSON.stringify([cnt(degreeTiers(d, 10, 40)),
+                                    degreeTiers(t, 10, 40).tiers,
+                                    cnt(degreeTiers({a: 3, b: 3}, 10, 40))]));
+    """)
+    f = tmp / "tiers.js"
+    f.write_text(probe, encoding="utf-8")
+    cp = subprocess.run([node, str(f)], capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stderr
+    spread, ties, flat = json.loads(cp.stdout)
+    assert spread == {"many": 10, "mid": 50, "few": 40}, spread
+    ones = {ties[f"a{i}"] for i in range(10)}
+    assert len(ones) == 1 and ties["hub"] == "many", f"равное число связей — разные уровни: {ties}"
+    assert flat == {"many": 0, "mid": 2, "few": 0}, flat
+
+
+@test
 def test_web_sync_without_pages_says_one_line(tmp: Path):
     """`sync:web` в проекте без веб-страниц — одна строка, а не образец конфига на каждом прогоне.
 
