@@ -871,6 +871,11 @@ def expansions_from_cards(cards: dict) -> dict:
     return out
 
 
+LINK_STUB = "_Заготовка: ссылка на это понятие уже есть"   # заготовка под ссылку
+TERM_STUB = "_Заготовка: имя названо в базе"               # заготовка под имя в тексте
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
+
+
 def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     """Завести пустышку под понятие, которое база называет словами, но карточки не имеет.
 
@@ -981,6 +986,69 @@ def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
                                              os.path.basename(rel)).replace("\\", "/")))
         dropped.append(c.stem)
     return dropped
+
+
+def plan_stale_stubs(cards: dict, plan: Plan, root: str) -> list:
+    """Убрать в архив пустые карточки, которые больше ничего не держат. → [(имя, почему)].
+
+    Проверка карточек, где нет ничего, кроме служебного (PRJ-B и PRJ-C 24.09.2026), нашла
+    три вида ошибочных — не «знания пока нет», а «и не будет»:
+
+    - заготовка под ссылку, на которую никто больше не ссылается: её завели под ссылку
+      прежней карточки, ту переписали, а заготовку держит только карта «Пустышки»;
+    - заготовка под «сокращение», которое оказалось обычным словом прописными
+      (`kb_gaps.written_as_words`): «НАЛОГОВ», «ГОДА», «WHERE»;
+    - пустая заметка под картинку: Obsidian заводит «схема.png.md», когда щёлкают по
+      встроенной картинке, а ремонт шапок и транслит делали из неё карточку.
+
+    Архив, а не удаление. Ссылки на заготовку-слово становятся текстом: иначе ремонт
+    ссылок завёл бы её заново.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from kb_gaps import load as load_gaps, written_as_words
+    words = written_as_words(load_gaps(root))
+    inbound: set = set()
+    for path, c in cards.items():
+        rel = path.replace("\\", "/")
+        if (is_service(rel) or "/_archive/" in rel or "/MOC/" in rel
+                or c.stem.startswith("_") or is_placeholder(c.fm, c.text)):
+            continue
+        for m in LINK_RE.finditer(c.text):
+            inbound.add(fold_hard(m.group(2).split("#")[0].strip()))
+    gone, unlink = [], {}
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel:
+            continue
+        title = (c.fm.get("title") or "").strip().strip('"')
+        own = c.body().split(QUOTES, 1)[0]
+        # Только машинная заготовка: статус `placeholder`, метка в своей части, и человек
+        # её не трогал. На PRJ-C у «заготовок» по тегу стоят `owner` и `verified` — это
+        # решение человека, а не мусор движка.
+        machine = ((c.fm.get("status") or "").strip().strip('"') == PLACEHOLDER
+                   and not (c.fm.get("verified") or c.fm.get("owner")))
+        why = ""
+        if title.lower().endswith(IMAGE_EXT) and not c.body().strip():
+            why = "пустая заметка под картинку"
+        elif machine and LINK_STUB in own:
+            names = {c.stem, title, *c.aliases} - {""}
+            if not any(fold_hard(n) in inbound for n in names):
+                why = "никто не ссылается"
+        elif machine and TERM_STUB in own and c.stem.isalpha() and c.stem.lower() in words:
+            why = "обычное слово, а не сокращение"
+            unlink[c.stem] = None
+        if not why:
+            continue
+        plan.moves.append((rel, os.path.join(ROOT, "_archive",
+                                             os.path.basename(rel)).replace("\\", "/")))
+        gone.append((c.stem, why))
+    if unlink:
+        for path, c in cards.items():
+            base = plan.file_writes.get(path, c.text)
+            new = rewrite_links(base, unlink)
+            if new != base:
+                plan.write(path, new)
+    return gone
 
 
 def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
@@ -1888,6 +1956,9 @@ def main() -> int:
     ap.add_argument("--drop-jira", action="store_true",
                     help="убрать в архив карточки, сделанные из задач Jira: задача — "
                          "это работа, а не сущность (правило заказчика)")
+    ap.add_argument("--stale-stubs", action="store_true",
+                    help="убрать в архив пустые карточки, которые ничего не держат: "
+                         "заготовки без ссылок, слова прописными, заметки под картинки")
     ap.add_argument("--drop-code-stubs", action="store_true",
                     help="убрать в архив заготовки под голые коды артефактов (US, AC, REQ, "
                          "SPEC, Epic); ссылки остаются и ведут на индекс кода (kb:moc --by-code)")
@@ -1943,7 +2014,7 @@ def main() -> int:
         return 1
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
-                a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs,
+                a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs,
                 a.unparsed, a.themes,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
@@ -2049,6 +2120,13 @@ def main() -> int:
                 head.append(f"- {name} ← {srcs}")
             if len(gone) > 20:
                 head.append(f"- … ещё {len(gone) - 20}")
+        if a.stale_stubs:
+            stale = plan_stale_stubs(cards, plan, a.root)
+            head.append(f"## Пустые карточки, которые ничего не держат: {len(stale)} в архив")
+            for name, why in stale[:20]:
+                head.append(f"- {name} — {why}")
+            if len(stale) > 20:
+                head.append(f"- … ещё {len(stale) - 20}")
         if a.drop_code_stubs:
             codes = plan_drop_code_stubs(cards, plan)
             head.append(f"## Заготовки под коды артефактов: {len(codes)} в архив; ссылки "

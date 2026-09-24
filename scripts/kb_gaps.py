@@ -103,6 +103,7 @@ def missing_cards(cards: dict, floor: int) -> list:
     known = set()
     for c in cards.values():
         known |= {n.lower() for n in c["names"]}
+    words = written_as_words(cards)
     seen = collections.Counter()
     for stem, c in cards.items():
         for term in {m.group(1) for m in TERM_RE.finditer(c["thesis"])}:
@@ -110,8 +111,29 @@ def missing_cards(cards: dict, floor: int) -> list:
                 continue
             if term.isalpha() and len(term) > ABBR_MAX:
                 continue          # длинное слово капсом — выделение, а не сокращение
+            if term.isalpha() and term.lower() in words:
+                continue          # обычное слово, набранное прописными в заголовке
             seen[term] += 1
     return [(t, n) for t, n in seen.most_common() if n >= floor]
+
+
+def written_as_words(cards: dict) -> set:
+    """Слова, которые база чаще пишет обычным написанием, чем прописными. → в нижнем регистре.
+
+    Заголовок новости набран прописными — «ПОСТУПЛЕНИЯ НАЛОГОВЫХ ПЛАТЕЖЕЙ НА 1 ИЮНЯ», — и
+    каждое слово в нём выглядит сокращением. Отчёт звал их понятиями без карточки, а ремонт
+    заводил под них заготовки: на PRJ-B 24.09.2026 — «НАЛОГОВ», «ПЛАТЕЖЕЙ», «ГОДА», «ЗАКОН»,
+    на PRJ-C — «ИНАЧЕ», «ОКНО», «WHERE», «VARCHAR». Слово от сокращения отличает то, как
+    его пишут в тексте: «налогов» встречается обычным написанием чаще, чем прописными, а
+    настоящее сокращение в карточках PRJ-C — прописными 52 раза против одного.
+    """
+    caps, plain = collections.Counter(), collections.Counter()
+    for c in cards.values():
+        if c["ph"]:
+            continue          # заготовка — не текст базы: её заголовок и есть спорное имя
+        for w in re.findall(r"[A-Za-zА-Яа-яЁё]+", c["thesis"]):
+            (caps if w.isupper() else plain)[w.lower()] += 1
+    return {w for w, n in plain.items() if n >= max(1, caps[w])}
 
 
 def missing_links(cards: dict) -> list:

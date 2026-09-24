@@ -65,7 +65,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES  # noqa: E402
+from aurora_common import QUOTES, fold  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -595,6 +595,46 @@ def thesis_of(text: str) -> str:
 _EXTRACT_LOCK = threading.Lock()   # запись выделенных определений — по одному потоку
 
 
+def sentences(text: str) -> list:
+    """Предложения тезиса как они написаны: по концу фразы и по строкам."""
+    return [p.strip() for p in re.split(r"(?<=[.!?;])\s+|\n+", text or "") if p.strip()]
+
+
+def sentence_key(sentence: str) -> str:
+    """Ключ предложения для сравнения: без ссылок-скобок, регистра и лишних пробелов."""
+    t = re.sub(r"\[\[[^\]|]+\|([^\]]+)\]\]", r"\1", sentence)
+    t = re.sub(r"\[\[([^\]|#]+)(?:#[^\]]*)?\]\]", r"\1", t)
+    return " ".join(t.split()).lower()
+
+
+def examined_thesis(text: str, fm: dict) -> str:
+    """Тезис, по которому карточку уже осматривали. Пусто — не осматривали или не восстановить.
+
+    Отметка `extracted` держит дату осмотренного тезиса, а переписанный тезис кладёт
+    прежний в историю карточки. Если после осмотра тезис переписан ровно один раз, прежний
+    в последней записи истории — тот самый, осмотренный. Переписан дважды и больше — какой
+    из прежних видела модель, уже не сказать: осматриваем целиком.
+    """
+    from aurora_common import FOOTER
+    seen = (fm.get("extracted") or "").strip()
+    if not seen or FOOTER not in text:
+        return ""
+    hist = text.split(FOOTER, 1)[1]
+    entries = re.findall(r"^- (\d{4}-\d{2}-\d{2}): тезис пересобран.*?<details><summary>"
+                         r"прежний тезис</summary>\n(.*?)\n\s*</details>", hist, re.M | re.S)
+    after = [body for day, body in entries if day > seen]
+    if len(after) != 1:
+        return ""
+    return "\n".join(line[2:] if line.startswith("  ") else line
+                     for line in after[0].splitlines()).strip()
+
+
+def fresh_part(thesis: str, examined: str) -> str:
+    """Предложения тезиса, которых не было в осмотренном. Пусто — нового текста нет."""
+    old = {sentence_key(x) for x in sentences(examined)}
+    return "\n".join(x for x in sentences(thesis) if sentence_key(x) not in old)
+
+
 def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
                  deadline: float = 0.0, prefer: int = 0) -> dict:
     """Вынести из карточки чужие определения в их собственные карточки. → шаг отчёта.
@@ -635,12 +675,29 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
             mark_examined(path, fm)
         return step
 
+    # Переписанный тезис осматривается только в новой части. Всё, что в нём уже было,
+    # модель видела и решила; прогон PRJ-B 24.09.2026 осмотрел 40 переписанных карточек
+    # целиком за 15 минут — и не вынес ни одного нового определения (PRJ-A: 0 из 13 и 0 из
+    # 14 при повторных осмотрах; при первом — 30 из 478). Нового текста нет — модель не нужна.
+    scope = thesis
+    was = examined_thesis(text, fm)
+    if was:
+        scope = fresh_part(thesis, was)
+        if not scope:
+            step["note"] = "тезис переписан без нового текста — осмотрен прежде"
+            if apply:
+                mark_examined(path, fm)
+            return step
+        step["scope"] = "новая часть тезиса"
+
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
-    known = candidates_block(candidates_for(root, cfg, thesis, limit=8))
+    known = candidates_block(candidates_for(root, cfg, scope, limit=8))
     title = (fm.get("title") or step["card"]).strip().strip('"')
     r = call(cfg, "planner", [{"role": "user", "content": with_terms(
-        PROMPT_EXTRACT.format(title=title, thesis=thesis[:8000], known=known),
-        thesis, root)}], deadline=deadline or (time.time() + AG.call_budget(cfg, "planner")),
+        PROMPT_EXTRACT.format(title=title, known=known, thesis=(
+            scope if scope is thesis else "(только новые предложения переписанного тезиса; "
+            "остальное уже осмотрено)\n\n" + scope)[:8000]),
+        scope, root)}], deadline=deadline or (time.time() + AG.call_budget(cfg, "planner")),
         prefer=prefer)
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
@@ -676,6 +733,13 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
             # значило бы переписать знание под видом переноса.
             out["note"] = (out["note"] + f"; «{term}»: определение не найдено дословно"
                            ).strip("; ")
+            continue
+        if closed_to_definitions(root, term, definition):
+            # Словарь и карточку документа модель не пишет: их текст — выгрузка справочника
+            # или сам документ. Определения там нет — переносить некуда, и кусок остаётся на
+            # месте: вырезать его значило бы потерять. Ссылку на термин поставит связывание.
+            out["note"] = (out["note"] + f"; «{term}» — карточка словаря или документа: "
+                           "определение оставлено на месте").strip("; ")
             continue
         # «Термин (расшифровка)» заменяется целиком на ссылку. Иначе от конструкции
         # остаются скобки, и в тексте выходит «введена УСН ([[УСН]])» — имя дважды и
@@ -783,6 +847,29 @@ def definition_link(root: str, term: str) -> str:
     target = (os.path.basename(existing)[:-3] if existing
               else card_filename(canon_term(term)))
     return f"[[{target}]]" if target == term else f"[[{target}|{term}]]"
+
+
+CLOSED_KINDS = ("dictionary", "document")   # их текст модель не пишет и не пополняет
+
+
+def closed_to_definitions(root: str, term: str, definition: str) -> bool:
+    """Карточка термина — словарь или документ, и этого определения в ней нет?
+
+    Вынос дописывал перенесённое определение в любую найденную карточку. Словарная
+    («КПП», kind: dictionary) — выгрузка справочника, карточка документа — сам документ:
+    дописанный моделью абзац в них — чужой текст под видом источника. Если определение
+    там уже есть, перенос безопасен: в донора встанет ссылка, текст не теряется.
+    """
+    from aurora_common import card_body, frontmatter, is_placeholder
+    existing = term_card(root, term)
+    if not existing:
+        return False
+    text = open(existing, encoding="utf-8", errors="ignore").read()
+    fm = frontmatter(text)
+    kind = (fm.get("kind") or "").strip().strip('"')
+    if kind not in CLOSED_KINDS or is_placeholder(fm, text):
+        return False
+    return definition.strip() not in card_body(text)
 
 
 def place_definition(root: str, term: str, definition: str, came_from: str,
@@ -2563,6 +2650,19 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
     return {"res": res, "results": results, "batches": batch, "texts": texts}
 
 
+def lap_steps(cfg: dict) -> int:
+    """Сколько источников разбирать за один запуск разбора: не меньше полной волны пула.
+
+    Лимит шагов (15 по умолчанию) ставили, когда разбор шёл в один поток. При пуле в 24
+    потока он оставлял девять свободными и резал 42 источника на три оборота маршрута, а
+    каждый оборот заново гонит типы, тезисы, вынос, индекс, связи и карты (PRJ-B
+    24.09.2026). Источники одной волны друг друга всё равно не видят: индекс для следующей
+    партии обновляется между оборотами — так что волна целиком ничего не теряет.
+    """
+    width = len(AG.pool(cfg)) if (cfg.get("parallel") or 1) > 1 else 1
+    return max(cfg["max_steps"], width)
+
+
 def distill_every(cfg: dict) -> int:
     """Через сколько записанных тезисов фиксировать проход до конца очереди.
 
@@ -3084,6 +3184,30 @@ def check_cards(cards: list, sections: list) -> str:
     return ""
 
 
+def merge_same_target(cards: list) -> list:
+    """Склеить записи плана, ведущие в одну карточку, в одну — с общим списком секций.
+
+    Блок источника в карточке один: повторная запись того же источника заменяет его
+    (`build_plan.own_block`). Модель же вправе разложить одну карточку на две записи —
+    «секции 1,2» и «секция 5». Двумя вызовами вторая запись заменила бы первую, и
+    секции 1–2 пропали бы из карточки. Одним — обе на месте.
+    """
+    out: list = []
+    seen: dict = {}
+    for c in cards:
+        name = str(c.get("into") or c.get("title") or "").strip()
+        key = fold(name) if name else ""
+        if key and key in seen:
+            first = out[seen[key]]
+            nums = sorted(section_set(first.get("sections", "")) | section_set(c.get("sections", "")))
+            first["sections"] = ",".join(str(n) for n in nums)
+            continue
+        if key:
+            seen[key] = len(out)
+        out.append(dict(c))
+    return out
+
+
 def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                  use_critic: bool, call=None, deadline: float | None = None) -> dict:
     """Разобрать один источник на карточки. → шаг для отчёта."""
@@ -3195,7 +3319,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         return step
 
     made = []
-    for card in cards:
+    for card in merge_same_target(cards):
         # `into` — знание дописывается в существующую карточку: про одну сущность
         # говорят несколько документов, и все они копятся в ней. `title` — новая карточка.
         into_name = str(card.get("into") or "").strip()
@@ -3424,14 +3548,15 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
     if limit:
         sources = sources[:limit]
 
-    slots, width = parallel_width(cfg, len(sources))
+    cap = lap_steps(cfg)
+    total = min(len(sources), cap)
+    slots, width = parallel_width(cfg, total)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     steps, fails, stopped = [], {}, ""
-    say(f"Источников в работе: {len(sources)} · лимит шагов {cfg['max_steps']} · "
+    say(f"Источников в работе: {len(sources)} · лимит шагов {cap} · "
         f"бюджет {cfg['budget_min']} мин")
-    total = min(len(sources), cfg["max_steps"])
     jobs = list(enumerate(sources[:total]))
 
     # Общий признак остановки. Задача, снятая с очереди уже после решения остановиться,
@@ -3466,8 +3591,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             if time.time() > budget:
                 stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
                 break
-            if len(steps) >= cfg["max_steps"]:
-                stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
+            if len(steps) >= cap:
+                stopped = f"дошли до лимита шагов ({cap})"
                 break
             say(f"  {progress(len(steps), total, started)} · поток 1 · "
                 f"{source.rsplit('/', 1)[-1][:60]} …")
@@ -3500,8 +3625,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                     defer_if_content_fail(cwd, source, step, apply)
                     if time.time() > budget:
                         stopped = f"бюджет {cfg['budget_min']} мин исчерпан"
-                    elif len(steps) >= cfg["max_steps"]:
-                        stopped = f"дошли до лимита шагов ({cfg['max_steps']})"
+                    elif len(steps) >= cap:
+                        stopped = f"дошли до лимита шагов ({cap})"
                     elif step["status"] == "сбой":
                         stopped = note_failure(step)
                     if stopped:
@@ -5260,12 +5385,23 @@ def report_distill(res: dict, apply: bool) -> str:
               "а саму карточку превратит в карту документа.", ""]
         L += [f"- {s['card']}: {s['note']}" for s in long[:15]]
         L += [""]
+    # Под предупреждением — только помеченные карточки. Раньше за ним сразу шёл список
+    # всех переписанных, без своего заголовка, и человек шёл проверять не те: в прогоне
+    # PRJ-B 24.09.2026 под «помечены 3» стояли 13 карточек.
+    flagged = [s for s in made if s.get("unsupported")]
     if res["unsupported"]:
         L += [f"⚠️ Момус нашёл утверждений без опоры: {res['unsupported']}. Эти карточки "
               "помечены `unsupported:` и ждут человека — это единственная работа, которую "
-              "новая схема ему оставляет.", ""]
-    for s in made[:15]:
-        L.append(f"- {s['card']}: {s['note']}")
+              "новая схема ему оставляет:", ""]
+        L += [f"- {s['card']}: без опоры {s['unsupported']}" for s in flagged[:15]]
+        if len(flagged) > 15:
+            L.append(f"- … ещё {len(flagged) - 15}")
+        L += [""]
+    if made:
+        L += ["## Переписанные тезисы", ""]
+        L += [f"- {s['card']}: {s['note']}" for s in made[:15]]
+        if len(made) > 15:
+            L.append(f"- … ещё {len(made) - 15}")
     if empty:
         L += ["", "## Знания в источнике нет", ""] + [f"- {s['card']}" for s in empty[:10]]
     return "\n".join(L)
@@ -5738,6 +5874,13 @@ def main() -> int:
         # на КАЖДЫЙ оборот маршрута (PRJ-A 22.09.2026). Строку плана печатаем: по ней цикл
         # маршрута считает, сколько источников осталось.
         print("Источников в плане: 0 → 0 · разбирать нечего")
+        return 0
+    if a.task == "aliases" and not read_conflicts(cwd):
+        # Разводить нечего — шаг холостой, как разбор с пустым планом: ни чекпойнта, ни
+        # оракула. Оракул дважды гоняет линтер всей базы, и холостые синонимы стоили
+        # маршруту 40 с на каждом прогоне (PRJ-B 24.09.2026) — при проверке конфликтов
+        # за секунду.
+        print("Конфликтов синонимов: 0 · разводить нечего")
         return 0
     cp = checkpoint(cwd, f"agent:{a.task}", a.apply and not a.no_checkpoint)
     before = tree_fingerprint(cwd)

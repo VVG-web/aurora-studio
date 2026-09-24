@@ -46,6 +46,7 @@ import urllib.parse
 from sources_core import (RestApi, WikiMirror, block, config_text, no_access,
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
+from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
 
 DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
@@ -859,8 +860,25 @@ def main() -> int:
               f"ссылок на чужие ключи {exp.ry_links}")
     print(f"Страниц: {len(exp.records)} · записано: {exp.written} · без изменений: {exp.skipped}"
           + (f" · ошибок: {exp.failed}" if exp.failed else ""))
+    # Переехавшая страница — не удалённая: её номер стоит в этом обходе под другим путём.
+    # Её старая копия уходит всегда, а база переводится на новый путь (`follow_moves`):
+    # без этого разбор видел новый путь как новый источник и клал тот же текст в ту же
+    # карточку вторым блоком. Порог чистки считается только по исчезнувшим — переезды
+    # раньше держали его закрытым навсегда (PRJ-B 24.09.2026: 57 из 63 «лишних»).
+    moved = page_moves(out) if stale else {}
+    if moved:
+        print(f"\nПереехали страниц: {len(moved)} — та же страница по новому пути:")
+        for old in sorted(moved)[:10]:
+            print(f"  - {old} → {moved[old]}")
+        if len(moved) > 10:
+            print(f"  … ещё {len(moved) - 10}")
+        if a.prune:
+            print(moves_report(follow_moves(out, apply=True), apply=True))
+        else:
+            print("Перевести базу на новые пути и убрать старые копии: повторите с --prune")
+    stale = [s for s in stale if s not in moved]
     if stale:
-        report_stale("страниц больше нет или они переехали", stale, out)
+        report_stale("страниц больше нет", stale, out)
         ok, why = prune_allowed(stale, len(exp.records), exp.failed) if a.prune else (False, "")
         if a.prune and not ok:
             print(f"Не убираю: {why}")
@@ -871,6 +889,10 @@ def main() -> int:
                   + (f" · убрано опустевших папок: {empty}" if empty else ""))
         else:
             print("Убрать: повторите с --prune")
+    elif moved and a.prune:
+        empty = drop_empty_dirs(out)
+        if empty:
+            print(f"Убрано опустевших папок: {empty}")
     print(f"\nСостояние: {os.path.join(out, STATE)}")
     print("Дальше: `sync_audit.py` (целостность) → `/aurora-vault diff` (дрейф) → `build`.")
     return 1 if exp.failed else 0

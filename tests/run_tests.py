@@ -4834,10 +4834,11 @@ def test_a_changed_source_reaches_the_base(tmp: Path):
     # и наоборот: неизменившийся источник карточку не трогает
     cp3 = run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md",
               "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
-    assert "обновлён источник" in cp3.stdout or "уже собрана" in cp3.stdout
+    assert "без изменений" in cp3.stdout, cp3.stdout
     again = card.read_text(encoding="utf-8")
     assert again.count("тезис пересобран") == 1, \
         "повторный проход по неизменившемуся источнику дописал историю впустую"
+    assert "distilled:" in again, "тезис по неизменному тексту снят — модель перепишет его зря"
 
 
 @test
@@ -17458,6 +17459,371 @@ def test_update_route_prunes_the_mirror_only_after_a_clean_export(tmp: Path):
     upd = scen.split("[update]")[1].split("\n[")[0]
     line = next(l for l in upd.splitlines() if l.startswith("sync:confluence"))
     assert line.rstrip().endswith("| --prune"), f"маршрут не убирает зеркала удалённых страниц: {line}"
+
+
+def _mirror_page(root: Path, rel: str, pid: int, text: str) -> str:
+    """Файл зеркала Confluence с шапкой, как её пишет синк. → путь от корня проекта."""
+    import hashlib
+    p = root / "Sources/Confluence" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    h = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+    crumbs = rel.rsplit("/", 1)[0]
+    p.write_text(f"---\npage_id: {pid}\ntitle: \"x\"\nbreadcrumbs: \"{crumbs}\"\n"
+                 f"content_hash: {h}\n---\n\n# x\n\n{text}\n", encoding="utf-8")
+    return "Sources/Confluence/" + rel
+
+
+def _sync_state(root: Path, rows: list) -> None:
+    """Состояние синка: [(page_id, путь в зеркале)] — то, что нашёл последний обход."""
+    body = "".join(f"| {i} | {pid} | x | {rel} | SYNCED |\n" for i, (pid, rel) in enumerate(rows, 1))
+    (root / "Sources/Confluence/sync_state.md").write_text(
+        "**Sync Date:** 2026-09-24\n\n| # | Page ID | Title | Local Path | Status |\n"
+        "|---|---|---|---|---|\n" + body, encoding="utf-8")
+
+
+def _quoted_card(root: Path, rel: str, sources: list, blocks: list, extra: str = "") -> Path:
+    """Карточка с разделом дословного текста: blocks = [(подпись или None, текст)]."""
+    p = root / "AuroraKnowledgeDB" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    src = "".join(f'  - "{x}"\n' for x in sources)
+    quoted = "\n\n".join((f"### {k}\n\n{t}" if k else t) for k, t in blocks)
+    p.write_text(f"---\ntitle: \"{p.stem}\"\ntype: process\nsources:\n{src}{extra}---\n\n"
+                 f"Тезис карточки.\n\n## Источник (перенесено дословно)\n\n{quoted}\n\n"
+                 "## История изменений\n\n- 2026-09-01: создана\n", encoding="utf-8")
+    return p
+
+
+@test
+def test_a_moved_page_stays_one_source(tmp: Path):
+    """Страница, переехавшая в Confluence, — тот же источник, а не второй.
+
+    Живой случай, PRJ-B 24.09.2026: родительскую папку переименовали, синк положил
+    страницу по новому пути, а старую копию оставил — чистку держал порог. Разбор счёл
+    новый путь новым источником и дописал тот же текст в ту же карточку вторым блоком
+    (27 карточек), а почти вся работа модели за прогон ушла на переписывание тезисов при
+    неизменном знании.
+    """
+    root = make_project(tmp)
+    old_a = _mirror_page(root, "Старая/Алгоритм.md", 111111, "Шаг один\nШаг два было")
+    new_a = _mirror_page(root, "Новая/Алгоритм.md", 111111, "Шаг один\nШаг два стало")
+    old_s = _mirror_page(root, "Старая/Справка.md", 222222, "Текст справки")
+    new_s = _mirror_page(root, "Новая/Справка.md", 222222, "Текст справки")
+    (root / "Sources/Confluence/Старая/Справка_assets").mkdir()
+    (root / "Sources/Confluence/Старая/Справка_assets/схема.drawio").write_text("x", encoding="utf-8")
+    _sync_state(root, [(111111, "Новая/Алгоритм.md"), (222222, "Новая/Справка.md")])
+    _quoted_card(root, "Processes/Алгоритм.md", [old_a, new_a],
+                 [(old_a, "Шаг один\nШаг два было"), (new_a, "Шаг один\nШаг два стало")],
+                 "distilled: 2026-09-20\n")
+    _quoted_card(root, "Processes/Справка.md", [old_s], [(None, "Текст справки")],
+                 "distilled: 2026-09-20\n")
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    B = importlib.import_module("build_plan")
+    man = root / "AuroraKnowledgeDB/meta/manifest.json"
+    man.parent.mkdir(parents=True, exist_ok=True)
+    man.write_text(json.dumps({"sources": {
+        old_a: {"hash": B.file_hash(str(root / old_a)), "cards": 1, "processed": "2026-09-01"},
+        new_a: {"hash": B.file_hash(str(root / new_a)), "cards": 1, "processed": "2026-09-24"},
+        old_s: {"hash": B.file_hash(str(root / old_s)), "cards": 1, "processed": "2026-09-01"},
+    }}, ensure_ascii=False), encoding="utf-8")
+
+    dry = run("kb_remap.py", "--moved", cwd=root, expect_rc=0).stdout
+    assert "Переехавших страниц: 2" in dry and (root / old_a).is_file(), f"dry-run записал:\n{dry}"
+    run("kb_remap.py", "--moved", "--apply", cwd=root, expect_rc=0)
+
+    alg = (root / "AuroraKnowledgeDB/Processes/Алгоритм.md").read_text(encoding="utf-8")
+    assert card_srcs(alg) == [new_a], f"старый путь остался в источниках: {card_srcs(alg)}"
+    quoted = alg.split("## Источник (перенесено дословно)")[1].split("## История изменений")[0]
+    assert quoted.count("Шаг один") == 1 and "было" not in quoted, f"текст страницы дважды:\n{quoted}"
+    assert "distilled:" not in alg, "тезис писали и по прежнему тексту — отметка должна сняться"
+    assert "второй экземпляр" in alg, "в истории карточки не сказано, что убрано"
+    ref = (root / "AuroraKnowledgeDB/Processes/Справка.md").read_text(encoding="utf-8")
+    assert card_srcs(ref) == [new_s] and "distilled: 2026-09-20" in ref, \
+        f"переезд без правки текста не должен трогать тезис:\n{ref}"
+    assert not (root / old_a).exists() and not (root / old_s).exists(), "старые копии в зеркале"
+    assert not (root / "Sources/Confluence/Старая/Справка_assets").exists(), "осталась папка схем"
+    recs = json.loads(man.read_text(encoding="utf-8"))["sources"]
+    assert old_a not in recs and old_s not in recs, f"старые пути в учёте разбора: {list(recs)}"
+    assert recs[new_s]["hash"] == B.file_hash(str(root / new_s)), \
+        "страница с тем же текстом после переезда снова ушла бы в разбор"
+
+
+@test
+def test_build_replaces_the_block_of_the_same_page(tmp: Path):
+    """Разбор кладёт страницу в карточку одним блоком — даже под новым путём.
+
+    Три дефекта одной природы (PRJ-B 24.09.2026): (1) переехавшая страница дописывалась
+    вторым блоком; (2) обновление одной страницы (`refresh_card`) стирало дословный текст
+    всех остальных источников карточки; (3) заголовок «### …» внутри текста страницы
+    делил её на два блока, и замена оставляла в карточке прежний хвост.
+    """
+    root = make_project(tmp)
+    old = _mirror_page(root, "Старая/Понятие.md", 333333, "x")
+    new = _mirror_page(root, "Новая/Понятие.md", 333333, "x")
+    jira = "Sources/JIRA/PRJ-1.md"
+    path = _quoted_card(root, "Concepts/Понятие.md", [old, jira],
+                        [(old, "Абзац один\n\n### Подраздел\n\nхвост старый"),
+                         (jira, "из задачи")], "distilled: 2026-09-20\n")
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    B = importlib.import_module("build_plan")
+    fresh = "Абзац один\n\n### Подраздел\n\nхвост новый"
+    B.append_card(str(path), path.read_text(encoding="utf-8"), fresh, new, True, str(root))
+    text = path.read_text(encoding="utf-8")
+    assert card_srcs(text) == [new, jira], f"источники: {card_srcs(text)}"
+    quoted = text.split("## Источник (перенесено дословно)")[1].split("## История изменений")[0]
+    assert "хвост старый" not in quoted and quoted.count("Абзац один") == 1, \
+        f"прежний текст страницы остался:\n{quoted}"
+    assert "из задачи" in quoted and "distilled:" not in text
+    # тот же текст ещё раз — карточка не меняется, тезис не снимается
+    again = text.replace("type: process\n", "type: process\ndistilled: 2026-09-24\n")
+    path.write_text(again, encoding="utf-8")
+    B.append_card(str(path), again, fresh, new, True, str(root))
+    assert path.read_text(encoding="utf-8") == again, "неизменный текст переписал карточку"
+    # обновление другого источника меняет только его блок
+    B.refresh_card(str(path), again, "из задачи, поправлено", jira, True, str(root))
+    text = path.read_text(encoding="utf-8")
+    assert "хвост новый" in text and "из задачи, поправлено" in text, \
+        f"обновление одного источника стёрло текст другого:\n{text}"
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    merged = R.merge_same_target([{"title": "А", "sections": "1,2"}, {"title": "Б", "sections": "3"},
+                                  {"into": "а", "sections": "5"}])
+    assert merged == [{"title": "А", "sections": "1,2,5"}, {"title": "Б", "sections": "3"}], merged
+
+
+@test
+def test_sync_follows_moves_and_prunes_only_the_gone(tmp: Path):
+    """Синк переводит базу за переехавшими страницами, а порог чистки считает только исчезнувшие.
+
+    PRJ-B 24.09.2026: 63 «лишних» из 204, из них 57 — переезды. Порог (не больше 20
+    или 10 %) держал чистку закрытой каждый прогон, а аудит зеркал каждый раз находил те же
+    63 файла.
+    """
+    root = make_project(tmp)
+    rows = []
+    for i in range(30):
+        _mirror_page(root, f"Старая/Стр{i}.md", 500000 + i, f"текст {i}")
+        _mirror_page(root, f"Новая/Стр{i}.md", 500000 + i, f"текст {i}")
+        rows.append((500000 + i, f"Новая/Стр{i}.md"))
+    gone = _mirror_page(root, "Старая/Удалённая.md", 599999, "нет её")
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(SCRIPTS)!r})
+        import confluence_export as C
+        C.read_config = lambda: {{"base_url": "https://wiki", "space": "S", "out": "Sources/Confluence",
+                                 "roots": ["1"]}}
+        C.read_secret = lambda: ("x", "токен")
+        def fake(cfg, roots, out, auth, force):
+            exp = C.Exporter(None, out, "https://wiki", "S", False)
+            exp.records = [(str(pid), rel, "x", "SYNCED") for pid, rel in {rows!r}]
+            return exp
+        C.run_export = fake
+        sys.argv = ["confluence_export.py", "--prune"]
+        sys.exit(C.main())
+    """)
+    cp = subprocess.run([sys.executable, "-c", script], cwd=str(root), capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    left = sorted(p.name for p in (root / "Sources/Confluence").rglob("*.md") if "Старая" in str(p))
+    assert left == [], f"старые копии и удалённая страница остались: {left}\n{cp.stdout}"
+    assert "Переехали страниц: 30" in cp.stdout and "Удалено: 1" in cp.stdout, cp.stdout
+    assert not (root / gone).exists()
+
+
+@test
+def test_distill_report_lists_under_the_warning_only_flagged_cards(tmp: Path):
+    """Под предупреждением Момуса — только помеченные карточки, переписанные — отдельно.
+
+    Живой случай, PRJ-B 24.09.2026: под «Момус нашёл утверждений без опоры: 3. Эти
+    карточки помечены…» стоял список всех 13 переписанных карточек без своего заголовка —
+    у первых двух отметки не было, и человек пошёл бы проверять не те.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    steps = [{"card": "Чистая.md", "status": "переписана", "note": "тезис"},
+             {"card": "Спорная.md", "status": "переписана", "note": "тезис", "unsupported": 2},
+             {"card": "Ещё-спорная.md", "status": "переписана", "note": "тезис", "unsupported": 1}]
+    rep = R.report_distill({"steps": steps, "left": 0, "unsupported": 3, "seconds": 1.0}, True)
+    warn, _, rest = rep.partition("⚠️")[2].partition("## Переписанные тезисы")
+    assert "Спорная.md" in warn and "Ещё-спорная.md" in warn and "Чистая.md" not in warn, \
+        f"под предупреждением не те карточки:\n{rep}"
+    assert all(n in rest for n in ("Чистая.md", "Спорная.md", "Ещё-спорная.md")), rep
+
+
+@test
+def test_rewritten_thesis_is_examined_only_in_its_new_part(tmp: Path):
+    """Вынос после переписанного тезиса читает только новые предложения.
+
+    Прогон PRJ-B 24.09.2026: 40 карточек с переписанным тезисом осмотрены целиком за
+    15 минут — новых определений ноль (PRJ-A: 0 из 13 и 0 из 14 при повторных осмотрах).
+    Прежние предложения модель уже видела и решила; нового текста нет — модель не зовётся.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    old = ("Реестр деклараций показывает все поданные декларации за выбранный период. "
+           "Сортировка идёт по дате подачи, новые сверху, по двадцать строк на странице.")
+    new_line = "Фильтр по инспекции ограничивает список декларациями своего региона."
+    hist = ("\n\n## Источник (перенесено дословно)\n\nтекст страницы"
+            "\n\n## История изменений\n\n- 2026-09-24: тезис пересобран — источник изменился. "
+            "Добавлен фильтр.\n  <details><summary>прежний тезис</summary>\n\n  " + old
+            + "\n\n  </details>\n")
+    cfg = {"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+           "thinking_roles": {}, "thinking": False, "backends": []}
+    seen = []
+
+    def fake(cfg, role, messages, **kw):
+        seen.append(messages[0]["content"])
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": '{"extract": []}'}
+
+    card(root, "Concepts/Реестр.md", status="draft", kind="knowledge", distilled="2026-09-24",
+         extracted="2026-09-20", body=old + " " + new_line + hist)
+    path = root / "AuroraKnowledgeDB/Concepts/Реестр.md"
+    R.extract_card(cfg, str(path), fake, apply=True)
+    assert len(seen) == 1 and new_line in seen[0] and "по двадцать строк" not in seen[0], \
+        "модели ушёл весь тезис, а не новая часть"
+    card(root, "Concepts/Реестр-2.md", status="draft", kind="knowledge", distilled="2026-09-24",
+         extracted="2026-09-20", body=old + hist)
+    path2 = root / "AuroraKnowledgeDB/Concepts/Реестр-2.md"
+    st = R.extract_card(cfg, str(path2), fake, apply=True)
+    assert len(seen) == 1, "тезис без нового текста снова ушёл модели"
+    assert "extracted: 2026-09-24" in path2.read_text(encoding="utf-8"), st
+
+
+@test
+def test_extraction_does_not_write_into_dictionary_cards(tmp: Path):
+    """Вынос не дописывает текст в словарную карточку и в карточку документа.
+
+    Прогон PRJ-B 24.09.2026: вынос нашёл определения «КПП» и «ИНН» и понёс их в
+    `Glossary/КПП.md` (kind: dictionary). Тогда определения там уже были, и встали только
+    ссылки; но при другом тексте движок дописал бы абзац модели в выгрузку справочника.
+    Определения там нет — кусок остаётся на месте, а не теряется.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    definition = "то есть код причины постановки на учёт из девяти цифр"
+    thesis = ("Декларация подаётся по каждому КПП, " + definition + ". Срок подачи — до "
+              "двадцатого числа месяца, следующего за налоговым периодом, для всех плательщиков "
+              "налога, кроме тех, кто перешёл на упрощённую систему по заявлению.")
+    card(root, "Glossary/КПП.md", "КПП — справочник кодов причин постановки.", kind="dictionary",
+         status="knowledge")
+    donor = card(root, "Concepts/Декларация.md", thesis, kind="knowledge", status="draft",
+                 distilled="2026-09-24")
+
+    def fake(cfg, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": json.dumps({"extract": [{"term": "КПП", "definition": definition,
+                                                 "keep": ""}]}, ensure_ascii=False)}
+
+    cfg = {"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
+           "thinking_roles": {}, "thinking": False, "backends": []}
+    before = (root / "AuroraKnowledgeDB/Glossary/КПП.md").read_text(encoding="utf-8")
+    st = R.extract_card(cfg, str(donor), fake, apply=True)
+    assert (root / "AuroraKnowledgeDB/Glossary/КПП.md").read_text(encoding="utf-8") == before, \
+        "в словарную карточку дописан текст модели"
+    assert definition in donor.read_text(encoding="utf-8"), "определение вырезано и потеряно"
+    assert "словаря или документа" in st["note"], st
+
+
+@test
+def test_update_route_spends_no_time_on_idle_steps(tmp: Path):
+    """Скорость «Обновить базу»: волна разбора на весь пул, холостые шаги — даром.
+
+    Прогон PRJ-B 24.09.2026: лимит 15 источников за запуск при пуле в 24 потока — 42
+    источника пошли в три оборота всего цикла; синонимы без единого конфликта стоили 40 с
+    (оракул дважды гонял линтер всей базы); каждый коммит маршрута — 20 с, из них 11 —
+    линтер всей базы в хуке при снятом храповике.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_PARALLEL": "24"})
+    assert R.lap_steps(cfg) == 24, f"волна разбора уже пула: {R.lap_steps(cfg)}"
+    one = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    assert R.lap_steps(one) == one["max_steps"], "в один поток лимит шагов изменился"
+    root = make_project(tmp, git=True)
+    g = lambda *args: subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+    (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    g("add", "-A"); g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+    before = len(g("log", "--oneline").stdout.splitlines())
+    env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
+           "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
+    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/agent_runner.py"),
+                         "--task", "aliases", "--apply", "--critic"],
+                        cwd=str(root), capture_output=True, text=True, env=env, timeout=300)
+    assert cp.returncode == 0 and "Конфликтов синонимов: 0" in cp.stdout, cp.stdout + cp.stderr
+    assert "Оракул" not in cp.stdout and len(g("log", "--oneline").stdout.splitlines()) == before, \
+        "холостые синонимы гоняли оракула или сделали коммит"
+    # хук при снятом храповике базу не проверяет: линтер-заглушка оставила бы след
+    lint = root / ".opencode/scripts/kb_lint.py"
+    lint.write_text("open('lint-ran', 'w').write('1')\nprint('карточек 1 · ошибок 0')\n",
+                    encoding="utf-8")
+    hooks = subprocess.run([sys.executable, str(SCRIPTS / "aurora_hooks.py"), "--install", "--force"],
+                           cwd=str(root), capture_output=True, text=True)
+    assert hooks.returncode == 0, hooks.stdout + hooks.stderr
+    (root / "lint-ran").unlink(missing_ok=True)        # установка сама меряет планку
+    (root / "AuroraKnowledgeDB/Concepts").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB/Concepts/Проба.md").write_text("# Проба\n", encoding="utf-8")
+    g("add", "-A")
+    done = subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "оборот"],
+                          cwd=str(root), capture_output=True, text=True,
+                          env={**os.environ, "AURORA_SKIP_RATCHET": "1"})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not (root / "lint-ran").exists(), "при снятом храповике хук гонял линтер"
+
+
+@test
+def test_empty_cards_that_hold_nothing_go_to_the_archive(tmp: Path):
+    """Пустая карточка, которая ничего не держит, уходит в архив; слово прописными — не сокращение.
+
+    Проверка карточек, где нет ничего, кроме служебного (PRJ-B и PRJ-C 24.09.2026): заготовки
+    под ссылки прежних карточек, на которые никто больше не ссылается; заготовки под
+    «сокращения» «НАЛОГОВ», «ГОДА», «WHERE» — слова из заголовков, набранных прописными;
+    пустая заметка «схема.png.md», которую Obsidian заводит по щелчку на картинке. Заготовку
+    с отметками человека (`owner`, `verified`) ремонт не трогает.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    stub = ("---\ntitle: \"{n}\"\naliases: []\nstatus: placeholder\ntype: concept\n"
+            "tags: [заготовка]\n{extra}---\n\n# {n}\n\n{mark}\n")
+    link_mark = "_Заготовка: ссылка на это понятие уже есть, знания пока нет._"
+    term_mark = "_Заготовка: имя названо в базе, расшифровки база пока не знает, знания нет._"
+    for name, mark, extra in (("Забытая", link_mark, ""), ("Нужная", link_mark, ""),
+                              ("Проверенная", link_mark, "owner: \"@человек\"\n"),
+                              ("НАЛОГОВ", term_mark, ""), ("ОКТМО", term_mark, "")):
+        (kb / "Concepts" / f"{name}.md").write_text(
+            stub.format(n=name, mark=mark, extra=extra), encoding="utf-8")
+    thesis = ("Поступления налогов и платежей растут. Сводка ПОСТУПЛЕНИЯ НАЛОГОВ И ПЛАТЕЖЕЙ за "
+              "июнь. Данные платежей сверяет ОКТМО по правилам БИК, а [[Нужная]] описывает "
+              "сверку и [[НАЛОГОВ|налогов]].")
+    for i in range(3):
+        card(root, f"Concepts/Сводка-{i}.md", thesis + " ОКТМО ОКТМО.", kind="knowledge",
+             status="knowledge")
+    (kb / "media").mkdir(exist_ok=True)
+    (kb / "media/схема.png.md").write_text("---\ntitle: \"схема.png\"\nstatus: draft\n---\n",
+                                           encoding="utf-8")
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    G = importlib.import_module("kb_gaps")
+    gaps = dict(G.missing_cards(G.load(str(kb)), 1))
+    assert "ПЛАТЕЖЕЙ" not in gaps and "БИК" in gaps, f"слово принято за сокращение: {gaps}"
+    cp = run("kb_fix.py", "--stale-stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=0)
+    left = {p.stem for p in (kb / "Concepts").glob("*.md")}
+    archived = {p.stem for p in (kb / "_archive").glob("*.md")}
+    assert {"Забытая", "НАЛОГОВ", "схема.png"} <= archived, f"{archived}\n{cp.stdout}"
+    assert {"Нужная", "Проверенная", "ОКТМО"} <= left, f"убрана нужная карточка: {left}"
+    text = (kb / "Concepts/Сводка-0.md").read_text(encoding="utf-8")
+    assert "[[НАЛОГОВ" not in text and "[[Нужная]]" in text, \
+        f"ссылка на убранное слово осталась — ремонт ссылок завёл бы его снова:\n{text}"
+    scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    fix = scen.split("[fix]")[1].split("\n[")[0]
+    assert "--stale-stubs" in fix, "«Починить базу» не убирает пустые карточки"
 
 
 @test

@@ -786,7 +786,8 @@ def one_typo(a: str, b: str, floor: int = 8) -> bool:
     return sum(1 for x, y in zip(a, b) if x != y) == 1
 
 
-def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -> int:
+def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
+                root: str = "") -> int:
     """Дописать знание нового источника в существующую карточку. → код возврата.
 
     Это и есть накопление, ради которого карточка называется сущностью, а не пересказом
@@ -802,12 +803,19 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -
 
     Повторное дополнение тем же источником **заменяет свой блок**, а не добавляет второй:
     источник правят и разбирают снова, и удвоение здесь означало бы, что карточка растёт
-    от собственных прогонов.
+    от собственных прогонов. «Тот же источник» — это та же страница, а не тот же путь
+    (`own_block`): страница, переехавшая в Confluence в другую папку, раньше ложилась в
+    карточку вторым дословным блоком (PRJ-B 24.09.2026 — 27 карточек).
+
+    Текст блока не изменился — карточку не трогаем: тезис написан по этому же тексту, и
+    снимать с него отметку значило бы гонять модель по неизменному знанию.
     """
     head, _sep, rest = (old_text.partition("\n---\n") if old_text.startswith("---")
                         else ("", "", old_text))
     mark = f"### {source}"
     block = f"{mark}\n\n{body.strip()}\n"
+    srcs = card_sources(old_text)
+    was, same = "", False
 
     if QUOTES_MARK not in rest:
         # У карточки нет раздела с дословным текстом (её писал человек). Заводим раздел,
@@ -825,34 +833,41 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -
             after, _m2, tail = after.partition(FOOTER_MARK)
             tail = FOOTER_MARK + tail
         blocks = split_source_blocks(after)
-        blocks[source] = body.strip()
+        was = own_block(blocks, source, srcs, root)
+        same = bool(was) and same_text(blocks[was], body)
+        if same and was in (source, FIRST_PARSE) and source in srcs:
+            print(f"без изменений: {path} · источник {source} — текст блока тот же")
+            return 0
+        # Свой блок меняется на месте и под именем источника: переехавшая страница
+        # занимает место прежней, а не встаёт второй рядом с ней.
+        blocks = {(source if k == was else k): (body.strip() if k == was else b)
+                  for k, b in blocks.items()}
+        blocks.setdefault(source, body.strip())
         quoted = "\n\n".join(f"### {s}\n\n{b}" for s, b in blocks.items())
         new_rest = (before.rstrip() + "\n\n" + QUOTES_MARK + "\n\n" + quoted + "\n"
                     + ("\n" + tail.strip() + "\n" if tail.strip() else ""))
 
-    srcs = card_sources(old_text)
-    new_head = head
+    if was and was != source and was in srcs:
+        srcs = [source if s == was else s for s in srcs]
     if source not in srcs:
         srcs = srcs + [source]
-    block_txt = sources_block(srcs).rstrip("\n")
-    if re.search(r"^sources:", new_head, re.M):
-        new_head = re.sub(r"^sources:(?:\s*\[.*\])?(?:\n\s+-.*)*$", block_txt,
-                          new_head, count=1, flags=re.M)
-    else:
-        new_head = re.sub(r"^source:.*$", block_txt, new_head, count=1, flags=re.M) \
-            if re.search(r"^source:", new_head, re.M) else new_head.rstrip("\n") + "\n" + block_txt
+    new_head = with_sources(head, srcs)
     for key, val in (("source_synced", TODAY), ("updated", TODAY)):
         new_head = (re.sub(rf"^{key}:.*$", f"{key}: {val}", new_head, flags=re.M)
                     if re.search(rf"^{key}:", new_head, re.M)
                     else new_head.rstrip("\n") + f"\n{key}: {val}")
-    new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
-    # Вместе с тезисом снимается и вердикт «знания нет»: он вынесен по
-    # ПРЕЖНЕМУ тексту, а текста стало больше. Оставить его значило бы
-    # закрыть карточке дорогу к тезису навсегда.
-    new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
+    if not same:
+        # Текст переехавшей страницы тот же — тезис по нему верен, переписывать нечего:
+        # поменялся только путь. Иначе тезис устарел вместе с текстом.
+        new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+        # Вместе с тезисом снимается и вердикт «знания нет»: он вынесен по
+        # ПРЕЖНЕМУ тексту, а текста стало больше. Оставить его значило бы
+        # закрыть карточке дорогу к тезису навсегда.
+        new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
 
     print(f"{'✅ дописано' if apply else '(dry-run) дописать'}: {path} · "
-          f"источник {source} · {len(body)} симв. · источников теперь {len(srcs)}")
+          f"источник {source} · {len(body)} симв. · источников теперь {len(srcs)}"
+          + (f" · блок той же страницы заменён: {was}" if was and was != source else ""))
     if not apply:
         print("Повторите с --apply, чтобы записать.")
         return 0
@@ -863,45 +878,246 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool) -
     return 0
 
 
+FIRST_PARSE = "(первый разбор)"
+# `### <путь к файлу>` или `### (первый разбор)` — и ничего больше
+BLOCK_MARK_RE = re.compile(r"^### (\(первый разбор\)|[^\n]*/[^\n]*\.\w{1,5})[ \t]*$", re.M)
+
+
+def page_id_of(path: str, root: str = "") -> str:
+    """Номер страницы Confluence из шапки файла зеркала. Пусто — файла нет или номера нет."""
+    full = path if (not root or os.path.isabs(path)) else os.path.join(root, path)
+    try:
+        head = head_text(full)
+    except (OSError, UnicodeError):
+        return ""
+    m = re.search(r"^page_id:\s*\"?(\d{4,})", head, re.M)
+    return m.group(1) if m else ""
+
+
+def same_text(a: str, b: str) -> bool:
+    """Один и тот же дословный текст — с точностью до пробелов по краям строк."""
+    def norm(t: str) -> str:
+        return "\n".join(line.strip() for line in (t or "").strip().splitlines())
+    return norm(a) == norm(b)
+
+
+def own_block(blocks: dict, source: str, srcs: list, root: str = "") -> str:
+    """Какой блок раздела дословного текста — этого же источника. → ключ или пусто.
+
+    Путь источника — не его имя. Страница Confluence — это её номер: переименовали
+    родительскую папку, и та же страница пришла по новому пути. Для карточки это тот же
+    источник, и его блок заменяется, а не встаёт вторым рядом. Безымянный блок первого
+    разбора — текст первого источника карточки: подписывать блоки начали позже, и
+    карточка, родившаяся из страницы, держит её прежний текст без подписи.
+    """
+    if source in blocks:
+        return source
+    pid = page_id_of(source, root)
+    if pid:
+        for k in blocks:
+            if k != FIRST_PARSE and page_id_of(k, root) == pid:
+                return k
+    if FIRST_PARSE in blocks and srcs:
+        first = srcs[0]
+        if first == source or (pid and page_id_of(first, root) == pid):
+            return FIRST_PARSE
+    return ""
+
+
+def with_sources(head: str, srcs: list) -> str:
+    """Шапка карточки с этим списком источников вместо прежнего."""
+    block_txt = sources_block(srcs).rstrip("\n")
+    if re.search(r"^sources:", head, re.M):
+        return re.sub(r"^sources:(?:\s*\[.*\])?(?:\n\s+-.*)*$", lambda _m: block_txt,
+                      head, count=1, flags=re.M)
+    if re.search(r"^source:", head, re.M):
+        return re.sub(r"^source:.*$", lambda _m: block_txt, head, count=1, flags=re.M)
+    return head.rstrip("\n") + "\n" + block_txt
+
+
 def split_source_blocks(quoted: str) -> dict:
     """Раздел дословного текста → {источник: текст}, в порядке появления.
 
     Карточка, собранная до накопления, блоков не имеет — весь её текст безымянный. Такой
     достаётся ключ `(первый разбор)`: терять его нельзя, а приписать конкретному источнику
     уже не получится — тогда его никто не подписывал.
+
+    Подпись блока — путь к файлу источника (`BLOCK_MARK_RE`). Заголовок третьего уровня
+    внутри перенесённого текста подписью не является: раньше «### Основной сценарий»
+    страницы делил её текст на два блока, и замена блока свежим текстом оставляла
+    прежний хвост страницы в карточке.
     """
     out: dict = {}
-    marks = list(re.finditer(r"^### (.+)$", quoted, re.M))
+    marks = list(BLOCK_MARK_RE.finditer(quoted))
     if not marks:
         body = quoted.strip()
         if body:
-            out["(первый разбор)"] = body
+            out[FIRST_PARSE] = body
         return out
     head = quoted[:marks[0].start()].strip()
     if head:
-        out["(первый разбор)"] = head
+        out[FIRST_PARSE] = head
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(quoted)
         out[m.group(1).strip()] = quoted[m.end():end].strip()
     return out
 
 
-def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool) -> int:
+def line_overlap(a: str, b: str) -> float:
+    """Какая доля непустых строк `a` дословно есть в `b`. Ноль — пустое `a`."""
+    la = [x.strip() for x in (a or "").splitlines() if x.strip()]
+    lb = {x.strip() for x in (b or "").splitlines() if x.strip()}
+    return sum(1 for x in la if x in lb) / len(la) if la else 0.0
+
+
+# Безымянный блок первого разбора — прежний текст той же страницы, если он — версия
+# подписанного блока (совпадает хотя бы эта доля его строк) и то, чего в подписанном нет,
+# нет и в нынешней странице (живо не больше второй доли). Иначе он держит нынешний текст
+# страницы, которого нет в свежем блоке, — это другая её часть, и она остаётся. Замер
+# 24.09.2026: PRJ-B — 65 карточек с обоими блоками, 54 прежних версии и 11 частей;
+# PRJ-C — 38, по 19. Совпадение ниже доли — остатки заготовки, а не страница.
+STALE_FIRST_SAME = 0.3
+STALE_FIRST_ALIVE = 0.2
+
+
+def stale_first(first: str, fresh: str, page: str) -> bool:
+    """Блок первого разбора — прежний текст страницы, у которой есть свежий блок?"""
+    if line_overlap(first, fresh) < STALE_FIRST_SAME:
+        return False
+    fresh_lines = {x.strip() for x in fresh.splitlines() if x.strip()}
+    page_lines = {x.strip() for x in (page or "").splitlines() if x.strip()}
+    extra = [x.strip() for x in first.splitlines() if x.strip() and x.strip() not in fresh_lines]
+    if not extra:
+        return True
+    if not page_lines:
+        return False          # страницы не прочесть — сверить «прежнее» не с чем
+    return sum(1 for x in extra if x in page_lines) / len(extra) <= STALE_FIRST_ALIVE
+
+
+def retarget_card(text: str, moves: dict, root: str = "") -> tuple:
+    """Перевести карточку на новые пути переехавших страниц. → (текст, что сделано).
+
+    `moves` — {прежний путь: нынешний}. Путь в `sources` и подпись блока меняются на
+    нынешний. Если у карточки под двумя подписями лежит одна и та же страница, остаётся
+    один блок — свежий: страница под нынешним путём разобрана последней. Тезис снимается
+    (`distilled`), только когда убранный текст отличался от оставленного: иначе знание
+    карточки не изменилось.
+
+    Безымянный блок первого разбора, у которого есть подписанный двойник той же страницы
+    и который держит только её прежний текст (`stale_first`), — след повторного разбора:
+    карточку разобрали снова и дописали, вместо того чтобы заменить. Он тоже уходит.
+    """
+    info = {"renamed": 0, "dropped": [], "redistill": False}
+    head, sep, rest = (text.partition("\n---\n") if text.startswith("---")
+                       else ("", "", text))
+    srcs = card_sources(text)
+    new_srcs = list(dict.fromkeys(moves.get(x, x) for x in srcs))
+
+    def ident(key: str):
+        cur = moves.get(key, key)
+        pid = page_id_of(cur, root) or page_id_of(key, root)
+        return ("page", pid) if pid else ("path", cur)
+
+    new_rest = rest
+    if QUOTES_MARK in rest:
+        before, _m, after = rest.partition(QUOTES_MARK)
+        quoted, m2, tail = after.partition(FOOTER_MARK)
+        blocks = split_source_blocks(quoted)
+        # Кто из экземпляров одной страницы остаётся: подписанный нынешним путём, а из
+        # равных — поздний (дописан последним, значит, свежее).
+        order, keep = [], {}
+        for i, (k, b) in enumerate(blocks.items()):
+            if k == FIRST_PARSE:
+                order.append(("first", None))
+                continue
+            idt = ident(k)
+            rank = (k not in moves, i)
+            if idt not in keep:
+                order.append(("block", idt))
+                keep[idt] = (rank, k, b, [])
+            else:
+                old = keep[idt]
+                win, lose = ((rank, k, b), old[:3]) if rank > old[0] else (old[:3], (rank, k, b))
+                keep[idt] = (*win, old[3] + [lose])
+        out: dict = {}
+        for kind, idt in order:
+            if kind == "first":
+                out[FIRST_PARSE] = blocks[FIRST_PARSE]
+                continue
+            _rank, k, b, losers = keep[idt]
+            cur = moves.get(k, k)
+            if cur != k:
+                info["renamed"] += 1
+            out[cur] = b
+            for _r, lk, lb in losers:
+                info["dropped"].append(lk)
+                if not same_text(lb, b):
+                    info["redistill"] = True
+        twin = keep.get(ident(new_srcs[0])) if FIRST_PARSE in out and new_srcs else None
+        if twin:
+            cur = moves.get(twin[1], twin[1])
+            full = cur if (not root or os.path.isabs(cur)) else os.path.join(root, cur)
+            try:
+                page = open(full, encoding="utf-8", errors="ignore").read()
+            except OSError:
+                page = ""
+            if stale_first(out[FIRST_PARSE], twin[2], page):
+                info["dropped"].append(FIRST_PARSE)
+                if not same_text(out[FIRST_PARSE], twin[2]):
+                    info["redistill"] = True
+                del out[FIRST_PARSE]
+        if info["renamed"] or info["dropped"]:
+            quoted_new = "\n\n".join(f"### {k}\n\n{b}" for k, b in out.items())
+            tail_txt = (FOOTER_MARK + tail) if m2 else ""
+            if info["dropped"]:
+                what = ", ".join("первого разбора" if d == FIRST_PARSE else f"`{d}`"
+                                 for d in info["dropped"])
+                line = (f"- {TODAY}: убран второй экземпляр дословного текста той же "
+                        f"страницы ({what}) — страница переехала или была разобрана "
+                        "повторно")
+                tail_txt = (tail_txt.rstrip() + "\n" + line) if tail_txt \
+                    else FOOTER_MARK + "\n\n" + line
+            new_rest = (before.rstrip() + "\n\n" + QUOTES_MARK + "\n\n" + quoted_new + "\n"
+                        + ("\n" + tail_txt.strip() + "\n" if tail_txt.strip() else ""))
+
+    new_head = head
+    if new_srcs != srcs:
+        new_head = with_sources(head, new_srcs)
+    if info["redistill"]:
+        new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+        new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
+    if new_head == head and new_rest == rest:
+        return text, info
+    info["sources"] = new_srcs != srcs
+    return (new_head + sep + new_rest) if head else new_rest, info
+
+
+def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool,
+                 root: str = "") -> int:
     """Заменить в готовой карточке перенесённый текст на свежий. → код возврата.
 
     Меняется ровно одно: раздел «Источник (перенесено дословно)». Тезис, история и связи
     остаются — их писали не по этому тексту, а поверх него, и терять их при обновлении
     источника значит наказывать за то, что страницу поправили.
+
+    Раздел заменяется целиком, только когда он весь — текст этого источника. У карточки,
+    накопившей несколько источников, меняется лишь свой блок (`append_card`): прежде
+    обновление одной страницы стирало дословный текст всех остальных, а `sources`
+    продолжал их называть.
     """
     head, _sep, rest = old_text.partition("\n---\n") if old_text.startswith("---") else ("", "", old_text)
     if QUOTES_MARK not in rest:
         print(f"(уже собрана из этого же источника, раздела с текстом нет) {path}")
         return 0
     before, _m, after = rest.partition(QUOTES_MARK)
-    tail = ""
-    if FOOTER_MARK in after:
-        _old_src, _m2, tail = after.partition(FOOTER_MARK)
-        tail = FOOTER_MARK + tail
+    quoted, _m2, tail = after.partition(FOOTER_MARK)
+    tail = FOOTER_MARK + tail if _m2 else ""
+    blocks = split_source_blocks(quoted)
+    if len(card_sources(old_text)) > 1 or set(blocks) - {FIRST_PARSE}:
+        return append_card(path, old_text, body, source, apply, root)
+    if same_text(blocks.get(FIRST_PARSE, ""), body):
+        print(f"без изменений: {path} · источник {source} — текст тот же")
+        return 0
     fresh = QUOTES_MARK + "\n\n" + body.strip() + "\n"
     new_rest = before.rstrip() + "\n\n" + fresh + ("\n" + tail.strip() + "\n" if tail.strip() else "")
     new_head = head
@@ -1026,7 +1242,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         else:
             old_text = open(target, encoding="utf-8", errors="ignore").read()
             was_stub = stub_text(old_text)
-            rc = append_card(target, old_text, body, source, apply)
+            rc = append_card(target, old_text, body, source, apply, root)
             if rc == 0 and apply:
                 add_er_labels(target, split_er_label(append_to)[1])
                 if was_stub:
@@ -1045,9 +1261,9 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         if target:
             old_text = open(target, encoding="utf-8", errors="ignore").read()
             if source in card_sources(old_text):
-                rc = refresh_card(target, old_text, body, source, apply)
+                rc = refresh_card(target, old_text, body, source, apply, root)
             else:
-                rc = append_card(target, old_text, body, source, apply)
+                rc = append_card(target, old_text, body, source, apply, root)
             if rc == 0 and apply:
                 add_er_labels(target, er_labels)
             return rc
@@ -1063,9 +1279,9 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
         old_text = open(elsewhere, encoding="utf-8", errors="ignore").read()
         was_stub = stub_text(old_text)
         if source in card_sources(old_text):
-            rc = refresh_card(elsewhere, old_text, body, source, apply)
+            rc = refresh_card(elsewhere, old_text, body, source, apply, root)
         else:
-            rc = append_card(elsewhere, old_text, body, source, apply)
+            rc = append_card(elsewhere, old_text, body, source, apply, root)
         if rc == 0 and apply and was_stub:
             unmark_placeholder(elsewhere)
         print(f"  ↳ «{title}» уже есть: {elsewhere} — знание дописано туда, а не рядом")
@@ -1086,7 +1302,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             # остальное — тезис, подвал истории, связи, шапку — оставляем как есть.
             # `distilled` снимаем: тезис написан по прежнему тексту и устарел. Его
             # перепишет `agent:distill`, сохранив прежний в истории карточки.
-            return refresh_card(path, old_text, body, source, apply)
+            return refresh_card(path, old_text, body, source, apply, root)
         print(f"build_plan: карточка «{safe}» уже есть и собрана из другого источника: "
               f"{', '.join(was) or '—'}\n"
               "Если это ТА ЖЕ сущность — допишите знание в неё: "

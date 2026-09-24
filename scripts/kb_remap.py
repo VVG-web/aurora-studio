@@ -38,6 +38,7 @@ import sys
 from datetime import date
 
 from aurora_common import fold, head_text
+from sources_core import nfc
 
 KB = "AuroraKnowledgeDB"
 SNAPSHOT = os.path.join(KB, "meta", "mirror_snapshot.json")
@@ -113,6 +114,158 @@ def load_state(mirror: str) -> tuple:
             by_id[pid] = rel
             by_title.setdefault(fold(title), []).append(rel)
     return by_id, by_title
+
+
+def page_moves(mirror: str) -> dict:
+    """{прежний путь: нынешний} — копии страниц, переехавших в Confluence.
+
+    Страница Confluence — это её номер, а не путь. Родительскую папку переименовали —
+    страница пришла по новому пути, а старый файл остался в зеркале: для чистки он
+    «лишний», и если таких много, `--prune` его не трогает. Переезд виден без сети:
+    номер старого файла стоит в состоянии синка под другим путём, и этот путь есть на
+    диске. Регистр и нормализация Unicode — не переезд: это тот же файл.
+    """
+    by_id, _ = load_state(mirror)
+    moves = {}
+    for pid, rels in scan_disk(mirror).items():
+        cur = by_id.get(pid)
+        if not cur or not os.path.isfile(os.path.join(mirror, cur)):
+            continue
+        for rel in rels:
+            if nfc(rel).casefold() != nfc(cur).casefold():
+                moves[rel] = cur
+    return moves
+
+
+def follow_moves(mirror: str, apply: bool, kb: str = KB, everywhere: bool = False) -> dict:
+    """Перевести базу на новые пути переехавших страниц и убрать их старые копии. → итог.
+
+    Переезд — не удаление и не новый источник. Раньше разбор видел новый путь как новый
+    источник и дописывал тот же текст в ту же карточку вторым блоком: PRJ-B 24.09.2026 —
+    27 карточек, PRJ-C — 15, а почти вся работа модели за прогон ушла на переписывание
+    тезисов при неизменном знании. Поэтому переезд доводится до конца в одном месте:
+
+    - карточки: путь в `sources` и подпись блока — нынешние, второй экземпляр той же
+      страницы уходит (`build_plan.retarget_card`);
+    - учёт разбора: запись переезжает на новый путь; текст страницы не менялся — она
+      остаётся разобранной, и разбор её не трогает;
+    - зеркало: старая копия и её папка схем удаляются.
+
+    Работает без сети, по состоянию синка: так её зовёт и синк, и «Починить базу».
+    `everywhere` — пройти все карточки, а не только те, где стоит старый путь: второй
+    экземпляр страницы мог лечь и от повторного разбора на том же месте.
+    """
+    import shutil
+    from build_plan import (FAILURES, MANIFEST, file_hash, load_manifest, retarget_card,
+                            save_manifest)
+    from sources_core import mirror_prefix
+
+    moves = page_moves(mirror)
+    prefix = mirror_prefix(mirror)
+    full = {f"{prefix}/{o}": f"{prefix}/{n}" for o, n in moves.items()}
+    st = {"moves": len(moves), "cards": 0, "blocks": 0, "redistill": 0, "manifest": 0,
+          "files": 0, "_cards": []}
+    if not moves and not everywhere:
+        return st
+
+    for dirpath, _, files in os.walk(kb):
+        if os.path.basename(dirpath) == "meta":
+            continue
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            path = os.path.join(dirpath, f)
+            try:
+                text = open(path, encoding="utf-8").read()
+            except (OSError, UnicodeError):
+                continue
+            if not (everywhere or any(o in text for o in full)):
+                continue
+            new, info = retarget_card(text, full)
+            if new == text:
+                continue
+            st["cards"] += 1
+            st["blocks"] += len(info["dropped"])
+            st["redistill"] += int(info["redistill"])
+            if info["dropped"]:
+                st["_cards"].append(path)
+            if apply:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(new)
+
+    if os.path.isfile(MANIFEST):
+        man = load_manifest()
+        srcs = man.setdefault("sources", {})
+        for old, cur in full.items():
+            rec = srcs.pop(old, None)
+            if rec is None:
+                continue
+            st["manifest"] += 1
+            if cur in srcs:
+                continue            # новый путь уже разобран — прежняя запись лишняя
+            # Разобранная страница с тем же текстом остаётся разобранной: шапка зеркала
+            # отличается путём в `breadcrumbs`, а `content_hash` — текстом страницы.
+            o_path, n_path = old, cur
+            if (os.path.isfile(o_path) and os.path.isfile(n_path)
+                    and rec.get("hash") == file_hash(o_path)
+                    and content_hash(o_path) and content_hash(o_path) == content_hash(n_path)):
+                rec = dict(rec, hash=file_hash(n_path))
+            srcs[cur] = rec
+        if apply and st["manifest"]:
+            save_manifest(man)
+    if os.path.isfile(FAILURES):
+        try:
+            fails = json.load(open(FAILURES, encoding="utf-8"))
+        except (OSError, ValueError):
+            fails = {}
+        dropped = [k for k in list(fails) if k in full]
+        for k in dropped:
+            fails.pop(k)
+        if apply and dropped:
+            with open(FAILURES, "w", encoding="utf-8") as fh:
+                json.dump(fails, fh, ensure_ascii=False, indent=1, sort_keys=True)
+
+    for old in sorted(moves):
+        path = os.path.join(mirror, old)
+        assets = os.path.splitext(path)[0] + "_assets"   # схемы страницы — рядом с ней
+        if apply:
+            try:
+                os.remove(path)
+                st["files"] += 1
+            except OSError as e:
+                print(f"  ! не удалить {old}: {e}", file=sys.stderr)
+            if os.path.isdir(assets):
+                shutil.rmtree(assets, ignore_errors=True)
+        else:
+            st["files"] += 1
+    return st
+
+
+def moves_report(st: dict, apply: bool) -> str:
+    """Итог `follow_moves` для человека — одинаково в синке и в ремонте."""
+    lines = [f"Переехавших страниц: {st['moves']}"
+             + (f" · старых копий {'убрано' if apply else 'к удалению'}: {st['files']}"
+                if st["moves"] else ""),
+             f"Карточек переведено на новые пути: {st['cards']}"
+             + (f" · убрано вторых экземпляров текста: {st['blocks']}" if st["blocks"] else "")
+             + (f" · тезис перепишется: {st['redistill']}" if st["redistill"] else ""),
+             f"Записей учёта разбора перенесено: {st['manifest']}"]
+    for path in st["_cards"][:10]:
+        lines.append(f"  - {path}")
+    if len(st["_cards"]) > 10:
+        lines.append(f"  - … ещё {len(st['_cards']) - 10}")
+    if not apply:
+        lines.append("(dry-run) Ничего не записано. Повторите с --apply.")
+    return "\n".join(lines)
+
+
+def content_hash(path: str) -> str:
+    """`content_hash` из шапки файла зеркала — хеш текста страницы без шапки."""
+    try:
+        m = re.search(r"^content_hash:\s*(\w+)", head_text(path), re.M)
+    except (OSError, UnicodeError):
+        return ""
+    return m.group(1) if m else ""
 
 
 def jira_map(mirror: str) -> dict:
@@ -267,6 +420,9 @@ def main() -> int:
                     help="снять карту page_id → путь ДО переэкспорта и сохранить в meta/")
     ap.add_argument("--from-git", metavar="REF",
                     help="взять старое зеркало из ревизии git (если снимок не снимали)")
+    ap.add_argument("--moved", action="store_true",
+                    help="страницы, переехавшие в Confluence: карточки — на новые пути, "
+                         "второй экземпляр той же страницы — прочь, старые копии из зеркала")
     ap.add_argument("--apply", action="store_true", help="записать изменения (иначе dry-run)")
     ap.add_argument("--report", metavar="PATH", help="сохранить отчёт")
     a = ap.parse_args()
@@ -274,6 +430,11 @@ def main() -> int:
     if not os.path.isdir(KB):
         print(f"kb_remap: нет {KB}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
+
+    if a.moved:
+        st = follow_moves(a.mirror, a.apply, everywhere=True)
+        print(moves_report(st, a.apply))
+        return 0
 
     # Зеркало Jira адресуется ключом задачи, а не page_id: карта строится по содержимому
     # файлов, снимок и ревизия git для неё не нужны.

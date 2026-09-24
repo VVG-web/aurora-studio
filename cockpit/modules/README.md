@@ -23,7 +23,7 @@ cockpit/modules/<id>/
   "order": 80,
   "needs": ["project"],
   "commands": ["ops:report"],
-  "for": "1.128.0"
+  "for": "1.129.0"
 }
 ```
 
