@@ -11,5 +11,5 @@
   "commands": ["dev:qa-run", "dev:qa-cover", "dev:qa-gap", "dev:qa-list", "dev:qa-check",
                "dev:qa-new", "kit:skills"],
   "dev": true,
-  "for": "1.126.1"
+  "for": "1.128.0"
 }

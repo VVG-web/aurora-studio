@@ -69,6 +69,7 @@ scripts/kb_trust.py        => .opencode/scripts/kb_trust.py
 scripts/kb_kind.py         => .opencode/scripts/kb_kind.py
 scripts/agent_core.py    => .opencode/scripts/agent_core.py
 scripts/agent_runner.py  => .opencode/scripts/agent_runner.py
+scripts/request_context.py => .opencode/scripts/request_context.py
 scripts/agents/pydantic_ai_adapter.py => .opencode/scripts/agents/pydantic_ai_adapter.py
 scripts/ship_doc.py      => .opencode/scripts/ship_doc.py
 scripts/kb_scrub.py      => .opencode/scripts/kb_scrub.py

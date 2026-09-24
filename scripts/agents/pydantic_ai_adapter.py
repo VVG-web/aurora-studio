@@ -150,6 +150,112 @@ def mcp_toolsets(config: dict, guard: dict = None, root: str = ".",
     return out
 
 
+def mcp_catalog(servers: dict) -> str:
+    """Каталог серверов для инструкций модели: имя и назначение, без инструментов."""
+    lines = [f"- {name}" + (f" — {spec.get('about')}" if (spec or {}).get("about") else "")
+             for name, spec in servers.items()]
+    return ("Внешние инструменты (MCP) подключаются по требованию. Нужен один из них — вызови "
+            "`mcp_connect` с его именем, и его инструменты появятся со следующего шага. "
+            "Без нужды не подключай: запуск сервера стоит времени.\n" + "\n".join(lines))
+
+
+def mcp_activate(state: dict, allowed: list, name: str) -> str:
+    """Подключить сервер к текущему прогону. Чистая функция: проверяется без pydantic-ai."""
+    want = (name or "").strip().lstrip("@")
+    match = next((n for n in allowed if n.lower() == want.lower()), "")
+    if not match:
+        return f"Сервера «{want}» нет. Доступны: {', '.join(allowed) or 'никаких'}"
+    if match in state["active"]:
+        return f"«{match}» уже подключён — его инструменты доступны."
+    state["active"].add(match)
+    return f"«{match}» подключён: его инструменты доступны со следующего шага."
+
+
+def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: str = "",
+                      state: dict = None) -> list:
+    """MCP по требованию: сервер запускается, только когда он нужен.
+
+    Раньше каждый вызов с инструментами поднимал ВСЕ серверы роли и клал описания всех их
+    инструментов в задание — даже когда задаче не нужен ни один. Теперь модель видит каталог
+    (имя и назначение) и служебный `mcp_connect`; сервер из `state["active"]` (его назвал
+    человек или требует тип артефакта) подключён сразу. Набор сервера — динамический: пока
+    сервер не подключён, фабрика отдаёт пусто; подключённый живёт до конца прогона и
+    запускается один раз (фабрика возвращает тот же объект — повторного входа нет).
+    """
+    servers = servers_for_role(config, role)
+    if not servers:
+        return []
+    try:
+        from dataclasses import dataclass, field
+        from fastmcp import Client
+        from pydantic_ai.mcp import MCPToolset
+        from pydantic_ai.toolsets import DynamicToolset, FunctionToolset, WrapperToolset
+    except ImportError:
+        return []
+    state = state if state is not None else {"active": set()}
+    state.setdefault("failed", {})
+    built: dict = {}
+
+    @dataclass
+    class SafeServer(WrapperToolset):
+        """Сервер, который не поднялся, не роняет прогон: инструментов нет, причина — в
+        `state["failed"]`, и `mcp_connect` назовёт её модели. Сервер бывает просто выключен
+        или без ключа — это не повод терять ответ."""
+        name: str = ""
+        up: bool = False
+
+        async def __aenter__(self):
+            try:
+                await self.wrapped.__aenter__()
+                self.up = True
+                state["failed"].pop(self.name, None)
+            except Exception as e:  # noqa: BLE001 — сервер может быть не поднят
+                self.up = False
+                state["failed"][self.name] = f"{type(e).__name__}: {e}"[:200]
+            return self
+
+        async def __aexit__(self, *args):
+            if not self.up:
+                return None
+            self.up = False
+            try:
+                return await self.wrapped.__aexit__(*args)
+            except Exception:  # noqa: BLE001
+                return None
+
+        async def get_tools(self, ctx):
+            return await self.wrapped.get_tools(ctx) if self.up else {}
+
+    def factory_for(name: str, spec: dict):
+        def factory(ctx):
+            if name not in state["active"]:
+                return None
+            if name not in built:
+                one = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
+                                             if k not in ("roles", "outbound", "about")}}}
+                hook = outbound_hook(name, guard or {}, root) if (spec or {}).get("outbound") else None
+                try:
+                    built[name] = SafeServer(MCPToolset(Client(one), process_tool_call=hook),
+                                             name=name)
+                except Exception as e:  # noqa: BLE001 — неверная настройка сервера
+                    state["failed"][name] = f"{type(e).__name__}: {e}"[:200]
+                    return None
+            return built[name]
+        return factory
+
+    def mcp_connect(name: str) -> str:
+        """Подключить внешний сервер MCP по имени из каталога. Его инструменты появятся со
+        следующего шага."""
+        key = next((n for n in servers if n.lower() == (name or "").strip().lstrip("@").lower()), "")
+        if key in state["failed"]:
+            return f"«{key}» не запустился: {state['failed'][key]}. Обойдись без него."
+        return mcp_activate(state, list(servers), name)
+
+    meta = FunctionToolset([mcp_connect], instructions=mcp_catalog(servers))
+    return [meta] + [DynamicToolset(factory_for(n, s), per_run_step=True)
+                     for n, s in servers.items()]
+
+
 def outbound_hook(server: str, guard: dict, root: str):
     """Сторож на вызовах внешнего сервера: смотрит аргументы до отправки."""
     def all_strings(value) -> list:
@@ -287,19 +393,27 @@ def main() -> int:
             answer({"ok": False, "error": "задание не разобрано как JSON"})
             continue
         try:
+            # Роль — в ключе: набор серверов отбирается по роли, и без неё агент, собранный
+            # для планировщика, достался бы писателю с чужими серверами.
             key = (task["url"], task["model"], bool(task.get("tools")),
-                   json.dumps(task.get("mcp") or {}, sort_keys=True))
+                   json.dumps(task.get("mcp") or {}, sort_keys=True), task.get("role") or "")
             if key not in agents:
                 provider = OpenAIProvider(base_url=task["url"],
                                           api_key=task.get("key") or "none")
-                toolsets = mcp_toolsets(task.get("mcp") or {}, task.get("guard") or {},
-                                        (task.get("tools") or ["."])[0],
-                                        task.get("role") or "")
+                state = {"active": set()}
+                toolsets = lazy_mcp_toolsets(task.get("mcp") or {}, task.get("guard") or {},
+                                             (task.get("tools") or ["."])[0],
+                                             task.get("role") or "", state)
                 agent = Agent(OpenAIChatModel(task["model"], provider=provider),
                               toolsets=toolsets or None)
                 if task.get("tools"):
                     register_tools(agent, task["tools"])
-                agents[key] = agent
+                agents[key] = (agent, state)
+            agent, state = agents[key]
+            # Сразу подключены — только названные человеком или типом артефакта; остальные
+            # модель подключит сама. Состояние сбрасывается на каждый вызов.
+            allowed = set(servers_for_role(task.get("mcp") or {}, task.get("role") or ""))
+            state["active"] = {n for n in (task.get("mcp_active") or []) if n in allowed}
             # thinking у шлюза включается нестандартным полем шаблона — прокидываем как есть
             settings = {"extra_body": {"chat_template_kwargs":
                                        {"enable_thinking": bool(task.get("thinking"))}}}
@@ -319,7 +433,7 @@ def main() -> int:
                 else:
                     history.append(ModelRequest(parts=[UserPromptPart(content=text_of)]))
             limit = int(task.get("tool_calls") or 0)
-            result = agents[key].run_sync(
+            result = agent.run_sync(
                 "\n\n".join(m["content"] for m in task["messages"]),
                 message_history=history or None,
                 usage_limits=UsageLimits(tool_calls_limit=limit) if limit else None,

@@ -424,7 +424,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
             "messages": fresh, "history": hist, "timeout": timeout,
             "tools": ([payload["tools_root"]] if payload.get("tools_root") else []),
-            "mcp": payload.get("mcp") or {}, "guard": payload.get("guard") or {},
+            "mcp": payload.get("mcp") or {}, "mcp_active": payload.get("mcp_active") or [],
+            "guard": payload.get("guard") or {},
             "role": payload.get("role") or "",
             "tool_calls": TOOL_CALLS if payload.get("tools_root") else 0,
             "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
@@ -465,7 +466,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
 
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
-ADAPTER_ONLY = frozenset({"_slots", "guard", "role", "tools_root", "mcp", "history"})
+ADAPTER_ONLY = frozenset({"_slots", "guard", "role", "tools_root", "mcp", "mcp_active",
+                          "history"})
 
 
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
@@ -790,22 +792,46 @@ def guard_grams(texts: list) -> list:
     return sorted(out)
 
 
-def mcp_config(project: str) -> dict:
-    """Объявленные проектом MCP-серверы — из `mcp.json` в стандартной форме.
+# Серверы машины — общие для всех проектов. Лежат в `local/` кита: папка закрыта
+# .gitignore и обновлением кита не трогается, а в этом файле бывают токены (`env`).
+KIT_MCP = ("local", "mcp.json")
 
-    Форма та же, что у Claude Code и Cursor (`{"mcpServers": {...}}`): своя заставила бы
-    человека держать две конфигурации об одном. Файла нет — серверов нет, и это норма:
-    MCP нужен только там, где движок чего-то не умеет сам.
-    """
-    path = os.path.join(project, "mcp.json")
-    if not os.path.isfile(path):
-        return {}
+
+def kit_mcp_path(kit=None) -> Path:
+    """Где лежат MCP-серверы машины. Кит по умолчанию — тот, чьим кодом идёт прогон."""
+    return Path(kit or _roots()[0]).joinpath(*KIT_MCP)
+
+
+def read_mcp_servers(path) -> dict:
+    """`mcpServers` из файла в стандартной форме; нет файла или он битый — пусто."""
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) and data.get("mcpServers") else {}
     except (OSError, ValueError):
         return {}
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    return {k: v for k, v in servers.items() if isinstance(v, dict)} \
+        if isinstance(servers, dict) else {}
+
+
+def mcp_config(project: str, kit=None) -> dict:
+    """MCP-серверы прогона: машины и проекта — в стандартной форме `{"mcpServers": {...}}`.
+
+    Форма та же, что у Claude Code и Cursor: своя заставила бы человека держать две
+    конфигурации об одном. Слои — как у настроек агента: кит < проект. Одноимённый сервер
+    проекта перекрывает машинный по полям, поэтому проект может объявить сервер, а токены
+    к нему остаются в машинном файле и не уезжают в git проекта. Файлов нет — серверов
+    нет, и это норма: MCP нужен только там, где движок чего-то не умеет сам.
+    """
+    # Прогон тестов не видит личные серверы машины — по той же причине, что и личный
+    # файл настроек агента (см. `raw_config`): иначе результат зависит от чужой машины.
+    isolated = os.environ.get("AURORA_TESTS_ISOLATED") and kit is None
+    merged = {} if isolated else \
+        {name: dict(spec) for name, spec in read_mcp_servers(kit_mcp_path(kit)).items()}
+    if project:
+        for name, spec in read_mcp_servers(os.path.join(project, "mcp.json")).items():
+            merged[name] = {**merged.get(name, {}), **spec}
+    return {"mcpServers": merged} if merged else {}
 
 
 def looks_like_timeout(err) -> bool:
@@ -861,8 +887,14 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               thinking: bool | None = None, max_tokens: int | None = None,
               prefer: int = 0, history: list | None = None,
               tools: bool = False, guard_text: list | None = None,
-              trim: tuple | None = None, request_timeout: float | None = None) -> dict:
+              trim: tuple | None = None, request_timeout: float | None = None,
+              mcp_active: list | None = None) -> dict:
     """Один вызов модели через кольцо бэкендов.
+
+    `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
+    их требует тип артефакта). Остальные серверы модель подключает сама, когда понадобятся:
+    видит их каталог и зовёт `mcp_connect` — запуск каждого сервера и описания всех его
+    инструментов стоят времени и места в задании, и платить за них заранее незачем.
 
     `tools` — дать модели инструменты чтения (поиск по базе, файлы проекта). Включается
     там, где модель ведёт разбор и может сама поискать недостающее; в разборе базы не
@@ -962,6 +994,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             if tools:
                 payload["tools_root"] = os.getcwd()
                 payload["mcp"] = mcp_config(os.getcwd())
+                payload["mcp_active"] = list(mcp_active or [])
                 # Сторож на исходящее собирается ЗДЕСЬ, а не в адаптере: нормализация
                 # слов должна быть той же, что в поиске по базе, а она живёт в движке.
                 # `ready` — отметка, что сторож действительно собран. Без неё адаптер

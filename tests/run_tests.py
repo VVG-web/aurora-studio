@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 import sys
 import tempfile
 import time
@@ -3898,6 +3899,222 @@ def test_the_panel_never_stores_mcp_secrets(tmp: Path):
         "раздел не ходит через /api/mcp"
     assert "env •••" in ui and "токены настраиваются вне панели" in ui, \
         "человек не видит, что токены есть и где они правятся"
+
+
+@test
+def test_machine_mcp_servers_reach_every_project(tmp: Path):
+    """Серверы машины видны всем проектам, проект перекрывает одноимённый по полям.
+
+    Так проект может объявить сервер в своём mcp.json (он едет в git вместе с проектом),
+    а токены к нему остаются в файле машины и в git не попадают.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+    kit, proj = tmp / "кит", tmp / "проект"
+    (kit / "local").mkdir(parents=True)
+    proj.mkdir()
+    assert A.kit_mcp_path(str(kit)) == kit / "local" / "mcp.json", \
+        "серверы машины лежат не в local/ — туда, где их не увезёт git"
+    (kit / "local" / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "atlassian": {"command": "uvx", "args": ["mcp-atlassian"], "env": {"TOKEN": "секрет"}},
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}), encoding="utf-8")
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian"]},
+        "local-only": {"url": "http://127.0.0.1:9/mcp"}}}), encoding="utf-8")
+    cfg = A.mcp_config(str(proj), kit=str(kit))["mcpServers"]
+    assert set(cfg) == {"atlassian", "fetch", "local-only"}, f"слои не сложились: {sorted(cfg)}"
+    assert cfg["atlassian"]["command"] == "npx", "поле проекта не перекрыло машинное"
+    assert cfg["atlassian"]["env"] == {"TOKEN": "секрет"}, \
+        "токен машины потерялся, когда проект объявил сервер с тем же именем"
+    assert A.mcp_config("", kit=str(kit))["mcpServers"].keys() == {"atlassian", "fetch"}, \
+        "без проекта не видны серверы машины"
+    assert A.mcp_config(str(proj), kit=str(tmp / "нет"))["mcpServers"].keys() == \
+        {"atlassian", "local-only"}, "без файла машины пропали серверы проекта"
+    # Прогон тестов не видит личные серверы машины разработчика.
+    assert os.environ.get("AURORA_TESTS_ISOLATED")
+    assert A.mcp_config(str(tmp / "пусто")) == {}, "тест увидел личные серверы машины"
+
+    # Файл машины — в папке, закрытой .gitignore и не тронутой обновлением кита.
+    ignored = subprocess.run(["git", "-C", str(KIT), "check-ignore", "-q", "local/mcp.json"])
+    assert ignored.returncode == 0, "local/mcp.json уедет в git кита вместе с токенами"
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert re.search(r'KIT_KEEP = \([^)]*"local/"', src), \
+        "обновление кита из архива перезапишет серверы машины"
+
+
+@test
+def test_machine_mcp_secrets_never_reach_the_browser(tmp: Path):
+    """Панель принимает токены серверов машины, но обратно отдаёт только маску.
+
+    Маска, пришедшая обратно, значит «оставить как было» — и в карточке, и в файле
+    целиком. Потерять токен молча нельзя: маска без сохранённого значения — ошибка.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    old_kit = ck.KIT
+    ck.KIT = str(tmp)
+    try:
+        act, state = ck.mcp_kit_action, ck.mcp_kit_state
+        assert state()["servers"] == {} and "error" not in state(), "пустая машина — не ошибка"
+        paste = json.dumps({"mcpServers": {"gh": {
+            "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
+            "env": {"GITHUB_TOKEN": "ghp_секрет"}, "timeout": 30},
+            "ctx": {"url": "https://mcp.example.com/mcp",
+                    "headers": {"Authorization": "Bearer токен"}}}})
+        dry = act({"action": "import", "text": paste, "dry": True})
+        assert dry.get("ok") and not (tmp / "local/mcp.json").exists(), \
+            f"предпросмотр вставки записал файл: {dry}"
+        assert "ghp_секрет" not in json.dumps(dry, ensure_ascii=False), \
+            "предпросмотр вставки вернул браузеру токен"
+        assert dry["servers"][0]["env"] == ["GITHUB_TOKEN"], "предпросмотр не назвал переменные"
+        r = act({"action": "import", "text": paste})
+        assert r.get("ok"), r
+        path = tmp / "local/mcp.json"
+        assert oct(path.stat().st_mode & 0o777) == "0o600", "файл с токенами читают все"
+
+        st = state()
+        seen = json.dumps(st, ensure_ascii=False)
+        assert "ghp_секрет" not in seen and "Bearer токен" not in seen, \
+            "секрет ушёл в браузер"
+        assert st["servers"]["gh"]["env"]["GITHUB_TOKEN"] == st["mask"], "вместо маски пусто"
+        assert st["servers"]["gh"]["timeout"] == 30, "поле вне формы потерялось"
+
+        # Карточка: правка без знания токена сохраняет его; переименование — тоже.
+        spec = st["servers"]["gh"]
+        spec["args"].append("--read-only")
+        assert act({"action": "save_server", "name": "github", "rename_from": "gh",
+                    "spec": spec}).get("ok")
+        disk = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert list(disk) == ["github", "ctx"], f"переименованный сервер сменил место: {list(disk)}"
+        assert disk["github"]["env"]["GITHUB_TOKEN"] == "ghp_секрет", "токен потерян при правке"
+        assert (tmp / "local/mcp.json.bak").is_file(), "прежняя версия не сохранена"
+
+        # Весь файл: маски восстанавливаются, новое значение пишется.
+        text = state()["text"].replace("mcp.example.com", "mcp2.example.com")
+        assert act({"action": "save_raw", "text": text}).get("ok")
+        disk = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        assert disk["ctx"]["headers"]["Authorization"] == "Bearer токен" \
+            and disk["ctx"]["url"].startswith("https://mcp2."), "весь файл не сохранился как надо"
+        broken = state()["text"].replace('"github"', '"renamed"')
+        r = act({"action": "save_raw", "text": broken})
+        assert "скрыто маской" in r.get("error", ""), \
+            f"маска без сохранённого значения записалась вместо токена: {r}"
+        assert act({"action": "import", "text": state()["text"]}).get("error"), \
+            "вставка настройки из самой панели (с масками) прошла"
+        assert "имя" in act({"action": "save_server", "name": "плохое имя", "rename_from": "",
+                             "spec": {"command": "x"}}).get("error", "")
+        assert "command" in act({"action": "save_server", "name": "x", "rename_from": "",
+                                 "spec": {"args": []}}).get("error", "")
+        assert act({"action": "delete_server", "name": "ctx"}).get("ok")
+        assert list(json.loads(path.read_text(encoding="utf-8"))["mcpServers"]) == ["github"]
+    finally:
+        ck.KIT = old_kit
+
+    # Маска — одна на панель: раздел берёт её из ответа сервера, а не держит свою копию.
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    for fn in ("async function renderMcpKit(", "function mcpCard(", "function mcpPairs(",
+               "function openMcpCard(", "function openMcpRaw("):
+        assert "••••••" not in _js_function(ui, fn), f"{fn} держит свою копию маски"
+
+
+@test
+def test_mcp_paste_understands_the_shapes_people_copy(tmp: Path):
+    """Вставка понимает то, что копируют из Claude Desktop, Claude Code, Cursor и VS Code."""
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    P = ck.mcp_parse_paste
+    shapes = {
+        '{"mcpServers": {"a": {"command": "npx", "args": ["x"]}}}': ["a"],
+        '{"servers": {"b": {"type": "stdio", "command": "uvx"}}}': ["b"],
+        '{"mcp": {"servers": {"c": {"url": "https://sse.example.com/sse", "type": "sse"}}}}': ["c"],
+        '{"d": {"command": "uvx"}, "e": {"url": "https://x.example.com/mcp"}}': ["d", "e"],
+        '"f": {"command": "uvx", "args": ["mcp-f"]},': ["f"],
+        '{"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github@1.0"]}': ["github"],
+        '{"url": "https://mcp.example.org/mcp"}': ["example"],
+        # JSONC: комментарии и висячие запятые, `//` в адресе — не комментарий
+        '{\n // мой сервер\n "servers": {"g": {"url": "https://g.example.com/mcp", /* x */},},\n}': ["g"],
+    }
+    for text, names in shapes.items():
+        srv, err = P(text)
+        assert not err and list(srv) == names, f"не разобрано: {text[:50]} → {err or list(srv)}"
+    assert P('{"servers": {"g": {"url": "https://g.example.com/mcp"}}}')[0]["g"]["url"] == "https://g.example.com/mcp", \
+        "разбор комментариев съел адрес после //"
+    for bad, why in (("", "пуста"), ('{"a": ', "не JSON"), ('{"x": {"y": 1}}', "command или url")):
+        assert why in P(bad)[1], f"плохая вставка не объяснена: {bad!r} → {P(bad)}"
+
+
+@test
+def test_mcp_paste_understands_zed(tmp: Path):
+    """Вставка из Zed: сервер расширения, свой сервер в старой форме, выключенный, обёртка.
+
+    Живой случай 24.09.2026: пользователь вставил сервер Tavily из настроек Zed — `enabled`,
+    `remote` и `settings` с ключом, без command и url, — и панель ответила «не похоже на
+    сервер MCP». Команду запуска у Zed знает расширение, поэтому известные расширения
+    описаны в движке, а для неизвестного ошибка говорит, что дописать.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    paste = '''"mcp-server-tavily": {
+      "enabled": true,
+      "remote": false,
+      "settings": {
+        "tavily_api_key": "tvly-test-0000",
+      },
+    },'''
+    srv, err, notes = ck.mcp_read_paste(paste)
+    assert not err, err
+    spec = srv["mcp-server-tavily"]
+    assert spec["command"] == "npx" and spec["args"] == ["-y", "tavily-mcp@latest"], spec
+    assert spec["env"] == {"TAVILY_API_KEY": "tvly-test-0000"}, "ключ из settings не стал переменной"
+    assert not {"settings", "enabled", "remote"} & set(spec), f"поля Zed уехали в настройку: {spec}"
+    assert notes and "расширения Zed" in notes[0] and "tvly-test" not in " ".join(notes), \
+        f"пояснение не сказано или показывает ключ: {notes}"
+    assert not ck.mcp_check(srv), ck.mcp_check(srv)
+
+    srv, err, _ = ck.mcp_read_paste('{"context_servers": {"my": {"command": {"path": "uvx", '
+                                    '"args": ["mcp-my"], "env": {"K": "v"}}, "settings": {}}}}')
+    assert not err and srv["my"] == {"command": "uvx", "args": ["mcp-my"], "env": {"K": "v"}}, (err, srv)
+
+    srv, err, notes = ck.mcp_read_paste('{"a": {"command": "uvx"}, "b": {"command": "x", "enabled": false}}')
+    assert list(srv) == ["a"] and any("«b» выключен" in n for n in notes), (srv, notes)
+
+    srv, err, _ = ck.mcp_read_paste('"mcp-server-unknown": {"settings": {"some_api_key": "k"}}')
+    assert "расширения Zed" in err and "SOME_API_KEY" in err and "k" not in err.split(":")[-1].split(","), err
+
+    # через действие панели: предпросмотр отдаёт пояснения, секрет — только именем
+    kitdir = tmp / "kit"
+    (kitdir / "local").mkdir(parents=True)
+    was = ck.kit_mcp_file
+    ck.kit_mcp_file = lambda: str(kitdir / "local" / "mcp.json")
+    try:
+        dry = ck.mcp_kit_action({"action": "import", "text": paste, "dry": True})
+    finally:
+        ck.kit_mcp_file = was
+    assert dry.get("ok") and dry["notes"] and dry["servers"][0]["env"] == ["TAVILY_API_KEY"], dry
+    assert "tvly-test" not in json.dumps(dry, ensure_ascii=False), "предпросмотр показал ключ"
+
+
+@test
+def test_kit_setup_has_machine_mcp_section(tmp: Path):
+    """«Настройка кита» показывает серверы машины карточками и умеет вставку и весь файл."""
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    setup = _js_function(ui, "async function renderSetup(")
+    assert "renderMcpKit()" in setup, "в «Настройке кита» нет раздела MCP"
+    assert "drawSetupJump(box)" in setup, "длинная страница без переходов — раздел не найти"
+    for fn in ("function mcpCard(", "function openMcpCard(", "function openMcpPaste(",
+               "function openMcpRaw("):
+        assert fn in ui, f"нет части раздела MCP: {fn}"
+    for action in ('"save_server"', '"delete_server"', '"import"', '"save_raw"'):
+        assert action in ui, f"раздел не зовёт {action}"
+    close = _js_function(ui, "function closeMcp(")
+    assert '$("#mcpDrawer").innerHTML = ""' in close, \
+        "после закрытия окна вставленные токены остаются в разметке страницы"
+    assert 'type:"password"' in _js_function(ui, "function mcpPairs("), \
+        "значения переменных видны при вводе, как обычный текст"
+    assert 'id="mcpOverlay"' in ui, "окну правки негде открыться"
 
 
 @test
@@ -17913,6 +18130,234 @@ def test_the_panel_offers_the_kit_update_itself(tmp: Path):
     assert "threading.Thread(target=registry" in src and "_REGISTRY_LOCK" in src, \
         "реестр собирается на первом запросе страницы, а не сразу и не один раз"
     assert '"/api/ping"' in src and "registry_ready()" in src
+
+
+@test
+def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path):
+    """Контекст запроса: `@путь`, вложения, `/навык`, `@MCP` — и ни одного секрета.
+
+    Просьба пользователя 24.09.2026: в «Продуктивности» ссылаться на файл или папку проекта
+    через `@`, прикладывать внешний текстовый файл, звать навык (`/grill-me`) и MCP-сервер
+    прямо из текста задачи. Вложения живут в `.opencode/context/<день>/`.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    RC = importlib.import_module("request_context")
+    root = tmp / "проект"
+    (root / "Requirements").mkdir(parents=True)
+    (root / "Requirements" / "Истории пользователей.md").write_text("US-1: вход по паролю\n", encoding="utf-8")
+    (root / "Requirements" / "US-2.md").write_text("US-2: выход\n", encoding="utf-8")
+    (root / ".env.aurora.test").write_text("TOKEN=секрет\n", encoding="utf-8")
+    (root / "local").mkdir()
+    (root / "local" / "mcp.json").write_text('{"k": "секрет"}', encoding="utf-8")
+
+    # вложение: текст — да, двоичное, секрет и чужое расширение — нет
+    ok = RC.save_attachment(str(root), "Постановка.md", "Нужна кнопка «Выгрузить»".encode())
+    assert ok.get("path", "").startswith(".opencode/context/") and (root / ok["path"]).is_file(), ok
+    assert "error" in RC.save_attachment(str(root), "a.png", b"\x89PNG\x00\x00")
+    assert "error" in RC.save_attachment(str(root), "x.txt", b"\x00\x01\x02")
+    assert "error" in RC.save_attachment(str(root), ".env", b"A=1")
+    # старые папки вложений чистятся
+    old = root / ".opencode" / "context" / "2020-01-01"
+    old.mkdir(parents=True)
+    assert RC.trim_context(str(root)) == 1 and not old.exists()
+
+    block, notes = RC.read_context(str(root), ["Requirements", ok["path"], ".env.aurora.test",
+                                               "local/mcp.json", "../чужое"])
+    assert "US-1: вход по паролю" in block and "US-2: выход" in block, "папка не прочитана"
+    assert "Нужна кнопка" in block, "вложение не прочитано"
+    assert "секрет" not in block, "секрет попал в задание модели"
+    assert any("секреты" in n for n in notes) and any("чужое" in n for n in notes), notes
+
+    # навыки: проект → кит → ~/.claude/skills; вложенный навык — на один уровень
+    home = tmp / "home"
+    (home / ".claude" / "skills" / "grill-me").mkdir(parents=True)
+    (home / ".claude" / "skills" / "grill-me" / "SKILL.md").write_text(
+        "---\nname: grill-me\n---\nRun a /grilling session.\n", encoding="utf-8")
+    (home / ".claude" / "skills" / "grilling").mkdir(parents=True)
+    (home / ".claude" / "skills" / "grilling" / "SKILL.md").write_text(
+        "---\nname: grilling\n---\nИнтервью раундами по дереву решений.\n", encoding="utf-8")
+    was = os.environ.get("HOME")
+    os.environ["HOME"] = str(home)
+    try:
+        m = RC.mentions('Добавь AC /grill-me, истории в @"Requirements/Истории пользователей.md", '
+                        "поищи через @Tavily и /Users/кто-то/путь не навык", str(root), ["tavily"])
+        names = [s[0] for s in m["skills"]]
+        assert names == ["grill-me", "grilling"], f"навыки не найдены или без вложенного: {names}"
+        assert m["mcp"] == ["tavily"], m["mcp"]
+        assert m["files"] == ["Requirements/Истории пользователей.md"], m["files"]
+        assert "Интервью раундами" in RC.skills_block(m["skills"])
+        # без личного навыка grill-me ведёт на навык кита
+        os.environ["HOME"] = str(tmp / "пустой")
+        path, body = RC.find_skill("grill-me", str(root), str(KIT))
+        assert path.endswith("aurora-grill/SKILL.md") and body, "grill-me не нашёл навык кита"
+        # подсказки: / — навыки, @ — файлы, папки и серверы; секретов в подсказках нет
+        assert any(i["value"] == "/aurora-grill" for i in RC.suggest(str(root), "/grill", [], str(KIT)))
+        hints = RC.suggest(str(root), "@ист", ["tavily"], str(KIT))
+        assert hints and hints[0]["value"] == "Requirements/Истории пользователей.md", hints
+        assert not any(".env" in i["value"] for i in RC.suggest(str(root), "@env", [], str(KIT)))
+        assert RC.suggest(str(root), "@tav", ["tavily"], str(KIT))[0]["kind"] == "mcp"
+    finally:
+        if was is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = was
+
+
+@test
+def test_make_takes_attachments_skills_and_named_mcp_into_the_task(tmp: Path):
+    """Производство артефакта кладёт в задание планировщика приложенное и названное.
+
+    Файлы и вложения — в задание; метод навыка — туда же; MCP-сервер, названный в задаче или
+    в поле `mcp` типа артефакта, — подключается сразу (`mcp_active`), остальные — по нужде.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=False)
+    (root / "Requirements").mkdir(exist_ok=True)
+    (root / "Requirements" / "Истории.md").write_text("US-7: выгрузка в Excel\n", encoding="utf-8")
+    (root / "mcp.json").write_text(json.dumps({"mcpServers": {"tavily": {"command": "npx"}}}),
+                                   encoding="utf-8")
+    att = importlib.import_module("request_context").save_attachment(
+        str(root), "Постановка.txt", "Кнопка «Выгрузить» справа".encode())["path"]
+    st = {"idea": "Сделай AC по @Requirements/Истории.md /aurora-grill, поищи через @tavily",
+          "rounds": [], "context": [att]}
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        got = R.request_asks(str(root), st, {"mcp": "tavily, нет-такого"})
+    finally:
+        os.chdir(here)
+    assert "US-7: выгрузка в Excel" in got["extra"], "файл по @ не в задании"
+    assert "Кнопка «Выгрузить» справа" in got["extra"], "вложение не в задании"
+    assert "/aurora-grill" not in got["extra"], "метод aurora-grill ушёл в задание второй раз"
+    assert got["mcp"] == ["tavily"], f"названный сервер не подключается сразу: {got['mcp']}"
+    src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
+    body = src[src.index("def run_make("):src.index("def report_make(")]
+    assert "prompt_extra += req[\"extra\"]" in body and body.count("mcp_active=req[\"mcp\"]") == 2, \
+        "задание планировщика и писателя без контекста или сервер не передан"
+    assert '"--context"' in src, "у agent:make нет --context"
+
+
+@test
+def test_mcp_servers_start_only_when_needed(tmp: Path):
+    """MCP по требованию: модель видит каталог и `mcp_connect`; сервер запускается при подключении.
+
+    Раньше каждый вызов с инструментами поднимал все серверы роли и клал описания всех их
+    инструментов в задание. Сервер, который не поднялся, не роняет прогон.
+    """
+    sys.path.insert(0, str(KIT / "scripts" / "agents"))
+    import importlib
+    AD = importlib.import_module("pydantic_ai_adapter")
+    state = {"active": set()}
+    assert "tavily — поиск" in AD.mcp_catalog({"tavily": {"about": "поиск"}})
+    assert "подключён" in AD.mcp_activate(state, ["tavily"], "@Tavily") and state["active"] == {"tavily"}
+    assert "уже подключён" in AD.mcp_activate(state, ["tavily"], "tavily")
+    assert "нет" in AD.mcp_activate(state, ["tavily"], "brave")
+    src = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    loop = src[src.index("def main("):]
+    assert "lazy_mcp_toolsets(" in loop and 'task.get("mcp_active")' in loop, "адаптер поднимает все серверы"
+    assert 'task.get("role") or "")' in loop.split("key = (")[1].split("\n")[1], "роль не в ключе агента"
+
+    vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
+    if not vpy.exists():
+        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
+    server = tmp / "demo_server.py"
+    server.write_text(textwrap.dedent("""
+        import json, pathlib, sys
+        pathlib.Path(sys.argv[1]).write_text("started")
+        def send(o):
+            sys.stdout.write(json.dumps(o, ensure_ascii=False) + "\\n"); sys.stdout.flush()
+        for line in sys.stdin:
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            i, meth = m.get("id"), m.get("method")
+            if meth == "initialize":
+                send({"jsonrpc": "2.0", "id": i, "result": {"protocolVersion": m["params"].get("protocolVersion"),
+                      "capabilities": {"tools": {}}, "serverInfo": {"name": "demo", "version": "1"}}})
+            elif meth == "tools/list":
+                send({"jsonrpc": "2.0", "id": i, "result": {"tools": [{"name": "echo", "description": "эхо",
+                      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}})
+            elif meth == "tools/call":
+                send({"jsonrpc": "2.0", "id": i, "result": {"content": [{"type": "text",
+                      "text": "эхо: " + (m["params"].get("arguments") or {}).get("text", "")}]}})
+            elif i is not None:
+                send({"jsonrpc": "2.0", "id": i, "result": {}})
+    """), encoding="utf-8")
+    scenario = tmp / "scenario.py"
+    scenario.write_text(textwrap.dedent("""
+        import json, os, sys
+        sys.path.insert(0, sys.argv[1])
+        import pydantic_ai_adapter as AD
+        from pydantic_ai import Agent
+        from pydantic_ai.models.function import FunctionModel
+        from pydantic_ai.messages import ModelResponse, ToolCallPart, TextPart, ToolReturnPart
+        S, mark = sys.argv[2], os.path.join(sys.argv[2], "started.txt")
+        cfg = {"mcpServers": {"demo": {"command": sys.executable, "args": [os.path.join(S, "demo_server.py"), mark]},
+                              "broken": {"command": "/nonexistent/mcp-nope"}}}
+        state = {"active": set()}
+        ts = AD.lazy_mcp_toolsets(cfg, {}, S, "", state)
+        seen = []
+        def fn(messages, info):
+            seen.append([sorted(t.name for t in info.function_tools), os.path.exists(mark)])
+            calls = {1: ("mcp_connect", {"name": "demo"}), 2: ("echo", {"text": "привет"}),
+                     3: ("mcp_connect", {"name": "broken"}), 4: ("mcp_connect", {"name": "broken"})}
+            if len(seen) in calls:
+                return ModelResponse(parts=[ToolCallPart(*calls[len(seen)])])
+            rets = [str(p.content) for m in messages for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)]
+            return ModelResponse(parts=[TextPart(json.dumps(rets, ensure_ascii=False))])
+        out = Agent(FunctionModel(fn), toolsets=ts).run_sync("go").output
+        print(json.dumps({"seen": seen, "returns": json.loads(out)}, ensure_ascii=False))
+    """), encoding="utf-8")
+    cp = subprocess.run([str(vpy), str(scenario), str(KIT / "scripts" / "agents"), str(tmp)],
+                        capture_output=True, text=True, timeout=240)
+    assert cp.returncode == 0, cp.stderr[-1500:]
+    d = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert d["seen"][0] == [["mcp_connect"], False], f"сервер поднят до нужды: {d['seen'][0]}"
+    assert "echo" in d["seen"][1][0] and d["seen"][1][1], f"подключённый сервер не дал инструментов: {d['seen'][1]}"
+    assert "эхо: привет" in d["returns"], d["returns"]
+    assert any("не запустился" in r for r in d["returns"]), f"сломанный сервер без объяснения: {d['returns']}"
+
+
+@test
+def test_productivity_takes_mentions_and_attachments(tmp: Path):
+    """«Продуктивность»: подсказки по @ и /, приложить файл, плашки, --context движку."""
+    view = (KIT / "cockpit/modules/work/view.js").read_text(encoding="utf-8")
+    html = (KIT / "cockpit/modules/work/view.html").read_text(encoding="utf-8")
+    for token in ('id="makeAttach"', 'id="makeFile"', 'id="makeRefs"', 'id="makeSuggest"'):
+        assert token in html, f"нет части поля задачи: {token}"
+    assert '"/api/context/upload"' in view and '"/api/context/suggest?project="' in view
+    assert '["--context", r.path]' in view, "ссылки и вложения не уходят движку"
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'u.path == "/api/context/upload"' in src and 'u.path == "/api/context/suggest"' in src
+    import importlib
+    sys.path.insert(0, str(KIT / "scripts"))
+    IA = importlib.import_module("install_aurora")
+    assert ".opencode/context/" in IA.GITIGNORE_BLOCK, "вложения уедут в git проекта"
+    assert "scripts/request_context.py" in (KIT / "engine_manifest.txt").read_text(encoding="utf-8"), \
+        "модуль контекста не доедет до проектов"
+
+
+@test
+def test_a_link_to_a_section_opens_it_without_waiting_for_health(tmp: Path):
+    """Ссылка на раздел (`#work|ПРОЕКТ`) открывает его сразу, а не после здоровья проекта.
+
+    Найдено 24.09.2026: старт панели ждал `pick` — а тот ждёт `/api/health`, на крупной базе
+    десятки секунд, — и только потом открывал раздел из адреса. Всё это время человек
+    смотрел на Мостик и решал, что ссылка не сработала.
+    """
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    boot = ui[ui.index("async function boot("):ui.index("/* ---------------- мостик ---------------- */")]
+    tail = boot[boot.index('location.hash.slice(1)'):]
+    assert "const picking = p ? pick(p, false) : null;" in tail, "проект выбирается с ожиданием здоровья"
+    assert tail.index("if (v) show(v);") < tail.index("if (picking) await picking;"), \
+        "раздел из адреса открывается только после здоровья"
+    pick = ui[ui.index("async function pick("):]
+    assert pick.index("S.project = p;") < pick.index('await api("/api/health'), \
+        "pick ставит проект только после здоровья — раздел откроется без проекта"
 
 
 @test

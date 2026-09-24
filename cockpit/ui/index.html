@@ -358,6 +358,18 @@ tr:last-child td{border-bottom:0}
 .palette .res .nm{font-weight:600;font-size:var(--text-md)}
 .palette .res .ds{color:var(--text-muted);font-size:var(--text-sm);flex:1;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
+/* MCP машины: карточки серверов и широкое окно для файла целиком */
+.mcp-card{display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);
+  text-align:left;padding:var(--sp-3) var(--sp-4);cursor:pointer;min-width:0}
+.mcp-card:hover,.mcp-card:focus-visible{border-color:var(--primary)}
+.mcp-line{font-size:var(--text-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mcp-kv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) auto;gap:6px;
+  margin-bottom:6px}
+.mcp-text{width:100%;min-height:52vh;font-family:var(--mono);font-size:var(--text-sm);
+  line-height:1.55;padding:var(--sp-3);resize:vertical;background:var(--console-bg);
+  color:var(--console-ink)}
+.drawer.wide{width:min(920px,96vw)}
+.setup-jump{gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 var(--sp-4)}
 .drawer{width:min(560px,94vw);max-height:80vh;overflow:auto;background:var(--card-bg);
   border:var(--card-border-w) solid var(--card-border);border-radius:var(--radius);
   padding:var(--sp-5) var(--sp-6);box-shadow:var(--shadow-pop)}
@@ -690,6 +702,7 @@ tr:last-child td{border-bottom:0}
   </div>
 </div>
 <div class="overlay" id="runOverlay"><div class="drawer" id="runDrawer" role="dialog"></div></div>
+<div class="overlay" id="mcpOverlay"><div class="drawer" id="mcpDrawer" role="dialog"></div></div>
 <div id="toasts"></div>
 
 <script>
@@ -698,7 +711,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.126.1";
+const UI_VERSION = "1.128.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1685,8 +1698,14 @@ async function boot(){
   checkKitUpdate();      // новая версия Aurora — отметкой на «О проекте», не окном поверх работы
   prefetchHealth();
   const [v, slug] = (location.hash.slice(1)||"").split("|");
-  if (slug){ const p = S.state.projects.find(p=>p.slug===slug); if (p) await pick(p, false); }
+  // Раздел из адреса — сразу, не дожидаясь здоровья: `pick` ставит проект мгновенно, а
+  // здоровье считается десятки секунд (на крупной базе — линтер всего дерева). Пока оно
+  // шло, человек смотрел на Мостик и решал, что раздел из ссылки не открылся. Пришедшее
+  // здоровье перерисует поднятые разделы само (`refreshModules` в `pick`).
+  const p = slug ? S.state.projects.find(x => x.slug === slug) : null;
+  const picking = p ? pick(p, false) : null;
   if (v) show(v);
+  if (picking) await picking;
 }
 
 /* ---------------- мостик ---------------- */
@@ -3680,6 +3699,309 @@ async function renderSetup(){
   // Кольцо бэкендов — общая настройка машины: адреса, ключи, модели, окна, ширины.
   // Проект может переопределить своё, и это видно в «Настройках проекта».
   await renderAgentCard(box, "kit");
+  MCPK.box = el("div", {});
+  box.append(MCPK.box);
+  await renderMcpKit();
+  drawSetupJump(box);
+}
+
+// Страница настройки длинная: кольцо шлюзов одно занимает несколько экранов, и то, что
+// под ним, человек просто не находит («я не вижу настроек MCP»). Строка переходов сверху
+// называет все части страницы и ведёт к каждой.
+function drawSetupJump(box){
+  const heads = $$("h2", box);
+  if (heads.length < 2) return;
+  const row = el("div", {class:"row setup-jump"},
+    el("span", {class:"muted", style:"font-size:12px"}, t("setup.jump")));
+  heads.forEach((h, i) => {
+    if (!h.id) h.id = "setup-part-" + i;
+    row.append(el("button", {class:"btn sm", onclick:()=>h.scrollIntoView({behavior:"smooth"})},
+      h.textContent));
+  });
+  box.prepend(row);
+}
+
+/* ---------------- MCP-серверы машины ----------------
+
+   Серверы, общие для всех проектов: `<кит>/local/mcp.json`, стандартная форма. Карточка на
+   сервер, окно правки, вставка готовой настройки из JSON и весь файл текстом. Секреты
+   (`env`, `headers`, `auth`) сервер отдаёт маской; маска, пришедшая обратно, значит «не
+   менять». Своей копии маски у страницы нет — её называет сервер (`mask`). */
+const MCPK = {state: null, box: null, touched: false};
+
+function mcpHow(spec){
+  const tr = String(spec.transport || spec.type || "").toLowerCase();
+  if (typeof spec.url === "string") return tr === "sse" ? "sse" : "http";
+  return "stdio";
+}
+
+async function renderMcpKit(){
+  const box = MCPK.box;
+  if (!box) return;
+  const d = await api("/api/mcp/kit");
+  MCPK.state = d;
+  box.innerHTML = "";
+  const names = Object.keys(d.servers || {});
+  const cards = el("div", {class:"grid tiles"});
+  names.forEach(n => cards.append(mcpCard(n, d.servers[n], d.mask)));
+  box.append(el("h2", {}, t("mcpk.title")),
+    el("div", {class:"card", style:"padding:20px"},
+      el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcpk.about")),
+      d.error ? el("div", {class:"warnbox"}, d.error) : null,
+      el("div", {class:"row", style:"gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px"},
+        el("button", {class:"btn sm primary", onclick:()=>openMcpCard("")}, t("mcpk.add")),
+        el("button", {class:"btn sm", onclick:openMcpPaste}, t("mcpk.paste")),
+        el("button", {class:"btn sm", onclick:openMcpRaw}, t("mcpk.raw")),
+        el("span", {class:"muted mono", style:"font-size:11.5px;overflow-wrap:anywhere"},
+          d.path || "")),
+      names.length ? cards
+                   : el("div", {class:"muted", style:"font-size:13px"}, t("mcpk.empty"))));
+}
+
+function mcpCard(name, spec, mask){
+  const how = mcpHow(spec);
+  const line = how === "stdio" ? [spec.command, ...(spec.args || [])].join(" ") : spec.url;
+  const secrets = Object.keys(spec.env || {}).length + Object.keys(spec.headers || {}).length
+                + (spec.auth === mask ? 1 : 0);
+  const about = spec.about || spec.description || "";
+  return el("button", {class:"card mcp-card", title: t("mcpk.open"),
+      "aria-label": name + " · " + t("mcpk.open"), onclick:()=>openMcpCard(name)},
+    el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
+      el("b", {class:"mono"}, name), el("span", {class:"chip"}, t("mcpk.how." + how))),
+    el("div", {class:"mono muted mcp-line", title: line || ""}, line || "—"),
+    (secrets || (spec.roles || []).length || spec.outbound)
+      ? el("div", {class:"row", style:"gap:6px;flex-wrap:wrap"},
+          secrets ? el("span", {class:"chip warn"}, t("mcpk.secrets", {n: secrets})) : null,
+          (spec.roles || []).length
+            ? el("span", {class:"chip"}, t("mcpk.roles_only", {list: spec.roles.join(", ")})) : null,
+          spec.outbound ? el("span", {class:"chip gold"}, t("mcpk.outbound_chip")) : null)
+      : null,
+    about ? el("div", {class:"muted", style:"font-size:12px"}, about) : null);
+}
+
+function mcpOpen(wide){
+  MCPK.touched = false;
+  const d = $("#mcpDrawer");
+  d.innerHTML = "";
+  d.classList.toggle("wide", !!wide);
+  $("#mcpOverlay").classList.add("on");
+  return d;
+}
+// Любая правка в окне — повод спросить перед закрытием: и текст, и галочки ролей.
+["input", "change"].forEach(ev =>
+  $("#mcpDrawer").addEventListener(ev, () => { MCPK.touched = true; }));
+function closeMcp(force){
+  if (!$("#mcpOverlay").classList.contains("on")) return;
+  if (!force && MCPK.touched && !confirm(t("mcpk.leave_ask"))) return;
+  $("#mcpOverlay").classList.remove("on");
+  $("#mcpDrawer").innerHTML = "";          // вставленные токены не остаются в разметке
+  MCPK.touched = false;
+}
+const mcpField = (label, node, hint) => el("label", {style:"display:block;margin-bottom:12px"},
+  el("div", {class:"muted", style:"font-size:12px;margin-bottom:4px"},
+    label + (hint ? " · " + hint : "")), node);
+const mcpInput = (value, extra) => el("input", Object.assign({class:"btn mono",
+  style:"width:100%;font-weight:400", value: value || "", spellcheck:"false",
+  autocomplete:"off"}, extra || {}));
+
+// Пары «имя → значение» для env и headers. Значение, скрытое маской, в поле не попадает:
+// пустое поле с пометкой «задано» при записи превращается обратно в маску.
+function mcpPairs(entries, mask, addLabel){
+  const rows = entries.map(([k, v]) => ({key: k, value: "", masked: v === mask,
+                                         plain: v === mask ? "" : v}));
+  const box = el("div", {});
+  const draw = () => {
+    box.innerHTML = "";
+    rows.forEach((r, i) => box.append(el("div", {class:"mcp-kv"},
+      mcpInput(r.key, {placeholder: t("mcpk.f_key"), oninput: e => { r.key = e.target.value; }}),
+      el("input", {class:"btn mono", type:"password", autocomplete:"new-password",
+        style:"width:100%;font-weight:400", value: r.plain,
+        placeholder: r.masked ? t("mcpk.kept") : t("mcpk.f_value"),
+        oninput: e => { r.plain = e.target.value; }}),
+      el("button", {class:"btn sm danger", onclick:()=>{ rows.splice(i, 1);
+        MCPK.touched = true; draw(); }}, "✕"))));
+    box.append(el("button", {class:"btn sm", onclick:()=>{
+      rows.push({key:"", plain:"", masked:false}); draw(); }}, addLabel));
+  };
+  draw();
+  return {box, value(){
+    const out = {};
+    for (const r of rows){
+      const key = r.key.trim();
+      if (!key) continue;
+      if (r.plain) out[key] = r.plain;
+      else if (r.masked) out[key] = mask;
+      else throw new Error(t("mcpk.need_value", {key}));
+    }
+    return out;
+  }};
+}
+
+function openMcpCard(name){
+  const d = MCPK.state || {}, mask = d.mask;
+  const orig = name ? JSON.parse(JSON.stringify((d.servers || {})[name] || {})) : {};
+  const drawer = mcpOpen(false);
+  let how = mcpHow(orig);
+  const nameIn = mcpInput(name, {placeholder:"github"});
+  const cmdIn = mcpInput(orig.command, {placeholder:"npx"});
+  const argsIn = el("textarea", {class:"btn mono", spellcheck:"false", rows:"4",
+    style:"width:100%;font-weight:400;resize:vertical"}, (orig.args || []).join("\n"));
+  const urlIn = mcpInput(orig.url, {placeholder:"https://…/mcp"});
+  const env = mcpPairs(Object.entries(orig.env || {}), mask, t("mcpk.add_var"));
+  const headers = mcpPairs(Object.entries(orig.headers || {}), mask, t("mcpk.add_header"));
+  const roles = new Set(orig.roles || []);
+  const outIn = el("input", {type:"checkbox", checked: orig.outbound ? "" : null});
+  const aboutIn = mcpInput(orig.about || orig.description, {class:"btn",
+    style:"width:100%;font-weight:400"});
+  const stdioBox = el("div", {},
+    mcpField(t("mcpk.f_command"), cmdIn), mcpField(t("mcpk.f_args"), argsIn),
+    mcpField(t("mcpk.f_env"), env.box));
+  const urlBox = el("div", {}, mcpField(t("mcpk.f_url"), urlIn),
+    mcpField(t("mcpk.f_headers"), headers.box));
+  const showHow = () => { stdioBox.hidden = how !== "stdio"; urlBox.hidden = how === "stdio"; };
+  const howSel = el("select", {class:"btn", style:"font-weight:400",
+      onchange: e => { how = e.target.value; showHow(); }},
+    ...["stdio", "http", "sse"].map(v => el("option", {value: v, selected: v === how ? "" : null},
+      t("mcpk.how." + v))));
+  // Поля, которых в форме нет (timeout, cwd, auth…), переживают запись: карточка правит
+  // только своё. Называем их, чтобы человек не удивлялся, откуда они в файле.
+  const MANAGED = ["command", "args", "env", "url", "headers", "transport", "type", "roles",
+                   "outbound", "about", "description"];
+  const extra = Object.keys(orig).filter(k => !MANAGED.includes(k));
+  const errBox = el("div", {});
+  const save = async () => {
+    errBox.innerHTML = "";
+    const newName = nameIn.value.trim();
+    if (!newName) return errBox.append(el("div", {class:"warnbox"}, t("mcpk.need_name")));
+    const spec = JSON.parse(JSON.stringify(orig));
+    try {
+      for (const k of ["command", "args", "env", "url", "headers", "transport", "type"])
+        delete spec[k];
+      if (how === "stdio"){
+        spec.command = cmdIn.value.trim();
+        const args = argsIn.value.split("\n").map(a => a.trim()).filter(Boolean);
+        if (args.length) spec.args = args;
+        const e = env.value(); if (Object.keys(e).length) spec.env = e;
+        delete spec.auth;
+      } else {
+        spec.url = urlIn.value.trim();
+        spec.transport = how;
+        const h = headers.value(); if (Object.keys(h).length) spec.headers = h;
+        delete spec.cwd;
+      }
+    } catch (e){ return errBox.append(el("div", {class:"warnbox"}, e.message)); }
+    if (roles.size) spec.roles = [...roles]; else delete spec.roles;
+    if (outIn.checked) spec.outbound = true; else delete spec.outbound;
+    delete spec.description;
+    if (aboutIn.value.trim()) spec.about = aboutIn.value.trim(); else delete spec.about;
+    const r = await api("/api/mcp/kit", {method:"POST", quiet:true, body: JSON.stringify(
+      {action:"save_server", name: newName, rename_from: name, spec})});
+    if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
+    toast(t("mcpk.saved", {n: r.count}), "ok");
+    closeMcp(true);
+    renderMcpKit();
+  };
+  // Родной `append` печатает пустое место словом «null» — пустые части отбрасываем.
+  drawer.append(...[
+    el("h2", {style:"margin-top:0"}, name ? t("mcpk.edit_title", {name}) : t("mcpk.new_title")),
+    mcpField(t("mcpk.f_name"), nameIn, t("mcpk.f_name_hint")),
+    mcpField(t("mcpk.f_how"), howSel), stdioBox, urlBox,
+    el("div", {style:"margin-bottom:12px"},
+      el("div", {class:"muted", style:"font-size:12px;margin-bottom:4px"},
+        t("mcpk.f_roles") + " · " + t("mcpk.f_roles_hint")),
+      el("div", {class:"row", style:"gap:14px;flex-wrap:wrap"},
+        ...(d.roles || []).map(r => el("label", {class:"row", style:"gap:6px;font-size:13px"},
+          el("input", {type:"checkbox", checked: roles.has(r) ? "" : null,
+            onchange: e => { e.target.checked ? roles.add(r) : roles.delete(r); }}), r)))),
+    el("label", {class:"row", style:"gap:8px;font-size:13px;margin-bottom:12px"}, outIn,
+      t("mcpk.f_outbound")),
+    mcpField(t("mcpk.f_about"), aboutIn),
+    extra.length ? el("div", {class:"muted", style:"font-size:12px;margin-bottom:12px"},
+      t("mcpk.kept_fields", {list: extra.join(", ")})) : null,
+    errBox,
+    el("div", {class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"},
+      el("button", {class:"btn primary", onclick: save}, t("mcpk.save")),
+      name ? el("button", {class:"btn sm danger", onclick: async () => {
+        if (!confirm(t("mcpk.delete_ask", {name}))) return;
+        const r = await api("/api/mcp/kit", {method:"POST", quiet:true,
+          body: JSON.stringify({action:"delete_server", name})});
+        if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
+        toast(t("mcpk.deleted", {name}), "ok");
+        closeMcp(true);
+        renderMcpKit();
+      }}, t("mcpk.delete")) : null,
+      el("div", {class:"spacer"}),
+      el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close")))].filter(Boolean));
+  showHow();
+}
+
+function openMcpPaste(){
+  const drawer = mcpOpen(true);
+  const text = el("textarea", {class:"mcp-text", spellcheck:"false", autocomplete:"off",
+    style:"min-height:30vh", placeholder: t("mcpk.paste_ph")});
+  const out = el("div", {});
+  const send = dry => api("/api/mcp/kit", {method:"POST", quiet:true,
+    body: JSON.stringify({action:"import", text: text.value, dry})});
+  const parse = async () => {
+    out.innerHTML = "";
+    const r = await send(true);
+    if (r.error) return out.append(el("div", {class:"warnbox"}, r.error));
+    out.append(el("div", {style:"font-weight:600;margin:12px 0 6px"},
+      t("mcpk.found", {n: r.servers.length})));
+    r.servers.forEach(s => out.append(el("div", {class:"list-item",
+        style:"gap:8px;flex-wrap:wrap;align-items:center"},
+      el("b", {class:"mono"}, s.name),
+      el("span", {class:"chip " + (s.replace ? "warn" : "ok")},
+        s.replace ? t("mcpk.will_replace") : t("mcpk.will_add")),
+      el("span", {class:"chip"}, t("mcpk.how." + (s.how === "url" ? "http" : "stdio"))),
+      s.env.length ? el("span", {class:"muted mono", style:"font-size:12px"},
+        t("mcpk.env_keys", {list: s.env.join(", ")})) : null,
+      s.headers.length ? el("span", {class:"muted mono", style:"font-size:12px"},
+        t("mcpk.header_keys", {list: s.headers.join(", ")})) : null)));
+    // Что разбор достроил сам (сервер из расширения Zed) или пропустил (выключен в источнике).
+    (r.notes || []).forEach(n => out.append(el("div", {class:"muted",
+      style:"font-size:12px;margin:6px 0 0"}, n)));
+    out.append(el("button", {class:"btn primary", style:"margin-top:12px", onclick: async () => {
+      const w = await send(false);
+      if (w.error) return out.append(el("div", {class:"warnbox"}, w.error));
+      toast(t("mcpk.imported", {n: w.servers.length}), "ok");
+      closeMcp(true);
+      renderMcpKit();
+    }}, t("mcpk.import")));
+  };
+  drawer.append(el("h2", {style:"margin-top:0"}, t("mcpk.paste_title")),
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("mcpk.paste_about")),
+    text, out,
+    el("div", {class:"row", style:"gap:8px;margin-top:12px"},
+      el("button", {class:"btn", onclick: parse}, t("mcpk.parse")),
+      el("div", {class:"spacer"}),
+      el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close"))));
+  text.focus();
+}
+
+function openMcpRaw(){
+  const d = MCPK.state || {};
+  const drawer = mcpOpen(true);
+  const text = el("textarea", {class:"mcp-text", spellcheck:"false", autocomplete:"off"},
+    d.text || "{\n  \"mcpServers\": {}\n}\n");
+  const errBox = el("div", {});
+  drawer.append(el("h2", {style:"margin-top:0"}, t("mcpk.raw_title")),
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 6px"}, t("mcpk.raw_about")),
+    el("div", {class:"muted mono", style:"font-size:11.5px;margin-bottom:10px;overflow-wrap:anywhere"},
+      d.path || ""),
+    text, errBox,
+    el("div", {class:"row", style:"gap:8px;margin-top:12px"},
+      el("button", {class:"btn primary", onclick: async () => {
+        errBox.innerHTML = "";
+        const r = await api("/api/mcp/kit", {method:"POST", quiet:true,
+          body: JSON.stringify({action:"save_raw", text: text.value})});
+        if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
+        toast(t("mcpk.raw_saved", {n: r.count}), "ok");
+        closeMcp(true);
+        renderMcpKit();
+      }}, t("mcpk.raw_save")),
+      el("div", {class:"spacer"}),
+      el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close"))));
 }
 
 /* ---------------- настройки проекта ----------------
@@ -4596,7 +4918,7 @@ $("#paletteBtn").onclick = openPalette;
 $("#paletteOverlay").onclick = e => { if (e.target.id==="paletteOverlay") e.currentTarget.classList.remove("on"); };
 document.addEventListener("keydown", e=>{
   if ((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==="k"){ e.preventDefault(); openPalette(); }
-  if (e.key==="Escape"){ closeRun(); $("#paletteOverlay").classList.remove("on"); }
+  if (e.key==="Escape"){ closeRun(); closeMcp(); $("#paletteOverlay").classList.remove("on"); }
 });
 
 /* ---------------- обработчики раздела «Файлы» ---------------- */

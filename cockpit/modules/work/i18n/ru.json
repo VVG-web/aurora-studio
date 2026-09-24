@@ -43,5 +43,18 @@
   "work.publish_task_note": "Уточнение: {note}",
   "work.publish_task_tail": "Настройки вида документа — /aurora-vault make:kinds.",
   "work.task_copied": "Задание скопировано — вставьте ассистенту",
-  "work.task_clipboard_off": "Буфер недоступен — скопируйте из консоли"
+  "work.task_clipboard_off": "Буфер недоступен — скопируйте из консоли",
+  "work.attach": "Приложить файл",
+  "work.refs_hint": "@ — файл или папка проекта и MCP-сервер, / — навык; приложить можно текстовый файл (.md, .txt, .json, .py…)",
+  "work.ref_file": "файл",
+  "work.ref_dir": "папка",
+  "work.ref_attach": "вложение",
+  "work.ref_remove": "Убрать из контекста",
+  "work.kind_file": "файл",
+  "work.kind_dir": "папка",
+  "work.kind_mcp": "MCP",
+  "work.kind_skill": "навык",
+  "work.attach_text_only": "«{name}» — вложения только текстовые",
+  "work.attach_too_big": "«{name}» больше 1 МБ — это уже не контекст",
+  "work.attach_failed": "«{name}» не приложен"
 }

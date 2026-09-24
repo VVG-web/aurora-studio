@@ -19,9 +19,22 @@
     <button class="btn" id="makePublish" data-i18n="work.publish">Опубликовать…</button>
   </div>
   <div class="muted" id="makeSpec" style="font-size:12px;margin:8px 0 10px"></div>
-  <textarea id="makeIdea" class="btn" rows="3" data-i18n-ph="work.idea_ph"
-            placeholder="Задача своими словами: под какую фичу или требование делаем документ"
-            style="width:100%;font-weight:400;resize:vertical"></textarea>
+  <!-- Поле задачи понимает упоминания: `@` — файл или папка проекта и MCP-сервер, `/` —
+       навык. Подсказки выпадают прямо под полем; выбранное и приложенное видно плашками. -->
+  <div style="position:relative">
+    <textarea id="makeIdea" class="btn" rows="3" data-i18n-ph="work.idea_ph"
+              placeholder="Задача своими словами: под какую фичу или требование делаем документ"
+              style="width:100%;font-weight:400;resize:vertical"></textarea>
+    <div id="makeSuggest" class="card" hidden
+         style="position:absolute;left:0;right:0;z-index:20;max-height:260px;overflow:auto;padding:4px"></div>
+  </div>
+  <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+    <button class="btn sm" id="makeAttach" data-i18n="work.attach">Приложить файл</button>
+    <input type="file" id="makeFile" multiple hidden>
+    <span class="muted" style="font-size:12px" data-i18n="work.refs_hint">@ — файл или папка
+      проекта, / — навык; приложить можно текстовый файл (.md, .txt, .json, .py…)</span>
+  </div>
+  <div id="makeRefs" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div>
   <div id="makeDialog" style="margin-top:12px"></div>
 </div>
 <div id="workBody"></div>

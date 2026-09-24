@@ -1206,6 +1206,403 @@ def kit_update() -> dict:
     return r
 
 
+# --------------------------------------------------------------- MCP машины
+
+# MCP-серверы машины — общие для всех проектов (`<кит>/local/mcp.json`, форма стандартная).
+# В этом файле бывают токены: `env` у запускаемого сервера, `headers` и `auth` у сервера по
+# адресу. Панель их принимает, но обратно не отдаёт никогда: вместо значения в браузер
+# уходит маска, а маска, пришедшая обратно, значит «оставить как было». Файл лежит в
+# `local/` — папка закрыта .gitignore и обновлением кита не трогается.
+MCP_MASK = "••••••"
+MCP_SECRET_MAPS = ("env", "headers")
+MCP_NAME = re.compile(r"^[\w.\-]{1,64}$")
+MCP_ROLES = ("worker", "planner", "critic", "qa")
+
+
+def kit_mcp_file() -> str:
+    return os.path.join(KIT, "local", "mcp.json")
+
+
+def mcp_kit_servers() -> tuple:
+    """(серверы, ошибка) из файла машины. Нет файла — пусто и без ошибки."""
+    path = kit_mcp_file()
+    if not os.path.isfile(path):
+        return {}, ""
+    try:
+        data = json.loads(read_text(path) or "{}")
+    except ValueError as e:
+        return {}, f"local/mcp.json не разобран: {e.msg}, строка {e.lineno}"
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if servers is None:
+        return {}, ""
+    if not isinstance(servers, dict):
+        return {}, "в local/mcp.json поле mcpServers — не объект"
+    return {k: v for k, v in servers.items() if isinstance(v, dict)}, ""
+
+
+def mcp_mask(servers: dict) -> dict:
+    """Копия серверов, где вместо каждого секрета стоит маска. Её и видит браузер."""
+    out = {}
+    for name, spec in servers.items():
+        one = json.loads(json.dumps(spec))
+        for key in MCP_SECRET_MAPS:
+            if isinstance(one.get(key), dict):
+                one[key] = {k: (MCP_MASK if v not in ("", None) else v)
+                            for k, v in one[key].items()}
+        if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
+            one["auth"] = MCP_MASK
+        out[name] = one
+    return out
+
+
+def mcp_unmask(servers: dict, old: dict, renamed: dict = None) -> str:
+    """Маска → прежнее значение с диска, на месте. Вернёт ошибку, если восстанавливать нечего.
+
+    Сервер переименовали — прежние значения ищутся под старым именем (`renamed`: новое →
+    старое). Маска без сохранённого значения — это потерянный токен, и молча записать
+    вместо него маску нельзя: сервер получил бы «••••••» вместо ключа и отказал бы уже в
+    прогоне, где причину не найти.
+    """
+    renamed = renamed or {}
+    for name, spec in servers.items():
+        src = old.get(renamed.get(name, name)) or {}
+        for key in MCP_SECRET_MAPS:
+            vals = spec.get(key)
+            if not isinstance(vals, dict):
+                continue
+            for k, v in list(vals.items()):
+                if v == MCP_MASK:
+                    was = (src.get(key) or {}).get(k) if isinstance(src.get(key), dict) else None
+                    if was is None:
+                        return (f"у сервера «{name}» значение {key}.{k} скрыто маской, а "
+                                "сохранённого нет — впишите его")
+                    vals[k] = was
+        if spec.get("auth") == MCP_MASK:
+            if not isinstance(src.get("auth"), str):
+                return f"у сервера «{name}» значение auth скрыто маской, а сохранённого нет"
+            spec["auth"] = src["auth"]
+    return ""
+
+
+def mcp_check(servers) -> str:
+    """Пустая строка — серверы годятся к записи; иначе — что не так, словами."""
+    if not isinstance(servers, dict):
+        return "mcpServers должен быть объектом «имя → настройка»"
+    for name, spec in servers.items():
+        if not isinstance(name, str) or not MCP_NAME.match(name):
+            return (f"имя «{str(name)[:40]}» не годится: буквы, цифры, точка, дефис и "
+                    "подчёркивание, до 64 знаков")
+        if not isinstance(spec, dict):
+            return f"сервер «{name}»: ожидался объект"
+        cmd, url = spec.get("command"), spec.get("url")
+        if not (isinstance(cmd, str) and cmd.strip()) and not (isinstance(url, str) and url.strip()):
+            return f"сервер «{name}»: нужен command (запуск программы) или url (адрес)"
+        if "args" in spec and not (isinstance(spec["args"], list)
+                                   and all(isinstance(a, str) for a in spec["args"])):
+            return f"сервер «{name}»: args — список строк"
+        for key in MCP_SECRET_MAPS:
+            if key in spec and not (isinstance(spec[key], dict) and all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in spec[key].items())):
+                return f"сервер «{name}»: {key} — объект «имя → строка»"
+        roles = spec.get("roles")
+        if roles is not None and not (isinstance(roles, list)
+                                      and all(r in MCP_ROLES for r in roles)):
+            return f"сервер «{name}»: roles — список из {', '.join(MCP_ROLES)}"
+        if "outbound" in spec and not isinstance(spec["outbound"], bool):
+            return f"сервер «{name}»: outbound — true или false"
+    return ""
+
+
+def mcp_write_kit(servers: dict) -> dict:
+    """Запись файла машины: прежняя версия — рядом как .bak, оба файла только для владельца."""
+    path = kit_mcp_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        if os.path.isfile(path):
+            with open(path + ".bak", "w", encoding="utf-8") as f:
+                f.write(read_text(path))
+            os.chmod(path + ".bak", 0o600)
+        tmp = path + ".aurora-new"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError as e:
+        return {"error": f"не удалось записать local/mcp.json: {e}"}
+    return {"ok": True, "path": path, "count": len(servers)}
+
+
+def _jsonc(text: str) -> str:
+    """JSON с комментариями и висячими запятыми → строгий JSON.
+
+    Так пишут конфиги VS Code и Cursor, и именно оттуда человек копирует настройку.
+    Разбор посимвольный: `//` внутри строки — это адрес (`https://`), а не комментарий.
+    """
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        elif c == ",":
+            # Висячая запятая бывает и перед комментарием: `"x": 1, // пояснение`.
+            j = i + 1
+            while j < n:
+                if text[j] in " \t\r\n":
+                    j += 1
+                elif text.startswith("//", j):
+                    k = text.find("\n", j)
+                    j = n if k < 0 else k
+                elif text.startswith("/*", j):
+                    k = text.find("*/", j + 2)
+                    j = n if k < 0 else k + 2
+                else:
+                    break
+            if j < n and text[j] in "}]":
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _mcp_is_server(v) -> bool:
+    return isinstance(v, dict) and (isinstance(v.get("command"), str)
+                                    or isinstance(v.get("url"), str))
+
+
+def _mcp_guess_name(spec: dict) -> str:
+    """Имя для сервера, скопированного без имени: по пакету, адресу или программе."""
+    name = ""
+    for a in spec.get("args") or []:
+        if isinstance(a, str) and not a.startswith("-") and ("mcp" in a.lower() or a.startswith("@")):
+            name = a.rstrip("/").split("/")[-1]
+            name = re.sub(r"@[\w.\-]*$", "", name) if not name.startswith("@") else name[1:]
+            break
+    if not name and isinstance(spec.get("url"), str):
+        host = re.sub(r"^\w+://", "", spec["url"]).split("/")[0].split(":")[0]
+        name = next((p for p in host.split(".") if p not in ("www", "api", "mcp")), host)
+    if not name and isinstance(spec.get("command"), str):
+        name = os.path.basename(spec["command"].strip().split(" ")[0])
+    for prefix in ("mcp-server-", "server-"):
+        if name.startswith(prefix) and len(name) > len(prefix):
+            name = name[len(prefix):]
+    name = re.sub(r"[^\w.\-]+", "-", name).strip("-.")[:64]
+    return name or "server"
+
+
+# Серверы из расширений Zed: в его настройке у них только `settings` с ключами, а команду
+# запуска знает само расширение. Известные расширения — здесь: как запускать сервер и в какие
+# переменные окружения класть ключи из `settings`. Неизвестное — понятная ошибка, а не молчание.
+MCP_ZED_EXTENSIONS = {
+    "mcp-server-tavily": {"command": "npx", "args": ["-y", "tavily-mcp@latest"],
+                          "env": {"tavily_api_key": "TAVILY_API_KEY"}},
+}
+MCP_ZED_ONLY = ("settings", "enabled", "remote", "source")   # поля Zed, движку не нужные
+
+
+def _mcp_from_zed(name: str, spec: dict) -> tuple:
+    """(сервер в обычной форме или None, пояснение) для записи из настроек Zed.
+
+    У Zed три вида записи: свой сервер в старой форме — `command` объектом `{path, args,
+    env}`; свой сервер в новой — обычные `command`/`args`/`env` рядом с `source`; сервер из
+    расширения — одни `settings`. Обычная запись Claude, Cursor или VS Code проходит как есть.
+    """
+    cmd = spec.get("command")
+    if isinstance(cmd, dict) and isinstance(cmd.get("path"), str):
+        out = {k: v for k, v in spec.items() if k not in MCP_ZED_ONLY and k != "command"}
+        out["command"] = cmd["path"]
+        if cmd.get("args"):
+            out["args"] = [str(a) for a in cmd["args"]]
+        if isinstance(cmd.get("env"), dict) and cmd["env"]:
+            out["env"] = {str(k): str(v) for k, v in cmd["env"].items()}
+        return out, ""
+    if _mcp_is_server(spec):
+        return {k: v for k, v in spec.items() if k not in MCP_ZED_ONLY}, ""
+    settings = spec.get("settings")
+    if not isinstance(settings, dict):
+        return None, ""
+    known = MCP_ZED_EXTENSIONS.get(name)
+    if not known:
+        keys = ", ".join(str(k).upper() for k in settings) or "—"
+        return None, (f"«{name}» — сервер из расширения Zed: команду запуска знает расширение, "
+                      f"а в настройке её нет. Допишите command и args — как запускать сервер; "
+                      f"ключи из settings станут переменными окружения: {keys}")
+    env = {var: str(settings[key]) for key, var in known["env"].items() if settings.get(key)}
+    lost = [var for key, var in known["env"].items() if not settings.get(key)]
+    out = {"command": known["command"], "args": list(known["args"])}
+    if env:
+        out["env"] = env
+    note = (f"«{name}» — сервер из расширения Zed: запускается как «{known['command']} "
+            f"{' '.join(known['args'])}»"
+            + (f"; ключ перенесён в секреты машины: {', '.join(env)}" if env else "")
+            + (f"; не хватает {', '.join(lost)} — впишите в карточке сервера" if lost else ""))
+    return out, note
+
+
+def mcp_parse_paste(text: str) -> tuple:
+    """(серверы, ошибка) из вставленной настройки — см. `mcp_read_paste`."""
+    servers, why, _notes = mcp_read_paste(text)
+    return servers, why
+
+
+def mcp_read_paste(text: str) -> tuple:
+    """(серверы, ошибка, пояснения) из вставленной настройки — в любой из ходовых форм.
+
+    Понимаем: `{"mcpServers": {...}}` (Claude Desktop, Claude Code, Cursor), `{"servers":
+    {...}}` (VS Code), `{"mcp": {"servers": ...}}` (настройки VS Code), `{"context_servers":
+    {...}}` и записи Zed (см. `_mcp_from_zed`), словарь серверов без обёртки, фрагмент
+    `"имя": {...}` без внешних скобок и один сервер без имени — имя тогда подбирается по
+    пакету. Комментарии и висячие запятые допустимы. Выключенный в источнике сервер
+    (`"enabled": false`, `"disabled": true`) не переносится — об этом пояснение.
+    """
+    t = (text or "").strip().lstrip("\ufeff")
+    if not t:
+        return {}, "вставка пуста", []
+    if t.startswith('"'):
+        t = "{" + t.rstrip(",") + "}"
+    try:
+        data = json.loads(_jsonc(t))
+    except ValueError as e:
+        return {}, f"это не JSON: {e.msg} — строка {e.lineno}, позиция {e.colno}", []
+    if isinstance(data, dict) and isinstance(data.get("mcp"), dict):
+        data = data["mcp"]
+    for key in ("mcpServers", "servers", "context_servers"):
+        if isinstance(data, dict) and isinstance(data.get(key), dict):
+            data = data[key]
+            break
+    if _mcp_is_server(data):
+        data = {_mcp_guess_name(data): data}
+    if not isinstance(data, dict) or not data:
+        return {}, "во вставке не нашлось ни одного сервера MCP", []
+    servers, notes, bad = {}, [], []
+    for name, spec in data.items():
+        name = str(name)
+        if not isinstance(spec, dict):
+            bad.append(name)
+            continue
+        if spec.get("enabled") is False or spec.get("disabled") is True:
+            notes.append(f"«{name}» выключен в источнике — не перенесён")
+            continue
+        got, note = _mcp_from_zed(name, spec)
+        if got is None:
+            if note:
+                return {}, note, notes
+            bad.append(name)
+            continue
+        servers[name] = json.loads(json.dumps(got))
+        if note:
+            notes.append(note)
+    if bad:
+        return {}, (f"не похоже на сервер MCP: {', '.join(bad[:3])} — у сервера "
+                    "должен быть command или url"), notes
+    if not servers:
+        return {}, "во вставке не нашлось ни одного включённого сервера MCP", notes
+    return servers, "", notes
+
+
+def _mcp_brief(name: str, spec: dict, old: dict) -> dict:
+    """Строка предпросмотра вставки: без значений секретов, только их имена."""
+    return {"name": name, "replace": name in old,
+            "how": "url" if isinstance(spec.get("url"), str) else "command",
+            "env": sorted((spec.get("env") or {}) if isinstance(spec.get("env"), dict) else []),
+            "headers": sorted((spec.get("headers") or {})
+                              if isinstance(spec.get("headers"), dict) else [])}
+
+
+def mcp_kit_state() -> dict:
+    """Что показать в разделе: серверы и весь файл — с масками вместо секретов."""
+    servers, err = mcp_kit_servers()
+    masked = mcp_mask(servers)
+    out = {"path": kit_mcp_file(), "mask": MCP_MASK, "servers": masked,
+           "text": json.dumps({"mcpServers": masked}, ensure_ascii=False, indent=2) + "\n",
+           "roles": list(MCP_ROLES)}
+    if err:
+        out["error"] = err
+    return out
+
+
+def mcp_kit_action(payload: dict) -> dict:
+    """Правка серверов машины: карточка, удаление, вставка из JSON, весь файл целиком."""
+    action = payload.get("action", "")
+    old, err = mcp_kit_servers()
+    if err and action != "save_raw":
+        return {"error": err + " — поправьте файл целиком («Весь конфиг»)"}
+    if action == "save_server":
+        name = str(payload.get("name") or "").strip()
+        was = str(payload.get("rename_from") or "").strip()
+        spec = payload.get("spec")
+        if was and was not in old:
+            return {"error": f"сервера «{was}» уже нет — перечитайте раздел"}
+        if name != was and name in old:
+            return {"error": f"сервер «{name}» уже есть — выберите другое имя"}
+        servers = {k: v for k, v in old.items() if k != was}
+        servers[name] = spec
+        why = mcp_check({name: spec}) or mcp_unmask({name: spec}, old, {name: was or name})
+        if why:
+            return {"error": why}
+        # Порядок в файле — как был: переименованный сервер остаётся на своём месте.
+        ordered = {}
+        for k in old:
+            if k == was:
+                ordered[name] = spec
+            elif k in servers:
+                ordered[k] = servers[k]
+        ordered.setdefault(name, spec)
+        return mcp_write_kit(ordered)
+    if action == "delete_server":
+        name = str(payload.get("name") or "")
+        if name not in old:
+            return {"error": f"сервера «{name}» нет"}
+        return mcp_write_kit({k: v for k, v in old.items() if k != name})
+    if action == "import":
+        new, why, notes = mcp_read_paste(payload.get("text", ""))
+        why = why or mcp_check(new)
+        if why:
+            return {"error": why}
+        if MCP_MASK in json.dumps(new, ensure_ascii=False):
+            return {"error": "во вставке есть маска «" + MCP_MASK + "» вместо значения: "
+                             "это настройка, скопированная из панели, без секретов"}
+        brief = [_mcp_brief(k, v, old) for k, v in new.items()]
+        if payload.get("dry"):
+            return {"ok": True, "dry": True, "servers": brief, "notes": notes}
+        r = mcp_write_kit({**old, **new})
+        if r.get("ok"):
+            r["servers"] = brief
+            r["notes"] = notes
+        return r
+    if action == "save_raw":
+        try:
+            data = json.loads(_jsonc(payload.get("text", "")))
+        except ValueError as e:
+            return {"error": f"это не JSON: {e.msg} — строка {e.lineno}, позиция {e.colno}"}
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        if servers is None and isinstance(data, dict) and not data:
+            servers = {}
+        why = mcp_check(servers) or mcp_unmask(servers, old)
+        if why:
+            return {"error": why}
+        return mcp_write_kit(servers)
+    return {"error": f"неизвестное действие: {action[:40]}"}
+
+
 # --------------------------------------------------------------- реестр команд
 
 # Сборка реестра — десятки секунд (`--help` у каждого скрипта), и два запроса подряд не
@@ -2318,7 +2715,7 @@ def agent_state(project: str) -> dict:
         "own": sorted(own),
         # Что подключено через MCP: панель показывает объявленное проектом, а не
         # угадывает по чужой конфигурации — та меняется без нашего ведома.
-        "mcp": sorted((AG.mcp_config(project or KIT).get("mcpServers") or {})),
+        "mcp": sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {})),
         "target": target,
         "target_label": (f"проект «{os.path.basename(project)}»" if project
                          else "глобально (кит) — общая настройка всех проектов"),
@@ -2841,6 +3238,9 @@ class Handler(BaseHTTPRequestHandler):
             cfg_text = read_text(os.path.join(project, "aurora.config.yaml"))
             self.send_json({"text": cfg_text, "path": "aurora.config.yaml",
                             "values": config_values(cfg_text)})
+        elif u.path == "/api/mcp/kit":
+            # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
+            self.send_json(mcp_kit_state())
         elif u.path == "/api/mcp":
             # MCP-серверы проекта (`<project>/mcp.json`). Панель читает только метаданные:
             # имя, command, args, url — и флаг `hasEnv`. Значения `env` (токены) панель в
@@ -2984,6 +3384,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             rc, out = run_capture(project or KIT, "agent_core.py", ["--ping"], timeout=180)
             self.send_json(ping_state(project or KIT, out, rc))
+        elif u.path == "/api/context/suggest":
+            # Подсказки поля задачи: `@` — файлы и папки проекта и MCP-серверы, `/` — навыки.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            import agent_core as AG
+            import request_context as RC
+            names = sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {}))
+            self.send_json({"items": RC.suggest(project, q.get("q", [""])[0], names, kit=KIT)})
         elif u.path == "/api/artifacts":
             # Что уже создано по типу: список файлов из его папки. Публиковать выбирают
             # из готового, а не набирают путь руками — иначе первая же опечатка уходит
@@ -3253,6 +3662,22 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(self._write_tokens(project, payload))
+            return
+        if u.path == "/api/mcp/kit":
+            self.send_json(mcp_kit_action(payload))
+            return
+        if u.path == "/api/context/upload":
+            # Вложение к задаче: только текст, в `.opencode/context/<день>/` проекта — папку
+            # временного контекста запросов, закрытую .gitignore и чистящуюся сама.
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            import request_context as RC
+            text = payload.get("text")
+            if not isinstance(text, str):
+                return self.send_json({"error": "вложение пришло не текстом"})
+            self.send_json(RC.save_attachment(project, payload.get("name", ""),
+                                              text.encode("utf-8")))
             return
         if u.path == "/api/mcp":
             project = payload.get("project", "")

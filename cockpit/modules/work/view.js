@@ -7,11 +7,118 @@
 import {renderRoutes} from "../quickstart/routes.js";
 
 let MAKE = null;               // {sid, kind} — идущее производство
+// Ссылки и вложения задачи: {path, label, kind: file|dir|attach}. Уходят движку `--context`;
+// упоминания в тексте (`@путь`, `/навык`, `@сервер`) движок разбирает и сам.
+let REFS = [];
+const ACCEPT = [".md", ".markdown", ".txt", ".rst", ".log", ".json", ".jsonl", ".yaml", ".yml",
+  ".toml", ".ini", ".cfg", ".csv", ".tsv", ".xml", ".html", ".htm", ".svg", ".bpmn", ".puml",
+  ".mmd", ".sql", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".rb",
+  ".php", ".cs", ".c", ".h", ".cpp", ".hpp", ".sh", ".ps1", ".feature", ".graphql", ".proto"];
 
 export function mount(ctx){
   ctx.root.dataset.module = "work";
   ctx.$("#makeGo").onclick = () => startMake(ctx);
   ctx.$("#makePublish").onclick = () => publish(ctx);
+  const file = ctx.$("#makeFile");
+  file.accept = ACCEPT.join(",");
+  ctx.$("#makeAttach").onclick = () => file.click();
+  file.onchange = () => attach(ctx, [...file.files]).then(() => { file.value = ""; });
+  wireSuggest(ctx);
+  drawRefs(ctx);
+}
+
+// ---- ссылки и вложения ----
+
+function addRef(ctx, ref){
+  if (!REFS.some(r => r.path === ref.path)) REFS.push(ref);
+  drawRefs(ctx);
+}
+
+// Подписи видов — таблицей, а не склейкой ключа: проверка каталогов видит только целые ключи.
+const REF_KEY = {file: "work.ref_file", dir: "work.ref_dir", attach: "work.ref_attach"};
+const KIND_KEY = {file: "work.kind_file", dir: "work.kind_dir", mcp: "work.kind_mcp",
+                  skill: "work.kind_skill"};
+
+function drawRefs(ctx){
+  const {t, el} = ctx;
+  const box = ctx.$("#makeRefs");
+  box.innerHTML = "";
+  REFS.forEach(r => box.append(el("span", {class: "chip", title: r.path,
+      style: "gap:6px;align-items:center;display:inline-flex"},
+    t(REF_KEY[r.kind]) + " " + r.label,
+    el("button", {class: "btn sm", style: "padding:0 6px;min-height:0", title: t("work.ref_remove"),
+      onclick: () => { REFS = REFS.filter(x => x !== r); drawRefs(ctx); }}, "×"))));
+}
+
+async function attach(ctx, files){
+  const {t} = ctx;
+  if (!ctx.project) return ctx.toast(t("work.pick_project"), "warn");
+  for (const f of files){
+    const ext = (f.name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
+    if (ext && !ACCEPT.includes(ext)){ ctx.toast(t("work.attach_text_only", {name: f.name}), "warn"); continue; }
+    if (f.size > 1_000_000){ ctx.toast(t("work.attach_too_big", {name: f.name}), "warn"); continue; }
+    const text = await f.text();
+    const r = await ctx.api("/api/context/upload", {method: "POST", quiet: true,
+      body: JSON.stringify({project: ctx.project.path, name: f.name, text})});
+    if (!r || r.error){ ctx.toast((r && r.error) || t("work.attach_failed", {name: f.name}), "err"); continue; }
+    addRef(ctx, {path: r.path, label: r.name, kind: "attach"});
+  }
+}
+
+// ---- подсказки по @ и / ----
+
+function tokenAtCaret(area){
+  const before = area.value.slice(0, area.selectionStart);
+  const m = before.match(/(^|\s)([@/][^\s]*)$/);
+  return m ? {text: m[2], start: before.length - m[2].length, end: area.selectionStart} : null;
+}
+
+function wireSuggest(ctx){
+  const area = ctx.$("#makeIdea"), list = ctx.$("#makeSuggest");
+  let items = [], pick = 0, timer = null, tok = null;
+  const close = () => { list.hidden = true; items = []; };
+  const choose = it => {
+    if (!tok) return close();
+    const value = (it.kind === "file" || it.kind === "dir")
+      ? "@" + (/\s/.test(it.value) ? '"' + it.value + '"' : it.value) : it.value;
+    area.value = area.value.slice(0, tok.start) + value + " " + area.value.slice(tok.end);
+    const at = tok.start + value.length + 1;
+    area.setSelectionRange(at, at);
+    area.focus();
+    if (it.kind === "file" || it.kind === "dir") addRef(ctx, {path: it.value, label: it.label, kind: it.kind});
+    close();
+  };
+  const draw = () => {
+    const {el, t} = ctx;
+    list.innerHTML = "";
+    if (!items.length){ list.hidden = true; return; }
+    items.forEach((it, i) => list.append(el("div", {class: "list-item",
+        style: "cursor:pointer;padding:4px 8px" + (i === pick ? ";background:var(--surface-2,rgba(128,128,128,.15))" : ""),
+        onmousedown: e => { e.preventDefault(); choose(it); }},
+      el("span", {class: "chip", style: "flex:none"}, t(KIND_KEY[it.kind])),
+      el("span", {class: "mono", style: "font-size:12px"}, it.label))));
+    list.hidden = false;
+  };
+  area.addEventListener("input", () => {
+    clearTimeout(timer);
+    tok = tokenAtCaret(area);
+    if (!tok || !ctx.project) return close();
+    timer = setTimeout(async () => {
+      const d = await ctx.api("/api/context/suggest?project=" + encodeURIComponent(ctx.project.path)
+        + "&q=" + encodeURIComponent(tok.text), {quiet: true});
+      items = (d && d.items) || []; pick = 0; draw();
+    }, 180);
+  });
+  area.addEventListener("keydown", e => {
+    if (list.hidden || !items.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp"){
+      e.preventDefault();
+      pick = (pick + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; draw();
+    } else if (e.key === "Enter" || e.key === "Tab"){
+      e.preventDefault(); choose(items[pick]);
+    } else if (e.key === "Escape"){ close(); }
+  });
+  area.addEventListener("blur", () => setTimeout(close, 150));
 }
 
 export async function refresh(ctx){
@@ -96,7 +203,8 @@ async function startMake(ctx){
   const idea = ctx.$("#makeIdea").value.trim();
   if (!idea) return ctx.$("#makeIdea").focus();
   MAKE = null;
-  const lines = await makeCall(ctx, ["--kind", ctx.$("#makeKind").value, "--idea", idea]);
+  const context = REFS.flatMap(r => ["--context", r.path]);
+  const lines = await makeCall(ctx, ["--kind", ctx.$("#makeKind").value, "--idea", idea, ...context]);
   if (lines) drawMake(ctx, lines);
 }
 

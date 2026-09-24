@@ -43,5 +43,18 @@
   "work.publish_task_note": "Note: {note}",
   "work.publish_task_tail": "The document type settings are /aurora-vault make:kinds.",
   "work.task_copied": "The task is copied — paste it to the assistant",
-  "work.task_clipboard_off": "The clipboard is unavailable — copy it from the console"
+  "work.task_clipboard_off": "The clipboard is unavailable — copy it from the console",
+  "work.attach": "Attach a file",
+  "work.refs_hint": "@ — a project file or folder and an MCP server, / — a skill; you can attach a text file (.md, .txt, .json, .py…)",
+  "work.ref_file": "file",
+  "work.ref_dir": "folder",
+  "work.ref_attach": "attachment",
+  "work.ref_remove": "Remove from context",
+  "work.kind_file": "file",
+  "work.kind_dir": "folder",
+  "work.kind_mcp": "MCP",
+  "work.kind_skill": "skill",
+  "work.attach_text_only": "“{name}” — only text files can be attached",
+  "work.attach_too_big": "“{name}” is over 1 MB — that is no longer context",
+  "work.attach_failed": "“{name}” was not attached"
 }

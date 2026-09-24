@@ -3997,8 +3997,36 @@ def make_spec(cwd: str, kind: str) -> dict:
     return rec
 
 
+def request_asks(cwd: str, st: dict, spec: dict) -> dict:
+    """Что аналитик приложил и назвал в задаче. → {extra: блок в задание, mcp: серверы}.
+
+    Разбор упоминаний — одно правило на движок (`request_context`): `@путь` — файл или
+    папка проекта, `/имя` — навык, `@имя` MCP-сервера — сервер подключается сразу; вложения
+    панели приходят путями в `--context`. Навык, чей метод планировщик и так применяет
+    (`aurora-grill`), второй раз в задание не кладём.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import request_context as RC
+    servers = list((AG.mcp_config(cwd).get("mcpServers") or {}))
+    text = "\n".join([st.get("idea", "")] + [rd.get("answers", "") for rd in st.get("rounds", [])])
+    found = RC.mentions(text, cwd, servers)
+    block, notes = RC.read_context(cwd, st.get("context", []) + found["files"])
+    skills = [s for s in found["skills"] if os.path.basename(os.path.dirname(s[1])) != "aurora-grill"]
+    for note in notes:
+        say(f"  контекст: {note}")
+    if found["files"] or st.get("context"):
+        say(f"  контекст: файлов и папок {len(set(st.get('context', []) + found['files']))}")
+    if found["skills"]:
+        say("  навыки: " + ", ".join("/" + s[0] for s in found["skills"]))
+    kind_mcp = [s.strip() for s in re.split(r"[,\s]+", str(spec.get("mcp") or "")) if s.strip()]
+    mcp = list(dict.fromkeys(found["mcp"] + [s for s in kind_mcp if s in servers]))
+    if mcp:
+        say("  MCP сразу: " + ", ".join(mcp))
+    return {"extra": block + RC.skills_block(skills), "mcp": mcp}
+
+
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
-             force_plan: bool, call=None, momus: bool = True) -> dict:
+             force_plan: bool, call=None, momus: bool = True, context=None) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
 
     Разбито на вызовы, потому что посередине стоит человек: планировщик задаёт вопросы и
@@ -4022,10 +4050,14 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         sid = d.name
         st = {"sid": sid, "kind": kind, "idea": idea, "spec": spec,
               "stages": {}, "rounds": [], "plan": ""}
+    # Файлы, папки и вложения аналитика живут в сессии: следующий раунд вопросов и писатель
+    # видят то же, что видел планировщик. Новые ссылки при продолжении — добавляются.
+    st["context"] = list(dict.fromkeys((st.get("context") or []) + list(context or [])))
 
     spec = st["spec"]
     stages = st["stages"]
     say(f"Артефакт: {spec.get('title') or st['kind']} · сессия {sid}")
+    req = request_asks(cwd, st, spec)
 
     # --- 1. обогащение: тот же механизм, что отвечает в «Спросить»
     if not stages.get("enriched"):
@@ -4050,6 +4082,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if spec.get("prompt") and os.path.isfile(os.path.join(cwd, spec["prompt"])):
         prompt_extra = ("Промпт проекта для этого вида документа:\n"
                         + read_text_file(os.path.join(cwd, spec["prompt"])) + "\n\n")
+    prompt_extra += req["extra"]
 
     # --- 2. план: раунды вопросов, пока человек не скажет «хватит»
     if not stages.get("planned"):
@@ -4084,7 +4117,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         # пак знаний и названия карточек. Шаблон не берём — он из общих слов, и по нему
         # заблокировалось бы всё.
         r = call(cfg, "planner", [{"role": "user", "content": prompt}], deadline=deadline,
-                 tools=True,
+                 tools=True, mcp_active=req["mcp"],
                  guard_text=[st["idea"], st["pack"]] + re.findall(r"^## (.+)$", st["pack"], re.M))
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": model_fail_note(r)}
@@ -4106,7 +4139,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                 "\n\nВЕРНИ ТОЛЬКО ПЛАН. Поле `questions` должно быть пустым списком. "
                 "Всё, что осталось невыясненным, назови прямо в тексте плана строкой "
                 "«не определено: …» — это честнее пустых разделов.")}],
-                deadline=deadline, tools=True,
+                deadline=deadline, tools=True, mcp_active=req["mcp"],
                 guard_text=[st["idea"], st["pack"]])
             if r2["ok"]:
                 plan = ((parse_json(r2["text"]) or {}).get("plan") or "").strip()
@@ -5575,6 +5608,9 @@ def main() -> int:
                     help="ответы на вопросы планировщика")
     ap.add_argument("--enough", action="store_true",
                     help="хватит расспросов: строить план по тому, что известно")
+    ap.add_argument("--context", metavar="ПУТЬ", action="append", default=[],
+                    help="файл или папка проекта в контекст задачи (для --task make); "
+                         "повторяется. Вложения панель кладёт в .opencode/context/")
     ap.add_argument("--thread", metavar="ID", default="",
                     help="продолжить разговор: уточняющий вопрос с контекстом прошлых "
                          "ответов (id — имя файла в meta/ask/ без .md)")
@@ -5646,7 +5682,7 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         res = run_make(cfg, cwd, a.kind, a.idea, a.session, a.answers, a.enough,
-                       momus=not a.no_momus)
+                       momus=not a.no_momus, context=a.context)
         if not res["ok"]:
             print(f"# Артефакт не сделан\n\n{res.get('why', '')}")
             return 2
