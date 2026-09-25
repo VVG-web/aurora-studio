@@ -8,9 +8,9 @@
   "ask.refine": "Follow up",
   "ask.refine_prefix": "Follow-up: ",
   "ask.context": "Context:",
-  "ask.mode_generate": "verified only",
-  "ask.mode_evaluate": "everything, drafts included",
-  "ask.mode_ask": "verified + decision history",
+  "ask.mode_generate": "trusted only",
+  "ask.mode_evaluate": "everything: untrusted and meetings too",
+  "ask.mode_ask": "trusted + decision history",
   "ask.model": "Model:",
   "ask.ring": "by the ring (primary, the spare on refusal)",
   "ask.hint_enter": "Ctrl+Enter — ask",
@@ -55,5 +55,7 @@
   "ask.thread_turns": "questions: {turns} · last: {last} · {path}",
   "ask.open": "Open",
   "ask.opened": "open",
-  "ask.thread_failed": "the conversation was not read"
+  "ask.thread_failed": "the conversation was not read",
+  "ask.mode_trusted_meetings": "trusted and meetings",
+  "ask.mode_meetings": "meetings only"
 }

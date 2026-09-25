@@ -1334,7 +1334,11 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
             f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}'
             f'{sources_block([source])}'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
-            f"built: machine\n{by_line(by)}related: []\n---\n\n# {title}\n\n{body}\n")
+            f"built: machine\n{by_line(by)}"
+            # Требование, сказанное на встрече, — заявлено, но не согласовано (правило
+            # базы для встреч: `req_status: stated`).
+            + ("req_status: stated\n" if into == "Requirements" and is_meeting(source) else "")
+            + f"related: []\n---\n\n# {title}\n\n{body}\n")
     print(f"{'✅' if apply else '(dry-run)'} {path} · секций {len(picked)} · "
           f"{len(body)} симв.")
     if not apply:

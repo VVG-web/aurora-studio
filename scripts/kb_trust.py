@@ -39,10 +39,10 @@ import sys
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
+from aurora_common import (is_meeting, branch_kind, LEGACY_TRUSTED_BRANCHES, ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
                            TRUST_STATUSES_DEFAULT, TRUSTED_BRANCHES_DEFAULT,
                            TRUSTED_SOURCES_DEFAULT, card_sources, config_list, frontmatter,
-                           is_placeholder, split_frontmatter, trusted_branch_sources,
+                           is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -78,6 +78,88 @@ def task_status(root: str) -> dict:
     return out
 
 
+def task_parents(root: str) -> dict:
+    """{ключ подзадачи: ключ её истории} из зеркала задач."""
+    out = {}
+    base = os.path.join(root, "Sources", "JIRA")
+    if not os.path.isdir(base):
+        return out
+    for p in walk_md(base):
+        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
+        key = (fm.get("key") or "").strip().strip('"')
+        parent = (fm.get("parent") or "").strip().strip('"')
+        if key and parent:
+            out[key] = parent
+    return out
+
+
+# Подзадача, статус которой взят у её истории: {подзадача: (свой статус, история)}.
+LAG: dict = {}
+
+# Эпики: их статус доверия не решает (решение пользователя 25.09.2026 — «эпик не влияет,
+# только карточки из эпика»). Эпик «В работе» живёт месяцами, пока его истории давно готовы.
+EPICS: set = set()
+EPIC_TYPES = ("epic", "эпик")
+
+# Справочные ветки вики. Принцип доверия к вики один на все проекты (25.09.2026): страница
+# либо справочник — и доверена по природе, — либо доверена задачей Jira, связанной с ней, по
+# статусу задачи на момент синка. Папка «по названию» доверия больше не даёт: «Алгоритмы» и
+# «GUI» — это постановка, и готова она тогда, когда готова её задача.
+REFERENCE_BRANCHES: list = list(TRUSTED_BRANCHES_DEFAULT)   # из настройки проекта в main
+WIKI = "Sources/Confluence/"
+
+
+def task_types(root: str) -> dict:
+    """{ключ задачи: тип} из зеркала задач."""
+    out = {}
+    base = os.path.join(root, "Sources", "JIRA")
+    if not os.path.isdir(base):
+        return out
+    for p in walk_md(base):
+        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
+        key = (fm.get("key") or "").strip().strip('"')
+        if key:
+            out[key] = (fm.get("type") or "").strip().strip('"')
+    return out
+
+
+def reference_page(src: str) -> bool:
+    """Страница вики из справочной ветки (НСИ, справочники, глоссарий)."""
+    src = (src or "").replace("\\", "/")
+    if not src.startswith(WIKI):
+        return False
+    top = src[len(WIKI):].split("/", 1)[0]
+    return bool(branch_kind(top, REFERENCE_BRANCHES))
+
+
+def inherit_story(statuses: dict, parents: dict, trust: set) -> dict:
+    """Статусы задач, где отставшая подзадача судится по своей истории.
+
+    Аналитическую подзадачу забывают закрыть: она стоит в «Анализ», а её история давно
+    «Аналитика - готово», «Тестирование» или «Закрыто». На PRJ-B 24.09.2026 так 22 карточки
+    из 27 «ещё в анализе»: постановка готова, а доверия нет. О готовности постановки
+    говорит история — ею и судим, если она в доверенном статусе. Обратного не делаем:
+    закрытая подзадача незакрытой истории остаётся при своём статусе.
+    """
+    out = dict(statuses)
+    LAG.clear()
+    for key, st in statuses.items():
+        story = parents.get(key)
+        told = statuses.get(story, "") if story else ""
+        if told and st.casefold() not in trust and told.casefold() in trust:
+            out[key] = told
+            LAG[key] = (st, story)
+    return out
+
+
+def lag_note(key: str) -> str:
+    """Пояснение для основания доверия, если статус задачи взят у её истории."""
+    if key not in LAG:
+        return ""
+    own, story = LAG[key]
+    return f"; подзадача сама в «{own}», статус взят у её истории {story}"
+
+
 def declared_trust(src: str):
     """True / False / None — что о доверии сказал сам файл зеркала.
 
@@ -104,7 +186,7 @@ def declared_trust(src: str):
 
 
 def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
-                 docs: tuple = ()) -> tuple:
+                 docs: tuple = (), reference: bool = False) -> tuple:
     """(класс, основание словами) для источника карточки.
 
     `docs` — доверенные источники из конфига проекта (`trusted_sources`). Документ —
@@ -114,6 +196,12 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
     не читал никто: его писала настройка проекта и правила панель, и на этом всё.
     """
     src = (src or "").replace("\\", "/")
+    if is_meeting(src):
+        # Стенограмма лежит в `Raw/`, но это не подписанный документ: сказанное на встрече,
+        # а не записанное. До 1.132.0 она шла общим правилом `Raw/` — и первый же разбор
+        # встреч PRJ-B записал в знание «по определению» сотни карточек из разговоров.
+        return "meeting", ("стенограмма встречи — сказано в разговоре, а не записано в "
+                           "документе; подтвердить документом или задачей")
     if src.startswith("Raw/"):
         return "raw", "первоисточник в Raw/ — подписанный документ, доверие по определению"
     # Модуль-документ мог объявить доверие прямо в файле зеркала — так делает `sync:web`,
@@ -131,13 +219,21 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
     if own in statuses and TASK_KEY_RE.match(own):
         st = statuses[own]
         if st.casefold() in trust:
-            return "trusted", f"источник — сама задача {own} в доверенном статусе «{st}»"
+            return "trusted", (f"источник — сама задача {own} в доверенном статусе «{st}»"
+                               + lag_note(own))
         if st.casefold() in draft:
             return "draft", (f"источник — сама задача {own} в статусе «{st}» — постановка "
                              "ещё меняется")
         return "unknown", (f"источник — задача {own}, её статус «{st or 'неизвестен'}» не "
                            "отнесён ни к доверенным, ни к черновым")
-    direct = table.get("direct", {}).get(src) or []
+    # Эпик доверия не решает: его статус выбрасываем из связей, как будто связи нет.
+    direct = [r for r in (table.get("direct", {}).get(src) or []) if r["key"] not in EPICS]
+    if src.startswith(WIKI):
+        # Вики — по одному правилу для всех проектов: справочник доверен по природе, прочее —
+        # только задачей. Папки из `trusted_sources`/`trusted_branches` здесь не действуют.
+        if reference or reference_page(src):
+            return "raw", ("справочник — доверен по природе (страница вики справочного вида)")
+        docs = ()
     for d in docs:
         d = d.replace("\\", "/").strip().rstrip("/")
         if d and (src == d or src.startswith(d + "/")):
@@ -153,12 +249,15 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
                                  "сильнее папки: постановка ещё меняется")
             return "raw", (f"источник в «{d}» — объявлен доверенным в конфиге проекта "
                            f"(`trusted_sources`), доверие по определению")
-    indirect = table.get("indirect", {}).get(src) or []
+    indirect = [r for r in (table.get("indirect", {}).get(src) or []) if r["key"] not in EPICS]
     rows = [(r["key"], r["why"], "прямая") for r in direct] or \
            [(r["key"], " → ".join(r["trail"]), f"трассировка, глубина {r['depth']}")
             for r in indirect]
     if not rows:
-        return "unknown", "связей с задачами нет — класс не определён"
+        epic_only = any(r["key"] in EPICS for r in (table.get("direct", {}).get(src) or [])
+                        + (table.get("indirect", {}).get(src) or []))
+        return "unknown", ("связана только с эпиком — эпик доверия не решает, задач нет"
+                           if epic_only else "связей с задачами нет — класс не определён")
     said = [(k, statuses.get(k, ""), why, how) for k, why, how in rows]
     known = [s for s in said if s[1]]
     if not known:
@@ -170,7 +269,8 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
     if all(s[1].casefold() in trust for s in known):
         first = known[0]
         return "trusted", (f"все связанные задачи в доверенных статусах, например "
-                           f"{first[0]} — «{first[1]}» ({first[3]}: {first[2]})")
+                           f"{first[0]} — «{first[1]}» ({first[3]}: {first[2]})"
+                           + lag_note(first[0]))
     other = next(s for s in known if s[1].casefold() not in trust)
     return "unknown", (f"статус задачи {other[0]} — «{other[1]}» — не отнесён "
                        f"ни к доверенным, ни к черновым")
@@ -246,8 +346,25 @@ def main() -> int:
     if by_default:
         print(f"В конфиге пусто: {', '.join(by_default)} — применены значения по умолчанию. "
               "Записать их в конфиг: `aurora update` или форма настроек.")
-    docs = tuple(docs) + tuple(b for b in trusted_branch_sources(root, kinds) if b not in docs)
-    print(f"Доверенные источники: {', '.join(docs)}\n")
+    if {k.casefold() for k in kinds} == {k.casefold() for k in LEGACY_TRUSTED_BRANCHES}:
+        # Старое умолчание — ветки «описания системы» по названию — читаем как новое:
+        # обновление движка перепишет его в конфиге, а до тех пор правило уже одно.
+        kinds = TRUSTED_BRANCHES_DEFAULT
+        print("В конфиге прежние доверенные ветки вики по названию — действуют справочные "
+              "(вики доверена как справочник или задачей Jira).")
+    REFERENCE_BRANCHES[:] = list(kinds)
+    print(f"Доверенные источники: {', '.join(docs)} · справочные ветки вики: "
+          f"{', '.join(kinds)}\n")
+    statuses = inherit_story(statuses, task_parents(root), trust)
+    EPICS.clear()
+    EPICS.update(k for k, ty in task_types(root).items() if ty.casefold() in EPIC_TYPES)
+    ignored = [d for d in docs if d.replace("\\", "/").startswith(WIKI)
+               and not reference_page(d.rstrip("/") + "/x")]
+    if ignored:
+        print("Папки вики в настройке доверия, которые не справочники, доверия больше не дают "
+              "(вики доверена как справочник или задачей): " + ", ".join(ignored) + "\n")
+    if LAG:
+        print(f"Подзадач, отставших от своей истории: {len(LAG)} — судим по истории\n")
 
     counts, changes, moved, refreshed = {}, [], 0, 0
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
@@ -281,10 +398,21 @@ def main() -> int:
             # готовых. Иначе доказанный источник вытянул бы в знание всё, что к нему
             # приписали.
             srcs = card_sources(text) or [""]
-            judged = [source_class(s, table, statuses, trust, draft, docs) for s in srcs]
-            cls, why = min(judged, key=lambda cw: CLASS_RANK.get(cw[0], 0))
-            if len(judged) > 1:
-                why += f" (слабейший из {len(judged)} источников)"
+            # Карточка-словарь — справочник: её вики-источники доверены по природе.
+            ref = (fm.get("kind") or "").strip().strip('"') == "dictionary"
+            judged = [source_class(s, table, statuses, trust, draft, docs, ref) for s in srcs]
+            # Встреча доверия не даёт и не отнимает: доверие карточки — от её документов, а
+            # сказанное на встрече видно по пометке «из встречи» и в тезисе. Карточка из
+            # одних встреч доверия не получает — записанного за ней нет.
+            documented = [cw for cw in judged if cw[0] != "meeting"]
+            if not documented:
+                cls, why = "draft", judged[0][1]
+            else:
+                cls, why = min(documented, key=lambda cw: CLASS_RANK.get(cw[0], 0))
+                if len(documented) > 1:
+                    why += f" (слабейший из {len(documented)} документальных источников)"
+                if len(documented) < len(judged):
+                    why += "; сказанное на встрече доверия не прибавляет — оно помечено"
         counts[cls] = counts.get(cls, 0) + 1
         now = wanted_status(cls)
         if now == was:

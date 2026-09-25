@@ -840,12 +840,17 @@ TRUST_STATUSES_DEFAULT = ("Закрыто", "Разработка", "Тести�
 ASSUMPTION_STATUSES_DEFAULT = ("Аналитика", "Анализ", "Сделать", "Бэклог",
                                "Аналитика - готово", "В работе")
 TRUSTED_SOURCES_DEFAULT = ("Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries")
-# Верхние ветки вики, доверенные по названию (`verify.trusted_branches`): описание системы, а
-# не ход работ. Название ищется в имени ветки целым словом — приставки и скобки у каждого
-# заказчика свои («XX_-_Алгоритмы», «Логическая_модель_(ERD)»).
-TRUSTED_BRANCHES_DEFAULT = ("Логическая модель", "Алгоритмы", "Схемы описания логики",
-                            "Нормативно-справочная информация", "НСИ", "Справочники",
-                            "Глоссарий", "GUI", "Ролевая модель", "Описание форматов данных")
+# Справочные ветки вики (`verify.trusted_branches`). Принцип доверия к вики один на все
+# проекты (решение пользователя 25.09.2026): страница либо справочник — и доверена по природе,
+# — либо доверена задачей Jira, связанной с ней, по статусу задачи на момент синка. Название
+# ищется в имени ветки целым словом — приставки и скобки у каждого заказчика свои.
+TRUSTED_BRANCHES_DEFAULT = ("Нормативно-справочная информация", "НСИ", "Справочники",
+                            "Справочник", "Глоссарий", "Классификаторы", "Классификатор")
+# Умолчание до 1.132.0: ветки «описания системы» по названию. «Алгоритмы» и «GUI» — это
+# постановка, и готова она, когда готова её задача; в конфиге такой список заменяется новым.
+LEGACY_TRUSTED_BRANCHES = ("Логическая модель", "Алгоритмы", "Схемы описания логики",
+                           "Нормативно-справочная информация", "НСИ", "Справочники",
+                           "Глоссарий", "GUI", "Ролевая модель", "Описание форматов данных")
 TRUST_DEFAULTS = {"trust_statuses": TRUST_STATUSES_DEFAULT,
                   "assumption_statuses": ASSUMPTION_STATUSES_DEFAULT,
                   "trusted_sources": TRUSTED_SOURCES_DEFAULT,
@@ -1077,24 +1082,27 @@ def with_meeting_mark(text: str) -> str:
     Пометку ставит движок, а не модель, и ставит всегда: тезис, разбор и ремонт её
     восстанавливают. Стоит в своей части карточки — сразу перед дословным текстом, а у
     карточки без него — под заголовком. Источников-встреч нет — пометка снимается.
+    Повторный вызов ничего не меняет: пометка снимается вместе с переводами строк перед ней
+    и встаёт обратно ровно так же. Первая версия копила пустые строки на каждой записи.
     """
-    lines = [l for l in (text or "").split("\n") if not l.startswith(MEETING_MARK)]
-    text = "\n".join(lines)
-    text = re.sub(r"\n{3,}", "\n\n", text) if len(lines) != len((text or "").split("\n")) else text
-    meets = [s for s in card_sources(text) if is_meeting(s)]
+    text = text or ""
+    base = re.sub(r"\n+" + re.escape(MEETING_MARK) + r"[^\n]*(?=\n|$)", "", text)
+    base = re.sub(r"\A" + re.escape(MEETING_MARK) + r"[^\n]*\n\n?", "", base)
+    meets = [s for s in card_sources(base) if is_meeting(s)]
     if not meets:
-        return text
+        return base
     when = ", ".join(dict.fromkeys(meeting_label(s) for s in meets))
     mark = (f"{MEETING_MARK}: {when} — сказано в разговоре, а не записано в документе. "
             f"Стенограмм{'а' if len(meets) == 1 else 'ы'}: "
             + ", ".join(f"`{s}`" for s in meets) + ".")
-    if QUOTES in text:
-        before, _m, after = text.partition(QUOTES)
-        return before.rstrip() + "\n\n" + mark + "\n\n" + QUOTES + after
-    m = re.search(r"^# .+$", text, re.M)
+    at = base.find("\n" + QUOTES)
+    if at >= 0:
+        before = base[:at].rstrip("\n")
+        return before + "\n\n" + mark + base[len(before):]
+    m = re.search(r"^# .+$", base, re.M)
     if m:
-        return text[:m.end()] + "\n\n" + mark + "\n" + text[m.end():]
-    return mark + "\n\n" + text
+        return base[:m.end()] + "\n\n" + mark + base[m.end():]
+    return mark + "\n\n" + base
 
 
 def corrections_of(text: str) -> str:

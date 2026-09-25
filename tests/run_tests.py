@@ -6072,11 +6072,14 @@ def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
     Решение заказчика 15.09: доверие наследуется от источника, но документ, прямо связанный
     с задачей, чья постановка ещё меняется, говорит о нерешённом. Через трассировку одна
     широкая задача понизила бы сотни карточек, поэтому косвенная связь класс не трогает.
+
+    Решение 25.09: папка доверяется по пути только вне вики — страница вики доверяется
+    справочником по названию ветки или задачей, а не папкой в конфиге.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     U = importlib.import_module("kb_trust")
-    folder = "Sources/Confluence/Архитектура"
+    folder = "Sources/Docs/Архитектура"
     table = {"direct": {f"{folder}/A.md": [{"key": "PRJ-9", "why": "ключ"}],
                         f"{folder}/B.md": [{"key": "PRJ-1", "why": "ключ"}]},
              "indirect": {f"{folder}/C.md": [{"key": "PRJ-9", "trail": ["C", "A"], "depth": 1}]}}
@@ -6089,6 +6092,13 @@ def test_task_outweighs_a_trusted_folder_only_by_direct_link(tmp: Path):
     assert U.source_class(f"{folder}/C.md", table, st, trust, draft, docs)[0] == "raw", \
         "косвенная связь понизила документ — одна широкая задача уронит сотни карточек"
     assert U.source_class(f"{folder}/D.md", table, st, trust, draft, docs)[0] == "raw"
+    # Вики-папка в `trusted_sources` доверия больше не даёт (решение 25.09): страница либо
+    # справочник, либо судится задачей.
+    cls, why = U.source_class("Sources/Confluence/Архитектура/D.md", table, st, trust, draft,
+                              ("Sources/Confluence/Архитектура",))
+    assert cls == "unknown", f"папка вики в конфиге снова дала доверие: {cls} — {why}"
+    cls, _ = U.source_class("Sources/Confluence/Справочники/Таблица.md", table, st, trust, draft)
+    assert cls == "raw", "справочная ветка вики перестала доверяться по природе"
 
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
     fix = scen[scen.index("[fix]"):]
@@ -6159,16 +6169,19 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
     root = make_project(tmp)
     conf = root / "Sources" / "Confluence"
     for name in ("Раздел_-_Алгоритмы", "Логическая_модель_(ERD)",
-                 "Нормативно-справочная_информация_(НСИ)", "Контракты", "Протоколы_встреч", "_архив"):
+                 "Нормативно-справочная_информация_(НСИ)", "Справочники_номенклатуры",
+                 "Классификаторы_документов", "Контракты", "Протоколы_встреч", "_архив"):
         (conf / name).mkdir(parents=True, exist_ok=True)
     (conf / "Глоссарий.md").write_text("# Глоссарий\n", encoding="utf-8")
     got = AC.trusted_branch_sources(str(root))
-    for need in ("Раздел_-_Алгоритмы", "Логическая_модель_(ERD)",
-                 "Нормативно-справочная_информация_(НСИ)", "Глоссарий.md"):
-        assert f"Sources/Confluence/{need}" in got, f"ветка не узнана по названию: {need} · {got}"
-    for no in ("Контракты", "Протоколы_встреч", "_архив"):
-        assert f"Sources/Confluence/{no}" not in got, f"ветка хода работ стала доверенной: {no}"
-    assert AC.branch_kind("GUI_-_Экранные_формы") == "GUI"
+    for need in ("Нормативно-справочная_информация_(НСИ)", "Справочники_номенклатуры",
+                 "Классификаторы_документов", "Глоссарий.md"):
+        assert f"Sources/Confluence/{need}" in got, f"справочная ветка не узнана по названию: {need} · {got}"
+    for no in ("Раздел_-_Алгоритмы", "Логическая_модель_(ERD)",
+               "Контракты", "Протоколы_встреч", "_архив"):
+        assert f"Sources/Confluence/{no}" not in got, \
+            f"вики доверена по названию — справочник или задача, не папка: {no}"
+    assert not AC.branch_kind("GUI_-_Экранные_формы"), "GUI снова справочная — это постановка"
     assert not AC.branch_kind("Полный_перечень_работ"), "название узнано по куску слова"
     assert AC.trusted_branch_sources(str(root), ("Контракты",)) == ["Sources/Confluence/Контракты"]
 
@@ -6198,7 +6211,7 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
         "Sources/Confluence/Протоколы_встреч/Итог.md": [{"key": "PRJ-1", "why": "ключ"}],
         "Sources/Confluence/Протоколы_встреч/Спор.md": [{"key": "PRJ-2", "why": "ключ"}]},
         "indirect": {}}, ensure_ascii=False), encoding="utf-8")
-    for name, status, src in (("Алгоритм", "draft", "Sources/Confluence/Раздел_-_Алгоритмы/Расчёт.md"),
+    for name, status, src in (("Справочник", "draft", "Sources/Confluence/Справочники_номенклатуры/Ведомость.md"),
                               ("Итог", "draft", "Sources/Confluence/Протоколы_встреч/Итог.md"),
                               ("Спор", "knowledge", "Sources/Confluence/Протоколы_встреч/Спор.md"),
                               ("Опора", "draft", "Sources/JIRA/PRJ-1.md")):
@@ -6207,7 +6220,7 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
     r = run("kb_trust.py", "--apply", cwd=root)
     assert "значения по умолчанию" in r.stdout, f"пересчёт не сказал, что взял значения по умолчанию:\n{r.stdout}"
     text = lambda n: (root / f"AuroraKnowledgeDB/Concepts/{n}.md").read_text(encoding="utf-8")
-    assert "status: knowledge" in text("Алгоритм"), "ветка алгоритмов не доверена по умолчанию"
+    assert "status: knowledge" in text("Справочник"), "справочная ветка вики не доверена по умолчанию"
     assert "status: knowledge" in text("Итог"), "статус «Закрыто» не дал доверия по умолчанию"
     assert "status: draft" in text("Спор"), "статус «Анализ» не признан предположением по умолчанию"
     assert "status: knowledge" in text("Опора"), "карточка с опорой на задачу не взяла её статус"
@@ -6216,8 +6229,8 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
                                                            "trusted_branches: [Глоссарий]"),
                    encoding="utf-8")
     run("kb_trust.py", "--apply", cwd=root)
-    assert "status: draft" in text("Алгоритм"), \
-        "заданный проектом список веток не заменил значения по умолчанию"
+    assert "status: draft" in text("Справочник"), \
+        "заданный проектом список справочных веток не заменил значения по умолчанию"
 
 
 @test
@@ -15116,8 +15129,9 @@ def test_a_document_is_trusted_wherever_the_project_keeps_it(tmp: Path):
     его писала настройка проекта и правила панель, и на этом всё. На живой базе из-за
     этого 224 карточки, собранные из зеркала документов, остались черновиками.
 
-    Совпадение — по границе пути: объявленный `Sources/Confluence` не делает доверенным
-    соседний `Sources/Confluence-2`.
+    Совпадение — по границе пути: объявленный `Sources/Docs` не делает доверенным
+    соседний `Sources/Docs-2`. Вики этим правилом не доверяется (решение 25.09):
+    страница — справочник по названию ветки или задача, а не папка в конфиге.
     """
     sys.path.insert(0, str(SCRIPTS))
     import importlib
@@ -15130,14 +15144,20 @@ def test_a_document_is_trusted_wherever_the_project_keeps_it(tmp: Path):
     cls, _ = T.source_class("Sources/Confluence/Стр.md", empty, {}, set(), set())
     assert cls == "unknown", "необъявленный источник стал доверенным сам собой"
 
-    cls, why = T.source_class("Sources/Confluence/Стр.md", empty, {}, set(), set(),
-                              ("Sources/Confluence",))
+    cls, why = T.source_class("Sources/Docs/Акт.md", empty, {}, set(), set(), ("Sources/Docs",))
     assert cls == "raw", f"объявленный доверенным источник не признан: {cls} — {why}"
     assert "конфиге" in why, f"основание не называет, откуда взято доверие: {why}"
 
-    cls, _ = T.source_class("Sources/Confluence-2/Стр.md", empty, {}, set(), set(),
-                            ("Sources/Confluence",))
+    cls, _ = T.source_class("Sources/Docs-2/Акт.md", empty, {}, set(), set(), ("Sources/Docs",))
     assert cls == "unknown", "доверие протекло на соседний путь с тем же началом"
+
+    # папка вики в `trusted_sources` доверия не даёт (решение 25.09) — только справочник
+    # по названию ветки или связанная задача
+    cls, _ = T.source_class("Sources/Confluence/Проект/Стр.md", empty, {}, set(), set(),
+                            ("Sources/Confluence/Проект",))
+    assert cls == "unknown", "папка вики в конфиге снова дала доверие"
+    cls, _ = T.source_class("Sources/Confluence/Справочники/Таблица.md", empty, {}, set(), set())
+    assert cls == "raw", "справочная ветка вики перестала доверяться по природе"
 
 
 @test
@@ -18084,6 +18104,48 @@ def test_graph_labels_scale_and_follow_the_link_distribution(tmp: Path):
     ones = {ties[f"a{i}"] for i in range(10)}
     assert len(ones) == 1 and ties["hub"] == "many", f"равное число связей — разные уровни: {ties}"
     assert flat == {"many": 0, "mid": 2, "few": 0}, flat
+
+
+@test
+def test_trust_follows_the_story_and_ignores_the_archive(tmp: Path):
+    """Доверие: отставшая подзадача судится по истории; архив не сидит в доле.
+
+    Вопрос пользователя 25.09.2026: «почему у PRJ-B только 59 % доверенных?». Нашлось два
+    дефекта движка. 22 карточки были связаны с аналитическими подзадачами в «Анализ», чьи
+    истории давно «Закрыто», «Тестирование» или «Аналитика - готово» — подзадачу просто не
+    закрыли. И 50 карточек из `_archive/` сидели в знаменателе доли: 59,6 % вместо 69,6 %.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    K = importlib.import_module("kb_trust")
+    st = {"PRJ-1": "Анализ", "PRJ-2": "Закрыто", "PRJ-3": "Анализ", "PRJ-4": "Бэклог",
+          "PRJ-5": "Закрыто"}
+    parents = {"PRJ-1": "PRJ-2", "PRJ-3": "PRJ-4", "PRJ-5": "PRJ-4"}
+    trust, draft = {"закрыто"}, {"анализ", "бэклог"}
+    eff = K.inherit_story(st, parents, trust)
+    assert eff["PRJ-1"] == "Закрыто", "подзадача готовой истории осталась «в анализе»"
+    assert eff["PRJ-3"] == "Анализ", "подзадача незаконченной истории стала доверенной"
+    assert eff["PRJ-5"] == "Закрыто", "закрытая подзадача взяла статус незакрытой истории"
+    table = {"direct": {"Sources/Confluence/A.md": [{"key": "PRJ-1", "why": "номер"}]},
+             "indirect": {}}
+    cls, why = K.source_class("Sources/Confluence/A.md", table, eff, trust, draft)
+    assert cls == "trusted" and "подзадача сама в «Анализ»" in why and "PRJ-2" in why, (cls, why)
+    # стенограмма встречи — не подписанный документ, хоть и лежит в Raw/
+    cls, why = K.source_class("Raw/meetings/20260424_15-07-12.md", table, eff, trust, draft)
+    assert cls == "meeting" and "встречи" in why, (cls, why)
+
+    root = make_project(tmp)
+    card(root, "Concepts/Живая.md", "Знание.", status="knowledge", kind="knowledge",
+         trust_basis='"ok"')
+    card(root, "Concepts/Черновая.md", "Знание.", status="draft", kind="knowledge",
+         trust_basis='"задача PRJ-3 в статусе «Анализ»"')
+    for i in range(3):
+        card(root, f"_archive/Старая-{i}.md", "Было.", status="draft", kind="knowledge")
+    card(root, "Concepts/Выведенная.md", "Было.", status="deprecated", kind="knowledge")
+    out = run("aurora_stats.py", "--json", cwd=root).stdout
+    st_json = json.loads(out[out.index("{"):])
+    assert st_json["trust_total"] == 2 and st_json["pct_verified"] == 50.0, \
+        f"архив или выведенное попали в долю доверия: {st_json['trust_total']}"
 
 
 @test

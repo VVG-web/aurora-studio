@@ -218,6 +218,13 @@ def endpoints(cfg: dict) -> list:
     return AG.embed_ring(cfg)
 
 
+# Шлюзы векторов, не ответившие в этом процессе вовсе (сеть, таймаут). Второй раз их не
+# спрашиваем: замер качества поиска зовёт векторы на каждую карточку, и при упавшем шлюзе
+# PRJ-B 25.09.2026 он два часа ждал таймаута на каждом запросе. Поиск без векторов идёт
+# словами — так же, как когда векторов нет вовсе.
+DEAD: set = set()
+
+
 def embed(texts: list, cfg: dict, model: str) -> list:
     """Вектора для списка текстов. Идём по кольцу, как остальной агент.
 
@@ -232,9 +239,16 @@ def embed(texts: list, cfg: dict, model: str) -> list:
         chunk = texts[i:i + BATCH]
         got = None
         for backend in endpoints(cfg):
+            if backend["url"] in DEAD:
+                continue
             st, data, err, _dt = AG.http_json(backend["url"] + "/embeddings",
                                               {"model": model, "input": chunk},
                                               backend["key"], cfg["request_timeout"])
+            if st is None:
+                DEAD.add(backend["url"])
+                print(f"  бэкенд {backend['url']}: {err} — до конца прогона без него",
+                      file=sys.stderr)
+                continue
             if st == 200 and (data.get("data") or []):
                 vecs = [normalize(d["embedding"]) for d in
                         sorted(data["data"], key=lambda d: d.get("index", 0))]

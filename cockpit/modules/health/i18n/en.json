@@ -53,7 +53,7 @@
   "health.contents_hint": "How many cards are in the base, not counting service maps and tables of contents",
   "health.trust": "Trust",
   "health.trust_why_old": "why the rest are not — not computed: the project engine is older than 1.93",
-  "health.trust_hint": "The share of trusted cards among those that have something to verify: stubs without knowledge and service files do not count. Trust is computed from sources and the statuses of related tasks, not assigned by a human",
+  "health.trust_hint": "Share of trusted cards among those a document can back: stubs, service files and meeting-only cards are left out — meetings are shown as a separate line. Trust is computed from sources and linked task statuses, not assigned by a person",
   "health.kinds": "Card types",
   "health.kinds_old": "not measured: the project engine is older than 1.93",
   "health.kinds_missing": "{n} without a type — unknown who should edit the body",

@@ -94,13 +94,17 @@ for event in ba_sa_events:
         metrics['weekly'][week] = {
             'stories': 0,
             'others': 0,
+            'rework_stories': 0,
+            'rework_others': 0,
             'ba_sa': 1
         }
 
-# Добавляем ba_sa:0 для всех недель, где его нет (для консистентности)
+# Добавляем недостающие вёдра нулями (для консистентности): неделя, в которой
+# не было ни BA-SA, ни возвратов, всё равно должна отдавать все ключи — иначе
+# дашборд получает undefined там, где ждёт число.
 for week in metrics['weekly']:
-    if 'ba_sa' not in metrics['weekly'][week]:
-        metrics['weekly'][week]['ba_sa'] = 0
+    for bucket in ('ba_sa', 'rework_stories', 'rework_others'):
+        metrics['weekly'][week].setdefault(bucket, 0)
 
 # 3. types_available: добавляем 'BA-SA Task' после 'История'
 types_available = metrics.get('types_available', [])
@@ -138,12 +142,15 @@ print("\n=== ОТЧЁТ ===")
 stories_total = sum(w.get('stories', 0) for w in metrics['weekly'].values())
 others_total = sum(w.get('others', 0) for w in metrics['weekly'].values())
 ba_sa_total = sum(w.get('ba_sa', 0) for w in metrics['weekly'].values())
+rework_total = sum(w.get('rework_stories', 0) + w.get('rework_others', 0)
+                   for w in metrics['weekly'].values())
 
 print(f"\nWeekly totals ({YEAR}):")
 print(f"  stories: {stories_total}")
 print(f"  others: {others_total}")
 print(f"  ba_sa: {ba_sa_total}")
-print(f"  total: {stories_total + others_total}")
+print(f"  rework: {rework_total}")
+print(f"  total: {stories_total + others_total + rework_total}")
 
 # Длительности переходов (только Истории)
 transitions_raw = metrics.get('transitions_raw', [])

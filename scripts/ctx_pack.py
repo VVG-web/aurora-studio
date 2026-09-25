@@ -34,7 +34,7 @@ import re
 import sys
 from datetime import date
 
-from aurora_common import (TRUSTED, Card as BaseCard, body, frontmatter,
+from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, frontmatter, is_meeting,
                            is_placeholder, link_targets, related_targets, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
@@ -55,13 +55,40 @@ MODE_STATUSES = {
     "review": {"knowledge", "verified", "canonical"},
     "ask": {"knowledge", "verified", "canonical", "deprecated"},
     "evaluate": {"knowledge", "draft", "verified", "canonical", "in-review", "imported", ""},
+    # Встречи (решение пользователя 25.09.2026): сказанное на встрече доверия не получает,
+    # но спросить о нём надо уметь — отдельно или вместе с доверенным. Какие карточки из
+    # встреч, решает `MEETING_RULE`, а не статус.
+    "meetings": set(),
+    "trusted_meetings": {"knowledge", "verified", "canonical"},
 }
+MEETING_RULE = {"meetings": "only", "trusted_meetings": "also"}
+
+
+def from_meeting(c) -> bool:
+    """Карточка держит знание из стенограммы встречи."""
+    return any(is_meeting(s) for s in card_sources(c.text))
+
+
+def mode_allows(c, mode: str, bootstrap: bool = False) -> bool:
+    """Берёт ли режим эту карточку в контекст. Заготовка — никогда: в ней нечего читать."""
+    if is_placeholder(c.fm, c.text):
+        return False
+    rule = MEETING_RULE.get(mode)
+    if rule and from_meeting(c) and c.status != "deprecated":
+        return True
+    if rule == "only":
+        return False
+    if c.status in MODE_STATUSES[mode]:
+        return True
+    return bootstrap and c.status in ("", "imported", "draft", "in-review")
 PREAMBLE = (
     "Ниже — карточки базы знаний проекта. Класс доверия указан в шапке каждой карточки и\n"
     "вычислен движком по статусу связанных задач, а не проставлен человеком.\n"
     "knowledge — знание из доверенного источника: постановка устоялась, на это можно\n"
     "опираться. draft — источник недоверенный или связей с задачами нет: материал для\n"
     "оценки, не факт. deprecated — история, не применять.\n"
+    "Пометка «🎙 Из встречи» — сказанное на встрече, а не записанное в документе: опираясь\n"
+    "на такую карточку, так и называй это в ответе.\n"
     "Противоречие двух knowledge-карточек — это ошибка базы, о которой надо сообщить.\n"
 )
 
@@ -535,7 +562,8 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
 
 
 def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
-            release: str, max_cards: int, close: dict | None = None) -> tuple:
+            release: str, max_cards: int, close: dict | None = None,
+            mode: str = "") -> tuple:
     """Seed по теме → один переход по ссылкам. → (карточки, исключено по релизу, соседи).
 
     «Соседи» — имена карточек, вошедших переходом, а не совпадением с запросом: при
@@ -546,6 +574,8 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
     def allowed(c: Card) -> bool:
         # Заготовка проходит приёмку (утверждений в ней нет — не верить нечему), но в
         # контексте она пустое место: имя без содержания только съедает бюджет пака.
+        if mode in MEETING_RULE:
+            return mode_allows(c, mode, bootstrap)
         if is_placeholder(c.fm, c.text):
             return False
         if c.status in statuses:
@@ -683,8 +713,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированная сборка context pack")
     ap.add_argument("topic", help="тема запроса")
     ap.add_argument("--mode", default="generate", choices=sorted(MODE_STATUSES),
-                    help="режим отбора: generate и review — только verified; "
-                         "ask — плюс история; evaluate — всё")
+                    help="режим отбора: generate и review — только доверенное; "
+                         "ask — плюс история; evaluate — всё; meetings — только встречи; "
+                         "trusted_meetings — доверенное и встречи")
     # Потолок в 15 карточек ставился под контекст в 8–32k токенов. Медианная карточка
     # базы — 1500 символов, сорок таких это 15k токенов: у модели со 128k остаётся место
     # и под постановку, и под шаблон, и под сам ответ. Резать выборку до пятнадцати
@@ -734,7 +765,7 @@ def main() -> int:
         groups: dict = {}
         for c in cards.values():
             # Ключ словаря — имя карточки, а не путь: раздел берём у самой карточки.
-            if is_placeholder(c.fm, c.text) or c.status not in MODE_STATUSES[a.mode]:
+            if not mode_allows(c, a.mode):
                 continue
             rel = os.path.relpath(c.path, ROOT).replace("\\", "/")
             section = rel.split("/")[0] if "/" in rel else "—"
@@ -757,7 +788,7 @@ def main() -> int:
     # значило бы искать векторами по исходному запросу, а словами по расширенному.
     close = {} if a.no_semantic else None
     chosen, dropped, neighbors = collect(cards, a.topic, MODE_STATUSES[a.mode], bootstrap,
-                                         release, a.max_cards, close)
+                                         release, a.max_cards, close, a.mode)
     jira = jira_state(a.topic)
     if not chosen and not jira:
         print(f"ctx_pack: по теме «{a.topic}» ничего не найдено. "

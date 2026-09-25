@@ -177,6 +177,19 @@ def fill_trust_defaults(text: str) -> tuple:
         lines = kept
         done.append("trusted_sections убран")
 
+    # Прежнее умолчание справочных веток (ветки «описания системы» по названию) заменяется
+    # новым: вики доверена как справочник или задачей Jira (решение 25.09.2026). Список,
+    # который проект правил сам, не трогаем.
+    from aurora_common import LEGACY_TRUSTED_BRANCHES
+    for i, ln in enumerate(lines):
+        m = re.match(r"^(\s*)trusted_branches\s*:\s*\[([^\]]*)\]", ln)
+        if m:
+            got = {x.strip().strip("\"'").casefold() for x in m.group(2).split(",") if x.strip()}
+            if got == {k.casefold() for k in LEGACY_TRUSTED_BRANCHES}:
+                lines[i] = (f"{m.group(1)}trusted_branches: "
+                            f"[{yaml_list(TRUST_DEFAULTS['trusted_branches'])}]\n")
+                done.append("trusted_branches: справочные ветки вместо веток по названию")
+
     def indent(line: str) -> int:
         return len(line) - len(line.lstrip(" "))
 
@@ -339,10 +352,11 @@ paths:
 
 verify:
   # Доверие по происхождению (`kb:trust`): что собрано из договора, ТЗ, материалов
-  # заказчика или ветки вики с описанием системы, пересказывает уже решённое.
-  # trusted_sources — папки и файлы по пути; trusted_branches — верхние ветки вики по
-  # названию (целым словом, приставки не мешают). Значения по умолчанию записаны при
-  # настройке — правьте под проект; пустой список снова означает значения по умолчанию.
+  # заказчика или справочной ветки вики, пересказывает уже решённое.
+  # trusted_sources — папки и файлы по пути (вики так не доверяется); trusted_branches —
+  # справочные ветки вики по названию (целым словом, приставки не мешают). Вики доверена
+  # как справочник или задачей Jira по её статусу — одно правило на все проекты. Значения по
+  # умолчанию записаны при настройке; пустой список снова означает значения по умолчанию.
   trusted_sources: [{c['trusted_sources']}]
   trusted_branches: [{c['trusted_branches']}]
 

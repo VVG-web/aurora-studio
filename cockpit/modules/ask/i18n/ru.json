@@ -8,9 +8,9 @@
   "ask.refine": "Уточнить",
   "ask.refine_prefix": "Уточнение: ",
   "ask.context": "Контекст:",
-  "ask.mode_generate": "только проверенное",
-  "ask.mode_evaluate": "всё, включая черновики",
-  "ask.mode_ask": "проверенное + история решений",
+  "ask.mode_generate": "только доверенное",
+  "ask.mode_evaluate": "всё: недоверенное и встречи тоже",
+  "ask.mode_ask": "доверенное + история решений",
   "ask.model": "Модель:",
   "ask.ring": "по кольцу (основная, при отказе — запасная)",
   "ask.hint_enter": "Ctrl+Enter — спросить",
@@ -55,5 +55,7 @@
   "ask.thread_turns": "вопросов: {turns} · последний: {last} · {path}",
   "ask.open": "Открыть",
   "ask.opened": "открыт",
-  "ask.thread_failed": "разговор не прочитан"
+  "ask.thread_failed": "разговор не прочитан",
+  "ask.mode_trusted_meetings": "доверенное и встречи",
+  "ask.mode_meetings": "только встречи"
 }

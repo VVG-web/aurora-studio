@@ -41,7 +41,7 @@ import subprocess
 import sys
 import unicodedata
 
-from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS, is_meeting,
                            sources_block,
                            RETIRED_STATUS, STUB_MARK,
                            STUB_BODY, Card as BaseCard, card_body, card_sources,
@@ -519,6 +519,10 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         # `meta/golden_questions.md` нарочно ссылается на знание, которого может ещё не
         # быть. Требовать от них целостности значит вечно держать нерешаемое в отчёте.
         if not path.replace("\\", "/").startswith(ROOT + "/") or is_service(path):
+            continue
+        # Архив — история, а не база: ссылка из убранной карточки на убранную карту не
+        # ошибка базы. Ремонт ссылок судил и её — и маршрут получал код 1 (PRJ-B 25.09.2026).
+        if "/_archive/" in path.replace("\\", "/"):
             continue
         mapping, aliases_for = {}, {}
         for m in LINK_RE.finditer(c.text):
@@ -1068,13 +1072,18 @@ def plan_meeting_marks(cards: dict, plan: Plan) -> int:
     разговоре не должно читаться записанным в документе ни на одном шаге (решение
     пользователя 24.09.2026) — поэтому хвост маршрута сверяет её по всей базе.
     """
-    from aurora_common import with_meeting_mark
+    from aurora_common import is_meeting, with_fields, with_meeting_mark
     fixed = 0
     for path, c in cards.items():
         if is_service(path.replace("\\", "/")) or "/_archive/" in path:
             continue
         base = plan.file_writes.get(path, c.text)
         new = with_meeting_mark(base)
+        srcs = card_sources(new)
+        # Требование, сказанное только на встрече, — заявлено, но не согласовано.
+        if ("/Requirements/" in path.replace("\\", "/") and srcs
+                and all(is_meeting(x) for x in srcs) and not (c.fm.get("req_status") or "").strip()):
+            new = with_fields(new, {"req_status": "stated"})
         if new != base:
             plan.write(path, new)
             fixed += 1
@@ -1171,7 +1180,20 @@ def plan_themes(cards: dict, plan: Plan, root: str, floor: int = 3) -> list:
             folder = os.path.dirname(src.replace("\\", "/"))
             if folder.count("/") < 2:      # «Sources/Confluence» — не тема, а зеркало
                 continue
+            # Папка стенограммы — это одна запись разговора, а не тема, которую задал
+            # человек: «Запись-экрана-2026-09-10…» ничего не группирует (PRJ-B 25.09.2026).
+            if is_meeting(src):
+                continue
             by_folder.setdefault(folder, []).append(c.stem)
+    # Уже заведённые темы по папкам стенограмм уходят в архив.
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if "/_archive/" in rel or "тема" not in (c.fm.get("tags") or ""):
+            continue
+        srcs = card_sources(c.text)
+        if srcs and all(is_meeting(x) for x in srcs) and not any(x.endswith(".md") for x in srcs):
+            plan.moves.append((rel, os.path.join(ROOT, "_archive",
+                                                 os.path.basename(rel)).replace("\\", "/")))
     made = []
     taken = {fold_hard(c.stem) for c in cards.values()}
     for folder, stems in sorted(by_folder.items()):

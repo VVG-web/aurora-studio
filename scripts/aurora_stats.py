@@ -26,7 +26,7 @@ import sys
 from collections import Counter
 from datetime import date
 
-from aurora_common import (TRUSTED, card_sources, config_value, frontmatter,
+from aurora_common import (is_meeting, TRUSTED, card_sources, config_value, frontmatter,
                            inbound_counts,
                            is_placeholder, is_service,
                            SERVICE_STATUS, link_targets, load_cards, walk_md)
@@ -83,11 +83,20 @@ def collect() -> dict:
             # живом проекте 632 пустышки из 1657 карточек держали долю ниже 40 % при любом
             # качестве знания, а потолок при полном доверии был 48 %.
             stubs.append(stem)
-        else:
+        elif not archived and status != "deprecated":
             why = (fm.get("trust_basis") or "").strip().strip('"').lower()
-            if status in TRUSTED or status == "knowledge":
+            srcs = card_sources(text)
+            meeting_only = bool(srcs) and all(is_meeting(x) for x in srcs)
+            cards[path]["meeting_only"] = meeting_only
+            if meeting_only:
+                # Карточка из одних встреч — отдельная строка, вне доли доверия (решение
+                # пользователя 25.09.2026): сказанное в разговоре не проверяется документом,
+                # и в долю «доверенного из документов» оно не входит ни числителем, ни
+                # знаменателем.
+                trust_why["из встреч (вне доли)"] += 1
+            elif status in TRUSTED or status == "knowledge":
                 trust_why["доверенные"] += 1
-            elif "связей" in why or "не найден" in why:
+            elif "связей" in why or "не найден" in why or "эпик" in why:
                 trust_why["связей с задачами нет"] += 1
             elif why:
                 trust_why["задачи ещё в работе"] += 1
@@ -117,7 +126,12 @@ def collect() -> dict:
     total = len(cards)
     # Доля доверенного — среди карточек, в которых есть что проверять: без заготовок и
     # служебных файлов. `total` остаётся составом базы, `trust_total` — знаменатель доли.
-    checkable = [c for c in cards.values() if not c.get("stub")]
+    # Архив и выведенное из обращения — не знание базы: до 1.132.0 они сидели в
+    # знаменателе, и у PRJ-B 50 архивных карточек держали долю на 59,6 % вместо 69,6 %.
+    checkable = [c for c in cards.values() if not c.get("stub") and not c["archived"]
+                 and not c.get("meeting_only")
+                 and (c["fm"].get("status") or "").strip() != "deprecated"]
+    meetings = sum(1 for c in cards.values() if c.get("meeting_only"))
     trust_total = len(checkable)
     trusted = sum(1 for c in checkable if (c["fm"].get("status") or "").strip() in TRUSTED)
     pct = round(trusted / trust_total * 100, 1) if trust_total else 0.0
@@ -185,7 +199,7 @@ def collect() -> dict:
 
     return {
         "date": TODAY, "total": total, "trusted": trusted, "pct_verified": pct,
-        "trust_total": trust_total,
+        "trust_total": trust_total, "meetings": meetings,
         "stubs": len(stubs),
         "threshold": threshold(), "bootstrap": pct < threshold(),
         "statuses": dict(statuses.most_common()), "sections": dict(sections.most_common()),

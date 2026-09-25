@@ -50,6 +50,28 @@ for stage, sset in STAGE_OF.items():
     for s in sset:
         STAGE_OF_R[s] = stage
 
+READY = "Аналитика - готово"
+
+# Порядок статусов для распознавания возврата. Возврат — это уход из «Аналитика -
+# готово» или любого более позднего статуса назад, в бэклог или в анализ: сданную
+# работу обнулили и её придётся сдавать заново.
+#
+# Статусы подзадач («В работе», «Код ревью», «На ревью») в лестницу не входят
+# намеренно: это отдельный workflow подзадач и BA/QA-задач, он с «Аналитика -
+# готово» не пересекается. Неизвестный статус возвратом не считается — гадать
+# о чужом процессе хуже, чем промолчать.
+RANK = {
+    "Бэклог": 0,
+    "Сделать": 1,
+    "Аналитика": 2,
+    READY: 3,
+    "Разработка": 4,
+    "Разработка - готово": 5, "Разработка готова": 5,
+    "Тестирование": 6,
+    "Тестирование - готово": 7, "Тестирование готово": 7,
+    "Закрыто": 8,
+}
+
 # ---------------------------------------------------------------------------
 # Утилиты
 # ---------------------------------------------------------------------------
@@ -91,8 +113,54 @@ def get_assignee_at(issue_key, at_ts):
 # ---------------------------------------------------------------------------
 # 1) Недельные переходы в «Аналитика - готово»
 # ---------------------------------------------------------------------------
-weeks_data = collections.defaultdict(lambda: {"stories": 0, "others": 0})
+BUCKETS = {"stories": 0, "others": 0, "rework_stories": 0, "rework_others": 0}
+weeks_data = collections.defaultdict(lambda: dict(BUCKETS))
 persons_set = set()  # assignee в переходах в «Аналитика - готово»
+rework_raw = []      # повторные сдачи: что вернули, откуда и кто сдавал заново
+
+
+def deliveries(issue):
+    """Сдачи задачи в «Аналитика - готово», свёрнутые по (ISO-год, неделя).
+
+    Задачу могут вернуть и принять заново несколько раз за одну неделю — у
+    PRJ-A-490 это три сдачи за неделю 06. Считать их тремя артефактами нельзя:
+    работа за неделю сделана один раз, а счёт вырос бы втрое. Поэтому неделя,
+    в которую задачу сдали, засчитывается один раз, сколько бы раз за эту
+    неделю сдачу ни повторяли.
+
+    Порядок сохраняется: первый элемент — самая ранняя сдача за всю историю
+    задачи, остальные пришли после возврата.
+    """
+    seen, out = set(), []
+    for tr in issue.get("status_history", []):
+        if tr["to"] != READY:
+            continue
+        y, w = iso_year(tr["at"]), iso_week(tr["at"])
+        if y is None or w is None or (y, w) in seen:
+            continue
+        seen.add((y, w))
+        out.append((y, w, tr["at"]))
+    return out
+
+
+def returned_from(issue, before_ts):
+    """Статус, из которого задачу вернули в работу перед этой сдачей.
+
+    Возврат — переход из «Аналитика - готово» или любого более позднего этапа
+    (разработка, тестирование, закрыто) назад в бэклог или в анализ. Именно он
+    обнуляет уже сданную работу и заставляет сдавать её заново.
+    """
+    last = None
+    edge = parse_time(before_ts)
+    for tr in issue.get("status_history", []):
+        at = parse_time(tr["at"])
+        if at and edge and at >= edge:
+            break
+        a, b = RANK.get(tr.get("from")), RANK.get(tr["to"])
+        if a is not None and b is not None and a >= RANK[READY] and b < RANK[READY]:
+            last = tr.get("from")
+    return last
+
 
 for key, issue in full.items():
     typ = issue_types.get(key, "?")
@@ -102,23 +170,26 @@ for key, issue in full.items():
     # (verify_weekly_by_person.py) перестаёт сходиться: она так не считает.
     if typ == "BA-SA Task":
         continue
-    for tr in issue.get("status_history", []):
-        if tr["to"] != "Аналитика - готово":
+    for i, (y, w, at) in enumerate(deliveries(issue)):
+        if y != YEAR:
             continue
-        y = iso_year(tr["at"])
-        w = iso_week(tr["at"])
-        if y is None or w is None or y != YEAR:
-            continue
-        
+
         # assignee на момент перехода
-        assignee = get_assignee_at(key, tr["at"])
+        assignee = get_assignee_at(key, at)
         if assignee:
             persons_set.add(assignee)
-        
-        if typ == "История":
-            weeks_data[w]["stories"] += 1
-        else:
-            weeks_data[w]["others"] += 1
+
+        # Первая сдача за всю историю задачи — обычная работа. Всё, что после
+        # неё, случилось потому, что задачу вернули: работа была сделана и
+        # обнулена. Для сотрудника это такая же сделанная и сданная работа,
+        # поэтому она считается — но отдельным ведром, чтобы возвраты было
+        # видно, а не растворялись в общем столбце.
+        base = "stories" if typ == "История" else "others"
+        bucket = base if i == 0 else "rework_" + base
+        weeks_data[w][bucket] += 1
+        if i:
+            rework_raw.append({"issue": key, "week": w, "assignee": assignee,
+                               "issue_type": typ, "returned_from": returned_from(issue, at)})
 
 # ---------------------------------------------------------------------------
 # 2) transitions_raw: длительности переходов между этапами (только Истории)
@@ -188,7 +259,11 @@ output = {
     "transitions_raw": transitions_raw,
     "types_available": sorted(types_set),
     "persons_available": persons_available,
-    "role_of": role_of
+    "role_of": role_of,
+    # Повторные сдачи: какую задачу вернули, откуда и кто сдавал заново.
+    # По ним дашборд подписывает красный сектор — иначе столбик «возвратов 3»
+    # виден, но разобраться в нём нечем.
+    "rework_raw": rework_raw,
 }
 
 # ---------------------------------------------------------------------------
@@ -205,12 +280,18 @@ print(f"WROTE {OUTPUT_PATH}")
 # weekly totals
 total_stories = sum(weeks_data[w]["stories"] for w in weeks_sorted)
 total_others = sum(weeks_data[w]["others"] for w in weeks_sorted)
-total_all = total_stories + total_others
+total_rework = sum(weeks_data[w]["rework_stories"] + weeks_data[w]["rework_others"]
+                   for w in weeks_sorted)
+total_all = total_stories + total_others + total_rework
 
 print(f"\n=== WEEKLY ({YEAR}) ===")
 print(f"stories: {total_stories}")
 print(f"others: {total_others}")
+print(f"rework (повторные сдачи после возврата): {total_rework}")
 print(f"total: {total_all}")
+if rework_raw:
+    by = collections.Counter(r["returned_from"] or "—" for r in rework_raw)
+    print("  откуда возвращали:", ", ".join(f"{k}: {v}" for k, v in by.most_common()))
 
 # transitions stats
 print(f"\n=== TRANSITIONS_RAW COUNT ===")

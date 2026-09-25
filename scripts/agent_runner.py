@@ -3209,12 +3209,13 @@ def merge_same_target(cards: list) -> list:
 
 
 def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
-                 use_critic: bool, call=None, deadline: float | None = None) -> dict:
+                 use_critic: bool, call=None, deadline: float | None = None,
+                 step_end: float = 0.0) -> dict:
     """Разобрать один источник на карточки. → шаг для отчёта."""
     call = call or AG.call_role
     from aurora_common import is_meeting
     if is_meeting(source):
-        return solve_meeting(cfg, cwd, group, source, apply, call)
+        return solve_meeting(cfg, cwd, group, source, apply, call, step_end)
     step = {"alias": source.rsplit("/", 1)[-1], "source": source, "group": group,
             "status": "", "note": "", "backends": [], "degraded": False}
     sections = read_sections(cwd, source)
@@ -3461,7 +3462,7 @@ def num_ranges(nums) -> str:
 
 
 def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
-                  call=None) -> dict:
+                  call=None, step_end: float = 0.0) -> dict:
     """Разобрать стенограмму встречи на карточки. → шаг для отчёта.
 
     До 1.130.0 стенограммы в разбор не шли вовсе: знание, сказанное только на встречах,
@@ -3495,11 +3496,18 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
 
     def plan(k_win):
         k, (a, b) = k_win
+        # Окно, начатое после конца бюджета шага, дорабатывало бы за его пределами: встреча
+        # в 10 окон шла 21 минуту при бюджете 20, и оракул разбора видел расхождение
+        # «движок засчитал 4, агент объявил 3» (PRJ-B 25.09.2026). Не успеваем — встреча
+        # целиком уходит в следующий оборот, ничего не записав.
+        if step_end and time.time() >= step_end:
+            return {"ok": False, "late": True}, []
         text = "\n\n".join(f"[{n}] {turns[n - 1]}" for n in range(a + 1, b + 1))
         cands = candidates_block(candidates_for(cwd, cfg, text[:4000]))
         r = call(cfg, "planner", [{"role": "user", "content": with_terms(PROMPT_MEETING.format(
             part=k + 1, parts=len(windows), source=source, when=when, candidates=cands,
-            turns=text), text, cwd)}], deadline=time.time() + AG.call_budget(cfg, "planner"))
+            turns=text), text, cwd)}], deadline=min(step_end or float("inf"),
+                                                    time.time() + AG.call_budget(cfg, "planner")))
         rows = []
         if r["ok"]:
             for row in (parse_json(r["text"]) or {}).get("parts") or []:
@@ -3520,6 +3528,10 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     for r, _rows in done:
         if r["ok"]:
             step["backends"].append((r["backend"], r["model"]))
+    if any(r.get("late") for r in failed):
+        step.update(status="стоп", note=f"встреча {when}: бюджет шага кончился на окне — "
+                    "вернётся следующим оборотом целиком")
+        return step
     if failed:
         # Часть встречи не прочитана — отмечать её разобранной нельзя: недочитанное
         # выпало бы из плана навсегда. Источник вернётся в следующем обороте.
@@ -3715,7 +3727,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 "alias": "—", "status": "стоп", "backends": [], "degraded": False,
                 "note": "остановлено до начала работы"}
         step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
-                            deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
+                            deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
+                            step_end=budget)
         return index, (group, source, _kb), step
 
     def note_failure(step) -> str:
@@ -3741,7 +3754,8 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             say(f"  {progress(len(steps), total, started)} · поток 1 · "
                 f"{source.rsplit('/', 1)[-1][:60]} …")
             step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
-                                deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
+                                deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
+                                step_end=budget)
             steps.append(step)
             say(f"      → {step['status']}"
                 + (f": {step['note'][:110]}" if step["note"] else "") + where(step))
@@ -5914,7 +5928,8 @@ def main() -> int:
     ap.add_argument("--question", metavar="ТЕКСТ", default="",
                     help="вопрос к базе своими словами (для --task ask)")
     ap.add_argument("--mode", default="generate",
-                    choices=["generate", "ask", "evaluate", "review"],
+                    choices=["generate", "ask", "evaluate", "review", "meetings",
+                             "trusted_meetings"],
                     help="какие карточки брать в контекст (для --task ask)")
     ap.add_argument("--kind", metavar="ТИП", default="",
                     help="тип артефакта из aurora.config.yaml (для --task make)")

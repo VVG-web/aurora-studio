@@ -3,10 +3,12 @@
 Rebuild weekly_by_person from full_status.json to match the authoritative weekly totals.
 
 Logic mirrors make_analyst_metrics.py and update_analyst_metrics.py:
-- For История and Инцидент (and any non-BA-SA type): event = transition to "Аналитика - готово"
+- For История and Инцидент (and any non-BA-SA type): event = transition to "Аналитика - готово",
+  свёрнутое по (год, неделя): несколько сдач одной задачи за неделю — одна сдача
 - For BA-SA Task: event = FIRST transition to "Закрыто"
 - Year must equal the reporting year from aurora.config.yaml (ISO year)
-- Bucket: История→stories, Инцидент→others, BA-SA Task→ba_sa
+- Bucket: История→stories, Инцидент→others, BA-SA Task→ba_sa;
+  всё, что сдано повторно после возврата, → rework
 """
 import json
 import csv
@@ -65,7 +67,8 @@ def get_assignee_at(issue_key, at_ts):
 
 # Build weekly_by_person from scratch
 # Structure: {person: {week: {"stories": 0, "others": 0, "ba_sa": 0}}}
-weekly_by_person = defaultdict(lambda: defaultdict(lambda: {"stories": 0, "others": 0, "ba_sa": 0}))
+weekly_by_person = defaultdict(lambda: defaultdict(
+    lambda: {"stories": 0, "others": 0, "ba_sa": 0, "rework": 0}))
 
 for key, issue in full.items():
     typ = issue_types.get(key, "?")
@@ -87,21 +90,34 @@ for key, issue in full.items():
                 weekly_by_person[assignee][w]["ba_sa"] += 1
                 break  # Only FIRST transition to "Закрыто"
     else:
-        # История, Инцидент, and any other non-BA-SA type: event = transition to "Аналитика - готово"
+        # История, Инцидент, and any other non-BA-SA type: event = transition to
+        # "Аналитика - готово". Свёртка по (год, неделя) — как в make_analyst_metrics:
+        # задачу могли вернуть и принять заново несколько раз за одну неделю, но
+        # работа за эту неделю сделана один раз.
+        seen_weeks = set()
+        nth = 0
         for tr in issue.get("status_history", []):
             if tr["to"] != "Аналитика - готово":
                 continue
             y = iso_year(tr["at"])
             w = iso_week(tr["at"])
-            if y is None or w is None or y != YEAR:
+            if y is None or w is None or (y, w) in seen_weeks:
                 continue
-            
+            seen_weeks.add((y, w))
+            nth += 1
+            if y != YEAR:
+                continue
+
             assignee = get_assignee_at(key, tr["at"])
             if assignee is None:
                 assignee = "Не назначен"
-            
-            # Bucket by issue type
-            if typ == "История":
+
+            # Первая сдача за историю задачи — обычная работа; всё последующее
+            # случилось после возврата. Сотруднику засчитывается и то и другое:
+            # работа сделана и сдана, — но в разные вёдра.
+            if nth > 1:
+                weekly_by_person[assignee][w]["rework"] += 1
+            elif typ == "История":
                 weekly_by_person[assignee][w]["stories"] += 1
             else:
                 # Инцидент and any other non-BA-SA type → others
@@ -113,27 +129,34 @@ for person, weeks_data in weekly_by_person.items():
     weekly_by_person_dict[person] = dict(weeks_data)
 
 # Validate: sum all buckets and compare against metrics["weekly"]
-aggregate = {"stories": 0, "others": 0, "ba_sa": 0}
+aggregate = {"stories": 0, "others": 0, "ba_sa": 0, "rework": 0}
 for person, weeks_data in weekly_by_person_dict.items():
     for week, buckets in weeks_data.items():
         aggregate["stories"] += buckets.get("stories", 0)
         aggregate["others"] += buckets.get("others", 0)
         aggregate["ba_sa"] += buckets.get("ba_sa", 0)
+        aggregate["rework"] += buckets.get("rework", 0)
 
 # Get authoritative totals from metrics["weekly"]
-weekly_totals = {"stories": 0, "others": 0, "ba_sa": 0}
+weekly_totals = {"stories": 0, "others": 0, "ba_sa": 0, "rework": 0}
 for week, buckets in metrics["weekly"].items():
     weekly_totals["stories"] += buckets.get("stories", 0)
     weekly_totals["others"] += buckets.get("others", 0)
     weekly_totals["ba_sa"] += buckets.get("ba_sa", 0)
+    weekly_totals["rework"] += (buckets.get("rework_stories", 0)
+                                + buckets.get("rework_others", 0))
 
-print(f"Rebuilt weekly_by_person sums: stories={aggregate['stories']}, others={aggregate['others']}, ba_sa={aggregate['ba_sa']}")
-print(f"Authoritative weekly totals:   stories={weekly_totals['stories']}, others={weekly_totals['others']}, ba_sa={weekly_totals['ba_sa']}")
+def _line(d):
+    return (f"stories={d['stories']}, others={d['others']}, "
+            f"ba_sa={d['ba_sa']}, rework={d['rework']}")
+
+
+print(f"Rebuilt weekly_by_person sums: {_line(aggregate)}")
+print(f"Authoritative weekly totals:   {_line(weekly_totals)}")
 
 # Check if they match
-if aggregate["stories"] == weekly_totals["stories"] and \
-   aggregate["others"] == weekly_totals["others"] and \
-   aggregate["ba_sa"] == weekly_totals["ba_sa"]:
+if all(aggregate[k] == weekly_totals[k]
+       for k in ("stories", "others", "ba_sa", "rework")):
     print("Sums match!")
     
     # Write the rebuilt weekly_by_person back to analyst_metrics.json
@@ -149,4 +172,5 @@ else:
     print(f"  stories: rebuilt={aggregate['stories']}, expected={weekly_totals['stories']}")
     print(f"  others: rebuilt={aggregate['others']}, expected={weekly_totals['others']}")
     print(f"  ba_sa: rebuilt={aggregate['ba_sa']}, expected={weekly_totals['ba_sa']}")
+    print(f"  rework: rebuilt={aggregate['rework']}, expected={weekly_totals['rework']}")
     exit(1)

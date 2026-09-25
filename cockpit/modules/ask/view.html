@@ -13,9 +13,11 @@
   <div class="row" style="gap:14px;margin-top:10px">
     <label class="muted" style="font-size:13px"><span data-i18n="ask.context">Контекст:</span>
       <select id="askMode" style="font:inherit;margin-left:6px">
-        <option value="generate" data-i18n="ask.mode_generate">только проверенное</option>
-        <option value="evaluate" data-i18n="ask.mode_evaluate">всё, включая черновики</option>
-        <option value="ask" data-i18n="ask.mode_ask">проверенное + история решений</option>
+        <option value="generate" data-i18n="ask.mode_generate">только доверенное</option>
+        <option value="trusted_meetings" data-i18n="ask.mode_trusted_meetings">доверенное и встречи</option>
+        <option value="meetings" data-i18n="ask.mode_meetings">только встречи</option>
+        <option value="evaluate" data-i18n="ask.mode_evaluate">всё: недоверенное и встречи тоже</option>
+        <option value="ask" data-i18n="ask.mode_ask">доверенное + история решений</option>
       </select></label>
     <label class="muted" style="font-size:13px"><span data-i18n="ask.model">Модель:</span>
       <select id="askBackend" style="font:inherit;margin-left:6px">

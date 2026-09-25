@@ -99,7 +99,8 @@ def prepare(y):
         for person, person_weeks in jira_data["weekly_by_person"].items():
             dst = merged.setdefault(canon(person), {})
             for week, wd in person_weeks.items():
-                acc = dst.setdefault(week, {"stories": 0, "others": 0, "ba_sa": 0})
+                acc = dst.setdefault(week, {"stories": 0, "others": 0,
+                                            "ba_sa": 0, "rework": 0})
                 for key in acc:
                     acc[key] += wd.get(key, 0)
         jira_data["weekly_by_person"] = merged
@@ -460,6 +461,7 @@ td.max-val{color:#f87171;font-weight:600}
 <div class="kpi-row">
   <div class="kpi"><div class="n" id="kpi-stories">—</div><div class="l">историй → «Аналитика готово»</div></div>
   <div class="kpi"><div class="n" id="kpi-others">—</div><div class="l">прочих артефактов → «Аналитика готово»</div></div>
+  <div class="kpi"><div class="n" id="kpi-rework">—</div><div class="l">из них сдано заново после возврата</div></div>
   <div class="kpi"><div class="n" id="kpi-total">—</div><div class="l">всего переходов</div></div>
 </div>
 
@@ -468,6 +470,12 @@ td.max-val{color:#f87171;font-weight:600}
   <h2>1. Переходы в «Аналитика - готово» по неделям (стек)</h2>
   <div class="canvasbox"><canvas id="chart-weekly"></canvas></div>
   <div class="note">Каждый столбец — одна ISO-неделя __YEAR__ года. Данные агрегированы, фильтры применяются только если возможно.</div>
+  <div class="note"><b style="color:#ef4444">Красный сектор</b> — задачи, которые уже сдавали
+    в «Аналитика&nbsp;-&nbsp;готово», потом вернули (в бэклог из разработки, тестирования
+    или закрытия) и сдали заново. Это сделанная работа, которую обнулили: сотруднику она
+    засчитывается, но показана отдельно. Несколько сдач одной задачи за одну неделю
+    считаются одной; сдачи в разные недели — каждая в своей. Наведите на сектор, чтобы
+    увидеть, какие задачи возвращали.</div>
 </div>
 
 <!-- Блок 2 -->
@@ -531,6 +539,7 @@ td.max-val{color:#f87171;font-weight:600}
     <div class="method">
       <b>Confluence:</b> данные получены через REST API с expand=history (createdDate, createdBy) и expand=version (updated, author). Блоки 4–5 используют реальные даты создания и правки.<br>
       <b>Jira (История):</b> длительности считаются по первому входу в статус. Событие "аналитик закончил" = переход в "Аналитика - готово".<br>
+      <b>Возвраты:</b> задача, вернувшаяся в бэклог или в анализ из "Аналитика - готово", "Разработка", "Тестирование" или "Закрыто", сдаётся заново — и эта сдача считается ещё раз, в своей неделе, красным сектором. Несколько сдач одной задачи за одну неделю считаются одной. Статусы подзадач ("В работе", "Код ревью", "На ревью") — отдельный workflow, возвратом не считаются.<br>
       <b>Jira (BA-SA Task):</b> событие "аналитик закончил" = переход в статус "Закрыто" (отдельный workflow без статуса "Аналитика - готово").<br>
     </div>
   </div>
@@ -1105,10 +1114,32 @@ function getPctlValue(arr, pctl) {
   }
 
 
+// Красный сектор без имён задач — это «возвратов three», и дальше некуда идти.
+// Подсказка называет задачи и статус, из которого их вернули; фильтры учитываются
+// те же, что и на графике.
+function reworkTooltip(items) {
+  const hit = items.find(i => i.dataset.label === 'Возвращали в работу');
+  if (!hit) return '';
+  const week = DATA.jira.weeks[hit.dataIndex];
+  const rows = (DATA.jira.rework_raw || []).filter(r => {
+    if (r.week !== week) return false;
+    if (!fOk(filters.person, r.assignee)) return false;
+    if (!fOk(filters.type, r.issue_type === 'История' ? 'История' : 'Прочие')) return false;
+    const role = DATA.jira.role_of[r.assignee] || DATA.roster[r.assignee] || 'Не назначен';
+    return fOk(filters.role, role);
+  });
+  if (!rows.length) return '';
+  const head = ['', 'Вернули и сдали заново:'];
+  const list = rows.slice(0, 8).map(r =>
+    '  ' + r.issue + (r.returned_from ? ' — из «' + r.returned_from + '»' : ''));
+  if (rows.length > 8) list.push('  … ещё ' + (rows.length - 8));
+  return head.concat(list);
+}
+
 function updateBlock1() {
   const formattedLabels = DATA.jira.weeks.map(w => (DATA.week_labels && DATA.week_labels[w] ? w + ' (' + DATA.week_labels[w] + ')' : w));
-  let stories = [], others = [], ba_sa = [];
-  let rawSumS = 0, rawSumO = 0, rawSumBA = 0;
+  let stories = [], others = [], ba_sa = [], rework = [];
+  let rawSumS = 0, rawSumO = 0, rawSumBA = 0, rawSumRW = 0;
   
   // Build filtered weekly data from weekly_by_person or weekly
   const weeklyByPerson = DATA.jira.weekly_by_person || {};
@@ -1118,7 +1149,8 @@ function updateBlock1() {
   const activePerWeek = {};
   Object.values(weeklyByPerson).forEach(personWeeks => {
     Object.entries(personWeeks).forEach(([week, data]) => {
-      const total = (data.stories || 0) + (data.others || 0) + (data.ba_sa || 0);
+      const total = (data.stories || 0) + (data.others || 0)
+                  + (data.ba_sa || 0) + (data.rework || 0);
       if (total > 0) {
         activePerWeek[week] = (activePerWeek[week] || 0) + 1;
       }
@@ -1128,12 +1160,14 @@ function updateBlock1() {
   DATA.jira.weeks.forEach(w => {
     // Week filter (fOk for multi-select)
     if (!fOk(filters.week, w)) {
-      stories.push(0); others.push(0); ba_sa.push(0);
+      stories.push(0); others.push(0); ba_sa.push(0); rework.push(0);
       return;
     }
     
     // Determine which data source to use
-    let data = { stories: 0, others: 0, ba_sa: 0 };
+    // rework_stories / rework_others хранятся раздельно, чтобы фильтр по типу и
+    // вес «прочих» работали для возвратов так же, как для обычных сдач.
+    let data = { stories: 0, others: 0, ba_sa: 0, rework_stories: 0, rework_others: 0 };
     
     if (!filters.person.has('__all')) {
       // Use weekly_by_person for specific person(s) - sum across all matching persons
@@ -1143,6 +1177,7 @@ function updateBlock1() {
           data.stories += weekData.stories || 0;
           data.others += weekData.others || 0;
           data.ba_sa += weekData.ba_sa || 0;
+          data.rework_stories += weekData.rework || 0;
         }
       });
     } else if (!filters.role.has('__all')) {
@@ -1154,6 +1189,7 @@ function updateBlock1() {
           data.stories += weekData.stories || 0;
           data.others += weekData.others || 0;
           data.ba_sa += weekData.ba_sa || 0;
+          data.rework_stories += weekData.rework || 0;
         }
       });
     } else {
@@ -1162,27 +1198,33 @@ function updateBlock1() {
       data.stories = weekData.stories || 0;
       data.others = weekData.others || 0;
       data.ba_sa = weekData.ba_sa || 0;
+      data.rework_stories = weekData.rework_stories || 0;
+      data.rework_others = weekData.rework_others || 0;
     }
     
     // Apply type filter (multi-select: zero categories not in set)
-    if (!fOk(filters.type, 'История')) data.stories = 0;
+    if (!fOk(filters.type, 'История')) { data.stories = 0; data.rework_stories = 0; }
     if (!fOk(filters.type, 'BA-SA Task')) data.ba_sa = 0;
-    if (!fOk(filters.type, 'Прочие')) data.others = 0;
+    if (!fOk(filters.type, 'Прочие')) { data.others = 0; data.rework_others = 0; }
 
     // Apply weights AFTER type filter, BEFORE pushing
     const weightedOthers = data.others * othersWeight;
     const weightedBaS = data.ba_sa * BA_SA_WEIGHT;
+    // Возврат весит столько же, сколько сдача того же типа: работа сделана та же.
+    const weightedRW = data.rework_stories + data.rework_others * othersWeight;
 
     stories.push(data.stories);
     others.push(weightedOthers);
     ba_sa.push(weightedBaS);
+    rework.push(weightedRW);
     rawSumS += data.stories;
     rawSumO += weightedOthers;
     rawSumBA += weightedBaS;
+    rawSumRW += weightedRW;
   });
   
   // Apply per-capita division if in per-capita mode
-  let sumS = rawSumS, sumO = rawSumO, sumBA = rawSumBA;
+  let sumS = rawSumS, sumO = rawSumO, sumBA = rawSumBA, sumRW = rawSumRW;
   let accActive = 0;
   if (scaleMode === 'percapita') {
     // Divide each week's values by active analysts in that week
@@ -1193,6 +1235,7 @@ function updateBlock1() {
         stories[i] = stories[i] / activeCount;
         others[i] = others[i] / activeCount;
         ba_sa[i] = ba_sa[i] / activeCount;
+        rework[i] = rework[i] / activeCount;
         accActive += activeCount;
       }
     }
@@ -1200,13 +1243,15 @@ function updateBlock1() {
     sumS = stories.reduce((a, b) => a + b, 0);
     sumO = others.reduce((a, b) => a + b, 0);
     sumBA = ba_sa.reduce((a, b) => a + b, 0);
+    sumRW = rework.reduce((a, b) => a + b, 0);
   } else {
     // Total mode: count all weeks as active for consistency
     accActive = DATA.jira.weeks.length;
   }
   
   // Compute trend line data (uses per-capita-adjusted values when in per-capita mode)
-  const totalData = formattedLabels.map((_, i) => (stories[i] || 0) + (others[i] || 0) + (ba_sa[i] || 0));
+  const totalData = formattedLabels.map((_, i) =>
+    (stories[i] || 0) + (others[i] || 0) + (ba_sa[i] || 0) + (rework[i] || 0));
   const trendData = computeTrendLine(totalData, DATA.jira.weeks);
   
   // Render KPIs (branch on scaleMode)
@@ -1214,11 +1259,14 @@ function updateBlock1() {
     const safeAccActive = accActive > 0 ? accActive : 1;
     document.getElementById('kpi-stories').textContent = (rawSumS / safeAccActive).toFixed(1);
     document.getElementById('kpi-others').textContent = (rawSumO / safeAccActive).toFixed(1);
-    document.getElementById('kpi-total').textContent = ((rawSumS + rawSumO + rawSumBA) / safeAccActive).toFixed(1);
+    document.getElementById('kpi-rework').textContent = (rawSumRW / safeAccActive).toFixed(1);
+    document.getElementById('kpi-total').textContent =
+      ((rawSumS + rawSumO + rawSumBA + rawSumRW) / safeAccActive).toFixed(1);
   } else {
     document.getElementById('kpi-stories').textContent = fmtNum(sumS);
     document.getElementById('kpi-others').textContent = fmtNum(sumO);
-    document.getElementById('kpi-total').textContent = fmtNum(sumS + sumO + sumBA);
+    document.getElementById('kpi-rework').textContent = fmtNum(sumRW);
+    document.getElementById('kpi-total').textContent = fmtNum(sumS + sumO + sumBA + sumRW);
   }
   
   const datasets = [
@@ -1227,6 +1275,13 @@ function updateBlock1() {
   ];
   if (ba_sa.some(v => v > 0)) {
     datasets.push({label: 'BA-SA', data: ba_sa, backgroundColor: '#f472b6', stack: 's'});
+  }
+  // Возвраты — отдельный сектор и намеренно красный: это работа, которую уже
+  // сделали и обнулили, и она должна быть видна на графике, а не растворяться
+  // в общем столбце.
+  if (rework.some(v => v > 0)) {
+    datasets.push({label: 'Возвращали в работу', data: rework,
+                   backgroundColor: '#ef4444', stack: 's'});
   }
   
   // Add trend line dataset
@@ -1250,7 +1305,11 @@ function updateBlock1() {
   chart1 = new Chart(document.getElementById('chart-weekly'), {
     type: 'bar',
     data: { labels: formattedLabels, datasets },
-    options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, offset: true }, y: { stacked: true } } },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { x: { stacked: true, offset: true }, y: { stacked: true } },
+      plugins: { tooltip: { callbacks: { afterBody: reworkTooltip } } }
+    },
     plugins: [eventPlugin(DATA.jira.weeks)]
   });
 }
