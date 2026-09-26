@@ -5298,6 +5298,41 @@ def test_a_route_will_not_run_on_two_engine_versions(tmp: Path):
 
 
 @test
+def test_version_gap_speaks_only_on_a_real_mismatch(tmp: Path):
+    """Сверка версий говорит делом, а не строками в исходнике.
+
+    26.09.2026 гейт поймал вживую: панель кита 1.135.0, проект 1.134.0 — маршрут не
+    стартовал, раскатка штампом открыла его. Соседний тест проверяет только наличие
+    кода; этот зовёт функцию и сверяет речь: меньше версии — молчать, отставание —
+    назвать обе версии и куда идти лечиться.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    def project_with(ver):
+        d = tmp / ("п-" + ver)
+        (d / "AuroraKnowledgeDB" / "meta").mkdir(parents=True)
+        (d / "AuroraKnowledgeDB" / "meta" / "aurora_version.txt").write_text(
+            ver + "\n", encoding="utf-8")
+        return str(d)
+
+    kit = ck.kit_version()
+    assert ck.version_gap(project_with(kit)) == "", "совпавшие версии не должны говорить"
+
+    # патч-релиз проекта от кита — тот же минор: скрипты совместимы, маршрут не блокируют
+    base = kit.rsplit(".", 1)[0]
+    assert ck.version_gap(project_with(base + ".9")) == "", \
+        "патч-разница внутри минора не должна блокировать маршрут"
+
+    gap = ck.version_gap(project_with("1.0.0"))
+    assert "1.0.0" in gap and kit in gap, f"гейт не называет версии: {gap!r}"
+    assert "Версия" in gap, "гейт не говорит, где раскатывать движок проекта"
+
+
+
+@test
 def test_writing_a_field_refuses_to_touch_the_body(tmp: Path):
     """`with_fields` сторожит себя сама — в любом проекте, на каждой записи.
 
