@@ -2522,7 +2522,74 @@ def read_run_console(project: str, run_id: str) -> dict:
         with open(path, encoding="utf-8", errors="replace") as f:
             return {"text": f.read()}
     except OSError:
+        # У прогона маршрута console.log не бывает: маршрут — не единый процесс,
+        # и в архиве от него остаётся только журнал шагов events.jsonl. Раньше такое
+        # раскрытие давало «архив не найден», хотя прогон не был потерян.
+        return render_route_events(project, rid)
+
+
+def render_route_events(project: str, rid: str) -> dict:
+    """Текст консоли прогона маршрута, собранный из его журнала шагов.
+
+    Каждый шаг маршрута запускается отдельной командой и свой console.log архивирует
+    отдельно; от самого маршрута остаётся только events.jsonl — строка на шаг. По этому
+    журналу показываем читаемую сводку: какие шаги прошёл маршрут, сколько занял каждый
+    и где rc вышел не нулём.
+    """
+    path = os.path.join(runs_dir(project), rid, "events.jsonl")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            raw = f.read().splitlines()
+    except OSError:
         return {"error": "архив прогона не найден"}
+    rows: list = []
+    failed: list = []
+    secs = 0
+    for line in raw:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue        # битая строка — не повод терять остальной журнал
+        if not isinstance(ev, dict):
+            continue
+        cmd = str(ev.get("cmd", "?"))
+        args = " ".join(str(a) for a in (ev.get("args") or []))
+        rc = ev.get("rc")
+        try:
+            dur = int(ev.get("duration_s") or 0)
+        except (TypeError, ValueError):
+            dur = 0
+        secs += dur
+        if rc not in (0, None):
+            failed.append(f"{cmd}={rc}")
+        span = _hms(ev.get("start")) if ev.get("start") else ""
+        if ev.get("end"):
+            span += (" → " if span else "") + _hms(ev.get("end"))
+        rows.append(f"{len(rows) + 1:>3}. {cmd}{' ' + args if args else ''}"
+                    + (f"  [{span}]" if span else "")
+                    + f"  {dur} s  rc {rc}")
+    if not rows:
+        # Папка есть, но ни один шаг не записан: маршрут умер в самом начале — сказать
+        # «архив не найден» было бы неправдой: архив был, работы в нём не было.
+        return {"text": f"Прогон маршрута {rid}: события шагов не записаны."}
+    mins, sec = divmod(secs, 60)
+    head = (f"Прогон маршрута {rid}: журнал шагов; шагов {len(rows)}, "
+            f"суммарно шагов {mins} мин {sec} с (время в UTC).\n"
+            "Маршрут — не единый процесс, текст консоли не сохранялся; "
+            "каждый шаг архивирует свой вывод отдельно.")
+    tail = ("\nrc ≠ 0: " + ", ".join(failed)) if failed else ""
+    return {"text": head + "\n\n" + "\n".join(rows) + tail}
+
+
+def _hms(iso) -> str:
+    """ЧЧ:ММ:СС из ISO-метки времени; что не разобралось — отдаётся как есть."""
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).strftime("%H:%M:%S")
+    except ValueError:
+        return str(iso)
 
 
 

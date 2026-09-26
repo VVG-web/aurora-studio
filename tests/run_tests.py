@@ -8260,6 +8260,58 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
 
 
 @test
+def test_route_run_archive_opens_from_events(tmp: Path):
+    """Прогон маршрута открывается из «Консоли»: console.log у него нет, архив — events.jsonl.
+
+    Вечерний маршрут на живом проекте молчал в панели: запись в списке архивов есть,
+    раскрытие — «архив прогона не найден». Маршрут не единый процесс, и единственное,
+    что он архивирует, — журнал шагов; именно он и должен показываться при раскрытии.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "проект"
+    root.mkdir()
+    base = Path(ck.runs_dir(str(root)))
+
+    rid = "20260926-153334-route"
+    (base / rid).mkdir(parents=True)
+    steps = [
+        {"cmd": "sync:confluence", "args": ["--prune"],
+         "start": "2026-09-26T12:33:34.264Z", "end": "2026-09-26T12:35:34.676Z",
+         "duration_s": 120, "rc": 0},
+        {"cmd": "kb:lint", "args": [],
+         "start": "2026-09-26T13:01:43.334Z", "end": "2026-09-26T13:02:02.031Z",
+         "duration_s": 19, "rc": 1},
+    ]
+    (base / rid / "events.jsonl").write_text(
+        "\n".join(json.dumps(s, ensure_ascii=False) for s in steps) + "\nбитая строка\n",
+        encoding="utf-8")
+
+    assert ck.run_archive(str(root))[0]["id"] == rid, "прогон маршрута не виден в архиве"
+    got = ck.read_run_console(str(root), rid)
+    text = got.get("text", "")
+    assert "sync:confluence" in text and "--prune" in text, f"шага не видно: {got}"
+    assert "kb:lint" in text and "kb:lint=1" in text, "сбойный шаг не помечен rc"
+    assert "битая" not in text, "битая строка журнала выглянула в текст"
+    assert "не найден" not in text, f"раскрытие маршрута по-прежнему «не найдено»: {got}"
+
+    # пустой журнал — тоже не «не найден»: архив был, просто работать маршрут не успел
+    (base / "20260926-160000-route").mkdir()
+    (base / "20260926-160000-route" / "events.jsonl").write_text("", encoding="utf-8")
+    empty = ck.read_run_console(str(root), "20260926-160000-route")
+    assert empty.get("text") and "не найден" not in empty.get("error", ""), \
+        f"маршрут без шагов надо объяснить, а не «не найден»: {empty}"
+
+    # папки без журнала и чужой путь из браузера остаются «не найден»
+    assert "не найден" in ck.read_run_console(str(root), "20260101-000000-route")["error"]
+    assert "не найден" in ck.read_run_console(str(root), "../чужой")["error"], \
+        "id прогона из браузера стал чужим путём"
+
+
+@test
 def test_a_stalled_route_is_an_stop_not_a_pass(tmp: Path):
     """Застой цикла — остановка, а не проход: «Продолжить маршрут» появляется и там.
 
