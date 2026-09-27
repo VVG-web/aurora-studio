@@ -116,6 +116,24 @@ def to_html(graph_path: str, out_path: str, limit: int = 3000) -> bool:
     return bool(got and got.get("ok"))
 
 
+_CYPHER = r"""
+import json, sys
+from networkx.readwrite import json_graph
+from graphify.export import to_cypher
+d = json.load(sys.stdin)
+data = json.load(open(d["graph"], encoding="utf-8"))
+G = json_graph.node_link_graph(data, edges="links")
+to_cypher(G, d["out"])
+print(json.dumps({"ok": True}))
+"""
+
+
+def to_cypher(graph_path: str, out_path: str) -> bool:
+    """Скрипт Cypher для Neo4j по `graph.json` (MERGE — повтор не удваивает). False — не вышло."""
+    got = _call(_CYPHER, {"graph": os.path.abspath(graph_path), "out": os.path.abspath(out_path)})
+    return bool(got and got.get("ok"))
+
+
 _CODE = r"""
 import json, sys
 from pathlib import Path

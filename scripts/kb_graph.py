@@ -923,6 +923,18 @@ def export_graph(data: dict) -> dict:
                    "nodes": nodes, "links": links}, f, ensure_ascii=False, indent=1,
                   sort_keys=True)
 
+    # Выгрузки graphify — если он установлен: интерактивная страница графа и скрипт Neo4j.
+    try:
+        from agents import graphify_adapter as GA
+        if GA.python():
+            base = os.path.dirname(GRAPH_EXPORT)
+            if GA.to_html(GRAPH_EXPORT, os.path.join(base, "graph.html")):
+                done["html"] = os.path.join(base, "graph.html")
+            if GA.to_cypher(GRAPH_EXPORT, os.path.join(base, "graph.cypher")):
+                done["cypher"] = os.path.join(base, "graph.cypher")
+    except Exception:                                     # noqa: BLE001
+        pass
+
     # Заметки сообществ: пересобираются целиком, свои прежние — убираются.
     os.makedirs(COMMUNITY_DIR, exist_ok=True)
     keep = set()
@@ -1001,6 +1013,10 @@ def report_export(done: dict, data: dict) -> None:
     print(f"Заметок тем: {done['communities']} — {COMMUNITY_DIR}/")
     if done.get("code"):
         print(f"Слой кода и SQL (kb:code-graph): узлов {done['code']}")
+    if done.get("html"):
+        print(f"Страница графа (graphify): {done['html']}")
+    if done.get("cypher"):
+        print(f"Скрипт для Neo4j (graphify): {done['cypher']}")
     if done["obsidian"]:
         print(f"Цвета графа Obsidian по статусу: {done['obsidian']}")
 

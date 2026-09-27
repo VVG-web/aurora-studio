@@ -1938,7 +1938,8 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
     allow = {"example.com", "example.ru", "example.org", "example", "localhost",
              "127.0.0.1", "github.com", "www.apache.org", "www.python.org",
              "schemas.openxmlformats.org", "cdn.jsdelivr.net", "openfontlicense.org",
-             "raw.githubusercontent.com"}   # обновление кита читает VERSION с GitHub (1.124.0)
+             "raw.githubusercontent.com",   # обновление кита читает VERSION с GitHub (1.124.0)
+             "pypi.org"}   # надстройки движка сверяют версию, которую поставит pip (1.138.0)
     def ok(host: str) -> bool:
         h = host.lower().rstrip(".")
         if h in allow or any(h.endswith("." + a) for a in allow):
@@ -16860,7 +16861,9 @@ def test_distill_drains_the_queue_in_one_pass_and_keeps_paid_answers(tmp: Path):
         .split('elif a.task == "distill":')[0]
     assert 'until_done(cwd, a, "distill"' in branch and "window_s=" in branch \
         and "commit_every=" in branch, "тезисы до конца очереди идут мимо общего цикла"
-    assert '"left": len(distill_queue(cfg, cwd))' in branch, \
+    # Остаток — настоящий: внутри цикла маршрута без отложенных (`--defer-refresh`), их
+    # перепишет шаг после цикла (1.138.1).
+    assert '"left": len(distill_queue(cfg, cwd, a.defer_refresh))' in branch, \
         "итог прохода называет не настоящий остаток — маршрут не узнает о невышедших"
 
 
@@ -18812,6 +18815,11 @@ def test_graph_export_types_links_and_finds_themes(tmp: Path):
     for tag in ("[update]", "[fix]"):
         part = sc.split(tag, 1)[1].split("\n[", 1)[0]
         assert part.index("kb:trust") < part.index("kb:graph-export"), f"{tag}: выгрузка до доверия"
+    # выгрузки — производная на мегабайты: в git им не место, правило доезжает до проектов
+    inst = (SCRIPTS / "install_aurora.py").read_text(encoding="utf-8")
+    assert "AuroraKnowledgeDB/meta/graphify/" in inst, "выгрузки графа уйдут в историю проекта"
+    kbg = (SCRIPTS / "kb_graph.py").read_text(encoding="utf-8")
+    assert "GA.to_html(" in kbg and "GA.to_cypher(" in kbg, "выгрузки graphify не подключены"
 
 
 @test
@@ -19008,6 +19016,33 @@ def test_sql_on_pages_joins_the_base_graph(tmp: Path):
     rel = {(l["source"], l["target"]): l["relation"] for l in gj["links"]}
     assert rel.get(("Журнал-пакетов", "table:order_log")) == "упоминает таблицу", rel
     assert rel.get(("table:order_item", "table:order_log")) == "в одном запросе"
+
+
+@test
+def test_deferred_theses_do_not_stall_the_route_loop(tmp: Path):
+    """Отложенные тезисы — не остаток оборота: цикл маршрута не выходит с «застоем».
+
+    Прогон PRJ-A 27.09.2026 на 1.138.0: дописанные карточки ждали шага после цикла, а
+    строки «осталось: 3» у тезисов и выноса цикл читал как работу оборота — на втором
+    обороте ничего не убыло, и маршрут записал «застой», хотя всё шло по плану.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "Дописанная.md").write_text(
+        "---\ntitle: \"Дописанная\"\nkind: knowledge\ndistilled_was: 2026-08-01\n---\n\n"
+        "Прежний тезис.\n\n## Источник (перенесено дословно)\n\nНовый текст источника.\n",
+        encoding="utf-8")
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    assert R.distill_queue(cfg, str(root), defer_refresh=True) == []
+    res = R.run_extract(cfg, str(root), apply=True, call=lambda *a, **k: {"ok": False})
+    assert res["distill_left"] == 0, "отложенная карточка засчитана остатком оборота"
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert '"left": len(distill_queue(cfg, cwd, a.defer_refresh))' in src
 
 
 @test

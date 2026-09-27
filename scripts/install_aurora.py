@@ -113,6 +113,10 @@ node_modules/
 # целиком при смене модели и пересобирается за минуты (`kb:embed --apply`).
 AuroraKnowledgeDB/meta/embeddings.bin
 AuroraKnowledgeDB/meta/embeddings.json
+# Граф базы наружу (`kb:graph-export`, `kb:code-graph`) — производная: graph.json для
+# MCP-сервера графа, страница и скрипт Neo4j от graphify на мегабайты, пересобираются
+# каждым прогоном. Заметки тем в `MOC/Сообщества/` — навигация базы, они в git.
+AuroraKnowledgeDB/meta/graphify/
 """
 
 
