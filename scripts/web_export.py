@@ -156,7 +156,9 @@ def slug(url: str, title: str) -> str:
     if not base:
         base = urllib.parse.urlparse(url).netloc or "page"
     tail = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
-    return f"{base}-{tail}.md"
+    # Правила трёх систем разом: NFC, имена вроде CON, длина в байтах (`portable_name`).
+    from aurora_common import portable_name
+    return portable_name(base, ext=f"-{tail}.md") or f"page-{tail}.md"
 
 
 def _get(url: str, token: str, timeout: int) -> tuple:

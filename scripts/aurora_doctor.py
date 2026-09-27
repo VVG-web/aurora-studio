@@ -411,6 +411,49 @@ def check_structure(verbose: bool = False):
     return errors, warns, lines
 
 
+def check_portable_names() -> list:
+    """Имена, которые не пройдут на Windows, macOS или Linux. → предупреждения.
+
+    Проект — git-репозиторий, и его выгружают на любой из трёх систем: имя, созданное на
+    одной, на другой ломает выгрузку ВСЕГО репозитория. Смотрим то, что лежит в git: оно и
+    уезжает. Для каждой группы сказано, чем чинить — руками это сотни переименований.
+    """
+    import subprocess
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from aurora_common import case_clashes, path_problems
+        out = subprocess.run(["git", "-C", str(ROOT), "-c", "core.quotepath=false",
+                              "ls-files", "-z"], capture_output=True, text=True,
+                             timeout=60).stdout
+    except Exception:  # noqa: BLE001 — нет git или старый движок: проверять нечего
+        return []
+    rels = [r for r in out.split("\0") if r]
+    groups: dict = {}
+    for rel in rels:
+        why = path_problems(rel)
+        if not why:
+            continue
+        where = ("зеркало Confluence" if rel.startswith("Sources/Confluence/") else
+                 "карточки" if rel.startswith("AuroraKnowledgeDB/") else "прочее")
+        groups.setdefault(where, []).append((rel, why[0]))
+    fix = {"зеркало Confluence": "следующий `sync:confluence --prune` (маршрут «Обновить базу») "
+                                 "выложит страницы по коротким путям и переведёт на них базу",
+           "карточки": "`kb_fix.py --names --links --apply` переименует и поправит ссылки",
+           "прочее": "переименуйте руками по правилам из AGENTS.md"}
+    warns = []
+    for where, items in groups.items():
+        sample = "; ".join(f"{r[:70]}{'…' if len(r) > 70 else ''} — {w}" for r, w in items[:2])
+        warns.append(f"имена: {where} — {len(items)} путей не пройдут на Windows, macOS или "
+                     f"Linux ({sample}). Чинить: {fix[where]}")
+    clash = case_clashes(rels)
+    if clash:
+        a, b = clash[0]
+        warns.append(f"имена: {len(clash)} пар путей отличаются только регистром или формой "
+                     f"букв — на macOS и Windows это один файл ({a} ↔ {b}). Лишний убрать "
+                     f"из git: `git rm --cached <путь>`")
+    return warns
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Готовность проекта Aurora к работе")
     ap.add_argument("--structure", action="store_true",
@@ -487,6 +530,8 @@ def main() -> int:
         warns.append(f"выведенные из схемы поля в шаблонах ({len(seeds)}): "
                      + "; ".join(seeds[:3]) + (" …" if len(seeds) > 3 else "")
                      + " → уберите: kb_fix.py --retire --apply")
+
+    warns += check_portable_names()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

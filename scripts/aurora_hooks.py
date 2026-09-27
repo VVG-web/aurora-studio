@@ -196,23 +196,18 @@ MSG_HOOK = """#!/bin/sh
 
 TERMS="{terms}"
 [ -f "$TERMS" ] || exit 0
-MSG=$(cat "$1")
-
-HIT=$(grep -v '^#' "$TERMS" | grep -v '^[[:space:]]*$' | while IFS= read -r term; do
-  # По границам слова: короткое название часто оказывается началом обычного слова,
-  # и хук, ловящий подстроку, блокирует живое сообщение вместо утечки.
-  printf '%s' "$MSG" | grep -qiE "(^|[^0-9A-Za-zА-Яа-яЁё])$term([^0-9A-Za-zА-Яа-яЁё]|$)" \
-    && printf '%s ' "$term"
-done)
-
-if [ -n "$HIT" ]; then
-  echo "aurora: в сообщении коммита внутренние названия — коммит остановлен." >&2
-  echo "        найдено: $HIT" >&2
-  echo "        Сообщение уходит в историю навсегда и не чинится линтером." >&2
-  echo "        Перепишите текст либо: git commit --no-verify" >&2
+# Проверяет Python, а не grep: шаблон с кириллицей у grep зависит от локали, и под
+# LANG=C (Linux, проверка GitHub) он молча ничего не находил — коммит проходил.
+PY=$(command -v python3 || command -v python)
+if [ -z "$PY" ]; then
+  echo "aurora: нет python3 — сообщение коммита проверить нечем, коммит остановлен." >&2
+  echo "        Осознанно: git commit --no-verify" >&2
   exit 1
 fi
-exit 0
+# Скрипт — из самого репозитория; нет его там — тот, которым хук поставлен.
+SCAN=scripts/aurora_hooks.py
+[ -f "$SCAN" ] || SCAN="{script}"
+exec "$PY" "$SCAN" --scan-msg "$1"
 """
 
 
@@ -229,6 +224,38 @@ def private_terms() -> list[str]:
             if x.strip() and not x.strip().startswith("#")]
 
 
+def term_patterns() -> list:
+    """[(название, шаблон)] по списку внутренних названий. Пусто — списка нет.
+
+    Звёздочка на конце названия — это основа: `Примор*` ловит и «Приморья». Без неё
+    граница справа съедала все склонения, и название заказчика уезжало в публичный
+    репозиторий при зелёной проверке.
+    """
+    return [(t, re.compile(r"(^|[^0-9A-Za-zА-Яа-яЁё])" + re.escape(t.rstrip("*"))
+                           + ("" if t.endswith("*") else r"([^0-9A-Za-zА-Яа-яЁё]|$)"),
+                           re.I)) for t in private_terms()]
+
+
+def scan_msg(path: str) -> int:
+    """Сообщение коммита: нет ли в нём внутренних названий. → код для хука commit-msg."""
+    pats = term_patterns()
+    if not pats:
+        return 0
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    body = "\n".join(l for l in text.splitlines() if not l.startswith("#"))
+    hits = [t for t, pat in pats if pat.search(body)]
+    if not hits:
+        return 0
+    print("aurora: в сообщении коммита внутренние названия — коммит остановлен.", file=sys.stderr)
+    print(f"        найдено: {' '.join(hits)}", file=sys.stderr)
+    print("        Сообщение уходит в историю навсегда и не чинится линтером.", file=sys.stderr)
+    print("        Перепишите текст либо: git commit --no-verify", file=sys.stderr)
+    return 1
+
+
 def scan_push() -> int:
     """Содержимое уезжающих коммитов: нет ли в нём внутренних названий.
 
@@ -242,15 +269,9 @@ def scan_push() -> int:
     вроде `/Cursor_git/<Имя>CDP`) так не ловится — такие формы дописывают в список
     отдельной строкой.
     """
-    terms = private_terms()
-    if not terms:
+    pats = term_patterns()
+    if not pats:
         return 0
-    # Звёздочка на конце названия — это основа: `Примор*` ловит и «Приморья». Без неё
-    # граница справа съедала все склонения, и название заказчика уезжало в публичный
-    # репозиторий при зелёной проверке.
-    pats = [(t, re.compile(r"(^|[^0-9A-Za-zА-Яа-яЁё])" + re.escape(t.rstrip("*"))
-                           + ("" if t.endswith("*") else r"([^0-9A-Za-zА-Яа-яЁё]|$)"),
-                           re.I)) for t in terms]
 
     hits: dict[tuple[str, str], str] = {}
     for line in sys.stdin.read().splitlines():
@@ -336,6 +357,8 @@ def main() -> int:
     ap.add_argument("--mode", choices=["ratchet", "block", "warn"], default="ratchet",
                     help="режим хука: ratchet (планка не растёт) или strict (ноль ошибок)")
     ap.add_argument("--force", action="store_true", help="перезаписать чужой pre-commit (с бэкапом)")
+    ap.add_argument("--scan-msg", metavar="FILE",
+                    help="служебный режим commit-msg: проверить сообщение коммита по " + TERMS)
     ap.add_argument("--scan-push", action="store_true",
                     help="служебный режим pre-push: прочитать refs со stdin и проверить "
                          "содержимое уезжающих коммитов по " + TERMS)
@@ -345,6 +368,8 @@ def main() -> int:
     # остального, git_dir() тут не нужен — хук уже запущен из корня репозитория.
     if a.scan_push:
         return scan_push()
+    if a.scan_msg:
+        return scan_msg(a.scan_msg)
 
     gd = git_dir()
     if not gd:
@@ -422,7 +447,9 @@ def main() -> int:
                 msg_hook.with_suffix(".bak").write_text(
                     msg_hook.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
                 print("Старый commit-msg сохранён как commit-msg.bak")
-            msg_hook.write_text(MSG_HOOK.format(marker=MSG_MARKER, terms=TERMS), encoding="utf-8")
+            msg_hook.write_text(MSG_HOOK.format(marker=MSG_MARKER, terms=TERMS,
+                                                script=Path(__file__).resolve().as_posix()),
+                                encoding="utf-8")
             msg_hook.chmod(msg_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             note = "" if Path(TERMS).is_file() else f" — но {TERMS} нет, проверка спит"
             print(f"Установлен commit-msg: сообщения проверяются по {TERMS}{note}")

@@ -449,6 +449,98 @@ def fix_mixed_script(name: str) -> str:
     return "".join(out)
 
 
+# ------------------------------------------------------------ переносимые имена
+#
+# Проект Авроры — git-репозиторий, который открывают на Windows, macOS и Linux. Имя файла
+# или папки обязано проходить по САМЫМ СТРОГИМ правилам из трёх систем сразу: имя,
+# допустимое на одной, на другой ломает выгрузку всего репозитория, а не один файл.
+#   • Linux (ext4) меряет имя в БАЙТАХ UTF-8: предел 255, а кириллица — 2 байта на букву.
+#     На macOS имя в 300 байт создаётся без ошибки — и `git clone` на Linux падает
+#     «File name too long» (так на GitHub падал тест движка, 27.09.2026).
+#   • Windows запрещает `< > : " / \ | ? *` и управляющие символы, имена CON, PRN, AUX,
+#     NUL, COM1…9, LPT1…9 (с любым расширением), точку и пробел в конце имени; весь путь —
+#     до 260 знаков (MAX_PATH), если длинные пути не включены отдельно.
+#   • macOS и Windows не различают регистр: «Core_Аналитический» и «Core_аналитический»
+#     в одной папке — один файл. macOS хранит «й» и «ё» разложенными (NFD), Linux считает
+#     разложенное и составное написание разными именами — имена пишем в NFC.
+NAME_BYTES = 255          # жёсткий предел имени: Linux, байты UTF-8
+NAME_BUDGET = 240         # основа имени, которое сочиняет движок: место под расширение и метку
+NAME_CHARS = 150          # и в знаках: иначе путь не уложится в PATH_CHARS
+PATH_CHARS = 200          # путь от корня проекта: 260 Windows минус место самого проекта
+WIN_FORBIDDEN = '<>:"/\\|?*'
+WIN_RESERVED = re.compile(r"^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$", re.I)
+
+
+def cut_bytes(text: str, limit: int) -> str:
+    """Обрезать строку до `limit` байт UTF-8, не разрезая букву."""
+    raw = (text or "").encode("utf-8")
+    return text if len(raw) <= limit else raw[:max(0, limit)].decode("utf-8", "ignore")
+
+
+def portable_name(name: str, sep: str = "-", ext: str = "", max_bytes: int = NAME_BUDGET,
+                  max_chars: int = NAME_CHARS) -> str:
+    """Имя файла или папки, допустимое на Windows, macOS и Linux одновременно.
+
+    `ext` — расширение с точкой: оно не режется и в пределы укладывается вместе с основой.
+    Запрещённое заменяется разделителем `sep`, лишнее отрезается с конца основы, хвостовые
+    точки и пробелы снимаются, зарезервированное имя Windows получает `_`. Пусто на
+    выходе — имя целиком состояло из запрещённого; запасное имя выбирает вызывающий.
+    """
+    s = unicodedata.normalize("NFC", name or "")
+    s = "".join(sep if (ch in WIN_FORBIDDEN or ord(ch) < 32 or ord(ch) == 127) else ch
+                for ch in s)
+    if sep:
+        s = re.sub(re.escape(sep) + "{2,}", sep, s)
+    trim = ". " + sep
+    s = s.strip(" ").rstrip(trim)
+    room_b = max_bytes - len(ext.encode("utf-8"))
+    room_c = max_chars - len(ext)
+    if len(s) > room_c or len(s.encode("utf-8")) > room_b:
+        s = cut_bytes(s[:room_c], room_b).rstrip(trim)
+    if s in (".", ".."):
+        s = ""
+    head = (s + ext).split(".")[0]
+    if WIN_RESERVED.match(head):
+        s = head + "_" + s[len(head):]
+    return s + ext if s else ""
+
+
+def path_problems(rel: str, max_path: int = PATH_CHARS) -> list:
+    """Чем путь от корня проекта нарушает правила трёх систем. Пусто — путь переносим."""
+    rel = (rel or "").replace("\\", "/")
+    out = []
+    for part in [p for p in rel.split("/") if p]:
+        bad = sorted({ch for ch in part if ch in WIN_FORBIDDEN or ord(ch) < 32 or ord(ch) == 127})
+        if bad:
+            out.append(f"«{part}»: знаки {' '.join(repr(c)[1:-1] for c in bad)} запрещены в Windows")
+        if WIN_RESERVED.match(part.split(".")[0]):
+            out.append(f"«{part}»: имя зарезервировано в Windows")
+        if part[-1] in ". ":
+            out.append(f"«{part}»: точка или пробел в конце — Windows их отрежет")
+        size = len(part.encode("utf-8"))
+        if size > NAME_BYTES:
+            out.append(f"«{part[:40]}…»: {size} байт — Linux принимает до {NAME_BYTES}")
+        if unicodedata.normalize("NFC", part) != part:
+            out.append(f"«{part}»: буквы в разложенной форме (NFD) — на Linux это другое имя")
+    if len(rel) > max_path:
+        out.append(f"путь {len(rel)} знаков — Windows без длинных путей принимает до 260 "
+                   f"вместе с папкой проекта; предел Авроры {max_path}")
+    return out
+
+
+def case_clashes(rels) -> list:
+    """Пары путей, которые macOS и Windows считают одним файлом: регистр и форма букв."""
+    seen: dict = {}
+    out = []
+    for rel in rels:
+        key = unicodedata.normalize("NFC", rel).casefold()
+        if key in seen and seen[key] != rel:
+            out.append((seen[key], rel))
+        else:
+            seen[key] = rel
+    return out
+
+
 def card_filename(title: str) -> str:
     """Заголовок → имя файла карточки по правилу из build.md.
 
@@ -484,7 +576,11 @@ def card_filename(title: str) -> str:
     # и на неё не вела ни одна ссылка — оглавление «отстало», карточка «без связей».
     s = s.replace("[", "-").replace("]", "").replace("|", "-")
     s = re.sub(r"-{2,}", "-", s)
-    return s.strip("-.")
+    # Последним — правила трёх систем: `? * < > "` и управляющие символы, длина в байтах
+    # и знаках, имена вроде CON. Карточка «HDFS->Hive» получала имя с «>», которое Windows
+    # не создаст (PRJ-A, 27.09.2026). Пределы выбраны так, что ни одно имя живых баз не
+    # меняется: самое длинное там — 232 байта и 125 знаков.
+    return portable_name(s.strip("-."), sep="-")
 
 
 def card_stem(name: str) -> str:

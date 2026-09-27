@@ -9,6 +9,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # Зеркало Confluence разбирает страницы через beautifulsoup4 и markdownify — их
+      # аналитик ставит из «Установки» панели. Без них восемь проверок синка падали
+      # здесь «No module named 'bs4'», и проверка кита не была зелёной ни разу с 28.08.
+      - name: Engine dependencies
+        run: python3 -m pip install --quiet beautifulsoup4 markdownify
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
       - name: Full suite

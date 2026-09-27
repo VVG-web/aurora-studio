@@ -439,6 +439,14 @@ def retrieval_report(save: bool = False) -> int:
             was = json.loads(CORPUS_EXPECTED.read_text(encoding="utf-8"))
         except ValueError:
             was = {}
+    # Имена карточек — из имён файлов, а их форма зависит от системы: macOS хранит «Ё»
+    # разложенной (NFD), свежий клон и Linux — составной (NFC). Эталон, записанный с диска
+    # macOS, расходился с выдачей на любой другой машине при том же порядке. Сравниваем в NFC.
+    import unicodedata
+    def nfc_all(d: dict) -> dict:
+        return {unicodedata.normalize("NFC", q): [unicodedata.normalize("NFC", x) for x in v]
+                for q, v in d.items()}
+    now, was = nfc_all(now), nfc_all(was)
     print(f"# Выдача по эталонному корпусу — {TODAY}\n")
     moved = []
     for q in CORPUS_QUERIES:
@@ -495,6 +503,10 @@ def main() -> int:
         print("dev_qa: это не кит. QA-контур нужен там, где движок разрабатывают, "
               "а не там, где им пользуются.", file=sys.stderr)
         return 1
+    # Эталонный корпус лежит в `tests/corpus` и едет с китом в git — кухня ему не нужна.
+    # Иначе сторож ранжирования молчал на любой чистой копии кита, включая проверку GitHub.
+    if a.retrieval:
+        return retrieval_report(a.save)
     if not QA.is_dir() and not a.new:
         print(f"dev_qa: нет {QA.relative_to(KIT)} — кухня разработки не заведена.\n"
               f"Создайте: python3 scripts/dev_qa.py --new case \"первая проверка\"",
@@ -507,8 +519,6 @@ def main() -> int:
             print("dev_qa: вид документа — case или scenario", file=sys.stderr)
             return 1
         return cmd_new(kind, a.new[1])
-    if a.retrieval:
-        return retrieval_report(a.save)
     if a.check:
         return cmd_check()
     if a.cover:

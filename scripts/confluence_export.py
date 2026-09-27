@@ -47,6 +47,7 @@ from sources_core import (RestApi, WikiMirror, block, config_text, no_access,
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
+from aurora_common import PATH_CHARS, portable_name  # noqa: E402
 
 DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
@@ -543,15 +544,46 @@ def to_markdown(storage_html: str, base_url: str, space: str, jira_base: str = "
 # ---------------------------------------------------------------- имена/пути
 
 def safe_name(title: str, page_id: str = "") -> str:
-    """Имя по конвенциям Авроры: без запрещённых символов, без хвостовых точек/пробелов."""
+    """Имя по конвенциям Авроры: без запрещённых символов, без хвостовых точек/пробелов.
+
+    И по правилам трёх систем разом (`portable_name`): NFC, имена вроде CON, длина в байтах.
+    """
     name = "".join("_" if ch in FORBIDDEN or ord(ch) < 32 else ch for ch in title)
     name = re.sub(r"\s+", "_", name).strip("._ ")
     name = re.sub(r"_{2,}", "_", name)
-    if len(name) > 120:
-        name = name[:120].rstrip("._ ")
+    name = portable_name(name, sep="_", max_chars=PART_CHARS)
     if not name:
         name = f"page_{page_id}"
     return name
+
+
+# Путь в зеркале повторяет дерево страниц, и глубокое дерево с длинными заголовками давало
+# пути в 321 знак (PRJ-A, 27.09.2026: 271 файл длиннее 200). Windows без длинных путей
+# принимает 260 вместе с папкой проекта — такой репозиторий там не выгружается. Имя
+# папки или страницы укорачивается, только когда путь родителя уже длинный: короткие пути
+# не сдвигаются. Укороченное имя получает номер страницы — иначе два длинных заголовка с
+# общим началом слились бы в одну папку.
+PART_CHARS = 120        # имя одного уровня зеркала, как было
+PART_MIN = 24           # короче имя перестаёт что-то говорить человеку
+CHILD_ROOM = 40         # сколько пути оставить детям страницы, у которой они есть
+
+
+ASSET_ROOM = len("_assets/") + PART_MIN     # папка схем и хоть сколько-то имени файла
+
+
+def fit_part(name: str, page_id: str, room: int) -> str:
+    """Имя уровня, укороченное до `room` знаков с номером страницы на конце.
+
+    Места нет даже на осмысленное начало заголовка (глубокая ветка) — уровнем становится
+    сам номер страницы: заголовок остаётся в шапке файла и в `breadcrumbs`, а путь всё
+    равно укладывается в предел.
+    """
+    if len(name) <= room:
+        return name
+    tail = f"_{page_id}" if page_id else ""
+    if room >= PART_MIN:
+        return name[:max(1, room - len(tail))].rstrip("._ ") + tail
+    return page_id or name[:PART_MIN].rstrip("._ ")
 
 
 RY_MACRO_RE = re.compile(
@@ -624,6 +656,11 @@ class Exporter(WikiMirror):
         self.space, self.force, self.jira_base = space, force, jira_base
         self.written = self.skipped = self.failed = 0
         self.ry_defines = self.ry_links = self.assets_saved = self.assets_dropped = 0
+        self.claimed: dict = {}     # (папка, имя без регистра) → номер страницы
+        # Длина пути считается от корня проекта: зеркало лежит в `Sources/Confluence/`,
+        # и эти знаки Windows тоже засчитывает.
+        where = os.path.relpath(os.path.abspath(out), os.getcwd()).replace("\\", "/")
+        self.prefix_len = len(where if not where.startswith("..") else DEFAULT_OUT) + 1
 
     def save_assets(self, page_id: str, rel: str, names: list) -> str:
         """Скачать вложения схем рядом со страницей и вернуть ссылки на них.
@@ -655,6 +692,12 @@ class Exporter(WikiMirror):
             # Имя вложения у draw.io — это имя диаграммы, без расширения. Файл без него
             # не открывается ни редактором, ни просмотрщиком: подставляем по виду схемы.
             fname = hit if hit.lower().endswith(known) else hit + ext.get(kind, ".xml")
+            # Имя вложения задаёт человек в Confluence: «:» и «?» там допустимы, а Windows
+            # такой файл не создаст. Расширение не режем — без него файл не откроется.
+            dot = next((k for k in known if fname.lower().endswith(k)), "")
+            room = PATH_CHARS - self.path_prefix() - len(folder) - 1
+            fname = portable_name(fname[:len(fname) - len(dot)], sep="_", ext=dot,
+                                  max_chars=max(PART_MIN, min(80, room))) or f"asset{dot}"
             try:
                 blob = self.api.fetch(have[hit])
             except Exception as e:  # noqa: BLE001
@@ -685,7 +728,52 @@ class Exporter(WikiMirror):
             return ""
         return "## Схемы страницы\n\n" + "\n".join(lines)
 
-    def walk(self, page_id: str, ancestors: list) -> None:
+    def part_name(self, title: str, page_id: str, parent: str, has_children: bool,
+                  has_assets: bool = False) -> str:
+        """Имя страницы в зеркале: папка у страницы с детьми, файл — у листа.
+
+        Считается один раз, по самой странице, и дети получают готовую папку родителя:
+        раньше папку предка каждый потомок собирал заново из заголовка, и укоротить её
+        для одних потомков, не укоротив для других, было бы нельзя.
+        """
+        name = safe_name(title, page_id)
+        tail = len("/index.md") if has_children else len(".md")
+        used = self.path_prefix() + (len(parent) + 1 if parent else 0)
+        room = (PATH_CHARS - used - tail - (CHILD_ROOM if has_children else 0)
+                - (ASSET_ROOM if has_assets else 0))
+        name = fit_part(name, page_id, room)
+        # macOS и Windows не различают регистр: два соседних заголовка, отличные только
+        # им, легли бы в один файл. Второму — номер страницы.
+        key = (parent.casefold(), name.casefold())
+        if not hasattr(self, "claimed"):
+            self.claimed = {}
+        owner = self.claimed.setdefault(key, page_id)
+        if owner != page_id:
+            name = fit_part(name + f"_{page_id}", "", max(len(name) + len(page_id) + 1, room))
+        return name
+
+    def path_prefix(self) -> int:
+        """Сколько знаков пути занимает само зеркало от корня проекта, с косой чертой."""
+        return getattr(self, "prefix_len", len(DEFAULT_OUT) + 1)
+
+    def place(self, title: str, page_id: str, parent: str, has_children: bool,
+              has_assets: bool = False) -> str:
+        """Путь страницы в зеркале без расширения: `<папка родителя>/<имя>`.
+
+        Дерево может быть любой глубины, а каждый уровень — хоть один знак и косая черта.
+        Не помещается и номер страницы — страница ложится в папку ближайшего предка, где
+        место есть. Номер уникален во всём Confluence, столкнуться ему там не с кем.
+        """
+        name = self.part_name(title, page_id, parent, has_children, has_assets)
+        here = f"{parent}/{name}" if parent else name
+        tail = ((len("/index.md") if has_children else len(".md"))
+                + (len("_assets/") + PART_MIN if has_assets else 0))
+        while (self.path_prefix() + len(here) + tail > PATH_CHARS and parent and page_id):
+            parent = parent.rsplit("/", 1)[0] if "/" in parent else ""
+            here = f"{parent}/{page_id}" if parent else page_id
+        return here
+
+    def walk(self, page_id: str, ancestors: list, parent: str = "") -> None:
         try:
             data = self.api.page(page_id)
         except Exception as e:  # noqa: BLE001
@@ -695,11 +783,6 @@ class Exporter(WikiMirror):
         title = data["title"]
         version = int(data.get("version", {}).get("number", 1))
         children = self.api.children(page_id)
-        parts = [safe_name(a, "") for a in ancestors]
-        leaf = safe_name(title, page_id)
-        rel = "/".join(parts + [leaf, "index.md"]) if children else "/".join(parts + [leaf + ".md"])
-
-        self.align_case(rel)
         # ключи RY считаем всегда, даже когда страница не переписывается: иначе итог
         # зависел бы от того, что изменилось со вчера, а не от того, что есть в источнике
         defines, links = ry_keys(data.get("body", {}).get("storage", {}).get("value", ""))
@@ -709,6 +792,11 @@ class Exporter(WikiMirror):
         assets: list = []
         users: list = []
         md = to_markdown(body, self.base_url, self.space, self.jira_base, assets, users)
+        # Путь — после разбора: у страницы со схемами рядом ляжет `<имя>_assets/`, и место
+        # под него держим только у неё, не укорачивая имена всем остальным.
+        here = self.place(title, page_id, parent, bool(children), bool(assets))
+        rel = f"{here}/index.md" if children else f"{here}.md"
+        self.align_case(rel)
         for key in sorted(set(users)):
             name = self.api.user_name(key)
             if name:
@@ -741,7 +829,7 @@ class Exporter(WikiMirror):
             self.records.append((str(page_id), rel, title, "SYNCED"))
 
         for child in sorted(children, key=lambda c: (c["title"], c["id"])):
-            self.walk(child["id"], ancestors + [title])
+            self.walk(child["id"], ancestors + [title], here)
 
     def stale(self) -> list:
         """Файлы зеркала, за которыми нет страницы."""

@@ -26,6 +26,37 @@ import time
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parents[1]
+# Кухня разработки — `Development/` кита, вне git. Проверки, которым она нужна, на чистой
+# копии кита (в том числе в проверке GitHub) сверяют только то, что едет в git.
+KITCHEN = KIT / "Development" / "QA"
+
+
+def _git_author_for_fixtures() -> None:
+    """Автор коммитов в заготовках — если на машине он не задан.
+
+    У разработчика имя и почта лежат в `~/.gitconfig`; на чистой машине (проверка GitHub)
+    их нет, и каждый `git commit` в заготовке падал кодом 128 «Please tell me who you are».
+    Глобальный конфиг подставляется временный: у настройки самого репозитория приоритет
+    выше, и тесты, задающие своё имя, остаются при нём.
+
+    Автор — только человек, никогда не имя программы или модели (правило Авроры для любого
+    авторства). Здесь это тот, кто запустил проверку: на GitHub — автор push
+    (`GITHUB_ACTOR`), на машине — пользователь системы.
+    """
+    have = subprocess.run(["git", "config", "--get", "user.email"],
+                          capture_output=True, text=True).stdout.strip()
+    if have or os.environ.get("GIT_CONFIG_GLOBAL"):
+        return
+    import getpass
+    who = os.environ.get("GITHUB_ACTOR") or getpass.getuser() or "user"
+    mail = (f"{who}@users.noreply.github.com" if os.environ.get("GITHUB_ACTOR")
+            else f"{who}@localhost")
+    cfg = Path(tempfile.mkdtemp(prefix="aurora-tests-git-")) / "gitconfig"
+    cfg.write_text(f"[user]\n\tname = {who}\n\temail = {mail}\n", encoding="utf-8")
+    os.environ["GIT_CONFIG_GLOBAL"] = str(cfg)
+
+
+_git_author_for_fixtures()
 SCRIPTS = KIT / "scripts"
 VERBOSE = "-v" in sys.argv
 RESULTS: list = []
@@ -1877,8 +1908,11 @@ def test_hooks_guard_commit_messages(tmp: Path):
 
     (root / "f.txt").write_text("y", encoding="utf-8")
     subprocess.run(["git", "add", "f.txt"], cwd=str(root), check=True)
+    # Под локалью C: так на Linux и в проверке GitHub. Прежний хук искал grep'ом с
+    # кириллицей в шаблоне — там он молча ничего не находил, и коммит проходил.
     bad = subprocess.run(["git", "commit", "-m", "правка про ВНУТРЕННЕЕИМЯ"], cwd=str(root),
-                         capture_output=True, text=True)
+                         capture_output=True, text=True,
+                         env={**os.environ, "LC_ALL": "C", "LANG": "C"})
     assert bad.returncode != 0, "коммит с внутренним названием в сообщении прошёл"
     assert "внутренние названия" in bad.stderr, bad.stderr[:300]
     n = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=str(root),
@@ -7640,6 +7674,101 @@ def test_thinking_is_switched_on_explicitly_in_every_request(tmp: Path):
 
 
 @test
+def test_names_pass_on_windows_macos_and_linux(tmp: Path):
+    """Имена файлов и папок — по самым строгим правилам из трёх систем сразу.
+
+    Проект открывают на Windows, macOS и Linux, и имя, допустимое на одной, на другой ломает
+    выгрузку всего репозитория. Проверка кита на GitHub не была зелёной ни разу с 28.08:
+    одна из причин — заготовка с именем в 418 байт, которое macOS создаёт, а Linux нет. В
+    живых базах 27.09.2026: карточка «HDFS->Hive» (Windows не создаст), пути зеркала
+    Confluence до 321 знака (Windows принимает 260), две папки, различимые только регистром.
+    """
+    import importlib
+    import unicodedata
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    importlib.reload(C)
+
+    # общее правило
+    assert C.portable_name('a<b>c:d"e|f?g*h', sep="-") == "a-b-c-d-e-f-g-h"
+    assert C.portable_name("отчёт. ", sep="-") == "отчёт", "точка и пробел в конце остались"
+    assert C.portable_name("con", ext=".md") == "con_.md", "имя CON Windows не создаст"
+    assert C.portable_name("LPT1.backup", sep="-") == "LPT1_.backup"
+    long = C.portable_name("я" * 300, ext=".md")
+    assert long.endswith(".md") and len(long.encode("utf-8")) <= C.NAME_BUDGET, \
+        f"имя {len(long.encode('utf-8'))} байт: режется не в байтах или теряет расширение"
+    nfd = unicodedata.normalize("NFD", "Отчёт-и-йод")
+    assert C.portable_name(nfd) == unicodedata.normalize("NFC", nfd), "имя не в NFC"
+    assert C.portable_name("???", sep="") == "", "пустое имя выдано за годное"
+
+    # имя карточки из заголовка
+    got = C.card_filename("Зависимость запуска HDFS->Hive: raw от Kafka->HDFS")
+    assert not C.path_problems(got + ".md"), f"имя карточки непереносимо: {got}"
+    big = C.card_filename("Очень длинное название " * 20)
+    assert len(big.encode("utf-8")) <= C.NAME_BUDGET and len(big) <= C.NAME_CHARS, big
+    assert C.card_filename("Статус-Черновик") == "Статус-Черновик", \
+        "обычное имя изменилось — поедут ссылки всей базы"
+
+    # проверка пути называет каждую беду
+    probs = " ".join(C.path_problems("A/nul.txt") + C.path_problems("A/x?.md")
+                     + C.path_problems("A/" + "я" * 130 + ".md") + C.path_problems("a" * 201)
+                     + C.path_problems("A/b.") + C.path_problems("A/" + nfd))
+    for must in ("зарезервировано", "запрещены", "байт", "путь 201", "в конце", "NFD"):
+        assert must in probs, f"проверка пути не называет «{must}»: {probs}"
+    assert C.case_clashes(["S/Core_Аналитический/a.md", "S/Core_аналитический/a.md",
+                           "S/b.md"]) == [("S/Core_Аналитический/a.md", "S/Core_аналитический/a.md")]
+
+    # зеркало Confluence: глубокая ветка с длинными заголовками укладывается в 200 знаков,
+    # а короткие пути остаются прежними — иначе переехала бы половина зеркала
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    exp = CE.Exporter.__new__(CE.Exporter)
+    exp.claimed, exp.prefix_len = {}, len("Sources/Confluence") + 1
+    parent = ""
+    for depth in range(20):
+        parent = exp.place(f"Раздел {depth} с длинным заголовком про налоговую отчётность",
+                           str(90000000 + depth), parent, True)
+        path = f"Sources/Confluence/{parent}/index.md"
+        assert len(path) <= C.PATH_CHARS, f"уровень {depth}: путь {len(path)} знаков"
+    last = exp.place("Страница со схемой " * 5, "91000000", parent, False, True)
+    assert len(f"Sources/Confluence/{last}_assets/") + CE.PART_MIN <= C.PATH_CHARS, \
+        "под схемы страницы места не осталось"
+    fresh = CE.Exporter.__new__(CE.Exporter)
+    fresh.claimed, fresh.prefix_len = {}, len("Sources/Confluence") + 1
+    assert fresh.part_name("Логическая модель", "1", "", True) == "Логическая_модель", \
+        "короткое имя зеркала изменилось — страницы переедут без нужды"
+    a = fresh.part_name("Core Аналитический", "11", "SM", True)
+    b = fresh.part_name("Core аналитический", "22", "SM", True)
+    assert a.casefold() != b.casefold() and b.endswith("_22"), \
+        f"соседние страницы, различимые только регистром, легли в одну папку: {a} / {b}"
+
+    # живая база: непереносимое имя карточки чинится вместе со ссылками
+    root = make_project(tmp, git=True)
+    bad = card(root, "Processes/Запуск-HDFS->Hive.md", status="draft", body="Порядок запуска.")
+    card(root, "Concepts/Kafka.md", status="draft", body="Шина. См. [[Запуск-HDFS->Hive]].")
+    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fx"],
+                   cwd=str(root), check=True)
+    doc = run("aurora_doctor.py", cwd=root).stdout
+    assert "имена: карточки — 1" in doc and "kb_fix.py --names --links --apply" in doc, \
+        f"доктор не назвал непереносимое имя и способ починки:\n{doc[-800:]}"
+    run("kb_fix.py", "--names", "--links", "--apply", cwd=root, expect_rc=0)
+    assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
+        "карточка с «>» в имени не переименована"
+    text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
+    assert "[[Запуск-HDFS-Hive" in text and "HDFS->Hive]]" not in text, \
+        f"ссылка на переименованную карточку не поправлена:\n{text}"
+
+    # правило видят все модели, работающие с базой (Т-85)
+    for rel in ("templates/agents/AGENTS.md.template", "skills/aurora-vault/SKILL.md",
+                "docs/knowledge-rules.md", "docs/knowledge-rules-tldr.md",
+                "templates/meta/conventions.md"):
+        doc = (KIT / rel).read_text(encoding="utf-8")
+        for must in ("Windows", "macOS", "Linux", "255 байт", "200 знаков"):
+            assert must in doc, f"в {rel} нет правила имён: не хватает «{must}»"
+
+
+@test
 def test_moc_recognises_its_own_files(tmp: Path):
     """Карта содержания генерируется, руками её не пишут никогда.
 
@@ -10077,17 +10206,20 @@ def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
     Задание же нужно потому, что модель, дорабатывавшая код, знает про свои изменения —
     но не знает правил этого контура.
     """
-    cov = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--cover"],
-                         cwd=str(KIT), capture_output=True, text=True)
-    assert cov.returncode == 0, cov.stderr[:300]
-    task = cov.stdout
-    assert "ЗАДАНИЕ АССИСТЕНТУ" in task, "нет блока для копирования в другой диалог"
-    for must in ("автотест", "тест-кейс QA", "сценарий", "--check", "--list", "covers"):
-        assert must in task, f"в задании не сказано про «{must}»"
-    assert "предпочтительный вариант ВСЕГДА" in task, \
-        "не задан приоритет автотеста над кейсом — модель заведёт кейс на всё подряд"
-    assert "--new case" in task and "--new scenario" in task, \
-        "модель не узнает, чем заводить документы"
+    # Кухня разработки (`Development/QA`) в git не едет: на чистой копии кита — в проверке
+    # GitHub — задание собрать не из чего, и проверяется только сам скилл.
+    if KITCHEN.is_dir():
+        cov = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--cover"],
+                             cwd=str(KIT), capture_output=True, text=True)
+        assert cov.returncode == 0, cov.stderr[:300]
+        task = cov.stdout
+        assert "ЗАДАНИЕ АССИСТЕНТУ" in task, "нет блока для копирования в другой диалог"
+        for must in ("автотест", "тест-кейс QA", "сценарий", "--check", "--list", "covers"):
+            assert must in task, f"в задании не сказано про «{must}»"
+        assert "предпочтительный вариант ВСЕГДА" in task, \
+            "не задан приоритет автотеста над кейсом — модель заведёт кейс на всё подряд"
+        assert "--new case" in task and "--new scenario" in task, \
+            "модель не узнает, чем заводить документы"
 
     skill = (KIT / "skills/aurora-dev/SKILL.md").read_text(encoding="utf-8")
     assert "Если вас позвали после разработки фичи" in skill, \
@@ -11487,6 +11619,8 @@ def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
     никогда — и создаёт видимость покрытия. Ссылка сценария на несуществующий кейс делает
     то же самое. Обе беды тихие: файлы на месте, всё выглядит правильно.
     """
+    if not KITCHEN.is_dir():
+        return      # кухня разработки не в git: на чистой копии кита (GitHub) реестра нет
     out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--check"],
                          cwd=str(KIT), capture_output=True, text=True)
     assert out.returncode == 0, f"реестр QA кита разошёлся:\n{out.stdout}"
@@ -12235,7 +12369,10 @@ def test_the_panel_shows_which_model_actually_takes_the_role(tmp: Path):
 
     proj = tmp / "проект"
     (proj / "AuroraKnowledgeDB").mkdir(parents=True)
+    # Адрес шлюза — свой: без него №1 существовал только там, где он задан в ките (на
+    # машине разработчика), и на чистой копии кита тест падал `StopIteration`.
     (proj / ".env.aurora.local").write_text(
+        "AURORA_AGENT_BACKEND_1_URL=http://gw.example/v1\n"
         "AURORA_AGENT_BACKEND_1_MODEL_WORKER=тяжёлая\n", encoding="utf-8")
     st = C.agent_state(str(proj))
     b1 = next(b for b in st["backends"] if b["n"] == 1)
@@ -12438,8 +12575,13 @@ def test_a_merge_archives_the_donor_even_when_the_name_is_taken(tmp: Path):
     got = [p.name for p in (base / "_archive").iterdir() if p.name != "Карточка.md"]
     assert len(got) == 1 and re.match(r"Карточка-\d{8}-\d{4}", got[0]), \
         why(got) or "в архиве не дата-время, а номер: по нему не видно, когда и в каком порядке"
-    # длина режется по пределу файловой системы, и режется ОСНОВА, а не метка времени
-    long_name = base / "Concepts" / ("Длинная-" + "я" * 200 + ".md")
+    # Длина режется по пределу файловой системы, и режется ОСНОВА, а не метка времени.
+    # Имя заготовки — 248 байт: его создаст любая система, а вот с меткой «-ГГГГММДД-ЧЧММ»
+    # оно уже длиннее 255. Прежняя заготовка в 418 байт создавалась только на macOS — на
+    # Linux тест падал раньше проверки (`File name too long`), и ровно так на Linux не
+    # выгружался бы репозиторий с таким именем.
+    long_name = base / "Concepts" / ("Длинная-" + "я" * 115 + ".md")
+    assert len(long_name.name.encode("utf-8")) <= 255, "заготовка сама нарушает предел Linux"
     long_name.write_text("текст", encoding="utf-8")
     (base / "_archive" / long_name.name).write_text("старая", encoding="utf-8")
     plan2 = F.Plan()

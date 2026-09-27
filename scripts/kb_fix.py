@@ -51,7 +51,8 @@ from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            fix_mixed_script, fold, fold_hard,
                            fold_hard, git_guard, leaf_name,
                            is_service, link_refs, not_a_card_link, project_file,
-                           rewrite_links, set_field, translit_names, TEMPLATE_LINK_RE, utc_slug)
+                           path_problems, rewrite_links, set_field, translit_names,
+                           TEMPLATE_LINK_RE, utc_slug, NAME_BYTES)
 from datetime import date, datetime
 from difflib import get_close_matches
 
@@ -369,14 +370,17 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
         renamed.append((rel, clean))
         taken.add(new_rel)
     # Имя с разметкой ссылки (`[`, `]`, `|`) — до 1.122.0 `card_filename` её пропускал: на
-    # такую карточку не ведёт ни одна ссылка. Переименовываем по общему правилу имени;
-    # заголовок остаётся прежним — в шапке скобки безвредны.
+    # такую карточку не ведёт ни одна ссылка. Имя, которое не пройдёт по правилам Windows,
+    # macOS и Linux разом (`>`, `?`, `:`, имя CON, больше 255 байт), — до 1.140.0 тоже:
+    # карточку «HDFS->Hive» Windows не создаст, и базу там не выгрузить. Переименовываем по
+    # общему правилу имени; заголовок остаётся прежним — в шапке эти знаки безвредны.
     for path, card in sorted(cards.items()):
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel or "/meta/" in rel:
             continue
         stem = os.path.splitext(os.path.basename(rel))[0]
-        if not any(ch in stem for ch in "[]|") or rel in [r for r, _n in renamed]:
+        broken = any(ch in stem for ch in "[]|") or bool(path_problems(stem + ".md", 10 ** 6))
+        if not broken or rel in [r for r, _n in renamed]:
             continue
         new_stem = normalize_title(stem)
         new_rel = os.path.join(os.path.dirname(rel), new_stem + ".md").replace("\\", "/")
@@ -1930,10 +1934,10 @@ def check_git_guard(root: str, allow_dirty: bool) -> bool:
     return False
 
 
-# Предел длины имени файла — 255 БАЙТ почти везде (ext4, APFS, NTFS). Кириллица в UTF-8
-# занимает два байта на букву, то есть 127 букв, а не 255: имя карточки, собранное из
-# длинного заголовка, к этому пределу подходит вплотную. Считаем в байтах.
-NAME_BYTES = 255
+# Предел длины имени — самый строгий из трёх систем: Linux (ext4) меряет его в БАЙТАХ
+# UTF-8, до 255. macOS и Windows считают знаки, поэтому имя в 300 байт кириллицей там
+# создаётся без ошибки — а на Linux такой репозиторий не выгружается. Кириллица занимает
+# два байта на букву: 127 букв, а не 255. Правило общее — `aurora_common.NAME_BYTES`.
 
 
 def free_archive_name(dst: str) -> str:
@@ -2088,7 +2092,8 @@ def main() -> int:
         head: list = []
         if a.names:
             renamed, bad = plan_names(cards, plan)
-            head.append(f"  снят код документа с имён: {len(renamed)}")
+            head.append(f"  имён приведено к правилу (код документа, разметка ссылки, "
+                        f"правила Windows/macOS/Linux): {len(renamed)}")
             for rel, clean in renamed[:8]:
                 head.append(f"    {os.path.basename(rel)} → «{clean}»")
             if len(renamed) > 8:

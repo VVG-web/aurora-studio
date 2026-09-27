@@ -384,8 +384,10 @@ bootstrap:
 # ---------- интерактив ----------
 
 def slugify(name: str) -> str:
+    from aurora_common import portable_name
     parts = [p for p in re.split(r"[\s_\-]+", name) if p]
-    return "".join(p[:1].upper() + p[1:] for p in parts) or "Project"
+    return portable_name("".join(p[:1].upper() + p[1:] for p in parts), sep="",
+                         max_chars=60) or "Project"
 
 
 def skill_prefixes(target: Path) -> list:
