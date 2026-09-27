@@ -35,7 +35,7 @@
 переносит рёбра графа в поле `related:` карточек, ничего не удаляя: только добавляет то,
 чего там нет.
 
-Панель: `kb:links` · `kb:map`
+Панель: `kb:links` · `kb:map` · `kb:graph-export`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
@@ -199,7 +199,7 @@ SKIP_DIRS = ("meta", "_archive", "MOC")
 REL_RE = re.compile(r"^related:\s*(.*)$", re.M)
 
 
-def write_cards_graph(path: str) -> dict:
+def write_cards_graph(path: str, typed: dict | None = None) -> dict:
     """Граф базы знаний для панели: узлы — карточки, рёбра — ссылки между ними.
 
     Берём то, что **написано в базе**: ссылки `[[…]]` в теле и поле `related:`. Не
@@ -231,28 +231,56 @@ def write_cards_graph(path: str) -> dict:
             fm = frontmatter(text) or {}
             stem = os.path.splitext(f)[0]
             by_stem[stem] = rel
+            forms = {stem.replace("-", " "), (fm.get("title") or "").strip().strip('"')}
+            forms |= set(re.findall(r'"([^"]+)"', fm.get("aliases") or ""))
+            srcs = card_sources(text)
             nodes.append({"id": stem, "path": rel,
                           "title": (fm.get("title") or stem).strip('"'),
                           "status": (fm.get("status") or "").strip(),
                           "type": (fm.get("type") or "").strip(),
-                          "kind": (fm.get("kind") or "").strip()})
+                          "kind": (fm.get("kind") or "").strip(),
+                          "source": srcs[0] if srcs else "", "_forms": forms,
+                          "tags": (fm.get("tags") or "").strip()})
+    typed = typed or {}
+    forms_of = {n["id"]: n["_forms"] for n in nodes}
+    best: dict = {}
+    # Тип и уверенность связи (1.138.0, как у graphify): «найдено в источнике» —
+    # ключ Requirement Yogi, номер истории, ссылка, чья подпись называет карточку по
+    # имени; «выведено» — ссылка, поставленная по смыслу. Одна пара — одно ребро, сильнейшее.
+    rank = {"EXTRACTED": 2, "INFERRED": 1}
     for n in nodes:
         text = open(n["path"], encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text) or {}
-        targets = [card_stem(x) for x in link_refs(text) if x.strip()]
-        targets += [x.strip().strip('[]"') for x in lst(fm.get("related"))]
-        for tgt in targets:
+        found = []
+        for m in re.finditer(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]", text):
+            tgt = card_stem(m.group(1).strip())
+            label = (m.group(2) or m.group(1)).strip()
+            found.append((tgt, "упоминает",
+                          "EXTRACTED" if names_the_card(label, forms_of.get(tgt, set()))
+                          else "INFERRED", n["path"]))
+        for x in lst(fm.get("related")):
+            found.append((x.strip().strip('[]"'), "связана", "EXTRACTED", n["path"]))
+        for tgt, rel, conf, why in found:
             tgt = tgt.strip()
             if not tgt or tgt == n["id"] or tgt not in by_stem:
                 continue        # ссылка в никуда — забота линтера, не графа
+            kind = typed.get((n["id"], tgt)) or typed.get((tgt, n["id"]))
+            if kind:
+                rel, conf, why = kind[0], "EXTRACTED", kind[1]
             pair = tuple(sorted((n["id"], tgt)))
-            if pair in seen:
+            was = best.get(pair)
+            score = (rank[conf], rel not in ("упоминает", "связана"))
+            if was and was[0] >= score:
                 continue
-            seen.add(pair)
-            edges.append({"from": pair[0], "to": pair[1]})
+            best[pair] = (score, {"from": pair[0], "to": pair[1], "rel": rel, "conf": conf,
+                                  "evidence": why})
+    edges = [e for _s, e in (best[p] for p in sorted(best))]
+    for n in nodes:
+        n.pop("_forms", None)
     data = {"generated": TODAY, "nodes": nodes, "edges": edges,
             "orphans": sum(1 for n in nodes
-                           if not any(n["id"] in e.values() for e in edges))}
+                           if not any(n["id"] in (e["from"], e["to"]) for e in edges))}
+    attach_communities(data)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, sort_keys=True)
@@ -658,6 +686,331 @@ def report(g: Graph, edges: list, hubs: dict, story: str | None) -> list:
     return out
 
 
+# Отношение по типу ключа Requirement Yogi: на что страница ссылается, то она и делает.
+RELATION = {"US": "реализует историю", "AC": "реализует историю",
+            "ALG": "использует алгоритм", "ER": "работает с данными",
+            "SPR": "опирается на справочник", "CONTRACT": "контракт",
+            "MAP": "маппинг", "UI": "экранная форма"}
+GRAPH_EXPORT = "AuroraKnowledgeDB/meta/graphify/graph.json"
+COMMUNITY_DIR = "AuroraKnowledgeDB/MOC/Сообщества"
+COMMUNITY_MIN = 12              # как у `--insights`: меньше — теме своя карта не нужна
+GENERATED = "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_graph.py — ручные правки будут потеряны. -->"
+# Цвета графа Obsidian по статусу: зелёное — знание, жёлтое — черновик, серое — заготовка.
+OBSIDIAN_GROUPS = [("[status:knowledge]", 0x4CAF50), ("[status:draft]", 0xF5A623),
+                   ("[status:placeholder]", 0x9E9E9E), ("[status:index]", 0x5B8DEF)]
+
+
+def relation_of(key: str) -> str:
+    return RELATION.get(ry_type(key), "ссылается")
+
+
+def typed_pairs(g: "Graph", hubs: dict, conf_root: str, jira_root: str) -> dict:
+    """{(карточка, карточка): (отношение, чем доказано)} — связи, записанные в источниках.
+
+    Это рёбра «найдено в источнике» в смысле graphify (`EXTRACTED`): ключ Requirement Yogi
+    на странице или общий номер истории. Карточки получают их через свои источники.
+    """
+    by_src = cards_by_source(conf_root, jira_root)
+    stem = lambda p: os.path.splitext(os.path.basename(p))[0]
+    out: dict = {}
+
+    def put(a, b, rel, why):
+        if a != b:
+            out.setdefault((stem(a), stem(b)), (rel, why))
+
+    for src, dst, rule, _w in g.edges():
+        key = rule.split(":", 1)[-1]
+        for a in by_src.get(f"{conf_root}/{src}", []):
+            for b in by_src.get(f"{conf_root}/{dst}", []):
+                put(a, b, relation_of(key), f"Requirement Yogi {key}")
+    for num, hub in hubs.items():
+        around = [c for rel in hub["us"] for c in by_src.get(f"{conf_root}/{rel}", [])]
+        kin = ([c for rel in hub["ac"] for c in by_src.get(f"{conf_root}/{rel}", [])]
+               + [c for key in hub["issues"] for c in by_src.get(f"{jira_root}/{key}.md", [])])
+        for a in around:
+            for b in kin:
+                put(b, a, "та же история", f"история {num}")
+    return out
+
+
+def _stem_word(w: str) -> str:
+    w = w.lower().replace("ё", "е")
+    return w[:len(w) - 2] if len(w) >= 6 else w
+
+
+def names_the_card(label: str, forms: set) -> bool:
+    """Подпись ссылки называет карточку её именем (с точностью до окончаний).
+
+    Такую ссылку мог поставить и человек, и механика — она найдена в тексте, а не
+    выведена (`EXTRACTED`). Ссылка, подпись которой имени карточки не содержит,
+    — вывод модели (`INFERRED`).
+    """
+    have = [_stem_word(w) for w in re.findall(r"\w+", label)]
+    for f in forms:
+        want = [_stem_word(w) for w in re.findall(r"\w+", f)]
+        if want and len(want) == len(have) and all(h.startswith(x) or x.startswith(h)
+                                                   for h, x in zip(have, want)):
+            return True
+    return False
+
+
+def louvain(pairs: dict) -> dict:
+    """{узел: номер темы} — разбиение по модульности (метод Лувена), детерминированно.
+
+    Связные группы без мостов (`communities`) хороши для разреженного графа; на плотной
+    базе мостов почти нет, и вся база оказывалась одной «темой» (PRJ-C 27.09.2026: 863
+    карточки из 1955). Модульность ищет группы, внутри которых связей больше, чем
+    ожидалось бы случайно: так делает и graphify (Лейден — улучшенный Лувен). Обход — в
+    порядке имён, поэтому одна и та же база всегда даёт одни и те же темы.
+    """
+    adj = {n: {m: 1.0 for m in nbrs if m != n} for n, nbrs in pairs.items()}
+    where = {n: n for n in adj}                  # исходный узел → текущий супер-узел
+    while True:
+        m2 = sum(sum(v.values()) for v in adj.values()) or 1.0
+        k = {n: sum(v.values()) for n, v in adj.items()}
+        comm = {n: n for n in adj}
+        tot = dict(k)
+        moved_any, moved = False, True
+        while moved:
+            moved = False
+            for n in sorted(adj):
+                own = comm[n]
+                tot[own] -= k[n]
+                links: dict = {}
+                for m, w in adj[n].items():
+                    if m != n:
+                        links[comm[m]] = links.get(comm[m], 0.0) + w
+                best, gain = own, links.get(own, 0.0) - tot[own] * k[n] / m2
+                for c in sorted(links):
+                    g = links[c] - tot[c] * k[n] / m2
+                    if g > gain + 1e-12:
+                        best, gain = c, g
+                comm[n] = best
+                tot[best] = tot.get(best, 0.0) + k[n]
+                if best != own:
+                    moved = moved_any = True
+        if not moved_any:
+            break
+        new: dict = {}
+        for n, nbrs in adj.items():
+            for m, w in nbrs.items():
+                a, b = comm[n], comm[m]
+                new.setdefault(a, {})
+                new[a][b] = new[a].get(b, 0.0) + w
+        for c in set(comm.values()):
+            new.setdefault(c, {})
+        where = {orig: comm[sup] for orig, sup in where.items()}
+        if len(new) == len(adj):
+            break
+        adj = new
+    labels: dict = {}
+    return {n: labels.setdefault(c, len(labels) + 1) for n, c in sorted(where.items())}
+
+
+def cluster(pairs: dict) -> dict:
+    """Разбиение на темы: Лейден из graphify, если он установлен, иначе Лувен (`louvain`)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from agents import graphify_adapter as GA
+        got = GA.cluster(pairs)
+        if got:
+            return got
+    except Exception:                                     # noqa: BLE001
+        pass
+    return louvain(pairs)
+
+
+def attach_communities(data: dict) -> None:
+    """Сообщества карточек — связные группы без мостов (`communities`), на месте в `data`.
+
+    Имя сообщества — его самая связанная карточка: как в graphify, без модели. Узел
+    получает `group`, данные — список крупных групп с размером и мостами между ними.
+    """
+    # Оглавления и заготовки — навигация, а не знание: оглавление связано с каждой своей
+    # карточкой, и через него вся база слипалась в одну «тему» (карта «Пустышки» у PRJ-C).
+    nav = {n["id"] for n in data["nodes"]
+           if n.get("status") in ("index", "placeholder") or n.get("type") == "moc"
+           or "тема" in n.get("tags", "") or "заготовка" in n.get("tags", "")}
+    pairs: dict = {}
+    for e in data["edges"]:
+        if e["from"] in nav or e["to"] in nav:
+            continue
+        pairs.setdefault(e["from"], set()).add(e["to"])
+        pairs.setdefault(e["to"], set()).add(e["from"])
+    label = cluster(pairs)
+    title = {n["id"]: n["title"] for n in data["nodes"]}
+    groups: dict = {}
+    for node, lab in label.items():
+        groups.setdefault(lab, []).append(node)
+    named = {}
+    for lab, members in groups.items():
+        if len(members) < COMMUNITY_MIN:
+            continue
+        # Имя — самая связанная карточка знания: словарный термин («VARCHAR») связан со
+        # всем и темы не называет.
+        kind = {n["id"]: n.get("kind", "") for n in data["nodes"]}
+        pool = [m for m in members if kind.get(m) == "knowledge"] or members
+        hub = max(pool, key=lambda m: (len(pairs.get(m, ())), m))
+        named[lab] = {"id": lab, "name": title.get(hub, hub), "hub": hub, "size": len(members)}
+    for n in data["nodes"]:
+        lab = label.get(n["id"])
+        n["group"] = lab if lab in named else None
+    data["groups"] = sorted(named.values(), key=lambda x: -x["size"])
+
+
+def export_graph(data: dict) -> dict:
+    """Граф базы наружу: graph.json в формате graphify, заметки-сообщества, цвета Obsidian.
+
+    `graph.json` — формат node-link, как у graphify: его читают MCP-сервер и выгрузки
+    graphify (`graphify serve`, HTML, Obsidian, Neo4j), если он установлен. Заметки
+    сообществ — по одной на крупную тему, с участниками, связями с соседними темами и
+    карточками-мостами. Цвета графа Obsidian — по статусу карточки; свои цветовые группы
+    человека остаются первыми и не трогаются. → что записано.
+    """
+    done = {"graph": GRAPH_EXPORT, "communities": 0, "obsidian": ""}
+    group_of = {n["id"]: n.get("group") for n in data["nodes"]}
+    nodes = [{"id": n["id"], "label": n["title"], "file_type": "document",
+              "source_file": n.get("source") or n["path"], "status": n.get("status", ""),
+              "kind": n.get("kind", ""), "section": n.get("type", ""),
+              "community": n.get("group")} for n in data["nodes"]]
+    links = [{"source": e["from"], "target": e["to"], "relation": e.get("rel", "связана"),
+              "confidence": e.get("conf", "EXTRACTED"),
+              "confidence_score": 1.0 if e.get("conf", "EXTRACTED") == "EXTRACTED" else 0.85,
+              "source_file": e.get("evidence", "")} for e in data["edges"]]
+    # Слой кода и SQL (`kb:code-graph`): таблицы и код — узлы, «упоминает таблицу» и «в одном
+    # запросе» — связи, найденные в источниках. Агент проходит «требование → таблица →
+    # связанные таблицы» по одному графу.
+    code_path = os.path.join(KB_DIR, "meta", "graphify", "code.json")
+    if os.path.isfile(code_path):
+        try:
+            code = json.load(open(code_path, encoding="utf-8"))
+        except (OSError, ValueError):
+            code = {}
+        ids = {n["id"] for n in nodes}
+        for t, rec in sorted((code.get("tables") or {}).items()):
+            tid = "table:" + t
+            nodes.append({"id": tid, "label": t, "file_type": "code", "kind": "table",
+                          "source_file": (rec.get("sources") or [""])[0], "status": "",
+                          "section": "SQL", "community": None})
+            for c in rec.get("cards") or []:
+                if c in ids:
+                    links.append({"source": c, "target": tid, "relation": "упоминает таблицу",
+                                  "confidence": "EXTRACTED", "confidence_score": 1.0,
+                                  "source_file": ""})
+        for j in code.get("joins") or []:
+            links.append({"source": "table:" + j["a"], "target": "table:" + j["b"],
+                          "relation": "в одном запросе", "confidence": "EXTRACTED",
+                          "confidence_score": 1.0, "source_file": ""})
+        layer = code.get("code") or {}
+        for n in layer.get("nodes") or []:
+            nodes.append({"id": "code:" + str(n.get("id")), "label": n.get("label") or n.get("id"),
+                          "file_type": "code", "kind": "code",
+                          "source_file": n.get("source_file") or "", "status": "",
+                          "section": "Код", "community": None})
+        for e in layer.get("edges") or []:
+            links.append({"source": "code:" + str(e.get("source")),
+                          "target": "code:" + str(e.get("target")),
+                          "relation": e.get("relation") or "связан",
+                          "confidence": e.get("confidence") or "EXTRACTED",
+                          "confidence_score": 1.0 if (e.get("confidence") or "EXTRACTED")
+                          == "EXTRACTED" else 0.85, "source_file": ""})
+        done["code"] = len(code.get("tables") or {}) + len(layer.get("nodes") or [])
+    os.makedirs(os.path.dirname(GRAPH_EXPORT), exist_ok=True)
+    with open(GRAPH_EXPORT, "w", encoding="utf-8") as f:
+        json.dump({"directed": False, "multigraph": False,
+                   "graph": {"source": "aurora-studio", "built": TODAY,
+                             "communities": {str(g["id"]): g["name"] for g in data["groups"]}},
+                   "nodes": nodes, "links": links}, f, ensure_ascii=False, indent=1,
+                  sort_keys=True)
+
+    # Заметки сообществ: пересобираются целиком, свои прежние — убираются.
+    os.makedirs(COMMUNITY_DIR, exist_ok=True)
+    keep = set()
+    by_id = {g["id"]: g for g in data["groups"]}
+    for g in data["groups"]:
+        members = sorted(n for n, lab in group_of.items() if lab == g["id"])
+        cross: dict = {}
+        reach: dict = {}
+        for e in data["edges"]:
+            a, b = group_of.get(e["from"]), group_of.get(e["to"])
+            if a != b and g["id"] in (a, b):
+                other = b if a == g["id"] else a
+                if other in by_id:
+                    cross[other] = cross.get(other, 0) + 1
+                inside = e["from"] if a == g["id"] else e["to"]
+                reach.setdefault(inside, set()).add(other)
+        name = card_stem_safe("Тема-" + g["name"])
+        keep.add(name + ".md")
+        L = ["---", f'title: "Тема: {g["name"]}"', "type: moc", "status: index",
+             "kind: document", f"updated: {TODAY}", "---", "", GENERATED, "",
+             f"# Тема: {g['name']}", "",
+             f"Карточек: **{g['size']}**. Тема — связная группа карточек, которая держится не "
+             "на одной ниточке: мосты между темами убраны, осталось то, что ссылается друг на "
+             f"друга по кругу. Имя — самая связанная карточка темы, [[{g['hub']}]].", "",
+             "## Карточки", ""]
+        L += [f"- [[{m}]]" for m in members]
+        if cross:
+            L += ["", "## Связи с другими темами", ""]
+            for other, count in sorted(cross.items(), key=lambda x: -x[1]):
+                L.append(f"- {count} связ{'ь' if count == 1 else 'и' if count < 5 else 'ей'} с "
+                         f"[[{card_stem_safe('Тема-' + by_id[other]['name'])}|"
+                         f"{by_id[other]['name']}]]")
+        bridges_top = sorted(((len(v), k) for k, v in reach.items() if k in members),
+                             reverse=True)[:5]
+        if bridges_top:
+            L += ["", "## Карточки-мосты", "",
+                  "Через них тема связана с остальной базой — их правка отзовётся шире темы.", ""]
+            L += [f"- [[{k}]] — связана с темами: {n}" for n, k in bridges_top]
+        with open(os.path.join(COMMUNITY_DIR, name + ".md"), "w", encoding="utf-8") as f:
+            f.write("\n".join(L) + "\n")
+        done["communities"] += 1
+    for f in os.listdir(COMMUNITY_DIR):
+        full = os.path.join(COMMUNITY_DIR, f)
+        if f.endswith(".md") and f not in keep:
+            try:
+                if GENERATED in open(full, encoding="utf-8", errors="ignore").read(600):
+                    os.remove(full)
+            except OSError:
+                pass
+
+    # Цвета графа Obsidian — только если хранилище Obsidian уже есть: заводить его за
+    # человека незачем.
+    cfg = os.path.join(KB_DIR, ".obsidian", "graph.json")
+    if os.path.isdir(os.path.dirname(cfg)):
+        try:
+            ob = json.load(open(cfg, encoding="utf-8")) if os.path.isfile(cfg) else {}
+        except (OSError, ValueError):
+            ob = None               # битый файл человека не перезаписываем
+        if isinstance(ob, dict):
+            ours = {q for q, _c in OBSIDIAN_GROUPS}
+            groups = [x for x in ob.get("colorGroups") or [] if x.get("query") not in ours]
+            groups += [{"query": q, "color": {"a": 1, "rgb": c}} for q, c in OBSIDIAN_GROUPS]
+            if groups != ob.get("colorGroups"):
+                ob["colorGroups"] = groups
+                with open(cfg, "w", encoding="utf-8") as f:
+                    json.dump(ob, f, ensure_ascii=False, indent=2)
+                done["obsidian"] = cfg
+    return done
+
+
+def report_export(done: dict, data: dict) -> None:
+    extracted = sum(1 for e in data["edges"] if e.get("conf") == "EXTRACTED")
+    print(f"Связей: {len(data['edges'])} · найдено в источниках: {extracted} · выведено: "
+          f"{len(data['edges']) - extracted}")
+    print(f"graph.json (формат graphify): {done['graph']}")
+    print(f"Заметок тем: {done['communities']} — {COMMUNITY_DIR}/")
+    if done.get("code"):
+        print(f"Слой кода и SQL (kb:code-graph): узлов {done['code']}")
+    if done["obsidian"]:
+        print(f"Цвета графа Obsidian по статусу: {done['obsidian']}")
+
+
+def card_stem_safe(name: str) -> str:
+    """Имя файла заметки: без запрещённых знаков, пробелы — дефисы."""
+    name = re.sub(r'[\\/:*?"<>|#^\[\]]', "", name).strip()
+    return re.sub(r"\s+", "-", name)[:120] or "Тема"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Граф связей: RY-ключи и номера историй")
     ap.add_argument("--story", help="разобрать одну историю целиком (например 4.4.2)")
@@ -670,6 +1023,10 @@ def main() -> int:
                          "написано, а не выведено правилами")
     ap.add_argument("--cards", action="store_true",
                     help="перенести связи графа в поле related: карточек базы")
+    ap.add_argument("--export", action="store_true",
+                    help="граф базы наружу: meta/graphify/graph.json в формате graphify "
+                         "(типы и уверенность связей, сообщества), заметки тем в "
+                         "MOC/Сообщества/ и цвета графа Obsidian по статусу")
     ap.add_argument("--apply", action="store_true",
                     help="записать (иначе dry-run); работает вместе с --cards")
     ap.add_argument("--insights", action="store_true",
@@ -690,12 +1047,14 @@ def main() -> int:
     # Граф самой базы читает только `AuroraKnowledgeDB` — ни зеркал, ни RY-ключей ему
     # не нужно. Требовать Confluence значило бы оставить без графа проект, собранный
     # из Raw/, и свежий проект, где зеркала ещё нет.
-    if a.cards_json and not os.path.isdir(a.conf):
+    if (a.cards_json or a.export) and not os.path.isdir(a.conf):
         if not os.path.isdir(KB_DIR):
             print(f"kb_graph: нет {KB_DIR}/ — запускайте из корня проекта", file=sys.stderr)
             return 1
-        write_cards_graph(a.cards_json)
-        print(f"Граф базы: {a.cards_json}")
+        data = write_cards_graph(a.cards_json or os.path.join(KB_DIR, "meta", "graph.json"))
+        print(f"Граф базы: {a.cards_json or 'meta/graph.json'}")
+        if a.export:
+            report_export(export_graph(data), data)
         return 0
 
     if not os.path.isdir(a.conf):
@@ -811,7 +1170,10 @@ def main() -> int:
         return 0
 
     text = "\n".join(report(g, edges, hubs, a.story)) + "\n"
-    print(text)
+    # Выгрузка графа — шаг маршрута: отчёт о ключах там никто не читает, а на живой базе
+    # он в сотни строк. Печатаем его, когда отчёт и просили.
+    if not a.export or a.write or a.report_path:
+        print(text)
 
     if a.json_path:
         data = {"generated": TODAY,
@@ -824,9 +1186,12 @@ def main() -> int:
         with open(a.json_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
         print(f"Граф: {a.json_path}")
-    if a.cards_json:
-        write_cards_graph(a.cards_json)
-        print(f"Граф базы: {a.cards_json}")
+    if a.cards_json or a.export:
+        data = write_cards_graph(a.cards_json or os.path.join(KB_DIR, "meta", "graph.json"),
+                                 typed_pairs(g, hubs, a.conf, a.jira))
+        print(f"Граф базы: {a.cards_json or 'meta/graph.json'}")
+        if a.export:
+            report_export(export_graph(data), data)
     if a.report_path:
         os.makedirs(os.path.dirname(a.report_path) or ".", exist_ok=True)
         open(a.report_path, "w", encoding="utf-8").write(text)

@@ -64,6 +64,7 @@ def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None) ->
     s["model_failed"] = int(u.get("failed") or 0)
     s["tokens_in"] = int(u.get("tokens_in") or 0)
     s["tokens_out"] = int(u.get("tokens_out") or 0)
+    s["model_cached"] = int(u.get("cached") or 0)
     s["gen_seconds"] = round(float(u.get("gen_seconds") or 0.0), 2)
     # Ошибки прогона — это документы и карточки, которые не вышли. Неудачный вызов модели —
     # ещё не ошибка: его повторяют, и чаще всего следующая попытка проходит; такие вызовы
@@ -263,9 +264,11 @@ def render(s: dict, title: str = "Итог прогона") -> list:
         tps = f"{t_out / gen:.1f}" if gen else "—"
         L.append(f"  Модель: токенов {_n(t_in + t_out)} (вход {_n(t_in)} · выход {_n(t_out)})"
                  f" · в среднем {tps} ток/с · вызовов {_n(calls)}"
-                 + (f", неудачных {_n(s.get('model_failed'))}" if s.get("model_failed") else ""))
+                 + (f", неудачных {_n(s.get('model_failed'))}" if s.get("model_failed") else "")
+                 + (f" · из кэша ответов {_n(s.get('model_cached'))}" if s.get("model_cached") else ""))
     else:
-        L.append("  Модель: не вызывалась")
+        L.append("  Модель: не вызывалась" + (f" · из кэша ответов {_n(s.get('model_cached'))}"
+                                               if s.get("model_cached") else ""))
     L.append(f"  Документы: обработано {_n(s.get('docs_done'))} · пропущено "
              f"{_n(s.get('docs_skipped'))} · не удалось разобрать {_n(s.get('docs_failed'))}")
     failed = f"не удалось создать/обновить {_n(s.get('cards_failed'))}"

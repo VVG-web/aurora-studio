@@ -535,7 +535,7 @@ DOWN: dict = {}       # {номер бэкенда: когда пробоват�
 # какой скоростью шла генерация и сколько вызовов не удалось — по видам. Вызовы идут из
 # нескольких потоков, поэтому счётчик под замком.
 USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
-               "errors": {}}
+               "errors": {}, "cached": 0}
 _USAGE_LOCK = threading.Lock()
 
 
@@ -882,7 +882,86 @@ def call_budget(cfg: dict, role: str) -> float:
     return request_timeout_for(cfg, role_thinks(cfg, role))
 
 
+# Кэш ответов модели по содержимому задания (1.138.0, как семантический кэш graphify).
+# Тот же вызов с тем же заданием — тот же ответ, и платить за него второй раз незачем:
+# встреча, сорвавшаяся на одном окне, переразбиралась целиком; пересборка базы с нуля и
+# повторные прогоны «Починить» оплачивали всё заново.
+LLM_CACHE = Path.home() / ".aurora" / "cache" / "llm"
+LLM_CACHE_DAYS = 30
+
+
+def _cache_key(cfg: dict, role: str, messages: list, think, max_tokens) -> str:
+    import hashlib
+    ring = [(b.get("url", ""), b.get("model", "")) for b in cfg.get("backends") or []]
+    blob = json.dumps({"v": 1, "role": role, "ring": ring, "think": bool(think),
+                       "max": max_tokens, "messages": messages},
+                      ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _cache_on() -> bool:
+    return (os.environ.get("AURORA_AGENT_CACHE", "1") not in ("0", "no", "off", "")
+            and not os.environ.get("AURORA_TESTS_ISOLATED"))
+
+
+def _cache_get(key: str) -> dict | None:
+    path = LLM_CACHE / key[:2] / f"{key}.json"
+    try:
+        if time.time() - path.stat().st_mtime > LLM_CACHE_DAYS * 86400:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _cache_put(key: str, r: dict) -> None:
+    keep = {k: r[k] for k in ("text", "reasoning", "backend", "model") if k in r}
+    path = LLM_CACHE / key[:2] / f"{key}.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(LLM_CACHE, 0o700)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def call_role(cfg: dict, role: str, messages: list, transport=None,
+              deadline: float | None = None, sleep=time.sleep,
+              thinking: bool | None = None, max_tokens: int | None = None,
+              prefer: int = 0, history: list | None = None,
+              tools: bool = False, guard_text: list | None = None,
+              trim: tuple | None = None, request_timeout: float | None = None,
+              mcp_active: list | None = None) -> dict:
+    """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
+
+    В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
+    инструментов, MCP и подрезки под окно — у них ответ зависит не только от задания.
+    Ключ — роль, кольцо бэкендов (модель поменяли — ответ спросят заново), режим
+    рассуждений и задание целиком. `AURORA_AGENT_CACHE=0` выключает кэш.
+    """
+    think = role_thinks(cfg, role) if thinking is None else thinking
+    key = ""
+    if (_cache_on() and transport is None and not history and not tools and not trim
+            and not mcp_active):
+        key = _cache_key(cfg, role, messages, think, max_tokens)
+        hit = _cache_get(key)
+        if hit and hit.get("text"):
+            with _USAGE_LOCK:
+                USAGE["cached"] = USAGE.get("cached", 0) + 1
+            return dict(hit, ok=True, cached=True, seconds=0.0, waited=0.0, seen=0, cut=0,
+                        ring=0, log=["ответ из кэша: тот же вызов уже был"], tokens_in=0,
+                        tokens_out=0, tps=0.0, url="")
+    r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
+                   prefer, history, tools, guard_text, trim, request_timeout, mcp_active)
+    if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
+        _cache_put(key, r)
+    return r
+
+
+def _call_role(cfg: dict, role: str, messages: list, transport=None,
               deadline: float | None = None, sleep=time.sleep,
               thinking: bool | None = None, max_tokens: int | None = None,
               prefer: int = 0, history: list | None = None,
@@ -1514,27 +1593,16 @@ def cmd_venv_install() -> int:
     """Поставить или обновить Pydantic AI в отдельном venv.
 
     Отдельный venv, а не системный pip: ядро кита обязано работать без зависимостей, и
-    агентский фреймворк не имеет права протечь в него. Путь одинаков для macOS/Linux и
-    Windows (pathlib сам разберётся с разделителями и Scripts/).
+    агентский фреймворк не имеет права протечь в него. Установка надстроек одна на кит —
+    `aurora_extras.py` (1.138.0): там же graphify, версии в git и на PyPI.
     """
-    vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    if not vpy.is_file():
-        print(f"Создаю venv: {VENV}")
-        VENV.parent.mkdir(parents=True, exist_ok=True)
-        p = subprocess.run([sys.executable, "-m", "venv", str(VENV)],
-                           capture_output=True, text=True)
-        if p.returncode != 0:
-            print(f"agent: venv не создан: {p.stderr[-400:]}", file=sys.stderr)
-            return 1
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import aurora_extras as EX
     print("Ставлю/обновляю pydantic-ai (может занять пару минут)…")
-    p = subprocess.run([str(vpy), "-m", "pip", "install", "--upgrade", "--quiet",
-                        "pydantic-ai"], capture_output=True, text=True, timeout=900)
-    if p.returncode != 0:
-        print(f"agent: pip не справился: {(p.stderr or p.stdout)[-500:]}", file=sys.stderr)
-        return 1
-    ok, version = venv_status()
-    print(f"✅ pydantic-ai {version} в {VENV}")
-    return 0 if ok else 1
+    res = EX.install("pydantic-ai")
+    print(res["log"] if res["ok"] else f"agent: {res['log']}",
+          file=sys.stdout if res["ok"] else sys.stderr)
+    return 0 if res["ok"] else 1
 
 
 def main() -> int:

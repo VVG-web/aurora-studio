@@ -31,6 +31,7 @@ export async function refresh(ctx){
           style:"font-size:12px;margin-top:6px;color:var(--text-muted)"}, i.install))));
   });
   box.append(card);
+  box.append(extrasCard(ctx));
 
   if (!ctx.project) return;
   const p = ctx.project;
@@ -55,6 +56,81 @@ export async function refresh(ctx){
       h.doctor.errors[0] || t("install.structure_ok"), "kit:doctor"));
   }
   box.append(pc);
+}
+
+/* Надстройки движка: Pydantic AI и graphify. Каждая — в своём venv под ~/.aurora/.
+   Строка показывает, что стоит, что вышло в git (последний выпуск на GitHub) и что
+   ставит pip (PyPI); кнопка ставит или обновляет. Сеть спрашивается раз в шесть часов,
+   «Проверить» — сейчас. */
+function extrasCard(ctx){
+  const {t, el} = ctx;
+  const wrap = el("div", {style:"margin-top:18px"});
+  const draw = async (fresh) => {
+    wrap.innerHTML = "";
+    wrap.append(el("h2", {}, t("install.extras")),
+      el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("install.extras_about")));
+    const body = el("div", {class:"card"}, el("span", {class:"spin"}));
+    wrap.append(body);
+    const d = await ctx.api("/api/extras" + (fresh ? "?fresh=1" : ""), {quiet:true});
+    body.innerHTML = "";
+    (d.extras || []).forEach(x => body.append(extraRow(ctx, x, draw)));
+    if (d.error) body.append(el("div", {class:"muted"}, d.error));
+    body.append(el("div", {class:"row", style:"margin-top:8px"},
+      el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.ex_check"))));
+  };
+  draw(false);
+  return wrap;
+}
+
+function extraRow(ctx, x, redraw){
+  const {t, el} = ctx;
+  const have = x.installed;
+  const ver = have ? t("install.ex_installed", {v: x.installed}) : t("install.ex_missing");
+  const git = x.git ? t("install.ex_git", {v: x.git}) : "";
+  const pypi = x.pypi && x.pypi !== x.git ? t("install.ex_pypi", {v: x.pypi}) : "";
+  const label = !have ? t("install.ex_install")
+    : x.update ? t("install.ex_update", {v: x.pypi}) : t("install.ex_latest");
+  const btn = el("button", {class:"btn sm" + (!have || x.update ? " primary" : ""),
+    disabled: have && !x.update ? "" : null,
+    title: t("install.ex_where", {path: x.venv}),
+    onclick: async (e) => {
+      e.target.disabled = true; e.target.textContent = t("install.ex_busy");
+      const r = await ctx.api("/api/extras/install", {method:"POST",
+        body: JSON.stringify({id: x.id}), quiet:true});
+      ctx.toast(r.ok ? t("install.ex_done", {name: x.title, v: r.version})
+                     : (r.error || t("install.ex_failed", {log: (r.log || "").slice(-200)})),
+                r.ok ? "ok" : "err");
+      redraw(true);
+    }}, label);
+  const row = el("div", {class:"list-item", style:"align-items:flex-start"},
+    el("span", {class:"chip " + (have ? (x.update ? "warn" : "ok") : ""), style:"flex:none"},
+      have ? (x.update ? t("install.ex_old") : t("install.have")) : t("install.missing")),
+    el("div", {style:"flex:1;min-width:0"},
+      el("div", {style:"font-weight:600"}, x.title, " ",
+        el("a", {href: x.repo, target:"_blank", class:"muted",
+                 style:"font-weight:400;font-size:12px"}, "GitHub")),
+      el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"},
+        t("install.enables", {what: x.enables})),
+      el("div", {style:"font-size:12.5px;margin-top:4px"},
+        [ver, git, pypi].filter(Boolean).join(" · ")),
+      x.pypi_behind ? el("div", {class:"muted", style:"font-size:12px"},
+        t("install.ex_pypi_behind", {git: x.git, pypi: x.pypi})) : null,
+      x.error ? el("div", {class:"muted", style:"font-size:12px"}, x.error) : null,
+      x.mcp ? mcpHint(ctx, x.mcp) : null),
+    btn);
+  return row;
+}
+
+function mcpHint(ctx, m){
+  const {t, el} = ctx;
+  const snippet = JSON.stringify({mcpServers: {[m.name]: {command: m.command, args: m.args}}},
+                                 null, 2);
+  return el("details", {style:"margin-top:6px"},
+    el("summary", {style:"font-size:12.5px;cursor:pointer"},
+      m.registered ? t("install.ex_mcp_on") : t("install.ex_mcp_off")),
+    el("div", {class:"muted", style:"font-size:12px;margin:6px 0"}, t("install.ex_mcp_hint")),
+    el("pre", {class:"mono", style:"font-size:11.5px;white-space:pre-wrap"}, snippet),
+    ctx.ui.copyButton(snippet));
 }
 
 export default {mount, refresh};

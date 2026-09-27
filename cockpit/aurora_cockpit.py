@@ -2687,14 +2687,6 @@ def sources(project: str) -> dict:
         return {"installed": [], "instances": [], "error": out.strip()[:300]}
 
 
-def _agent_venv_ok() -> bool:
-    try:
-        import agent_core as AG
-        return AG.venv_status()[0]
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def environment() -> dict:
     """Что установлено на машине и какие команды от этого зависят.
 
@@ -2744,10 +2736,6 @@ def environment() -> dict:
              "enables": "kb:ingest-office — xlsx", "install": "pip3 install openpyxl"},
             {"name": "pypdf", "ok": has_module("pypdf") or has_module("fitz"), "kind": "py",
              "enables": "kb:ingest-office — pdf", "install": "pip3 install pypdf"},
-            {"name": "Pydantic AI (встроенный агент)", "ok": _agent_venv_ok(), "kind": "py",
-             "enables": "agent:* — адаптер по умолчанию; без него агент работает на "
-                        "stdlib-фолбэке",
-             "install": "кнопка «Установить / Обновить» в «Настройка» → «Агент»"},
             {"name": "Atlassian MCP в Cursor", "ok": mcp_ok, "kind": "mcp",
              "enables": "работа ассистента с Confluence/Jira из редактора",
              "install": "Cursor → Settings → MCP → mcp-atlassian"},
@@ -3070,6 +3058,36 @@ def agent_venv_install() -> dict:
         return {"error": f"установка не выполнена: {type(e).__name__}: {e}"}
 
 
+# ----------------------------------------------------------------- надстройки движка
+
+def _extras():
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    import aurora_extras as EX
+    return EX
+
+
+def extras_state(fresh: bool = False) -> dict:
+    """Надстройки движка: что стоит, что вышло в git и на PyPI, подключён ли граф в MCP.
+
+    Сеть спрашивается раз в шесть часов (кэш модуля), `fresh` — по кнопке «Проверить».
+    """
+    return {"extras": _extras().status(fresh=fresh)}
+
+
+def extras_install(extra_id: str) -> dict:
+    """Поставить или обновить надстройку. Синхронно: локальная панель, человек ждёт.
+
+    Установка одна на кит — `aurora_extras.install`: тот же путь, что из терминала,
+    вместе с подключением MCP-сервера графа после graphify.
+    """
+    EX = _extras()
+    if extra_id not in EX.EXTRAS:
+        return {"error": f"неизвестная надстройка: {extra_id}"}
+    res = EX.install(extra_id)
+    CACHE.pop("env", None)          # строки «Установки» обязаны обновиться
+    return res
+
+
 # ----------------------------------------------------------------- выполнение
 
 def start_job(project: str, cmd: str, extra: list) -> str:
@@ -3315,6 +3333,8 @@ class Handler(BaseHTTPRequestHandler):
             cfg_text = read_text(os.path.join(project, "aurora.config.yaml"))
             self.send_json({"text": cfg_text, "path": "aurora.config.yaml",
                             "values": config_values(cfg_text)})
+        elif u.path == "/api/extras":
+            self.send_json(extras_state(fresh=bool(q.get("fresh"))))
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())
@@ -3800,6 +3820,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/agent/venv":
             self.send_json(agent_venv_install())
+            return
+        if u.path == "/api/extras/install":
+            self.send_json(extras_install(str(payload.get("id") or "")))
             return
         if u.path == "/api/update-all":
             self.send_json(update_all_projects(self.server.roots,

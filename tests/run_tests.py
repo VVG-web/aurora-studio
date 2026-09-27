@@ -14427,118 +14427,77 @@ def test_updating_the_engine_refreshes_the_git_hook(tmp: Path):
 
 @test
 def test_relinking_adds_links_and_proves_the_text_is_untouched(tmp: Path):
-    """Связи расставляются в готовом тезисе, и движок доказывает, что текст не изменён.
+    """Связи: механика ставит названное в тексте, модель — только пары «фраза → карточка».
 
-    Тезисы уже написаны и проверены Момусом. Переписывать их ради связей значит рисковать
-    знанием там, где риска не требуется: модель «заодно» поправит формулировку, и правка
-    уедет в базу под видом расстановки ссылок.
-
-    Поэтому ход другой: модель вставляет ТОЛЬКО разметку, а движок снимает её с ответа и
-    сравнивает с исходным текстом посимвольно. Не совпало — ответ отброшен целиком.
+    Тезисы уже написаны и проверены Момусом, переписывать их ради связей нельзя. С 1.138.0
+    модель тезис не возвращает вовсе: механика ставит ссылки на карточки, чьё имя, заголовок
+    или синоним названы в тексте (и в других падежах), а модель называет пары для
+    оставшихся кандидатов. Вставляет их движок дословно и сверяет, что текст тот же.
+    Замер 27.09.2026: в среднем 7 тысяч токенов ответа на карточку уходили на то, чтобы
+    вернуть тезис буква в букву, а механика находит 44–92 % прежних ссылок модели.
     """
     sys.path.insert(0, str(SCRIPTS))
     import importlib
     R = importlib.import_module("agent_runner")
     importlib.reload(R)
-
-    assert R.strip_links("из [[ФЦОД]] и [[Профиль абонента|Профиля]]") == "из ФЦОД и Профиля", \
-        "разметка снимается неверно — сверка текста будет врать"
-
+    assert R.strip_links("из [[ФЦОД]] и [[Профиль абонента|Профиля]]") == "из ФЦОД и Профиля"
     flat = " ".join(R.PROMPT_RELINK.split())
-    assert "Ни одного изменённого слова" in flat, "модели не сказано главное правило"
-    assert "сравнит с исходным текстом посимвольно" in flat, \
-        "модель не предупреждена о сверке — будет править текст «заодно»"
+    assert '"phrase"' in flat and "буква в букву" in flat and "Текст тезиса не меняется" in flat
 
     root = make_project(tmp)
-    thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию. Остатки "
-              "обновляются по факту поступления платежа и хранятся за расчётный период. "
-              "Сверка проводится ежедневно и фиксируется в журнале операций.")
-    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge",
-         body="Подсистема обработки платежей.")
-    card(root, "Concepts/Аналитический-баланс.md", status="draft", kind="knowledge",
-         distilled="2026-09-01", body=thesis)
-    path = root / "AuroraKnowledgeDB/Concepts/Аналитический-баланс.md"
+    thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию и обновляет "
+              "профиль абонента. Остатки хранятся за расчётный период. Сверка проводится "
+              "ежедневно и фиксируется в журнале операций по каждому счёту.")
+    for name, title, extra in (("ФЦОД", "ФЦОД", ""), ("Профиль-абонента", "Профиль абонента", ""),
+                               ("Журнал-учёта-операций", "Журнал учёта операций", "")):
+        card(root, f"Concepts/{name}.md", status="draft", kind="knowledge",
+             body="Подсистема и её назначение. " * 3)
+    path = card(root, "Concepts/Аналитический-баланс.md", status="draft", kind="knowledge",
+                distilled="2026-09-01", body=thesis)
     cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
            "thinking_roles": {}, "embed": {"model": "m"}}
+    calls = []
 
-    linked = thesis.replace("из ФЦОД", "из [[ФЦОД]]", 1)
-    calls = {"n": 0}
+    def pairs(*links, text=None):
+        def fake(c, role, messages, **kw):
+            calls.append(messages[0]["content"])
+            return {"ok": True, "backend": 1, "model": "m", "log": [],
+                    "text": text if text is not None else json.dumps(
+                        {"links": [{"phrase": p, "card": n} for p, n in links]},
+                        ensure_ascii=False)}
+        return fake
 
-    def marks_only(c, role, messages, **kw):
-        calls["n"] += 1
-        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": linked}
-
-    # Без кандидатов ход не зовёт модель вовсе: связывать не с чем. Проверяем именно
-    # это, а не «нет индекса»: с 1.100.38 выборка гибридная и без индекса ищет словами
-    # — маленькая база вроде этой находит «ФЦОД» и связывается, что и правильно.
     was = R.candidates_for
-    R.candidates_for = lambda *a, **k: []
+    here = os.getcwd()
     try:
-        st = R.relink_card(cfg, str(path), marks_only, apply=True)
+        os.chdir(root)
+        # механика: имя дословно и в другом падеже — без модели, кандидатов не осталось
+        R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", ""),
+                                            ("Профиль-абонента", "Concepts", "")]
+        st = R.relink_card(cfg, str(path), pairs(), apply=True)
+        assert not calls and st["status"] == "связана" and st["added"] == 2, (st, calls)
+        got = path.read_text(encoding="utf-8")
+        assert "из [[ФЦОД]] по расписанию" in got and \
+            "[[Профиль-абонента|профиль абонента]]" in got, got
+        # модель: пара для оставшегося кандидата; фраза не из текста и чужая карточка — мимо
+        R.candidates_for = lambda *a, **k: [("Журнал-учёта-операций", "Concepts", "")]
+        st = R.relink_card(cfg, str(path), pairs(("журнале операций", "Журнал-учёта-операций"),
+                                                 ("журнале сверок", "Журнал-учёта-операций"),
+                                                 ("Остатки", "Выдуманная")), apply=True)
+        assert st["status"] == "связана" and st["added"] == 1, st
+        assert "[[ФЦОД]]" in calls[-1], "модель не видит ссылок, уже поставленных механикой"
+        got = path.read_text(encoding="utf-8")
+        assert "[[Журнал-учёта-операций|журнале операций]]" in got and "Выдуманная" not in got
+        assert R.strip_links(got.split("## ")[0]) .count("ежедневно") == 1
+        assert R.strip_links(R.thesis_of(got)).endswith(" ".join(thesis.split()).rstrip()[-40:]), \
+            "текст тезиса изменился"
     finally:
         R.candidates_for = was
-    assert calls["n"] == 0 and st["status"] == "пропущена", \
-        f"без кандидатов ход всё равно пошёл к модели: {st}"
-
-    # с кандидатами — связывает и пишет
-    R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", "Подсистема платежей")]
-    st = R.relink_card(cfg, str(path), marks_only, apply=True)
-    assert st["status"] == "связана" and st["added"] == 1, st
-    got = path.read_text(encoding="utf-8")
-    assert "[[ФЦОД]]" in got, "ссылка не записана"
-    assert "Сверка проводится ежедневно" in got, "задет остальной текст"
-
-    # Карточка, где ссылка УЖЕ стояла, не должна отвергаться: разметка снимается с обеих
-    # сторон. Сравнение «ответ без разметки против исходника в разметке» отвергало такие
-    # всегда — на живой базе восемь попыток из восьми.
-    card(root, "Concepts/Со-ссылкой.md", status="draft", kind="knowledge",
-         distilled="2026-09-01",
-         body="Баланс получает данные из [[ФЦОД]] по расписанию. Остатки обновляются по "
-              "факту поступления платежа и хранятся за расчётный период целиком. "
-              "Сверка проводится ежедневно и фиксируется в журнале операций.")
-    withlink = root / "AuroraKnowledgeDB/Concepts/Со-ссылкой.md"
-    same = ("Баланс получает данные из [[ФЦОД]] по расписанию. Остатки обновляются по "
-            "факту поступления платежа и хранятся за расчётный период целиком. "
-            "Сверка проводится ежедневно и фиксируется в журнале операций.")
-    st3 = R.relink_card(cfg, str(withlink),
-                        lambda *a, **k: {"ok": True, "backend": 1, "model": "m",
-                                         "log": [], "text": same}, apply=True)
-    assert st3["status"] != "отброшен", \
-        f"карточка с уже стоявшей ссылкой отвергнута: {st3}"
-
-    # правка текста под видом разметки: формулировка модели не пишется НИКОГДА; её связи
-    # переносятся в исходный текст (1.122.0 — раньше ответ отбрасывался вместе со связями)
-    card(root, "Concepts/Другая.md", status="draft", kind="knowledge",
-         distilled="2026-09-01", body=thesis)
-    other = root / "AuroraKnowledgeDB/Concepts/Другая.md"
-    before = other.read_text(encoding="utf-8")
-
-    def rewrites(c, role, messages, **kw):
-        return {"ok": True, "backend": 1, "model": "m", "log": [],
-                "text": linked.replace("ежедневно", "еженедельно")}
-
-    st2 = R.relink_card(cfg, str(other), rewrites, apply=True)
-    after = other.read_text(encoding="utf-8")
-    assert "еженедельно" not in after and "ежедневно" in after, \
-        "правка формулировки записана под видом расстановки ссылок"
-    assert st2["status"] == "связана" and "ответ менял текст" in st2["note"], st2
-    assert R.strip_links(after) == R.strip_links(before), "перенос связей изменил текст"
-
-    # а ответ, чьи связи в исходном тексте не находятся, отбрасывается целиком
-    card(root, "Concepts/Третья.md", status="draft", kind="knowledge",
-         distilled="2026-09-01", body=thesis)
-    third = root / "AuroraKnowledgeDB/Concepts/Третья.md"
-    was = third.read_text(encoding="utf-8")
-    st4 = R.relink_card(cfg, str(third),
-                        lambda *a, **k: {"ok": True, "backend": 1, "model": "m", "log": [],
-                                         "text": "Совсем другой текст про [[ФЦОД-2]]."}, apply=True)
-    assert st4["status"] == "отброшен" and "текст изменён" in st4["note"], st4
-    assert third.read_text(encoding="utf-8") == was, "отброшенный ответ что-то записал"
+        os.chdir(here)
 
     # отметка держит дату тезиса: перепишут тезис — карточка вернётся сама
     R.mark_relinked(str(path))
-    assert "relinked: 2026-09-01" in path.read_text(encoding="utf-8"), \
-        "нет отметки — ход будет ходить по одним и тем же карточкам каждый раз"
+    assert "relinked: 2026-09-01" in path.read_text(encoding="utf-8")
 
 
 @test
@@ -17346,7 +17305,7 @@ def test_slow_answers_do_not_trip_the_dead_gateway_breaker(tmp: Path):
 
 @test
 def test_relink_keeps_links_when_the_model_also_edited_the_text(tmp: Path):
-    """Модель поставила связи и заодно поправила текст — связи переносятся в исходный тезис.
+    """Пары модели переносятся в исходный тезис дословно — `rescue_links`.
 
     Живой случай, PRJ-A 22.09.2026: 23 из 187 ответов связывания отброшены целиком («текст
     изменён»), а карточка всё равно получала отметку «связано» и больше в очередь не
@@ -17364,31 +17323,6 @@ def test_relink_keeps_links_when_the_model_also_edited_the_text(tmp: Path):
     # середина слова и уже стоящая ссылка — не трогаем
     out, n = R.rescue_links("[[НДС]] и [[Реестр]]", "НДСный учёт; [[Реестр]] есть")
     assert n == 0 and out == "НДСный учёт; [[Реестр]] есть", out
-
-    root = make_project(tmp)
-    card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge", distilled="2026-09-01",
-         body="Подсистема обработки платежей. " * 6)
-    path = card(root, "Concepts/Баланс.md", status="draft", kind="knowledge", distilled="2026-09-01",
-                body=("Аналитический баланс получает данные из ФЦОД по расписанию и хранит остатки "
-                      "по каждому лицевому счёту за период. ") * 2)
-
-    def fake(cfg, role, messages, **kw):
-        return {"ok": True, "backend": 1, "model": "m", "log": [],
-                "text": ("Аналитический баланс берёт данные из [[ФЦОД]] по расписанию и хранит остатки "
-                         "по каждому лицевому счёту за период. ") * 2}
-
-    here = os.getcwd()
-    try:
-        os.chdir(root)
-        step = R.relink_card({"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
-                              "thinking_roles": {}, "thinking": False, "backends": []},
-                             str(path), fake, apply=True)
-    finally:
-        os.chdir(here)
-    assert step["status"] == "связана" and step["added"] >= 1, step
-    text = path.read_text(encoding="utf-8")
-    assert "из [[ФЦОД]] по расписанию" in text and "берёт данные" not in text, \
-        "в карточку попал изменённый моделью текст или связь не перенесена"
 
 
 @test
@@ -18711,6 +18645,372 @@ def test_trust_flows_from_the_user_story(tmp: Path):
 
 
 @test
+def test_a_thesis_the_model_calls_unchanged_is_kept(tmp: Path):
+    """«По сути без изменений» — прежний тезис остаётся, без Момуса и повторных выноса и связи.
+
+    Замер 27.09.2026: так заканчивалась каждая третья пересборка тезиса у PRJ-B и четыре из
+    пяти у PRJ-C, а новый тезис в половине случаев переформулировал то же знание. Следом
+    шли Момус, повторный вынос и повторное связывание — по новой отметке тезиса.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    src = root / "Sources/Confluence/Стр.md"
+    src.write_text("Возврат за 10 дней. Правило действует для всех заявок.", encoding="utf-8")
+    run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md",
+        "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
+    card = root / "AuroraKnowledgeDB/Concepts/Возврат.md"
+    txt = card.read_text(encoding="utf-8").replace(
+        "# Возврат\n\n", "Возврат занимает десять дней.\n\n## Источник (перенесено дословно)\n\n")
+    txt = txt.replace("built: machine", "built: machine\nkind: knowledge\ndistilled: 2026-08-01"
+                      "\nextracted: 2026-08-01\nrelinked: 2026-08-01")
+    card.write_text(txt + "\n## История изменений\n\n- 2026-08-01: карточка заведена\n",
+                    encoding="utf-8")
+    src.write_text("Возврат за 10 дней. Правило действует для всех заявок без исключения.",
+                   encoding="utf-8")
+    run("build_plan.py", "--card", "Возврат", "--source", "Sources/Confluence/Стр.md",
+        "--paras", "1", "--to", "Concepts", "--apply", cwd=root)
+    now = card.read_text(encoding="utf-8")
+    assert "distilled_was: 2026-08-01" in now and "\ndistilled:" not in now, now[:400]
+
+    # внутри цикла маршрута дописанная карточка ждёт его конца
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    assert str(card) not in R.distill_queue(cfg, str(root), defer_refresh=True)
+    assert str(card) in R.distill_queue(cfg, str(root))
+
+    roles = []
+
+    def fake(cfg_, role, messages, **kw):
+        roles.append(role)
+        return {"ok": True, "text": "ТЕЗИС:\nВозврат оформляется в течение десяти дней.\n\n"
+                                    "ИЗМЕНИЛОСЬ:\nПо сути без изменений: уточнена формулировка.",
+                "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    res = R.run_distill(cfg, str(root), apply=True, limit=3, momus=True, call=fake)
+    done = card.read_text(encoding="utf-8")
+    assert roles == ["worker"], f"Момус проверял тезис, который не менялся: {roles}"
+    assert "Возврат занимает десять дней." in done.split("## Источник")[0], \
+        "проверенный тезис заменён переформулировкой того же"
+    assert "distilled: 2026-08-01" in done and "distilled_was" not in done, done[:500]
+    assert "прежний тезис оставлен" in done, "в истории не сказано, что тезис оставлен"
+    assert [s["status"] for s in res["steps"]] == ["без изменений"], res["steps"]
+    # вынос и связывание этот тезис уже видели — в очередь он не возвращается
+    fm = R.frontmatter(done) if hasattr(R, "frontmatter") else __import__("aurora_common").frontmatter(done)
+    assert fm.get("extracted") == fm.get("distilled") == fm.get("relinked"), fm
+
+    # маршрут: тезисы дописанных карточек — один раз, после цикла
+    sc = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    upd = sc.split("[update]", 1)[1].split("\n[", 1)[0]
+    loop, after = upd.split("цикл:", 1)[1].split("конец цикла", 1)
+    assert "agent:distill" in loop and "--defer-refresh" in loop.split("agent:distill", 1)[1].splitlines()[0]
+    first_after = [l.split("|")[0].strip() for l in after.splitlines()[1:4]]
+    assert first_after[:2] == ["agent:distill", "agent:extract"], first_after
+
+
+@test
+def test_trace_reads_requirement_yogi_links(tmp: Path):
+    """Ключи Requirement Yogi в шапке зеркала — связи доверия без догадок по тексту.
+
+    `ry_links` пишет синк из макросов страницы: «Реализует: RU.X.US-4.1.2» — это связь,
+    записанная автором страницы. С 1.138.0 трассировка берёт её и без упоминания в тексте:
+    история — прямая связь, ключ алгоритма — ссылка на страницу, где он объявлен.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    T = importlib.import_module("kb_trace_table")
+    root = make_project(tmp)
+    jira, conf = root / "Sources/JIRA", root / "Sources/Confluence"
+    jira.mkdir(parents=True, exist_ok=True)
+    (jira / "PRJ-2.md").write_text('---\nkey: "PRJ-2"\ntitle: "US 4.1.2 Выход"\nstatus: "Анализ"\n---\n',
+                                   encoding="utf-8")
+
+    def page(rel, title, defines="", links="", body="Текст страницы."):
+        p = conf / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f'---\ntitle: "{title}"\nry_defines: [{defines}]\nry_links: [{links}]\n---\n\n'
+                     f"# {title}\n\n{body}\n", encoding="utf-8")
+    page("Алгоритмы/ALG-072_Выход.md", "ALG-072 Выход", "RU.PRJ.ALG-072", "RU.PRJ.US-4.1.2")
+    page("Форматы/Контракт.md", "Контракт выхода", "RU.PRJ.CONTRACT-001", "RU.PRJ.ALG-072")
+    t = T.build(str(root))
+    alg = "Sources/Confluence/Алгоритмы/ALG-072_Выход.md"
+    assert [r["key"] for r in t["direct"].get(alg, [])] == ["PRJ-2"], t["direct"].get(alg)
+    assert "Requirement Yogi" in t["direct"][alg][0]["why"], t["direct"][alg]
+    contract = "Sources/Confluence/Форматы/Контракт.md"
+    assert [(r["page"], r["code"]) for r in t["refs"].get(contract, [])] == [(alg, "RU.PRJ.ALG-072")], \
+        t["refs"].get(contract)
+
+
+@test
+def test_graph_export_types_links_and_finds_themes(tmp: Path):
+    """Граф наружу: тип и уверенность у связи, темы по модульности, цвета Obsidian.
+
+    Одобренные пользователем 27.09.2026 предложения из разбора graphify: связь называет,
+    что она значит и найдена ли в источнике (`EXTRACTED`) или выведена (`INFERRED`);
+    темы — группы по модульности (как Лейден у graphify), названные самой связанной
+    карточкой знания; цвета графа Obsidian — по статусу, свои группы человека — первыми.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    G = importlib.import_module("kb_graph")
+    importlib.reload(G)
+    # две плотные группы и одна ниточка между ними — две темы, и так каждый раз
+    pairs = {}
+    for grp in ("a", "b"):
+        for i in range(5):
+            for j in range(5):
+                if i != j:
+                    pairs.setdefault(f"{grp}{i}", set()).add(f"{grp}{j}")
+    pairs["a0"].add("b0"); pairs["b0"].add("a0")
+    lab = G.louvain(pairs)
+    assert len({lab[f"a{i}"] for i in range(5)}) == 1 and len({lab[f"b{i}"] for i in range(5)}) == 1
+    assert lab["a0"] != lab["b0"] and G.louvain(pairs) == lab, lab
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    (kb / ".obsidian").mkdir(parents=True, exist_ok=True)
+    (kb / ".obsidian/graph.json").write_text(json.dumps(
+        {"colorGroups": [{"query": "BPMN", "color": {"a": 1, "rgb": 1}}], "scale": 2}),
+        encoding="utf-8")
+    names = [f"Карточка-{g}{i}" for g in "АБ" for i in range(5)]
+    for n in names:
+        grp = n.split("-")[1][0]
+        mates = [m for m in names if m.split("-")[1][0] == grp and m != n]
+        body = "Связана с " + ", ".join(f"[[{m}]]" for m in mates) + "."
+        if n == "Карточка-А0":
+            body += " И с [[Карточка-Б0|соседней темой]]."
+        card(root, f"Concepts/{n}.md", body, status="knowledge", kind="knowledge")
+    (kb / "MOC/Сообщества").mkdir(parents=True, exist_ok=True)
+    stale = kb / "MOC/Сообщества/Тема-Прежняя.md"
+    stale.write_text(f"---\ntype: moc\n---\n\n{G.GENERATED}\n\n# Прежняя\n", encoding="utf-8")
+    mine = kb / "MOC/Сообщества/Моя-заметка.md"
+    mine.write_text("# Написал человек\n", encoding="utf-8")
+    here, was_min = os.getcwd(), G.COMMUNITY_MIN
+    try:
+        os.chdir(root)
+        G.COMMUNITY_MIN = 3
+        data = G.write_cards_graph("AuroraKnowledgeDB/meta/graph.json")
+        done = G.export_graph(data)
+        G.export_graph(data)                       # повтор не удваивает цвета
+    finally:
+        G.COMMUNITY_MIN = was_min
+        os.chdir(here)
+    gj = json.loads((root / G.GRAPH_EXPORT).read_text(encoding="utf-8"))
+    ids = {n["id"] for n in gj["nodes"]}
+    assert {"nodes", "links", "graph"} <= set(gj) and set(names) <= ids, ids
+    rel = {(l["source"], l["target"]): (l["relation"], l["confidence"]) for l in gj["links"]}
+    assert rel[("Карточка-А0", "Карточка-Б0")] == ("упоминает", "INFERRED"), rel
+    assert rel[("Карточка-А0", "Карточка-А1")] == ("упоминает", "EXTRACTED"), rel
+    assert done["communities"] == 2 and len(gj["graph"]["communities"]) == 2, gj["graph"]
+    notes = sorted(p.name for p in (kb / "MOC/Сообщества").glob("*.md"))
+    assert "Тема-Прежняя.md" not in notes and "Моя-заметка.md" in notes, notes
+    assert any(n.startswith("Тема-Карточка-А") for n in notes), notes
+    ob = json.loads((kb / ".obsidian/graph.json").read_text(encoding="utf-8"))
+    qs = [g["query"] for g in ob["colorGroups"]]
+    assert qs[0] == "BPMN" and qs.count("[status:knowledge]") == 1 and ob["scale"] == 2, qs
+    sc = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    for tag in ("[update]", "[fix]"):
+        part = sc.split(tag, 1)[1].split("\n[", 1)[0]
+        assert part.index("kb:trust") < part.index("kb:graph-export"), f"{tag}: выгрузка до доверия"
+
+
+@test
+def test_mechanical_links_do_not_guess(tmp: Path):
+    """Механика связывает только названное: одно слово — целиком, рубрики — никогда.
+
+    Замер 27.09.2026 на PRJ-B: с окончаниями у однословных имён «Участок» находил
+    «участие», а рубрики «Алгоритмы», «Системы», «Справочники» получали ссылку от каждого
+    упоминания слова — модель таких связей не ставила. Пара модели, задевающая уже
+    стоящую ссылку, пропускается, а не роняет остальные связи карточки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    importlib.reload(R)
+    root = make_project(tmp)
+    card(root, "Concepts/Участок.md", "Земельный участок.", status="draft", kind="knowledge")
+    card(root, "Concepts/Алгоритмы.md", "Перечень алгоритмов.", status="draft", kind="knowledge",
+         tags="[тема]")
+    card(root, "Concepts/Налоговая-декларация.md", "Документ.", status="draft", kind="knowledge")
+    card(root, "Concepts/НДС.md", "Налог.", status="draft", kind="knowledge")
+    text = ("Участие инспектора обязательно. Алгоритм проверяет налоговую декларацию по НДС "
+            "и сверяет её с участком учёта.")
+    got, placed = R.mechanical_links(text, str(root), "Проверка")
+    assert "Участок" not in placed and "Алгоритмы" not in placed, placed
+    assert "[[Налоговая-декларация|налоговую декларацию]]" in got and "[[НДС]]" in got, got
+    assert R.strip_links(got) == R.strip_links(text)
+    # пара, которая задевает стоящую ссылку, не вставляется
+    out, n = R.rescue_links("[[Декларация-по-НДС|декларацию по НДС]]", got)
+    assert n == 0 and out == got, out
+
+
+@test
+def test_model_answers_are_cached_by_the_task(tmp: Path):
+    """Тот же вызов с тем же заданием второй раз не оплачивается — ответ из кэша.
+
+    Как семантический кэш graphify (1.138.0): встреча, сорвавшаяся на одном окне,
+    переразбиралась целиком; пересборка с нуля и повторные прогоны оплачивали всё заново.
+    Ключ — роль, кольцо моделей и задание: поменяли модель или задание — спросят снова.
+    Разговор с историей, инструменты и тестовый транспорт в кэш не ходят.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AG = importlib.import_module("agent_core")
+    saved = (AG.LLM_CACHE, AG._call_role, os.environ.pop("AURORA_TESTS_ISOLATED", None))
+    AG.LLM_CACHE = tmp / "cache"
+    calls = []
+
+    def real(cfg, role, messages, *a):
+        calls.append(role)
+        return {"ok": True, "text": f"ответ {len(calls)}", "backend": 1, "model": "m",
+                "tokens_in": 10, "tokens_out": 20}
+    AG._call_role = real
+    try:
+        cfg = {"backends": [{"url": "u", "model": "m", "n": 1}], "thinking": False,
+               "thinking_roles": {}}
+        msgs = [{"role": "user", "content": "Напиши тезис"}]
+        first = AG.call_role(cfg, "worker", msgs)
+        again = AG.call_role(cfg, "worker", msgs)
+        assert calls == ["worker"] and again["text"] == first["text"] and again["cached"], again
+        assert again["tokens_out"] == 0, "ответ из кэша посчитан как потраченные токены"
+        AG.call_role(cfg, "worker", [{"role": "user", "content": "Другое задание"}])
+        AG.call_role(dict(cfg, backends=[{"url": "u", "model": "m2", "n": 1}]), "worker", msgs)
+        assert len(calls) == 3, "другое задание или другая модель взяли чужой ответ"
+        AG.call_role(cfg, "worker", msgs, history=[{"role": "user", "content": "раньше"}])
+        AG.call_role(cfg, "worker", msgs, tools=True)
+        assert len(calls) == 5, "разговор или инструменты ответили из кэша"
+        os.environ["AURORA_AGENT_CACHE"] = "0"
+        AG.call_role(cfg, "worker", msgs)
+        assert len(calls) == 6, "выключенный кэш всё равно ответил"
+    finally:
+        os.environ.pop("AURORA_AGENT_CACHE", None)
+        AG.LLM_CACHE, AG._call_role = saved[0], saved[1]
+        if saved[2] is not None:
+            os.environ["AURORA_TESTS_ISOLATED"] = saved[2]
+    RS = importlib.import_module("run_summary")
+    line = "\n".join(RS.render({"model_calls": 2, "tokens_in": 1, "tokens_out": 1,
+                                "model_cached": 5, "seconds": 1}))
+    assert "из кэша ответов 5" in line, line
+
+
+@test
+def test_engine_addons_show_versions_and_install_from_the_panel(tmp: Path):
+    """Надстройки движка: Pydantic AI и graphify — версия, выпуск в git, установка из панели.
+
+    Просьба пользователя 27.09.2026: обе надстройки предлагаются к установке и обновляются
+    прямо из панели, с текущей версией и последней в git. Каждая — в своём venv; после
+    graphify MCP-сервер графа базы подключается к серверам машины, чужие не трогаются.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    EX = importlib.import_module("aurora_extras")
+    importlib.reload(EX)
+    assert EX._clean("v0.9.69") == "0.9.69" and EX._clean("release-2.51.0") == "2.51.0"
+    assert EX._vt("2.51.0") > EX._vt("2.33.0") and not EX._vt("0.9.69") > EX._vt("0.9.69")
+    assert set(EX.EXTRAS) == {"pydantic-ai", "graphify"}
+    assert EX.EXTRAS["graphify"]["min_python"] >= (3, 10), "graphify требует Python 3.10+"
+    assert any("tree-sitter-sql" in spec for spec in EX.EXTRAS["graphify"]["pip"])
+
+    saved = (EX.installed_version, EX.latest, EX.venv_python, EX.kit_mcp_file)
+    fake_py = tmp / "gvenv/bin/python"
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_text("", encoding="utf-8")
+    mcp = tmp / "kit/local/mcp.json"
+    mcp.parent.mkdir(parents=True)
+    mcp.write_text(json.dumps({"mcpServers": {"mcp-atlassian": {"command": "x"}}}),
+                   encoding="utf-8")
+    try:
+        EX.installed_version = lambda eid: {"pydantic-ai": "2.33.0", "graphify": ""}[eid]
+        EX.latest = lambda eid, fresh=False: {"git": "2.51.0" if eid == "pydantic-ai" else "0.9.69",
+                                              "pypi": "2.51.0" if eid == "pydantic-ai" else "0.9.60",
+                                              "error": ""}
+        rows = {r["id"]: r for r in EX.status()}
+        assert rows["pydantic-ai"]["update"] and rows["pydantic-ai"]["git"] == "2.51.0"
+        assert not rows["graphify"]["installed"] and not rows["graphify"]["update"]
+        assert rows["graphify"]["pypi_behind"], "git впереди PyPI — это надо сказать"
+        EX.venv_python = lambda eid: fake_py
+        EX.kit_mcp_file = lambda: mcp
+        assert EX.register_graph_mcp() == ""
+        servers = json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"]
+        assert "mcp-atlassian" in servers and servers["aurora-graph"]["args"][-1].endswith(
+            "graph.json"), servers
+        assert oct(mcp.stat().st_mode)[-3:] == "600", "файл серверов машины открыт не только владельцу"
+    finally:
+        EX.installed_version, EX.latest, EX.venv_python, EX.kit_mcp_file = saved
+
+    ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert '"/api/extras"' in ck and '"/api/extras/install"' in ck
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    assert "function extrasCard" in view and '"/api/extras/install"' in view
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/modules/install/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert {"install.extras", "install.ex_update", "install.ex_git", "install.ex_mcp_hint"} <= set(cat)
+    core = (SCRIPTS / "agent_core.py").read_text(encoding="utf-8")
+    assert 'EX.install("pydantic-ai")' in core, "две разные установки Pydantic AI"
+
+
+@test
+def test_graphify_is_optional_under_the_hood(tmp: Path):
+    """graphify под капотом — необязателен: не стоит — движок делает то же своей механикой."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    GA = importlib.import_module("agents.graphify_adapter")
+    G = importlib.import_module("kb_graph")
+    was = GA.python
+    GA.python = lambda: ""
+    try:
+        assert GA.cluster({"a": {"b"}, "b": {"a"}}) is None and GA.serve_argv("g.json") == []
+        assert GA.code_graph(str(tmp), [str(tmp)]) is None
+        lab = G.cluster({"a": {"b"}, "b": {"a"}, "c": {"d"}, "d": {"c"}})
+        assert lab["a"] == lab["b"] != lab["c"] == lab["d"], lab
+    finally:
+        GA.python = was
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    for f in ("scripts/aurora_extras.py", "scripts/agents/graphify_adapter.py",
+              "scripts/kb_code_graph.py"):
+        assert f in man, f"{f} не доезжает до проектов"
+
+
+@test
+def test_sql_on_pages_joins_the_base_graph(tmp: Path):
+    """SQL со страниц — в графе базы: таблицы, пары одного запроса, карточки, которые их называют.
+
+    Без модели: блоки ```sql на страницах зеркала разбираются по FROM/JOIN, `public.x` и
+    `x` — одна таблица, комментарий запроса таблиц не называет, оглавление — не упоминание.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    C = importlib.import_module("kb_code_graph")
+    G = importlib.import_module("kb_graph")
+    root = make_project(tmp)
+    page = root / "Sources/Confluence/SQL.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("---\ntitle: \"SQL\"\n---\n\n```sql\n-- из old\\_table\nselect * from "
+                    "public.order\\_log l\njoin order\\_item d on d.id = l.id;\n"
+                    "select 1 from orders\n```\n", encoding="utf-8")
+    card(root, "Concepts/Журнал-пакетов.md", "Пакеты пишутся в order_log.",
+         status="knowledge", kind="knowledge")
+    card(root, "MOC/Оглавление.md", "order_log упомянут тут.", status="index", type="moc")
+    tables, pairs = C.parse_sql(C.sql_sources(str(root)))
+    assert set(tables) == {"order_log", "order_item", "orders"}, tables
+    assert pairs == {("order_item", "order_log"): 1}, pairs
+    got = C.card_mentions(str(root), sorted(tables))
+    assert got == {"order_log": ["Журнал-пакетов"]}, got
+    here = os.getcwd()
+    try:
+        os.chdir(root)
+        assert run("kb_code_graph.py", "--apply", cwd=root).returncode == 0
+        data = G.write_cards_graph("AuroraKnowledgeDB/meta/graph.json")
+        G.export_graph(data)
+    finally:
+        os.chdir(here)
+    gj = json.loads((root / G.GRAPH_EXPORT).read_text(encoding="utf-8"))
+    rel = {(l["source"], l["target"]): l["relation"] for l in gj["links"]}
+    assert rel.get(("Журнал-пакетов", "table:order_log")) == "упоминает таблицу", rel
+    assert rel.get(("table:order_item", "table:order_log")) == "в одном запросе"
+
+
+@test
 def test_web_sync_without_pages_says_one_line(tmp: Path):
     """`sync:web` в проекте без веб-страниц — одна строка, а не образец конфига на каждом прогоне.
 
@@ -18900,74 +19200,50 @@ def test_a_route_says_why_a_step_did_not_start_and_saves_its_tail(tmp: Path):
 
 @test
 def test_a_rejected_relink_answer_gets_a_second_try_and_stays_queued(tmp: Path):
-    """Отброшенный ответ связывания — повтор с указанием места правки, а не отметка «связано».
+    """Неразобранный ответ связывания: механика записана, карточка остаётся в очереди.
 
-    Черновик находок PRJ-A 22.09.2026, №34: ответ, где модель заодно поправила текст,
-    отбрасывался, а карточка получала отметку `relinked` и больше в очередь не
-    возвращалась — без единой связи (23 из 187). 1.122.0 переносит связи такого ответа в
-    исходный тезис; здесь — случай, когда переносить нечего.
+    Черновик находок PRJ-A 22.09.2026, №34: отброшенная карточка получала отметку
+    `relinked` и больше в очередь не возвращалась — без единой связи (23 из 187). С
+    1.138.0 модель возвращает пары, а не текст, и повтор «ты изменила текст» не нужен:
+    ответ, который не разобран, — один вызов, связи механики записаны, отметки нет.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     R = importlib.import_module("agent_runner")
-    want, have = R.first_diff("Сверка проводится ежедневно в полночь",
-                              "Сверка проводится еженедельно в полночь")
-    assert "ежедневно" in want and "еженедельно" in have, (want, have)
-
     root = make_project(tmp)
     thesis = ("Аналитический баланс получает данные из ФЦОД по расписанию. Сверка "
               "проводится ежедневно и фиксируется в журнале операций. ") * 2
     card(root, "Concepts/ФЦОД.md", status="draft", kind="knowledge", distilled="2026-09-01",
          body="Подсистема обработки платежей. " * 6)
-    first = card(root, "Concepts/Баланс.md", status="draft", kind="knowledge",
-                 distilled="2026-09-01", body=thesis)
+    card(root, "Concepts/Журнал-операций.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", body="Журнал, где фиксируется каждая операция. " * 4)
     second = card(root, "Concepts/Сверка.md", status="draft", kind="knowledge",
                   distilled="2026-09-01", body=thesis)
     cfg = {"request_timeout": 60, "budget_min": 5, "embed": {"model": "m"},
            "thinking_roles": {}, "thinking": False, "backends": [], "parallel": 1}
-    rewritten = thesis.replace("ежедневно", "еженедельно")       # правка без единой ссылки
-    linked = thesis.replace("из ФЦОД", "из [[ФЦОД]]", 1)
     seen = []
 
-    def learns(c, role, messages, **kw):
+    def garbled(c, role, messages, **kw):
         seen.append(messages)
-        return {"ok": True, "backend": 1, "model": "m", "log": [],
-                "text": rewritten if len(messages) == 1 else linked}
-
-    def stubborn(c, role, messages, **kw):
-        seen.append(messages)
-        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": rewritten}
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": "не JSON вовсе"}
 
     was = R.candidates_for
-    R.candidates_for = lambda *a, **k: [("ФЦОД", "Concepts", "Подсистема платежей")]
+    R.candidates_for = lambda *a, **k: [("Вне-текста", "Concepts", "")]
     here = os.getcwd()
     try:
         os.chdir(root)
-        st = R.relink_card(cfg, str(first), learns, apply=True)
-        assert st["status"] == "связана" and "второй попытки" in st["note"], st
-        assert len(seen) == 2 and len(seen[1]) == 3, "повтора не было или он без прошлого ответа"
-        again = seen[1][-1]["content"]
-        assert "ежедневно" in again and "еженедельно" in again, \
-            "повтор не показывает модели, где она разошлась с тезисом"
-        assert "из [[ФЦОД]] по расписанию" in first.read_text(encoding="utf-8")
-        R.mark_relinked(str(first))           # отметку ставит заход, а не карточка
-
-        seen.clear()
-        res = R.run_relink(cfg, str(root), True, call=stubborn)
-        stuck = [s for s in res["steps"] if s["status"] == "отброшен"]
-        assert [s["card"] for s in stuck] == ["Сверка"], res["steps"]
-        assert len(seen) == 2, f"на отказ ушло вызовов: {len(seen)}, а не два"
-        assert "relinked:" not in second.read_text(encoding="utf-8"), \
-            "отброшенная карточка отмечена связанной — из очереди она уйдёт без связей"
-        assert res["rejected"] == [str(second)], res["rejected"]
-        # в этом прогоне её больше не берут, в следующем — берут
-        again_res = R.run_relink(cfg, str(root), True, call=stubborn, skip=set(res["rejected"]))
-        assert again_res["cards"] == 0, "отброшенную гоняют по второму кругу в том же прогоне"
-        assert R.run_relink(cfg, str(root), False, call=stubborn)["cards"] == 1, \
-            "отброшенная карточка выпала из очереди"
+        res = R.run_relink(cfg, str(root), True, call=garbled)
     finally:
-        os.chdir(here)
         R.candidates_for = was
+        os.chdir(here)
+    by = {s["card"]: s for s in res["steps"]}
+    assert by["Сверка"]["status"] == "отброшен" and "JSON" in by["Сверка"]["note"], by
+    assert len([m for m in seen]) == len([s for s in res["steps"] if s["backends"]]), \
+        "на отказ ушло больше одного вызова на карточку"
+    text = second.read_text(encoding="utf-8")
+    assert "[[ФЦОД]]" in text and "[[Журнал-операций|журнале операций]]" in text, \
+        "связи механики потеряны вместе с ответом модели"
+    assert "relinked:" not in text, "отброшенная карточка отмечена связанной — уйдёт из очереди"
 
 
 @test

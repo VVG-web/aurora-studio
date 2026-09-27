@@ -214,6 +214,11 @@ mirrors, install advisor, engine version, docs. Vanilla HTML/CSS/JS, no CDN, no 
 - Optional: Atlassian MCP in your editor; the sync scripts use their own token
   (`.env.aurora.local`, see `aurora.env.local.example`)
 - Optional: Obsidian (for wiki-link navigation)
+- Optional engine add-ons, each in its own venv under `~/.aurora/`, installed and updated
+  from the panel (Install → Engine add-ons, current version vs the latest release in git):
+  **Pydantic AI** — the built-in agent (validated model answers, tools, MCP);
+  **graphify** — Leiden themes, an MCP server over the knowledge-base graph for Claude Code
+  and Cursor, HTML/Neo4j exports, code parsing. The core works without both.
 
 Check what's missing on your machine: `python3 aurora.py doctor <project>` or the
 Install advisor in the cockpit.

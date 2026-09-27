@@ -129,6 +129,14 @@ def numbers(s: str) -> set:
     return {m.group(1) for m in NUM.finditer(s or "")}
 
 
+def ry_list(side: dict, key: str) -> list:
+    """Ключи Requirement Yogi из шапки зеркала: `ry_defines` — что страница объявляет,
+    `ry_links` — на что ссылается. Их пишет `sync:confluence` из макросов страницы: это
+    связи, записанные самим автором страницы, а не угаданные по тексту (1.138.0)."""
+    raw = str(side["fm"].get(key) or "").strip().strip("[]")
+    return [x.strip().strip("\"'") for x in raw.split(",") if x.strip().strip("\"'")]
+
+
 def body_of(text: str) -> str:
     """Текст страницы без шапки: в шапке «хлебные крошки» — имена предков, не ссылки."""
     if text.startswith("---"):
@@ -236,6 +244,13 @@ def direct(tasks: list, arts: list, text_stories: bool = True) -> dict:
         for n in story_nums:
             for key, num in by_num.get(n, []):
                 found.setdefault(key, f"история {num} названа в тексте артефакта")
+        # Ссылка Requirement Yogi на историю («Реализует: RU.X.US-4.1.1») — та же связь,
+        # только записанная макросом, а не словами.
+        if text_stories and page_kind(a) != "story":
+            for ry in ry_list(a, "ry_links"):
+                for m in STORY.finditer(ry):
+                    for key, num in by_num.get(m.group(1), []):
+                        found.setdefault(key, f"история {num} — ссылка Requirement Yogi {ry}")
         pid = unq(a["fm"].get("page_id")) or unq(a["fm"].get("id"))
         for key in by_page.get(pid, []):
             found.setdefault(key, f"page_id {pid} в задаче")
@@ -306,6 +321,12 @@ def code_refs(arts: list, task_prefixes: set) -> dict:
         return got if len(got) == 1 else set()
 
     kind = {a["path"]: page_kind(a) for a in arts}
+    # Ключ Requirement Yogi объявлен ровно на одной странице — это адрес без догадок.
+    owner: dict = {}
+    for a in arts:
+        for ry in ry_list(a, "ry_defines"):
+            owner.setdefault(ry.lower(), set()).add(a["path"])
+    owner = {k: next(iter(v)) for k, v in owner.items() if len(v) == 1}
     # Куда страница может опереться: история — никуда, алгоритм — на истории, прочие — на
     # истории и алгоритмы.
     allowed = {"story": (), "algorithm": ("story",)}
@@ -315,6 +336,10 @@ def code_refs(arts: list, task_prefixes: set) -> dict:
         can = allowed.get(kind[a["path"]], ("story", "algorithm"))
         if not can:
             continue
+        for ry in ry_list(a, "ry_links"):
+            path = owner.get(ry.lower())
+            if path and path != a["path"] and kind.get(path) in can and not family(a["path"], path):
+                rows.setdefault(path, ry)
         for m in CODE_BODY.finditer(body_of(a["text"])):
             if m.group(2) in task_prefixes:
                 continue

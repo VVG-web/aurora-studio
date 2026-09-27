@@ -859,7 +859,7 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
     if not same:
         # Текст переехавшей страницы тот же — тезис по нему верен, переписывать нечего:
         # поменялся только путь. Иначе тезис устарел вместе с текстом.
-        new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+        new_head = drop_thesis_mark(new_head)
         # Вместе с тезисом снимается и вердикт «знания нет»: он вынесен по
         # ПРЕЖНЕМУ тексту, а текста стало больше. Оставить его значило бы
         # закрыть карточке дорогу к тезису навсегда.
@@ -892,6 +892,21 @@ def page_id_of(path: str, root: str = "") -> str:
         return ""
     m = re.search(r"^page_id:\s*\"?(\d{4,})", head, re.M)
     return m.group(1) if m else ""
+
+
+def drop_thesis_mark(head: str) -> str:
+    """Снять отметку тезиса (`distilled`), запомнив её в `distilled_was`.
+
+    Тезис написан по прежнему тексту — `agent:distill` перечитает карточку. Если модель,
+    прочтя новый текст, скажет «по сути без изменений», прежний тезис остаётся, а с ним и
+    его отметка: вынос и связывание по этому тезису уже прошли (`extracted`, `relinked`
+    равны ей), и повторять их незачем (1.138.0). Первая запомненная отметка не
+    затирается: карточку могут дописать дважды до того, как тезис перечитают.
+    """
+    m = re.search(r"^distilled:[ \t]*(\S[^\n]*?)[ \t]*$", head, re.M)
+    if m and not re.search(r"^distilled_was:", head, re.M):
+        head = head.rstrip("\n") + f"\ndistilled_was: {m.group(1)}"
+    return re.sub(r"^distilled:.*$\n?", "", head, flags=re.M)
 
 
 def same_text(a: str, b: str) -> bool:
@@ -1085,7 +1100,7 @@ def retarget_card(text: str, moves: dict, root: str = "") -> tuple:
     if new_srcs != srcs:
         new_head = with_sources(head, new_srcs)
     if info["redistill"]:
-        new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+        new_head = drop_thesis_mark(new_head)
         new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
     if new_head == head and new_rest == rest:
         return text, info
@@ -1125,7 +1140,7 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool,
         new_head = re.sub(rf"^{key}:.*$", f"{key}: {val}", new_head, flags=re.M) \
             if re.search(rf"^{key}:", new_head, re.M) else new_head.rstrip("\n") + f"\n{key}: {val}"
     # тезис написан по прежнему тексту: снимаем отметку, `agent:distill` перепишет
-    new_head = re.sub(r"^distilled:.*$\n?", "", new_head, flags=re.M)
+    new_head = drop_thesis_mark(new_head)
     # Вместе с тезисом снимается и вердикт «знания нет»: он вынесен по
     # ПРЕЖНЕМУ тексту, а текста стало больше. Оставить его значило бы
     # закрыть карточке дорогу к тезису навсегда.

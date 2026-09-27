@@ -129,6 +129,8 @@ needed for the requested command (progressive disclosure, keep context small).
 | `kb:split` | разрезать раздутую карточку по её заголовкам: части становятся атомарными, а сама она — картой документа со ссылками на них | `references/maintenance.md` |
 | `kb:embed` | семантический индекс базы: вектора карточек для поиска по смыслу. Индекс лежит вне git и пересобирается; тексты уходят на тот же шлюз, что и у агента | `references/retrieval.md` |
 | `kb:map` | что говорит граф: сообщества, доросшие до своей карты, мосты между темами и острова, до которых не дойти по ссылкам | `references/build.md` |
+| `kb:graph-export` | граф базы наружу: у связи тип и уверенность (найдено в источнике или выведено), темы по модульности, заметки тем в `MOC/Сообщества/`, цвета графа Obsidian по статусу, `meta/graphify/graph.json` для MCP-сервера графа и выгрузок graphify | `references/build.md` |
+| `kb:code-graph` | код и SQL проекта в графе без модели: таблицы из SQL на страницах и в `*.sql`, пары таблиц одного запроса, карточки, которые называют таблицу; код из `graphify: code_dirs` — разбором graphify | `references/build.md` |
 | `kb:moc` (`moc`) | карты содержания по группировкам из `moc_groups.txt` + список брошенных карточек (`kb_moc.py`) | `references/build.md` |
 | `kb:index` | регенерация `_index.md` разделов (рукотворные не трогает) | `references/maintenance.md` |
 | `kb:scrub` | персональные данные: найти и закрыть маркерами (`kb_scrub.py`); режим — `privacy.scrub` в конфиге; доказательства не правит | `references/maintenance.md` |

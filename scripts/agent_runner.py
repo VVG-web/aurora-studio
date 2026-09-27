@@ -1054,57 +1054,28 @@ def report_extract(res: dict, apply: bool) -> str:
 
 # ------------------------------------------------------------------ задача: связывание
 
-PROMPT_RELINK = """Ты расставляешь связи в готовом тезисе карточки. Текст менять нельзя.
+PROMPT_RELINK = """Ты расставляешь связи в готовом тезисе карточки. Текст тезиса не меняется: ты
+только называешь, где в нём упомянуты карточки из списка.
 
 Карточка: {title}
-Её тезис:
+Её тезис (ссылки `[[…]]`, которые в нём уже стоят, поставил движок — их не повторяй):
 
 {thesis}
 
-{known}
+{known}Найди в тезисе упоминания сущностей из списка и верни JSON:
 
-Верни ТОТ ЖЕ текст, вставив `[[Имя карточки]]` там, где он называет сущность из списка
-выше. Ссылка ставится на месте самого упоминания, слитно с фразой:
-
-  было:  Данные приходят из ФЦОД по расписанию.
-  стало: Данные приходят из [[ФЦОД]] по расписанию.
+{{"links": [{{"phrase": "кусок тезиса буква в букву", "card": "Имя карточки из списка"}}]}}
 
 Правила, они же критерии проверки:
 
-1. **Ни одного изменённого слова.** Движок снимет разметку с твоего ответа и сравнит с
-   исходным текстом посимвольно: не совпало — ответ отброшен целиком. Не исправляй
-   опечатки, не меняй падежи, не переставляй слова, не добавляй и не убирай пробелы.
-2. Ссылайся только на карточки из списка, имя пиши буква в букву, как в списке.
-3. Упоминание в другом падеже — ссылка с подписью: `[[Профиль абонента|Профиля
-   абонента]]`. Так текст остаётся тем же, а ссылка ведёт куда надо.
-4. На саму себя карточка не ссылается. Одну сущность связывай один раз — при первом
-   упоминании; дальше по тексту она уже названа.
-5. Нечего связывать — верни текст без единого изменения. Это нормальный исход.
+1. `phrase` — точный кусок тезиса, как он там написан: тот же падеж, те же буквы. Движок
+   ищет его в тексте дословно; не нашёл — связь отброшена.
+2. `card` — имя из списка, буква в букву. Карточек не из списка не называй.
+3. Одна карточка — одна связь, при первом упоминании. На саму себя карточка не ссылается.
+4. Связь — только если фраза называет ИМЕННО эту сущность, а не соседнюю тему.
+5. Связывать нечего — верни {{"links": []}}. Это нормальный исход.
 
-Верни только текст, без пояснений вокруг."""
-
-PROMPT_RELINK_AGAIN = """Ответ отброшен: движок снял с него разметку, сравнил с исходным тезисом, и
-текст не совпал. Первое расхождение:
-
-  в тезисе: …{want}…
-  у тебя:   …{have}…
-
-Верни исходный тезис ещё раз — буква в букву, как он дан выше, — и только вставь `[[…]]`.
-Сомневаешься в ссылке — не ставь её: текст без изменений тоже правильный ответ.
-
-Верни только текст, без пояснений вокруг."""
-
-
-def first_diff(want: str, have: str, around: int = 40) -> tuple:
-    """Первое расхождение двух текстов — кусками вокруг него. → (из первого, из второго).
-
-    Повтору связывания мало сказать «текст изменён»: модель не видит, где именно, и
-    правит снова. Кусок вокруг первого расхождения показывает место.
-    """
-    i = next((k for k, (x, y) in enumerate(zip(want, have)) if x != y),
-             min(len(want), len(have)))
-    a = max(0, i - around // 2)
-    return want[a:i + around], have[a:i + around]
+Верни только JSON, без пояснений вокруг."""
 
 
 def strip_links(text: str) -> str:
@@ -1131,63 +1102,6 @@ def plain_links(text: str, readable: bool = False) -> str:
     return re.sub(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]", word, text)
 
 
-def named_here(thesis: str, cwd: str, skip: str,
-               why: str = "НАЗВАНА В ТЕКСТЕ — связь обязательна") -> list:
-    """[(имя, раздел, о чём)] — карточки, чьё ИМЯ прямо названо в этом тезисе.
-
-    Механика надёжнее модели там, где надо заметить строку. На живой базе тридцать две
-    пары «сущность названа, карточка есть, ссылки нет» находились сравнением строк — и
-    не находились моделью, которой предлагалось заметить их самой. Отдаём ей готовый
-    список: её работа — расставить разметку, а не искать.
-
-    Порог длины имени в пять букв — тот же, что у `ops:gaps`: короткое имя совпадает
-    случайно («ЭСФ» внутри «ЭСФДок»), и такая связь была бы выдумана движком.
-    """
-    low = " " + " ".join(thesis.lower().split()) + " "
-    out = []
-    for stem, section, names in _card_names(cwd):
-        if stem == skip:
-            continue
-        hit = next((n for n in names if len(n) >= 5 and n.lower() in low), "")
-        if not hit:
-            hit = next((n for n in names
-                        if len(n) >= 5 and n.replace("-", " ").lower() in low), "")
-        if hit:
-            out.append((stem, section, why))
-    return out[:20]
-
-
-_NAMES: dict = {}        # {корень проекта: (когда собрано, [(имя, раздел, {написания})])}
-_NAMES_LOCK = threading.Lock()
-
-
-def _card_names(cwd: str) -> list:
-    """Имена карточек базы для `named_here`. Собирается раз на прогон, освежается по TTL.
-
-    Список читал с диска всю базу на КАЖДУЮ карточку: 1786 файлов — две секунды чистого
-    процессора, и под общим замком интерпретатора потоки ждали их по очереди.
-    """
-    from aurora_common import KB_ROOT, frontmatter, is_placeholder, walk_md
-    with _NAMES_LOCK:
-        got = _NAMES.get(cwd)
-        if got and time.time() - got[0] <= HYB_TTL:
-            return got[1]
-        rows = []
-        for p2 in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
-            stem = os.path.basename(p2)[:-3]
-            if len(stem) < 5:
-                continue
-            text = open(p2, encoding="utf-8", errors="ignore").read()
-            fm = frontmatter(text)
-            if is_placeholder(fm, text):
-                continue          # пустая карточка не должна обещать содержание
-            section = os.path.relpath(os.path.dirname(p2),
-                                      os.path.join(cwd, KB_ROOT)).split(os.sep)[0]
-            rows.append((stem, section, {stem, (fm.get("title") or "").strip().strip('"')}))
-        _NAMES[cwd] = (time.time(), rows)
-        return rows
-
-
 _LINK_ANY = re.compile(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
 
 
@@ -1209,8 +1123,8 @@ def rescue_links(got: str, thesis: str) -> tuple:
         pos = -1
         for hit in re.finditer(re.escape(label), out):
             a, b = hit.start(), hit.end()
-            if any(s <= a < e for s, e in taken):
-                continue
+            if any(a < e and s < b for s, e in taken):
+                continue          # задевает стоящую ссылку хотя бы краем
             if (a and out[a - 1].isalnum()) or (b < len(out) and out[b].isalnum()):
                 continue          # середина слова — не упоминание
             pos = a
@@ -1228,21 +1142,27 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
     """Расставить связи в готовом тезисе. Текст не меняется. → шаг отчёта.
 
     Отдельный ход, а не пересборка тезиса: тексты уже написаны и проверены Момусом,
-    переписывать их ради связей значит рисковать знанием там, где рискa не требуется.
-    Здесь модель только вставляет разметку, а движок доказывает это сравнением.
+    переписывать их ради связей значит рисковать знанием там, где риска не требуется.
+
+    С 1.138.0 ход в два шага. Сначала механика ставит ссылки на карточки, чьё имя,
+    заголовок или однозначный синоним названы в тексте, — и в других падежах тоже
+    (`mechanical_links`). Замер 27.09.2026: так находится 44–92 % ссылок, которые раньше
+    ставила модель. Потом модель смотрит на оставшихся кандидатов и возвращает только пары
+    «фраза тезиса → карточка»; вставляет их движок, дословно. Раньше модель возвращала
+    тезис целиком, и в среднем 7 тысяч токенов ответа на карточку уходили на то, чтобы
+    переписать его буква в букву, а правка «заодно» отбрасывала ответ.
     """
     call = call or AG.call_role
     from aurora_common import frontmatter, is_placeholder
     step = {"card": os.path.basename(path)[:-3], "status": "пропущена", "added": 0,
-            "note": "", "backends": []}
+            "note": "", "backends": [], "mechanical": 0}
     text = open(path, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
     if is_placeholder(fm, text) or (fm.get("kind") or "").strip().strip('"') != "knowledge":
         return step
     whole = thesis_of(text)
-    # Заголовок карточки в разметке не нуждается и обратно дословно возвращается плохо:
-    # модель то опускает решётку, то меняет регистр. Отрезаем его и приставляем обратно
-    # сами — сверять надо текст знания, а не вёрстку вокруг него.
+    # Заголовок карточки в разметке не нуждается: отрезаем его и приставляем обратно сами —
+    # связывать надо текст знания, а не вёрстку вокруг него.
     head, body_start = "", 0
     m = re.match(r"\s*#[^\n]*\n+", whole)
     if m:
@@ -1254,88 +1174,169 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
     title = (fm.get("title") or step["card"]).strip().strip('"')
+    before = len(re.findall(r"\[\[", thesis))
+    got, placed = mechanical_links(thesis, root, step["card"])
+    step["mechanical"] = len(placed)
+    linked = {x.group(1).strip() for x in _LINK_ANY.finditer(got)}
     # Заготовки в цели ссылок не берём: пустая карточка не должна обещать содержание.
-    # Разбору они, наоборот, нужны — туда знание и кладут (`_pick`).
     near = candidates_for(root, cfg, title + "\n" + thesis, limit=CANDIDATES, stubs=False)
-    near = [c for c in near if c[0] != step["card"]]
-    # Сначала — те, чьё имя прямо названо в тексте: их нашла механика, и спорить тут не
-    # о чем. Похожие по смыслу идут следом: перечень может быть неполным, и модель
-    # дополняет его — но не вместо механики, а после неё.
-    must = named_here(thesis, root, step["card"])
-    seen = {n for n, _s, _b in must}
-    near = must + [c for c in near if c[0] not in seen]
-    if not near:
+    near = [c for c in near if c[0] != step["card"] and c[0] not in linked]
+    failed = ""
+    if near:
+        ask = [{"role": "user", "content": PROMPT_RELINK.format(
+            title=title, thesis=got, known=links_block(near))}]
+        r = call(cfg, "worker", ask,
+                 deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")),
+                 prefer=prefer)
+        step["backends"].append(r.get("backend"))
+        if not r["ok"]:
+            if not placed:
+                step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
+                return step
+            failed = "модель не ответила: " + model_fail_note(r)
+        else:
+            data = parse_json(r.get("text") or "")
+            pairs = data.get("links") if isinstance(data, dict) else None
+            if not isinstance(pairs, list):
+                failed = "ответ модели не разобран как JSON"
+            else:
+                allowed = {n for n, _s, _b in near}
+                # Пары вставляются по одной, и каждая сверяется с текстом: пара, которая
+                # задела бы текст, пропускается, а не роняет остальные связи карточки.
+                for p in pairs:
+                    if not isinstance(p, dict):
+                        continue
+                    card_name = str(p.get("card", "")).strip()
+                    phrase = " ".join(str(p.get("phrase", "")).split())
+                    if card_name not in allowed or not phrase:
+                        continue
+                    mark = f"[[{card_name}]]" if phrase == card_name else f"[[{card_name}|{phrase}]]"
+                    tried, _n = rescue_links(mark, got)
+                    if strip_links(tried) == strip_links(thesis):
+                        got = tried
+    elif not placed:
         step["note"] = "не с чем связывать"
         return step
-    listing = links_block(near)
-
-    ask = [{"role": "user", "content": PROMPT_RELINK.format(
-        title=title, thesis=thesis, known=listing)}]
-    r = call(cfg, "worker", ask,
-             deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")), prefer=prefer)
-    step["backends"].append(r.get("backend"))
-    if not r["ok"]:
-        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
-        return step
-    got = (r["text"] or "").strip()
-    if not got:
-        step.update(status="сбой", note="пустой ответ")
-        return step
-    # Доказательство, а не доверие: снимаем разметку С ОБЕИХ сторон и сравниваем.
-    # Сравнивать ответ без разметки с исходником в разметке нельзя: карточка, где ссылка
-    # уже стояла, отвергалась бы всегда — так и вышло на живой базе, восемь из восьми.
-    if strip_links(got) != strip_links(thesis):
-        # Модель поменяла текст — ответ как текст не годится, но её связи годятся: переносим
-        # их в исходный тезис механикой (`rescue_links`). Раньше такой ответ выбрасывался
-        # целиком, а карточка получала отметку «связано» без единой связи: на прогоне PRJ-A
-        # 22.09.2026 — 23 карточки из 187.
-        fixed, moved = rescue_links(got, thesis)
-        usable = moved > 0
-        note = f"ответ менял текст — связи перенесены в исходный: {moved}"
-        if not usable:
-            # Переносить нечего — один повтор с указанием места правки, а не отказ сразу:
-            # модель не видит, где разошлась с тезисом, и без подсказки правит снова.
-            want, have = first_diff(strip_links(thesis), strip_links(got))
-            r2 = call(cfg, "worker", ask + [
-                {"role": "assistant", "content": got},
-                {"role": "user", "content": PROMPT_RELINK_AGAIN.format(want=want, have=have)}],
-                deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")),
-                prefer=prefer)
-            step["backends"].append(r2.get("backend"))
-            again = (r2.get("text") or "").strip() if r2.get("ok") else ""
-            if again and strip_links(again) == strip_links(thesis):
-                fixed, usable, note = again, True, "текст выправлен со второй попытки"
-            elif again:
-                fixed, moved = rescue_links(again, thesis)
-                usable = moved > 0
-                note = f"текст изменён дважды — связи перенесены в исходный: {moved}"
-        if not usable:
-            step.update(status="отброшен",
-                        note="текст изменён, а не только размечен (дважды) — ждёт следующего прогона")
-            return step
-        got = fixed
-        step["note"] = note
-    before = len(re.findall(r"\[\[", thesis))
-    after = len(re.findall(r"\[\[", got))
-    if after <= before:
-        step["status"] = "нечего связывать"
-        return step
     got, invented = drop_invented_links(got, root)
-    step["added"] = len(re.findall(r"\[\[", got)) - before
+    if strip_links(got) != strip_links(thesis):
+        # Вставка разметки текст не меняет — это проверка движка, а не надежда на модель.
+        step.update(status="отброшен", note="связывание задело текст — ничего не записано")
+        return step
+    step["added"] = max(0, len(re.findall(r"\[\[", got)) - before)
     if invented:
         step["note"] = f"снято выдуманных: {invented}"
-    if step["added"] <= 0:
+    if failed:
+        # Механика своё сделала, модель — нет: пишем найденное механикой, но карточку не
+        # отмечаем связанной — следующий прогон спросит модель снова.
+        step["note"] = (step["note"] + "; " if step["note"] else "") + failed
+        step["status"] = "отброшен"
+    elif step["added"] <= 0:
         step["status"] = "нечего связывать"
         return step
-    step["status"] = "связана" if apply else "связал бы"
-    if apply:
-        # Ответ модели обрезан (`strip`), а за тезисом в карточке идёт раздел дословного
-        # текста: хвост пустых строк возвращаем, иначе заголовок прилипает к последней фразе.
+    else:
+        step["status"] = "связана" if apply else "связал бы"
+    if apply and step["added"] > 0:
+        # За тезисом в карточке идёт раздел дословного текста: хвост пустых строк
+        # возвращаем, иначе заголовок прилипает к последней фразе.
         from aurora_common import unglue_quotes
         tail = whole[len(whole.rstrip()):]
-        written, _n = unglue_quotes(text.replace(whole, head + got + tail, 1))
+        written, _n = unglue_quotes(text.replace(whole, head + got.rstrip() + tail, 1))
         open(path, "w", encoding="utf-8").write(written)
     return step
+
+
+_MECH: dict = {}         # {корень: (когда собрано, [(форма, имя карточки, выражение)])}
+_MECH_LOCK = threading.Lock()
+
+
+def _word_rx(w: str) -> str:
+    """Слово с окончанием: «проверка» находит «проверки», «проверкой». Короткое — дословно."""
+    if len(w) >= 6 and w.isalpha():
+        return re.escape(w[:len(w) - 2]) + r"\w{0,4}"
+    return re.escape(w)
+
+
+def _mech_forms(cwd: str) -> list:
+    """Формы имён карточек для механического связывания. Раз на прогон, по TTL.
+
+    Форма — имя файла словами, заголовок и синонимы. Синоним, которым назвались две
+    карточки, адресом не считается: движок не выбирает за человека, какая имелась в виду.
+    Короче пяти знаков — только аббревиатура из заглавных, по границе слова.
+    Длинные формы идут первыми: «Акт налоговой проверки» раньше «Налоговой проверки».
+    """
+    from aurora_common import KB_ROOT, frontmatter, is_placeholder, walk_md
+    with _MECH_LOCK:
+        got = _MECH.get(cwd)
+        if got and time.time() - got[0] <= HYB_TTL:
+            return got[1]
+        owners: dict = {}
+        for p2 in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
+            stem = os.path.basename(p2)[:-3]
+            text = open(p2, encoding="utf-8", errors="ignore").read()
+            fm = frontmatter(text)
+            if is_placeholder(fm, text):
+                continue
+            # Рубрика («Алгоритмы», «Системы») и оглавление — не сущность: слово «алгоритм»
+            # в тезисе не делает их предметом. Замер 27.09.2026: механика связывала с ними
+            # каждое упоминание слова; модель такие связи не ставила.
+            if ((fm.get("status") or "").strip() == "index" or "тема" in (fm.get("tags") or "")
+                    or (fm.get("type") or "").strip() == "moc"):
+                continue
+            forms = {stem.replace("-", " "), (fm.get("title") or "").strip().strip('"')}
+            forms |= set(re.findall(r'"([^"]+)"', fm.get("aliases") or ""))
+            for f in forms:
+                f = " ".join(f.split())
+                # Короче пяти знаков — только аббревиатура («ФЦОД», «НДС»): её ищем по
+                # границе слова, и «ЭСФ» внутри «ЭСФДок» не совпадает.
+                if len(f) >= 5 or (len(f) >= 3 and f.isupper()):
+                    owners.setdefault(f.lower(), set()).add(stem)
+        rows = []
+        for form, stems in owners.items():
+            if len(stems) != 1:
+                continue
+            words = re.findall(r"\w+", form)
+            if not words:
+                continue
+            # Окончания — только у имён из нескольких слов. Однословное имя ищется целым
+            # словом: с окончанием «Участок» находил «участие» (замер 27.09.2026).
+            if len(words) == 1:
+                rx = r"(?<!\w)" + re.escape(words[0]) + r"(?!\w)"
+            else:
+                rx = r"(?<!\w)" + r"[\s\-]+".join(_word_rx(w) for w in words) + r"(?!\w)"
+            rows.append((form, next(iter(stems)), re.compile(rx, re.I)))
+        rows.sort(key=lambda r: -len(r[0]))
+        _MECH[cwd] = (time.time(), rows)
+        return rows
+
+
+def mechanical_links(thesis: str, cwd: str, skip: str) -> tuple:
+    """Связи, которые находит механика. → (тезис с разметкой, [имена карточек]).
+
+    Ссылка ставится при первом упоминании, вне уже стоящих ссылок и заголовков, на
+    карточку, которой ещё нет в тексте. Совпало имя дословно — `[[Имя]]`, иначе с подписью
+    как в тексте: `[[Профиль-абонента|профиля абонента]]`. Текст не меняется ни на символ.
+    """
+    out = thesis
+    have = {x.group(1).strip() for x in _LINK_ANY.finditer(out)}
+    placed = []
+    for _form, stem, rx in _mech_forms(cwd):
+        if stem == skip or stem in have:
+            continue
+        taken = [(x.start(), x.end()) for x in _LINK_ANY.finditer(out)]
+        for hit in rx.finditer(out):
+            a, b = hit.start(), hit.end()
+            if any(s <= a < e or s < b <= e for s, e in taken):
+                continue
+            line_start = out.rfind("\n", 0, a) + 1
+            if out[line_start:a].lstrip().startswith("#"):
+                continue          # заголовок — не упоминание в тексте
+            label = out[a:b]
+            link = f"[[{stem}]]" if label == stem else f"[[{stem}|{label}]]"
+            out = out[:a] + link + out[b:]
+            have.add(stem)
+            placed.append(stem)
+            break
+    return out, placed
 
 
 def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
@@ -3865,6 +3866,10 @@ PROMPT_REDISTILL = """Источник карточки «{title}» измени
 не изменилось, а поменялась только вёрстка — так и напишите: «по сути без изменений»>"""
 
 
+# Ответ «ИЗМЕНИЛОСЬ: по сути без изменений» — формулировка задана заданием выше.
+SAME_MEANING = re.compile(r"по\s+сути\s+без\s+изменени|без\s+изменений\s+по\s+сути", re.I)
+
+
 HUMAN_LEAD = """ИСПРАВЛЕНИЕ ЧЕЛОВЕКА — непреложная правда с высшим приоритетом. Человек сказал
 это о карточке сам, поверх источников. Где текст источника ему противоречит, прав человек:
 в тезисе стоит его версия. Каждое утверждение, взятое из исправления, заканчивай пометкой
@@ -5227,6 +5232,15 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         thesis = re.sub(r"^\s*ТЕЗИС:\s*$", "", m[0], count=1, flags=re.M).strip()
         changed = (m[1].strip() if len(m) > 1 else "")
         step["redistilled"] = True
+        # Модель сама сказала «по сути без изменений» — прежний тезис верен, и он уже
+        # проверен Момусом, вынесен и связан. Новая формулировка того же ничего не даёт,
+        # а стоит второго вызова (Момус) и повторных выноса и связывания: они идут по
+        # отметке тезиса. На живых базах так заканчивалась каждая третья пересборка у
+        # PRJ-B и четыре из пяти у PRJ-C, и в половине случаев тезис переписывался
+        # заметно иначе, хотя знание не менялось (1.138.0).
+        if SAME_MEANING.search(changed):
+            step["kept"] = True
+            thesis = was_thesis
     elif len(parts) == 1:
         # Тезис — без списка карточек. Замер PRJ-A 22.09.2026: получив список, модель
         # начинает ссылаться на карточки как на источники («согласно …», «описано в …»),
@@ -5276,7 +5290,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if invented:
         step["note"] = (step.get("note", "") + f"; снято выдуманных ссылок: {invented}"
                         ).strip("; ")
-    if momus:
+    if momus and not step.get("kept"):
         # Итог сверяем с ПЕРВЫМ куском, если текст резали: сверять с обрезком и называть
         # это проверкой целого было бы той же тихой потерей, только в проверке.
         mo = run_momus(cfg, parts[0], f"Тезис карточки «{title}»",
@@ -5287,7 +5301,17 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # Подвал не затирается пересборкой, а переезжает в новую карточку и прирастает
     # строкой: дата, документ-основание, что поменялось и прежний тезис. Источник в
     # историю не кладём — он есть в зеркале по `source:`, а прежний тезис невосстановим.
-    if step.get("redistilled"):
+    if step.get("kept"):
+        from aurora_common import card_sources as _srcs
+        src_name = ", ".join(f"`{s}`" for s in _srcs(text)[:3])
+        line = (f"- {TODAY_STR}: источник изменился" + (f" ({src_name})" if src_name else "")
+                + ". " + changed + " — прежний тезис оставлен: он уже проверен.")
+        if FOOTER in footer:
+            footer = footer.rstrip() + "\n" + line + "\n"
+        else:
+            footer = ((footer.rstrip() + "\n\n") if footer.strip() else "") \
+                + f"{FOOTER}\n\n{line}\n"
+    elif step.get("redistilled"):
         from aurora_common import card_sources as _srcs
         src_name = ", ".join(f"`{s}`" for s in _srcs(text)[:3])
         line = (f"- {TODAY_STR}: тезис пересобран — источник изменился"
@@ -5308,15 +5332,24 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # собранный текст промахивается мимо шапки и вклеивает его в тело — так `distilled`
     # однажды оказался посреди раздела «Источник».
     step["head"], step["body"] = head, new_body
-    step.update(status="переписана", note=thesis.splitlines()[0][:110])
+    if step.get("kept"):
+        step.update(status="без изменений", note="по сути без изменений — тезис оставлен")
+    else:
+        step.update(status="переписана", note=thesis.splitlines()[0][:110])
     return step
 
 
-def distill_queue(cfg: dict, cwd: str) -> list:
+def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     """Очередь переосмысления: карточки знания без тезиса и словари, переросшие окно.
 
     Очередь собирается обходом файлов и стоит даром — поэтому заходы до конца очереди
     пересчитывают её между заходами сами, а итог называет настоящий остаток.
+
+    `defer_refresh` — внутри цикла маршрута «Обновить базу» карточки, у которых тезис уже
+    был и которые разбор только дописал, ждут конца цикла. Следующий оборот может дописать
+    их снова, и тезис переписывался бы по разу на оборот: на прогоне PRJ-B 25.09.2026 — 53
+    лишних пересборки из 423. Новые карточки идут сразу: по их тезисам вынос находит
+    новые сущности для следующего оборота (1.138.0).
     """
     from aurora_common import card_body, frontmatter, is_placeholder, walk_md
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
@@ -5348,6 +5381,8 @@ def distill_queue(cfg: dict, cwd: str) -> list:
             # одно — «знания нет», и это будет стоить вызова. Решаем механикой.
             if not card_body(text).strip():
                 continue
+            if defer_refresh and (QUOTES in text or (fm.get("distilled_was") or "").strip()):
+                continue
             todo.append(p)
         elif kind in ("dictionary", "document") and window:
             # только те, что не влезают: остальные словари трогать незачем и нельзя
@@ -5362,7 +5397,7 @@ def distill_queue(cfg: dict, cwd: str) -> list:
 
 def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True,
                 call=None, skip: set | None = None, window_s: float = 0,
-                commit=None, commit_every: int = 0) -> dict:
+                commit=None, commit_every: int = 0, defer_refresh: bool = False) -> dict:
     """Тезисы для карточек `knowledge`; словари и документы — только режем, если не влезают.
 
     Тело словаря и документа модель не переписывает никогда — это смысл самих типов. Но
@@ -5380,7 +5415,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     """
     started = time.time()
     budget = started + (window_s or cfg["budget_min"] * 60)
-    todo = [p for p in distill_queue(cfg, cwd) if p not in (skip or ())]
+    todo = [p for p in distill_queue(cfg, cwd, defer_refresh) if p not in (skip or ())]
     total = min(len(todo), limit) if limit else (
         len(todo) if window_s else min(len(todo), cfg["max_steps"]))
     say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "
@@ -5498,12 +5533,16 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             return
         if apply and step.get("head") is not None:
             from aurora_common import with_fields
-            fields = {"distilled": TODAY_STR}
-            if by := used_model(step):
+            # Тезис оставлен — оставлена и его отметка: по ней вынос и связывание знают,
+            # что этот тезис они уже видели.
+            was = re.search(r"^distilled_was:[ \t]*(\S[^\n]*?)[ \t]*$", step["head"], re.M)
+            head_now = re.sub(r"^distilled_was:.*$\n?", "", step["head"], flags=re.M)
+            fields = {"distilled": (was.group(1) if step.get("kept") and was else TODAY_STR)}
+            if not step.get("kept") and (by := used_model(step)):
                 fields["distilled_by"] = f'"{by}"'   # тезис пишет модель — назовём её
             if step.get("unsupported"):
                 fields["unsupported"] = str(step["unsupported"])
-            text = "---" + step["head"] + "\n---" + step["body"]
+            text = "---" + head_now + "\n---" + step["body"]
             # Пометку встречи ставит движок: тезис переписан — она на месте.
             from aurora_common import with_meeting_mark
             open(path, "w", encoding="utf-8").write(with_meeting_mark(with_fields(text, fields)))
@@ -5564,13 +5603,15 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
 
 def report_distill(res: dict, apply: bool) -> str:
     made = [s for s in res["steps"] if s["status"] == "переписана"]
+    kept = [s for s in res["steps"] if s["status"] == "без изменений"]
     empty = [s for s in res["steps"] if s["status"] == "знания нет"]
     bad = [s for s in res["steps"] if s["status"] == "сбой"]
     long = [s for s in res["steps"] if s["status"] == "слишком длинная"]
     parted = [s for s in made if s.get("parts")]
     L = [f"# Агент · тезисы карточек — {utc_label()}", "",
          f"Режим: {'запись' if apply else 'предпросмотр'} · переписано: {len(made)} · "
-         f"без знания: {len(empty)} · сбоев: {len(bad)} · осталось: {res['left']}", ""]
+         + (f"по сути без изменений (тезис оставлен): {len(kept)} · " if kept else "")
+         + f"без знания: {len(empty)} · сбоев: {len(bad)} · осталось: {res['left']}", ""]
     if parted:
         L += [f"Собрано из частей: {len(parted)} — источник не влез в окно модели за один "
               f"заход. Тезис сведён из выписок, каждую проверял Момус.", ""]
@@ -5954,6 +5995,9 @@ def main() -> int:
     ap.add_argument("--backend", type=int, default=0, metavar="N",
                     help="спросить конкретный бэкенд из списка (для --task ask): "
                          "1 — основной, дальше по порядку настройки")
+    ap.add_argument("--defer-refresh", action="store_true",
+                    help="тезисы: дописанные карточки с прежним тезисом ждут конца цикла "
+                         "маршрута — внутри цикла пишутся только новые")
     ap.add_argument("--no-momus", action="store_true",
                     help="не проверять ответ второй моделью (быстрее, но никем не сверено)")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
@@ -6153,6 +6197,7 @@ def main() -> int:
             # Заход — вся оставшаяся очередь в оставшемся окне; следующий заход бывает
             # только после обрыва связи. Фиксация — по ходу, каждые `every` тезисов.
             r = run_distill(cfg, cwd, True, a.limit, momus=not a.no_momus, skip=tried,
+                            defer_refresh=a.defer_refresh,
                             window_s=max(60.0, end - time.time()),
                             commit=lambda n: commit_result(
                                 cwd, "agent:distill", f"тезисов по ходу прохода: {n}",
@@ -6168,9 +6213,12 @@ def main() -> int:
         loop = until_done(cwd, a, "distill", distill_step,
                           lambda r: report_distill(r, True),
                           lambda r: "тезисов: " + str(sum(1 for s in r["steps"]
-                                                          if s["status"] == "переписана")),
+                                                          if s["status"] == "переписана"))
+                          + "".join(f" · оставлено без изменений: {k}" for k in
+                                    [sum(1 for s in r["steps"] if s["status"] == "без изменений")]
+                                    if k),
                           lambda r: sum(1 for s in r["steps"] if s["status"] != "сбой"),
-                          remaining=lambda: len(distill_queue(cfg, cwd)))
+                          remaining=lambda: len(distill_queue(cfg, cwd, a.defer_refresh)))
         steps_all += [s for r in loop["results"] for s in r["steps"]]
         # Отчёт — за весь прогон, остаток — настоящий: не вышедшие карточки остались
         # в очереди, и маршрут должен о них знать.
@@ -6185,7 +6233,8 @@ def main() -> int:
             print("agent_runner: --until-done без --apply зациклится: предпросмотр не "
                   "пишет тезисов, и очередь не убывает. Делаю один заход.",
                   file=sys.stderr)
-        res = run_distill(cfg, cwd, a.apply, a.limit, momus=not a.no_momus)
+        res = run_distill(cfg, cwd, a.apply, a.limit, momus=not a.no_momus,
+                          defer_refresh=a.defer_refresh)
         text = report_distill(res, a.apply)
     elif a.task == "translit":
         res = run_translit(cfg, cwd, a.apply, a.limit)
