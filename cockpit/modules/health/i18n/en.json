@@ -54,6 +54,7 @@
   "health.trust": "Trust",
   "health.trust_why_old": "why the rest are not — not computed: the project engine is older than 1.93",
   "health.trust_hint": "Share of trusted cards among those a document can back: stubs, service files and meeting-only cards are left out — meetings are shown as a separate line. Trust is computed from sources and linked task statuses, not assigned by a person",
+  "health.trust_meetings": "🎙 from meetings: {n} — outside the share; picked separately in Ask",
   "health.kinds": "Card types",
   "health.kinds_old": "not measured: the project engine is older than 1.93",
   "health.kinds_missing": "{n} without a type — unknown who should edit the body",

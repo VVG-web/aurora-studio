@@ -93,14 +93,17 @@ def prepare(y):
     # Приводим к актуальным ФИО всё, что дальше группируется по людям
     for t in jira_data.get("transitions_raw", []):
         t["assignee"] = canon(t.get("assignee"))
+    # Подсказка красного сектора фильтрует возвраты по тем же ФИО, что и столбцы.
+    for r in jira_data.get("rework_raw", []):
+        r["assignee"] = canon(r.get("assignee"))
 
     if jira_data.get("weekly_by_person"):
         merged = {}
         for person, person_weeks in jira_data["weekly_by_person"].items():
             dst = merged.setdefault(canon(person), {})
             for week, wd in person_weeks.items():
-                acc = dst.setdefault(week, {"stories": 0, "others": 0,
-                                            "ba_sa": 0, "rework": 0})
+                acc = dst.setdefault(week, {"stories": 0, "others": 0, "ba_sa": 0,
+                                            "rework_stories": 0, "rework_others": 0})
                 for key in acc:
                     acc[key] += wd.get(key, 0)
         jira_data["weekly_by_person"] = merged
@@ -461,7 +464,7 @@ td.max-val{color:#f87171;font-weight:600}
 <div class="kpi-row">
   <div class="kpi"><div class="n" id="kpi-stories">—</div><div class="l">историй → «Аналитика готово»</div></div>
   <div class="kpi"><div class="n" id="kpi-others">—</div><div class="l">прочих артефактов → «Аналитика готово»</div></div>
-  <div class="kpi"><div class="n" id="kpi-rework">—</div><div class="l">из них сдано заново после возврата</div></div>
+  <div class="kpi"><div class="n" id="kpi-rework">—</div><div class="l">сдано заново после возврата</div></div>
   <div class="kpi"><div class="n" id="kpi-total">—</div><div class="l">всего переходов</div></div>
 </div>
 
@@ -1114,7 +1117,7 @@ function getPctlValue(arr, pctl) {
   }
 
 
-// Красный сектор без имён задач — это «возвратов three», и дальше некуда идти.
+// Красный сектор без имён задач — это «возвратов три», и дальше некуда идти.
 // Подсказка называет задачи и статус, из которого их вернули; фильтры учитываются
 // те же, что и на графике.
 function reworkTooltip(items) {
@@ -1149,8 +1152,8 @@ function updateBlock1() {
   const activePerWeek = {};
   Object.values(weeklyByPerson).forEach(personWeeks => {
     Object.entries(personWeeks).forEach(([week, data]) => {
-      const total = (data.stories || 0) + (data.others || 0)
-                  + (data.ba_sa || 0) + (data.rework || 0);
+      const total = (data.stories || 0) + (data.others || 0) + (data.ba_sa || 0)
+                  + (data.rework_stories || 0) + (data.rework_others || 0);
       if (total > 0) {
         activePerWeek[week] = (activePerWeek[week] || 0) + 1;
       }
@@ -1177,7 +1180,8 @@ function updateBlock1() {
           data.stories += weekData.stories || 0;
           data.others += weekData.others || 0;
           data.ba_sa += weekData.ba_sa || 0;
-          data.rework_stories += weekData.rework || 0;
+          data.rework_stories += weekData.rework_stories || 0;
+          data.rework_others += weekData.rework_others || 0;
         }
       });
     } else if (!filters.role.has('__all')) {
@@ -1189,7 +1193,8 @@ function updateBlock1() {
           data.stories += weekData.stories || 0;
           data.others += weekData.others || 0;
           data.ba_sa += weekData.ba_sa || 0;
-          data.rework_stories += weekData.rework || 0;
+          data.rework_stories += weekData.rework_stories || 0;
+          data.rework_others += weekData.rework_others || 0;
         }
       });
     } else {

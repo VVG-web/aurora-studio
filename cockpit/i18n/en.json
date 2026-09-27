@@ -115,6 +115,8 @@
   "overview.lint": "{n} lint error|{n} lint errors",
   "overview.sources": "sources {pct}%",
   "overview.sources_hint": "parsed {done} sources of {total}",
+  "overview.meetings": "🎙 {n}",
+  "overview.meetings_hint": "meeting-only cards: {n} — not counted in the trust share",
   "overview.uncommitted": "{n} uncommitted",
   "overview.tree_clean": "tree clean",
   "overview.projects": "projects on the engine",

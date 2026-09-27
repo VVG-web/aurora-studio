@@ -358,10 +358,13 @@ def main() -> int:
     statuses = inherit_story(statuses, task_parents(root), trust)
     EPICS.clear()
     EPICS.update(k for k, ty in task_types(root).items() if ty.casefold() in EPIC_TYPES)
-    ignored = [d for d in docs if d.replace("\\", "/").startswith(WIKI)
-               and not reference_page(d.rstrip("/") + "/x")]
+    # Папка пишется в конфиге и без косой в конце («Sources/Confluence»), и выше вики
+    # («Sources») — такая тоже не действует на вики, о ней надо сказать.
+    folders = [(d, d.replace("\\", "/").strip().rstrip("/") + "/") for d in docs]
+    ignored = [d for d, f in folders if WIKI.startswith(f)
+               or (f.startswith(WIKI) and not reference_page(f + "x"))]
     if ignored:
-        print("Папки вики в настройке доверия, которые не справочники, доверия больше не дают "
+        print("Папки из настройки доверия, которые страницам вики доверия больше не дают "
               "(вики доверена как справочник или задачей): " + ", ".join(ignored) + "\n")
     if LAG:
         print(f"Подзадач, отставших от своей истории: {len(LAG)} — судим по истории\n")

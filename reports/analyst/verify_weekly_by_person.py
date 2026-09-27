@@ -8,7 +8,8 @@ Logic mirrors make_analyst_metrics.py and update_analyst_metrics.py:
 - For BA-SA Task: event = FIRST transition to "Закрыто"
 - Year must equal the reporting year from aurora.config.yaml (ISO year)
 - Bucket: История→stories, Инцидент→others, BA-SA Task→ba_sa;
-  всё, что сдано повторно после возврата, → rework
+  всё, что сдано повторно после возврата, → rework_stories / rework_others (по типу —
+  чтобы фильтр типа и вес «прочих» работали для возвратов и при выборе сотрудника)
 """
 import json
 import csv
@@ -68,7 +69,7 @@ def get_assignee_at(issue_key, at_ts):
 # Build weekly_by_person from scratch
 # Structure: {person: {week: {"stories": 0, "others": 0, "ba_sa": 0}}}
 weekly_by_person = defaultdict(lambda: defaultdict(
-    lambda: {"stories": 0, "others": 0, "ba_sa": 0, "rework": 0}))
+    lambda: {"stories": 0, "others": 0, "ba_sa": 0, "rework_stories": 0, "rework_others": 0}))
 
 for key, issue in full.items():
     typ = issue_types.get(key, "?")
@@ -115,13 +116,9 @@ for key, issue in full.items():
             # Первая сдача за историю задачи — обычная работа; всё последующее
             # случилось после возврата. Сотруднику засчитывается и то и другое:
             # работа сделана и сдана, — но в разные вёдра.
-            if nth > 1:
-                weekly_by_person[assignee][w]["rework"] += 1
-            elif typ == "История":
-                weekly_by_person[assignee][w]["stories"] += 1
-            else:
-                # Инцидент and any other non-BA-SA type → others
-                weekly_by_person[assignee][w]["others"] += 1
+            # Инцидент and any other non-BA-SA type → others
+            base = "stories" if typ == "История" else "others"
+            weekly_by_person[assignee][w][("rework_" + base) if nth > 1 else base] += 1
 
 # Convert to regular dict for JSON serialization
 weekly_by_person_dict = {}
@@ -129,34 +126,29 @@ for person, weeks_data in weekly_by_person.items():
     weekly_by_person_dict[person] = dict(weeks_data)
 
 # Validate: sum all buckets and compare against metrics["weekly"]
-aggregate = {"stories": 0, "others": 0, "ba_sa": 0, "rework": 0}
+KEYS = ("stories", "others", "ba_sa", "rework_stories", "rework_others")
+aggregate = dict.fromkeys(KEYS, 0)
 for person, weeks_data in weekly_by_person_dict.items():
     for week, buckets in weeks_data.items():
-        aggregate["stories"] += buckets.get("stories", 0)
-        aggregate["others"] += buckets.get("others", 0)
-        aggregate["ba_sa"] += buckets.get("ba_sa", 0)
-        aggregate["rework"] += buckets.get("rework", 0)
+        for k in KEYS:
+            aggregate[k] += buckets.get(k, 0)
 
 # Get authoritative totals from metrics["weekly"]
-weekly_totals = {"stories": 0, "others": 0, "ba_sa": 0, "rework": 0}
+weekly_totals = dict.fromkeys(KEYS, 0)
 for week, buckets in metrics["weekly"].items():
-    weekly_totals["stories"] += buckets.get("stories", 0)
-    weekly_totals["others"] += buckets.get("others", 0)
-    weekly_totals["ba_sa"] += buckets.get("ba_sa", 0)
-    weekly_totals["rework"] += (buckets.get("rework_stories", 0)
-                                + buckets.get("rework_others", 0))
+    for k in KEYS:
+        weekly_totals[k] += buckets.get(k, 0)
+
 
 def _line(d):
-    return (f"stories={d['stories']}, others={d['others']}, "
-            f"ba_sa={d['ba_sa']}, rework={d['rework']}")
+    return ", ".join(f"{k}={d[k]}" for k in KEYS)
 
 
 print(f"Rebuilt weekly_by_person sums: {_line(aggregate)}")
 print(f"Authoritative weekly totals:   {_line(weekly_totals)}")
 
 # Check if they match
-if all(aggregate[k] == weekly_totals[k]
-       for k in ("stories", "others", "ba_sa", "rework")):
+if all(aggregate[k] == weekly_totals[k] for k in KEYS):
     print("Sums match!")
     
     # Write the rebuilt weekly_by_person back to analyst_metrics.json
@@ -169,8 +161,6 @@ if all(aggregate[k] == weekly_totals[k]
     exit(0)
 else:
     print("Sums do NOT match!")
-    print(f"  stories: rebuilt={aggregate['stories']}, expected={weekly_totals['stories']}")
-    print(f"  others: rebuilt={aggregate['others']}, expected={weekly_totals['others']}")
-    print(f"  ba_sa: rebuilt={aggregate['ba_sa']}, expected={weekly_totals['ba_sa']}")
-    print(f"  rework: rebuilt={aggregate['rework']}, expected={weekly_totals['rework']}")
+    for k in KEYS:
+        print(f"  {k}: rebuilt={aggregate[k]}, expected={weekly_totals[k]}")
     exit(1)

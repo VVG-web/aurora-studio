@@ -64,6 +64,11 @@ cd aurora-studio
 python3 aurora.py new /path/to/your-project
 ```
 
+No terminal at hand? Double-click `start-aurora.command` (macOS) or `start-aurora.bat`
+(Windows) in the kit folder: it checks for a working Python 3.9+ and git, offers to install
+what is missing, and opens the control panel. macOS may block a downloaded script the first
+time — right-click it and choose **Open**.
+
 `aurora.py new` scaffolds the trust-layer structure, copies the engine, and launches an
 **interactive setup** that asks for everything project-specific:
 

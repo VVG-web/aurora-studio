@@ -115,6 +115,8 @@
   "overview.lint": "{n} ошибка линтера|{n} ошибки линтера|{n} ошибок линтера",
   "overview.sources": "источники {pct}%",
   "overview.sources_hint": "разобрано источников {done} из {total}",
+  "overview.meetings": "🎙 {n}",
+  "overview.meetings_hint": "карточек из одних встреч: {n} — в долю доверия не входят",
   "overview.uncommitted": "{n} не в git",
   "overview.tree_clean": "дерево чисто",
   "overview.projects": "проектов на движке",

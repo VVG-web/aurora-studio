@@ -18236,6 +18236,362 @@ def test_trust_follows_the_story_and_ignores_the_archive(tmp: Path):
 
 
 @test
+def test_ask_picks_meetings_apart_from_trust(tmp: Path):
+    """«Спросить»: встречи — отдельный выбор; доля доверия их не считает.
+
+    Решение пользователя 25.09.2026: карточки из встреч показываются отдельной строкой, а в
+    «Спросить» — выбор: только встречи; всё, включая недоверенное и встречи; только
+    доверенное и встречи. В «только доверенное» сказанное на встрече не проходит.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    C = importlib.import_module("ctx_pack")
+    AC = importlib.import_module("aurora_common")
+
+    def mk(name, status, srcs):
+        return C.Card(f"AuroraKnowledgeDB/Concepts/{name}.md",
+                      f'---\ntitle: "{name}"\nstatus: {status}\nkind: knowledge\n'
+                      + AC.sources_block(srcs) + f"---\n\n# {name}\n\nЗнание о предмете.\n")
+    meet = "Raw/meetings/2026-09-11/transcript.md"
+    cards = [mk("Док", "knowledge", ["Sources/Confluence/A.md"]),
+             mk("Черновик", "draft", ["Sources/Confluence/B.md"]),
+             mk("Встреча", "draft", [meet]),
+             mk("Смесь", "knowledge", ["Sources/Confluence/A.md", meet])]
+    want = {"generate": {"Док", "Смесь"},
+            "trusted_meetings": {"Док", "Смесь", "Встреча"},
+            "meetings": {"Встреча", "Смесь"},
+            "evaluate": {"Док", "Черновик", "Встреча", "Смесь"}}
+    for mode, names in want.items():
+        got = {c.stem for c in cards if C.mode_allows(c, mode)}
+        assert got == names, f"режим {mode}: {sorted(got)} вместо {sorted(names)}"
+    # каждый режим панели движок принимает
+    view = (KIT / "cockpit/modules/ask/view.html").read_text(encoding="utf-8")
+    ui = set(re.findall(r'<option value="(\w+)" data-i18n="ask\.mode_', view))
+    runner = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    choices = set(re.findall(r'"(\w+)"', runner.split('"--mode", default="generate"')[1]
+                             .split("help=")[0]))
+    assert {"generate", "trusted_meetings", "meetings", "evaluate"} <= ui, ui
+    assert ui <= choices and ui <= set(C.MODE_STATUSES), f"панель шлёт режим, которого движок не знает: {ui - choices}"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Док.md", "Знание.", status="knowledge", kind="knowledge",
+         trust_basis='"ok"', sources=f'["Sources/Confluence/A.md"]')
+    card(root, "Concepts/Встреча.md", "Сказано.", status="draft", kind="knowledge",
+         trust_basis='"сказано на встрече"', sources=f'["{meet}"]')
+    out = run("aurora_stats.py", "--json", cwd=root).stdout
+    st = json.loads(out[out.index("{"):])
+    assert st["trust_total"] == 1 and st["pct_verified"] == 100.0 and st["meetings"] == 1, \
+        f"карточка из встречи попала в долю доверия: {st['trust_total']}, встреч {st.get('meetings')}"
+    health = (KIT / "cockpit/modules/health/view.js").read_text(encoding="utf-8")
+    assert 't("health.trust_meetings"' in health and '"из встреч (вне доли)"' in health, \
+        "встречи снова показаны одной из причин недоверия, а не отдельной строкой"
+
+
+@test
+def test_an_epic_does_not_decide_trust(tmp: Path):
+    """Статус эпика доверия не решает — только истории и задачи.
+
+    Решение пользователя 25.09.2026: эпик «В работе» живёт месяцами, пока его истории давно
+    готовы. Связь только с эпиком — то же, что связей нет; история рядом с эпиком решает сама.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    K = importlib.import_module("kb_trust")
+    st = {"PRJ-1": "В работе", "PRJ-2": "Закрыто"}
+    trust, draft = {"закрыто"}, {"в работе", "анализ"}
+    K.EPICS.clear()
+    K.EPICS.add("PRJ-1")
+    try:
+        only = {"direct": {"Sources/Docs/A.md": [{"key": "PRJ-1", "why": "номер"}]}, "indirect": {}}
+        cls, why = K.source_class("Sources/Docs/A.md", only, st, trust, draft)
+        assert cls == "unknown" and "эпик" in why, (cls, why)
+        both = {"direct": {"Sources/Docs/A.md": [{"key": "PRJ-1", "why": "номер"},
+                                                 {"key": "PRJ-2", "why": "номер"}]},
+                "indirect": {}}
+        cls, why = K.source_class("Sources/Docs/A.md", both, st, trust, draft)
+        assert cls == "trusted" and "PRJ-2" in why, f"эпик в работе утянул готовую историю: {cls} — {why}"
+    finally:
+        K.EPICS.clear()
+
+
+@test
+def test_trust_names_every_wiki_folder_it_no_longer_trusts(tmp: Path):
+    """Папка вики в `trusted_sources` доверия не даёт — и пересчёт называет её, как ни пиши.
+
+    Решение пользователя 25.09.2026: вики доверена справочником или задачей Jira, одно
+    правило на все проекты. Папку пишут и без косой в конце, и выше вики («Sources») —
+    правило действовало, а пересчёт про такую папку молчал.
+    """
+    root = make_project(tmp)
+    with open(root / "aurora.config.yaml", "a", encoding="utf-8") as f:
+        f.write("verify:\n  trusted_sources: [Raw/contract, Sources/Confluence, "
+                "Sources/Confluence/Справочники/, Sources/Confluence/Проект/]\n")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    out = run("kb_trust.py", cwd=root).stdout
+    line = next((l for l in out.splitlines() if "доверия больше не дают" in l), "")
+    assert "Sources/Confluence," in line + "," and "Sources/Confluence/Проект/" in line, \
+        f"папка вики без косой в конце не названа:\n{out[:800]}"
+    assert "Справочники" not in line and "Raw/contract" not in line, line
+
+
+@test
+def test_meeting_requirements_are_stated_and_repairs_skip_the_archive(tmp: Path):
+    """Требование со встречи — `req_status: stated`; ремонт не судит архив и темы встреч.
+
+    Находки прогона PRJ-B 25.09.2026: 115 «требований» из встреч лежали как требования
+    заказчика; `kb:repair --links` давал код 1 из-за ссылки в архивной заметке; папка
+    стенограммы («Запись-экрана-…») становилась карточкой темы.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    meet = "Raw/meetings/2026-09-11/Запись экрана 2026-09-09 в 15_39_25_1/transcript.md"
+    src_block = lambda p: AC.sources_block([p]).rstrip("\n")
+    req = root / "AuroraKnowledgeDB/Requirements/Сортировка-реестра.md"
+    req.parent.mkdir(parents=True, exist_ok=True)
+    req.write_text('---\ntitle: "Сортировка реестра"\nstatus: draft\ntype: requirement\n'
+                   f"kind: knowledge\n{src_block(meet)}\n---\n\n# Сортировка реестра\n\n"
+                   "Реестр сортируется по дате подачи.\n", encoding="utf-8")
+    for i in range(3):
+        card(root, f"Concepts/Из-встречи-{i}.md", f"Сказано {i}.", status="draft",
+             kind="knowledge", sources=f'["{meet}"]')
+    folder = os.path.dirname(meet)
+    theme = root / "AuroraKnowledgeDB/Concepts/Запись-экрана.md"
+    theme.write_text('---\ntitle: "Запись экрана"\nstatus: draft\ntype: concept\nkind: knowledge\n'
+                     f"tags: [тема]\n{src_block(folder)}\n---\n\n# Запись экрана\n\n"
+                     "- [[Из-встречи-0]]\n", encoding="utf-8")
+    card(root, "_archive/Старая.md", "Ссылка на [[Нет-такой-карточки]].", status="deprecated",
+         kind="knowledge")
+    cp = run("kb_fix.py", "--links", "--themes", "--meetings", "--apply", "--allow-dirty",
+             cwd=root)
+    assert cp.returncode == 0, cp.stdout[-800:] + cp.stderr[-800:]
+    assert "не решено 0" in cp.stdout, f"ремонт ссылок судит архив:\n{cp.stdout[:800]}"
+    assert "Карточки тем по папкам источников: 0" in cp.stdout, \
+        f"папка стенограммы стала темой:\n{cp.stdout[:800]}"
+    assert not theme.exists() and (root / "AuroraKnowledgeDB/_archive/Запись-экрана.md").exists(), \
+        "тема по папке стенограммы не ушла в архив"
+    text = req.read_text(encoding="utf-8")
+    assert "req_status: stated" in text and "🎙 Из встречи" in text, \
+        f"требование со встречи читается согласованным:\n{text}"
+
+
+@test
+def test_a_meeting_past_the_step_budget_waits_whole(tmp: Path):
+    """Встреча, не влезающая в бюджет шага, уходит в следующий оборот целиком.
+
+    Живой случай, PRJ-B 25.09.2026: встреча в 10 окон дорабатывала за пределом бюджета
+    `agent:build`, и оракул разбора видел «движок засчитал 4, агент объявил 3».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    src = "Raw/meetings/2026-09-11/transcript.md"
+    (root / src).parent.mkdir(parents=True, exist_ok=True)
+    (root / src).write_text("# transcript\n\n" + "\n".join(
+        f"[0:00:{i:02d}] [SPEAKER_01] Реплика номер {i} о реестре деклараций." for i in range(20))
+        + "\n", encoding="utf-8")
+    calls = []
+
+    def fake(cfg_, role, messages, **kw):
+        calls.append(role)
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": '{"parts": []}'}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    step = R.solve_meeting(cfg, str(root), "Встречи", src, True, call=fake,
+                           step_end=time.time() - 1)
+    assert step["status"] == "стоп" and not calls, f"встреча пошла за пределом бюджета: {step}, {calls}"
+    man = root / "AuroraKnowledgeDB/meta/manifest.json"
+    done = json.loads(man.read_text(encoding="utf-8")).get("sources", {}) if man.exists() else {}
+    assert src not in done, "недочитанная встреча отмечена разобранной — выпала бы из плана"
+
+
+@test
+def test_a_silent_vector_gateway_is_asked_once(tmp: Path):
+    """Шлюз векторов, не ответивший вовсе, до конца процесса не спрашивается.
+
+    Живой случай, PRJ-B 25.09.2026: `ops:search-quality` при недоступном шлюзе ждал таймаута
+    на каждом вопросе — 1 ч 55 мин вместо минут.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    E = importlib.import_module("kb_embed")
+    asked = []
+    saved = (E.endpoints, E.AG.http_json, E.load_index)
+    E.endpoints = lambda cfg: [{"url": "http://dead", "key": ""}]
+    E.AG.http_json = lambda url, body, key, timeout: (asked.append(url) or (None, {}, "timed out", 0))
+    E.load_index = lambda: {}
+    E.DEAD.clear()
+    try:
+        for _ in range(5):
+            assert E.embed(["вопрос"], {"request_timeout": 1}, "m") == []
+        assert asked == ["http://dead/embeddings"], f"мёртвый шлюз спрошен {len(asked)} раз"
+        assert "http://dead" in E.DEAD
+    finally:
+        E.endpoints, E.AG.http_json, E.load_index = saved
+        E.DEAD.clear()
+
+
+@test
+def test_legacy_wiki_branches_become_reference_branches(tmp: Path):
+    """Прежнее умолчание веток вики по названию сменяется справочным — в конфиге и в счёте.
+
+    Решение пользователя 25.09.2026: ветки «описания системы» (алгоритмы, GUI, ролевая
+    модель) больше не доверены по названию. Список, который проект правил сам, не трогается.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    S = importlib.import_module("aurora_setup")
+    legacy = "[" + ", ".join(f'"{b}"' for b in AC.LEGACY_TRUSTED_BRANCHES) + "]"
+    text = f"verify:\n  trusted_sources: [Raw/contract]\n  trusted_branches: {legacy}\n"
+    new, done = S.fill_trust_defaults(text)
+    assert any("справочные ветки" in d for d in done), done
+    assert "Алгоритмы" not in new and "Глоссарий" in new, new
+    own = "verify:\n  trusted_sources: [Raw/contract]\n  trusted_branches: [Алгоритмы]\n"
+    assert "[Алгоритмы]" in S.fill_trust_defaults(own)[0], "список проекта переписан"
+
+    root = make_project(tmp)
+    with open(root / "aurora.config.yaml", "a", encoding="utf-8") as f:
+        f.write(f"verify:\n  trusted_branches: {legacy}\n")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    out = run("kb_trust.py", cwd=root).stdout
+    assert "прежние доверенные ветки" in out and "справочные ветки вики: Нормативно" in out, out[:600]
+
+
+@test
+def test_meeting_mark_is_written_once(tmp: Path):
+    """Пометка «из встречи» ставится один раз, сколько бы шагов её ни ставили.
+
+    Живой случай 25.09.2026: каждый проход ремонта добавлял пустую строку перед пометкой.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    text = ('---\ntitle: "К"\n' + AC.sources_block(["Raw/meetings/2026-09-11/t.md"])
+            + "---\n\n# К\n\nСказано на встрече.\n")
+    once = AC.with_meeting_mark(text)
+    assert once.count(AC.MEETING_MARK) == 1, once
+    assert AC.with_meeting_mark(AC.with_meeting_mark(once)) == once, "пометка растёт с каждым проходом"
+
+
+@test
+def test_analyst_rework_is_counted_apart_for_each_person(tmp: Path):
+    """Отчёт аналитика: повторная сдача после возврата — красным, по людям — по типу.
+
+    1.133.0 (TC-088): сдачи одной задачи за неделю — одна; сдача после возврата — отдельное
+    ведро. Сверка по людям складывала возвраты в одно ведро «историй», и под фильтром по
+    сотруднику возврат инцидента весил как история. Возврат «Аналитика - готово → Анализ»
+    не узнавался в проектах, где статус называется «Анализ», а не «Аналитика».
+    """
+    root = tmp / "p"
+    data = root / ".opencode/cache/reports/analyst"
+    data.mkdir(parents=True)
+    (root / "Settings").mkdir()
+    (root / "aurora.config.yaml").write_text(
+        'project:\n  name: "P"\n  slug: "P"\n\natlassian:\n  jira:\n    project_key: "P"\n\n'
+        "reports:\n  analyst:\n    year: 2026\n    roster: Settings/roster.csv\n"
+        "    events: Settings/events.csv\n    data_dir: .opencode/cache/reports/analyst\n"
+        "    output: Artifacts/reports/{project}_analyst_extended.html\n", encoding="utf-8")
+    (root / "Settings/roster.csv").write_text("ФИО;Роль\nАналитик А;Аналитик\nАналитик Б;Аналитик\n",
+                                              encoding="utf-8")
+    at = lambda day, h=12: f"2026-{day}T{h:02d}:00:00.000+0300"
+    READY = "Аналитика - готово"
+    hist = {
+        # сдана в неделю 10, возвращена из разработки, сдана заново в неделю 12
+        "P-1": ("История", "Аналитик А", [("Бэклог", "Аналитика", at("03-02", 9)),
+                                           ("Аналитика", READY, at("03-02")),
+                                           (READY, "Разработка", at("03-04")),
+                                           ("Разработка", "Бэклог", at("03-10")),
+                                           ("Бэклог", "Аналитика", at("03-16", 9)),
+                                           ("Аналитика", READY, at("03-16"))]),
+        # три сдачи за одну неделю 06 — одна
+        "P-2": ("История", "Аналитик А", [("Анализ", READY, at("02-02")),
+                                           (READY, "Анализ", at("02-03")),
+                                           ("Анализ", READY, at("02-04")),
+                                           (READY, "Анализ", at("02-05")),
+                                           ("Анализ", READY, at("02-06"))]),
+        # инцидент: сдан в неделю 10, возвращён в «Анализ», сдан заново в неделю 13
+        "P-3": ("Инцидент", "Аналитик Б", [("Анализ", READY, at("03-03")),
+                                            (READY, "Анализ", at("03-11")),
+                                            ("Анализ", READY, at("03-24"))]),
+    }
+    issues, full = [], {}
+    for key, (typ, who, trs) in hist.items():
+        issues.append({"key": key, "fields": {"issuetype": {"name": typ}, "summary": key}})
+        full[key] = {"key": key, "assignee_now": who, "issuetype": typ,
+                     "status_history": [{"from": a, "to": b, "at": t} for a, b, t in trs]}
+    (data / "issues.json").write_text(json.dumps(issues, ensure_ascii=False), encoding="utf-8")
+    (data / "full_status.json").write_text(json.dumps(full, ensure_ascii=False), encoding="utf-8")
+    env = {**os.environ, "AURORA_REPORT_YEAR": "2026"}
+    for step in ("make_analyst_metrics.py", "update_analyst_metrics.py", "verify_weekly_by_person.py"):
+        cp = subprocess.run([sys.executable, str(KIT / "reports/analyst" / step)], cwd=str(root),
+                            capture_output=True, text=True, env=env, timeout=120)
+        assert cp.returncode == 0, f"{step}: {cp.stdout[-600:]}{cp.stderr[-600:]}"
+    m = json.loads(next(data.rglob("analyst_metrics.json")).read_text(encoding="utf-8"))
+    wk = m["weekly"]
+    assert wk["06"]["stories"] == 1, f"три сдачи за неделю посчитаны не одной: {wk['06']}"
+    assert wk["10"]["stories"] == 1 and wk["10"]["others"] == 1, wk["10"]
+    assert wk["12"]["rework_stories"] == 1 and wk["13"]["rework_others"] == 1, wk
+    back = {r["issue"]: r["returned_from"] for r in m["rework_raw"]}
+    assert back == {"P-1": "Разработка", "P-3": READY}, f"откуда вернули: {back}"
+    b = m["weekly_by_person"]["Аналитик Б"]["13"]
+    assert b.get("rework_others") == 1 and not b.get("rework_stories"), \
+        f"возврат инцидента у сотрудника лёг в ведро историй: {b}"
+
+
+@test
+def test_kit_launchers_try_python_before_trusting_it(tmp: Path):
+    """Пусковые файлы кита проверяют Python и git запуском, а `.bat` хранится с CRLF.
+
+    На чистом macOS `/usr/bin/python3` и `/usr/bin/git` — заглушки, которые без
+    инструментов Xcode не работают; на Windows `python.exe` из WindowsApps открывает
+    магазин. Поиск по PATH их находил, и пусковой файл падал на запуске панели вместо
+    внятного «поставьте Python». С одними LF в `.bat` cmd.exe промахивается мимо меток.
+    """
+    bat = (KIT / "start-aurora.bat").read_bytes()
+    assert bat.count(b"\r\n") == bat.count(b"\n"), "в start-aurora.bat строки без CRLF"
+    assert "/start-aurora.bat -text" in (KIT / ".gitattributes").read_text(encoding="utf-8"), \
+        "git поменяет концы строк .bat при клоне или в архиве"
+    text = bat.decode("utf-8")
+    assert "sys.version_info >= (3, 9)" in text and "where python" not in text, \
+        ".bat снова доверяет поиску по PATH"
+    bash = shutil.which("bash")
+    if not bash or os.name == "nt":
+        return
+    fake = tmp / "bin"
+    fake.mkdir()
+    for name, say in (("python3", "xcode-select: note: No developer tools were found"),
+                      ("git", "xcode-select: note: No developer tools were found"),
+                      ("python", "Python 2.7.18")):
+        (fake / name).write_text(f"#!/bin/sh\necho '{say}' >&2\nexit 1\n", encoding="utf-8")
+        (fake / name).chmod(0o755)
+    for tool in ("dirname", "uname"):
+        real = shutil.which(tool)
+        if real:
+            (fake / tool).symlink_to(real)
+    kit = tmp / "kit"
+    kit.mkdir()
+    shutil.copy2(KIT / "start-aurora.command", kit / "start-aurora.command")
+    cp = subprocess.run([bash, str(kit / "start-aurora.command")], input="", capture_output=True,
+                        text=True, timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
+    assert cp.returncode == 1 and "Не найден Python 3.9" in cp.stdout, \
+        f"заглушка python3 принята за Python:\n{cp.stdout}{cp.stderr}"
+    (fake / "python3").unlink()
+    (fake / "python3").symlink_to(sys.executable)
+    cp = subprocess.run([bash, str(kit / "start-aurora.command")], input="", capture_output=True,
+                        text=True, timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
+    assert cp.returncode == 1 and "Не найден git" in cp.stdout, \
+        f"заглушка git принята за git:\n{cp.stdout}{cp.stderr}"
+
+
+@test
 def test_web_sync_without_pages_says_one_line(tmp: Path):
     """`sync:web` в проекте без веб-страниц — одна строка, а не образец конфига на каждом прогоне.
 

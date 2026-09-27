@@ -149,9 +149,16 @@ function baseCards(ctx, h, st){
       sub: t("health.contents_sub", {knowledge: st.statuses?.knowledge ?? st.trusted ?? 0,
                                      drafts: st.statuses?.draft ?? 0}),
       hint: t("health.contents_hint")}),
+    // Карточки из одних встреч — вне доли и отдельной строкой, а не одной из причин
+    // недоверия (решение пользователя 25.09.2026): встреча — не документ, который не
+    // дорос до доверия, а другой род знания.
     card({title: t("health.trust"), value: (st.pct_verified ?? 0) + "%",
-      sub: Object.entries(why).filter(([n]) => n !== "доверенные")  // данные движка
-             .map(([n, v]) => `${v} — ${n}`).join(" · ") || t("health.trust_why_old"),
+      sub: el("span", {},
+        Object.entries(why)
+          .filter(([n]) => n !== "доверенные" && n !== "из встреч (вне доли)")  // данные движка
+          .map(([n, v]) => `${v} — ${n}`).join(" · ") || t("health.trust_why_old"),
+        st.meetings ? el("div", {style: "margin-top:4px"},
+                         t("health.trust_meetings", {n: st.meetings})) : null),
       hint: t("health.trust_hint"),
       go: ctx.ui.goRoute("update", t("health.go_update"))}),
     // Пустой `kinds` — это «движок проекта старый и типов не считает», а не «у всех
