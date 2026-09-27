@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (is_meeting, branch_kind, LEGACY_TRUSTED_BRANCHES, ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
                            TRUST_STATUSES_DEFAULT, TRUSTED_BRANCHES_DEFAULT,
                            TRUSTED_SOURCES_DEFAULT, card_sources, config_list, frontmatter,
+                           sync_roots,
                            is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
@@ -132,6 +133,45 @@ def reference_page(src: str) -> bool:
     return bool(branch_kind(top, REFERENCE_BRANCHES))
 
 
+TRUSTED_ROOTS: list = []          # [(путь в зеркале, название)] корней с галочкой «доверять»
+
+
+def trusted_roots(root: str, roots: list) -> list:
+    """Где в зеркале лежат корни синка с галочкой «доверять». → [(путь, название)].
+
+    Корень ищем по `page_id` в шапке его страницы: название в конфиге человек пишет сам,
+    и оно расходится с заголовком в Confluence. Корень с детьми — папка `<имя>/`, без
+    детей — файл `<имя>.md` (так их кладёт `sync:confluence`).
+    """
+    want = {r["page_id"]: r["title"] for r in roots if r.get("trusted")}
+    if not want:
+        return []
+    base = os.path.join(root, WIKI)
+    out = []
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        full = os.path.join(base, name)
+        head = os.path.join(full, "index.md") if os.path.isdir(full) else full
+        if not head.endswith(".md") or not os.path.isfile(head):
+            continue
+        with open(head, encoding="utf-8", errors="ignore") as f:
+            fm = frontmatter(f.read(4000))
+        pid = str(fm.get("page_id") or "").strip().strip("\"'")
+        if pid in want:
+            out.append((WIKI + name + ("/" if os.path.isdir(full) else ""), want.pop(pid)))
+    for pid, title in want.items():
+        print(f"Корень «{title}» ({pid}) отмечен «доверять», но в зеркале его нет — "
+              "синк ещё не забирал его: `sync:confluence --apply`.")
+    return out
+
+
+def trusted_root(src: str) -> str:
+    """Название корня с галочкой «доверять», в котором лежит страница, или пусто."""
+    for prefix, title in TRUSTED_ROOTS:
+        if src == prefix or (prefix.endswith("/") and src.startswith(prefix)):
+            return title
+    return ""
+
+
 def inherit_story(statuses: dict, parents: dict, trust: set) -> dict:
     """Статусы задач, где отставшая подзадача судится по своей истории.
 
@@ -186,7 +226,8 @@ def declared_trust(src: str):
 
 
 def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
-                 docs: tuple = (), reference: bool = False) -> tuple:
+                 docs: tuple = (), reference: bool = False, depth: int = 0,
+                 explicit: bool = False) -> tuple:
     """(класс, основание словами) для источника карточки.
 
     `docs` — доверенные источники из конфига проекта (`trusted_sources`). Документ —
@@ -204,6 +245,13 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
                            "документе; подтвердить документом или задачей")
     if src.startswith("Raw/"):
         return "raw", "первоисточник в Raw/ — подписанный документ, доверие по определению"
+    # Галочка «доверять» у корня синка Confluence — первое слово (решение пользователя
+    # 27.09.2026): раздел целиком объявлен доверенным тем, кто его подключил, как веб-ссылка.
+    # Сильнее задач: человек отметил раздел, который задачами не описывается.
+    root_title = trusted_root(src)
+    if root_title:
+        return "raw", (f"раздел Confluence «{root_title}» отмечен «доверять» в настройке "
+                       "импорта — доверие по определению")
     # Модуль-документ мог объявить доверие прямо в файле зеркала — так делает `sync:web`,
     # где галочку ставит человек на КАЖДУЮ ссылку: закон и стандарт доверены, чужой блог
     # с пересказом нет. Спрашиваем сам источник, а не гадаем по совпадению пути.
@@ -249,19 +297,68 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
                                  "сильнее папки: постановка ещё меняется")
             return "raw", (f"источник в «{d}» — объявлен доверенным в конфиге проекта "
                            f"(`trusted_sources`), доверие по определению")
+    # Явные связи: задачи (ключ, номер, названная история) и артефакты, чей код назван в
+    # тексте, — контракт, назвавший алгоритм, наследует доверие алгоритма, алгоритм —
+    # доверие истории (решение пользователя 27.09.2026). Слабейшая связь решает за всех.
+    verdicts = []
+    if direct:
+        v = task_verdict([(r["key"], r["why"], "прямая") for r in direct],
+                         statuses, trust, draft)
+        if v:
+            verdicts.append(v)
+    if depth < REF_DEPTH:
+        for r in table.get("refs", {}).get(src) or []:
+            cls, why = ref_class(r["page"], table, statuses, trust, draft, docs, depth + 1)
+            # Артефакт без связей ничего не говорит ни за, ни против — как задача без
+            # статуса. Справочник и раздел с галочкой тоже нейтральны: форма, назвавшая
+            # сущность логической модели, от этого не стала готовой — готовность решают
+            # истории и задачи.
+            if cls in ("trusted", "draft"):
+                verdicts.append((cls, f"по ссылке на {r['code']} "
+                                      f"({os.path.splitext(os.path.basename(r['page']))[0]}): {why}"))
+    if verdicts:
+        return min(verdicts, key=lambda cw: CLASS_RANK.get(cw[0], 0))
+    if direct:
+        return "unknown", "связанные задачи есть, но их статус неизвестен"
+    if explicit:
+        return "unknown", "явных связей нет"
     indirect = [r for r in (table.get("indirect", {}).get(src) or []) if r["key"] not in EPICS]
-    rows = [(r["key"], r["why"], "прямая") for r in direct] or \
-           [(r["key"], " → ".join(r["trail"]), f"трассировка, глубина {r['depth']}")
+    rows = [(r["key"], " → ".join(r["trail"]), f"трассировка, глубина {r['depth']}")
             for r in indirect]
     if not rows:
         epic_only = any(r["key"] in EPICS for r in (table.get("direct", {}).get(src) or [])
                         + (table.get("indirect", {}).get(src) or []))
         return "unknown", ("связана только с эпиком — эпик доверия не решает, задач нет"
                            if epic_only else "связей с задачами нет — класс не определён")
+    return task_verdict(rows, statuses, trust, draft) or \
+        ("unknown", "связанные задачи есть, но их статус неизвестен")
+
+
+REF_DEPTH = 2          # переходов по ссылкам на артефакты: контракт → алгоритм → история
+_REF_MEMO: dict = {}
+
+
+def ref_class(src: str, table: dict, statuses: dict, trust: set, draft: set, docs: tuple,
+              depth: int) -> tuple:
+    """Класс артефакта, на который ссылаются по коду, — только по его явным связям.
+
+    Трассировка по именам соседей сюда не идёт: через неё и через ссылку подряд связь
+    ушла бы на четыре перехода, а там связано всё со всем.
+    """
+    key = (id(table), id(statuses), src, depth)
+    if key not in _REF_MEMO:
+        _REF_MEMO[key] = ("unknown", "проверяется")      # страж цикла A → B → A
+        _REF_MEMO[key] = source_class(src, table, statuses, trust, draft, docs,
+                                      depth=depth, explicit=True)
+    return _REF_MEMO[key]
+
+
+def task_verdict(rows: list, statuses: dict, trust: set, draft: set):
+    """(класс, основание) по связанным задачам — слабейшая решает; None — статусов нет."""
     said = [(k, statuses.get(k, ""), why, how) for k, why, how in rows]
     known = [s for s in said if s[1]]
     if not known:
-        return "unknown", "связанные задачи есть, но их статус неизвестен"
+        return None
     if any(s[1].casefold() in draft for s in known):
         bad = next(s for s in known if s[1].casefold() in draft)
         return "draft", (f"задача {bad[0]} в статусе «{bad[1]}» — постановка ещё меняется "
@@ -353,8 +450,14 @@ def main() -> int:
         print("В конфиге прежние доверенные ветки вики по названию — действуют справочные "
               "(вики доверена как справочник или задачей Jira).")
     REFERENCE_BRANCHES[:] = list(kinds)
+    cfg_path = os.path.join(root, "aurora.config.yaml")
+    cfg_text = open(cfg_path, encoding="utf-8").read() if os.path.isfile(cfg_path) else ""
+    TRUSTED_ROOTS[:] = trusted_roots(root, sync_roots(cfg_text))
+    _REF_MEMO.clear()
     print(f"Доверенные источники: {', '.join(docs)} · справочные ветки вики: "
-          f"{', '.join(kinds)}\n")
+          f"{', '.join(kinds)}"
+          + (" · разделы Confluence с галочкой «доверять»: "
+             + ", ".join(t for _p, t in TRUSTED_ROOTS) if TRUSTED_ROOTS else "") + "\n")
     statuses = inherit_story(statuses, task_parents(root), trust)
     EPICS.clear()
     EPICS.update(k for k, ty in task_types(root).items() if ty.casefold() in EPIC_TYPES)

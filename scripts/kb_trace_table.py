@@ -17,9 +17,21 @@
   • ссылка видна хотя бы с одной стороны: ключ задачи в тексте артефакта, URL страницы
     или её `page_id` в задаче.
 
+  • история названа в тексте: «Реализует: US-4.1.1» на странице алгоритма — связь с
+    историей 4.1.1 (решение пользователя 27.09.2026: алгоритм доверен, если доверена
+    пользовательская история, которую он реализует).
+
+**Ссылка по коду** — артефакт называет код другого артефакта: контракт упоминает `ALG-072`,
+GUI — `US-4.1.1`. Код — ведущий токен заголовка страницы (`ALG-072 Регистрация…`,
+`AC-5.2.2. Гистограмма…`); номер истории сравнивается без префикса, как и с задачами.
+Доверие такой артефакт наследует от того, на который ссылается (`kb:trust`).
+
 **Косвенная** — трассировка через артефакты, глубиной до двух переходов: артефакт → другой
 артефакт → третий, у которого есть прямая связь. Дальше связь размывается настолько, что
-доверять ей нельзя: через три перехода в большой базе связано всё со всем.
+доверять ей нельзя: через три перехода в большой базе связано всё со всем. Страница и её
+предки или потомки в дереве вики соседями не считаются: родитель перечисляет детей, дети
+несут его имя в «хлебных крошках», и через родителя алгоритм оказывался связан с задачами
+всех соседних алгоритмов папки (PRJ-C 27.09.2026).
 
 Сосед — страница, чьё имя или заголовок упомянуты в тексте **целым словом**. Служебные файлы
 зеркала (`sync_state.md`, журналы, промпты и правила прежних синков) в таблицу не входят:
@@ -75,6 +87,17 @@ GENERATED_RE = re.compile(r"\A\s*<!--[^>]*?(не править руками|г�
 
 # Номер истории: префикс при сравнении отбрасывается, значим только сам номер.
 NUM = re.compile(r"(?i)\b(?:US|AC|ALG|SPEC|REQ)?[\s._-]?(\d+(?:\.\d+){1,3})\b")
+# История, названная в тексте: только с префиксом истории — голое «1.2» бывает чем угодно.
+STORY = re.compile(r"(?<![A-Za-z0-9])(?:US|AC)[\s._-]?(\d+(?:\.\d+){1,3})(?![\d])")
+STORY_PREFIX = ("US", "AC")
+# Код артефакта: ведущий токен заголовка (`ALG-072`, `AC-5.2.2`, `RU.PRJ.UI.DBD-002`).
+# Приставка пространства (`SERVICE.`, `FORM.`) — часть кода: `SERVICE.UI-003` и
+# `FORM.UI-003` — разные экранные формы.
+CODE_TITLE = re.compile(r"^((?:[A-Z][A-Z0-9]*\.)*)([A-Z]{2,}[A-Z0-9]*)[-_ ]?(\d+(?:\.\d+)*)(?!\d)")
+CODE_BODY = re.compile(r"(?<![A-Za-z0-9.])((?:[A-Z][A-Z0-9]*\.)*)([A-Z]{2,}[A-Z0-9]*)[-_ ]?"
+                       r"(\d+(?:\.\d+)*)(?!\d)")
+STORY_PAGES = 3                 # у истории бывает страница US и страница AC — это одна история
+ALGO_PREFIX = ("ALG",)
 KEY = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
 PAGE_ID = re.compile(r"\b(?:pageId|page_id)[=:\s\"']*(\d{4,})", re.I)
 
@@ -106,6 +129,51 @@ def numbers(s: str) -> set:
     return {m.group(1) for m in NUM.finditer(s or "")}
 
 
+def body_of(text: str) -> str:
+    """Текст страницы без шапки: в шапке «хлебные крошки» — имена предков, не ссылки."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4:]
+    return text
+
+
+def norm_code(prefix: str, num: str) -> str:
+    """Код в одном написании: `ALG-072` = `ALG-72`; история — по номеру без префикса."""
+    parts = ".".join(str(int(x)) for x in num.split("."))
+    if prefix.upper() in STORY_PREFIX and "." in parts:
+        return "story " + parts
+    return f"{prefix.upper()}-{parts}"
+
+
+def page_kind(side: dict) -> str:
+    """«story», «algorithm» или пусто — по коду в заголовке страницы.
+
+    Доверие идёт от истории (решение пользователя 27.09.2026): история опирается только на
+    свою задачу, алгоритм — на истории, которые реализует, прочие страницы (контракт,
+    форма, описание) — на истории и алгоритмы. Обратно доверие не течёт: история,
+    упомянувшая форму, от статуса формы не зависит.
+    """
+    title = unq(side["fm"].get("title")) or os.path.splitext(os.path.basename(side["path"]))[0]
+    m = CODE_TITLE.match(title.strip())
+    if not m:
+        return ""
+    if norm_code(m.group(2), m.group(3)).startswith("story "):
+        return "story"
+    return "algorithm" if m.group(2) in ALGO_PREFIX else ""
+
+
+def family(a: str, b: str) -> bool:
+    """Страницы — предок и потомок в дереве вики (в любую сторону).
+
+    Зеркало кладёт страницу с детьми в `<имя>/index.md`, без детей — в `<имя>.md`; дети
+    страницы лежат в папке `<имя>/`.
+    """
+    def kids(p: str) -> str:
+        return (os.path.dirname(p) if os.path.basename(p) == "index.md" else p[:-3]) + "/"
+    return b.startswith(kids(a)) or a.startswith(kids(b))
+
+
 def collect(root: str = ".") -> tuple:
     """(задачи, артефакты) по ролям зеркал."""
     tasks, arts = [], []
@@ -131,7 +199,7 @@ def collect(root: str = ".") -> tuple:
     return tasks, arts
 
 
-def direct(tasks: list, arts: list) -> dict:
+def direct(tasks: list, arts: list, text_stories: bool = True) -> dict:
     """{артефакт: [(ключ задачи, чем доказано)]} — только прямые связи.
 
     Каждая связь записывается вместе с доказательством: через месяц никто не воспроизведёт
@@ -160,6 +228,14 @@ def direct(tasks: list, arts: list) -> dict:
         for m in KEY.finditer(a["text"]):
             if m.group(1) in by_key:
                 found.setdefault(m.group(1), f"ключ {m.group(1)} в тексте артефакта")
+        # История, которую артефакт реализует или на которую опирается, названа в тексте:
+        # «Реализует: US-4.1.1». Номер в заголовке этого не ловил — у алгоритма свой код.
+        # Страница самой истории чужие истории в опору не берёт: её доверие — её задача.
+        story_nums = set() if page_kind(a) == "story" or not text_stories else \
+            {m.group(1) for m in STORY.finditer(body_of(a["text"]))}
+        for n in story_nums:
+            for key, num in by_num.get(n, []):
+                found.setdefault(key, f"история {num} названа в тексте артефакта")
         pid = unq(a["fm"].get("page_id")) or unq(a["fm"].get("id"))
         for key in by_page.get(pid, []):
             found.setdefault(key, f"page_id {pid} в задаче")
@@ -168,12 +244,13 @@ def direct(tasks: list, arts: list) -> dict:
     return out
 
 
-def art_links(arts: list) -> dict:
+def art_links(arts: list, tree: bool = False) -> dict:
     """{артефакт: {соседи}} — страницы, чьё имя или заголовок упомянуты целым словом.
 
     Подстрока не годится: «Пол» есть в «Полный», «МНС» — в «МНС_РА», и короткое имя
     справочника связывало с собой полбазы. Имя двух файлов сразу (`index` у каждой ветки)
-    не адрес — по нему не понять, о каком файле речь.
+    не адрес — по нему не понять, о каком файле речь. `tree` — считать и связи предка с
+    потомком: по ним трассировка не ходит, но узел по числу связей судится с ними.
     """
     names: dict = {}
     for a in arts:
@@ -186,7 +263,7 @@ def art_links(arts: list) -> dict:
     for a in arts:
         text = a["text"]
         for name, path in names.items():
-            if path == a["path"] or name not in text:
+            if path == a["path"] or name not in text or (not tree and family(a["path"], path)):
                 continue
             if not re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text):
                 continue
@@ -199,6 +276,69 @@ def art_links(arts: list) -> dict:
     return out
 
 
+def code_refs(arts: list, task_prefixes: set) -> dict:
+    """{артефакт: [(страница, код)]} — истории и алгоритмы, чей код назван в тексте.
+
+    Направленная связь: контракт, назвавший `ALG-072`, опирается на алгоритм, а не
+    наоборот, и доверие наследует от него (`kb:trust`); алгоритм — на историю (`page_kind`).
+    Ключ задачи Jira кодом артефакта не считается — у него свой путь, прямая связь. Код
+    без приставки, которым названо несколько страниц, — не адрес; ссылка на предка или
+    потомка — навигация по дереву.
+    """
+    index: dict = {}
+    for a in arts:
+        title = unq(a["fm"].get("title")) or os.path.splitext(os.path.basename(a["path"]))[0]
+        m = CODE_TITLE.match(title.strip())
+        if m and m.group(2) not in task_prefixes:
+            code = norm_code(m.group(2), m.group(3))
+            index.setdefault(code, set()).add(a["path"])
+            if m.group(1) and not code.startswith("story "):
+                index.setdefault(m.group(1).upper() + code, set()).add(a["path"])
+
+    def pages(space: str, prefix: str, num: str) -> set:
+        code = norm_code(prefix, num)
+        if code.startswith("story "):
+            got = index.get(code, set())
+            return got if len(got) <= STORY_PAGES else set()
+        # Код с приставкой ищем с приставкой; без неё — только если он однозначен.
+        got = index.get(space.upper() + code, set()) if space else set()
+        got = got or index.get(code, set())
+        return got if len(got) == 1 else set()
+
+    kind = {a["path"]: page_kind(a) for a in arts}
+    # Куда страница может опереться: история — никуда, алгоритм — на истории, прочие — на
+    # истории и алгоритмы.
+    allowed = {"story": (), "algorithm": ("story",)}
+    out: dict = {}
+    for a in arts:
+        rows = {}
+        can = allowed.get(kind[a["path"]], ("story", "algorithm"))
+        if not can:
+            continue
+        for m in CODE_BODY.finditer(body_of(a["text"])):
+            if m.group(2) in task_prefixes:
+                continue
+            for path in pages(m.group(1), m.group(2), m.group(3)):
+                if (path != a["path"] and kind.get(path) in can
+                        and not family(a["path"], path)):
+                    rows.setdefault(path, f"{m.group(1)}{m.group(2)}-{m.group(3)}")
+        if rows:
+            out[a["path"]] = rows
+    # Узел: страница, на которую по коду ссылается больше каждого двадцатого артефакта, —
+    # общее меню или справочник экрана, а не зависимость. Истории узлами не бывают: на
+    # них и держится доверие алгоритмов и форм (решение пользователя 27.09.2026).
+    cut = max(HUB_MIN, len(arts) // HUB_SHARE)
+    fans: dict = {}
+    for rows in out.values():
+        for path, code in rows.items():
+            fans.setdefault(path, set()).add(code)
+    wide = {p for p, _c in fans.items()
+            if sum(1 for rows in out.values() if p in rows) > cut
+            and not any(STORY.search(c) for c in fans[p])}
+    return {k: sorted((p, c) for p, c in v.items() if p not in wide)
+            for k, v in out.items() if any(p not in wide for p in v)}
+
+
 def hubs(links: dict) -> set:
     """Узлы — страницы, связанные больше чем с каждым двадцатым артефактом."""
     cut = max(HUB_MIN, len(links) // HUB_SHARE)
@@ -206,29 +346,33 @@ def hubs(links: dict) -> set:
 
 
 def indirect(direct_map: dict, links: dict, depth: int = DEPTH,
-             hubs: frozenset = frozenset()) -> dict:
+             hubs: frozenset = frozenset(), linked: dict = None) -> dict:
     """{артефакт: [(ключ, путь трассировки, глубина)]} — связь через соседей.
 
     Через узел (`hubs`) путь не идёт и от узла не начинается: узел связан со всем, и путь
-    через него доказывает лишь то, что оба конца упоминают один термин.
+    через него доказывает лишь то, что оба конца упоминают один термин. `linked` —
+    артефакты, у которых явная связь уже есть (по умолчанию `direct_map`): им трассировка
+    не нужна.
     """
     out: dict = {}
     for start in links:
-        if start in direct_map or start in hubs:
+        if start in (direct_map if linked is None else linked) or start in hubs:
             continue
         seen, front, found = {start}, [(start, [start])], {}
         for step in range(1, depth + 1):
             nxt = []
             for node, path in front:
                 for nb in links.get(node, ()):
-                    if nb in seen:
+                    # Узел не отдаёт и своих задач: глоссарий со своей связью иначе раздавал
+                    # бы её каждому, кто употребил термин.
+                    if nb in seen or nb in hubs:
                         continue
                     seen.add(nb)
                     trail = path + [nb]
                     if nb in direct_map:
                         for key, _why in direct_map[nb]:
                             found.setdefault(key, (trail, step))
-                    elif nb not in hubs:
+                    else:
                         nxt.append((nb, trail))
             front = nxt
             if not front:
@@ -243,9 +387,21 @@ def build(root: str = ".") -> dict:
     tasks, arts = collect(root)
     dmap = direct(tasks, arts)
     links = art_links(arts)
-    hub = hubs(links)
-    imap = indirect(dmap, links, hubs=hub)
+    # Узел судим по всем связям, включая «родитель — дети»: оглавление связано со всем
+    # поддеревом, и без этих связей оно переставало быть узлом — трассировка шла через
+    # него к чужим задачам (PRJ-A 27.09.2026).
+    hub = hubs(art_links(arts, tree=True))
+    # История, названная в тексте, — опора самой назвавшей страницы, но не её соседей:
+    # оглавление, перечислившее полсотни историй, раздавало бы их всем, кто на него
+    # сослался (PRJ-A 27.09.2026). Концами трассировки остаются номер в заголовке, ключ
+    # задачи и page_id.
+    imap = indirect(direct(tasks, arts, text_stories=False), links, hubs=hub, linked=dmap)
+    prefixes = {k.rsplit("-", 1)[0] for k in
+                (unq(t["fm"].get("key")) or os.path.splitext(os.path.basename(t["path"]))[0]
+                 for t in tasks) if "-" in k}
+    refs = code_refs(arts, prefixes)
     return {"date": TODAY, "tasks": len(tasks), "artifacts": len(arts), "hubs": sorted(hub),
+            "refs": {k: [{"page": p, "code": c} for p, c in v] for k, v in refs.items()},
             "direct": {k: [{"key": key, "why": why} for key, why in v]
                        for k, v in dmap.items()},
             "indirect": {k: [{"key": key, "trail": tr, "depth": d} for key, tr, d in v]
@@ -259,9 +415,11 @@ def render_moc(t: dict) -> str:
          f"updated: {TODAY}", "---", "",
          "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_trace_table.py — ручные правки будут потеряны. -->", "", "# Трассировка: артефакт → задача", "",
          f"_Задач: {t['tasks']} · артефактов: {t['artifacts']} · прямых связей: "
-         f"{len(t['direct'])} · косвенных: {len(t['indirect'])} · собрано {t['date']}_", "",
-         "Прямая связь — совпавший номер или ссылка. Косвенная — трассировка через "
-         "артефакты, до двух переходов. Класс доверия карточки считается по этой таблице: "
+         f"{len(t['direct'])} · по коду: {len(t.get('refs') or {})} · косвенных: "
+         f"{len(t['indirect'])} · собрано {t['date']}_", "",
+         "Прямая связь — совпавший номер, ссылка или история, названная в тексте. По коду — "
+         "артефакт называет код другого и наследует его доверие. Косвенная — трассировка "
+         "через артефакты, до двух переходов. Класс доверия карточки считается по этой таблице: "
          "`kb:trust`.", ""] + ([
              "Страницы-узлы, через которые трассировка не идёт: "
              + ", ".join("/".join(h.split("/")[-2:]) for h in t["hubs"][:30]) + ".", ""]
@@ -271,6 +429,12 @@ def render_moc(t: dict) -> str:
     for path, rows in sorted(t["direct"].items())[:400]:
         keys = ", ".join(r["key"] for r in rows[:4])
         L.append(f"| {os.path.basename(path)} | {keys} | {rows[0]['why']} |")
+    L += ["", "## Ссылки на артефакты по коду", "",
+          "| Артефакт | Ссылается на | Код |", "|---|---|---|"]
+    for path, rows in sorted((t.get("refs") or {}).items())[:400]:
+        L.append(f"| {os.path.basename(path)} | "
+                 f"{', '.join(os.path.basename(r['page']) for r in rows[:3])} | "
+                 f"{', '.join(r['code'] for r in rows[:3])} |")
     L += ["", "## Косвенные связи (трассировка)", "",
           "| Артефакт | Задачи | Путь | Глубина |", "|---|---|---|---|"]
     for path, rows in sorted(t["indirect"].items())[:400]:
@@ -295,9 +459,11 @@ def main() -> int:
     print(f"Задач в зеркале: {t['tasks']} · артефактов: {t['artifacts']}")
     print(f"Артефактов с прямой связью: {len(t['direct'])}")
     print(f"Артефактов со связью через трассировку: {len(t['indirect'])}")
+    print(f"Артефактов со ссылкой на другой артефакт по коду: {len(t['refs'])}")
     print(f"Страниц-узлов, через которые трассировка не идёт: {len(t['hubs'])}")
-    orphan = t["artifacts"] - len(t["direct"]) - len(t["indirect"])
-    print(f"Без связи с задачами: {orphan} — их класс доверия будет «unknown»")
+    linked = set(t["direct"]) | set(t["indirect"]) | set(t["refs"])
+    orphan = t["artifacts"] - len(linked)
+    print(f"Без связей: {orphan} — их класс доверия будет «unknown»")
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
         return 0
@@ -305,8 +471,8 @@ def main() -> int:
     direct, indirect = len(t["direct"]), len(t["indirect"])
     Path(a.root, SUMMARY).write_text(json.dumps(
         {"date": t["date"], "tasks": t["tasks"], "artifacts": t["artifacts"],
-         "direct": direct, "indirect": indirect,
-         "orphan": max(0, t["artifacts"] - direct - indirect)},
+         "direct": direct, "indirect": indirect, "refs": len(t["refs"]),
+         "orphan": max(0, orphan)},
         ensure_ascii=False, indent=1), encoding="utf-8")
     Path(a.root, TABLE).write_text(json.dumps(t, ensure_ascii=False, indent=1),
                                    encoding="utf-8")

@@ -1496,8 +1496,23 @@ def test_confluence_ref_parsing(tmp: Path):
 
     # форма читает корни любого вида, иначе неразрешённая строка исчезает с экрана
     ui = panel_sources()
-    assert 'page_id:\\s*"?([^"\\n]+?)"?' in ui, \
-        "панель читает только числовые page_id — нечисловая строка пропадёт из формы"
+    got = re.search(r"sync_roots: \(\(\) => \{([\s\S]*?)\n    \}\)\(\),", ui)
+    assert got, "разбор корней синка в форме не найден"
+    node = shutil.which("node")
+    if node:
+        probe = tmp / "roots.js"
+        probe.write_text("const cfgRaw = {text: " + json.dumps(
+            'atlassian:\n  confluence:\n    sync_roots:\n'
+            '      - page_id: "https://c.example.com/display/SP/GUI"\n        title: "GUI"\n'
+            '      - page_id: "111"\n        title: "Раздел А"\n        trusted: true\n'
+            '  jira:\n    project_key: "P"\n') + "};\nconsole.log(JSON.stringify((() => {"
+            + got.group(1) + "\n})()));\n", encoding="utf-8")
+        cp = subprocess.run([node, str(probe)], capture_output=True, text=True)
+        assert cp.returncode == 0, cp.stderr
+        rows = json.loads(cp.stdout)
+        assert [r["page_id"] for r in rows] == ["https://c.example.com/display/SP/GUI", "111"], \
+            f"панель читает только числовые page_id — нечисловая строка пропадёт из формы: {rows}"
+        assert [r["trusted"] for r in rows] == [False, True], rows
 
 
 @test
@@ -6326,20 +6341,23 @@ def test_trace_ignores_service_files_short_names_and_hubs(tmp: Path):
     page = lambda rel, title, body: ((conf / rel).parent.mkdir(parents=True, exist_ok=True),
                                      (conf / rel).write_text(f'---\ntitle: "{title}"\n---\n\n{body}\n',
                                                              encoding="utf-8"))
-    page("US-1.1-Экран.md", "US-1.1. Экран", "Экран.")
-    page("Алгоритм.md", "Алгоритм", "см. US-1.1-Экран")
-    page("Термин.md", "Термин", "употреблён на экране US-1.1-Экран")
+    # Прямая связь — ключом задачи в тексте; соседи называют страницу по имени. Код истории
+    # в тексте (US-1.1) — уже прямая связь (1.137.0), поэтому соседи им не пользуются.
+    page("Экран-оплаты.md", "Экран оплаты", "Задача PRJ-1.")
+    page("Алгоритм.md", "Алгоритм", "см. Экран-оплаты")
+    # у узла своя прямая связь: её задачи всё равно не раздаются тем, кто упомянул термин
+    page("Термин.md", "Термин", "употреблён на экране Экран-оплаты, история US-1.1")
     names = [f"Страница-{i:02d}" for i in range(25)]
     for n in names:
         page(f"{n}.md", n, "Термин встречается и здесь. Полный текст.")
-    page("Пол.md", "Пол", "см. US-1.1-Экран")
+    page("Пол.md", "Пол", "см. Экран-оплаты")
     page("Сирота.md", "Сирота", "Полный список без ссылок.")
     page("А/index.md", "Ветка А", "Оглавление.")
-    page("Б/index.md", "Ветка Б", "см. US-1.1-Экран")
+    page("Б/index.md", "Ветка Б", "см. Экран-оплаты")
     page("Ссылка-на-оглавление.md", "Ссылка на оглавление", "см. index")
     (conf / "sync_state.md").write_text(
         "<!-- Confluence sync state — генерируется, не править руками -->\n| Title |\n|---|\n"
-        + "".join(f"| {n} |\n" for n in names + ["US-1.1-Экран", "Сирота", "Термин"]),
+        + "".join(f"| {n} |\n" for n in names + ["Экран-оплаты", "Сирота", "Термин"]),
         encoding="utf-8")
 
     _tasks, arts = T.collect(str(root))
@@ -18589,6 +18607,107 @@ def test_kit_launchers_try_python_before_trusting_it(tmp: Path):
                         text=True, timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
     assert cp.returncode == 1 and "Не найден git" in cp.stdout, \
         f"заглушка git принята за git:\n{cp.stdout}{cp.stderr}"
+
+
+@test
+def test_trust_flows_from_the_user_story(tmp: Path):
+    """Доверие вики идёт от пользовательской истории; раздел с галочкой доверен сразу.
+
+    Решение пользователя 27.09.2026: алгоритм доверен, если доверена история, которую он
+    реализует («Реализует: US-4.1.1»); контракт — через алгоритм; форма — по историям; из
+    нескольких связей решает слабейшая. Галочка «доверять» у корня синка Confluence —
+    первое слово, сильнее задач. Живой случай PRJ-C: номер истории искался только в
+    заголовке, код `ALG-072` в тексте контракта связью не считался, а через страницу-
+    родителя алгоритм получал задачи всех соседних алгоритмов папки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    T = importlib.import_module("kb_trace_table")
+    K = importlib.import_module("kb_trust")
+    AC = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    jira, conf = root / "Sources/JIRA", root / "Sources/Confluence"
+
+    def page(rel, title, body, pid=""):
+        p = conf / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f'---\n{"page_id: " + pid + chr(10) if pid else ""}title: "{title}"\n'
+                     f'breadcrumbs: "Алгоритмы"\n---\n\n# {title}\n\n{body}\n', encoding="utf-8")
+    jira.mkdir(parents=True, exist_ok=True)
+    for key, title, status in (("PRJ-1", "US 4.1.1 Вход", "Закрыто"),
+                               ("PRJ-2", "US 4.1.2 Выход", "Анализ"),
+                               ("PRJ-3", "Доработка соседнего алгоритма", "Анализ")):
+        (jira / f"{key}.md").write_text(f'---\nkey: "{key}"\ntitle: "{title}"\n'
+                                        f'status: "{status}"\n---\n', encoding="utf-8")
+    page("Истории/US-4.1.1._Вход.md", "US-4.1.1. Вход", "Использует ALG-073 и US-4.1.2.")
+    page("Алгоритмы/index.md", "Алгоритмы", "- ALG-072 Регистрация\n- ALG-073 Прочее", pid="100")
+    page("Алгоритмы/ALG-072_Регистрация.md", "ALG-072 Регистрация",
+         "| Реализует | RU.PRJ.US-4.1.1 |")
+    page("Алгоритмы/ALG-073_Прочее.md", "ALG-073 Прочее", "Задача PRJ-3.")
+    page("Форматы/Контракт_регистрации.md", "Контракт регистрации", "Вызывает RU.PRJ.ALG-072.")
+    page("GUI/Форма_входа.md", "Форма входа", "Истории US-4.1.1 и US-4.1.2.")
+    page("Модель/index.md", "Логическая модель", "Сущности.", pid="900")
+    page("Модель/Заявитель.md", "Заявитель", "Заполняет ALG-073. Задача PRJ-3.")
+
+    t = T.build(str(root))
+    alg = "Sources/Confluence/Алгоритмы/ALG-072_Регистрация.md"
+    assert [r["key"] for r in t["direct"].get(alg, [])] == ["PRJ-1"], \
+        f"история, названная в тексте алгоритма, не стала связью: {t['direct'].get(alg)}"
+    assert alg not in t["indirect"] or all("PRJ-3" != r["key"] for r in t["indirect"][alg]), \
+        "через страницу-родителя алгоритм получил задачу соседнего"
+    story = "Sources/Confluence/Истории/US-4.1.1._Вход.md"
+    assert [r["key"] for r in t["direct"][story]] == ["PRJ-1"] and story not in t["refs"], \
+        f"история взяла в опору чужую историю или алгоритм: {t['direct'][story]}, {t['refs'].get(story)}"
+    contract = "Sources/Confluence/Форматы/Контракт_регистрации.md"
+    assert [r["page"] for r in t["refs"][contract]] == [alg], t["refs"].get(contract)
+
+    K.TRUSTED_ROOTS[:] = K.trusted_roots(str(root), [
+        {"page_id": "900", "title": "Логическая модель", "trusted": True},
+        {"page_id": "100", "title": "Алгоритмы", "trusted": False}])
+    K._REF_MEMO.clear()
+    st = K.task_status(str(root))
+    trust, draft = {"закрыто"}, {"анализ"}
+    judge = lambda src: K.source_class(src, t, st, trust, draft)
+    try:
+        assert judge(alg)[0] == "trusted", judge(alg)
+        assert judge("Sources/Confluence/Алгоритмы/ALG-073_Прочее.md")[0] == "draft"
+        cls, why = judge(contract)
+        assert cls == "trusted" and "ALG-072" in why, f"контракт не взял доверие алгоритма: {cls} — {why}"
+        cls, why = judge("Sources/Confluence/GUI/Форма_входа.md")
+        assert cls == "draft" and "PRJ-2" in why, f"слабейшая история не решила за форму: {cls} — {why}"
+        assert judge(story)[0] == "trusted", "история взяла статус упомянутого алгоритма"
+        cls, why = judge("Sources/Confluence/Модель/Заявитель.md")
+        assert cls == "raw" and "Логическая модель" in why, \
+            f"раздел с галочкой не доверен сразу: {cls} — {why}"
+    finally:
+        K.TRUSTED_ROOTS.clear()
+        K._REF_MEMO.clear()
+
+    # галочка — в настройке проекта: читается, пишется и доходит до формы панели
+    cfg = ('atlassian:\n  confluence:\n    base_url: "https://c.example.com"\n    space: "S"\n'
+           '    sync_roots:\n      - page_id: "900"\n        title: "Логическая модель"\n'
+           '        trusted: true\n      - page_id: "100"\n        title: "Алгоритмы"\n'
+           '  jira:\n    project_key: "PRJ"\n')
+    assert [r["trusted"] for r in AC.sync_roots(cfg)] == [True, False]
+    S = importlib.import_module("aurora_setup")
+    (root / "aurora.config.yaml").write_text(cfg, encoding="utf-8")
+    c = S.read_config(root / "aurora.config.yaml")
+    assert c["sync_roots"] == [("900", "Логическая модель", True), ("100", "Алгоритмы", False)], c
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.run_answers(root, {"sync_roots": [{"page_id": "900", "title": "Логическая модель"},
+                                            {"page_id": "100", "title": "Алгоритмы",
+                                             "trusted": True}]})
+    got = AC.sync_roots((root / "aurora.config.yaml").read_text(encoding="utf-8"))
+    assert [(r["page_id"], r["trusted"]) for r in got] == [("900", False), ("100", True)], got
+    assert "trusted: false" not in (root / "aurora.config.yaml").read_text(encoding="utf-8"), \
+        "«не отмечено» записано как «не доверять» — у корня это «работают правила»"
+    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'title: t("proj.root_trust_hint")' in html and "onchange:e=>r.trusted=" in html, \
+        "у корня синка в форме нет галочки «доверять»"
+    for lang in ("ru", "en"):
+        assert "proj.root_trust_hint" in json.loads(
+            (KIT / f"cockpit/i18n/{lang}.json").read_text(encoding="utf-8")), lang
 
 
 @test

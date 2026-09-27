@@ -714,7 +714,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.136.0";
+const UI_VERSION = "1.137.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -4089,8 +4089,18 @@ async function renderProject(){
     // источники, и доверяются они по разным правилам. У каждой ссылки своя галочка.
     web_pages: [...(cfgRaw.text.matchAll(/-\s*url:\s*(\S+)\s*\n\s*trusted:\s*(\S+)/g))]
       .map(m => ({url: m[1], trusted: /^(true|yes|да)$/i.test(m[2])})),
-    sync_roots: [...(cfgRaw.text.matchAll(/page_id:\s*"?([^"\n]+?)"?\s*\n\s*title:\s*"?([^"\n]+?)"?\s*$/gm))]
-      .map(m=>({page_id:m[1], title:m[2]})),
+    // Корни синка — пунктами списка: page_id, название, ссылка и галочка «доверять»
+    // (решение пользователя 27.09.2026). Разбор тот же, что у движка (`sync_roots`).
+    sync_roots: (() => {
+      const m = cfgRaw.text.match(/^(\s*)sync_roots\s*:[^\n]*\n((?:\1\s+[^\n]*\n?|\s*\n)*)/m);
+      if (!m) return [];
+      return m[2].split(/^\s*-\s+/m).slice(1).map(item => {
+        const f = k => ((item.match(new RegExp("^\\s*" + k + "\\s*:\\s*(.*?)\\s*$", "m")) || [])[1]
+                        || "").replace(/^["']|["']$/g, "");
+        return {page_id: f("page_id"), title: f("title"),
+                trusted: /^(true|yes|да)$/i.test(f("trusted"))};
+      }).filter(r => r.page_id);
+    })(),
   };
   const inp = (key, label, ph, hint) => el("label",{style:"display:block;margin-bottom:12px"},
     el("div",{class:"muted",style:"font-size:12px;margin-bottom:4px"},
@@ -4108,11 +4118,18 @@ async function renderProject(){
       watch(el("input",{class:"btn",style:"flex:1;min-width:160px;font-weight:400",
         placeholder: t("proj.root_title_ph"), value:r.title,
         oninput:e=>r.title=e.target.value}), "form", t("dirty.form")),
+      // Галочка у раздела, как у веб-ссылки: отмечен — доверен целиком и сразу; не
+      // отмечен — доверие по правилам (справочник, задача, история).
+      el("label",{class:"muted",style:"font-size:12px;display:flex;align-items:center;gap:6px",
+        title: t("proj.root_trust_hint")},
+        watch(el("input",{type:"checkbox", checked: r.trusted ? "" : null,
+          onchange:e=>r.trusted=e.target.checked}), "form", t("dirty.form")),
+        t("proj.trust")),
       el("button",{class:"btn sm danger", title: t("proj.drop"),
         onclick:()=>{A.sync_roots.splice(i,1); drawRoots();
                      setDirty("form", t("dirty.form"), true);}},"✕"))));
     rootsBox.append(el("button",{class:"btn sm",style:"margin-top:4px",
-      onclick:()=>{A.sync_roots.push({page_id:"",title:""}); drawRoots();
+      onclick:()=>{A.sync_roots.push({page_id:"",title:"",trusted:false}); drawRoots();
                    setDirty("form", t("dirty.form"), true);}},
       t("proj.add_root")));
   };

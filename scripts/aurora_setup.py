@@ -72,9 +72,10 @@ def read_config(path: Path) -> dict:
         m = re.search(rf"^\s+{name}\s*:\s*(\S+)", wblock, re.M)
         if m:
             cfg[key] = m.group(1).strip().strip('"\'')
-    # sync_roots: пары page_id / title
-    for m in re.finditer(r'page_id:\s*"?([^"\n]+?)"?\s*\n\s*title:\s*"?([^"\n]+?)"?\s*(?:\n|$)', cblock):
-        cfg["sync_roots"].append((m.group(1).strip(), m.group(2).strip()))
+    # sync_roots: page_id, название и галочка «доверять» — тем же чтением, что у `kb:trust`
+    from aurora_common import sync_roots
+    cfg["sync_roots"] = [(r["page_id"], r["title"] or f"page {r['page_id']}", r["trusted"])
+                         for r in sync_roots(cblock)]
     # jira блок
     jm = re.search(r"jira:(.*?)(?:\n  auth:|\Z)", text, re.S)
     jblock = jm.group(1) if jm else ""
@@ -282,13 +283,17 @@ def write_config(path: Path, c: dict):
     roots = "[]"
     if c["sync_roots"]:
         lines = []
-        for pid, title in c["sync_roots"]:
+        for pid, title, trusted in c["sync_roots"]:
             # ссылку собираем только для настоящего номера: иначе в конфиг попадал
             # адрес вида …?pageId=https://…/display/… — бессмысленный и вводящий в заблуждение
             url = (f"{c['conf_url'].rstrip('/')}/pages/viewpage.action?pageId={pid}"
                    if c["conf_url"] and str(pid).isdigit() else "")
+            # Галочку пишем только поставленную: у корня Confluence «не отмечено» значит
+            # «работают правила» (справочник, задача, история), а не «не доверять», как у
+            # веб-ссылки, — и `trusted: false` читался бы неверно.
             lines.append(f'      - page_id: "{pid}"\n        title: "{title}"'
-                         + (f'\n        url: "{url}"' if url else ""))
+                         + (f'\n        url: "{url}"' if url else "")
+                         + ("\n        trusted: true" if trusted else ""))
         roots = "\n" + "\n".join(lines)
     pages = ""
     for key, name in (("web_depth", "depth"), ("web_assets", "assets"),
@@ -424,7 +429,7 @@ def run_answers(target: Path, answers: dict) -> int:
 
     Форму задаёт панель, а записывает всё этот же скрипт: иначе у настройки появилось бы
     два разных способа собрать конфиг, и они разошлись бы на второй же правке.
-    Ключи те же, что поля диалога; `sync_roots` — список пар page_id и title.
+    Ключи те же, что поля диалога; `sync_roots` — список {page_id, title, trusted}.
     """
     cfg_path = target / "aurora.config.yaml"
     c = read_config(cfg_path)
@@ -448,7 +453,8 @@ def run_answers(target: Path, answers: dict) -> int:
                 pid = m.group(1)
             if not pid.isdigit():
                 unresolved.append(pid)
-            roots.append((pid, str(item.get("title") or f"page {pid}").strip()))
+            roots.append((pid, str(item.get("title") or f"page {pid}").strip(),
+                          bool(item.get("trusted"))))
         c["sync_roots"] = roots
         for raw in unresolved:
             print(f"⚠️  не номер страницы: {raw}\n"
@@ -506,8 +512,8 @@ def run(target: Path, interactive: bool):
         # ничего — человек уходил с одним корнем или без корней вовсе.
         if c["sync_roots"]:
             print(f"\n  Корневые страницы для синка — сейчас {len(c['sync_roots'])}:")
-            for pid, title in c["sync_roots"]:
-                print(f"    · {pid} — {title}")
+            for pid, title, trusted in c["sync_roots"]:
+                print(f"    · {pid} — {title}" + (" · доверять" if trusted else ""))
             act = ask("  Оставить как есть / добавить ещё / очистить [оставить/add/clear]",
                       "оставить").lower()
             if act.startswith("c"):
@@ -532,7 +538,10 @@ def run(target: Path, interactive: bool):
                     print("       нужен номер страницы из URL (…viewpage.action?pageId=NNN)")
                     continue
             title = input("       название (Enter — по номеру): ").strip() or f"page {pid}"
-            c["sync_roots"].append((pid, title))
+            # Галочка «доверять»: раздел доверен целиком, без задач и историй. Ставят её
+            # справочным разделам — логической модели, описанию форматов.
+            trusted = ask("       доверять разделу целиком, без задач? [y/N]", "n").lower()
+            c["sync_roots"].append((pid, title, trusted.startswith(("y", "д"))))
         if c["sync_roots"]:
             print(f"  → корней синка: {len(c['sync_roots'])}")
 

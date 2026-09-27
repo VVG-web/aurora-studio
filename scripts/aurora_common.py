@@ -830,6 +830,30 @@ def config_list(key: str) -> list:
     return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
 
 
+def sync_roots(text: str) -> list:
+    """Корни синка Confluence из текста конфига: [{page_id, title, url, trusted}].
+
+    Одно чтение на движок: настройка проекта пишет корни, `kb:trust` читает галочку
+    «доверять» (решение пользователя 27.09.2026). Галочка стоит у корня, как у веб-ссылки:
+    отмечен — всё поддерево доверено сразу; не отмечен — работают правила (справочник,
+    задача, история). Ключа нет — не отмечен.
+    """
+    m = re.search(r"^(\s*)sync_roots\s*:[^\n]*\n((?:\1\s+[^\n]*\n?|\s*\n)*)", text or "", re.M)
+    if not m:
+        return []
+    out = []
+    for item in re.split(r"^\s*-\s+", m.group(2), flags=re.M)[1:]:
+        row = {"page_id": "", "title": "", "url": "", "trusted": False}
+        for key in row:
+            f = re.search(rf"^\s*{key}\s*:\s*(.*?)\s*$", item, re.M)
+            if f:
+                row[key] = f.group(1).strip().strip("\"'")
+        row["trusted"] = str(row["trusted"]).lower() in ("true", "yes", "да")
+        if row["page_id"]:
+            out.append(row)
+    return out
+
+
 # Настройка доверия по умолчанию (решение заказчика 15.09.2026). Это обычная настройка
 # проекта: значения пишутся в `aurora.config.yaml` шаблоном нового проекта, формой настроек и
 # обновлением движка — там, где список пуст или ключа нет, — и дальше их видно и их правят.

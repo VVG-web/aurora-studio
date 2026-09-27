@@ -415,6 +415,7 @@
   "proj.f_conf_url": "Confluence: the address",
   "proj.f_conf_space": "Confluence: the space",
   "proj.roots_note": "The sync's root pages · a page is pulled with its whole subtree, so there are usually several of them",
+  "proj.root_trust_hint": "Checked — the whole section is trusted at once, above tasks: reference sections such as the logical model or data formats. Unchecked — trust follows the rules: a reference branch, a linked Jira task or the user story the page implements",
   "proj.f_jira_url": "Jira: the address",
   "proj.f_jira_key": "Jira: the project key",
   "proj.f_jira_jql": "Jira: the default JQL",
