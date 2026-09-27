@@ -117,6 +117,7 @@ function extraRow(ctx, x, redraw){
         t("install.ex_pypi_behind", {git: x.git, pypi: x.pypi})) : null,
       x.error ? el("div", {class:"muted", style:"font-size:12px"}, x.error) : null,
       x.mcp ? mcpHint(ctx, x.mcp) : null,
+      x.id === "pydantic-ai" && have ? compatLine(ctx, x, redraw) : null,
       x.id === "pydantic-ai" ? pydanticHint(ctx) : null),
     btn);
   return row;
@@ -132,6 +133,28 @@ function mcpHint(ctx, m){
     el("div", {class:"muted", style:"font-size:12px;margin:6px 0"}, t("install.ex_mcp_hint")),
     el("pre", {class:"mono", style:"font-size:11.5px;white-space:pre-wrap"}, snippet),
     ctx.ui.copyButton(snippet));
+}
+
+/* Совместимость установленной версии Pydantic AI с Авророй. Новая версия проходит
+   самопроверку один раз — при обновлении из панели или при первом вызове модели; не прошла —
+   движок работает прямым HTTP, а обновление из панели возвращает прежнюю версию. */
+function compatLine(ctx, x, redraw){
+  const {t, el} = ctx;
+  const c = x.compat;
+  const text = !c ? t("install.ex_compat_none")
+    : c.ok ? t("install.ex_compat_ok", {at: c.at})
+    : t("install.ex_compat_bad", {why: (c.problems || []).slice(0, 2).join("; ")});
+  return el("div", {class:"row", style:"gap:8px;margin-top:4px;font-size:12.5px"},
+    el("span", {class:"chip " + (!c ? "" : c.ok ? "ok" : "warn")}, text),
+    el("button", {class:"btn sm", onclick: async (e) => {
+      e.target.disabled = true; e.target.textContent = t("install.ex_busy");
+      const r = await ctx.api("/api/extras/check", {method:"POST",
+        body: JSON.stringify({id: x.id}), quiet:true});
+      ctx.toast(r.ok ? t("install.ex_compat_ok", {at: ""}) :
+                (r.error || t("install.ex_compat_bad", {why: (r.problems || []).join("; ")})),
+                r.ok ? "ok" : "err");
+      redraw(false);
+    }}, t("install.ex_compat_check")));
 }
 
 /* Что уходит в шлюз через Pydantic AI — по шлюзам и ролям: модель, рассуждения и поля

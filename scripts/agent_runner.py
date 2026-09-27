@@ -4013,6 +4013,14 @@ PROMPT_ASK_HINT = """
 
 # ------------------------------------------------------------------ журнал диалогов
 
+def artifact_stem(idea: str, kind: str) -> str:
+    """Имя файла артефакта из первой строки задачи — по правилам Windows, macOS и Linux."""
+    from aurora_common import portable_name
+    title = ((idea or "").strip().splitlines() or ["документ"])[0][:80]
+    return portable_name(re.sub(r"[^\w\- ]+", "", title).strip().replace(" ", "-"),
+                         max_chars=80) or portable_name(kind) or "документ"
+
+
 def slug(text: str, limit: int = 40) -> str:
     """Имя файла из вопроса: человек ищет разговор глазами, а не по идентификатору."""
     from aurora_common import portable_name
@@ -4609,9 +4617,7 @@ def write_artifact(cwd: str, st: dict) -> str:
     out_dir = os.path.join(cwd, spec["out"])
     os.makedirs(out_dir, exist_ok=True)
     title = (st["idea"].strip().splitlines() or ["документ"])[0][:80]
-    from aurora_common import portable_name
-    name = portable_name(re.sub(r"[^\w\- ]+", "", title).strip().replace(" ", "-"),
-                         max_chars=80) or st["kind"]
+    name = artifact_stem(st["idea"], st["kind"])
     # Своя сессия пишет в свой же файл — критик и Момус дописывают шапку того, что уже
     # положил воркер. Чужой файл не трогаем: молча затереть документ, который человек
     # писал руками, значит потерять его без следа — в git он мог и не попасть.

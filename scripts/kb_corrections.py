@@ -142,7 +142,7 @@ def resolve_owners(c: dict, known: dict) -> list:
 def slug(name: str) -> str:
     from aurora_common import portable_name
     return portable_name(re.sub(r"[^\w\-.]+", "-", name, flags=re.U).strip("-"),
-                         max_chars=60)
+                         max_chars=60) or "исправление"
 
 
 def ambiguous(owner: str, known: dict) -> str:

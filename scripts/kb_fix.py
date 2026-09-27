@@ -369,6 +369,16 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
             plan.renames.append((path, new_rel))
         renamed.append((rel, clean))
         taken.add(new_rel)
+    return plan_portable_names(cards, plan, renamed, stuck, taken)
+
+
+def plan_portable_names(cards: dict, plan: "Plan", renamed=None, stuck=None,
+                        taken=None) -> tuple:
+    """Имена, которые не пройдут на Windows, macOS или Linux, или с разметкой ссылки.
+    → (переименовано, спорных). Отдельно от снятия кода: `kb_names` чинит только это."""
+    renamed = [] if renamed is None else renamed
+    stuck = [] if stuck is None else stuck
+    taken = {p.replace("\\", "/") for p in cards} if taken is None else taken
     # Имя с разметкой ссылки (`[`, `]`, `|`) — до 1.122.0 `card_filename` её пропускал: на
     # такую карточку не ведёт ни одна ссылка. Имя, которое не пройдёт по правилам Windows,
     # macOS и Linux разом (`>`, `?`, `:`, имя CON, больше 255 байт), — до 1.140.0 тоже:
@@ -2026,6 +2036,9 @@ def main() -> int:
     ap.add_argument("--terms", action="store_true",
                     help="завести заготовки под понятия, названные в базе словами: "
                          "расшифровка берётся из словаря проекта, выдуманных нет")
+    ap.add_argument("--portable-names", action="store_true",
+                    help="только имена, которые не пройдут на Windows, macOS или Linux "
+                         "(без снятия кода документа) — так их чинит kb_names")
     ap.add_argument("--names", action="store_true",
                     help="снять код документа с имени карточки: знание называется по "
                          "объекту, код и прежнее имя уходят в синонимы")
@@ -2090,8 +2103,9 @@ def main() -> int:
         idx = Index(cards)
         plan = Plan()
         head: list = []
-        if a.names:
-            renamed, bad = plan_names(cards, plan)
+        if a.names or a.portable_names:
+            renamed, bad = (plan_names(cards, plan) if a.names
+                            else plan_portable_names(cards, plan))
             head.append(f"  имён приведено к правилу (код документа, разметка ссылки, "
                         f"правила Windows/macOS/Linux): {len(renamed)}")
             for rel, clean in renamed[:8]:

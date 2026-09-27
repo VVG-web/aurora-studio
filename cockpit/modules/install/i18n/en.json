@@ -50,5 +50,9 @@
   "install.ex_no_backends": "No chat gateways are set up.",
   "install.ex_tpl_bad": "template fields rejected: {why}",
   "install.ex_not_selected": "plain HTTP is selected (AURORA_AGENT_ADAPTER)",
-  "install.ex_not_installed": "not installed"
+  "install.ex_not_installed": "not installed",
+  "install.ex_compat_none": "compatibility with Aurora is checked on the first model call",
+  "install.ex_compat_ok": "compatible with Aurora ✓ {at}",
+  "install.ex_compat_bad": "failed the compatibility check: {why} — calls go over plain HTTP",
+  "install.ex_compat_check": "Check compatibility"
 }

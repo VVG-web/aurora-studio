@@ -568,7 +568,24 @@ PART_MIN = 24           # короче имя перестаёт что-то г�
 CHILD_ROOM = 40         # сколько пути оставить детям страницы, у которой они есть
 
 
-ASSET_ROOM = len("_assets/") + PART_MIN     # папка схем и хоть сколько-то имени файла
+
+
+def need_after(has_children: bool, has_assets: bool) -> int:
+    """Сколько знаков пути нужно после имени страницы: файл, дети, схемы.
+
+    Считается наибольшее, а не сумма: папка схем страницы с детьми лежит внутри её же
+    папки (`<имя>/index_assets/…`), и места под детей ей хватает.
+    """
+    need = len("/index.md") if has_children else len(".md")
+    if has_children:
+        need = max(need, CHILD_ROOM)
+    if has_assets:
+        need = max(need, len("/index_assets/" if has_children else "_assets/") + PART_MIN)
+    return need
+# Точка в имени ещё не расширение: вложение зовут «Стр4.Свод.Итог», и `splitext` честно
+# возвращает «.Итог». Сверяем с известными расширениями, а не с точкой.
+ASSET_EXTS = (".drawio", ".xml", ".mmd", ".png", ".svg", ".jpg", ".jpeg", ".pdf",
+              ".puml", ".json", ".txt")
 
 
 def fit_part(name: str, page_id: str, room: int) -> str:
@@ -677,10 +694,7 @@ class Exporter(WikiMirror):
         base = os.path.splitext(os.path.basename(rel))[0]
         folder = os.path.join(os.path.dirname(rel), base + "_assets").replace("\\", "/")
         ext = {"drawio": ".drawio", "mermaid": ".mmd"}
-        # Точка в имени ещё не расширение: вложение зовут «Стр4.Свод.Итог», и `splitext`
-        # честно возвращает «.Итог». Сверяем с известными расширениями, а не с точкой.
-        known = (".drawio", ".xml", ".mmd", ".png", ".svg", ".jpg", ".jpeg", ".pdf",
-                 ".puml", ".json", ".txt")
+        known = ASSET_EXTS
         lines, kept = [], set()
         for kind, name in sorted(set(names)):
             # плагин пишет имя схемы, вложение лежит и с расширением, и без
@@ -692,12 +706,7 @@ class Exporter(WikiMirror):
             # Имя вложения у draw.io — это имя диаграммы, без расширения. Файл без него
             # не открывается ни редактором, ни просмотрщиком: подставляем по виду схемы.
             fname = hit if hit.lower().endswith(known) else hit + ext.get(kind, ".xml")
-            # Имя вложения задаёт человек в Confluence: «:» и «?» там допустимы, а Windows
-            # такой файл не создаст. Расширение не режем — без него файл не откроется.
-            dot = next((k for k in known if fname.lower().endswith(k)), "")
-            room = PATH_CHARS - self.path_prefix() - len(folder) - 1
-            fname = portable_name(fname[:len(fname) - len(dot)], sep="_", ext=dot,
-                                  max_chars=max(PART_MIN, min(80, room))) or f"asset{dot}"
+            fname = self.asset_name(fname, folder)
             try:
                 blob = self.api.fetch(have[hit])
             except Exception as e:  # noqa: BLE001
@@ -737,10 +746,8 @@ class Exporter(WikiMirror):
         для одних потомков, не укоротив для других, было бы нельзя.
         """
         name = safe_name(title, page_id)
-        tail = len("/index.md") if has_children else len(".md")
         used = self.path_prefix() + (len(parent) + 1 if parent else 0)
-        room = (PATH_CHARS - used - tail - (CHILD_ROOM if has_children else 0)
-                - (ASSET_ROOM if has_assets else 0))
+        room = PATH_CHARS - used - need_after(has_children, has_assets)
         name = fit_part(name, page_id, room)
         # macOS и Windows не различают регистр: два соседних заголовка, отличные только
         # им, легли бы в один файл. Второму — номер страницы.
@@ -751,6 +758,25 @@ class Exporter(WikiMirror):
         if owner != page_id:
             name = fit_part(name + f"_{page_id}", "", max(len(name) + len(page_id) + 1, room))
         return name
+
+    def asset_name(self, fname: str, folder: str) -> str:
+        """Имя файла схемы в `folder` (путь папки от корня зеркала).
+
+        Имя вложения задаёт человек в Confluence: «:» и «?» там допустимы, а Windows такой
+        файл не создаст; длина — по месту, которое осталось в пути. Расширение не режем —
+        без него файл не откроется. Считается одним кодом и синком, и `kb_names`.
+        """
+        dot = next((k for k in ASSET_EXTS if fname.lower().endswith(k)), "")
+        stem = fname[:len(fname) - len(dot)]
+        cap = max(PART_MIN, min(80, PATH_CHARS - self.path_prefix() - len(folder) - 1))
+        name = portable_name(stem, sep="_", ext=dot, max_chars=cap)
+        # Укороченное имя получает отпечаток полного: «KG_переход на ГС и Отчет из
+        # Расхождений» и «…и отчет из расхождения» иначе стали бы одним файлом, и вторая
+        # схема затёрла бы первую (найдено на PRJ-A, 27.09.2026, до выпуска).
+        if name and name != portable_name(stem, sep="_", ext=dot, max_chars=10 ** 6):
+            tag = "~" + hashlib.sha1(stem.encode("utf-8")).hexdigest()[:6]
+            name = portable_name(stem, sep="_", ext=tag + dot, max_chars=cap)
+        return name or f"asset{dot}"
 
     def path_prefix(self) -> int:
         """Сколько знаков пути занимает само зеркало от корня проекта, с косой чертой."""
@@ -766,8 +792,7 @@ class Exporter(WikiMirror):
         """
         name = self.part_name(title, page_id, parent, has_children, has_assets)
         here = f"{parent}/{name}" if parent else name
-        tail = ((len("/index.md") if has_children else len(".md"))
-                + (len("_assets/") + PART_MIN if has_assets else 0))
+        tail = need_after(has_children, has_assets)
         while (self.path_prefix() + len(here) + tail > PATH_CHARS and parent and page_id):
             parent = parent.rsplit("/", 1)[0] if "/" in parent else ""
             here = f"{parent}/{page_id}" if parent else page_id

@@ -486,13 +486,17 @@ def portable_name(name: str, sep: str = "-", ext: str = "", max_bytes: int = NAM
     точки и пробелы снимаются, зарезервированное имя Windows получает `_`. Пусто на
     выходе — имя целиком состояло из запрещённого; запасное имя выбирает вызывающий.
     """
-    s = unicodedata.normalize("NFC", name or "")
+    s = orig = unicodedata.normalize("NFC", name or "")
     s = "".join(sep if (ch in WIN_FORBIDDEN or ord(ch) < 32 or ord(ch) == 127) else ch
                 for ch in s)
     if sep:
         s = re.sub(re.escape(sep) + "{2,}", sep, s)
     trim = ". " + sep
-    s = s.strip(" ").rstrip(trim)
+    s = s.strip(" ").rstrip(". ")
+    # Разделитель в конце снимаем, только если его поставила замена: «вопрос?» → «вопрос»,
+    # а «1_» остаётся «1_» — иначе «1_.drawio» и «1.drawio» стали бы одним файлом.
+    if sep and s.endswith(sep) and not orig.rstrip(". ").endswith(sep):
+        s = s.rstrip(trim)
     room_b = max_bytes - len(ext.encode("utf-8"))
     room_c = max_chars - len(ext)
     if len(s) > room_c or len(s.encode("utf-8")) > room_b:

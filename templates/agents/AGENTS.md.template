@@ -103,7 +103,7 @@ Transform imperative tasks into declarative goals:
    - буквы в составной форме NFC: macOS умеет хранить «й» и «ё» разложенными, и Linux читает
      такое имя как другое.
 
-   Проверка — `python3 .opencode/scripts/aurora_doctor.py` (строки «имена:»); имена карточек чинит `kb_fix.py --names --links --apply` вместе со ссылками, пути зеркала Confluence укорачивает следующий `sync:confluence --prune`.
+   Проверка — `python3 .opencode/scripts/aurora_doctor.py` (строки «имена:»); починка — `python3 .opencode/scripts/kb_names.py --apply` (команда `kb:names`): пути зеркала Confluence, имена карточек со ссылками, записи git, различимые только регистром.
 
 ## Конфиденциальность (осторожный дефолт)
 

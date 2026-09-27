@@ -50,5 +50,9 @@
   "install.ex_no_backends": "Чатовые шлюзы не настроены.",
   "install.ex_tpl_bad": "поля шаблона не приняты: {why}",
   "install.ex_not_selected": "выбран прямой HTTP (AURORA_AGENT_ADAPTER)",
-  "install.ex_not_installed": "не установлен"
+  "install.ex_not_installed": "не установлен",
+  "install.ex_compat_none": "совместимость с Авророй проверится при первом вызове модели",
+  "install.ex_compat_ok": "совместим с Авророй ✓ {at}",
+  "install.ex_compat_bad": "не прошёл проверку совместимости: {why} — работа идёт прямым HTTP",
+  "install.ex_compat_check": "Проверить совместимость"
 }

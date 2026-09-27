@@ -444,18 +444,91 @@ def shared_agent_key(task: dict):
     return (task["url"], task.get("key") or "", task["model"])
 
 
+def tolerant_request(raw: bytes) -> bytes:
+    """Запрос в шлюз — в той форме, которую понимают SGLang, llama.cpp и vLLM.
+
+    Pydantic AI задаёт форму флагами профиля модели, а их названия меняются от версии к
+    версии: переименуй флаг — и он молча перестанет действовать, а шлюз ответит 400. Здесь
+    та же форма обеспечивается на проводе, от флагов не завися:
+      • `max_completion_tokens` → `max_tokens` (первого шлюзы не знают и пишут без потолка);
+      • роль `developer` → `system` (так клиент OpenAI зовёт инструкции у новых моделей);
+      • все системные сообщения — одним, первым (шаблон Qwen: «System message must be at
+        the beginning»).
+    Не JSON или без `messages` — байты как были.
+    """
+    try:
+        body = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
+        return raw
+    changed = False
+    if "max_completion_tokens" in body:
+        cap = body.pop("max_completion_tokens")
+        body.setdefault("max_tokens", cap)
+        changed = True
+    msgs = body["messages"]
+    system, rest = [], []
+    for m in msgs:
+        role = m.get("role") if isinstance(m, dict) else None
+        if role in ("system", "developer"):
+            system.append(text_of(m.get("content")))
+        else:
+            rest.append(m)
+    if len(system) > 1 or any(isinstance(m, dict) and m.get("role") == "developer" for m in msgs) \
+            or (system and (not msgs or msgs[0].get("role") not in ("system", "developer"))):
+        body["messages"] = ([{"role": "system", "content": "\n\n".join(s for s in system if s)}]
+                            if system else []) + rest
+        changed = True
+    return json.dumps(body, ensure_ascii=False).encode("utf-8") if changed else raw
+
+
+def http_lib():
+    """Библиотека HTTP, на которой стоит клиент OpenAI: `httpx2` или прежний `httpx`.
+
+    Клиент OpenAI 3.x перешёл на `httpx2`, и `AsyncOpenAI(http_client=…)` ждёт клиента
+    оттуда же. Адаптер брал `httpx` — работало, пока тот стоял рядом как чужая зависимость
+    и был устроен так же. В сборке Pydantic AI из git (2.51.1.dev, 27.09.2026) `httpx` уже
+    нет, и терпимый слой не поднимался вовсе. Берём ровно то, что импортирует клиент.
+    """
+    import importlib
+    try:
+        import openai._base_client as base
+        for name in ("httpx2", "httpx"):
+            mod = getattr(base, name, None)
+            if mod is not None and hasattr(mod, "AsyncBaseTransport"):
+                return mod
+    except Exception:  # noqa: BLE001 — устройство клиента меняется; ниже — прямой поиск
+        pass
+    for name in ("httpx2", "httpx"):
+        try:
+            return importlib.import_module(name)
+        except ImportError:
+            continue
+    raise ImportError("нет ни httpx2, ни httpx — клиент OpenAI не установлен")
+
+
 def http_client():
-    """HTTP-клиент адаптера: один на процесс, с терпимым разбором ответа."""
-    import httpx
+    """HTTP-клиент адаптера: один на процесс, терпимый в обе стороны."""
+    httpx = http_lib()
 
     class Tolerant(httpx.AsyncBaseTransport):
-        """Ответ в JSON проходит через `tolerant_body` до того, как его увидит клиент
-        OpenAI. Поток событий (stream) не трогаем: движок им не пользуется."""
+        """Запрос в шлюз проходит через `tolerant_request`, ответ в JSON — через
+        `tolerant_body`, до того как его увидит клиент OpenAI. Поток событий (stream) не
+        трогаем: движок им не пользуется."""
 
         def __init__(self):
             self.inner = httpx.AsyncHTTPTransport()
 
         async def handle_async_request(self, request):
+            if request.method == "POST" and request.url.path.endswith("/chat/completions"):
+                raw = await request.aread()
+                fixed = tolerant_request(raw)
+                if fixed is not raw:
+                    headers = [(k, v) for k, v in request.headers.items()
+                               if k.lower() != "content-length"]
+                    request = httpx.Request(request.method, request.url, headers=headers,
+                                            content=fixed, extensions=request.extensions)
             resp = await self.inner.handle_async_request(request)
             if "json" not in resp.headers.get("content-type", ""):
                 return resp
@@ -480,29 +553,47 @@ def answer(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)
 
 
-def main() -> int:
+# Ошибки связи и срока — «сервер не ответил», а не поломка адаптера: повтор прямым HTTP
+# упёрся бы в то же. Имена классов, а не импорт: у разных версий клиента OpenAI и Pydantic
+# AI они лежат в разных модулях, а называются одинаково.
+SERVER_SILENT = {"ModelAPIError", "APIConnectionError", "APITimeoutError", "ConnectError",
+                 "ConnectTimeout", "ReadTimeout", "TimeoutException", "RemoteProtocolError"}
+
+
+def runtime():
+    """→ (run_task, версия Pydantic AI). Всё, что зависит от API фреймворка, — здесь.
+
+    API Pydantic AI меняется от версии к версии, и каждое место, на которое опирается
+    адаптер, прикрыто: другое имя класса модели, `instructions` у старых версий, `usage`
+    методом или свойством, `finish_reason` не у всех ответов. Что прикрыть нельзя, найдёт
+    `--selfcheck` — движок гоняет его после каждого обновления пакета.
+    """
+    import inspect
+    from typing import Optional
+    import pydantic_ai
+    from openai import AsyncOpenAI
+    from pydantic_ai import Agent, capture_run_messages
+    from pydantic_ai import exceptions as X
     try:
-        import asyncio
-        import threading
-        from typing import Optional
-        import pydantic_ai
-        from openai import AsyncOpenAI
-        from pydantic_ai import Agent, capture_run_messages
-        from pydantic_ai.exceptions import (ModelAPIError, ModelHTTPError,
-                                            UnexpectedModelBehavior)
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
-        # История разговора: без неё модель не помнит, что спрашивала минуту назад, и
-        # диалог (планировщик, уточняющие вопросы) невозможен в принципе.
-        from pydantic_ai.messages import (ModelRequest, ModelResponse, TextPart,
-                                          ThinkingPart, UserPromptPart)
-        # Потолок на вызовы инструментов: самостоятельность модели появилась вместе с
-        # ними — pydantic-ai сам гоняет цикл «подумал → позвал → подумал ещё». Без
-        # потолка один сложный вопрос съедает бюджет всего прогона.
-        from pydantic_ai.usage import UsageLimits
-    except Exception as e:  # noqa: BLE001
-        answer({"ready": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
-        return 0
+        from pydantic_ai.models.openai import OpenAIChatModel as ChatModel
+    except ImportError:
+        from pydantic_ai.models.openai import OpenAIModel as ChatModel
+    from pydantic_ai.providers.openai import OpenAIProvider
+    # История разговора: без неё модель не помнит, что спрашивала минуту назад, и
+    # диалог (планировщик, уточняющие вопросы) невозможен в принципе.
+    from pydantic_ai.messages import (ModelRequest, ModelResponse, SystemPromptPart,
+                                      TextPart, UserPromptPart)
+    try:
+        from pydantic_ai.messages import ThinkingPart
+    except ImportError:                     # у старых версий рассуждений отдельно нет
+        ThinkingPart = type("ThinkingPart", (), {})
+    # Потолок на вызовы инструментов: самостоятельность модели появилась вместе с
+    # ними — pydantic-ai сам гоняет цикл «подумал → позвал → подумал ещё». Без
+    # потолка один сложный вопрос съедает бюджет всего прогона.
+    from pydantic_ai.usage import UsageLimits
+    has_instructions = "instructions" in inspect.signature(Agent.run).parameters
+    HTTPError = X.ModelHTTPError
+    Unexpected = X.UnexpectedModelBehavior
 
     client = http_client()
     agents: dict = {}          # shared_agent_key → агент: провайдер строится один раз
@@ -526,13 +617,14 @@ def main() -> int:
         # шлюз, не знающий этого поля, писал бы без потолка.
         # Системное сообщение — одно: инструкции движка и каталог MCP-серверов Pydantic AI
         # шлёт двумя, а chat-шаблон Qwen на шлюзе отвечает на второе `400 System message
-        # must be at the beginning` (живой шлюз №1, 27.09.2026).
-        profile = {**(provider.model_profile(task["model"]) or {}),
-                   "openai_chat_supports_max_completion_tokens": False,
+        # must be at the beginning` (живой шлюз №1, 27.09.2026). Флаги профиля — первая
+        # линия; вторая — `tolerant_request` на проводе, на случай их переименования.
+        base = getattr(provider, "model_profile", lambda _m: {})(task["model"]) or {}
+        profile = {**base, "openai_chat_supports_max_completion_tokens": False,
                    "openai_chat_supports_multiple_system_messages": False}
         # `Optional[str]`: пустой ответ — не повод для повторного запроса, а ответ, который
         # движок разберёт сам (рассуждения съели лимит, шаблон на сервере и т. п.).
-        agent = Agent(OpenAIChatModel(task["model"], provider=provider, profile=profile),
+        agent = Agent(ChatModel(task["model"], provider=provider, profile=profile),
                       output_type=Optional[str], toolsets=toolsets or None)
         if task.get("tools"):
             register_tools(agent, task["tools"])
@@ -545,7 +637,7 @@ def main() -> int:
 
     def thinking_of(resp) -> str:
         return "\n".join(p.content for p in (resp.parts if resp else [])
-                         if isinstance(p, ThinkingPart) and p.content).strip()
+                         if isinstance(p, ThinkingPart) and getattr(p, "content", "")).strip()
 
     def usage_of(usage) -> dict:
         u = usage() if callable(usage) else usage
@@ -575,6 +667,11 @@ def main() -> int:
         history = [ModelResponse(parts=[TextPart(content=t["content"])])
                    if t["role"] == "assistant" else
                    ModelRequest(parts=[UserPromptPart(content=t["content"])]) for t in turns]
+        extra = {}
+        if instructions and has_instructions:
+            extra["instructions"] = instructions
+        elif instructions:
+            history = [ModelRequest(parts=[SystemPromptPart(content=instructions)])] + history
         settings: dict = {}
         # Рассуждения шлюз включает нестандартным полем шаблона. Движок снимает его,
         # если шлюз ответил на него 400, — тогда и адаптер его не шлёт.
@@ -591,28 +688,178 @@ def main() -> int:
         with capture_run_messages() as seen:
             try:
                 result = await agent.run(
-                    prompt, instructions=instructions or None,
-                    message_history=history or None,
+                    prompt, message_history=history or None,
                     usage_limits=UsageLimits(tool_calls_limit=limit) if limit else None,
-                    model_settings=settings)
-            except ModelHTTPError as e:
+                    model_settings=settings, **extra)
+            except HTTPError as e:
                 return http_error(e)
-            except ModelAPIError as e:
-                # Связь или срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
-                return {"ok": False, "where": "server", "error": str(e.message or e)[:300]}
-            except UnexpectedModelBehavior as e:
+            except Unexpected as e:
                 last = last_response(seen)
-                if last is not None and last.finish_reason == "length":
+                if last is not None and getattr(last, "finish_reason", None) == "length":
                     # Рассуждения съели лимит до ответа — это ответ, а не поломка: движок
                     # назовёт причину сам, как при прямом HTTP.
                     return {"ok": True, "text": "", "reasoning": thinking_of(last),
                             "finish": "length", "usage": usage_of(last.usage)}
                 return {"ok": False, "where": "adapter", "error": f"{type(e).__name__}: {e}"[:300]}
+            except Exception as e:  # noqa: BLE001
+                chain = {type(x).__name__ for x in (e, e.__cause__, e.__context__) if x}
+                if chain & SERVER_SILENT:
+                    # Связь или срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
+                    msg = getattr(e, "message", "") or str(e)
+                    return {"ok": False, "where": "server", "error": str(msg)[:300]}
+                raise
         last = last_response(result.all_messages())
         return {"ok": True, "text": (result.output or "").strip(),
                 "reasoning": thinking_of(last),
-                "finish": (last.finish_reason if last is not None else None) or "stop",
+                "finish": (getattr(last, "finish_reason", None) if last is not None else None)
+                or "stop",
                 "usage": usage_of(result.usage)}
+
+    return run_task, getattr(pydantic_ai, "__version__", "")
+
+
+def selfcheck() -> dict:
+    """Проверка совместимости этой версии Pydantic AI с Авророй — без сети и без модели.
+
+    Местный поддельный шлюз отвечает как SGLang (с `metadata.weight_versions`), и через
+    него проходит тот же путь, что у живой работы: одиночный вызов, вызов с инструментами
+    и каталогом MCP, история разговора, рассуждения, съевшие лимит, отказ 400, обрыв связи.
+    Сверяется и то, что ушло по проводу, — одно системное сообщение, `max_tokens`, поля
+    шаблона. → {"ok", "version", "openai", "problems": [...]}.
+    """
+    import asyncio
+    import socket
+    import tempfile
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    seen: list = []
+
+    def reply(req: dict):
+        users = [m for m in req.get("messages", []) if m.get("role") == "user"]
+        q = text_of(users[-1].get("content")) if users else ""
+        if "отказ" in q:
+            return 400, {"error": {"message": "плохой запрос"}}
+        length = "лимит" in q
+        return 200, {
+            "id": "1", "object": "chat.completion", "created": 1, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "length" if length else "stop",
+                         "matched_stop": 2,
+                         "message": {"role": "assistant", "content": "" if length else "ок",
+                                     "reasoning_content": "думал"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            "metadata": {"weight_version": "default",
+                         "weight_versions": [{"version": "default", "start": 0, "end": 2}]}}
+
+    class Gateway(BaseHTTPRequestHandler):
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            seen.append(req)
+            code, body = reply(req)
+            out = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    problems: list = []
+    try:
+        import openai
+        run_task, version = runtime()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "version": "", "openai": "",
+                "problems": [f"не импортируется: {type(e).__name__}: {e}"[:300]]}
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/v1"
+    with socket.socket() as sock:                       # свободный порт, где никто не слушает
+        sock.bind(("127.0.0.1", 0))
+        dead = f"http://127.0.0.1:{sock.getsockname()[1]}/v1"
+    work = tempfile.mkdtemp(prefix="aurora-selfcheck-")
+    base = {"url": url, "key": "", "model": "m", "timeout": 20}
+
+    def check(name: str, cond: bool, detail) -> None:
+        if not cond:
+            problems.append(f"{name}: {detail}"[:300])
+
+    async def go():
+        # 1. одиночный вызов: разбор ответа SGLang, форма запроса
+        out = await run_task(dict(base, max_tokens=50,
+                                  template={"enable_thinking": True, "reasoning_effort": "high"},
+                                  messages=[{"role": "system", "content": "ты критик"},
+                                            {"role": "user", "content": "проверь"}]))
+        check("ответ SGLang", out.get("ok") and out.get("text") == "ок", out)
+        check("рассуждения", out.get("reasoning") == "думал", out.get("reasoning"))
+        check("токены", out.get("usage") == {"prompt_tokens": 5, "completion_tokens": 2},
+              out.get("usage"))
+        req = seen[-1] if seen else {}
+        roles = [m.get("role") for m in req.get("messages", [])]
+        check("одно системное сообщение", roles[:1] == ["system"] and roles.count("system") == 1,
+              roles)
+        check("max_tokens", req.get("max_tokens") == 50 and "max_completion_tokens" not in req,
+              {k: req.get(k) for k in ("max_tokens", "max_completion_tokens")})
+        check("поля шаблона", req.get("chat_template_kwargs") ==
+              {"enable_thinking": True, "reasoning_effort": "high"}, req.get("chat_template_kwargs"))
+        # 2. инструменты и каталог MCP: инструкции сливаются в одно системное сообщение
+        out = await run_task(dict(base, tools=[work], role="worker", guard={"ready": False},
+                                  mcp={"mcpServers": {"проба": {"command": "/nonexistent",
+                                                                "about": "проба"}}},
+                                  messages=[{"role": "system", "content": "ты критик"},
+                                            {"role": "user", "content": "найди"}]))
+        check("вызов с инструментами", out.get("ok"), out)
+        req = seen[-1] if seen else {}
+        msgs = req.get("messages", [])
+        check("инструкции и каталог MCP — одним системным сообщением",
+              [m.get("role") for m in msgs].count("system") == 1 and msgs
+              and "ты критик" in text_of(msgs[0].get("content"))
+              and "mcp_connect" in text_of(msgs[0].get("content")),
+              [m.get("role") for m in msgs])
+        tools = {t.get("function", {}).get("name") for t in req.get("tools", [])}
+        check("инструменты чтения", {"read_file", "kb_search", "mcp_connect"} <= tools, sorted(tools))
+        # 3. история разговора — по порядку, до нового вопроса
+        await run_task(dict(base, messages=[{"role": "user", "content": "было"},
+                                            {"role": "assistant", "content": "ответ"},
+                                            {"role": "user", "content": "дальше"}]))
+        req = seen[-1] if seen else {}
+        check("история разговора", [(m.get("role"), text_of(m.get("content")))
+                                    for m in req.get("messages", [])][-3:] ==
+              [("user", "было"), ("assistant", "ответ"), ("user", "дальше")],
+              req.get("messages"))
+        # 4. рассуждения съели лимит — ответ, а не поломка
+        out = await run_task(dict(base, messages=[{"role": "user", "content": "лимит"}]))
+        check("рассуждения съели лимит", out.get("ok") and out.get("finish") == "length"
+              and out.get("text") == "", out)
+        # 5. отказ сервера — со статусом, как по HTTP
+        out = await run_task(dict(base, messages=[{"role": "user", "content": "отказ"}]))
+        check("отказ 400", out.get("where") == "server" and out.get("status") == 400, out)
+        # 6. обрыв связи — «сервер не ответил», не поломка адаптера
+        out = await run_task(dict(base, url=dead, messages=[{"role": "user", "content": "есть?"}]))
+        check("обрыв связи", out.get("where") == "server" and not out.get("ok"), out)
+
+    try:
+        asyncio.run(go())
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"проверка упала: {type(e).__name__}: {e}"[:300])
+    finally:
+        srv.shutdown()
+    return {"ok": not problems, "version": version, "openai": getattr(openai, "__version__", ""),
+            "problems": problems}
+
+
+def main() -> int:
+    if "--selfcheck" in sys.argv:
+        answer(selfcheck())
+        return 0
+    try:
+        import asyncio
+        import threading
+        run_task, version = runtime()
+    except Exception as e:  # noqa: BLE001
+        answer({"ready": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
+        return 0
 
     loop = asyncio.new_event_loop()
 
@@ -641,7 +888,7 @@ def main() -> int:
         # Движок закрыл трубу — прогон кончился, ждать больше некого.
         loop.call_soon_threadsafe(loop.stop)
 
-    answer({"ready": True, "version": getattr(pydantic_ai, "__version__", "")})
+    answer({"ready": True, "version": version})
     threading.Thread(target=reader, daemon=True).start()
     loop.run_forever()
     return 0

@@ -389,6 +389,71 @@ def _adapter_argv() -> list:
     return [str(vpy), str(adapter)] if vpy.is_file() and adapter.is_file() else []
 
 
+# Совместимость адаптера с установленной версией Pydantic AI. API фреймворка меняется от
+# версии к версии, и обновление пакета не должно молча ломать работу: вызовы уходили бы
+# прямым HTTP, а человек думал бы, что всё идёт через Pydantic AI. Поэтому новая версия
+# (или новый адаптер) один раз проходит `--selfcheck` — поддельный шлюз SGLang, весь путь
+# адаптера, форма запроса на проводе, — и результат запоминается до следующей смены.
+SELFCHECK = Path.home() / ".aurora" / "cache" / "pydantic-selfcheck.json"
+
+
+def _adapter_sha() -> str:
+    path = Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
+    try:
+        import hashlib
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
+def last_selfcheck() -> dict:
+    """Последняя запомненная самопроверка (или пусто). Сети и venv не трогает."""
+    try:
+        return json.loads(SELFCHECK.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def adapter_selfcheck(version: str = "", force: bool = False) -> dict:
+    """→ {"ok", "version", "openai", "problems", "at"} — проходит ли эта версия Pydantic AI.
+
+    `version` — версия, которую назвал запущенный адаптер; для неё и этого файла адаптера
+    проверка делается один раз. `force` — проверить заново (кнопка в панели, `--check`).
+    В тестах результат не запоминается: они не пишут в домашнюю папку.
+    """
+    persist = not os.environ.get("AURORA_TESTS_ISOLATED")
+    key = f"{version}|{_adapter_sha()}"
+    if version and persist and not force:
+        cached = last_selfcheck()
+        if cached.get("key") == key:
+            return cached
+    argv = _adapter_argv()
+    if not argv:
+        return {"ok": False, "version": version, "problems": ["venv с pydantic-ai не установлен"]}
+    try:
+        p = subprocess.run(argv + ["--selfcheck"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, encoding="utf-8", timeout=180,
+                           env=child_env())
+        out = json.loads((p.stdout.strip().splitlines() or ["{}"])[-1])
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        out = {"ok": False, "problems": [f"самопроверка не ответила: {type(e).__name__}"]}
+    if not isinstance(out, dict) or "problems" not in out:
+        out = {"ok": False, "problems": ["адаптер не умеет самопроверку"]}
+    out["version"] = out.get("version") or version
+    out["key"] = f"{out['version']}|{_adapter_sha()}"
+    from aurora_common import utc_label
+    out["at"] = utc_label()
+    if persist:
+        try:
+            SELFCHECK.parent.mkdir(parents=True, exist_ok=True)
+            tmp = SELFCHECK.with_suffix(".tmp")
+            tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, SELFCHECK)
+        except OSError:
+            pass
+    return out
+
+
 def _hub_reader(proc, pending: dict) -> None:
     """Раздаёт ответы ожидающим по `id`. Процесс закрылся — всем честный отказ."""
     for line in proc.stdout:
@@ -452,8 +517,20 @@ def adapter_hub():
                 pass
             _HUB["broken"] = hello.get("error") or f"не ответил за {ADAPTER_START} с запуска"
             return None, _HUB["broken"]
+        version = hello.get("version") or ""
+        chk = adapter_selfcheck(version)
+        if not chk.get("ok"):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            first = (chk.get("problems") or ["причина не названа"])[0]
+            _HUB["broken"] = (f"Pydantic AI {version} не прошёл проверку совместимости с "
+                              f"Авророй ({first}) — работаю прямым HTTP; вернуть прежнюю "
+                              f"версию: «Установка» → Pydantic AI")
+            return None, _HUB["broken"]
         pending: dict = {}
-        _HUB.update(proc=proc, pending=pending, version=hello.get("version") or "")
+        _HUB.update(proc=proc, pending=pending, version=version)
         threading.Thread(target=_hub_reader, args=(proc, pending), daemon=True).start()
         return proc, pending
 
@@ -1654,8 +1731,14 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
                          "template": b.get("template") or {},
                          "template_error": b.get("template_error") or "",
                          "roles": roles})
+    chk = last_selfcheck()
     return {
         "adapter": cfg.get("adapter", ""),
+        # Прошла ли установленная версия проверку совместимости. Не проверялась — проверка
+        # пройдёт при первом вызове модели.
+        "compat": ({"ok": bool(chk.get("ok")), "problems": chk.get("problems") or [],
+                    "at": chk.get("at", "")}
+                   if chk.get("version") == version and version else None),
         # Идёт ли работа через Pydantic AI на самом деле: выбран и стоит.
         "active": cfg.get("adapter") == "pydantic_ai" and ok,
         "venv": {"ok": ok, "version": version, "path": str(VENV)},
@@ -1667,8 +1750,11 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
     }
 
 
-def cmd_pydantic(as_json: bool) -> int:
+def cmd_pydantic(as_json: bool, check: bool = False) -> int:
     cfg = parse_config(raw_config())
+    if check:
+        ok, version = venv_status()
+        adapter_selfcheck(version, force=True) if ok else None
     d = pydantic_settings(cfg)
     if as_json:
         print(json.dumps(d, ensure_ascii=False, indent=1))
@@ -1679,6 +1765,11 @@ def cmd_pydantic(as_json: bool) -> int:
           f" ({v['path']}) · адаптер: {d['adapter']}"
           + (" — все вызовы модели идут через него" if d["active"] else
              " — вызовы идут прямым HTTP"))
+    c = d.get("compat")
+    print("Совместимость с Авророй: " + ("не проверялась — проверка пройдёт при первом вызове "
+                                        "модели (или `--pydantic --check`)" if c is None else
+                                        f"проверено {c['at']} ✓" if c["ok"] else
+                                        "НЕ ПРОЙДЕНА — " + "; ".join(c["problems"][:3])))
     print("Клиент: один процесс, запросы параллельно · повторов нет (решает кольцо) · "
           "потолок ответа полем max_tokens · системное сообщение одно · в metadata "
           f"ответа только строки · вызовов инструментов ≤ {d['client']['tool_calls']}\n")
@@ -1722,6 +1813,8 @@ def main() -> int:
     ap.add_argument("--show", action="store_true", help="собранная конфигурация, ключи маской")
     ap.add_argument("--pydantic", action="store_true",
                     help="настройки Pydantic AI: что уходит в шлюз по ролям")
+    ap.add_argument("--check", action="store_true",
+                    help="с --pydantic: заново проверить совместимость установленной версии")
     ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
     ap.add_argument("--venv-install", action="store_true",
                     help="поставить/обновить Pydantic AI в ~/.aurora/venv")
@@ -1733,7 +1826,7 @@ def main() -> int:
     if a.probe_width:
         return cmd_probe(a.json, heavy=a.heavy)
     if a.pydantic:
-        return cmd_pydantic(a.json)
+        return cmd_pydantic(a.json, a.check)
     if a.venv_status:
         ok, version = venv_status()
         if a.json:

@@ -436,9 +436,9 @@ def check_portable_names() -> list:
         where = ("зеркало Confluence" if rel.startswith("Sources/Confluence/") else
                  "карточки" if rel.startswith("AuroraKnowledgeDB/") else "прочее")
         groups.setdefault(where, []).append((rel, why[0]))
-    fix = {"зеркало Confluence": "следующий `sync:confluence --prune` (маршрут «Обновить базу») "
-                                 "выложит страницы по коротким путям и переведёт на них базу",
-           "карточки": "`kb_fix.py --names --links --apply` переименует и поправит ссылки",
+    fix = {"зеркало Confluence": "`kb_names.py --apply` переложит страницы без сети по правилу "
+                                 "синка и переведёт на них базу",
+           "карточки": "`kb_names.py --apply` переименует и поправит ссылки",
            "прочее": "переименуйте руками по правилам из AGENTS.md"}
     warns = []
     for where, items in groups.items():
@@ -449,8 +449,8 @@ def check_portable_names() -> list:
     if clash:
         a, b = clash[0]
         warns.append(f"имена: {len(clash)} пар путей отличаются только регистром или формой "
-                     f"букв — на macOS и Windows это один файл ({a} ↔ {b}). Лишний убрать "
-                     f"из git: `git rm --cached <путь>`")
+                     f"букв — на macOS и Windows это один файл ({a} ↔ {b}). Лишнюю запись "
+                     f"снимет из индекса git `kb_names.py --apply`")
     return warns
 
 

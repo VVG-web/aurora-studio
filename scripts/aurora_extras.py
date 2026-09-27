@@ -154,8 +154,21 @@ def status(fresh: bool = False, online: bool = True) -> list:
             "venv": str(ex["venv"]), "repo": f"https://github.com/{ex['repo']}",
             "python": python_for(eid) or "",
             **({"mcp": graph_mcp()} if eid == "graphify" and have else {}),
+            **({"compat": compat_of(have)} if eid == "pydantic-ai" and have else {}),
         })
     return rows
+
+
+def compat_of(version: str):
+    """Запомненная проверка совместимости для этой версии. None — ещё не проверялась."""
+    try:
+        import agent_core as AG
+    except ImportError:
+        return None
+    chk = AG.last_selfcheck()
+    if chk.get("version") != version:
+        return None
+    return {"ok": bool(chk.get("ok")), "problems": chk.get("problems") or [], "at": chk.get("at", "")}
 
 
 def python_for(extra_id: str) -> str:
@@ -172,6 +185,15 @@ def python_for(extra_id: str) -> str:
             if path and os.path.isfile(path) and os.access(path, os.X_OK):
                 return path
     return ""
+
+
+def check_compat(version: str) -> dict:
+    """Самопроверка адаптера Pydantic AI для этой версии (заново, без памяти)."""
+    try:
+        import agent_core as AG
+    except ImportError:
+        return {"ok": True, "problems": [], "version": version}
+    return AG.adapter_selfcheck(version, force=True)
 
 
 def install(extra_id: str) -> dict:
@@ -197,6 +219,7 @@ def install(extra_id: str) -> dict:
         p = _run([base, "-m", "venv", str(ex["venv"])], timeout=300)
         if p.returncode != 0:
             return {"ok": False, "version": "", "log": "\n".join(log + [p.stderr[-400:]])}
+    before = installed_version(extra_id)
     _run([str(vpy), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], timeout=600)
     last = None
     for spec in ex["pip"]:
@@ -208,8 +231,28 @@ def install(extra_id: str) -> dict:
         log.append((last.stderr or last.stdout)[-300:])
     version = installed_version(extra_id)
     ok = bool(version) and last is not None and last.returncode == 0
-    log.append(f"✅ {ex['title']} {version}" if ok else "установка не удалась")
     res = {"ok": ok, "version": version}
+    # Новая версия Pydantic AI работает, только если прошла проверку совместимости с
+    # Авророй. Не прошла — возвращаем ту, что стояла: обновление не должно ломать работу.
+    if ok and extra_id == "pydantic-ai":
+        chk = check_compat(version)
+        res["compat"] = chk
+        if not chk.get("ok"):
+            why = "; ".join((chk.get("problems") or ["причина не названа"])[:2])
+            log.append(f"⚠️ {ex['title']} {version} не прошёл проверку совместимости: {why}")
+            if before and before != version:
+                log.append(f"возвращаю {before}")
+                _run([str(vpy), "-m", "pip", "install", "--quiet", f"{ex['dist']}=={before}"],
+                     timeout=1800)
+                back = installed_version(extra_id)
+                res["compat"] = check_compat(back) if back else chk
+                res.update(version=back, rolled_back=version)
+                log.append(f"оставлена {back}: обновитесь, когда кит научится новой версии")
+            ok = res["ok"] = False
+            res["error"] = (f"{ex['title']} {version} не совместим с Авророй ({why})"
+                            + (f" — оставлена {res['version']}" if res.get("rolled_back") else ""))
+    log.append(f"✅ {ex['title']} {res['version']}" if ok else
+               ("" if res.get("error") else "установка не удалась"))
     if ok and extra_id == "graphify":
         why = register_graph_mcp()
         res["mcp"] = not why

@@ -3090,6 +3090,18 @@ def extras_state(fresh: bool = False) -> dict:
     return {"extras": _extras().status(fresh=fresh)}
 
 
+def extras_check(extra_id: str) -> dict:
+    """Проверить заново, совместима ли установленная версия Pydantic AI с Авророй."""
+    EX = _extras()
+    if extra_id != "pydantic-ai":
+        return {"ok": False, "error": "проверка совместимости есть только у Pydantic AI"}
+    have = EX.installed_version(extra_id)
+    if not have:
+        return {"ok": False, "error": "Pydantic AI не установлен"}
+    chk = EX.check_compat(have)
+    return {"ok": bool(chk.get("ok")), "version": have, "problems": chk.get("problems") or []}
+
+
 def extras_install(extra_id: str) -> dict:
     """Поставить или обновить надстройку. Синхронно: локальная панель, человек ждёт.
 
@@ -3842,6 +3854,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/extras/install":
             self.send_json(extras_install(str(payload.get("id") or "")))
+            return
+        if u.path == "/api/extras/check":
+            self.send_json(extras_check(str(payload.get("id") or "")))
             return
         if u.path == "/api/update-all":
             self.send_json(update_all_projects(self.server.roots,

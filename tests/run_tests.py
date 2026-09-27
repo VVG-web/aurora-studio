@@ -7392,6 +7392,8 @@ def test_adapter_answers_every_caller_in_parallel(tmp: Path):
             threading.Thread(target=work, args=(json.loads(line),)).start()
     """), encoding="utf-8")
     ag._adapter_argv = lambda: [sys.executable, str(fake)]
+    # Поддельный адаптер самопроверки не знает — совместимость здесь не предмет проверки.
+    ag.adapter_selfcheck = lambda version="", force=False: {"ok": True, "problems": []}
     ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
     b = {"n": 1, "url": "http://x/v1", "key": ""}
 
@@ -7750,9 +7752,11 @@ def test_names_pass_on_windows_macos_and_linux(tmp: Path):
     subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fx"],
                    cwd=str(root), check=True)
     doc = run("aurora_doctor.py", cwd=root).stdout
-    assert "имена: карточки — 1" in doc and "kb_fix.py --names --links --apply" in doc, \
+    assert "имена: карточки — 1" in doc and "kb_names.py --apply" in doc, \
         f"доктор не назвал непереносимое имя и способ починки:\n{doc[-800:]}"
-    run("kb_fix.py", "--names", "--links", "--apply", cwd=root, expect_rc=0)
+    dry = run("kb_names.py", cwd=root, expect_rc=0).stdout
+    assert "Запуск-HDFS->Hive.md" in dry and bad.exists(), f"показ без --apply что-то изменил:\n{dry}"
+    run("kb_names.py", "--apply", cwd=root, expect_rc=0)
     assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
         "карточка с «>» в имени не переименована"
     text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
@@ -7766,6 +7770,317 @@ def test_names_pass_on_windows_macos_and_linux(tmp: Path):
         doc = (KIT / rel).read_text(encoding="utf-8")
         for must in ("Windows", "macOS", "Linux", "255 байт", "200 знаков"):
             assert must in doc, f"в {rel} нет правила имён: не хватает «{must}»"
+
+
+@test
+def test_kit_files_pass_on_every_os(tmp: Path):
+    """Файлы самого кита — и в ките, и там, куда их кладёт обновление в проекте.
+
+    Кит выгружают на Windows, macOS и Linux, а его файлы ещё и уезжают в проекты под
+    `.opencode/`: путь там длиннее. Правило то же, что для базы, — самое строгое из трёх.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    rels = [r for r in subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"],
+                                      cwd=str(KIT), capture_output=True,
+                                      text=True).stdout.split("\0") if r]
+    assert len(rels) > 100, "список файлов кита не прочитан"
+    bad = [(r, C.path_problems(r)) for r in rels if C.path_problems(r)]
+    assert not bad, f"файлы кита не пройдут на одной из систем: {bad[:5]}"
+    assert not C.case_clashes(rels), f"в ките пути, различимые только регистром: {C.case_clashes(rels)[:3]}"
+    # как они лягут в проекте
+    targets = []
+    for line in (KIT / "engine_manifest.txt").read_text(encoding="utf-8").splitlines():
+        if "=>" in line and not line.lstrip().startswith("#"):
+            dst = line.split("=>", 1)[1].strip().split()[-1]
+            if "/" in dst or "." in dst:
+                targets.append(dst)
+    assert targets, "манифест движка не прочитан"
+    far = [(t, C.path_problems(t)) for t in targets if C.path_problems(t)]
+    assert not far, f"в проекте файлы движка лягут непереносимо: {far[:5]}"
+    # заготовки структуры проекта
+    for line in (KIT / "structure_dirs.txt").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            assert not C.path_problems(line), f"папка схемы непереносима: {line}"
+
+
+@test
+def test_every_name_maker_is_portable(tmp: Path):
+    """Каждое место, где движок сочиняет имя, выдерживает неудобный вход.
+
+    Имена приходят из заголовков Confluence, вопросов человека, задач, адресов сайтов —
+    из текста, который никто не проверял на правила файловых систем.
+    """
+    import importlib
+    import unicodedata
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    CE = importlib.import_module("confluence_export")
+    W = importlib.import_module("web_export")
+    R = importlib.import_module("agent_runner")
+    K = importlib.import_module("kb_corrections")
+    S = importlib.import_module("aurora_setup")
+    nasty = ["CON", "nul.txt", "Com1", 'a<b>:c"d/e\\f|g?h*i', "конец. ", " пробел в начале",
+             "я" * 300, "x" * 400, unicodedata.normalize("NFD", "йод и ёж"), "📊 отчёт",
+             "\x07звонок", "...", "??", "Отчёт: Q1/2026 — итоги?", "1_", "a" * 90 + ".drawio"]
+    exp = CE.Exporter.__new__(CE.Exporter)
+    exp.claimed, exp.prefix_len = {}, len("Sources/Confluence") + 1
+    makers = {
+        "карточка": lambda t: C.card_filename(t) + ".md",
+        "страница зеркала": lambda t: CE.safe_name(t, "12345678") + ".md",
+        "схема страницы": lambda t: exp.asset_name(t, "Раздел/Страница_assets"),
+        "страница сайта": lambda t: W.slug("https://site.example/p?x=1", t),
+        "разговор": lambda t: R.slug(t) + ".md",
+        "артефакт": lambda t: R.artifact_stem(t, "us") + ".md",
+        "исправление": lambda t: K.slug(t) + ".md",
+        "навык проекта": lambda t: S.slugify(t),
+    }
+    for what, make in makers.items():
+        for t in nasty:
+            got = make(t)
+            base = got[:-3] if got.endswith(".md") else got
+            if what == "карточка" and not base:
+                continue    # «имени нет»: карточку без имени вызывающий не заводит
+            assert base.strip(". "), f"{what}: из {t!r} вышло пустое имя"
+            assert not C.path_problems(got), f"{what}: {t!r} → {got!r}: {C.path_problems(got)}"
+            assert len(got.encode("utf-8")) <= C.NAME_BYTES, f"{what}: {len(got.encode())} байт"
+            assert unicodedata.normalize("NFC", got) == got, f"{what}: {got!r} не в NFC"
+    # укороченные имена схем не сливаются: иначе вторая схема затёрла бы первую
+    a = exp.asset_name("KG_переход на ГС и Отчет из Расхождений.drawio", "П" * 120 + "_assets")
+    b = exp.asset_name("KG_переход на ГС и отчет из расхождения.drawio", "П" * 120 + "_assets")
+    assert a != b and a.endswith(".drawio"), f"две схемы стали одним файлом: {a} / {b}"
+    assert exp.asset_name(a, "П" * 120 + "_assets") == a, "повторная раскладка меняет имя снова"
+    assert exp.asset_name("1_.drawio", "X_assets") == "1_.drawio", \
+        "допустимое имя изменено без нужды — «1_» и «1» слились бы"
+
+
+@test
+def test_name_repair_lays_the_mirror_out_as_the_next_sync(tmp: Path):
+    """Починка имён без сети раскладывает зеркало ровно так, как следующий синк.
+
+    Иначе страницы переехали бы дважды: сначала по починке, потом по синку, — а каждый
+    переезд переписывает источники карточек. Проверка: старое зеркало (без предела пути),
+    карточки со ссылками на него, `kb_names --apply`, затем синк по правилу — и синк не
+    должен ни переложить, ни переписать ни одной страницы.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    C = importlib.import_module("aurora_common")
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    N = importlib.import_module("kb_names")
+    importlib.reload(N)
+    root = make_project(tmp, git=True)
+    mirror = root / "Sources" / "Confluence"
+    long = "Очень длинный заголовок раздела про налоговую отчётность и расхождения"
+    tree = {"9100100": ("Корень аналитики проекта", ["9100101", "9100102"])}
+    tree["9100101"] = (long + " один", [])
+    tree["9100102"] = (long + " два", ["9100103"])
+    tree["9100103"] = (long + " три", ["9100104", "9100105"])
+    tree["9100104"] = (long + " четыре со схемой", [])
+    tree["9100105"] = (long + " пять", ["9100106", "9100200"])
+    tree["9100106"] = (long + " шесть", [])
+    # Очень глубокая ветка: здесь страницы уже не помещаются и под номером — синк кладёт
+    # их в папку ближайшего предка, где место есть. Починка обязана узнать их родителя
+    # по шапке, а не по пути, иначе повторный запуск переложит их не туда.
+    for depth in range(20):
+        pid = str(9100200 + depth)
+        tree[pid] = (f"Уровень {depth}", [str(9100201 + depth)] if depth < 19 else [])
+    drawio = ('<p>Схема:</p><ac:structured-macro ac:name="drawio">'
+              '<ac:parameter ac:name="diagramName">KG_переход на ГС и Отчет из Расхождений'
+              '</ac:parameter></ac:structured-macro>'
+              '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">'
+              'KG_переход на ГС и отчет из расхождения</ac:parameter></ac:structured-macro>')
+
+    class Api:
+        def page(self, pid):
+            title = tree[pid][0]
+            body = drawio if pid == "9100104" else f"<p>Текст страницы {pid}.</p>"
+            return {"title": title, "version": {"number": 1, "when": "2026-09-27"},
+                    "body": {"storage": {"value": body}}, "space": {"key": "S"},
+                    "_links": {"webui": f"/p/{pid}"}}
+
+        def children(self, pid):
+            return [{"id": c, "title": tree[c][0]} for c in tree[pid][1]]
+
+        def attachments(self, pid):
+            if pid != "9100104":
+                return {}
+            return {"KG_переход на ГС и Отчет из Расхождений.drawio": "a1",
+                    "KG_переход на ГС и отчет из расхождения.drawio": "a2"}
+
+        def fetch(self, url):
+            return f"<mxfile>{url}</mxfile>".encode("utf-8")
+
+        def user_name(self, key):
+            return key
+
+    here, real = os.getcwd(), CE.PATH_CHARS
+    os.chdir(root)
+    try:
+        # 1. старое зеркало: как до 1.140.0 — путь ничем не ограничен
+        CE.PATH_CHARS = 10 ** 6
+        old = CE.Exporter(Api(), str(mirror), "https://wiki", "S", False)
+        old.walk("9100100", [])
+        old.write_state()
+        CE.PATH_CHARS = real
+        old_paths = {pid: rel for pid, rel, _t, _s in old.records}
+        assert max(len("Sources/Confluence/" + r) for r in old_paths.values()) > C.PATH_CHARS, \
+            "заготовка не воспроизводит длинные пути"
+        card(root, "Concepts/Знание.md", "Текст.",
+             source=f'"Sources/Confluence/{old_paths["9100106"]}"', status="draft")
+        subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "до"],
+                       cwd=str(root), check=True)
+
+        # 2. починка без сети
+        plan = N.mirror_plan(str(root), str(mirror))
+        assert any(p["old"] != p["new"] for p in plan), "починка не нашла длинных путей"
+        N.apply_mirror(str(root), str(mirror), plan)
+        on_disk = [str(p.relative_to(root)).replace("\\", "/") for p in mirror.rglob("*") if p.is_file()]
+        assert all(not C.path_problems(r) for r in on_disk), \
+            f"после починки пути длиннее предела: {[r for r in on_disk if C.path_problems(r)][:3]}"
+        src = (root / "AuroraKnowledgeDB/Concepts/Знание.md").read_text(encoding="utf-8")
+        rows = {pid: rel for pid, _t, rel, _s in N._state_rows(str(mirror))}
+        assert f"Sources/Confluence/{rows['9100106']}" in src, f"источник карточки не переведён:\n{src}"
+        assert (mirror / rows["9100106"]).is_file(), "страница не лежит по новому пути"
+
+        assert not N.mirror_plan(str(root), str(mirror)), \
+            "повторная починка снова что-то перекладывает — она не повторяема"
+        parent_of = {c: p for p, (_t, kids) in tree.items() for c in kids}
+
+        def here_of(pid):
+            r = rows[pid]
+            return r[:-len("/index.md")] if r.endswith("/index.md") else r[:-3]
+        lifted = [pid for pid in rows if pid in parent_of
+                  and os.path.dirname(here_of(pid)) != here_of(parent_of[pid])]
+        assert lifted, "заготовка не дошла до страниц, лёгших в папку предка"
+
+        # 3. синк по правилу: ни переезда, ни перезаписи
+        new = CE.Exporter(Api(), str(mirror), "https://wiki", "S", False)
+        new.walk("9100100", [])
+        assert {pid: rel for pid, rel, _t, _s in new.records} == rows, \
+            "синк разложил зеркало иначе, чем починка: страницы переедут второй раз"
+        assert new.written == 0, f"синк переписал страниц: {new.written} — починка оставила не тот текст"
+        assert not new.stale(), f"после синка лишние файлы: {new.stale()}"
+        schemes = sorted(p.name for p in mirror.rglob("*.drawio"))
+        assert len(schemes) == 2 and schemes[0] != schemes[1], f"схемы слились или пропали: {schemes}"
+        page = (mirror / rows["9100104"]).read_text(encoding="utf-8")
+        for name in schemes:
+            import urllib.parse
+            assert urllib.parse.quote(name) in page, f"ссылка на схему {name} не поправлена"
+    finally:
+        CE.PATH_CHARS = real
+        os.chdir(here)
+
+
+@test
+def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
+    """Обновление Pydantic AI не ломает работу Авроры молча.
+
+    Проверка 28.09.2026 на сборке Pydantic AI из git (2.51.1.dev): клиент OpenAI там стоит
+    на `httpx2`, а прежнего `httpx` нет вовсе — адаптер импортировал `httpx` и не поднимался,
+    и все вызовы тихо ушли бы прямым HTTP. На 2.0.0 молча пропадал каталог MCP. Поэтому:
+    HTTP-библиотеку адаптер берёт ту же, что у клиента OpenAI; форму запроса держит на
+    проводе, а не только флагами профиля (их названия меняются); новая версия работает,
+    только пройдя самопроверку, а обновление из панели, не прошедшее её, откатывается.
+    """
+    import importlib
+    import types
+    sys.path.insert(0, str(KIT / "scripts" / "agents"))
+    sys.path.insert(0, str(SCRIPTS))
+    AD = importlib.import_module("pydantic_ai_adapter")
+    importlib.reload(AD)
+
+    # форма запроса на проводе — без опоры на флаги профиля
+    raw = json.dumps({"model": "m", "max_completion_tokens": 50, "messages": [
+        {"role": "developer", "content": "ты критик"}, {"role": "system", "content": "каталог MCP"},
+        {"role": "user", "content": "проверь"}]}).encode()
+    got = json.loads(AD.tolerant_request(raw))
+    assert got.get("max_tokens") == 50 and "max_completion_tokens" not in got, got
+    assert [m["role"] for m in got["messages"]] == ["system", "user"], got["messages"]
+    assert got["messages"][0]["content"] == "ты критик\n\nкаталог MCP", got["messages"][0]
+    plain = json.dumps({"messages": [{"role": "system", "content": "a"},
+                                     {"role": "user", "content": "b"}], "max_tokens": 5}).encode()
+    assert AD.tolerant_request(plain) is plain, "правильный запрос пересобран без нужды"
+
+    # HTTP-библиотека — та, на которой стоит клиент OpenAI
+    fake_lib = types.ModuleType("httpx2")
+    fake_lib.AsyncBaseTransport = object
+    base = types.ModuleType("openai._base_client")
+    base.httpx2 = fake_lib
+    top = types.ModuleType("openai")
+    top._base_client = base
+    saved = {k: sys.modules.get(k) for k in ("openai", "openai._base_client")}
+    sys.modules.update({"openai": top, "openai._base_client": base})
+    try:
+        assert AD.http_lib() is fake_lib, "адаптер взял не ту HTTP-библиотеку, что клиент OpenAI"
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    # версия без пройденной самопроверки не работает: вызовы — прямым HTTP с причиной
+    ag = importlib.import_module("agent_core")
+    importlib.reload(ag)
+    fake = tmp / "fake.py"
+    fake.write_text('import json,sys\nprint(json.dumps({"ready": True, "version": "9.0.0"}), flush=True)\n'
+                    'sys.stdin.read()\n', encoding="utf-8")
+    ag._adapter_argv = lambda: [sys.executable, str(fake)]
+    ag.adapter_selfcheck = lambda version="", force=False: {
+        "ok": False, "version": version, "problems": ["одно системное сообщение: ['system', 'system']"]}
+    ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
+    ag.ADAPTER.update(name="pydantic_ai", fallback_why="")
+    real = ag.http_json
+    ag.http_json = lambda *a, **k: (200, {"choices": [{"message": {"content": "по HTTP"}}]}, "", 0.0)
+    try:
+        st, body, err, _ = ag.default_transport("chat", {"n": 1, "url": "http://x/v1", "key": ""},
+                                                {"model": "m", "messages": [
+                                                    {"role": "user", "content": "?"}]}, 10)
+        assert st == 200 and body["choices"][0]["message"]["content"] == "по HTTP", \
+            "непроверенная версия не отправила вызов прямым HTTP"
+        assert "не прошёл проверку совместимости" in ag.ADAPTER["fallback_why"] \
+            and "9.0.0" in ag.ADAPTER["fallback_why"], ag.ADAPTER["fallback_why"]
+    finally:
+        ag.http_json = real
+        ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
+        importlib.reload(ag)
+
+    # обновление из панели, не прошедшее проверку, возвращает прежнюю версию
+    EX = importlib.import_module("aurora_extras")
+    importlib.reload(EX)
+    ran, have = [], ["2.51.0"]
+
+    def fake_run(cmd, timeout=60):
+        ran.append(cmd)
+        if "import sys" in " ".join(cmd):
+            return subprocess.CompletedProcess(cmd, 0, "3.13\n", "")
+        if "--upgrade" in cmd and "pydantic-ai" in cmd:
+            have[0] = "9.0.0"
+        if any(str(c).startswith("pydantic-ai==") for c in cmd):
+            have[0] = str(next(c for c in cmd if str(c).startswith("pydantic-ai=="))).split("==")[1]
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    EX._run = fake_run
+    EX.venv_python = lambda _id: Path(sys.executable)
+    EX.installed_version = lambda _id: have[0]
+    EX.check_compat = lambda v: {"ok": v != "9.0.0", "version": v,
+                                 "problems": [] if v != "9.0.0" else ["обрыв связи: адаптер"]}
+    res = EX.install("pydantic-ai")
+    assert not res["ok"] and res.get("rolled_back") == "9.0.0" and res["version"] == "2.51.0", res
+    assert any("pydantic-ai==2.51.0" in c for c in ran), "прежняя версия не возвращена"
+    assert "не совместим" in res.get("error", ""), res
+
+    vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
+    if not vpy.exists():
+        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
+    cp = subprocess.run([str(vpy), str(KIT / "scripts/agents/pydantic_ai_adapter.py"), "--selfcheck"],
+                        capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
+    out = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert out["ok"], f"установленная версия {out.get('version')} не прошла самопроверку: {out['problems']}"
 
 
 @test
@@ -20163,7 +20478,7 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
     assert "уже подключён" in AD.mcp_activate(state, ["tavily"], "tavily")
     assert "нет" in AD.mcp_activate(state, ["tavily"], "brave")
     src = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
-    loop = src[src.index("def main("):]
+    loop = src[src.index("def runtime("):]
     assert "lazy_mcp_toolsets(" in loop and 'task.get("mcp_active")' in loop, "адаптер поднимает все серверы"
     # Агент с серверами строится на одно задание: задания идут параллельно, и общий агент
     # отдал бы серверы, подключённые планировщиком, писателю соседнего вызова.
