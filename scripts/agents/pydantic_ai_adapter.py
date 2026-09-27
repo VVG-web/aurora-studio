@@ -7,12 +7,25 @@
 и stdout.
 
 Протокол построчный: одно задание — одна строка JSON на stdin, один ответ — одна строка
-на stdout. Процесс живёт весь прогон: запуск venv-питона с импортом фреймворка стоит
+на stdout. Процесс один на прогон: запуск venv-питона с импортом фреймворка стоит
 восемь секунд, и платить их за каждый шаг агента значило бы пять минут ожидания на
 двух десятках конфликтов.
 
-Задание: {"url", "key", "model", "messages", "thinking", "timeout"}
-Ответ:   {"ok", "text", "reasoning"} либо {"ok": false, "error"}
+Задания идут ПАРАЛЛЕЛЬНО: у каждого свой `id`, ответ несёт тот же `id` и приходит, когда
+готов, а не в порядке заданий. Прежде процесс брал задание, ждал модель и только потом
+читал следующее — движок держал пул таких процессов (по 114 МБ), и всё равно на живом
+шлюзе выходило 1,05 ответа в секунду против 5,46 прямым HTTP. Поэтому одиночные вызовы
+шли мимо Pydantic AI. Замер 27.09.2026 (24 потока): один асинхронный процесс — 19,5
+ответа в секунду на шлюзе №1 против 18,8 прямым HTTP, на №2 — 2,37 против 2,48. Узким
+местом была наша труба, а не фреймворк, и теперь через него идёт каждый вызов.
+
+Первая строка процесса — {"ready": true, "version"} либо {"ready": false, "error"}.
+Задание: {"id", "url", "key", "model", "messages", "template", "max_tokens", "timeout",
+          "tools", "mcp", "mcp_active", "guard", "role", "tool_calls"}
+Ответ:   {"id", "ok": true, "text", "reasoning", "finish", "usage"}
+         либо {"id", "ok": false, "where": "server"|"adapter", "status", "error", "body"}
+`where` отделяет отказ сервера (движок решает по нему, как по HTTP) от поломки адаптера
+(движок повторяет вызов прямым HTTP и пишет причину в отчёт).
 
 Зачем фреймворк, если есть прямой HTTP: Pydantic AI валидирует ответ и умеет заставить
 модель переписать невалидный — а в фазе 2 агент возвращает не текст, а решение в JSON,
@@ -361,88 +374,276 @@ def register_tools(agent, allowed: list) -> None:
         return engine("make_kinds.py", ["--kind", kind] if kind else [])
 
 
+def tolerant_body(raw: bytes) -> bytes:
+    """Ответ шлюза, приведённый к стандарту там, где строгий клиент OpenAI на нём падает.
+
+    Шлюз на SGLang кладёт в ответ `metadata.weight_versions` — список отрезков с версией
+    весов модели (SGLang умеет менять веса на лету и отмечает, какой версией написан какой
+    кусок ответа). По стандарту OpenAI `metadata` — словарь строк, и клиент внутри
+    Pydantic AI отвергал ВЕСЬ ответ: «Invalid response … metadata.weight_versions Input
+    should be a valid string». Ответ при этом верный, а поле нам не нужно ни для чего.
+
+    Правим только то, что нарушает стандарт: строковые пары `metadata` остаются, прочее
+    уходит; нестандартные поля, которые клиент и так пропускает (`matched_stop`, `timings`,
+    `reasoning_content`), не трогаем. Не JSON или не словарь — байты как были.
+    """
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return raw
+    if not isinstance(body, dict) or "metadata" not in body:
+        return raw
+    md = body["metadata"]
+    if md is None or (isinstance(md, dict) and all(isinstance(v, str) for v in md.values())):
+        return raw
+    keep = {k: v for k, v in md.items() if isinstance(v, str)} if isinstance(md, dict) else {}
+    if keep:
+        body["metadata"] = keep
+    else:
+        body.pop("metadata")
+    return json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+
+def text_of(content) -> str:
+    """Текст сообщения: строка как есть, список частей — их тексты подряд."""
+    if isinstance(content, list):
+        return "\n".join(str(p.get("text") or "") for p in content
+                         if isinstance(p, dict) and p.get("type") == "text")
+    return str(content or "")
+
+
+def split_messages(messages: list) -> tuple:
+    """→ (инструкции, история, новый запрос) — разговор в форме Pydantic AI.
+
+    Системные сообщения идут в инструкции, а не в текст запроса: прежде адаптер склеивал
+    ВСЁ в одну реплику пользователя, и модель через Pydantic AI получала другое задание,
+    чем через HTTP, — роль и правила оказывались посреди пересказа карточки. Последняя
+    реплика пользователя — запрос; всё, что до неё, — история разговора.
+    """
+    system = [text_of(m.get("content")) for m in messages if m.get("role") == "system"]
+    rest = [m for m in messages if m.get("role") != "system"]
+    prompt = ""
+    if rest and rest[-1].get("role") != "assistant":
+        prompt = text_of(rest[-1].get("content"))
+        rest = rest[:-1]
+    history = [{"role": "assistant" if m.get("role") == "assistant" else "user",
+                "content": text_of(m.get("content"))} for m in rest]
+    return "\n\n".join(s for s in system if s), history, prompt
+
+
+def shared_agent_key(task: dict):
+    """Ключ общего агента для задания, либо None — агент строится на одно задание.
+
+    Задания идут параллельно, и агент с инструментами общим быть не может: у него своё
+    состояние подключённых MCP-серверов, и два одновременных вызова перепутали бы, кто
+    какой сервер подключил. Такие вызовы редки (планировщик, «Спросить») — им свой агент.
+    Одиночный вызов без инструментов состояния не имеет: агент на модель общий.
+    """
+    if task.get("tools") or (task.get("mcp") or {}).get("mcpServers"):
+        return None
+    return (task["url"], task.get("key") or "", task["model"])
+
+
+def http_client():
+    """HTTP-клиент адаптера: один на процесс, с терпимым разбором ответа."""
+    import httpx
+
+    class Tolerant(httpx.AsyncBaseTransport):
+        """Ответ в JSON проходит через `tolerant_body` до того, как его увидит клиент
+        OpenAI. Поток событий (stream) не трогаем: движок им не пользуется."""
+
+        def __init__(self):
+            self.inner = httpx.AsyncHTTPTransport()
+
+        async def handle_async_request(self, request):
+            resp = await self.inner.handle_async_request(request)
+            if "json" not in resp.headers.get("content-type", ""):
+                return resp
+            raw = await resp.aread()
+            await resp.aclose()
+            # Тело уже распаковано: сжатие и длина из заголовков к нему не относятся.
+            headers = [(k, v) for k, v in resp.headers.items()
+                       if k.lower() not in ("content-length", "content-encoding",
+                                            "transfer-encoding")]
+            return httpx.Response(resp.status_code, headers=headers,
+                                  content=tolerant_body(raw), request=request,
+                                  extensions=resp.extensions)
+
+        async def aclose(self):
+            await self.inner.aclose()
+
+    # Срок задаёт движок на каждый запрос (`timeout` в настройках модели), свой не нужен.
+    return httpx.AsyncClient(transport=Tolerant(), timeout=None)
+
+
 def answer(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)
 
 
 def main() -> int:
     try:
-        from pydantic_ai import Agent
+        import asyncio
+        import threading
+        from typing import Optional
+        import pydantic_ai
+        from openai import AsyncOpenAI
+        from pydantic_ai import Agent, capture_run_messages
+        from pydantic_ai.exceptions import (ModelAPIError, ModelHTTPError,
+                                            UnexpectedModelBehavior)
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
         # История разговора: без неё модель не помнит, что спрашивала минуту назад, и
         # диалог (планировщик, уточняющие вопросы) невозможен в принципе.
         from pydantic_ai.messages import (ModelRequest, ModelResponse, TextPart,
-                                          UserPromptPart)
+                                          ThinkingPart, UserPromptPart)
         # Потолок на вызовы инструментов: самостоятельность модели появилась вместе с
         # ними — pydantic-ai сам гоняет цикл «подумал → позвал → подумал ещё». Без
         # потолка один сложный вопрос съедает бюджет всего прогона.
         from pydantic_ai.usage import UsageLimits
     except Exception as e:  # noqa: BLE001
-        answer({"ok": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
+        answer({"ready": False, "error": f"pydantic-ai не импортируется: {type(e).__name__}"})
         return 0
 
-    agents: dict = {}          # (url, model) → готовый агент: провайдер строится один раз
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    client = http_client()
+    agents: dict = {}          # shared_agent_key → агент: провайдер строится один раз
+
+    def agent_for(task: dict):
+        """→ (агент, состояние MCP). Общий для одиночных вызовов, свой — для инструментов."""
+        key = shared_agent_key(task)
+        if key is not None and key in agents:
+            return agents[key]
+        # Повторов у клиента нет: кольцо бэкендов движка само решает, кого спросить
+        # снова, а скрытые повторы клиента OpenAI удваивали бы срок молча.
+        provider = OpenAIProvider(openai_client=AsyncOpenAI(
+            base_url=task["url"], api_key=task.get("key") or "none",
+            http_client=client, max_retries=0))
+        state = {"active": set()}
+        toolsets = lazy_mcp_toolsets(task.get("mcp") or {}, task.get("guard") or {},
+                                     (task.get("tools") or ["."])[0],
+                                     task.get("role") or "", state)
+        # Потолок ответа — полем `max_tokens`, как в прямом HTTP: его понимают SGLang,
+        # llama.cpp и vLLM. Клиент OpenAI по умолчанию шлёт `max_completion_tokens`, и
+        # шлюз, не знающий этого поля, писал бы без потолка.
+        # Системное сообщение — одно: инструкции движка и каталог MCP-серверов Pydantic AI
+        # шлёт двумя, а chat-шаблон Qwen на шлюзе отвечает на второе `400 System message
+        # must be at the beginning` (живой шлюз №1, 27.09.2026).
+        profile = {**(provider.model_profile(task["model"]) or {}),
+                   "openai_chat_supports_max_completion_tokens": False,
+                   "openai_chat_supports_multiple_system_messages": False}
+        # `Optional[str]`: пустой ответ — не повод для повторного запроса, а ответ, который
+        # движок разберёт сам (рассуждения съели лимит, шаблон на сервере и т. п.).
+        agent = Agent(OpenAIChatModel(task["model"], provider=provider, profile=profile),
+                      output_type=Optional[str], toolsets=toolsets or None)
+        if task.get("tools"):
+            register_tools(agent, task["tools"])
+        if key is not None:
+            agents[key] = (agent, state)
+        return agent, state
+
+    def last_response(messages: list):
+        return next((m for m in reversed(messages or []) if isinstance(m, ModelResponse)), None)
+
+    def thinking_of(resp) -> str:
+        return "\n".join(p.content for p in (resp.parts if resp else [])
+                         if isinstance(p, ThinkingPart) and p.content).strip()
+
+    def usage_of(usage) -> dict:
+        u = usage() if callable(usage) else usage
+        return {"prompt_tokens": int(getattr(u, "input_tokens", 0)
+                                     or getattr(u, "request_tokens", 0) or 0),
+                "completion_tokens": int(getattr(u, "output_tokens", 0)
+                                         or getattr(u, "response_tokens", 0) or 0)}
+
+    def http_error(e) -> dict:
+        body = e.body if isinstance(e.body, (dict, list)) else None
+        msg = ""
+        if isinstance(body, dict):
+            err = body.get("error")
+            msg = err.get("message", "") if isinstance(err, dict) else str(err or body.get("message") or "")
+        return {"ok": False, "where": "server", "status": e.status_code, "body": body,
+                "error": msg or f"HTTP {e.status_code}"}
+
+    async def run_task(task: dict) -> dict:
+        agent, state = agent_for(task)
+        # Сразу подключены — только названные человеком или типом артефакта; остальные
+        # модель подключит сама.
+        allowed = set(servers_for_role(task.get("mcp") or {}, task.get("role") or ""))
+        state["active"] = {n for n in (task.get("mcp_active") or []) if n in allowed}
+        instructions, turns, prompt = split_messages(task.get("messages") or [])
+        if not prompt:
+            return {"ok": False, "where": "adapter", "error": "в задании нет реплики пользователя"}
+        history = [ModelResponse(parts=[TextPart(content=t["content"])])
+                   if t["role"] == "assistant" else
+                   ModelRequest(parts=[UserPromptPart(content=t["content"])]) for t in turns]
+        settings: dict = {}
+        # Рассуждения шлюз включает нестандартным полем шаблона. Движок снимает его,
+        # если шлюз ответил на него 400, — тогда и адаптер его не шлёт.
+        if task.get("template") is not None:
+            settings["extra_body"] = {"chat_template_kwargs": task["template"]}
+        if task.get("max_tokens"):
+            settings["max_tokens"] = int(task["max_tokens"])
+        # Таймаут считает движок (у него дедлайн шага и бюджет прогона). Без передачи
+        # действовал внутренний по умолчанию — и рассуждающая модель на 122b упиралась
+        # в него, а прогон уходил на stdlib-фолбэк, теряя валидацию ответа.
+        if task.get("timeout"):
+            settings["timeout"] = float(task["timeout"])
+        limit = int(task.get("tool_calls") or 0)
+        with capture_run_messages() as seen:
+            try:
+                result = await agent.run(
+                    prompt, instructions=instructions or None,
+                    message_history=history or None,
+                    usage_limits=UsageLimits(tool_calls_limit=limit) if limit else None,
+                    model_settings=settings)
+            except ModelHTTPError as e:
+                return http_error(e)
+            except ModelAPIError as e:
+                # Связь или срок: сервер не ответил. Повтор прямым HTTP упрётся в то же.
+                return {"ok": False, "where": "server", "error": str(e.message or e)[:300]}
+            except UnexpectedModelBehavior as e:
+                last = last_response(seen)
+                if last is not None and last.finish_reason == "length":
+                    # Рассуждения съели лимит до ответа — это ответ, а не поломка: движок
+                    # назовёт причину сам, как при прямом HTTP.
+                    return {"ok": True, "text": "", "reasoning": thinking_of(last),
+                            "finish": "length", "usage": usage_of(last.usage)}
+                return {"ok": False, "where": "adapter", "error": f"{type(e).__name__}: {e}"[:300]}
+        last = last_response(result.all_messages())
+        return {"ok": True, "text": (result.output or "").strip(),
+                "reasoning": thinking_of(last),
+                "finish": (last.finish_reason if last is not None else None) or "stop",
+                "usage": usage_of(result.usage)}
+
+    loop = asyncio.new_event_loop()
+
+    async def serve(task: dict) -> None:
+        try:
+            out = await run_task(task)
+        except Exception as e:  # noqa: BLE001 — движку нужен диагноз, а не трассировка
+            out = {"ok": False, "where": "adapter", "error": f"{type(e).__name__}: {e}"[:300]}
+        out["id"] = task.get("id")
+        answer(out)
+
+    def start(line: str) -> None:
         try:
             task = json.loads(line)
         except ValueError:
-            answer({"ok": False, "error": "задание не разобрано как JSON"})
-            continue
-        try:
-            # Роль — в ключе: набор серверов отбирается по роли, и без неё агент, собранный
-            # для планировщика, достался бы писателю с чужими серверами.
-            key = (task["url"], task["model"], bool(task.get("tools")),
-                   json.dumps(task.get("mcp") or {}, sort_keys=True), task.get("role") or "")
-            if key not in agents:
-                provider = OpenAIProvider(base_url=task["url"],
-                                          api_key=task.get("key") or "none")
-                state = {"active": set()}
-                toolsets = lazy_mcp_toolsets(task.get("mcp") or {}, task.get("guard") or {},
-                                             (task.get("tools") or ["."])[0],
-                                             task.get("role") or "", state)
-                agent = Agent(OpenAIChatModel(task["model"], provider=provider),
-                              toolsets=toolsets or None)
-                if task.get("tools"):
-                    register_tools(agent, task["tools"])
-                agents[key] = (agent, state)
-            agent, state = agents[key]
-            # Сразу подключены — только названные человеком или типом артефакта; остальные
-            # модель подключит сама. Состояние сбрасывается на каждый вызов.
-            allowed = set(servers_for_role(task.get("mcp") or {}, task.get("role") or ""))
-            state["active"] = {n for n in (task.get("mcp_active") or []) if n in allowed}
-            # thinking у шлюза включается нестандартным полем шаблона — прокидываем как есть
-            settings = {"extra_body": {"chat_template_kwargs":
-                                       {"enable_thinking": bool(task.get("thinking"))}}}
-            # Таймаут считает движок (у него дедлайн шага и бюджет прогона). Без передачи
-            # действовал внутренний по умолчанию — и рассуждающая модель на 122b упиралась
-            # в него, а прогон уходил на stdlib-фолбэк, теряя валидацию ответа.
-            if task.get("timeout"):
-                settings["timeout"] = float(task["timeout"])
-            # Два пути живут рядом намеренно. Старый — склейка в одну строку — держит
-            # разбор базы, который работает; новый нужен диалогу. Развилку снимаем, когда
-            # новый докажет себя на живой работе, а не когда он просто написан.
-            history = []
-            for turn in (task.get("history") or []):
-                text_of = str(turn.get("content") or "")
-                if turn.get("role") == "assistant":
-                    history.append(ModelResponse(parts=[TextPart(content=text_of)]))
-                else:
-                    history.append(ModelRequest(parts=[UserPromptPart(content=text_of)]))
-            limit = int(task.get("tool_calls") or 0)
-            result = agent.run_sync(
-                "\n\n".join(m["content"] for m in task["messages"]),
-                message_history=history or None,
-                usage_limits=UsageLimits(tool_calls_limit=limit) if limit else None,
-                model_settings=settings)
-            text = (result.output or "").strip()
-            answer({"ok": True, "text": text, "reasoning": ""} if text
-                   else {"ok": False, "error": "пустой ответ модели"})
-        except Exception as e:  # noqa: BLE001 — движку нужен диагноз, а не трассировка
-            answer({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]})
+            answer({"ok": False, "where": "adapter", "error": "задание не разобрано как JSON"})
+            return
+        loop.create_task(serve(task))
+
+    def reader() -> None:
+        # Чтение — в своём потоке: цикл событий занят ответами модели, а новое задание
+        # должно уходить в работу сразу, не дожидаясь чужих.
+        for line in sys.stdin:
+            if line.strip():
+                loop.call_soon_threadsafe(start, line.strip())
+        # Движок закрыл трубу — прогон кончился, ждать больше некого.
+        loop.call_soon_threadsafe(loop.stop)
+
+    answer({"ready": True, "version": getattr(pydantic_ai, "__version__", "")})
+    threading.Thread(target=reader, daemon=True).start()
+    loop.run_forever()
     return 0
 
 

@@ -2821,7 +2821,12 @@ def agent_state(project: str) -> dict:
                       # Зрячая модель — третье кольцо, устроено как вектора: шлюз может
                       # держать только её, и тогда в чатовое кольцо он не берётся.
                       "ocr_model": b.get("ocr_model", ""),
-                      "ocr_url": b.get("ocr_url", "")} for b in cfg["backends"]],
+                      "ocr_url": b.get("ocr_url", ""),
+                      # Свои поля chat-шаблона шлюза (как extraBody у opencode) и ошибка
+                      # разбора — опечатка в JSON не должна молча выключать поле.
+                      "template": b.get("template") or {},
+                      "template_error": b.get("template_error", "")}
+                     for b in cfg["backends"]],
         # Ключ наружу не отдаём никогда — только «заполнен или нет», как и у бэкендов.
         "embed": {"url": cfg["embed"]["url"], "model": cfg["embed"]["model"],
                   "key_set": bool(cfg["embed"]["key"]),
@@ -2842,6 +2847,17 @@ def agent_state(project: str) -> dict:
                          for r in (AG.ocr_ring(cfg) if hasattr(AG, "ocr_ring") else [])]},
         "venv": {"ok": venv_ok, "version": venv_ver, "path": str(AG.VENV)},
     }
+
+
+def pydantic_state(project: str) -> dict:
+    """Настройки Pydantic AI — то же, что печатает `agent:pydantic`: по шлюзам и ролям,
+    что уйдёт в запрос. Слои те же, что у агента (кит < проект); ключей в ответе нет."""
+    import agent_core as AG
+    from aurora_common import ENV_FILE
+    env = dict(AG.load_env(Path(KIT) / ENV_FILE))
+    if project:
+        env.update(AG.load_env(Path(project) / ENV_FILE))
+    return AG.pydantic_settings(AG.parse_config(env))
 
 
 # Категории линтера, по которым человек принимает решения о карточках. Всё остальное
@@ -3513,6 +3529,9 @@ class Handler(BaseHTTPRequestHandler):
                            else {"error": "проект не выбран"})
         elif u.path == "/api/agent":
             self.send_json(agent_state(q.get("project", [""])[0]))
+        elif u.path == "/api/agent/pydantic":
+            project = (q.get("project") or [""])[0]
+            self.send_json(pydantic_state(project if project and self._known(project) else ""))
         elif u.path == "/api/about":
             self.send_json(about())
         elif u.path == "/api/scenarios":

@@ -35,5 +35,20 @@
   "install.ex_pypi_behind": "В git уже {git}, а pip пока ставит {pypi}: выпуск ещё не дошёл до PyPI.",
   "install.ex_mcp_on": "MCP-сервер графа базы подключён к агенту Авроры",
   "install.ex_mcp_off": "MCP-сервер графа базы не подключён — переустановите graphify",
-  "install.ex_mcp_hint": "Для Claude Code или Cursor добавьте это в их настройки MCP; запускайте из папки проекта — граф берётся оттуда (после шага «Граф базы наружу»)."
+  "install.ex_mcp_hint": "Для Claude Code или Cursor добавьте это в их настройки MCP; запускайте из папки проекта — граф берётся оттуда (после шага «Граф базы наружу»).",
+  "install.ex_settings": "Что уходит в шлюз",
+  "install.ex_settings_about": "По каждому шлюзу и роли: модель, включены ли рассуждения и поля chat-шаблона ровно в том виде, в каком уходят в запрос (extra_body). Меняются в «Настройке» → «Агент». Ключей здесь нет.",
+  "install.ex_settings_client": "Клиент: один процесс, запросы параллельно · повторов нет (решает кольцо) · потолок ответа полем max_tokens · системное сообщение одно · в metadata ответа только строки",
+  "install.ex_settings_off": "Pydantic AI не работает: {why} — вызовы идут прямым HTTP",
+  "install.ex_settings_on": "Все вызовы модели идут через Pydantic AI {v}",
+  "install.ex_role": "роль",
+  "install.ex_model": "модель",
+  "install.ex_thinking": "рассуждения",
+  "install.ex_timeout": "срок, с",
+  "install.ex_on": "вкл",
+  "install.ex_off": "выкл",
+  "install.ex_no_backends": "Чатовые шлюзы не настроены.",
+  "install.ex_tpl_bad": "поля шаблона не приняты: {why}",
+  "install.ex_not_selected": "выбран прямой HTTP (AURORA_AGENT_ADAPTER)",
+  "install.ex_not_installed": "не установлен"
 }

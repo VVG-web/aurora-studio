@@ -191,8 +191,7 @@ INVARIANTS = frozenset({
     "the agent can hold a conversation and use tools",
     "width probe measures work not noise",
     "section is the type written as a folder",
-    "adapter does not serialise the whole run",
-    "adapter pool structure and growth",
+    "adapter answers every caller in parallel",
     "console says which step uses the threads",
 })
 
@@ -7314,125 +7313,331 @@ def test_section_is_the_type_written_as_a_folder(tmp: Path):
 
 
 @test
-def test_adapter_does_not_serialise_the_whole_run(tmp: Path):
-    """Один процесс адаптера обслуживал ВСЕ вызовы построчно — очередь длиной в прогон.
+def test_adapter_answers_every_caller_in_parallel(tmp: Path):
+    """Каждый вызов модели идёт через Pydantic AI, и адаптер не выстраивает их в очередь.
 
-    Запрос пишется в его stdin, ответ читается из stdout; параллельные потоки упирались
-    в одну трубу. Замер на живом шлюзе: чистый HTTP при восьми потоках 2,40 ответа в
-    секунду, тот же шлюз через один адаптерный процесс — 0,47. Впятеро меньше, и «шлюз
-    не тянет» тут ни при чём: ёмкость была, очередь стояла у нас.
+    Прежде процесс адаптера брал задание, ждал модель и только потом читал следующее;
+    движок держал пул таких процессов (по 114 МБ), а через них выходило 1,05 ответа в
+    секунду против 5,46 прямым HTTP. Поэтому одиночные вызовы шли мимо Pydantic AI, и
+    фреймворк работал лишь в разговорах с инструментами. Замер 27.09.2026: один
+    асинхронный процесс держит ту же скорость, что прямой HTTP.
 
-    Хуже медленного: замка на трубе не было вовсе — два потока могли разобрать ответы
-    друг друга. Тихая подмена ответа страшнее любой задержки.
+    Здесь поддельный адаптер (тот же протокол) отвечает на задания не по порядку: каждый
+    поток обязан получить СВОЙ ответ, все вместе — за время самого долгого, а процесс —
+    один. Отказ сервера возвращается как есть, поломка адаптера — прямым HTTP с причиной.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
+    import threading
     ag = importlib.import_module("agent_core")
     importlib.reload(ag)
 
-    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
-    assert "def adapter_slot(" in src, "процесс адаптера по-прежнему один на всё"
-    assert '"slots"' in src and "threading.Lock()" in src, \
-        "у процессов адаптера нет своих замков — потоки разберут чужие ответы"
-    body = src[src.index("def pydantic_transport("):src.index("def default_transport(")]
-    assert "with lock:" in body, "замок не держится на весь обмен запрос-ответ"
-    assert body.index("proc.stdin.write") > body.index("with lock:"), \
-        "запись в трубу идёт вне замка"
-    assert "readline()" in body and body.index("readline()") > body.index("with lock:"), \
-        "ответ читается вне замка — его может забрать чужой поток"
-    assert "_slots" in src, "пул не знает, сколько параллельных запросов будет"
+    fake = tmp / "fake_adapter.py"
+    fake.write_text(textwrap.dedent("""
+        import json, sys, threading, time
+        lock = threading.Lock()
+        def say(o):
+            with lock:
+                sys.stdout.write(json.dumps(o, ensure_ascii=False) + "\\n"); sys.stdout.flush()
+        say({"ready": True, "version": "поддельный"})
+        def work(t):
+            q = t["messages"][-1]["content"]
+            if q == "упади":
+                sys.stdout.flush(); import os; os._exit(0)
+            if q == "отказ":
+                return say({"id": t["id"], "ok": False, "where": "server", "status": 400,
+                            "error": "шлюзу не по вкусу", "body": {"error": {"message": "x"}}})
+            if q == "сломан":
+                return say({"id": t["id"], "ok": False, "where": "adapter",
+                            "error": "ответ не разобран"})
+            time.sleep(float(q))
+            say({"id": t["id"], "ok": True, "text": "ответ " + q, "reasoning": "думал",
+                 "finish": "stop", "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                 "system": [m["content"] for m in t["messages"] if m["role"] == "system"]})
+        for line in sys.stdin:
+            threading.Thread(target=work, args=(json.loads(line),)).start()
+    """), encoding="utf-8")
+    ag._adapter_argv = lambda: [sys.executable, str(fake)]
+    ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
+    b = {"n": 1, "url": "http://x/v1", "key": ""}
 
-    # Тяжёлый путь — только там, где его возможности нужны. Одиночный вызов без истории
-    # и инструментов адаптер выполняет ровно как обычный HTTP, но через трубу подпроцесса:
-    # сервер отдаёт 5,46 ответа в секунду на 24 потоках, через адаптер выходит 1,05 при
-    # любом их числе. Пересказ карточки — самый частый вызов, и он как раз одиночный.
-    tr = src[src.index("def default_transport("):src.index("def answer_of(")]
-    assert "needs_adapter" in tr, "любой вызов идёт через подпроцесс адаптера"
-    assert 'payload.get("tools_root")' in tr and 'payload.get("history")' in tr, \
-        "признак «нужен адаптер» не привязан к его возможностям"
-    # Сторож исходящего живёт на пути с инструментами — значит он на адаптерном пути.
-    assert 'payload.get("tools_root")' in tr, \
-        "вызов с инструментами может пойти мимо адаптера, а с ним и мимо сторожа"
+    def ask(q, system="роль"):
+        return ag.pydantic_transport(b, {"model": "m", "messages": [
+            {"role": "system", "content": system}, {"role": "user", "content": q}]}, 30)
 
-    # Пул поднимается по числу слотов и не растёт бесконечно: каждый процесс — это venv
-    # с фреймворком, восемь секунд старта и заметная память.
-    assert "ADAPTER_MAX" in src, "число процессов адаптера ничем не ограничено"
-    ag.ADAPTER["slots"] = []
-    proc, lock = ag.adapter_slot(3)
-    if proc is None:
-        return          # venv с pydantic-ai не поставлен — проверять нечего
-    assert lock is not None and hasattr(lock, "acquire"), "у процесса нет замка"
-    assert len(ag.ADAPTER["slots"]) == 1, "пул поднял больше, чем нужно под первый вызов"
-    with lock:
-        p2, l2 = ag.adapter_slot(3)
-        assert p2 is not None and p2 is not proc, \
-            "занятый процесс выдан второму потоку — они смешают ответы"
-    for s in ag.ADAPTER.get("slots") or []:
+    delays = ["0.9", "0.1", "0.6", "0.3", "0.8", "0.2", "0.5", "0.4"]
+    got = {}
+    t0 = time.time()
+    threads = [threading.Thread(target=lambda d=d: got.__setitem__(d, ask(d))) for d in delays]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    took = time.time() - t0
+    try:
+        for d in delays:
+            st, body, err, _ = got[d]
+            assert st == 200, f"вызов «{d}» не получил ответа: {err}"
+            text = body["choices"][0]["message"]["content"]
+            assert text == "ответ " + d, \
+                f"поток «{d}» получил чужой ответ «{text}» — ответы раздаются не по id"
+        assert took < 2.5, (f"восемь вызовов шли {took:.1f} с при самом долгом 0,9 с — "
+                            "адаптер снова берёт задания по одному")
+        body = got["0.1"][1]
+        assert body["usage"]["completion_tokens"] == 2, "токены через адаптер потерялись"
+        assert body["choices"][0]["message"]["reasoning_content"] == "думал", \
+            "рассуждения через адаптер потерялись"
+        proc = ag._HUB["proc"]
+        assert proc is not None and proc.poll() is None, "процесс адаптера не живёт весь прогон"
+        assert ag._HUB["seq"] == len(delays), "лишние задания"
+
+        # Одиночный вызов без истории и инструментов — тоже через адаптер.
+        ag.ADAPTER.update(name="pydantic_ai", fallback_why="")
+        called = []
+        real = ag.http_json
+        ag.http_json = lambda *a, **k: called.append(a) or (200, {"choices": [
+            {"message": {"content": "по HTTP"}}]}, "", 0.0)
         try:
-            s["proc"].kill()
-        except OSError:
-            pass
-    ag.ADAPTER["slots"] = []
+            st, body, err, _ = ag.default_transport("chat", b, {"model": "m", "messages": [
+                {"role": "user", "content": "0.05"}]}, 30)
+            assert st == 200 and body["choices"][0]["message"]["content"] == "ответ 0.05" \
+                and not called, "одиночный вызов ушёл мимо Pydantic AI"
+            # Отказ сервера — ответ сервера: кольцо решает по нему, повтор по HTTP не нужен.
+            st, body, err, _ = ag.default_transport("chat", b, {"model": "m", "messages": [
+                {"role": "user", "content": "отказ"}]}, 30)
+            assert st == 400 and "не по вкусу" in err and not called, \
+                "отказ сервера через адаптер повторён по HTTP или потерял статус"
+            # Поломка адаптера — тот же вызов прямым HTTP, причина — в отчёт.
+            st, body, err, _ = ag.default_transport("chat", b, {"model": "m", "messages": [
+                {"role": "user", "content": "сломан"}]}, 30)
+            assert st == 200 and called and "не разобран" in ag.ADAPTER["fallback_why"], \
+                "поломка адаптера не ушла на прямой HTTP или причина не записана"
+            # Процесс упал — ожидающие получают отказ, следующий вызов поднимает новый.
+            st, body, err, _ = ask("упади")
+            assert st is None and err.startswith(ag.ADAPTER_FAIL), \
+                f"упавший процесс оставил вызов без внятного отказа: {err}"
+            for _ in range(50):
+                if ag._HUB["proc"] is None:
+                    break
+                time.sleep(0.05)
+            st, body, err, _ = ask("0.05")
+            assert st == 200, f"после падения адаптер не поднялся заново: {err}"
+        finally:
+            ag.http_json = real
+    finally:
+        p = ag._HUB.get("proc")
+        if p is not None:
+            p.kill()
+        ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
+        ag.ADAPTER.update(name="openai_compat", fallback_why="")
+        importlib.reload(ag)
+
 
 @test
-def test_adapter_pool_structure_and_growth(tmp: Path):
-    """Структурные asserts пула адаптера: спавн вне замка, честная раздача по курсору, ленивый рост."""
-    sys.path.insert(0, str(KIT / "scripts"))
+def test_pydantic_ai_reads_a_gateway_with_nonstandard_metadata(tmp: Path):
+    """Шлюз на SGLang ломал Pydantic AI полем `metadata.weight_versions`.
+
+    SGLang кладёт в ответ версию весов модели списком отрезков, а по стандарту OpenAI
+    `metadata` — словарь строк. Клиент внутри Pydantic AI отвергал ответ целиком («Invalid
+    response … metadata.weight_versions Input should be a valid string») при любой версии
+    фреймворка, и движок молча уходил на прямой HTTP. Поле нам не нужно — адаптер убирает
+    из него нестроковое до разбора и ничего больше не трогает.
+
+    Ещё два расхождения с HTTP-путём: адаптер склеивал системное сообщение с запросом в
+    одну реплику и не возвращал токены — отчёт о расходе врал при каждом вызове через него.
+    """
+    sys.path.insert(0, str(KIT / "scripts" / "agents"))
     import importlib
+    AD = importlib.import_module("pydantic_ai_adapter")
+    importlib.reload(AD)
+
+    sglang = {"id": "1", "object": "chat.completion", "created": 1, "model": "m",
+              "choices": [{"index": 0, "finish_reason": "stop", "matched_stop": 2,
+                           "message": {"role": "assistant", "content": "ок",
+                                       "reasoning_content": "думал"}}],
+              "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+              "metadata": {"weight_version": "default",
+                           "weight_versions": [{"version": "default", "start": 0, "end": 2}]}}
+    fixed = json.loads(AD.tolerant_body(json.dumps(sglang).encode()))
+    assert fixed["metadata"] == {"weight_version": "default"}, \
+        f"нестроковое в metadata осталось: {fixed.get('metadata')}"
+    assert fixed["choices"][0]["matched_stop"] == 2 and fixed["usage"] == sglang["usage"], \
+        "адаптер правит больше, чем нарушает стандарт"
+    only_list = dict(sglang, metadata={"weight_versions": [1]})
+    assert "metadata" not in json.loads(AD.tolerant_body(json.dumps(only_list).encode()))
+    plain = json.dumps({"choices": [], "metadata": {"a": "b"}}).encode()
+    assert AD.tolerant_body(plain) is plain, "стандартный ответ пересобран без нужды"
+    assert AD.tolerant_body(b"not json") == b"not json"
+
+    ins, hist, prompt = AD.split_messages([
+        {"role": "system", "content": "ты критик"},
+        {"role": "user", "content": "было"}, {"role": "assistant", "content": "ответ"},
+        {"role": "user", "content": "новое"}])
+    assert ins == "ты критик", "системное сообщение не стало инструкцией"
+    assert prompt == "новое" and [h["role"] for h in hist] == ["user", "assistant"], \
+        "история разговора разложена неверно"
+    assert AD.shared_agent_key({"url": "u", "model": "m", "tools": ["."]}) is None, \
+        "агент с инструментами общий — параллельные вызовы перепутают подключённые серверы"
+    assert AD.shared_agent_key({"url": "u", "model": "m"}) == ("u", "", "m")
+
+    vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
+    if not vpy.exists():
+        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
+
+    # Живая проверка: настоящий адаптер против местного «шлюза SGLang».
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    seen = []
+
+    class Gateway(BaseHTTPRequestHandler):
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append(req)
+            out = json.dumps(sglang).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Gateway)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    sys.path.insert(0, str(KIT / "scripts"))
     ag = importlib.import_module("agent_core")
     importlib.reload(ag)
-
-    src = (KIT / "scripts/agent_core.py").read_text(encoding="utf-8")
-    
-    # (a) спавн ВНЕ `with _ADAPTER_LOCK:` — резервация под замком, запуск venv вне
-    body = src[src.index("def adapter_slot("):src.index("def adapter_process(")]
-    first_lock = body.index("with _ADAPTER_LOCK:")
-    do_spawn = body.index("if do_spawn:")
-    assert "_spawn_adapter(" not in body[first_lock:do_spawn], \
-        "спавн запускается под замком — рост пула блокирует всех искателей"
-    assert body.index("_spawn_adapter(") > do_spawn, \
-        "запуск venv должен идти в ветке роста, вне замка"
-    spawn_line_end = body.index("\n", body.index("_spawn_adapter("))
-    second_lock_start = spawn_line_end
-    assert "with _ADAPTER_LOCK:" in body[second_lock_start:], \
-        "регистрация процесса должна быть отделена от резервации замка"
-    
-    # (b) честная раздача по курсору — не всегда первый слот
-    assert "_cursor" in src and 'ADAPTER["_cursor"]' in src, \
-        "пул не ведёт курсор раздачи — насыщение начнёт давить на первый слот"
-    assert "slots[cursor % len(slots)]" in body, \
-        "при насыщении не используется круговой обход слотов"
-    
-    # (c) ленивый рост пула на живом venv (skip если venv нет)
-    ag.ADAPTER["slots"] = []
-    proc, lock = ag.adapter_slot(3)
-    if proc is None:
-        return  # venv с pydantic-ai не поставлен — проверять нечего
-    assert lock is not None and hasattr(lock, "acquire"), "у процесса нет замка"
-    assert len(ag.ADAPTER["slots"]) == 1, "пул поднял больше, чем нужно под первый вызов"
-    
-    p2, p3, l2 = None, None, None
+    ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
     try:
-        with lock:
-            p2, l2 = ag.adapter_slot(3)
-            assert p2 is not None and p2 is not proc, \
-                "занятый процесс выдан второму потоку — они смешают ответы"
-            # Удерживая l2 (второй процесс), запросить ещё: пул растёт дальше к want
-            with l2:
-                p3, l3 = ag.adapter_slot(3)
-                assert p3 is not None and p3 is not proc and p3 is not p2, \
-                    "пул уперся в один процесс и не растёт к want"
+        st, body, err, _ = ag.pydantic_transport(
+            {"n": 1, "url": f"http://127.0.0.1:{srv.server_port}/v1", "key": ""},
+            {"model": "m", "max_tokens": 50, "chat_template_kwargs": {"enable_thinking": True},
+             "messages": [{"role": "system", "content": "ты критик"},
+                          {"role": "user", "content": "проверь"}]}, 30)
+        assert st == 200, f"ответ шлюза SGLang не прочитан через Pydantic AI: {err}"
+        msg = body["choices"][0]["message"]
+        assert msg["content"] == "ок" and msg["reasoning_content"] == "думал", msg
+        assert body["usage"] == {"prompt_tokens": 5, "completion_tokens": 2}, body["usage"]
+        req = seen[-1]
+        assert req["messages"][0] == {"role": "system", "content": "ты критик"}, \
+            f"системное сообщение ушло не своей ролью: {req['messages']}"
+        assert req.get("max_tokens") == 50, "max_tokens не дошёл до шлюза"
+        assert req.get("chat_template_kwargs") == {"enable_thinking": True}, \
+            "режим рассуждений не дошёл до шлюза"
+        # С инструментами Pydantic AI добавляет свою инструкцию — каталог MCP-серверов.
+        # Двух системных сообщений chat-шаблон Qwen не принимает: `400 System message must
+        # be at the beginning` (живой шлюз №1, 27.09.2026).
+        st, body, err, _ = ag.pydantic_transport(
+            {"n": 1, "url": f"http://127.0.0.1:{srv.server_port}/v1", "key": ""},
+            {"model": "m", "tools_root": str(tmp), "guard": {"ready": False}, "role": "worker",
+             "mcp": {"mcpServers": {"проба": {"command": "/nonexistent", "about": "проба"}}},
+             "messages": [{"role": "system", "content": "ты критик"},
+                          {"role": "user", "content": "проверь"}]}, 30)
+        assert st == 200, err
+        roles = [m["role"] for m in seen[-1]["messages"]]
+        assert roles.count("system") == 1 and roles[0] == "system", \
+            f"системных сообщений не одно в начале: {roles} — шаблон Qwen откажет"
+        first = seen[-1]["messages"][0]["content"]
+        assert "ты критик" in first and "mcp_connect" in first, \
+            "при слиянии пропала инструкция движка или каталог серверов"
     finally:
-        # Погашение всех процессов в try/finally — без зомби
-        for s in ag.ADAPTER.get("slots") or []:
-            try:
-                s["proc"].kill()
-            except OSError:
-                pass
-        ag.ADAPTER["slots"] = []
+        srv.shutdown()
+        p = ag._HUB.get("proc")
+        if p is not None:
+            p.kill()
+        ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
 
-    # Укрепление существующего живого блока: после проверки p2 is not proc добавить p3
-    # (уже выше в блоке try/finally)
+
+@test
+def test_thinking_is_switched_on_explicitly_in_every_request(tmp: Path):
+    """Рассуждения включаются явно в каждом запросе — умолчанию шлюза не доверяем.
+
+    У части моделей рассуждения по умолчанию выключены: в настройке opencode это видно по
+    `extraBody.chat_template_kwargs.enable_thinking: true` у каждой модели и по
+    `reasoning_effort: "xhigh"` у одной. У Авроры своих полей шаблона у шлюза не было, а
+    любой ответ 400 повторялся БЕЗ `chat_template_kwargs` — и рассуждения молча уходили в
+    умолчание модели. 27.09.2026 так повторялся отказ шаблона Qwen «System message must be
+    at the beginning», к полю отношения не имевший.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    importlib.reload(A)
+    env = {"AURORA_AGENT_BACKEND_1_URL": "http://gw/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+           "AURORA_AGENT_BACKEND_1_KEY": "секрет-не-показывать",
+           "AURORA_AGENT_BACKEND_1_TEMPLATE_KWARGS":
+               '{"reasoning_effort": "xhigh", "enable_thinking": false}',
+           "AURORA_AGENT_BACKEND_2_URL": "http://gw2/v1", "AURORA_AGENT_BACKEND_2_MODEL": "m2",
+           "AURORA_AGENT_BACKEND_2_TEMPLATE_KWARGS": "{reasoning_effort: xhigh",
+           "AURORA_AGENT_THINKING_WORKER": "0"}
+    cfg = A.parse_config(env)
+    b1, b2 = cfg["backends"]
+    assert b1["template"] == {"reasoning_effort": "xhigh", "enable_thinking": False}
+    assert A.request_template(b1, True) == {"reasoning_effort": "xhigh", "enable_thinking": True}, \
+        "enable_thinking из полей шлюза перекрыл решение роли"
+    assert A.request_template(b1, False)["enable_thinking"] is False
+    assert b2["template"] == {} and b2["template_error"], \
+        "опечатка в JSON полей шаблона прошла молча"
+    assert A.request_template(b2, True) == {"enable_thinking": True}, \
+        "без своих полей рассуждения не включаются явно"
+
+    sent, answers = [], []
+
+    def transport(kind, b, payload, timeout):
+        if kind == "slots":
+            return None, None, "нет /slots", 0.0
+        sent.append(json.loads(json.dumps(payload)))
+        return answers.pop(0)
+
+    one = dict(cfg, backends=[b1])
+    ok = (200, {"choices": [{"message": {"content": "ок"}}]}, "", 0.1)
+    answers[:] = [ok]
+    r = A.call_role(one, "qa", [{"role": "user", "content": "?"}], transport=transport,
+                    sleep=lambda s: None)
+    assert r["ok"] and sent[-1]["chat_template_kwargs"] == \
+        {"reasoning_effort": "xhigh", "enable_thinking": True}, sent[-1]
+    answers[:] = [ok]
+    A.call_role(one, "worker", [{"role": "user", "content": "?"}], transport=transport,
+                sleep=lambda s: None)
+    assert sent[-1]["chat_template_kwargs"]["enable_thinking"] is False, \
+        "роль с выключенными рассуждениями получила их по полям шлюза"
+
+    # 400 не про поле — повтора без рассуждений нет.
+    sent.clear()
+    answers[:] = [(400, {"error": {"message": "System message must be at the beginning."}},
+                   "System message must be at the beginning.", 0.1)]
+    r = A.call_role(one, "qa", [{"role": "user", "content": "?"}], transport=transport,
+                    sleep=lambda s: None, deadline=time.time() + 2)
+    assert all("chat_template_kwargs" in p for p in sent), \
+        "отказ не про поле шаблона, а запрос повторён без рассуждений"
+    # 400 про поле — повтор без него, и это сказано вслух.
+    sent.clear()
+    answers[:] = [(400, None, "Unrecognized request argument supplied: chat_template_kwargs", 0.1),
+                  ok]
+    r = A.call_role(one, "qa", [{"role": "user", "content": "?"}], transport=transport,
+                    sleep=lambda s: None)
+    assert r["ok"] and "chat_template_kwargs" not in sent[-1], "шлюз без поля так и не спрошен"
+    assert any("рассуждения" in line for line in r["log"]), \
+        "рассуждения пропали молча — в журнале шага ни слова"
+
+    # Что уходит в шлюз — видно без чтения кода, и без ключей.
+    d = A.pydantic_settings(cfg, venv=(True, "9.9"))
+    assert "секрет" not in json.dumps(d, ensure_ascii=False), "в настройках Pydantic AI утёк ключ"
+    roles = d["backends"][0]["roles"]
+    assert all("enable_thinking" in r["extra_body"]["chat_template_kwargs"] for r in roles.values()), \
+        "в настройках есть роль без явного включения рассуждений"
+    assert roles["qa"]["extra_body"]["chat_template_kwargs"]["reasoning_effort"] == "xhigh"
+    assert d["backends"][1]["template_error"], "ошибка полей шаблона не видна в настройках"
+
+    ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'u.path == "/api/agent/pydantic"' in ck, "у панели нет настроек Pydantic AI"
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    assert '"/api/agent/pydantic"' in view and 'x.id === "pydantic-ai"' in view, \
+        "в «Установке» нет кнопки с настройками Pydantic AI"
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert 'pre+"TEMPLATE_KWARGS"' in ui, "поля шаблона шлюза нельзя задать в панели"
+
 
 @test
 def test_moc_recognises_its_own_files(tmp: Path):
@@ -7777,7 +7982,7 @@ def test_gateway_gets_only_what_it_understands(tmp: Path):
     Ломался сам запрос: `default_transport` отдавал в HTTP **весь** payload, а в нём
     лежат поля для внутреннего адаптера —
 
-        _slots      сколько процессов держать пулу (читается в adapter_slot)
+        _slots      сколько процессов держать пулу (пула больше нет — снято в 1.139.0)
         guard       сторож исходящего для инструментов
         role        роль вызова
         tools_root  корень файлов проекта
@@ -7805,15 +8010,14 @@ def test_gateway_gets_only_what_it_understands(tmp: Path):
         A.default_transport("chat", {"url": "http://x/v1", "key": "k", "n": 1},
                             {"model": "m", "messages": [{"role": "user", "content": "?"}],
                              "max_tokens": 1, "chat_template_kwargs": {"enable_thinking": False},
-                             "_slots": 8, "role": "worker", "tools_root": "/tmp",
-                             "mcp": {}, "guard": {"ready": False},
-                             "history": [{"role": "user", "content": "было"}]},
+                             "role": "worker", "tools_root": "/tmp", "mcp": {},
+                             "mcp_active": [], "guard": {"ready": False}},
                             5.0)
     finally:
         A.http_json = real
 
     got = set(sent["payload"])
-    internal = {"_slots", "role", "tools_root", "mcp", "guard", "history"}
+    internal = {"role", "tools_root", "mcp", "mcp_active", "guard"}
     leaked = sorted(got & internal)
     assert not leaked, (
         f"в шлюз ушли внутренние поля движка: {leaked}. Строгий шлюз отвечает на них "
@@ -19819,7 +20023,11 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
     src = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
     loop = src[src.index("def main("):]
     assert "lazy_mcp_toolsets(" in loop and 'task.get("mcp_active")' in loop, "адаптер поднимает все серверы"
-    assert 'task.get("role") or "")' in loop.split("key = (")[1].split("\n")[1], "роль не в ключе агента"
+    # Агент с серверами строится на одно задание: задания идут параллельно, и общий агент
+    # отдал бы серверы, подключённые планировщиком, писателю соседнего вызова.
+    assert AD.shared_agent_key({"url": "u", "model": "m", "tools": ["."],
+                                "mcp": {"mcpServers": {"s": {}}}, "role": "planner"}) is None, \
+        "агент с MCP-серверами общий для разных ролей и вызовов"
 
     vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
     if not vpy.exists():

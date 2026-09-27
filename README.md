@@ -216,7 +216,8 @@ mirrors, install advisor, engine version, docs. Vanilla HTML/CSS/JS, no CDN, no 
 - Optional: Obsidian (for wiki-link navigation)
 - Optional engine add-ons, each in its own venv under `~/.aurora/`, installed and updated
   from the panel (Install → Engine add-ons, current version vs the latest release in git):
-  **Pydantic AI** — the built-in agent (validated model answers, tools, MCP);
+  **Pydantic AI** — every model call goes through it (validated answers, tools, MCP;
+  without it the engine calls the gateway over plain HTTP);
   **graphify** — Leiden themes, an MCP server over the knowledge-base graph for Claude Code
   and Cursor, HTML/Neo4j exports, code parsing. The core works without both.
 

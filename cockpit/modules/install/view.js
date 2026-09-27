@@ -116,7 +116,8 @@ function extraRow(ctx, x, redraw){
       x.pypi_behind ? el("div", {class:"muted", style:"font-size:12px"},
         t("install.ex_pypi_behind", {git: x.git, pypi: x.pypi})) : null,
       x.error ? el("div", {class:"muted", style:"font-size:12px"}, x.error) : null,
-      x.mcp ? mcpHint(ctx, x.mcp) : null),
+      x.mcp ? mcpHint(ctx, x.mcp) : null,
+      x.id === "pydantic-ai" ? pydanticHint(ctx) : null),
     btn);
   return row;
 }
@@ -131,6 +132,65 @@ function mcpHint(ctx, m){
     el("div", {class:"muted", style:"font-size:12px;margin:6px 0"}, t("install.ex_mcp_hint")),
     el("pre", {class:"mono", style:"font-size:11.5px;white-space:pre-wrap"}, snippet),
     ctx.ui.copyButton(snippet));
+}
+
+/* Что уходит в шлюз через Pydantic AI — по шлюзам и ролям: модель, рассуждения и поля
+   chat-шаблона ровно так, как они лягут в запрос (extra_body). Раньше это знал только код
+   адаптера; у части моделей рассуждения по умолчанию выключены, и человек должен видеть,
+   что движок включает их явно. Грузится при раскрытии; ключей в ответе нет. */
+function pydanticHint(ctx){
+  const {t, el} = ctx;
+  const box = el("div", {style:"margin-top:6px"});
+  let loaded = false;
+  const det = el("details", {style:"margin-top:6px", ontoggle: async () => {
+    if (!det.open || loaded) return;
+    loaded = true;
+    box.innerHTML = "";
+    box.append(el("span", {class:"spin"}));
+    const q = ctx.project ? "?project=" + encodeURIComponent(ctx.project.path) : "";
+    const d = await ctx.api("/api/agent/pydantic" + q, {quiet:true});
+    box.innerHTML = "";
+    if (d.error){ box.append(el("div", {class:"muted"}, d.error)); return; }
+    box.append(el("div", {class:"chip " + (d.active ? "ok" : "warn"), style:"margin-bottom:6px"},
+      d.active ? t("install.ex_settings_on", {v: d.venv.version})
+               : t("install.ex_settings_off", {why: d.venv.ok ? t("install.ex_not_selected")
+                                                               : t("install.ex_not_installed")})));
+    box.append(el("div", {class:"muted", style:"font-size:12px;margin-bottom:4px"},
+      t("install.ex_settings_about")));
+    box.append(el("div", {class:"muted", style:"font-size:12px;margin-bottom:8px"},
+      t("install.ex_settings_client")));
+    if (!(d.backends || []).length){
+      box.append(el("div", {class:"muted"}, t("install.ex_no_backends")));
+      return;
+    }
+    const sent = {};
+    d.backends.forEach(b => {
+      box.append(el("div", {style:"font-weight:600;font-size:12.5px;margin:8px 0 4px"},
+        "№" + b.n + " ", el("span", {class:"mono", style:"font-weight:400"}, b.url)));
+      if (b.template_error) box.append(el("div", {class:"chip warn", style:"font-size:11.5px"},
+        t("install.ex_tpl_bad", {why: b.template_error})));
+      const tbl = el("table", {class:"mono", style:"font-size:11.5px;border-collapse:collapse;width:100%"},
+        el("tr", {class:"muted"},
+          ...[t("install.ex_role"), t("install.ex_model"), t("install.ex_thinking"),
+              t("install.ex_timeout"), "extra_body"].map(h => el("td", {style:"padding:2px 8px 2px 0"}, h))));
+      sent["№" + b.n] = {};
+      Object.entries(b.roles || {}).forEach(([role, r]) => {
+        sent["№" + b.n][role] = {model: r.model, extra_body: r.extra_body};
+        tbl.append(el("tr", {},
+          el("td", {style:"padding:2px 8px 2px 0"}, role),
+          el("td", {style:"padding:2px 8px 2px 0"}, r.model || "—"),
+          el("td", {style:"padding:2px 8px 2px 0"}, r.thinking ? t("install.ex_on") : t("install.ex_off")),
+          el("td", {style:"padding:2px 8px 2px 0"}, String(r.timeout)),
+          el("td", {style:"padding:2px 0;word-break:break-all"}, JSON.stringify(r.extra_body))));
+      });
+      box.append(el("div", {style:"overflow-x:auto"}, tbl));
+    });
+    box.append(el("div", {style:"margin-top:8px"},
+      ctx.ui.copyButton(JSON.stringify(sent, null, 2))));
+  }},
+    el("summary", {style:"font-size:12.5px;cursor:pointer"}, t("install.ex_settings")),
+    box);
+  return det;
 }
 
 export default {mount, refresh};

@@ -28,7 +28,7 @@
     `max_tokens` рассуждения съедают всё и `content=None` при `finish_reason=length`;
   • формы ошибок две: `{"error": {...}}` и `{"code": ..., "message": ...}`.
 
-Панель: `agent:ping`, `agent:width`
+Панель: `agent:ping`, `agent:width`, `agent:pydantic`
 """
 from __future__ import annotations
 
@@ -108,6 +108,51 @@ def raw_config() -> dict:
 BACKEND_MAX = 16
 
 
+def template_kwargs_of(raw: str) -> tuple:
+    """`AURORA_AGENT_BACKEND_<n>_TEMPLATE_KWARGS` → (словарь, ошибка). Пусто — ({}, "").
+
+    Ошибка не роняет конфигурацию: шлюз работает без своих полей, а панель и `agent:pydantic`
+    называют причину — иначе опечатка в JSON молча выключила бы `reasoning_effort`.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return {}, ""
+    try:
+        got = json.loads(raw)
+    except ValueError as e:
+        return {}, f"не JSON: {e}"
+    if not isinstance(got, dict):
+        return {}, "нужен объект JSON вида {\"reasoning_effort\": \"xhigh\"}"
+    return got, ""
+
+
+def request_template(backend: dict, think: bool) -> dict:
+    """`chat_template_kwargs` запроса: поля шлюза плюс явное `enable_thinking` роли.
+
+    Явное — всегда, и в обе стороны: у части моделей рассуждения по умолчанию выключены,
+    у части включены, и умолчание шлюза не должно решать за роль. `enable_thinking` из
+    полей шлюза не действует — рассуждает роль или нет, решает настройка роли (Момусу без
+    рассуждений нельзя совсем).
+    """
+    out = {k: v for k, v in (backend.get("template") or {}).items() if k != "enable_thinking"}
+    out["enable_thinking"] = bool(think)
+    return out
+
+
+def rejects_template(err, body) -> bool:
+    """Отказал ли шлюз именно из-за `chat_template_kwargs`, а не из-за чего-то ещё.
+
+    Прежде любой ответ 400 повторялся без этого поля — и рассуждения молча уходили в
+    умолчание модели, у многих выключенное. 27.09.2026 так повторялся отказ шаблона Qwen
+    «System message must be at the beginning», к полю отношения не имевший.
+    """
+    text = (str(err or "") + " " + (json.dumps(body, ensure_ascii=False)
+                                    if isinstance(body, (dict, list)) else str(body or ""))).lower()
+    return any(s in text for s in ("chat_template_kwargs", "unrecognized request argument",
+                                   "extra_forbidden", "extra inputs are not permitted",
+                                   "unexpected keyword argument"))
+
+
 def parse_config(env: dict) -> dict:
     """env-словарь → конфигурация агента. Чистая функция: тесты кормят её напрямую."""
     backends = []
@@ -157,6 +202,13 @@ def parse_config(env: dict) -> dict:
             "ocr_model": (env.get(prefix + "OCR_MODEL", "") or "").strip(),
             # Адрес сервиса распознавания, если он не совпадает с чатовым.
             "ocr_url": ((env.get(prefix + "OCR_URL", "") or env[prefix + "URL"]).rstrip("/")),
+            # Свои поля chat-шаблона модели на ЭТОМ шлюзе — как `extraBody.chat_template_kwargs`
+            # у opencode: `{"reasoning_effort": "xhigh"}`. Включение рассуждений сюда писать
+            # не нужно: `enable_thinking` движок кладёт в КАЖДЫЙ запрос сам, по роли, —
+            # у части моделей рассуждения по умолчанию выключены, и полагаться на умолчание
+            # шлюза нельзя.
+            **dict(zip(("template", "template_error"),
+                       template_kwargs_of(env.get(prefix + "TEMPLATE_KWARGS", "")))),
             # Умеет ли шлюз ЧАТ. Поднятый только под вектора или только под распознавание
             # (объявлена их модель и не объявлено ни одной чат-модели) в чатовое кольцо не
             # берётся: вызов ушёл бы на сервер без чат-модели и вернулся «Missing model
@@ -311,163 +363,159 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
         return None, None, f"{type(e).__name__}: {e}", time.time() - t0
 
 
-# Пул процессов адаптера. Один процесс на все вызовы означал очередь длиной в прогон:
-# запрос пишется в его stdin и ответ читается из stdout построчно — параллельные потоки
-# упирались в одну трубу. Замер на живом шлюзе: чистый HTTP при восьми потоках даёт
-# 2,40 ответа в секунду, тот же шлюз через один адаптерный процесс — 0,47. Впятеро
-# меньше, и «шлюз не тянет» тут ни при чём.
+# Процесс адаптера — один на прогон, и запросы в нём идут параллельно: у каждого свой
+# `id`, ответ приходит с тем же `id`, когда готов. Раньше был пул процессов, каждый брал
+# одно задание за раз (труба «запрос → ждать → ответ» под замком), и через адаптер выходило
+# 1,05 ответа в секунду против 5,46 прямым HTTP — из-за этого одиночные вызовы шли мимо
+# Pydantic AI. Замер 27.09.2026 на 24 потоках: один асинхронный процесс — 19,5 ответа в
+# секунду на шлюзе №1 при 18,8 прямым HTTP. Процесс ≈114 МБ, а не гигабайты пула.
 #
-# Хуже медленного: замка на трубе не было вовсе, и два потока могли разобрать ответы
-# друг друга. Теперь у каждого процесса свой замок, и берётся он целиком.
-# Потолок пула. По умолчанию 32 (> кольца в 24): под нагрузкой пул растёт к числу
-# слотов кольца, а не к прежним 6. Спустить под себя по памяти (слот ≈ 114 МБ RSS):
-#   AURORA_AGENT_ADAPTER_PROCS=6
-ADAPTER_MAX = int(os.environ.get("AURORA_AGENT_ADAPTER_PROCS", "32") or 32)
-ADAPTER_WARN_AT = 8      # с этого числа процессов говорим про память вслух, один раз
-_ADAPTER_LOCK = threading.Lock()
+# Ответ находит своего адресата по `id`, а не по порядку в трубе: чужой ответ поток
+# не заберёт, даже если модель ответила на второй запрос раньше первого.
+_HUB: dict = {"proc": None, "pending": {}, "seq": 0, "broken": "", "deaths": 0,
+              "version": ""}
+_HUB_LOCK = threading.Lock()        # запуск процесса и учёт ожидающих
+_HUB_WRITE = threading.Lock()       # строка задания уходит в трубу целиком
+ADAPTER_START = 60                  # секунд на запуск venv и импорт фреймворка
+ADAPTER_DEATHS = 3                  # столько падений за прогон — и адаптер больше не зовём
+# Приставка поломки самого адаптера. По ней транспорт отличает «сервер отказал» (решает
+# кольцо, как при HTTP) от «адаптер не смог» (тот же вызов уходит прямым HTTP).
+ADAPTER_FAIL = "адаптер Pydantic AI: "
 
 
-
-def _emit_metrics(metrics: dict):
-    """Метрики пула в stderr, только при AURORA_AGENT_DEBUG=1."""
-    if os.environ.get("AURORA_AGENT_DEBUG", "0") in ("1", "true", "yes"):
-        print(json.dumps(metrics), file=sys.stderr)
-
-
-def _spawn_adapter():
+def _adapter_argv() -> list:
     vpy = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     adapter = Path(__file__).resolve().parent / "agents" / "pydantic_ai_adapter.py"
-    if not vpy.is_file() or not adapter.is_file():
-        return None
-    return subprocess.Popen([str(vpy), str(adapter)], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            text=True, bufsize=1, env=child_env())
+    return [str(vpy), str(adapter)] if vpy.is_file() and adapter.is_file() else []
 
 
-def adapter_slot(want: int = 1):
-    """Свободный процесс адаптера и его замок. → (proc, lock) либо (None, None).
+def _hub_reader(proc, pending: dict) -> None:
+    """Раздаёт ответы ожидающим по `id`. Процесс закрылся — всем честный отказ."""
+    for line in proc.stdout:
+        try:
+            out = json.loads(line)
+        except ValueError:
+            continue
+        with _HUB_LOCK:
+            slot = pending.pop(out.get("id"), None)
+        if slot is not None:
+            slot["out"] = out
+            slot["done"].set()
+    with _HUB_LOCK:
+        if _HUB["proc"] is proc:
+            _HUB["proc"] = None
+            _HUB["deaths"] += 1
+            if _HUB["deaths"] >= ADAPTER_DEATHS:
+                _HUB["broken"] = f"процесс падал {_HUB['deaths']} раза за прогон"
+        left = list(pending.values())
+        pending.clear()
+    for slot in left:
+        slot["out"] = {"ok": False, "where": "adapter", "error": "процесс адаптера закрылся"}
+        slot["done"].set()
 
-    Под глобальным замком — только резерв слота и решение о спавне; сам спавн venv
-    (~6–8 с) идёт ВНЕ замка. Иначе каждое вырастание пула блокирует всех искателей
-    свободного слота, и параллельность оплачивается общей задержкой.
-    Все заняты и пул упёрся в потолок — ожидающие распределяются курсором по пулу,
-    а не валятся на первый процесс.
+
+def adapter_hub():
+    """→ (процесс, его ожидающие) либо (None, причина). Запускает процесс при первом зове.
+
+    Запуск — под замком: пока venv поднимается, остальным потокам процесс всё равно нужен
+    тот же. Не поднялся — причина запоминается на весь прогон, и восемь секунд запуска не
+    платятся на каждом вызове; вызовы идут прямым HTTP с этой причиной в отчёте.
     """
-    cap = max(1, min(max(1, int(want or 1)), ADAPTER_MAX))
-    reserve = None
-    do_spawn = False
-    with _ADAPTER_LOCK:
-        slots = ADAPTER.setdefault("slots", [])
-        slots[:] = [s for s in slots if s["proc"].poll() is None]
-        # Свободный процесс — отдаём его и двигаем курсор мимо, чтобы раздача
-        # при насыщении не начиналась с только что отданного соседа.
-        for i, s in enumerate(slots):
-            if not s["lock"].locked():
-                reserve = s
-                ADAPTER["_cursor"] = (i + 1) % len(slots)
-                break
-        # Свободного нет и есть куда расти — под нагрузкой пул растёт к want.
-        if reserve is None and len(slots) < cap:
-            do_spawn = True
-        elif reserve is None:
-            # Потолок достигнут, все заняты: честный круговой обход.
-            cursor = ADAPTER.get("_cursor", 0)
-            reserve = slots[cursor % len(slots)]
-            ADAPTER["_cursor"] = (cursor + 1) % len(slots)
-    if do_spawn:
-        proc = _spawn_adapter()          # ВНЕ глобального замка: рост никого не держит
-        if proc is None:
-            return None, None
-        # Цена роста названа вслух, и один раз. Процесс адаптера — это venv с
-        # фреймворком: ~114 МБ и шесть секунд старта. Пул на два десятка слотов стоит
-        # гигабайтов, и молча их занимать движок не вправе: человек увидит только то,
-        # что машина «стала тормозить», и причину будет искать не там.
-        grown = len(ADAPTER.get("slots") or []) + 1
-        if grown == ADAPTER_WARN_AT:
-            print(f"agent: процессов адаптера уже {grown}, каждый ≈114 МБ — это около "
-                  f"{grown * 114 // 1024 or 1} ГБ памяти. Потолок задаётся "
-                  f"AURORA_AGENT_ADAPTER_PROCS (сейчас {ADAPTER_MAX}).", file=sys.stderr)
-        with _ADAPTER_LOCK:
-            slots = ADAPTER["slots"]
-            slots[:] = [s for s in slots if s["proc"].poll() is None]
-            if proc.poll() is None:
-                reserve = {"proc": proc, "lock": threading.Lock()}
-                slots.append(reserve)
-                ADAPTER["_cursor"] = 0
-            else:
-                reserve = None           # процесс умер сразу — не отдаём его
-    if reserve is None:
-        return None, None
-    return reserve["proc"], reserve["lock"]
-
-
-def adapter_process():
-    """Совместимость: один процесс, как было. Используется там, где параллельности нет."""
-    proc, _ = adapter_slot(1)
-    return proc
+    with _HUB_LOCK:
+        proc = _HUB["proc"]
+        if proc is not None and proc.poll() is None:
+            return proc, _HUB["pending"]
+        if _HUB["broken"]:
+            return None, _HUB["broken"]
+        argv = _adapter_argv()
+        if not argv:
+            return None, "venv с pydantic-ai не установлен"
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                                    encoding="utf-8", env=child_env())
+        except OSError as e:
+            _HUB["broken"] = f"не запускается: {type(e).__name__}"
+            return None, _HUB["broken"]
+        box: list = []
+        t = threading.Thread(target=lambda: box.append(proc.stdout.readline()), daemon=True)
+        t.start()
+        t.join(ADAPTER_START)
+        try:
+            hello = json.loads(box[0]) if box and box[0] else {}
+        except ValueError:
+            hello = {}
+        if not hello.get("ready"):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            _HUB["broken"] = hello.get("error") or f"не ответил за {ADAPTER_START} с запуска"
+            return None, _HUB["broken"]
+        pending: dict = {}
+        _HUB.update(proc=proc, pending=pending, version=hello.get("version") or "")
+        threading.Thread(target=_hub_reader, args=(proc, pending), daemon=True).start()
+        return proc, pending
 
 
 def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     """Тот же контракт, что у прямого вызова, но через Pydantic AI в отдельном venv.
 
     Подпроцессом, а не импортом: зависимости фреймворка живут в `~/.aurora/venv` и в
-    питон движка не попадают. Сломался venv — вызывающий откатится на stdlib-транспорт,
-    и работа не встанет.
+    питон движка не попадают. Отказ сервера возвращается как есть (статус, тело, причина),
+    и кольцо решает по нему так же, как по HTTP. Поломка самого адаптера — с приставкой
+    `ADAPTER_FAIL`: транспорт повторит вызов прямым HTTP.
     """
-    proc, lock = adapter_slot(payload.get("_slots") or 1)
+    t0 = time.time()
+    proc, pending = adapter_hub()
     if proc is None:
-        return None, None, "venv с pydantic-ai не установлен", 0.0
-    hist = payload.get("history") or []
-    # Адаптеру история нужна отдельно: pydantic-ai кладёт её в `message_history`, а не в
-    # текст запроса. Поэтому в `messages` для него — только новое сообщение.
-    fresh = payload["messages"][len(hist):] if hist else payload["messages"]
+        return None, None, ADAPTER_FAIL + str(pending), 0.0
+    tools = bool(payload.get("tools_root"))
     task = {"url": backend["url"], "key": backend["key"], "model": payload["model"],
-            "messages": fresh, "history": hist, "timeout": timeout,
-            "tools": ([payload["tools_root"]] if payload.get("tools_root") else []),
+            # Разговор целиком: адаптер сам разложит его на инструкции, историю и запрос.
+            "messages": payload["messages"], "timeout": timeout,
+            "template": payload.get("chat_template_kwargs"),
+            "max_tokens": payload.get("max_tokens"),
+            "tools": ([payload["tools_root"]] if tools else []),
             "mcp": payload.get("mcp") or {}, "mcp_active": payload.get("mcp_active") or [],
             "guard": payload.get("guard") or {},
             "role": payload.get("role") or "",
-            "tool_calls": TOOL_CALLS if payload.get("tools_root") else 0,
-            "thinking": (payload.get("chat_template_kwargs") or {}).get("enable_thinking", True)}
-    t0 = time.time()
-    queue_wait_ms = 0.0
-    # Труба у процесса одна: ...
+            "tool_calls": TOOL_CALLS if tools else 0}
+    slot = {"done": threading.Event(), "out": None}
+    with _HUB_LOCK:
+        _HUB["seq"] += 1
+        rid = task["id"] = _HUB["seq"]
+        pending[rid] = slot
     try:
-        with lock:
-            # первая строка ВНУТРИ with выполняется сразу после захвата замка:
-            # это и есть время ожидания свободного процесса (очередь в пуле)
-            queue_wait_ms = (time.time() - t0) * 1000
+        with _HUB_WRITE:
             proc.stdin.write(json.dumps(task, ensure_ascii=False) + "\n")
             proc.stdin.flush()
-            line = proc.stdout.readline()
-        if not line:
-            _emit_metrics({"queue_wait_ms": queue_wait_ms,
-                           "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
-            return None, None, "адаптер закрылся", time.time() - t0
-        out = json.loads(line)
-    except Exception as e:  # noqa: BLE001
-        try:
-            proc.kill()                 # мёртвый процесс уберётся из пула сам
-        except OSError:
-            pass
-        _emit_metrics({"queue_wait_ms": queue_wait_ms,
-                       "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
-        return None, None, f"адаптер не ответил: {type(e).__name__}", time.time() - t0
+    except (OSError, ValueError) as e:
+        with _HUB_LOCK:
+            pending.pop(rid, None)
+        return None, None, ADAPTER_FAIL + f"труба закрыта ({type(e).__name__})", time.time() - t0
+    # У вызова с инструментами несколько запросов к модели — и срок на каждый.
+    wait = timeout * (1 + (TOOL_CALLS if tools else 0)) + 30
+    if not slot["done"].wait(wait):
+        with _HUB_LOCK:
+            pending.pop(rid, None)
+        return None, None, f"адаптер не дал ответа за {int(wait)} с (timed out)", time.time() - t0
+    out = slot["out"] or {}
+    dt = time.time() - t0
     if not out.get("ok"):
-        _emit_metrics({"queue_wait_ms": queue_wait_ms,
-                       "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
-        return None, None, out.get("error", "адаптер вернул ошибку"), time.time() - t0
-    body = {"choices": [{"message": {"content": out["text"],
-                                     "reasoning": out.get("reasoning", "")},
-                         "finish_reason": "stop"}]}
-    _emit_metrics({"queue_wait_ms": queue_wait_ms,
-                   "exchange_ms": (time.time() - t0) * 1000 - queue_wait_ms})
-    return 200, body, "", time.time() - t0
+        err = str(out.get("error") or "ошибка без описания")
+        if out.get("where") == "server":
+            return out.get("status"), out.get("body"), err, dt
+        return None, None, ADAPTER_FAIL + err, dt
+    body = {"choices": [{"message": {"content": out.get("text") or "",
+                                     "reasoning_content": out.get("reasoning") or ""},
+                         "finish_reason": out.get("finish") or "stop"}],
+            "usage": out.get("usage") or {}}
+    return 200, body, "", dt
 
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
-ADAPTER_ONLY = frozenset({"_slots", "guard", "role", "tools_root", "mcp", "mcp_active",
-                          "history"})
+ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active"})
 
 
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
@@ -475,25 +523,20 @@ def default_transport(kind: str, backend: dict, payload: dict | None, timeout: f
     if kind == "slots":
         root = backend["url"].rsplit("/v1", 1)[0]
         return http_json(root + "/slots", None, backend["key"], CONNECT_TIMEOUT)
-    # Тяжёлый путь — только там, где его возможности нужны. Pydantic AI даёт историю
-    # разговора, инструменты и сторож исходящего; одиночный вызов без всего этого он
-    # выполняет ровно как обычный HTTP, но через трубу одного подпроцесса. На живом
-    # шлюзе разница решающая: сервер отдаёт 5,46 ответа в секунду на 24 потоках, а через
-    # адаптер выходит 1,05 при любом их числе — упирается не сервер, а пул процессов.
-    needs_adapter = bool(payload and (payload.get("tools_root") or payload.get("history")))
-    if ADAPTER.get("name") == "pydantic_ai" and needs_adapter:
+    # Каждый вызов модели — через Pydantic AI, когда он выбран: одиночный пересказ так же,
+    # как разговор с инструментами. Ответ сервера (и отказ тоже) возвращается как есть;
+    # прямой HTTP — только если не смог сам адаптер (venv не стоит, процесс упал, ответ
+    # не разобран). Фолбэк не молчаливый: причина уходит в отчёт прогона.
+    if ADAPTER.get("name") == "pydantic_ai" and payload:
         st, body, err, dt = pydantic_transport(backend, payload, timeout)
-        if st == 200:
+        if not str(err or "").startswith(ADAPTER_FAIL):
             return st, body, err, dt
-        # Фолбэк не молчаливый: причина уходит в журнал шага, и в отчёте видно, что
-        # работали не тем адаптером, который выбран в конфиге.
-        ADAPTER["fallback_why"] = err
+        ADAPTER["fallback_why"] = err[len(ADAPTER_FAIL):]
     # В шлюз уходит запрос по стандарту. Внутренние поля адресованы адаптеру, а не
-    # серверу: `_slots` говорит пулу, сколько процессов держать, `guard`/`role`/
-    # `tools_root`/`mcp` — сторожу и инструментам, `history` в HTTP уже слита в
-    # `messages`. Строгий шлюз на неизвестное поле отвечает `400 Unrecognized request
-    # argument`, а движок объявлял его недоступным на пятнадцать минут и показывал
-    # «не отвечал» — при живом сервере, которым другие клиенты пользовались без помех.
+    # серверу: `guard`/`role`/`tools_root`/`mcp` — сторожу и инструментам. Строгий шлюз
+    # на неизвестное поле отвечает `400 Unrecognized request argument`, а движок объявлял
+    # его недоступным на пятнадцать минут и показывал «не отвечал» — при живом сервере,
+    # которым другие клиенты пользовались без помех.
     return http_json(backend["url"] + "/chat/completions",
                      {k: v for k, v in (payload or {}).items() if k not in ADAPTER_ONLY},
                      backend["key"], timeout)
@@ -1062,14 +1105,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"№{b['n']} {model}: {why_big}")
                 continue
             payload = {"model": model, "messages": msgs,
-                       "chat_template_kwargs": {"enable_thinking": think},
-                       # сколько процессов адаптера имеет смысл держать: столько же,
-                       # сколько слотов в кольце — по одному на параллельный запрос
-                       "_slots": len(pool(cfg))}
+                       "chat_template_kwargs": request_template(b, think)}
             if history:
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
+                # Адаптеру Pydantic AI — так же: он сам отделит историю от нового запроса.
                 payload["messages"] = list(history) + list(msgs)
-                payload["history"] = list(history)      # для адаптера pydantic-ai
             if tools:
                 payload["tools_root"] = os.getcwd()
                 payload["mcp"] = mcp_config(os.getcwd())
@@ -1119,8 +1159,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 attempts += 1
                 st, body, err, dt = transport("chat", b, payload,
                                               max(5.0, min(left, req_timeout)))
-                if st == 400 and not looks_like_overflow(err, body):
+                if st == 400 and rejects_template(err, body):
                     payload.pop("chat_template_kwargs", None)
+                    log.append(f"№{b['n']} {model}: шлюз не принял chat_template_kwargs — "
+                               f"повтор без него; рассуждения теперь как у модели по "
+                               f"умолчанию, включить их на этом шлюзе нечем")
                     st, body, err, dt = transport("chat", b, payload,
                                                   max(5.0, deadline - time.time()))
                 if st != 200 or not isinstance(body, dict):
@@ -1274,7 +1317,7 @@ def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS, heavy: bool = False) -> d
     one = {**cfg, "backends": [b], "request_timeout": 60}
 
     def shot(_):
-        # При heavy=True — тяжёлый путь: подаём историю, чтобы needs_adapter сработал
+        # При heavy=True — с историей разговора: меряется путь диалога, а не одиночный
         hist = [{"role": "user", "content": "контекст"}] if heavy else None
         r = call_role(one, "worker",
                       [{"role": "user", "content": "Одним абзацем в три предложения: "
@@ -1589,6 +1632,69 @@ def venv_status() -> tuple:
         return False, ""
 
 
+def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
+    """Что уходит в шлюз через Pydantic AI — по шлюзам и ролям. Ключей здесь нет.
+
+    Одна правда для панели и `agent:pydantic`: модель роли, рассуждает ли роль, поля
+    chat-шаблона ровно в том виде, в каком они уйдут (`extra_body`), срок запроса и
+    настройки клиента. Раньше это можно было узнать, только прочитав код адаптера.
+    """
+    ok, version = venv if venv is not None else venv_status()
+    backends = []
+    for b in cfg.get("backends") or []:
+        if b.get("chat") is False:
+            continue
+        roles = {}
+        for r in ROLES:
+            think = role_thinks(cfg, r)
+            roles[r] = {"model": role_model(b, r), "thinking": think,
+                        "timeout": int(request_timeout_for(cfg, think)),
+                        "extra_body": {"chat_template_kwargs": request_template(b, think)}}
+        backends.append({"n": b["n"], "url": b["url"], "key_set": bool(b.get("key")),
+                         "template": b.get("template") or {},
+                         "template_error": b.get("template_error") or "",
+                         "roles": roles})
+    return {
+        "adapter": cfg.get("adapter", ""),
+        # Идёт ли работа через Pydantic AI на самом деле: выбран и стоит.
+        "active": cfg.get("adapter") == "pydantic_ai" and ok,
+        "venv": {"ok": ok, "version": version, "path": str(VENV)},
+        "thinking": {r: role_thinks(cfg, r) for r in ROLES},
+        "client": {"max_retries": 0, "max_tokens_field": "max_tokens",
+                   "system_messages": 1, "metadata": "strings_only",
+                   "tool_calls": TOOL_CALLS, "processes": 1},
+        "backends": backends,
+    }
+
+
+def cmd_pydantic(as_json: bool) -> int:
+    cfg = parse_config(raw_config())
+    d = pydantic_settings(cfg)
+    if as_json:
+        print(json.dumps(d, ensure_ascii=False, indent=1))
+        return 0
+    v = d["venv"]
+    print(f"# Pydantic AI — что уходит в шлюз · {TODAY}\n")
+    print(f"Pydantic AI: {'установлен, ' + v['version'] if v['ok'] else 'не установлен'}"
+          f" ({v['path']}) · адаптер: {d['adapter']}"
+          + (" — все вызовы модели идут через него" if d["active"] else
+             " — вызовы идут прямым HTTP"))
+    print("Клиент: один процесс, запросы параллельно · повторов нет (решает кольцо) · "
+          "потолок ответа полем max_tokens · системное сообщение одно · в metadata "
+          f"ответа только строки · вызовов инструментов ≤ {d['client']['tool_calls']}\n")
+    for b in d["backends"]:
+        print(f"№{b['n']} {b['url']} · ключ {'задан' if b['key_set'] else 'не задан'}")
+        if b["template_error"]:
+            print(f"    ⚠ AURORA_AGENT_BACKEND_{b['n']}_TEMPLATE_KWARGS: {b['template_error']}")
+        for r, x in b["roles"].items():
+            print(f"    {r:8s} {x['model'] or '—':24s} рассуждения {'вкл ' if x['thinking'] else 'выкл'}"
+                  f" · срок {x['timeout']} с · extra_body "
+                  + json.dumps(x["extra_body"], ensure_ascii=False))
+    if not d["backends"]:
+        print("Чатовые шлюзы не настроены.")
+    return 0
+
+
 def cmd_venv_install() -> int:
     """Поставить или обновить Pydantic AI в отдельном venv.
 
@@ -1614,6 +1720,8 @@ def main() -> int:
     ap.add_argument("--heavy", action="store_true",
                     help="мерить тяжёлый путь (через адаптер, по истории)")
     ap.add_argument("--show", action="store_true", help="собранная конфигурация, ключи маской")
+    ap.add_argument("--pydantic", action="store_true",
+                    help="настройки Pydantic AI: что уходит в шлюз по ролям")
     ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
     ap.add_argument("--venv-install", action="store_true",
                     help="поставить/обновить Pydantic AI в ~/.aurora/venv")
@@ -1624,6 +1732,8 @@ def main() -> int:
         return cmd_ping(a.json)
     if a.probe_width:
         return cmd_probe(a.json, heavy=a.heavy)
+    if a.pydantic:
+        return cmd_pydantic(a.json)
     if a.venv_status:
         ok, version = venv_status()
         if a.json:

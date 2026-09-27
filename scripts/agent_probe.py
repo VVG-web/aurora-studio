@@ -129,7 +129,6 @@ def verdict(code, body: str, err: str) -> tuple:
 LAYERS = (
     ("голый запрос", {}),
     ("+ chat_template_kwargs", {"chat_template_kwargs": {"enable_thinking": False}}),
-    ("+ _slots", {"_slots": 8}),
     ("+ guard/role", {"guard": {"grams": [], "gram": 3, "max_words": 12, "ready": False},
                       "role": "worker"}),
 )
