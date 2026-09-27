@@ -503,13 +503,24 @@ def adapter_hub():
             _HUB["broken"] = f"не запускается: {type(e).__name__}"
             return None, _HUB["broken"]
         box: list = []
-        t = threading.Thread(target=lambda: box.append(proc.stdout.readline()), daemon=True)
+
+        def first_hello() -> None:
+            # Первая строка-приветствие; посторонние строки (баннеры библиотек) пропускаем.
+            for _ in range(50):
+                line = proc.stdout.readline()
+                if not line:
+                    return
+                try:
+                    got = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(got, dict) and "ready" in got:
+                    box.append(got)
+                    return
+        t = threading.Thread(target=first_hello, daemon=True)
         t.start()
         t.join(ADAPTER_START)
-        try:
-            hello = json.loads(box[0]) if box and box[0] else {}
-        except ValueError:
-            hello = {}
+        hello = box[0] if box else {}
         if not hello.get("ready"):
             try:
                 proc.kill()
@@ -1290,6 +1301,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 if not text:
                     why = ("рассуждения съели лимит токенов (finish_reason=length)"
                            if finish == "length" and reasoning else
+                           f"модель исчерпала вызовы инструментов ({TOOL_CALLS}) и не ответила"
+                           if finish == "tool_limit" else
                            "пустой ответ — вероятно, chat-шаблон на сервере")
                     log.append(f"№{b['n']} {model}: {why}")
                     can_recover = True

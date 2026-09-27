@@ -8084,6 +8084,113 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
 
 
 @test
+def test_the_agent_really_reads_the_knowledge_graph(tmp: Path):
+    """Встроенный агент читает граф базы через MCP-сервер graphify — на деле, а не на бумаге.
+
+    Ревизия 28.09.2026: сервер графа стоял и отвечал, но агент ни разу до графа не дошёл.
+    Инструменты graphify принимают `project_path`, модель подставляла выдуманный путь («/app/…»),
+    сервер искал граф в `<путь>/graphify-out/`, модель перебирала варианты до потолка вызовов,
+    а движок повторял вопрос прямым HTTP уже без инструментов — и модель отвечала «инструмента
+    нет», и этот ответ уходил как настоящий. Ещё: оглавления были главными узлами графа
+    («Брошенные» — 711 связей), а Pydantic AI 2.5x печатает приветствие в линию с движком.
+    """
+    import asyncio
+    import dataclasses
+    import importlib
+    sys.path.insert(0, str(KIT / "scripts" / "agents"))
+    sys.path.insert(0, str(SCRIPTS))
+    EX = importlib.import_module("aurora_extras")
+    importlib.reload(EX)
+    AD = importlib.import_module("pydantic_ai_adapter")
+    importlib.reload(AD)
+
+    # запись сервера: граф — в нашей папке, `project_path` агент не передаёт, назначение названо
+    entry = EX.graph_entry(Path("/py"))
+    assert entry["env"] == {"GRAPHIFY_OUT": os.path.join("AuroraKnowledgeDB", "meta", "graphify")}, entry
+    assert entry["drop_args"] == ["project_path"] and entry["about"], entry
+    # прежняя запись (1.138) приводится к нынешней сама — это наша запись
+    kit_mcp = tmp / "mcp.json"
+    kit_mcp.write_text(json.dumps({"mcpServers": {"чужой": {"command": "x"}, "aurora-graph": {
+        "command": sys.executable, "args": ["-m", "graphify.serve", EX.GRAPH_REL]}}}), encoding="utf-8")
+    EX.kit_mcp_file = lambda: kit_mcp
+    EX.venv_python = lambda _id: Path(sys.executable)
+    m = EX._graph_mcp_current()
+    saved = json.loads(kit_mcp.read_text(encoding="utf-8"))["mcpServers"]
+    assert m.get("registered") and saved["aurora-graph"].get("drop_args") == ["project_path"], saved
+    assert saved["чужой"] == {"command": "x"}, "чужой сервер задет"
+    importlib.reload(EX)
+
+    # адаптер снимает аргумент и при вызове, и в описании инструмента
+    got = {}
+
+    async def call_tool(name, args):
+        got[name] = args
+        return "ок"
+    hook = AD.call_hook("aurora-graph", {"drop_args": ["project_path"]}, {}, str(tmp))
+    asyncio.run(hook(None, call_tool, "graph_stats", {"project_path": "/app", "top_n": 3}))
+    assert got["graph_stats"] == {"top_n": 3}, f"выдуманный путь ушёл серверу: {got}"
+
+    @dataclasses.dataclass
+    class Def:
+        parameters_json_schema: dict
+
+    @dataclasses.dataclass
+    class Tool:
+        tool_def: Def
+    tools = {"graph_stats": Tool(Def({"type": "object", "required": ["project_path"],
+                                      "properties": {"project_path": {}, "top_n": {}}}))}
+    shown = AD.hide_args(tools, {"project_path"})["graph_stats"].tool_def.parameters_json_schema
+    assert list(shown["properties"]) == ["top_n"] and shown["required"] == [], shown
+    assert {"about", "drop_args", "roles", "outbound"} <= set(AD.SPEC_ONLY), \
+        "ключи Авроры уходят серверу в настройке запуска"
+
+    # приветствие библиотеки в линии с движком не мешает запуску адаптера
+    ag = importlib.import_module("agent_core")
+    importlib.reload(ag)
+    fake = tmp / "banner.py"
+    fake.write_text("import json,sys\nprint('   / \\\\   observability: off')\nprint('')\n"
+                    "print(json.dumps({'ready': True, 'version': '2.51.0'}), flush=True)\n"
+                    "sys.stdin.read()\n", encoding="utf-8")
+    ag._adapter_argv = lambda: [sys.executable, str(fake)]
+    ag.adapter_selfcheck = lambda version="", force=False: {"ok": True, "problems": []}
+    ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
+    try:
+        proc, pending = ag.adapter_hub()
+        assert proc is not None, f"строка приветствия библиотеки сорвала запуск адаптера: {pending}"
+    finally:
+        if ag._HUB.get("proc"):
+            ag._HUB["proc"].kill()
+        importlib.reload(ag)
+
+    # упор в потолок вызовов — названная причина, не ответ без инструментов
+    cfg = ag.parse_config({"AURORA_AGENT_BACKEND_1_URL": "http://gw/v1",
+                           "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    seen = []
+
+    def transport(kind, b, payload, timeout):
+        if kind == "slots":
+            return None, None, "нет", 0.0
+        seen.append(1)
+        return 200, {"choices": [{"message": {"content": ""}, "finish_reason": "tool_limit"}]}, "", 0.1
+    r = ag.call_role(cfg, "worker", [{"role": "user", "content": "?"}], transport=transport,
+                     sleep=lambda s: None, deadline=time.time() + 1, request_timeout=1)
+    assert any("исчерпала вызовы инструментов" in line for line in r["log"]), r["log"]
+
+    # в выгрузке для graphify нет навигации — настоящим экспортом по маленькой базе
+    root = make_project(tmp)
+    card(root, "Concepts/Реестр.md", "Реестр ведёт [[ЭСФ]] и [[Декларация]].", status="knowledge")
+    card(root, "Concepts/ЭСФ.md", "ЭСФ попадает в [[Реестр]] и [[Декларация]].", status="knowledge")
+    card(root, "Concepts/Декларация.md", "Декларация сверяется с [[ЭСФ]] и [[Реестр]].", status="knowledge")
+    card(root, "MOC/Оглавление.md", "- [[Реестр]]\n- [[ЭСФ]]\n- [[Декларация]]",
+         type="moc", status="index")
+    run("kb_graph.py", "--export", cwd=root, expect_rc=0)
+    out = json.loads((root / "AuroraKnowledgeDB/meta/graphify/graph.json").read_text(encoding="utf-8"))
+    ids = {n["id"] for n in out["nodes"]}
+    assert not any("Оглавление" in i for i in ids), f"оглавление осталось узлом графа: {ids}"
+    assert any("Реестр" in i for i in ids), ids
+    assert not any("Оглавление" in l["source"] + l["target"] for l in out["links"]), out["links"]
+
+@test
 def test_moc_recognises_its_own_files(tmp: Path):
     """Карта содержания генерируется, руками её не пишут никогда.
 

@@ -36,6 +36,10 @@ import os
 import re
 import sys
 
+# Pydantic AI 2.5x печатает приветствие про observability. В процессе адаптера stdout — это
+# линия с движком, и чужая строка там читалась бы вместо ответа. Выключаем до импорта.
+os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+
 
 def leaks(query: str, guard: dict) -> str:
     """Что не так с запросом наружу. Пустая строка — можно отправлять.
@@ -152,10 +156,8 @@ def mcp_toolsets(config: dict, guard: dict = None, root: str = ".",
     out = []
     for name, spec in servers.items():
         one = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
-                                     if k not in ("roles", "outbound", "about")}}}
-        hook = None
-        if (spec or {}).get("outbound"):
-            hook = outbound_hook(name, guard or {}, root)
+                                     if k not in SPEC_ONLY}}}
+        hook = call_hook(name, spec, guard, root)
         try:
             out.append(MCPToolset(Client(one), process_tool_call=hook))
         except Exception:  # noqa: BLE001 — сервер может быть не поднят: это не повод падать
@@ -237,7 +239,10 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
                 return None
 
         async def get_tools(self, ctx):
-            return await self.wrapped.get_tools(ctx) if self.up else {}
+            if not self.up:
+                return {}
+            return hide_args(await self.wrapped.get_tools(ctx),
+                             set((servers.get(self.name) or {}).get("drop_args") or []))
 
     def factory_for(name: str, spec: dict):
         def factory(ctx):
@@ -245,8 +250,8 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
                 return None
             if name not in built:
                 one = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
-                                             if k not in ("roles", "outbound", "about")}}}
-                hook = outbound_hook(name, guard or {}, root) if (spec or {}).get("outbound") else None
+                                             if k not in SPEC_ONLY}}}
+                hook = call_hook(name, spec, guard, root)
                 try:
                     built[name] = SafeServer(MCPToolset(Client(one), process_tool_call=hook),
                                              name=name)
@@ -267,6 +272,52 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
     meta = FunctionToolset([mcp_connect], instructions=mcp_catalog(servers))
     return [meta] + [DynamicToolset(factory_for(n, s), per_run_step=True)
                      for n, s in servers.items()]
+
+
+SPEC_ONLY = ("roles", "outbound", "about", "drop_args")   # ключи Авроры, серверу не нужны
+
+
+def call_hook(name: str, spec: dict, guard: dict, root: str):
+    """Крючок на вызовы инструментов сервера: сторож исходящего и снятие аргументов.
+
+    `drop_args` — аргументы, которые модель передавать не должна: у graphify это
+    `project_path` — модель подставляла выдуманный путь, и граф не открывался. Сервер и так
+    запущен в папке проекта.
+    """
+    guard_hook = outbound_hook(name, guard or {}, root) if (spec or {}).get("outbound") else None
+    drop = set((spec or {}).get("drop_args") or [])
+    if not drop:
+        return guard_hook
+
+    async def hook(ctx, call_tool, tool, args):
+        args = {k: v for k, v in (args or {}).items() if k not in drop}
+        if guard_hook:
+            return await guard_hook(ctx, call_tool, tool, args)
+        return await call_tool(tool, args)
+    return hook
+
+
+def hide_args(tools: dict, drop: set) -> dict:
+    """Описания инструментов без снимаемых аргументов: модели незачем их видеть и гадать.
+
+    Устройство описаний у Pydantic AI меняется; не вышло поправить — остаётся снятие при
+    вызове (`call_hook`), и работа не ломается."""
+    if not drop:
+        return tools
+    try:
+        import dataclasses
+        out = {}
+        for name, t in tools.items():
+            schema = dict(t.tool_def.parameters_json_schema or {})
+            props = {k: v for k, v in (schema.get("properties") or {}).items() if k not in drop}
+            schema["properties"] = props
+            if schema.get("required"):
+                schema["required"] = [r for r in schema["required"] if r not in drop]
+            out[name] = dataclasses.replace(
+                t, tool_def=dataclasses.replace(t.tool_def, parameters_json_schema=schema))
+        return out
+    except Exception:  # noqa: BLE001
+        return tools
 
 
 def outbound_hook(server: str, guard: dict, root: str):
@@ -594,6 +645,7 @@ def runtime():
     has_instructions = "instructions" in inspect.signature(Agent.run).parameters
     HTTPError = X.ModelHTTPError
     Unexpected = X.UnexpectedModelBehavior
+    LimitHit = getattr(X, "UsageLimitExceeded", None) or type("NoLimit", (Exception,), {})
 
     client = http_client()
     agents: dict = {}          # shared_agent_key → агент: провайдер строится один раз
@@ -693,6 +745,14 @@ def runtime():
                     model_settings=settings, **extra)
             except HTTPError as e:
                 return http_error(e)
+            except LimitHit as e:
+                # Модель исчерпала вызовы инструментов и не ответила. Это не поломка адаптера:
+                # повтор прямым HTTP шёл бы уже без инструментов, и модель честно отвечала
+                # «инструмента нет» — такой ответ уходил бы как настоящий (28.09.2026).
+                last = last_response(seen)
+                return {"ok": True, "text": "", "reasoning": thinking_of(last),
+                        "finish": "tool_limit", "usage": usage_of(last.usage) if last else {},
+                        "error": str(e)[:200]}
             except Unexpected as e:
                 last = last_response(seen)
                 if last is not None and getattr(last, "finish_reason", None) == "length":
@@ -739,6 +799,14 @@ def selfcheck() -> dict:
         q = text_of(users[-1].get("content")) if users else ""
         if "отказ" in q:
             return 400, {"error": {"message": "плохой запрос"}}
+        if "цикл" in q:                     # модель, которая зовёт инструмент без конца
+            return 200, {
+                "id": "1", "object": "chat.completion", "created": 1, "model": "m",
+                "choices": [{"index": 0, "finish_reason": "tool_calls",
+                             "message": {"role": "assistant", "content": None, "tool_calls": [
+                                 {"id": f"c{len(seen)}", "type": "function",
+                                  "function": {"name": "list_dir", "arguments": "{}"}}]}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}}
         length = "лимит" in q
         return 200, {
             "id": "1", "object": "chat.completion", "created": 1, "model": "m",
@@ -835,7 +903,14 @@ def selfcheck() -> dict:
         # 5. отказ сервера — со статусом, как по HTTP
         out = await run_task(dict(base, messages=[{"role": "user", "content": "отказ"}]))
         check("отказ 400", out.get("where") == "server" and out.get("status") == 400, out)
-        # 6. обрыв связи — «сервер не ответил», не поломка адаптера
+        # 6. модель зовёт инструменты без конца — упор в потолок это ответ «не уложилась»,
+        #    а не поломка: иначе движок повторил бы вопрос без инструментов
+        out = await run_task(dict(base, tools=[work], role="worker", guard={"ready": False},
+                                  tool_calls=2,
+                                  messages=[{"role": "user", "content": "цикл"}]))
+        check("потолок вызовов инструментов", out.get("ok") and out.get("finish") == "tool_limit",
+              out)
+        # 7. обрыв связи — «сервер не ответил», не поломка адаптера
         out = await run_task(dict(base, url=dead, messages=[{"role": "user", "content": "есть?"}]))
         check("обрыв связи", out.get("where") == "server" and not out.get("ok"), out)
 

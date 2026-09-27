@@ -125,8 +125,8 @@ function extraRow(ctx, x, redraw){
 
 function mcpHint(ctx, m){
   const {t, el} = ctx;
-  const snippet = JSON.stringify({mcpServers: {[m.name]: {command: m.command, args: m.args}}},
-                                 null, 2);
+  const snippet = JSON.stringify({mcpServers: {[m.name]: {command: m.command, args: m.args,
+                                 ...(m.env ? {env: m.env} : {})}}}, null, 2);
   return el("details", {style:"margin-top:6px"},
     el("summary", {style:"font-size:12.5px;cursor:pointer"},
       m.registered ? t("install.ex_mcp_on") : t("install.ex_mcp_off")),

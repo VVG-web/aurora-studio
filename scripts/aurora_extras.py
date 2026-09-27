@@ -153,10 +153,23 @@ def status(fresh: bool = False, online: bool = True) -> list:
             "pypi_behind": bool(new.get("git") and avail and _vt(new["git"]) > _vt(avail)),
             "venv": str(ex["venv"]), "repo": f"https://github.com/{ex['repo']}",
             "python": python_for(eid) or "",
-            **({"mcp": graph_mcp()} if eid == "graphify" and have else {}),
+            **({"mcp": _graph_mcp_current()} if eid == "graphify" and have else {}),
             **({"compat": compat_of(have)} if eid == "pydantic-ai" and have else {}),
         })
     return rows
+
+
+def _graph_mcp_current() -> dict:
+    """Запись сервера графа — и прежнюю, от 1.138, приводит к нынешней: это наша запись."""
+    m = graph_mcp()
+    if m and not m.get("registered"):
+        try:
+            servers = json.loads(kit_mcp_file().read_text(encoding="utf-8")).get("mcpServers") or {}
+        except (OSError, ValueError, AttributeError):
+            servers = {}
+        if GRAPH_MCP in servers and not register_graph_mcp():
+            m = graph_mcp()
+    return m
 
 
 def compat_of(version: str):
@@ -264,6 +277,23 @@ def install(extra_id: str) -> dict:
 
 GRAPH_MCP = "aurora-graph"
 GRAPH_REL = os.path.join("AuroraKnowledgeDB", "meta", "graphify", "graph.json")
+GRAPH_OUT = os.path.join("AuroraKnowledgeDB", "meta", "graphify")
+
+
+def graph_entry(vpy) -> dict:
+    """Запись сервера графа в `local/mcp.json`.
+
+    `GRAPHIFY_OUT` — папка выгрузки: инструменты graphify принимают `project_path` и ищут
+    граф в `<project_path>/graphify-out/`, а наш лежит в `AuroraKnowledgeDB/meta/graphify/`.
+    Встроенный агент `project_path` не передаёт вовсе (`drop_args`): модель подставляла
+    выдуманный путь («/app/…») и перебирала варианты до потолка вызовов — граф так ни разу и
+    не открылся (PRJ-A, 28.09.2026). Сервер и так запущен в папке проекта.
+    """
+    return {"command": str(vpy), "args": ["-m", "graphify.serve", GRAPH_REL],
+            "env": {"GRAPHIFY_OUT": GRAPH_OUT},
+            "about": "граф базы знаний проекта: связи карточек, темы, кратчайший путь между "
+                     "понятиями, самые связанные карточки, соседи карточки",
+            "drop_args": ["project_path"]}
 KIT = Path(__file__).resolve().parent.parent
 
 
@@ -286,8 +316,9 @@ def graph_mcp() -> dict:
         servers = json.loads(kit_mcp_file().read_text(encoding="utf-8")).get("mcpServers") or {}
     except (OSError, ValueError, AttributeError):
         servers = {}
-    return {"registered": GRAPH_MCP in servers, "name": GRAPH_MCP, "command": str(vpy),
-            "args": ["-m", "graphify.serve", GRAPH_REL]}
+    want = graph_entry(vpy)
+    return {"registered": servers.get(GRAPH_MCP) == want, "name": GRAPH_MCP,
+            "command": want["command"], "args": want["args"], "env": want["env"]}
 
 
 def register_graph_mcp() -> str:
@@ -309,7 +340,7 @@ def register_graph_mcp() -> str:
             return f"local/mcp.json не разобран: {e}"
     servers = data.get("mcpServers") if isinstance(data, dict) else None
     servers = servers if isinstance(servers, dict) else {}
-    want = {"command": str(vpy), "args": ["-m", "graphify.serve", GRAPH_REL]}
+    want = graph_entry(vpy)
     if servers.get(GRAPH_MCP) == want:
         return ""
     servers[GRAPH_MCP] = want

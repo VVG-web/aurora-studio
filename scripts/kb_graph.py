@@ -869,14 +869,20 @@ def export_graph(data: dict) -> dict:
     """
     done = {"graph": GRAPH_EXPORT, "communities": 0, "obsidian": ""}
     group_of = {n["id"]: n.get("group") for n in data["nodes"]}
+    # Оглавления, указатели и заготовки — навигация, а не знание. В выгрузке для graphify они
+    # были главными узлами (PRJ-A 28.09.2026: «Брошенные» — 711 связей, «Процессы» — 451), и
+    # обход графа из любой карточки на глубину 3 разрастался до трёхсот узлов через них.
+    nav = {n["id"] for n in data["nodes"]
+           if n.get("status") in ("index", "placeholder") or n.get("type") == "moc"}
     nodes = [{"id": n["id"], "label": n["title"], "file_type": "document",
               "source_file": n.get("source") or n["path"], "status": n.get("status", ""),
               "kind": n.get("kind", ""), "section": n.get("type", ""),
-              "community": n.get("group")} for n in data["nodes"]]
+              "community": n.get("group")} for n in data["nodes"] if n["id"] not in nav]
     links = [{"source": e["from"], "target": e["to"], "relation": e.get("rel", "связана"),
               "confidence": e.get("conf", "EXTRACTED"),
               "confidence_score": 1.0 if e.get("conf", "EXTRACTED") == "EXTRACTED" else 0.85,
-              "source_file": e.get("evidence", "")} for e in data["edges"]]
+              "source_file": e.get("evidence", "")} for e in data["edges"]
+             if e["from"] not in nav and e["to"] not in nav]
     # Слой кода и SQL (`kb:code-graph`): таблицы и код — узлы, «упоминает таблицу» и «в одном
     # запросе» — связи, найденные в источниках. Агент проходит «требование → таблица →
     # связанные таблицы» по одному графу.
