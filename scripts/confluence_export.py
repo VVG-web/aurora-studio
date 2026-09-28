@@ -957,6 +957,11 @@ def main() -> int:
         return verify(lambda into: run_export(cfg, roots, into, auth, True), skip=(STATE,))
 
     exp = run_export(cfg, roots, out, auth, a.force)
+    if exp.failed:
+        kept = exp.keep_unvisited()
+        if kept:
+            print(f"Не дошли из-за сбоев: {kept} страниц — в состоянии зеркала остаются "
+                  "прежними, следующий синк их обойдёт\n")
     exp.write_state()
     stale = exp.stale()
 

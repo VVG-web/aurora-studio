@@ -272,6 +272,26 @@ class WikiMirror(Mirror):
                 for i, (pid, rel, title, status)
                 in enumerate(sorted(self.records, key=lambda r: r[1]), 1)]
 
+    def keep_unvisited(self) -> int:
+        """Страницы прежнего состояния, до которых обход не дошёл, — остаются. → сколько.
+
+        Обход с ошибками связи доходит не до всех веток: у PRJ-A 28.09.2026 из 1068 страниц
+        обошлось 229 (таймауты сервера). Состояние же писалось по обойдённым, и 839 страниц
+        выпадали из него — база считала их чужими зеркалу, а маршрут закоммитил бы это.
+        Страница, чей файл на месте и до которой просто не дошли, остаётся прежней записью.
+        """
+        seen = {str(r[0]) for r in self.records}
+        kept = 0
+        for cells in self.state_cells():
+            if len(cells) < 5 or not cells[1].isdigit() or cells[1] in seen:
+                continue
+            pid, title, rel, status = cells[1], cells[2], cells[3], cells[4]
+            if os.path.isfile(os.path.join(self.out, rel)):
+                self.records.append((pid, rel, title, status))
+                seen.add(pid)
+                kept += 1
+        return kept
+
     def align_case(self, rel: str) -> None:
         """Привести регистр папок зеркала к тому, что сейчас в заголовках страниц.
 

@@ -8379,6 +8379,40 @@ def test_a_legacy_machine_card_is_refreshed_not_doubled(tmp: Path):
 
 
 @test
+def test_a_sync_with_errors_keeps_the_pages_it_did_not_reach(tmp: Path):
+    """Синк со сбоями связи не выбрасывает из состояния страницы, до которых не дошёл.
+
+    PRJ-A 28.09.2026: сервер Confluence отвечал таймаутами, обход дошёл до 229 страниц из 1068,
+    и состояние зеркала переписалось по обойдённым — 839 страниц из него выпали. Маршрут
+    после восьми попыток пошёл бы дальше и закоммитил базу, которая считает их чужими.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    CE = importlib.import_module("confluence_export")
+    importlib.reload(CE)
+    mirror = tmp / "Sources" / "Confluence"
+    for rel in ("A.md", "Ветка/B.md", "Ветка/C.md"):
+        (mirror / rel).parent.mkdir(parents=True, exist_ok=True)
+        (mirror / rel).write_text("---\npage_id: 1\n---\n\n# x\n", encoding="utf-8")
+    old = CE.Exporter(None, str(mirror), "https://wiki", "S", False)
+    old.records = [("1000001", "A.md", "А", "SYNCED"), ("1000002", "Ветка/B.md", "Б", "SYNCED"),
+                   ("1000003", "Ветка/C.md", "В", "SYNCED"), ("1000004", "Нет.md", "Г", "SYNCED")]
+    old.write_state()
+    run = CE.Exporter(None, str(mirror), "https://wiki", "S", False)
+    run.records = [("1000001", "A.md", "А", "UPDATED")]
+    run.failed = 1
+    assert run.keep_unvisited() == 2, "страницы, до которых не дошли, выпали из состояния"
+    run.write_state()
+    rows = {c[1]: c[3] for c in run.state_cells()}
+    assert rows == {"1000001": "A.md", "1000002": "Ветка/B.md", "1000003": "Ветка/C.md"}, rows
+    assert not run.stale(), "непосещённые страницы объявлены лишними"
+    src = (SCRIPTS / "confluence_export.py").read_text(encoding="utf-8")
+    body = src[src.index("exp = run_export(cfg, roots, out, auth, a.force)"):]
+    assert body.index("keep_unvisited()") < body.index("exp.write_state()"), \
+        "состояние пишется раньше, чем в него вернули непосещённые страницы"
+
+
+@test
 def test_moc_recognises_its_own_files(tmp: Path):
     """Карта содержания генерируется, руками её не пишут никогда.
 
