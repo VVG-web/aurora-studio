@@ -7757,6 +7757,8 @@ def test_names_pass_on_windows_macos_and_linux(tmp: Path):
     dry = run("kb_names.py", cwd=root, expect_rc=0).stdout
     assert "Запуск-HDFS->Hive.md" in dry and bad.exists(), f"показ без --apply что-то изменил:\n{dry}"
     run("kb_names.py", "--apply", cwd=root, expect_rc=0)
+    assert (root / "AuroraKnowledgeDB/meta/graphify/graph.json").is_file(), \
+        "после починки имён граф не пересобран — сервер графа отвечал бы по старым путям"
     assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
         "карточка с «>» в имени не переименована"
     text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
@@ -8189,6 +8191,118 @@ def test_the_agent_really_reads_the_knowledge_graph(tmp: Path):
     assert not any("Оглавление" in i for i in ids), f"оглавление осталось узлом графа: {ids}"
     assert any("Реестр" in i for i in ids), ids
     assert not any("Оглавление" in l["source"] + l["target"] for l in out["links"]), out["links"]
+
+@test
+def test_graph_export_tells_what_changed_and_what_to_check(tmp: Path):
+    """Выгрузка графа говорит больше, чем связи: что изменилось, что неожиданно, что проверить.
+
+    Ревизия graphify 28.09.2026: страница графа тянула vis-network с unpkg и в закрытом
+    контуре открывалась пустой; по отчёту шага не было видно, что стало с графом за прогон;
+    выведенных связей — половина, и проверять их никто не просил; а каждый новый день
+    выгрузка переписывала десятки заметок тем ради одной строки `updated:`.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    G = importlib.import_module("kb_graph")
+    importlib.reload(G)
+    root = make_project(tmp)
+    card(root, "Concepts/Реестр-НП.md", "Реестр ведёт [[ЭСФ]] и [[Декларация]].", status="knowledge")
+    card(root, "Concepts/ЭСФ.md", "ЭСФ попадает в [[Декларация]].", status="knowledge")
+    card(root, "Concepts/Декларация.md", "Сверяется с [[ЭСФ]].", status="knowledge")
+    # односторонние ссылки: пара карточек — одна связь, сильнейшая
+    card(root, "Concepts/Штраф.md", "Штраф вносят в [[Реестр-НП|реестр]].", status="knowledge")
+    card(root, "Concepts/Пени.md", "Порядок описан [[ЭСФ|здесь]].", status="knowledge")
+    run("kb_graph.py", "--export", cwd=root, expect_rc=0)
+    base = root / "AuroraKnowledgeDB/meta/graphify"
+    page = (base / "graph.html").read_text(encoding="utf-8")
+    assert not re.search(r"<script[^>]+src=[\"']https?://", page), "страница графа тянет библиотеку из сети"
+    assert "cytoscape" in page and '"Реестр-НП"' in page, "в странице нет библиотеки или данных"
+    ins = (base / "insights.md").read_text(encoding="utf-8")
+    for must in ("Изменения с прошлой выгрузки", "Неожиданные связи между темами",
+                 "Выведенные связи на проверку"):
+        assert must in ins, f"в заметке графа нет раздела «{must}»"
+    # «здесь» не называет «Реестр-НП» ни одним словом — на проверку; «реестр» — сокращение
+    queue = ins.split("## Выведенные связи на проверку")[1]
+    assert "«здесь»" in queue and "«реестр»" not in queue, queue[-600:]
+
+    # второй раз без изменений — ни заметок тем, ни графа базы не переписывает
+    meta = root / "AuroraKnowledgeDB/meta/graph.json"
+    stamp = meta.stat().st_mtime_ns
+    notes = {p: p.stat().st_mtime_ns for p in (root / "AuroraKnowledgeDB/MOC").rglob("*.md")}
+    time.sleep(0.05)
+    run("kb_graph.py", "--export", cwd=root, expect_rc=0)
+    assert meta.stat().st_mtime_ns == stamp, "граф базы переписан без изменений — лишняя правка в git"
+    assert all(p.stat().st_mtime_ns == t for p, t in notes.items()), "заметки тем переписаны без изменений"
+
+    # пришла карточка — сравнение с прошлой выгрузкой это называет
+    card(root, "Concepts/Налоговый-агент.md", "Агент подаёт [[Декларация]].", status="knowledge")
+    out = run("kb_graph.py", "--export", cwd=root, expect_rc=0).stdout
+    assert "С прошлой выгрузки: карточек +1" in out, out[-600:]
+    assert "Налоговый-агент" in (base / "insights.md").read_text(encoding="utf-8")
+
+    # неожиданная связь: выведенная, между темами, из разных веток источников
+    data = {"nodes": [{"id": "a", "title": "А", "group": 1, "source": "Sources/Confluence/X/a.md"},
+                      {"id": "b", "title": "Б", "group": 2, "source": "Sources/Confluence/Y/b.md"},
+                      {"id": "c", "title": "В", "group": 1, "source": "Sources/Confluence/X/c.md"}],
+            "edges": [{"from": "a", "to": "b", "conf": "INFERRED"},
+                      {"from": "a", "to": "c", "conf": "EXTRACTED"}],
+            "groups": [{"id": 1, "name": "Первая"}, {"id": 2, "name": "Вторая"}]}
+    s = G.surprising_links(data, set())
+    assert len(s) == 1 and {s[0]["a"], s[0]["b"]} == {"А", "Б"}, s
+    assert "выведена" in s[0]["why"] and "разных ветках" in s[0]["why"], s[0]["why"]
+
+
+@test
+def test_graph_hops_in_search_wait_for_measurement(tmp: Path):
+    """Переходы поиска по графу базы есть, но включаются по замеру, а не на веру.
+
+    Замер 28.09.2026 (PRJ-A самопоиск, PRJ-C эталон из 18 вопросов): переходы по связям из
+    источников и по теме находку и R@1 не меняют; совпадения по теме заполняют пак целиком,
+    а с отведёнными местами ответ эталона чаще выпадает из пака (0.944 → 0.889). Поэтому
+    выключены, и замер `--compare` видит «эталон в паке», а не только порядок выдачи.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    P = importlib.import_module("ctx_pack")
+    importlib.reload(P)
+    assert P.RETRIEVAL["hop_typed"] is False and P.RETRIEVAL["hop_theme"] == 0 \
+        and P.RETRIEVAL["graph_slots"] == 0, "переходы по графу включены без замера"
+    Q = importlib.import_module("kb_search_quality")
+    assert {"typed", "theme"} <= set(Q.COMPARE_PRESETS), "их нельзя замерить командой --compare"
+    assert '"эталон в паке"' in (SCRIPTS / "kb_search_quality.py").read_text(encoding="utf-8"), \
+        "замер не видит, выпал ли ответ эталона из пака, — а именно это меняют переходы"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Отчёт-по-НДС.md", "Отчёт по НДС подаётся ежеквартально.", status="knowledge")
+    card(root, "Concepts/Контрольные-соотношения.md", "Проверки перед приёмом.", status="knowledge")
+    (root / "AuroraKnowledgeDB/meta/graph.json").write_text(json.dumps({
+        "nodes": [{"id": "Отчёт-по-НДС", "group": 1}, {"id": "Контрольные-соотношения", "group": 1}],
+        "edges": [{"from": "Отчёт-по-НДС", "to": "Контрольные-соотношения",
+                   "rel": "реализует историю", "conf": "EXTRACTED"}]}, ensure_ascii=False),
+        encoding="utf-8")
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        cards = P.load_cards()
+        P.measure_rarity(cards)
+        ok = set(P.TRUSTED) | {"knowledge"}
+        got = lambda: {c.stem for c in P.collect(cards, "отчёт по НДС ежеквартально",
+                                                 ok, True, "", 1)[0]}
+        assert "Контрольные-соотношения" not in got(), "сосед по источнику пришёл без флага"
+        P.RETRIEVAL.update(hop_typed=True, graph_slots=1)
+        P._RETRIEVAL_ENV_DONE = True
+        pack = P.collect(cards, "отчёт по НДС ежеквартально", ok, True, "", 2)
+        assert "Контрольные-соотношения" in {c.stem for c in pack[0]}, \
+            "связь из источника не привела соседа в пак"
+    finally:
+        os.chdir(here)
+        importlib.reload(P)
+
+    man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
+    assert ".opencode/vendor/cytoscape.min.js" in man and ".opencode/vendor/cytoscape.LICENSE" in man, \
+        "библиотека страницы графа не доедет до проектов"
+    assert (KIT / "cockpit/vendor/cytoscape/dist/cytoscape.min.js").is_file()
+
 
 @test
 def test_moc_recognises_its_own_files(tmp: Path):
@@ -19587,7 +19701,8 @@ def test_graph_export_types_links_and_finds_themes(tmp: Path):
     inst = (SCRIPTS / "install_aurora.py").read_text(encoding="utf-8")
     assert "AuroraKnowledgeDB/meta/graphify/" in inst, "выгрузки графа уйдут в историю проекта"
     kbg = (SCRIPTS / "kb_graph.py").read_text(encoding="utf-8")
-    assert "GA.to_html(" in kbg and "GA.to_cypher(" in kbg, "выгрузки graphify не подключены"
+    assert "graph_page(" in kbg and "GA.to_cypher(" in kbg, \
+        "страница графа или выгрузка для Neo4j не подключены"
 
 
 @test

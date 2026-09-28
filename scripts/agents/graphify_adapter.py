@@ -8,9 +8,10 @@
 Что берём у graphify (разбор 27.09.2026, 1.138.0):
   • `cluster` — темы базы Лейденом вместо нашего Лувена;
   • `serve_argv` — готовый MCP-сервер графа базы для Claude Code, Cursor и агентов;
-  • `to_html` — интерактивная страница графа;
   • `code_graph` — разбор кода и SQL проекта без модели (tree-sitter).
 Разбор документов моделью у graphify не берём: он стоит тех же токенов, что наш.
+Страницу графа тоже не берём: у graphify она тянет vis-network из сети, наша
+(`kb_graph.graph_page`) открывается без неё.
 """
 from __future__ import annotations
 
@@ -88,32 +89,6 @@ def serve_argv(graph_path: str) -> list:
     """Команда MCP-сервера графа базы. Пусто — graphify не стоит."""
     vpy = python()
     return [vpy, "-m", "graphify.serve", os.path.abspath(graph_path)] if vpy else []
-
-
-_HTML = r"""
-import json, sys
-from networkx.readwrite import json_graph
-from graphify.exporters.html import to_html
-d = json.load(sys.stdin)
-data = json.load(open(d["graph"], encoding="utf-8"))
-G = json_graph.node_link_graph(data, edges="links")
-comms, labels = {}, {}
-for n, attrs in G.nodes(data=True):
-    c = attrs.get("community")
-    if c is not None:
-        comms.setdefault(int(c), []).append(n)
-for k, v in (data.get("graph", {}).get("communities") or {}).items():
-    labels[int(k)] = v
-ok = to_html(G, comms, d["out"], community_labels=labels, node_limit=d.get("limit"))
-print(json.dumps({"ok": bool(ok)}))
-"""
-
-
-def to_html(graph_path: str, out_path: str, limit: int = 3000) -> bool:
-    """Интерактивная страница графа базы (vis.js) по `graph.json`. False — не вышло."""
-    got = _call(_HTML, {"graph": os.path.abspath(graph_path), "out": os.path.abspath(out_path),
-                        "limit": limit})
-    return bool(got and got.get("ok"))
 
 
 _CYPHER = r"""

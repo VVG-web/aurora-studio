@@ -324,6 +324,8 @@ COMPARE_PRESETS = {
     "backlinks": {"hop_backlinks": True},
     "collapsed": {"neighbor_full": False},
     "pagerank": {"pagerank": 0.25},
+    "typed": {"hop_typed": True},
+    "theme": {"hop_theme": 2},
 }
 
 
@@ -426,6 +428,9 @@ def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> in
             if golden:
                 g = measure(golden, cfg, model, say=lambda *_: None, closes=closes)
                 row["эталон R@1"] = g["R@1"]
+                # Попал ли ответ эталона в пак — то, что меняют переходы по графу и места под
+                # соседей; R@1 считает только порядок выдачи и этого не видит.
+                row["эталон в паке"] = pack_measure(golden, closes)["находка"]
             rows.append(row)
     finally:
         P.RETRIEVAL.clear()
@@ -433,7 +438,7 @@ def compare(specs: list, pairs: list, golden: list, cfg: dict, model: str) -> in
 
     keys = ["R@1", "R@5", "MRR", "запас", "находка", "цель телом", "символов", "соседей"]
     if golden:
-        keys.append("эталон R@1")
+        keys += ["эталон R@1", "эталон в паке"]
     print("\n| Вариант | " + " | ".join(keys) + " |")
     print("|---|" + "---:|" * len(keys))
     for row in rows:

@@ -296,6 +296,8 @@ def main() -> int:
     cp = subprocess.run(fix, cwd=root, capture_output=True, text=True)
     lines = [l for l in cp.stdout.splitlines()
              if "имён приведено" in l or l.startswith("    ") or "переименований" in l]
+    if a.apply and re.search(r"переименований: [1-9]", cp.stdout):
+        changed = True
     print("## Карточки (kb_fix --portable-names --links)\n")
     print("\n".join(lines[:12]) or "  нечего")
     if cp.returncode not in (0, 1):
@@ -319,6 +321,14 @@ def main() -> int:
         for r, w in rest[:10]:
             print(f"  - {r} — {w}")
         print()
+    if a.apply:
+        # Граф базы — по новым путям: иначе сервер графа (MCP) и страница графа отвечали бы
+        # по старым до следующего маршрута. Выгрузка дешёвая и ничего не переписывает зря.
+        g = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                         "kb_graph.py"), "--export"],
+                           cwd=root, capture_output=True, text=True)
+        print("## Граф базы пересобран по новым путям\n" if g.returncode == 0 else
+              f"## Граф базы не пересобран: {(g.stderr or g.stdout)[-300:]}\n")
     if not a.apply:
         print("(dry-run) Ничего не изменено. Сделать: --apply")
     elif changed:

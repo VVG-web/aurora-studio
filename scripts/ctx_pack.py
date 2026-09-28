@@ -29,6 +29,7 @@ Bootstrap: пока verified меньше порога из `aurora.config.yaml`
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -112,6 +113,17 @@ RETRIEVAL = {
     # выключенными, флаги сохранены для будущих замеров (multi-hop не внедряли:
     # раз графовый хоп не добавляет новых карточек в топ, углублять его бессмысленно).
     "pagerank": 0.25,         # вес графовой центральности в fuse: 0 — выключено
+    # Граф базы (`kb:graph-export`, meta/graph.json): связи из самих источников — общий ключ
+    # Requirement Yogi, одна история, — которых нет в тексте карточек; и тема, в которую
+    # граф сложил найденную карточку. Замер 28.09.2026 (PRJ-A самопоиск, PRJ-C эталон 18
+    # вопросов): находка и R@1 — те же, а места под соседей выталкивают ответ эталона из
+    # пака (0.944 → 0.889). Выключены; сравнить заново — `ops:search-quality --compare typed,theme`.
+    "hop_typed": False,       # + карточки, связанные с найденной через её источники
+    "hop_theme": 0,           # + столько карточек той же темы на каждую из трёх первых
+    # Сколько мест пака держать под соседей. Без этого совпадения по теме заполняют пак
+    # целиком, и до переходов очередь не доходит (PRJ-A 28.09.2026: соседей 0 при любых
+    # флагах). С восемью местами пак на 13 % меньше, но ответ эталона PRJ-C выпадает чаще.
+    "graph_slots": 0,
 }
 _RETRIEVAL_ENV_DONE = False
 
@@ -159,6 +171,40 @@ def _retrieval_env() -> None:
 
 
 _GRAPH: dict = {"key": None, "back": {}, "rank": {}}
+_BASE_GRAPH: dict = {"mtime": None, "typed": {}, "theme": {}, "members": {}}
+
+
+def _base_graph() -> tuple:
+    """(связи из источников {карточка: [карточки]}, {карточка: тема}, {тема: [карточки]}).
+
+    Читается готовый граф базы (`meta/graph.json`, его пишет `kb:graph-export`): связи
+    с типом — те, что не «упоминает» и не «связана», то есть найденные в источниках.
+    Нет файла — пусто, и выборка работает как без графа.
+    """
+    path = os.path.join(ROOT, "meta", "graph.json")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}, {}, {}
+    if _BASE_GRAPH["mtime"] == mtime:
+        return _BASE_GRAPH["typed"], _BASE_GRAPH["theme"], _BASE_GRAPH["members"]
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}, {}
+    typed: dict = {}
+    for e in data.get("edges") or []:
+        if e.get("rel") in ("упоминает", "связана"):
+            continue
+        typed.setdefault(e["from"], []).append(e["to"])
+        typed.setdefault(e["to"], []).append(e["from"])
+    theme = {n["id"]: n.get("group") for n in data.get("nodes") or []
+             if n.get("group") is not None}
+    members: dict = {}
+    for name, g in theme.items():
+        members.setdefault(g, []).append(name)
+    _BASE_GRAPH.update(mtime=mtime, typed=typed, theme=theme, members=members)
+    return typed, theme, members
 
 
 def _graph(cards: dict) -> tuple:
@@ -584,8 +630,9 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
 
     seeds = fuse(cards, topic, close, limit=max_cards * 2)
     chosen, seen, dropped = [], set(), []
+    seed_cap = max(1, max_cards - int(RETRIEVAL.get("graph_slots") or 0))
     for _, c in seeds:
-        if len(chosen) >= max_cards:
+        if len(chosen) >= seed_cap:
             break
         if c.stem in seen or not allowed(c):
             continue
@@ -610,6 +657,32 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
         if RETRIEVAL["hop_backlinks"]:
             ordered += back.get(c.stem, [])
         for link in ordered:
+            if len(chosen) >= max_cards:
+                break
+            nb = cards.get(link)
+            if not nb or nb.stem in seen or not allowed(nb):
+                continue
+            if release and nb.applies_to and release not in nb.applies_to:
+                continue
+            seen.add(nb.stem)
+            chosen.append(nb)
+            neighbors.add(nb.stem)
+
+    # Граф базы: связи из источников и та же тема (по замеру, см. RETRIEVAL).
+    if RETRIEVAL["hop_typed"] or RETRIEVAL["hop_theme"]:
+        typed, theme, members = _base_graph()
+        rank = _graph(cards)[1]
+        extra = []
+        seeds_only = [c for c in chosen if c.stem not in neighbors]
+        if RETRIEVAL["hop_typed"]:
+            for c in seeds_only:
+                extra += typed.get(c.stem, [])
+        if RETRIEVAL["hop_theme"]:
+            for c in seeds_only[:3]:
+                same = [m for m in members.get(theme.get(c.stem), []) if m != c.stem]
+                same.sort(key=lambda m: -rank.get(m, 0))
+                extra += same[:int(RETRIEVAL["hop_theme"])]
+        for link in extra:
             if len(chosen) >= max_cards:
                 break
             nb = cards.get(link)

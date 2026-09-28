@@ -58,6 +58,9 @@ scripts/make_kinds.py    => .opencode/scripts/make_kinds.py
 scripts/aurora_mcp.py    => .opencode/scripts/aurora_mcp.py
 scripts/kb_fix.py        => .opencode/scripts/kb_fix.py
 scripts/kb_names.py      => .opencode/scripts/kb_names.py
+# Страница графа без сети (kb:graph-export): библиотека рисования и её лицензия
+cockpit/vendor/cytoscape/dist/cytoscape.min.js => .opencode/vendor/cytoscape.min.js
+cockpit/vendor/cytoscape/LICENSE => .opencode/vendor/cytoscape.LICENSE
 scripts/kb_corrections.py => .opencode/scripts/kb_corrections.py
 scripts/kb_retrieval.py  => .opencode/scripts/kb_retrieval.py
 scripts/kb_remap.py      => .opencode/scripts/kb_remap.py

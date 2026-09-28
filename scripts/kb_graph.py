@@ -252,9 +252,14 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
         text = open(n["path"], encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text) or {}
         found = []
+        context: dict = {}
         for m in re.finditer(r"\[\[([^\]|#]+?)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]", text):
             tgt = card_stem(m.group(1).strip())
             label = (m.group(2) or m.group(1)).strip()
+            # подпись и фраза вокруг — для очереди проверки выведенных связей; в файл
+            # графа они не пишутся
+            line = " ".join(text[max(0, m.start() - 90):m.end() + 90].split())
+            context.setdefault(tgt, (label, line))
             found.append((tgt, "упоминает",
                           "EXTRACTED" if names_the_card(label, forms_of.get(tgt, set()))
                           else "INFERRED", n["path"]))
@@ -272,8 +277,11 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
             score = (rank[conf], rel not in ("упоминает", "связана"))
             if was and was[0] >= score:
                 continue
-            best[pair] = (score, {"from": pair[0], "to": pair[1], "rel": rel, "conf": conf,
-                                  "evidence": why})
+            edge = {"from": pair[0], "to": pair[1], "rel": rel, "conf": conf, "evidence": why}
+            if conf == "INFERRED" and tgt in context:
+                edge["_from"], edge["_label"], edge["_line"] = n["id"], *context[tgt]
+                edge["_to"] = tgt
+            best[pair] = (score, edge)
     edges = [e for _s, e in (best[p] for p in sorted(best))]
     for n in nodes:
         n.pop("_forms", None)
@@ -282,8 +290,18 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
                            if not any(n["id"] in (e["from"], e["to"]) for e in edges))}
     attach_communities(data)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    stored = dict(data, edges=[{k: v for k, v in e.items() if not k.startswith("_")}
+                               for e in edges])
+    # Тот же граф — тот же файл: дата сборки в нём менялась бы каждый день и давала правку
+    # в git при неизменной базе.
+    try:
+        was = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        was = None
+    if isinstance(was, dict) and dict(was, generated="") == dict(stored, generated=""):
+        return data
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, sort_keys=True)
+        json.dump(stored, f, ensure_ascii=False, sort_keys=True)
     return data
 
 
@@ -858,6 +876,255 @@ def attach_communities(data: dict) -> None:
     data["groups"] = sorted(named.values(), key=lambda x: -x["size"])
 
 
+def graph_diff(before, nodes: list, links: list, themes: dict) -> dict:
+    """Что изменилось в графе с прошлой выгрузки: карточки, связи, темы.
+
+    Прогон «Обновить базу» меняет базу партиями, и по отчёту шага не видно, что стало с
+    картиной целиком: какие карточки пришли и ушли, сколько связей прибавилось, появились
+    ли новые темы. Прошлая выгрузка лежит рядом (`graph.json`) — с ней и сравниваем.
+    """
+    if not isinstance(before, dict):
+        return {"first": True}
+    label = {n["id"]: n.get("label") or n["id"] for n in nodes}
+    was_label = {n["id"]: n.get("label") or n["id"] for n in before.get("nodes") or []}
+    now_ids = {n["id"] for n in nodes if n.get("file_type") == "document"}
+    was_ids = {n["id"] for n in before.get("nodes") or [] if n.get("file_type") == "document"}
+    pair = lambda l: tuple(sorted((str(l.get("source")), str(l.get("target")))))
+    now_links = {pair(l) for l in links}
+    was_links = {pair(l) for l in before.get("links") or []}
+    was_themes = set(((before.get("graph") or {}).get("communities") or {}).values())
+    return {"first": False,
+            "added": sorted(label[i] for i in now_ids - was_ids),
+            "removed": sorted(was_label.get(i, i) for i in was_ids - now_ids),
+            "links_added": len(now_links - was_links),
+            "links_removed": len(was_links - now_links),
+            "themes_before": len(was_themes), "themes_after": len(set(themes.values())),
+            "new_themes": sorted(set(themes.values()) - was_themes)}
+
+
+def _branch(source: str) -> str:
+    """Ветка источника: первая папка под зеркалом (`Sources/Confluence/<ветка>/…`)."""
+    parts = (source or "").replace("\\", "/").split("/")
+    if len(parts) > 3 and parts[0] == "Sources":
+        return "/".join(parts[1:3])
+    return "/".join(parts[:2])
+
+
+def surprising_links(data: dict, nav: set, top: int = 30) -> list:
+    """Связи между разными темами, которых не ждёшь, — по счёту, как у graphify.
+
+    Связь интереснее, если она выведена, а не найдена в тексте; если её концы из разных
+    веток источников; если между двумя темами таких связей единицы; если малозаметная
+    карточка через неё выходит на крупную. Мосты и острова `kb:map` считает отдельно — здесь
+    не структура, а смысл: где база соединяет то, что в источниках лежит порознь.
+    """
+    node = {n["id"]: n for n in data["nodes"] if n["id"] not in nav}
+    theme_name = {g["id"]: g["name"] for g in data.get("groups") or []}
+    edges = [e for e in data["edges"] if e["from"] in node and e["to"] in node]
+    degree: dict = {}
+    between: dict = {}
+    for e in edges:
+        for x in (e["from"], e["to"]):
+            degree[x] = degree.get(x, 0) + 1
+        ga, gb = node[e["from"]].get("group"), node[e["to"]].get("group")
+        if ga is not None and gb is not None and ga != gb:
+            key = tuple(sorted((ga, gb)))
+            between[key] = between.get(key, 0) + 1
+    out = []
+    for e in edges:
+        a, b = node[e["from"]], node[e["to"]]
+        ga, gb = a.get("group"), b.get("group")
+        if ga is None or gb is None or ga == gb:
+            continue
+        score, why = 1, []
+        if e.get("conf") == "INFERRED":
+            score += 2
+            why.append("связь выведена, а не найдена в тексте")
+        ba, bb = _branch(a.get("source", "")), _branch(b.get("source", ""))
+        if ba and bb and ba != bb:
+            score += 2
+            why.append(f"источники в разных ветках ({ba} / {bb})")
+        n_between = between.get(tuple(sorted((ga, gb))), 0)
+        if n_between <= 2:
+            score += 2
+            why.append(f"между этими темами связей всего {n_between}")
+        da, db = degree.get(a["id"], 0), degree.get(b["id"], 0)
+        if min(da, db) <= 2 and max(da, db) >= 5:
+            score += 1
+            small, big = (a, b) if da <= db else (b, a)
+            why.append(f"малозаметная «{small['title']}» выходит на крупную «{big['title']}»")
+        if score >= 4:
+            out.append({"a": a["title"], "b": b["title"], "score": score,
+                        "theme_a": theme_name.get(ga, str(ga)), "theme_b": theme_name.get(gb, str(gb)),
+                        "why": "; ".join(why)})
+    out.sort(key=lambda x: (-x["score"], x["a"], x["b"]))
+    return out[:top]
+
+
+def inferred_queue(data: dict, nav: set) -> dict:
+    """Выведенные связи: какие похожи на сокращённое имя карточки, какие стоит проверить.
+
+    Выведенная связь — ссылка, подпись которой не называет карточку по имени (её ставят по
+    смыслу, чаще модель при связывании). Подпись «реестр» у ссылки на «Реестр НП» — просто
+    сокращение; подпись, не разделяющая с именем карточки ни одного слова, — повод
+    проверить, туда ли ведёт ссылка. → {total, likely, check: [...]}.
+    """
+    title = {n["id"]: n.get("title") or n["id"] for n in data["nodes"]}
+    total, likely, check = 0, 0, []
+    for e in data["edges"]:
+        if e.get("conf") != "INFERRED" or e["from"] in nav or e["to"] in nav:
+            continue
+        total += 1
+        tgt = e.get("_to") or e["to"]
+        label = e.get("_label") or ""
+        want = {_stem_word(w) for w in re.findall(r"\w+", title.get(tgt, tgt) + " " + tgt)
+                if len(w) >= 3}
+        have = {_stem_word(w) for w in re.findall(r"\w+", label) if len(w) >= 3}
+        if want & have or any(h.startswith(x) or x.startswith(h)
+                              for h in have for x in want if min(len(h), len(x)) >= 4):
+            likely += 1
+            continue
+        check.append({"from": title.get(e.get("_from") or e["from"], e["from"]),
+                      "to": title.get(tgt, tgt), "label": label, "line": e.get("_line", "")})
+    check.sort(key=lambda x: (x["to"], x["from"]))
+    return {"total": total, "likely": likely, "check": check}
+
+
+def write_insights(path: str, done: dict) -> None:
+    """Что граф говорит сверх связей — одной заметкой рядом с выгрузкой (вне git)."""
+    d = done.get("diff") or {}
+    lines = ["# Граф базы: что изменилось и что проверить", "",
+             f"Собрано {TODAY} выгрузкой `kb:graph-export`. Файл пересобирается целиком.", ""]
+    lines += ["## Изменения с прошлой выгрузки", ""]
+    if d.get("first"):
+        lines += ["Первая выгрузка — сравнивать не с чем.", ""]
+    elif d:
+        lines += [f"Карточек пришло {len(d['added'])}, ушло {len(d['removed'])}; связей "
+                  f"прибавилось {d['links_added']}, пропало {d['links_removed']}; тем было "
+                  f"{d['themes_before']}, стало {d['themes_after']}.", ""]
+        for name, items in (("Пришли", d["added"]), ("Ушли", d["removed"]),
+                            ("Новые темы", d.get("new_themes") or [])):
+            if items:
+                lines += [f"**{name}:** " + ", ".join(items[:40])
+                          + (f" … ещё {len(items) - 40}" if len(items) > 40 else ""), ""]
+    lines += ["## Неожиданные связи между темами", "",
+              "Связи, соединяющие то, что в источниках лежит порознь. Это не ошибка, а место, "
+              "где стоит посмотреть: верна ли связь и не пропущено ли знание о том, как эти "
+              "темы соприкасаются.", ""]
+    for x in done.get("surprises") or []:
+        lines.append(f"- **{x['a']}** ↔ **{x['b']}** · {x['theme_a']} ↔ {x['theme_b']} · {x['why']}")
+    q = done.get("inferred") or {}
+    lines += ["", "## Выведенные связи на проверку", "",
+              f"Всего выведенных: {q.get('total', 0)}; подпись похожа на имя карточки: "
+              f"{q.get('likely', 0)}; не называет её вовсе: {len(q.get('check') or [])}. "
+              "Неверную ссылку исправьте в карточке или слоем исправлений "
+              "(`Raw/corrections/`).", ""]
+    for x in (q.get("check") or [])[:300]:
+        lines.append(f"- «{x['label']}» в **{x['from']}** → **{x['to']}**"
+                     + (f"  \n  > …{x['line']}…" if x.get("line") else ""))
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+
+
+def _cytoscape_js() -> str:
+    """Библиотека рисования графа: в проекте — `.opencode/vendor/`, в ките — рядом с панелью."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, "..", "vendor", "cytoscape.min.js"),
+                 os.path.join(here, "..", "cockpit", "vendor", "cytoscape", "dist",
+                              "cytoscape.min.js")):
+        if os.path.isfile(cand):
+            return open(cand, encoding="utf-8").read()
+    return ""
+
+
+PAGE = """<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Граф базы — __NAME__</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1f2328;--muted:#6b7280;--line:#e5e2da;--card:#ffffff;--hl:#d9480f}
+@media (prefers-color-scheme: dark){:root{--bg:#15171a;--fg:#e6e6e6;--muted:#9aa0a6;--line:#2b2f36;--card:#1d2026;--hl:#ff8a4c}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;display:flex;height:100vh}
+#side{width:340px;max-width:45vw;border-right:1px solid var(--line);padding:14px;overflow:auto;background:var(--card)}
+#cy{flex:1}h1{font-size:16px;margin:0 0 6px}.muted{color:var(--muted);font-size:12.5px}
+input{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);margin:10px 0}
+.theme{display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer}.dot{width:11px;height:11px;border-radius:50%;flex:none}
+.nb{cursor:pointer;text-decoration:underline dotted}#info{margin:10px 0;padding-top:10px;border-top:1px solid var(--line)}
+@media (max-width:700px){body{flex-direction:column}#side{width:100%;max-width:none;height:45vh;border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body>
+<div id="side"><h1>Граф базы — __NAME__</h1>
+<div class="muted">__STATS__ · открывается без сети</div>
+<input id="q" placeholder="Найти карточку…">
+<div id="info" class="muted">Нажмите на узел — здесь будет карточка и её соседи.</div>
+<div id="themes"></div></div>
+<div id="cy"><div id="busy" class="muted" style="padding:16px">Раскладка графа…</div></div>
+<script>__CYTOSCAPE__</script>
+<script>
+const D = __DATA__;
+const PAL = ["#4e79a7","#f28e2b","#59a14f","#e15759","#76b7b2","#edc948","#b07aa1","#ff9da7","#9c755f","#86bcb6","#8cd17d","#d37295"];
+const color = c => c === null || c === undefined ? "#9aa0a6" : PAL[c % PAL.length];
+const deg = {}; D.links.forEach(l => { deg[l.source] = (deg[l.source]||0)+1; deg[l.target] = (deg[l.target]||0)+1; });
+const els = D.nodes.map(n => ({data:{id:n.id, label:n.label, c:color(n.community), size:10+Math.min(30, 3*Math.sqrt(deg[n.id]||0)), n}}))
+  .concat(D.links.map((l,i) => ({data:{id:"e"+i, source:l.source, target:l.target, w:l.confidence==="EXTRACTED"?1.4:0.7}})));
+// Раскладка в прямоугольник по числу узлов: иначе несвязанные куски cose кладёт в одну
+// ленту шириной в десятки тысяч точек, и в окне виден только её край.
+const SIDE = Math.round(45 * Math.sqrt(Math.max(1, D.nodes.length)));
+const cy = cytoscape({container:document.getElementById("cy"), elements:els,
+  style:[{selector:"node",style:{"background-color":"data(c)",width:"data(size)",height:"data(size)",label:"data(label)","font-size":8,color:getComputedStyle(document.body).color,"min-zoomed-font-size":9,"text-wrap":"ellipsis","text-max-width":120}},
+         {selector:"edge",style:{width:"data(w)","line-color":"#9aa0a6",opacity:0.45}},
+         {selector:".hl",style:{"border-width":3,"border-color":"#d9480f"}},{selector:".dim",style:{opacity:0.12}}],
+  layout:{name:"cose",animate:false,numIter:900,nodeRepulsion:6000,idealEdgeLength:60,
+          boundingBox:{x1:0,y1:0,w:Math.round(SIDE*1.4),h:SIDE},fit:true,padding:30}});
+cy.fit(undefined, 30);
+document.getElementById("busy").remove();
+const esc = s => String(s||"").replace(/[&<>]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch]));
+function show(id){ const x = cy.getElementById(id); if(!x.length) return; const n = x.data("n");
+  cy.elements().removeClass("hl dim"); x.addClass("hl"); cy.animate({center:{eles:x}, zoom:Math.max(cy.zoom(),1.2)}, {duration:250});
+  const nb = x.neighborhood("node").map(y => `<div class="nb" data-id="${esc(y.id())}">${esc(y.data("label"))}</div>`).join("");
+  document.getElementById("info").innerHTML = `<b>${esc(n.label)}</b><div class="muted">${esc(n.section||"")} · ${esc(n.status||"")} · тема: ${esc(D.themes[n.community]||"—")}</div><div class="muted">${esc(n.source_file||"")}</div><div style="margin-top:8px">Соседи (${x.neighborhood("node").length}):</div>${nb}`;
+  document.querySelectorAll(".nb").forEach(el => el.onclick = () => show(el.dataset.id)); }
+cy.on("tap","node", e => show(e.target.id()));
+document.getElementById("q").oninput = e => { const t = e.target.value.trim().toLowerCase(); cy.elements().removeClass("dim hl");
+  if(!t) return; const hit = cy.nodes().filter(n => (n.data("label")||"").toLowerCase().includes(t));
+  cy.elements().not(hit).addClass("dim"); if(hit.length) show(hit[0].id()); };
+const counts = {}; D.nodes.forEach(n => { if(n.community!==null && n.community!==undefined) counts[n.community]=(counts[n.community]||0)+1; });
+document.getElementById("themes").innerHTML = "<div style='margin:6px 0'>Темы:</div>" + Object.keys(counts).sort((a,b)=>counts[b]-counts[a]).map(c =>
+  `<div class="theme" data-c="${c}"><span class="dot" style="background:${color(+c)}"></span>${esc(D.themes[c]||("тема "+c))} <span class="muted">${counts[c]}</span></div>`).join("");
+document.querySelectorAll(".theme").forEach(el => el.onclick = () => { const c = +el.dataset.c;
+  cy.elements().removeClass("hl"); cy.elements().addClass("dim"); const m = cy.nodes().filter(n => n.data("n").community === c);
+  m.removeClass("dim"); m.connectedEdges().removeClass("dim"); cy.fit(m, 40); });
+</script></body></html>
+"""
+
+
+def graph_page(nodes: list, links: list, themes: dict, out: str) -> bool:
+    """Страница графа, которая открывается без сети: библиотека и данные — внутри файла."""
+    lib = _cytoscape_js()
+    if not lib:
+        return False
+    keep = [{k: n.get(k) for k in ("id", "label", "community", "status", "section",
+                                   "source_file")} for n in nodes]
+    ids = {n["id"] for n in keep}
+    edges = [{"source": l["source"], "target": l["target"], "confidence": l.get("confidence")}
+             for l in links if l["source"] in ids and l["target"] in ids]
+    payload = json.dumps({"nodes": keep, "links": edges, "themes": themes},
+                         ensure_ascii=False).replace("</", "<\\/")
+    name = os.path.basename(os.path.abspath("."))
+    page = (PAGE.replace("__NAME__", name.replace("<", ""))
+            .replace("__STATS__", f"карточек {len(keep)}, связей {len(edges)}, тем {len(set(themes.values()))}")
+            .replace("__DATA__", payload)
+            .replace("__CYTOSCAPE__", lib.replace("</script", "<\\/script")))
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(page)
+        return True
+    except OSError:
+        return False
+
+
 def export_graph(data: dict) -> dict:
     """Граф базы наружу: graph.json в формате graphify, заметки-сообщества, цвета Obsidian.
 
@@ -922,6 +1189,12 @@ def export_graph(data: dict) -> dict:
                           == "EXTRACTED" else 0.85, "source_file": ""})
         done["code"] = len(code.get("tables") or {}) + len(layer.get("nodes") or [])
     os.makedirs(os.path.dirname(GRAPH_EXPORT), exist_ok=True)
+    try:
+        before = json.load(open(GRAPH_EXPORT, encoding="utf-8"))
+    except (OSError, ValueError):
+        before = None
+    themes = {str(g["id"]): g["name"] for g in data["groups"]}
+    done["diff"] = graph_diff(before, nodes, links, themes)
     with open(GRAPH_EXPORT, "w", encoding="utf-8") as f:
         json.dump({"directed": False, "multigraph": False,
                    "graph": {"source": "aurora-studio", "built": TODAY,
@@ -929,17 +1202,25 @@ def export_graph(data: dict) -> dict:
                    "nodes": nodes, "links": links}, f, ensure_ascii=False, indent=1,
                   sort_keys=True)
 
-    # Выгрузки graphify — если он установлен: интерактивная страница графа и скрипт Neo4j.
+    base = os.path.dirname(GRAPH_EXPORT)
+    # Страница графа — своя и без сети: cytoscape вложен в файл. Страница graphify тянула
+    # vis-network с unpkg, и в закрытом контуре открывалась пустой (ревизия 28.09.2026).
+    html = os.path.join(base, "graph.html")
+    if graph_page(nodes, links, themes, html):
+        done["html"] = html
+    # Скрипт Neo4j — выгрузкой graphify, если он установлен.
     try:
         from agents import graphify_adapter as GA
-        if GA.python():
-            base = os.path.dirname(GRAPH_EXPORT)
-            if GA.to_html(GRAPH_EXPORT, os.path.join(base, "graph.html")):
-                done["html"] = os.path.join(base, "graph.html")
-            if GA.to_cypher(GRAPH_EXPORT, os.path.join(base, "graph.cypher")):
-                done["cypher"] = os.path.join(base, "graph.cypher")
+        if GA.python() and GA.to_cypher(GRAPH_EXPORT, os.path.join(base, "graph.cypher")):
+            done["cypher"] = os.path.join(base, "graph.cypher")
     except Exception:                                     # noqa: BLE001
         pass
+    # Что граф говорит сверх связей: неожиданные мосты между темами и выведенные связи,
+    # которые стоит проверить. Файлы — рядом с выгрузкой, в git не едут.
+    done["surprises"] = surprising_links(data, nav)
+    done["inferred"] = inferred_queue(data, nav)
+    write_insights(os.path.join(base, "insights.md"), done)
+    done["insights"] = os.path.join(base, "insights.md")
 
     # Заметки сообществ: пересобираются целиком, свои прежние — убираются.
     os.makedirs(COMMUNITY_DIR, exist_ok=True)
@@ -979,9 +1260,20 @@ def export_graph(data: dict) -> dict:
             L += ["", "## Карточки-мосты", "",
                   "Через них тема связана с остальной базой — их правка отзовётся шире темы.", ""]
             L += [f"- [[{k}]] — связана с темами: {n}" for n, k in bridges_top]
-        with open(os.path.join(COMMUNITY_DIR, name + ".md"), "w", encoding="utf-8") as f:
-            f.write("\n".join(L) + "\n")
+        path = os.path.join(COMMUNITY_DIR, name + ".md")
+        text = "\n".join(L) + "\n"
+        # Та же заметка — та же дата: иначе каждый новый день давал в git десятки правок
+        # одной строки `updated:` при неизменном содержании (PRJ-A, 28.09.2026).
+        try:
+            was = open(path, encoding="utf-8").read()
+        except OSError:
+            was = ""
+        same = lambda t: re.sub(r"(?m)^updated: .*$", "", t)
         done["communities"] += 1
+        if was and same(was) == same(text):
+            continue
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
     for f in os.listdir(COMMUNITY_DIR):
         full = os.path.join(COMMUNITY_DIR, f)
         if f.endswith(".md") and f not in keep:
@@ -1019,8 +1311,27 @@ def report_export(done: dict, data: dict) -> None:
     print(f"Заметок тем: {done['communities']} — {COMMUNITY_DIR}/")
     if done.get("code"):
         print(f"Слой кода и SQL (kb:code-graph): узлов {done['code']}")
+    d = done.get("diff") or {}
+    if d.get("first"):
+        print("Сравнивать не с чем: это первая выгрузка графа")
+    elif d:
+        print(f"С прошлой выгрузки: карточек +{len(d['added'])} −{len(d['removed'])} · "
+              f"связей +{d['links_added']} −{d['links_removed']} · тем было {d['themes_before']}, "
+              f"стало {d['themes_after']}"
+              + (f" · новые темы: {', '.join(d['new_themes'][:3])}" if d.get("new_themes") else ""))
+    s = done.get("surprises") or []
+    if s:
+        print(f"Неожиданные связи между темами — {len(s)}, самые заметные:")
+        for x in s[:5]:
+            print(f"  - {x['a']} ↔ {x['b']} ({x['theme_a']} ↔ {x['theme_b']}): {x['why']}")
+    q = done.get("inferred") or {}
+    if q.get("total"):
+        print(f"Выведенных связей: {q['total']} · подпись похожа на имя карточки: {q['likely']} · "
+              f"не называет её вовсе — проверить: {len(q['check'])}")
+    if done.get("insights"):
+        print(f"Подробно: {done['insights']}")
     if done.get("html"):
-        print(f"Страница графа (graphify): {done['html']}")
+        print(f"Страница графа (без сети): {done['html']}")
     if done.get("cypher"):
         print(f"Скрипт для Neo4j (graphify): {done['cypher']}")
     if done["obsidian"]:
@@ -1028,9 +1339,10 @@ def report_export(done: dict, data: dict) -> None:
 
 
 def card_stem_safe(name: str) -> str:
-    """Имя файла заметки: без запрещённых знаков, пробелы — дефисы."""
+    """Имя файла заметки: без запрещённых знаков, пробелы — дефисы; правила трёх систем."""
+    from aurora_common import portable_name
     name = re.sub(r'[\\/:*?"<>|#^\[\]]', "", name).strip()
-    return re.sub(r"\s+", "-", name)[:120] or "Тема"
+    return portable_name(re.sub(r"\s+", "-", name), max_chars=120) or "Тема"
 
 
 def main() -> int:
