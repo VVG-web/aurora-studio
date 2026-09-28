@@ -163,12 +163,34 @@ def mirror_plan(root: str, mirror: str) -> list:
     return plan
 
 
+def same_knowledge(a: str, b: str) -> bool:
+    """Тот же текст страницы с точностью до имён файлов схем и хэша содержания.
+
+    Починка имён переименовывает схемы и правит ссылки на них — знание страницы при этом
+    не меняется. Без этой сверки разбор такой страницы считался устаревшим, и маршрут
+    разбирал её моделью заново (PRJ-A 28.09.2026: 118 страниц, повторный разбор легаси-
+    справочников задвоил в них текст).
+    """
+    drop = lambda t: "\n".join(l for l in t.splitlines()
+                               if not l.startswith("content_hash:") and not LINK_RE.match(l))
+    return drop(a) == drop(b)
+
+
 def apply_mirror(root: str, mirror: str, plan: list) -> dict:
     """Переложить страницы по плану и перевести на них базу. → итог `follow_moves`."""
     import confluence_export as CE
+    from build_plan import file_hash, load_manifest, save_manifest
     from kb_remap import follow_moves
-    from sources_core import WikiMirror, drop_empty_dirs
+    from sources_core import WikiMirror, drop_empty_dirs, mirror_prefix
     moved = {p["old"]: p for p in plan}
+    prefix = mirror_prefix(mirror)
+    man = load_manifest()
+    fresh = {}                       # новый путь → разбор был актуален для прежнего текста
+    for item in plan:
+        rec = (man.get("sources") or {}).get(f"{prefix}/{item['old']}") or {}
+        src = os.path.join(mirror, item["old"])
+        if rec.get("hash") and os.path.isfile(src) and rec["hash"] == file_hash(src):
+            fresh[f"{prefix}/{item['new']}"] = open(src, encoding="utf-8").read()
     for item in plan:
         src = os.path.join(mirror, item["old"])
         dst = os.path.join(mirror, item["new"])
@@ -212,6 +234,20 @@ def apply_mirror(root: str, mirror: str, plan: list) -> dict:
     state.write_state()
     # Старые копии — переезды: база переводится на новые пути, копии уходят.
     st = follow_moves(mirror, apply=True, kb=os.path.join(root, "AuroraKnowledgeDB"))
+    # Разбор остаётся действительным, если знание страницы то же: меняли только схемы.
+    man = load_manifest()
+    kept = 0
+    for new, was_text in fresh.items():
+        rec = (man.get("sources") or {}).get(new)
+        if not rec or not os.path.isfile(new):
+            continue
+        now_text = open(new, encoding="utf-8").read()
+        if rec.get("hash") != file_hash(new) and same_knowledge(was_text, now_text):
+            rec["hash"] = file_hash(new)
+            kept += 1
+    if kept:
+        save_manifest(man)
+    st["kept_parsed"] = kept
     drop_empty_dirs(mirror)
     return st
 

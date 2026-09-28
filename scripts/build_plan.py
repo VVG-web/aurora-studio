@@ -791,6 +791,18 @@ def one_typo(a: str, b: str, floor: int = 8) -> bool:
     return sum(1 for x, y in zip(a, b) if x != y) == 1
 
 
+def legacy_own(head: str, srcs: list, source: str, root: str = "") -> bool:
+    """Машинная карточка старого формата из одного-единственного этого же источника.
+
+    До раздела «Источник (перенесено дословно)» машина клала текст страницы прямо в тело.
+    Её можно обновить заменой тела — но только если источник один и он этот же (путь или
+    номер страницы): карточку человека и карточку нескольких источников заменять нельзя.
+    """
+    if not re.search(r"^built:\s*machine\s*$", head, re.M) or len(srcs) != 1:
+        return False
+    return srcs[0] == source or bool(own_block({srcs[0]: ""}, source, srcs, root))
+
+
 def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
                 root: str = "") -> int:
     """Дописать знание нового источника в существующую карточку. → код возврата.
@@ -822,7 +834,22 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
     srcs = card_sources(old_text)
     was, same = "", False
 
-    if QUOTES_MARK not in rest:
+    if QUOTES_MARK not in rest and legacy_own(head, srcs, source, root):
+        # Машинная карточка старого формата (до раздела дословного текста, PRJ-A 21.08):
+        # её тело — прежний текст этого же источника. Дописать под ним свежий значило бы
+        # задвоить страницу в карточке — так и вышло 28.09.2026 на повторном разборе.
+        # Тело заменяется свежим текстом в нынешнем устройстве; заголовок и хвост
+        # (исправления человека, история) остаются.
+        before, tail = split_tail(rest)
+        m = re.match(r"\s*(# [^\n]*)\n", before)
+        old_body = before[m.end():] if m else before
+        if same_text(old_body, body):
+            print(f"без изменений: {path} · источник {source} — текст тот же")
+            return 0
+        new_rest = ("\n\n" + m.group(1) + "\n\n" if m else "\n") + QUOTES_MARK + "\n\n" + block \
+            + ("\n" + tail.strip() + "\n" if tail.strip() else "")
+        was = source                      # свой текст заменён, а не дописан рядом
+    elif QUOTES_MARK not in rest:
         # У карточки нет раздела с дословным текстом (её писал человек). Заводим раздел,
         # не трогая написанного: его текст остаётся первым, наш ложится под него.
         before, tail = split_tail(rest)
@@ -865,8 +892,9 @@ def append_card(path: str, old_text: str, body: str, source: str, apply: bool,
         # закрыть карточке дорогу к тезису навсегда.
         new_head = re.sub(r"^distill_empty:.*$\n?", "", new_head, flags=re.M)
 
-    print(f"{'✅ дописано' if apply else '(dry-run) дописать'}: {path} · "
-          f"источник {source} · {len(body)} симв. · источников теперь {len(srcs)}"
+    replaced = was == source and QUOTES_MARK not in rest
+    print(f"{('✅ обновлён источник' if replaced else '✅ дописано') if apply else '(dry-run) обновить'}: "
+          f"{path} · источник {source} · {len(body)} симв. · источников теперь {len(srcs)}"
           + (f" · блок той же страницы заменён: {was}" if was and was != source else ""))
     if not apply:
         print("Повторите с --apply, чтобы записать.")
@@ -1123,6 +1151,9 @@ def refresh_card(path: str, old_text: str, body: str, source: str, apply: bool,
     """
     head, _sep, rest = old_text.partition("\n---\n") if old_text.startswith("---") else ("", "", old_text)
     if QUOTES_MARK not in rest:
+        if legacy_own(head, card_sources(old_text), source, root):
+            # машинная карточка старого формата: тело — прежний текст этого источника
+            return append_card(path, old_text, body, source, apply, root)
         print(f"(уже собрана из этого же источника, раздела с текстом нет) {path}")
         return 0
     before, _m, after = rest.partition(QUOTES_MARK)

@@ -1212,7 +1212,11 @@ def test_build_slices_source_and_assembles_card(tmp: Path):
     again = run("build_plan.py", "--card", "Алгоритм приёма", "--source",
                 "Sources/Confluence/Страница.md", "--sections", "1", "--to", "Processes",
                 "--apply", cwd=root)
-    assert "уже собрана" in again.stdout, again.stdout[-200:]
+    assert again.returncode == 0 and ("обновлён источник" in again.stdout
+                                      or "без изменений" in again.stdout), again.stdout[-200:]
+    redo = made.read_text(encoding="utf-8")
+    assert redo.count("поля запроса") == 20, \
+        f"повтор из того же источника задвоил текст страницы: {redo.count('поля запроса')} вместо 20"
 
     other = root / "Sources" / "Confluence" / "Другая.md"
     other.write_text("# Другая\n\n" + "текст. " * 60, encoding="utf-8")
@@ -7937,6 +7941,12 @@ def test_name_repair_lays_the_mirror_out_as_the_next_sync(tmp: Path):
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "до"],
                        cwd=str(root), check=True)
 
+        # учёт разбора: все страницы разобраны по нынешнему тексту
+        import build_plan as BP
+        importlib.reload(BP)
+        BP.save_manifest({"sources": {f"Sources/Confluence/{rel}": {
+            "hash": BP.file_hash(str(mirror / rel)), "cards": 1} for rel in old_paths.values()}})
+
         # 2. починка без сети
         plan = N.mirror_plan(str(root), str(mirror))
         assert any(p["old"] != p["new"] for p in plan), "починка не нашла длинных путей"
@@ -7948,6 +7958,12 @@ def test_name_repair_lays_the_mirror_out_as_the_next_sync(tmp: Path):
         rows = {pid: rel for pid, _t, rel, _s in N._state_rows(str(mirror))}
         assert f"Sources/Confluence/{rows['9100106']}" in src, f"источник карточки не переведён:\n{src}"
         assert (mirror / rows["9100106"]).is_file(), "страница не лежит по новому пути"
+        # страница со схемами изменилась только в именах схем — разбор остаётся в силе:
+        # иначе маршрут разобрал бы её моделью заново (PRJ-A 28.09.2026: 118 страниц)
+        man = BP.load_manifest()["sources"]
+        page_key = f"Sources/Confluence/{rows['9100104']}"
+        assert man.get(page_key, {}).get("hash") == BP.file_hash(str(mirror / rows["9100104"])), \
+            "после переименования схем разбор страницы считается устаревшим"
 
         assert not N.mirror_plan(str(root), str(mirror)), \
             "повторная починка снова что-то перекладывает — она не повторяема"
@@ -8302,6 +8318,64 @@ def test_graph_hops_in_search_wait_for_measurement(tmp: Path):
     assert ".opencode/vendor/cytoscape.min.js" in man and ".opencode/vendor/cytoscape.LICENSE" in man, \
         "библиотека страницы графа не доедет до проектов"
     assert (KIT / "cockpit/vendor/cytoscape/dist/cytoscape.min.js").is_file()
+
+
+@test
+def test_a_legacy_machine_card_is_refreshed_not_doubled(tmp: Path):
+    """Машинная карточка старого формата обновляется заменой текста, а не задваивается.
+
+    До раздела «Источник (перенесено дословно)» машина клала текст страницы прямо в тело
+    (PRJ-A 21.08: 395 из 421 справочника). Повторный разбор 28.09.2026 принимал такую
+    карточку за карточку человека и дописывал свежий текст той же страницы под старый —
+    страница оказывалась в карточке дважды. `refresh_card` же такие карточки молча
+    пропускал, и правка страницы до них не доходила вовсе.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    B = importlib.import_module("build_plan")
+    importlib.reload(B)
+    root = make_project(tmp)
+    src = "Sources/Confluence/Раздел/Страница.md"
+    (root / src).parent.mkdir(parents=True, exist_ok=True)
+    (root / src).write_text("---\npage_id: 7700100\n---\n\n# Страница\n\nтекст\n", encoding="utf-8")
+    path = root / "AuroraKnowledgeDB/Reference/Справочник.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = (f'---\ntitle: "Справочник"\nsource: "{src}"\nbuilt: machine\nkind: dictionary\n'
+              "distilled: 2026-09-01\n---\n\n# Справочник\n\n## Описание\n\nстарый текст страницы\n")
+    path.write_text(legacy, encoding="utf-8")
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        B.append_card(str(path), legacy, "## Описание\n\nновый текст страницы", src, True, str(root))
+        got = path.read_text(encoding="utf-8")
+        assert got.count(B.QUOTES_MARK) == 1 and "новый текст страницы" in got, got
+        assert "старый текст страницы" not in got, f"текст страницы в карточке дважды:\n{got}"
+        assert "# Справочник" in got and got.count("## Описание") == 1, got
+        assert "distilled:" not in got, "тезис по прежнему тексту остался отмеченным"
+        # тот же текст ещё раз — карточку не трогаем
+        B.append_card(str(path), got, "## Описание\n\nновый текст страницы", src, True, str(root))
+        assert path.read_text(encoding="utf-8") == got, "неизменённый текст переписал карточку"
+
+        # обновление тем же источником (--card) тоже доходит до старой карточки
+        path.write_text(legacy, encoding="utf-8")
+        B.refresh_card(str(path), legacy, "## Описание\n\nсвежий", src, True, str(root))
+        fresh = path.read_text(encoding="utf-8")
+        assert "свежий" in fresh and "старый текст страницы" not in fresh, fresh
+
+        # карточку человека не заменяем: его текст первым, наш — ниже
+        human = legacy.replace("built: machine\n", "")
+        path.write_text(human, encoding="utf-8")
+        B.append_card(str(path), human, "## Описание\n\nновый текст страницы", src, True, str(root))
+        mixed = path.read_text(encoding="utf-8")
+        assert "старый текст страницы" in mixed and "новый текст страницы" in mixed, mixed
+        # и машинную карточку нескольких источников тоже
+        many = legacy.replace(f'source: "{src}"', f'sources:\n  - "{src}"\n  - "Raw/другое.md"')
+        path.write_text(many, encoding="utf-8")
+        B.append_card(str(path), many, "## Описание\n\nновый текст страницы", src, True, str(root))
+        assert "старый текст страницы" in path.read_text(encoding="utf-8"), \
+            "тело карточки нескольких источников заменено текстом одного"
+    finally:
+        os.chdir(here)
 
 
 @test
@@ -11507,7 +11581,10 @@ def test_build_card_is_idempotent_for_the_same_source(tmp: Path):
         "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
     again = run("build_plan.py", "--card", "Общая тема", "--source", "Raw/project/первый.md",
                 "--sections", "1", "--to", "Concepts", "--apply", cwd=root)
-    assert "уже собрана" in again.stdout, again.stdout[-200:]
+    assert again.returncode == 0 and "без изменений" in again.stdout, again.stdout[-200:]
+    card_text = (root / "AuroraKnowledgeDB/Concepts/Общая-тема.md").read_text(encoding="utf-8")
+    assert card_text.count("текст.") == 60, \
+        f"повтор из того же источника задвоил текст: {card_text.count('текст.')} вместо 60"
 
     clash = run("build_plan.py", "--card", "Общая тема", "--source", "Raw/project/второй.md",
                 "--sections", "1", "--to", "Concepts", "--apply", cwd=root, expect_rc=1)
