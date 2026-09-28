@@ -16,7 +16,9 @@
                  общие aliases, одинаковый title). Слияние — отдельной командой:
   --merge KEEP DROP   слить DROP в KEEP: тело в «## Слияние», aliases объединить,
                  входящие ссылки переписать, DROP → deprecated + superseded_by + _archive.
-  --all          = --links --homoglyphs --frontmatter --dupes
+  --titles       заголовок вместо имени файла («Формат-выгрузки-DF-07» → «Формат выгрузки
+                 DF-07») — в шапке и в первой строке тезиса; файл и ссылки не меняются.
+  --all          = --links --homoglyphs --frontmatter --titles --dupes
 
 Запуск из корня проекта:
   python3 .opencode/scripts/kb_fix.py --all                 # что будет сделано
@@ -688,6 +690,40 @@ def plan_retire(cards: dict, plan: Plan):
         plan.file_writes[path] = new_head + rest
         touched += 1
     return touched
+
+
+def plan_titles(cards: dict, plan: Plan) -> tuple:
+    """Заголовок вместо имени файла — в шапке и в первой строке тезиса. → (шапок, тезисов).
+
+    До 1.142.3 карточка, которую разбор дописывал, но не находил, рождалась с заголовком
+    «Формат-выгрузки-…» — именем файла, как его видела модель; тезис же писался по имени
+    файла и с него начинался. Файл и ссылки не меняются: из нового заголовка
+    `card_filename` даёт то же имя, и заголовок меняется, только если это так.
+    """
+    from aurora_common import looks_like_stem, title_from_stem
+    heads = theses = 0
+    for path, c in cards.items():
+        if is_service(path.replace("\\", "/")) or "/_archive/" in path or not c.has_frontmatter:
+            continue
+        base = plan.file_writes.get(path, c.text)
+        probe = Card(path, base)
+        head, rest = base[:probe.fm_end], base[probe.fm_end:]
+        old = (probe.fm.get("title") or "").strip().strip('"')
+        title = title_from_stem(old or probe.stem)
+        if old and title != old and normalize_title(title) == normalize_title(old):
+            head = re.sub(r"^title:.*$", lambda _m: f'title: "{title}"', head, count=1, flags=re.M)
+            heads += 1
+        # `rest` начинается с закрывающей черты шапки; тезис — первая строка после неё.
+        cut = rest.find("\n", 1)
+        if cut != -1 and looks_like_stem(probe.stem):
+            body = rest[cut:]
+            m = re.match(r"(\s*)" + re.escape(probe.stem) + r"(?=[\s—–:,]|$)", body)
+            if m:
+                rest = rest[:cut] + m.group(1) + title + body[m.end():]
+                theses += 1
+        if head + rest != base:
+            plan.write(path, head + rest)
+    return heads, theses
 
 
 SPLIT_HEAD_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$", re.M)
@@ -2011,6 +2047,8 @@ def main() -> int:
                     help="убрать поля, выведенные из схемы (audience, confirmed_by; "
                          "легаси-статус canonical → verified)")
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
+    ap.add_argument("--titles", action="store_true",
+                    help="заголовок вместо имени файла — в шапке и в начале тезиса")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
     ap.add_argument("--themes", action="store_true",
@@ -2078,13 +2116,13 @@ def main() -> int:
         print(f"kb_fix: нет папки {a.root}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     if a.all:
-        a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = True
+        a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.titles = True
         a.aliases = a.sections = a.names = True
     if a.set_alias and not (a.old and a.new):
         print("kb_fix: для --set-alias нужны и --old, и --new", file=sys.stderr)
         return 1
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
-    if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.aliases, a.split,
+    if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.titles, a.aliases, a.split,
                 a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs, a.meetings,
                 a.unparsed, a.themes,
                 a.merge, a.merge_all,
@@ -2168,6 +2206,9 @@ def main() -> int:
         if a.retire:
             n = plan_retire(cards, plan)
             head.append(f"## Поля вне схемы: убраны в {n} карточках")
+        if a.titles:
+            nh, nt = plan_titles(cards, plan)
+            head.append(f"## Заголовок вместо имени файла: в шапке {nh}, в начале тезиса {nt}")
         if a.stubs:
             created = plan_stubs(cards, idx, plan, a.root)
             head.append(f"## Заготовки под ссылки: {len(created)} новых карточек")

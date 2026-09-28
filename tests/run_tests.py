@@ -8379,6 +8379,77 @@ def test_a_legacy_machine_card_is_refreshed_not_doubled(tmp: Path):
 
 
 @test
+def test_a_card_is_titled_by_name_not_by_file_name(tmp: Path):
+    """Заголовок карточки и начало тезиса — имя сущности, а не имя файла через дефисы.
+
+    Модель видит карточки базы по именам файлов и так их и называет. Прогон PRJ-A 28.09.2026:
+    разбор дописывал в «Формат-выгрузки-…», которой не было, и заводил её с таким
+    заголовком; тезис получал имя файла вместо заголовка и с него начинался — 85 заголовков
+    и 32 тезиса. Имя файла от исправления не меняется, ссылки не рвутся.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    importlib.reload(A)
+    for stem, want in (("Формат-выгрузки-реестра-DF-07", "Формат выгрузки реестра DF-07"),
+                       ("Отчёт-по-рискам-R-9-и-R-10", "Отчёт по рискам R-9 и R-10"),
+                       ("US-3.6.14-Проверка-какой-то-суммы", "US-3.6.14 Проверка какой-то суммы"),
+                       ("Реестр-НП", "Реестр-НП"), ("Отчёт по НДС", "Отчёт по НДС")):
+        got = A.title_from_stem(stem)
+        assert got == want, f"{stem} → {got}, ждали {want}"
+        assert A.card_filename(got) == A.card_filename(stem), f"имя файла сменилось: {got}"
+
+    # разбор: дописать в карточку, которой нет, — заводит её под заголовком
+    root = make_project(tmp)
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/A.md").write_text(
+        "## Раздел\n\n" + "Выгрузка реестра формируется в Excel с листом «Реестр». " * 6,
+        encoding="utf-8")
+    cp = run("build_plan.py", "--append", "Формат-выгрузки-реестра-DF-07", "--to", "Requirements",
+             "--source", "Sources/Confluence/A.md", "--sections", "1", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    made = root / "AuroraKnowledgeDB/Requirements/Формат-выгрузки-реестра-DF-07.md"
+    assert made.is_file(), list((root / "AuroraKnowledgeDB").rglob("*.md"))
+    assert 'title: "Формат выгрузки реестра DF-07"' in made.read_text(encoding="utf-8"), \
+        made.read_text(encoding="utf-8")[:300]
+
+    # тезис: модель получает заголовок; имя файла в начале ответа — заголовком
+    R = importlib.import_module("agent_runner")
+    importlib.reload(R)
+    path = root / "AuroraKnowledgeDB/Concepts/Отчёт-по-рискам-R-9-и-R-10.md"
+    path.write_text('---\ntitle: "Отчёт-по-рискам-R-9-и-R-10"\nkind: knowledge\nstatus: draft\n'
+                    'type: concept\n---\n\nОтчёт строится ежемесячно.\n', encoding="utf-8")
+    seen = []
+
+    def fake(cfg, role, messages, deadline=None, **kw):
+        seen.append(messages[0]["content"])
+        return {"ok": True, "backend": 1, "model": "w", "log": [], "tps": 10,
+                "text": "Отчёт-по-рискам-R-9-и-R-10 — отчёт, который строится ежемесячно."}
+
+    step = R.distill_card({"request_timeout": 60}, str(path), call=fake, momus=False)
+    assert "Карточка: Отчёт по рискам R-9 и R-10" in seen[0], seen[0][:200]
+    assert step["body"].lstrip().startswith("Отчёт по рискам R-9 и R-10 — отчёт"), step["body"][:120]
+    path.unlink()
+
+    # ремонт: заголовок в шапке и начало тезиса у готовых карточек
+    old = root / "AuroraKnowledgeDB/Processes/Порядок-проверки-связи-по-данным-ЭСФ.md"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text('---\ntitle: "Порядок-проверки-связи-по-данным-ЭСФ"\nstatus: draft\n'
+                   'type: process\n---\n\nПорядок-проверки-связи-по-данным-ЭСФ — сценарий проверки.\n'
+                   '\nПорядок-проверки-связи-по-данным-ЭСФ ниже не трогаем.\n', encoding="utf-8")
+    kept = card(root, "Concepts/Реестр-НП.md", "Реестр-НП — список плательщиков.")
+    before = kept.read_text(encoding="utf-8")
+    out = run("kb_fix.py", "--titles", "--apply", "--allow-dirty", cwd=root, expect_rc=0).stdout
+    assert "в шапке 1, в начале тезиса 1" in out, out[-500:]
+    fixed = old.read_text(encoding="utf-8")
+    assert 'title: "Порядок проверки связи по данным ЭСФ"' in fixed, fixed
+    assert "\n\nПорядок проверки связи по данным ЭСФ — сценарий" in fixed, fixed
+    assert "\nПорядок-проверки-связи-по-данным-ЭСФ ниже" in fixed, "правка ушла дальше первой строки"
+    assert kept.read_text(encoding="utf-8") == before, "одиночный дефис — часть имени, не разделитель"
+    assert "в шапке 0, в начале тезиса 0" in run("kb_fix.py", "--titles", cwd=root).stdout
+
+
+@test
 def test_a_sync_with_errors_keeps_the_pages_it_did_not_reach(tmp: Path):
     """Синк со сбоями связи не выбрасывает из состояния страницы, до которых не дошёл.
 

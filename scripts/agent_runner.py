@@ -5163,7 +5163,11 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     # Хвост — исправления человека и история: ни то ни другое не текст источника.
     from aurora_common import split_tail, corrections_of
     quotes, footer = split_tail(quotes)
-    title = os.path.splitext(os.path.basename(path))[0]
+    # Имя сущности — заголовок, а не имя файла. До 1.142.3 модель получала имя файла и с него
+    # же начинала тезис: «Формат-выгрузки-детализации-… — формат …» (PRJ-A: 31 тезис).
+    from aurora_common import frontmatter as _fm0, looks_like_stem, title_from_stem
+    stem = os.path.splitext(os.path.basename(path))[0]
+    title = title_from_stem((_fm0(text).get("title") or "").strip().strip('"') or stem)
     deadline = deadline or (time.time() + AG.call_budget(cfg, "worker"))
     kind = (AG.frontmatter_of(text).get("kind") or "").strip().strip('"') \
         if hasattr(AG, "frontmatter_of") else ""
@@ -5295,6 +5299,9 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     if not thesis or thesis.strip().upper().startswith("ПУСТО"):
         step.update(status="знания нет", note="в тексте одна вёрстка — человеку")
         return step
+    # Имя файла в начале тезиса — заголовком: модель видела его в списке базы.
+    if looks_like_stem(stem) and thesis.startswith(stem):
+        thesis = title + thesis[len(stem):]
     # Связывать тезису разрешено, выдумывать имена — нет. Ссылка на карточку, которой в
     # базе не существует, ведёт в никуда, а ремонт заводит под неё пустышку: база растёт
     # именами, которых никто не называл. Имя остаётся словами, знание не страдает.

@@ -587,6 +587,38 @@ def card_filename(title: str) -> str:
     return portable_name(s.strip("-."), sep="-")
 
 
+def looks_like_stem(name: str) -> bool:
+    """Имя файла карточки там, где ждут заголовок: без пробелов, слова через дефис."""
+    name = (name or "").strip()
+    return " " not in name and name.count("-") >= 2
+
+
+# Дефис, который остаётся дефисом: между словом и частицей («какой-то») и в предлогах.
+_HYPHEN_WORDS = {"то", "либо", "нибудь", "таки"}
+_HYPHEN_PAIRS = {("из", "за"), ("из", "под"), ("по", "прежнему"), ("по", "другому")}
+
+
+def title_from_stem(name: str) -> str:
+    """Имя файла карточки → заголовок: «Формат-выгрузки-DF-07» → «Формат выгрузки DF-07».
+
+    Заголовок — имя сущности для человека и для модели, имя файла — для ссылок. Модель
+    видит карточки базы по именам файлов и так же их называет; карточка, которой ещё нет,
+    рождалась с заголовком через дефисы, а тезис начинался с имени файла (PRJ-A 28.09.2026:
+    85 заголовков и 31 тезис). Дефис в коде документа (`ALG-082`, `US-1.2.3`, `R-9`)
+    остаётся: код пишется так и в источниках. Имя файла из заголовка не меняется —
+    `card_filename` снова сводит пробелы к дефисам.
+    """
+    if not looks_like_stem(name):
+        return name
+    parts = name.strip().split("-")
+    out = parts[0]
+    for a, b in zip(parts, parts[1:]):
+        code = bool(re.fullmatch(r"[A-Z0-9][A-Za-z0-9.]*", a) and re.match(r"\d", b))
+        word = b.lower() in _HYPHEN_WORDS or (a.lower(), b.lower()) in _HYPHEN_PAIRS
+        out += ("-" if code or word or not a or not b else " ") + b
+    return out
+
+
 def card_stem(name: str) -> str:
     """Имя карточки из ссылки или пути. → «AC-3.2.3-Проверка», а не «AC-3.2».
 

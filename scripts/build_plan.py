@@ -39,7 +39,7 @@ from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
                            card_sources, fold_hard, frontmatter, sources_block,
                            split_frontmatter, split_tail, translit_names, walk_md,
-                           is_meeting, meeting_turns, with_meeting_mark)
+                           is_meeting, meeting_turns, title_from_stem, with_meeting_mark)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -1304,6 +1304,9 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # кодом не повод отказать, а место, куда знание дописывается. Модель, называя сущность
     # полной формой, не может знать, что карточка уже заведена: на живой базе один код
     # приходил с двумя разными подписями, а четыре кода совпали с уже заведёнными полями.
+    # Имя файла вместо заголовка: модель видит карточки по именам файлов и так их и зовёт.
+    # Файл получится тем же, а заголовок — человеческим.
+    title = title_from_stem(title)
     title, er_labels = split_er_label(title)
     if er_labels:
         target = find_card(title, root)
