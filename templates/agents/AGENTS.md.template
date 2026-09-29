@@ -72,7 +72,7 @@ Transform imperative tasks into declarative goals:
 | `Raw/` | первоисточники (ТЗ, законы, протоколы) | ❌ (кроме `Raw/project/`, `Raw/examples/` — живые доки) |
 | `AuroraKnowledgeDB/` | карточки знаний со статусами доверия | ✅ через процедуры /aurora-vault |
 | `Artifacts/` | продукты ИИ+аналитика (us/, ac/, reviews/, reports/) | ✅ сюда идут результаты |
-| `Deliverables/` | поставляемые документы (work/ и неизменяемый released/) | ✅ work; ❌ released |
+| `Deliverables/` | поставляемые документы (work/, неизменяемый released/ и архивы поставок _archive/) | ✅ work; ❌ released, _archive |
 | `Workspaces/` | рабочие пространства задач | ✅ |
 | `Templates/`, `Prompts/` | шаблоны и типовые промпты | ✅ по конвенциям |
 

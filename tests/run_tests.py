@@ -4073,6 +4073,77 @@ def test_settings_groups_fold_like_quickstart_routes(tmp: Path):
 
 
 @test
+def test_deliverables_have_a_folder_for_archives(tmp: Path):
+    """У поставок есть папка архивов — `Deliverables/_archive` (решение пользователя 29.09.2026).
+
+    Пакеты `.zip`, переданные комплектом, и прежние версии документов лежали прямо в
+    `Deliverables/` или в самодельной `_arch`, которую doctor честно звал нарушением схемы.
+    """
+    structure = (KIT / "structure_dirs.txt").read_text(encoding="utf-8")
+    assert "\nDeliverables/_archive\n" in structure, "папки архивов нет в схеме проекта"
+    root = make_project(tmp)
+    assert (root / "Deliverables/_archive").is_dir(), "update не заведёт папку архивов"
+    (root / "Deliverables/_archive/Материалы программы.zip").write_bytes(b"PK")
+    cp = run("aurora_doctor.py", "--structure", cwd=root)
+    assert "Deliverables/_archive" not in cp.stdout + cp.stderr, \
+        f"doctor зовёт папку архивов нарушением:\n{(cp.stdout + cp.stderr)[-600:]}"
+    for doc in ("docs/INSTALL.md", "templates/agents/AGENTS.md.template"):
+        assert "_archive" in (KIT / doc).read_text(encoding="utf-8").split("Deliverables", 1)[1][:200], \
+            f"{doc} не знает про папку архивов"
+
+
+@test
+def test_a_term_with_a_known_expansion_is_a_definition_not_a_stub(tmp: Path):
+    """Термин с известной расшифровкой — определение, а не заготовка.
+
+    Решение пользователя 29.09.2026: заготовка — только карточка без смысла, со ссылками на
+    упоминания. «ТКС — Телекоммуникационный канал связи.» — уже определение, пусть и самое
+    простое. До 1.143.2 `--terms` заводил такие карточки пустышками, и определение выпадало
+    из поиска и контекста модели: 35 карточек PRJ-C, 27 PRJ-A, 14 PRJ-B.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    g = root / "AuroraKnowledgeDB/Glossary"
+    g.mkdir(parents=True, exist_ok=True)
+    (g / "Глоссарий-проекта.md").write_text(
+        '---\ntitle: "Глоссарий проекта"\nstatus: knowledge\ntype: glossary\n'
+        'sources:\n  - "Sources/Confluence/Глоссарий.md"\n---\n\n# Глоссарий проекта\n\n'
+        "| Сокращение | Расшифровка |\n|---|---|\n| ТКС | Телекоммуникационный канал связи |\n"
+        "| ЦУН | Централизованный учет налогоплательщиков |\n", encoding="utf-8")
+    for i in range(3):
+        card(root, f"Processes/Обмен-{i}.md", f"Квитанция уходит по ТКС, данные — из ЦУН ({i}).",
+             status="knowledge")
+    # заготовка старого образца: расшифровка есть, а пометка держит её вне выдачи
+    (g / "ЦУН.md").write_text(
+        '---\ntitle: "ЦУН"\naliases: []\nstatus: placeholder\ntype: glossary\n'
+        'tags: [заготовка]\ncreated: 2026-09-09\nupdated: 2026-09-09\nrelated: []\n---\n\n'
+        "# ЦУН\n\nЦУН — Централизованный учет налогоплательщиков.\n\n"
+        "_Заготовка: имя названо в базе и расшифровка известна, знания о предмете пока нет._\n"
+        "_Наполните её при следующем разборе источника — ссылки переписывать не придётся._\n\n"
+        "## Названо в карточках\n\n- [[Обмен-0]]\n", encoding="utf-8")
+    cp = run("kb_fix.py", "--all", "--terms", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode in (0, 1), cp.stdout[-600:] + cp.stderr[-400:]
+    for name in ("ТКС", "ЦУН"):
+        path = g / f"{name}.md"
+        assert path.is_file(), f"карточки {name} нет: {sorted(p.name for p in g.iterdir())}"
+        text = path.read_text(encoding="utf-8")
+        assert not A.is_placeholder(A.frontmatter(text), text), f"{name} осталась заготовкой:\n{text}"
+        assert "_Заготовка:" not in text and "заготовка" not in A.frontmatter(text).get("tags", "")
+        assert A.card_sources(text) == ["Sources/Confluence/Глоссарий.md"], \
+            f"у определения нет источника справочника: {A.card_sources(text)}"
+        assert "[[Глоссарий-проекта]]" in text, "не видно, откуда взята расшифровка"
+    assert "ТКС — Телекоммуникационный канал связи." in (g / "ТКС.md").read_text(encoding="utf-8")
+
+    # без расшифровки — по-прежнему честная заготовка
+    K = importlib.import_module("kb_fix")
+    src = (SCRIPTS / "kb_fix.py").read_text(encoding="utf-8")
+    stub_branch = src.split("def plan_term_stubs(")[1].split("def plan_drop_jira(")[0]
+    assert "расшифровки база пока не знает" in stub_branch and "status: {PLACEHOLDER}" in stub_branch
+
+
+@test
 def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
     """Движок компилируется на старшем из обещанных Python — 3.9, системном у macOS.
 
@@ -14013,6 +14084,7 @@ def test_a_named_concept_the_base_can_explain_gets_a_card(tmp: Path):
     assert "[[" in zzz.split("Названо в карточках")[1], \
         why(zzz[-200:]) or "нет ссылок на тех, кто назвал понятие — вход в тему потерян"
     # код документа сущностью не считается: по правилу базы он живёт в синонимах
+    sys.path.insert(0, str(SCRIPTS))
     import build_plan as BP
     assert BP.is_doc_code("PRJ.SYS.ERD-006") and BP.is_doc_code("US-3.6.14"), \
         "голый код документа не опознан — под него заведут карточку"
@@ -14021,9 +14093,12 @@ def test_a_named_concept_the_base_can_explain_gets_a_card(tmp: Path):
 
     text = next(p for p in (root / "AuroraKnowledgeDB").rglob("НДС.md")).read_text(
         encoding="utf-8")
-    assert "status: placeholder" in text, \
-        "расшифровка имени подана как знание — карточка попадёт в выдачу пустой"
-    assert "Налог на добавленную стоимость" in text, "расшифровка из словаря потеряна"
+    # Расшифровка из словаря — определение термина, а не пустышка (решение пользователя
+    # 29.09.2026): карточка в выдаче, с источником словаря. Без расшифровки — заготовка.
+    assert "status: placeholder" not in text and "_Заготовка:" not in text, \
+        "определение термина спрятано как заготовка — его не найдут ни поиск, ни модель"
+    assert "НДС — Налог на добавленную стоимость." in text, "расшифровка из словаря потеряна"
+    assert "status: placeholder" in zzz, "понятие без расшифровки перестало быть заготовкой"
     named = text.split("Названо в карточках")[1]
     assert "[[" in named or re.search(r"Понятие названо в \d+ карточк", named), \
         why(text) or "не сказано, кто и в скольких карточках назвал понятие"
@@ -14091,7 +14166,13 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     assert U.tracked_but_ignored(repo) == [], "без правила ничего не должно числиться закрытым"
+    (repo / "Workspaces").mkdir()
+    (repo / "Workspaces/черновик.md").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     merge_gitignore(repo / ".gitignore")
+    with open(repo / ".gitignore", "a", encoding="utf-8") as f:
+        f.write("\n# своё правило человека\nWorkspaces/\n")
+    # своё правило человека — его дело: «снять с учёта» его рабочие файлы не предлагаем
     assert U.tracked_but_ignored(repo) == [".opencode/cache/reports/issues.json"], \
         U.tracked_but_ignored(repo)
     assert "git rm -r --cached" in upd and "tracked_but_ignored(target)" in upd

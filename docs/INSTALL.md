@@ -79,7 +79,7 @@ Sources/{Confluence,JIRA}/
 Raw/{laws,contract,customer,project,meetings,examples}/
 AuroraKnowledgeDB/
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,reviews,reports,drafts,meetings}/
-Deliverables/{work,released}/
+Deliverables/{work,released,_archive}/
 Workspaces/
 Templates/  TemplatesCommon/  Prompts/
 ```

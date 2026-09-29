@@ -58,6 +58,7 @@ Examples (adapt to your domain):
 - Artifacts: `YYYY-MM-DD_<type>_<object>.md`; type ∈ {review, report, drift, garden,
   summary, context, draft-us, draft-ac}.
 - Deliverables: work — `<DOC>_v<version>.md`; released — `<DOC>_v<version>_<YYYY-MM-DD>.md`.
+  Архивы поставок (пакеты `.zip`, прежние версии, снятые с работы) — `Deliverables/_archive/`.
 - Templates: snake_case + `_template.md`; prompts: `<ACRONYM>_<action>.md`.
 
 ### Sources/ (synced — names belong to the sync)

@@ -957,6 +957,73 @@ TERM_STUB = "_Заготовка: имя названо в базе"            
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
 
 
+def term_origin(cards: dict, name: str, meaning: str) -> tuple:
+    """(карточка, где записана расшифровка; её источники). Справочник сокращений — первым.
+
+    Расшифровку `project_terms` берёт из справочников и глоссария базы, но откуда именно —
+    не говорит. Определению нужен источник: по нему считается доверие, по нему человек
+    проверит расшифровку. Не нашлось — пусто, карточка остаётся без источника.
+    """
+    from aurora_common import TERMS_HINT
+    low_n, low_m = name.lower(), meaning.lower()
+    best, rank = ("", []), (-1, -1)
+    for path, c in cards.items():
+        if (c.stem == name or path.replace("\\", "/").startswith(("Templates/", "Prompts/"))
+                or is_placeholder(c.fm, c.text)):
+            continue
+        text = c.text.lower()
+        if low_n not in text or low_m not in text:
+            continue
+        srcs = [x for x in card_sources(c.text) if x]
+        here = (int(bool(TERMS_HINT.search(c.stem + " " + (c.fm.get("title") or "")))),
+                int(bool(srcs)))
+        if here > rank:
+            best, rank = (c.stem, srcs), here
+    return best
+
+
+DEFINITION_STUB = "расшифровка известна"
+
+
+def plan_term_definitions(cards: dict, plan: Plan) -> list:
+    """Заготовки с известной расшифровкой — в определения. → [имя].
+
+    До 1.143.2 `--terms` заводил их пустышками: определение «ЦУН — Централизованный учёт
+    налогоплательщиков.» стояло в карточке, но пометка «Заготовка» выводила её из поиска
+    и контекста модели. Снимаем пометку и строки-заготовки, статус — `draft`, источник —
+    справочника, где расшифровка записана; из списка «Названо в карточках» уходят карты.
+    """
+    moc = {c.stem for p, c in cards.items() if "/MOC/" in "/" + p.replace("\\", "/")}
+    done = []
+    for path, c in sorted(cards.items()):
+        if ("/_archive/" in path or path.replace("\\", "/").startswith(("Templates/", "Prompts/"))
+                or not c.has_frontmatter or not is_placeholder(c.fm, c.text)):
+            continue
+        own = c.text.split("## Названо в карточках", 1)[0]
+        title = (c.fm.get("title") or c.stem).strip().strip('"')
+        m = re.search(r"^" + re.escape(title) + r" — (.+?)\.?$", own, re.M)
+        if DEFINITION_STUB not in own or not m:
+            continue
+        head, rest = c.text[:c.fm_end], c.text[c.fm_end:]
+        head = re.sub(r"^status:.*$", "status: draft", head, count=1, flags=re.M)
+        head = re.sub(r"^tags:\s*\[\s*заготовка\s*\]\s*\n", "", head, flags=re.M)
+        head = re.sub(r"^(tags:\s*\[)([^\]]*)\]", lambda t: t.group(1) + ", ".join(
+            x.strip() for x in t.group(2).split(",") if x.strip() and x.strip() != "заготовка")
+            + "]", head, flags=re.M)
+        origin, srcs = term_origin(cards, title, m.group(1))
+        if srcs and not card_sources(c.text):
+            head = head.rstrip("\n") + "\n" + sources_block(srcs).rstrip("\n")
+        lines = [l for l in rest.split("\n")
+                 if not l.startswith("_Заготовка:") and not l.startswith("_Наполните её")
+                 and not (l.startswith("- [[") and l[4:].split("]]")[0].split("|")[0] in moc)]
+        rest = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+        if origin and f"[[{origin}]]" not in rest:
+            rest = rest.replace(m.group(0), m.group(0) + f"\n\n_Расшифровка — из [[{origin}]]._", 1)
+        plan.write(path, head + rest)
+        done.append(title)
+    return done
+
+
 def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     """Завести пустышку под понятие, которое база называет словами, но карточки не имеет.
 
@@ -970,8 +1037,12 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
     записанный факт, а не догадка. Понятия без расшифровки не трогаем совсем: придумать
     её — худшее, что здесь можно сделать, и `ops:gaps` показывает их человеку списком.
 
-    Пустышка честно пуста: расшифровка имени — не знание о предмете. Статус
-    `placeholder` держит её вне выдачи, пока разбор не принесёт содержание.
+    Расшифровка известна — это определение термина, пусть и самое простое: «ТКС —
+    Телекоммуникационный канал связи.» Такая карточка — не заготовка (решение пользователя
+    29.09.2026: заготовка — только карточка без смысла, со ссылками на упоминания). До
+    1.143.2 она заводилась пустышкой и выпадала из поиска и контекста модели — вместе с
+    определением. Источник у неё — источник справочника, где расшифровка записана.
+    Расшифровки нет — тогда это заготовка: `placeholder` держит её вне выдачи.
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from kb_gaps import load as load_gaps, missing_cards
@@ -1000,15 +1071,25 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
         # Расшифровки может не быть — карточка всё равно нужна: имя занято, и видно, кто
         # это понятие называет. Выдумывать расшифровку по-прежнему нельзя, её просто нет.
         where = mentions_of(root, name)
-        body = ((f"{name} — {meaning}.\n\n" if meaning else "")
-                + "_Заготовка: имя названо в базе"
-                + (" и расшифровка известна" if meaning
-                   else ", расшифровки база пока не знает")
-                + ", знания о предмете пока нет._\n"
-                + "_Наполните её при следующем разборе источника — ссылки переписывать "
-                  "не придётся._\n\n## Названо в карточках\n\n"
-                + ("\n".join(f"- [[{x}]]" for x in where) if where
-                   else f"Понятие названо в {seen} карточках базы.") + "\n")
+        named = ("\n\n## Названо в карточках\n\n"
+                 + ("\n".join(f"- [[{x}]]" for x in where) if where
+                    else f"Понятие названо в {seen} карточках базы.") + "\n")
+        if meaning:
+            origin, srcs = term_origin(cards, name, meaning)
+            plan.write(path,
+                       f"---\ntitle: \"{name}\"\naliases: []\nstatus: draft\n"
+                       f"type: {SECTION_TYPE.get(section, 'concept')}\n"
+                       + sources_block(srcs) +
+                       f"created: {TODAY}\nupdated: {TODAY}\nrelated: []\n---\n\n# {name}\n\n"
+                       f"{name} — {meaning}.\n"
+                       + (f"\n_Расшифровка — из [[{origin}]]._\n" if origin else "")
+                       + named)
+            created.append((name, section, seen))
+            continue
+        body = ("_Заготовка: имя названо в базе, расшифровки база пока не знает, знания о "
+                "предмете пока нет._\n"
+                "_Наполните её при следующем разборе источника — ссылки переписывать "
+                "не придётся._" + named)
         plan.write(path,
                    f"---\ntitle: \"{name}\"\naliases: []\n"
                    f"status: {PLACEHOLDER}\n"
@@ -2280,8 +2361,13 @@ def main() -> int:
                 return None, None, 1
             head.append(f"## Переименование: {done}")
         if a.terms:
+            defined = plan_term_definitions(cards, plan)
+            if defined:
+                head.append(f"## Заготовки с расшифровкой стали определениями: {len(defined)}")
+                head.append("  " + ", ".join(defined[:15]) + (" …" if len(defined) > 15 else ""))
             made = plan_term_stubs(cards, idx, plan, a.root)
-            head.append(f"## Заготовки под понятия словаря: {len(made)} новых карточек")
+            head.append(f"## Карточки под понятия словаря: {len(made)} новых "
+                        "(с расшифровкой — определение, без неё — заготовка)")
             for name, section, seen in made[:15]:
                 head.append(f"- {section}/{name}.md — названо в {seen} "
                             + ("карточке" if seen % 10 == 1 and seen % 100 != 11

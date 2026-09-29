@@ -307,14 +307,38 @@ def refresh_hooks(target: Path) -> str:
 
 
 def tracked_but_ignored(target: Path) -> list:
-    """Файлы в git, которые правила .gitignore теперь закрывают. Нет git — пусто."""
+    """Файлы в git, которые закрывают правила .gitignore ОТ КИТА. Нет git — пусто.
+
+    Только правила кита: свои правила человек пишет сам и знает, что под ними лежит.
+    Подсказка «снять с учёта» для его рабочих папок (у одного проекта — сотня файлов
+    `Workspaces/…`) звала бы убрать из истории его же работу.
+    """
     try:
         p = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "ls-files", "-ci",
                             "--exclude-standard"],
                            capture_output=True, text=True, timeout=30)
+        paths = [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
+        if not paths:
+            return []
+        v = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "check-ignore",
+                            "-v", "--no-index", "--stdin"], input="\n".join(paths) + "\n",
+                           capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return []
-    return [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        from install_aurora import GITIGNORE_BLOCK
+    except Exception:
+        return []
+    kit_rules = {l.strip() for l in GITIGNORE_BLOCK.splitlines()
+                 if l.strip() and not l.strip().startswith("#")}
+    out = []
+    for line in v.stdout.splitlines():
+        where, _, path = line.partition("\t")
+        pattern = where.split(":", 2)[-1] if where.count(":") >= 2 else ""
+        if pattern.strip() in kit_rules and path.strip():
+            out.append(path.strip())
+    return out
 
 
 def refresh_gitignore(target: Path) -> list:

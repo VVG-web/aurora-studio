@@ -51,6 +51,9 @@ Artifacts/meetings
 Deliverables/work
 Deliverables/work/spec-packs
 Deliverables/released
+# Архивы поставок: пакеты .zip, переданные комплектом, и прежние версии документов,
+# снятые с работы. Не рабочая версия (work/) и не сданная (released/) — хранение.
+Deliverables/_archive
 
 Workspaces/_archive
 
