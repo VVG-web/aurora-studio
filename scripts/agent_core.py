@@ -965,6 +965,43 @@ def mcp_config(project: str, kit=None) -> dict:
     return {"mcpServers": merged} if merged else {}
 
 
+def mcp_probe(project: str, kit=None, timeout: float = 60) -> dict:
+    """Работают ли MCP-серверы в проекте. → {"servers": {имя: {ok, tools|error, from}}}.
+
+    Проверяется то, что получит прогон: серверы машины и проекта, слитые `mcp_config`, в
+    папке проекта и в venv Pydantic AI. `from` — откуда сервер: `kit`, `project` или `both`
+    (проект перекрыл сервер машины по полям, токены остались машинные).
+    """
+    isolated = os.environ.get("AURORA_TESTS_ISOLATED") and kit is None
+    at_kit = {} if isolated else read_mcp_servers(kit_mcp_path(kit))
+    at_project = read_mcp_servers(os.path.join(project, "mcp.json")) if project else {}
+    servers = mcp_config(project, kit).get("mcpServers") or {}
+    if not servers:
+        return {"ok": True, "servers": {}}
+    argv = _adapter_argv()
+    if not argv:
+        return {"error": "Pydantic AI не установлен — «Установка» → Pydantic AI: серверы MCP "
+                         "подключает он"}
+    try:
+        p = subprocess.run(argv + ["--mcp-probe"], input=json.dumps(
+            {"mcpServers": servers, "timeout": timeout}, ensure_ascii=False),
+            capture_output=True, text=True, cwd=project or None, env=child_env(),
+            timeout=timeout + 30)
+    except subprocess.TimeoutExpired:
+        return {"error": f"проверка серверов не уложилась в {int(timeout + 30)} с"}
+    lines = [l for l in (p.stdout or "").splitlines() if l.startswith("{")]
+    try:
+        out = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        out = {}
+    if not out.get("ok"):
+        return {"error": out.get("error") or f"адаптер не ответил (код {p.returncode})"}
+    for name, row in (out.get("servers") or {}).items():
+        row["from"] = ("both" if name in at_kit and name in at_project
+                       else "project" if name in at_project else "kit")
+    return out
+
+
 def looks_like_timeout(err) -> bool:
     """Молчание по сроку. Сервер жив и, возможно, всё ещё думает — просто не успел."""
     s = str(err or "").lower()
@@ -1831,6 +1868,8 @@ def main() -> int:
     ap.add_argument("--venv-status", action="store_true", help="стоит ли Pydantic AI")
     ap.add_argument("--venv-install", action="store_true",
                     help="поставить/обновить Pydantic AI в ~/.aurora/venv")
+    ap.add_argument("--mcp-probe", action="store_true",
+                    help="запустить MCP-серверы машины и проекта и назвать их инструменты")
     ap.add_argument("--json", action="store_true", help="машинный вывод (для панели)")
     a = ap.parse_args()
 
@@ -1849,7 +1888,34 @@ def main() -> int:
         return 0
     if a.venv_install:
         return cmd_venv_install()
+    if a.mcp_probe:
+        return cmd_mcp_probe(a.json)
     return cmd_show()
+
+
+def cmd_mcp_probe(as_json: bool) -> int:
+    """Проверка MCP-серверов текущего проекта — те же, что получит прогон."""
+    project = _roots()[1]
+    out = mcp_probe(str(project) if project else "")
+    if as_json:
+        print(json.dumps(out, ensure_ascii=False))
+        return 0 if not out.get("error") else 1
+    if out.get("error"):
+        print(f"✗ {out['error']}")
+        return 1
+    rows = out.get("servers") or {}
+    if not rows:
+        print("MCP-серверы не объявлены ни в ките, ни в проекте — это норма: движок работает "
+              "и без них.")
+        return 0
+    where = {"kit": "из кита", "project": "проекта", "both": "проекта поверх кита"}
+    for name, r in rows.items():
+        if r.get("ok"):
+            print(f"✓ {name} ({where.get(r.get('from'), '')}): инструментов {r.get('tools', 0)}"
+                  + (f" — {', '.join(r.get('names') or [])}" if r.get("names") else ""))
+        else:
+            print(f"✗ {name} ({where.get(r.get('from'), '')}): {r.get('error')}")
+    return 0 if all(r.get("ok") for r in rows.values()) else 1
 
 
 if __name__ == "__main__":

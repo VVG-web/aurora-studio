@@ -2561,13 +2561,14 @@ def test_project_settings_page_draws_every_block(tmp: Path):
     ui = panel_sources()
 
     body = _js_function(ui, "async function renderProject(")
-    blocks = ['t("mcp.title"', 't("yaml.title")',
-              'renderAgentCard(box, "project")', "renderKinds(box)"]
+    blocks = ['t("mcp.title"', 'renderMcp("project")', 't("yaml.title")',
+              'renderAgentCard(box, "project")', "renderKinds(box)", "drawSetupJump(box)"]
     for b in blocks:
         assert b in body, f"на странице настроек проекта нет блока {b}"
     where = [body.index(b) for b in blocks]
     assert where == sorted(where), "блоки страницы настроек проекта переставлены"
-    assert "Object.entries(mcp.mcpServers" in body, \
+    mcp = _js_function(ui, "async function renderMcp(")
+    assert "Object.keys(d.servers || {})" in mcp and "Object.keys(kit)" in mcp, \
         "серверы MCP обходятся не как объект — страница оборвётся на первом же проекте"
     # Тот же класс ошибки в любом месте панели: метод массива у заглушки-объекта. Законно,
     # когда скобку открыл Object.keys/values/entries, — тогда метод вызывается у массива.
@@ -3869,18 +3870,18 @@ def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
 
     # и это видно человеку: настроил или нет
     ui = panel_sources()
-    assert "MCP-серверы проекта" in ui and "не объявлены" in ui, \
+    assert "У проекта своих серверов нет" in ui and "не объявлены" in ui, \
         "панель молчит про MCP — человек не узнает ни что подключено, ни что это норма"
 
 
 @test
 def test_the_panel_never_stores_mcp_secrets(tmp: Path):
-    """Панель пишет MCP-конфиг, но не токены: поле `env` в браузер не проходит.
+    """Секреты MCP в файл проекта не попадают: он уезжает в git проекта.
 
-    Секреты человек кладёт в env mcp.json или в `.env.aurora.local` сам. Прошли бы
-    через панель — легли бы на страницу, в историю браузера и в бэкап. Существующий
-    `env` при слиянии переносится на диск в неизменном виде, а браузеру отдаётся
-    только флаг `hasEnv` — что токены настроены, но не сами токены.
+    Токены держит машина (`<кит>/local/mcp.json`): одноимённый сервер кита отдаёт проекту
+    свой `env`, а проект перекрывает остальные поля. Секрет, уже лежащий в файле проекта
+    (положили руками), браузеру приходит маской и переживает запись как есть. Правка
+    серверов проекта — те же карточки, что у кита (решение пользователя 29.09.2026).
     """
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
@@ -3889,69 +3890,222 @@ def test_the_panel_never_stores_mcp_secrets(tmp: Path):
 
     root = tmp / "проект"
     root.mkdir()
-    w = ck.Handler._write_mcp
+    act = lambda payload: ck.mcp_action(payload, str(root))
+    save = lambda name, spec, was="": act({"action": "save_server", "name": name,
+                                          "rename_from": was, "spec": spec})
 
     # Новый сервер: стандартная форма на диск, бэкапа до первой записи нет
-    r = w(None, str(root), {"atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian"]}})
+    r = save("atlassian", {"command": "npx", "args": ["-y", "mcp-atlassian"]})
     assert r.get("ok") is True, f"обычный сервер не записан: {r}"
     data = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
     srv = data["mcpServers"]["atlassian"]
-    assert srv["command"] == "npx" and srv["args"] == ["-y", "mcp-atlassian"], \
-        f"стандартная форма не записана: {srv}"
+    assert srv == {"command": "npx", "args": ["-y", "mcp-atlassian"]}, f"не стандартная форма: {srv}"
     assert not (root / "mcp.json.bak").exists(), "бэкап до первой записи — пустая форма"
 
     # Вторая запись: прежняя версия остаётся рядом как .bak
     old = (root / "mcp.json").read_text(encoding="utf-8")
-    r = w(None, str(root), {"atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian", "--x"]}})
-    assert r.get("ok") is True, r
+    assert save("atlassian", {"command": "npx", "args": ["-y", "mcp-atlassian", "--x"]},
+                "atlassian").get("ok")
     assert (root / "mcp.json.bak").read_text(encoding="utf-8") == old, \
         "бэкап не сохранил прежнюю версию конфига"
 
-    # env на диске — не дело панели: при слиянии переносится в неизменном виде
+    # Новый секрет в файл проекта не проходит ни карточкой, ни вставкой, ни файлом целиком
+    why = save("atlassian", {"command": "npx", "env": {"TOKEN": "секрет"}}, "atlassian")
+    assert "Настройке кита" in why.get("error", ""), f"панель приняла секрет в проект: {why}"
+    why = act({"action": "import", "text": '{"gh": {"command": "npx", "env": {"T": "x1"}}}'})
+    assert "Настройке кита" in why.get("error", ""), f"вставка положила секрет в проект: {why}"
+    why = act({"action": "save_raw",
+               "text": '{"mcpServers": {"w": {"url": "https://x.example/mcp", "headers": {"A": "b"}}}}'})
+    assert "Настройке кита" in why.get("error", ""), f"файл целиком положил секрет: {why}"
+    assert "секрет" not in (root / "mcp.json").read_text(encoding="utf-8")
+
+    # Секрет, положенный в файл руками, браузеру — маской, а запись его не теряет
     cur = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
     cur["mcpServers"]["atlassian"]["env"] = {"TOKEN": "секрет"}
     (root / "mcp.json").write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
-    r = w(None, str(root), {"atlassian": {"command": "npx", "args": ["-y", "mcp-atlassian"]}})
-    assert r.get("ok") is True, r
+    st = ck.mcp_state(str(root))
+    assert "секрет" not in json.dumps(st, ensure_ascii=False), "значение env ушло в браузер"
+    spec = st["servers"]["atlassian"]
+    assert spec["env"] == {"TOKEN": st["mask"]}, spec
+    spec["args"] = ["-y", "mcp-atlassian"]
+    assert save("atlassian", spec, "atlassian").get("ok")
     cur = json.loads((root / "mcp.json").read_text(encoding="utf-8"))
     assert cur["mcpServers"]["atlassian"].get("env") == {"TOKEN": "секрет"}, \
-        "слияние стёрло чужой env — токены человека потеряны"
-
-    # А в нагрузку панели env не принимается никогда
-    r = w(None, str(root), {"atlassian": {"command": "npx", "env": {"TOKEN": "секрет"}}})
-    assert r.get("error") == "панель не хранит секреты: env в mcp.json настраивается вне панели", \
-        f"панель приняла секрет: {r}"
+        "запись стёрла env, положенный руками, — токены человека потеряны"
 
     # Прочие кривые формы тоже не доходят до диска
-    assert w(None, str(root), ["atlassian"])["error"] == "mcpServers должен быть объектом"
-    assert w(None, str(root), {"": {"command": "npx"}})["error"] == "имя сервера не может быть пустым"
-    assert "неизвестное поле" in w(None, str(root), {"x": {"command": "npx", "port": 1}})["error"]
-    assert "command должен быть непустой строкой" in w(None, str(root), {"x": {"command": " "}})["error"]
-    assert "args должен быть списком строк" in w(None, str(root), {"x": {"command": "npx", "args": [1]}})["error"]
+    assert "имя" in save("", {"command": "npx"})["error"]
+    assert "command" in save("x", {"args": []})["error"]
+    assert "args" in save("x", {"command": "npx", "args": [1]})["error"]
 
-    # Битый файл не преграда: чистый лист, прежний — в бэкапе
+    # Битый файл: правка карточкой не молчит, файл целиком чинит, прежний — в бэкапе
     (root / "mcp.json").write_text("{ это не json", encoding="utf-8")
-    r = w(None, str(root), {"atlassian": {"command": "npx"}})
-    assert r.get("ok") is True, "битый конфиг запретил панели работать"
+    assert "Весь конфиг" in save("atlassian", {"command": "npx"})["error"]
+    assert act({"action": "save_raw", "text": '{"mcpServers": {"atlassian": {"command": "npx"}}}'}).get("ok")
     assert json.loads((root / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]["atlassian"]["command"] == "npx"
     assert "{ это не json" in (root / "mcp.json.bak").read_text(encoding="utf-8"), \
         "битая версия не сохранена в бэкапе"
 
-    # Браузеру — только метаданные: флаг hasEnv, а не значения env
-    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
-    at = src.index('elif u.path == "/api/mcp":')
-    block = src[at:src.index('elif u.path == "/api/runlog":')]
-    assert '"hasEnv": bool(cfg.get("env"))' in block, \
-        "панель молчит про то, что токены настроены, — человек этого не видит"
-    assert '"env": cfg.get("env")' not in block, \
-        "GET-маршрут отдаёт значения env браузеру"
+    # Раздел проекта ходит в тот же маршрут, что и прежде, — только карточками
+    ui = panel_sources()
+    assert '"/api/mcp?project="' in ui and '"/api/mcp" : "/api/mcp/kit"' in ui, \
+        "раздел проекта не ходит через /api/mcp"
+    assert "Токены (env, headers) в проекте не хранятся" in ui, \
+        "человек не видит, где живут токены серверов проекта"
+
+
+@test
+def test_project_shows_machine_mcp_servers_read_only(tmp: Path):
+    """Серверы машины видны в настройке проекта, но правятся только в «Настройке кита».
+
+    Как кольцо шлюзов: машинное работает в каждом проекте и видно в нём, а меняется одним
+    местом (решение пользователя 29.09.2026). В проекте два вида карточек: машинные — только
+    для чтения, проектные — с правкой. Одноимённый сервер проекта перекрывает машинный.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+    kitdir = tmp / "кит"
+    (kitdir / "local").mkdir(parents=True)
+    (kitdir / "local" / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "github": {"command": "npx", "args": ["-y", "gh-mcp"], "env": {"GH_TOKEN": "ghp-секрет"}},
+        "graph": {"command": "python3", "args": ["-m", "graph"]}}}, ensure_ascii=False),
+        encoding="utf-8")
+    proj = tmp / "проект"
+    proj.mkdir()
+    saved_file = ck.kit_mcp_file
+    ck.kit_mcp_file = lambda: str(kitdir / "local" / "mcp.json")
+    try:
+        st = ck.mcp_state(str(proj))
+        assert sorted(st["kit"]) == ["github", "graph"] and st["servers"] == {}, st
+        assert "ghp-секрет" not in json.dumps(st, ensure_ascii=False), "токен машины ушёл в проект"
+        assert st["kit"]["github"]["env"] == {"GH_TOKEN": st["mask"]}
+        # перекрыть в проекте: то же имя, без секретов — токен остаётся машинный
+        r = ck.mcp_action({"action": "save_server", "name": "github", "rename_from": "",
+                           "spec": {"command": "npx", "args": ["-y", "gh-mcp", "--read-only"]}},
+                          str(proj))
+        assert r.get("ok"), r
+        assert "github" in ck.mcp_state(str(proj))["servers"]
+        # файл машины проектом не тронут
+        kit = json.loads((kitdir / "local" / "mcp.json").read_text(encoding="utf-8"))
+        assert kit["mcpServers"]["github"]["args"] == ["-y", "gh-mcp"], "проект переписал сервер машины"
+    finally:
+        ck.kit_mcp_file = saved_file
+
+    sys.path.insert(0, str(KIT / "scripts"))
+    A = importlib.import_module("agent_core")
+    merged = A.mcp_config(str(proj), kit=str(kitdir))["mcpServers"]
+    assert merged["github"]["args"][-1] == "--read-only" and merged["github"]["env"] == {
+        "GH_TOKEN": "ghp-секрет"}, f"прогон не получил поля проекта с токеном машины: {merged}"
+    assert "graph" in merged, "сервер машины не дошёл до прогона проекта"
 
     ui = panel_sources()
-    assert "MCP-серверы · " in ui, "нет раздела MCP-серверов"
-    assert '"/api/mcp?project="' in ui and '"/api/mcp",{method:"POST"' in ui, \
-        "раздел не ходит через /api/mcp"
-    assert "env •••" in ui and "токены настраиваются вне панели" in ui, \
-        "человек не видит, что токены есть и где они правятся"
+    render = _js_function(ui, "async function renderMcp(")
+    assert 'mcpCard("kit-ro"' in render and 't("mcp.readonly")' in render, \
+        "серверы машины в проекте не показаны или показаны с правкой"
+    card = _js_function(ui, "function openMcpCard(")
+    assert "n.disabled = true" in card and 'openMcpCard("project", name, base)' in card, \
+        "сервер машины из проекта правится — или его нельзя перекрыть проектом"
+    assert "/api/mcp/probe?project=" in render, "в проекте нечем проверить, работают ли серверы"
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'elif u.path == "/api/mcp/probe":' in src and "AC.mcp_probe(project)" in src
+    ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    assert '"--mcp-probe" in sys.argv' in ad and "await client.list_tools()" in ad, \
+        "проверка не спрашивает у сервера его инструменты"
+
+
+@test
+def test_routes_build_the_index_after_the_graph_notes(tmp: Path):
+    """Оглавления собираются после выгрузки графа: она заводит и снимает заметки тем.
+
+    Прогон PRJ-A 29.09.2026: «Обновить базу» кончился девятью ошибками линтера — темы графа
+    переименовались (27 → 24) уже после `kb:index`, и оглавление `MOC/_index.md` называло
+    заметки, которых нет.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import aurora_cockpit as ck
+    seen = 0
+    for sc in ck.scenarios():
+        cmds = [st.get("cmd") for st in sc["steps"]]
+        if "kb:graph-export" in cmds and "kb:index" in cmds:
+            seen += 1
+            last_index = len(cmds) - 1 - cmds[::-1].index("kb:index")
+            assert last_index > cmds.index("kb:graph-export"), \
+                f"маршрут {sc['id']}: оглавления собираются до выгрузки графа"
+    assert seen >= 3, "маршруты без выгрузки графа — проверять нечего"
+
+
+@test
+def test_settings_groups_fold_like_quickstart_routes(tmp: Path):
+    """Части «Настройки кита» и «Настроек проекта» сворачиваются, как маршруты «Быстрого старта».
+
+    Страницы длинные: одно кольцо шлюзов — несколько экранов, и то, что под ним, человек не
+    находил. Каждая часть — группа с «+/−»; что раскрыто, помнит браузер (решение
+    пользователя 29.09.2026). Память — только удобство: без неё страница рисуется так же.
+    """
+    ui = panel_sources()
+    sg = _js_function(ui, "function sgroup(")
+    assert '"−" : "+"' in sg and "body.hidden = !open" in sg and '"aria-expanded"' in sg, \
+        "группа не сворачивается или не говорит, свёрнута ли"
+    mem = _js_function(ui, "function sgroupsOpen(") + _js_function(ui, "function sgroupRemember(")
+    assert mem.count("try") == 2 and "localStorage" in mem, \
+        "память групп без защиты: закрытое хранилище оборвёт отрисовку настроек"
+    setup = _js_function(ui, "async function renderSetup(")
+    for gid in ('"setup:roots"', '"setup:new"', '"setup:mcp"'):
+        assert gid in setup, f"в «Настройке кита» нет группы {gid}"
+    project = _js_function(ui, "async function renderProject(")
+    for gid in ('"project:form"', '"project:tokens"', '"project:mcp"', '"project:yaml"'):
+        assert gid in project, f"в «Настройках проекта» нет группы {gid}"
+    agent = _js_function(ui, "async function renderAgentCard(")
+    assert '"project:agent" : "setup:agent"' in agent, "кольцо шлюзов не свёрнуто в группу"
+    assert '"project:kinds"' in _js_function(ui, "async function renderKinds("), \
+        "виды артефактов не свёрнуты в группу"
+    for page in (setup, project):
+        assert 'box.append(el("h2"' not in page, "часть страницы осталась без группы"
+    jump = _js_function(ui, "function drawSetupJump(")
+    assert "g.sgSet(true)" in jump and 't("sgroup.all_open")' in jump, \
+        "переход к части страницы не раскрывает её — или нельзя раскрыть всё разом"
+
+
+@test
+def test_mcp_probe_names_where_each_server_comes_from(tmp: Path):
+    """Проверка серверов — то, что получит прогон: машина и проект, в папке проекта."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    kitdir = tmp / "кит"
+    (kitdir / "local").mkdir(parents=True)
+    (kitdir / "local" / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "m": {"command": "x"}, "both": {"command": "y"}}}), encoding="utf-8")
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "p": {"command": "z"}, "both": {"args": ["--p"]}}}), encoding="utf-8")
+    seen = {}
+
+    def fake_run(argv, input=None, cwd=None, **kw):
+        seen.update(argv=argv, task=json.loads(input), cwd=cwd)
+        rows = {n: {"ok": True, "tools": 1, "names": ["t"]} for n in seen["task"]["mcpServers"]}
+        return subprocess.CompletedProcess(argv, 0, stdout="шум\n" + json.dumps(
+            {"ok": True, "servers": rows}) + "\n", stderr="")
+
+    saved = (A.subprocess.run, A._adapter_argv)
+    A.subprocess.run, A._adapter_argv = fake_run, lambda: ["py", "adapter.py"]
+    try:
+        out = A.mcp_probe(str(proj), kit=str(kitdir))
+    finally:
+        A.subprocess.run, A._adapter_argv = saved
+    assert seen["argv"][-1] == "--mcp-probe" and seen["cwd"] == str(proj), seen
+    assert seen["task"]["mcpServers"]["both"] == {"command": "y", "args": ["--p"]}, \
+        "проверяется не то, что получит прогон"
+    assert {n: r["from"] for n, r in out["servers"].items()} == {
+        "m": "kit", "both": "both", "p": "project"}, out
+    A._adapter_argv, keep = (lambda: []), A._adapter_argv
+    try:
+        assert "Pydantic AI" in A.mcp_probe(str(proj), kit=str(kitdir))["error"]
+    finally:
+        A._adapter_argv = keep
 
 
 @test
@@ -8376,6 +8530,48 @@ def test_a_legacy_machine_card_is_refreshed_not_doubled(tmp: Path):
             "тело карточки нескольких источников заменено текстом одного"
     finally:
         os.chdir(here)
+
+
+@test
+def test_stubs_come_from_the_base_not_from_templates_or_data(tmp: Path):
+    """Заготовки заводятся под ссылки базы — не под образцы шаблона и не под строки данных.
+
+    «Починить базу» PRJ-A 29.09.2026 завела три пустышки: две под образцы из
+    `Templates/spec_template.md` (шаблоны в список карточек подгружает чистка полей) и одну
+    под массив из выгрузки SQL в таблице источника — `[[01804201710137, 1, 0.5, Seller]]`.
+    Линтер после этого звал битой ссылку заготовки на шаблон.
+    """
+    root = make_project(tmp)
+    card(root, "Processes/Сверка.md",
+         "Сверку ведёт [[Налоговый агент]].\n\n| a | b |\n|---|---|\n"
+         "| 1 | [[01804201710137, 1, 0.500000000000000000, Seller]] |\n",
+         status="knowledge")
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/spec_template.md").write_text(
+        '---\ntitle: "Спецификация"\n---\n\nРешение: [[DR-0012]]. Объект: [[Основной объект]].\n',
+        encoding="utf-8")
+    cp = run("kb_fix.py", "--all", "--stubs", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode in (0, 1), cp.stdout[-400:] + cp.stderr[-400:]
+    names = {p.stem for p in (root / "AuroraKnowledgeDB").rglob("*.md")}
+    assert "Налоговый-агент" in names, f"под ссылку базы заготовка не заведена: {sorted(names)}"
+    for bad in ("DR-0012", "Основной-объект"):
+        assert bad not in names, f"заготовка под образец из шаблона: {bad}"
+    assert not any(n.startswith("01804201710137") for n in names), "заготовка под строку данных"
+    assert (root / "Templates/spec_template.md").read_text(encoding="utf-8").startswith(
+        '---\ntitle: "Спецификация"'), "ремонт правил шаблон"
+
+    # «Названо в карточках» у заготовки — только карточки: карты навигационные, а заметки
+    # тем графа меняют имя с каждой выгрузкой — ссылка на них ломается в том же маршруте.
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    K = importlib.import_module("kb_fix")
+    comm = root / "AuroraKnowledgeDB/MOC/Сообщества"
+    comm.mkdir(parents=True, exist_ok=True)
+    (comm / "Тема-Сверка.md").write_text("---\ntitle: \"Тема\"\n---\n\nТема про ЭСФ-ККМ.\n",
+                                          encoding="utf-8")
+    card(root, "Concepts/Узел.md", "Узел ЭСФ-ККМ считается отдельно.", status="knowledge")
+    got = K.mentions_of(str(root / "AuroraKnowledgeDB"), "ЭСФ-ККМ")
+    assert got == ["Узел"], f"заготовка назовёт карту или заметку темы: {got}"
 
 
 @test
@@ -17987,6 +18183,75 @@ def test_embed_gateway_hiccup_does_not_stop_the_route(tmp: Path):
     ui = panel_sources()
     assert "const failed = rc => rc >= 2 || rc < 0;" in ui, \
         "маршрут считает поломкой не то, что раньше: код 1 шага не должен его останавливать"
+
+
+@test
+def test_embed_keeps_what_it_counted_before_the_gateway_dropped(tmp: Path):
+    """Шлюз векторов оборвался посреди сборки — посчитанное остаётся в индексе.
+
+    Прогон PRJ-A 29.09.2026: шлюз отвечал медленно, 192 куска из 543 были готовы, а один
+    запрос не уложился в срок. `kb:embed` выбрасывал всё посчитанное, маршрут пережидал сеть
+    и начинал заново — с тем же исходом на каждом повторе.
+    """
+    import http.server
+    import threading
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    for i in range(40):
+        (kb / f"Карточка-{i}.md").write_text(
+            f'---\ntitle: "Карточка {i}"\nkind: knowledge\n---\n\nзнание номер {i}\n',
+            encoding="utf-8")
+    state = {"calls": 0, "fail_from": 2, "inputs": []}
+
+    class Fake(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state["calls"] += 1
+            if state["fail_from"] and state["calls"] >= state["fail_from"]:
+                self.send_response(500)
+                self.end_headers()
+                return
+            state["inputs"].append(len(body["input"]))
+            data = [{"index": i, "embedding": [1.0, float(i % 7), 0.5, 0.25]}
+                    for i in range(len(body["input"]))]
+            out = json.dumps({"data": data}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
+           "AURORA_AGENT_BACKEND_1_URL": f"http://127.0.0.1:{srv.server_address[1]}/v1",
+           "AURORA_AGENT_REQUEST_TIMEOUT": "5"}
+    run_embed = lambda: subprocess.run(
+        [sys.executable, str(root / ".opencode/scripts/kb_embed.py"), "--apply"],
+        cwd=str(root), capture_output=True, text=True, env=env, timeout=120)
+    try:
+        cp = run_embed()
+        total = int(re.search(r"Пересчитать: (\d+)", cp.stdout).group(1))
+        assert total > 32, cp.stdout
+        assert cp.returncode == 1, f"недосчитанный индекс выдан за готовый: {cp.returncode}"
+        assert f"посчитано 32 из {total}" in cp.stderr, cp.stderr[-400:]
+        idx = json.loads((root / "AuroraKnowledgeDB/meta/embeddings.json").read_text(encoding="utf-8"))
+        assert len(idx["cards"]) == 32, f"посчитанное до обрыва не сохранено: {len(idx['cards'])}"
+
+        # связь вернулась — досчитывается только остаток
+        state.update(calls=0, fail_from=0, inputs=[])
+        cp = run_embed()
+        assert cp.returncode == 0, cp.stdout[-400:] + cp.stderr[-400:]
+        assert sum(state["inputs"]) == total - 32, \
+            f"повтор посчитал заново готовое: {sum(state['inputs'])} вместо {total - 32}"
+        idx = json.loads((root / "AuroraKnowledgeDB/meta/embeddings.json").read_text(encoding="utf-8"))
+        assert len(idx["cards"]) == total
+    finally:
+        srv.shutdown()
 
 
 @test

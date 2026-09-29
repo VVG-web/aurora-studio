@@ -225,8 +225,11 @@ def endpoints(cfg: dict) -> list:
 DEAD: set = set()
 
 
-def embed(texts: list, cfg: dict, model: str) -> list:
+def embed(texts: list, cfg: dict, model: str, partial: bool = False) -> list:
     """Вектора для списка текстов. Идём по кольцу, как остальной агент.
+
+    `partial` — при обрыве вернуть посчитанное начало, а не пусто: сборке индекса оно
+    нужно, чтобы следующий запуск не считал заново уже готовое.
 
     Размерность ответа сверяется с индексом. Шлюз может ответить «200 OK» и отдать вектора
     ДРУГОЙ модели — под тем же именем или из другого пространства; лечь в общий индекс им
@@ -262,7 +265,7 @@ def embed(texts: list, cfg: dict, model: str) -> list:
                 break
             print(f"  бэкенд {backend['url']}: {err or 'пустой ответ'}", file=sys.stderr)
         if got is None or len(got) != len(chunk):
-            return []
+            return out if partial else []
         out += got
         # Прогресс — про сборку индекса, где батчей сотни. Один вопрос поиска это
         # один батч, и строка «посчитано 1 из 1» на каждый запрос забивает вывод
@@ -588,8 +591,11 @@ def main() -> int:
     # не разъезжались с содержимым.
     keep = {n: r for n, r in idx["cards"].items() if n in texts and n not in stale}
     old_dim = idx.get("dim") or 0
-    old = load_vectors(old_dim, len(idx["cards"])) if keep else array.array("f")
-    fresh = embed([texts[n] for n in stale], cfg, model) if stale else []
+    old = load_vectors(old_dim, len(idx["cards"])) if idx["cards"] else array.array("f")
+    # Посчитанное до обрыва не выбрасывается. Прогон PRJ-A 29.09.2026: шлюз отвечал
+    # медленно, 192 куска из 543 были готовы, а один запрос не уложился в срок — всё
+    # посчитанное пропадало, и каждый повтор маршрута начинал заново с тем же исходом.
+    fresh = embed([texts[n] for n in stale], cfg, model, partial=True) if stale else []
     if stale and not fresh:
         # Код 1, а не 2: шлюз векторов не ответил — это не поломка шага, а связь. Индекс —
         # производная, прежний цел и работает, досчитает следующий `kb:embed`. Код 2
@@ -602,14 +608,21 @@ def main() -> int:
         return 1
 
     dim = len(fresh[0]) if fresh else old_dim
+    done = {n: i for i, n in enumerate(stale[:len(fresh)])}
+    short = len(fresh) < len(stale)
     out, cards = array.array("f"), {}
     for name in sorted(texts):
-        if name in keep and old_dim == dim:
-            off = keep[name]["row"] * dim
-            vec = old[off:off + dim]
+        was = idx["cards"].get(name)
+        if name in done:
+            vec, mark = array.array("f", fresh[done[name]]), digest(texts[name])
+        elif was and old_dim == dim and (name in keep or short):
+            # Недосчитанная карточка держит прежний вектор с прежним отпечатком: искать по
+            # нему можно, а следующий запуск увидит её устаревшей и досчитает.
+            off = was["row"] * dim
+            vec, mark = old[off:off + dim], (digest(texts[name]) if name in keep else was["hash"])
         else:
-            vec = array.array("f", fresh[stale.index(name)])
-        cards[name] = {"hash": digest(texts[name]), "row": len(out) // dim}
+            continue            # новой карточки вектора ещё нет — досчитает следующий запуск
+        cards[name] = {"hash": mark, "row": len(out) // dim}
         out.extend(vec)
 
     pf = build_prefilter(out, dim, len(cards))
@@ -624,6 +637,12 @@ def main() -> int:
           + (f" · предфильтр {len(pf[0])} осей ({why})" if pf
              else f" · предфильтр не пригодился: {why}") + ".")
     print(f"   Файлы: {VECTORS} и {INDEX} (в git не идут — это производная).")
+    if short:
+        # Код 1 с обрывом связи в выводе — маршрут переждёт сеть и повторит шаг, а повтор
+        # досчитает только остаток.
+        print(f"kb_embed: посчитано {len(fresh)} из {len(stale)} — посчитанное в индексе, "
+              "остальное досчитает следующий запуск", file=sys.stderr)
+        return 1
     return 0
 
 

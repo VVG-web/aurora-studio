@@ -277,6 +277,42 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
 SPEC_ONLY = ("roles", "outbound", "about", "drop_args")   # ключи Авроры, серверу не нужны
 
 
+def mcp_probe(task: dict) -> dict:
+    """Работает ли каждый сервер: запустить и спросить список инструментов. → ответ движку.
+
+    Так же, как его поднимет прогон (`MCPToolset(Client(...))`): та же форма настройки и
+    та же папка — движок запускает проверку в папке проекта. Сервер, который не поднялся,
+    называет причину, а не роняет проверку остальных. Серверы проверяются одновременно:
+    запуск `npx`/`uvx` — это секунды на каждый.
+    """
+    import asyncio
+    from fastmcp import Client
+    servers = task.get("mcpServers") or {}
+    limit = float(task.get("timeout") or 60)
+
+    async def listed(conf: dict) -> list:
+        async with Client(conf) as client:
+            return [t.name for t in await client.list_tools()]
+
+    async def one(name: str, spec: dict) -> tuple:
+        conf = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
+                                      if k not in SPEC_ONLY}}}
+        try:
+            names = await asyncio.wait_for(listed(conf), limit)
+        except asyncio.TimeoutError:
+            return name, {"ok": False, "error": f"не ответил за {int(limit)} с"}
+        except Exception as e:  # noqa: BLE001 — причина нужна человеку, а не трассировка
+            return name, {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+        drop = set((spec or {}).get("drop_args") or [])
+        return name, {"ok": True, "tools": len(names), "names": names[:12],
+                      "drop_args": sorted(drop)}
+
+    async def every() -> dict:
+        return dict(await asyncio.gather(*(one(n, s) for n, s in servers.items())))
+
+    return {"ok": True, "servers": asyncio.run(every()) if servers else {}}
+
+
 def call_hook(name: str, spec: dict, guard: dict, root: str):
     """Крючок на вызовы инструментов сервера: сторож исходящего и снятие аргументов.
 
@@ -927,6 +963,12 @@ def selfcheck() -> dict:
 def main() -> int:
     if "--selfcheck" in sys.argv:
         answer(selfcheck())
+        return 0
+    if "--mcp-probe" in sys.argv:
+        try:
+            answer(mcp_probe(json.loads(sys.stdin.read() or "{}")))
+        except Exception as e:  # noqa: BLE001 — нет fastmcp или битое задание
+            answer({"ok": False, "error": f"{type(e).__name__}: {e}"[:300]})
         return 0
     try:
         import asyncio

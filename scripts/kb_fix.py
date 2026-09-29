@@ -692,7 +692,7 @@ def plan_retire(cards: dict, plan: Plan):
     return touched
 
 
-def plan_titles(cards: dict, plan: Plan) -> tuple:
+def plan_titles(cards: dict, plan: Plan, root: str = ROOT) -> tuple:
     """Заголовок вместо имени файла — в шапке и в первой строке тезиса. → (шапок, тезисов).
 
     До 1.142.3 карточка, которую разбор дописывал, но не находил, рождалась с заголовком
@@ -705,6 +705,8 @@ def plan_titles(cards: dict, plan: Plan) -> tuple:
     for path, c in cards.items():
         if is_service(path.replace("\\", "/")) or "/_archive/" in path or not c.has_frontmatter:
             continue
+        if not path.replace("\\", "/").startswith(root.rstrip("/").replace("\\", "/") + "/"):
+            continue          # шаблоны и промпты — не карточки: их заголовок — образец
         base = plan.file_writes.get(path, c.text)
         probe = Card(path, base)
         head, rest = base[:probe.fm_end], base[probe.fm_end:]
@@ -816,13 +818,21 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     # «ER-BaR-FID» это одно понятие, и заводить под второе написание пустую карточку
     # значит расколоть знание надвое.
     taken = {fold_hard(c.stem) for c in cards.values()}
+    base_root = root.rstrip("/").replace("\\", "/") + "/"
     for path, c in sorted(cards.items()):
         if is_service(path):
+            continue
+        # Ссылки берутся только из базы. Шаблоны и промпты в список карточек подгружает
+        # чистка полей (`--retire`), и их образцы («[[DR-0012]]», «[[Основной объект]]»)
+        # заводили заготовки, которые ссылались на шаблон (PRJ-A 29.09.2026).
+        if not path.replace("\\", "/").startswith(base_root):
             continue
         for target in link_refs(c.text):
             base = target.split("#")[0].strip()
             if not base or base.startswith("http"):
                 continue
+            if not_a_card_link(base):
+                continue          # литерал данных из выгрузки: «[[01804201710137, 1, …]]»
             leaf = leaf_name(base)
             if idx.resolve(leaf)[0]:
                 continue
@@ -891,6 +901,11 @@ def mentions_of(root: str, term: str, limit: int = 20) -> list:
     for path in sorted(walk_md(root, skip_service=True, skip_archive=True)):
         stem = os.path.basename(path)[:-3]
         if stem == term:
+            continue
+        # Карты — навигация, а не тезисы; заметки тем графа к тому же меняют имя с каждой
+        # выгрузкой. Заготовка «ЭСФ-ККМ» PRJ-A 29.09.2026 назвала заметку темы, выгрузка
+        # в том же маршруте её переименовала — и в базе появилась битая ссылка.
+        if "/MOC/" in "/" + path.replace("\\", "/"):
             continue
         text = open(path, encoding="utf-8", errors="ignore").read()
         if low in card_body(text).split(QUOTES, 1)[0].lower():
@@ -2207,7 +2222,7 @@ def main() -> int:
             n = plan_retire(cards, plan)
             head.append(f"## Поля вне схемы: убраны в {n} карточках")
         if a.titles:
-            nh, nt = plan_titles(cards, plan)
+            nh, nt = plan_titles(cards, plan, a.root)
             head.append(f"## Заголовок вместо имени файла: в шапке {nh}, в начале тезиса {nt}")
         if a.stubs:
             created = plan_stubs(cards, idx, plan, a.root)

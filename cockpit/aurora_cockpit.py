@@ -1233,21 +1233,32 @@ def kit_mcp_file() -> str:
     return os.path.join(KIT, "local", "mcp.json")
 
 
-def mcp_kit_servers() -> tuple:
-    """(серверы, ошибка) из файла машины. Нет файла — пусто и без ошибки."""
-    path = kit_mcp_file()
+def mcp_file(project: str = "") -> str:
+    """Файл серверов: проекта (`<project>/mcp.json`) или машины (`<кит>/local/mcp.json`)."""
+    return os.path.join(project, "mcp.json") if project else kit_mcp_file()
+
+
+def mcp_servers_of(project: str = "") -> tuple:
+    """(серверы, ошибка) из файла проекта или машины. Нет файла — пусто и без ошибки."""
+    path = mcp_file(project)
+    label = "mcp.json проекта" if project else "local/mcp.json"
     if not os.path.isfile(path):
         return {}, ""
     try:
         data = json.loads(read_text(path) or "{}")
     except ValueError as e:
-        return {}, f"local/mcp.json не разобран: {e.msg}, строка {e.lineno}"
+        return {}, f"{label} не разобран: {e.msg}, строка {e.lineno}"
     servers = data.get("mcpServers") if isinstance(data, dict) else None
     if servers is None:
         return {}, ""
     if not isinstance(servers, dict):
-        return {}, "в local/mcp.json поле mcpServers — не объект"
+        return {}, f"в {label} поле mcpServers — не объект"
     return {k: v for k, v in servers.items() if isinstance(v, dict)}, ""
+
+
+def mcp_kit_servers() -> tuple:
+    """(серверы, ошибка) из файла машины."""
+    return mcp_servers_of("")
 
 
 def mcp_mask(servers: dict) -> dict:
@@ -1323,23 +1334,61 @@ def mcp_check(servers) -> str:
     return ""
 
 
-def mcp_write_kit(servers: dict) -> dict:
-    """Запись файла машины: прежняя версия — рядом как .bak, оба файла только для владельца."""
-    path = kit_mcp_file()
+def mcp_write(servers: dict, project: str = "") -> dict:
+    """Запись файла серверов: прежняя версия — рядом как .bak.
+
+    Файл машины и его копия — только для владельца: в нём токены. Файл проекта токенов не
+    держит (см. `mcp_new_secrets`) и живёт с обычными правами — его читает git проекта.
+    """
+    path = mcp_file(project)
+    label = "mcp.json проекта" if project else "local/mcp.json"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         if os.path.isfile(path):
             with open(path + ".bak", "w", encoding="utf-8") as f:
                 f.write(read_text(path))
-            os.chmod(path + ".bak", 0o600)
+            if not project:
+                os.chmod(path + ".bak", 0o600)
         tmp = path + ".aurora-new"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n")
-        os.chmod(tmp, 0o600)
+        if not project:
+            os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     except OSError as e:
-        return {"error": f"не удалось записать local/mcp.json: {e}"}
+        return {"error": f"не удалось записать {label}: {e}"}
     return {"ok": True, "path": path, "count": len(servers)}
+
+
+def mcp_write_kit(servers: dict) -> dict:
+    return mcp_write(servers, "")
+
+
+def mcp_new_secrets(servers: dict) -> str:
+    """Секрет, впервые пришедший в файл проекта, — отказ с объяснением; иначе пусто.
+
+    `mcp.json` проекта уезжает в git проекта, и токен в нём — токен в истории репозитория.
+    Токены держит машина: одноимённый сервер кита отдаёт проекту свой `env`, а проект
+    перекрывает остальные поля. Маска — значение, уже лежащее в файле (его положили руками),
+    оно остаётся как было.
+    """
+    for name, spec in (servers or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        for key in MCP_SECRET_MAPS:
+            vals = spec.get(key)
+            if isinstance(vals, dict):
+                for k, v in vals.items():
+                    if v not in ("", None, MCP_MASK):
+                        return (f"сервер «{name}»: {key}.{k} — секрет, а mcp.json проекта "
+                                "уезжает в git проекта. Задайте сервер с тем же именем и его "
+                                f"{key} в «Настройке кита»: проект возьмёт оттуда токены и "
+                                "перекроет остальные поля")
+        auth = spec.get("auth")
+        if isinstance(auth, str) and auth not in ("", "oauth", MCP_MASK):
+            return (f"сервер «{name}»: auth — секрет, а mcp.json проекта уезжает в git "
+                    "проекта. Задайте его в «Настройке кита»")
+    return ""
 
 
 def _jsonc(text: str) -> str:
@@ -1537,24 +1586,47 @@ def _mcp_brief(name: str, spec: dict, old: dict) -> dict:
                               if isinstance(spec.get("headers"), dict) else [])}
 
 
-def mcp_kit_state() -> dict:
-    """Что показать в разделе: серверы и весь файл — с масками вместо секретов."""
-    servers, err = mcp_kit_servers()
+def mcp_state(project: str = "") -> dict:
+    """Что показать в разделе: серверы и весь файл — с масками вместо секретов.
+
+    Для проекта — ещё и серверы машины: они работают в каждом проекте, и в настройке проекта
+    их видно, но править их можно только в «Настройке кита» — так же, как кольцо шлюзов.
+    """
+    servers, err = mcp_servers_of(project)
     masked = mcp_mask(servers)
-    out = {"path": kit_mcp_file(), "mask": MCP_MASK, "servers": masked,
+    out = {"path": mcp_file(project), "mask": MCP_MASK, "servers": masked,
            "text": json.dumps({"mcpServers": masked}, ensure_ascii=False, indent=2) + "\n",
-           "roles": list(MCP_ROLES)}
+           "roles": list(MCP_ROLES), "scope": "project" if project else "kit"}
     if err:
         out["error"] = err
+    if project:
+        kit, kit_err = mcp_servers_of("")
+        out["kit"] = mcp_mask(kit)
+        out["kit_path"] = kit_mcp_file()
+        if kit_err:
+            out["kit_error"] = kit_err
     return out
 
 
+def mcp_kit_state() -> dict:
+    return mcp_state("")
+
+
 def mcp_kit_action(payload: dict) -> dict:
-    """Правка серверов машины: карточка, удаление, вставка из JSON, весь файл целиком."""
+    return mcp_action(payload, "")
+
+
+def mcp_action(payload: dict, project: str = "") -> dict:
+    """Правка серверов машины или проекта: карточка, удаление, вставка из JSON, файл целиком.
+
+    Одна процедура на обе области: правила серверов одни, различается только файл и то, что
+    файл проекта не принимает новых секретов (`mcp_new_secrets`).
+    """
     action = payload.get("action", "")
-    old, err = mcp_kit_servers()
+    old, err = mcp_servers_of(project)
     if err and action != "save_raw":
         return {"error": err + " — поправьте файл целиком («Весь конфиг»)"}
+    secrets = mcp_new_secrets if project else (lambda _servers: "")
     if action == "save_server":
         name = str(payload.get("name") or "").strip()
         was = str(payload.get("rename_from") or "").strip()
@@ -1565,7 +1637,8 @@ def mcp_kit_action(payload: dict) -> dict:
             return {"error": f"сервер «{name}» уже есть — выберите другое имя"}
         servers = {k: v for k, v in old.items() if k != was}
         servers[name] = spec
-        why = mcp_check({name: spec}) or mcp_unmask({name: spec}, old, {name: was or name})
+        why = mcp_check({name: spec}) or secrets({name: spec}) \
+            or mcp_unmask({name: spec}, old, {name: was or name})
         if why:
             return {"error": why}
         # Порядок в файле — как был: переименованный сервер остаётся на своём месте.
@@ -1576,15 +1649,15 @@ def mcp_kit_action(payload: dict) -> dict:
             elif k in servers:
                 ordered[k] = servers[k]
         ordered.setdefault(name, spec)
-        return mcp_write_kit(ordered)
+        return mcp_write(ordered, project)
     if action == "delete_server":
         name = str(payload.get("name") or "")
         if name not in old:
             return {"error": f"сервера «{name}» нет"}
-        return mcp_write_kit({k: v for k, v in old.items() if k != name})
+        return mcp_write({k: v for k, v in old.items() if k != name}, project)
     if action == "import":
         new, why, notes = mcp_read_paste(payload.get("text", ""))
-        why = why or mcp_check(new)
+        why = why or mcp_check(new) or secrets(new)
         if why:
             return {"error": why}
         if MCP_MASK in json.dumps(new, ensure_ascii=False):
@@ -1593,7 +1666,7 @@ def mcp_kit_action(payload: dict) -> dict:
         brief = [_mcp_brief(k, v, old) for k, v in new.items()]
         if payload.get("dry"):
             return {"ok": True, "dry": True, "servers": brief, "notes": notes}
-        r = mcp_write_kit({**old, **new})
+        r = mcp_write({**old, **new}, project)
         if r.get("ok"):
             r["servers"] = brief
             r["notes"] = notes
@@ -1606,10 +1679,10 @@ def mcp_kit_action(payload: dict) -> dict:
         servers = data.get("mcpServers") if isinstance(data, dict) else None
         if servers is None and isinstance(data, dict) and not data:
             servers = {}
-        why = mcp_check(servers) or mcp_unmask(servers, old)
+        why = mcp_check(servers) or secrets(servers) or mcp_unmask(servers, old)
         if why:
             return {"error": why}
-        return mcp_write_kit(servers)
+        return mcp_write(servers, project)
     return {"error": f"неизвестное действие: {action[:40]}"}
 
 
@@ -3367,29 +3440,20 @@ class Handler(BaseHTTPRequestHandler):
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())
         elif u.path == "/api/mcp":
-            # MCP-серверы проекта (`<project>/mcp.json`). Панель читает только метаданные:
-            # имя, command, args, url — и флаг `hasEnv`. Значения `env` (токены) панель в
-            # браузер не отдаёт никогда: они правятся в редакторе или `.env.aurora.local`.
+            # MCP-серверы проекта (`<project>/mcp.json`) и машины — последние только для
+            # показа: править их можно в «Настройке кита». Секреты — маской, см. `mcp_mask`.
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
-            try:
-                data = json.loads(read_text(os.path.join(project, "mcp.json")) or "{}")
-            except ValueError:
-                self.send_json({"error": "mcp.json не разобран"}, 400)
+            self.send_json(mcp_state(project))
+        elif u.path == "/api/mcp/probe":
+            # Работают ли серверы в проекте: каждый запускается там, где его запустит прогон,
+            # и называет свои инструменты. Серверы машины и проекта — вместе, как в прогоне.
+            project = q.get("project", [""])[0]
+            if not self._known(project):
                 return
-            servers = data.get("mcpServers") if isinstance(data, dict) else {}
-            out = {}
-            for name, cfg in (servers or {}).items():
-                if not isinstance(cfg, dict):
-                    continue
-                out[name] = {
-                    "command": cfg.get("command"),
-                    "args": cfg.get("args", []),
-                    "url": cfg.get("url"),
-                    "hasEnv": bool(cfg.get("env")),
-                }
-            self.send_json({"mcpServers": out})
+            import agent_core as AC
+            self.send_json(AC.mcp_probe(project))
         elif u.path == "/api/runlog":
             # Журнал запусков — своим маршрутом. Он читается мгновенно, а ехал внутри
             # `/api/health`, который зовёт несколько команд и занимает секунды: на живом
@@ -3811,7 +3875,7 @@ class Handler(BaseHTTPRequestHandler):
             project = payload.get("project", "")
             if not self._known(project):
                 return
-            self.send_json(self._write_mcp(project, payload.get("mcpServers")))
+            self.send_json(mcp_action(payload, project))
             return
         if u.path == "/api/project/new":
             self.send_json(self._create_project(payload))
@@ -3944,58 +4008,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"error": f"не удалось записать: {e}"}
         return {"ok": True}
-
-    def _write_mcp(self, project: str, servers) -> dict:
-        """MCP-серверы проекта (`<project>/mcp.json`). Панель не хранит и не знает секреты:
-        поле `env` (туда кладут токены) панель не принимает и не отдаёт. Существующий `env`
-        переносится на диск в неизменном виде — слиянием со старым файлом, без вывода в браузер.
-        Прежняя версия сохраняется рядом как .bak."""
-        if not isinstance(servers, dict):
-            return {"error": "mcpServers должен быть объектом"}
-        allowed = ("command", "args", "url")
-        for name, entry in servers.items():
-            if not isinstance(name, str) or not name.strip():
-                return {"error": "имя сервера не может быть пустым"}
-            if not isinstance(entry, dict):
-                return {"error": f"сервер `{name}`: ожидался объект"}
-            if "env" in entry:
-                return {"error": "панель не хранит секреты: env в mcp.json настраивается вне панели"}
-            for key in entry:
-                if key not in allowed:
-                    return {"error": f"сервер `{name}`: неизвестное поле {key}"}
-            if "command" in entry and (not isinstance(entry["command"], str) or not entry["command"].strip()):
-                return {"error": f"сервер `{name}`: command должен быть непустой строкой"}
-            if "url" in entry and (not isinstance(entry["url"], str) or not entry["url"].strip()):
-                return {"error": f"сервер `{name}`: url должен быть непустой строкой"}
-            if "args" in entry:
-                if not isinstance(entry["args"], list) or not all(isinstance(a, str) for a in entry["args"]):
-                    return {"error": f"сервер `{name}`: args должен быть списком строк"}
-        path = os.path.join(project, "mcp.json")
-        try:
-            old = json.loads(read_text(path) or "{}")
-        except ValueError:
-            old = {}       # битый файл не преграда: начнём с чистого листа
-        old_servers = old.get("mcpServers") if isinstance(old, dict) else {}
-        merged = {}
-        for name, entry in servers.items():
-            base = dict(old_servers.get(name, {})) if isinstance(old_servers, dict) else {}
-            for key in allowed:
-                if key in entry:
-                    base[key] = entry[key]
-                else:
-                    base.pop(key, None)
-            merged[name] = base
-        try:
-            if os.path.isfile(path):
-                backup = path + ".bak"
-                with open(backup, "w", encoding="utf-8") as f:
-                    f.write(read_text(path))
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"mcpServers": merged}, ensure_ascii=False, indent=2) + "\n")
-        except Exception as e:
-            return {"error": f"не удалось записать: {e}"}
-        return {"ok": True, "backup": "mcp.json.bak"}
-
 
     def _write_sources(self, project: str, modules: list) -> dict:
         """Переписать секцию `sources:` конфига — подключение и отключение модулей.
