@@ -2666,9 +2666,17 @@ def test_one_button_ends_with_what_is_left_to_the_human(tmp: Path):
     out = run("aurora_todo.py", cwd=root).stdout
     assert "Принять" not in out and "Приёмка" not in out, \
         f"в остатке снова приёмка — принимать карточки человеку не нужно:\n{out}"
-    assert "починка их не берёт" in out and "Нет-такой-карточки" in out, \
+    assert "Ремонт не взял" in out and "Нет-такой-карточки" in out, \
         f"остаток починки не назван поимённо:\n{out}"
-    assert "не чинится кнопкой" in out, "не сказано, почему остаток нельзя автоматизировать"
+    # Наполнение базы решает движок (пользователь, 29.09.2026): несделанное ремонтом —
+    # пробел движка, а не «ваше решение», и честный список так и говорит.
+    assert "пробел движка, а не ваше решение" in out, out
+    assert "не чинится кнопкой" not in out and "нужно ваше решение" not in out, \
+        f"остаток снова объявлен решением человека:\n{out}"
+    todo = (SCRIPTS / "aurora_todo.py").read_text(encoding="utf-8")
+    human = todo.split("HUMAN = (")[1].split("\n)\n")[0]
+    assert human.count("(\"") == 1 and "контрольные вопросы" in human, \
+        "в «решает человек» снова то, что давно решают агенты и ремонт"
 
 
 @test
@@ -4070,6 +4078,92 @@ def test_settings_groups_fold_like_quickstart_routes(tmp: Path):
     assert 'class:"unsaved-badge"' in sg, "свёрнутая группа прячет несохранённую правку"
     assert "sgroupsMarkDirty();" in _js_function(ui, "function setDirty("), \
         "пометка на заголовке группы не следит за несохранённым"
+
+
+@test
+def test_repair_takes_what_ops_todo_used_to_leave_to_a_human(tmp: Path):
+    """То, что «Что осталось человеку» звало его решением, берёт ремонт.
+
+    PRJ-C 29.09.2026, после «Починить базу»:
+    - двенадцать «артефактов в базе»: пустышки под кодом с приставкой проекта
+      («RU.PRJ.US-3.2.5») и под кодом с названием («US-4.2.1 Создание черновика») —
+      линтер видел их своим правилом, ремонт искал по голому коду и не брал;
+    - эпик и история с именем предмета, которое уже занято, — «это слияние, человеку»,
+      хотя по правилу базы совпало имя — совпала сущность;
+    - папка раздела в самой себе (`Glossary/Glossary`) — линтер находил, ремонт не поднимал;
+    - переименование клало прежнее имя в синонимы, а сверка шапки в том же прогоне
+      снимала его как «повтор имени файла» — ссылки на прежнее имя рвались.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    stub = ('---\ntitle: "{t}"\naliases: []\nstatus: draft\ntype: concept\ntags: [заготовка]\n'
+            '---\n\n# {t}\n\n_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n')
+    for name in ("RU.PRJ.US-3.2.5", "US-4.2.1 Создание черновика заявки"):
+        (kb / f"Concepts/{name}.md").write_text(stub.format(t=name), encoding="utf-8")
+    card(root, "Concepts/Формирование-заявки.md", "Заявка формируется в личном кабинете.",
+         status="knowledge")
+    (kb / "Concepts/Epic-4.2-Формирование-заявки.md").write_text(
+        '---\ntitle: "Epic-4.2-Формирование-заявки"\naliases: ["Epic-4.2"]\nstatus: draft\n'
+        'type: concept\n---\n\nЭпик: заявку подписывают КЭП.\n', encoding="utf-8")
+    (kb / "Concepts/Epic-5.1-Приём-платежей.md").write_text(
+        '---\ntitle: "Epic-5.1-Приём-платежей"\naliases: ["Приём-платежей", "Epic-5.1"]\n'
+        'status: draft\ntype: concept\n---\n\nПлатежи принимаются по QR.\n', encoding="utf-8")
+    card(root, "Processes/Оплата.md", "См. [[Epic-5.1-Приём-платежей]] и [[Epic-4.2-Формирование-заявки]].",
+         status="knowledge")
+    (kb / "Glossary/Glossary").mkdir(parents=True)
+    (kb / "Glossary/Glossary/Единицы-измерения.md").write_text(
+        '---\ntitle: "Единицы измерения"\nstatus: draft\ntype: glossary\n---\n\nШтука, метр.\n',
+        encoding="utf-8")
+    cp = run("kb_fix.py", "--all", "--drop-code-stubs", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode in (0, 1), cp.stdout[-600:] + cp.stderr[-400:]
+    live = {p.stem: p for p in kb.rglob("*.md") if "_archive" not in p.parts}
+    for gone in ("RU.PRJ.US-3.2.5", "US-4.2.1 Создание черновика заявки"):
+        assert gone not in live, f"пустышка под кодом артефакта осталась в базе: {gone}"
+    assert "Epic-4.2-Формирование-заявки" not in live, "эпик с занятым именем предмета не слит"
+    merged = live["Формирование-заявки"].read_text(encoding="utf-8")
+    assert "подписывают КЭП" in merged and "Epic-4.2" in A.aliases(merged), merged[:600]
+    assert "Приём-платежей" in live and "Epic-5.1-Приём-платежей" in A.aliases(
+        live["Приём-платежей"].read_text(encoding="utf-8")), \
+        "прежнее имя снято из синонимов — ссылки на него оборвутся"
+    assert not (kb / "Glossary/Glossary").exists() and (kb / "Glossary/Единицы-измерения.md").is_file(), \
+        ("папка раздела в самой себе не поднята: "
+         + str(sorted(str(p.relative_to(kb)) for p in (kb / "Glossary").rglob("*")))
+         + "\n" + cp.stdout[-1500:])
+    lint = run("kb_lint.py", "--full", cwd=root).stdout
+    for bad in ("артефакт в знаниях", "вложена сама в себя", "Epic-5.1-Приём-платежей]]"):
+        assert bad not in lint, f"после ремонта осталось: {bad}\n{lint[-800:]}"
+
+
+@test
+def test_lint_expansions_check_only_what_the_model_wrote(tmp: Path):
+    """Расшифровку сверяют только в тексте карточки — не в дословном источнике и не в архиве.
+
+    PRJ-C 29.09.2026: «ПДО» звалось выдуманной расшифровкой дважды — строкой источника,
+    перенесённой дословно, и той же строкой в заархивированной карточке. Правило ловит
+    выдумки модели; слово источника выдумкой не бывает.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    card(root, "Reference/Сокращения.md",
+         "| Сокращение | Расшифровка |\n|---|---|\n| ПДО | подтверждение даты отправки |\n",
+         status="knowledge")
+    text = ("Квитанция содержит подтверждение даты отправки.\n\n" + R.QUOTES +
+            "\nКвитанция с идентификатором пакета, датой и временем приема (ПДО), извещением.\n")
+    card(root, "Requirements/Квитанция.md", text, status="draft")
+    (root / "AuroraKnowledgeDB/_archive").mkdir(parents=True, exist_ok=True)
+    (root / "AuroraKnowledgeDB/_archive/Старая.md").write_text(
+        "---\ntitle: Старая\n---\n\nПакет с датой и временем приема (ПДО).\n", encoding="utf-8")
+    out = run("kb_lint.py", "--full", cwd=root).stdout
+    assert "«ПДО» расшифровано" not in out, out[-600:]
+    card(root, "Requirements/Выдумка.md", "Пакет, датой и временем приема (ПДО) подписан.",
+         status="draft")
+    assert "«ПДО» расшифровано" in run("kb_lint.py", "--full", cwd=root).stdout, \
+        "выдумка модели в тексте карточки больше не ловится"
 
 
 @test

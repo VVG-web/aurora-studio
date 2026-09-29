@@ -21,7 +21,7 @@
 import argparse
 import json, os, re, sys, collections
 
-from aurora_common import looks_like_expansion  # noqa: F401
+from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
                            card_sources, config_list, config_value, clean_meaning,
                            frontmatter, is_service, not_a_card_link,
@@ -319,8 +319,12 @@ def main():
         # но промпт — просьба, а не гарантия: на живом проекте одна аббревиатура получила
         # три значения, два выдуманы моделью, и разъехались по карточкам как факт.
         # Ошибка неотличима от знания на вид, поэтому её ищет машина, а не читатель.
-        for abbr, said, known in ([] if (stem.startswith("_") or "/meta/" in rel)
-                                  else wrong_expansions(body, terms)):
+        # Смотрим только своё: дословный текст источника (раздел «Источник») модель не
+        # писала, и расшифровка в нём — слово источника, а не выдумка. Архив не проверяем:
+        # он ушёл из базы. PRJ-C 29.09.2026: обе находки «ПДО» были строкой источника.
+        for abbr, said, known in ([] if (stem.startswith("_") or "/meta/" in rel
+                                         or "/_archive/" in "/" + rel)
+                                  else wrong_expansions(body.split(QUOTES, 1)[0], terms)):
             errors.append(f"{rel}: «{abbr}» расшифровано как «{said[:70]}», "
                           f"а в словаре проекта — «{known[:70]}». "
                           "Расшифровку не выдумывают: либо она есть в источнике, "

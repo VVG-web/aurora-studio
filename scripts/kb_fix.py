@@ -336,6 +336,11 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
         clean, codes = split_doc_code(title)
         if not codes or clean == title:
             continue
+        if is_placeholder(card.fm, card.text):
+            # Пустышка под кодом — не предмет, а обещание бумаги: её уберёт в архив
+            # `--drop-code-stubs`. Переименование в том же прогоне сдвигало файл из-под
+            # переноса в архив, и ремонт падал на середине записи.
+            continue
         # Имя файла считает `card_filename` — тот же, которым его считает сборка карточки.
         # Своя регулярка здесь расходилась с ним по подчёркиванию, и ремонт переименовывал
         # карточку в форму, которую сборка потом не воспроизводила: следующий разбор того
@@ -346,7 +351,16 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
             continue
         new_rel = os.path.join(os.path.dirname(rel), new_stem + ".md").replace("\\", "/")
         if new_rel != rel and (new_rel in taken or os.path.exists(new_rel)):
-            stuck.append((rel, f"имя «{new_stem}» уже занято — это слияние, а не переименование"))
+            # Имя предмета уже занято: по правилу базы совпало имя — совпала сущность, и
+            # знание, записанное под кодом документа, сливается в карточку предмета. Раньше
+            # здесь было «это слияние — человеку», и ошибка «артефакт в знаниях» висела
+            # вечно (PRJ-C 29.09.2026: эпики и истории при готовых карточках предметов).
+            target = next((k for k in cards if k.replace("\\", "/") == new_rel), None)
+            if target and target != path and not is_placeholder(card.fm, card.text):
+                merge_paths(cards, target, path, plan)
+                renamed.append((rel, f"{new_stem} (слито в карточку предмета)"))
+            else:
+                stuck.append((rel, f"имя «{new_stem}» уже занято — это слияние, а не переименование"))
             continue
         head = card.text[:card.fm_end] if card.has_frontmatter else ""
         if not head:
@@ -468,17 +482,27 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
         if is_service(rel):
             continue
         section = parts[1]
+        # Папка раздела внутри самой себя («Glossary/Glossary/…») прячет карточки второго
+        # уровня: раздел — это тип, и второго уровня с тем же именем не бывает. Линтер её
+        # находил, а ремонт не поднимал — и она висела на человеке (PRJ-C 29.09.2026).
+        rest = parts[2:]
+        while len(rest) > 1 and rest[0] == section:
+            rest = rest[1:]
         kind = (card.fm.get("type") or "").strip().strip('"')
         want_type = TYPE_ALIASES.get(kind, kind)
         if not want_type or want_type not in TYPE_SECTION:
             if kind:
                 stuck.append((rel, f"тип «{kind}» не сходится ни с одним разделом"))
+            flat = "/".join([parts[0], section] + rest)
+            if flat != rel and flat not in taken and not os.path.exists(flat):
+                plan.renames.append((path, flat))
+                moved.append((rel, flat))
             continue
         want = TYPE_SECTION[want_type]
-        if want == section and want_type == kind:
+        new_rel = "/".join([parts[0], want] + rest)
+        if new_rel == rel and want_type == kind:
             continue
-        new_rel = "/".join([parts[0], want] + parts[2:])
-        if want != section and (new_rel in taken or os.path.exists(new_rel)):
+        if new_rel != rel and (new_rel in taken or os.path.exists(new_rel)):
             # Одноимённая карточка уже стоит в целевом разделе: перенос сложил бы две
             # разные карточки в одну. Это не перекодирование, а слияние знания — человеку.
             stuck.append((rel, f"в разделе {want} уже есть карточка с таким именем"))
@@ -488,7 +512,7 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
             if head:
                 plan.write(path, "---" + set_field(head[3:], "type", want_type)
                            + card.text[card.fm_end:])
-        if want != section:
+        if new_rel != rel:
             plan.renames.append((path, new_rel))
             moved.append((rel, new_rel))
     return moved, stuck
@@ -1142,7 +1166,18 @@ def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel:
             continue
-        if not ARTIFACT_CODE_RE.match(c.stem) or not is_placeholder(c.fm, c.text):
+        if not is_placeholder(c.fm, c.text):
+            continue
+        # Правило — то же, что у линтера (`artifact_kind`): код с приставкой проекта
+        # («RU.PRJ.US-3.2.5») и код с названием («US-4.2.1 Создание черновика») он зовёт
+        # артефактом, а ремонт по голому коду их не брал — и пустышки висели на человеке
+        # навсегда (PRJ-C 29.09.2026: 11 штук).
+        from kb_lint import artifact_kind
+        section = rel.split("/")[1] if rel.count("/") >= 2 else ""
+        kind = artifact_kind(c.stem, (c.fm.get("title") or c.stem).strip().strip('"'),
+                             (card_sources(c.text) or [""])[0], section, None)
+        if not ARTIFACT_CODE_RE.match(c.stem) and kind not in ("User Story",
+                                                               "Acceptance Criteria", "Epic"):
             continue
         plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                              os.path.basename(rel)).replace("\\", "/")))
@@ -1747,8 +1782,14 @@ def plan_frontmatter(cards: dict, plan: Plan):
         # ведёт куда надо. А в отчёте о синонимах он выглядел «именем, занятым дважды» —
         # хотя карточка одна, и уточнять человеку было нечего. Отсюда ощущение, что ремонт
         # не сходится: список повторялся из прогона в прогон.
-        if probe.stem in probe.aliases:
-            fixed = drop_alias(probe, probe.stem)
+        # Имя — то, под которым карточка будет жить после переименований этого же прогона:
+        # переименование кладёт прежнее имя в синонимы (по нему ходят ссылки), а файл ещё
+        # стоит на старом месте. Сверка со старым именем снимала этот синоним как «повтор
+        # имени файла» — и ссылки на прежнее имя рвались (PRJ-C 29.09.2026, эпики).
+        moving = dict(plan.renames).get(path)
+        stem_now = os.path.splitext(os.path.basename(moving))[0] if moving else probe.stem
+        if stem_now in probe.aliases:
+            fixed = drop_alias(probe, stem_now)
             if fixed != base:
                 plan.file_writes[path] = fixed
                 base, probe = fixed, Card(path, fixed)
@@ -2127,8 +2168,15 @@ def apply_plan(plan: Plan) -> int:
             continue
         os.makedirs(os.path.dirname(new) or ".", exist_ok=True)
         os.rename(old, new)
+    renamed_to = dict(plan.renames)
     for src, dst in plan.moves:
         if os.path.abspath(src) == os.path.abspath(dst):
+            continue
+        if not os.path.exists(src) and os.path.exists(renamed_to.get(src, "")):
+            src = renamed_to[src]          # тот же прогон её уже переименовал
+        if not os.path.exists(src):
+            print(f"  ! переносить нечего: {src} уже нет", file=sys.stderr)
+            skipped += 1
             continue
         # Занятое имя в архиве — не повод оставить карточку в базе. Пропуск задумывался
         # как защита от затирания, а на деле оставлял карточку, которую движок считает
@@ -2138,6 +2186,21 @@ def apply_plan(plan: Plan) -> int:
         dst = free_archive_name(dst)
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         shutil.move(src, dst)
+    # Папка, из которой ушли все карточки, не остаётся пустой: пустая «Glossary/Glossary»
+    # после подъёма карточки линтер снова звал вложенной (PRJ-C 29.09.2026). Удаляем
+    # только опустевшие папки ГЛУБЖЕ раздела, откуда что-то уехало: сам раздел — часть
+    # схемы проекта, и опустевший он остаётся на месте.
+    for src in [o for o, _n in plan.renames] + [s for s, _d in plan.moves]:
+        d = os.path.dirname(src)
+        while (d and os.path.isdir(d) and os.path.basename(d) != ROOT
+               and os.path.basename(os.path.dirname(d)) != ROOT):
+            left = [x for x in os.listdir(d) if x != ".DS_Store"]
+            if left:
+                break
+            for x in os.listdir(d):
+                os.remove(os.path.join(d, x))
+            os.rmdir(d)
+            d = os.path.dirname(d)
     return skipped
 
 
