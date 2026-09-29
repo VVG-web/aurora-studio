@@ -720,7 +720,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.143.0";
+const UI_VERSION = "1.143.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1579,6 +1579,17 @@ function setDirty(key, label, on){
   if (on) DIRTY.set(key, label); else DIRTY.delete(key);
   $$(`[data-save="${key}"]`).forEach(b => b.classList.toggle("unsaved", DIRTY.has(key)));
   $$(`[data-badge="${key}"]`).forEach(n => n.style.display = DIRTY.has(key) ? "" : "none");
+  sgroupsMarkDirty();
+}
+// Свёрнутая группа прячет и кнопку «Сохранить» с её пометкой — несохранённое видно на
+// заголовке группы, иначе правку легко потерять, свернув её.
+function sgroupsMarkDirty(){
+  $$(".sgroup").forEach(g => {
+    const mark = $(".sgroup-head > .unsaved-badge", g);
+    if (!mark) return;
+    const dirty = [...g.querySelectorAll("[data-save]")].some(b => DIRTY.has(b.dataset.save));
+    mark.style.display = dirty ? "" : "none";
+  });
 }
 const watch = (node, key, label) => {
   node.addEventListener("input", () => setDirty(key, label, true));
@@ -3786,7 +3797,8 @@ function sgroup(box, id, title){
   const body = el("div", {class:"sgroup-body"});
   body.hidden = !open;
   const wrap = el("section", {class:"sgroup", "data-group": id},
-    el("div", {class:"row sgroup-head"}, toggle, head), body);
+    el("div", {class:"row sgroup-head"}, toggle, head,
+      el("span", {class:"unsaved-badge", style:"display:none"}, t("dirty.badge"))), body);
   wrap.sgSet = now => {
     body.hidden = !now;
     toggle.textContent = now ? "−" : "+";

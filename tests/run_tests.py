@@ -4066,6 +4066,135 @@ def test_settings_groups_fold_like_quickstart_routes(tmp: Path):
     jump = _js_function(ui, "function drawSetupJump(")
     assert "g.sgSet(true)" in jump and 't("sgroup.all_open")' in jump, \
         "переход к части страницы не раскрывает её — или нельзя раскрыть всё разом"
+    # несохранённое в свёрнутой группе видно на её заголовке
+    assert 'class:"unsaved-badge"' in sg, "свёрнутая группа прячет несохранённую правку"
+    assert "sgroupsMarkDirty();" in _js_function(ui, "function setDirty("), \
+        "пометка на заголовке группы не следит за несохранённым"
+
+
+@test
+def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
+    """Движок компилируется на старшем из обещанных Python — 3.9, системном у macOS.
+
+    С 1.112.0 по 1.143.0 в `kb_lint.py` стояла f-строка с кавычками того же вида внутри
+    выражения — это понимает только Python 3.12+. На системном Python линтер не запускался
+    вовсе, а вместе с ним падали починка, «Что осталось человеку» и хук коммита; проверка
+    кита шла на 3.12 и этого не видела. Здесь — если на машине есть Python старше 3.12;
+    в CI то же делает отдельная задача на 3.9.
+    """
+    old = None
+    for cand in ("/usr/bin/python3", "python3.9", "python3.10", "python3.11"):
+        try:
+            v = subprocess.run([cand, "-c", "import sys; print(sys.version_info[:2] < (3, 12))"],
+                               capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if v.returncode == 0 and v.stdout.strip() == "True":
+            old = cand
+            break
+    wf = (KIT / ".github/workflows/test.yml").read_text(encoding="utf-8")
+    assert 'python-version: "3.9"' in wf and "compileall" in wf, "в CI нет проверки на Python 3.9"
+    if not old:
+        return
+    out = tmp / "pyc"
+    cp = subprocess.run([old, "-m", "compileall", "-q",
+                         str(KIT / "scripts"), str(KIT / "cockpit"), str(KIT / "aurora.py")],
+                        capture_output=True, text=True, timeout=300,
+                        env={**os.environ, "PYTHONPYCACHEPREFIX": str(out)})
+    assert cp.returncode == 0, f"движок не компилируется на {old}:\n{(cp.stdout + cp.stderr)[-800:]}"
+
+
+@test
+def test_unsupported_claims_are_written_down_for_a_human(tmp: Path):
+    """Что именно Момус не нашёл в источнике, записано — человеку есть что проверять.
+
+    До 1.143.1 в карточку уходило только число `unsupported: N`, а утверждения терялись вместе
+    с ответом Момуса. На PRJ-A так копились 223 утверждения в 176 карточках, `ops:todo` о них
+    молчал, и разобрать их было нельзя: проверять нечего.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    importlib.reload(R)
+    verdict = ("1. ОПОРА «ежемесячно»\n2. **НЕТ ОПОРЫ** срок подачи — 10 дней\n"
+               "- ПРОТИВОРЕЧИЕ ставка 12 % ↔ «ставка 20 %»\nВЕРДИКТ: БЕЗ ОПОРЫ 2")
+    assert R.momus_claims(verdict) == ["НЕТ ОПОРЫ: срок подачи — 10 дней",
+                                      "ПРОТИВОРЕЧИЕ: ставка 12 % ↔ «ставка 20 %»"], \
+        R.momus_claims(verdict)
+    assert R.momus_claims("ВЕРДИКТ: ЧИСТО") == []
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    kb.mkdir(parents=True, exist_ok=True)
+    mk = lambda name, n: (kb / f"{name}.md").write_text(
+        f'---\ntitle: "{name}"\nkind: knowledge\nstatus: draft\ntype: concept\n'
+        f'unsupported: {n}\n---\n\n{name} подаётся ежемесячно.\n\n{R.QUOTES}\n'
+        'Отчёт подаётся ежемесячно, ставка 20 %.\n', encoding="utf-8")
+    mk("Отчёт", 2)
+    mk("Реестр", 1)
+    answers = {"Отчёт": verdict, "Реестр": "ОПОРА «ежемесячно»\nВЕРДИКТ: ЧИСТО"}
+
+    def fake(cfg, role, messages, **kw):
+        q = messages[0]["content"]
+        name = "Отчёт" if "«Отчёт»" in q else "Реестр"
+        return {"ok": True, "text": answers[name], "backend": 1, "model": "qa", "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    res = R.recheck_unsupported(cfg, str(root), True, call=fake)
+    assert (res["clean"], res["flagged"], res["claims"]) == (1, 1, 2), res
+    fm = lambda name: (kb / f"{name}.md").read_text(encoding="utf-8").split("\n---", 1)[0]
+    assert "unsupported: 2" in fm("Отчёт") and "unsupported:" not in fm("Реестр"), \
+        "пометка не следует за перепроверкой"
+    md = (root / "AuroraKnowledgeDB/meta/unsupported.md").read_text(encoding="utf-8")
+    assert "[[Отчёт]]" in md and "срок подачи — 10 дней" in md and "[[Реестр]]" not in md, md
+    todo = (SCRIPTS / "aurora_todo.py").read_text(encoding="utf-8")
+    assert "unsupported_cards()" in todo and "meta/unsupported.md" in todo, \
+        "«Что осталось человеку» снова молчит о непроверенных утверждениях"
+
+    # тезис переписан и проверен чисто — пометка и запись в реестре уходят
+    (kb / "Отчёт.md").write_text((kb / "Отчёт.md").read_text(encoding="utf-8").replace(
+        "\nОтчёт подаётся ежемесячно.\n", "\n"), encoding="utf-8")
+    def fake2(cfg, role, messages, **kw):
+        if role == "qa":
+            return {"ok": True, "text": "ВЕРДИКТ: ЧИСТО", "backend": 1, "model": "qa", "log": []}
+        return {"ok": True, "text": "Отчёт подаётся ежемесячно по ставке 20 %.", "backend": 1,
+                "model": "w", "tps": 9, "log": []}
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        R.run_distill(cfg, str(root), apply=True, limit=5, momus=True, call=fake2)
+    finally:
+        os.chdir(here)
+    assert "unsupported:" not in fm("Отчёт"), "чистый новый тезис остался с прежней пометкой"
+    assert "[[Отчёт]]" not in (root / "AuroraKnowledgeDB/meta/unsupported.md").read_text(encoding="utf-8")
+
+
+@test
+def test_mcp_tools_never_collide_with_the_agents_own(tmp: Path):
+    """Инструменты сервера MCP идут с приставкой его имени — совпасть им не с чем.
+
+    Живая проверка 29.09.2026: сервер базы проекта (`aurora-kb`) называет поиск `kb_search`,
+    как и встроенный инструмент агента. Pydantic AI на совпадении имён отказал всему
+    вызову, движок повторил его уже без инструментов, и модель честно ответила
+    «инструмент не вызван». С приставкой модель вызвала оба сервера — кита и проекта.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS / "agents"))
+    P = importlib.import_module("pydantic_ai_adapter")
+    importlib.reload(P)
+    assert P.tool_prefix("aurora-graph") == "aurora-graph"
+    assert P.tool_prefix("mcp.atlassian") != P.tool_prefix("mcp_atlassian"), \
+        "два разных сервера получили одну приставку"
+    a, b = P.tool_prefix("граф"), P.tool_prefix("база")
+    assert a != b and re.fullmatch(r"[A-Za-z0-9_-]{1,24}", a), (a, b)
+    src = (SCRIPTS / "agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    lazy = src.split("def lazy_mcp_toolsets(")[1].split("def call_hook(")[0]
+    assert ".prefixed(tool_prefix(name))" in lazy, "инструменты серверов снова без приставки"
+    assert ".prefixed(tool_prefix(name))" in src.split("def mcp_toolsets(")[1].split("def mcp_catalog(")[0]
+    assert "aurora-graph_graph_stats" in P.mcp_catalog({"aurora-graph": {}}), \
+        "модель не знает, как называются инструменты подключённого сервера"
+    assert '"tools_called": tools_called(' in src, "по ответу не понять, какие инструменты вызваны"
 
 
 @test
@@ -8530,6 +8659,48 @@ def test_a_legacy_machine_card_is_refreshed_not_doubled(tmp: Path):
             "тело карточки нескольких источников заменено текстом одного"
     finally:
         os.chdir(here)
+
+
+@test
+def test_merging_twins_keeps_the_card_header_whole(tmp: Path):
+    """Слияние двойников не режет шапку выжившей карточки посреди строки.
+
+    Синонимы донора удлиняют шапку, а граница шапки бралась по прежнему тексту: список
+    источников вписывался внутрь чужой записи. PRJ-A, слияния 21–22.09.2026: пять карточек
+    с путями вида «…19.02.2025.md".2024.md"», обрывками «bui» / «lt: machine» и пустым
+    `updated:` — источники считались пропавшими, доверие — по неверному списку.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB/Processes"
+    kb.mkdir(parents=True, exist_ok=True)
+    long_src = "Sources/Confluence/Архитектура/Вопросы/Вопросы_и_материалы_для_встречи_21.08.2024.md"
+    (kb / "Параметры-запуска.md").write_text(
+        '---\ntitle: "Параметры запуска"\naliases: []\nstatus: draft\ntype: process\n'
+        f'source: "{long_src}"\nsource_synced: 2026-08-21\ncreated: 2026-08-21\n'
+        'updated: 2026-08-21\nbuilt: machine\nrelated: []\nkind: knowledge\n---\n\nТекст.\n',
+        encoding="utf-8")
+    (kb / "Технические-нюансы-пайплайнов.md").write_text(
+        '---\ntitle: "Технические нюансы пайплайнов"\naliases: ["Агентский-ЭСФ-пайплайны"]\n'
+        'status: draft\ntype: process\nsources:\n'
+        '  - "Sources/Confluence/Архитектура/Вопросы/Встреча_10.12.2024.md"\n'
+        '  - "Sources/Confluence/Архитектура/Вопросы/Встреча_19.02.2025.md"\n'
+        'built: machine\n---\n\nЕщё текст.\n', encoding="utf-8")
+    run("kb_fix.py", "--merge", "Параметры-запуска", "Технические-нюансы-пайплайнов",
+        "--apply", "--allow-dirty", cwd=root)
+    got = (kb / "Параметры-запуска.md").read_text(encoding="utf-8")
+    head = got[:got.find("\n---", 3)]
+    srcs = A.card_sources(got)
+    assert sorted(srcs) == sorted([long_src, "Sources/Confluence/Архитектура/Вопросы/Встреча_10.12.2024.md",
+                                   "Sources/Confluence/Архитектура/Вопросы/Встреча_19.02.2025.md"]), \
+        f"источники после слияния: {srcs}\n{head}"
+    fm = A.frontmatter(got)
+    assert fm.get("updated") == "2026-08-21" and fm.get("built") == "machine" \
+        and fm.get("kind") == "knowledge", f"поля шапки порезаны слиянием:\n{head}"
+    for line in head.split("\n")[1:]:
+        assert re.match(r'^([\w-]+:( .*)?|  - ".*"|  - .+)$', line), f"обрывок в шапке: {line!r}\n{head}"
 
 
 @test
@@ -13881,6 +14052,7 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
 
     Дописываем только недостающее: файл правит человек, и его строки — его дело.
     """
+    import importlib
     sys.path.insert(0, str(SCRIPTS))
     from install_aurora import merge_gitignore, GITIGNORE_BLOCK
     gi = tmp / ".gitignore"
@@ -13906,6 +14078,23 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     upd = (SCRIPTS / "aurora_update.py").read_text(encoding="utf-8")
     assert "refresh_gitignore(target)" in upd, \
         "обновление движка не трогает .gitignore — правила снова не доедут"
+
+    # Кэш отчёта аналитика — производная (29.09.2026: у двух проектов он уже лежал в git,
+    # его утащил чекпойнт агента). Правило закрывает новое, а про уже попавшее в историю
+    # обновление говорит, как снять его с учёта, — само git проекта не трогает.
+    assert ".opencode/cache/" in GITIGNORE_BLOCK, "кэш отчёта аналитика снова уедет в git"
+    U = importlib.import_module("aurora_update")
+    repo = tmp / "репо"
+    (repo / ".opencode/cache/reports").mkdir(parents=True)
+    (repo / ".opencode/cache/reports/issues.json").write_text("{}", encoding="utf-8")
+    (repo / "Карточка.md").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    assert U.tracked_but_ignored(repo) == [], "без правила ничего не должно числиться закрытым"
+    merge_gitignore(repo / ".gitignore")
+    assert U.tracked_but_ignored(repo) == [".opencode/cache/reports/issues.json"], \
+        U.tracked_but_ignored(repo)
+    assert "git rm -r --cached" in upd and "tracked_but_ignored(target)" in upd
 
 
 @test
@@ -21198,7 +21387,7 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
         seen = []
         def fn(messages, info):
             seen.append([sorted(t.name for t in info.function_tools), os.path.exists(mark)])
-            calls = {1: ("mcp_connect", {"name": "demo"}), 2: ("echo", {"text": "привет"}),
+            calls = {1: ("mcp_connect", {"name": "demo"}), 2: ("demo_echo", {"text": "привет"}),
                      3: ("mcp_connect", {"name": "broken"}), 4: ("mcp_connect", {"name": "broken"})}
             if len(seen) in calls:
                 return ModelResponse(parts=[ToolCallPart(*calls[len(seen)])])
@@ -21212,7 +21401,8 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
     assert cp.returncode == 0, cp.stderr[-1500:]
     d = json.loads(cp.stdout.strip().splitlines()[-1])
     assert d["seen"][0] == [["mcp_connect"], False], f"сервер поднят до нужды: {d['seen'][0]}"
-    assert "echo" in d["seen"][1][0] and d["seen"][1][1], f"подключённый сервер не дал инструментов: {d['seen'][1]}"
+    # Инструменты сервера — с приставкой его имени: `demo` → `demo_echo` (1.143.1).
+    assert "demo_echo" in d["seen"][1][0] and d["seen"][1][1], f"подключённый сервер не дал инструментов: {d['seen'][1]}"
     assert "эхо: привет" in d["returns"], d["returns"]
     assert any("не запустился" in r for r in d["returns"]), f"сломанный сервер без объяснения: {d['returns']}"
 

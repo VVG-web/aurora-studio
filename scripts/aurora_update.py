@@ -306,6 +306,17 @@ def refresh_hooks(target: Path) -> str:
     return mode if cp.returncode == 0 else ""
 
 
+def tracked_but_ignored(target: Path) -> list:
+    """Файлы в git, которые правила .gitignore теперь закрывают. Нет git — пусто."""
+    try:
+        p = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "ls-files", "-ci",
+                            "--exclude-standard"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
+
+
 def refresh_gitignore(target: Path) -> list:
     """Дописать в .gitignore правила кита, появившиеся после заведения проекта.
 
@@ -450,6 +461,14 @@ def run(target: Path, apply: bool, structure_only: bool = False):
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
           + f". Версия → {kv}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
+    stuck = tracked_but_ignored(target)
+    if stuck:
+        # Правило .gitignore не снимает с учёта то, что уже попало в историю: такие файлы
+        # продолжают меняться в каждом коммите. Снять — решение о git проекта, не движка.
+        tops = sorted({"/".join(p.split("/")[:3]) for p in stuck})
+        print(f"   В git уже лежат файлы, которые теперь закрыты .gitignore: {len(stuck)}. "
+              "Снять с учёта, не трогая диск:\n"
+              + "\n".join(f"     git rm -r --cached -q \"{t}\"" for t in tops[:5]))
     if seeds:
         print("   Не забудьте сравнить *.new с вашими Templates/Prompts и удалить .new.")
     return 0

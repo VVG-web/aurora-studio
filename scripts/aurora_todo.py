@@ -94,6 +94,33 @@ def short(finding: str) -> str:
     return finding.replace("AuroraKnowledgeDB/", "")[:110]
 
 
+def unsupported_cards() -> tuple:
+    """(карточек с пометкой `unsupported:`, утверждений в реестре, помеченных вне реестра)."""
+    flagged = []
+    for dp, dirs, files in os.walk("AuroraKnowledgeDB"):
+        dirs[:] = [d for d in dirs if d not in ("meta", "_archive") and not d.startswith(".")]
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            path = os.path.join(dp, f)
+            try:
+                head = open(path, encoding="utf-8", errors="ignore").read(4000)
+            except OSError:
+                continue
+            m = re.search(r"^unsupported:\s*(\d+)", head.split("\n---", 1)[0], re.M)
+            if m and int(m.group(1)):
+                flagged.append(path.replace("\\", "/"))
+    try:
+        with open(os.path.join("AuroraKnowledgeDB", "meta", "unsupported.json"),
+                  encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        reg = {}
+    listed = {k for k, v in reg.items() if isinstance(v, dict) and v.get("claims")}
+    claims = sum(len(v.get("claims") or []) for v in reg.values() if isinstance(v, dict))
+    return len(flagged), claims, sum(1 for p in flagged if p not in listed)
+
+
 def main() -> int:
     if not os.path.isdir("AuroraKnowledgeDB"):
         print("ops:todo: запускайте из корня проекта", file=sys.stderr)
@@ -141,6 +168,17 @@ def main() -> int:
         if errs:
             todo.append((f"{len(errs)} {what}", how, ""))
 
+    # Утверждения тезисов без опоры в источнике: их нашёл Момус, решить может только
+    # человек. До 1.143.1 этот пункт сюда не попадал вовсе — на PRJ-A так копились 223.
+    flagged, claims, unlisted = unsupported_cards()
+    if flagged:
+        todo.append((f"{flagged} карточек с утверждениями без опоры в источнике",
+                     "Момус сверил тезис с текстом источника и не нашёл опоры"
+                     + (f" {claims} утверждениям" if claims else "")
+                     + ". Неверное — исправьте исправлением (`Raw/corrections/`), тезис "
+                     "перепишется с ним. Список — `AuroraKnowledgeDB/meta/unsupported.md`.",
+                     f"agent:distill --recheck --apply — у {unlisted} карточек утверждения "
+                     "не записаны" if unlisted else ""))
     unlinked = why.get("связей с задачами нет", 0)
     if unlinked:
         todo.append((f"{unlinked} карточек не на что опереться для доверия",

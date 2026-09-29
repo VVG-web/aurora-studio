@@ -1917,13 +1917,19 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
     donor = card_sources(drop.text)
     both = card_sources(text) + donor
     if donor:
-        head, rest = (text[:keep.fm_end], text[keep.fm_end:]) if keep.has_frontmatter else ("", text)
+        # Граница шапки — по нынешнему тексту: синонимы выше её уже удлинили. Граница
+        # прежнего текста резала шапку посреди строки, и список источников вписывался
+        # внутрь чужой записи — «…19.02.2025.md".2024.md"» (PRJ-A, слияния 21–22.09.2026).
+        now = Card(kpath, text)
+        head, rest = (text[:now.fm_end], text[now.fm_end:]) if now.has_frontmatter else ("", text)
         if head:
             new_block = sources_block(both).rstrip("\n")
             if re.search(r"^sources:.*(?:\n  - .*)*", head, re.M):
                 head = re.sub(r"^sources:.*(?:\n  - .*)*", new_block, head, count=1, flags=re.M)
             else:
-                head = head.rstrip("\n") + "\n" + new_block + "\n"
+                # `rest` начинается с «\n---»: лишний перевод строки дал бы пустую строку
+                # внутри шапки.
+                head = head.rstrip("\n") + "\n" + new_block
             text = head + rest
     merged_body = drop.body().strip()
     # Повторное слияние того же донора ничего не прибавляет, а тело удваивает. Раньше

@@ -287,7 +287,7 @@ def main():
                     # убрал бы ни ремонт, ни человек — ставить нечего.
                     if expected or section not in declared:
                         errors.append(f"{rel}: нет type: — раздел {section} ждёт "
-                                      f"`{expected or "тип из frontmatter.md"}`")
+                                      f"`{expected or 'тип из frontmatter.md'}`")
                 elif actual not in known_types:
                     errors.append(f"{rel}: тип `{actual}` вне схемы (frontmatter.md)")
                 elif expected and actual != expected:

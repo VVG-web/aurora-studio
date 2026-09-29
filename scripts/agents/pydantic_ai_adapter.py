@@ -159,7 +159,7 @@ def mcp_toolsets(config: dict, guard: dict = None, root: str = ".",
                                      if k not in SPEC_ONLY}}}
         hook = call_hook(name, spec, guard, root)
         try:
-            out.append(MCPToolset(Client(one), process_tool_call=hook))
+            out.append(MCPToolset(Client(one), process_tool_call=hook).prefixed(tool_prefix(name)))
         except Exception:  # noqa: BLE001 — сервер может быть не поднят: это не повод падать
             continue
     return out
@@ -171,6 +171,8 @@ def mcp_catalog(servers: dict) -> str:
              for name, spec in servers.items()]
     return ("Внешние инструменты (MCP) подключаются по требованию. Нужен один из них — вызови "
             "`mcp_connect` с его именем, и его инструменты появятся со следующего шага. "
+            "Инструменты сервера называются с его именем впереди: у `aurora-graph` "
+            "инструмент `graph_stats` — это `aurora-graph_graph_stats`. "
             "Без нужды не подключай: запуск сервера стоит времени.\n" + "\n".join(lines))
 
 
@@ -254,7 +256,7 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
                 hook = call_hook(name, spec, guard, root)
                 try:
                     built[name] = SafeServer(MCPToolset(Client(one), process_tool_call=hook),
-                                             name=name)
+                                             name=name).prefixed(tool_prefix(name))
                 except Exception as e:  # noqa: BLE001 — неверная настройка сервера
                     state["failed"][name] = f"{type(e).__name__}: {e}"[:200]
                     return None
@@ -275,6 +277,25 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
 
 
 SPEC_ONLY = ("roles", "outbound", "about", "drop_args")   # ключи Авроры, серверу не нужны
+
+
+def tool_prefix(server: str) -> str:
+    """Приставка к инструментам сервера: его имя латиницей, без знаков вне `[A-Za-z0-9_-]`.
+
+    Инструменты разных серверов и встроенные инструменты агента живут в одном списке, а
+    Pydantic AI на совпадении имён отказывает всему вызову. Сервер базы проекта
+    (`aurora-kb`) называет свой поиск так же, как встроенный, — `kb_search`, — и вызов с
+    ним падал целиком, а повтор шёл уже без инструментов (29.09.2026). С приставкой имена
+    не совпадают никогда, а модель видит, чей это инструмент. Имя инструмента у шлюзов —
+    до 64 знаков, поэтому приставка короткая.
+    """
+    server = server or "mcp"
+    clean = re.sub(r"[^A-Za-z0-9_-]", "_", server).strip("_-")
+    if clean != server:
+        # Имя не латиницей: два таких сервера не должны получить одну приставку.
+        import hashlib
+        clean = (clean or "mcp")[:17] + "_" + hashlib.md5(server.encode("utf-8")).hexdigest()[:6]
+    return clean[:24]
 
 
 def mcp_probe(task: dict) -> dict:
@@ -636,6 +657,13 @@ def http_client():
     return httpx.AsyncClient(transport=Tolerant(), timeout=None)
 
 
+def tools_called(messages) -> list:
+    """Какие инструменты модель вызвала за прогон — по порядку. Без этого ответ «инструмента
+    не вызывала» не отличить от «вызвала, а результат потерялся»."""
+    return [p.tool_name for m in messages or [] for p in getattr(m, "parts", [])
+            if type(p).__name__ == "ToolCallPart"]
+
+
 def answer(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)
 
@@ -809,7 +837,8 @@ def runtime():
                 "reasoning": thinking_of(last),
                 "finish": (getattr(last, "finish_reason", None) if last is not None else None)
                 or "stop",
-                "usage": usage_of(result.usage)}
+                "usage": usage_of(result.usage),
+                "tools_called": tools_called(result.all_messages())}
 
     return run_task, getattr(pydantic_ai, "__version__", "")
 

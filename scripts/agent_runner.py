@@ -4899,6 +4899,81 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
             "why": "" if m else "Момус не дал вердикта — проверка не состоялась"}
 
 
+UNSUPPORTED_JSON = os.path.join("AuroraKnowledgeDB", "meta", "unsupported.json")
+UNSUPPORTED_MD = os.path.join("AuroraKnowledgeDB", "meta", "unsupported.md")
+
+
+def momus_claims(text: str) -> list:
+    """Что Момус не нашёл в источнике: строки «НЕТ ОПОРЫ …» и «ПРОТИВОРЕЧИЕ …» его разбора.
+
+    До 1.143.1 в карточку уходило только число (`unsupported: 2`), а сами утверждения
+    терялись вместе с ответом Момуса: человек видел пометку, но не видел, что проверять, —
+    на PRJ-A так копились 223 утверждения в 176 карточках, и ни одно не было разобрано.
+    """
+    out = []
+    for line in (text or "").splitlines():
+        s = re.sub(r"^[\s>*•\-\d.)]+", "", line).replace("**", "").strip()
+        m = re.match(r"(НЕТ ОПОРЫ|ПРОТИВОРЕЧИЕ)\b[\s:—\-]*(.+)", s, re.I)
+        if m and m.group(2).strip():
+            out.append(f"{m.group(1).upper()}: {m.group(2).strip()}"[:500])
+    return out
+
+
+def record_unsupported(root: str, path: str, claims: list | None, count: int = 0) -> None:
+    """Реестр утверждений без опоры: карточка → что Момус не нашёл в её источнике.
+
+    Два файла в `meta/`: JSON — для движка, Markdown — для человека. Пусто — карточка
+    из реестра уходит; ушедшие из базы карточки уходят тоже.
+    """
+    jp = os.path.join(root, UNSUPPORTED_JSON)
+    try:
+        with open(jp, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+    if claims or count:
+        data[rel] = {"date": TODAY_STR, "count": int(count or len(claims or [])),
+                     "claims": list(claims or [])}
+    else:
+        data.pop(rel, None)
+    data = {k: v for k, v in sorted(data.items()) if os.path.isfile(os.path.join(root, k))}
+    os.makedirs(os.path.dirname(jp), exist_ok=True)
+    with open(jp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    n = sum(v.get("count") or len(v.get("claims") or []) for v in data.values())
+    L = ["# Утверждения тезисов без опоры в источнике", "",
+         "Момус — вторая модель — сверил тезис карточки с перенесённым текстом её источника и "
+         "не нашёл опоры этим утверждениям. Решает человек. Утверждение неверно или "
+         "источник о нём молчит — напишите, как правильно, исправлением "
+         "(`Raw/corrections/`, слово человека — высшая правда): тезис перепишется с ним. "
+         "Утверждение верно и опора в источнике есть — перепроверьте карточку: "
+         "`agent:distill --recheck --apply`.", "",
+         f"Карточек: {len(data)} · утверждений: {n} · обновлено {TODAY_STR}", ""]
+    for rel_path, row in data.items():
+        stem = os.path.splitext(os.path.basename(rel_path))[0]
+        L.append(f"## [[{stem}]] · {row.get('date', '')}")
+        L.append("")
+        claims_here = row.get("claims") or []
+        L += [f"- {c}" for c in claims_here] or [
+            f"- без опоры: {row.get('count', 0)} — что именно, Момус не записал; "
+            "перепроверьте: `agent:distill --recheck --apply`"]
+        L.append("")
+    with open(os.path.join(root, UNSUPPORTED_MD), "w", encoding="utf-8") as f:
+        f.write("\n".join(L).rstrip() + "\n")
+
+
+def set_unsupported(text: str, count: int) -> str:
+    """Поле `unsupported:` в шапке: число или ничего, если опора нашлась всему."""
+    end = text.find("\n---", 3) if text.startswith("---") else -1
+    if end == -1:
+        return text
+    lines = [l for l in text[:end].split("\n") if not l.startswith("unsupported:")]
+    if count:
+        lines.append(f"unsupported: {count}")
+    return "\n".join(lines) + text[end:]
+
+
 def report_ask(res: dict, question: str, cfg: dict) -> str:
     L = [f"# Ответ базы — {utc_label()}", "", f"**Вопрос:** {question}", ""]
     if not res["ok"]:
@@ -5286,6 +5361,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                                    call, MOMUS_PREFER)
                     if mp.get("ok") and not mp.get("clean"):
                         step["unsupported"] = step.get("unsupported", 0) + mp["unsupported"]
+                        step.setdefault("claims", []).extend(momus_claims(mp.get("text")))
         if not notes:
             step.update(status="знания нет", note="во всех частях одна вёрстка — человеку")
             return step
@@ -5317,6 +5393,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         step["momus"] = mo
         if mo.get("ok") and not mo.get("clean"):
             step["unsupported"] = step.get("unsupported", 0) + mo["unsupported"]
+            step.setdefault("claims", []).extend(momus_claims(mo.get("text")))
     # Подвал не затирается пересборкой, а переезжает в новую карточку и прирастает
     # строкой: дата, документ-основание, что поменялось и прежний тезис. Источник в
     # историю не кладём — он есть в зеркале по `source:`, а прежний тезис невосстановим.
@@ -5562,9 +5639,15 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             if step.get("unsupported"):
                 fields["unsupported"] = str(step["unsupported"])
             text = "---" + head_now + "\n---" + step["body"]
+            checked = not step.get("kept") and (step.get("momus") or {}).get("ok")
+            if checked and not step.get("unsupported"):
+                # Новый тезис проверен и чист — прежняя пометка о нём больше не говорит.
+                text = set_unsupported(text, 0)
             # Пометку встречи ставит движок: тезис переписан — она на месте.
             from aurora_common import with_meeting_mark
             open(path, "w", encoding="utf-8").write(with_meeting_mark(with_fields(text, fields)))
+            if checked:
+                record_unsupported(cwd, path, step.get("claims"), step.get("unsupported", 0))
             if commit and commit_every and written[0] % commit_every == 0:
                 commit(written[0])
 
@@ -5618,6 +5701,80 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             # Предохранитель сработал — заходы до конца очереди встают, как у связывания:
             # следующий заход упёрся бы в тот же лежащий шлюз.
             "gateways_down": in_a_row >= FAILS_IN_A_ROW}
+
+
+def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Перепроверить карточки с пометкой `unsupported:` — только Момусом, тезис не трогаем.
+
+    Пометка без самих утверждений человеку ничего не даёт: проверять нечего. Проход сверяет
+    нынешний тезис с перенесённым текстом источника (и с исправлениями человека, если они
+    есть) и записывает, что именно без опоры, в `meta/unsupported.md`. Опора нашлась
+    всему — пометка снимается.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from aurora_common import (corrections_of, frontmatter, split_frontmatter, split_tail,
+                               walk_md)
+    call = call or AG.call_role
+    todo = []
+    for path in sorted(walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
+                               skip_archive=True)):
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        if str(frontmatter(text).get("unsupported") or "0").strip() not in ("", "0"):
+            todo.append(path)
+    total = len(todo)
+    if limit:
+        todo = todo[:limit]
+    say(f"Карточек с пометкой «без опоры»: {total} · в этот прогон: {len(todo)}")
+
+    def one(path: str) -> tuple:
+        text = open(path, encoding="utf-8", errors="ignore").read()
+        head, body = split_frontmatter(text)
+        body = body[4:] if (body or "").startswith("\n---") else (body or "")
+        if QUOTES not in body:
+            return path, {"status": "нет источника"}
+        thesis, quotes = body.split(QUOTES, 1)
+        quotes, footer = split_tail(quotes)
+        human = corrections_of(footer)
+        lead = HUMAN_LEAD.format(text=human) if human else ""
+        title = (frontmatter(text).get("title") or os.path.basename(path)[:-3]).strip().strip('"')
+        budget = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_MOMUS) + len(thesis) + 400)
+        pack = lead + (chunks(quotes.strip(), budget) or [""])[0]
+        mo = run_momus(cfg, pack, f"Тезис карточки «{title}»",
+                       plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
+        if not mo.get("ok"):
+            return path, {"status": "сбой", "note": mo.get("why", "")}
+        return path, {"status": "чисто" if mo.get("clean") else "без опоры",
+                      "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
+
+    width = max(1, parallel_width(cfg, len(todo))[1]) if todo else 1
+    steps = []
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        for i, (path, st) in enumerate(pool.map(one, todo), 1):
+            st["card"] = os.path.basename(path)
+            steps.append(st)
+            say(f"  [{i}/{len(todo)}] {st['card'][:-3]} → {st['status']}"
+                + (f" {st['count']}" if st.get("count") else ""))
+            if apply and st["status"] in ("чисто", "без опоры"):
+                text = open(path, encoding="utf-8", errors="ignore").read()
+                new = set_unsupported(text, st["count"])
+                if new != text:
+                    open(path, "w", encoding="utf-8").write(new)
+                record_unsupported(cwd, path, st["claims"], st["count"])
+    return {"steps": steps, "total": total,
+            "clean": sum(1 for s in steps if s["status"] == "чисто"),
+            "flagged": sum(1 for s in steps if s["status"] == "без опоры"),
+            "claims": sum(len(s.get("claims") or []) for s in steps),
+            "failed": sum(1 for s in steps if s["status"] == "сбой")}
+
+
+def report_recheck(res: dict, apply: bool) -> str:
+    L = [f"# Перепроверка утверждений без опоры — {utc_label()}", "",
+         f"Режим: {'запись' if apply else 'предпросмотр'} · помеченных: {res['total']} · "
+         f"проверено: {len(res['steps'])} · опора нашлась всему: {res['clean']} · "
+         f"без опоры: {res['flagged']} (утверждений: {res['claims']}) · сбоев: {res['failed']}",
+         "", f"Список для человека: `{UNSUPPORTED_MD}`" if apply else
+         "(предпросмотр) Ничего не записано. Повторите с --apply."]
+    return "\n".join(L)
 
 
 def report_distill(res: dict, apply: bool) -> str:
@@ -6017,6 +6174,10 @@ def main() -> int:
     ap.add_argument("--defer-refresh", action="store_true",
                     help="тезисы: дописанные карточки с прежним тезисом ждут конца цикла "
                          "маршрута — внутри цикла пишутся только новые")
+    ap.add_argument("--recheck", action="store_true",
+                    help="тезисы: перепроверить Момусом карточки с пометкой unsupported и "
+                         "записать, какие утверждения без опоры (meta/unsupported.md); "
+                         "тезис не переписывается")
     ap.add_argument("--no-momus", action="store_true",
                     help="не проверять ответ второй моделью (быстрее, но никем не сверено)")
     ap.add_argument("--apply", action="store_true", help="записывать в базу (иначе предпросмотр)")
@@ -6204,6 +6365,16 @@ def main() -> int:
                 break
             cp = checkpoint(cwd, "agent:build", a.apply and not a.no_checkpoint)
         text = "\n\n---\n\n".join(texts[-3:])      # в журнал — последние партии
+    elif a.task == "distill" and a.recheck:
+        res = recheck_unsupported(cfg, cwd, a.apply, a.limit)
+        text = report_recheck(res, a.apply)
+        print(text)
+        if a.apply:
+            done = commit_result(cwd, "agent:distill",
+                                 f"перепроверка без опоры: чисто {res['clean']}, "
+                                 f"без опоры {res['flagged']}", not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 1 if res["failed"] else 0
     elif a.task == "distill" and a.until_done and a.apply:
         # Очередь тезисов — заходами до конца, а не по пятнадцать карточек за оборот
         # маршрута. Живой случай, PRJ-A 21.09.2026: 576 карточек без тезиса, по

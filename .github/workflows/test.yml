@@ -18,3 +18,18 @@ jobs:
         run: python3 tests/run_tests.py --smoke
       - name: Full suite
         run: python3 tests/run_tests.py
+  oldest-python:
+    # README обещает Python 3.9+, а системный Python macOS — 3.9. Строка, понятная только
+    # 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на нём целиком с 1.112.0
+    # по 1.143.0, и проверка на 3.12 этого не видела.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Engine compiles on the oldest supported Python
+        run: python3 -m compileall -q scripts cockpit reports aurora.py tests
+      - name: Smoke on the oldest supported Python
+        run: python3 tests/run_tests.py --smoke
