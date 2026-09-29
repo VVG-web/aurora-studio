@@ -4167,6 +4167,60 @@ def test_lint_expansions_check_only_what_the_model_wrote(tmp: Path):
 
 
 @test
+def test_schemes_of_a_vanished_page_leave_the_mirror(tmp: Path):
+    """Схемы страницы, которой в зеркале больше нет, находят и убирают синк, аудит и `kb_names`.
+
+    PRJ-B 29.09.2026: от раскладки 12.08 осталась папка с тремя `_assets/` и ни одной
+    страницы — 36 файлов в git. Путь одного, 205 знаков, doctor звал чинить `kb_names`, а тот
+    ничего не находил: правило «схемы принадлежат зеркалу» не спрашивало, есть ли страница.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    SC = importlib.import_module("sources_core")
+    root = make_project(tmp)
+    m = root / "Sources/Confluence"
+    (m / "Живая_assets").mkdir(parents=True)
+    (m / "Живая.md").write_text("---\npage_id: 685064916\ntitle: \"Живая\"\nbreadcrumbs: \"Живая\"\n---\n\n# Живая\n", encoding="utf-8")
+    (m / "Живая_assets/схема.drawio").write_text("x", encoding="utf-8")
+    (m / "Ветка/index_assets").mkdir(parents=True)
+    (m / "Ветка/index.md").write_text("---\npage_id: 685064882\ntitle: \"Ветка\"\nbreadcrumbs: \"Ветка\"\n---\n\n# Ветка\n", encoding="utf-8")
+    (m / "Ветка/index_assets/схема.drawio").write_text("x", encoding="utf-8")
+    (m / "Старое/Дашборд_assets").mkdir(parents=True)
+    (m / "Старое/Дашборд_assets/Диаграмма без названия-1.drawio").write_text("x", encoding="utf-8")
+    (m / "sync_state.md").write_text(
+        "<!-- Confluence sync state -->\n**Sync Date:** 2026-09-29\n**Pages:** 2\n\n"
+        "| # | Page ID | Title | Local Path | Status |\n|---|---|---|---|---|\n"
+        "| 1 | 685064916 | Живая | Живая.md | SYNCED |\n| 2 | 685064882 | Ветка | Ветка/index.md | SYNCED |\n",
+        encoding="utf-8")
+    mirror = SC.WikiMirror.__new__(SC.WikiMirror)
+    SC.WikiMirror.__init__(mirror, str(m))
+    extra = mirror.extra_files(["Живая.md", "Ветка/index.md"])
+    assert extra == ["Старое/Дашборд_assets/Диаграмма без названия-1.drawio"], \
+        f"чистка синка: {extra}"
+    audit = run("sync_audit.py", cwd=root).stdout
+    assert "ПОСТОРОННИЕ: **1**" in audit, audit[-600:]
+    dry = run("kb_names.py", cwd=root).stdout
+    assert "схем без страницы: 1" in dry, dry[-600:]
+    run("kb_names.py", "--apply", "--allow-dirty", cwd=root)
+    assert not (m / "Старое").exists(), "след прежней раскладки не убран"
+    assert (m / "Живая_assets/схема.drawio").is_file() and \
+        (m / "Ветка/index_assets/схема.drawio").is_file(), "убраны схемы живых страниц"
+
+
+@test
+def test_registry_cache_notices_a_changed_script(tmp: Path):
+    """Ключ кэша реестра панели меняет и правка скрипта, а не только версия и реестр.
+
+    Флаги команд панель берёт из `--help` скриптов. В ките на разработке новый флаг без
+    смены версии не появлялся: ключ помнил версию, `commands.txt` и сервер панели.
+    """
+    src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    body = src.split("def _registry()")[1].split("\ndef ")[0]
+    assert "scripts={newest}" in body and 'f.endswith(".py")' in body, \
+        "ключ кэша реестра не видит правки скриптов"
+
+
+@test
 def test_deliverables_have_a_folder_for_archives(tmp: Path):
     """У поставок есть папка архивов — `Deliverables/_archive` (решение пользователя 29.09.2026).
 

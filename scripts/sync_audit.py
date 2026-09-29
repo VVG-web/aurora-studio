@@ -70,7 +70,7 @@ def disk_files(root: str) -> dict:
     return out
 
 
-def foreign_files(root: str) -> list:
+def foreign_files(root: str, pages=None) -> list:
     """Файлы зеркала, которые не страницы и не служебное: `.md_COLLISION`, `.bak`, копии.
 
     Зеркало — машинная выгрузка, и всё, что в нём не выгружено синком, — след прежних
@@ -83,8 +83,14 @@ def foreign_files(root: str) -> list:
             if f.startswith(".") or f.endswith(".md") or SERVICE_RE.search(f):
                 continue
             rel = nfc(os.path.relpath(os.path.join(dirpath, f), root).replace("\\", "/"))
-            if ASSET_DIR_RE.search(rel):
-                continue      # схемы страницы — содержимое зеркала, а не чужой файл
+            m = ASSET_DIR_RE.search(rel)
+            if m:
+                # Схемы страницы — содержимое зеркала, пока есть сама страница. Схемы
+                # страницы, которой в состоянии нет, — след прежней раскладки (PRJ-B
+                # 29.09.2026: 36 файлов, один с путём длиннее предела).
+                page = rel[:m.end() - len("_assets/")]
+                if pages is None or {page + ".md", page + "/index.md"} & pages:
+                    continue
             out.append(rel)
     return sorted(out)
 
@@ -241,7 +247,7 @@ def audit_wiki(src: dict, stale_days: int, out: list, stats: dict) -> int:
     if truncated:
         out.append(f"- ⚠️ синк пишет обрезанные пути ({len(truncated)} строк) — состояние теряет "
                    "проверяемость; синк-скилл должен писать полный путь от корня зеркала")
-    foreign = foreign_files(root)
+    foreign = foreign_files(root, {nfc(r) for r in by_path})
     out.append(f"- MISSING: **{len(missing)}** · MOVED: **{len(moved)}** · ORPHAN: **{len(orphans)}** "
                f"· CASE: **{len(recase)}** · COLLISION: **{len(collisions)}** "
                f"· ПОСТОРОННИЕ: **{len(foreign)}**\n")
@@ -256,7 +262,8 @@ def audit_wiki(src: dict, stale_days: int, out: list, stats: dict) -> int:
         out.append(f"### ПОСТОРОННИЕ — файлы, которых синк не выгружал ({len(foreign)})\n")
         out.append("Следы прежних инструментов: `.md_COLLISION`, `.bak`, копии. Зеркало — "
                    "машинная выгрузка, такому в нём не место; папка с ними читается как "
-                   "дубль каталога. Убрать: `sync:confluence --prune`.\n")
+                   "дубль каталога. Схемы без страницы — след прежней раскладки. Убрать: "
+                   "`sync:confluence --prune`, без сети — `kb_names.py --apply`.\n")
         for f in foreign[:20]:
             out.append(f"- `{f}`")
         if len(foreign) > 20:

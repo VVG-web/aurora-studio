@@ -233,8 +233,18 @@ class Mirror:
         for rel in self.disk_rels(only_md=False):
             # Схемы страницы лежат рядом с ней в `<страница>_assets/`. В состоянии синка
             # их нет — там страницы, — но зеркалу они принадлежат: без этого правила
-            # чистка сносила ровно то, что синк только что скачал.
-            if ASSET_DIR_RE.search(rel):
+            # чистка сносила ровно то, что синк только что скачал. Принадлежат, пока есть
+            # сама страница: схемы страницы, которой в состоянии нет, — след прежней
+            # раскладки. PRJ-B 29.09.2026: папка прежней раскладки от 12.08 держала три
+            # `_assets/` без единой страницы, и путь одного из них в 205 знаков doctor
+            # звал на починку, а ни синк, ни аудит, ни `kb_names` его не видели.
+            m = ASSET_DIR_RE.search(rel)
+            if m:
+                page = rel[:m.end() - len("_assets/")]
+                owners = {nfc(page + ".md"), nfc(page + "/index.md")}
+                if owners & known_n or {o.casefold() for o in owners} & known_ci:
+                    continue
+                out.append(rel)
                 continue
             n = nfc(rel)
             if n not in known_n and n.casefold() not in known_ci:

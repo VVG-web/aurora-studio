@@ -163,6 +163,17 @@ def mirror_plan(root: str, mirror: str) -> list:
     return plan
 
 
+def orphan_assets(mirror: str) -> list:
+    """Файлы `<страница>_assets/`, чьей страницы нет в состоянии синка. → [путь в зеркале]."""
+    from sources_core import ASSET_DIR_RE, WikiMirror
+    state = WikiMirror.__new__(WikiMirror)
+    WikiMirror.__init__(state, mirror)
+    known = [rel for _pid, _title, rel, _st in _state_rows(mirror)]
+    if not known:
+        return []          # состояния нет — судить, чья схема, не по чему
+    return [r for r in state.extra_files(known) if ASSET_DIR_RE.search(r)]
+
+
 def same_knowledge(a: str, b: str) -> bool:
     """Тот же текст страницы с точностью до имён файлов схем и хэша содержания.
 
@@ -324,6 +335,23 @@ def main() -> int:
             st = apply_mirror(root, mirror, plan)
             print(f"сделано: переложено {st.get('moves', 0)}, карточек переведено на новые "
                   f"пути {st.get('cards', 0)}")
+            changed = True
+        # Схемы страниц, которых в зеркале уже нет: папка `<страница>_assets/` пережила
+        # саму страницу (прежняя раскладка, переезд). Правило то же, что у чистки синка
+        # (`extra_files`), но без сети — по состоянию синка. Путь такого следа doctor и
+        # зовёт чинить этой командой (PRJ-B 29.09.2026: 205 знаков).
+        orphans = orphan_assets(mirror)
+        print(f"схем без страницы: {len(orphans)}")
+        for rel in orphans[:5]:
+            print(f"  - {rel}")
+        if a.apply and orphans:
+            from sources_core import drop_empty_dirs
+            for rel in orphans:
+                try:
+                    os.remove(os.path.join(mirror, rel))
+                except OSError as e:
+                    print(f"  ! не удалить {rel}: {e}", file=sys.stderr)
+            drop_empty_dirs(mirror)
             changed = True
         print()
 

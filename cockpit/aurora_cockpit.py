@@ -1723,9 +1723,15 @@ def _registry() -> list:
     # не показываются. Ключ без этого признака делал кэш общим — панель, запущенная в
     # проекте, записывала «реестр без dev» в файл кита, и разработка движка исчезала
     # из панели до следующей смены версии.
+    # Флаги команд берутся из `--help` скриптов: правка скрипта без смены версии (кит в
+    # разработке) должна сбрасывать кэш так же, как правка реестра, иначе панель
+    # показывает вчерашние флаги. Самый свежий скрипт — дешёвый признак: полсотни stat.
+    scripts = os.path.join(KIT, "scripts")
+    newest = max((os.path.getmtime(os.path.join(scripts, f)) for f in os.listdir(scripts)
+                  if f.endswith(".py")), default=0)
     key = (f"{kit_version()}|{stamp}|"
            f"{os.path.getmtime(os.path.join(KIT, 'commands.txt'))}|"
-           f"src={int(kit_is_source())}|engine={ENGINE}")
+           f"src={int(kit_is_source())}|engine={ENGINE}|scripts={newest}")
     cached = read_text(REGISTRY_CACHE, limit=4_000_000)
     if cached:
         try:
