@@ -507,18 +507,28 @@ def main():
         # убирается починкой по определению.
         residue_path = os.path.join(ROOT, "meta", "lint_residue.json")
         fresh = None
-        if args.residue:
-            os.makedirs(os.path.dirname(residue_path), exist_ok=True)
-            with open(residue_path, "w", encoding="utf-8") as fh:
-                json.dump(sorted(errors), fh, ensure_ascii=False, indent=1)
+        # «Новое» считается до того, как остаток перезапишется: иначе «Починить базу»,
+        # прибавившая ошибок, каждый раз сообщала «нового: 0» и «ошибок не было» — на PRJ-C
+        # 30.09.2026 линтер вырос с 34 до 53, а итог маршрута был чистым.
         if os.path.isfile(residue_path):
             try:
                 left = set(json.load(open(residue_path, encoding="utf-8")))
                 fresh = sum(1 for e in errors if e not in left)
             except (OSError, ValueError):
                 fresh = None
+        if args.residue:
+            fresh = fresh or 0              # первый остаток: сравнивать не с чем, нового нет
+            os.makedirs(os.path.dirname(residue_path), exist_ok=True)
+            with open(residue_path, "w", encoding="utf-8") as fh:
+                json.dump(sorted(errors), fh, ensure_ascii=False, indent=1)
         print(f"kb_lint: карточек {n}, ошибок {len(errors)}"
               + (f" · нового после починки: {fresh}" if fresh is not None else ""))
+        if fresh:
+            # Итог маршрута (`run_summary`) складывает ошибки шагов: база, ставшая хуже, чем
+            # после прошлой починки, — ошибка маршрута, а не строчка в выводе линтера.
+            print("AURORA-SUMMARY " + json.dumps(
+                {"errors": {"база хуже, чем после прошлой починки — новых ошибок линтера":
+                            fresh}}, ensure_ascii=False))
     if summary or not errors:
         return 1 if errors else 0
 

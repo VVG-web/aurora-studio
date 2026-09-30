@@ -1217,6 +1217,24 @@ def meeting_turns(raw: str) -> list:
         if len(u) <= TURN_MAX:
             out.append(u)
             continue
+        # Таблица режется по строкам, а не по точкам: точка стоит внутри ячейки, и протокол
+        # встречи (action items) рвался посреди строки — карточка пункта 4 получала пункты
+        # 9–12 и обрывок 8-го (PRJ-C 30.09.2026). Шапка таблицы идёт в каждый кусок: без неё
+        # строки не прочесть.
+        rows = u.split("\n")
+        if sum(1 for r in rows if r.lstrip().startswith("|")) * 2 >= len(rows):
+            head = []
+            if len(rows) > 1 and re.match(r"^\s*\|?[\s:|-]+\|[\s:|-]*$", rows[1]):
+                head, rows = rows[:2], rows[2:]
+            piece: list = []
+            for r in rows:
+                if piece and len("\n".join(head + piece + [r])) > TURN_PIECE:
+                    out.append("\n".join(head + piece))
+                    piece = []
+                piece.append(r)
+            if piece:
+                out.append("\n".join(head + piece))
+            continue
         piece = ""
         for sent in re.split(r"(?<=[.!?…])\s+", u):
             if piece and len(piece) + len(sent) > TURN_PIECE:
@@ -1228,8 +1246,20 @@ def meeting_turns(raw: str) -> list:
     return out
 
 
+TURN_RULE = 2         # версия нарезки: сменилась — встречи, которых она касается, разбираются заново
 TURN_MAX = 3000       # реплика длиннее — не реплика, а нерасчленённый текст
 TURN_PIECE = 1200     # до скольки знаков собирать куски такого текста
+
+
+def meeting_has_long_table(raw: str) -> bool:
+    """Есть ли в стенограмме таблица длиннее реплики — её нарезку меняла `TURN_RULE` 2."""
+    body = re.sub(r"(?s)\A---\n.*?\n---\n", "", raw or "")
+    for u in re.split(r"\n\s*\n", body):
+        rows = u.strip().split("\n")
+        if (len(u) > TURN_MAX
+                and sum(1 for r in rows if r.lstrip().startswith("|")) * 2 >= len(rows)):
+            return True
+    return False
 
 
 def with_meeting_mark(text: str) -> str:
@@ -1514,6 +1544,40 @@ def hide_template(text: str, source: str = "", root: str = ".",
         return text
     kept = "\n".join(l for i, l in enumerate(lines) if i not in drop)
     return re.sub(r"\n{3,}", "\n\n", kept).strip("\n")
+
+
+_ECHO_LINK = r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|([^\]]*))?\]\]"
+
+
+def drop_echo_sentences(text: str) -> tuple:
+    """Предложения, в которых кроме ссылки ничего нет. → (текст, сколько убрано).
+
+    Вынос определения (`agent:extract`) оставлял на его месте «Заявители — [[Заявители]].»,
+    а в 1.144.1 — голую строку «[[ДОК]]». Связывание делало из первой «Заявители —
+    Заявители.» (PRJ-C 6, PRJ-A 6, PRJ-B 3). Знания в такой фразе нет: определение уехало в
+    свою карточку. Убираются: строка из одной ссылки, «X — [[X]].» и «X — X.», где слева и
+    справа одно и то же имя.
+    """
+    n = 0
+    out = []
+    for line in (text or "").split("\n"):
+        s = line.strip()
+        bare = re.fullmatch(_ECHO_LINK + r"\s*[.;]?", s)
+        m = re.fullmatch(r"(.{1,120}?)\s+[—–-]\s+(.{1,160}?)\s*[.;]?", s)
+        echo = False
+        if m and not bare:
+            left = re.sub(_ECHO_LINK, lambda x: x.group(2) or x.group(1), m.group(1))
+            right = re.sub(_ECHO_LINK, lambda x: x.group(2) or x.group(1), m.group(2))
+            fl, fr = fold_hard(left), fold_hard(right)
+            echo = bool(fl) and (fl == fr or (fr.startswith(fl) and fr[len(fl):] in
+                                               {fold_hard(w) for w in ("определение",
+                                                                       "понятие", "термин")}))
+        if bare or echo:
+            n += 1
+            continue
+        out.append(line)
+    text = "\n".join(out)
+    return (re.sub(r"\n{3,}", "\n\n", text) if n else text), n
 
 
 def template_in(text: str, blocks: dict) -> list:

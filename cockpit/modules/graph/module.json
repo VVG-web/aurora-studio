@@ -10,5 +10,5 @@
   "needs": ["project"],
   "commands": ["kb:links", "kb:map"],
   "dev": true,
-  "for": "1.145.0"
+  "for": "1.146.0"
 }

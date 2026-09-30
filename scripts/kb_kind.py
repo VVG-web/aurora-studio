@@ -18,10 +18,13 @@
                 уходят в подвал. Переосмысляется при каждом обогащении.
 
 Тип определяется правилом, а не вкусом модели: папка источника, раздел базы, характер
-текста. Спорное не угадывается — оно попадает в `ops:todo` списком.
+текста. И пересчитывается на каждом прогоне: карточка копит источники, и документ из одной
+бумаги, вобравший ещё четыре страницы, — уже знание.
 
-**Выбор человека сильнее правила.** Если `kind` уже стоит в карточке, движок его не
-перетирает: человек мог знать про документ то, чего не знает эвристика.
+**Слово человека — исправление.** До 1.146.0 любой записанный `kind` считался «выбором
+человека» и не пересчитывался, хотя пишет его сам движок: на PRJ-C тип расходился с
+правилом у 92 карточек, PRJ-A — у 38, PRJ-B — у 21. Человек задаёт тип так же, как любое
+своё слово: полем `kind:` в шапке исправления (`Raw/corrections/`, `corrects: "[[Карточка]]"`).
 
 Панель: `kb:kind`
 """
@@ -45,9 +48,15 @@ KINDS = ("dictionary", "document", "knowledge")
 DICT_SECTIONS = {"Glossary", "Reference", "Statuses"}
 # Папки первоисточников: нормативный текст, который переносится дословно.
 DOC_ROOTS = ("Raw/contract", "Raw/customer", "Raw/project", "Raw/dictionaries")
-# Слова в имени источника, по которым видно нормативный документ.
-DOC_WORDS = re.compile(r"(?i)(договор|контракт|техническое[ _-]задание|\bТЗ\b|регламент|"
-                       r"приложение[ _-]№|печатн|форма[ _-]отч|устав|положение|приказ)")
+# Слова в имени источника, по которым видно нормативный документ. «Контракт» — только в
+# правовом смысле: в ИТ-проекте это чаще интеграционный контракт, и «Маппинг контракта
+# ВАЛЮТА» становился документом, которому тезис не пишут никогда (PRJ-C). «Печатная форма»
+# там же — спецификация экрана, а не бумага.
+DOC_WORDS = re.compile(r"(?i)(договор|государственн\w*[ _-]+контракт|госконтракт|"
+                       r"контракт\w*[ _-]*(№|n[o°]?[ _-]*\d)|техническое[ _-]задание|\bТЗ\b|"
+                       r"регламент|приложение[ _-]№|форма[ _-]отч|устав|положение|приказ)")
+# Таблица шагов алгоритма и таблица требований экранной формы — знание, а не справочник.
+TABLE_IS_KNOWLEDGE = {"Processes", "Requirements"}
 TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$", re.M)
 
 
@@ -77,9 +86,31 @@ def guess(path: str, fm: dict, body: str, sources: list | None = None) -> tuple:
         return "document", "имя источника говорит о нормативном документе"
     if section in DICT_SECTIONS:
         return "dictionary", f"раздел {section} — именование, а не выводы"
-    if looks_like_table(body):
+    if section not in TABLE_IS_KNOWLEDGE and looks_like_table(body):
         return "dictionary", "тело — таблица кодов без прозы"
     return "knowledge", "обычное знание: тезис пишется и переосмысляется"
+
+
+def human_kinds(root: str = ".") -> dict:
+    """{имя карточки: тип} — из шапок действующих исправлений человека."""
+    out: dict = {}
+    folder = os.path.join(root, "Raw", "corrections")
+    if not os.path.isdir(folder):
+        return out
+    for f in sorted(os.listdir(folder)):
+        if not f.endswith(".md") or f.startswith("_"):
+            continue
+        try:
+            fm = frontmatter(open(os.path.join(folder, f), encoding="utf-8",
+                                  errors="ignore").read()) or {}
+        except OSError:
+            continue
+        kind = (fm.get("kind") or "").strip().strip('"')
+        if kind not in KINDS or (fm.get("status") or "").strip().strip('"') == "archived":
+            continue
+        for name in re.findall(r"\[\[([^\]|#]+)", fm.get("corrects") or ""):
+            out[name.strip()] = kind
+    return out
 
 
 def main() -> int:
@@ -93,6 +124,7 @@ def main() -> int:
         print("kb_kind: нет AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     counts, set_now, kept = {}, [], 0
+    human = human_kinds(root)
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
         # `split_frontmatter` отдаёт шапку БЕЗ разделителей, а хвост — начиная с «\n---».
@@ -108,14 +140,18 @@ def main() -> int:
         was = (fm.get("kind") or "").strip().strip('"')
         if was == "template":
             continue            # форма проекта (`kb:repair --unparsed`): тип ей дан при заведении
-        if was in KINDS:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if human.get(stem):
+            kind, why = human[stem], "так сказал человек (Raw/corrections)"
             kept += 1
-            counts[was] = counts.get(was, 0) + 1
-            continue
-        kind, why = guess(os.path.relpath(path, root), fm, body or "",
-                          card_sources(text))
+        else:
+            kind, why = guess(os.path.relpath(path, root), fm, body or "",
+                              card_sources(text))
         counts[kind] = counts.get(kind, 0) + 1
-        set_now.append((os.path.relpath(path, root), kind, why))
+        if kind == was:
+            continue
+        set_now.append((os.path.relpath(path, root), kind,
+                        (f"было {was} — " if was else "") + why))
         if a.apply:
             open(path, "w", encoding="utf-8").write(with_fields(text, {"kind": kind}))
 
@@ -126,7 +162,7 @@ def main() -> int:
                     ("document", "дословно, менять запрещено"),
                     ("knowledge", "тезис пишется и переосмысляется")):
         print(f"| {k} | {counts.get(k, 0)} | {what} |")
-    print(f"\nПроставить: {len(set_now)} · выбор человека сохранён: {kept}")
+    print(f"\nПроставить или пересчитать: {len(set_now)} · по исправлению человека: {kept}")
     for rel, kind, why in set_now[:8]:
         print(f"  - {rel}: {kind} — {why}")
     if len(set_now) > 8:

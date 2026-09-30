@@ -185,12 +185,10 @@ def main() -> int:
 
     if fresh:
         print(f"## Новые имена: {len(fresh)}\n")
-        print("Перевод не угадывается механически — впишите его в правую колонку словаря "
-              "руками\nили попросите модель. Записанный один раз, дальше он "
-              "переиспользуется.\n")
-        print("Не всякое латинское имя — транслит: `ER.TAC.SystemId` это идентификатор, а\n"
-              "`Epic 3` — английское слово. У таких оставьте перевод пустым: "
-              "переименование\nидёт только по заполненным строкам.\n")
+        print("Перевод механически не угадывается — его пишет модель (`agent:translit`), "
+              "\nодин раз: записанный, он переиспользуется. Коды и идентификаторы "
+              "(`ER.TAC.SystemId`)\nв словарь не идут, а вердикт «не транслит» "
+              "запоминается знаком «—».\n")
         for path, stem in fresh[:30]:
             print(f"- `{stem}` — {path}")
         if len(fresh) > 30:
@@ -205,12 +203,17 @@ def main() -> int:
         print()
 
     if a.rename:
-        undo = undo_identifiers(known, a.apply)
+        # Сначала план, потом охрана дерева, и только потом запись. В 1.145.0 коды
+        # переименовывались ДО проверки: охрана видела эти же переименования грязным деревом,
+        # отказывала, и ссылки на карточки оставались непереписанными (PRJ-C 30.09.2026).
+        undo = undo_identifiers(known, False, say=not a.apply)
         if not ready and not undo:
             print("Переводов в словаре нет — переименовывать нечего.")
             return 0
         if a.apply and not git_guard(KB_ROOT, a.allow_dirty, "переименование по словарю"):
             return 2
+        if a.apply and undo:
+            undo_identifiers(known, True)
         cards = load_cards()
         renamed = 0
         # Ссылки ведут на ИМЯ ФАЙЛА, а не на строку словаря: `card_filename` меняет
@@ -269,13 +272,25 @@ def main() -> int:
             rows.setdefault(stem, "")
         write_dict(rows)
         print(f"✅ Словарь обновлён: {DICT_PATH} (записей {len(rows)})")
-        print("Впишите переводы в правую колонку, затем `kb:translit --rename --apply`.")
+        print("Переводы пишет `agent:translit`, переименование — `kb:translit --rename --apply`: "
+              "оба идут в маршруте «Починить базу».")
     else:
         print("(dry-run) Словарь не тронут. Дописать находки: `--apply`")
     return 0
 
 
-def undo_identifiers(known: dict, apply: bool) -> dict:
+def _drop_aliases(path: str, names: set) -> None:
+    """Снять из шапки синонимы с этими именами."""
+    text = open(path, encoding="utf-8").read()
+    head_end = text.find("\n---", 3)
+    head = text[:head_end]
+    for n in names:
+        head = re.sub(r'^\s*-\s*"?' + re.escape(n) + r'"?\s*\n', "", head + "\n", flags=re.M)[:-1]
+    if head != text[:head_end]:
+        open(path, "w", encoding="utf-8").write(head + text[head_end:])
+
+
+def undo_identifiers(known: dict, apply: bool, say: bool = True) -> dict:
     """Вернуть имя коду, который прежний прогон «перевёл». → {старая цель ссылки: код}.
 
     Карточка, названная по переводу кода (`ER.Doc.BankId` → «ЕР.Док.БанкИд»), получает
@@ -290,6 +305,13 @@ def undo_identifiers(known: dict, apply: bool) -> dict:
         name = card_filename(cyr)
         path = disk.get(name)
         back = card_filename(lat)
+        if back in disk and not path:
+            # Имя уже возвращено, а ссылки ещё ведут на перевод — довести их до кода; синоним-
+            # перевод снять: это не второе имя сущности, а ошибка словаря.
+            out[name] = out[cyr] = back
+            if apply:
+                _drop_aliases(disk[back], {cyr, name})
+            continue
         if not path or back in disk:
             continue
         # Только карточка, которую переименовал словарь: у неё код остался синонимом.
@@ -297,13 +319,17 @@ def undo_identifiers(known: dict, apply: bool) -> dict:
         if not re.search(r'^\s*-\s*"?' + re.escape(lat) + r'"?\s*$',
                          open(path, encoding="utf-8", errors="ignore").read(), re.M):
             continue
-        print(f"{'✅' if apply else '(dry-run)'} код возвращён: {name} → {back}")
+        if say:
+            print(f"{'✅' if apply else '(dry-run)'} код возвращён: {name} → {back}")
         out[name] = out[cyr] = back
         if not apply:
             continue
+        _drop_aliases(path, {lat, cyr, name})
         text = open(path, encoding="utf-8").read()
-        text = re.sub(r'^\s*-\s*"?' + re.escape(lat) + r'"?\s*\n', "", text, count=1,
-                      flags=re.M)
+        own, sep, rest = text.partition("## Источник (перенесено дословно)")
+        own = re.sub(r"^#\s+(" + re.escape(cyr) + "|" + re.escape(name) + r")\s*$",
+                     lambda _m: f"# {lat}", own, count=1, flags=re.M)
+        text = own + sep + rest
         text = re.sub(r'^(title:\s*)"?[^"\n]*"?\s*$', f'\\1"{lat}"', text, count=1,
                       flags=re.M)
         open(path, "w", encoding="utf-8").write(text)

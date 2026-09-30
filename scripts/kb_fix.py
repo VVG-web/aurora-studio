@@ -1535,6 +1535,113 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
     return born, cleaned, forms, detached
 
 
+def plan_copies(cards: dict, plan: Plan) -> tuple:
+    """Машинная расшифровка рядом с копией человека — снять её с карточек. → (снято, в архив).
+
+    Правило «есть копия — машинную не разбирать» до 1.146.0 узнавало копию только по имени
+    `X.md` рядом с `X.converted.md`, и одна бумага разбиралась дважды (PRJ-C: шесть
+    документов, госконтракт — 6 + 6 карточек). Теперь копия узнаётся по имени без
+    разделителей (`build_plan.human_twin`), а ремонт убирает след двойного разбора:
+
+    - у карточки есть и копия, и расшифровка — блок расшифровки и её строка в `sources`
+      уходят; знание то же, тезис не сбрасывается;
+    - карточка собрана только из расшифровки — в архив, ссылки на неё — текстом: ту же
+      бумагу разбор взял из копии человека.
+
+    Расшифровка уходит и из учёта разбора: источником она больше не числится.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+    seen: dict = {}
+
+    def twin(s: str) -> str:
+        if s not in seen:
+            seen[s] = BP.human_twin(s) if s.startswith("Raw/") and os.path.isfile(s) else ""
+        return seen[s]
+
+    trimmed, archived = [], []
+    gone: dict = {}
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
+            continue
+        srcs = card_sources(c.text)
+        machine = [s for s in srcs if twin(s)]
+        if not machine:
+            continue
+        plan.reopen += machine
+        keep = [s for s in srcs if s not in machine]
+        title = (c.fm.get("title") or "").strip().strip('"') or c.stem
+        if not keep:
+            plan.moves.append((rel, os.path.join(ROOT, "_archive",
+                                                 os.path.basename(rel)).replace("\\", "/")))
+            gone[c.stem] = title
+            archived.append((c.stem, machine[0]))
+            continue
+        body = c.body()
+        own, sep, quotes = body.partition(QUOTES)
+        if sep:
+            marks = list(BP.BLOCK_MARK_RE.finditer(quotes))
+            first_is_machine = srcs[0] in machine
+            parts = []
+            head_txt = quotes[:marks[0].start()] if marks else quotes
+            if not (first_is_machine and head_txt.strip()):
+                parts.append(head_txt)
+            for i, m in enumerate(marks):
+                end = marks[i + 1].start() if i + 1 < len(marks) else len(quotes)
+                seg = quotes[m.start():end]
+                key = m.group(1).strip()
+                if key in machine or (key == BP.FIRST_PARSE and first_is_machine):
+                    tail = re.search(r"\n## ", seg)
+                    if tail:
+                        parts.append(seg[tail.start():])
+                    continue
+                parts.append(seg)
+            quotes = "".join(parts)
+        prefix = c.text[:len(c.text) - len(body)]
+        head_end = prefix.find("\n---", 3)
+        text = BP.with_sources(prefix[:head_end], keep) + prefix[head_end:] + own + sep + quotes
+        plan.write(path, text)
+        trimmed.append((c.stem, machine[0]))
+    if gone:
+        leaving = {m[0] for m in plan.moves}
+        for path, c in cards.items():
+            if path.replace("\\", "/") in leaving:
+                continue
+            base = plan.file_writes.get(path, c.text)
+            new = _unlink_archived(base, gone)
+            if new != base:
+                plan.write(path, new)
+    return trimmed, archived
+
+
+def plan_tautologies(cards: dict, plan: Plan) -> list:
+    """Пустые предложения в тезисах — одна ссылка или «X — X.». → [имя карточки].
+
+    След выноса определения (`agent:extract`) до 1.146.0: «Заявители — [[Заявители]].»,
+    голая «[[ДОК]]». Знания в них нет — определение уехало в свою карточку; правило одно с
+    выносом (`aurora_common.drop_echo_sentences`). Дословный раздел не трогается.
+    """
+    from aurora_common import drop_echo_sentences
+    fixed = []
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
+            continue
+        if (c.fm.get("kind") or "").strip().strip('"') != "knowledge":
+            continue
+        base = plan.file_writes.get(path, c.text)
+        now = Card(path, base)
+        body = now.body()
+        own, sep, rest = body.partition(QUOTES)
+        new_own, n = drop_echo_sentences(own)
+        if not n:
+            continue
+        plan.write(path, base[:len(base) - len(body)] + new_own + sep + rest)
+        fixed.append(c.stem)
+    return fixed
+
+
 def plan_themes(cards: dict, plan: Plan, root: str, floor: int = 3) -> list:
     """Завести карточку темы по папке источников. → [(имя, сколько карточек)].
 
@@ -2072,17 +2179,20 @@ def plan_frontmatter(cards: dict, plan: Plan):
 
 
 WORD_FORMS = "одно понятие в разных формах слова"
+SPELLING = "одно имя, другое написание"
 
 
 def find_dupes(cards: dict):
     """Группы двойников: по свёрнутому имени, по общим alias, по одинаковому title и по
     ключу термина — одно имя в разных формах слова («Заявители» и «Заявитель»)."""
     from build_plan import term_key
-    by_fold, by_alias, by_title, by_key = {}, {}, {}, {}
+    by_fold, by_alias, by_title, by_key, by_spell = {}, {}, {}, {}, {}
     for path, c in cards.items():
         if is_service(path) or "/_archive/" in path:
             continue
         by_fold.setdefault(fold(c.stem), []).append(path)
+        by_spell.setdefault(fold_hard(c.stem.replace("ё", "е").replace("Ё", "Е")),
+                            []).append(path)
         by_key.setdefault(term_key(c.stem), []).append(path)
         for a in c.aliases:
             by_alias.setdefault(fold(a), set()).add(path)
@@ -2100,6 +2210,11 @@ def find_dupes(cards: dict):
 
     for k, v in by_fold.items():
         add("имя (регистр/гомоглифы)", v)
+    for k, v in by_spell.items():
+        # «НД-по-КН» и «НД по КН», «платеж» и «платёж», «ER.Doc.DocId» и «ER-Doc-DocId»:
+        # одно имя, набранное иначе. Уже названное выше как «имя» здесь не повторяется.
+        if k and len({fold(cards[p].stem) for p in v}) > 1:
+            add(SPELLING, v)
     for k, v in by_alias.items():
         add("общий alias", list(v))
     for k, v in by_title.items():
@@ -2191,11 +2306,43 @@ def plan_merge_all(cards: dict, plan: Plan) -> tuple:
             refused.append((kind, live, "общий синоним — это не обязательно один предмет"))
             continue
         # Формы одного слова — почти всегда одно понятие, но не всегда: «Отчет по НДС» в
-        # понятиях и «Отчеты по НДС» в системах могут оказаться разными вещами. Решает человек.
+        # понятиях и «Отчеты по НДС» в системах могут оказаться разными вещами. Заготовка
+        # под косвенный падеж ссылки («товара», «Расписанию запуска…») — не понятие, а
+        # форма имени: она сливается в живую карточку правилом. Две живые — судит модель
+        # (`agent:twins`, флаг `--word-forms`), человеку этот выбор не отдаётся (29.09).
         if kind == WORD_FORMS:
-            refused.append((kind, live, "формы одного слова — проверьте, одно ли это понятие"))
+            real = [p for p in live if not is_placeholder(cards[p].fm, cards[p].text)]
+            if len(real) > 1:
+                refused.append((kind, live, "формы одного слова — судит модель (`agent:twins`)"))
+                continue
+            # Одна живая — в неё; живых нет — остаётся самое короткое имя: у заготовок под
+            # падеж ссылки это обычно начальная форма («Товар», а не «товара»), и ссылки
+            # при слиянии переписываются на неё.
+            keep = real[0] if real else min(
+                live, key=lambda p: (len(cards[p].stem), not cards[p].stem[:1].isupper()))
+            why = ("заготовка под форму слова — в живую карточку" if real
+                   else "заготовки под формы слова — в начальную форму")
+            for drop in [p for p in live if p != keep]:
+                if merge_paths(cards, keep, drop, plan) == 0:
+                    merged_paths.add(drop)
+                    done.append((keep, drop, why))
             continue
-        keep, drops, why = pick_winner(cards, live, inbound)
+        if kind == SPELLING:
+            # Одно имя, набранное иначе: остаётся живая карточка, из живых — с именем по
+            # правилу (код ER — с точками: он имя сущности; прочее — без пробелов и «_»).
+            # Входящие ссылки и объём решают ничью. Без этого выживало «ER-Doc-DocId» и
+            # «Расписание_запуска_алгоритмов» — по числу ссылок.
+            from build_plan import ER_PATH_RE
+
+            def spell_rank(p_):
+                c_ = cards[p_]
+                return (not is_placeholder(c_.fm, c_.text), bool(ER_PATH_RE.fullmatch(c_.stem)),
+                        c_.stem == normalize_title(c_.stem), inbound.get(c_.stem, 0),
+                        len(c_.body()))
+            keep = max(live, key=spell_rank)
+            drops, why = [p_ for p_ in live if p_ != keep], "одно имя, другое написание"
+        else:
+            keep, drops, why = pick_winner(cards, live, inbound)
         if not keep:
             refused.append((kind, live, why))
             continue
@@ -2428,6 +2575,12 @@ def main() -> int:
     ap.add_argument("--template", action="store_true",
                     help="карточки, собранные по шаблону страницы: рождённые шаблоном — в "
                          "архив, их источники — в план; абзац шаблона из тезиса — прочь")
+    ap.add_argument("--tautologies", action="store_true",
+                    help="пустые предложения в тезисах: одна ссылка или «X — X.» — след выноса "
+                         "определения")
+    ap.add_argument("--copies", action="store_true",
+                    help="машинная расшифровка рядом с копией человека: снять её с карточек, "
+                         "карточку только из неё — в архив")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
     ap.add_argument("--themes", action="store_true",
@@ -2477,6 +2630,9 @@ def main() -> int:
                     help="и снять их механически: alias останется у карточки, чьё имя "
                          "совпадает. Без ключа — только отчёт и задание ассистенту")
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
+    ap.add_argument("--word-forms", action="store_true",
+                    help="JSON: группы живых карточек, названных формами одного слова — "
+                         "их судит `agent:twins`")
     ap.add_argument("--all", action="store_true", help="всё вышеперечисленное")
     ap.add_argument("--merge", nargs=2, metavar=("KEEP", "DROP"), help="слить DROP в KEEP")
     ap.add_argument("--merge-all", action="store_true",
@@ -2494,6 +2650,13 @@ def main() -> int:
     if not os.path.isdir(a.root):
         print(f"kb_fix: нет папки {a.root}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
+    if a.word_forms:
+        cards = load_cards(a.root)
+        groups = [[cards[p].stem for p in paths] for kind, paths in find_dupes(cards)
+                  if kind == WORD_FORMS
+                  and sum(1 for p in paths if not is_placeholder(cards[p].fm, cards[p].text)) > 1]
+        print(json.dumps(groups, ensure_ascii=False))
+        return 0
     if a.all:
         a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.titles = True
         a.aliases = a.sections = a.names = True
@@ -2503,7 +2666,7 @@ def main() -> int:
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.titles, a.aliases, a.split,
                 a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs, a.meetings,
-                a.unparsed, a.themes, a.template,
+                a.unparsed, a.themes, a.template, a.copies, a.tautologies,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
         ap.print_help()
@@ -2549,7 +2712,7 @@ def main() -> int:
         if a.merge_all:
             done, refused = plan_merge_all(cards, plan)
             plan.notes.append(f"  двойников слито правилом: {len(done)}, "
-                              f"оставлено человеку: {len(refused)}")
+                              f"решит модель: {len(refused)}")
             MERGE_REPORT.extend([done, refused])
         if a.merge:
             # Аргументом может быть и имя карточки, и путь от корня базы: у двойников
@@ -2618,6 +2781,19 @@ def main() -> int:
                 head.append(f"- тезис без шаблона: {name}")
             for name in forms_gone[:10]:
                 head.append(f"- не форма, а знание — источник в разбор: {name}")
+        if a.tautologies:
+            echo = plan_tautologies(cards, plan)
+            head.append(f"## Пустые предложения в тезисах (одна ссылка, «X — X.»): "
+                        f"убраны в {len(echo)} карточках")
+            for name in echo[:15]:
+                head.append(f"- {name}")
+        if a.copies:
+            trimmed, archived = plan_copies(cards, plan)
+            head.append(f"## Документ разобран дважды — из копии человека и из машинной "
+                        f"расшифровки: расшифровка снята с {len(trimmed)} карточек, "
+                        f"{len(archived)} карточек только из неё — в архив")
+            for name, src in (trimmed + archived)[:15]:
+                head.append(f"- {name} ← {src}")
         if a.unparsed:
             tpl, ptr = plan_unparsed_sources(cards, plan, a.root)
             head.append(f"## Источники вне разбора: шаблонов {len(tpl)}, "
@@ -2732,7 +2908,7 @@ def main() -> int:
     if a.merge_all and MERGE_REPORT:
         done, refused = MERGE_REPORT[0], MERGE_REPORT[1]
         out.append(f"## Слияние двойников: {len(done)} пар правилом, "
-                   f"{len(refused)} остаётся человеку")
+                   f"{len(refused)} решит модель")
         by_why: dict = {}
         for keep, drop, why in done:
             by_why.setdefault(why, []).append((keep, drop))
@@ -2744,12 +2920,12 @@ def main() -> int:
                 out.append(f"    … ещё {len(pairs) - 6}")
         if refused:
             out.append("")
-            out.append("Не слито — выбор знаниевый, а не механический:")
+            out.append("Не слито правилом — это решает модель (`agent:twins`) или уточнение "
+                       "синонима (`agent:aliases`):")
             for kind, paths, why in refused[:15]:
                 out.append(f"- {why}: " + ", ".join(short(p) for p in paths))
             if len(refused) > 15:
                 out.append(f"- … ещё {len(refused) - 15}")
-            out.append("Решите сами: `kb:dedupe` с флагом --merge «оставить» «убрать».")
         out.append("")
 
     if a.dupes:

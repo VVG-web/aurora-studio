@@ -771,6 +771,22 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
             new_thesis = new_thesis[:start] + replacement + tail
         made.append((term, definition))
 
+    # Определение уехало в свою карточку, и от предложения могла остаться одна ссылка:
+    # «[[ДОК]]» или «Заявители — [[Заявители]].» (PRJ-C, 1.144.1). Такое предложение уходит,
+    # а термин получает ссылку там, где тезис его упоминает (`drop_echo_sentences`).
+    if made:
+        from aurora_common import drop_echo_sentences
+        new_thesis, _echo = drop_echo_sentences(new_thesis)
+        for term, _definition in made:
+            link = definition_link(root, term)
+            target = link[2:-2].split("|", 1)[0]
+            if f"[[{target}" in new_thesis:
+                continue
+            m = re.search(r"(?<![\w\[|])" + re.escape(term) + r"(?![\w\]|])", new_thesis)
+            if m:
+                label = f"[[{target}]]" if target == m.group(0) else f"[[{target}|{m.group(0)}]]"
+                new_thesis = new_thesis[:m.start()] + label + new_thesis[m.end():]
+
     if not made:
         out["status"] = "нечего выносить"
         if apply:
@@ -2147,6 +2163,18 @@ def twin_groups(cwd: str, min_score: float = 0.6, limit: int = 0) -> list:
             cur.append(name)
     if cur:
         groups.append(cur)
+    # Живые карточки, названные формами одного слова («Заявители» и «Заявитель»): текст у
+    # них разный, и сходство по тексту их не находит, а правило слить их не вправе. Судит
+    # модель — до 1.146.0 `kb:dedupe` отдавал эти пары человеку.
+    wf = run_command(cwd, "kb_fix.py", ["--word-forms"])
+    if wf["ok"]:
+        try:
+            known = {tuple(sorted(g)) for g in groups}
+            for g in json.loads(wf["out"].strip().splitlines()[-1]):
+                if len(g) > 1 and tuple(sorted(g)) not in known:
+                    groups.append(g)
+        except (ValueError, IndexError):
+            pass
     groups = [g for g in groups if len(g) > 1]
     groups = [g for g in groups if not decided_apart(cwd, g)]
     return groups[:limit] if limit else groups
@@ -2350,7 +2378,7 @@ def lint_conflicts(cwd: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def lint_errors(cwd: str, orphans: bool = True) -> int:
+def lint_errors(cwd: str, orphans: bool = True) -> int:  # noqa: C901
     """Ошибок базы по линтеру. `orphans=False` — без «карточек без связей».
 
     Разбор заводит карточки, а связи им ставит следующий шаг (`agent:relink`): новая
@@ -2508,8 +2536,26 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
                 return step
 
     if proposal["verdict"] == "duplicate":
-        step.update(status="дубль — человеку",
-                    note=(proposal.get("reason") or "карточки об одном и том же")[:160])
+        # Карточки об одном и том же — это двойники, и сливает их движок тем же путём, что и
+        # `agent:twins`: тело проигравшей уезжает в раздел «Слияние», синонимы объединяются,
+        # ссылки переписываются, сама она — в архив. Знание не теряется, и человек здесь
+        # не нужен (принцип 29.09.2026: «на человеке» — пробел движка).
+        from aurora_common import fold
+        names = [c.rsplit("/", 1)[-1] for c in cards]
+        keep = next((n for n in names if fold(n) == fold(alias)), names[0])
+        merged = []
+        for drop in [n for n in names if n != keep]:
+            if apply:
+                res = run_command(cwd, "kb_fix.py", ["--dupes", "--merge", keep, drop,
+                                                     "--apply", "--allow-dirty"])
+                if not res["ok"]:
+                    step.update(status="сбой", note=f"слияние {drop} → {keep} не прошло: "
+                                + (res.get("why") or res["out"][:200]))
+                    return step
+            merged.append(drop)
+        step.update(status="слито" if apply else "слил бы",
+                    note=f"оставлена {keep}, слиты: {', '.join(merged)} — "
+                         + (proposal.get("reason") or "карточки об одном и том же")[:120])
         return step
 
     renames = [x for x in (proposal.get("renames") or [])
@@ -3907,6 +3953,12 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 executor.shutdown(wait=False, cancel_futures=True)
 
     after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
+    if apply and any(s.get("status") == "разобран" for s in steps):
+        # Текст страницы переносится дословно, и ссылки в нём ведут на страницы и вопросы по
+        # их именам — ремонт находит им карточку. Чиним до счёта: оракул судит о том, что
+        # ремонту не по силам, а не о том, до чего ремонт ещё не дошёл («14 → 22» на PRJ-C
+        # 29.09.2026 — ложная тревога посреди оборота).
+        run_command(cwd, "kb_fix.py", ["--links", "--apply", "--allow-dirty"])
     return {"steps": steps, "seconds": round(time.time() - started, 1), "task": "build",
             "before": {"left": before_left, "done": before_done, "errors": before_errors},
             "after": {"left": after_left, "done": after_done,
@@ -5916,9 +5968,9 @@ def report_distill(res: dict, apply: bool) -> str:
     # PRJ-B 24.09.2026 под «помечены 3» стояли 13 карточек.
     flagged = [s for s in made if s.get("unsupported")]
     if res["unsupported"]:
-        L += [f"⚠️ Момус нашёл утверждений без опоры: {res['unsupported']}. Эти карточки "
-              "помечены `unsupported:` и ждут человека — это единственная работа, которую "
-              "новая схема ему оставляет:", ""]
+        L += [f"⚠️ Момус нашёл утверждений без опоры: {res['unsupported']}. Карточки "
+              "помечены `unsupported:`, утверждения записаны в `meta/unsupported.md`; "
+              "перепроверку делает `agent:distill --recheck`:", ""]
         L += [f"- {s['card']}: без опоры {s['unsupported']}" for s in flagged[:15]]
         if len(flagged) > 15:
             L.append(f"- … ещё {len(flagged) - 15}")
@@ -6073,10 +6125,10 @@ def verdict(res: dict, apply: bool) -> tuple:
 
     Ноль конфликтов любой ценой — вредная цель: часть из них дубли, и агент, добиваясь
     нуля, начал бы выдумывать различия там, где карточки надо сливать. Поэтому успех —
-    «каждый конфликт разобран»: уточнён или честно отложен человеку.
+    «каждый конфликт разобран»: уточнён или слит как дубль.
     """
-    done = [s for s in res["steps"] if s["status"] in ("уточнено", "уточнил бы")]
-    dup = [s for s in res["steps"] if s["status"] == "дубль — человеку"]
+    done = [s for s in res["steps"] if s["status"] in ("уточнено", "уточнил бы",
+                                                      "слито", "слил бы")]
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком", "стоп",
                                                       "не начат")]
     grew = apply and res["after"]["errors"] > res["before"]["errors"]
@@ -6085,10 +6137,10 @@ def verdict(res: dict, apply: bool) -> tuple:
     blind = 0 if res.get("limited") else max(0, res["before"]["conflicts"] - res["total_conflicts"])
     left = res.get("left", 0)
     ok = (not bad and not grew and not blind
-          and (len(done) + len(dup)) == res["total_conflicts"] - left)
+          and len(done) == res["total_conflicts"] - left)
     why = []
     if left and res.get("stopped"):
-        why.append(f"разобрано {len(done) + len(dup)} из {res['total_conflicts']}, "
+        why.append(f"разобрано {len(done)} из {res['total_conflicts']}, "
                    f"{res['stopped']}")
     if blind:
         why.append(f"агент увидел {res['total_conflicts']} конфликтов из "
@@ -6138,24 +6190,23 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
         L += [f"- {s['alias']}: {s['note']}" for s in fail]
     human = [s for s in res["steps"] if s["status"] == "без секций — человеку"]
     if human:
-        L += ["", "## Отложено человеку: источники без структуры", "",
-              "Раскадровка пуста — карточку из таких источников пишут чтением, а тела "
-              "карточек агент писать не имеет права. Разберите их в `kb:build` руками "
-              "или ассистентом.", ""]
+        L += ["", "## Без раскадровки — пробел движка", "",
+              "Раскадровка пуста: длинный текст движок режет по абзацам, короткий — одна "
+              "секция. Источник сюда попадать не должен; он останется в плане.", ""]
         L += [f"- {s['alias']}" for s in human]
 
     L += ["", f"**Оракул:** {'✅ ' if ok else '✗ '}{why}",
           f"Источников в плане: {res['before']['left']} → {res['after']['left']} · "
           f"ошибок базы: {res['before']['errors']} → {res['after']['errors']}"]
     if made:
-        # Честная граница работы: агент решает, где границы темы и как она называется.
-        # Довести тело до вида знания (убрать вёрстку исходника, «см. рисунок ниже»,
-        # повторы) он не может — правка тел карточек моделью запрещена конструкцией.
-        L += ["", "## Что осталось человеку", "",
-              f"Карточки собраны механически и лежат со статусом `imported`: агент выбрал "
-              f"границы тем и имена, тело перенёс движок дословно. Вёрстка исходника, "
-              f"«см. рисунок ниже» и повторы остались в тексте — доводка это работа "
-              f"человека или ассистента (`kb:build`, шаг 3). После доводки — `kb:verify`."]
+        # Граница работы разбора: он выбирает границы тем и имена, тело переносит движок
+        # дословно. Тезис напишет `agent:distill`, связи — `agent:relink`: оба идут в том же
+        # маршруте следом. Прежний раздел «Что осталось человеку» звал к доводке и к
+        # `kb:verify`, которых нет с тех пор, как тезисы пишет модель.
+        L += ["", "## Что дальше", "",
+              "Карточки собраны: границы тем и имена выбрал агент, текст источника перенесён "
+              "дословно. Тезис напишет `agent:distill`, связи — `agent:relink`; оба идут в "
+              "маршруте «Обновить базу» следом."]
     L += adapter_lines(cfg, res)
     if res.get("left"):
         L += ["", f"## Осталось в партии: {res['left']}", "",
@@ -6232,11 +6283,11 @@ def report(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) -> str
               f"Прогон остановился — {res.get('stopped') or 'дошёл до лимита'}. Это не "
               "ошибка: конфликты независимы, и агент разбирает их по одному. Запустите "
               "`agent:aliases` ещё раз — он продолжит с оставшихся."]
-    dup = [s for s in res["steps"] if s["status"] == "дубль — человеку"]
+    dup = [s for s in res["steps"] if s["status"] in ("слито", "слил бы")]
     if dup:
-        L += ["", "## Отложено человеку: дубли карточек", "",
-              "Это не провал прогона: агент не имеет права сливать карточки — знание можно "
-              "потерять. Разберите командой `kb:dedupe`.", ""]
+        L += ["", "## Слиты как дубли", "",
+              "Синоним спорили карточки об одном и том же. Слияние — `kb:dedupe --merge`: "
+              "тело проигравшей в разделе «Слияние», синонимы и ссылки перенесены.", ""]
         L += [f"- «{s['alias']}»: {s['note']}" for s in dup]
     if not apply:
         L += ["", "(предпросмотр) В базу ничего не записано. Повторите с `--apply`."]
@@ -6675,7 +6726,11 @@ def main() -> int:
                     else f"тезисов: {made}, без опоры: {res['unsupported']}")
             done = commit_result(cwd, "agent:distill", head, not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
-        return 0 if made and not res["unsupported"] else 1
+        # Код 1 — только сбой. «Работы не нашлось» — успех, а утверждения без опоры записаны
+        # в `meta/unsupported.md` и перепроверяются `--recheck`: до 1.146.0 и то и другое
+        # давало код 1, и каждый оборот маршрута PRJ-C красил шаг упавшим (4 из 4).
+        failed = sum(1 for s in res["steps"] if s["status"] == "сбой")
+        return 1 if failed else 0
     # Сборка со своей петлёй коммитит каждую партию сама — итоговый коммит был бы вторым.
     self_looped = a.until_done and a.task == "build"
     if a.apply and not self_looped:

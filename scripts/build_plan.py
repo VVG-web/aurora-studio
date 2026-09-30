@@ -291,10 +291,8 @@ def sources() -> list:
                 # документа она вышла в три с половиной раза короче копии.
                 # Копия обязана быть годным источником сама (тот же порог, что ниже):
                 # пропустив расшифровку при пустой копии, потеряли бы документ целиком.
-                if f.endswith(".converted.md"):
-                    copy = os.path.join(dirpath, f[: -len(".converted.md")] + ".md")
-                    if os.path.isfile(copy) and os.path.getsize(copy) >= 200:
-                        continue
+                if human_twin(os.path.join(dirpath, f)):
+                    continue
                 path = os.path.join(dirpath, f).replace("\\", "/")
                 # Карточка, собранная из справочника, ложится рядом с ним — и попадала
                 # в план новым источником. План рос от собственной работы: разобрал
@@ -329,6 +327,54 @@ TERMS_SOURCE = re.compile(
 # плане навсегда: при каждой пересборке шаблон снова уходил к модели и снова признавался
 # пустым. Признак — слово в имени либо незаполненные плейсхолдеры в теле.
 TEMPLATE_NAME = re.compile(r"(?i)шаблон|template|_tpl\b")
+
+
+def _doc_key(name: str) -> str:
+    """Имя документа без расширения, пометки расшифровки и разделителей."""
+    stem = name[:-3] if name.endswith(".md") else name
+    stem = stem[:-len(".converted")] if stem.endswith(".converted") else stem
+    return re.sub(r"[\s_\-]+", "", stem.lower())
+
+
+def is_machine_copy(path: str) -> bool:
+    """Машинная расшифровка документа: `X.converted.md` или `converted_from:` в шапке."""
+    if path.endswith(".converted.md"):
+        return True
+    try:
+        return "converted_from:" in open(path, encoding="utf-8", errors="ignore").read(800)
+    except OSError:
+        return False
+
+
+def human_twin(path: str) -> str:
+    """Копия того же документа, сделанная человеком, рядом с машинной. → путь или пусто.
+
+    Правило заказчика: есть копия — машинную расшифровку не разбирать. Копию узнавали по
+    имени буквально (`X.md` рядом с `X.converted.md`), а человек называет файл по-своему:
+    «gf_дКН_представление.md» рядом с расшифровкой «gf_дКН представление.md». Конвертер
+    не нашёл копии, положил свою как `X.md`, и одна бумага разбиралась дважды — на PRJ-C
+    шесть документов, госконтракт в их числе (6 + 6 карточек), на PRJ-B четыре. Копия
+    узнаётся по имени без разделителей; своя шапка у неё без `converted_from:`.
+    """
+    if not is_machine_copy(path):
+        return ""
+    folder, name = os.path.split(path)
+    key = _doc_key(name)
+    try:
+        names = sorted(os.listdir(folder or "."))
+    except OSError:
+        return ""
+    for g in names:
+        other = os.path.join(folder, g)
+        if g == name or not g.endswith(".md") or _doc_key(g) != key:
+            continue
+        try:
+            if os.path.getsize(other) < 200 or is_machine_copy(other):
+                continue
+        except OSError:
+            continue
+        return other.replace("\\", "/")
+    return ""
 
 
 def is_template(path: str, text: str = "") -> bool:
@@ -529,7 +575,9 @@ BOLD_RE = re.compile(r"^\*\*([^*\n]{4,120}?)[:.]?\*\*\s*$")   # псевдоза
 MIN_SECTION = 200          # короче — подпись под картинкой, а не тема
 
 
-ATOMIC_MAX = 12_000     # символов: длиннее — это не атом, а нечитанный документ
+ATOMIC_MAX = 12_000     # символов: длиннее — не атом, и режется по абзацам
+WHOLE_MIN = 60          # короче — подпись, а не документ
+PART_CHARS = 4_000      # часть длинного текста без заголовков
 
 
 # «Вопрос 5. …» — заголовок вопроса в документе вопросов и ответов. Внутри вопроса свои
@@ -628,11 +676,32 @@ def sections(text: str) -> list:
     # Порог нужен: очень длинный текст без единого заголовка — это либо неудачная
     # конвертация, либо документ, который правда надо читать глазами. Его отдаём человеку.
     whole = body.strip()
-    if MIN_SECTION <= len(whole) <= ATOMIC_MAX:
-        # Имя темы — первая содержательная строка, а не «---» от frontmatter
-        first = next((l.strip().lstrip("# ").strip() for l in lines
-                      if l.strip() and set(l.strip()) - set("-=*_")), "")
+    # Имя темы — первая содержательная строка, а не «---» от frontmatter
+    first = next((l.strip().lstrip("# ").strip() for l in lines
+                  if l.strip() and set(l.strip()) - set("-=*_")), "")
+    # Короткий документ про одно — тоже секция: письмо на 339 знаков с правилом «имя
+    # события берётся из столбца “Тип события”» уходило человеку («ОТЛОЖЕНО ЧЕЛОВЕКУ»,
+    # PRJ-C). Порог — чтобы строка-подпись не стала карточкой.
+    if WHOLE_MIN <= len(whole) <= ATOMIC_MAX:
         return [(first[:120] or "весь документ", whole)]
+    # Длинный текст без единого заголовка — не «нечитанный документ для человека», а текст,
+    # который режется по абзацам, как расшифровка встречи. Концепция PRJ-C на 42 КБ так
+    # и не была разобрана: «без секций — человеку».
+    if len(whole) > ATOMIC_MAX:
+        parts, cur = [], []
+        for par in re.split(r"\n\s*\n", whole):
+            if cur and len("\n\n".join(cur + [par])) > PART_CHARS:
+                parts.append("\n\n".join(cur))
+                cur = []
+            cur.append(par)
+        if cur:
+            parts.append("\n\n".join(cur))
+        out_parts = []
+        for i, part in enumerate(parts, 1):
+            lead = next((l.strip().lstrip("#*> ").strip() for l in part.splitlines()
+                         if l.strip() and set(l.strip()) - set("-=*_|")), "")
+            out_parts.append((f"Часть {i}: {lead[:80]}", part))
+        return out_parts
     return []
 
 
@@ -985,8 +1054,8 @@ def with_sources(head: str, srcs: list) -> str:
     """Шапка карточки с этим списком источников вместо прежнего."""
     block_txt = sources_block(srcs).rstrip("\n")
     if re.search(r"^sources:", head, re.M):
-        return re.sub(r"^sources:(?:\s*\[.*\])?(?:\n\s+-.*)*$", lambda _m: block_txt,
-                      head, count=1, flags=re.M)
+        return re.sub(r"^sources:[ \t]*(?:\[.*\])?[ \t]*(?:\n[ \t]+-.*)*$",
+                      lambda _m: block_txt, head, count=1, flags=re.M)
     if re.search(r"^source:", head, re.M):
         return re.sub(r"^source:.*$", lambda _m: block_txt, head, count=1, flags=re.M)
     return head.rstrip("\n") + "\n" + block_txt
@@ -1504,7 +1573,13 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
         # Confluence не доходила до базы никогда: «карточки есть, значит разобран».
         rec = (manifest.get("sources") or {}).get(path) or {}
         changed = bool(rec.get("hash")) and rec["hash"] != file_hash(path)
-        if path in known and not changed:
+        # Стенограмма, нарезанная прежним правилом: таблица протокола рвалась посреди
+        # строки, и карточки получали чужие пункты. Такую разбираем заново — один раз.
+        from aurora_common import TURN_RULE, is_meeting, meeting_has_long_table
+        stale_turns = (is_meeting(path) and int(rec.get("turns_rule") or 0) < TURN_RULE
+                       and meeting_has_long_table(
+                           open(path, encoding="utf-8", errors="ignore").read()))
+        if path in known and not changed and not stale_turns:
             continue
         # Источник, ПРИЗНАННЫЙ ПУСТЫМ, — это разобранный источник, а не пропущенный.
         # Вердикт вынесен, записан в манифест (`empty_reason`) и проверен: с 1.100.41
@@ -1517,7 +1592,7 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
         # (`EMPTY_RULE`) — вердикт вынесен о другом тексте и пересматривается один раз:
         # до 1.145.0 модели прятали как «служебные» секции «История версии заявки» и
         # «Инструкция: подписание с МЧД» и получали честное «пусто» о знании (PRJ-C).
-        if (rec.get("empty_reason") and not changed
+        if (rec.get("empty_reason") and not changed and not stale_turns
                 and int(rec.get("empty_rule") or 0) >= EMPTY_RULE):
             continue
         if rec.get("empty_reason") and not changed:
@@ -1529,7 +1604,8 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
         top = "/".join(p.split("/")[:2])
         by_group[top] = by_group.get(top, 0) + 1
     print(f"# Переоткрыть источники — {TODAY}\n")
-    print(f"Отмечено обработанными, но ни одной карточки не дали: {len(victims)}\n")
+    print(f"Вернуть в план: {len(victims)} — не дали ни одной карточки, изменились после "
+          "разбора или разобраны по прежним правилам показа\n")
     print("Источники с вынесенным вердиктом «пусто» сюда не входят: это разобранные "
           "источники, а не пропущенные. Изменится файл — вернутся сами.\n")
     if rejudge:
@@ -1589,6 +1665,9 @@ def mark_done(manifest: dict, target: str, claimed: int, empty: str, root: str =
     # Хеш — от содержимого, значит читаем по разрешённому пути; ключом в манифесте
     # остаётся относительный `path`.
     rec = {"hash": file_hash(read_from), "processed": TODAY, "cards": found}
+    from aurora_common import TURN_RULE, is_meeting
+    if is_meeting(path):
+        rec["turns_rule"] = TURN_RULE
     if found == 0:
         rec["empty_reason"] = empty
         rec["empty_rule"] = EMPTY_RULE

@@ -1318,14 +1318,14 @@ def test_build_plan_reopens_sources_that_gave_nothing(tmp: Path):
     # даст карточек никогда, и возвращать его в план значит гонять по нему модель вечно.
     # Ровно из-за этого маршрут «Обновить базу» не заканчивался работой в ноль (1.100.41).
     dry = run("build_plan.py", "--reopen", cwd=root)
-    assert "не дали: 0" in dry.stdout, \
+    assert "Вернуть в план: 0" in dry.stdout, \
         f"источник с вердиктом «пусто» снова переоткрывается:\n{dry.stdout[:400]}"
 
     # А вот знание, ПРОПАВШЕЕ из базы, обязано вернуть источник в план: отметка
     # «обработан» без карточек — это молчаливая потеря, ради которой `--reopen` и есть.
     (root / "AuroraKnowledgeDB/Concepts/Из-полезной.md").unlink()
     dry2 = run("build_plan.py", "--reopen", cwd=root)
-    assert "не дали: 1" in dry2.stdout, \
+    assert "Вернуть в план: 1" in dry2.stdout, \
         f"источник, чьи карточки исчезли, не вернулся:\n{dry2.stdout[:400]}"
     assert "осталось: 0" in run("build_plan.py", "--status", cwd=root).stdout, \
         "dry-run не должен править манифест"
@@ -2778,7 +2778,12 @@ def test_distill_writes_a_thesis_and_keeps_the_source(tmp: Path):
 
 @test
 def test_card_kind_decides_who_may_rewrite_the_body(tmp: Path):
-    """Тип карточки определяется правилом, и выбор человека сильнее правила."""
+    """Тип карточки определяется правилом на каждом прогоне; слово человека — исправление.
+
+    До 1.146.0 записанный `kind` считался «выбором человека», хотя писал его движок: тип
+    расходился с правилом у 92 карточек PRJ-C. «Контракт» в имени страницы делал документом
+    интеграционный маппинг, таблица шагов — словарём алгоритм: тезис им не писали никогда.
+    """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
     K = importlib.import_module("kb_kind")
@@ -2805,12 +2810,33 @@ def test_card_kind_decides_who_may_rewrite_the_body(tmp: Path):
     assert grown[0] != "document", \
         f"карточка из пяти источников осталась «документом» — тезис ей не напишут: {grown}"
 
+    mapping = K.guess("AuroraKnowledgeDB/Systems/Маппинг.md", {}, "текст",
+                      ["Sources/Confluence/Маппинг_контракта_ВАЛЮТА.md"])
+    assert mapping[0] == "knowledge", f"интеграционный контракт стал документом: {mapping}"
+    legal = K.guess("AuroraKnowledgeDB/Roles/Обязанности.md", {}, "текст",
+                    ["Sources/Confluence/Государственный_контракт_№_5-6.md"])
+    assert legal[0] == "document", f"госконтракт — нормативный текст: {legal}"
+    steps = K.guess("AuroraKnowledgeDB/Processes/Расчёт-НДС.md", {}, table,
+                    ["Sources/Confluence/x.md"])
+    assert steps[0] == "knowledge", f"таблица шагов алгоритма стала справочником: {steps}"
+
     root = make_project(tmp)
-    (root / "AuroraKnowledgeDB/Concepts/Своё.md").write_text(
-        '---\ntitle: "Своё"\nkind: document\nstatus: knowledge\n---\n\nдословный текст\n',
-        encoding="utf-8")
+    kb = root / "AuroraKnowledgeDB/Concepts"
+    for name in ("Машинное", "Своё"):
+        (kb / f"{name}.md").write_text(
+            f'---\ntitle: "{name}"\nkind: document\nstatus: knowledge\n---\n\nдословный текст\n',
+            encoding="utf-8")
+    fix = root / "Raw/corrections"
+    fix.mkdir(parents=True, exist_ok=True)
+    (fix / "Своё-документ.md").write_text(
+        '---\ntitle: "Своё — документ"\ncorrects: "[[Своё]]"\nkind: document\n---\n\n'
+        "Это текст приказа, его не пересказывают.\n", encoding="utf-8")
     out = run("kb_kind.py", "--apply", cwd=root).stdout
-    assert "выбор человека сохранён: 1" in out, f"движок перетёр выбор человека:\n{out}"
+    assert "по исправлению человека: 1" in out, out
+    assert "kind: document" in (kb / "Своё.md").read_text(encoding="utf-8"), \
+        "исправление человека не удержало тип"
+    assert "kind: knowledge" in (kb / "Машинное.md").read_text(encoding="utf-8"), \
+        "тип, записанный движком, не пересчитан по правилу"
 
 
 @test
@@ -12711,7 +12737,7 @@ def test_agent_runner_oracle_and_checkpoint(tmp: Path):
 
     Оракул «ноль конфликтов любой ценой» толкал бы агента выдумывать различия там, где
     карточки надо сливать, — в базе появлялись бы замаскированные дубли. Поэтому успех:
-    каждый конфликт разобран (уточнён или честно отложен человеку), а ошибок в базе не
+    каждый конфликт разобран (уточнён или слит как дубль), а ошибок в базе не
     прибавилось.
     """
     sys.path.insert(0, str(KIT / "scripts"))
@@ -12756,12 +12782,16 @@ def test_agent_runner_oracle_and_checkpoint(tmp: Path):
     ok, why = R.verdict(res, apply=True)
     assert ok, f"оракул не принял корректный прогон: {why}"
     statuses = sorted(s["status"] for s in res["steps"])
-    assert statuses == ["дубль — человеку", "уточнено"], statuses
+    assert statuses == ["слито", "уточнено"], statuses
     assert res["after"]["conflicts"] < res["before"]["conflicts"], "конфликтов не убавилось"
 
-    # дубль остался нетронутым: агент не имеет права сливать карточки
-    dup = (root / "AuroraKnowledgeDB/Statuses/SPR-7-Статусы.md").read_text(encoding="utf-8")
-    assert '"SPR-7"' in dup, "агент тронул синоним дубля вместо того, чтобы отложить"
+    # дубль слит тем же путём, что и двойники (`kb:dedupe --merge`): одна карточка живёт,
+    # вторая — в архиве, её тело в разделе «Слияние». Человек не нужен (принцип 29.09).
+    kb = root / "AuroraKnowledgeDB"
+    alive = [p for p in (kb / "Statuses/SPR-7-Статусы.md", kb / "Glossary/SPR-7-Statusy.md")
+             if p.is_file()]
+    assert len(alive) == 1, f"дубль не слит: {alive}"
+    assert list((kb / "_archive").glob("SPR-7-*.md")), "проигравшая карточка не ушла в архив"
 
     # откат одной строкой возвращает базу к состоянию до агента
     subprocess.run(["git", "reset", "--hard", cp["sha"]], cwd=str(root),
@@ -12773,7 +12803,8 @@ def test_agent_runner_oracle_and_checkpoint(tmp: Path):
     # отчёт называет и оракул, и путь отката
     text = R.report(res, cp, apply=True, use_critic=True, cfg=cfg)
     assert "Оракул:" in text and "git reset --hard" in text
-    assert "Отложено человеку" in text, "дубли не выделены в отчёте отдельно"
+    assert "## Слиты как дубли" in text and "Отложено человеку" not in text, \
+        "дубли не выделены в отчёте отдельно"
 
 
 @test
@@ -21090,7 +21121,7 @@ def test_extract_finds_the_term_card_in_another_word_form(tmp: Path):
     заведёнными и в одном проходе — термин приходит в той форме, в какой назван в тексте.
     Сверка 23.09 по четырём проектам нашла таких групп семь («Заявители» и «Заявитель»,
     «НАЛОГЕ», «НАЛОГОВ» и «НАЛОГУ»); ложных среди них не было. Отчёт двойников их теперь
-    называет, а автоматическое слияние не трогает: решает человек.
+    называет, а слияние по правилу не трогает: решает модель (`agent:twins`).
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
@@ -21125,7 +21156,10 @@ def test_extract_finds_the_term_card_in_another_word_form(tmp: Path):
     assert "одно понятие в разных формах слова" in cp.stdout and "Заявители.md" in cp.stdout, \
         cp.stdout[-1200:]
     cp = run("kb_fix.py", "--merge-all", cwd=root)
-    assert "формы одного слова — проверьте" in cp.stdout, cp.stdout[-1200:]
+    assert "формы одного слова — судит модель" in cp.stdout, cp.stdout[-1200:]
+    wf = json.loads(run("kb_fix.py", "--word-forms", cwd=root).stdout.strip().splitlines()[-1])
+    assert any(set(g) == {"Заявители", "Заявитель"} for g in wf), \
+        f"пара живых форм слова не дошла до модели (`agent:twins`): {wf}"
 
 
 @test
@@ -21150,7 +21184,7 @@ def test_extract_does_not_say_the_same_thing_twice(tmp: Path):
         ("Автоматические связи между НП на ГС имеют описание и список связей.",
          {"term": "Автоматические связи", "definition": "между НП на ГС имеют описание и список связей",
           "keep": ""},
-         "[[Автоматические-связи|Автоматические связи]]."),
+         None),     # предложение целиком ушло в карточку термина — голой ссылки не остаётся
         ("Баланс получает информацию из подсистемы ФЦОД, которая является частью проекта МинФин.",
          {"term": "ФЦОД", "definition": "которая является частью проекта МинФин", "keep": ""},
          "Баланс получает информацию из подсистемы [[ФЦОД]]."),
@@ -21164,6 +21198,11 @@ def test_extract_does_not_say_the_same_thing_twice(tmp: Path):
         text = path.read_text(encoding="utf-8")
         R.apply_extract_plan(str(root), str(path), text, thesis, [item], True)
         got = path.read_text(encoding="utf-8")
+        if want is None:
+            own = got.split("\n---", 1)[1]
+            assert "[[Автоматические-связи" not in own and "связи Автоматические" not in own, \
+                f"случай {i}: осталась голая ссылка или повтор имени\n{got[-300:]}"
+            continue
         assert want in got, f"случай {i}: ждали «{want}»\n{got[-300:]}"
 
 
@@ -22668,6 +22707,188 @@ def test_a_human_correction_is_named_by_its_path_not_by_a_broken_link(tmp: Path)
     lint = run("kb_lint.py", cwd=root).stdout
     broken = lint.split("## битые ссылки", 1)[1].split("\n## ", 1)[0] if "## битые ссылки" in lint else ""
     assert "Статусов-пять" not in broken, broken
+
+
+@test
+def test_a_document_is_parsed_once_even_when_its_copy_is_named_differently(tmp: Path):
+    """Бумага разбирается один раз, даже если копию человек назвал по-своему.
+
+    Правило «есть копия — машинную расшифровку не разбирать» узнавало копию по имени
+    буквально. «gf_дКН_представление.md» (копия человека) рядом с «gf_дКН представление.md»
+    (расшифровка с `converted_from:`) не узнавалась, и одна бумага разбиралась дважды:
+    шесть документов PRJ-C, госконтракт — 6 + 6 карточек. Ремонт `--copies` снимает след.
+    """
+    import importlib, json
+    sys.path.insert(0, str(SCRIPTS))
+    B = importlib.import_module("build_plan")
+    root = make_project(tmp)
+    d = root / "Raw/customer/FAQ"
+    d.mkdir(parents=True, exist_ok=True)
+    human = d / "Памятка_для_перевозчиков.md"
+    human.write_text("# Памятка для перевозчиков\n\n> **Источник:** `Памятка для перевозчиков.pdf`\n\n"
+                     + "Перевозчик предъявляет QR-код на границе. " * 20, encoding="utf-8")
+    machine = d / "Памятка для перевозчиков.md"
+    machine.write_text('---\ntitle: "Памятка"\nconverted_from: "Raw/customer/FAQ/Памятка для '
+                       'перевозчиков.pdf"\n---\n\n' + "Перевозчик предъявляет код. " * 20,
+                       encoding="utf-8")
+    old = d / "Старый.converted.md"
+    old.write_text("расшифровка " * 40, encoding="utf-8")
+    (d / "Старый.md").write_text("копия человека " * 40, encoding="utf-8")
+    rel = lambda p: str(p.relative_to(root)).replace("\\\\", "/")
+    assert B.human_twin(str(machine)).endswith("Памятка_для_перевозчиков.md")
+    assert B.human_twin(str(old)).endswith("Старый.md")
+    assert not B.human_twin(str(human)), "копия человека объявлена машинной"
+    plan = run("build_plan.py", cwd=root).stdout
+    assert "Памятка_для_перевозчиков" in plan and "Памятка для перевозчиков.md" not in plan, plan[-500:]
+
+    kb = root / "AuroraKnowledgeDB"
+    card(root, "Processes/Предъявление-кода.md",
+         f"Перевозчик предъявляет код.\n\n## Источник (перенесено дословно)\n\n### {rel(human)}\n\n"
+         f"Из копии.\n\n### {rel(machine)}\n\nИз расшифровки.\n",
+         status="knowledge", kind="knowledge", distilled="2026-09-20",
+         sources=f'\n  - "{rel(human)}"\n  - "{rel(machine)}"')
+    card(root, "Concepts/Только-из-расшифровки.md", "Знание из расшифровки.", status="knowledge",
+         sources=f'\n  - "{rel(machine)}"')
+    card(root, "Concepts/Ссылается.md", "См. [[Только-из-расшифровки|памятку]].", status="knowledge")
+    man = kb / "meta/manifest.json"
+    man.parent.mkdir(parents=True, exist_ok=True)
+    man.write_text(json.dumps({"sources": {rel(human): {"cards": 1}, rel(machine): {"cards": 2}}},
+                              ensure_ascii=False), encoding="utf-8")
+    cp = run("kb_fix.py", "--copies", "--apply", "--allow-dirty", cwd=root)
+    kept = (kb / "Processes/Предъявление-кода.md").read_text(encoding="utf-8")
+    assert card_srcs(kept) == [rel(human)], card_srcs(kept)
+    assert "Из расшифровки" not in kept and "Из копии" in kept and "distilled: 2026-09-20" in kept, kept
+    assert (kb / "_archive/Только-из-расшифровки.md").is_file(), cp.stdout[-600:]
+    assert "См. памятку." in (kb / "Concepts/Ссылается.md").read_text(encoding="utf-8")
+    assert rel(machine) not in json.loads(man.read_text(encoding="utf-8"))["sources"]
+
+
+@test
+def test_a_meeting_table_is_cut_between_rows_with_its_header(tmp: Path):
+    """Протокол встречи — таблица, и режется он между строками, с шапкой в каждом куске.
+
+    Реплика длиннее 3000 знаков резалась по концам предложений, а точка стоит внутри
+    ячейки: протокол рвался посреди строки, и карточка пункта 4 получила пункты 9–12 и
+    обрывок 8-го (PRJ-C). Стенограммы, нарезанные прежним правилом, `--reopen` возвращает.
+    """
+    import importlib, json
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    rows = "\n".join(f"| {i} | Сделать задачу номер {i}. Проверить на стенде. | Реестр | "
+                     f"Подробности {i}: всё описано в протоколе. | Отдел |" for i in range(1, 40))
+    raw = "Источник: протокол встречи.\n\n| № | Задача | Форма | Детали | Кто |\n|---|---|---|---|---|\n" + rows
+    turns = A.meeting_turns(raw)
+    assert len(turns) > 2, turns
+    for t_ in turns[1:]:
+        lines = t_.split("\n")
+        assert lines[0].startswith("| № |") and lines[1].startswith("|---"), lines[:2]
+        assert all(l.startswith("|") and l.rstrip().endswith("|") for l in lines), \
+            f"строка таблицы разрезана:\n{t_[:300]}"
+    assert A.meeting_has_long_table(raw)
+
+    root = make_project(tmp)
+    m = root / "Raw/meetings/action_items_2026-03-24.md"
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.write_text(raw, encoding="utf-8")
+    card(root, "Requirements/Пункт.md", "Пункт протокола.", status="draft",
+         sources='\n  - "Raw/meetings/action_items_2026-03-24.md"')
+    B = importlib.import_module("build_plan")
+    man = root / "AuroraKnowledgeDB/meta/manifest.json"
+    man.parent.mkdir(parents=True, exist_ok=True)
+    man.write_text(json.dumps({"sources": {"Raw/meetings/action_items_2026-03-24.md": {
+        "hash": B.file_hash(str(m)), "cards": 1}}}), encoding="utf-8")
+    run("build_plan.py", "--reopen", "--apply", cwd=root)
+    left = json.loads(man.read_text(encoding="utf-8"))["sources"]
+    assert "Raw/meetings/action_items_2026-03-24.md" not in left, "встреча с прежней нарезкой не вернулась"
+
+
+@test
+def test_an_extracted_definition_leaves_no_empty_sentence(tmp: Path):
+    """Вынос определения не оставляет пустого предложения.
+
+    На месте определения оставалось «Заявители — [[Заявители]].» или голая «[[ДОК]]», а
+    связывание делало «Заявители — Заявители.» (PRJ-C 6, PRJ-A 6, PRJ-B 3). Такое предложение
+    уходит; термин получает ссылку там, где тезис его упоминает. Ремонт `--tautologies`
+    снимает оставшиеся.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    text = ("Участники — [[Заявители|заявители]] и перевозчики.\nЗаявители — Заявители.\n"
+            "[[ДОК]]\nОсновной документ — [[Основной-документ]].\n"
+            "Перевозчики — Перевозчики-определение.\nНДС — налог на добавленную стоимость.")
+    got, n = A.drop_echo_sentences(text)
+    assert n == 4, got
+    assert "Участники — [[Заявители|заявители]]" in got and "НДС — налог" in got, got
+
+    root = make_project(tmp)
+    card(root, "Roles/Участники.md", "Участники — заявители.\nЗаявители — [[Заявители]].\n\n"
+         "## Источник (перенесено дословно)\n\nЗаявители — Заявители.\n",
+         status="knowledge", kind="knowledge")
+    run("kb_fix.py", "--tautologies", "--apply", "--allow-dirty", cwd=root)
+    after = (root / "AuroraKnowledgeDB/Roles/Участники.md").read_text(encoding="utf-8")
+    own, quotes = after.split("## Источник (перенесено дословно)")
+    assert "Заявители — [[Заявители]]" not in own and "Участники — заявители." in own, own
+    assert "Заявители — Заявители." in quotes, "тронут дословный раздел"
+    R = importlib.import_module("agent_runner")
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8").split(
+        "def apply_extract_plan(")[1].split("\ndef ")[0]
+    assert "drop_echo_sentences(new_thesis)" in src, "вынос определения снова оставляет пустую фразу"
+
+
+@test
+def test_returning_a_code_name_checks_the_tree_before_writing(tmp: Path):
+    """Возврат имени коду пишет только после охраны дерева — и доводит ссылки до конца.
+
+    В 1.145.0 коды переименовывались ДО проверки git: охрана видела эти же переименования
+    грязным деревом, отказывала (код 2), и маршрут «Починить базу» падал с карточками под
+    старыми именами и ссылками на перевод (PRJ-C 30.09.2026).
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    TR = importlib.import_module("kb_translit")
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    card(root, "Concepts/ЕР.Док.БанкИд.md", "Идентификатор банка.", status="knowledge",
+         aliases='\n  - "ER.Doc.BankId"\n  - "ЕР.Док.БанкИд"')
+    card(root, "Concepts/Ссылки.md", "См. [[ЕР.Док.БанкИд]].", status="knowledge")
+    (kb / "meta").mkdir(parents=True, exist_ok=True)
+    TR.write_dict({"ER.Doc.BankId": "ЕР.Док.БанкИд"}, str(kb / "meta/translit.md"))
+    subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "база"], cwd=root, capture_output=True)
+    cp = run("kb_translit.py", "--rename", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout[-600:] + cp.stderr[-300:]
+    back = kb / "Concepts/ER.Doc.BankId.md"
+    assert back.is_file(), sorted(p.name for p in (kb / "Concepts").iterdir())
+    assert "ЕР.Док.БанкИд" not in back.read_text(encoding="utf-8"), "синоним-перевод остался"
+    assert "[[ER.Doc.BankId]]" in (kb / "Concepts/Ссылки.md").read_text(encoding="utf-8")
+
+
+@test
+def test_a_route_that_made_the_base_worse_says_so(tmp: Path):
+    """Маршрут, после которого база стала хуже, не отчитывается «ошибок не было».
+
+    «Починить базу» на PRJ-C 30.09.2026: линтер 34 → 53, а итог — «Ошибки: не было»: остаток
+    перезаписывался до сравнения, и новое всегда было нулём. Теперь новые ошибки считаются
+    до перезаписи и уходят в итог маршрута ошибкой. И код шага говорит правду: `distill`
+    без работы — успех, а не код 1 в каждом обороте.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    RS = importlib.import_module("run_summary")
+    root = make_project(tmp)
+    card(root, "Concepts/Опора.md", "Опора базы.", status="knowledge")
+    first = run("kb_lint.py", "--residue", cwd=root).stdout
+    assert "нового после починки: 0" in first, first
+    card(root, "Concepts/Новая.md", "См. [[Нет-такой-карточки]].", status="knowledge")
+    again = run("kb_lint.py", "--residue", cwd=root).stdout
+    got = RS.merge(RS.parse(again.splitlines()))
+    assert any("база хуже" in k for k in got["errors"]), f"ухудшение не дошло до итога: {again}"
+    lines = RS.render(got)
+    assert "Ошибки: не было" not in "\n".join(lines), lines
+    src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert 'return 0 if made and not res["unsupported"] else 1' not in src, \
+        "distill снова красит шаг упавшим, когда работы не было"
 
 
 # ---------------------------------+ import-драйвер: исполняет отобранные проверки
