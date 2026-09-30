@@ -397,12 +397,17 @@ def glossary_links(root: str = KB_DIR) -> list:
                 if len(clean) >= 4:
                     terms.setdefault(clean.lower(), path)
     out = []
+    # Сначала — есть ли слово в тексте вообще (поиск подстроки в C), и только потом граница
+    # слова регулярным выражением. Без этого на PRJ-A было 225 тысяч регулярных поисков и
+    # 34 секунды из 42 на каждый вызов `kb:links` — и так каждый оборот маршрута, даже
+    # когда новых карточек не было. Результат тот же: выражение проверяет то же, что прежде.
+    bound = {term: re.compile(r"(?<![\w-])" + re.escape(term) + r"(?![\w-])") for term in terms}
     for path, text in cards:
         low = " ".join(text.split()).lower()
         for term, target in terms.items():
-            if target == path:
+            if target == path or term not in low:
                 continue
-            if re.search(r"(?<![\w-])" + re.escape(term) + r"(?![\w-])", low):
+            if bound[term].search(low):
                 out.append((path, target))
     return out
 

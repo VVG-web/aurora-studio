@@ -450,14 +450,20 @@ def load_failures() -> dict:
         return {}
 
 
-def record_failure(path: str, note: str) -> int:
-    """Учесть сбой. → сколько раз подряд не разобран ЭТОТ текст источника."""
+def record_failure(path: str, note: str, critic: bool = False) -> int:
+    """Учесть сбой. → сколько раз подряд не разобран ЭТОТ текст источника.
+
+    `critic` — отказ критика: на второй встрече с тем же текстом разбор, прошедший
+    арифметику, принимается (`agent_runner.critic_disputed_before`), а не откладывается.
+    """
     path = path.replace("\\", "/")
     data = load_failures()
     digest = file_hash(path)
     rec = data.get(path) or {}
     count = int(rec.get("count", 0)) + 1 if rec.get("hash") == digest else 1
     data[path] = {"hash": digest, "count": count, "note": note[:300], "at": TODAY}
+    if critic:
+        data[path]["critic"] = True
     os.makedirs(os.path.dirname(FAILURES), exist_ok=True)
     with open(FAILURES, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
@@ -1763,6 +1769,7 @@ def main() -> int:
                     help="ограничить --reopen группой (Confluence, JIRA, Raw/project, …)")
     ap.add_argument("--apply", action="store_true", help="записать (для --reopen)")
     ap.add_argument("--failed", metavar="FILE", help=argparse.SUPPRESS)  # агент: учесть сбой
+    ap.add_argument("--critic", action="store_true", help=argparse.SUPPRESS)  # сбой — отказ критика
     ap.add_argument("--note", default="", help=argparse.SUPPRESS)
     ap.add_argument("--retry-failed", action="store_true",
                     help="вернуть в план источники, отложенные после сбоев разбора")
@@ -1778,7 +1785,7 @@ def main() -> int:
     if a.done:
         return mark_done(manifest, a.done, a.cards, a.empty)
     if a.failed:
-        n = record_failure(a.failed, a.note)
+        n = record_failure(a.failed, a.note, critic=a.critic)
         print(f"⏸ {a.failed}: разбор не удался {n} раза подряд — отложен до изменения файла"
               if n >= DEFER_AFTER else f"сбой разбора учтён: {a.failed} ({n} из {DEFER_AFTER})")
         return 0

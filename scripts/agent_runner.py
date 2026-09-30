@@ -2766,6 +2766,21 @@ def used_model(step: dict) -> str:
     return str(used[-1][1]) if used and len(used[-1]) > 1 else ""
 
 
+def critic_disputed_before(cwd: str, source: str) -> bool:
+    """Критик уже отклонял разбор этого же текста источника — прошлым оборотом или прогоном."""
+    import build_plan as BP
+    try:
+        data = json.load(open(os.path.join(cwd, BP.FAILURES), encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    rec = (data or {}).get(source.replace("\\", "/")) or {}
+    try:
+        same = rec.get("hash") == BP.file_hash(os.path.join(cwd, source))
+    except OSError:
+        return False
+    return same and str(rec.get("note") or "").strip() != "" and bool(rec.get("critic"))
+
+
 def defer_if_content_fail(cwd: str, source: str, step: dict, apply: bool) -> None:
     """Учесть сбой разбора по содержанию: после нескольких подряд план отложит источник.
 
@@ -2777,7 +2792,10 @@ def defer_if_content_fail(cwd: str, source: str, step: dict, apply: bool) -> Non
     """
     if not apply or not step.get("content_fail"):
         return
-    r = run_command(cwd, "build_plan.py", ["--failed", source, "--note", step["note"][:300]])
+    args = ["--failed", source, "--note", step["note"][:300]]
+    if step.get("status") == "отклонено критиком":
+        args.append("--critic")
+    r = run_command(cwd, "build_plan.py", args)
     last = ((r.get("out") or "").strip().splitlines() or [""])[-1]
     if last:
         say(f"      {last}")
@@ -3457,8 +3475,19 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             #
             # Если разбор всё же встал — это видно: цикл маршрута упирается в предел за
             # 12 оборотов и прямо говорит, какой источник не удалось отметить.
+            # Спор исполнителя с критиком, который уже был о ЭТОМ тексте, повторяться не должен:
+            # US-3.6.21 PRJ-C отклонялась одной и той же фразой в каждом обороте и в каждом
+            # прогоне, а маршрут кончался застоем. Разбор, прошедший арифметику, принимается
+            # на второй встрече, возражение критика остаётся в заметке шага. Отказ проверки
+            # арифметикой не принимается никогда.
+            if not from_check and critic_disputed_before(cwd, source):
+                step["note"] = (f"критик возражал второй раз («{why[:160]}») — принят разбор, "
+                                "прошедший проверку арифметикой")
+                why = ""
+                break
             step.update(status="отклонено проверкой" if from_check else "отклонено критиком",
                         note=why)
+            step["content_fail"] = True
             return step
         note_back = ("\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА. Замечание: " + why +
                      "\nИсправь именно это и ответь заново тем же JSON.")
@@ -5913,8 +5942,12 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
 
     width = max(1, parallel_width(cfg, len(todo))[1]) if todo else 1
     steps = []
+    from concurrent.futures import as_completed
     with ThreadPoolExecutor(max_workers=width) as pool:
-        for i, (path, st) in enumerate(pool.map(one, todo), 1):
+        # По мере готовности, а не по порядку: большая первая карточка держала весь отчёт
+        # о ходе, и 142 проверки PRJ-C семь минут выглядели зависшими.
+        for i, fut in enumerate(as_completed([pool.submit(one, p_) for p_ in todo]), 1):
+            path, st = fut.result()
             st["card"] = os.path.basename(path)
             steps.append(st)
             say(f"  [{i}/{len(todo)}] {st['card'][:-3]} → {st['status']}"

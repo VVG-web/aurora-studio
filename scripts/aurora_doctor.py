@@ -467,6 +467,15 @@ def main() -> int:
         errors.append("нет aurora.config.yaml — скопируйте из Aurora kit templates/")
     else:
         data = load_yaml_lite(CONFIG)
+        # Корень синка, записанный дважды: синк обходит его один раз (с 1.147.0), но
+        # настройка врёт о числе корней, и форма показывает два одинаковых.
+        from aurora_common import sync_roots
+        ids = [r["page_id"] for r in sync_roots(CONFIG.read_text(encoding="utf-8"))]
+        twice = sorted({i for i in ids if ids.count(i) > 1})
+        if twice:
+            warns.append("aurora.config.yaml: корень синка записан больше одного раза — "
+                         + ", ".join(twice) + "; уберите повтор в «Настройки проекта» → "
+                         "«Источники»")
         if data.get("_raw"):
             if not data.get("project"):
                 warns.append("aurora.config.yaml: не найден блок project (проверьте YAML)")

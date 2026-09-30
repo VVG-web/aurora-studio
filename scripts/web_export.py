@@ -232,7 +232,7 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
     host = urllib.parse.urlparse(base_url).netloc
     links, assets = [], []
     for a in main.find_all("a", href=True):
-        full = urllib.parse.urljoin(base_url, a["href"].strip())
+        full = web_join(base_url, a["href"])
         full, _frag = urllib.parse.urldefrag(full)
         if not full.startswith(("http://", "https://")):
             continue
@@ -247,7 +247,7 @@ def to_markdown(html: str, base_url: str = "") -> tuple:
         else:
             links.append(full)
     for img in main.find_all("img", src=True):
-        full = urllib.parse.urljoin(base_url, img["src"].strip())
+        full = web_join(base_url, img["src"])
         if full.startswith(("http://", "https://")) \
                 and urllib.parse.urlparse(full).netloc == host:
             assets.append((full, " ".join((img.get("alt") or "").split())[:80]))
@@ -301,6 +301,20 @@ def _uniq(items: list) -> list:
             seen.add(x)
             out.append(x)
     return out
+
+
+def web_join(base_url: str, ref: str) -> str:
+    """Адрес ссылки со страницы — так, как его поймёт браузер.
+
+    Браузер читает обратную косую в адресе http(s) как прямую: `\\images_ca\\icons\\x.png`
+    — это `/images_ca/icons/x.png` от корня сайта. `urljoin` оставлял косые как есть, и
+    вложения сайта налоговой службы шли в 404 (PRJ-C 29.09.2026).
+    """
+    ref = (ref or "").strip()
+    if base_url.lower().startswith(("http://", "https://")) and "\\" in ref \
+            and not ref.lower().startswith(("mailto:", "data:", "javascript:")):
+        ref = ref.replace("\\", "/")
+    return urllib.parse.urljoin(base_url, ref)
 
 
 def asset_name(url: str, label: str = "") -> str:
@@ -379,7 +393,7 @@ def local_links(md: str, base_url: str, saved: dict) -> str:
     дольше. Файл уже лежит рядом — значит и ссылка обязана вести к нему.
     """
     def repl(m):
-        full = urllib.parse.urljoin(base_url, m.group(2))
+        full = web_join(base_url, m.group(2))
         name = saved.get(full)
         return f"{m.group(1)}({ASSET_DIR}/{name})" if name else m.group(0)
     return re.sub(r"(!?\[[^\]]*\])\(([^)\s]+)[^)]*\)", repl, md)

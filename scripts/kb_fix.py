@@ -1615,6 +1615,100 @@ def plan_copies(cards: dict, plan: Plan) -> tuple:
     return trimmed, archived
 
 
+_CODE_RE = re.compile(r"^((?:[A-Za-z]{2,}[A-Za-z]*[-_. ]?)?\d+(?:[.\-]\d+)*)[._ \-]")
+
+
+def _mirror_codes(top: str) -> dict:
+    """{код документа: [пути]} — по именам файлов зеркала."""
+    out: dict = {}
+    for dp, dirs, files in os.walk(top):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            m = _CODE_RE.match(f)
+            if m:
+                out.setdefault(m.group(1).lower().replace("_", "-"), []).append(
+                    os.path.join(dp, f).replace("\\", "/"))
+    return out
+
+
+def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
+    """Источник карточки, которого нет на диске. → (переведено, снято, записей исправлено).
+
+    Синк убирает из зеркала удалённые страницы, а карточки продолжали называть их в
+    `sources`: на PRJ-C 19 таких, и этого не чинил никто — `ops:stats` отчитывался о них на
+    каждом прогоне. Три случая:
+
+    - страница переехала под другим именем — находится по коду документа («SPR-012» в
+      транслитном пути прежней раскладки и кириллицей в нынешней) или папкой с `index.md`;
+      путь переводится;
+    - запись испорчена: два пути через «;», свободный текст вместо пути — разрезается или
+      уходит в историю;
+    - страницы нет — путь снимается, в истории — строка. Дословный текст остаётся: это то,
+      что страница говорила. Карточка без источников остаётся в базе, но доверия ей не на
+      что опереться (`kb:trust` — «класс не определён»), и это видно.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+    codes: dict = {}
+
+    def code_twin(path: str) -> str:
+        top = "/".join(path.split("/")[:2])
+        if top not in codes:
+            codes[top] = _mirror_codes(top) if os.path.isdir(top) else {}
+        m = _CODE_RE.match(os.path.basename(path))
+        hits = codes[top].get(m.group(1).lower().replace("_", "-"), []) if m else []
+        return hits[0] if len(hits) == 1 else ""
+
+    moved, dropped, fixed = [], [], []
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
+            continue
+        srcs = card_sources(c.text)
+        if not srcs:
+            continue
+        new_srcs, notes, remap = [], [], {}
+        for s in srcs:
+            parts = [x.strip() for x in s.split(";")] if ";" in s else [s]
+            if len(parts) > 1:
+                fixed.append(c.stem)
+            for x in parts:
+                if not x.startswith(("Sources/", "Raw/")) or re.search(r"\s\(", x):
+                    notes.append(f"запись источника «{x}» — не путь к файлу, снята")
+                    fixed.append(c.stem)
+                    continue
+                if os.path.exists(x):
+                    new_srcs.append(x)
+                    continue
+                other = (x + "/index.md") if os.path.isfile(x + "/index.md") else code_twin(x)
+                if other:
+                    new_srcs.append(other)
+                    remap[x] = other
+                    moved.append((c.stem, x, other))
+                    notes.append(f"страница переехала: `{x}` → `{other}`")
+                    continue
+                notes.append(f"источника больше нет в зеркале: `{x}`")
+                dropped.append((c.stem, x))
+        new_srcs = list(dict.fromkeys(new_srcs))
+        if new_srcs == srcs and not notes:
+            continue
+        text = plan.file_writes.get(path, c.text)
+        head_end = text.find("\n---", 3)
+        head = BP.with_sources(text[:head_end], new_srcs)
+        rest = text[head_end:]
+        for old_p, new_p in remap.items():
+            rest = rest.replace(f"\n### {old_p}\n", f"\n### {new_p}\n")
+        line = "".join(f"\n- {TODAY}: {n}" for n in notes)
+        if FOOTER in rest:
+            rest = rest.rstrip() + line + "\n"
+        else:
+            rest = rest.rstrip() + "\n\n" + FOOTER + "\n" + line + "\n"
+        plan.write(path, head + rest)
+    return moved, dropped, sorted(set(fixed))
+
+
 def plan_tautologies(cards: dict, plan: Plan) -> list:
     """Пустые предложения в тезисах — одна ссылка или «X — X.». → [имя карточки].
 
@@ -2575,6 +2669,9 @@ def main() -> int:
     ap.add_argument("--template", action="store_true",
                     help="карточки, собранные по шаблону страницы: рождённые шаблоном — в "
                          "архив, их источники — в план; абзац шаблона из тезиса — прочь")
+    ap.add_argument("--gone-sources", action="store_true",
+                    help="источник карточки, которого нет на диске: переехавшую страницу найти "
+                         "по коду документа, испорченную запись исправить, пропавшую — снять")
     ap.add_argument("--tautologies", action="store_true",
                     help="пустые предложения в тезисах: одна ссылка или «X — X.» — след выноса "
                          "определения")
@@ -2666,7 +2763,7 @@ def main() -> int:
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.titles, a.aliases, a.split,
                 a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs, a.meetings,
-                a.unparsed, a.themes, a.template, a.copies, a.tautologies,
+                a.unparsed, a.themes, a.template, a.copies, a.tautologies, a.gone_sources,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
         ap.print_help()
@@ -2781,6 +2878,15 @@ def main() -> int:
                 head.append(f"- тезис без шаблона: {name}")
             for name in forms_gone[:10]:
                 head.append(f"- не форма, а знание — источник в разбор: {name}")
+        if a.gone_sources:
+            moved, gone, fixed = plan_gone_sources(cards, plan)
+            head.append(f"## Источник, которого нет на диске: переведено на новый путь "
+                        f"{len(moved)}, снято {len(gone)}, испорченных записей исправлено "
+                        f"{len(fixed)}")
+            for name, old_p, new_p in moved[:10]:
+                head.append(f"- {name}: {old_p} → {new_p}")
+            for name, old_p in gone[:10]:
+                head.append(f"- {name}: снят {old_p}")
         if a.tautologies:
             echo = plan_tautologies(cards, plan)
             head.append(f"## Пустые предложения в тезисах (одна ссылка, «X — X.»): "

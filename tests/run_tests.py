@@ -22891,6 +22891,171 @@ def test_a_route_that_made_the_base_worse_says_so(tmp: Path):
         "distill снова красит шаг упавшим, когда работы не было"
 
 
+@test
+def test_the_sync_skips_pages_whose_version_did_not_change(tmp: Path):
+    """Синк не качает страницу, чья версия не менялась, — и обходит корень один раз.
+
+    PRJ-C 29.09.2026: 28 минут на 1202 страницы ради 30 изменений — каждая качалась телом и
+    конвертировалась, хотя номер версии приходит в списке детей бесплатно. Там же один
+    корень, записанный в настройке дважды, обходился дважды (1202 записи вместо 1058).
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    CE = importlib.import_module("confluence_export")
+    root = make_project(tmp)
+    mirror = root / "Sources/Confluence"
+    ver = {"10": 1, "11": 1, "12": 1}
+    tree = {"10": ("Корень", ["11", "12"]), "11": ("Первая", []), "12": ("Вторая", [])}
+    fetched = []
+
+    class Api:
+        def page(self, pid):
+            fetched.append(pid)
+            return {"title": tree[pid][0], "version": {"number": ver[pid], "when": "2026-09-30"},
+                    "body": {"storage": {"value": f"<p>Страница {pid}, версия {ver[pid]}.</p>"}},
+                    "space": {"key": "S"}, "_links": {"webui": f"/p/{pid}"}}
+
+        def children(self, pid):
+            return [{"id": c, "title": tree[c][0], "version": {"number": ver[c]}}
+                    for c in tree[pid][1]]
+
+        def attachments(self, pid):
+            return {}
+
+        def user_name(self, key):
+            return key
+
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        first = CE.Exporter(Api(), str(mirror), "https://wiki", "S", False)
+        for r in ("10", "10"):
+            first.walk(r, [])
+        first.save_cache()
+        assert sorted(fetched) == ["10", "11", "12"], f"корень обойдён дважды: {fetched}"
+        assert (root / ".opencode/cache/confluence_pages.json").is_file()
+
+        fetched.clear()
+        ver["12"] = 2
+        second = CE.Exporter(Api(), str(mirror), "https://wiki", "S", False)
+        second.walk("10", [])
+        assert sorted(fetched) == ["10", "12"], \
+            f"неизменённая страница скачана заново или изменённая пропущена: {fetched}"
+        assert {r[0] for r in second.records} == {"10", "11", "12"}, "пропущенная страница выпала из состояния"
+        assert "версия 2" in (mirror / "Корень/Вторая.md").read_text(encoding="utf-8")
+
+        fetched.clear()
+        forced = CE.Exporter(Api(), str(mirror), "https://wiki", "S", True)
+        forced.walk("10", [])
+        assert sorted(fetched) == ["10", "11", "12"], "--force не прошёл зеркало полностью"
+    finally:
+        os.chdir(here)
+    src = (SCRIPTS / "confluence_export.py").read_text(encoding="utf-8")
+    assert "dict.fromkeys(str(r) for r in roots)" in src, "повтор корня снова обходится дважды"
+
+
+@test
+def test_a_backslash_in_a_web_link_means_what_the_browser_reads(_t):
+    """Обратная косая в адресе сайта — прямая, как её читает браузер.
+
+    Вложения `\\images_ca\\icons\\*.png` со страницы налоговой службы шли в 404: `urljoin`
+    оставлял косые как есть (PRJ-C 29.09.2026).
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    W = importlib.import_module("web_export")
+    got = W.web_join("https://example.ru/rn77/service/", "\\images_ca\\icons\\qr.png")
+    assert got == "https://example.ru/images_ca/icons/qr.png", got
+    assert W.web_join("https://example.ru/a/b.html", "c.png") == "https://example.ru/a/c.png"
+
+
+@test
+def test_a_card_whose_source_left_the_mirror_is_repaired(tmp: Path):
+    """Источник карточки, которого нет на диске, чинится ремонтом, а не висит в отчёте.
+
+    PRJ-C: 19 карточек называли в `sources` файлы, которых нет, — `ops:stats` сообщал о них
+    каждый прогон. Переехавшая страница находится по коду документа, испорченная запись
+    (два пути через «;», текст вместо пути) исправляется, пропавшая — снимается с записью в
+    истории; дословный текст остаётся.
+    """
+    root = make_project(tmp)
+    ref = root / "Sources/Confluence/НСИ"
+    ref.mkdir(parents=True, exist_ok=True)
+    (ref / "SPR-012_Роль_пользователя.md").write_text("# SPR-012 Роль\n\nтекст\n", encoding="utf-8")
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/A.md").write_text("а" * 300, encoding="utf-8")
+    (root / "Raw/project/B.md").write_text("б" * 300, encoding="utf-8")
+    card(root, "Reference/Роль.md",
+         "Роль пользователя.\n\n## Источник (перенесено дословно)\n\n"
+         "### Sources/Confluence/НСИ/SPR-012_Rol_polzovatelia.md\n\nтекст\n",
+         status="knowledge", sources='\n  - "Sources/Confluence/НСИ/SPR-012_Rol_polzovatelia.md"')
+    card(root, "Concepts/Склейка.md", "Знание.", status="knowledge",
+         sources='\n  - "Raw/project/A.md; Raw/project/B.md"\n  - "Raw/dictionaries (legacy, перенесены)"')
+    card(root, "Concepts/Ушедшая.md", "Знание страницы.", status="knowledge",
+         sources='\n  - "Sources/Confluence/Удалена.md"')
+    run("kb_fix.py", "--gone-sources", "--apply", "--allow-dirty", cwd=root)
+    kb = root / "AuroraKnowledgeDB"
+    role = (kb / "Reference/Роль.md").read_text(encoding="utf-8")
+    assert card_srcs(role) == ["Sources/Confluence/НСИ/SPR-012_Роль_пользователя.md"], card_srcs(role)
+    assert "### Sources/Confluence/НСИ/SPR-012_Роль_пользователя.md" in role, "блок не переименован"
+    glued = (kb / "Concepts/Склейка.md").read_text(encoding="utf-8")
+    assert card_srcs(glued) == ["Raw/project/A.md", "Raw/project/B.md"], card_srcs(glued)
+    gone = (kb / "Concepts/Ушедшая.md").read_text(encoding="utf-8")
+    assert card_srcs(gone) == [] and "источника больше нет в зеркале" in gone, gone
+    assert "Знание страницы." in gone, "знание пропало вместе с путём"
+
+
+@test
+def test_a_repeated_critic_dispute_ends_with_the_checked_plan(tmp: Path):
+    """Спор исполнителя с критиком о том же тексте не повторяется вечно.
+
+    US-3.6.21 PRJ-C отклонялась критиком одной и той же фразой в оборотах 2, 3, 4, и маршрут
+    кончался застоем. Отказ критика теперь учитывается; на второй встрече с тем же текстом
+    принимается разбор, прошедший проверку арифметикой, а возражение остаётся в заметке.
+    """
+    import importlib, json
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    BP = importlib.import_module("build_plan")
+    root = make_project(tmp)
+    src = root / "Sources/Confluence/US-1.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("# US-1\n\n" + "Текст истории. " * 40, encoding="utf-8")
+    assert not R.critic_disputed_before(str(root), "Sources/Confluence/US-1.md")
+    fail = root / BP.FAILURES
+    fail.parent.mkdir(parents=True, exist_ok=True)
+    fail.write_text(json.dumps({"Sources/Confluence/US-1.md": {
+        "hash": BP.file_hash(str(src)), "count": 1, "note": "объединяет все секции",
+        "critic": True}}, ensure_ascii=False), encoding="utf-8")
+    assert R.critic_disputed_before(str(root), "Sources/Confluence/US-1.md")
+    src.write_text(src.read_text(encoding="utf-8") + "Правка.", encoding="utf-8")
+    assert not R.critic_disputed_before(str(root), "Sources/Confluence/US-1.md"), \
+        "спор о прежнем тексте засчитан новому"
+    code = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
+    assert "if not from_check and critic_disputed_before(cwd, source):" in code
+
+
+@test
+def test_card_links_come_fast_and_the_same(tmp: Path):
+    """Связи по глоссарию ставятся так же, но без сотен тысяч регулярных выражений.
+
+    `kb:links` на PRJ-A — 42 с, из них 34 с на 225 тысяч поисков «термин × карточка»; каждый
+    оборот маршрута, даже пустой. Сначала поиск подстроки, потом граница слова: 38 с → 3 с,
+    вывод байт в байт тот же.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    G = importlib.import_module("kb_graph")
+    root = make_project(tmp)
+    card(root, "Glossary/Налоговая-декларация.md", "Декларация — документ.", status="knowledge")
+    card(root, "Concepts/Подача.md", "Подача: налоговая декларация уходит в срок.", status="knowledge")
+    card(root, "Concepts/Декларант.md", "Налоговая декларацияхх — не то слово.", status="knowledge")
+    pairs = G.glossary_links(str(root / "AuroraKnowledgeDB"))
+    got = {(os.path.basename(a), os.path.basename(b)) for a, b in pairs}
+    assert ("Подача.md", "Налоговая-декларация.md") in got, got
+    assert ("Декларант.md", "Налоговая-декларация.md") not in got, "граница слова потеряна"
+
+
 # ---------------------------------+ import-драйвер: исполняет отобранные проверки
 # (декоратор лишь регистрирует; исполнение здесь — чтобы --only/--smoke/--no-invariants
 # решали состав до прогона).

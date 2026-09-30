@@ -38,19 +38,42 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
 import urllib.parse
+from datetime import date, timedelta
 
 from sources_core import (RestApi, WikiMirror, block, config_text, no_access,
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
-from aurora_common import PATH_CHARS, portable_name  # noqa: E402
+from aurora_common import PATH_CHARS, TODAY, portable_name  # noqa: E402
 
 DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
+# Версия конвертера страниц. Изменили `to_markdown` так, что меняется вывод, — поднимите:
+# кэш страниц сбросится, и синк один раз пройдёт всё зеркало полностью.
+CONVERTER = 1
+PAGE_CACHE = os.path.join(".opencode", "cache", "confluence_pages.json")
+CACHE_FRESH_SINCE = (date.fromisoformat(TODAY) - timedelta(days=7)).isoformat()
+
+
+def load_page_cache() -> dict:
+    try:
+        data = json.load(open(PAGE_CACHE, encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_page_cache(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(PAGE_CACHE), exist_ok=True)
+        json.dump(data, open(PAGE_CACHE, "w", encoding="utf-8"), ensure_ascii=False)
+    except OSError:
+        pass
 FORBIDDEN = r'<>:"/\|?*'
 # Метки Requirement Yogi в тексте зеркала. Вид связи виден прямо в метке, иначе объявление
 # ключа и ссылку на него не различить ни глазом, ни грепом:
@@ -176,7 +199,9 @@ class Api(RestApi):
         return out
 
     def children(self, page_id: str) -> list:
-        out, path = [], f"/rest/api/content/{page_id}/child/page?limit=50"
+        # Номер версии ребёнка приходит в том же списке и ничего не стоит — по нему синк
+        # решает, качать ли страницу (`Exporter.cached_walk`).
+        out, path = [], f"/rest/api/content/{page_id}/child/page?limit=50&expand=version"
         while path:
             data = self.get(path)
             out += data.get("results", [])
@@ -674,6 +699,11 @@ class Exporter(WikiMirror):
         self.written = self.skipped = self.failed = 0
         self.ry_defines = self.ry_links = self.assets_saved = self.assets_dropped = 0
         self.claimed: dict = {}     # (папка, имя без регистра) → номер страницы
+        self.visited: set = set()   # страницы, пройденные этим синком
+        # Что синк знает о страницах с прошлого раза: версия, путь, ключи RY, схемы.
+        # Кэш — производное: нет его — синк просто идёт полным проходом.
+        self.cache = {} if force else load_page_cache()
+        self.fresh: dict = {}
         # Длина пути считается от корня проекта: зеркало лежит в `Sources/Confluence/`,
         # и эти знаки Windows тоже засчитывает.
         where = os.path.relpath(os.path.abspath(out), os.getcwd()).replace("\\", "/")
@@ -798,7 +828,46 @@ class Exporter(WikiMirror):
             here = f"{parent}/{page_id}" if parent else page_id
         return here
 
-    def walk(self, page_id: str, ancestors: list, parent: str = "") -> None:
+    def cached_walk(self, page_id: str, ancestors: list, parent: str,
+                    version) -> bool:
+        """Страница не менялась с прошлого синка — тело не качаем. → пройдена ли так.
+
+        Синк PRJ-C 29.09.2026 шёл 28 минут: каждая из 1202 страниц качалась телом и
+        конвертировалась ради 30 изменившихся. Номер версии приходит в списке детей
+        бесплатно; совпал с запомненным, конвертер тот же, путь не сменился, файл на месте
+        и запись свежее недели (правка вложения версию страницы не поднимает) — берём
+        прежнее. Всё прочее — обычный полный проход.
+        """
+        c = self.cache.get(str(page_id))
+        if (not c or version is None or c.get("version") != int(version)
+                or c.get("conv") != CONVERTER or c.get("at", "") < CACHE_FRESH_SINCE):
+            return False
+        try:
+            children = self.api.children(page_id)
+        except Exception:  # noqa: BLE001
+            return False
+        here = self.place(c["title"], page_id, parent, bool(children), bool(c.get("assets")))
+        rel = f"{here}/index.md" if children else f"{here}.md"
+        if rel != c.get("rel") or not os.path.isfile(os.path.join(self.out, rel)):
+            return False
+        self.ry_defines += int(c.get("ryd") or 0)
+        self.ry_links += int(c.get("ryl") or 0)
+        self.skipped += 1
+        self.records.append((str(page_id), rel, c["title"], "SYNCED"))
+        self.fresh[str(page_id)] = c
+        for child in sorted(children, key=lambda x: (x["title"], x["id"])):
+            self.walk(child["id"], ancestors + [c["title"]], here,
+                      (child.get("version") or {}).get("number"))
+        return True
+
+    def walk(self, page_id: str, ancestors: list, parent: str = "", version=None) -> None:
+        # Страница, уже пройденная этим синком, второй раз не качается и не пишется:
+        # страница с двумя родителями или корень внутри корня иначе дали бы второй файл.
+        if str(page_id) in self.visited:
+            return
+        self.visited.add(str(page_id))
+        if not self.force and self.cached_walk(page_id, ancestors, parent, version):
+            return
         try:
             data = self.api.page(page_id)
         except Exception as e:  # noqa: BLE001
@@ -852,9 +921,19 @@ class Exporter(WikiMirror):
         else:
             self.skipped += 1
             self.records.append((str(page_id), rel, title, "SYNCED"))
+        self.fresh[str(page_id)] = {"version": version, "conv": CONVERTER, "rel": rel,
+                                    "title": title, "assets": bool(assets),
+                                    "ryd": len(defines), "ryl": len(links), "at": TODAY}
 
         for child in sorted(children, key=lambda c: (c["title"], c["id"])):
-            self.walk(child["id"], ancestors + [title], here)
+            self.walk(child["id"], ancestors + [title], here,
+                      (child.get("version") or {}).get("number"))
+
+    def save_cache(self) -> None:
+        """Запомнить страницы для следующего синка. Непройденные из-за сбоя — прежними."""
+        keep = dict(self.cache) if self.failed else {}
+        keep.update(self.fresh)
+        save_page_cache(keep)
 
     def stale(self) -> list:
         """Файлы зеркала, за которыми нет страницы."""
@@ -908,7 +987,13 @@ def drop_nested_roots(api: Api, roots: list) -> tuple:
 
 def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Exporter:
     api = Api(cfg["base_url"], auth)
-    roots, dropped = drop_nested_roots(api, [str(r) for r in roots])
+    # Один корень, записанный в настройке дважды, обходился дважды: на PRJ-C с 10.08
+    # «Страниц: 1202» вместо 1058 и ~12 % лишних запросов на каждом синке.
+    uniq = list(dict.fromkeys(str(r) for r in roots))
+    if len(uniq) < len(roots):
+        print(f"  ⚠️  корень записан в настройке больше одного раза — обойдён один раз "
+              f"({len(roots) - len(uniq)} повтор.)")
+    roots, dropped = drop_nested_roots(api, uniq)
     for r, parent in dropped:
         print(f"  ⚠️  корень {r} уже входит в корень {parent} — пропущен, "
               "иначе страница легла бы вторым файлом в корень зеркала")
@@ -957,6 +1042,7 @@ def main() -> int:
         return verify(lambda into: run_export(cfg, roots, into, auth, True), skip=(STATE,))
 
     exp = run_export(cfg, roots, out, auth, a.force)
+    exp.save_cache()
     if exp.failed:
         kept = exp.keep_unvisited()
         if kept:
