@@ -69,6 +69,28 @@ HEAD = """# Словарь имён: латиница → кириллица
 """
 
 
+# «Не транслит» — вердикт, а не пустая строка. Пустая значит «переведите», и модель
+# спрашивали об одних и тех же пятнадцати именах на каждом ремонте (PRJ-C 30.09.2026).
+NOT_TRANSLIT = "—"
+
+# Идентификатор — не транслит, и переводить его нельзя: код ER — адрес сущности в модели
+# данных и её имя (`build_plan.split_er_label`), `RYl:` — ссылка на требование, CamelCase и
+# ПРОПИСНЫЕ — поле и значение перечисления. Модель «перевела» `ER.Dop.Status` в
+# «RYl:ЕР.Доп.Статус» (кириллические Е и Р — гомоглифы), и ремонт переименовал карточку.
+_ER_IDENT = re.compile(r"^(?:RYl[-:_ ]?)?(?i:er)(?:[.\-_ ][A-Za-z0-9]+)+$")
+
+
+def is_identifier(stem: str) -> bool:
+    """Имя — идентификатор модели данных или кода, а не слова, записанные латиницей."""
+    s = (stem or "").strip()
+    if s.startswith("RYl") or _ER_IDENT.match(s):
+        return True
+    words = [w for w in re.split(r"[-_. :]+", s) if w]
+    if any(re.search(r"[a-z][A-Z]", w) for w in words):
+        return True
+    return any(len(w) >= 5 and w.isalpha() and w.isupper() for w in words)
+
+
 def has_cyrillic(s: str) -> bool:
     return bool(re.search(r"[А-Яа-яЁё]", s))
 
@@ -80,7 +102,7 @@ def is_latin_name(stem: str) -> bool:
     имя целиком из кода и цифр не считаем транслитом. Транслит — это когда латиницей
     записаны слова.
     """
-    if has_cyrillic(stem):
+    if has_cyrillic(stem) or is_identifier(stem):
         return False
     words = [w for w in re.split(r"[-_. ]+", stem) if w]
     # хотя бы одно слово из букв длиной от четырёх: «Statusy», «Tipy» — да; «SPR», «001» — нет
@@ -98,8 +120,17 @@ def read_dict(path: str = DICT_PATH) -> dict:
         lat, cyr = lat.strip(), cyr.strip()
         if not lat or lat.startswith("-") or lat.lower() == "латиницей":
             continue
-        out[lat] = cyr if has_cyrillic(cyr) else ""
+        if cyr == NOT_TRANSLIT:
+            out[lat] = NOT_TRANSLIT
+        else:
+            out[lat] = cyr if has_cyrillic(cyr) else ""
     return out
+
+
+def translation(known: dict, stem: str) -> str:
+    """Перевод из словаря, пригодный для имени. Вердикт «не транслит» и код — не перевод."""
+    cyr = known.get(stem) or ""
+    return "" if cyr == NOT_TRANSLIT or is_identifier(stem) else cyr
 
 
 def write_dict(rows: dict, path: str = DICT_PATH) -> None:
@@ -117,7 +148,8 @@ def latin_cards(root: str = KB_ROOT) -> list:
     out = []
     for path in walk_md(root, skip_service=True, skip_archive=True):
         stem = os.path.basename(path)[:-3]
-        if stem.startswith("_") or not is_latin_name(stem):
+        if (stem.startswith("_") or "/MOC/" in path.replace("\\", "/")
+                or not is_latin_name(stem)):
             continue
         try:
             text = open(path, encoding="utf-8", errors="ignore").read()
@@ -165,7 +197,7 @@ def main() -> int:
             print(f"- … ещё {len(fresh) - 30}")
         print()
 
-    ready = {s: known[s] for _p, s in found if known.get(s)}
+    ready = {s: translation(known, s) for _p, s in found if translation(known, s)}
     if ready:
         print(f"## Готовы к переименованию: {len(ready)}\n")
         for lat, cyr in sorted(ready.items())[:20]:
@@ -173,15 +205,20 @@ def main() -> int:
         print()
 
     if a.rename:
-        if not ready:
+        undo = undo_identifiers(known, a.apply)
+        if not ready and not undo:
             print("Переводов в словаре нет — переименовывать нечего.")
             return 0
         if a.apply and not git_guard(KB_ROOT, a.allow_dirty, "переименование по словарю"):
             return 2
         cards = load_cards()
         renamed = 0
+        # Ссылки ведут на ИМЯ ФАЙЛА, а не на строку словаря: `card_filename` меняет
+        # пробелы на дефисы, и ссылка `[[SPR-001 Статусы тарифа]]` на карточку
+        # «SPR-001-Статусы-тарифа» оставалась битой — 25 ссылок за один ремонт (PRJ-C).
+        links: dict = {}
         for path, stem in found:
-            cyr = known.get(stem)
+            cyr = translation(known, stem)
             if not cyr:
                 continue
             new_name = card_filename(cyr)
@@ -190,6 +227,7 @@ def main() -> int:
                 print(f"  ⚠️  {new_path} уже занят — {stem} пропущен")
                 continue
             print(f"{'✅' if a.apply else '(dry-run)'} {stem} → {new_name}")
+            links[stem] = links[cyr] = new_name
             if not a.apply:
                 renamed += 1
                 continue
@@ -200,13 +238,29 @@ def main() -> int:
             open(path, "w", encoding="utf-8").write(text)
             os.rename(path, new_path)
             renamed += 1
-        if a.apply:
+        # Уже переименованные прежним прогоном: ссылки на строку словаря — на имя файла.
+        on_disk = {os.path.basename(p)[:-3] for p in walk_md(KB_ROOT, skip_service=True,
+                                                             skip_archive=True)}
+        for lat, cyr in known.items():
+            name = card_filename(cyr) if translation(known, lat) else ""
+            if name and name in on_disk and cyr != name:
+                links.setdefault(cyr, name)
+        links.update(undo)
+        if a.apply and links:
             for path in walk_md(KB_ROOT, skip_service=False, skip_archive=True):
                 text = open(path, encoding="utf-8", errors="ignore").read()
-                fixed = rewrite_links(text, {lat: known[lat] for lat in ready})
+                fixed = rewrite_links(text, links)
                 if fixed != text:
                     open(path, "w", encoding="utf-8").write(fixed)
-        print(f"\n{'✅ Переименовано' if a.apply else '(dry-run) К переименованию'}: {renamed}")
+        stale = [lat for lat, cyr in known.items()
+                 if is_identifier(lat) and cyr and cyr != NOT_TRANSLIT]
+        if a.apply and stale:
+            rows = dict(known)
+            for lat in stale:
+                rows[lat] = NOT_TRANSLIT
+            write_dict(rows)
+        print(f"\n{'✅ Переименовано' if a.apply else '(dry-run) К переименованию'}: {renamed}"
+              + (f" · кодам возвращено имя: {len({v for v in undo.values()})}" if undo else ""))
         return 0
 
     if a.apply:
@@ -219,6 +273,42 @@ def main() -> int:
     else:
         print("(dry-run) Словарь не тронут. Дописать находки: `--apply`")
     return 0
+
+
+def undo_identifiers(known: dict, apply: bool) -> dict:
+    """Вернуть имя коду, который прежний прогон «перевёл». → {старая цель ссылки: код}.
+
+    Карточка, названная по переводу кода (`ER.Doc.BankId` → «ЕР.Док.БанкИд»), получает
+    исходное имя обратно; синоним-код из шапки снимается — он снова имя.
+    """
+    out: dict = {}
+    disk = {os.path.basename(p)[:-3]: p for p in walk_md(KB_ROOT, skip_service=True,
+                                                         skip_archive=True)}
+    for lat, cyr in known.items():
+        if not cyr or cyr == NOT_TRANSLIT or not is_identifier(lat):
+            continue
+        name = card_filename(cyr)
+        path = disk.get(name)
+        back = card_filename(lat)
+        if not path or back in disk:
+            continue
+        # Только карточка, которую переименовал словарь: у неё код остался синонимом.
+        # Одноимённая карточка, заведённая иначе, не трогается.
+        if not re.search(r'^\s*-\s*"?' + re.escape(lat) + r'"?\s*$',
+                         open(path, encoding="utf-8", errors="ignore").read(), re.M):
+            continue
+        print(f"{'✅' if apply else '(dry-run)'} код возвращён: {name} → {back}")
+        out[name] = out[cyr] = back
+        if not apply:
+            continue
+        text = open(path, encoding="utf-8").read()
+        text = re.sub(r'^\s*-\s*"?' + re.escape(lat) + r'"?\s*\n', "", text, count=1,
+                      flags=re.M)
+        text = re.sub(r'^(title:\s*)"?[^"\n]*"?\s*$', f'\\1"{lat}"', text, count=1,
+                      flags=re.M)
+        open(path, "w", encoding="utf-8").write(text)
+        os.rename(path, os.path.join(os.path.dirname(path), back + ".md"))
+    return out
 
 
 def add_alias(text: str, name: str) -> str:

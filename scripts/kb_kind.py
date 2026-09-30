@@ -106,6 +106,8 @@ def main() -> int:
         if (fm.get("status") or "").strip() == "index":
             continue
         was = (fm.get("kind") or "").strip().strip('"')
+        if was == "template":
+            continue            # форма проекта (`kb:repair --unparsed`): тип ей дан при заведении
         if was in KINDS:
             kept += 1
             counts[was] = counts.get(was, 0) + 1

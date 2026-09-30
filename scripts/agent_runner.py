@@ -2096,8 +2096,11 @@ def run_translit(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) ->
         steps.append(st)
         say(f"  {progress(i, total, started)} · {st['stem']} → "
             + (st["cyrillic"] or st["status"]) + where(st))
-        if st["status"] == "переведено":
+        if st["status"] == "переведено" and not KT.is_identifier(st["stem"]):
             rows[st["stem"]] = st["cyrillic"]
+        elif st["status"] == "не транслит":
+            # Вердикт запоминается: без него те же имена уходили модели на каждом ремонте.
+            rows[st["stem"]] = KT.NOT_TRANSLIT
     if apply and steps:
         KT.write_dict(rows, dict_path)
     done = sum(1 for s in steps if s["status"] == "переведено")
@@ -3119,9 +3122,9 @@ PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источник
 Чего проверять НЕ надо, и за что отклонять нельзя:
 
 - служебный текст ВНУТРИ секции — история изменений, метаданные страницы, инструкции по
-  правке, «см. рисунок ниже». Секции переносятся целиком, вырезать куски из тела на этом
-  шаге нельзя; лишнее убирает человек при доводке. Отклонять из-за этого — значит
-  требовать невозможного, источник просто останется неразобранным;
+  правке, «см. рисунок ниже». Секции переносятся целиком и дословно, вырезать куски из
+  тела на этом шаге нельзя, а шаблон страницы движок уже спрятал из превью. Отклонять
+  из-за этого — значит требовать невозможного, источник просто останется неразобранным;
 - стиль, формулировки и полнота текста: тело не пишется, оно переносится;
 - секции, целиком служебные, уже отсеяны движком до тебя.
 
@@ -3131,14 +3134,111 @@ PROMPT_BUILD_CRITIC = """Ты проверяешь разбор источник
 # Секции, которые знанием не являются никогда: так устроен экспорт Confluence. Обе
 # модели спорили о них каждый второй источник — worker включал, критик отклонял. Спор
 # о постоянном списке — работа для кода, а не для двух моделей.
-SERVICE_SECTION = ("истори", "changelog", "журнал изменений", "версии страницы",
-                   "оглавлени", "содержание", "инструкц", "мета-данные", "метаданные",
-                   "комментари", "правила ведения", "как заполнять")
+#
+# Заголовок сравнивается ЦЕЛИКОМ. До 1.145.0 хватало куска слова — «истори», «инструкц»,
+# «комментари», — и служебными становились сущности и документы: «Core_История версии
+# заявки», «ER_AS_История импорта», 67 секций «Уникальный идентификатор и историчность»,
+# «Основной сценарий №3. Работа с комментарием», документ заказчика «Инструкция:
+# подписание заявки с МЧД». На PRJ-C так выпало 235 секций из 133 файлов, и модель честно
+# выносила «знания нет» о тексте, которого не видела.
+SERVICE_SECTION = re.compile(
+    r"(история изменени[йя]( страницы| документа)?|история версий|история правок|"
+    r"журнал изменений|changelog|change log|версии страницы|оглавление|содержание|"
+    r"мета-?данные( страницы)?|комментарии|правила ведения( страницы)?|"
+    r"как заполнять( страницу| шаблон)?|инструкция по заполнению)")
+
+
+PROMPT_TEMPLATE_KINDS = """Ниже — абзацы и строки, которые дословно повторяются на десятках страниц
+вики проекта.
+
+Часть из них — служебный текст шаблона страницы: инструкции авторам («Указать название
+страницы…», «При правках… писать комментарий»), незаполненные подсказки («(Опционально)
+Вставить ссылку…»), метаданные правки страницы (автор, дата, номер версии, «Создание
+страницы»), пустые заготовки таблиц. Другая часть — знание о системе, честно повторённое в
+нескольких документах: правило, формат, требование, описание поля.
+
+Для каждого номера реши: служебный это текст или знание. Сомневаешься — знание: спрятать
+знание от автора тезиса хуже, чем показать ему лишний абзац.
+
+{items}
+
+Ответь строго JSON: {{"service": [номера служебных]}}"""
+
+TEMPLATE_KINDS = os.path.join(".opencode", "cache", "template_kinds.json")
+_SERVICE_BLOCKS: dict = {}
+
+
+def service_template(cfg: dict, cwd: str, call=None) -> dict:
+    """{абзац: канон} — повторы шаблона, которые модель признала служебным текстом.
+
+    Повтор бывает инструкцией авторам и бывает знанием: «Отчёт состоит из ячеек, значения
+    которых заполняются статическим и динамическим текстом» стоит в 34 постановках PRJ-A и
+    есть правило. Раскадровка прячет от модели любой повтор — иначе он тянет знание сорока
+    страниц в одну карточку. Автор тезиса видит всё, кроме служебного: спрятать от него
+    знание значит написать тезис без сути. Различает смысл, поэтому решает модель — один
+    раз на абзац, ответ хранится в кэше проекта.
+    """
+    import json
+    from aurora_common import template_blocks
+    blocks = template_blocks(cwd)
+    path = os.path.join(cwd, TEMPLATE_KINDS)
+    try:
+        kinds = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        kinds = {}
+    todo = [p for p in blocks if p not in kinds]
+    call = call or AG.call_role
+    for i in range(0, len(todo), 60):
+        part = todo[i:i + 60]
+        items = "\n".join(f"{n}. {p[:300]}" for n, p in enumerate(part, 1))
+        r = call(cfg, "worker", [{"role": "user", "content":
+                                  PROMPT_TEMPLATE_KINDS.format(items=items)}],
+                 deadline=time.time() + AG.call_budget(cfg, "worker"))
+        if not r.get("ok"):
+            break                       # без ответа ничего не записываем: спросим снова
+        ans = parse_json(r.get("text") or "") or {}
+        service = {int(n) for n in ans.get("service") or [] if str(n).isdigit()}
+        for n, p in enumerate(part, 1):
+            kinds[p] = "service" if n in service else "knowledge"
+    if todo:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            json.dump(kinds, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+        except OSError:
+            pass
+    return {p: c for p, c in blocks.items() if kinds.get(p) == "service"}
+
+
+def hide_quotes_template(quotes: str, sources: list, root: str,
+                         blocks: dict | None = None) -> str:
+    """Раздел дословного текста без шаблона страницы — по блокам своих источников.
+
+    Каждый блок подписан путём источника; канон абзаца — свой у каждого, и блок
+    канонического источника свой абзац сохраняет. Безымянный блок первого разбора —
+    текст первого источника карточки.
+    """
+    import build_plan as BP
+    from aurora_common import hide_template, template_blocks
+    blocks = template_blocks(root) if blocks is None else blocks
+    if not blocks or not (quotes or "").strip():
+        return quotes or ""
+    marks = list(BP.BLOCK_MARK_RE.finditer(quotes))
+    first = (sources or [""])[0]
+    if not marks:
+        return hide_template(quotes, first, root, blocks)
+    out = [hide_template(quotes[:marks[0].start()], first, root, blocks)]
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(quotes)
+        key = m.group(1).strip()
+        own = first if key == BP.FIRST_PARSE else key
+        out.append(m.group(0) + "\n\n" + hide_template(quotes[m.end():end], own, root,
+                                                         blocks).strip("\n") + "\n\n")
+    return "".join(out)
 
 
 def is_service_section(title: str) -> bool:
-    low = title.strip().lower()
-    return any(mark in low for mark in SERVICE_SECTION)
+    low = re.sub(r"^[\s#*\d.)]+|[\s:.*]+$", "", (title or "").strip().lower())
+    return bool(SERVICE_SECTION.fullmatch(low))
 
 
 def section_set(spec: str) -> set:
@@ -3229,9 +3329,11 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         # Единственный вопрос, который тут стоит: есть ли здесь знание вообще. Написать
         # карточку чтением агент не может — тела карточек он не пишет.
         return judge_empty(cfg, cwd, source, step, apply, use_critic, call, deadline)
+    from aurora_common import TEMPLATE_ONLY
     listing = "\n".join(
         f"  {n}. {title} ({size} симв.)"
-        + ("  ← СЛУЖЕБНАЯ, не включай в карточки" if is_service_section(title) else "")
+        + ("  ← СЛУЖЕБНАЯ, не включай в карточки"
+           if is_service_section(title) or prev.startswith(TEMPLATE_ONLY) else "")
         + f"\n     {prev}"
         for n, title, size, prev in sections)
 
@@ -3612,6 +3714,10 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     except OSError:
         step.update(status="сбой", note="источник не читается")
         return step
+    # О знании модель судит без шаблона страницы: незаполненная форма с одними
+    # инструкциями авторам — «пусто», а не «знание есть».
+    from aurora_common import hide_template
+    whole = hide_template(whole, source, cwd)
     # Здесь тоже стояло тихое обрезание — `[:6000]`. На источнике в 300 КБ модель судила
     # о наличии знания по первым двум процентам и почти всегда отвечала «пусто». Режем по
     # объявленному окну, а факт обрезания называем: вердикт по части — это не вердикт.
@@ -5261,7 +5367,10 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
                         note=f"{kind} длиннее окна, а границ планировщик не нашёл — "
                              f"разрежьте руками (`kb:split`)")
         return step
-    src = quotes.strip()
+    # Шаблон страницы модель не читает: по нему она писала тезисы «При правках стори
+    # после ревью ОБЯЗАТЕЛЬНО писать комментарий…» карточкам журналов и алгоритмов
+    # (PRJ-C 30.09.2026). Раздел «Источник» в файле остаётся дословным.
+    src = hide_quotes_template(quotes, _srcs_of(text), root, _SERVICE_BLOCKS).strip()
     # Слово человека идёт в задание первым и с высшим приоритетом. До 1.130.0 тезис писался
     # только по тексту источника: исправление лежало в карточке, а тезис ему противоречил,
     # и Момус называл сказанное человеком «утверждением без опоры».
@@ -5512,6 +5621,10 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     started = time.time()
     budget = started + (window_s or cfg["budget_min"] * 60)
     todo = [p for p in distill_queue(cfg, cwd, defer_refresh) if p not in (skip or ())]
+    if todo:
+        # Что из шаблона страницы служебное — решено один раз на проект и лежит в кэше.
+        _SERVICE_BLOCKS.clear()
+        _SERVICE_BLOCKS.update(service_template(cfg, cwd, call))
     total = min(len(todo), limit) if limit else (
         len(todo) if window_s else min(len(todo), cfg["max_steps"]))
     say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "

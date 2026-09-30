@@ -1337,6 +1337,190 @@ def body_hash(body: str) -> str:
     return hashlib.md5(norm.encode("utf-8")).hexdigest()[:12]
 
 
+# ------------------------------------------------------------------ шаблон пространства
+#
+# Страницы вики пишут по шаблону, и его инструкции авторам остаются на страницах дословно:
+# «При правках стори после прохождения ревью ОБЯЗАТЕЛЬНО писать комментарий…» стоит на 427
+# страницах PRJ-C, пустая таблица «Описание решения» — на 78 страницах PRJ-A. Модель
+# принимала этот текст за знание: превью секции (первые 900 знаков) у алгоритма целиком
+# состояло из шаблона, поиск кандидатов находил по нему карточку, чей тезис написан по тому
+# же шаблону, и знание сорока страниц сливалось в одну карточку-сборник (PRJ-C 30.09.2026:
+# «Сохранение-текста-комментария», 59 источников).
+#
+# Шаблон узнаётся по тому, чем он и отличается от знания: абзац стоит дословно в двадцати
+# и более файлах зеркала. Прячется он только от МОДЕЛИ — в раскадровке, в поиске
+# кандидатов, во входе тезиса. Раздел «Источник (перенесено дословно)» остаётся дословным:
+# это обещание базы, и шаблон в нём никому не мешает.
+#
+# Одно исключение — канонический источник, первый по пути файл с этим абзацем. Повтор
+# бывает и знанием («Отчёт сохраняется в формате xlsx» в 45 постановках PRJ-A); у
+# канонического источника модель его видит, и знание остаётся в базе хотя бы раз.
+
+TEMPLATE_ONLY = "(только шаблон страницы — знания нет)"
+TEMPLATE_MIN_FILES = 20      # абзац дословно в стольких файлах зеркала — шаблон
+TEMPLATE_MIN_CHARS = 25      # короче — «Нет», «---», заголовок таблицы: не абзац
+TEMPLATE_MIRRORS = ("Sources",)
+TEMPLATE_CACHE = os.path.join(".opencode", "cache", "template_blocks.json")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+_TEMPLATE_MEMO: dict = {}
+
+
+def _paragraph_spans(lines: list) -> list:
+    """[(начало, конец)] абзацев: строки подряд без пустых. Заголовок — не абзац."""
+    spans, i, n = [], 0, len(lines)
+    while i < n:
+        if not lines[i].strip() or _HEADING_RE.match(lines[i]):
+            i += 1
+            continue
+        j = i
+        while j < n and lines[j].strip() and not _HEADING_RE.match(lines[j]):
+            j += 1
+        spans.append((i, j))
+        i = j
+    return spans
+
+
+def norm_paragraph(text: str) -> str:
+    """Абзац для сравнения: пробелы и переносы свёрнуты — их меняет выгрузка, не автор."""
+    return " ".join((text or "").split())
+
+
+_ROW_RE = re.compile(r"^\s*(\||[-*+]\s|\d{1,3}[.)]\s)")
+_SEP_RE = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$")
+
+
+def _row_lines(lines: list, a: int, b: int) -> list:
+    """Строки таблицы и списка внутри абзаца, кроме шапки таблицы. → [номер строки].
+
+    Шаблон живёт и строкой: «| RYo:свойствоАвтор изменений | @… |», «(Опционально)
+    Вставить ссылку RY…» стоят в таблице истории сотен страниц, и модель переписывала их в
+    тезис. Шапка таблицы остаётся всегда: без неё строки не прочесть.
+    """
+    out = []
+    for i in range(a, b):
+        if not _ROW_RE.match(lines[i]) or _SEP_RE.match(lines[i]):
+            continue
+        if i + 1 < b and _SEP_RE.match(lines[i + 1]):
+            continue                    # шапка таблицы
+        out.append(i)
+    return out
+
+
+def paragraphs_of(text: str) -> list:
+    """Абзацы текста и строки его таблиц и списков — в виде, в каком их сравнивает словарь."""
+    lines = (text or "").splitlines()
+    out = []
+    for a, b in _paragraph_spans(lines):
+        p = norm_paragraph("\n".join(lines[a:b]))
+        if len(p) >= TEMPLATE_MIN_CHARS:
+            out.append(p)
+        if b - a > 1:
+            for i in _row_lines(lines, a, b):
+                r = norm_paragraph(lines[i])
+                if len(r) >= TEMPLATE_MIN_CHARS:
+                    out.append(r)
+    return out
+
+
+def _mirror_files(root: str) -> list:
+    out = []
+    for base in TEMPLATE_MIRRORS:
+        top = os.path.join(root, base)
+        if not os.path.isdir(top):
+            continue
+        for dp, dirs, files in os.walk(top):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for f in sorted(files):
+                if f.endswith(".md"):
+                    out.append(os.path.join(dp, f))
+    return out
+
+
+def template_blocks(root: str = ".") -> dict:
+    """{абзац: канонический источник} — шаблон пространства, общий на весь движок.
+
+    Считается по зеркалу один раз и кэшируется в `.opencode/cache/`: подпись — число, объём
+    и время правки файлов. Синк поменял страницу — словарь пересчитается сам.
+    """
+    import json
+    files = _mirror_files(root)
+    sig = [len(files), 0, 0.0]
+    for p in files:
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        sig[1] += st.st_size
+        sig[2] = max(sig[2], st.st_mtime)
+    key = (os.path.abspath(root), tuple(sig))
+    if key in _TEMPLATE_MEMO:
+        return _TEMPLATE_MEMO[key]
+    cache = os.path.join(root, TEMPLATE_CACHE)
+    try:
+        data = json.load(open(cache, encoding="utf-8"))
+        if (data.get("sig") == sig and data.get("min") == TEMPLATE_MIN_FILES
+                and data.get("v") == 2):
+            _TEMPLATE_MEMO.clear()
+            _TEMPLATE_MEMO[key] = data["blocks"]
+            return data["blocks"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    seen: dict = {}
+    first: dict = {}
+    for p in files:
+        rel = os.path.relpath(p, root).replace("\\", "/")
+        try:
+            text = open(p, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        head, rest = split_frontmatter(text)
+        for par in set(paragraphs_of(rest if head is not None else text)):
+            seen[par] = seen.get(par, 0) + 1
+            if par not in first or rel < first[par]:
+                first[par] = rel
+    blocks = {par: first[par] for par, n in seen.items() if n >= TEMPLATE_MIN_FILES}
+    try:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        json.dump({"sig": sig, "min": TEMPLATE_MIN_FILES, "v": 2, "blocks": blocks},
+                  open(cache, "w", encoding="utf-8"), ensure_ascii=False)
+    except OSError:
+        pass
+    _TEMPLATE_MEMO.clear()
+    _TEMPLATE_MEMO[key] = blocks
+    return blocks
+
+
+def hide_template(text: str, source: str = "", root: str = ".",
+                  blocks: dict | None = None) -> str:
+    """Текст без абзацев шаблона — то, что читает модель. Источнику-канону абзац оставлен."""
+    blocks = template_blocks(root) if blocks is None else blocks
+    if not blocks or not text:
+        return text or ""
+    source = (source or "").replace("\\", "/").lstrip("./")
+    lines = text.splitlines()
+    drop = set()
+    for a, b in _paragraph_spans(lines):
+        par = norm_paragraph("\n".join(lines[a:b]))
+        canon = blocks.get(par)
+        if canon is not None and canon != source:
+            drop.update(range(a, b))
+            continue
+        if b - a > 1:
+            for i in _row_lines(lines, a, b):
+                canon = blocks.get(norm_paragraph(lines[i]))
+                if canon is not None and canon != source:
+                    drop.add(i)
+    if not drop:
+        return text
+    kept = "\n".join(l for i, l in enumerate(lines) if i not in drop)
+    return re.sub(r"\n{3,}", "\n\n", kept).strip("\n")
+
+
+def template_in(text: str, blocks: dict) -> list:
+    """Абзацы шаблона, которые стоят в тексте. Порядок — как в тексте."""
+    return [p for p in paragraphs_of(text) if p in blocks]
+
+
 # ------------------------------------------------------------------ словарь проекта
 
 # Заголовки справочников, где лежат расшифровки: имя файла или title карточки.

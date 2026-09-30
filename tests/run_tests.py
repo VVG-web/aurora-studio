@@ -7497,7 +7497,7 @@ def test_correction_is_a_layer_not_a_one_time_edit(tmp: Path):
     assert after.startswith("---\n"), "у карточки съеден открывающий разделитель шапки"
     assert "Статусов пять" in after, "исправление не доехало до карточки"
     assert "У заявки четыре статуса." in after, "исправление затёрло тело карточки"
-    assert 'corrected_by: "[[' in after, "карточка не помнит, чем исправлена"
+    assert 'corrected_by: "' in after, "карточка не помнит, чем исправлена"
     assert "Sources/Confluence/Заявки.md" in card_srcs(after), \
         "источник подменён: по нему работает sync:audit, и зеркало начнёт сыпать находками"
     assert "# Исправление:" not in after, \
@@ -13930,7 +13930,8 @@ def test_a_source_judged_empty_is_done_not_pending(tmp: Path):
     try:
         man = {"sources": {
             "Sources/Confluence/Пустая.md": {"cards": 0, "hash": BP.file_hash(str(empty)),
-                                             "empty_reason": "знания нет"},
+                                             "empty_reason": "знания нет",
+                                             "empty_rule": BP.EMPTY_RULE},
             "Sources/Confluence/Живая.md": {"cards": 0, "hash": BP.file_hash(str(live))}}}
         # `reopen` возвращает код выхода, а не число — считаем по манифесту после записи
         import copy
@@ -22264,6 +22265,410 @@ def test_fields_are_readable_in_both_themes(tmp: Path):
 
 SMOKE = "--smoke" in sys.argv
 NO_INVARIANTS = "--no-invariants" in sys.argv
+
+TEMPLATE_PAR = ("При правках стори после прохождения ревью ОБЯЗАТЕЛЬНО писать комментарий "
+                "при сохранении страницы - что поменялось (около кнопки SAVE)")
+TEMPLATE_ROW = "| RYo:свойствоАвтор изменений | @Иванова Анна Петровна |"
+TEMPLATE_PAR2 = ("Указать название страницы: код RY и название алгоритма, как принято в разделе "
+                 "требований к оформлению страниц проекта; код берётся из реестра требований")
+
+
+def _template_mirror(root: Path, n: int = 22) -> list:
+    """Зеркало вики, где у каждой страницы — шаблон, строка истории и своё знание."""
+    base = root / "Sources/Confluence/Алгоритмы"
+    base.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i in range(n):
+        p = base / f"ALG-{100 + i:03d}_Алгоритм_{i}.md"
+        p.write_text(
+            f"---\npage_id: {5000 + i}\ntitle: \"ALG-{100 + i} Алгоритм {i}\"\n---\n"
+            f"# ALG-{100 + i} Алгоритм {i}\n\n# Описание\n\n{TEMPLATE_PAR}\n\n{TEMPLATE_PAR2}\n\n"
+            f"| Код | RYk:ALG-{100 + i} |\n|---|---|\n{TEMPLATE_ROW}\n"
+            f"| RYo:свойствоОписание | Алгоритм {i} считает сумму налога по ставке {i} процентов |\n\n"
+            f"# Шаги алгоритма\n\nШаг первый: взять ставку {i}. Шаг второй: умножить на базу "
+            f"и записать результат в журнал расчётов номер {i}.\n", encoding="utf-8")
+        paths.append(p)
+    return paths
+
+
+@test
+def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Path):
+    """Шаблон страницы модель не видит, а дословный раздел карточки остаётся дословным.
+
+    PRJ-C 30.09.2026: «При правках стори… писать комментарий» стоит на 427 страницах. Превью
+    секции (900 знаков) у алгоритма целиком было шаблоном, поиск кандидатов находил по нему
+    карточку с тезисом о том же шаблоне, и знание 59 страниц легло в одну карточку. С
+    1.145.0 абзац, дословно стоящий в двадцати файлах, — шаблон: из раскадровки он пропадает
+    (кроме канонического источника — первого по пути), строка таблицы истории — тоже, шапка
+    таблицы остаётся. Переносится в карточку текст по-прежнему целиком.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    paths = _template_mirror(root)
+    blocks = A.template_blocks(str(root))
+    assert TEMPLATE_PAR in blocks and TEMPLATE_ROW in blocks, sorted(blocks)[:5]
+    assert all("Шаг первый" not in p for p in blocks), "своё знание страницы принято за шаблон"
+    assert (root / ".opencode/cache/template_blocks.json").is_file(), "словарь не закэширован"
+
+    rel = str(paths[5].relative_to(root))
+    cp = run("build_plan.py", "--slice", rel, "--slice-chars", "900", cwd=root)
+    head = cp.stdout.split("ЗАДАНИЕ АССИСТЕНТУ")[0]
+    assert "ОБЯЗАТЕЛЬНО писать комментарий" not in head, f"шаблон в превью:\n{head}"
+    assert "@Иванова" not in head, f"строка истории в превью:\n{head}"
+    assert "| Код | RYk:ALG-105 |" in head, "шапку таблицы спрятали вместе со строкой"
+    assert "считает сумму налога" in head and "Шаг первый" in head, head
+
+    canon = str(paths[0].relative_to(root))
+    assert blocks[TEMPLATE_PAR] == canon, blocks[TEMPLATE_PAR]
+    head0 = run("build_plan.py", "--slice", canon, "--slice-chars", "900", cwd=root).stdout
+    assert "ОБЯЗАТЕЛЬНО писать комментарий" in head0, "канонический источник потерял абзац"
+
+    run("build_plan.py", "--card", "Алгоритм пять", "--source", rel, "--sections", "1",
+        "--to", "Processes", "--apply", cwd=root, expect_rc=0)
+    made = (root / "AuroraKnowledgeDB/Processes/Алгоритм-пять.md").read_text(encoding="utf-8")
+    assert TEMPLATE_PAR in made and TEMPLATE_ROW in made, \
+        "раздел «перенесено дословно» перестал быть дословным"
+
+    # секция из одного шаблона помечена для модели служебной
+    only = root / "Sources/Confluence/Алгоритмы/Пустая_форма.md"
+    only.write_text(f"---\npage_id: 9999\n---\n# Пустая форма\n\n# Описание\n\n{TEMPLATE_PAR}\n\n"
+                    f"{TEMPLATE_PAR2}\n\n# Шаги\n\nЕдинственный шаг — отправить квитанцию в "
+                    "налоговый орган по телекоммуникационному каналу связи в течение суток, "
+                    "а при отказе канала — повторить отправку через час и записать попытку в "
+                    "журнал обмена с указанием времени и кода ошибки шлюза.\n", encoding="utf-8")
+    slice_ = run("build_plan.py", "--slice", str(only.relative_to(root)), cwd=root).stdout
+    assert A.TEMPLATE_ONLY in slice_, slice_
+    R = importlib.import_module("agent_runner")
+    rows = R.SECTION_RE.findall(slice_.split("ЗАДАНИЕ АССИСТЕНТУ")[0])
+    assert any(prev.startswith(A.TEMPLATE_ONLY) for _n, _t, _s, prev in rows), rows
+
+
+@test
+def test_a_card_born_of_the_page_template_is_archived_and_its_sources_replanned(tmp: Path):
+    """Карточка, собранная по шаблону, — в архив; чужие страницы — обратно в план.
+
+    Два вида вреда от шаблона в уже собранной базе PRJ-C. «Предусловия-пользовательских-
+    историй» — карточка, чей тезис пересказывает инструкцию авторам, к которой 38 историй
+    пришли одним абзацем: она уходит в архив, а источники — в план. «Сохранение-текста-
+    комментария» — законная карточка алгоритма, к которой шаблон притянул 54 чужих: блок,
+    пришедший абзацем шаблона и не называющий её сущность, отвязывается. Ссылки на
+    ушедшую карточку становятся текстом, строка из одной ссылки уходит.
+    """
+    import importlib, json
+    sys.path.insert(0, str(SCRIPTS))
+    root = make_project(tmp)
+    paths = [str(p.relative_to(root)) for p in _template_mirror(root)]
+    q = lambda srcs: "".join(f"### {s}\n\n# Описание\n\n{TEMPLATE_PAR}\n\nАлгоритм {i}.\n\n"
+                             for i, s in enumerate(srcs))
+    srcs_block = lambda srcs: "sources:\n" + "".join(f'  - "{s}"\n' for s in srcs)
+    kb = root / "AuroraKnowledgeDB"
+    (kb / "Processes").mkdir(parents=True, exist_ok=True)
+    (kb / "Processes/Комментарий-при-правке-стори.md").write_text(
+        f'---\ntitle: "Комментарий при правке стори"\nstatus: draft\ntype: process\n'
+        f'kind: knowledge\ndistilled: 2026-09-20\n{srcs_block(paths[3:8])}---\n\n'
+        "Комментарий при правке стори: после прохождения ревью обязательно писать "
+        "комментарий при сохранении страницы — что поменялось.\n\n"
+        f"## Источник (перенесено дословно)\n\n{q(paths[3:8])}", encoding="utf-8")
+    own = paths[10]
+    (kb / "Processes/Алгоритм-десять.md").write_text(
+        f'---\ntitle: "Алгоритм десять"\nstatus: knowledge\ntype: process\nkind: knowledge\n'
+        f'distilled: 2026-09-20\n{srcs_block([own] + paths[11:15])}---\n\n'
+        "Алгоритм десять считает сумму налога по ставке десять процентов.\n\n"
+        f"## Источник (перенесено дословно)\n\n### {own}\n\nАлгоритм десять.\n\n"
+        + "".join(f"### {s}\n\n{TEMPLATE_PAR}\n\nЧужой расчёт {i}.\n\n"
+                  for i, s in enumerate(paths[11:14]))
+        + f"### {paths[14]}\n\n{TEMPLATE_PAR}\n\nЗдесь снова алгоритм десять: он же.\n",
+        encoding="utf-8")
+    card(root, "Concepts/Ссылается.md", "Смотри [[Комментарий-при-правке-стори|правило]].\n"
+         "[[Комментарий-при-правке-стори]].\nИ дальше текст.", status="knowledge")
+    man = kb / "meta/manifest.json"
+    man.parent.mkdir(parents=True, exist_ok=True)
+    man.write_text(json.dumps({"sources": {p: {"hash": "x", "cards": 1} for p in paths}},
+                              ensure_ascii=False), encoding="utf-8")
+
+    cp = run("kb_fix.py", "--template", "--apply", "--allow-dirty", cwd=root)
+    assert cp.returncode == 0, cp.stdout[-800:] + cp.stderr[-400:]
+    assert not (kb / "Processes/Комментарий-при-правке-стори.md").exists(), cp.stdout[-800:]
+    assert (kb / "_archive/Комментарий-при-правке-стори.md").is_file()
+    left = json.loads(man.read_text(encoding="utf-8"))["sources"]
+    assert not set(paths[3:8]) & set(left), "источники карточки-шаблона не вернулись в план"
+    assert set(paths[11:14]).isdisjoint(left), "отвязанные источники не вернулись в план"
+    assert paths[14] in left and own in left, "тронуты источники, пришедшие по делу"
+
+    alg = (kb / "Processes/Алгоритм-десять.md").read_text(encoding="utf-8")
+    srcs = card_srcs(alg)
+    assert srcs == [own, paths[14]], srcs
+    assert "Чужой расчёт" not in alg and "Здесь снова алгоритм десять" in alg, alg
+    assert "distilled: 2026-09-20" not in alg.split("\n---", 1)[0], "тезис не отправлен на переписывание"
+
+    ref = (kb / "Concepts/Ссылается.md").read_text(encoding="utf-8")
+    assert "[[Комментарий-при-правке-стори" not in ref, ref
+    assert "Смотри правило." in ref and "\n[[" not in ref and "И дальше текст." in ref, ref
+
+
+@test
+def test_the_author_of_a_thesis_sees_repeated_knowledge_but_not_service_text(tmp: Path):
+    """Автор тезиса видит повтор-знание, но не служебный текст шаблона.
+
+    Повтор бывает инструкцией авторам и бывает правилом: «Отчёт состоит из ячеек…» стоит в
+    34 постановках PRJ-A. Раскадровка прячет любой повтор, а тезис — только то, что модель
+    один раз признала служебным; ответ хранится в кэше проекта и второй раз не спрашивается.
+    """
+    import importlib, json
+    sys.path.insert(0, str(SCRIPTS))
+    AG = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    paths = [str(p.relative_to(root)) for p in _template_mirror(root)]
+    rule = ("Отчёт состоит из ячеек, значения которых заполняются статическим и динамическим "
+            "текстом по правилам раздела форматов")
+    for p in paths:
+        f = root / p
+        f.write_text(f.read_text(encoding="utf-8") + f"\n{rule}\n", encoding="utf-8")
+    asked = []
+
+    def fake(cfg, role, messages, **kw):
+        text = messages[0]["content"]
+        asked.append(text)
+        nums = [line.split(".", 1)[0] for line in text.splitlines()
+                if re.match(r"^\d+\. ", line) and ("ОБЯЗАТЕЛЬНО" in line or "Автор" in line)]
+        return {"ok": True, "backend": 1, "model": "m", "tps": 9, "log": [],
+                "text": json.dumps({"service": [int(n) for n in nums]})}
+
+    cfg = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    service = R.service_template(cfg, str(root), call=fake)
+    assert TEMPLATE_PAR in service and TEMPLATE_ROW in service, service
+    assert rule not in service, "правило, повторённое в постановках, объявлено служебным"
+    R.service_template(cfg, str(root), call=fake)
+    assert len(asked) == 1, "служебность шаблона спрашивается у модели на каждом прогоне"
+    quotes = f"### {paths[4]}\n\n{TEMPLATE_PAR}\n\n{rule}\n\nШаг первый.\n"
+    shown = R.hide_quotes_template(quotes, [paths[4]], str(root), service)
+    assert TEMPLATE_PAR not in shown and rule in shown and "Шаг первый" in shown, shown
+
+
+@test
+def test_a_service_section_is_named_by_the_whole_title_not_by_a_word_in_it(_t):
+    """Служебная секция — по заголовку целиком, а не по куску слова.
+
+    До 1.145.0 хватало «истори», «инструкц», «комментари»: служебными становились сущности
+    «Core_История версии заявки», «ER_AS_История импорта», 67 секций «Уникальный
+    идентификатор и историчность» и документ заказчика «Инструкция: подписание заявки с
+    МЧД» — на PRJ-C 235 секций из 133 файлов, и модель выносила «пусто» о знании.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    R = importlib.import_module("agent_runner")
+    for title in ("История изменений", "## История изменений страницы", "1. Оглавление",
+                  "Содержание:", "Changelog", "Метаданные", "Комментарии"):
+        assert R.is_service_section(title), f"служебная не опознана: {title}"
+    for title in ("Core_История версии заявки", "ER_AS_История импорта",
+                  "Уникальный идентификатор и историчность",
+                  "Инструкция для Сервиса Заявителя: подписание заявки с МЧД",
+                  "Основной сценарий №3. Работа с комментарием в карточке",
+                  "Задача на разработку истории", "Текстовое содержание оповещений"):
+        assert not R.is_service_section(title), f"знание объявлено служебным: {title}"
+
+
+@test
+def test_a_format_mask_in_the_text_does_not_make_a_page_a_template(tmp: Path):
+    """Маска формата в тексте — спецификация, а не незаполненная форма.
+
+    Правило «метка в тексте короче 4000 знаков — шаблон» сработало на трёх проектах 13 раз
+    и все 13 — мимо: `ON_<КНД>_<УИД>.xml`, версия `XXX`, «Порядок формирования ИНН» с
+    форматом `XXXXXX`. Такие алгоритмы уходили в Reference с пометкой «разбору не
+    подлежит». Шаблон узнаётся по имени файла или по явной пометке в шапке; карточка
+    «Шаблон проекта», заведённая по старому правилу, уходит в архив, а источник — в разбор.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    B = importlib.import_module("build_plan")
+    spec = ("# Порядок формирования ИНН\n\nИНН имеет вид XXXXXX, файл — ON_<КНД>_<УИД>.xml, "
+            "дата — yyyy-MM-dd. Проверка контрольного разряда обязательна.\n")
+    assert not B.is_template("Sources/Confluence/Порядок_формирования_ИНН.md", spec)
+    assert B.is_template("Sources/Confluence/Шаблон_протокола.md", "что угодно")
+    assert B.is_template("Raw/x.md", "---\ntemplate: true\n---\nполе: ____\n")
+
+    root = make_project(tmp)
+    src = root / "Sources/Confluence/Порядок_формирования_ИНН.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(spec, encoding="utf-8")
+    kb = root / "AuroraKnowledgeDB/Reference"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "Порядок-формирования-ИНН.md").write_text(
+        '---\ntitle: "Порядок формирования ИНН"\nstatus: draft\ntype: reference\n'
+        'kind: dictionary\nsources:\n  - "Sources/Confluence/Порядок_формирования_ИНН.md"\n'
+        '---\n\n# Порядок формирования ИНН\n\n_Шаблон проекта. Разбору не подлежит: это форма, '
+        'а не знание._\n', encoding="utf-8")
+    cp = run("kb_fix.py", "--template", "--apply", "--allow-dirty", cwd=root)
+    assert (root / "AuroraKnowledgeDB/_archive/Порядок-формирования-ИНН.md").is_file(), cp.stdout[-600:]
+    plan = run("build_plan.py", cwd=root).stdout
+    assert "Порядок_формирования_ИНН" in plan, f"спецификация формата не пошла в разбор:\n{plan[-600:]}"
+
+
+@test
+def test_an_empty_verdict_under_the_old_show_rules_is_judged_again_once(tmp: Path):
+    """Вердикт «пусто» по прежним правилам показа пересматривается — один раз.
+
+    Модель судила о знании по тому, что ей показали; до 1.145.0 от неё прятали секции
+    «История версии заявки» и «Инструкция: подписание с МЧД» как служебные. Такие вердикты
+    `--reopen` возвращает в план; вынесенный по новым правилам — остаётся на месте.
+    """
+    import importlib, json
+    sys.path.insert(0, str(SCRIPTS))
+    B = importlib.import_module("build_plan")
+    root = make_project(tmp)
+    src = root / "Sources/Confluence"
+    src.mkdir(parents=True, exist_ok=True)
+    for name in ("Старый.md", "Новый.md"):
+        (src / name).write_text("# Core_История версии заявки\n\n" + "Атрибут. " * 60, encoding="utf-8")
+    man = root / "AuroraKnowledgeDB/meta/manifest.json"
+    man.parent.mkdir(parents=True, exist_ok=True)
+
+    def rec(p, rule):
+        r = {"hash": B.file_hash(str(src / p)), "processed": "2026-09-20", "cards": 0,
+             "empty_reason": "Единственная секция помечена служебной"}
+        if rule:
+            r["empty_rule"] = rule
+        return r
+    man.write_text(json.dumps({"sources": {
+        "Sources/Confluence/Старый.md": rec("Старый.md", 0),
+        "Sources/Confluence/Новый.md": rec("Новый.md", B.EMPTY_RULE)}}), encoding="utf-8")
+    out = run("build_plan.py", "--reopen", "--apply", cwd=root).stdout
+    left = json.loads(man.read_text(encoding="utf-8"))["sources"]
+    assert "Sources/Confluence/Старый.md" not in left, "вердикт по старым правилам не пересмотрен"
+    assert "Sources/Confluence/Новый.md" in left, "свежий вердикт «пусто» пересматривается зря"
+    assert "по прежним правилам показа" in out, out
+
+
+@test
+def test_a_code_is_never_translated_and_a_translated_code_gets_its_name_back(tmp: Path):
+    """Код модели данных не переводится, а «переведённый» получает имя обратно.
+
+    PRJ-C 30.09.2026: модель «перевела» `ER.Dop.Status` в «RYl:ЕР.Доп.Статус» (кириллические
+    Е и Р — гомоглифы латинских), `ER.AS.Notice` — в «ER_AS_Извещение», и ремонт
+    переименовал карточки. Код ER — имя сущности (Т-73, Т-74), переводить его нельзя.
+    Там же переименование писало ссылки на строку словаря, а файл называло по правилу
+    имён — 25 битых ссылок. И «не транслит» не запоминался: те же 15 имён уходили модели
+    на каждом ремонте.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    TR = importlib.import_module("kb_translit")
+    for code in ("ER.Dop.Status", "RYl-ER.Dop.Status", "ER-AS-Spe-ExciseAllTotal", "IsAnnulated",
+                 "Status-REGISTERED", "ER.DNsp"):
+        assert TR.is_identifier(code) and not TR.is_latin_name(code), code
+    assert TR.is_latin_name("SPR-002-Tipy-Transportnogo-sredstva")
+
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    card(root, "Concepts/RYl-ЕР.Доп.Статус.md", "Статус заявки в модели данных.",
+         status="knowledge", aliases='\n  - "RYl-ER.Dop.Status"')
+    card(root, "Concepts/Profil-abonenta.md", "Профиль обслуживания абонента.", status="draft")
+    card(root, "Concepts/Ссылки.md", "См. [[RYl:ЕР.Доп.Статус]], [[Profil-abonenta]] и "
+         "[[Профиль абонента]].", status="knowledge")
+    d = kb / "meta/translit.md"
+    d.parent.mkdir(parents=True, exist_ok=True)
+    TR.write_dict({"RYl-ER.Dop.Status": "RYl:ЕР.Доп.Статус", "Profil-abonenta": "Профиль абонента",
+                   "Processes": TR.NOT_TRANSLIT}, str(d))
+    assert TR.read_dict(str(d))["Processes"] == TR.NOT_TRANSLIT, "вердикт «не транслит» не читается"
+    run("kb_translit.py", "--rename", "--apply", "--allow-dirty", cwd=root)
+    back = kb / "Concepts/RYl-ER.Dop.Status.md"
+    assert back.is_file(), sorted(p.name for p in (kb / "Concepts").iterdir())
+    assert 'title: "RYl-ER.Dop.Status"' in back.read_text(encoding="utf-8")
+    assert (kb / "Concepts/Профиль-абонента.md").is_file(), "настоящий транслит не переименован"
+    links = (kb / "Concepts/Ссылки.md").read_text(encoding="utf-8")
+    assert "[[RYl-ER.Dop.Status]]" in links, links
+    assert "[[Профиль-абонента]]" in links and "[[Профиль абонента]]" not in links, \
+        f"ссылка ведёт на строку словаря, а не на имя файла:\n{links}"
+    assert TR.read_dict(str(d))["RYl-ER.Dop.Status"] == TR.NOT_TRANSLIT, "код остался в словаре переводом"
+
+    R = importlib.import_module("agent_runner")
+    run_src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8").split(
+        "def run_translit(")[1].split("def report_translit(")[0]
+    assert "KT.NOT_TRANSLIT" in run_src, "вердикт модели «не транслит» не записывается в словарь"
+
+
+@test
+def test_an_archived_copy_and_project_forms_are_not_alias_rivals(tmp: Path):
+    """Копия карточки в архиве и шаблоны проекта — не соперники по синониму.
+
+    Ремонт объявлял спором карточку и её же копию в `_archive` («Epic-4.2», «Личный
+    кабинет»), а три версии шаблона `Templates/test_review` — спором синонимов базы: модель
+    тратила вызовы, чтобы ответить «дубль — человеку», и каждый шаг ремонта завершался
+    кодом 1. Ссылка, которой не на что указывать, — работа `--stubs`, а не сбой шага.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Формирование-заявки.md", "Эпик формирования. [[Нет-такой-карточки]]",
+         status="knowledge", aliases='\n  - "Epic-4.2"')
+    card(root, "_archive/Формирование-заявки.md", "Старая копия.", status="deprecated",
+         aliases='\n  - "Epic-4.2"')
+    tpl = root / "Templates"
+    tpl.mkdir(exist_ok=True)
+    for v in ("1.0", "1.1"):
+        (tpl / f"test_review_v{v}.md").write_text(
+            f'---\ntitle: "Ревью {v}"\naliases:\n  - "Ревью тест-кейса"\n---\n\nФорма.\n',
+            encoding="utf-8")
+    cp = run("kb_fix.py", "--all", "--apply", "--allow-dirty", cwd=root)
+    assert "«Epic-4.2»" not in cp.stdout, cp.stdout[-800:]
+    assert "Ревью тест-кейса" not in cp.stdout, "шаблоны проекта стали карточками базы"
+    assert cp.returncode == 0, f"ссылка без карточки красит ремонт упавшим: rc={cp.returncode}"
+
+
+@test
+def test_a_link_to_a_source_page_leads_to_the_card_of_its_entity(tmp: Path):
+    """Ссылка на страницу-источник по полному имени ведёт в карточку её сущности.
+
+    `[[US-6.5.4._Получение_статуса_приёма_пакета_по_API]]` — имя страницы US; карточка
+    процесса названа сущностью. `--stubs` заводил под такую ссылку заготовку рядом с живой
+    карточкой (PRJ-C 30.09.2026: двойников 17 → 19 за один ремонт).
+    """
+    root = make_project(tmp)
+    card(root, "Processes/Получение-статуса-приёма-пакета-по-API.md",
+         "Учётная система получает статус приёма пакета.", status="knowledge")
+    card(root, "Systems/Интеграция.md", "См. [[US-6.5.4._Получение_статуса_приёма_пакета_по_API]].",
+         status="knowledge")
+    run("kb_fix.py", "--links", "--stubs", "--apply", "--allow-dirty", cwd=root)
+    text = (root / "AuroraKnowledgeDB/Systems/Интеграция.md").read_text(encoding="utf-8")
+    assert "[[Получение-статуса-приёма-пакета-по-API" in text, text
+    made = [p.name for p in (root / "AuroraKnowledgeDB").rglob("*.md") if "_статуса_" in p.name
+            or p.name.startswith("Получение_")]
+    assert not made, f"под ссылку заведён двойник: {made}"
+
+
+@test
+def test_a_human_correction_is_named_by_its_path_not_by_a_broken_link(tmp: Path):
+    """Исправление человека называется путём к файлу, а не вики-ссылкой.
+
+    Файл исправления лежит в `Raw/corrections/`, вне базы: ссылка `[[…]]` на него в Obsidian
+    не открывается, и линтер звал её битой — 12 «битых ссылок» PRJ-C после каждого ремонта.
+    Смена одного лишь вида ссылки тезис не сбрасывает: слово человека то же.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Заявка.md", "У заявки четыре статуса.", status="knowledge",
+         sources='\n  - "Sources/Confluence/Заявки.md"', distilled="2026-09-20")
+    fix = root / "Raw/corrections"
+    fix.mkdir(parents=True, exist_ok=True)
+    (fix / "Статусов-пять.md").write_text(
+        '---\ntitle: "Статусов пять"\ncorrects: "[[Заявка]]"\ncreated: 2026-09-21\n---\n\n'
+        "Статусов пять: добавлен «Отозвана».\n", encoding="utf-8")
+    run("kb_corrections.py", "--apply", cwd=root)
+    text = (root / "AuroraKnowledgeDB/Concepts/Заявка.md").read_text(encoding="utf-8")
+    assert "Источник исправления: `Raw/corrections/Статусов-пять.md`" in text, text
+    assert 'corrected_by: "Статусов-пять"' in text, text
+    # старый вид ссылки → новый: переписать, но тезис не сбрасывать
+    old = text.replace("`Raw/corrections/Статусов-пять.md`", "[[Статусов-пять]]").replace(
+        "updated:", "distilled: 2026-09-22\nupdated:", 1)
+    (root / "AuroraKnowledgeDB/Concepts/Заявка.md").write_text(old, encoding="utf-8")
+    run("kb_corrections.py", "--apply", cwd=root)
+    again = (root / "AuroraKnowledgeDB/Concepts/Заявка.md").read_text(encoding="utf-8")
+    assert "`Raw/corrections/Статусов-пять.md`" in again and "[[Статусов-пять]]" not in again
+    assert "distilled: 2026-09-22" in again, "смена вида ссылки сбросила тезис"
+    lint = run("kb_lint.py", cwd=root).stdout
+    broken = lint.split("## битые ссылки", 1)[1].split("\n## ", 1)[0] if "## битые ссылки" in lint else ""
+    assert "Статусов-пять" not in broken, broken
+
 
 # ---------------------------------+ import-драйвер: исполняет отобранные проверки
 # (декоратор лишь регистрирует; исполнение здесь — чтобы --only/--smoke/--no-invariants

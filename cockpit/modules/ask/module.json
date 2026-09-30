@@ -9,5 +9,5 @@
   "order": 70,
   "needs": ["project"],
   "commands": ["agent:ask"],
-  "for": "1.144.1"
+  "for": "1.145.0"
 }

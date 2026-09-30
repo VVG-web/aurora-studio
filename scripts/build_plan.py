@@ -329,7 +329,6 @@ TERMS_SOURCE = re.compile(
 # плане навсегда: при каждой пересборке шаблон снова уходил к модели и снова признавался
 # пустым. Признак — слово в имени либо незаполненные плейсхолдеры в теле.
 TEMPLATE_NAME = re.compile(r"(?i)шаблон|template|_tpl\b")
-TEMPLATE_MARK = re.compile(r"\(##\)|yyyy-MM-dd|<[A-ZА-Я_]{3,}>|\bХ{3,}\b|\bXXX+\b")
 
 
 def is_template(path: str, text: str = "") -> bool:
@@ -342,9 +341,13 @@ def is_template(path: str, text: str = "") -> bool:
         except OSError:
             return False
     fm = text[:600]
-    if re.search(r"(?im)^\s*template:\s*(true|yes|да)\s*$", fm):
-        return True
-    return bool(TEMPLATE_MARK.search(text)) and len(text) < 4000
+    # Прежде шаблоном считалась и страница с «меткой заполнения» в тексте (`XXX`,
+    # `<КНД>`, `yyyy-MM-dd`) короче 4000 знаков. На трёх проектах правило сработало 13 раз
+    # и все 13 — мимо: формат имени файла `ON_<КНД>_<УИД>.xml`, версия `XXX`, «Порядок
+    # формирования ИНН» с форматом `XXXXXX` (PRJ-C, PRJ-B 30.09.2026). Метка в тексте —
+    # это спецификация формата, а не незаполненная форма; шаблон узнаётся по имени файла
+    # или по явной пометке в шапке.
+    return bool(re.search(r"(?im)^\s*template:\s*(true|yes|да)\s*$", fm))
 
 
 # Источник, у которого всё содержание — ссылка на внешний артефакт (схема .drawio,
@@ -677,10 +680,21 @@ def slice_report(path: str, chars: int = 110) -> int:
         print("Структуры не видно: ни заголовков, ни выделенных строк. Такой источник "
               "разбирается чтением — раскадровка не поможет.")
         return 0
+    # Превью — без абзацев шаблона пространства (`aurora_common.template_blocks`): по нему
+    # модель решает, о чём секция и в какую карточку она ляжет. У алгоритмов PRJ-C первые
+    # 900 знаков секции целиком были инструкцией авторам, и знание сорока страниц ушло в
+    # одну карточку. Нумерация и переносимый текст не меняются: секции те же.
+    from aurora_common import TEMPLATE_ONLY, hide_template, template_blocks
+    blocks = template_blocks(".")
     for i, (title, body) in enumerate(secs, 1):
-        preview = " ".join(body.split())[:chars]
-        print(f"{i:3}. {title[:80]}\n     {len(body)} симв. · {preview}"
-              + ("…" if len(" ".join(body.split())) > chars else ""))
+        shown = hide_template(body, path, blocks=blocks)
+        flat = " ".join(shown.split())
+        # Осталась одна разметка — черта, заголовок, строка жирным целиком: знания нет.
+        bare = re.sub(r"(?m)^\s*(-{3,}|\*\*[^*\n]+\*\*|#.*|>\s*\*\*[^*\n]+\*\*)\s*$",
+                      "", shown).strip()
+        preview = flat[:chars] if (flat and bare) else TEMPLATE_ONLY
+        print(f"{i:3}. {title[:80]}\n     {len(shown)} симв. · {preview}"
+              + ("…" if len(flat) > chars else ""))
     print(f"""
 ─────────────────────────────────────────────────────────────────────
 ЗАДАНИЕ АССИСТЕНТУ · РАСКАДРОВКА — скопируйте блок целиком в чат
@@ -1479,7 +1493,7 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     базой: есть ли хоть одна карточка с таким `source`.
     """
     known = sources_in_use()
-    victims = []
+    victims, rejudge = [], 0
     for path in sorted(manifest.get("sources") or {}):
         if group and not path.startswith(group):
             continue
@@ -1499,8 +1513,15 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
         # маршрут «Обновить базу» никогда не заканчивался работой в ноль.
         #
         # Изменился файл — вернём: вердикт был о прежнем тексте.
-        if rec.get("empty_reason") and not changed:
+        # Вердикт выносился по тому, что движок показал модели. Правило показа поменялось
+        # (`EMPTY_RULE`) — вердикт вынесен о другом тексте и пересматривается один раз:
+        # до 1.145.0 модели прятали как «служебные» секции «История версии заявки» и
+        # «Инструкция: подписание с МЧД» и получали честное «пусто» о знании (PRJ-C).
+        if (rec.get("empty_reason") and not changed
+                and int(rec.get("empty_rule") or 0) >= EMPTY_RULE):
             continue
+        if rec.get("empty_reason") and not changed:
+            rejudge += 1
         victims.append(path)
 
     by_group: dict = {}
@@ -1511,6 +1532,10 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     print(f"Отмечено обработанными, но ни одной карточки не дали: {len(victims)}\n")
     print("Источники с вынесенным вердиктом «пусто» сюда не входят: это разобранные "
           "источники, а не пропущенные. Изменится файл — вернутся сами.\n")
+    if rejudge:
+        print(f"Исключение — {rejudge} вердиктов «пусто», вынесенных по прежним правилам показа "
+              "(служебные секции, шаблон страницы): модель видела не тот текст, и вердикт "
+              "пересматривается один раз.\n")
     for g, n in sorted(by_group.items(), key=lambda kv: -kv[1]):
         print(f"- {g}: {n}")
     print("\nЗадачи Jira и готовые справочники Reference/ часто дают ноль законно — "
@@ -1523,6 +1548,12 @@ def reopen(manifest: dict, group: str, apply: bool) -> int:
     save_manifest(manifest)
     print(f"\n✅ Возвращено в план: {len(victims)}. Проверьте: build_plan.py --status")
     return 0
+
+
+# Версия правил, по которым модели показывают источник перед вердиктом «пусто». Меняется,
+# когда меняется показ: служебные секции, шаблон страницы. Вердикты по прежней версии
+# `--reopen` возвращает в план — один раз, дальше они снова стоят.
+EMPTY_RULE = 2
 
 
 def mark_done(manifest: dict, target: str, claimed: int, empty: str, root: str = "") -> int:
@@ -1560,6 +1591,7 @@ def mark_done(manifest: dict, target: str, claimed: int, empty: str, root: str =
     rec = {"hash": file_hash(read_from), "processed": TODAY, "cards": found}
     if found == 0:
         rec["empty_reason"] = empty
+        rec["empty_rule"] = EMPTY_RULE
     manifest["sources"][path] = rec
     save_manifest(manifest)
 

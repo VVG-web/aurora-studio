@@ -246,9 +246,15 @@ def apply_block(card_path: str, cs: list) -> bool:
     text = open(card_path, encoding="utf-8", errors="ignore").read()
     head, _rest = split_frontmatter(text)
     body = body_of(text)
-    parts = [f"> Источник исправления: [[{c['name']}]] · {c['created'] or '—'}\n\n{said_of(c)}"
-             for c in cs]
-    block = f"{MARK}\n\n" + "\n\n".join(parts) + "\n"
+    # Файл исправления лежит в `Raw/corrections/`, вне базы: вики-ссылка на него в Obsidian
+    # не открывается, и линтер честно звал её битой — 12 «битых ссылок» на PRJ-C держали
+    # базу с ошибками после каждого ремонта. Путь — в обратных кавычках, как у источников.
+    def block_of(link) -> str:
+        parts = [f"> Источник исправления: {link(c)} · {c['created'] or '—'}\n\n{said_of(c)}"
+                 for c in cs]
+        return f"{MARK}\n\n" + "\n\n".join(parts) + "\n"
+    block = block_of(lambda c: f"`{c['path'].replace(os.sep, '/')}`")
+    legacy = block_of(lambda c: f"[[{c['name']}]]")
     was = ""
     if MARK in body:
         start = body.index(MARK)
@@ -258,6 +264,9 @@ def apply_block(card_path: str, cs: list) -> bool:
         body = (body[:start].rstrip() + "\n\n" + body[end:].lstrip("\n")).strip()
     if was == block.strip():
         return False
+    # Сменился только вид ссылки — слово человека то же, и тезис, написанный с ним,
+    # переписывать незачем.
+    same_word = was == legacy.strip()
     if FOOTER in body:
         before, _m, after = body.partition(FOOTER)
         body = before.rstrip() + "\n\n" + block + "\n" + FOOTER + after
@@ -267,11 +276,12 @@ def apply_block(card_path: str, cs: list) -> bool:
     # Поля — только через `with_fields`: он собирает файл сам и проверяет, что тело не
     # тронуто, а поле встало в шапку. Ровно на этом месте движок дважды портил базу,
     # собирая разделители «почти правильно».
-    names = ", ".join(f"[[{c['name']}]]" for c in cs)
+    names = ", ".join(c["name"] for c in cs)
     new = with_fields(new, {"corrected_by": f'"{names}"', "updated": TODAY})
     fm_end = new.find("\n---", 3)
-    new = (re.sub(r"(?m)^(distilled|distill_empty):.*\n", "", new[:fm_end + 1])
-           + new[fm_end + 1:])
+    if not same_word:
+        new = (re.sub(r"(?m)^(distilled|distill_empty):.*\n", "", new[:fm_end + 1])
+               + new[fm_end + 1:])
     open(card_path, "w", encoding="utf-8").write(new)
     return True
 

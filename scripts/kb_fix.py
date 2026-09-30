@@ -191,6 +191,18 @@ class Index:
             return os.path.splitext(os.path.basename(hard.pop()))[0], "разделители"
         if len(hard) > 1:
             return None, "неоднозначно (двойники — см. --dupes)"
+        # Ссылка на страницу-источник по её полному имени: «US-6.5.4._Получение_статуса_
+        # приёма_пакета_по_API». Карточка названа сущностью, код документа ушёл в синонимы
+        # или не записан вовсе — ищем по остатку. Без этого `--stubs` заводил под такую
+        # ссылку заготовку «Получение_статуса_приёма_пакета_по_API» рядом с живой
+        # карточкой процесса (PRJ-C 30.09.2026: двойников 17 → 19 за один ремонт).
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from build_plan import split_doc_code
+        rest, codes = split_doc_code(re.sub(r"[_]+", " ", leaf))
+        if codes and rest and fold_hard(rest) != fold_hard(leaf):
+            found, _how = self.resolve(rest)
+            if found:
+                return found, "код документа снят"
         return None, "не найдено"
 
 
@@ -523,6 +535,7 @@ class Plan:
         self.file_writes: dict = {}      # path → новый текст
         self.renames: list = []          # (старый путь, новый путь)
         self.moves: list = []            # (путь, куда) — в _archive
+        self.reopen: list = []           # источники — обратно в план разбора
         self.notes: list = []            # строки отчёта
         self.unresolved: list = []       # ссылки, которые движок не берёт
 
@@ -1338,6 +1351,190 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
     return made_t, made_p
 
 
+FORM_MARK = "_Шаблон проекта. Разбору не подлежит"
+_WORD_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]{4,}")
+BORN_SHARE = 0.5     # доля слов абзаца шаблона, пересказанная в начале тезиса
+MAGNET_BLOCKS = 3    # абзац шаблона в стольких блоках одной карточки — её к ним притянуло
+
+
+def _stems(text: str) -> set:
+    """Грубые основы слов: первые пять букв. Пересказ меняет окончания, не корни."""
+    return {w.lower().replace("ё", "е")[:5] for w in _WORD_RE.findall(text or "")}
+
+
+def _unlink_archived(text: str, gone: dict) -> str:
+    """Ссылки на ушедшие в архив карточки — текстом; строка из одной ссылки — прочь.
+
+    Подпись ссылки остаётся словами, голая ссылка — заголовком карточки. Строку, в
+    которой кроме ссылки ничего нет («[[Сохранение-текста-комментария]].» — след
+    `agent:extract`), убираем целиком: предложения в ней нет.
+    """
+    def bare(line: str) -> bool:
+        m = re.fullmatch(r"\s*\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|[^\]]*)?\]\]\s*[.;]?\s*", line)
+        return bool(m) and m.group(1).strip() in gone
+    lines = [l for l in text.split("\n") if not bare(l)]
+    text = "\n".join(lines)
+
+    def sub(m):
+        key = m.group(2).strip()
+        if key not in gone:
+            return m.group(0)
+        label = m.group(5)
+        return label if label is not None else gone[key]
+    return LINK_RE.sub(sub, text)
+
+
+def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
+    """Карточки, собранные по шаблону страницы, а не по знанию. → (рождённые, тезисы, формы).
+
+    Шаблон пространства — абзацы, дословно стоящие в двадцати и более файлах зеркала
+    (`aurora_common.template_blocks`). С 1.145.0 модель его не видит, но базу, собранную
+    раньше, он уже испортил тремя способами, и ремонт снимает все три:
+
+    - **карточка, рождённая шаблоном.** Её тезис пересказывает инструкцию авторам, а к ней
+      сорок источников пришли одним и тем же абзацем: «Сохранение-текста-комментария»,
+      «Предусловия-пользовательских-историй» (PRJ-C). Такая карточка уходит в архив, её
+      источники — обратно в план: разбор разложит их знание по своим сущностям. Признак —
+      тезис пересказывает абзац шаблона (половина его слов) И абзац либо стоит в трёх и
+      более блоках карточки, либо пришёл не из канонического источника;
+    - **абзац шаблона в тезисе.** Модель переписала инструкцию в тезис карточки знания
+      дословно — строка уходит, тезис перепишется;
+    - **карточка «Шаблон проекта»**, заведённая под источник, который до 1.145.0 считался
+      формой по метке в тексте (`XXX`, `<КНД>`), — в архив: источник теперь разбирается.
+
+    Раздел дословного текста не меняется нигде: шаблон в нём — дословно правда.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
+    from aurora_common import hide_template, norm_paragraph, template_blocks, template_in
+    blocks = template_blocks(".")
+    born, cleaned, forms, detached = [], [], [], []
+    gone: dict = {}
+    # Строку тезиса снимаем, только если это служебный текст шаблона — так решила модель
+    # (`agent_runner.service_template`, кэш проекта). Повтор-знание в тезисе — правда.
+    try:
+        kinds = json.load(open(os.path.join(".opencode", "cache", "template_kinds.json"),
+                               encoding="utf-8"))
+    except (OSError, ValueError):
+        kinds = {}
+    bare_pars = {p.rstrip(". ") for p in blocks if kinds.get(p) == "service"}
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if (is_service(rel) or "/_archive/" in rel or "/MOC/" in rel
+                or c.stem.startswith("_") or is_placeholder(c.fm, c.text)):
+            continue
+        srcs = card_sources(c.text)
+        kind = (c.fm.get("kind") or "").strip().strip('"')
+        title = (c.fm.get("title") or "").strip().strip('"') or c.stem
+        dst = os.path.join(ROOT, "_archive", os.path.basename(rel)).replace("\\", "/")
+        # Карточку «Шаблон проекта» узнаём по пометке, а не только по `kind`: до 1.145.0
+        # `kb_kind` перетирал `template` правилом раздела, и у ALG-305 PRJ-C стоял `dictionary`.
+        if (kind == "template" or "шаблон" in (c.fm.get("tags") or "")
+                or FORM_MARK in c.body()[:600]):
+            if srcs and os.path.isfile(srcs[0]) and not BP.is_template(srcs[0]):
+                plan.moves.append((rel, dst))
+                forms.append(c.stem)
+                gone[c.stem] = title
+            continue
+        # Своя часть словаря и документа — дословный текст источника, а не тезис: шаблон
+        # в ней — правда, и судить по ней о рождении карточки нельзя.
+        if (not blocks or kind != "knowledge"
+                or not (c.fm.get("distilled") or "").strip()):
+            continue
+        body = c.body()
+        own, sep, quotes = body.partition(QUOTES)
+        if not sep:
+            continue
+        counts: dict = {}
+        for _key, txt in BP.split_source_blocks(quotes).items():
+            for par in set(template_in(txt, blocks)):
+                counts[par] = counts.get(par, 0) + 1
+        # Определение — первые строки тезиса: оно называет, о чём карточка.
+        lead = _stems(" ".join(l for l in own.split("\n")
+                               if l.strip() and not l.lstrip().startswith(("#", ">")))[:320])
+        hit = None
+        for par, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            words = _stems(par)
+            if (n < MAGNET_BLOCKS or len(words) < 5 or not lead
+                    or kinds.get(par) == "knowledge"):
+                continue
+            common = len(words & lead)
+            if common / len(words) >= BORN_SHARE and common / len(lead) >= BORN_SHARE:
+                hit = (par, n)
+                break
+        if hit:
+            plan.moves.append((rel, dst))
+            plan.reopen += [s for s in srcs if s.startswith(("Sources/", "Raw/"))]
+            born.append((c.stem, hit[0], hit[1], len(srcs)))
+            gone[c.stem] = title
+            continue
+        # Карточка своя, но шаблон притянул к ней чужие страницы: «Сохранение-текста-
+        # комментария» — алгоритм ALG-131, а к нему приписаны 54 алгоритма, пришедших
+        # абзацем «При правках стори… писать комментарий». Блок, который пришёл этим
+        # абзацем и в своём тексте сущность карточки не называет, отвязывается, а
+        # источник уходит в план — разбор положит его знание к его сущности.
+        magnets = {par for par, n in counts.items() if n >= MAGNET_BLOCKS}
+        drop_keys = []
+        if magnets and srcs:
+            name = _stems(title)
+            for m in BP.BLOCK_MARK_RE.finditer(quotes):
+                key = m.group(1).strip()
+                if key in (BP.FIRST_PARSE, srcs[0]):
+                    continue
+                end = quotes.find("\n### ", m.end())
+                txt = quotes[m.end():end if end != -1 else len(quotes)]
+                if not magnets & set(template_in(txt, blocks)):
+                    continue
+                shown = _stems(hide_template(txt, key, ".", blocks))
+                if name and len(name & shown) / len(name) >= 0.5:
+                    continue
+                drop_keys.append(key)
+        if drop_keys:
+            marks = list(BP.BLOCK_MARK_RE.finditer(quotes))
+            parts = [quotes[:marks[0].start()]] if marks else [quotes]
+            for i, m in enumerate(marks):
+                end = marks[i + 1].start() if i + 1 < len(marks) else len(quotes)
+                seg = quotes[m.start():end]
+                if m.group(1).strip() in drop_keys:
+                    # хвост раздела (история, исправления) живёт за последним блоком
+                    tail = re.search(r"\n## ", seg)
+                    if tail:
+                        parts.append(seg[tail.start():])
+                    continue
+                parts.append(seg)
+            new_quotes = "".join(parts)
+            keep = [s for s in srcs if s not in drop_keys]
+            prefix = c.text[:len(c.text) - len(body)]
+            head_end = prefix.find("\n---", 3)
+            head = BP.drop_thesis_mark(BP.with_sources(prefix[:head_end], keep))
+            text = head + prefix[head_end:] + own + sep + new_quotes
+            plan.write(path, text)
+            plan.reopen += [s for s in drop_keys if s.startswith(("Sources/", "Raw/"))]
+            detached.append((c.stem, len(drop_keys), len(srcs)))
+            continue
+        # Служебный абзац шаблона, вписанный в тезис, — строкой: тезис пишется построчно.
+        kept = [l for l in own.split("\n")
+                if norm_paragraph(l).rstrip(". ") not in bare_pars]
+        if len(kept) == len(own.split("\n")):
+            continue
+        new_own = re.sub(r"\n{3,}", "\n\n", "\n".join(kept))
+        text = c.text[:len(c.text) - len(body)] + new_own + sep + quotes
+        head_end = text.find("\n---", 3)
+        text = BP.drop_thesis_mark(text[:head_end]) + text[head_end:]
+        plan.write(path, text)
+        cleaned.append(c.stem)
+    if gone:
+        leaving = {m[0] for m in plan.moves}
+        for path, c in cards.items():
+            if path.replace("\\", "/") in leaving:
+                continue
+            base = plan.file_writes.get(path, c.text)
+            new = _unlink_archived(base, gone)
+            if new != base:
+                plan.write(path, new)
+    return born, cleaned, forms, detached
+
+
 def plan_themes(cards: dict, plan: Plan, root: str, floor: int = 3) -> list:
     """Завести карточку темы по папке источников. → [(имя, сколько карточек)].
 
@@ -1419,7 +1616,12 @@ def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
     """
     owners: dict = {}
     for path, c in sorted(cards.items()):
-        if is_service(path):
+        # Архивная карточка — не соперник живой: она ушла со ссылкой на победителя, и её
+        # синонимы — история, а не имя. Шаблоны вне базы — тем более. Считая их, ремонт
+        # объявлял спором карточку и её же копию в архиве («Epic-4.2», «Личный кабинет»),
+        # а модель тратила вызовы, чтобы сказать «дубль — человеку» (PRJ-C 30.09.2026).
+        rel = path.replace("\\", "/")
+        if is_service(path) or "/_archive/" in rel or not rel.startswith(ROOT + "/"):
             continue
         # Синоним, в точности повторяющий имя файла, спором не является: карточка одна.
         # Сам мусор убирает чистка шапки (`--frontmatter`), здесь он просто не считается.
@@ -2186,6 +2388,15 @@ def apply_plan(plan: Plan) -> int:
         dst = free_archive_name(dst)
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         shutil.move(src, dst)
+    if plan.reopen:
+        # Карточка ушла в архив, а её источники — обратно в план: разбор возьмёт их заново
+        # и положит знание туда, где оно по смыслу (`--template`).
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import build_plan as BP
+        manifest = BP.load_manifest()
+        for s in dict.fromkeys(plan.reopen):
+            (manifest.get("sources") or {}).pop(s, None)
+        BP.save_manifest(manifest)
     # Папка, из которой ушли все карточки, не остаётся пустой: пустая «Glossary/Glossary»
     # после подъёма карточки линтер снова звал вложенной (PRJ-C 29.09.2026). Удаляем
     # только опустевшие папки ГЛУБЖЕ раздела, откуда что-то уехало: сам раздел — часть
@@ -2214,6 +2425,9 @@ def main() -> int:
     ap.add_argument("--frontmatter", action="store_true", help="проставить status легаси-карточкам")
     ap.add_argument("--titles", action="store_true",
                     help="заголовок вместо имени файла — в шапке и в начале тезиса")
+    ap.add_argument("--template", action="store_true",
+                    help="карточки, собранные по шаблону страницы: рождённые шаблоном — в "
+                         "архив, их источники — в план; абзац шаблона из тезиса — прочь")
     ap.add_argument("--stubs", action="store_true",
                     help="завести карточки-заготовки под ссылки, которым не на что указывать")
     ap.add_argument("--themes", action="store_true",
@@ -2289,7 +2503,7 @@ def main() -> int:
     # `--terms`, как и `--stubs`, в `--all` не входит: заведение карточек — не ремонт.
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.titles, a.aliases, a.split,
                 a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs, a.meetings,
-                a.unparsed, a.themes,
+                a.unparsed, a.themes, a.template,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
         ap.print_help()
@@ -2297,12 +2511,15 @@ def main() -> int:
 
     def build_plan():
         cards = load_cards(a.root)
+        # Шаблоны и промпты проекта нужны только снятию выведенных полей: они порождают
+        # новые карточки, и поле, оставленное в них, вернулось бы в базу. В общий набор
+        # их не кладём — там они становились «карточками» для синонимов, двойников и
+        # разрешения ссылок: три версии `test_review` числились спором синонимов.
+        forms: dict = {}
         if a.retire:
-            # шаблон и промпт порождают новые карточки: оставить в них выведенное поле
-            # значит вернуть его в базу с первой же созданной карточкой
             for extra in ("Templates", "Prompts"):
                 if os.path.isdir(extra):
-                    cards.update(load_cards(extra))
+                    forms.update(load_cards(extra))
         idx = Index(cards)
         plan = Plan()
         head: list = []
@@ -2369,7 +2586,7 @@ def main() -> int:
             head.append(f"## Битые ссылки: чинится {fixed}, добавлено алиасов {aliased}, "
                         f"не решено {len(plan.unresolved)}")
         if a.retire:
-            n = plan_retire(cards, plan)
+            n = plan_retire({**cards, **forms}, plan)
             head.append(f"## Поля вне схемы: убраны в {n} карточках")
         if a.titles:
             nh, nt = plan_titles(cards, plan, a.root)
@@ -2386,6 +2603,21 @@ def main() -> int:
             head.append(f"## Карточки тем по папкам источников: {len(th)}")
             for n, k in th[:15]:
                 head.append(f"- {n} — карточек в теме: {k}")
+        if a.template:
+            born, cleaned, forms_gone, detached = plan_template(cards, plan, a.root)
+            head.append(f"## Шаблон страницы: карточек, рождённых шаблоном, — {len(born)} "
+                        f"в архив (источники — в план); отвязано чужих источников у "
+                        f"{len(detached)} карточек; тезисов к переписыванию: {len(cleaned)}; "
+                        f"карточек «Шаблон проекта» не по делу: {len(forms_gone)}")
+            for name, par, n, k in born[:15]:
+                head.append(f"- {name} — абзац в {n} блоках, источников {k}: «{par[:90]}…»")
+            for name, n, k in detached[:15]:
+                head.append(f"- {name}: отвязано {n} из {k} источников — пришли абзацем "
+                            "шаблона, сущность карточки не называют")
+            for name in cleaned[:10]:
+                head.append(f"- тезис без шаблона: {name}")
+            for name in forms_gone[:10]:
+                head.append(f"- не форма, а знание — источник в разбор: {name}")
         if a.unparsed:
             tpl, ptr = plan_unparsed_sources(cards, plan, a.root)
             head.append(f"## Источники вне разбора: шаблонов {len(tpl)}, "
@@ -2581,7 +2813,10 @@ def main() -> int:
     print(f"\n✅ Записано за {passes} проход(а/ов)."
           + (f" Пропущено из-за коллизий имён: {skipped_total}." if skipped_total else ""))
     print("   Проверьте: в панели `kb:lint`, затем git diff --stat")
-    return 1 if plan.unresolved else 0
+    # Ссылка без карточки — работа следующих шагов того же ремонта (`--stubs`, `--terms`),
+    # а не сбой этого: код 1 красил шаг в панели упавшим при каждом прогоне, и красное
+    # переставало что-либо значить.
+    return 0
 
 
 if __name__ == "__main__":
