@@ -126,6 +126,20 @@ def load_cards(root: str) -> dict:
     return cards
 
 
+DOC_MAP = "Документ--"      # имя карты документа (`kb:moc --by-source`)
+
+
+def live_only(paths: list) -> list:
+    """Совпадения без архивных копий — если живая среди них есть.
+
+    Слитая карточка уходит в `_archive` под тем же именем, и ссылка «ER_Объект_учета_ЮЛ»
+    находила две — живую и её копию в архиве — и объявлялась неоднозначной (PRJ-C). Живая
+    карточка и есть ответ; архив решает, только когда живых нет вовсе.
+    """
+    live = [p for p in paths if "/_archive/" not in p.replace("\\", "/")]
+    return live or paths
+
+
 class Index:
     """Разрешение имён: точное, по регистру, по гомоглифам, по алиасам."""
 
@@ -175,18 +189,18 @@ class Index:
                           (normalize_title(fix_mixed_script(leaf)), "нормализация+гомоглифы")):
             if cand != leaf and cand in self.by_stem:
                 return cand, how
-        hits = self.by_fold.get(fold(leaf), [])
+        hits = live_only(self.by_fold.get(fold(leaf), []))
         if len(hits) == 1:
             return os.path.splitext(os.path.basename(hits[0]))[0], "регистр/гомоглифы"
         if len(hits) > 1:
             return None, "неоднозначно (двойники — см. --dupes)"
-        norm_hits = self.by_fold.get(fold(normalize_title(leaf)), [])
+        norm_hits = live_only(self.by_fold.get(fold(normalize_title(leaf)), []))
         if len(norm_hits) == 1:
             return os.path.splitext(os.path.basename(norm_hits[0]))[0], "нормализация+регистр"
         if fold(leaf) in self.by_alias:
             return os.path.splitext(os.path.basename(self.by_alias[fold(leaf)]))[0], "alias/регистр"
         # последнее: та же строка, набранная с другими разделителями
-        hard = {p for p in self.by_hard.get(fold_hard(leaf), [])}
+        hard = set(live_only(list(dict.fromkeys(self.by_hard.get(fold_hard(leaf), [])))))
         if len(hard) == 1:
             return os.path.splitext(os.path.basename(hard.pop()))[0], "разделители"
         if len(hard) > 1:
@@ -626,6 +640,10 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
                 if not definition:
                     aliases_for.setdefault(new, set()).add(leaf)
                 plan.notes.append(f"  ссылка [[{target}]] → [[{new}]]  ({how})  в {path}")
+            elif leaf.startswith(DOC_MAP):
+                # Карта документа ушла вместе с документом (`kb:moc --by-source`) — ссылка
+                # на неё становится словами; строка списка из неё одной уходит ниже.
+                mapping[target] = None
             elif (path, leaf) not in reported:
                 reported.add((path, leaf))
                 sugg = get_close_matches(leaf, list(idx.by_stem), n=1, cutoff=0.85)
@@ -638,7 +656,7 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         # тут нечего — строку надо убрать, что и делает ремонт ссылок.
         dead = [m.group(0) for m in re.finditer(r"^- \[\[([^\]|#]+)\]\][ \t]*$",
                                                c.text, re.M)
-                if is_placeholder(c.fm, c.text)
+                if (is_placeholder(c.fm, c.text) or m.group(1).strip().startswith(DOC_MAP))
                 and leaf_name(m.group(1)) not in idx.by_stem
                 and leaf_name(m.group(1)) not in idx.by_alias]
         if dead:
@@ -1709,6 +1727,54 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
     return moved, dropped, sorted(set(fixed))
 
 
+THESIS_MARKS = ("distilled", "distilled_by", "distilled_was", "extracted", "relinked",
+                "unsupported", "distill_empty")
+
+
+def plan_stub_text(cards: dict, plan: Plan) -> tuple:
+    """Заготовка с пересказанным служебным текстом — вернуть ей вид заготовки. → (тексты, статусы).
+
+    До 1.101 `agent:distill` брал и заготовки: служебную пометку «ссылка на это понятие уже
+    есть, знания пока нет» модель пересказывала «тезисом» («Авторизация — заготовка понятия,
+    в которой ссылка уже есть…»), а саму пометку уносила в дословный раздел. На PRJ-C так
+    345 заготовок (после ремонта 1.145 — 132). Тег заготовки держал их вне поиска, но тело
+    читалось как бессмыслица. Прежний текст заготовки лежит в дословном разделе — он и
+    возвращается; отметки тезиса снимаются.
+
+    Там же — статус: заготовка, узнанная по тегу, стоит `draft` (Glossary PRJ-C: 306), и
+    разделы расходились в том, что считать заготовкой. Признак один — `status: placeholder`.
+    """
+    fixed_text, fixed_status = [], []
+    for path, c in sorted(cards.items()):
+        rel = path.replace("\\", "/")
+        if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel or c.stem.startswith("_"):
+            continue
+        if not is_placeholder(c.fm, c.text) or card_sources(c.text):
+            continue
+        base = plan.file_writes.get(path, c.text)
+        now = Card(path, base)
+        body = now.body()
+        own, sep, quotes = body.partition(QUOTES)
+        head = base[:len(base) - len(body)]
+        changed = False
+        if sep and STUB_BODY not in own and STUB_BODY in quotes:
+            stub, _sep2, tail = quotes.partition("\n" + FOOTER)
+            stub = re.sub(r"^\s*###\s*\(первый разбор\)\s*\n", "", stub.strip() + "\n")
+            body = stub.strip() + "\n" + (("\n" + FOOTER + tail) if _sep2 else "")
+            changed = True
+            fixed_text.append(c.stem)
+        status = (c.fm.get("status") or "").strip().strip('"')
+        if status != PLACEHOLDER:
+            head = re.sub(r"^status:.*$", f"status: {PLACEHOLDER}", head, count=1, flags=re.M)
+            fixed_status.append(c.stem)
+            changed = True
+        if changed:
+            for f_ in THESIS_MARKS:
+                head = re.sub(rf"^{f_}:.*\n", "", head, flags=re.M)
+            plan.write(path, head + body)
+    return fixed_text, fixed_status
+
+
 def plan_tautologies(cards: dict, plan: Plan) -> list:
     """Пустые предложения в тезисах — одна ссылка или «X — X.». → [имя карточки].
 
@@ -2669,6 +2735,9 @@ def main() -> int:
     ap.add_argument("--template", action="store_true",
                     help="карточки, собранные по шаблону страницы: рождённые шаблоном — в "
                          "архив, их источники — в план; абзац шаблона из тезиса — прочь")
+    ap.add_argument("--stub-text", action="store_true",
+                    help="заготовка с пересказанным служебным текстом — вернуть вид заготовки; "
+                         "статус заготовки — placeholder во всех разделах")
     ap.add_argument("--gone-sources", action="store_true",
                     help="источник карточки, которого нет на диске: переехавшую страницу найти "
                          "по коду документа, испорченную запись исправить, пропавшую — снять")
@@ -2764,6 +2833,7 @@ def main() -> int:
     if not any((a.links, a.homoglyphs, a.frontmatter, a.dupes, a.retire, a.titles, a.aliases, a.split,
                 a.stubs, a.terms, a.rename, a.drop_jira, a.drop_code_stubs, a.stale_stubs, a.meetings,
                 a.unparsed, a.themes, a.template, a.copies, a.tautologies, a.gone_sources,
+                a.stub_text,
                 a.merge, a.merge_all,
                 a.set_alias, a.sections, a.names)):
         ap.print_help()
@@ -2878,6 +2948,12 @@ def main() -> int:
                 head.append(f"- тезис без шаблона: {name}")
             for name in forms_gone[:10]:
                 head.append(f"- не форма, а знание — источник в разбор: {name}")
+        if a.stub_text:
+            texts, statuses = plan_stub_text(cards, plan)
+            head.append(f"## Заготовки: служебный текст возвращён у {len(texts)}, статус "
+                        f"`placeholder` поставлен у {len(statuses)}")
+            for name in texts[:10]:
+                head.append(f"- {name}")
         if a.gone_sources:
             moved, gone, fixed = plan_gone_sources(cards, plan)
             head.append(f"## Источник, которого нет на диске: переведено на новый путь "
