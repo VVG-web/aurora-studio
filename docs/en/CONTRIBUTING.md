@@ -39,6 +39,7 @@ flowchart LR
   C --> D["The full run<br>run_tests.py"]
   D --> E["VERSION · CHANGELOG<br>commit vX.Y.Z"]
   E --> F["CI<br>Python 3.12 and 3.9"]
+  F --> G["release.yml<br>tag and Release"]
 ```
 
 ```bash
@@ -121,6 +122,13 @@ The panel's third-party libraries (`cockpit/vendor/`) are not edited — only re
 - Every release is an entry in `CHANGELOG.md` (Russian text): `## X.Y.Z — the gist`, below it what and why changed. A breaking
   schema change is marked **BREAKING** with a migration step.
 - A commit message starts with the version: `vX.Y.Z: the gist`.
+- **CI creates the tag and the GitHub Release** — `.github/workflows/release.yml`. After a green `engine-tests` on
+  `master` it looks at `VERSION`: if that version has no Release yet, it puts the tag `vX.Y.Z` on the commit that
+  raised `VERSION` (like the earlier tags) and publishes the Release. The title `vX.Y.Z — the gist` and the text come
+  from that version's entry in `CHANGELOG.md`; no entry — no release, and the workflow fails with a clear error. You
+  do not need to tag by hand; if you did, the Release still lands on your tag. The workflow never overwrites an
+  existing tag or Release, so running it again is safe. To repeat a release by hand — Actions → release → Run workflow
+  on `master`; to switch it off — delete the file or disable the workflow in the Actions tab.
 - Before a release these are green: `tests/run_tests.py`, `kit_commands.py --check`, `kit_i18n.py --check`.
 - The `Development/` folder (the QA kitchen: cases, scenarios, run journals) does not ride in the kit's git; it is mounted as a
   worktree of the `development` branch: `git worktree add Development development`.
