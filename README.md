@@ -139,7 +139,7 @@ your-project/
 | Installing and operating | [Install](docs/en/INSTALL.md) · [Control panel](docs/en/control-panel.md) · [Source modules](docs/en/connectors.md) |
 | How it is built | [Architecture](docs/en/architecture.md) · [Design decisions and roadmap](docs/en/roadmap.md) |
 | Contributing | [CONTRIBUTING](docs/en/CONTRIBUTING.md) |
-| History | [CHANGELOG](CHANGELOG.md) (in Russian) |
+| History and releases | [CHANGELOG](CHANGELOG.md) (in Russian) · [how releases are made](docs/en/CONTRIBUTING.md#versions-and-releases) |
 
 Full index with both languages: [docs/README.md](docs/README.md).
 
