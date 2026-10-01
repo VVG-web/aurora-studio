@@ -1,0 +1,120 @@
+name: release
+# Выпуск версии: тег vX.Y.Z и GitHub Release создаёт CI, а не человек со своей машины.
+# Версия — файл VERSION, описание выпуска — запись «## X.Y.Z — …» в CHANGELOG.md.
+#
+# Срабатывает:
+#   • после зелёного engine-tests на master — если у текущей VERSION ещё нет Release;
+#   • вручную (Actions → release → Run workflow на master) — тот же прогон без ожидания
+#     тестов: повторить выпуск, если он не создался.
+#
+# Безопасно запускать сколько угодно раз: готовый Release и существующий тег не
+# перезаписываются. Тег ставится на коммит, который поднял VERSION, — как и прежние теги,
+# а не на то, что лежит в master сейчас.
+#
+# Отключить выпуск по версии: удалить этот файл или выключить workflow во вкладке Actions.
+on:
+  workflow_run:
+    # Имя — из test.yml. Переименуете там — поправьте и здесь, иначе выпуск молча замолчит.
+    workflows: [engine-tests]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Только master и только то, что прошло проверки: PR и чужие ветки выпуска не создают.
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Создать тег и Release. Больше этот workflow не получает ничего.
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Ровно тот коммит, что прошёл проверки. Полная история нужна, чтобы найти
+          # коммит, поднявший VERSION.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - name: Выпустить версию из VERSION
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::В VERSION не semver: «$VERSION»"
+            exit 1
+          fi
+          TAG="v$VERSION"
+
+          # Release уже есть — выпуск сделан, ни текст, ни тег не трогаем.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG уже существует — делать нечего."
+            echo "### $TAG уже выпущен — workflow ничего не менял" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Тег поставили руками — Release ляжет на него. Тега нет — его создаст сам Release
+          # на коммите, поднявшем VERSION. Код 2 у ls-remote значит «нет такого», всё
+          # остальное — сбой связи, и принимать его за «нет» нельзя.
+          rc=0
+          git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 || rc=$?
+          case "$rc" in
+            0) TAG_ARGS=(--verify-tag) ;;
+            2) TAG_ARGS=(--target "$(git log -1 --format=%H -- VERSION)") ;;
+            *) echo "::error::Не удалось спросить у GitHub про тег $TAG (код $rc)"; exit 1 ;;
+          esac
+
+          # Заголовок и текст — запись этой версии из CHANGELOG.md, как у прежних выпусков.
+          # Без записи выпуск не создаём: пустая страница хуже отсутствующей.
+          python3 - "$VERSION" <<'PY'
+          import os
+          import re
+          import sys
+
+          version = sys.argv[1]
+          lines = open("CHANGELOG.md", encoding="utf-8").read().splitlines()
+          head = re.compile(r"^##\s+" + re.escape(version) + r"(?:\s+[—–-]\s+(.*?))?\s*$")
+          start = next((i for i, line in enumerate(lines) if head.match(line)), None)
+          if start is None:
+              print(f"::error::В CHANGELOG.md нет записи «## {version} — …»: выпуск без описания не создаём")
+              sys.exit(1)
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          body = "\n".join(lines[start + 1:end]).strip()
+          if not body:
+              print(f"::error::Запись {version} в CHANGELOG.md пуста")
+              sys.exit(1)
+          summary = (head.match(lines[start]).group(1) or "").strip()
+          tmp = os.environ["RUNNER_TEMP"]
+          with open(os.path.join(tmp, "release_title.txt"), "w", encoding="utf-8") as f:
+              f.write(f"v{version} — {summary}" if summary else f"v{version}")
+          with open(os.path.join(tmp, "release_notes.md"), "w", encoding="utf-8") as f:
+              f.write(body + "\n")
+          PY
+
+          gh release create "$TAG" "${TAG_ARGS[@]}" \
+            --title "$(cat "$RUNNER_TEMP/release_title.txt")" \
+            --notes-file "$RUNNER_TEMP/release_notes.md"
+
+          URL="$(gh release view "$TAG" --json url --jq .url)"
+          echo "Выпуск создан: $URL"
+          {
+            echo "### Выпущена $TAG"
+            echo
+            echo "$URL"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -297,7 +297,9 @@ git-guard. Он читает, правит движок. Готовые стро
 | Живая база | `python3 tests/smoke_live.py <проект>` | «на этом проекте ничего не поехало»: снимок чисел и имён в самом проекте |
 
 CI (`.github/workflows/test.yml`) гоняет smoke и полный набор на Python 3.12 и компиляцию плюс
-smoke на Python 3.9 — минимальной поддерживаемой версии.
+smoke на Python 3.9 — минимальной поддерживаемой версии. Выпуск версии — тег и GitHub Release — создаёт
+`.github/workflows/release.yml` после зелёных проверок на `master`, если у `VERSION` ещё нет Release
+(подробнее — [CONTRIBUTING](CONTRIBUTING.md#версии-и-выпуски)).
 
 ## 9. Раскладка репозитория кита
 

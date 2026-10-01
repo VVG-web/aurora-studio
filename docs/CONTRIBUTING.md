@@ -43,6 +43,7 @@ flowchart LR
   C --> D["Полный прогон<br>run_tests.py"]
   D --> E["VERSION · CHANGELOG<br>commit vX.Y.Z"]
   E --> F["CI<br>Python 3.12 и 3.9"]
+  F --> G["release.yml<br>тег и Release"]
 ```
 
 ```bash
@@ -126,6 +127,13 @@ CI (`.github/workflows/test.yml`): `--smoke` и полный прогон на P
 - Каждый выпуск — запись в `CHANGELOG.md` (русский текст): `## X.Y.Z — суть выпуска`, ниже что и почему
   изменилось. Ломающее изменение схемы помечается **BREAKING** с шагом миграции.
 - Сообщение коммита начинается с версии: `vX.Y.Z: суть`.
+- **Тег и GitHub Release создаёт CI** — `.github/workflows/release.yml`. После зелёного `engine-tests` на
+  `master` он смотрит в `VERSION`: если Release этой версии ещё нет, ставит тег `vX.Y.Z` на коммит, который
+  поднял `VERSION` (как и прежние теги), и публикует Release. Заголовок `vX.Y.Z — суть` и текст берутся из
+  записи этой версии в `CHANGELOG.md`; записи нет — выпуск не создаётся, workflow падает с понятной ошибкой.
+  Руками тег ставить не нужно; если поставили, Release всё равно ляжет на него. Готовый тег и Release
+  workflow не перезаписывает, поэтому повторный запуск безопасен. Повторить выпуск вручную — Actions →
+  release → Run workflow на `master`; отключить — удалить файл или выключить workflow во вкладке Actions.
 - Перед выпуском зелёные: `tests/run_tests.py`, `kit_commands.py --check`, `kit_i18n.py --check`.
 - Папка `Development/` (QA-кухня: кейсы, сценарии, журналы прогонов) в git кита не едет; она
   смонтирована как worktree ветки `development`: `git worktree add Development development`.
