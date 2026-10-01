@@ -1,120 +1,137 @@
-# Implementing Aurora in your project
+# Внедрение Авроры в проекте
 
-Playbook for leads / SA / BA introducing the framework.
+План для лида, системного и бизнес-аналитика, которые вводят фреймворк в команду: фазы, настройка
+ассистента, перенос накопленной базы, критерии успеха и антипаттерны. English version:
+[en/IMPLEMENTATION.md](en/IMPLEMENTATION.md).
 
-## Why Aurora
+## Зачем
 
-LLM agents hallucinate when all markdown looks equal. Aurora separates:
+Агент на LLM галлюцинирует, когда весь markdown выглядит одинаково. Аврора разделяет:
 
-1. **Evidence** (`Raw/`, `Sources/`) — immutable or sync-owned
-2. **Knowledge** (`AuroraKnowledgeDB/` cards with `status`) — trust filter for prompts
-3. **Products** (`Artifacts/`, `Deliverables/`) — generated work, not fed back as “truth”
+1. **Доказательства** (`Raw/`, `Sources/`) — неизменяемые или принадлежащие синку;
+2. **Знания** (карточки `AuroraKnowledgeDB/`) — фильтр доверия для промптов; статус считает движок по
+   статусам задач и происхождению источника;
+3. **Продукты** (`Artifacts/`, `Deliverables/`) — произведённая работа; обратно в промпты как
+   «истина» не подаётся.
 
-Invariants (never violate): see `.opencode/skills/aurora-vault/SKILL.md`.
+Инварианты, которые не нарушают никогда, — в `.opencode/skills/aurora-vault/SKILL.md` проекта и в
+[правилах базы знаний](knowledge-rules.md).
 
-## Rollout phases
+## Фазы внедрения
 
-### Phase 0 — Install (30–60 min)
-
-Follow [INSTALL.md](INSTALL.md). Commit the scaffold. Do **not** invent domain cards yet.
-
-### Phase 1 — Evidence first (1–3 days)
-
-Put real materials only:
-
-| Material | Path |
-|---|---|
-| Contract / SoW / ТЗ | `Raw/contract/` |
-| Laws / regulations | `Raw/laws/` |
-| Meeting transcripts / protocols | `Raw/meetings/` |
-| Customer AS-IS, decks | `Raw/customer/` |
-| Living project notes | `Raw/project/` |
-| Confluence / Jira mirrors | via sync skills → `Sources/` |
-
-### Phase 2 — First cards (bootstrap)
-
-- Extract candidates via `/aurora-vault build` or `ingest <path>`
-- Default status: `imported` or `draft`
-- Bootstrap mode: agents may use imported cautiously until verified ≥ ~20% (see `retrieval.md`)
-- Add 5–10 **golden questions** once you have verified facts
-
-### Phase 3 — Verify gate (ongoing)
-
-Human owner sets:
-
-```yaml
-status: verified
-owner: "@name"
-review_by: YYYY-MM-DD
+```mermaid
+flowchart LR
+  P0["Фаза 0<br>Установка<br>30–60 минут"] --> P1["Фаза 1<br>Доказательства<br>1–3 дня"]
+  P1 --> P2["Фаза 2<br>Первое наполнение<br>ночь маршрута"]
+  P2 --> P3["Фаза 3<br>Доверие и привычка<br>первая неделя"]
+  P3 --> P4["Фаза 4<br>Артефакты и SDD"]
+  P4 --> P5["Фаза 5<br>Ритм и гигиена"]
 ```
 
-`verified` is the top status of the base. Never silent overwrite of verified.
+### Фаза 0 — установка (30–60 минут)
 
-### Phase 4 — Artifacts & SDD
+[INSTALL.md](INSTALL.md): `aurora.py new`, токены, `kit:doctor`, `kit:hooks`. Закоммитьте каркас. Домен
+в карточки руками **не вносите**: базу собирает движок.
 
-- US → `Artifacts/us/`, AC → `Artifacts/ac/`
-- Specs → `AuroraKnowledgeDB/Specs/` (`/aurora-vault spec`) then `spec-pack` for vendors
-- Trace: ТЗ → REQ → SPEC → Jira → AC → test plan
+### Фаза 1 — сначала доказательства (1–3 дня)
 
-### Phase 5 — Hygiene
+Кладите только настоящие материалы:
 
-Weekly: `/aurora-vault garden` + `python3 .opencode/scripts/kb_lint.py`  
-Monthly: update `AuroraKnowledgeDB/meta/metrics.md`  
-After big syncs: `/aurora-vault eval` against golden questions
+| Материал | Куда |
+|---|---|
+| Контракт, ТЗ, допсоглашения | `Raw/contract/` |
+| Законы, регламенты | `Raw/laws/` |
+| Расшифровки и протоколы встреч | `Raw/meetings/` |
+| Материалы заказчика: AS-IS, презентации | `Raw/customer/` |
+| Живые заметки проекта, концепты | `Raw/project/` |
+| Зеркала Confluence и Jira, страницы сайтов | через sync → `Sources/` |
 
-## Agent configuration
+Укажите в конфиге корни Confluence, JQL, статусы доверия Jira (`trust_statuses` /
+`assumption_statuses`), справочные ветки вики и доверенные разделы — от них зависит доля `knowledge`.
 
-1. Open the **project** as the IDE workspace root (not this kit).
-2. Ensure `AGENTS.md` is loaded as project instructions.
-3. Skills under `.opencode/skills/` (and/or copy `aurora-vault` into `.claude/skills/` / Cursor skills if your tool requires it).
-4. Optional Atlassian MCP for sync skills.
+### Фаза 2 — первое наполнение
 
-### Cursor
+В панели — маршрут «Обновить базу» (сначала «Посмотреть»). На большом проекте это часы: запустите на
+ночь, остановить можно в любой момент. Затем `ops:stats` и «Здоровье». Добавьте пять-десять
+**golden questions** в `AuroraKnowledgeDB/meta/golden_questions.md`, когда появятся подтверждённые
+факты: по ним `ctx:eval` ловит регрессии после синков и миграций.
 
-- Project rules: `.cursor/rules/atlassian.mdc`
-- Point agent at project root
+### Фаза 3 — доверие и привычка (первая неделя)
 
-### Claude Code / OpenCode
+Доверие считается само, а человеку остаются три вещи: писать то, чего нет в источниках (DR, вопросы,
+исправления), разбирать `ops:todo` и нажимать «Обновить» и «Починить». Если доля `knowledge`
+низкая, это не авария: либо задачи в работе, либо трассировка не нашла связей. Проверьте
+`trust_statuses`, номера историй в заголовках страниц, ключи задач в тексте.
 
-- Skills in `.opencode/skills/aurora-vault/`
-- Invoke `/aurora-vault <command>`
+### Фаза 4 — артефакты и SDD
 
-## Migrating legacy bases
+- Истории — `Artifacts/us/`, критерии — `Artifacts/ac/` (`agent:make`, виды объявлены в `artifacts:`
+  конфига: шаблон, папка, правила);
+- спеки — `AuroraKnowledgeDB/Specs/` (`make:spec`), затем `make:spec-pack` для подрядчика;
+- трассировка: ТЗ → REQ → SPEC → Jira → AC → ПМИ → приёмка (`ops:trace`) — [SDD](readme/06-sdd.md).
 
-1. Install Aurora without `--force`.
-2. Map old folders:
+### Фаза 5 — ритм и гигиена
 
-| Legacy | Aurora |
+Еженедельно: «Починить базу», `ops:todo`, `kb:garden`. Раз в месяц: `ops:stats --append-metrics`,
+`ops:search-quality`. После крупных синков: `ctx:eval` по golden questions. Раз в релиз: `kb:schema`,
+`tests/smoke_live.py <проект>`.
+
+## Настройка ассистента
+
+1. Откройте **проект** (не кит) корнем рабочей области IDE.
+2. Убедитесь, что `AGENTS.md` подхвачен как инструкция проекта.
+3. Навыки лежат в `.opencode/skills/`; `kit:skills --apply` кладёт их в общий каталог агента
+   (`~/.claude/skills`) — тогда `/aurora-vault` находится в любом диалоге.
+4. По желанию подключите Atlassian MCP для sync-навыков и **базу знаний как MCP** (`kit:mcp`:
+   готовая строка для Claude Code, Cursor, OpenCode; сервер только читает).
+
+| Инструмент | Что настроить |
+|---|---|
+| Cursor | правила `.cursor/rules/atlassian.mdc`; открыть корень проекта |
+| Claude Code, OpenCode | навыки из `.opencode/skills/aurora-vault/`; команды `/aurora-vault <команда>` |
+| Любой | `kit:mcp` → запись `mcpServers` с именем `aurora-<slug>` |
+
+## Перенос накопленной базы
+
+Подробно — `skills/aurora-vault/references/migration.md`. Коротко:
+
+1. Разверните Аврору **без** `--force`.
+2. Разложите старое:
+
+| Было | Стало |
 |---|---|
 | `Laws/`, `docs/legal/` | `Raw/laws/` |
 | `Transcripts/`, `meetings/` | `Raw/meetings/` |
-| Root `JIRA/` | `Sources/JIRA/` |
-| Flat `AuroraKnowledgeDB/ZK-*.md` | `AuroraKnowledgeDB/{Concepts,Processes,…}/` + frontmatter upgrade |
-| Working BPMN / drafts | `Workspaces/<task>/` |
+| корневой `JIRA/` | `Sources/JIRA/` (через `sync:jira` или `kit:remap-sources`) |
+| плоский `AuroraKnowledgeDB/ZK-*.md` | разделы `AuroraKnowledgeDB/…` + апгрейд шапок (`kb:repair`, `kb:schema`) |
+| рабочие BPMN и черновики | `Workspaces/<задача>/` |
+| принятые решения | `Decisions/DR-NNNN-…` со `status: accepted` |
 
-3. Status mapping suggestion:
+3. Статусы не переносите: `fact`, `confirmed`, `verified` в новой модели ничего не значат — доверие
+   посчитает `kb:trust` по задачам и источникам. Старые `verified` и `imported` движок читает и
+   переводит на новую шкалу за один прогон.
+4. Прежние идентификаторы оставьте в `aliases:`, чтобы вики-ссылки продолжали работать.
+5. Пересоберите `manifest.json` обычным разбором («Обновить базу»).
+6. Прогоните «Починить базу».
 
-| Old | New |
-|---|---|
-| fact / confirmed | `imported` (then human → `verified`) |
-| todo / to_verify | `draft` |
-| decision | `Decisions/DR-NNNN-…` with `status: accepted` |
+## Критерии успеха
 
-4. Keep legacy IDs in `aliases:` so wiki-links keep working.
-5. Rebuild `manifest.json` via `/aurora-vault build`.
+- [ ] `kb:lint`: ошибок 0;
+- [ ] `AGENTS.md` соответствует реальному дереву папок;
+- [ ] `kit:doctor --structure` без блокеров;
+- [ ] доля `knowledge` растёт вместе с движением задач, а не из-за правки шапок;
+- [ ] golden questions проходят `ctx:eval`;
+- [ ] артефакты, произведённые по пакетам контекста, называют карточки в `based_on`;
+- [ ] `ops:todo` разбирается раз в неделю и не растёт.
 
-## Success criteria
+## Антипаттерны
 
-- [ ] `kb_lint` = 0 errors
-- [ ] AGENTS.md matches real folder tree
-- [ ] At least one verified card with owner + review_by
-- [ ] Golden questions pass `/aurora-vault eval`
-- [ ] Artifacts cite `based_on` cards when generated from context packs
-
-## Anti-patterns
-
-- Putting AI drafts straight into `AuroraKnowledgeDB/` as `verified`
-- Editing `Deliverables/released/` or `Raw/contract/`
-- Feeding `Artifacts/` back into prompts as ground truth
-- Deleting cards instead of `supersede`
-- Sync writing outside `Sources/`
+- Поднимать долю `knowledge` правкой шапок: доверие считается, а не присваивается.
+- Править карточки руками — следующая сборка сотрёт правку; неверное исправляют через `kb:correct`.
+- Класть произведённые ИИ черновики в `AuroraKnowledgeDB/`.
+- Редактировать `Deliverables/released/` или `Raw/contract/`.
+- Скармливать `Artifacts/` обратно в промпты как истину.
+- Удалять карточки вместо `kb:supersede`.
+- Писать мимо `Sources/` в зеркала или хранить там чужое.
+- Заводить свои папки верхнего уровня: нестандартному место в `Workspaces/`.
+- Коммитить `.env.aurora.local`.

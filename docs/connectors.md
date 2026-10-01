@@ -1,5 +1,7 @@
 # Модули источников
 
+English version: [en/connectors.md](en/connectors.md).
+
 Зеркала в `Sources/` наливают подключаемые модули. Движок про Confluence и Jira ничего
 не знает: он знает два **вида** хранилищ и умеет обслуживать любой модуль, который
 объявил свой вид.
@@ -29,7 +31,7 @@
 свойством источника, а не выводится из совпадения пути на диске, и второго списка
 доверенных папок в конфиге заводить не нужно.
 
-Confluence Data Center (`confluence-dc`) и Jira Data Center (`jira-dc`) идут в комплекте
+Confluence Data Center (`confluence-dc`), Jira Data Center (`jira-dc`) и `web` идут в комплекте
 с kit'ом и устанавливаются всегда. Всё остальное — Notion, SharePoint, Confluence Cloud,
 YouTrack, GitLab Issues — добавляется папкой в `connectors/`.
 
@@ -64,17 +66,21 @@ connectors/<id>/
   "id": "notion",
   "title": "Notion",
   "kind": "wiki",
+  "role": "artifacts",
   "since": "1.29.0",
   "what": "Страницы базы Notion деревом.",
   "mirror": {"default_path": "Sources/Notion", "state": "sync_state.md"},
   "run": {"script": "notion_export.py", "command": "sync:notion", "skill": "notion-sync"},
   "auth": {"env_prefix": "NOTION", "what": "интеграционный токен"},
   "settings_block": "notion",
-  "settings": [{"key": "database_id", "what": "какая база выгружается", "required": true}]
+  "settings": [{"key": "database_id", "what": "какая база выгружается", "required": true}],
+  "requires": {"python": ["beautifulsoup4"]}
 }
 ```
 
 - `kind` — `wiki` или `board`; движок по нему выбирает и раскладку, и правила аудита;
+- `role` — `tasks`, `artifacts` или `raw`: откуда у источника берётся доверие (таблица выше);
+- `requires.python` — пакеты Python, без которых модуль не работает; движок на стандартной библиотеке, поэтому их ставят отдельно ([INSTALL](INSTALL.md#требования));
 - `mirror.default_path` — папка зеркала; она же становится легитимной в `Sources/`
   (`kit:doctor --structure` перестаёт считать её ничьей);
 - `auth.env_prefix` — из него выводятся имена переменных: `NOTION_PAT`,
@@ -129,7 +135,7 @@ class Mirror(BoardMirror):
 
 Дальше — цикл по записям источника: сложить `mirror.rows`, вызвать `mirror.write_state()`,
 показать `mirror.extra_files(...)` и удалить их по `--prune`. Готовые образцы —
-`scripts/jira_export.py` (board, 324 строки) и `scripts/confluence_export.py` (wiki).
+`scripts/jira_export.py` (board) и `scripts/confluence_export.py` (wiki).
 
 Обязательное для приёмки модуля:
 
