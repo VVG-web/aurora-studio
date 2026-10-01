@@ -62,7 +62,7 @@ Unbounded, Literata, Nunito, Comfortaa, JetBrains Mono, IBM Plex Mono, лице�
 | `--primary` | первичное действие и состояние «здорово» |
 | `--accent` | акцент, присутствие Авроры |
 | `--gold` | необратимые действия и несохранённые правки |
-| `--tier-imported`, `--tier-draft`, `--tier-inreview`, `--tier-verified`, `--tier-deprecated` | статусы карточек: тот же код, что и в самой базе |
+| `--tier-imported`, `--tier-draft`, `--tier-inreview`, `--tier-verified`, `--tier-deprecated` | состояния карточек: `--tier-verified` — `knowledge`, `--tier-draft` — `draft`, `--tier-imported` — без доверия (пустышка, неизвестное), `--tier-deprecated` — `deprecated`, `--tier-inreview` — предупреждение. Имена остались от прежней шкалы статусов |
 | `--danger`, `--corruption` | ошибки и дрейф зеркал |
 | `--sans`, `--mono`, `--display` | текст, числа и код, заголовки |
 | `--text-xs … --text-2xl` | шкала кеглей: шесть ступеней на всю панель |
@@ -92,7 +92,7 @@ Unbounded, Literata, Nunito, Comfortaa, JetBrains Mono, IBM Plex Mono, лице�
 
 ## Правила, которые лучше не нарушать
 
-Статусы карточек должны оставаться различимыми: `verified` и `imported` — это разница
+Состояния карточек должны оставаться различимыми: `knowledge` и «без доверия» — это разница
 между фактом и слухом, и она читается по цвету во всех списках. Контраст текста —
 не ниже WCAG AA в обеих темах, панель рассчитана на долгую работу. Цвет никогда не
 единственный признак статуса: рядом всегда есть подпись или форма. Свечение и анимации

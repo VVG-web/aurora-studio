@@ -1,21 +1,36 @@
 ---
-title: "Example process card"
-aliases: ["example-process"]
+title: "Заявка на поставку"
+aliases: ["заявка", "ЗНП"]
 tags: [process.workflow]
-type: process
-status: imported
-trust: medium
-owner:
+type: concept
+schema_version: 6
+status: knowledge
+kind: knowledge
+built: machine
+trust: trusted
+trust_basis: "все связанные задачи в доверенных статусах, например PRJ-123 — «Закрыто»"
+trust_checked: 2026-09-01
+distilled: 2026-09-01
 created: 2026-07-12
-updated: 2026-07-12
-verified:
-review_by:
-source: "Raw/examples/readme"
-source_synced: 2026-07-12
-audience: [SA, BA]
-related: []
+updated: 2026-09-01
+source: "Sources/Confluence/Процессы/Заявка на поставку.md"
+sources:
+  - "Sources/Confluence/Процессы/Заявка на поставку.md"
+  - "Raw/contract/ТЗ.md"
+source_synced: 2026-09-01
+related: ["[[Поставщик]]", "[[Статусы заявки]]"]
 ---
 
-# Example process card
+# Заявка на поставку
 
-Replace this with real knowledge. Until `status: verified`, agents must treat the content as a hypothesis, not a fact.
+Документ, которым заказчик поручает [[Поставщик|поставщику]] передать товар в согласованный срок.
+Проходит статусы из модели [[Статусы заявки]]; отмена возможна до подтверждения поставщиком.
+
+## Источник (перенесено дословно)
+
+> Заявка — основной документ процесса поставки. Создаётся заказчиком, подтверждается
+> поставщиком в течение трёх рабочих дней…
+
+## История изменений
+
+- 2026-09-01 — тезис дополнен условием отмены из ТЗ (п. 4.2.1); прежний тезис сохранён в подвале.
