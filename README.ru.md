@@ -139,7 +139,7 @@ your-project/
 | Установка и эксплуатация | [Установка](docs/INSTALL.md) · [Панель управления](docs/control-panel-ui-requirements.md) · [Модули источников](docs/connectors.md) |
 | Как это устроено | [Архитектура](docs/architecture.md) · [Решения и дорожная карта](docs/roadmap.md) |
 | Участие в разработке | [CONTRIBUTING](docs/CONTRIBUTING.md) |
-| История | [CHANGELOG](CHANGELOG.md) |
+| История и выпуски | [CHANGELOG](CHANGELOG.md) · [как выпускают версии](docs/CONTRIBUTING.md#версии-и-выпуски) |
 
 Полный указатель на двух языках: [docs/README.md](docs/README.md).
 
