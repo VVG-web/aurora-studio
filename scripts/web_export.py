@@ -417,6 +417,7 @@ def convert_documents(out_dir: str, apply: bool) -> int:
         return 0
     try:
         import office_ingest as OI                                   # noqa: PLC0415
+        from aurora_common import file_hash                          # noqa: PLC0415
     except Exception:                                                # noqa: BLE001
         return 0
     made = 0
@@ -425,7 +426,7 @@ def convert_documents(out_dir: str, apply: bool) -> int:
         if not os.path.isfile(src) or os.path.splitext(name)[1].lower() not in OI.SUPPORTED:
             continue
         dst = OI.transcript_path(src)
-        digest = OI.sha(src)
+        digest = file_hash(src)
         if OI.existing_hash(dst) == digest:
             continue
         if not apply:
@@ -594,25 +595,33 @@ def run(a) -> int:
             rel = slug(url, title)
             path = os.path.join(mirror.out, rel)
 
-            def store(md: str, files: list) -> tuple:
+            def store(md: str, files: list, write: bool = True) -> tuple:
                 text = card_text(url, title, trusted, md, seed, files, feed)
                 was = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
-                if a.apply and was != text:
+                if a.apply and write and was != text:
                     open(path, "w", encoding="utf-8").write(text)
                 return text, was
 
-            # Страницу записываем СРАЗУ, до вложений. Вложений у страницы бывает полтора
-            # десятка, качаются они минуты, и прогон, прерванный посередине, оставлял на
-            # диске картинки без страницы: работа сделана, а записи о ней нет. Со стороны
-            # это выглядит как «скачались одни картинки». Ссылки в этом первом варианте
-            # ведут на сайт; после вложений текст перезаписывается с локальными.
-            text, was = store(body, [])
-            status = "без изменений" if was == text else ("обновлена" if was else "новая")
+            # Новую страницу записываем СРАЗУ, до вложений. Вложений у страницы бывает
+            # полтора десятка, качаются они минуты, и прогон, прерванный посередине,
+            # оставлял на диске картинки без страницы: работа сделана, а записи о ней нет.
+            # Ссылки в этом первом варианте ведут на сайт; после вложений текст
+            # перезаписывается с локальными.
+            # Страница, что уже лежит на диске, с локальными ссылками, так не пишется:
+            # вариант со ссылками на сайт стёрся бы ровно на время загрузки вложений и
+            # вернулся бы к локальным, то есть файл дважды за прогон менялся туда и обратно
+            # (дифф в git, смена времени файла) ради текста, которого никто не прочтёт.
+            # Её пишем один раз, когда вложения уже скачаны.
+            will_fetch = bool(opt["assets"] and assets)
+            text, was = store(body, [], write=not (will_fetch and os.path.isfile(path)))
+            status = ""
+            if not will_fetch or was is None:
+                status = "без изменений" if was == text else ("обновлена" if was else "новая")
             # Говорим о странице СРАЗУ. Вложений у неё бывает полтора десятка, качаются
             # они минуты, и шаг, молчащий всё это время, по логам неотличим от зависшего:
             # человек видит «## раздел» и тишину, хотя страница уже на диске.
             print(f"  {'✅' if a.apply else '(dry-run)'} [{taken + 1}/{opt['max_pages']}] "
-                  f"{url} → {rel} · {status}"
+                  f"{url} → {rel}" + (f" · {status}" if status else "")
                   + (f" · вложений к загрузке {len(assets)}" if assets else ""), flush=True)
             saved: dict = {}
             if opt["assets"]:
@@ -624,7 +633,11 @@ def run(a) -> int:
                         print(f"     ! вложение {src} — {aerr[:70]}")
                 if saved:
                     text, _ = store(local_links(body, url, saved), list(saved.values()))
-                    status = "без изменений" if was == text else ("обновлена" if was else "новая")
+                else:
+                    # ни одно вложение не пришло: страницу всё равно обновляем, со
+                    # ссылками на сайт — иначе правка на сайте не дошла бы до зеркала
+                    text, _ = store(body, [])
+                status = "без изменений" if was == text else ("обновлена" if was else "новая")
             mirror.rows.append((url, trusted, rel, status))
             files_total += len(saved)
             taken += 1

@@ -30,7 +30,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import re
 import shutil
@@ -40,18 +39,10 @@ import zipfile
 from datetime import date
 from xml.etree import ElementTree as ET
 
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".opencode", ".cursor", ".claude"}
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-
-
-def sha(path: str) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()[:16]
 
 
 def have(tool: str) -> bool:
@@ -431,7 +422,7 @@ def main() -> int:
     done, skipped, failed = [], [], []
     for src in files:
         dst = transcript_path(src)
-        digest = sha(src)
+        digest = file_hash(src)
         if not a.force and existing_hash(dst) == digest:
             skipped.append(src)
             continue

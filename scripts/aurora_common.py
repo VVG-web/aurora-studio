@@ -11,6 +11,7 @@ aurora_common` работает: Python кладёт папку запускае
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -97,6 +98,27 @@ def local_week(value):
         return None
     year, week, _day = dt.astimezone().isocalendar()
     return year, week
+
+
+def iso_week(value):
+    """ISO-неделя 'WW' отметки — по часам системы (`local_week`)."""
+    w = local_week(value)
+    return f"{w[1]:02d}" if w else None
+
+
+def iso_year(value):
+    """ISO-год отметки — по часам системы."""
+    w = local_week(value)
+    return w[0] if w else None
+
+
+def file_hash(path: str) -> str:
+    """Короткий хеш содержимого файла (md5, 16 знаков): по нему сверяют «тот же ли файл»."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
 
 
 def _as_utc(when=None) -> _datetime:

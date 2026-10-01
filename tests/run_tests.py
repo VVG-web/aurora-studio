@@ -16927,6 +16927,82 @@ def test_a_crawled_page_survives_an_interrupted_run(tmp: Path):
 
 
 @test
+def test_a_mirrored_page_is_not_rewritten_back_and_forth(tmp: Path):
+    """Страница с вложениями за прогон не меняется туда и обратно.
+
+    Страницу записывали дважды: сначала со ссылками на сайт, потом, после вложений, с
+    локальными. На странице, что уже лежала на диске, это значило два изменения файла за
+    прогон (дифф и время файла) ради промежуточного текста. Новая страница по-прежнему
+    пишется сразу, до вложений, — на этом держится прерванный прогон.
+    """
+    import argparse
+    import contextlib
+    import io
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+
+    url = "https://site.example/docs/"
+    asset = "https://site.example/files/prikaz.pdf"
+    state = {"body": f"Текст.\n\n[Приказ]({asset})"}
+    writes: list = []
+    real_open = open
+
+    def counting_open(path, mode="r", *args, **kw):
+        if "w" in mode and str(path).endswith(".md") and "Sources" in str(path):
+            writes.append(str(path))
+        return real_open(path, mode, *args, **kw)
+
+    saved_attrs = {k: getattr(W, k) for k in ("config_text", "fetch", "to_markdown",
+                                              "fetch_asset", "PAUSE")}
+    W.config_text = lambda: f"web:\n  pages:\n    - url: {url}\n      trusted: true\n"
+    W.fetch = lambda u, token: ("<html></html>", "")
+    W.to_markdown = lambda html, u: ("Документы", state["body"], [], [(asset, "Приказ")])
+    W.PAUSE = 0
+    W.open = counting_open
+    fail_assets = {"on": False}
+
+    def fake_asset(src, out_dir, apply, label=""):
+        if fail_assets["on"]:
+            return "", "сайт не отвечает"
+        return "Приказ-11111111.pdf", ""
+    W.fetch_asset = fake_asset
+
+    out = tmp / "Sources" / "Web"
+    args = argparse.Namespace(out=str(out), apply=True, prune=False, verify=False)
+
+    def run_once() -> int:
+        writes.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            W.run(args)
+        page = [p for p in writes if os.path.basename(p) != "update_log.md"]
+        return len(page)
+
+    try:
+        first = run_once()
+        pages = [p for p in out.glob("*.md") if p.name not in ("update_log.md", "sync_state.md")]
+        assert len(pages) == 1, f"страница не записана: {list(out.iterdir())}"
+        text = pages[0].read_text(encoding="utf-8")
+        assert "_files/Приказ-11111111.pdf" in text, f"ссылка не стала локальной:\n{text}"
+        assert first == 2, f"новая страница пишется сразу и после вложений: {first}"
+
+        assert run_once() == 0, "страница с вложениями переписывается на каждом прогоне"
+        assert pages[0].read_text(encoding="utf-8") == text, "текст страницы изменился"
+
+        # страница изменилась на сайте, а вложения не пришли: обновление не теряется
+        state["body"] = f"Новый текст.\n\n[Приказ]({asset})"
+        fail_assets["on"] = True
+        run_once()
+        assert "Новый текст." in pages[0].read_text(encoding="utf-8"), \
+            "правка страницы потеряна из-за недоступных вложений"
+    finally:
+        for k, v in saved_attrs.items():
+            setattr(W, k, v)
+        if hasattr(W, "open"):
+            del W.open
+
+
+@test
 def test_a_document_is_trusted_wherever_the_project_keeps_it(tmp: Path):
     """Документ доверен по своей природе, а не по тому, лежит ли он в `Raw/`.
 
@@ -18372,7 +18448,10 @@ def test_time_is_recorded_in_utc_and_shown_in_local_time(tmp: Path):
     assert A.local_week("2026-09-20T22:30:00Z") == (y, w), "неделя посчитана не по часам системы"
     for step in ("make_analyst_metrics.py", "verify_weekly_by_person.py"):
         src = (KIT / "reports/analyst" / step).read_text(encoding="utf-8")
-        assert "local_week(ts)" in src, f"{step} считает неделю своей копией правила"
+        assert "from aurora_common import iso_week, iso_year" in src and "def iso_week" not in src, \
+            f"{step} считает неделю своей копией правила"
+    assert A.iso_week("2026-09-20T22:30:00Z") == f"{w:02d}" and A.iso_year("2026-09-20T22:30:00Z") == y, \
+        "iso_week/iso_year не по часам системы"
     fetch = (KIT / "reports/analyst/fetch_full.py").read_text(encoding="utf-8")
     assert '_utc(h.get("created", ""))' in fetch and "[:19]" not in fetch, \
         "выгрузка отчёта снова срезает смещение Jira"
