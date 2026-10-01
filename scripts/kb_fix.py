@@ -50,8 +50,7 @@ from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            is_placeholder,
                            aliases as card_aliases, card_filename as normalize_title,
                            frontmatter,
-                           fix_mixed_script, fold, fold_hard,
-                           fold_hard, git_guard, leaf_name,
+                           fix_mixed_script, fold, fold_hard, git_guard, leaf_name,
                            is_service, link_refs, not_a_card_link, project_file,
                            path_problems, rewrite_links, set_field, translit_names,
                            TEMPLATE_LINK_RE, utc_slug, NAME_BYTES)
@@ -1904,10 +1903,13 @@ def drop_alias(card: Card, alias: str) -> str:
         items = [x for x in items if x.strip('"\'') != alias]
         line = "aliases: [" + ", ".join(items) + "]" if items else "aliases: []"
         return head[:inline.start()] + line + head[inline.end():] + rest
-    out, drop_next = [], False
+    out, in_aliases = [], False
     for line in head.split("\n"):
+        if re.match(r"^\S", line):
+            in_aliases = line.startswith("aliases:")
         m = re.match(r"^\s*-\s*\"?([^\"]+)\"?\s*$", line)
-        if m and m.group(1).strip() == alias:
+        # только пункты самого `aliases`: то же слово в `tags` или `related` — не синоним
+        if in_aliases and m and m.group(1).strip() == alias:
             continue
         out.append(line)
     return "\n".join(out) + rest
