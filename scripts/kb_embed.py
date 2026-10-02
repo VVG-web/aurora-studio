@@ -407,20 +407,29 @@ def prefilter_pays_off(out: array.array, dim: int, rows: int, pf) -> tuple:
 
 def save_index(model: str, dim: int, cards: dict, out: "array.array", pf) -> None:
     """Индекс на диск: файл v2 (заголовок, оси, вектора, проекции) и json-карта.
-    Файлы производные: битые считываются как пустые, пересобираются --apply."""
+    Файлы производные: битые считываются как пустые, пересобираются --apply.
+
+    Каждый файл пишется во временный и подменяется целиком: читатель (MCP-поиск, панель)
+    в середине записи видел обрезанный файл. Сначала вектора, потом карта — карта
+    называет число строк, и заголовок векторов её сверяет."""
     os.makedirs(META, exist_ok=True)
     axes, per_row = pf if pf else ([], array.array("f"))
     flat = [x for a in axes for x in a]
-    with open(VECTORS, "wb") as f:
+    tmp = VECTORS + ".tmp"
+    with open(tmp, "wb") as f:
         f.write(struct.pack("<4sIIII", BIN_MAGIC, BIN_VER, dim, len(axes), len(cards)))
         if flat:
             f.write(struct.pack(f"<{len(flat)}d", *flat))
         out.tofile(f)
         per_row.tofile(f)
-    with open(INDEX, "w", encoding="utf-8") as f:
+    os.replace(tmp, VECTORS)
+    tmp = INDEX + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"model": model, "dim": dim, "built": TODAY,
                    "cards": cards, "pf": len(axes)},
                   f, ensure_ascii=False, indent=1, sort_keys=True)
+    os.replace(tmp, INDEX)
+
 
 def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:
     """[(имя карточки, близость)] по убыванию. Пустой список — индекса нет или он чужой.

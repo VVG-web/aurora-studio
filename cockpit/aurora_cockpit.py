@@ -67,6 +67,7 @@ STARTED = time.time()
 ENGINE = os.path.getmtime(os.path.abspath(__file__))
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+CHDIR_LOCK = threading.Lock()   # смена текущей папки процесса — только под ним
 CACHE: dict = {}
 REGISTRY_CACHE = os.path.join(KIT, "cockpit", ".registry-cache.json")
 
@@ -3297,10 +3298,19 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # --- защита: только localhost, только со своим токеном
+    def host_ok(self) -> bool:
+        """Запрос пришёл на петлевой адрес. Иначе чужая страница, чьё имя перенаправили на
+        127.0.0.1 (DNS rebinding), прочла бы и токен сессии, вшитый в главную страницу."""
+        host = (self.headers.get("Host") or "").strip()
+        host = host[:host.index("]") + 1] if host.startswith("[") and "]" in host \
+            else host.split(":")[0]
+        if host in ("127.0.0.1", "localhost", "[::1]"):
+            return True
+        self.send_json({"error": "панель отвечает только на 127.0.0.1"}, 403)
+        return False
+
     def guarded(self, query: dict) -> bool:
-        host = (self.headers.get("Host") or "").split(":")[0]
-        if host not in ("127.0.0.1", "localhost", "[::1]"):
-            self.send_json({"error": "панель отвечает только на 127.0.0.1"}, 403)
+        if not self.host_ok():
             return False
         # Вендоренная статика — без токена. Не послабление: браузер грузит `<script src>`
         # и `<link href>` сам, а сама библиотека тянет своё (lute, mermaid, KaTeX, язык)
@@ -3315,7 +3325,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/modules/"):
             return True
         tok = (query.get("t", [""])[0] or self.headers.get("X-Aurora-Token", ""))
-        if not secrets.compare_digest(tok, TOKEN):
+        # Сравнение по байтам: со строкой не из ASCII `compare_digest` падает TypeError, и
+        # вместо отказа клиент получал оборванное соединение.
+        if not secrets.compare_digest(tok.encode("utf-8"), TOKEN.encode("utf-8")):
             self.send_json({"error": "нет токена сессии — откройте адрес из консоли"}, 403)
             return False
         return True
@@ -3377,6 +3389,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
+            if not self.host_ok():
+                return
             html = ui_source()
             if not html:
                 html = "<h1>cockpit/ui/index.html не найден</h1>"
@@ -3696,12 +3710,12 @@ class Handler(BaseHTTPRequestHandler):
                         if not j["done"] and (not project or j["project"] == project)]
             self.send_json({"jobs": sorted(live, key=lambda j: j["started"])})
         elif u.path == "/api/job":
-            job = JOBS.get(q.get("id", [""])[0])
-            if not job:
-                self.send_json({"error": "задание не найдено"}, 404)
-                return
             since = int(q.get("since", ["0"])[0])
             with JOBS_LOCK:
+                job = JOBS.get(q.get("id", [""])[0])
+                if not job:
+                    self.send_json({"error": "задание не найдено"}, 404)
+                    return
                 lines = job["out"][since:]
                 self.send_json({"id": job["id"], "lines": lines, "next": since + len(lines),
                                 "done": job["done"], "rc": job["rc"], "cmd": job["cmd"],
@@ -4066,13 +4080,17 @@ class Handler(BaseHTTPRequestHandler):
         того чтобы записать в конфиг неработающий корень.
         """
         import confluence_export as C
-        cwd = os.getcwd()
-        try:
-            os.chdir(project)
-            cfg = C.read_config()
-            auth, _kind = C.read_secret()
-        finally:
-            os.chdir(cwd)
+        # Читалки конфига и секрета берут пути от текущей папки. Замок не даёт двум запросам
+        # перепутать «куда вернуться»: второй запоминал папку первого, и после обоих сервер
+        # оставался стоять в чужом проекте.
+        with CHDIR_LOCK:
+            cwd = os.getcwd()
+            try:
+                os.chdir(project)
+                cfg = C.read_config()
+                auth, _kind = C.read_secret()
+            finally:
+                os.chdir(cwd)
         out = []
         api = C.Api(cfg["base_url"], auth) if (auth and cfg.get("base_url")) else None
         for raw in refs:
