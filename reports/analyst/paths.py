@@ -112,7 +112,6 @@ def year() -> int:
     прогоняет цепочку счёта по разу на год, подставляя год сюда через окружение. В
     конфиге при этом остаётся год по умолчанию — тот, что дашборд открывает первым.
     """
-    import datetime
     env = os.environ.get("AURORA_REPORT_YEAR", "")
     if env.strip().isdigit():
         return int(env)

@@ -60,7 +60,6 @@ import sys
 import itertools
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -653,8 +652,8 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
     невозможен по построению.
     """
     call = call or AG.call_role
-    from aurora_common import (KB_ROOT, PLACEHOLDER, card_filename, frontmatter,
-                               is_placeholder, set_field)
+    from aurora_common import (frontmatter,
+                               is_placeholder)
     step = {"card": os.path.basename(path)[:-3], "status": "пропущена", "note": "",
             "made": [], "backends": []}
     text = open(path, encoding="utf-8", errors="ignore").read()
@@ -897,11 +896,10 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
     отметку; карточка есть и с содержанием — дописываем, потому что выбросить принесённое
     значило бы потерять знание при переезде.
     """
-    from aurora_common import (KB_ROOT, PLACEHOLDER, card_body, card_filename,
+    from aurora_common import (KB_ROOT, card_body, card_filename,
                                frontmatter, is_placeholder, set_field, sources_block,
                                with_sources)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import build_plan as BP
 
     base = os.path.join(root, KB_ROOT)
     existing = term_card(root, term)
@@ -1365,7 +1363,7 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
     `skip` — карточки, отброшенные уже в этом прогоне: следующий заход их не берёт, а
     очередь держит их до следующего прогона. → ответ захода; `rejected` — отброшенные.
     """
-    from aurora_common import frontmatter, is_placeholder, link_refs, walk_md
+    from aurora_common import frontmatter, is_placeholder, walk_md
     started = time.time()
     budget = started + cfg["budget_min"] * 60
     todo = []
@@ -1634,7 +1632,7 @@ def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0
     """Найти противоречия внутри одной группы. → шаг отчёта. Ничего не правит."""
     call = call or AG.call_role
     step = {"group": group, "clashes": [], "status": "чисто", "why": "", "backends": []}
-    from aurora_common import KB_ROOT, card_body, frontmatter
+    from aurora_common import card_body
     import build_plan as BP
     rows = []
     for name in group[:8]:

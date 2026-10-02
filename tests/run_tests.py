@@ -16927,6 +16927,29 @@ def test_a_crawled_page_survives_an_interrupted_run(tmp: Path):
 
 
 @test
+def test_project_templates_do_not_drift_from_the_trust_model(tmp: Path):
+    """Шаблоны, что едут в каждый проект, не возвращают снятую приёмку и мёртвые скрипты.
+
+    Скилл с 1.89.0 говорит, что доверие вычисляется, а AGENTS.md проекта читает агент:
+    пока шаблон просил «verified» и «verify-гейт», агент получал правила, которых в
+    движке нет. Тест ловит и ссылки на скрипты, которых в ките больше нет (`kb_queue.py`).
+    """
+    files = [p for pat in ("templates", "scaffold/Prompts", "scaffold/Templates")
+             for p in (KIT / pat).rglob("*") if p.is_file()]
+    assert len(files) > 10, "шаблоны кита не найдены"
+    old = re.compile(r"kb_queue|kb:queue|kb:verify|verify-гейт|verified-карточ|верифицированн|"
+                     r"^status:\s*(verified|imported)|^verified:|^review_by:", re.M)
+    scripts = {p.name for p in (KIT / "scripts").rglob("*.py")} | {"aurora.py"}
+    bad = []
+    for p in files:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+        bad += [f"{p.relative_to(KIT)}: «{m.group(0).strip()}»" for m in old.finditer(text)]
+        bad += [f"{p.relative_to(KIT)}: нет скрипта {n}"
+                for n in sorted(set(re.findall(r"\b([a-z][a-z0-9_]+\.py)\b", text)) - scripts)]
+    assert not bad, "шаблоны расходятся с моделью доверия:\n" + "\n".join(bad)
+
+
+@test
 def test_a_mirrored_page_is_not_rewritten_back_and_forth(tmp: Path):
     """Страница с вложениями за прогон не меняется туда и обратно.
 

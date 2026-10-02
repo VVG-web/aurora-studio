@@ -26,7 +26,6 @@ import os
 import re
 import shutil
 import sys
-from datetime import date
 
 from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatter
 

@@ -27,9 +27,8 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
-import argparse, difflib, json, re, shutil, subprocess, sys
+import argparse, difflib, json, re, subprocess, sys
 from pathlib import Path
-from datetime import date
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aurora_common import utc_today  # noqa: E402 — дата в UTC, одна на движок

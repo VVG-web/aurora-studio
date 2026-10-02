@@ -35,14 +35,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import threading
 import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import date
 from pathlib import Path
 
 from aurora_common import child_env, load_env

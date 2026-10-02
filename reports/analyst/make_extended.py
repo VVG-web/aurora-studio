@@ -11,7 +11,6 @@
 Панель: `ops:report`
 """
 import json
-import csv
 import os
 import sys
 import datetime

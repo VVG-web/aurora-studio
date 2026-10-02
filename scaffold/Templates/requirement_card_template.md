@@ -6,12 +6,10 @@ type: requirement
 req_id: REQ-{{NNN}}
 req_status: stated        # stated → agreed → implemented | rejected
 stated: {{YYYY-MM-DD}}
-status: imported          # статус доверия карточки: imported → ... → verified
+status: draft             # класс доверия считает `kb:trust` по задачам Jira, руками не ставится
 owner:
 created: {{YYYY-MM-DD}}
 updated: {{YYYY-MM-DD}}
-verified:
-review_by:
 source: "Raw/meetings/{{YYYY-MM-DD}}_{{тема}}/protocol.md"
 jira: []                  # [PROJ-123] Epic/US, реализующие требование
 acceptance: []            # ссылки на AC-карточки

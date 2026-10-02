@@ -24,12 +24,11 @@ import argparse
 import os
 import re
 import sys
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_FIELDS, RETIRED_STATUS,
+from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_STATUS,
                            frontmatter, git_guard, sources_block,
-                           is_service, set_field, split_frontmatter, walk_md)
+                           set_field, split_frontmatter, walk_md)
 
 CURRENT = 6
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок

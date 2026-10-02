@@ -8,12 +8,12 @@
 
 Вывод: analyst_metrics.json в кэше отчёта
 """
-import json, csv, collections, datetime, os
+import json, collections, os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
-from paths import DATA_DIR, ROSTER_PATH
+from paths import DATA_DIR
 
 YEAR = paths.YEAR
 FULL_STATUS_PATH = os.path.join(DATA_DIR, "full_status.json")

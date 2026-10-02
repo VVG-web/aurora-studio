@@ -36,7 +36,6 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from datetime import date
 from xml.etree import ElementTree as ET
 
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок

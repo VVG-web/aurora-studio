@@ -30,7 +30,6 @@ import tempfile
 from aurora_common import yaml_scalar
 import unicodedata
 import urllib.request
-from datetime import date
 
 CONFIG = "aurora.config.yaml"
 ENV_LOCAL = ".env.aurora.local"

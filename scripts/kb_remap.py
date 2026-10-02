@@ -35,7 +35,6 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date
 
 from aurora_common import fold, head_text
 from sources_core import nfc

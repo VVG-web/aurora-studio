@@ -3,7 +3,7 @@ title: "Q-NNN — <краткая суть вопроса>"
 aliases: []
 tags: [question]
 type: question
-status: draft            # карточка вопроса: draft → verified (ответ проверен) → deprecated
+status: draft            # класс доверия считает `kb:trust`; ход вопроса — в q_status
 q_id: Q-NNN
 q_status: open           # open → asked → answered | closed-no-answer
 owner: "@<кто ведёт вопрос>"

@@ -38,7 +38,6 @@ import argparse
 import os
 import re
 import sys
-from datetime import date
 
 from aurora_common import KB_ROOT, frontmatter, walk_md
 

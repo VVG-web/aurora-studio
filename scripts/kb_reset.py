@@ -44,7 +44,6 @@ import argparse
 import os
 import shutil
 import sys
-from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402

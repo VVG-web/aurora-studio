@@ -19,7 +19,7 @@
 либо ответы подаются в stdin построчно.
 """
 from __future__ import annotations
-import argparse, os, re, sys
+import argparse, re, sys
 from pathlib import Path
 
 

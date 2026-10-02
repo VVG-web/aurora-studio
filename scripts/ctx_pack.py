@@ -33,7 +33,6 @@ import json
 import os
 import re
 import sys
-from datetime import date
 
 from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, frontmatter, is_meeting,
                            is_placeholder, link_targets, related_targets, walk_md)

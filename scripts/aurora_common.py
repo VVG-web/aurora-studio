@@ -16,7 +16,6 @@ import os
 import re
 import subprocess
 import unicodedata
-from datetime import date
 
 from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 

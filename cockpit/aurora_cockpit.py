@@ -2328,7 +2328,6 @@ def unfinished(project: str) -> dict:
     видимой. Удалять её движок не должен — это работа человека, пусть и неоконченная, а
     срок автоудаления никто не подберёт правильно, тогда как потеря необратима.
     """
-    import datetime as _dt
     sys.path.insert(0, os.path.join(KIT, "scripts"))
     import make_kinds as MK
     out, oldest = [], None

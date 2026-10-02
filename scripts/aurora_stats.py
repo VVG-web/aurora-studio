@@ -24,7 +24,6 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import date
 
 from aurora_common import (is_meeting, TRUSTED, card_sources, config_value, frontmatter,
                            inbound_counts,

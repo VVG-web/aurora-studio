@@ -89,7 +89,6 @@ def log_outbound(root: str, server: str, query: str, verdict: str) -> None:
     не утекло ли лишнее. Поэтому пишутся оба, и в проекте, а не в сессии: вопрос «что
     вообще уходило за месяц» задают проекту.
     """
-    import datetime
     path = os.path.join(root, "Workspaces", "_outbound.md")
     head = ("# Что уходило за периметр\n\n"
             "Последние сто запросов к серверам с `outbound: true`: ушедшие и "

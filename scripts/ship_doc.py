@@ -28,7 +28,6 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import date
 
 from aurora_common import (KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
                            clean_copy,

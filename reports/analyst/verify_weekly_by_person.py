@@ -12,15 +12,13 @@ Logic mirrors make_analyst_metrics.py and update_analyst_metrics.py:
   чтобы фильтр типа и вес «прочих» работали для возвратов и при выборе сотрудника)
 """
 import json
-import csv
 from collections import defaultdict
-import datetime
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
-from paths import DATA_DIR, ROSTER_PATH
+from paths import DATA_DIR
 
 YEAR = paths.YEAR
 FULL_STATUS_PATH = os.path.join(DATA_DIR, "full_status.json")
@@ -41,7 +39,7 @@ for iss in issues_list:
 # Load roster for role mapping
 roster = paths.roster()
 
-from aurora_common import iso_week, iso_year, parse_time  # noqa: E402 — правило времени одно на движок
+from aurora_common import iso_week, iso_year  # noqa: E402 — правило времени одно на движок
 
 from assignee_resolver import AssigneeResolver, load_synced_assignees
 

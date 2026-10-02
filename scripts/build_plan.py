@@ -31,12 +31,11 @@ import json
 import os
 import re
 import sys
-from datetime import date
 
 from sources_core import SERVICE_RE  # noqa: E402
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
-                           card_sources, fold_hard, frontmatter, sources_block,
+                           card_sources, fold_hard, sources_block,
                            split_frontmatter, split_tail, translit_names, walk_md,
                            is_meeting, meeting_turns, title_from_stem, with_meeting_mark)
 

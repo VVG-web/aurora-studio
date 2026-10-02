@@ -26,7 +26,6 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date
 
 from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, link_targets, walk_md)
 
