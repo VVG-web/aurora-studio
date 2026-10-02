@@ -41,19 +41,7 @@ for iss in issues_list:
 # Load roster for role mapping
 roster = paths.roster()
 
-from aurora_common import local_week, parse_time  # noqa: E402 — правило времени одно на движок
-
-
-def iso_week(ts):
-    """ISO-неделя 'WW' отметки — по часам системы (`aurora_common.local_week`)."""
-    w = local_week(ts)
-    return f"{w[1]:02d}" if w else None
-
-
-def iso_year(ts):
-    """ISO-год отметки — по часам системы."""
-    w = local_week(ts)
-    return w[0] if w else None
+from aurora_common import iso_week, iso_year, parse_time  # noqa: E402 — правило времени одно на движок
 
 from assignee_resolver import AssigneeResolver, load_synced_assignees
 

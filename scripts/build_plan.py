@@ -27,7 +27,6 @@ Reference → Statuses → Raw/project → Sources/Confluence → Sources/JIRA. 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -42,7 +41,7 @@ from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            is_meeting, meeting_turns, title_from_stem, with_meeting_mark)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
@@ -183,14 +182,6 @@ def is_doc_code(name: str) -> bool:
     базы код живёт в синонимах той карточки, которую он называет.
     """
     return bool(BARE_CODE_RE.match((name or "").strip()))
-
-
-def file_hash(path: str) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()[:16]
 
 
 class ManifestBroken(RuntimeError):

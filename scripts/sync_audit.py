@@ -32,7 +32,6 @@ wiki (дерево страниц с номерами) или board (плоск�
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -45,7 +44,7 @@ from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guar
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
-from aurora_common import utc_today  # noqa: E402
+from aurora_common import file_hash, utc_today  # noqa: E402
 TODAY = date.fromisoformat(utc_today())   # дата в UTC, как у всех записей
 
 ROW_RE = re.compile(r"^\|\s*[^|]*\|\s*(\d{4,})\s*\|([^|]*)\|\s*([^|]+?)\s*\|\s*([A-Z_]+)?\s*\|")
@@ -399,14 +398,6 @@ def audit_board(src: dict, stale_days: int, out: list, stats: dict) -> int:
 
 
 AUDITORS = {"wiki": audit_wiki, "board": audit_board}
-
-
-def file_hash(path: str) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()[:16]
 
 
 def drift_collect(only_trusted: bool) -> tuple:

@@ -62,7 +62,7 @@ Transform imperative tasks into declarative goals:
 
 **Настройки проекта:** `aurora.config.yaml` (space, JQL, sync roots, recommended skills). Секреты — только в `.env.aurora.local` (не в git) или в личном Cursor MCP.
 
-Режим: **bootstrap** (пока verified < 20% — см. `references/retrieval.md`).
+Режим ретрива зависит от доли доверенных карточек: `ops:stats` показывает, bootstrap сейчас или строгий режим (порог — `bootstrap.verified_threshold_pct` в `aurora.config.yaml`; см. `references/retrieval.md`).
 
 ## Слои доверия (кратко; полная таблица — в SKILL.md)
 
@@ -82,13 +82,13 @@ Transform imperative tasks into declarative goals:
 > «Invariants»). Ниже — то, что нужно помнить до открытия скилла; при расхождении
 > прав SKILL.md.
 
-1. **Статус карточки = уровень доверия.** `verified` — факты; `imported`/`draft` — не факты; `deprecated` — история. Легаси-карточки без `status` = `imported`.
-2. **Никогда не перезаписывай verified-карточки** — только человек. При расхождении с источником — рапортуй DRIFT.
+1. **Класс карточки = уровень доверия, и он вычисляется** по статусам связанных задач Jira (`kb:trust`). `knowledge` — факты; `draft` — не факты; `deprecated` — история. Человек доверие не ставит и не снимает. Легаси-статусы (`verified`, `imported`) читаются, но не назначаются: `kb:trust` переводит базу на новую шкалу.
+2. **Не переписывай карточки в обход процедур:** тело `document` и `dictionary` переносится дословно, `knowledge` переосмысляют только `kb:build` и `agent:*`. Тип, выбранный человеком, не меняй. При расхождении с источником — рапортуй DRIFT.
 3. **Ничего не удаляй**: устаревшее → `supersede` (deprecated + `_archive/`). Decision Records неизменяемы.
-4. **Артефакт ≠ знание**: результаты генерации в `Artifacts/`, в базу — только через verify-гейт.
+4. **Артефакт ≠ знание**: результаты генерации в `Artifacts/`, знание попадает в базу только из источников через разбор (`kb:build`, `agent:build`), а не копированием из артефакта.
 5. **Именование** — `AuroraKnowledgeDB/meta/conventions.md` (слои PascalCase, категории lowercase, артефакты `YYYY-MM-DD_<тип>_<объект>.md`).
 6. **Структура папок фиксирована движком** (`.opencode/structure_dirs.txt`) и одинакова во всех проектах Авроры. Не создавай новых папок верхнего уровня, разделов `AuroraKnowledgeDB/` и типов `Artifacts/<тип>/`. Всё нестандартное — в `Workspaces/<задача>/`. Проверка: `python3 .opencode/scripts/aurora_doctor.py --structure`.
-7. **Массовую механику делай скриптом, не обходом базы:** `kb_lint.py` (найти) → `kb_fix.py` (починить) → `kb_queue.py` (что верифицировать) → `sync_audit.py` (целостность зеркал) → `aurora_stats.py` (числа). Модель интерпретирует отчёт и принимает решения, требующие суждения.
+7. **Массовую механику делай скриптом, не обходом базы:** `kb_lint.py` (найти) → `kb_fix.py` (починить) → `kb_trust.py` (пересчитать доверие) → `sync_audit.py` (целостность зеркал) → `aurora_stats.py` (числа). Модель интерпретирует отчёт и принимает решения, требующие суждения.
 8. **Sync:** Confluence — skill `confluence-sync-{{PROJECT_SLUG}}`; Jira — `jira-export-{{PROJECT_SLUG}}`; параметры — **`aurora.config.yaml`**; пишут только в `Sources/`.
 9. **Секреты:** не коммитить Atlassian token/password; каждый пользователь логинится в MCP своим аккаунтом.
 10. **Имена файлов и папок — по самым строгим правилам из трёх систем сразу: Windows, macOS и Linux.** Проект открывают на любой из них, и имя, допустимое на одной, на другой ломает выгрузку всего репозитория, а не один файл. Для всего, что создаёшь или переименовываешь:
