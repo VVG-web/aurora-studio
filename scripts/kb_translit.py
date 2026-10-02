@@ -34,13 +34,10 @@ import argparse
 import os
 import re
 import sys
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aurora_common import (KB_ROOT, card_filename, frontmatter,  # noqa: E402
-                           git_guard, is_service, link_refs, load_cards,
-                           rewrite_links, walk_md)
+from aurora_common import (KB_ROOT, card_filename, git_guard, rewrite_links, walk_md)
 
 DICT_PATH = os.path.join(KB_ROOT, "meta", "translit.md")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -214,7 +211,6 @@ def main() -> int:
             return 2
         if a.apply and undo:
             undo_identifiers(known, True)
-        cards = load_cards()
         renamed = 0
         # Ссылки ведут на ИМЯ ФАЙЛА, а не на строку словаря: `card_filename` меняет
         # пробелы на дефисы, и ссылка `[[SPR-001 Статусы тарифа]]` на карточку

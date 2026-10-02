@@ -29,7 +29,6 @@ import argparse
 import os
 import re
 import sys
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, as_list, frontmatter, git_guard, set_field,

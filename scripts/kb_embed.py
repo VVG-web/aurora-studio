@@ -38,7 +38,6 @@ import os
 import random
 import struct
 import sys
-from datetime import date
 from itertools import repeat
 from operator import add, mul, sub
 from pathlib import Path

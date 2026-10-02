@@ -133,7 +133,6 @@ with open(OUT_PATH, "w", encoding="utf-8") as fh:
     json.dump(out, fh, ensure_ascii=False, indent=0)
 
 # summary: counts of transitions into the three ready statuses
-import collections
 READY = {"Аналитика - готово": 0, "Разработка - готово": 0, "Тестирование - готово": 0}
 for v in out.values():
     for s in v["status_history"]:

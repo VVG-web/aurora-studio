@@ -23,13 +23,11 @@
 from __future__ import annotations
 
 import argparse
-import datetime
 import os
 import re
 import sys
-from datetime import date
 
-from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targets, walk_md
+from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targets
 
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]

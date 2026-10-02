@@ -46,7 +46,6 @@ import json
 import os
 import re
 import sys
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_body, card_sources, card_stem,  # noqa: E402
@@ -211,9 +210,9 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
     дойти до карточки, а не отчёт о её месте в мире.
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from aurora_common import link_refs, is_service
+    from aurora_common import is_service
 
-    nodes, edges, seen = [], [], set()
+    nodes, edges = [], []
     by_stem: dict = {}
     for dirpath, dirs, files in os.walk(KB_DIR):
         dirs[:] = [d for d in dirs if d not in ("meta", "_archive")]

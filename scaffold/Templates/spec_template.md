@@ -4,16 +4,14 @@ aliases: ["SPEC-{{NNN}}"]
 tags: [spec]
 type: spec
 spec_id: SPEC-{{NNN}}
-status: draft             # draft → in-review → verified (согласована); передача в разработку — spec-pack
+status: draft             # класс доверия считает `kb:trust` по задачам Jira, руками не ставится; передача в разработку — spec-pack
 owner:
 created: {{YYYY-MM-DD}}
 updated: {{YYYY-MM-DD}}
-verified:
-review_by:
 implements: []            # ["[[REQ-042]]"] — какие требования реализует
 decisions: []             # ["[[DR-0012]]"] — решения-ограничения
 jira: []                  # Epic/US, созданные из спеки
-based_on: []              # verified-карточки-основания — заполняется при сборке, ОБЯЗАТЕЛЬНО
+based_on: []              # карточки-основания (knowledge) — заполняется при сборке, ОБЯЗАТЕЛЬНО
 applies_to: []            # релиз(ы)
 related: []
 ---

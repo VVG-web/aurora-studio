@@ -27,7 +27,6 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parents[1]

@@ -19,12 +19,11 @@
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 import argparse
-import json, os, re, sys, collections
+import json, os, re, sys
 
 from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
 from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
-                           card_sources, config_list, config_value, clean_meaning,
-                           frontmatter, is_service, not_a_card_link,
+                           card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
 
 ROOT = "AuroraKnowledgeDB"

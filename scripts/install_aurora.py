@@ -23,7 +23,6 @@ import argparse
 import json
 import shutil
 import sys
-from datetime import date
 from pathlib import Path
 
 KIT_ROOT = Path(__file__).resolve().parents[1]

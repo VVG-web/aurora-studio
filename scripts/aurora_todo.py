@@ -26,7 +26,6 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)

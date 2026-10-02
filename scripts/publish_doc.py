@@ -34,7 +34,6 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy,

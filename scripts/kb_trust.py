@@ -36,7 +36,6 @@ import json
 import os
 import re
 import sys
-from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (is_meeting, branch_kind, LEGACY_TRUSTED_BRANCHES, ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402

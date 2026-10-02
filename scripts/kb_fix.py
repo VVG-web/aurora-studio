@@ -41,7 +41,6 @@ import re
 import shutil
 import subprocess
 import sys
-import unicodedata
 
 from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS, is_meeting,
                            sources_block,
@@ -50,11 +49,10 @@ from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            is_placeholder,
                            aliases as card_aliases, card_filename as normalize_title,
                            frontmatter,
-                           fix_mixed_script, fold, fold_hard, git_guard, leaf_name,
+                           fix_mixed_script, fold, fold_hard, leaf_name,
                            is_service, link_refs, not_a_card_link, project_file,
                            path_problems, rewrite_links, set_field, translit_names,
-                           TEMPLATE_LINK_RE, utc_slug, NAME_BYTES)
-from datetime import date, datetime
+                           utc_slug, NAME_BYTES)
 from difflib import get_close_matches
 
 ROOT = "AuroraKnowledgeDB"

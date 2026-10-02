@@ -8,7 +8,6 @@ import os
 import sys
 import urllib.request
 import urllib.parse
-from datetime import datetime
 
 # Add scripts directory to path to import paths module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
