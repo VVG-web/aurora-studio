@@ -13,17 +13,26 @@ jobs:
       # аналитик ставит из «Установки» панели. Без них восемь проверок синка падали
       # здесь «No module named 'bs4'», и проверка кита не была зелёной ни разу с 28.08.
       - name: Engine dependencies
-        run: python3 -m pip install --quiet beautifulsoup4 markdownify
+        run: python3 -m pip install --quiet -r requirements.txt
+      - name: Version, CHANGELOG and panel agree
+        run: python3 tests/check_release.py
       - name: Smoke (source-scan invariants)
         run: python3 tests/run_tests.py --smoke
       - name: Full suite
         run: python3 tests/run_tests.py
+      # Не блокирует: показывает неиспользуемые импорты/переменные и замыкания в цикле,
+      # чтобы мёртвый код не копился снова. Станет обязательным, когда счётчик будет нулевым.
+      - name: Lint (ruff, advisory)
+        continue-on-error: true
+        run: |
+          python3 -m pip install --quiet ruff
+          ruff check --select F401,F841,B023 --output-format github scripts cockpit reports aurora.py
   oldest-python:
     # README обещает Python 3.9+, а системный Python macOS — 3.9. Строка, понятная только
     # 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на нём целиком с 1.112.0
     # по 1.143.0, и проверка на 3.12 этого не видела.
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,5 +40,7 @@ jobs:
           python-version: "3.9"
       - name: Engine compiles on the oldest supported Python
         run: python3 -m compileall -q scripts cockpit reports aurora.py tests
-      - name: Smoke on the oldest supported Python
-        run: python3 tests/run_tests.py --smoke
+      - name: Engine dependencies
+        run: python3 -m pip install --quiet -r requirements.txt
+      - name: Full suite on the oldest supported Python
+        run: python3 tests/run_tests.py
