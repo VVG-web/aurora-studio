@@ -1353,7 +1353,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Граф связей: RY-ключи и номера историй")
     ap.add_argument("--story", help="разобрать одну историю целиком (например 4.4.2)")
     ap.add_argument("--write", action="store_true",
-                    help=f"записать {OUT_MOC} (файл генерируется, правки затрутся)")
+                    help=f"записать {OUT_MOC.replace(os.sep, '/')} (файл генерируется, правки затрутся)")
     ap.add_argument("--json", dest="json_path", help="выгрузить граф машинночитаемо")
     ap.add_argument("--cards-json", dest="cards_json", metavar="ФАЙЛ",
                     help="граф самой базы для панели: карточки и связи между ними — "
@@ -1378,8 +1378,8 @@ def main() -> int:
     ap.add_argument("--max-related", type=int, default=60, metavar="N",
                     help="сколько связей писать в одну карточку (по умолчанию 60)")
     ap.add_argument("--report", dest="report_path", help="сохранить отчёт в файл")
-    ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR})")
-    ap.add_argument("--jira", default=JIRA_DIR, help=f"зеркало Jira ({JIRA_DIR})")
+    ap.add_argument("--conf", default=CONF_DIR, help=f"зеркало Confluence ({CONF_DIR.replace(os.sep, '/')})")
+    ap.add_argument("--jira", default=JIRA_DIR, help=f"зеркало Jira ({JIRA_DIR.replace(os.sep, '/')})")
     a = ap.parse_args()
 
     # Граф самой базы читает только `AuroraKnowledgeDB` — ни зеркал, ни RY-ключей ему

@@ -791,7 +791,7 @@ def main() -> int:
                "    pages:\n      - url: https://example.org/razdel/\n"
                "        trusted: true\n\n"
                "Правится в панели: «Настройки проекта» → «Веб-страницы».")
-    ap.add_argument("--out", default=DEFAULT_OUT, help=f"папка зеркала (по умолчанию {DEFAULT_OUT})")
+    ap.add_argument("--out", default=DEFAULT_OUT, help=f"папка зеркала (по умолчанию {DEFAULT_OUT.replace(os.sep, '/')})")
     ap.add_argument("--apply", action="store_true", help="записать файлы")
     ap.add_argument("--prune", action="store_true", help="убрать файлы снятых ссылок")
     ap.add_argument("--verify", action="store_true", help="гейт детерминизма: две выгрузки подряд")

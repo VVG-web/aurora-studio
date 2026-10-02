@@ -297,7 +297,7 @@ def run_export(cfg: dict, auth: str, out_dir: str, jql: str, limit: int,
 def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированное зеркало Jira → Sources/JIRA/")
     ap.add_argument("--jql", help="JQL (по умолчанию default_jql из aurora.config.yaml)")
-    ap.add_argument("--out", help=f"куда писать (по умолчанию {DEFAULT_OUT})")
+    ap.add_argument("--out", help=f"куда писать (по умолчанию {DEFAULT_OUT.replace(os.sep, '/')})")
     ap.add_argument("--limit", type=int, default=0, help="ограничить число задач")
     ap.add_argument("--force", action="store_true", help="перечитать всё")
     ap.add_argument("--comments", action="store_true", help="выгружать комментарии")

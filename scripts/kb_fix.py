@@ -2814,7 +2814,7 @@ def main() -> int:
     ap.add_argument("--json", action="store_true",
                     help="машинный список конфликтов синонимов (полный, без обрезки)")
     ap.add_argument("--report", metavar="PATH", help="сохранить отчёт в файл")
-    ap.add_argument("--root", default=ROOT, help=f"корень базы (по умолчанию {ROOT})")
+    ap.add_argument("--root", default=ROOT, help=f"корень базы (по умолчанию {ROOT.replace(os.sep, '/')})")
     a = ap.parse_args()
 
     if not os.path.isdir(a.root):

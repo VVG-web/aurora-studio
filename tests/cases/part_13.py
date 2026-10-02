@@ -2636,3 +2636,33 @@ def test_the_suite_shards_cover_every_check_exactly_once(tmp: Path):
         except SystemExit:
             continue
         raise AssertionError(f"доля {bad} принята")
+
+
+@test
+def test_script_help_does_not_print_paths_in_the_native_separator(tmp: Path):
+    """Пояснения флагов в `--help` называют пути через «/» на любой системе.
+
+    Путь по умолчанию подставлялся в справку прямо из константы, собранной `os.path.join`: на
+    Windows в окне запуска панели стояло «AuroraKnowledgeDB\\meta\\graphify\\code.json». А
+    английский перевод пояснения ищется по самому тексту, и с «\\» он не находился — на
+    Windows английский экран показывал русский текст (`kit_i18n --check` краснел там же).
+    """
+    import ast
+    bad = []
+    for f in sorted(SCRIPTS.glob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "help" or not isinstance(kw.value, ast.JoinedStr):
+                    continue
+                for part in kw.value.values:
+                    if not isinstance(part, ast.FormattedValue):
+                        continue
+                    expr = ast.unparse(part.value)
+                    # число (версия схемы) безопасно; всё остальное — путь, и разделитель должен быть «/»
+                    if expr in ("CURRENT",) or "os.sep" in expr:
+                        continue
+                    bad.append(f"{f.name}:{node.lineno}: {{{expr}}}")
+    assert not bad, "в справке путь подставлен как есть:\n" + "\n".join(bad)
