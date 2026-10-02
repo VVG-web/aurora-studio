@@ -5903,8 +5903,9 @@ def test_version_gap_speaks_only_on_a_real_mismatch(tmp: Path):
     assert ck.version_gap(project_with(kit)) == "", "совпавшие версии не должны говорить"
 
     # патч-релиз проекта от кита — тот же минор: скрипты совместимы, маршрут не блокируют
-    base = kit.rsplit(".", 1)[0]
-    assert ck.version_gap(project_with(base + ".9")) == "", \
+    base, patch = kit.rsplit(".", 1)
+    other = str(int(patch) + 1)               # не равна версии кита, иначе папка проекта та же
+    assert ck.version_gap(project_with(base + "." + other)) == "", \
         "патч-разница внутри минора не должна блокировать маршрут"
 
     gap = ck.version_gap(project_with("1.0.0"))

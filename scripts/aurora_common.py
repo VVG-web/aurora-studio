@@ -1356,15 +1356,29 @@ def is_placeholder(fm: dict, text: str = "") -> bool:
     return "заготовка" in (fm.get("tags") or "") or STUB_BODY in own
 
 
+def read_card_text(path: str):
+    """Текст карточки или None, если файл не читается: один нечитаемый файл не должен
+    ронять обход всей базы. Общее для всех `load_cards` — остальное у них своё."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def load_cards(root: str = KB_ROOT, skip_service: bool = True,
                skip_archive: bool = True) -> dict:
-    """{путь: Card} — вся база одним вызовом."""
+    """{путь: Card} — вся база одним вызовом.
+
+    Три похожих `load_cards` рядом сознательно не слиты с этим: `kb_fix` ключует по пути с
+    жёсткой UTF-8 и печатает нечитаемое, `ctx_pack` — по имени файла и со своим `Card`,
+    `spec_pack` — по имени и отдаёт словари. Общее — только чтение файла (`read_card_text`).
+    """
     out = {}
     for path in walk_md(root, skip_service=skip_service, skip_archive=skip_archive):
-        try:
-            out[path] = Card(path, open(path, encoding="utf-8", errors="ignore").read(), root)
-        except Exception:  # noqa: BLE001
-            continue
+        text = read_card_text(path)
+        if text is not None:
+            out[path] = Card(path, text, root)
     return out
 
 

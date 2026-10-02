@@ -27,7 +27,8 @@ import re
 import subprocess
 import sys
 
-from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, link_targets, walk_md)
+from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, link_targets,
+                           read_card_text, walk_md)
 
 OUT_DIR = os.path.join("Deliverables", "work", "spec-packs")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -53,9 +54,8 @@ def trust_header(fm: dict, section: str) -> str:
 def load_cards() -> dict:
     cards = {}
     for path in walk_md(KB_ROOT, skip_service=True):
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception:
+        text = read_card_text(path)
+        if text is None:
             continue
         stem = os.path.splitext(os.path.basename(path))[0]
         section = os.path.relpath(os.path.dirname(path), KB_ROOT).split(os.sep)[0]
