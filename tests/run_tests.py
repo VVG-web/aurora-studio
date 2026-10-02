@@ -12127,6 +12127,38 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
         paths.add(rec["args"][rec["args"].index("--project") + 1])
     assert len(paths) == 2, paths
 
+    # Кривой аргумент от модели не должен ронять сервер, а значение, похожее на флаг, —
+    # попадать в argparse скрипта как флаг.
+    bad = [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "kb_search", "arguments": {"query": "обеспечение", "limit": "abc"}}},
+           {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "kb_context", "arguments": {"topic": "--index"}}},
+           {"jsonrpc": "2.0", "id": 3, "method": "ping"}]
+    proc = subprocess.run(
+        [sys.executable, str(KIT / "scripts" / "aurora_mcp.py"), "--project", str(root)],
+        input="\n".join(json.dumps(c) for c in bad), capture_output=True, text=True,
+        timeout=180)
+    got = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    assert len(got) == 3, f"сервер упал на кривом аргументе: {proc.stderr[-300:]}"
+    assert "usage:" not in got[1]["result"]["content"][0]["text"], \
+        "тема «--index» разобрана как флаг ctx_pack"
+
+
+@test
+def test_dropping_an_alias_leaves_the_same_word_in_tags(tmp: Path):
+    """Снять синоним — не значит вычистить слово из всей шапки.
+
+    `drop_alias` для списка столбиком искал пункт `- слово` по всей шапке, и тег с тем же
+    словом уходил вместе с синонимом.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    F = importlib.import_module("kb_fix")
+    text = ("---\ntitle: \"X\"\naliases:\n  - Заявка\n  - Иное\ntags:\n  - Заявка\n"
+            "  - прочее\n---\nтело\n")
+    out = F.drop_alias(F.Card("AuroraKnowledgeDB/Concepts/X.md", text), "Заявка")
+    assert "aliases:\n  - Иное\ntags:\n  - Заявка\n  - прочее" in out, out
+
 
 @test
 def test_graph_insights_name_communities_bridges_islands(tmp: Path):

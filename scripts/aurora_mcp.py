@@ -31,12 +31,14 @@ MCP убирает посредника — ассистент сам ищет �
 
     kb_search   найти карточки по смыслу и словам — имя, статус, суть
     kb_card     прочитать карточку целиком
-    kb_context  собрать контекст-пак по теме (шапки доверия, только verified)
+    kb_context  собрать контекст-пак по теме (шапки доверия, режим generate — только
+                доверенное знание)
+    artifact_spec  как делать артефакт проекта: шаблон, папка, промпт, граница чистовика
     kb_index    оглавление базы: строка на карточку, по разделам
     kb_ask      спросить базу — отвечает модель проекта, по карточкам и со ссылками
 
-Писать в базу через MCP нельзя, и это не настройка: чужой ассистент не участвует в
-приёмке знания и не проходит git-guard. Он читает — правит движок.
+Писать в базу через MCP нельзя, и это не настройка: чужой ассистент не проходит
+git-guard, а доверие к знанию считает движок по задачам, а не ассистент. Он читает — правит движок.
 
 Протокол — JSON-RPC 2.0 по stdio, разбирается стандартной библиотекой: ни MCP SDK, ни
 Node в поставке не появляется.
@@ -69,11 +71,13 @@ TOOLS = [
          "name": {"type": "string", "description": "имя карточки без .md"}}}},
     {"name": "kb_context",
      "description": "Собрать контекст-пак по теме: карточки с шапками доверия и "
-                    "преамбулой. Режим generate (по умолчанию) даёт только проверенное "
-                    "человеком знание — на нём можно строить требования.",
+                    "преамбулой. Режим generate (по умолчанию) даёт только знание из "
+                    "доверенных источников — на нём можно строить требования.",
      "inputSchema": {"type": "object", "required": ["topic"], "properties": {
          "topic": {"type": "string"},
-         "mode": {"type": "string", "enum": ["generate", "ask", "evaluate", "review"]}}}},
+         "mode": {"type": "string",
+                  "enum": ["generate", "ask", "evaluate", "review", "meetings",
+                           "trusted_meetings"]}}}},
     {"name": "kb_index",
      "description": "Оглавление базы: строка на карточку, сгруппировано по разделам. "
                     "Нужно, когда неясно, что вообще есть в базе по теме.",
@@ -125,7 +129,10 @@ def card_path(project: str, name: str) -> str:
 
 def call_tool(project: str, name: str, args: dict) -> str:
     if name == "kb_search":
-        limit = min(int(args.get("limit") or 20), 40)
+        try:
+            limit = max(1, min(int(args.get("limit") or 20), 40))
+        except (TypeError, ValueError):
+            limit = 20
         return search(project, str(args.get("query", "")), limit)
     if name == "kb_card":
         path = card_path(project, str(args.get("name", "")))
@@ -136,15 +143,15 @@ def call_tool(project: str, name: str, args: dict) -> str:
     if name == "kb_context":
         mode = str(args.get("mode") or "generate")
         return run(project, "ctx_pack.py",
-                   [str(args.get("topic", "")), "--mode", mode, "--no-log"])
+                   ["--mode", mode, "--no-log", "--", str(args.get("topic", ""))])
     if name == "kb_index":
         return run(project, "ctx_pack.py", ["оглавление", "--index", "--no-log"])
     if name == "artifact_spec":
         kind = str(args.get("kind") or "").strip()
-        return run(project, "make_kinds.py", ["--kind", kind] if kind else [])
+        return run(project, "make_kinds.py", [f"--kind={kind}"] if kind else [])
     if name == "kb_ask":
         return run(project, "agent_runner.py",
-                   ["--task", "ask", "--question", str(args.get("question", ""))])
+                   ["--task", "ask", f"--question={args.get('question', '')}"])
     return f"Инструмента {name} нет. Доступны: " + ", ".join(t["name"] for t in TOOLS)
 
 
@@ -225,7 +232,10 @@ def serve(project: str) -> int:
             reply(msg_id, {"tools": named})
         elif method == "tools/call":
             params = msg.get("params") or {}
-            text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
+            try:
+                text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
+            except Exception as e:                  # noqa: BLE001 — сессия важнее вызова
+                text = f"Инструмент не отработал: {type(e).__name__}: {e}"
             reply(msg_id, {"content": [{"type": "text", "text": text}]})
         elif method == "ping":
             reply(msg_id, {})
@@ -325,7 +335,10 @@ def main() -> int:
         print(f"aurora_mcp: в {project} нет AuroraKnowledgeDB/ — это не проект Авроры",
               file=sys.stderr)
         return 1
-    return selftest(project) if a.selftest else serve(project)
+    if a.selftest:
+        sys.stdout = CHANNEL      # отчёт проверки — для человека, а не в stderr
+        return selftest(project)
+    return serve(project)
 
 
 if __name__ == "__main__":
