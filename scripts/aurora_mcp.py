@@ -111,10 +111,26 @@ TOOLS = [
 
 
 ASK_TIMEOUT = 240       # kb_ask ждёт модель проекта; дольше ассистент всё равно не ждёт
+CONTEXT_MODES = TOOLS[2]["inputSchema"]["properties"]["mode"]["enum"]      # перечень один
 
 
-def run(project: str, script: str, args: list, timeout: int = 120) -> str:
-    """Команда движка проекта. Ни один инструмент не пишет — только читает."""
+class ToolError(Exception):
+    """Отказ инструмента: уходит ассистенту с `isError: true` и этим текстом.
+
+    Ответ вида «карточки нет» или «режим не тот» — не знание базы. Текстом без флага его
+    читали как ответ, а недопустимый аргумент доезжал до чужого argparse и возвращался
+    целой справкой `usage:`.
+    """
+
+
+def run(project: str, script: str, args: list, timeout: int = 120, fail_from: int = 2) -> str:
+    """Команда движка проекта. Ни один инструмент не пишет — только читает.
+
+    Код движка: 0 — готово, 1 — «отработала и нашла, что сказать» (например, по теме ничего не
+    найдено: это ответ базы, а не сбой), 2 и выше — не отработала. Отказом (`ToolError`)
+    считается код от `fail_from`; `kb_ask` отвечает кодом 1, когда ни одна модель не ответила,
+    и для него это сбой.
+    """
     path = os.path.join(project, ".opencode", "scripts", script)
     if not os.path.isfile(path):
         path = str(SCRIPTS / script)
@@ -122,8 +138,10 @@ def run(project: str, script: str, args: list, timeout: int = 120) -> str:
         p = subprocess.run([sys.executable, path, *args], cwd=project,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
-        return f"Команда {script} не ответила за {timeout} с."
+        raise ToolError(f"Команда {script} не ответила за {timeout} с.") from None
     out = (p.stdout or "").strip() or (p.stderr or "").strip()
+    if p.returncode >= fail_from:
+        raise ToolError((out[:LIMIT] or f"Команда {script} завершилась с кодом {p.returncode} без вывода."))
     return out[:LIMIT] or "(пусто)"
 
 
@@ -139,37 +157,51 @@ def card_path(project: str, name: str) -> str:
     return ""
 
 
+def need(args: dict, key: str, what: str) -> str:
+    """Обязательный текстовый аргумент: пустой — отказ с названием, а не молчаливый «ничего не нашлось»."""
+    value = str(args.get(key) or "").strip()
+    if not value:
+        raise ToolError(f"Не задан {key}: {what}.")
+    return value
+
+
 def call_tool(project: str, name: str, args: dict) -> str:
+    if not isinstance(args, dict):
+        raise ToolError("arguments должны быть объектом «имя → значение».")
     if name == "kb_search":
         try:
             limit = max(1, min(int(args.get("limit") or 20), 40))
         except (TypeError, ValueError):
             limit = 20
-        return search(project, str(args.get("query", "")), limit)
+        return search(project, need(args, "query", "запрос своими словами"), limit)
     if name == "kb_card":
-        path = card_path(project, str(args.get("name", "")))
+        card = need(args, "name", "имя карточки без .md, как в результатах поиска")
+        path = card_path(project, card)
         if not path:
-            return (f"Карточки «{args.get('name')}» в базе нет. Найдите точное имя через "
-                    "kb_search — оно совпадает с именем файла без .md.")
+            raise ToolError(f"Карточки «{card}» в базе нет. Найдите точное имя через "
+                            "kb_search — оно совпадает с именем файла без .md.")
         with open(path, encoding="utf-8", errors="ignore") as f:
             return f.read()[:LIMIT]
     if name == "kb_context":
         mode = str(args.get("mode") or "generate")
+        if mode not in CONTEXT_MODES:
+            raise ToolError(f"Режим «{mode}» не годится. Допустимые: {', '.join(CONTEXT_MODES)}.")
         return run(project, "ctx_pack.py",
-                   ["--mode", mode, "--no-log", "--", str(args.get("topic", ""))])
+                   ["--mode", mode, "--no-log", "--", need(args, "topic", "тема контекст-пака")])
     if name == "kb_index":
         return run(project, "ctx_pack.py", ["оглавление", "--index", "--no-log"])
     if name == "artifact_spec":
         kind = str(args.get("kind") or "").strip()
         return run(project, "make_kinds.py", [f"--kind={kind}"] if kind else [])
     if name == "kb_ask":
+        question = need(args, "question", "вопрос к базе своими словами")
         # `--no-journal`: команда по умолчанию дописывает разговор в `meta/ask/` — это журнал
         # панели, а не чужого ассистента. Без флага каждый вопрос через MCP рождал файл в базе
         # и пачкал дерево git, хотя сервер обещает только читать.
         return run(project, "agent_runner.py",
-                   ["--task", "ask", "--no-journal", f"--question={args.get('question', '')}"],
-                   timeout=ASK_TIMEOUT)
-    return f"Инструмента {name} нет. Доступны: " + ", ".join(t["name"] for t in TOOLS)
+                   ["--task", "ask", "--no-journal", f"--question={question}"],
+                   timeout=ASK_TIMEOUT, fail_from=1)
+    raise ToolError(f"Инструмента {name} нет. Доступны: " + ", ".join(t["name"] for t in TOOLS))
 
 
 def search(project: str, query: str, limit: int) -> str:
@@ -208,7 +240,7 @@ def _search_locked(project: str, query: str, limit: int) -> str:
             brief = c.summary or C.first_sentence(c.text)
             rows.append(f"- {c.stem} · {c.status or 'без статуса'} · {brief}")
     except Exception as e:                      # noqa: BLE001 — ассистенту нужен диагноз
-        return f"Поиск не удался: {type(e).__name__}: {e}"
+        raise ToolError(f"Поиск не удался: {type(e).__name__}: {e}") from None
     finally:
         os.chdir(cwd)
     if not rows:
@@ -245,13 +277,19 @@ def reply(msg_id, result=None, error=None) -> None:
 
 
 def answer_call(project: str, msg_id, params: dict) -> None:
+    failed = False
     try:
         text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
+    except ToolError as e:
+        text, failed = str(e), True
     except Exception as e:                          # noqa: BLE001 — сессия важнее вызова
-        text = f"Инструмент не отработал: {type(e).__name__}: {e}"
+        text, failed = f"Инструмент не отработал: {type(e).__name__}: {e}", True
     finally:
         CALL_SLOTS.release()
-    reply(msg_id, {"content": [{"type": "text", "text": text}]})
+    result = {"content": [{"type": "text", "text": text}]}
+    if failed:
+        result["isError"] = True       # отказ — не знание: ассистент обязан отличить его от ответа
+    reply(msg_id, result)
 
 
 def serve(project: str) -> int:
@@ -381,10 +419,15 @@ def selftest(project: str) -> int:
     print(f"База знаний: {'найдена' if ok else 'НЕ найдена — это не проект Авроры'}")
     if not ok:
         return 1
-    print("\n## kb_search «обеспечение»\n")
-    print(call_tool(project, "kb_search", {"query": "обеспечение", "limit": 5})[:600])
-    print("\n## kb_index (первые строки)\n")
-    print(call_tool(project, "kb_index", {})[:300])
+    for title, tool, args, cut in (("kb_search «обеспечение»", "kb_search",
+                                    {"query": "обеспечение", "limit": 5}, 600),
+                                   ("kb_index (первые строки)", "kb_index", {}, 300)):
+        print(f"\n## {title}\n")
+        try:
+            print(call_tool(project, tool, args)[:cut])
+        except ToolError as e:          # проверка обязана договорить, а не оборваться на отказе
+            print(f"ОТКАЗ: {e}")
+            return 1
     return 0
 
 

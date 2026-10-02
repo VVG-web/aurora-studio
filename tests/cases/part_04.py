@@ -76,7 +76,6 @@ def test_cards_are_distilled_side_by_side(tmp: Path):
     # общей машине CI (Windows) накладные расходы потоков съедали выигрыш, и время плавало.
     assert peak1 == 1 and peak6 >= 3, \
         f"ширина не работает: при 1 одновременно {peak1}, при 6 — {peak6} обращений"
-    assert many < one, f"параллельный проход не быстрее последовательного: {many:.1f} с против {one:.1f} с"
 
 
 @test
