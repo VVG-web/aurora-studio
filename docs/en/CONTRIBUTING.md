@@ -97,11 +97,14 @@ f-string).
    is `скрипт`, `модель` or `скрипт+модель`.
 3. A file in `engine_manifest.txt` (`scripts/x.py => .opencode/scripts/x.py`), otherwise it will not reach projects.
 4. A line in the table of `skills/aurora-vault/SKILL.md` and, if it is a procedure, in `references/`.
-5. Regenerate the reference: `python3 scripts/kit_commands.py --md docs/commands.md` (the file is not edited by hand) and update
-   the English [commands.md](commands.md).
+5. Regenerate the reference: `python3 scripts/kit_commands.py --md docs/commands.md` (the file is not edited by hand). The
+   English description of the command and of its new flags goes into `cockpit/i18n/data/en.json` (sections `commands`,
+   `flags`); then `python3 scripts/kit_commands.py --en-md docs/en/commands.md`. Without a translation
+   `kit_i18n.py --check` is red.
 6. A test; a CHANGELOG entry.
 
-A command that needs a button in a route is added with a line to `cockpit/scenarios.txt`.
+A command that needs a button in a route is added with a line to `cockpit/scenarios.txt`; the step's explanation is translated
+in `cockpit/i18n/data/en.json` (section `scenarios`, the key is the Russian text).
 
 ## How to add a source module, a panel section, a skin
 
@@ -110,7 +113,7 @@ A command that needs a button in a route is added with a line to `cockpit/scenar
 | A source module | the folder `connectors/<id>/` with `connector.json`, `SKILL.md` and a script | [connectors.md](connectors.md) |
 | A panel section | the folder `cockpit/modules/<id>/` | [cockpit/modules/README.md](../../cockpit/modules/README.md): a manifest, `mount`/`refresh`, strings through `t()`, keys prefixed with the section |
 | A skin | the file `cockpit/skins/<name>.css` | [cockpit/skins/README.md](../../cockpit/skins/README.md): tokens only, both theme states |
-| An interface language | `cockpit/i18n/<code>.json` and `modules/*/i18n/<code>.json` | `python3 scripts/kit_i18n.py --new <code> "<name>"`, then `--check` |
+| An interface language | `cockpit/i18n/<code>.json`, `modules/*/i18n/<code>.json` and `cockpit/i18n/data/<code>.json` | `python3 scripts/kit_i18n.py --new <code> "<name>"`, then `--check`; `data/` holds the translation of what the server hands out: commands, flags, routes, skins, connectors, error messages |
 | An artifact type or a schema folder | `structure_dirs.txt` + the tables in `SKILL.md` and `templates/meta/conventions.md` + CHANGELOG | a kit change: arrives in all projects with one `update` |
 
 The panel's third-party libraries (`cockpit/vendor/`) are not edited — only replaced whole (see `cockpit/vendor/README.md`).

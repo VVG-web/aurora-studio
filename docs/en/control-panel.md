@@ -142,8 +142,12 @@ flowchart LR
   folders `cockpit/modules/<id>/` with a manifest, markup, a script and their own strings. A section appears in the menu by
   itself and loads on demand. The modules' contract — [cockpit/modules/README.md](../../cockpit/modules/README.md) (in Russian).
 - **The interface is translated** by catalogues `cockpit/i18n/<lang>.json` (the core) and `modules/<id>/i18n/` (the
-  sections): Russian and English. A string without a translation is shown in Russian, so completeness is checked by
-  `kit:i18n --check`; `--new <code> <name>` creates a language.
+  sections): Russian and English. What the server itself hands out — command and flag descriptions, routes, skin names,
+  connector descriptions, the doctor's findings, error messages — is translated by the table
+  `cockpit/i18n/data/<lang>.json`: the page asks for a language (`?lang=en`) and the server answers in it. A string without
+  a translation is shown in Russian, so completeness is checked by `kit:i18n --check`; `--new <code> <name>` creates a
+  language. The output of the commands themselves (the console, the linter's reports) stays Russian: it is the engine's
+  language, not the panel's.
 - **Jobs** live in the panel's process: `/api/jobs` returns the running ones, so reloading the page neither hides a working
   command nor provokes a second route on top of it. The archive of recent runs is `.opencode/runs/` (outside git).
 - **Data.** Where a command supports `--json` (`stats`), the panel takes it; the rest it parses by key lines (`ERROR:`,

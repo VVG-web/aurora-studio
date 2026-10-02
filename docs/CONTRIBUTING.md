@@ -102,10 +102,14 @@ CI (`.github/workflows/test.yml`): `--smoke` и полный прогон на P
    проектов.
 4. Строка в таблице `skills/aurora-vault/SKILL.md` и, если это процедура, в `references/`.
 5. Перегенерировать справочник: `python3 scripts/kit_commands.py --md docs/commands.md` (вручную файл
-   не правят) и обновить английский [en/commands.md](en/commands.md).
+   не правят). Английское описание команды и пояснения её новых флагов — в
+   `cockpit/i18n/data/en.json` (разделы `commands`, `flags`); затем
+   `python3 scripts/kit_commands.py --en-md docs/en/commands.md`. Без перевода `kit_i18n.py --check`
+   красный.
 6. Тест; запись в CHANGELOG.
 
-Команда, которой нужна кнопка в маршруте, добавляется строкой в `cockpit/scenarios.txt`.
+Команда, которой нужна кнопка в маршруте, добавляется строкой в `cockpit/scenarios.txt`; пояснение шага
+переводится в `cockpit/i18n/data/en.json` (раздел `scenarios`, ключ — русский текст).
 
 ## Как добавить модуль источника, раздел панели, скин
 
@@ -114,7 +118,7 @@ CI (`.github/workflows/test.yml`): `--smoke` и полный прогон на P
 | Модуль источника | папка `connectors/<id>/` с `connector.json`, `SKILL.md` и скриптом | [connectors.md](connectors.md) |
 | Раздел панели | папка `cockpit/modules/<id>/` | [cockpit/modules/README.md](../cockpit/modules/README.md): манифест, `mount`/`refresh`, строки через `t()`, ключи с префиксом раздела |
 | Скин | файл `cockpit/skins/<имя>.css` | [cockpit/skins/README.md](../cockpit/skins/README.md): только токены, оба состояния темы |
-| Язык интерфейса | `cockpit/i18n/<код>.json` и `modules/*/i18n/<код>.json` | `python3 scripts/kit_i18n.py --new <код> "<название>"`, затем `--check` |
+| Язык интерфейса | `cockpit/i18n/<код>.json`, `modules/*/i18n/<код>.json` и `cockpit/i18n/data/<код>.json` | `python3 scripts/kit_i18n.py --new <код> "<название>"`, затем `--check`; в `data/` — перевод того, что отдаёт сервер: команды, флаги, маршруты, скины, коннекторы, сообщения об ошибках |
 | Тип артефакта или папка схемы | `structure_dirs.txt` + таблицы в `SKILL.md` и `templates/meta/conventions.md` + CHANGELOG | изменение кита: приезжает во все проекты одним `update` |
 
 Сторонние библиотеки панели (`cockpit/vendor/`) не правятся — только заменяются целиком (см.

@@ -762,6 +762,193 @@ def i18n_catalogue(lang: str) -> dict:
             "default": DEFAULT_LANG, "warning": warning}
 
 
+def data_catalogue(lang: str) -> dict:
+    """Тексты, которые отдаёт сам сервер, — на языке интерфейса: {раздел: {ключ: текст}}.
+
+    Строки интерфейса живут в `cockpit/i18n/<язык>.json`, а описания 91 команды, названия
+    скинов и маршруты — это данные, и пришли они из реестра на русском. Перевод лежит
+    рядом, в `cockpit/i18n/data/<язык>.json`: новый язык — новый файл. Ключа нет — остаётся
+    русский оригинал, как и в каталоге строк: неполный перевод не прячет текст.
+    """
+    lang = os.path.basename(lang or DEFAULT_LANG)
+    if lang == DEFAULT_LANG:
+        return {}
+    try:
+        with open(os.path.join(I18N_DIR, "data", lang + ".json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if not k.startswith("_") and isinstance(v, dict)}
+
+
+def request_lang(q: dict) -> str:
+    """Язык, который просит страница: `?lang=en`. Не язык — русский, а не ошибка."""
+    lang = ((q.get("lang") or [""])[0] or "").strip().lower()
+    return lang if re.fullmatch(r"[a-z]{2,3}", lang) else DEFAULT_LANG
+
+
+# Сообщения сервера — «error», «why», «note» в ответах — пишутся по-русски в одном месте
+# кода и показываются человеку как есть. Переводятся они в одной точке, перед отправкой:
+# перевод — `data/<язык>.json` → `messages`, ключ — сама русская строка, где каждая
+# подстановка записана как `{}` (так её видит `kit_i18n.message_skeletons`). Строка с
+# подстановками ищется по образцу: что подставлено — берётся из русского текста и тоже
+# переводится, если это сообщение (причина отказа вложена в «Маршрут не начат: …»).
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait")
+MESSAGE_LISTS = ("errors", "warns")          # находки доктора: список сообщений под одним ключом
+_MATCHERS: dict = {}
+
+
+def _message_matchers(lang: str):
+    """[(образец, перевод)] для языка: сначала строки без подстановок, потом по длине."""
+    if lang not in _MATCHERS:
+        table = data_catalogue(lang).get("messages") or {}
+        exact = {k: v for k, v in table.items() if "{}" not in k}
+        pattern = []
+        for k, v in table.items():
+            if "{}" in k:
+                rx = "(.*?)".join(re.escape(part) for part in k.split("{}"))
+                pattern.append((len(k), re.compile(rx, re.S), v))
+        pattern.sort(key=lambda x: -x[0])
+        _MATCHERS[lang] = (exact, [(rx, v) for _n, rx, v in pattern])
+    return _MATCHERS[lang]
+
+
+def translate_message(text: str, lang: str, depth: int = 0) -> str:
+    """Сообщение сервера на языке интерфейса; не нашлось — как есть, по-русски."""
+    if lang == DEFAULT_LANG or not isinstance(text, str) or depth > 3:
+        return text
+    exact, patterns = _message_matchers(lang)
+    if text in exact:
+        return exact[text]
+    for rx, template in patterns:
+        m = rx.fullmatch(text)
+        if m:
+            vals = [translate_message(g, lang, depth + 1) for g in m.groups()]
+            return re.sub(r"\{\}", lambda _m, it=iter(vals): next(it, ""), template)
+    return text
+
+
+def translate_payload(payload, lang: str, depth: int = 0):
+    """Ответ сервера с переведёнными сообщениями: только значения под ключами сообщений."""
+    if lang == DEFAULT_LANG or depth > 6:
+        return payload
+    if isinstance(payload, dict):
+        out = {}
+        for k, v in payload.items():
+            if k in MESSAGE_KEYS and isinstance(v, str):
+                out[k] = translate_message(v, lang)
+            elif k in MESSAGE_LISTS and isinstance(v, list):
+                out[k] = [translate_message(x, lang) if isinstance(x, str) else x for x in v]
+            else:
+                out[k] = translate_payload(v, lang, depth + 1)
+        return out
+    if isinstance(payload, list):
+        return [translate_payload(v, lang, depth + 1) for v in payload]
+    return payload
+
+
+def _tr_text(text, table: dict):
+    """Точное совпадение, иначе — по началу: ключ, оканчивающийся на «: », переводит приставку."""
+    if not isinstance(text, str) or not text or not table:
+        return text
+    if text in table:
+        return table[text]
+    for k, v in table.items():
+        if k.endswith(": ") and text.startswith(k):
+            return v + text[len(k):]
+    return text
+
+
+def localized_environment(env: dict, lang: str) -> dict:
+    """Что стоит на машине — с пояснениями «что даёт» на языке интерфейса."""
+    tr = data_catalogue(lang).get("install") or {}
+    if not tr:
+        return env
+    return {**env, "items": [{**i, "name": _tr_text(i["name"], tr),
+                              "enables": _tr_text(i["enables"], tr)} for i in env["items"]]}
+
+
+def localized_extras(state: dict, lang: str) -> dict:
+    """Надстройки движка: пояснение и сообщение о сбое сети — на языке интерфейса."""
+    tr = data_catalogue(lang).get("install") or {}
+    if not tr:
+        return state
+    return {**state, "extras": [{**x, "enables": _tr_text(x.get("enables"), tr),
+                                 "error": _tr_text(x.get("error"), tr)}
+                                for x in state.get("extras", [])]}
+
+
+def localized_sources(data: dict, lang: str) -> dict:
+    """Модули источников: название и описание коннектора — из его перевода, если он есть."""
+    tr = data_catalogue(lang).get("connectors") or {}
+    if not tr:
+        return data
+
+    def one(m):
+        t = tr.get(m.get("id") or m.get("module") or "") or {}
+        return {**m, "title": t.get("title") or m.get("title"), "what": t.get("what") or m.get("what")}
+    return {**data, "installed": [one(m) for m in data.get("installed", [])],
+            "instances": [({**i, "title": (tr.get(i.get("module") or "") or {}).get("title")
+                            or i.get("title")}) for i in data.get("instances", [])]}
+
+
+def localized_skins(rows: list, lang: str) -> list:
+    """Названия и описания скинов на языке интерфейса; ключ — имя файла без `.css`."""
+    tr = data_catalogue(lang).get("skins") or {}
+    return [{**r, "name": (tr.get(r["id"]) or {}).get("name") or r["name"],
+             "about": (tr.get(r["id"]) or {}).get("about") or r["about"]} for r in rows]
+
+
+def localized_scenarios(routes: list, lang: str) -> list:
+    """Маршруты с текстами на языке интерфейса. Перевод — по самому русскому тексту.
+
+    Ключ — исходная строка из `scenarios.txt`: одна и та же фраза стоит в нескольких
+    маршрутах, и переводится она один раз. Правили русский текст — перевод по нему
+    перестал находиться, и `kit:i18n --check` называет эту строку, а экран до тех пор
+    показывает русскую (неполный перевод не прячет текст).
+    """
+    tr = data_catalogue(lang).get("scenarios") or {}
+    if not tr:
+        return routes
+
+    def one(text):
+        return tr.get(text) or text
+    out = []
+    for r in routes:
+        steps = []
+        for s in r["steps"]:
+            s = dict(s)
+            if s.get("why"):
+                s["why"] = one(s["why"])
+            if s.get("manual"):
+                s["title"] = one(s["title"])
+            steps.append(s)
+        out.append({**r, "title": one(r["title"]), "when": one(r["when"]), "steps": steps})
+    return out
+
+
+def localized_commands(rows: list, lang: str) -> list:
+    """Реестр команд на языке интерфейса: описание команды, пояснения флагов и их значений.
+
+    Пояснение флага пишется один раз — в `--help` самого скрипта, по-русски, — и переводится
+    здесь по самому тексту (`flags`), метапеременные вроде «ПУТЬ» — по таблице `flag_args`.
+    Нет перевода — остаётся русский оригинал: неполный перевод не прячет текст.
+    """
+    data = data_catalogue(lang)
+    names, helps, metas = (data.get("commands") or {}, data.get("flags") or {},
+                           data.get("flag_args") or {})
+    if not (names or helps or metas):
+        return rows
+
+    def meta(text):
+        return metas.get(text) or text
+    return [{**r, "what": names.get(r["cmd"]) or r["what"],
+             "flag_help": {f: helps.get(h) or h for f, h in (r.get("flag_help") or {}).items()},
+             "flag_args": {f: meta(a) for f, a in (r.get("flag_args") or {}).items()},
+             "args": " ".join(meta(t) for t in (r.get("args") or "").split())
+                     if isinstance(r.get("args"), str) else r.get("args")} for r in rows]
+
+
 # ------------------------------------------------------------------- git проекта
 
 def git_out(project: str, *args, timeout: int = 60) -> tuple:
@@ -2208,7 +2395,7 @@ def forget_version(project: str, report_id: str, stamp: str) -> dict:
     return {"ok": True, "left": len(versions(project, report_id))}
 
 
-def health(project: str) -> dict:
+def health(project: str, lang: str = DEFAULT_LANG) -> dict:
     rc, out = run_capture(project, "aurora_stats.py", ["--json"])
     try:
         stats = json.loads(out[out.index("{"):out.rindex("}") + 1])
@@ -2269,7 +2456,7 @@ def health(project: str) -> dict:
     return {"project": project,
             "stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
             "build": build_progress(project), "agent": last_agent_run(project),
-            "sources": sources(project), "runs": read_runlog(project),
+            "sources": localized_sources(sources(project), lang), "runs": read_runlog(project),
             "trace": trace, "todo": todo_count(project),
             "source_health": source_health(project),
             "index": index_health(project), "ping": ping_state(project),
@@ -3339,6 +3526,11 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def send_json(self, payload, code: int = 200):
+        # Язык просит страница (`?lang=en`, в том числе у POST): сообщения об ошибках и отказах
+        # переводятся здесь, в одной точке, а не в каждом из сотни мест, где они рождаются.
+        lang = request_lang(parse_qs(urlparse(self.path).query))
+        if lang != DEFAULT_LANG:
+            payload = translate_payload(payload, lang)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -3443,8 +3635,8 @@ class Handler(BaseHTTPRequestHandler):
                        "behind": ui_version() != kit_version(),
                        "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED},
                 "projects": projects,
-                "env": environment(),
-                "commands": registry(),
+                "env": localized_environment(environment(), request_lang(q)),
+                "commands": localized_commands(registry(), request_lang(q)),
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
                 "dev_available": kit_is_source(),
             })
@@ -3452,7 +3644,7 @@ class Handler(BaseHTTPRequestHandler):
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
-            self.send_json(health(project))
+            self.send_json(health(project, request_lang(q)))
         elif u.path == "/api/git/head":
             # Точка, от которой итог маршрута посчитает изменения базы.
             project = q.get("project", [""])[0]
@@ -3467,7 +3659,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"text": cfg_text, "path": "aurora.config.yaml",
                             "values": config_values(cfg_text)})
         elif u.path == "/api/extras":
-            self.send_json(extras_state(fresh=bool(q.get("fresh"))))
+            self.send_json(localized_extras(extras_state(fresh=bool(q.get("fresh"))),
+                                            request_lang(q)))
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())
@@ -3643,9 +3836,9 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/about":
             self.send_json(about())
         elif u.path == "/api/scenarios":
-            self.send_json({"scenarios": scenarios()})
+            self.send_json({"scenarios": localized_scenarios(scenarios(), request_lang(q))})
         elif u.path == "/api/skins":
-            self.send_json({"skins": skins()})
+            self.send_json({"skins": localized_skins(skins(), request_lang(q))})
         elif u.path == "/api/modules":
             self.send_json({"modules": modules()})
         elif u.path.startswith("/modules/"):

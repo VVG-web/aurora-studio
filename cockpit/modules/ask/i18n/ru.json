@@ -57,5 +57,6 @@
   "ask.opened": "открыт",
   "ask.thread_failed": "разговор не прочитан",
   "ask.mode_trusted_meetings": "доверенное и встречи",
-  "ask.mode_meetings": "только встречи"
+  "ask.mode_meetings": "только встречи",
+  "ask.who_none": "модель: —"
 }

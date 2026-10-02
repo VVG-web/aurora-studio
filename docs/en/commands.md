@@ -1,14 +1,18 @@
 # Command reference
 
-A short English reference of every command in the registry (`commands.txt`) for engine version **1.147.19**. The complete
-reference with modifiers, taken live from the scripts' `--help`, is the generated Russian [../commands.md](../commands.md), or
-`python3 aurora.py list <project>` in a terminal. Русская версия: [../commands.md](../commands.md).
+A short English reference of every command in the registry (`commands.txt`). The complete
+reference with modifiers, taken live from the scripts' `--help`, is the generated Russian
+[../commands.md](../commands.md), or `python3 aurora.py list <project>` in a terminal.
+Русская версия: [../commands.md](../commands.md).
 
-Short names in parentheses are historical aliases and always work. **Executor** marks the border: **script** — deterministic
-mechanics, the result is reproducible; **model** — work with meaning, done by the assistant by a procedure from
-`skills/aurora-vault/references/`; **script + model** — a script counts and prepares, a model or a human decides. A command
+Short names in parentheses are historical aliases and always work. **Executor** marks the
+border: **script** — deterministic mechanics, the result is reproducible; **model** — work
+with meaning, done by the assistant by a procedure from `skills/aurora-vault/references/`;
+**script + model** — a script counts and prepares, a model or a human decides. A command
 that writes shows a preview without `--apply`.
 
+This file is generated: `python3 scripts/kit_commands.py --en-md docs/en/commands.md`.
+The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel shows.
 
 ## `kit:` — The engine and the project
 

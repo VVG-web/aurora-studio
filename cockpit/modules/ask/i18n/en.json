@@ -57,5 +57,6 @@
   "ask.opened": "open",
   "ask.thread_failed": "the conversation was not read",
   "ask.mode_trusted_meetings": "trusted and meetings",
-  "ask.mode_meetings": "meetings only"
+  "ask.mode_meetings": "meetings only",
+  "ask.who_none": "model: —"
 }

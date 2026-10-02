@@ -36,6 +36,7 @@ from harness import (  # noqa: F401
     NO_INVARIANTS,
     ONLY,
     RESULTS,
+    SHARD,
     SMOKE,
     select_tests,
     test,
@@ -75,7 +76,7 @@ def test_smoke_runs_only_invariants(_t):
 # ---------------------------------+ import-драйвер: исполняет отобранные проверки
 # (декоратор лишь регистрирует; исполнение здесь — чтобы --only/--smoke/--no-invariants
 # решали состав до прогона).
-selected = select_tests(only=ONLY, smoke=SMOKE, no_invariants=NO_INVARIANTS)
+selected = select_tests(only=ONLY, smoke=SMOKE, no_invariants=NO_INVARIANTS, shard=SHARD)
 FILTER_MISSED = bool(ONLY) and not SMOKE and not any(not is_inv for _n, _f, is_inv in selected)
 # Рабочая папка проверок снимается тихо: на Windows её держит открытым любой дочерний процесс,
 # не успевший выйти, и `rmtree` падал на самой последней строке — после всех проверок, но
