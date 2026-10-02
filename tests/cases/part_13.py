@@ -2394,3 +2394,34 @@ def test_a_gitignored_folder_with_a_russian_name_is_recognised(tmp: Path):
         assert D.git_ignored([]) == set()
     finally:
         os.chdir(old)
+
+
+@test
+def test_a_path_on_another_drive_does_not_stop_the_engine(tmp: Path):
+    """Путь на другом диске Windows не роняет разбор: относительного пути между дисками нет.
+
+    `os.path.relpath("C:\\\\x", "D:\\\\y")` — `ValueError: path is on mount 'C:', start on mount
+    'D:'`. Карточка, чей путь абсолютный и лежит на другом диске, чем текущая папка, роняла
+    разбор раздела (`Card.section`), а синк Confluence падал на подсчёте длины пути. Здесь
+    диск «чужой» подменяется функцией, которая бросает ту же ошибку.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import KB_ROOT, Card, safe_relpath, section_of
+
+    def other_drive(*_a):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+    assert safe_relpath("/a/b/c", "/a", relpath=other_drive) == "/a/b/c"
+    assert safe_relpath("/a/b/c", "/a") == "b/c"
+    assert section_of("C:/Users/me/proj/AuroraKnowledgeDB/Concepts/Заявка.md", relpath=other_drive) \
+        == "Concepts"
+    assert section_of("C:\\Users\\me\\proj\\AuroraKnowledgeDB\\Glossary\\a.md", relpath=other_drive) \
+        == "Glossary"
+    assert section_of("C:/elsewhere/a.md", relpath=other_drive) == "", "корня базы нет в пути"
+    assert section_of(f"{KB_ROOT}/Systems/АИС.md") == "Systems"
+    assert Card("/x/AuroraKnowledgeDB/Roles/Роль.md", "---\ntitle: Роль\n---\n", root="/x/AuroraKnowledgeDB").section \
+        == "Roles"
+
+    src = (SCRIPTS / "confluence_export.py").read_text(encoding="utf-8")
+    assert "os.path.relpath(os.path.abspath(out), os.getcwd())" not in src, \
+        "синк снова считает путь от текущей папки напрямую — на другом диске он упадёт"

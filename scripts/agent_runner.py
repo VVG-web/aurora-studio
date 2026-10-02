@@ -2977,7 +2977,7 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
         stub = AC.is_placeholder(c.fm, c.text)
         if stub and not stubs:
             continue
-        section = os.path.relpath(os.path.dirname(c.path), AC.KB_ROOT).split(os.sep)[0]
+        section = AC.section_of(c.path)
         brief = (c.summary or "")[:CAND_SUMMARY]
         if stub:
             # Кто на неё ссылается — единственное, по чему видно, в каком смысле имя

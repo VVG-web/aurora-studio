@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
@@ -92,8 +93,12 @@ try:
             RESULTS.append((_n, why(e)))
             print(f"  ❌ {_n}\n     {why(e).splitlines()[0]}")
         except Exception as e:  # noqa: BLE001
-            RESULTS.append((_n, f"{type(e).__name__}: {e}"))
-            print(f"  ❌ {_n} — {type(e).__name__}: {e}")
+            # Не только тип и текст: на чужой системе по одной строке `ValueError: …` не найти,
+            # откуда она пришла. Три последних кадра стека — достаточно, чтобы не гадать.
+            frames = " ← ".join(f"{os.path.basename(f.filename)}:{f.lineno}"
+                               for f in reversed(traceback.extract_tb(e.__traceback__)[-4:]))
+            RESULTS.append((_n, f"{type(e).__name__}: {e}  [{frames}]"))
+            print(f"  ❌ {_n} — {type(e).__name__}: {e}  [{frames}]")
 finally:
     shutil.rmtree(td, ignore_errors=True)
 

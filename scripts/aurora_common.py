@@ -987,6 +987,37 @@ def load_env(path) -> dict:
     return out
 
 
+def safe_relpath(path, start=None, relpath=None) -> str:
+    """`os.path.relpath`, который не падает, когда пути на разных дисках Windows.
+
+    `relpath("C:\\x", "D:\\y")` — `ValueError: path is on mount 'C:', start on mount 'D:'`:
+    относительного пути между дисками нет. Движок спрашивал его от текущей папки, и проект на
+    одном диске при запуске с другого ронял разбор. Нет относительного — отдаём абсолютный.
+    """
+    relpath = relpath or os.path.relpath
+    try:
+        return relpath(path) if start is None else relpath(path, start)
+    except ValueError:
+        return os.fspath(path)
+
+
+def section_of(path: str, root: str = KB_ROOT, relpath=None) -> str:
+    """Раздел базы, в котором лежит карточка: первая папка под корнем базы.
+
+    Корень задан относительно текущей папки, а путь карточки бывает абсолютным и лежащим на
+    другом диске Windows — тогда относительного пути нет, и раздел берётся по имени корня в
+    самом пути.
+    """
+    path = os.fspath(path).replace("\\", "/")
+    try:
+        rel = (relpath or os.path.relpath)(os.path.dirname(path), root)
+    except ValueError:
+        parts = os.path.dirname(path).split("/")
+        name = os.path.basename(root.replace("\\", "/").rstrip("/"))
+        rel = "/".join(parts[parts.index(name) + 1:]) if name in parts else ""
+    return rel.replace("\\", "/").split("/")[0]
+
+
 def stdin_is_terminal(stream=None, kernel32=None) -> bool:
     """Сидит ли за вводом человек. На Windows `isatty()` для `NUL` отвечает «да».
 
@@ -1288,7 +1319,7 @@ class Card:
         self.text = text
         self.stem = os.path.splitext(os.path.basename(self.path))[0]
         self.fm = frontmatter(text)
-        self.section = os.path.relpath(os.path.dirname(self.path), root).split(os.sep)[0]
+        self.section = section_of(self.path, root)
 
     @property
     def status(self) -> str:
