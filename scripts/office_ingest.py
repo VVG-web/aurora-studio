@@ -88,7 +88,13 @@ def conv_docx_builtin(src: str) -> str | None:
             xml = z.read("word/document.xml")
     except Exception:
         return None
-    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+    # Проверка идёт по тексту, а не по байтам: в UTF-16 те же слова записаны через нули, и
+    # поиск байтов их не видел. Настоящий документ Word — UTF-8 без нулевых знаков.
+    try:
+        head = xml.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    if "\x00" in head or re.search(r"<!\s*(DOCTYPE|ENTITY)", head, re.I):
         return None
 
     def para_text(p) -> str:

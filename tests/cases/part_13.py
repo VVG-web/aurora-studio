@@ -1908,3 +1908,99 @@ def test_clashes_remember_what_they_have_examined(tmp: Path):
                  encoding="utf-8")
     R.run_clashes(cfg, cwd, call=clean)
     assert len(calls) == 1, "изменился текст группы, а её не посмотрели снова"
+
+
+@test
+def test_the_panel_checks_the_host_before_it_gives_the_token_away(tmp: Path):
+    """Главная страница с токеном сессии отдаётся только на петлевой адрес.
+
+    Страница отдавалась раньше проверки `Host`: чужой сайт, чьё имя перенаправили на
+    127.0.0.1, читал её и забирал токен. И токен не из ASCII ронял `compare_digest`
+    TypeError — клиент получал разрыв соединения вместо отказа.
+    """
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(tmp)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def get(path: str, host: str):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=20)
+        c.putrequest("GET", path, skip_host=True)
+        c.putheader("Host", host)
+        c.endheaders()
+        r = c.getresponse()
+        return r.status, r.read().decode("utf-8", "replace")
+    try:
+        code, body = get("/", "evil.example:8787")
+        assert code == 403 and ck.TOKEN not in body, "токен отдан на чужое имя хоста"
+        code, body = get("/", "localhost:8787")
+        assert code == 200 and ck.TOKEN in body, "на свой адрес страница не отдана"
+        code, body = get("/", "[::1]:8787")
+        assert code == 200, "адрес [::1] с портом не опознан"
+        code, body = get("/api/ping?t=%D1%82%D0%BE%D0%BA%D0%B5%D0%BD", "127.0.0.1:8787")
+        assert code == 403, f"токен не из ASCII: ждали отказ, получили {code}"
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_xml_in_utf16_cannot_hide_a_doctype_from_the_docx_reader(tmp: Path):
+    """DOCTYPE и ENTITY в UTF-16 не обходят проверку встроенного чтения docx."""
+    import zipfile
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    OI = importlib.import_module("office_ingest")
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    xml = ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE d [<!ENTITY a "aaaaaaaaaa">]>'
+           f'<w:document xmlns:w="{ns}"><w:body><w:p><w:r><w:t>&a;</w:t></w:r></w:p>'
+           '</w:body></w:document>')
+    path = tmp / "u16.docx"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", xml.encode("utf-16"))
+    assert OI.conv_docx_builtin(str(path)) is None, "XML с сущностями в UTF-16 разобран"
+    low = tmp / "low.docx"
+    with zipfile.ZipFile(low, "w") as z:
+        z.writestr("word/document.xml", xml.replace("DOCTYPE", "doctype").encode("utf-8"))
+    assert OI.conv_docx_builtin(str(low)) is None, "doctype в нижнем регистре пропущен"
+
+
+@test
+def test_the_embedding_index_is_replaced_whole_or_not_at_all(tmp: Path):
+    """Индекс векторов подменяется целиком: сбой посреди записи не оставляет обрубок.
+
+    Файлы писались прямо по месту: MCP-поиск или панель, читавшие индекс в этот момент,
+    видели обрезанный файл и отвечали «векторов нет».
+    """
+    import array
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    E = importlib.import_module("kb_embed")
+    root = make_project(tmp)
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        E.META = os.path.join("AuroraKnowledgeDB", "meta")
+        E.VECTORS = os.path.join(E.META, "embeddings.bin")
+        E.INDEX = os.path.join(E.META, "embeddings.json")
+        cards = {"А": {"hash": "x", "row": 0}}
+        E.save_index("m", 2, cards, array.array("f", [0.6, 0.8]), None)
+        before = (open(E.VECTORS, "rb").read(), open(E.INDEX, encoding="utf-8").read())
+        assert not [f for f in os.listdir(E.META) if f.endswith(".tmp")], "остался временный файл"
+
+        class Broken:
+            def tofile(self, f):
+                f.write(b"half")
+                raise OSError("диск кончился")
+        try:
+            E.save_index("m", 2, cards, Broken(), None)
+        except OSError:
+            pass
+        assert (open(E.VECTORS, "rb").read(), open(E.INDEX, encoding="utf-8").read()) == before, \
+            "сбой посреди записи испортил прежний индекс"
+    finally:
+        os.chdir(old)
