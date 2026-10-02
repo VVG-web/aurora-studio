@@ -37,6 +37,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from aurora_common import replace_file  # noqa: E402
+
 HOME = Path.home() / ".aurora"
 CACHE = HOME / "extras-cache.json"
 CACHE_TTL = 6 * 3600            # как у проверки версии кита: сеть трогаем редко
@@ -361,7 +363,7 @@ def register_graph_mcp() -> str:
         tmp = path.with_name(path.name + ".aurora-new")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except OSError as e:
         return f"не удалось записать local/mcp.json: {e}"
     return ""

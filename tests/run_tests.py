@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 for _s in (sys.stdin, sys.stdout, sys.stderr):
@@ -75,7 +76,11 @@ def test_smoke_runs_only_invariants(_t):
 # решали состав до прогона).
 selected = select_tests(only=ONLY, smoke=SMOKE, no_invariants=NO_INVARIANTS)
 FILTER_MISSED = bool(ONLY) and not SMOKE and not any(not is_inv for _n, _f, is_inv in selected)
-with tempfile.TemporaryDirectory() as td:
+# Рабочая папка проверок снимается тихо: на Windows её держит открытым любой дочерний процесс,
+# не успевший выйти, и `rmtree` падал на самой последней строке — после всех проверок, но
+# до итога: красный прогон приходил без списка того, что именно красное.
+td = tempfile.mkdtemp(prefix="aurora-tests-")
+try:
     for _n, _fn, _is_inv in selected:
         run_td = Path(td) / f"case-{len(RESULTS)}"
         run_td.mkdir(parents=True)
@@ -89,6 +94,10 @@ with tempfile.TemporaryDirectory() as td:
         except Exception as e:  # noqa: BLE001
             RESULTS.append((_n, f"{type(e).__name__}: {e}"))
             print(f"  ❌ {_n} — {type(e).__name__}: {e}")
+finally:
+    shutil.rmtree(td, ignore_errors=True)
+
+
 def main() -> int:
     print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text(encoding='utf-8').strip()}"
           + (f" · только «{ONLY}»" if ONLY else "") + "\n")

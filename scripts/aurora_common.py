@@ -987,6 +987,29 @@ def load_env(path) -> dict:
     return out
 
 
+def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
+                 pause: float = 0.025) -> None:
+    """`os.replace` с повтором на Windows: файл, который сейчас читают, туда не подменить.
+
+    На POSIX подмена файла не зависит от того, открыт ли он у других: читатель дочитывает
+    старый, новый встаёт на место. На Windows файл, открытый другим потоком или процессом,
+    подмене не поддаётся — `PermissionError` (WinError 5 или 32), хотя прав хватает. Так
+    неделимая запись манифеста и индексов падала на ровном месте, стоило кому-то в этот
+    миг их читать. Занятость проходит за миллисекунды: ждём и пробуем снова, а на другой
+    системе `PermissionError` — настоящий отказ в правах, и он поднимается сразу.
+    """
+    import time
+    retry = (os.name == "nt") if windows is None else windows
+    for n in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not retry or n == attempts - 1:
+                raise
+            time.sleep(pause * min(n + 1, 8))
+
+
 def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:
     """`pid_alive` для Windows: `OpenProcess` + `GetExitCodeProcess`, без сигналов.
 

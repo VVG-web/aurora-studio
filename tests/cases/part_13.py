@@ -961,7 +961,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
     assert all("Шаг первый" not in p for p in blocks), "своё знание страницы принято за шаблон"
     assert (root / ".opencode/cache/template_blocks.json").is_file(), "словарь не закэширован"
 
-    rel = str(paths[5].relative_to(root))
+    rel = paths[5].relative_to(root).as_posix()
     cp = run("build_plan.py", "--slice", rel, "--slice-chars", "900", cwd=root)
     head = cp.stdout.split("ЗАДАНИЕ АССИСТЕНТУ")[0]
     assert "ОБЯЗАТЕЛЬНО писать комментарий" not in head, f"шаблон в превью:\n{head}"
@@ -969,7 +969,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
     assert "| Код | RYk:ALG-105 |" in head, "шапку таблицы спрятали вместе со строкой"
     assert "считает сумму налога" in head and "Шаг первый" in head, head
 
-    canon = str(paths[0].relative_to(root))
+    canon = paths[0].relative_to(root).as_posix()
     assert blocks[TEMPLATE_PAR] == canon, blocks[TEMPLATE_PAR]
     head0 = run("build_plan.py", "--slice", canon, "--slice-chars", "900", cwd=root).stdout
     assert "ОБЯЗАТЕЛЬНО писать комментарий" in head0, "канонический источник потерял абзац"
@@ -987,7 +987,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
                     "налоговый орган по телекоммуникационному каналу связи в течение суток, "
                     "а при отказе канала — повторить отправку через час и записать попытку в "
                     "журнал обмена с указанием времени и кода ошибки шлюза.\n", encoding="utf-8")
-    slice_ = run("build_plan.py", "--slice", str(only.relative_to(root)), cwd=root).stdout
+    slice_ = run("build_plan.py", "--slice", only.relative_to(root).as_posix(), cwd=root).stdout
     assert A.TEMPLATE_ONLY in slice_, slice_
     R = importlib.import_module("agent_runner")
     rows = R.SECTION_RE.findall(slice_.split("ЗАДАНИЕ АССИСТЕНТУ")[0])
@@ -1008,7 +1008,7 @@ def test_a_card_born_of_the_page_template_is_archived_and_its_sources_replanned(
     import importlib, json
     sys.path.insert(0, str(SCRIPTS))
     root = make_project(tmp)
-    paths = [str(p.relative_to(root)) for p in _template_mirror(root)]
+    paths = [p.relative_to(root).as_posix() for p in _template_mirror(root)]
     q = lambda srcs: "".join(f"### {s}\n\n# Описание\n\n{TEMPLATE_PAR}\n\nАлгоритм {i}.\n\n"
                              for i, s in enumerate(srcs))
     srcs_block = lambda srcs: "sources:\n" + "".join(f'  - "{s}"\n' for s in srcs)
@@ -1070,7 +1070,7 @@ def test_the_author_of_a_thesis_sees_repeated_knowledge_but_not_service_text(tmp
     AG = importlib.import_module("agent_core")
     R = importlib.import_module("agent_runner")
     root = make_project(tmp)
-    paths = [str(p.relative_to(root)) for p in _template_mirror(root)]
+    paths = [p.relative_to(root).as_posix() for p in _template_mirror(root)]
     rule = ("Отчёт состоит из ячеек, значения которых заполняются статическим и динамическим "
             "текстом по правилам раздела форматов")
     for p in paths:
@@ -1344,7 +1344,7 @@ def test_a_document_is_parsed_once_even_when_its_copy_is_named_differently(tmp: 
     old = d / "Старый.converted.md"
     old.write_text("расшифровка " * 40, encoding="utf-8")
     (d / "Старый.md").write_text("копия человека " * 40, encoding="utf-8")
-    rel = lambda p: str(p.relative_to(root)).replace("\\\\", "/")
+    rel = lambda p: p.relative_to(root).as_posix()
     assert B.human_twin(str(machine)).endswith("Памятка_для_перевозчиков.md")
     assert B.human_twin(str(old)).endswith("Старый.md")
     assert not B.human_twin(str(human)), "копия человека объявлена машинной"
@@ -2236,3 +2236,90 @@ def test_child_processes_speak_utf8_whatever_the_system_codepage(tmp: Path):
                 os.environ[k] = v
     assert out.returncode == 0, out.stderr.decode("utf-8", "replace")
     assert out.stdout.decode("utf-8").strip() == "Проверка — ✓", out.stdout
+
+
+@test
+def test_replacing_a_busy_file_waits_on_windows_and_fails_at_once_elsewhere(tmp: Path):
+    """Подмена файла, который кто-то читает, на Windows ждёт; на другой системе — не ждёт.
+
+    Неделимая запись манифеста, индексов и настроек — это «записать рядом и подменить».
+    На Windows подмена файла, открытого другим потоком, падает с `PermissionError`
+    (WinError 5 или 32) на ровном месте: на windows-latest так падала параллельная запись
+    манифеста. Занятость проходит за миллисекунды, а на POSIX тот же `PermissionError` —
+    настоящий отказ в правах, и ждать его бессмысленно.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import replace_file
+    src, dst = tmp / "new.json", tmp / "manifest.json"
+    src.write_text("новый", encoding="utf-8")
+    dst.write_text("старый", encoding="utf-8")
+
+    real, calls = os.replace, []
+
+    def busy(times):
+        def fake(a, b):
+            calls.append(1)
+            if len(calls) <= times:
+                raise PermissionError(5, "Access is denied")
+            return real(a, b)
+        return fake
+
+    try:
+        os.replace = busy(3)
+        replace_file(src, dst, windows=True, pause=0.001)
+        assert len(calls) == 4, f"ждали три отказа и успех, было вызовов: {len(calls)}"
+        assert dst.read_text(encoding="utf-8") == "новый" and not src.exists()
+
+        calls.clear()
+        src.write_text("ещё", encoding="utf-8")
+        os.replace = busy(99)
+        try:
+            replace_file(src, dst, windows=False)
+        except PermissionError:
+            assert len(calls) == 1, "на POSIX отказ в правах повторяют — это ждёт зря"
+        else:
+            raise AssertionError("отказ в правах проглочен")
+
+        calls.clear()
+        try:
+            replace_file(src, dst, windows=True, attempts=5, pause=0.001)
+        except PermissionError:
+            assert len(calls) == 5, f"повторов должно быть ровно {5}, было {len(calls)}"
+        else:
+            raise AssertionError("вечная занятость не поднята ошибкой")
+    finally:
+        os.replace = real
+    assert dst.read_text(encoding="utf-8") == "новый", "при отказе файл-приёмник испорчен"
+
+    for site in ("build_plan.py", "kb_embed.py", "agent_core.py", "agent_runner.py"):
+        code = (SCRIPTS / site).read_text(encoding="utf-8")
+        assert "os.replace(" not in code, f"{site}: запись мимо replace_file — на Windows упадёт"
+
+
+@test
+def test_every_script_speaks_utf8_even_into_a_legacy_codepage_pipe(tmp: Path):
+    """Скрипт с русским выводом не падает, когда труба в однобайтной кодовой странице.
+
+    На Windows вывод в трубу идёт в cp1251/cp1252, и первая же русская строка — это
+    `UnicodeEncodeError`. Пять скриптов (`kit_i18n`, `kb_retrieval`, `sources_registry`,
+    `agent_probe`, `dev_qa`) не переключали вывод и роняли тест проверки каталогов
+    интерфейса. Здесь кодовая страница трубы подменяется переменной окружения, поэтому
+    дефект виден и на Linux: справка каждого скрипта обязана выйти кодом 0 и читаться как
+    UTF-8, и обязана это делать вне зависимости от окружения родителя.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    env["PYTHONIOENCODING"] = "cp1252"
+    bad = []
+    checked = 0
+    for f in sorted(SCRIPTS.glob("*.py")):
+        code = f.read_text(encoding="utf-8")
+        if "__main__" not in code or "argparse.ArgumentParser" not in code:
+            continue
+        cp = subprocess.run([sys.executable, str(f), "--help"], capture_output=True, env=env,
+                            timeout=60)
+        checked += 1
+        err = cp.stderr.decode("utf-8", "replace")
+        if cp.returncode != 0 or "UnicodeEncodeError" in err:
+            bad.append(f"{f.name}: rc={cp.returncode} {err.strip().splitlines()[-1:]}")
+    assert checked > 20, f"справку проверили у {checked} скриптов — перечень не нашёлся"
+    assert not bad, "\n".join(bad)

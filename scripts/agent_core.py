@@ -45,7 +45,7 @@ from pathlib import Path
 
 from aurora_common import child_env, load_env
 
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -446,7 +446,7 @@ def adapter_selfcheck(version: str = "", force: bool = False) -> dict:
             SELFCHECK.parent.mkdir(parents=True, exist_ok=True)
             tmp = SELFCHECK.with_suffix(".tmp")
             tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(tmp, SELFCHECK)
+            replace_file(tmp, SELFCHECK)
         except OSError:
             pass
     return out
@@ -1089,7 +1089,7 @@ def _cache_put(key: str, r: dict) -> None:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")
         os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except OSError:
         pass
 

@@ -40,7 +40,7 @@ from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            is_meeting, meeting_turns, title_from_stem, with_meeting_mark)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
-from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, file_hash, replace_file  # noqa: E402 — дата в UTC, одна на движок
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
@@ -238,7 +238,7 @@ def save_manifest(data: dict) -> None:
             json.dump(data, f, ensure_ascii=False, indent=1, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, MANIFEST)
+        replace_file(tmp, MANIFEST)
     except BaseException:
         # Не оставляем мусор рядом с базой: недописанный временный файл никому не нужен.
         try:

@@ -950,8 +950,8 @@ def test_a_thesis_the_model_calls_unchanged_is_kept(tmp: Path):
 
     # внутри цикла маршрута дописанная карточка ждёт его конца
     cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
-    assert str(card) not in R.distill_queue(cfg, str(root), defer_refresh=True)
-    assert str(card) in R.distill_queue(cfg, str(root))
+    assert card.as_posix() not in R.distill_queue(cfg, str(root), defer_refresh=True)
+    assert card.as_posix() in R.distill_queue(cfg, str(root))   # очередь — пути в posix-виде
 
     roles = []
 
@@ -1214,7 +1214,8 @@ def test_engine_addons_show_versions_and_install_from_the_panel(tmp: Path):
         servers = json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"]
         assert "mcp-atlassian" in servers and servers["aurora-graph"]["args"][-1].endswith(
             "graph.json"), servers
-        assert oct(mcp.stat().st_mode)[-3:] == "600", "файл серверов машины открыт не только владельцу"
+        assert os.name == "nt" or oct(mcp.stat().st_mode)[-3:] == "600", \
+            "файл серверов машины открыт не только владельцу"   # биты прав — только POSIX
     finally:
         EX.installed_version, EX.latest, EX.venv_python, EX.kit_mcp_file = saved
 

@@ -64,7 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES, fold  # noqa: E402
+from aurora_common import QUOTES, fold, replace_file  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -897,7 +897,7 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
             f'kind: knowledge\n{sources_block(donor_sources or [])}'
             f'created: {TODAY_STR}\nupdated: {TODAY_STR}\n'
             f'built: machine\nrelated: []\n---\n\n# {term}\n\n{line}\n\n{note}\n')
-        return path
+        return path.replace("\\", "/")     # пути движка — в posix-виде, как у `walk_md`
 
     text = open(existing, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
@@ -1623,7 +1623,7 @@ def save_clash_seen(cwd: str, seen: dict) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(seen, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:

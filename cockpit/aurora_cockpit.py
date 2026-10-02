@@ -55,7 +55,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
-                           utc_slug, utc_stamp, yaml_scalar)
+                           replace_file, utc_slug, utc_stamp, yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
@@ -539,7 +539,7 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(text)
-        os.replace(tmp, full)
+        replace_file(tmp, full)
     except OSError as e:
         try:
             os.remove(tmp)
@@ -1187,7 +1187,7 @@ def _update_archive(st: dict) -> dict:
             f.write(data)
         if (files[rel].external_attr >> 16) & 0o111:
             os.chmod(tmp, 0o755)
-        os.replace(tmp, dst)
+        replace_file(tmp, dst)
     # Убираем только то, что прошлый архив поставил сам, а новый уже не везёт. Без списка
     # прошлой поставки не убираем ничего: чужой файл в папке кита — не наш.
     for rel in old:
@@ -1361,7 +1361,7 @@ def mcp_write(servers: dict, project: str = "") -> dict:
             f.write(json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n")
         if not project:
             os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except OSError as e:
         return {"error": f"не удалось записать {label}: {e}"}
     return {"ok": True, "path": path, "count": len(servers)}

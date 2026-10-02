@@ -714,7 +714,10 @@ def test_machine_mcp_secrets_never_reach_the_browser(tmp: Path):
         r = act({"action": "import", "text": paste})
         assert r.get("ok"), r
         path = tmp / "local/mcp.json"
-        assert oct(path.stat().st_mode & 0o777) == "0o600", "файл с токенами читают все"
+        # Права доступа по битам — понятие POSIX: на Windows `chmod` трогает лишь признак
+        # «только чтение», а доступ к файлу решает ACL папки профиля.
+        assert os.name == "nt" or oct(path.stat().st_mode & 0o777) == "0o600", \
+            "файл с токенами читают все"
 
         st = state()
         seen = json.dumps(st, ensure_ascii=False)
