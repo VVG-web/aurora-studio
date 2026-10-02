@@ -127,6 +127,31 @@ def _as_utc(when=None) -> _datetime:
 
 TODAY = utc_today()
 KB_ROOT = "AuroraKnowledgeDB"
+
+# Дата сборки в генерируемом файле: поле `updated:`, «собрано …», «обновлено …» и "date" в json.
+_DATED = re.compile(r"^updated: \S+$|· (?:собрано|обновлено) \S+|^\s*\"date\": \"[^\"]*\"", re.M)
+
+
+def undated(text: str) -> str:
+    """Текст без даты сборки: день перегенерации — не изменение файла.
+
+    Иначе каждый новый день карты, индексы и трассировка переписывались ради одной даты —
+    в git сотни правок, в которых нет ни одной новой ссылки.
+    """
+    return _DATED.sub("", text)
+
+
+def write_if_changed(path: str, text: str) -> bool:
+    """Записать файл, если изменилось что-то кроме даты сборки. True — записан."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            if undated(f.read()) == undated(text):
+                return False
+    except OSError:
+        pass
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return True
 # `canonical` убран из схемы в 1.10.0 (ступень не использовалась ни в одном
 # проекте). Читаем его как синоним `verified`: старые базы не должны разом
 # потерять доверие к карточкам. Новое знание пишется только как `verified`.

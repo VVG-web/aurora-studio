@@ -39,7 +39,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (TRUSTED, card_sources, frontmatter, git_guard,  # noqa: E402
                            is_placeholder,
-                           is_service)
+                           is_service, undated, write_if_changed)
 
 ROOT = "AuroraKnowledgeDB"
 MOC_DIR = os.path.join(ROOT, "MOC")
@@ -157,18 +157,6 @@ def machine_made(path: str) -> bool:
         return GENERATED in open(path, encoding="utf-8", errors="ignore").read()
     except OSError:
         return False
-
-
-_DATED = re.compile(r"^updated: \S+$|· собрано \S+$", re.M)
-
-
-def undated(text: str) -> str:
-    """Карта без даты сборки: день перегенерации — не изменение карты.
-
-    Иначе каждый новый день все карты документов (305 на PRJ-A) переписывались ради одной
-    даты — в git сотни правок, в которых нет ни одной новой ссылки.
-    """
-    return _DATED.sub("", text)
 
 
 def render(name: str, note: str, items: list, kind: str = "moc") -> str:
@@ -377,8 +365,7 @@ def main() -> int:
             text = text.replace("tags: [moc]\n", "tags: [moc, код]\naliases: ["
                                 + ", ".join(f'"{v}"' for v in variants) + "]\n", 1)
             os.makedirs(MOC_DIR, exist_ok=True)
-            open(path, "w", encoding="utf-8").write(text)
-            written += 1
+            written += write_if_changed(path, text)
         stale = [f for f in (sorted(os.listdir(MOC_DIR)) if os.path.isdir(MOC_DIR) else [])
                  if f.endswith(".md") and CODE_NAME_RE.match(f[:-3]) and f not in produced
                  and machine_made(os.path.join(MOC_DIR, f))]
@@ -538,8 +525,7 @@ def main() -> int:
             print(f"  ⚠️  {path} написан руками — не трогаю")
             continue
         os.makedirs(MOC_DIR, exist_ok=True)
-        open(path, "w", encoding="utf-8").write(render(name, note, items))
-        written += 1
+        written += write_if_changed(path, render(name, note, items))
 
     empty = [n for n, _n2, items in planned if not items]
     if empty:

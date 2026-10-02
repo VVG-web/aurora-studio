@@ -55,10 +55,9 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import frontmatter, walk_md  # noqa: E402
+from aurora_common import frontmatter, walk_md, write_if_changed  # noqa: E402
 try:
     from sources_core import SERVICE_RE
 except Exception:                                    # noqa: BLE001
@@ -493,15 +492,14 @@ def main() -> int:
         return 0
     os.makedirs(os.path.join(a.root, OUT_DIR), exist_ok=True)
     direct, indirect = len(t["direct"]), len(t["indirect"])
-    Path(a.root, SUMMARY).write_text(json.dumps(
-        {"date": t["date"], "tasks": t["tasks"], "artifacts": t["artifacts"],
-         "direct": direct, "indirect": indirect, "refs": len(t["refs"]),
-         "orphan": max(0, orphan)},
-        ensure_ascii=False, indent=1), encoding="utf-8")
-    Path(a.root, TABLE).write_text(json.dumps(t, ensure_ascii=False, indent=1),
-                                   encoding="utf-8")
+    summary = {"date": t["date"], "tasks": t["tasks"], "artifacts": t["artifacts"],
+               "direct": direct, "indirect": indirect, "refs": len(t["refs"]),
+               "orphan": max(0, orphan)}
+    write_if_changed(os.path.join(a.root, SUMMARY),
+                     json.dumps(summary, ensure_ascii=False, indent=1))
+    write_if_changed(os.path.join(a.root, TABLE), json.dumps(t, ensure_ascii=False, indent=1))
     os.makedirs(os.path.dirname(os.path.join(a.root, MOC)), exist_ok=True)
-    Path(a.root, MOC).write_text(render_moc(t), encoding="utf-8")
+    write_if_changed(os.path.join(a.root, MOC), render_moc(t))
     print(f"\n✅ Таблица: {TABLE} · свод: {MOC}")
     return 0
 
