@@ -45,7 +45,7 @@ python3 cockpit/aurora_cockpit.py --roots ~/work ~/tmp    # только эти 
 ## 3. Разделы
 
 Меню делится на три группы и консоль. Разделы-модули лежат папками в `cockpit/modules/`, остальные
-живут в ядре (`cockpit/ui/index.html`).
+живут в ядре (`cockpit/ui/`: `index.html`, `panel.js`, `panel.css`).
 
 ```mermaid
 flowchart TB
@@ -136,7 +136,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-  BR["Браузер<br>cockpit/ui/index.html<br>модули · скины · i18n"] <-->|"JSON и поток вывода<br>токен сессии"| SV["aurora_cockpit.py<br>127.0.0.1:8787"]
+  BR["Браузер<br>cockpit/ui/<br>модули · скины · i18n"] <-->|"JSON и поток вывода<br>токен сессии"| SV["aurora_cockpit.py<br>127.0.0.1:8787"]
   SV -->|"только команды из реестра,<br>аргументы списком"| CMD["commands.txt → scripts/"]
   SV -->|"находит проекты,<br>читает состояние"| PRJ[("Проекты машины")]
   CMD <--> PRJ

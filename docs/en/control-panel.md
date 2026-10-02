@@ -43,7 +43,7 @@ python3 cockpit/aurora_cockpit.py --roots ~/work ~/tmp    # only these folders, 
 ## 3. Sections
 
 The menu has three groups and the console. Section modules lie as folders in `cockpit/modules/`, the rest live in the core
-(`cockpit/ui/index.html`).
+(`cockpit/ui/`: `index.html`, `panel.js`, `panel.css`).
 
 ```mermaid
 flowchart TB
@@ -131,7 +131,7 @@ up to the marker `<!-- ниже — производство, в чистови�
 
 ```mermaid
 flowchart LR
-  BR["The browser<br>cockpit/ui/index.html<br>modules · skins · i18n"] <-->|"JSON and an output stream<br>session token"| SV["aurora_cockpit.py<br>127.0.0.1:8787"]
+  BR["The browser<br>cockpit/ui/<br>modules · skins · i18n"] <-->|"JSON and an output stream<br>session token"| SV["aurora_cockpit.py<br>127.0.0.1:8787"]
   SV -->|"only commands from the registry,<br>arguments as a list"| CMD["commands.txt → scripts/"]
   SV -->|"finds projects,<br>reads state"| PRJ[("The machine's projects")]
   CMD <--> PRJ

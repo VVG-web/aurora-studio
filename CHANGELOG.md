@@ -4,6 +4,12 @@ Semver. Обновление движка в работающем проекте
 (сначала dry-run, затем `--apply`). Обновляются только пути из `engine_manifest.txt`;
 контент проекта не трогается. Ломающие изменения схемы помечены **BREAKING** с шагом миграции.
 
+## 1.147.19 — документация: раскладка панели и справочник команд по текущей версии
+
+- `docs/CONTRIBUTING.md`: опечатка `cockpit/ui/panel.jsl` исправлена на `panel.js`.
+- `cockpit/README.md`, `docs/control-panel-ui-requirements.md`, `docs/en/control-panel.md`: интерфейс описан по фактической раскладке — `index.html` (каркас), `panel.js` (логика), `panel.css` (оформление); раньше всё называлось одним `index.html`.
+- `docs/commands.md` пересобран командой `kit:list`, английский справочник `docs/en/commands.md` сверен с ним: обе шапки говорят о текущей версии, а не о 1.147.1.
+
 ## 1.147.18 — убран мёртвый код и тройная копия git_commit
 
 - Удалены функции, которые никто не вызывает: `kb_fix._is_cyr` и `_is_lat`, `agent_runner._card_path` с кэшем `_PATHS`, `pydantic_ai_adapter.mcp_toolsets` (его заменил `lazy_mcp_toolsets`), `aurora_common.trusted_branch_sources`, `mcp_kit_servers`, `mcp_write_kit` и `mcp_parse_paste` в панели, `load_config` в отчётах аналитика. Тесты, которые проверяли их исходный текст, переведены на живые аналоги.
