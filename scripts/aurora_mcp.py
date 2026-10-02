@@ -163,8 +163,11 @@ def call_tool(project: str, name: str, args: dict) -> str:
         kind = str(args.get("kind") or "").strip()
         return run(project, "make_kinds.py", [f"--kind={kind}"] if kind else [])
     if name == "kb_ask":
+        # `--no-journal`: команда по умолчанию дописывает разговор в `meta/ask/` — это журнал
+        # панели, а не чужого ассистента. Без флага каждый вопрос через MCP рождал файл в базе
+        # и пачкал дерево git, хотя сервер обещает только читать.
         return run(project, "agent_runner.py",
-                   ["--task", "ask", f"--question={args.get('question', '')}"],
+                   ["--task", "ask", "--no-journal", f"--question={args.get('question', '')}"],
                    timeout=ASK_TIMEOUT)
     return f"Инструмента {name} нет. Доступны: " + ", ".join(t["name"] for t in TOOLS)
 
