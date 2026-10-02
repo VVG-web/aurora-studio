@@ -29,7 +29,7 @@
 |---|---|---|---|---|---|
 | `sync:sources` (`sources`) | модули источников: что установлено и какие зеркала подключены к проекту | скрипт | `sources_registry.py` | `--json` | 1.28.0 |
 | `sync:confluence` | детерминированное зеркало Confluence → Sources/Confluence/ (модуль confluence-dc) | скрипт | `confluence_export.py` | `--roots --out --force --prune --verify` | 1.6.0 |
-| `sync:web` | страницы по списку адресов → Sources/Web/ (модуль web); доверие ставится галочкой на каждую ссылку и уходит в шапку сохранённого файла | скрипт | `web_export.py` | `--out --apply --prune --verify` | 1.101.0 |
+| `sync:web` | страницы по списку адресов → Sources/Web/ (модуль web); доверие ставится галочкой на каждую ссылку и уходит в шапку сохранённого файла | скрипт | `web_export.py` | `--out --apply --prune --verify --force` | 1.101.0 |
 | `sync:jira` | детерминированное зеркало Jira → Sources/JIRA/ (модуль jira-dc) | скрипт | `jira_export.py` | `--jql --out --limit --force --comments --prune --verify` | 1.9.0 |
 | `sync:audit` (`audit`) | целостность зеркал: missing / orphan / collision / протухшее состояние / посторонние файлы, включая схемы страниц, которых нет; обходит все подключённые модули | скрипт | `sync_audit.py` | `--stale-days --report --source --json --drift --all --stamp --apply --allow-dirty --confluence-only --jira-only` | 1.3.0 |
 | `sync:diff` (`diff`) | дрейф: источник изменился после того, как знание проверили | скрипт | `sync_audit.py --drift` | `--stale-days --report --source --json --all --stamp --apply --allow-dirty --confluence-only --jira-only` | 1.9.1 |

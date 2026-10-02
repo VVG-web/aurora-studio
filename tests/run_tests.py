@@ -17007,6 +17007,94 @@ def test_project_templates_do_not_drift_from_the_trust_model(tmp: Path):
 
 
 @test
+def test_an_unchanged_web_page_is_not_downloaded_again(tmp: Path):
+    """Страница, которую сервер назвал неизменной (304), не качается и не переписывается.
+
+    Веб-зеркало заново скачивало и разбирало каждую страницу на каждом прогоне, тогда как
+    зеркала Confluence и Jira уже пропускали неизменное. Спрашиваем сервер по ETag; без
+    ответа 304, при смене настройки страницы или с `--force` — полный проход.
+    """
+    import argparse
+    import contextlib
+    import http.server
+    import io
+    import threading
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    W = importlib.import_module("web_export")
+
+    state = {"body": "<html><title>Раздел</title><body><main><p>Первый текст.</p></main></body></html>",
+             "etag": '"v1"', "full": 0, "cond": 0}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.headers.get("If-None-Match") == state["etag"]:
+                state["cond"] += 1
+                self.send_response(304)
+                self.end_headers()
+                return
+            state["full"] += 1
+            data = state["body"].encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("ETag", state["etag"])
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/razdel/"
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    saved_attrs = {k: getattr(W, k) for k in ("config_text", "PAUSE")}
+    trusted = {"v": "true"}
+    W.config_text = lambda: f"web:\n  pages:\n    - url: {url}\n      trusted: {trusted['v']}\n"
+    W.PAUSE = 0
+    out = tmp / "Sources" / "Web"
+
+    def run_once(force=False) -> None:
+        args = argparse.Namespace(out=str(out), apply=True, prune=False, verify=False, force=force)
+        with contextlib.redirect_stdout(io.StringIO()):
+            W.run(args)
+
+    def page() -> Path:
+        return next(p for p in out.glob("*.md") if p.name not in ("update_log.md", "sync_state.md"))
+
+    try:
+        run_once()
+        assert state["full"] == 1 and (tmp / W.PAGE_CACHE).is_file(), "первый прогон не скачал или не запомнил"
+        first = page().read_text(encoding="utf-8")
+        mtime = page().stat().st_mtime_ns
+        run_once()
+        assert state["full"] == 1 and state["cond"] == 1, \
+            f"неизменная страница скачана заново: полных {state['full']}, условных {state['cond']}"
+        assert page().stat().st_mtime_ns == mtime and page().read_text(encoding="utf-8") == first, \
+            "неизменная страница переписана"
+
+        run_once(force=True)
+        assert state["full"] == 2, "--force не скачал страницу заново"
+
+        trusted["v"] = "false"
+        run_once()
+        assert state["full"] == 3 and "trusted: false" in page().read_text(encoding="utf-8"), \
+            "смена доверия не дошла до файла: страница взята из кэша"
+
+        state["body"] = state["body"].replace("Первый", "Второй")
+        state["etag"] = '"v2"'
+        run_once()
+        assert "Второй текст." in page().read_text(encoding="utf-8"), "изменённая страница не обновилась"
+    finally:
+        os.chdir(cwd)
+        srv.shutdown()
+        for k, v in saved_attrs.items():
+            setattr(W, k, v)
+
+
+@test
 def test_a_mirrored_page_is_not_rewritten_back_and_forth(tmp: Path):
     """Страница с вложениями за прогон не меняется туда и обратно.
 
@@ -17036,7 +17124,7 @@ def test_a_mirrored_page_is_not_rewritten_back_and_forth(tmp: Path):
     saved_attrs = {k: getattr(W, k) for k in ("config_text", "fetch", "to_markdown",
                                               "fetch_asset", "PAUSE")}
     W.config_text = lambda: f"web:\n  pages:\n    - url: {url}\n      trusted: true\n"
-    W.fetch = lambda u, token: ("<html></html>", "")
+    W.fetch = lambda u, token, known=None, meta=None: ("<html></html>", "")
     W.to_markdown = lambda html, u: ("Документы", state["body"], [], [(asset, "Приказ")])
     W.PAUSE = 0
     W.open = counting_open
