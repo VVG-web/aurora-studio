@@ -37,7 +37,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402
+from aurora_common import (TRUSTED, card_sources, frontmatter, git_guard,  # noqa: E402
                            is_placeholder,
                            is_service)
 
@@ -192,7 +192,7 @@ def render(name: str, note: str, items: list, kind: str = "moc") -> str:
             body.append(f"## {section}")
             body.append("")
         for c in sorted(by_section[section], key=lambda x: x["title"].lower()):
-            mark = "" if c["status"] in ("verified", "accepted") else " ·  не проверено"
+            mark = "" if c["status"] in TRUSTED + ("accepted",) else " ·  не проверено"
             # Одна фраза о сути рядом со ссылкой: карта из полусотни имён не говорит
             # ничего, пока не откроешь каждое. С фразой она читается как оглавление.
             brief = c.get("summary") or ""

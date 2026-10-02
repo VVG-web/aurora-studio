@@ -52,7 +52,7 @@ from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            fix_mixed_script, fold, fold_hard, leaf_name,
                            is_service, link_refs, not_a_card_link, project_file,
                            path_problems, rewrite_links, set_field, translit_names,
-                           utc_slug, NAME_BYTES)
+                           status_rank, utc_slug, NAME_BYTES)
 from difflib import get_close_matches
 
 ROOT = "AuroraKnowledgeDB"
@@ -2330,7 +2330,6 @@ HOME_SECTION = (
     (re.compile(r"^(RU\.[A-Z]+\.)?SPR[-_. ]", re.I), "Reference"),
     (re.compile(r"(?i)статус", re.U), "Statuses"),
 )
-STATUS_RANK = {"verified": 4, "canonical": 4, "in-review": 3, "draft": 2, "imported": 1, "": 0}
 
 
 def section_of(path: str) -> str:
@@ -2345,7 +2344,7 @@ def pick_winner(cards: dict, paths: list, inbound: dict) -> tuple:
     1. **Раздел по имени.** `ALG-…` живёт в `Processes/`, `REQ/AC/US-…` — в
        `Requirements/`, `SPR-…` — в `Reference/`, «…статус…» — в `Statuses/`. Ровно одна
        карточка группы лежит там, где положено, — она и остаётся.
-    2. **Статус.** Принятое знание старше черновика: verified > in-review > draft > imported.
+    2. **Статус.** Знание старше черновика: `status_rank` (knowledge > draft > без статуса).
     3. **Входящие ссылки.** На чём стоит база, то и остаётся.
     4. **Объём тела.** Из двух одинаковых по всему прочему остаётся более полная.
 
@@ -2367,7 +2366,7 @@ def pick_winner(cards: dict, paths: list, inbound: dict) -> tuple:
 
     def rank(path):
         c = cards[path]
-        return (STATUS_RANK.get((c.fm.get("status") or "").strip(), 0),
+        return (status_rank(c.fm.get("status")),
                 inbound.get(c.stem, 0),
                 len(c.body().strip()))
 

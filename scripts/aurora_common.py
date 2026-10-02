@@ -153,6 +153,42 @@ KNOWLEDGE = ("knowledge",)
 # ослепнуть до того, как хозяин найдёт время на `kb:trust`.
 TRUSTED = ("knowledge", "verified", "canonical")
 
+# Чей текст надёжнее, когда карточек об одном несколько. Одна шкала на слияние двойников
+# (`kb_fix`, `kb_twins`), порядок строк в оглавлениях и порядок карточек в пакете: прежде у
+# каждого была своя таблица, и в `kb_fix` она не знала `knowledge` — слияние оставляло
+# черновик и вливало в него знание. Устаревшие ступени приёмки читаются как раньше.
+STATUS_RANK = {"knowledge": 4, "verified": 4, "canonical": 4, "in-review": 3, "draft": 2,
+               "imported": 1, "": 1, "placeholder": 0, "deprecated": 0, "index": 0}
+
+
+def status_rank(status: str) -> int:
+    """Ранг статуса карточки: чем выше, тем скорее её текст остаётся. Неизвестный — как «без статуса»."""
+    return STATUS_RANK.get((status or "").strip().strip('"'), 1)
+
+
+def trust_header(fm: dict, section: str = "") -> str:
+    """Шапка доверия — инвариант 4: карточка не входит в промпт без неё.
+
+    Одна на все пакеты (`ctx_pack`, `spec_pack`). Основание словами вместо имени владельца:
+    доверие больше не чьё-то решение, и спрашивать «кто принял» стало не у кого. Спрашивать
+    надо «почему», а ответ на это пишет `kb:trust` — статус задачи и то, чем доказана связь.
+    """
+    status = (fm.get("status") or "").strip().strip('"')
+    st = status or "без статуса"
+    if status == "deprecated":
+        succ = fm.get("superseded_by", "—")
+        return f"[deprecated | заменено: {succ} | только исторический контекст]"
+    why = (fm.get("trust_basis") or "").strip().strip('"')
+    if status in TRUSTED:
+        review_by = (fm.get("review_by") or "").strip()
+        if review_by and review_by < TODAY:
+            return (f"[{st} | ПЕРЕСЧИТАТЬ: {review_by} прошло — "
+                    "статус задачи мог измениться]")
+        return f"[{st} | доверенный источник | {why or 'основание не записано'}]"
+    if section == "Reference":
+        return "[reference | справочник домена]"
+    return f"[{st} | НЕ ФАКТ | {why or 'источник не подтверждён задачей'}]"
+
 # Поля и статусы, выведенные из схемы. Живут здесь, а не в одном скрипте: их должны
 # одинаково понимать и ремонт (`kb:retire`), и проверка готовности (`kit:doctor`).
 # `trust` выведено в 1.35.0: за всё время его писали шесть скриптов и не читал

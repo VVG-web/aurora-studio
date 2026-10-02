@@ -35,7 +35,8 @@ import re
 import sys
 
 from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, frontmatter, is_meeting,
-                           is_placeholder, link_targets, read_card_text, related_targets, walk_md)
+                           is_placeholder, link_targets, read_card_text, related_targets,
+                           status_rank, trust_header, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
@@ -282,23 +283,8 @@ class Card(BaseCard):
         return bool(rb and rb < TODAY and self.status in TRUSTED)
 
     def header(self) -> str:
-        """Шапка доверия — инвариант 4: карточка не входит в промпт без неё."""
-        st = self.status or "без статуса"
-        if self.status == "deprecated":
-            succ = self.fm.get("superseded_by", "—")
-            return f"[deprecated | заменено: {succ} | только исторический контекст]"
-        # Основание словами вместо имени владельца: доверие больше не чьё-то решение, и
-        # спрашивать «кто принял» стало не у кого. Спрашивать надо «почему», а ответ на
-        # это пишет `kb:trust` — статус задачи и то, чем доказана связь.
-        why = (self.fm.get("trust_basis") or "").strip().strip('"')
-        if self.status in TRUSTED:
-            if self.expired:
-                return (f"[{st} | ПЕРЕСЧИТАТЬ: {self.fm.get('review_by')} прошло — "
-                        "статус задачи мог измениться]")
-            return f"[{st} | доверенный источник | {why or 'основание не записано'}]"
-        if self.section == "Reference":
-            return "[reference | справочник домена]"
-        return f"[{st} | НЕ ФАКТ | {why or 'источник не подтверждён задачей'}]"
+        """Шапка доверия — одна на все пакеты (`aurora_common.trust_header`)."""
+        return trust_header(self.fm, self.section)
 
 
 def first_sentence(text: str) -> str:
@@ -769,8 +755,7 @@ def render_block(c: "Card", collapsed: bool = False) -> str:
 
 
 def order(cards: list) -> list:
-    rank = {"canonical": 1, "verified": 1}   # canonical — легаси-синоним
-    return sorted(cards, key=lambda c: (c.expired, rank.get(c.status, 2), c.stem))
+    return sorted(cards, key=lambda c: (c.expired, -status_rank(c.status), c.stem))
 
 
 def log_usage(stems: list, command: str) -> None:

@@ -495,8 +495,8 @@ def test_spec_pack_bundles_grounds_and_names_risks(tmp: Path):
          based_on='["[[Шина]]"]')
     card(root, "Requirements/REQ-042-Обмен-с-смежная система.md", "", type="requirement",
          req_id="REQ-042", req_status="stated", status="imported")
-    card(root, "Systems/Шина.md", "Kafka по VPN", status="verified", owner='"@sa"',
-         verified="2026-01-01", review_by="2030-01-01")
+    card(root, "Systems/Шина.md", "Kafka по VPN", status="knowledge",
+         trust_basis='"задача PRJ-1 в статусе Готово"', review_by="2030-01-01")
     card(root, "Systems/Черновик.md", "набросок", status="draft")
     card(root, "Decisions/DR-0007-Шина.md", "Выбрали Kafka", type="decision", status="accepted")
 
@@ -508,7 +508,10 @@ def test_spec_pack_bundles_grounds_and_names_risks(tmp: Path):
     pack = (root / "Deliverables/work/spec-packs/SPEC-012_v1.2.md").read_text(encoding="utf-8")
     assert "## Риски передачи" in pack, "риски не попали в бандл"
     assert "Kafka по VPN" in pack and "Выбрали Kafka" in pack, "тела оснований не приложены"
-    assert "[verified | проверено 2026-01-01" in pack, "нет шапки доверия у основания"
+    assert "[knowledge | доверенный источник | задача PRJ-1 в статусе Готово]" in pack, \
+        f"нет шапки доверия у основания или она говорит по старой модели:\n{pack[:600]}"
+    assert "НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ" not in pack and "владелец" not in pack, \
+        "в пакете осталась шапка прежней приёмки"
     assert "[[" not in pack, "wiki-ссылки не разрезолвлены в якоря — снаружи базы не кликаются"
 
 
