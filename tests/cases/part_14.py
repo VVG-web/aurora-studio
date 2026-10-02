@@ -238,3 +238,58 @@ def test_saving_the_same_settings_twice_keeps_the_rollback_copy(tmp: Path):
         assert "name: B" in cfg.read_text(encoding="utf-8")
     finally:
         restore()
+
+
+@test
+def test_the_panel_does_not_start_the_same_command_twice_at_once(tmp: Path):
+    """Та же команда в том же проекте с теми же аргументами не запускается второй раз, пока идёт первая.
+
+    Двойной щелчок по «Запустить», вторая вкладка или повторное нажатие после обрыва связи
+    запускали второй процесс рядом с первым: два одинаковых пишущих прогона над одной базой.
+    Агент от этого защищён замком, а механические команды (`kb:repair --apply`, синки) — нет.
+    Второй запуск получает идентификатор идущего задания и смотрит тот же вывод.
+    """
+    import threading
+    import time
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    sleepy = tmp / "sleepy.py"
+    sleepy.write_text("import sys, time\nprint('running', flush=True)\ntime.sleep(float(sys.argv[1]) "
+                      "if len(sys.argv) > 1 else 3)\n", encoding="utf-8")
+    row = {"runnable": True, "flags": ["--apply"], "fixed_flags": ["3"], "script": "sleepy.py", "cmd": "kb:x"}
+    saved = (ck.command_by_name, ck.script_path, ck.write_runlog, ck.mark_running)
+    ck.command_by_name = lambda name: row if name == "kb:x" else None
+    ck.script_path = lambda project, script: str(sleepy)
+    ck.write_runlog = lambda *a, **k: None
+    ck.mark_running = lambda *a, **k: None
+    project = str(tmp / "proj")
+    os.makedirs(project)
+    started = []
+    try:
+        first = ck.start_job(project, "kb:x", ["--apply"])
+        threads = [threading.Thread(target=lambda: started.append(ck.start_job(project, "kb:x", ["--apply"])))
+                   for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert set(started) == {first}, f"параллельные запуски дали разные задания: {started}"
+        assert len([j for j in ck.JOBS.values() if not j["done"]]) == 1, "идут два одинаковых задания"
+        other = ck.start_job(project, "kb:x", [])
+        assert other != first, "команда с другими аргументами приняла чужое задание"
+        elsewhere = ck.start_job(str(tmp / "other"), "kb:x", ["--apply"])
+        assert elsewhere not in (first, other), "задание чужого проекта принято за своё"
+        for _ in range(100):
+            if all(j["done"] for j in ck.JOBS.values()):
+                break
+            time.sleep(0.2)
+        again = ck.start_job(project, "kb:x", ["--apply"])
+        assert again != first, "после конца задания новый запуск получил старое задание"
+    finally:
+        for j in list(ck.JOBS.values()):
+            if j.get("proc") and not j["done"]:
+                j["proc"].kill()
+        ck.JOBS.clear()
+        ck.command_by_name, ck.script_path, ck.write_runlog, ck.mark_running = saved
+        restore()

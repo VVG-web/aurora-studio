@@ -792,7 +792,9 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
     # Каждый прогон получает id, а stdout пишется на диск рядом с живым буфером
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     at = src.index("def start_job(")
-    sj = src[at:at + 4000]
+    # Тело функции целиком — до следующей функции верхнего уровня, а не окно в 4000 знаков:
+    # окно съезжало всякий раз, когда в начало `start_job` добавляли строку.
+    sj = src[at:src.index("\ndef ", at + 1)]
     assert 'utc_slug() + "-" + job_id[:6]' in sj, \
         "у прогона нет id в UTC — архив не соберётся в хронологию"
     assert '"run_id": run_id' in sj, "задание не помнит id своего архива"
