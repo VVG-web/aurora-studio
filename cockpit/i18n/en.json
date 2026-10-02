@@ -454,6 +454,7 @@
   "yaml.about": "The form above covers the usual fields. Here is the whole file: the lists of Jira statuses (done_statuses, cancelled_statuses), the recommended skills, the paths. Before writing, the previous version is saved next to it as .bak.",
   "yaml.save": "Save",
   "yaml.saved": "Saved · the backup copy is {backup}",
+  "yaml.unchanged": "No changes: the file was not rewritten, the backup copy is as before",
   "yaml.reread": "Read it again",
   "yaml.note": "an example of the sync_roots block is in the file itself, in a comment",
   "agent.from_kit": "from the kit",
@@ -818,5 +819,6 @@
   "sgroup.all_open": "expand all",
   "sgroup.all_close": "collapse all",
   "mcp.saved": "Written to the project's mcp.json · {n} servers",
+  "mcp.unchanged": "No changes: the file was not rewritten, the backup copy is as before",
   "mcp.raw_saved": "The project's mcp.json is written · {n} servers · the previous one is in .bak"
 }

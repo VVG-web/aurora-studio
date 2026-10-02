@@ -1537,6 +1537,11 @@ def mcp_write(servers: dict, project: str = "") -> dict:
     path = mcp_file(project)
     label = "mcp.json проекта" if project else "local/mcp.json"
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    text = json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n"
+    # Запись без изменений ничего не пишет: иначе копия «до» становилась копией текущего файла,
+    # и от прежней версии — единственного, к чему можно вернуться, — не оставалось следа.
+    if os.path.isfile(path) and read_text(path) == text:
+        return {"ok": True, "path": path, "count": len(servers), "unchanged": True}
     try:
         if os.path.isfile(path):
             with open(path + ".bak", "w", encoding="utf-8") as f:
@@ -1545,7 +1550,7 @@ def mcp_write(servers: dict, project: str = "") -> dict:
                 os.chmod(path + ".bak", 0o600)
         tmp = path + ".aurora-new"
         with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n")
+            f.write(text)
         if not project:
             os.chmod(tmp, 0o600)
         replace_file(tmp, path)
@@ -4190,13 +4195,18 @@ class Handler(BaseHTTPRequestHandler):
             return {"error": "слишком большой файл"}
         if "project:" not in text:
             return {"error": "в тексте нет блока project: — это не похоже на конфиг Авроры"}
+        new = text if text.endswith("\n") else text + "\n"
+        # То же правило, что у `mcp_write`: сохранение без правок не трогает ни файл, ни копию «до».
+        if os.path.isfile(path) and read_text(path) == new:
+            return {"ok": True, "unchanged": True,
+                    "backup": "aurora.config.yaml.bak" if os.path.isfile(path + ".bak") else ""}
         try:
             if os.path.isfile(path):
                 backup = path + ".bak"
                 with open(backup, "w", encoding="utf-8") as f:
                     f.write(read_text(path))
             with open(path, "w", encoding="utf-8") as f:
-                f.write(text if text.endswith("\n") else text + "\n")
+                f.write(new)
         except Exception as e:
             return {"error": f"не удалось записать: {e}"}
         return {"ok": True, "backup": "aurora.config.yaml.bak"}

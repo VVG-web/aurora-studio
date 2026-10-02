@@ -14,6 +14,7 @@ import sys
 
 from harness import (  # noqa: F401
     KIT,
+    _cockpit_on,
     SCRIPTS,
     card,
     make_project,
@@ -195,3 +196,45 @@ def test_installing_a_skill_never_leaves_the_agent_without_it(tmp: Path):
     assert (home / "aurora-x" / "SKILL.md").read_text(encoding="utf-8") == "новая версия\n", "скилл не обновился"
     assert (home / "aurora-x" / "more.md").is_file()
     assert sorted(p.name for p in home.iterdir()) == ["aurora-x"], "после установки остался временный каталог"
+
+
+@test
+def test_saving_the_same_settings_twice_keeps_the_rollback_copy(tmp: Path):
+    """Повторное сохранение тех же настроек не затирает копию «до» — откат остаётся откатом.
+
+    `mcp.json` и `aurora.config.yaml` перед записью копировались в `.bak`, даже когда
+    сохранялось то же самое. Две подряд нажатые «Сохранить» (или «Сохранить» без правок)
+    делали `.bak` копией текущего файла, и прежняя версия — единственное, к чему можно
+    вернуться, — пропадала. Запись без изменений ничего не пишет и копию не трогает.
+    """
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    try:
+        project = str(tmp / "proj")
+        os.makedirs(project)
+        a = {"alpha": {"command": "a"}}
+        b = {"alpha": {"command": "a"}, "beta": {"command": "b"}}
+        assert ck.mcp_write(a, project).get("ok")
+        path = ck.mcp_file(project)
+        assert not os.path.exists(path + ".bak"), "первая запись создала копию из ничего"
+        assert ck.mcp_write(b, project).get("ok")
+        was = Path(path + ".bak").read_text(encoding="utf-8")
+        assert '"beta"' not in was and '"alpha"' in was, "копия после первой правки — не прежняя версия"
+        again = ck.mcp_write(b, project)
+        assert again.get("ok") and again.get("unchanged"), f"то же самое записано заново: {again}"
+        assert Path(path + ".bak").read_text(encoding="utf-8") == was, \
+            "повторное сохранение затёрло копию «до» самим собой"
+
+        cfg = Path(project) / "aurora.config.yaml"
+        save = lambda text: ck.Handler._write_config(None, project, text)
+        assert save("project:\n  name: A\n").get("ok")
+        assert save("project:\n  name: B\n").get("ok")
+        bak = Path(project) / "aurora.config.yaml.bak"
+        assert "name: A" in bak.read_text(encoding="utf-8")
+        same = save("project:\n  name: B\n")
+        assert same.get("ok") and same.get("unchanged"), f"то же самое записано заново: {same}"
+        assert "name: A" in bak.read_text(encoding="utf-8"), "повторное сохранение конфига затёрло копию «до»"
+        assert "name: B" in cfg.read_text(encoding="utf-8")
+    finally:
+        restore()
