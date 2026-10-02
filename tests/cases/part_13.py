@@ -240,7 +240,7 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
         restore_home()
         restore_home = set_home(tmp / "пустой")
         path, body = RC.find_skill("grill-me", str(root), str(KIT))
-        assert path.endswith("aurora-grill/SKILL.md") and body, "grill-me не нашёл навык кита"
+        assert path.replace("\\", "/").endswith("aurora-grill/SKILL.md") and body, "grill-me не нашёл навык кита"
         # подсказки: / — навыки, @ — файлы, папки и серверы; секретов в подсказках нет
         assert any(i["value"] == "/aurora-grill" for i in RC.suggest(str(root), "/grill", [], str(KIT)))
         hints = RC.suggest(str(root), "@ист", ["tavily"], str(KIT))
@@ -2323,3 +2323,74 @@ def test_every_script_speaks_utf8_even_into_a_legacy_codepage_pipe(tmp: Path):
             bad.append(f"{f.name}: rc={cp.returncode} {err.strip().splitlines()[-1:]}")
     assert checked > 20, f"справку проверили у {checked} скриптов — перечень не нашёлся"
     assert not bad, "\n".join(bad)
+
+
+@test
+def test_a_null_device_is_not_a_terminal_on_windows(tmp: Path):
+    """`stdin=DEVNULL` — не терминал, даже когда `isatty()` отвечает «да».
+
+    На Windows `NUL` — символьное устройство, и `isatty()` для него истинно: `aurora.py new`
+    из скрипта, панели или ассистента шёл задавать вопросы в пустоту и падал на первом
+    `input()` с `EOFError`. Настоящая консоль отличается тем, что читается её режим.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import stdin_is_terminal
+
+    class Stream:
+        def __init__(self, tty):
+            self.tty = tty
+
+        def isatty(self):
+            return self.tty
+
+    class Kernel32:
+        def __init__(self, console):
+            self.console = console
+
+        def GetStdHandle(self, which):
+            assert which == -10, "спрашивали не стандартный ввод"
+            return 7
+
+        def GetConsoleMode(self, handle, ref):
+            return 1 if self.console else 0
+
+    assert stdin_is_terminal(Stream(False), Kernel32(True)) is False, "файл или труба названы терминалом"
+    assert stdin_is_terminal(Stream(True), Kernel32(False)) is False, "NUL назван терминалом"
+    assert stdin_is_terminal(Stream(True), Kernel32(True)) is True, "консоль не узнана"
+    assert stdin_is_terminal(None, Kernel32(True)) is False, "нет stdin — это не терминал"
+    cp = subprocess.run([sys.executable, "-c",
+                         "import sys; sys.path.insert(0, %r); "
+                         "from aurora_common import stdin_is_terminal; "
+                         "print(stdin_is_terminal())" % str(SCRIPTS)],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    assert cp.stdout.strip() == "False", f"DEVNULL принят за терминал: {cp.stdout!r} {cp.stderr[-200:]}"
+
+
+@test
+def test_a_gitignored_folder_with_a_russian_name_is_recognised(tmp: Path):
+    """Папка по-русски, закрытая `.gitignore`, — вне схемы допустима, как и латинская.
+
+    `git check-ignore` печатает не-ASCII пути в кавычках с восьмеричными кодами
+    («\\320\\241…»), и доктор не узнавал в них свою папку: рабочая папка с русским именем,
+    честно закрытая правилом, считалась нарушением схемы. А на Windows текстовый режим
+    подпроцесса превращал `\\n` в `\\r\\n`, и git получал каждый путь с хвостом `\\r`.
+    Пути идут байтами и через NUL.
+    """
+    root = make_project(tmp, git=True)
+    (root / "СвояПапка").mkdir()
+    (root / "СвояПапка" / "файл.md").write_text("текст", encoding="utf-8")
+    (root / "Чужая").mkdir()
+    (root / "Чужая" / "файл.md").write_text("текст", encoding="utf-8")
+    (root / ".gitignore").write_text("СвояПапка/\n", encoding="utf-8")
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    D = importlib.import_module("aurora_doctor")
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        got = D.git_ignored(["СвояПапка", "Чужая"])
+        assert got == {"СвояПапка"}, f"закрытая русская папка не узнана: {got}"
+        assert D.git_ignored([]) == set()
+    finally:
+        os.chdir(old)

@@ -218,13 +218,18 @@ def git_ignored(paths: list, rules_only: bool = False) -> set:
     if not paths:
         return set()
     import subprocess
+    # Пути идут через NUL (`-z`) и байтами. Без этого — две беды на ровном месте: git
+    # печатает не-ASCII пути в кавычках с восьмеричными кодами («\320\241…»), и папка по-русски,
+    # закрытая правилом, не узнавалась; а текстовый режим на Windows превращает `\n` в
+    # `\r\n`, и каждый путь приходил в git с хвостом `\r`.
     try:
-        out = subprocess.run(["git", "check-ignore", "--stdin"]
+        out = subprocess.run(["git", "-c", "core.quotepath=off", "check-ignore", "--stdin", "-z"]
                              + (["--no-index"] if rules_only else []),
-                             input="\n".join(paths), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+                             input=("\0".join(paths) + "\0").encode("utf-8"),
+                             capture_output=True, timeout=60)
     except Exception:
         return set()
-    return {line.strip().rstrip("/") for line in out.stdout.splitlines() if line.strip()}
+    return {p.rstrip("/") for p in out.stdout.decode("utf-8", "replace").split("\0") if p}
 
 
 def retired_fields_in_seeds() -> list:

@@ -933,26 +933,29 @@ def test_names_pass_on_windows_macos_and_linux(tmp: Path):
     assert a.casefold() != b.casefold() and b.endswith("_22"), \
         f"соседние страницы, различимые только регистром, легли в одну папку: {a} / {b}"
 
-    # живая база: непереносимое имя карточки чинится вместе со ссылками
-    root = make_project(tmp, git=True)
-    bad = card(root, "Processes/Запуск-HDFS->Hive.md", status="draft", body="Порядок запуска.")
-    card(root, "Concepts/Kafka.md", status="draft", body="Шина. См. [[Запуск-HDFS->Hive]].")
-    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fx"],
-                   cwd=str(root), check=True)
-    doc = run("aurora_doctor.py", cwd=root).stdout
-    assert "имена: карточки — 1" in doc and "kb_names.py --apply" in doc, \
-        f"доктор не назвал непереносимое имя и способ починки:\n{doc[-800:]}"
-    dry = run("kb_names.py", cwd=root, expect_rc=0).stdout
-    assert "Запуск-HDFS->Hive.md" in dry and bad.exists(), f"показ без --apply что-то изменил:\n{dry}"
-    run("kb_names.py", "--apply", cwd=root, expect_rc=0)
-    assert (root / "AuroraKnowledgeDB/meta/graphify/graph.json").is_file(), \
-        "после починки имён граф не пересобран — сервер графа отвечал бы по старым путям"
-    assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
-        "карточка с «>» в имени не переименована"
-    text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
-    assert "[[Запуск-HDFS-Hive" in text and "HDFS->Hive]]" not in text, \
-        f"ссылка на переименованную карточку не поправлена:\n{text}"
+    # живая база: непереносимое имя карточки чинится вместе со ссылками.
+    # На Windows файл с «>» в имени не создать вовсе (ровно об этом правило), поэтому
+    # живую базу с таким именем проверяет только POSIX.
+    if os.name != "nt":
+        root = make_project(tmp, git=True)
+        bad = card(root, "Processes/Запуск-HDFS->Hive.md", status="draft", body="Порядок запуска.")
+        card(root, "Concepts/Kafka.md", status="draft", body="Шина. См. [[Запуск-HDFS->Hive]].")
+        subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fx"],
+                       cwd=str(root), check=True)
+        doc = run("aurora_doctor.py", cwd=root).stdout
+        assert "имена: карточки — 1" in doc and "kb_names.py --apply" in doc, \
+            f"доктор не назвал непереносимое имя и способ починки:\n{doc[-800:]}"
+        dry = run("kb_names.py", cwd=root, expect_rc=0).stdout
+        assert "Запуск-HDFS->Hive.md" in dry and bad.exists(), f"показ без --apply что-то изменил:\n{dry}"
+        run("kb_names.py", "--apply", cwd=root, expect_rc=0)
+        assert (root / "AuroraKnowledgeDB/meta/graphify/graph.json").is_file(), \
+            "после починки имён граф не пересобран — сервер графа отвечал бы по старым путям"
+        assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
+            "карточка с «>» в имени не переименована"
+        text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
+        assert "[[Запуск-HDFS-Hive" in text and "HDFS->Hive]]" not in text, \
+            f"ссылка на переименованную карточку не поправлена:\n{text}"
 
     # правило видят все модели, работающие с базой (Т-85)
     for rel in ("templates/agents/AGENTS.md.template", "skills/aurora-vault/SKILL.md",

@@ -72,7 +72,9 @@ def cmd_new(target: str, extra: list[str]) -> int:
     # Диалог настройки требует терминала. Когда его нет — запуск из скрипта, из панели,
     # из ассистента — вопросы задавать некому, и раньше команда падала на первом же
     # `input()` с EOFError, оставляя развёрнутую, но ненастроенную папку.
-    quiet = "--non-interactive" in extra or not sys.stdin.isatty()
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import stdin_is_terminal
+    quiet = "--non-interactive" in extra or not stdin_is_terminal()
     extra = [x for x in extra if x != "--non-interactive"]
 
     print(f"→ Разворачиваю Aurora в {tgt}\n", flush=True)

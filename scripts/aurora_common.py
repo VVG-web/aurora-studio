@@ -987,6 +987,30 @@ def load_env(path) -> dict:
     return out
 
 
+def stdin_is_terminal(stream=None, kernel32=None) -> bool:
+    """Сидит ли за вводом человек. На Windows `isatty()` для `NUL` отвечает «да».
+
+    Запуск из скрипта, панели или ассистента отдаёт процессу `stdin=DEVNULL`; на POSIX
+    `isatty()` честно говорит «нет», а на Windows файл `NUL` — символьное устройство, и
+    ответ «да»: `aurora.py new` шёл задавать вопросы в пустоту и падал на первом `input()`
+    с `EOFError`. Настоящая консоль отличается тем, что у её дескриптора читается режим
+    (`GetConsoleMode`); у `NUL`, трубы и файла — нет. `kernel32` подставляется снаружи.
+    """
+    stream = sys.stdin if stream is None else stream
+    try:
+        if stream is None or not stream.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if os.name != "nt" and kernel32 is None:
+        return True
+    import ctypes
+    k = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
+    STD_INPUT_HANDLE = -10
+    mode = ctypes.c_ulong()
+    return bool(k.GetConsoleMode(k.GetStdHandle(STD_INPUT_HANDLE), ctypes.byref(mode)))
+
+
 def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
                  pause: float = 0.025) -> None:
     """`os.replace` с повтором на Windows: файл, который сейчас читают, туда не подменить.

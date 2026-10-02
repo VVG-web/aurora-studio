@@ -393,7 +393,8 @@ const ctx = {
 })();
 """
     src = tmp / "ask_tab.mjs"
-    src.write_text(harness.replace("MODULE", view), encoding="utf-8")
+    # ES-модуль по пути не импортируется: на Windows нужен адрес file:///D:/…
+    src.write_text(harness.replace("MODULE", Path(view).resolve().as_uri()), encoding="utf-8")
     cp = subprocess.run([engine, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert cp.returncode == 0 and cp.stdout.strip(), \
         f"функции раздела не выполнились:\n{(cp.stderr or cp.stdout)[:800]}"

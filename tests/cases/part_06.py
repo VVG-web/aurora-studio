@@ -451,7 +451,7 @@ def test_two_writing_runs_do_not_share_one_base(tmp: Path):
     # Процесс, которому нам не дано сигналить, — ЖИВ, а не мёртв. Системный процесс
     # усыновляет любой прогон, чей родитель ушёл; записав его в мёртвые, движок снимал
     # замок и пускал второго писателя в базу.
-    held["pid"] = 1
+    held["pid"] = 4 if os.name == "nt" else 1       # системный процесс; на Windows это «System»
     lock.write_text(_j.dumps(held), encoding="utf-8")
     got_sys, busy_sys = ar.writing_lock(str(root), "distill")
     assert not got_sys, "замок чужого процесса снят: отказ в правах принят за смерть"
