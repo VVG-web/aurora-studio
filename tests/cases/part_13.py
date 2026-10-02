@@ -1687,3 +1687,16 @@ def test_the_panel_is_served_as_one_document_assembled_from_its_parts(tmp: Path)
     assert len(shell.splitlines()) < 400, "оболочка снова вобрала в себя стили и скрипт"
     assert ck.ui_version() == (KIT / "VERSION").read_text(encoding="utf-8").strip(), \
         "версия панели не читается из подставленного скрипта"
+
+
+@test
+def test_the_interface_catalogues_agree_with_the_panel(tmp: Path):
+    """`kit_i18n.py --check` зелёная: каждая надпись панели есть в каталоге и наоборот.
+
+    CONTRIBUTING требует её зелёной перед выпуском, но проверку никто не гонял, и она
+    краснела на сорока ключах справки: `data-help="ключ"` просит `ключ.what/.how/.result`,
+    а проверка искала голый «ключ». Красное, к которому привыкли, перестаёт быть сигналом.
+    """
+    cp = subprocess.run([sys.executable, str(KIT / "scripts" / "kit_i18n.py"), "--check"],
+                        capture_output=True, text=True, timeout=120)
+    assert cp.returncode == 0, cp.stdout[-1500:] + cp.stderr[-500:]
