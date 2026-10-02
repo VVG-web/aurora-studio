@@ -1134,8 +1134,12 @@ def _update_archive(st: dict) -> dict:
         if info.is_dir() or len(parts) != 2 or not parts[1]:
             continue
         rel = parts[1]
-        if rel.startswith("/") or ".." in rel.split("/"):
+        if rel.startswith("/") or "\\" in rel or ":" in rel.split("/")[0] \
+                or ".." in rel.split("/"):
             return {"error": f"в архиве подозрительный путь: {rel[:120]}"}
+        dst_real = os.path.realpath(os.path.join(KIT, rel))
+        if os.path.commonpath([os.path.realpath(KIT), dst_real]) != os.path.realpath(KIT):
+            return {"error": f"в архиве путь вне кита: {rel[:120]}"}
         if not rel.startswith(KIT_KEEP):
             files[rel] = info
     if "VERSION" not in files:
@@ -1827,8 +1831,9 @@ def load_roots(cli: list | None = None) -> list:
         return [norm(r) for r in cli]
     saved = []
     if os.path.isfile(ROOTS_FILE):
-        saved = [norm(l) for l in open(ROOTS_FILE, encoding="utf-8").read().splitlines()
-                 if l.strip() and not l.startswith("#")]
+        with open(ROOTS_FILE, encoding="utf-8") as f:
+            saved = [norm(l) for l in f.read().splitlines()
+                     if l.strip() and not l.startswith("#")]
     return saved or [norm(os.path.dirname(KIT))]
 
 

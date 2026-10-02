@@ -139,7 +139,8 @@ def call_tool(project: str, name: str, args: dict) -> str:
         if not path:
             return (f"Карточки «{args.get('name')}» в базе нет. Найдите точное имя через "
                     "kb_search — оно совпадает с именем файла без .md.")
-        return open(path, encoding="utf-8", errors="ignore").read()[:LIMIT]
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return f.read()[:LIMIT]
     if name == "kb_context":
         mode = str(args.get("mode") or "generate")
         return run(project, "ctx_pack.py",
@@ -251,7 +252,8 @@ def slug(project: str) -> str:
     cfg = os.path.join(project, "aurora.config.yaml")
     if os.path.isfile(cfg):
         import re as _re
-        text = open(cfg, encoding="utf-8", errors="ignore").read(4000)
+        with open(cfg, encoding="utf-8", errors="ignore") as f:
+            text = f.read(4000)
         m = _re.search(r'^\s*slug\s*:\s*"?([^"\n#]+?)"?\s*$', text, _re.M)
         if m:
             name = m.group(1).strip()

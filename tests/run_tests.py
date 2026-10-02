@@ -14910,6 +14910,63 @@ def test_office_ingest_converts_and_is_idempotent(tmp: Path):
 
 
 @test
+def test_a_hostile_docx_does_not_take_the_converter_down(tmp: Path):
+    """Чужой docx: объявленные сущности и битый XML — «не смогли», а не падение разбора.
+
+    Документ приходит от заказчика. XML с `<!ENTITY>` раздувается в гигабайты при
+    разборе, а битый document.xml бросал `ParseError` мимо `try`, и весь прогон
+    `office_ingest` падал на одном файле. Настоящий docx не объявляет ни того ни другого.
+    """
+    import zipfile
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    OI = importlib.import_module("office_ingest")
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    def make(name: str, xml: str) -> str:
+        path = tmp / name
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("word/document.xml", xml)
+        return str(path)
+
+    good = (f'<?xml version="1.0"?><w:document xmlns:w="{ns}"><w:body>'
+            '<w:p><w:r><w:t>Абзац</w:t></w:r></w:p></w:body></w:document>')
+    assert "Абзац" in (OI.conv_docx_builtin(make("good.docx", good)) or ""), "обычный docx не разобран"
+    bomb = ('<?xml version="1.0"?><!DOCTYPE d [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;">]>'
+            f'<w:document xmlns:w="{ns}"><w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body></w:document>')
+    assert OI.conv_docx_builtin(make("bomb.docx", bomb)) is None, "XML с сущностями разобран"
+    assert OI.conv_docx_builtin(make("broken.docx", "<w:document")) is None, \
+        "битый XML уронил конвертер вместо отказа"
+
+
+@test
+def test_an_update_archive_cannot_write_outside_the_kit(tmp: Path):
+    """Путь из архива обновления с обратной косой чертой не выводит за пределы кита.
+
+    Проверка искала `..` только среди частей, разделённых «/». На Windows «..\\x» —
+    тоже выход вверх, и архив с таким именем записал бы файл рядом с китом.
+    """
+    import io
+    import zipfile
+    kit = tmp / "aurora-studio"
+    (kit).mkdir(parents=True)
+    (kit / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("aurora-studio-master/VERSION", "1.1.0\n")
+        z.writestr("aurora-studio-master/scripts\\..\\..\\evil.txt", "x")
+    ck, restore = _cockpit_on(kit)
+    ck._http_get = lambda url, limit, timeout=20: (
+        b"1.1.0\n" if url.endswith("/VERSION") else buf.getvalue())
+    try:
+        r = ck.kit_update()
+    finally:
+        restore()
+    assert "подозрительный путь" in r.get("error", ""), f"архив с обратной косой принят: {r}"
+    assert not (tmp / "evil.txt").exists() and (kit / "VERSION").read_text().strip() == "1.0.0"
+
+
+@test
 def test_scan_without_text_layer_is_not_passed_off_as_converted(tmp: Path):
     """Скан без текстового слоя — это НЕ разобранный файл, и он должен дойти до распознавания.
 

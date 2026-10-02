@@ -41,6 +41,7 @@ from xml.etree import ElementTree as ET
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".opencode", ".cursor", ".claude"}
+MAX_DOCX_XML = 200_000_000     # байт после распаковки: больше — не документ, а бомба
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
@@ -79,8 +80,15 @@ def conv_docx_builtin(src: str) -> str | None:
         return None
     try:
         with zipfile.ZipFile(src) as z:
+            # Документ приходит снаружи: архив-бомба и XML с объявленными сущностями
+            # (миллиард смехов) кладут разбор. Настоящий word/document.xml не объявляет
+            # ни DOCTYPE, ни ENTITY, а гигабайты текста в нём бывают только у бомбы.
+            if z.getinfo("word/document.xml").file_size > MAX_DOCX_XML:
+                return None
             xml = z.read("word/document.xml")
     except Exception:
+        return None
+    if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
         return None
 
     def para_text(p) -> str:
@@ -97,7 +105,10 @@ def conv_docx_builtin(src: str) -> str | None:
             return "#" * min(int(m.group(1)), 6) + " " + text
         return text
 
-    root = ET.fromstring(xml)
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return None             # битый XML — это «не смогли», как у остальных конвертеров
     body = root.find(f"{W_NS}body")
     if body is None:
         return None
