@@ -84,17 +84,17 @@ def test_the_kit_updates_itself_from_an_archive_install(tmp: Path):
     finally:
         restore()
     assert r.get("ok") and r["from"] == "1.0.0" and r["to"] == "1.1.0" and r["restart"], r
-    assert (kit / "VERSION").read_text().strip() == "1.1.0"
-    assert (kit / "scripts/a.py").read_text() == "new\n", "файл поставки не заменён"
+    assert (kit / "VERSION").read_text(encoding="utf-8").strip() == "1.1.0"
+    assert (kit / "scripts/a.py").read_text(encoding="utf-8") == "new\n", "файл поставки не заменён"
     assert os.access(kit / "scripts/new.sh", os.X_OK), "исполняемый файл потерял права"
     assert not (kit / "scripts/gone.py").exists(), "устаревший файл прошлой поставки остался"
-    assert (kit / "local/private_terms.txt").read_text() == "СЕКРЕТ\n", "тронуто личное"
-    assert (kit / ".env.test").read_text() == "TOKEN=1\n", "тронуты личные настройки"
+    assert (kit / "local/private_terms.txt").read_text(encoding="utf-8") == "СЕКРЕТ\n", "тронуто личное"
+    assert (kit / ".env.test").read_text(encoding="utf-8") == "TOKEN=1\n", "тронуты личные настройки"
     assert (kit / "mine.txt").exists(), "убран чужой файл, которого не было в прошлой поставке"
     backup = Path(r["backup"])
-    assert (backup / "scripts/a.py").read_text() == "old\n" and (backup / "scripts/gone.py").exists(), \
+    assert (backup / "scripts/a.py").read_text(encoding="utf-8") == "old\n" and (backup / "scripts/gone.py").exists(), \
         "заменённое и убранное не сохранены копией"
-    assert "scripts/new.sh" in json.loads((kit / ".aurora-install.json").read_text())["files"]
+    assert "scripts/new.sh" in json.loads((kit / ".aurora-install.json").read_text(encoding="utf-8"))["files"]
 
 
 @test
@@ -108,21 +108,21 @@ def test_the_kit_updates_itself_as_a_clone_even_after_a_history_rewrite(tmp: Pat
     """
     def git(cwd, *a):
         r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
-                           cwd=str(cwd), capture_output=True, text=True)
+                           cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert r.returncode == 0, (a, r.stderr)
         return r.stdout.strip()
 
     up = tmp / "upstream"
     up.mkdir()
     git(up, "init", "-q", "-b", "master")
-    (up / "VERSION").write_text("1.0.0\n")
-    (up / "CHANGELOG.md").write_text("## 1.0.0 — начало\n")
+    (up / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    (up / "CHANGELOG.md").write_text("## 1.0.0 — начало\n", encoding="utf-8")
     git(up, "add", "-A")
     git(up, "commit", "-q", "-m", "1.0.0")
     kit = tmp / "kit"
     git(tmp, "clone", "-q", str(up), str(kit))
-    (up / "VERSION").write_text("1.1.0\n")
-    (up / "CHANGELOG.md").write_text("## 1.1.0 — вперёд\n\n## 1.0.0 — начало\n")
+    (up / "VERSION").write_text("1.1.0\n", encoding="utf-8")
+    (up / "CHANGELOG.md").write_text("## 1.1.0 — вперёд\n\n## 1.0.0 — начало\n", encoding="utf-8")
     git(up, "commit", "-q", "-am", "1.1.0")
     ck, restore = _cockpit_on(kit)
     try:
@@ -130,16 +130,16 @@ def test_the_kit_updates_itself_as_a_clone_even_after_a_history_rewrite(tmp: Pat
         assert r.get("ok") and r["to"] == "1.1.0" and r["how"] == "git", r
         # история на GitHub переписана: тот же 1.1.0 другим коммитом, поверх — 1.2.0
         git(up, "commit", "-q", "--amend", "-m", "1.1.0 (переписан)")
-        (up / "VERSION").write_text("1.2.0\n")
+        (up / "VERSION").write_text("1.2.0\n", encoding="utf-8")
         git(up, "commit", "-q", "-am", "1.2.0")
         r = ck.kit_update()
         assert r.get("ok") and r["to"] == "1.2.0", r
         assert any("aurora-backup/1.1.0-" in n for n in r["notes"]), r["notes"]
         assert "aurora-backup/1.1.0-" in git(kit, "branch", "--list", "aurora-backup/*")
         # свой коммит в ките — кнопка отказывается, ничего не трогая
-        (up / "VERSION").write_text("1.3.0\n")
+        (up / "VERSION").write_text("1.3.0\n", encoding="utf-8")
         git(up, "commit", "-q", "--amend", "-am", "1.3.0, история снова переписана")
-        (kit / "mine.txt").write_text("своё\n")
+        (kit / "mine.txt").write_text("своё\n", encoding="utf-8")
         git(kit, "add", "mine.txt")
         git(kit, "commit", "-q", "-m", "своя правка")
         head = git(kit, "rev-parse", "HEAD")
@@ -366,7 +366,7 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
         print(json.dumps({"seen": seen, "returns": json.loads(out)}, ensure_ascii=False))
     """), encoding="utf-8")
     cp = subprocess.run([str(vpy), str(scenario), str(KIT / "scripts" / "agents"), str(tmp)],
-                        capture_output=True, text=True, timeout=240)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240)
     assert cp.returncode == 0, cp.stderr[-1500:]
     d = json.loads(cp.stdout.strip().splitlines()[-1])
     assert d["seen"][0] == [["mcp_connect"], False], f"сервер поднят до нужды: {d['seen'][0]}"
@@ -889,7 +889,7 @@ def test_cockpit_scripts_parse(tmp: Path):
     def check(name: str, code: str, module: bool):
         f = tmp / (name + (".mjs" if module else ".js"))
         f.write_text(code, encoding="utf-8")
-        cp = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+        cp = subprocess.run([node, "--check", str(f)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert cp.returncode == 0, f"{name} не разбирается:\n{cp.stderr.strip()[:800]}"
 
     ui = ui_source()
@@ -1698,7 +1698,7 @@ def test_the_interface_catalogues_agree_with_the_panel(tmp: Path):
     а проверка искала голый «ключ». Красное, к которому привыкли, перестаёт быть сигналом.
     """
     cp = subprocess.run([sys.executable, str(KIT / "scripts" / "kit_i18n.py"), "--check"],
-                        capture_output=True, text=True, timeout=120)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert cp.returncode == 0, cp.stdout[-1500:] + cp.stderr[-500:]
 
 
@@ -1774,7 +1774,7 @@ def test_mcp_search_survives_parallel_calls_and_ignores_the_archive(tmp: Path):
     lines.append(json.dumps({"jsonrpc": "2.0", "id": 900, "method": "tools/call", "params": {
         "name": "kb_card", "arguments": {"name": "Старый-двойник"}}}))
     cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_mcp.py"), "--project", str(root)],
-                        input="\n".join(lines) + "\n", capture_output=True, text=True,
+                        input="\n".join(lines) + "\n", capture_output=True, text=True, encoding="utf-8", errors="replace",
                         timeout=180, cwd=str(tmp))
     answers = {}
     for line in cp.stdout.splitlines():

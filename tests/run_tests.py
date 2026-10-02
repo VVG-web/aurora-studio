@@ -18,6 +18,13 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 import tempfile
 
 import harness  # noqa: F401 — каркас; заодно кладёт tests/ в sys.path
@@ -45,7 +52,7 @@ for _part in ['part_01', 'part_02', 'part_03', 'part_04', 'part_05', 'part_06', 
 def test_smoke_invariants_always_run_with_filter(_t):
     """Пустой фильтр: rc 1 + warning «не подошёл», но инварианты всё равно прогнаны (урок T5)."""
     cp = subprocess.run([sys.executable, __file__, "--only=zzz_no_match_zzz"],
-                      capture_output=True, text=True, env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
+                      capture_output=True, text=True, encoding="utf-8", errors="replace", env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
     assert cp.returncode == 1, cp.stdout
     assert "не подошёл" in cp.stdout, cp.stdout
     for name in INVARIANTS:
@@ -56,7 +63,7 @@ def test_smoke_invariants_always_run_with_filter(_t):
 def test_smoke_runs_only_invariants(_t):
     """--smoke гоняет только инварианты, без тяжёлых интеграционных проверок."""
     cp = subprocess.run([sys.executable, __file__, "--smoke"],
-                      capture_output=True, text=True, env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
+                      capture_output=True, text=True, encoding="utf-8", errors="replace", env={**os.environ, "AURORA_TESTS_ISOLATED": "1"})
     assert cp.returncode == 0, cp.stdout
     for name in INVARIANTS:
         assert name in cp.stdout, (name, cp.stdout)
@@ -83,7 +90,7 @@ with tempfile.TemporaryDirectory() as td:
             RESULTS.append((_n, f"{type(e).__name__}: {e}"))
             print(f"  ❌ {_n} — {type(e).__name__}: {e}")
 def main() -> int:
-    print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text().strip()}"
+    print(f"Aurora engine tests — kit {(KIT / 'VERSION').read_text(encoding='utf-8').strip()}"
           + (f" · только «{ONLY}»" if ONLY else "") + "\n")
     if ONLY and not RESULTS:
         print(f"Ни одна проверка не подошла под «{ONLY}».")

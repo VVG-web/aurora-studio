@@ -56,7 +56,7 @@ def conv_pandoc(src: str) -> str | None:
         return None
     try:
         out = subprocess.run(["pandoc", "-t", "gfm", "--wrap=none", src],
-                             capture_output=True, text=True, timeout=180)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
         return out.stdout if out.returncode == 0 and out.stdout.strip() else None
     except Exception:
         return None
@@ -237,7 +237,7 @@ def conv_pdf_builtin(src: str) -> str | None:
     if have("pdftotext"):
         try:
             out = subprocess.run(["pdftotext", "-layout", src, "-"],
-                                 capture_output=True, text=True, timeout=180)
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
             if out.returncode == 0 and out.stdout.strip():
                 return out.stdout
         except Exception:

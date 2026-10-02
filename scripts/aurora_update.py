@@ -301,7 +301,7 @@ def refresh_hooks(target: Path) -> str:
     mode = m.group(1) if m else "ratchet"
     cp = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"),
                          "--install", "--mode", mode, "--force"],
-                        cwd=str(target), capture_output=True, text=True)
+                        cwd=str(target), capture_output=True, text=True, encoding="utf-8", errors="replace")
     return mode if cp.returncode == 0 else ""
 
 
@@ -315,13 +315,13 @@ def tracked_but_ignored(target: Path) -> list:
     try:
         p = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "ls-files", "-ci",
                             "--exclude-standard"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         paths = [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
         if not paths:
             return []
         v = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "check-ignore",
                             "-v", "--no-index", "--stdin"], input="\n".join(paths) + "\n",
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return []
     sys.path.insert(0, str(KIT / "scripts"))

@@ -23,6 +23,13 @@ import os
 import re
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # в проекте реестр лежит рядом со схемой папок, в kit'е — в корне
@@ -87,7 +94,7 @@ def help_text(impl: str) -> str:
     if script.endswith(".py") and os.path.isfile(path):
         try:
             out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
-                                 text=True, timeout=30).stdout
+                                 text=True, encoding="utf-8", errors="replace", timeout=30).stdout
         except Exception:  # noqa: BLE001
             out = ""
     _HELP[script] = out
@@ -301,7 +308,7 @@ def args_of(impl: str) -> str:
         return ""
     try:
         out = subprocess.run([sys.executable, path, "--help"], capture_output=True,
-                             text=True, timeout=30).stdout
+                             text=True, encoding="utf-8", errors="replace", timeout=30).stdout
     except Exception:
         return ""
     if "usage:" not in out:      # скрипт без argparse — позиционных аргументов не знаем

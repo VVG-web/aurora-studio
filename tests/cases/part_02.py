@@ -394,7 +394,7 @@ const ctx = {
 """
     src = tmp / "ask_tab.mjs"
     src.write_text(harness.replace("MODULE", view), encoding="utf-8")
-    cp = subprocess.run([engine, str(src)], capture_output=True, text=True, timeout=60)
+    cp = subprocess.run([engine, str(src)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert cp.returncode == 0 and cp.stdout.strip(), \
         f"функции раздела не выполнились:\n{(cp.stderr or cp.stdout)[:800]}"
     r = json.loads(cp.stdout.strip().splitlines()[-1])
@@ -1246,7 +1246,7 @@ def test_foreign_harness_gets_rules_not_only_paths(tmp: Path):
 
     def spec(*args):
         r = subprocess.run([sys.executable, str(KIT / "scripts" / "make_kinds.py"), *args],
-                           cwd=root, capture_output=True, text=True)
+                           cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return r.stdout
 
     ac, opz, all_kinds = spec("--kind", "ac"), spec("--kind", "opz"), spec()
@@ -1470,7 +1470,7 @@ def test_context_pack_knows_the_model_window(tmp: Path):
     env = dict(os.environ, AURORA_AGENT_BACKEND_1_URL="http://x/v1",
                AURORA_AGENT_BACKEND_1_MODEL="m", AURORA_AGENT_BACKEND_1_CONTEXT="8000")
     cp = subprocess.run([sys.executable, str(KIT / "scripts/ctx_pack.py"), "правило"],
-                        cwd=root, capture_output=True, text=True, env=env)
+                        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     assert "Объём пака ограничен окном модели" in cp.stdout, \
         f"пак не узнал про окно модели:\n{cp.stdout[:400]}"
     assert "исчерпан" in cp.stdout, "бюджет объявлен, а лишнее всё равно вошло"
@@ -1481,7 +1481,7 @@ def test_context_pack_knows_the_model_window(tmp: Path):
         if k.startswith("AURORA_AGENT_"):
             bare.pop(k)
     cp2 = subprocess.run([sys.executable, str(KIT / "scripts/ctx_pack.py"), "правило"],
-                         cwd=root, capture_output=True, text=True, env=bare)
+                         cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", env=bare)
     assert "Объём пака ограничен окном модели" not in cp2.stdout, \
         "движок придумал предел там, где окно не объявлено"
 
@@ -1611,7 +1611,7 @@ def test_the_development_kitchen_stays_private(tmp: Path):
                                    ("development", "/tmp/private.git", 0)):
         cp = subprocess.run(["sh", str(hook), "origin", public],
                             input=f"refs/heads/{branch} abc123 refs/heads/{branch} def456\n",
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert cp.returncode == expect, \
             (f"ветка {branch} на {public}: ждали rc={expect}, получили {cp.returncode}\n"
              f"{cp.stderr[:300]}")
@@ -1746,7 +1746,7 @@ def test_retrieval_is_watched_not_guessed(tmp: Path):
         "в эталоне есть запросы, которые ничего не находят — такой сторож не сторожит"
 
     cp = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--retrieval"],
-                        capture_output=True, text=True, timeout=300)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     assert cp.returncode == 0, f"выдача по корпусу разошлась с эталоном:\n{cp.stdout[-600:]}"
     assert "Порядок не менялся" in cp.stdout, cp.stdout[-400:]
 

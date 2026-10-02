@@ -26,6 +26,13 @@ import re
 import shutil
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 import time
 import urllib.request
 from pathlib import Path
@@ -68,7 +75,7 @@ def venv_python(extra_id: str) -> Path:
 
 def _run(cmd: list, timeout: int = 60) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env)
 
 
 def installed_version(extra_id: str) -> str:

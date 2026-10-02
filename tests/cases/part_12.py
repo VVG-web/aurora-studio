@@ -81,7 +81,7 @@ def test_update_route_spends_no_time_on_idle_steps(tmp: Path):
     one = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
     assert R.lap_steps(one) == one["max_steps"], "в один поток лимит шагов изменился"
     root = make_project(tmp, git=True)
-    g = lambda *args: subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+    g = lambda *args: subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     g("add", "-A"); g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
     before = len(g("log", "--oneline").stdout.splitlines())
@@ -89,7 +89,7 @@ def test_update_route_spends_no_time_on_idle_steps(tmp: Path):
            "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
     cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/agent_runner.py"),
                          "--task", "aliases", "--apply", "--critic"],
-                        cwd=str(root), capture_output=True, text=True, env=env, timeout=300)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=300)
     assert cp.returncode == 0 and "Конфликтов синонимов: 0" in cp.stdout, cp.stdout + cp.stderr
     assert "Оракул" not in cp.stdout and len(g("log", "--oneline").stdout.splitlines()) == before, \
         "холостые синонимы гоняли оракула или сделали коммит"
@@ -98,14 +98,14 @@ def test_update_route_spends_no_time_on_idle_steps(tmp: Path):
     lint.write_text("open('lint-ran', 'w').write('1')\nprint('карточек 1 · ошибок 0')\n",
                     encoding="utf-8")
     hooks = subprocess.run([sys.executable, str(SCRIPTS / "aurora_hooks.py"), "--install", "--force"],
-                           cwd=str(root), capture_output=True, text=True)
+                           cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert hooks.returncode == 0, hooks.stdout + hooks.stderr
     (root / "lint-ran").unlink(missing_ok=True)        # установка сама меряет планку
     (root / "AuroraKnowledgeDB/Concepts").mkdir(parents=True, exist_ok=True)
     (root / "AuroraKnowledgeDB/Concepts/Проба.md").write_text("# Проба\n", encoding="utf-8")
     g("add", "-A")
     done = subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "оборот"],
-                          cwd=str(root), capture_output=True, text=True,
+                          cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env={**os.environ, "AURORA_SKIP_RATCHET": "1"})
     assert done.returncode == 0, done.stdout + done.stderr
     assert not (root / "lint-ran").exists(), "при снятом храповике хук гонял линтер"
@@ -410,7 +410,7 @@ def test_graph_labels_scale_and_follow_the_link_distribution(tmp: Path):
     """)
     f = tmp / "tiers.js"
     f.write_text(probe, encoding="utf-8")
-    cp = subprocess.run([node, str(f)], capture_output=True, text=True)
+    cp = subprocess.run([node, str(f)], capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stderr
     spread, ties, flat = json.loads(cp.stdout)
     assert spread == {"many": 10, "mid": 50, "few": 40}, spread
@@ -758,7 +758,7 @@ def test_analyst_rework_is_counted_apart_for_each_person(tmp: Path):
     env = {**os.environ, "AURORA_REPORT_YEAR": "2026"}
     for step in ("make_analyst_metrics.py", "update_analyst_metrics.py", "verify_weekly_by_person.py"):
         cp = subprocess.run([sys.executable, str(KIT / "reports/analyst" / step)], cwd=str(root),
-                            capture_output=True, text=True, env=env, timeout=120)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120)
         assert cp.returncode == 0, f"{step}: {cp.stdout[-600:]}{cp.stderr[-600:]}"
     m = json.loads(next(data.rglob("analyst_metrics.json")).read_text(encoding="utf-8"))
     wk = m["weekly"]
@@ -806,13 +806,13 @@ def test_kit_launchers_try_python_before_trusting_it(tmp: Path):
     kit.mkdir()
     shutil.copy2(KIT / "start-aurora.command", kit / "start-aurora.command")
     cp = subprocess.run([bash, str(kit / "start-aurora.command")], input="", capture_output=True,
-                        text=True, timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
+                        text=True, encoding="utf-8", errors="replace", timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
     assert cp.returncode == 1 and "Не найден Python 3.9" in cp.stdout, \
         f"заглушка python3 принята за Python:\n{cp.stdout}{cp.stderr}"
     (fake / "python3").unlink()
     (fake / "python3").symlink_to(sys.executable)
     cp = subprocess.run([bash, str(kit / "start-aurora.command")], input="", capture_output=True,
-                        text=True, timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
+                        text=True, encoding="utf-8", errors="replace", timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
     assert cp.returncode == 1 and "Не найден git" in cp.stdout, \
         f"заглушка git принята за git:\n{cp.stdout}{cp.stderr}"
 
@@ -1367,7 +1367,7 @@ def test_an_empty_build_plan_costs_nothing(tmp: Path):
     коммитил один журнал запусков панели как «работу человека».
     """
     root = make_project(tmp, git=True)
-    g = lambda *args: subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+    g = lambda *args: subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     # как в настоящем проекте: кеш интерпретатора закрыт .gitignore
     (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     g("add", "-A"); g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "gitignore")
@@ -1377,7 +1377,7 @@ def test_an_empty_build_plan_costs_nothing(tmp: Path):
            "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
     cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/agent_runner.py"),
                          "--task", "build", "--apply", "--critic"],
-                        cwd=str(root), capture_output=True, text=True, env=env, timeout=300)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=300)
     assert cp.returncode == 0, cp.stderr[-600:]
     assert "Источников в плане: 0 → 0" in cp.stdout, \
         f"цикл маршрута не узнает, что источников не осталось:\n{cp.stdout[-400:]}"

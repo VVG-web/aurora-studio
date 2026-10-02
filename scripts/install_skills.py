@@ -25,6 +25,13 @@ import argparse
 import filecmp
 import shutil
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parents[1]

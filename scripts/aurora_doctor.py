@@ -187,7 +187,7 @@ def check_case_drift(schema: list) -> list:
     import subprocess
     tops = sorted({p.split("/")[0] for p in schema})
     try:
-        out = subprocess.run(["git", "ls-files"], capture_output=True, text=True, timeout=60)
+        out = subprocess.run(["git", "ls-files"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if out.returncode != 0:
             return []
     except Exception:
@@ -221,7 +221,7 @@ def git_ignored(paths: list, rules_only: bool = False) -> set:
     try:
         out = subprocess.run(["git", "check-ignore", "--stdin"]
                              + (["--no-index"] if rules_only else []),
-                             input="\n".join(paths), capture_output=True, text=True, timeout=60)
+                             input="\n".join(paths), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except Exception:
         return set()
     return {line.strip().rstrip("/") for line in out.stdout.splitlines() if line.strip()}
@@ -423,7 +423,7 @@ def check_portable_names() -> list:
     try:
         from aurora_common import case_clashes, path_problems
         out = subprocess.run(["git", "-C", str(ROOT), "-c", "core.quotepath=false",
-                              "ls-files", "-z"], capture_output=True, text=True,
+                              "ls-files", "-z"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                              timeout=60).stdout
     except Exception:  # noqa: BLE001 — нет git или старый движок: проверять нечего
         return []
@@ -521,7 +521,7 @@ def main() -> int:
     import subprocess                      # как в остальных проверках: git нужен не всегда
     try:
         rc = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"],
-                            capture_output=True, text=True, timeout=20).returncode
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).returncode
     except Exception:
         rc = 1
     if rc != 0:

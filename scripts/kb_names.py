@@ -267,7 +267,7 @@ def apply_mirror(root: str, mirror: str, plan: list) -> dict:
 
 def tracked(root: str) -> list:
     out = subprocess.run(["git", "-C", root, "-c", "core.quotepath=false", "ls-files", "-z"],
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     return [r for r in out.split("\0") if r]
 
 
@@ -357,7 +357,7 @@ def main() -> int:
 
     fix = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb_fix.py"),
            "--portable-names", "--links"] + (["--apply", "--allow-dirty"] if a.apply else [])
-    cp = subprocess.run(fix, cwd=root, capture_output=True, text=True)
+    cp = subprocess.run(fix, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     lines = [l for l in cp.stdout.splitlines()
              if "имён приведено" in l or l.startswith("    ") or "переименований" in l]
     if a.apply and re.search(r"переименований: [1-9]", cp.stdout):
@@ -390,7 +390,7 @@ def main() -> int:
         # по старым до следующего маршрута. Выгрузка дешёвая и ничего не переписывает зря.
         g = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                          "kb_graph.py"), "--export"],
-                           cwd=root, capture_output=True, text=True)
+                           cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
         print("## Граф базы пересобран по новым путям\n" if g.returncode == 0 else
               f"## Граф базы не пересобран: {(g.stderr or g.stdout)[-300:]}\n")
     if not a.apply:

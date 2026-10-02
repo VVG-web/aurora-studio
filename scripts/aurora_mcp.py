@@ -52,6 +52,13 @@ import json
 import os
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 import threading
 from pathlib import Path
 
@@ -113,7 +120,7 @@ def run(project: str, script: str, args: list, timeout: int = 120) -> str:
         path = str(SCRIPTS / script)
     try:
         p = subprocess.run([sys.executable, path, *args], cwd=project,
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         return f"Команда {script} не ответила за {timeout} с."
     out = (p.stdout or "").strip() or (p.stderr or "").strip()

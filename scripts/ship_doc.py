@@ -85,7 +85,7 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) ->
     cmd += ["--metadata", f"title={title}"]
 
     try:
-        proc = subprocess.run(cmd, input=text, text=True, capture_output=True, timeout=300)
+        proc = subprocess.run(cmd, input=text, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=300)
     except Exception as e:  # noqa: BLE001
         print(f"ship_doc: pandoc не запустился: {e}", file=sys.stderr)
         return 1

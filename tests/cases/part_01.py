@@ -1272,7 +1272,7 @@ def test_confluence_ref_parsing(tmp: Path):
                    input=json.dumps({"conf_url": "https://c.example.com",
                                      "sync_roots": [{"page_id": "https://c.example.com/display/SP/GUI",
                                                      "title": "GUI"}]}),
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
     cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
     assert "pageId=https://" not in cfg, "в конфиг попал бессмысленный адрес"
 
@@ -1289,7 +1289,7 @@ def test_confluence_ref_parsing(tmp: Path):
             '      - page_id: "111"\n        title: "Раздел А"\n        trusted: true\n'
             '  jira:\n    project_key: "P"\n') + "};\nconsole.log(JSON.stringify((() => {"
             + got.group(1) + "\n})()));\n", encoding="utf-8")
-        cp = subprocess.run([node, str(probe)], capture_output=True, text=True)
+        cp = subprocess.run([node, str(probe)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert cp.returncode == 0, cp.stderr
         rows = json.loads(cp.stdout)
         assert [r["page_id"] for r in rows] == ["https://c.example.com/display/SP/GUI", "111"], \
@@ -1331,7 +1331,7 @@ def test_setup_accepts_answers_as_form(tmp: Path):
     cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_setup.py"),
                          "--target", str(root), "--json", "-"],
                         input=json.dumps(answers, ensure_ascii=False),
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stderr[:400]
     cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
     assert 'page_id: "111"' in cfg and 'page_id: "222"' in cfg, \
@@ -1355,7 +1355,7 @@ def test_setup_form_saves_jql_with_quotes(tmp: Path):
                          "--target", str(root), "--json", "-"],
                         input=json.dumps({"jira_key": "PRJ", "jira_jql": jql},
                                          ensure_ascii=False),
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stderr[:400]
     cfg = (root / "aurora.config.yaml").read_text(encoding="utf-8")
     line = next(l for l in cfg.splitlines() if l.strip().startswith("default_jql:"))
@@ -1440,7 +1440,7 @@ def test_new_project_works_without_a_terminal(tmp: Path):
     target = tmp / "auto-project"
     cp = subprocess.run([sys.executable, str(KIT / "aurora.py"), "new", str(target),
                          "--name", "Auto", "--slug", "Auto"],
-                        capture_output=True, text=True, stdin=subprocess.DEVNULL)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL)
     assert cp.returncode == 0, f"new упал без терминала:\n{cp.stdout[-800:]}\n{cp.stderr[-400:]}"
     assert "EOFError" not in cp.stderr, cp.stderr[-300:]
     assert (target / "aurora.config.yaml").is_file(), "конфиг не создан"
@@ -1453,7 +1453,7 @@ def test_new_project_works_without_a_terminal(tmp: Path):
     for args in (["kb_lint.py", "--summary"], ["build_plan.py", "--status"],
                  ["aurora_stats.py"], ["kb_trust.py"]):
         r = subprocess.run([sys.executable, str(target / ".opencode/scripts" / args[0]),
-                            *args[1:]], cwd=str(target), capture_output=True, text=True)
+                            *args[1:]], cwd=str(target), capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert r.returncode == 0, f"{args[0]} на свежем проекте: rc={r.returncode}\n{r.stderr[:300]}"
 
 
@@ -1472,7 +1472,7 @@ def test_update_works_from_project_copy(tmp: Path):
 
     # без подсказки — понятная ошибка, а не стек
     cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/aurora_update.py"), "."],
-                        cwd=str(root), capture_output=True, text=True)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 2, f"ожидался управляемый отказ, а не {cp.returncode}"
     assert "Traceback" not in cp.stderr, "человек получает трассировку вместо объяснения"
     assert "kit_path.txt" in cp.stderr, "не сказано, как починить"
@@ -1480,7 +1480,7 @@ def test_update_works_from_project_copy(tmp: Path):
     # с подсказкой — обычная работа
     (root / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
     cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/aurora_update.py"), "."],
-                        cwd=str(root), capture_output=True, text=True)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, f"с подсказкой обновление должно работать:\n{cp.stderr[:400]}"
     assert "kit " in cp.stdout, "не показана версия kit'а"
 
@@ -1497,7 +1497,7 @@ def test_kit_ships_no_project_data(tmp: Path):
     # -z: пути через NUL и без экранирования — иначе кириллица приезжает в кавычках
     # и проверка «начинается с tests/corpus/» промахивается на каждом втором файле
     tracked = [p for p in subprocess.run(["git", "ls-files", "-z"], cwd=str(KIT),
-                                         capture_output=True, text=True).stdout.split("\0") if p]
+                                         capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split("\0") if p]
     project_dirs = ("AuroraKnowledgeDB/", "Sources/", "Raw/", "Artifacts/",
                     "Deliverables/", "Workspaces/", ".opencode/")
     stray = [p for p in tracked
@@ -1557,9 +1557,9 @@ def test_no_private_terms_in_tracked_files(tmp: Path):
     # `git add` проверкой не виден — и уезжает в коммит с внутренними названиями внутри.
     # Так и вышло: `kb_translit.py` прошёл прогон зелёным, а хук отклонил push.
     tracked = subprocess.run(["git", "ls-files"], cwd=str(KIT),
-                             capture_output=True, text=True).stdout.split()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     fresh = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
-                           cwd=str(KIT), capture_output=True, text=True).stdout.split()
+                           cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     tracked = list(dict.fromkeys(tracked + fresh))
     rx = term_regex(terms)
     hits = []
@@ -1597,7 +1597,7 @@ def test_no_private_terms_in_commit_messages(tmp: Path):
     if not terms:
         return
     log = subprocess.run(["git", "log", "--format=%H%x00%B%x01"], cwd=str(KIT),
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     rx = term_regex(terms)
     hits = []
     for entry in log.split("\x01"):
@@ -1626,14 +1626,14 @@ def test_hooks_guard_commit_messages(tmp: Path):
     (root / "engine_manifest.txt").write_text("# manifest\n", encoding="utf-8")
 
     out = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--install"],
-                         cwd=str(root), capture_output=True, text=True)
+                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "commit-msg" in out.stdout, f"хук сообщений не поставлен:\n{out.stdout}"
     assert (root / ".git/hooks/commit-msg").is_file()
 
     (root / "f.txt").write_text("x", encoding="utf-8")
     subprocess.run(["git", "add", "f.txt"], cwd=str(root), check=True)
     ok = subprocess.run(["git", "commit", "-m", "обычная правка"], cwd=str(root),
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert ok.returncode == 0, f"чистое сообщение не прошло:\n{ok.stderr}"
 
     (root / "f.txt").write_text("y", encoding="utf-8")
@@ -1641,12 +1641,12 @@ def test_hooks_guard_commit_messages(tmp: Path):
     # Под локалью C: так на Linux и в проверке GitHub. Прежний хук искал grep'ом с
     # кириллицей в шаблоне — там он молча ничего не находил, и коммит проходил.
     bad = subprocess.run(["git", "commit", "-m", "правка про ВНУТРЕННЕЕИМЯ"], cwd=str(root),
-                         capture_output=True, text=True,
+                         capture_output=True, text=True, encoding="utf-8", errors="replace",
                          env={**os.environ, "LC_ALL": "C", "LANG": "C"})
     assert bad.returncode != 0, "коммит с внутренним названием в сообщении прошёл"
     assert "внутренние названия" in bad.stderr, bad.stderr[:300]
     n = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=str(root),
-                       capture_output=True, text=True).stdout.strip()
+                       capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     assert n == "1", f"коммит всё-таки создан (их {n})"
 
 
@@ -1668,7 +1668,7 @@ def test_privacy_hook_is_kit_only(tmp: Path):
     (root / "local/private_terms.txt").write_text("ВНУТРЕННЕЕИМЯ\n", encoding="utf-8")
 
     out = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--install"],
-                         cwd=str(root), capture_output=True, text=True)
+                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "pre-commit" in out.stdout, f"линтер-хук не поставлен:\n{out.stdout}"
     assert not (root / ".git/hooks/commit-msg").exists(), \
         "в проект поставлен хук приватности — он про публикацию кита, а не про работу"
@@ -1676,11 +1676,11 @@ def test_privacy_hook_is_kit_only(tmp: Path):
     (root / "f.txt").write_text("x", encoding="utf-8")
     subprocess.run(["git", "add", "f.txt"], cwd=str(root), check=True)
     cp = subprocess.run(["git", "commit", "-m", "правка про ВНУТРЕННЕЕИМЯ"], cwd=str(root),
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, f"коммит в проекте остановлен зря:\n{cp.stderr}"
 
     st = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--status"],
-                        cwd=str(root), capture_output=True, text=True).stdout
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "это проект, а не кит" in st, f"статус не объясняет, почему хука нет:\n{st}"
 
 
@@ -1710,7 +1710,7 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
         return "." not in h                       # https://c и подобные фикстуры без домена
     rx = re.compile(r"https?://([A-Za-z0-9.-]+)|[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
     tracked = subprocess.run(["git", "ls-files"], cwd=str(KIT),
-                             capture_output=True, text=True).stdout.split()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     hits = []
     for rel in tracked:
         path = KIT / rel

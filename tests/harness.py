@@ -34,7 +34,7 @@ def _git_author_for_fixtures() -> None:
     (`GITHUB_ACTOR`), на машине — пользователь системы.
     """
     have = subprocess.run(["git", "config", "--get", "user.email"],
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     if have or os.environ.get("GIT_CONFIG_GLOBAL"):
         return
     import getpass
@@ -67,7 +67,7 @@ for _k in [k for k in os.environ if k.startswith("AURORA_AGENT_BACKEND_")]:
 
 def run(script: str, *args, cwd: Path, expect_rc=None) -> subprocess.CompletedProcess:
     cp = subprocess.run([sys.executable, str(SCRIPTS / script), *args],
-                        cwd=str(cwd), capture_output=True, text=True)
+                        cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if VERBOSE:
         print(f"    $ {script} {' '.join(args)} → rc={cp.returncode}")
         print("      " + "\n      ".join(cp.stdout.strip().splitlines()[:12]))

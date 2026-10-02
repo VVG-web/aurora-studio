@@ -427,7 +427,7 @@ def register_tools(agent, allowed: list) -> None:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         try:
             r = sp.run([os.sys.executable, os.path.join(here, script), *args],
-                       cwd=root, capture_output=True, text=True, timeout=180)
+                       cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
             return (r.stdout or r.stderr)[:40_000]
         except Exception as e:  # noqa: BLE001
             return f"{type(e).__name__}: {e}"

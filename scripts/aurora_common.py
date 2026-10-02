@@ -16,6 +16,14 @@ import os
 import re
 import subprocess
 import unicodedata
+import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 
@@ -923,7 +931,7 @@ def git_dirty(path: str = ".") -> list:
     """Отслеживаемые файлы с незакоммиченными правками (неотслеживаемые не мешают)."""
     try:
         out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--", path],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except Exception:
         return []
     if out.returncode != 0:
@@ -935,7 +943,7 @@ def git_commit() -> str:
     """Короткий хеш текущего коммита; пусто, если это не git или git недоступен."""
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""

@@ -204,7 +204,7 @@ SAME_FAIL_LIMIT = 3      # одна и та же команда с теми же
 # ------------------------------------------------------------------ git-чекпойнт
 
 def git(*args: str, cwd: str = ".") -> tuple:
-    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
@@ -279,7 +279,7 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     if not os.path.isfile(path):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
     p = subprocess.run([sys.executable, path, *args], cwd=cwd,
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": ((p.stdout or "") + (p.stderr or "")).strip(), "refused": ""}
 

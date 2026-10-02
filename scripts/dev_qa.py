@@ -164,10 +164,10 @@ def cmd_check() -> int:
 def changed_scripts(base: str) -> list:
     """Изменённые файлы движка относительно базы сравнения."""
     cp = subprocess.run(["git", "diff", "--name-only", base], cwd=str(KIT),
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     files = [f for f in cp.stdout.split() if f.endswith((".py", ".html", ".txt", ".md"))]
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=str(KIT),
-                           capture_output=True, text=True).stdout
+                           capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     files += [l[3:].strip() for l in dirty.splitlines() if l[3:].strip().endswith(".py")]
     return sorted(set(files))
 
@@ -282,7 +282,7 @@ def cmd_run(what: str, apply_record: bool) -> int:
         cp = None
     else:
         cp = subprocess.run([sys.executable, str(KIT / "tests/run_tests.py")],
-                            cwd=str(KIT), capture_output=True, text=True,
+                            cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace",
                             env={**os.environ, "AURORA_QA_RUNNING": "1"})
     if cp is not None:
         tail = [l for l in cp.stdout.splitlines() if l.strip()][-1:]
@@ -427,7 +427,7 @@ def retrieval_report(save: bool = False) -> int:
             "--no-semantic"]
     for q in CORPUS_QUERIES:
         args += ["--query", q]
-    r = sp.run(args, cwd=CORPUS, capture_output=True, text=True, timeout=180)
+    r = sp.run(args, cwd=CORPUS, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     try:
         now = json.loads(r.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):

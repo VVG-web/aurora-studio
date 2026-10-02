@@ -108,12 +108,12 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
 
     lint = KIT / "scripts/kb_lint.py"
     whole = subprocess.run([sys.executable, str(lint), "--summary"], cwd=root,
-                           capture_output=True, text=True).stdout
+                           capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "ошибок 2" in whole, f"подготовка сломалась: {whole}"
 
     mine = subprocess.run([sys.executable, str(lint), "--only",
                            "AuroraKnowledgeDB/Concepts/Моя.md", "--summary"],
-                          cwd=root, capture_output=True, text=True)
+                          cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "ошибок 0" in mine.stdout, \
         f"за чужие ошибки отвечает тот, кто их не делал:\n{mine.stdout}"
     assert mine.returncode == 0, "чистый файл, а код возврата ненулевой"
@@ -122,7 +122,7 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
     lst = root / "список.txt"
     lst.write_text("AuroraKnowledgeDB/Concepts/Чужая.md\n", encoding="utf-8")
     by_file = subprocess.run([sys.executable, str(lint), "--only-from", str(lst), "--summary"],
-                             cwd=root, capture_output=True, text=True).stdout
+                             cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "ошибок 2" in by_file, \
         f"список путей из файла не сработал — а через оболочку кириллица не доходит:\n{by_file}"
 
@@ -160,7 +160,7 @@ def test_correction_is_a_layer_not_a_one_time_edit(tmp: Path):
 
     def run_fix(*args):
         return subprocess.run([sys.executable, str(script), *args], cwd=root,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     # Владельца нет — заводить нечего: применить такое исправление будет некуда.
     bad = run_fix("--new", "Такой-карточки-нет", "--text", "что-то")
@@ -237,7 +237,7 @@ def test_correction_asks_instead_of_deciding(tmp: Path):
 
     def run_fix(*args):
         return subprocess.run([sys.executable, str(script), *args], cwd=root,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     run_fix("--new", "Заявка", "--text", "на самом деле иначе")
     run_fix("--apply")
@@ -275,7 +275,7 @@ def test_correction_asks_instead_of_deciding(tmp: Path):
     lost = run_fix("--list")
     assert "осиротела" in lost.stdout or "Осиротели" in lost.stdout or True
     fresh = subprocess.run([sys.executable, str(script), "--new", "Заявка", "--text", "x"],
-                           cwd=root, capture_output=True, text=True)
+                           cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert fresh.returncode == 1, "исправление заведено на исчезнувшую карточку"
 
 
@@ -472,7 +472,7 @@ def test_card_is_named_after_the_object_not_the_paper(tmp: Path):
                     'type: process\nstatus: knowledge\n---\n\n'
                     "# AC-3.4.2 Отправка начислений\n\nТело. [[Другая]]\n", encoding="utf-8")
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--names", "--apply"],
-                        cwd=root, capture_output=True, text=True)
+                        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode in (0, 1), cp.stderr[:300]
     made = list((root / "AuroraKnowledgeDB" / "Concepts").glob("*.md"))
     assert len(made) == 1 and made[0].name == "Отправка-начислений.md", \
@@ -519,7 +519,7 @@ def test_section_is_the_type_written_as_a_folder(tmp: Path):
         encoding="utf-8")
 
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--sections", "--apply"],
-                        cwd=root, capture_output=True, text=True)
+                        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode in (0, 1), cp.stderr[:300]
     assert (kb / "Processes" / "Алгоритм.md").is_file(), "процесс остался среди понятий"
     assert (kb / "Glossary" / "Термин.md").is_file(), "словарная статья осталась в справочниках"
@@ -975,7 +975,7 @@ def test_kit_files_pass_on_every_os(tmp: Path):
     C = importlib.import_module("aurora_common")
     rels = [r for r in subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"],
                                       cwd=str(KIT), capture_output=True,
-                                      text=True).stdout.split("\0") if r]
+                                      text=True, encoding="utf-8", errors="replace").stdout.split("\0") if r]
     assert len(rels) > 100, "список файлов кита не прочитан"
     bad = [(r, C.path_problems(r)) for r in rels if C.path_problems(r)]
     assert not bad, f"файлы кита не пройдут на одной из систем: {bad[:5]}"
@@ -1281,7 +1281,7 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
     if not vpy.exists():
         return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
     cp = subprocess.run([str(vpy), str(KIT / "scripts/agents/pydantic_ai_adapter.py"), "--selfcheck"],
-                        capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, stdin=subprocess.DEVNULL)
     out = json.loads(cp.stdout.strip().splitlines()[-1])
     assert out["ok"], f"установленная версия {out.get('version')} не прошла самопроверку: {out['problems']}"
 

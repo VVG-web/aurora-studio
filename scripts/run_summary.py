@@ -101,7 +101,7 @@ def git_head(cwd: str) -> str:
     """Коммит, от которого считаются изменения базы; пусто — проект не в git."""
     try:
         r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True,
-                           text=True, timeout=30)
+                           text=True, encoding="utf-8", errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
     return r.stdout.strip() if r.returncode == 0 else ""
@@ -129,9 +129,9 @@ def kb_delta(cwd: str, since: str) -> dict | None:
     git = ["git", "-c", "core.quotepath=false"]
     try:
         d = subprocess.run(git + ["diff", "--name-status", "-M", since, "--", KB], cwd=cwd,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         u = subprocess.run(git + ["ls-files", "--others", "--exclude-standard", "--", KB],
-                           cwd=cwd, capture_output=True, text=True, timeout=120)
+                           cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
     if d.returncode != 0:

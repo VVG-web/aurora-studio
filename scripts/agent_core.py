@@ -983,7 +983,7 @@ def mcp_probe(project: str, kit=None, timeout: float = 60) -> dict:
     try:
         p = subprocess.run(argv + ["--mcp-probe"], input=json.dumps(
             {"mcpServers": servers, "timeout": timeout}, ensure_ascii=False),
-            capture_output=True, text=True, cwd=project or None, env=child_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=project or None, env=child_env(),
             timeout=timeout + 30)
     except subprocess.TimeoutExpired:
         return {"error": f"проверка серверов не уложилась в {int(timeout + 30)} с"}
@@ -1751,7 +1751,7 @@ def venv_status() -> tuple:
     try:
         p = subprocess.run([str(vpy), "-c",
                             "from importlib.metadata import version; print(version('pydantic-ai'))"],
-                           capture_output=True, text=True, timeout=20, env=child_env())
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, env=child_env())
         return (p.returncode == 0, p.stdout.strip())
     except Exception:  # noqa: BLE001
         return False, ""
