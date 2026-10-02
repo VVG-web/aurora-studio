@@ -2071,3 +2071,69 @@ def test_confluence_config_and_secret_are_read_from_the_given_root(tmp: Path):
     assert os.getcwd() == before, "чтение сменило рабочую папку"
     src = (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
     assert "os.chdir(" not in src, "панель снова меняет рабочую папку процесса"
+
+
+@test
+def test_a_stub_gets_its_own_text_back_and_one_status(tmp: Path):
+    """Заготовка, чей служебный текст пересказан «тезисом», снова выглядит заготовкой.
+
+    До 1.101 distill брал и заготовки: «Авторизация — заготовка понятия, в которой ссылка
+    уже есть…» — пересказ пометки, а сама пометка уехала в дословный раздел (PRJ-C: 345).
+    И заготовки в Glossary стояли `draft`, в Concepts — `placeholder`.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Авторизация.md",
+         "Авторизация — заготовка понятия, в которой ссылка уже есть, а знаний пока нет.\n\n"
+         "## Источник (перенесено дословно)\n\n\n# Авторизация\n\n"
+         "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n\n## Упоминается в\n\n"
+         "- [[Вход]]\n\n## История изменений\n\n- 2026-08-30: тезис пересобран\n",
+         status="draft", tags="[заготовка]", distilled="2026-08-30", relinked="2026-09-01")
+    card(root, "Glossary/ТКП.md", "_Заготовка: имя названо в базе._", status="draft",
+         tags="[заготовка]")
+    run("kb_fix.py", "--stub-text", "--apply", "--allow-dirty", cwd=root)
+    kb = root / "AuroraKnowledgeDB"
+    a = (kb / "Concepts/Авторизация.md").read_text(encoding="utf-8")
+    head, body = a.split("\n---", 1)
+    assert "status: placeholder" in head and "distilled:" not in head and "relinked:" not in head, head
+    assert "## Источник (перенесено дословно)" not in body and "_Заготовка:" in body, body
+    assert "заготовка понятия, в которой" not in body and "## История изменений" in body, body
+    assert "status: placeholder" in (kb / "Glossary/ТКП.md").read_text(encoding="utf-8")
+
+
+@test
+def test_a_page_its_authors_retired_is_not_parsed(tmp: Path):
+    """Страницу, которую сами авторы вывели из работы, разбор не берёт.
+
+    «[не_используем]ALG-029» (91 КБ), «Вариант… (Устаревший)», «Удалить_или_переиспользовать»,
+    прежние версии алгоритмов в «…/Архив/» разбирались на PRJ-C как живые.
+    """
+    root = make_project(tmp)
+    base = root / "Sources/Confluence/Алгоритмы"
+    for rel in ("[не_используем]ALG-029._Полный_ФЛК.md", "Архив/ALG-061_Проверка.md",
+                "Вариант_(Устаревший)/index.md", "Удаление_документа.md"):
+        f = base / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("# Страница\n\n" + "Шаг алгоритма. " * 30, encoding="utf-8")
+    plan = run("build_plan.py", cwd=root).stdout
+    assert "Удаление_документа" in plan, plan[-400:]
+    for gone in ("ALG-029", "ALG-061", "Устаревший"):
+        assert gone not in plan, f"отозванная авторами страница в плане: {gone}"
+
+
+@test
+def test_a_live_card_wins_over_its_archived_copy_and_dead_maps_leave(tmp: Path):
+    """Ссылка ведёт на живую карточку, а не путается в её копии в архиве.
+
+    Слитая карточка уходит в `_archive` под тем же именем, и «[[ER_Объект_учета_ЮЛ]]»
+    находила две — живую и копию — и объявлялась неоднозначной. Там же ссылки на карту
+    документа, ушедшую вместе с машинной расшифровкой, держали базу с битыми ссылками.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/ER-Объект-учета-ЮЛ.md", "Объект учёта.", status="knowledge")
+    card(root, "_archive/ER-Объект-учета-ЮЛ.md", "Старая копия.", status="deprecated")
+    card(root, "Concepts/Ссылки.md", "См. [[ER_Объект_учета_ЮЛ]].\n\n## Названо в карточках\n\n"
+         "- [[Документ--Старая-расшифровка]]\n- [[ER-Объект-учета-ЮЛ]]\n", status="knowledge")
+    run("kb_fix.py", "--links", "--apply", "--allow-dirty", cwd=root)
+    text = (root / "AuroraKnowledgeDB/Concepts/Ссылки.md").read_text(encoding="utf-8")
+    assert "[[ER-Объект-учета-ЮЛ]]" in text and "[[ER_Объект_учета_ЮЛ]]" not in text, text
+    assert "Документ--Старая-расшифровка" not in text, f"ссылка на ушедшую карту осталась:\n{text}"

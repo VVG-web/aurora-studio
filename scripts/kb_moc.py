@@ -276,6 +276,30 @@ def code_mentions(cards: dict) -> dict:
     return out
 
 
+def drop_links_to(names: set, root: str = "AuroraKnowledgeDB") -> int:
+    """Убрать из базы ссылки на эти имена. → в скольких файлах."""
+    item = re.compile(r"^\s*[-*]\s*\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|[^\]]*)?\]\]\s*$")
+    inline = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|([^\]]*))?\]\]")
+    changed = 0
+    for dp, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            path = os.path.join(dp, f)
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            if "[[" not in text or not any(n in text for n in names):
+                continue
+            lines = [l for l in text.split("\n")
+                     if not ((m := item.match(l)) and m.group(1).strip() in names)]
+            new = inline.sub(lambda m: (m.group(2) or m.group(1)) if m.group(1).strip() in names
+                             else m.group(0), "\n".join(lines))
+            if new != text:
+                open(path, "w", encoding="utf-8").write(new)
+                changed += 1
+    return changed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Карты содержания базы знаний")
     ap.add_argument("--apply", action="store_true", help="записать MOC/*.md (иначе dry-run)")
@@ -443,6 +467,15 @@ def main() -> int:
             if a.apply:
                 os.remove(path)
             print(f"  {'убрана' if a.apply else 'уйдёт'} карта документа без карточек: {path}")
+        if stale and a.apply:
+            # Ссылки на ушедшую карту — прочь, иначе база ссылается на то, чего нет: списки
+            # «Названо в карточках» терминов держали [[Документ--…converted]] после снятия
+            # машинной расшифровки (PRJ-C 30.09.2026). Строка списка из одной ссылки уходит,
+            # в тексте ссылка становится словами.
+            gone = {os.path.basename(p_)[:-3] for p_ in stale}
+            n = drop_links_to(gone)
+            if n:
+                print(f"  ссылки на ушедшие карты сняты в {n} карточках")
         if a.apply:
             print(f"\n✅ Карт по документам записано: {written}"
                   + (f" · убрано устаревших: {len(stale)}" if stale else ""))
