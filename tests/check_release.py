@@ -23,9 +23,9 @@ def main():
         problems.append(f"VERSION «{version}» — не вида X.Y.Z")
     if not re.search(r"^## " + re.escape(version) + r"(\s|$)", read("CHANGELOG.md"), re.M):
         problems.append(f"в CHANGELOG.md нет записи «## {version} — …»")
-    ui = re.search(r'const UI_VERSION\s*=\s*"([^"]+)"', read("cockpit/ui/index.html"))
+    ui = re.search(r'const UI_VERSION\s*=\s*"([^"]+)"', read("cockpit/ui/panel.js"))
     if not ui:
-        problems.append("в cockpit/ui/index.html не найден UI_VERSION")
+        problems.append("в cockpit/ui/panel.js не найден UI_VERSION")
     elif ui.group(1) != version:
         problems.append(f"UI_VERSION {ui.group(1)} ≠ VERSION {version}")
     for p in problems:

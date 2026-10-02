@@ -83,7 +83,9 @@ def used_in(module: str = "") -> set:
         files = [os.path.join(r, f) for r, _d, fs in os.walk(base) for f in fs
                  if f.endswith((".js", ".html"))]
     else:
-        files = [UI]
+        ui_dir = os.path.dirname(UI)
+        files = [os.path.join(ui_dir, f) for f in sorted(os.listdir(ui_dir))
+                 if f.endswith((".html", ".js"))] if os.path.isdir(ui_dir) else [UI]
     keys = set()
     for path in files:
         if not os.path.isfile(path):

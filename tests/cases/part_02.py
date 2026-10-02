@@ -93,11 +93,11 @@ def test_cockpit_ui_version_tracks_kit(tmp: Path):
     ui_v, kit_v = m.group(1), kit
     assert ui_v == kit_v, (
         f"панель собрана под {ui_v}, ядро {kit_v} — версии разошлись. ",
-        "Либо обновите cockpit/ui/index.html под новые команды и метрики, ",
+        "Либо обновите cockpit/ui/panel.js под новые команды и метрики, ",
         "либо поднимите UI_VERSION осознанно")
     assert ui_v.split(".")[:2] == kit_v.split(".")[:2], (
         f"панель собрана под {ui_v}, ядро {kit_v} — младшая версия разошлась. "
-        "Либо обновите cockpit/ui/index.html под новые команды и метрики, "
+        "Либо обновите cockpit/ui/panel.js под новые команды и метрики, "
         "либо поднимите UI_VERSION осознанно")
 
 

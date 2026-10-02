@@ -4,7 +4,8 @@
   python3 cockpit/aurora_cockpit.py            # поднять и открыть в браузере
   python3 cockpit/aurora_cockpit.py --port 8787 --roots ~/work ~/projects
 
-Панель — один self-contained HTML (`cockpit/ui/index.html`), сервер — только стандартная
+Панель — один self-contained HTML (оболочка `cockpit/ui/index.html`, к ней на лету подставляются
+`panel.css` и `panel.js`), сервер — только стандартная
 библиотека: контур закрытый, ставить в него нечего.
 
 Что делает сервер и чего не делает:
@@ -1943,9 +1944,25 @@ def project_card(path: str) -> dict:
     }
 
 
+UI_INCLUDE = re.compile(r"^<!--@include ([\w.-]+)-->\n", re.M)
+
+
+def ui_source(limit: int = 4_000_000) -> str:
+    """Страница панели целиком: оболочка `index.html` плюс стили и скрипт из соседних файлов.
+
+    В браузер уходит один самодостаточный документ, как и раньше: куски (`panel.css`,
+    `panel.js`) подставляются сюда на каждый запрос. Подставляется только файл из папки
+    страницы по простому имени — не путь, который можно подсунуть.
+    """
+    html = read_text(UI, limit=limit)
+    folder = os.path.dirname(UI)
+    return UI_INCLUDE.sub(lambda m: read_text(os.path.join(folder, m.group(1)), limit=limit),
+                          html)
+
+
 def ui_version() -> str:
     """Версия панели объявлена в самом HTML — там же, где она используется."""
-    m = re.search(r'const UI_VERSION = "([^"]+)"', read_text(UI, limit=200_000))
+    m = re.search(r'const UI_VERSION = "([^"]+)"', ui_source(limit=400_000))
     return m.group(1) if m else "—"
 
 
@@ -3375,7 +3392,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
-            html = read_text(UI, limit=4_000_000)
+            html = ui_source()
             if not html:
                 html = "<h1>cockpit/ui/index.html не найден</h1>"
             html = html.replace("__AURORA_TOKEN__", TOKEN)

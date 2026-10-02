@@ -1,0 +1,477 @@
+/* ОФОРМЛЕНИЕ ПАНЕЛИ — ТРИ СЛОЯ ТОКЕНОВ.
+
+   1. Палитра живёт в скине (`cockpit/skins/*.css`): только значения, никаких селекторов.
+      Здесь — запасной набор на случай, если скин не загрузился: панель обязана остаться
+      читаемой всегда.
+   2. Смысл — имена, которыми пользуется разметка: фон, поверхность, текст, уровни
+      доверия, шаг сетки, шкала кеглей, радиусы, тени, длительности.
+   3. Токены компонентов — то, чем скин меняет приём, а не цвет: толщина рамки карточки,
+      тень кнопки, форма точки статуса, регистр заголовка. Компонент читает только их.
+
+   Правило, ради которого всё это заведено: скин не трогает селекторы разметки. Пока он
+   их трогал (`zine.css` переопределял два десятка правил), любая правка вёрстки молча
+   ломала оформление, и узнать об этом можно было только глазами. */
+
+/* ── Слой 1 · запасная палитра (скин перекроет) ───────────────────────────── */
+:root{
+  --bg:#0A0F1E; --surface-1:#111A30; --surface-2:#17223D; --border:#263353;
+  --text:#EAF0FA; --text-muted:#93A0BC;
+  --primary:#2EE6C8; --accent:#FF4DA3; --gold:#F7C948;
+  --tier-imported:#8592A8; --tier-draft:#9DC0FF; --tier-inreview:#FFA62B;
+  --tier-verified:#2EE6C8; --tier-deprecated:#6E63C9;
+  --danger:#FF4D5E; --corruption:#B24BFF;
+  --console-bg:#060B17; --console-ink:#CFE9E3;
+  --aura-1:transparent; --aura-2:transparent;
+}
+
+/* ── Слой 2 · смысл ───────────────────────────────────────────────────────── */
+:root{
+  /* Линия сильнее обычной: рамка карточки в скинах, где граница либо есть, либо её нет. */
+  --border-strong:var(--border);
+
+  /* Шрифты. Файлы лежат в `cockpit/vendor/fonts`, подключены в шапке страницы; если
+     шрифт не пришёл, системный стек в конце списка держит панель читаемой. */
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --display:var(--sans);
+
+  /* Шкала кеглей: шесть ступеней на всю панель. Размер вне шкалы — повод завести токен,
+     а не написать число в правиле. */
+  --text-xs:11px; --text-sm:12.5px; --text-md:13.5px; --text-lg:15px;
+  --text-xl:21px; --text-2xl:27px;
+
+  /* Шаг сетки: отступы кратны четырём, иначе плотность экрана плывёт от раздела к разделу. */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:22px; --sp-6:30px;
+
+  --radius:14px; --radius-sm:10px; --radius-xs:6px; --radius-pill:999px;
+  --glow:0 0 0 1px color-mix(in oklab,var(--primary) 35%,transparent),
+         0 0 24px -6px color-mix(in oklab,var(--primary) 55%,transparent);
+  --shadow-card:none;
+  --shadow-pop:0 30px 80px -20px rgba(0,0,0,.7);
+  --shadow-toast:0 18px 40px -18px rgba(0,0,0,.8);
+
+  --motion-fast:.16s; --motion-slow:.24s;
+
+  /* Фактура полотна: два пятна света по умолчанию. Скин заменяет их бумагой в точку
+     или гасит вовсе — это одно свойство, а не переопределение `body::before`. */
+  --canvas-texture:
+    radial-gradient(900px 500px at 78% -12%, var(--aura-1), transparent 60%),
+    radial-gradient(760px 460px at 8% 0%, var(--aura-2), transparent 62%);
+  --canvas-texture-size:auto;
+}
+
+/* ── Слой 3 · токены компонентов ──────────────────────────────────────────── */
+:root{
+  /* карточка */
+  --card-bg:var(--surface-1); --card-border:var(--border); --card-border-w:1px;
+  --card-radius:var(--radius); --card-shadow:var(--shadow-card);
+
+  /* кнопка */
+  --btn-bg:var(--surface-2); --btn-border:var(--border); --btn-ink:var(--text);
+  --btn-radius:var(--radius-sm); --btn-weight:600; --btn-shadow:none;
+  --btn-transform:none; --btn-ls:normal; --btn-pad:8px 14px;
+  --btn-primary-bg:color-mix(in oklab,var(--primary) 18%,var(--surface-2));
+  --btn-primary-border:color-mix(in oklab,var(--primary) 55%,var(--border));
+  --btn-primary-ink:var(--text);
+  --btn-hover-border:color-mix(in oklab,var(--primary) 45%,var(--border));
+  --btn-hover-shift:0;
+
+  /* чип статуса и сама точка: форма — тоже приём скина */
+  --chip-bg:var(--surface-2); --chip-border-w:1px; --chip-radius:var(--radius-pill);
+  --chip-weight:400; --chip-ink:var(--text-muted);
+  --dot-size:7px; --dot-radius:2px; --dot-rotate:45deg; --dot-clip:none; --dot-ring:none;
+
+  /* меню */
+  --nav-bg:color-mix(in oklab,var(--surface-1) 35%,transparent);
+  --nav-item-radius:var(--radius-sm);
+  --nav-item-active-bg:var(--surface-2); --nav-item-active-ink:var(--text);
+  --nav-marker-w:3px; --nav-marker:var(--primary); --nav-marker-glow:0 0 12px var(--primary);
+
+  /* шапка */
+  --header-bg:color-mix(in oklab,var(--surface-1) 72%,transparent);
+  --header-blur:blur(10px);
+
+  /* плитка проекта: полоса тяжести слева и — если скин захочет — пятно ауры */
+  --tile-rail-w:4px; --tile-aura-opacity:0; --tile-lift:-3px;
+
+  /* заголовки */
+  --h1-font:var(--display); --h1-size:var(--text-xl); --h1-weight:800;
+  --h1-transform:none; --h1-ls:-.01em; --h1-ink:var(--text); --h1-shadow:none;
+  --h2-transform:none; --h2-weight:700; --h2-ls:.01em;
+  --eyebrow-ls:.16em;
+
+  /* числа: у части скинов цифры набираются не моноширинным, а своим начертанием */
+  --num-font:var(--mono);
+
+  /* поля ввода и терминальные блоки */
+  --field-bg:var(--surface-1); --field-border:var(--border);
+  --console-radius:var(--radius);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:var(--text-lg)/1.5 var(--sans);
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:var(--canvas-texture);background-size:var(--canvas-texture-size)}
+/* Поля и выпадающие списки красит браузер — и красит по-своему: фон светлый, а цвет
+   текста наследуется от панели. В тёмной теме это белым по белому, и найти такое можно
+   только глазами. Поэтому правило общее (не по классу): фон, цвет и рамка — токенами.
+   `color-scheme` говорит браузеру, какие рисовать системные части, которые нам не
+   подчиняются: раскрытый список, полосы прокрутки, стрелку выбора. */
+:root[data-theme="dark"]{color-scheme:dark}
+:root[data-theme="light"]{color-scheme:light}
+button,input,select,textarea{font:inherit;color:inherit}
+input:not([type=checkbox]):not([type=radio]),select,textarea{
+  background:var(--field-bg);color:var(--text);
+  border:var(--card-border-w) solid var(--field-border);border-radius:var(--radius-sm)}
+/* Раскрытый список Chrome рисует сам, но фон и цвет строк берёт отсюда. */
+option{background:var(--surface-1);color:var(--text)}
+button{cursor:pointer;background:none;border:0}
+a{color:var(--primary)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:10px}
+
+/* ---------------- каркас ---------------- */
+#app{position:relative;z-index:1;display:grid;grid-template-columns:236px 1fr;
+  grid-template-rows:56px 1fr;height:100%}
+header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 var(--sp-5);
+  border-bottom:var(--card-border-w) solid var(--border);background:var(--header-bg);
+  backdrop-filter:var(--header-blur)}
+:root[data-theme="light"] header{background:var(--header-bg)}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--display);
+  font-weight:800;letter-spacing:.14em;font-size:var(--text-sm)}
+.brand svg{filter:drop-shadow(0 0 6px color-mix(in oklab,var(--primary) 60%,transparent))}
+.brand small{font-weight:600;letter-spacing:.02em;color:var(--text-muted);font-size:var(--text-xs)}
+.brand small.stale{color:var(--tier-inreview);border-bottom:1px dashed currentColor;cursor:help}
+/* Что бы ни делала половина экранов, они делают это с одним конкретным проектом —
+   и он должен быть виден всегда, а не только на Мостике. */
+.projbadge{display:flex;align-items:center;gap:8px;max-width:32ch;font-weight:600}
+.projbadge .dot{width:8px;height:8px;border-radius:50%;flex:none;
+  background:var(--aura,var(--text-muted));box-shadow:0 0 8px var(--aura,transparent)}
+.projbadge .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.projbadge.none{font-weight:500;color:var(--text-muted);border-style:dashed}
+.stalebar{border:1px solid color-mix(in oklab,var(--tier-inreview) 45%,var(--border));
+  background:color-mix(in oklab,var(--tier-inreview) 10%,transparent);border-radius:var(--radius-sm);
+  padding:var(--sp-3) var(--sp-4);font-size:var(--text-md);margin-bottom:var(--sp-5)}
+/* Браузерное правило `[hidden]{display:none}` живёт в UA-стилях, а любой авторский
+   `display` его перебивает — независимо от специфичности. Поэтому кнопка `nav button`
+   (`display:flex`) с атрибутом hidden оставалась на экране: «Скрыть раздел» ставила
+   атрибут, панель уходила на «О проекте», а «Разработка» никуда не девалась. То же
+   касалось `.btn` и `.chip` — всех, у кого display задан явно. Одна строка на весь класс
+   ошибок, и она обязана быть !important: иначе спор с авторскими правилами повторится. */
+[hidden]{display:none !important}
+.spacer{flex:1}
+.kbd{font:var(--text-xs) var(--mono);border:1px solid var(--border);border-radius:var(--radius-xs);
+  padding:3px 7px;color:var(--text-muted);background:var(--surface-2)}
+nav{border-right:var(--card-border-w) solid var(--border);padding:var(--sp-3) 10px;
+  overflow:auto;background:var(--nav-bg)}
+:root[data-theme="light"] nav{background:var(--nav-bg)}
+nav .group{font-size:10px;letter-spacing:var(--eyebrow-ls);color:var(--text-muted);
+  text-transform:uppercase;margin:var(--sp-3) var(--sp-2) 6px}
+nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  padding:9px 10px;border-radius:var(--nav-item-radius);color:var(--text-muted);
+  font-size:var(--text-md);position:relative}
+nav button:hover{background:var(--surface-2);color:var(--text)}
+nav button[aria-current="true"]{background:var(--nav-item-active-bg);
+  color:var(--nav-item-active-ink);font-weight:600}
+nav button[aria-current="true"]::before{content:"";position:absolute;left:-10px;top:9px;bottom:9px;
+  width:var(--nav-marker-w);border-radius:0 3px 3px 0;background:var(--nav-marker);
+  box-shadow:var(--nav-marker-glow)}
+nav .count{margin-left:auto;font:var(--text-xs) var(--mono);padding:1px 6px;
+  border-radius:var(--radius-pill);background:var(--surface-1);border:1px solid var(--border)}
+nav .count:empty{display:none}
+nav .count.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
+.navgroup{display:contents}
+main{overflow:auto;padding:var(--sp-5) var(--sp-6) 60px;scroll-behavior:smooth}
+.view{display:none;animation:rise .22s ease}
+.view.on{display:block}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+h1{font-family:var(--h1-font);font-size:var(--h1-size);font-weight:var(--h1-weight);
+  letter-spacing:var(--h1-ls);text-transform:var(--h1-transform);color:var(--h1-ink);
+  text-shadow:var(--h1-shadow);margin:0 0 var(--sp-1)}
+h2{font-size:var(--text-lg);font-weight:var(--h2-weight);margin:var(--sp-6) 0 var(--sp-3);
+  letter-spacing:var(--h2-ls);text-transform:var(--h2-transform)}
+.sub{color:var(--text-muted);font-size:var(--text-md);margin:0 0 var(--sp-5);max-width:70ch}
+
+/* ---------------- элементы ---------------- */
+.help-tip{position:fixed;z-index:2000;max-width:380px;padding:10px 12px;border-radius:10px;background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);box-shadow:0 10px 28px rgba(0,0,0,.22);font-size:var(--text-sm);line-height:1.45;pointer-events:none}
+.help-tip b{display:block;margin-bottom:2px}
+.help-tip .k{color:var(--text-muted);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;margin-top:8px}
+.card{background:var(--card-bg);border:var(--card-border-w) solid var(--card-border);
+  border-radius:var(--card-radius);box-shadow:var(--card-shadow)}
+.grid{display:grid;gap:var(--sp-3)}
+.tiles{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+.metrics{grid-template-columns:repeat(auto-fill,minmax(178px,1fr))}
+.metric{padding:var(--sp-3) var(--sp-4);position:relative;overflow:hidden;text-align:left;
+  width:100%;transition:transform var(--motion-fast),border-color var(--motion-fast),
+  box-shadow var(--motion-fast)}
+.metric:hover{transform:translateY(-2px);border-color:var(--btn-hover-border)}
+.metric .val{font:700 var(--text-2xl)/1.1 var(--num-font);letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums}
+.metric .lbl{color:var(--text-muted);font-size:var(--text-sm);margin-top:5px}
+.metric .hint{font-size:var(--text-xs);color:var(--text-muted);margin-top:var(--sp-2);opacity:.85}
+.metric.warn .val{color:var(--tier-inreview)} .metric.bad .val{color:var(--danger)}
+.metric.ok .val{color:var(--primary)} .metric.drift .val{color:var(--corruption)}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-xs);padding:3px 9px;
+  border-radius:var(--chip-radius);border:var(--chip-border-w) solid var(--border);
+  background:var(--chip-bg);color:var(--chip-ink);font-weight:var(--chip-weight)}
+.chip.tier{color:var(--text)}
+/* Точка статуса: цвет несёт смысл, форму задаёт скин — ромб, квадрат или сердце. */
+.chip .dot{width:var(--dot-size);height:var(--dot-size);border-radius:var(--dot-radius);
+  transform:rotate(var(--dot-rotate));clip-path:var(--dot-clip);box-shadow:var(--dot-ring)}
+.chip.ok{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 40%,var(--border))}
+.chip.bad{color:var(--danger);border-color:color-mix(in oklab,var(--danger) 45%,var(--border))}
+.chip.warn{color:var(--tier-inreview);border-color:color-mix(in oklab,var(--tier-inreview) 45%,var(--border))}
+.chip.gold{color:var(--gold);border-color:color-mix(in oklab,var(--gold) 45%,var(--border))}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:var(--btn-pad);
+  border-radius:var(--btn-radius);border:var(--card-border-w) solid var(--btn-border);
+  background:var(--btn-bg);color:var(--btn-ink);font-size:var(--text-md);
+  font-weight:var(--btn-weight);text-transform:var(--btn-transform);letter-spacing:var(--btn-ls);
+  box-shadow:var(--btn-shadow);transition:var(--motion-fast)}
+.btn:hover{border-color:var(--btn-hover-border);
+  transform:translate(var(--btn-hover-shift),var(--btn-hover-shift))}
+.btn:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--primary);
+  outline-offset:2px}
+.btn.primary{background:var(--btn-primary-bg);border-color:var(--btn-primary-border);
+  color:var(--btn-primary-ink)}
+.btn.primary:hover{box-shadow:var(--glow)}
+.btn.gold{background:color-mix(in oklab,var(--gold) 16%,var(--surface-2));
+  border-color:color-mix(in oklab,var(--gold) 55%,var(--border))}
+.btn.danger{border-color:color-mix(in oklab,var(--danger) 50%,var(--border));color:var(--danger)}
+.btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none;transform:none}
+/* Несохранённые правки: кнопка меняет цвет на «золото» — тот же код, что у необратимых
+   действий, потому что смысл тот же: без нажатия работа пропадёт. */
+.btn.unsaved{background:color-mix(in oklab,var(--gold) 22%,var(--surface-2));
+  border-color:var(--gold);color:var(--text);animation:pulse 2.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in oklab,var(--gold) 40%,transparent)}
+  50%{box-shadow:0 0 0 6px transparent}}
+.unsaved-badge{color:var(--gold);font-size:var(--text-sm);font-weight:600}
+.btn.sm{padding:5px 10px;font-size:var(--text-sm);border-radius:var(--radius-sm)}
+/* Поля ввода носят класс кнопки, но капс и разрядка ломают само значение — путь, JQL,
+   имя файла. Поэтому у полей приём кнопки снимается токеном, а не правкой скина. */
+input.btn,select.btn,textarea.btn{text-transform:none;letter-spacing:normal;font-weight:400;
+  background:var(--field-bg);border-color:var(--field-border)}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* Кнопки справа. `.spacer{flex:1}` работает, только пока строка НЕ перенеслась: стоит
+   заголовку команды стать длинным или окну — узким, как распорка остаётся на первой
+   строке, а кнопки уезжают на вторую и прижимаются влево. Группа с `margin-left:auto`
+   держится справа и на своей строке тоже. */
+.row-right{display:flex;align-items:center;gap:10px;margin-left:auto;flex-wrap:wrap;
+  justify-content:flex-end}
+/* Длинная команда не должна ломать строку целиком: она сжимается с многоточием. */
+#consoleCmd{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  max-width:min(60ch,42vw)}
+/* Маршрут, который включает в себя остальные, и маршрут, который сносит базу: первый
+   зовёт нажать, второй — подумать. Разной рамкой, а не только словами в подписи. */
+.card.route-all{border-color:color-mix(in oklab,var(--primary) 55%,var(--border));
+  box-shadow:0 0 0 1px color-mix(in oklab,var(--primary) 22%,transparent) inset}
+.card.route-danger{border-color:color-mix(in oklab,var(--danger) 50%,var(--border));
+  background:color-mix(in oklab,var(--danger) 5%,transparent)}
+.chip.accent{color:var(--primary);border-color:color-mix(in oklab,var(--primary) 45%,var(--border))}
+.mono{font-family:var(--mono)}
+code.tick{font:var(--text-sm) var(--mono);background:var(--surface-2);padding:1px 5px;
+  border-radius:var(--radius-xs);color:var(--text)}
+.muted{color:var(--text-muted)}
+.sep{height:1px;background:var(--border);margin:var(--sp-5) 0}
+
+/* плитка проекта */
+.tower{padding:var(--sp-4);text-align:left;position:relative;overflow:hidden;
+  transition:transform var(--motion-slow)}
+.tower:hover{transform:translateY(var(--tile-lift))}
+/* Тяжесть проблем читается боковым зрением: сплошная полоса слева, а не размытое пятно.
+   Пятно осталось приёмом скина — `--tile-aura-opacity` включает его обратно. */
+.tower::before{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--tile-rail-w);
+  background:var(--aura,var(--text-muted))}
+.tower::after{content:"";position:absolute;inset:-40% -30% auto auto;width:180px;height:180px;
+  border-radius:50%;filter:blur(38px);opacity:var(--tile-aura-opacity);
+  background:var(--aura,var(--primary));transition:opacity var(--motion-slow)}
+.tower:hover::after{opacity:calc(var(--tile-aura-opacity) * 1.5)}
+.tower .name{font-weight:700;font-size:var(--text-lg);margin-bottom:2px}
+.tower .path{font:var(--text-xs) var(--mono);color:var(--text-muted);
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Чипы переносятся, а не обрезаются: «линтер…» вместо «линтер 29» — это потерянное число. */
+.tower .foot{display:flex;gap:var(--sp-2);margin-top:var(--sp-4);flex-wrap:wrap;position:relative}
+.tower .foot .act{display:contents}
+/* Длинная подпись («маршрут остановлен: …») переносится, а не срезается краем плитки:
+   на узком экране срез съедал как раз ту часть, ради которой чип и показан. */
+.tower .chip{max-width:100%;white-space:normal;text-align:left}
+/* Работа в проекте идёт прямо сейчас: мигающая точка отличает её от статичных чипов. */
+.chip.live::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;
+  animation:blink 1.4s ease-in-out infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion: reduce){.chip.live::before{animation:none}}
+.ring{--p:0;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;
+  background:conic-gradient(var(--primary) calc(var(--p)*1%), var(--surface-2) 0);
+  position:relative;flex:none}
+.ring::after{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--surface-1)}
+.ring span{position:relative;z-index:1;font:700 var(--text-sm) var(--num-font)}
+
+/* таблицы и списки */
+table{width:100%;border-collapse:collapse;font-size:var(--text-md)}
+th{text-align:left;font-weight:600;color:var(--text-muted);font-size:var(--text-xs);
+  text-transform:uppercase;letter-spacing:.1em;padding:var(--sp-2) var(--sp-3);
+  border-bottom:1px solid var(--border)}
+td{padding:10px var(--sp-3);border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent);
+  vertical-align:top}
+tr:last-child td{border-bottom:0}
+.scroll-x{overflow-x:auto}
+.list-item{display:flex;gap:var(--sp-3);align-items:flex-start;padding:var(--sp-3) var(--sp-4);
+  border-bottom:1px solid color-mix(in oklab,var(--border) 55%,transparent)}
+.list-item:last-child{border-bottom:0}
+
+/* консоль */
+.console{background:var(--console-bg);border:var(--card-border-w) solid var(--card-border);
+  border-radius:var(--console-radius);font:var(--text-sm)/1.65 var(--mono);
+  padding:var(--sp-4);min-height:220px;max-height:52vh;overflow:auto;
+  white-space:pre-wrap;word-break:break-word;color:var(--console-ink)}
+.console-wrap{position:relative}
+.console-tail{position:absolute;right:14px;bottom:12px;z-index:2;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.metric.clickable{cursor:pointer;transition:border-color var(--motion-fast),transform var(--motion-fast)}
+.metric.clickable:hover{border-color:var(--primary);transform:translateY(-1px)}
+.routebar{background:var(--primary);color:var(--bg);border-color:transparent;font-weight:600}
+.routebar .rb-dim{opacity:.75;font-weight:400}
+.console .err{color:var(--danger)} .console .ok{color:var(--primary)}
+.console .warn{color:var(--tier-inreview)} .console .dim{opacity:.6}
+
+/* модалка / палитра */
+.overlay{position:fixed;inset:0;background:rgba(4,8,18,.62);backdrop-filter:blur(3px);
+  display:none;align-items:flex-start;justify-content:center;padding-top:12vh;z-index:50}
+.overlay.on{display:flex}
+.palette{width:min(680px,92vw);background:var(--card-bg);
+  border:var(--card-border-w) solid var(--card-border);border-radius:var(--radius);
+  box-shadow:var(--shadow-pop);overflow:hidden}
+.palette input{width:100%;padding:var(--sp-4) 18px;background:transparent;border:0;
+  border-bottom:1px solid var(--border);font-size:16px;outline:0;
+  text-transform:none;letter-spacing:normal}
+.palette .results{max-height:52vh;overflow:auto}
+.palette .res{display:flex;gap:10px;align-items:center;width:100%;padding:11px 18px;text-align:left}
+.palette .res:hover,.palette .res.sel{background:var(--surface-2)}
+.palette .res .nm{font-weight:600;font-size:var(--text-md)}
+.palette .res .ds{color:var(--text-muted);font-size:var(--text-sm);flex:1;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+/* Группы настроек: сворачиваются, как маршруты «Быстрого старта» */
+.sgroup{margin-bottom:18px}
+.sgroup-head{gap:10px;align-items:center;margin-bottom:10px}
+.sgroup-title{margin:0;cursor:pointer;user-select:none}
+/* MCP машины: карточки серверов и широкое окно для файла целиком */
+.mcp-card{display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);
+  text-align:left;padding:var(--sp-3) var(--sp-4);cursor:pointer;min-width:0}
+.mcp-card:hover,.mcp-card:focus-visible{border-color:var(--primary)}
+.mcp-card.ro{border-style:dashed;opacity:.92}
+#mcpDrawer .btn:disabled{opacity:.45;cursor:not-allowed}
+.mcp-line{font-size:var(--text-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mcp-kv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) auto;gap:6px;
+  margin-bottom:6px}
+.mcp-text{width:100%;min-height:52vh;font-family:var(--mono);font-size:var(--text-sm);
+  line-height:1.55;padding:var(--sp-3);resize:vertical;background:var(--console-bg);
+  color:var(--console-ink)}
+.drawer.wide{width:min(920px,96vw)}
+.setup-jump{gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 var(--sp-4)}
+.drawer{width:min(560px,94vw);max-height:80vh;overflow:auto;background:var(--card-bg);
+  border:var(--card-border-w) solid var(--card-border);border-radius:var(--radius);
+  padding:var(--sp-5) var(--sp-6);box-shadow:var(--shadow-pop)}
+.flagline{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:var(--text-md)}
+.flagline input{accent-color:var(--primary)}
+.note{font-size:var(--text-sm);line-height:1.45;color:var(--text-muted);
+  border-left:2px solid var(--border);padding:2px 0 2px 10px}
+.note.warn{border-color:var(--tier-inreview)}
+.warnbox{border:var(--card-border-w) solid color-mix(in oklab,var(--gold) 45%,var(--border));
+  background:color-mix(in oklab,var(--gold) 10%,transparent);border-radius:var(--radius-sm);
+  padding:var(--sp-3) var(--sp-4);font-size:var(--text-md);margin:var(--sp-3) 0}
+.dangerbox{border-color:color-mix(in oklab,var(--danger) 45%,var(--border));
+  background:color-mix(in oklab,var(--danger) 10%,transparent)}
+
+/* тосты */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:10px;z-index:80}
+.toast{padding:11px 15px;border-radius:var(--radius-sm);
+  border:var(--card-border-w) solid var(--card-border);background:var(--card-bg);
+  font-size:var(--text-md);box-shadow:var(--shadow-toast);animation:rise .2s ease}
+.toast.ok{border-color:color-mix(in oklab,var(--primary) 50%,var(--border))}
+.toast.err{border-color:color-mix(in oklab,var(--danger) 50%,var(--border))}
+.toast.warn{border-color:color-mix(in oklab,var(--tier-inreview) 50%,var(--border))}
+
+/* документация */
+.doc{max-width:80ch;font-size:14.5px}
+.doc h1{font-size:22px;margin:22px 0 10px} .doc h2{font-size:17px;margin:24px 0 8px}
+.doc h3{font-size:15px;margin:18px 0 6px} .doc p{margin:10px 0}
+.doc code{font:var(--text-sm) var(--mono);background:var(--surface-2);padding:2px 5px;
+  border-radius:var(--radius-xs)}
+.doc pre{background:var(--console-bg);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:12px 14px;overflow-x:auto}
+.doc pre code{background:none;padding:0;color:var(--console-ink)}
+.doc table{margin:12px 0} .doc li{margin:4px 0}
+.doc blockquote{border-left:3px solid var(--primary);margin:12px 0;padding:2px 14px;
+  color:var(--text-muted)}
+
+.skel{background:linear-gradient(90deg,var(--surface-1),var(--surface-2),var(--surface-1));
+  background-size:200% 100%;animation:sh 1.2s infinite;border-radius:var(--radius-sm);height:74px}
+@keyframes sh{to{background-position:-200% 0}}
+.spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--primary);
+  border-radius:50%;display:inline-block;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* Имя файла — данные, а не интерфейс. Скин уводил их в капс с разрядкой, и
+   длинное имя карточки занимало две строки и не читалось. Тот же
+   дефект, что был у предпросмотра документа: оформление панели поверх содержимого. */
+#fileTree button{text-transform:none !important; letter-spacing:normal !important;
+  font-weight:400; padding:3px 8px; line-height:1.3; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; display:block; font-size:12px}
+#fileTree .group{font-size:11px}
+/* Ширину панели тянут мышью: имена карточек длинные и у каждого проекта свои, угадать
+   одну ширину для всех нельзя. Запоминается, чтобы не настраивать каждый раз. */
+#filesSplit{width:6px; cursor:col-resize; flex:0 0 6px; align-self:stretch;
+  border-radius:3px; background:var(--border); opacity:.5}
+#filesSplit:hover{opacity:1; background:var(--accent)}
+#fileTree button .pill{margin-left:8px}
+#fileTree button[aria-current="true"]{background:var(--surface-2); font-weight:700;
+  outline:1px solid var(--accent)}
+#fileTree .group{cursor:pointer; user-select:none}
+
+/* Редактор показывает ДОКУМЕНТ, а не панель. Скины Авроры красят агрессивно —
+   капс, разрядка, свой шрифт, — и заголовок карточки в предпросмотре выходил жёлтым
+   капсом. Человек правит текст, который потом уедет заказчику: он должен видеть текст,
+   а не оформление панели. Сбрасываем на поддереве редактора, чужой код не трогаем. */
+#vditor, #vditor *{text-transform:none !important; letter-spacing:normal !important;
+  font-variant:normal !important}
+#vditor .vditor-reset{font-family:var(--sans)}
+#vditor .vditor-reset h1,#vditor .vditor-reset h2,#vditor .vditor-reset h3,
+#vditor .vditor-reset h4{color:inherit; font-weight:600}
+
+/* ---------------- узкий экран ----------------
+   Раньше здесь была одна ступень на 860 px: меню сжималось до 64 px и прятало подписи.
+   Иконок в меню нет, поэтому на телефоне оставался столбик пустых кнопок, а шапка не
+   помещалась в строку. Теперь меню на узком экране становится горизонтальной лентой
+   с подписями, а шапка переносится. Проверено от 320 px. */
+@media (max-width:980px){
+  #app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr}
+  header{position:sticky;top:0;z-index:20;flex-wrap:wrap;gap:var(--sp-2);
+    padding:var(--sp-2) var(--sp-3)}
+  header .spacer{flex-basis:100%;height:0}
+  nav{display:flex;gap:6px;align-items:center;overflow-x:auto;overflow-y:hidden;
+    border-right:0;border-bottom:var(--card-border-w) solid var(--border);
+    padding:var(--sp-2) var(--sp-3);scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{width:auto;white-space:nowrap;padding:6px 11px}
+  nav button[aria-current="true"]::before{left:0;right:0;top:auto;bottom:-6px;width:auto;
+    height:var(--nav-marker-w);border-radius:3px 3px 0 0}
+  nav .group{margin:0 var(--sp-1) 0 var(--sp-2);font-size:9px;white-space:nowrap;opacity:.75}
+  nav .count{margin-left:6px}
+  main{padding:var(--sp-4) var(--sp-4) 48px}
+  .console{max-height:44vh}
+  #consoleCmd{max-width:min(40ch,60vw)}
+  /* Файлы: дерево и редактор столбиком — ползунок ширины на телефоне бесполезен.
+     Ширину списка тянут мышью, и JS пишет её прямо в стиль элемента: на узком экране
+     это значение приходится перебивать, иначе дерево занимает весь экран. */
+  #filesSplit{display:none}
+  #filesPanel{flex:1 1 100% !important;width:auto !important;max-height:34vh}
+}
+@media (max-width:560px){
+  .brand{font-size:var(--text-xs);letter-spacing:.1em}
+  .brand small{display:none}
+  .projbadge{max-width:18ch}
+  main{padding:var(--sp-3) var(--sp-3) 40px}
+  .tiles,.metrics{grid-template-columns:1fr}
+  .drawer{padding:var(--sp-4)}
+  #toasts{right:10px;left:10px;bottom:10px}
+}

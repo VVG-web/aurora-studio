@@ -11,6 +11,7 @@ import sys
 import textwrap
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     SCRIPTS,
     TEMPLATE_PAR,
@@ -402,7 +403,7 @@ def test_a_link_to_a_section_opens_it_without_waiting_for_health(tmp: Path):
     десятки секунд, — и только потом открывал раздел из адреса. Всё это время человек
     смотрел на Мостик и решал, что ссылка не сработала.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     boot = ui[ui.index("async function boot("):ui.index("/* ---------------- мостик ---------------- */")]
     tail = boot[boot.index('location.hash.slice(1)'):]
     assert "const picking = p ? pick(p, false) : null;" in tail, "проект выбирается с ожиданием здоровья"
@@ -765,7 +766,7 @@ def test_cockpit_core_strings_live_in_catalogues(tmp: Path):
         такая строка помечается в коде словами «данные движка»;
       • сообщения в консоль браузера — их читает тот, кто правит код, а не человек.
     """
-    src = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    src = ui_source()
 
     # ── 1. каталоги ядра сходятся между собой ──────────────────────────────
     ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
@@ -853,7 +854,7 @@ def test_cockpit_serves_module_catalogues_together(tmp: Path):
 def test_cockpit_core_mounts_modules_and_keeps_menu(tmp: Path):
     """Ядро умеет поднимать раздел из папки, а меню собирается по группам и порядку."""
     # Здесь нужен именно монолит: проверяем, что переехавший раздел из него ушёл.
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")  # монолит панели читаем сознательно
+    ui = ui_source()  # монолит панели читаем сознательно
 
     for needed in ("async function loadModules", "async function mountModule",
                    "function moduleCtx", "/api/modules", "navgroup"):
@@ -891,7 +892,7 @@ def test_cockpit_scripts_parse(tmp: Path):
         cp = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
         assert cp.returncode == 0, f"{name} не разбирается:\n{cp.stderr.strip()[:800]}"
 
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     # Ядро — один инлайновый скрипт; токен и каталог строк сервер подставляет при выдаче,
     # поэтому для разбора ставим на их место заглушки.
     body = ui.split("<script>", 1)[1].rsplit("</script>", 1)[0]
@@ -913,7 +914,7 @@ def test_fields_are_readable_in_both_themes(tmp: Path):
     половина списков в панели заведена без класса, и «покрасили те, что помним» — это ровно
     то, как дефект и появился.
     """
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     css = ui[ui.index("<style>"):ui.index("</style>")]
 
     assert 'color-scheme:dark' in css and 'color-scheme:light' in css, \
@@ -1665,3 +1666,24 @@ def test_card_links_come_fast_and_the_same(tmp: Path):
     got = {(os.path.basename(a), os.path.basename(b)) for a, b in pairs}
     assert ("Подача.md", "Налоговая-декларация.md") in got, got
     assert ("Декларант.md", "Налоговая-декларация.md") not in got, "граница слова потеряна"
+
+
+@test
+def test_the_panel_is_served_as_one_document_assembled_from_its_parts(tmp: Path):
+    """Оболочка, стили и скрипт лежат в трёх файлах, а в браузер уходит один документ.
+
+    Если подстановка не сработает, человек откроет панель без стилей или без скрипта —
+    пустую страницу, которую по тексту `index.html` не заметить.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    page = ck.ui_source()
+    assert "@include" not in page, "в странице остался маркер подстановки"
+    assert page == ui_source(), "сервер и проверки собирают страницу по-разному"
+    assert page.count("<style>") == 1 and page.count("<script>") == 1 \
+        and "const UI_VERSION" in page and ".drawer{" in page, "в странице нет стилей или скрипта"
+    shell = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    assert len(shell.splitlines()) < 400, "оболочка снова вобрала в себя стили и скрипт"
+    assert ck.ui_version() == (KIT / "VERSION").read_text(encoding="utf-8").strip(), \
+        "версия панели не читается из подставленного скрипта"

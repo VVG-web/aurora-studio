@@ -11,6 +11,7 @@ import textwrap
 import time
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     SCRIPTS,
     card,
@@ -859,7 +860,7 @@ def test_thinking_is_switched_on_explicitly_in_every_request(tmp: Path):
     view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
     assert '"/api/agent/pydantic"' in view and 'x.id === "pydantic-ai"' in view, \
         "в «Установке» нет кнопки с настройками Pydantic AI"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     assert 'pre+"TEMPLATE_KWARGS"' in ui, "поля шаблона шлюза нельзя задать в панели"
 
 
