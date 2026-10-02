@@ -35,7 +35,7 @@ import re
 import sys
 
 from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, frontmatter, is_meeting,
-                           is_placeholder, link_targets, related_targets, walk_md)
+                           is_placeholder, link_targets, read_card_text, related_targets, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
 USAGE = os.path.join(ROOT, "meta", "usage.log")
@@ -325,10 +325,9 @@ def load_cards() -> dict:
             if not f.endswith(".md") or f.startswith("_") or f == "index.md":
                 continue
             p = os.path.join(dirpath, f)
-            try:
-                cards[os.path.splitext(f)[0]] = Card(p, open(p, encoding="utf-8", errors="ignore").read())
-            except Exception:
-                continue
+            text = read_card_text(p)
+            if text is not None:
+                cards[os.path.splitext(f)[0]] = Card(p, text)
     return cards
 
 
