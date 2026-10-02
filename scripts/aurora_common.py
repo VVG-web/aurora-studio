@@ -987,6 +987,62 @@ def load_env(path) -> dict:
     return out
 
 
+def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:
+    """`pid_alive` для Windows: `OpenProcess` + `GetExitCodeProcess`, без сигналов.
+
+    На Windows `os.kill(pid, 0)` не «проверяет»: сигнал 0 там — тот же код завершения,
+    и вызов прерывает процесс. Замок пишущего прогона, который проверял «жив ли
+    держатель» таким способом, убивал держателя — а в тестах и сам тестовый прогон,
+    чей pid лежал в замке. `kernel32` и `last_error` подставляются снаружи: проверить
+    логику можно и на другой системе.
+    """
+    import ctypes
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        last_error = ctypes.get_last_error
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        # Нет доступа — процесс есть, просто чужой; любая другая ошибка — процесса нет.
+        return last_error() == ERROR_ACCESS_DENIED
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def pid_alive(pid: int) -> bool:
+    """Жив ли процесс. Отказ в правах — ЖИВ.
+
+    `os.kill(pid, 0)` отвечает тремя способами: тишиной (жив), `ProcessLookupError`
+    (мёртв) и `PermissionError` (жив, но сигналить ему нам не дано — процесс чужой).
+    Все три — `OSError`, и один общий `except` записывал чужой процесс в мёртвые:
+    замок снимался, и второй пишущий прогон заходил в базу поверх первого. Ровно это и
+    случается с прогоном, чей родитель ушёл, — процесс усыновляет системный, а сигналить
+    ему обычному пользователю нельзя.
+
+    Windows — отдельный путь (`_win_pid_alive`): там `os.kill` убивает, а не проверяет.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _win_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def child_env(project: str = "", **extra) -> dict:
     """Окружение дочернего процесса: без отладочного мусора, с настройками движка.
 
@@ -1002,6 +1058,10 @@ def child_env(project: str = "", **extra) -> dict:
     лишний способ их обронить.
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
+    # Дочерний Python на Windows пишет в трубу в кодовой странице системы (cp1251/cp1252):
+    # русский текст и «—» ломают протокол или превращаются в «?». UTF-8 — язык движка.
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     kit = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for base in (kit, project or os.getcwd()):
         for k, v in load_env(os.path.join(base, ENV_FILE)).items():

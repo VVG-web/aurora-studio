@@ -387,24 +387,42 @@ def _quoted_card(root: Path, rel: str, sources: list, blocks: list, extra: str =
     return p
 
 
+def set_home(path):
+    """Подменить домашнюю папку на время проверки. → функция, возвращающая прежнюю.
+
+    `os.path.expanduser("~")` читает `HOME` на POSIX и `USERPROFILE` на Windows: проверка,
+    выставившая одну `HOME`, на Windows писала в настоящий профиль того, кто её запустил,
+    и не находила файлов, положенных в подменённый.
+    """
+    names = ("HOME", "USERPROFILE")
+    saved = {k: os.environ.get(k) for k in names}
+    for k in names:
+        os.environ[k] = str(path)
+
+    def restore():
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return restore
+
+
 def _cockpit_on(kit: Path):
     """Модуль панели, направленный на пробный кит: KIT, список прогонов и дом — во временной папке."""
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
     ck = importlib.import_module("aurora_cockpit")
-    saved = (ck.KIT, ck.RUNNING, ck._http_get, os.environ.get("HOME"), dict(ck.CACHE))
+    saved = (ck.KIT, ck.RUNNING, ck._http_get, dict(ck.CACHE))
     ck.KIT, ck.RUNNING = str(kit), str(kit / "running.json")
     ck.CACHE.pop("kit_status", None)
-    os.environ["HOME"] = str(kit.parent / "home")
+    restore_home = set_home(kit.parent / "home")
 
     def restore():
         ck.KIT, ck.RUNNING, ck._http_get = saved[0], saved[1], saved[2]
-        if saved[3] is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = saved[3]
+        restore_home()
         ck.CACHE.clear()
-        ck.CACHE.update(saved[4])
+        ck.CACHE.update(saved[3])
     return ck, restore
 
 

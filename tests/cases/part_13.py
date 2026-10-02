@@ -28,6 +28,7 @@ from harness import (  # noqa: F401
     make_project,
     panel_sources,
     run,
+    set_home,
     stub_messages,
     test,
 )
@@ -226,8 +227,7 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
     (home / ".claude" / "skills" / "grilling").mkdir(parents=True)
     (home / ".claude" / "skills" / "grilling" / "SKILL.md").write_text(
         "---\nname: grilling\n---\nИнтервью раундами по дереву решений.\n", encoding="utf-8")
-    was = os.environ.get("HOME")
-    os.environ["HOME"] = str(home)
+    restore_home = set_home(home)
     try:
         m = RC.mentions('Добавь AC /grill-me, истории в @"Requirements/Истории пользователей.md", '
                         "поищи через @Tavily и /Users/кто-то/путь не навык", str(root), ["tavily"])
@@ -237,7 +237,8 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
         assert m["files"] == ["Requirements/Истории пользователей.md"], m["files"]
         assert "Интервью раундами" in RC.skills_block(m["skills"])
         # без личного навыка grill-me ведёт на навык кита
-        os.environ["HOME"] = str(tmp / "пустой")
+        restore_home()
+        restore_home = set_home(tmp / "пустой")
         path, body = RC.find_skill("grill-me", str(root), str(KIT))
         assert path.endswith("aurora-grill/SKILL.md") and body, "grill-me не нашёл навык кита"
         # подсказки: / — навыки, @ — файлы, папки и серверы; секретов в подсказках нет
@@ -247,10 +248,7 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
         assert not any(".env" in i["value"] for i in RC.suggest(str(root), "@env", [], str(KIT)))
         assert RC.suggest(str(root), "@tav", ["tavily"], str(KIT))[0]["kind"] == "mcp"
     finally:
-        if was is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = was
+        restore_home()
 
 
 @test
@@ -2137,3 +2135,104 @@ def test_a_live_card_wins_over_its_archived_copy_and_dead_maps_leave(tmp: Path):
     text = (root / "AuroraKnowledgeDB/Concepts/Ссылки.md").read_text(encoding="utf-8")
     assert "[[ER-Объект-учета-ЮЛ]]" in text and "[[ER_Объект_учета_ЮЛ]]" not in text, text
     assert "Документ--Старая-расшифровка" not in text, f"ссылка на ушедшую карту осталась:\n{text}"
+
+
+@test
+def test_checking_a_pid_never_stops_the_process(tmp: Path):
+    """Вопрос «жив ли процесс» не должен его убивать — ни на какой системе.
+
+    `os.kill(pid, 0)` на Windows не проверяет, а завершает процесс. Замок пишущего прогона
+    проверял держателя именно им: на windows-latest проверка убила сам тестовый прогон,
+    чей pid лежал в замке. Живой дочерний процесс после вопроса обязан остаться живым,
+    а завершённый и собранный — стать мёртвым; чужой pid 0 и отрицательные — не жив.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import pid_alive
+    import agent_runner
+    assert agent_runner.pid_alive is pid_alive, "у замка и панели должна быть одна проверка"
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        for _ in range(3):
+            assert pid_alive(child.pid), "живой процесс назван мёртвым"
+        assert child.poll() is None, "вопрос «жив ли процесс» завершил процесс"
+    finally:
+        child.terminate()
+        child.wait(timeout=30)
+    assert not pid_alive(child.pid), "завершённый процесс назван живым"
+    assert pid_alive(os.getpid())
+    assert not pid_alive(0) and not pid_alive(-5)
+
+
+@test
+def test_windows_pid_check_reads_the_exit_code_not_a_signal(tmp: Path):
+    """Ветка Windows сверяется с кодом завершения и считает «нет доступа» признаком жизни.
+
+    На другой системе `kernel32` подставляется: проверяем логику выбора, а не сам вызов.
+    STILL_ACTIVE (259) — идёт; любой другой код — закончился; не открылся с ошибкой 5 —
+    процесс чужой и жив; не открылся с другой ошибкой — его нет; ручка закрывается всегда.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import ctypes
+    from aurora_common import _win_pid_alive
+
+    class Kernel32:
+        def __init__(self, handle, exit_code=259, ok=1):
+            self.handle, self.exit_code, self.ok = handle, exit_code, ok
+            self.closed, self.opened = [], []
+
+        def OpenProcess(self, access, inherit, pid):
+            self.opened.append((access, inherit, pid))
+            return self.handle
+
+        def GetExitCodeProcess(self, handle, ref):
+            ref._obj.value = self.exit_code
+            return self.ok
+
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+
+    assert ctypes.c_ulong  # ref._obj — сама c_ulong, в которую пишет GetExitCodeProcess
+    k = Kernel32(77, 259)
+    assert _win_pid_alive(4321, k, lambda: 0) is True and k.closed == [77]
+    assert k.opened == [(0x1000, False, 4321)], "права шире «спросить состояние» не нужны"
+    k = Kernel32(77, 0)
+    assert _win_pid_alive(4321, k, lambda: 0) is False and k.closed == [77]
+    k = Kernel32(77, 0, ok=0)
+    assert _win_pid_alive(4321, k, lambda: 0) is True, "не смогли спросить — не объявляем мёртвым"
+    assert k.closed == [77]
+    assert _win_pid_alive(4321, Kernel32(0), lambda: 5) is True, "чужой процесс записан в мёртвые"
+    assert _win_pid_alive(4321, Kernel32(0), lambda: 87) is False, "несуществующий pid назван живым"
+
+
+@test
+def test_child_processes_speak_utf8_whatever_the_system_codepage(tmp: Path):
+    """Дочерний Python пишет в трубу UTF-8, а не в кодовой странице системы.
+
+    На Windows труба без этого кодируется в cp1251/cp1252: кириллица в ответе адаптера
+    превращалась в «?» или роняла запись. Значение, заданное человеком, сильнее умолчания.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import child_env
+    saved = {k: os.environ.pop(k, None) for k in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    try:
+        env = child_env()
+        assert env["PYTHONUTF8"] == "1" and env["PYTHONIOENCODING"] == "utf-8", env
+        assert "PYTHONUTF8" not in os.environ, "умолчание просочилось в окружение самого процесса"
+        os.environ["PYTHONIOENCODING"] = "cp866"
+        assert child_env()["PYTHONIOENCODING"] == "cp866", "явная настройка человека затёрта"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    for k in ("PYTHONUTF8", "PYTHONIOENCODING"):
+        os.environ.pop(k, None)
+    try:
+        out = subprocess.run([sys.executable, "-c", "print('Проверка — ✓')"], capture_output=True,
+                             env=child_env())
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    assert out.returncode == 0, out.stderr.decode("utf-8", "replace")
+    assert out.stdout.decode("utf-8").strip() == "Проверка — ✓", out.stdout

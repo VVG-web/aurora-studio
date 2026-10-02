@@ -113,8 +113,8 @@ def prune_runs(runs: Path, task: str) -> int:
         except OSError:
             pass
     return len(old)
-from aurora_common import (local_now, local_view, utc_label, utc_slug,  # noqa: E402
-                           utc_stamp, utc_today)
+from aurora_common import (local_now, local_view, pid_alive, utc_label,  # noqa: E402,F401
+                           utc_slug, utc_stamp, utc_today)
 TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
@@ -350,27 +350,6 @@ def _bp_flag(args: list, flag: str, default: str = "") -> str:
 
 
 LOCK = os.path.join(".opencode", "state", "agent.lock")
-
-
-def pid_alive(pid: int) -> bool:
-    """Жив ли процесс. Отказ в правах — ЖИВ.
-
-    `os.kill(pid, 0)` отвечает тремя способами: тишиной (жив), `ProcessLookupError`
-    (мёртв) и `PermissionError` (жив, но сигналить ему нам не дано — процесс чужой).
-    Все три — `OSError`, и один общий `except` записывал чужой процесс в мёртвые:
-    замок снимался, и второй пишущий прогон заходил в базу поверх первого. Ровно это и
-    случается с прогоном, чей родитель ушёл, — процесс усыновляет системный, а сигналить
-    ему обычному пользователю нельзя.
-    """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def writing_lock(cwd: str, task: str):

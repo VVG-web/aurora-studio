@@ -18,6 +18,7 @@ from harness import (  # noqa: F401
     make_project,
     panel_sources,
     run,
+    set_home,
     term_regex,
     test,
     why,
@@ -1117,8 +1118,7 @@ def test_cockpit_roots_are_not_fixed_to_kit_neighbours(tmp: Path):
 
     home = tmp / "home"
     (home / "Documents/GitProjects").mkdir(parents=True)
-    old_home = os.environ.get("HOME", "")
-    os.environ["HOME"] = str(home)
+    restore_home = set_home(home)
     try:
         importlib.reload(ck)
         assert str(home) in ck.ROOTS_FILE, "список корней должен жить в домашней папке"
@@ -1136,7 +1136,7 @@ def test_cockpit_roots_are_not_fixed_to_kit_neighbours(tmp: Path):
         assert ck.load_roots(["~/elsewhere"]) == [ck.norm("~/elsewhere")], \
             "--roots должен перекрывать сохранённое на один запуск"
     finally:
-        os.environ["HOME"] = old_home
+        restore_home()
         importlib.reload(ck)
 
     ui = panel_sources()
