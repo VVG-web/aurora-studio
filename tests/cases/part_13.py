@@ -1798,3 +1798,22 @@ def test_mcp_search_survives_parallel_calls_and_ignores_the_archive(tmp: Path):
         assert "Старый-двойник" not in P.load_cards(), "ctx_pack читает архив"
     finally:
         os.chdir(old)
+
+
+@test
+def test_repair_does_not_create_code_stubs_that_it_archives_next(tmp: Path):
+    """`--stubs` не заводит заготовку под код артефакта, которую унесёт `--drop-code-stubs`.
+
+    Шаг «Завести заготовки» пропускал голые коды, а «убрать заготовки под коды» брал ещё и
+    коды с приставкой проекта: маршрут «Починить базу» каждый прогон писал
+    `RU.PRJ.US-3.2.5` и тут же архивировал.
+    """
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Тест-ссылки.md",
+         "Связано: [[RU.PRJ.US-3.2.5]], [[US-3.1.1]], [[Новое понятие X]].", status="draft")
+    run("kb_fix.py", "--stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
+    kb = root / "AuroraKnowledgeDB"
+    assert (kb / "Concepts/Новое-понятие-X.md").is_file(), "обычная заготовка не заведена"
+    assert not (kb / "Concepts/RU.PRJ.US-3.2.5.md").exists(), "заготовка под код с приставкой заведена"
+    cp = run("kb_fix.py", "--drop-code-stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
+    assert "0 в архив" in cp.stdout, f"второй шаг нашёл, что убрать:\n{cp.stdout[:500]}"
