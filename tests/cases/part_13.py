@@ -2045,3 +2045,29 @@ def test_a_crash_between_the_two_index_files_is_seen_as_a_stale_index(tmp: Path)
         assert set(E.load_index()["cards"]) == {"А", "Б"}, "индекс без отпечатка отвергнут"
     finally:
         os.chdir(old)
+
+
+@test
+def test_confluence_config_and_secret_are_read_from_the_given_root(tmp: Path):
+    """Конфиг и секрет Confluence читаются из названного корня, а не от рабочей папки процесса.
+
+    Панель разбирала ссылки, переключая `os.chdir` в многопоточном сервере: два запроса
+    путали, куда возвращаться, и сервер оставался в чужом проекте.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    C = importlib.import_module("confluence_export")
+    root = make_project(tmp)
+    (root / "aurora.config.yaml").write_text(
+        'project:\n  name: "Test"\natlassian:\n  confluence:\n'
+        '    base_url: "https://wiki.example.org"\n    space: "DOC"\n  jira:\n    project_key: "T"\n',
+        encoding="utf-8")
+    (root / ".env.aurora.local").write_text("CONFLUENCE_PAT=token-from-root\n", encoding="utf-8")
+    before = os.getcwd()
+    got = C.read_config(str(root))
+    auth, kind = C.read_secret(str(root))
+    assert got["base_url"] == "https://wiki.example.org" and got["space"] == "DOC", got
+    assert auth == "Bearer token-from-root" and kind == "PAT", (auth, kind)
+    assert os.getcwd() == before, "чтение сменило рабочую папку"
+    src = (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+    assert "os.chdir(" not in src, "панель снова меняет рабочую папку процесса"

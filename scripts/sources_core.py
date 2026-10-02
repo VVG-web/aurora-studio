@@ -66,11 +66,14 @@ def scalar(text: str, key: str, default: str = "") -> str:
     return yaml_scalar(text, key, default)
 
 
-def read_env() -> dict:
-    """Окружение плюс `.env.aurora.local` (он в .gitignore). Секреты наружу не печатаем."""
+def read_env(root: str = "") -> dict:
+    """Окружение плюс `.env.aurora.local` (он в .gitignore). Секреты наружу не печатаем.
+
+    `root` — корень проекта; без него файл ищется от текущей папки процесса."""
     env = dict(os.environ)
-    if os.path.isfile(ENV_LOCAL):
-        for line in open(ENV_LOCAL, encoding="utf-8", errors="ignore"):
+    env_file = os.path.join(root, ENV_LOCAL) if root else ENV_LOCAL
+    if os.path.isfile(env_file):
+        for line in open(env_file, encoding="utf-8", errors="ignore"):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
@@ -78,13 +81,13 @@ def read_env() -> dict:
     return env
 
 
-def read_secret(prefix: str) -> tuple:
+def read_secret(prefix: str, root: str = "") -> tuple:
     """→ (заголовок Authorization, как назвали способ).
 
     Имена переменных выводятся из префикса модуля: `CONFLUENCE` → `CONFLUENCE_PAT`,
     `CONFLUENCE_PERSONAL_TOKEN`, `CONFLUENCE_USER` + `CONFLUENCE_PASSWORD`.
     """
-    env = read_env()
+    env = read_env(root)
     pat = env.get(f"{prefix}_PAT") or env.get(f"{prefix}_PERSONAL_TOKEN")
     if pat:
         return f"Bearer {pat}", "PAT"

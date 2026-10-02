@@ -45,7 +45,7 @@ import sys
 import urllib.parse
 from datetime import date, timedelta
 
-from sources_core import (RestApi, WikiMirror, block, config_text, no_access,
+from sources_core import (CONFIG, RestApi, WikiMirror, block, config_text, no_access,
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
@@ -86,10 +86,12 @@ RY_MARK = {"key": "RYk:", "link": "RYl:", "prop": "RYo:", "report": "RYr"}
 
 # ------------------------------------------------------------------ конфиг
 
-def read_config() -> dict:
-    """base_url и корни синка — из aurora.config.yaml (единственный источник правды)."""
+def read_config(root: str = "") -> dict:
+    """base_url и корни синка — из aurora.config.yaml (единственный источник правды).
+
+    `root` — корень проекта; без него конфиг ищется от текущей папки процесса."""
     cfg = {"base_url": "", "space": "", "roots": [], "out": DEFAULT_OUT}
-    text = config_text()
+    text = config_text(os.path.join(root, CONFIG)) if root else config_text()
     if not text:
         return cfg
     conf = block(text, "confluence:", "jira:")
@@ -101,9 +103,9 @@ def read_config() -> dict:
     return cfg
 
 
-def read_secret() -> tuple:
+def read_secret(root: str = "") -> tuple:
     """→ (заголовок Authorization, как назвали способ). Секрет наружу не печатается."""
-    return core_secret("CONFLUENCE")
+    return core_secret("CONFLUENCE", root)
 
 
 # --------------------------------------------------------------------- API
