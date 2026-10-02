@@ -3420,6 +3420,14 @@ def start_job(project: str, cmd: str, extra: list) -> str:
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
            "out": [], "started": time.time(), "done": False, "run_id": run_id}
     with JOBS_LOCK:
+        # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
+        # заводим, а отдаём идущее задание: двойной щелчок, вторая вкладка или повтор после
+        # обрыва связи иначе запускали два одинаковых пишущих прогона над одной базой. Проверка
+        # и запись — под одним замком, иначе два запроса одновременно оба не найдут друг друга.
+        for running in JOBS.values():
+            if (not running["done"] and running["project"] == project
+                    and running["cmd"] == cmd and running["args"] == args):
+                return running["id"]
         JOBS[job_id] = job
 
     def worker():
