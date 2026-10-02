@@ -67,7 +67,6 @@ STARTED = time.time()
 ENGINE = os.path.getmtime(os.path.abspath(__file__))
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
-CHDIR_LOCK = threading.Lock()   # смена текущей папки процесса — только под ним
 CACHE: dict = {}
 REGISTRY_CACHE = os.path.join(KIT, "cockpit", ".registry-cache.json")
 
@@ -4080,17 +4079,10 @@ class Handler(BaseHTTPRequestHandler):
         того чтобы записать в конфиг неработающий корень.
         """
         import confluence_export as C
-        # Читалки конфига и секрета берут пути от текущей папки. Замок не даёт двум запросам
-        # перепутать «куда вернуться»: второй запоминал папку первого, и после обоих сервер
-        # оставался стоять в чужом проекте.
-        with CHDIR_LOCK:
-            cwd = os.getcwd()
-            try:
-                os.chdir(project)
-                cfg = C.read_config()
-                auth, _kind = C.read_secret()
-            finally:
-                os.chdir(cwd)
+        # Корень проекта передаётся читалкам явно: смена рабочей папки процесса в
+        # многопоточном сервере чужим запросам подставляла чужой проект.
+        cfg = C.read_config(project)
+        auth, _kind = C.read_secret(project)
         out = []
         api = C.Api(cfg["base_url"], auth) if (auth and cfg.get("base_url")) else None
         for raw in refs:
