@@ -1009,7 +1009,7 @@ def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Expo
 def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированное зеркало Confluence → Sources/Confluence/")
     ap.add_argument("--roots", nargs="*", help="page_id корней (по умолчанию — из aurora.config.yaml)")
-    ap.add_argument("--out", help=f"куда писать (по умолчанию {DEFAULT_OUT})")
+    ap.add_argument("--out", help=f"куда писать (по умолчанию {DEFAULT_OUT.replace(os.sep, '/')})")
     ap.add_argument("--force", action="store_true",
                     help="переписать зеркало целиком, не сверяясь с тем, что уже лежит")
     ap.add_argument("--prune", action="store_true", help="удалить зеркала страниц, которых больше нет")

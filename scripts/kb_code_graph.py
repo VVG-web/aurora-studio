@@ -129,7 +129,7 @@ def code_layer(root: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Код и SQL проекта в графе базы")
-    ap.add_argument("--apply", action="store_true", help=f"записать {OUT}")
+    ap.add_argument("--apply", action="store_true", help=f"записать {OUT.replace(os.sep, '/')}")
     ap.add_argument("--root", default=".", help="корень проекта")
     a = ap.parse_args()
     root = a.root

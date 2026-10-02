@@ -49,6 +49,12 @@ jobs:
     # включает.
     runs-on: windows-latest
     timeout-minutes: 30
+    # Полный прогон на Windows занимает ~12 минут, а выпуск ждёт все проверки: набор режется на
+    # три доли, и каждая идёт на своей машине (`--shard=i/3` — каждая третья проверка).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -60,6 +66,6 @@ jobs:
         run: python tests/run_tests.py --smoke
       # Полный набор идёт и после красной проверки инвариантов: за один прогон нужен весь
       # список падений на Windows, а не первое из них.
-      - name: Full suite
+      - name: Full suite (shard ${{ matrix.shard }} of 3)
         if: success() || failure()
-        run: python tests/run_tests.py
+        run: python tests/run_tests.py --shard=${{ matrix.shard }}/3

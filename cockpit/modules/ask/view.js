@@ -42,6 +42,7 @@ export async function refresh(ctx){
     ctx.$("#askBody").innerHTML = "";
   }
   ctx.$("#askText").focus();
+  drawWho(ctx);                // подпись «кто ответил» — на языке интерфейса, и после его смены
   await renderHistory(ctx);
   drawThreadHint(ctx);
   drawExport(ctx);
@@ -101,14 +102,29 @@ async function askBase(ctx){
   const who = (lines.find(l => /модель:/.test(l)) || "")                      // данные движка
     .match(/модель:\s*([^\s(·]+)[^)]*\(бэкенд №(\d+)\)/);                     // данные движка
   if (who){
-    ctx.$("#askWho").textContent = t("ask.who_line", {model: who[1], n: who[2]})
-      + (who[2] === "1" ? "" : t("ask.who_spare"));
+    drawWho(ctx, {kind: "answer", model: who[1], n: who[2]});
     if (who[2] !== "1") ctx.toast(t("ask.spare_toast"), "warn");
   }
   ctx.$("#askText").value = "";
   drawThreadHint(ctx);
   drawExport(ctx);
   await renderHistory(ctx);
+}
+
+// Подпись «кто ответил» хранит не готовый текст, а то, из чего он собран: язык интерфейса
+// сменили — строка собирается заново на новом языке, а выгрузка берёт модель из данных, а не
+// отрезает приставку от надписи (по-русски «модель: », по-английски — другая, и отрезать было
+// нечего: в файл попадало «Model: model: X»).
+export function drawWho(ctx, state){
+  const chip = ctx.$("#askWho"), {t} = ctx;
+  if (state) Object.assign(chip.dataset, {kind: state.kind || "", model: state.model || "",
+                                          n: state.n || ""});
+  const {kind, model, n} = chip.dataset;
+  chip.textContent = kind === "answer"
+      ? t("ask.who_line", {model, n}) + (n === "1" ? "" : t("ask.who_spare"))
+    : kind === "ping_ok" ? t("ask.primary_answers") + (model || "—")
+    : kind === "ping_fail" ? t("ask.primary_silent") + (model || "—")
+    : t("ask.who_none");
 }
 
 function drawThreadHint(ctx){
@@ -143,14 +159,14 @@ function drawExport(ctx){
   if (btn) btn.hidden = !cards(ctx).length;
 }
 
-function markdown(ctx){
+export function markdown(ctx){
   const {t} = ctx;
   // Карточки на экране лежат свежим сверху; в файле разговор читают с начала.
   const rows = cards(ctx).reverse();
   const head = [t("ask.md_title"), "",
     t("ask.md_project", {path: ctx.project ? ctx.project.path : "—"}),
     t("ask.md_when", {when: new Date().toLocaleString(ctx.lang === "en" ? "en-GB" : "ru-RU")}),
-    t("ask.md_model", {model: (ctx.$("#askWho").textContent || "—").replace(/^модель:\s*/, "")})];
+    t("ask.md_model", {model: ctx.$("#askWho").dataset.model || "—"})];
   // Канонический экземпляр разговора лежит в базе и уходит в git. Файл выгрузки — копия
   // для переноса, и об этом надо сказать, иначе правки понесут в копию.
   if (THREAD) head.push(t("ask.md_thread", {id: THREAD.id}));
@@ -216,8 +232,7 @@ async function pingPrimary(ctx, btn){
   const first = (r && (r.backends || r.results) || [])[0];
   if (!first) return ctx.toast((r && r.error) || t("ask.ping_none"), "warn");
   const ok = first.ok !== false;
-  ctx.$("#askWho").textContent = (ok ? t("ask.primary_answers") : t("ask.primary_silent"))
-    + (first.model || "—");
+  drawWho(ctx, {kind: ok ? "ping_ok" : "ping_fail", model: first.model || ""});
   ctx.toast(ok ? t("ask.ping_ok", {model: first.model || ""})
                : t("ask.ping_fail", {why: first.error || first.why || t("ask.no_answer")}),
     ok ? "ok" : "warn");

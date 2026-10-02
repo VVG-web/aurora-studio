@@ -436,6 +436,9 @@ def test_fallback_provider_gets_a_fair_chance(tmp: Path):
     import importlib, time as _t
     AG = importlib.import_module("agent_core")
     AG.DOWN.clear()
+    # Недавний ответ №1 от прошлой проверки в этом же процессе отменяет карантин («отвечал
+    # только что»): без сброса результат зависит от того, какие проверки шли раньше.
+    AG.LAST_OK.clear()
 
     seen = []
 

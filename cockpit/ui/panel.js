@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.148.2";
+const UI_VERSION = "1.149.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -59,7 +59,11 @@ const tick = s => esc(s).replace(/`([^`]+)`/g, '<code class="tick">$1</code>');
 const esc = s => String(s??"").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const api = async (path, opts={}) => {
   const sep = path.includes("?") ? "&" : "?";
-  const r = await fetch(path + sep + "t=" + encodeURIComponent(TOKEN),
+  // Язык интерфейса сервер знает от страницы: описания команд и маршруты приходят от него
+  // готовыми. `S` объявлен ниже, а первый запрос идёт до выбора языка — тогда русский.
+  const lang = (!path.includes("lang=") && typeof S !== "undefined" && S.lang && S.lang !== "ru")
+    ? "&lang=" + encodeURIComponent(S.lang) : "";
+  const r = await fetch(path + sep + "t=" + encodeURIComponent(TOKEN) + lang,
     {...opts, headers:{"Content-Type":"application/json", ...(opts.headers||{})}});
   const d = await r.json();
   if (d.error && !opts.quiet) toast(d.error, "err");
@@ -266,6 +270,13 @@ function drawLangPicker(){
     await loadI18n();
     drawLangPicker();
     relabelModules();      // подписи разделов в меню
+    // Описания команд приходят от сервера уже на языке интерфейса: без нового запроса
+    // они остались бы прежними до перезагрузки страницы.
+    const st = await api("/api/state", {quiet:true});
+    if (st && st.commands) S.state.commands = st.commands;
+    S.scenarios = null;     // маршруты тоже приходят на языке интерфейса — спросим заново
+    S.health = null;        // и итог «Здоровья»: находки доктора и описания источников
+    loadSkins();            // и названия скинов в списке
     await refreshModules();   // и содержимое тех, что уже подняты
     toast(t("lang.switched",
                 {name: sel.options[sel.selectedIndex].text.split(" · ")[0]}));

@@ -414,7 +414,7 @@ def remap(mirror: str, old_map: dict, apply: bool) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Перенацелить source: карточек на новое зеркало")
-    ap.add_argument("--mirror", default=DEFAULT_MIRROR, help=f"корень зеркала ({DEFAULT_MIRROR})")
+    ap.add_argument("--mirror", default=DEFAULT_MIRROR, help=f"корень зеркала ({DEFAULT_MIRROR.replace(os.sep, '/')})")
     ap.add_argument("--snapshot", action="store_true",
                     help="снять карту page_id → путь ДО переэкспорта и сохранить в meta/")
     ap.add_argument("--from-git", metavar="REF",

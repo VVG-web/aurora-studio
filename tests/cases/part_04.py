@@ -45,8 +45,17 @@ def test_cards_are_distilled_side_by_side(tmp: Path):
             f'---\nid: KB-{i}\ntitle: "К{i}"\nkind: knowledge\nstatus: knowledge\n'
             f'---\n\nтело {i}\n', encoding="utf-8")
 
+    import threading
+    gate = threading.Lock()
+    live = {"now": 0, "peak": 0}
+
     def slow(cfg, role, messages, **kw):
+        with gate:
+            live["now"] += 1
+            live["peak"] = max(live["peak"], live["now"])
         time.sleep(0.2)
+        with gate:
+            live["now"] -= 1
         return {"ok": True, "text": "ТЕЗИС: тезис\nОПОРА: цитата", "backend": 1,
                 "model": "тест", "seconds": 0.2, "tps": 10, "log": []}
 
@@ -55,15 +64,19 @@ def test_cards_are_distilled_side_by_side(tmp: Path):
                               "AURORA_AGENT_BACKEND_1_MODEL": "m",
                               "AURORA_AGENT_PARALLEL": str(width)})
         assert cfg["parallel"] == width, "ширина не читается из настроек"
+        live["peak"] = 0
         t0 = time.time()
         res = R.run_distill(cfg, str(tmp), apply=False, limit=6, momus=False, call=slow)
-        return time.time() - t0, res
+        return time.time() - t0, res, live["peak"]
 
-    one, res1 = go(1)
-    many, res6 = go(6)
+    one, res1, peak1 = go(1)
+    many, res6, peak6 = go(6)
     assert len(res1["steps"]) == len(res6["steps"]) == 6, "часть карточек потерялась"
-    assert many < one / 2, \
-        f"параллельный проход не быстрее последовательного: {many:.1f} с против {one:.1f} с"
+    # Параллельность считаем по числу одновременных обращений к модели, а не по секундомеру: на
+    # общей машине CI (Windows) накладные расходы потоков съедали выигрыш, и время плавало.
+    assert peak1 == 1 and peak6 >= 3, \
+        f"ширина не работает: при 1 одновременно {peak1}, при 6 — {peak6} обращений"
+    assert many < one, f"параллельный проход не быстрее последовательного: {many:.1f} с против {one:.1f} с"
 
 
 @test

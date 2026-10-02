@@ -2425,3 +2425,244 @@ def test_a_path_on_another_drive_does_not_stop_the_engine(tmp: Path):
     src = (SCRIPTS / "confluence_export.py").read_text(encoding="utf-8")
     assert "os.path.relpath(os.path.abspath(out), os.getcwd())" not in src, \
         "синк снова считает путь от текущей папки напрямую — на другом диске он упадёт"
+
+
+def test_the_english_panel_describes_every_command_in_english(tmp: Path):
+    """В английском режиме 91 описание команды читается по-английски, а не по-русски.
+
+    Описания приходят от сервера из реестра `commands.txt`, а он один и русский: в
+    разделе «Команды», палитре и окне запуска английский экран показывал русский текст у
+    каждой команды. Перевод лежит в `cockpit/i18n/data/en.json` — тот же, из которого
+    собран английский справочник `docs/en/commands.md`, — и страница сама просит язык.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    reg = [r for r in ck.registry()]
+    data = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))
+    names = data["commands"]
+    ru = {}
+    for line in (KIT / "commands.txt").read_text(encoding="utf-8").splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if line.strip() and not line.startswith("#") and len(parts) == 7:
+            ru[parts[1]] = parts[6]
+    assert set(names) == set(ru), (sorted(set(ru) - set(names)), sorted(set(names) - set(ru)))
+    for cmd, text in names.items():
+        outside = re.sub(r"`[^`]*`", "", text)
+        assert text.strip() and not re.search("[а-яА-ЯёЁ]", outside), \
+            f"{cmd}: описание пусто или осталось по-русски: {text[:80]}"
+
+    got = ck.localized_commands(reg, "en")
+    assert len(got) == len(reg) and all(r["what"] == names[r["cmd"]] for r in got if r["cmd"] in names), \
+        "описания не заменены на английские"
+    assert [r["cmd"] for r in got] == [r["cmd"] for r in reg], "порядок реестра изменился"
+    assert got[0]["flags"] == reg[0]["flags"], "перевод тронул не только описание"
+    assert ck.localized_commands(reg, "ru") == reg, "русский режим изменил реестр"
+    assert ck.localized_commands(reg, "zz") == reg, "неизвестный язык не откатился на русский"
+    assert ck.localized_commands(reg, "../../etc/passwd") == reg
+    assert ck.request_lang({"lang": ["EN"]}) == "en"
+    assert ck.request_lang({"lang": ["../x"]}) == "ru" and ck.request_lang({}) == "ru"
+
+    ui = ui_source()
+    assert 'S.lang !== "ru"' in ui and '"&lang=" + encodeURIComponent(S.lang)' in ui, \
+        "страница не просит у сервера язык: описания команд придут по-русски"
+    assert 'S.state.commands = st.commands' in ui, \
+        "смена языка не перечитывает описания команд: они останутся прежними до перезагрузки"
+
+    out = tmp / "commands.md"
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "kit_commands.py"), "--en-md", str(out)],
+                        cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert out.read_text(encoding="utf-8") == (KIT / "docs/en/commands.md").read_text(encoding="utf-8"), \
+        "docs/en/commands.md устарел: python3 scripts/kit_commands.py --en-md docs/en/commands.md"
+
+    gap = subprocess.run([sys.executable, str(SCRIPTS / "kit_i18n.py"), "--check"], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace")
+    assert "данные: commands" in gap.stdout and gap.returncode == 0, gap.stdout[-600:]
+
+
+@test
+def test_the_ask_tab_keeps_the_model_as_data_not_as_russian_text(tmp: Path):
+    """Подпись «кто ответил» хранит модель в данных; выгрузка не режет русскую приставку.
+
+    Выгрузка разговора брала модель из текста подписи и отрезала от неё «модель: » —
+    по-русски. На английском приставка другая, резать было нечего, и в файл попадало
+    «Model: model: X · backend No. 1». Пустая подпись до первого ответа была вшита в
+    разметку по-русски и на английском экране оставалась русской.
+    """
+    node = shutil.which("node")
+    if not node:
+        return
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    view = ck.module_file("ask", "view.js")
+    html = Path(ck.module_file("ask", "view.html")).read_text(encoding="utf-8")
+    assert not re.search(r'id="askWho"[^>]*>[^<]*[а-яА-ЯёЁ]', html), \
+        "подпись «кто ответил» вшита в разметку по-русски"
+    harness = """
+import {drawWho, markdown} from "MODULE";
+const chip = {dataset: {}, textContent: ""};
+const cardsBox = {children: []};
+const ctx = {
+  t: (k, v) => k + (v ? ":" + JSON.stringify(v) : ""),
+  $: q => q === "#askWho" ? chip : q === "#askBody" ? {children: [], querySelectorAll: () => []} : null,
+  project: {path: "/p"}, lang: "en",
+};
+const out = {};
+drawWho(ctx); out.empty = chip.textContent;
+drawWho(ctx, {kind: "answer", model: "glm-5", n: "2"}); out.answer = chip.textContent; out.model = chip.dataset.model;
+ctx.lang = "ru"; drawWho(ctx); out.again = chip.textContent;      // язык сменили — строка собрана заново
+drawWho(ctx, {kind: "ping_ok", model: "m1"}); out.ping = chip.textContent;
+console.log(JSON.stringify(out));
+"""
+    src = tmp / "who.mjs"
+    src.write_text(harness.replace("MODULE", Path(view).resolve().as_uri()), encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:600]
+    r = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert r["empty"] == "ask.who_none", r
+    assert r["answer"].startswith("ask.who_line") and '"model":"glm-5"' in r["answer"] \
+        and "ask.who_spare" in r["answer"], r
+    assert r["model"] == "glm-5" and r["again"] == r["answer"], r
+    assert r["ping"] == "ask.primary_answersm1", r
+    js = Path(view).read_text(encoding="utf-8")
+    assert 'replace(/^модель:' not in js and 'dataset.model' in js, \
+        "выгрузка снова режет русскую приставку у подписи"
+
+
+@test
+def test_the_panel_server_answers_in_the_language_the_page_asks_for(tmp: Path):
+    """Страница просит язык (`?lang=en`), и сервер отвечает на нём: данные, маршруты, отказы.
+
+    Описания 91 команды, пояснения 295 флагов, маршруты, названия скинов, описания
+    коннекторов, находки доктора и сообщения об ошибках рождаются в сервере по-русски. На
+    английском экране каждое из них оставалось русским; теперь переводятся по таблице
+    `cockpit/i18n/data/en.json` — в одном месте, перед отправкой ответа. Нет перевода — русский
+    оригинал, а не пустота.
+    """
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    sys.path.insert(0, str(KIT / "cockpit"))
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+
+    # --- движок перевода сообщений
+    assert ck.translate_message("проект не выбран", "en") == "no project selected"
+    assert ck.translate_message("проект не выбран", "ru") == "проект не выбран"
+    assert ck.translate_message("неведомое сообщение", "en") == "неведомое сообщение", \
+        "нет перевода — русский оригинал, а не пустота"
+    assert ck.translate_message("флаг --x не объявлен командой «kb:lint»", "en") \
+        == "the flag --x is not declared by the command «kb:lint»", "подстановки не перенесены"
+    nested = ck.translate_message("Маршрут не начат: проект не выбран", "en")
+    assert nested == "The route was not started: no project selected", \
+        f"причина, вложенная в сообщение, осталась русской: {nested}"
+    payload = {"error": "проект не выбран", "name": "проект не выбран",
+               "doctor": {"errors": ["нет AGENTS.md"], "warns": ["нет AGENTS.md", 5]},
+               "items": [{"why": "путь вне проекта"}]}
+    got = ck.translate_payload(payload, "en")
+    assert got["error"] == "no project selected" and got["name"] == "проект не выбран", \
+        "переведено значение под чужим ключом — данные проекта трогать нельзя"
+    assert got["doctor"]["errors"] == ["there is no AGENTS.md"] and got["doctor"]["warns"][1] == 5
+    assert got["items"][0]["why"] == "the path is outside the project"
+    assert ck.MESSAGE_KEYS == tuple(__import__("kit_i18n").MESSAGE_KEYS), \
+        "перечень ключей сообщений в сервере и в проверке каталогов разошёлся"
+
+    # --- настоящий сервер: GET с ?lang=en и POST с отказом
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(tmp)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def call(method: str, path: str, body: str = ""):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=60)
+        c.request(method, path + ("&" if "?" in path else "?") + "t=" + ck.TOKEN, body=body or None,
+                  headers={"Content-Type": "application/json"})
+        r = c.getresponse()
+        return r.status, json.loads(r.read().decode("utf-8"))
+    cyr = re.compile("[а-яА-ЯёЁ]")
+    try:
+        _code, state = call("GET", "/api/state?lang=en")
+        row = next(r for r in state["commands"] if r["cmd"] == "kit:doctor")
+        assert row["what"].startswith("Project readiness"), row["what"]
+        assert all(not cyr.search(h) for r in state["commands"] for h in r["flag_help"].values()
+                   if h.replace("MOC/Сообщества/", "").replace("MOC/Трассировка-требований.md", "")
+                   .replace("MOC/Связи.md", "") == h), "пояснение флага осталось русским"
+        assert any(i["enables"].startswith("everything:") for i in state["env"]["items"]), \
+            "«что даёт» в Установке осталось русским"
+        _code, ru_state = call("GET", "/api/state")
+        row_ru = next(r for r in ru_state["commands"] if r["cmd"] == "kit:doctor")
+        assert cyr.search(row_ru["what"]), "без языка страница получила не русский"
+
+        _code, sc = call("GET", "/api/scenarios?lang=en")
+        assert sc["scenarios"][0]["title"] == "Update the base", sc["scenarios"][0]["title"]
+        left = [s["why"] for r in sc["scenarios"] for s in r["steps"] if cyr.search(s.get("why", ""))]
+        assert not left, f"пояснения шагов остались русскими: {left[:2]}"
+        _code, sk = call("GET", "/api/skins?lang=en")
+        assert {s["name"] for s in sk["skins"]} >= {"Contrast", "Zine 2.0"}, sk["skins"]
+
+        code, err = call("POST", "/api/run?lang=en",
+                         json.dumps({"project": str(tmp / "нет"), "cmd": "kb:lint"}))
+        assert code >= 400 and err["error"] == "the project was not found among the discovered ones", err
+        _code, ru_err = call("POST", "/api/run", json.dumps({"project": str(tmp / "нет"), "cmd": "kb:lint"}))
+        assert ru_err["error"] == "проект не найден среди обнаруженных", ru_err
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_the_suite_shards_cover_every_check_exactly_once(tmp: Path):
+    """Доли набора вместе дают весь набор, и каждая проверка идёт ровно в одной доле.
+
+    На Windows полный прогон идёт ~12 минут, а выпуск ждёт все проверки, поэтому там набор
+    режется на три доли (`--shard=i/3`). Доля, потерявшая проверку или взявшая её дважды, —
+    либо пропущенный дефект, либо лишнее время.
+    """
+    sys.path.insert(0, str(KIT / "tests"))
+    import harness as H
+    whole = [n for n, _f, _i in H.select_tests()]
+    for n in (1, 2, 3, 5):
+        parts = [[x for x, _f, _i in H.select_tests(shard=(i, n))] for i in range(1, n + 1)]
+        flat = [x for p in parts for x in p]
+        assert sorted(flat) == sorted(whole), \
+            f"{n} долей: потеряно {set(whole) - set(flat)}, лишнее {len(flat) - len(set(flat))}"
+        assert max(map(len, parts)) - min(map(len, parts)) <= len(H.INVARIANTS) + 1, \
+            f"{n} долей неравны: {[len(p) for p in parts]}"
+    for bad in ((0, 3), (4, 3), (1, 0)):
+        try:
+            H.select_tests(shard=bad)
+        except SystemExit:
+            continue
+        raise AssertionError(f"доля {bad} принята")
+
+
+@test
+def test_script_help_does_not_print_paths_in_the_native_separator(tmp: Path):
+    """Пояснения флагов в `--help` называют пути через «/» на любой системе.
+
+    Путь по умолчанию подставлялся в справку прямо из константы, собранной `os.path.join`: на
+    Windows в окне запуска панели стояло «AuroraKnowledgeDB\\meta\\graphify\\code.json». А
+    английский перевод пояснения ищется по самому тексту, и с «\\» он не находился — на
+    Windows английский экран показывал русский текст (`kit_i18n --check` краснел там же).
+    """
+    import ast
+    bad = []
+    for f in sorted(SCRIPTS.glob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg != "help" or not isinstance(kw.value, ast.JoinedStr):
+                    continue
+                for part in kw.value.values:
+                    if not isinstance(part, ast.FormattedValue):
+                        continue
+                    expr = ast.unparse(part.value)
+                    # число (версия схемы) безопасно; всё остальное — путь, и разделитель должен быть «/»
+                    if expr in ("CURRENT",) or "os.sep" in expr:
+                        continue
+                    bad.append(f"{f.name}:{node.lineno}: {{{expr}}}")
+    assert not bad, "в справке путь подставлен как есть:\n" + "\n".join(bad)

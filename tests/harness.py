@@ -230,8 +230,24 @@ INVARIANTS = frozenset({
 })
 
 
-def select_tests(only: str = "", smoke: bool = False, no_invariants: bool = False):
-    """Выборка (display_name, fn, is_invariant) в порядке регистрации."""
+def select_tests(only: str = "", smoke: bool = False, no_invariants: bool = False, shard=None):
+    """Выборка (display_name, fn, is_invariant) в порядке регистрации.
+
+    `shard=(i, n)` — каждая n-я проверка, начиная с i-й; инварианты остаются только в первой доле,
+    чтобы все доли вместе прогоняли каждую проверку ровно один раз.
+    """
+    chosen = _select(only, smoke, no_invariants)
+    if shard and not smoke:
+        i, n = shard
+        if not (n >= 1 and 1 <= i <= n):
+            raise SystemExit(f"--shard={i}/{n}: доля вне диапазона")
+        rest = [c for c in chosen if not c[2]]
+        chosen = ([c for c in chosen if c[2]] if i == 1 else []) + \
+                 [c for k, c in enumerate(rest) if k % n == i - 1]
+    return chosen
+
+
+def _select(only: str, smoke: bool, no_invariants: bool):
     chosen = []
     for name, fn in REGISTRY:
         is_inv = name in INVARIANTS
@@ -464,6 +480,10 @@ def _answer(cl, profile, override=None):
 
 SMOKE = "--smoke" in sys.argv
 NO_INVARIANTS = "--no-invariants" in sys.argv
+# Доля набора: `--shard=2/3` — вторая треть. На Windows полный прогон идёт вчетверо дольше, чем на
+# Linux, а выпуск ждёт все проверки; три параллельные доли возвращают время, которое отнимает ОС.
+SHARD = next((tuple(int(x) for x in a.split("=", 1)[1].split("/")) for a in sys.argv
+              if a.startswith("--shard=")), None)
 
 TEMPLATE_PAR = ("При правках стори после прохождения ревью ОБЯЗАТЕЛЬНО писать комментарий "
                 "при сохранении страницы - что поменялось (около кнопки SAVE)")

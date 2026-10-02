@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -376,6 +377,49 @@ def render_md(rows: list, version: str) -> str:
     return "\n".join(L)
 
 
+# Английский справочник. Описания команд лежат в данных панели (`cockpit/i18n/data/en.json`) —
+# тех же, из которых их берёт сама панель на английском: два перевода одной строки
+# разошлись бы на первой правке. Файл есть только в ките, поэтому и справочник строится
+# из кита.
+EN_DATA = os.path.join(HERE, "..", "cockpit", "i18n", "data", "en.json")
+EN_NS = {"kit": "The engine and the project", "sync": "Mirrors of external systems",
+         "kb": "Extraction and the life of knowledge", "ctx": "Using knowledge",
+         "make": "Producing artifacts", "ship": "Outward", "ops": "Management and reporting",
+         "agent": "The built-in agent", "dev": "QA of the engine"}
+EN_KIND = {"скрипт": "script", "модель": "model", "скрипт+модель": "script + model"}
+
+
+def render_en_md(rows: list, names: dict) -> str:
+    """Короткий английский справочник по реестру. Команда без перевода — ошибка, а не пропуск."""
+    lost = [r["cmd"] for r in rows if r["cmd"] not in names]
+    if lost:
+        raise KeyError("нет английского описания: " + ", ".join(lost))
+    L = ["# Command reference", "",
+         "A short English reference of every command in the registry (`commands.txt`). The complete",
+         "reference with modifiers, taken live from the scripts' `--help`, is the generated Russian",
+         "[../commands.md](../commands.md), or `python3 aurora.py list <project>` in a terminal.",
+         "Русская версия: [../commands.md](../commands.md).", "",
+         "Short names in parentheses are historical aliases and always work. **Executor** marks the",
+         "border: **script** — deterministic mechanics, the result is reproducible; **model** — work",
+         "with meaning, done by the assistant by a procedure from `skills/aurora-vault/references/`;",
+         "**script + model** — a script counts and prepares, a model or a human decides. A command",
+         "that writes shows a preview without `--apply`.", "",
+         "This file is generated: `python3 scripts/kit_commands.py --en-md docs/en/commands.md`.",
+         "The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel shows."]
+    for ns, title in EN_NS.items():
+        part = [r for r in rows if r["ns"] == ns]
+        if not part:
+            continue
+        L += ["", f"## `{ns}:` — {title}", "",
+              "| Command | What it does | Executor | Since |", "|---|---|---|---|"]
+        for r in part:
+            alias = ("" if not r["alias"] else
+                     " (" + ", ".join(f"`{a.strip()}`" for a in r["alias"].split(",")) + ")")
+            L.append(f"| `{r['cmd']}`{alias} | {names[r['cmd']]} | "
+                     f"{EN_KIND.get(r['kind'], r['kind'])} | {r['since']} |")
+    return "\n".join(L) + "\n"
+
+
 def check(rows: list) -> int:
     """Реестр против движка: новая команда не должна появиться мимо справочника."""
     problems = []
@@ -406,6 +450,8 @@ def main() -> int:
     ap.add_argument("--search", help="искать по имени и описанию")
     ap.add_argument("--md", nargs="?", const="",
                     help="записать markdown-справочник (в проекте — AuroraKnowledgeDB/meta/)")
+    ap.add_argument("--en-md", metavar="PATH",
+                    help="записать короткий английский справочник (только в ките)")
     ap.add_argument("--check", action="store_true", help="сверить реестр с движком")
     a = ap.parse_args()
 
@@ -415,6 +461,19 @@ def main() -> int:
         return 1
     if a.check:
         return check(rows)
+    if a.en_md:
+        try:
+            with open(EN_DATA, encoding="utf-8") as f:
+                names = json.load(f).get("commands") or {}
+            text = render_en_md(rows, names)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"kit:list: английский справочник не собран — {e}", file=sys.stderr)
+            return 1
+        os.makedirs(os.path.dirname(a.en_md) or ".", exist_ok=True)
+        with open(a.en_md, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        print(f"✅ {a.en_md}: команд {len(rows)}")
+        return 0
     if a.namespace:
         rows = [r for r in rows if r["ns"] == a.namespace.strip(": ")]
     if a.search:

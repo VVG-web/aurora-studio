@@ -129,6 +129,171 @@ def keys_of(data: dict) -> set:
     return {k for k in data if not k.startswith("_")}
 
 
+# Данные, которые панели отдаёт сам сервер: описания команд, названия скинов, маршруты.
+# Их перевод — `cockpit/i18n/data/<язык>.json`, и полнота у него та же, что у каталога строк:
+# ключа нет — человек видит русский оригинал посреди английского экрана.
+# Сообщения сервера панели («error», «why» …) переводятся по самому русскому тексту, и каждая
+# подстановка в нём — `{}`. Что считать сообщением, решает этот перечень: ключи ответа, текст
+# `raise` и возврат функций, которые отдают причину отказа. Сервер знает те же ключи
+# (`MESSAGE_KEYS`) — их совпадение сверяет проверка.
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait")
+REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask", "mcp_check",
+                "mcp_new_secrets", "writable_target", "version_gap", "build")
+
+
+def _skeleton(node):
+    """Русский текст сообщения с `{}` на месте подстановок; не текст — None."""
+    import ast
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _skeleton(node.left), _skeleton(node.right)
+        if left is None and right is None:
+            return None
+        return (left if left is not None else "{}") + (right if right is not None else "{}")
+    return None
+
+
+def message_skeletons() -> set:
+    """Русские сообщения сервера панели и доктора в том виде, в каком их ищет перевод."""
+    import ast
+    out = set()
+
+    def add(node):
+        s = _skeleton(node)
+        if s and re.search("[а-яА-ЯёЁ]", s):
+            out.add(s.strip())
+
+    server = os.path.join(KIT, "cockpit", "aurora_cockpit.py")
+    if os.path.isfile(server):
+        for node in ast.walk(ast.parse(open(server, encoding="utf-8").read())):
+            if isinstance(node, ast.Dict):
+                for k, v in zip(node.keys, node.values):
+                    if isinstance(k, ast.Constant) and k.value in MESSAGE_KEYS:
+                        add(v)
+            elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+                for a in node.exc.args:
+                    add(a)
+            elif isinstance(node, ast.FunctionDef) and node.name in REASON_FUNCS:
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Return) and sub.value is not None:
+                        add(sub.value)
+    # Находки доктора — строки `ERROR:` и `WARN:`, которые панель показывает на «Здоровье»:
+    # их рождает `.append(...)` в самом скрипте.
+    doctor = os.path.join(KIT, "scripts", "aurora_doctor.py")
+    if os.path.isfile(doctor):
+        for node in ast.walk(ast.parse(open(doctor, encoding="utf-8").read())):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append" and node.args):
+                add(node.args[0])
+    return out
+
+
+def connector_ids() -> set:
+    folder = os.path.join(KIT, "connectors")
+    return {d for d in os.listdir(folder)
+            if os.path.isfile(os.path.join(folder, d, "connector.json"))} if os.path.isdir(folder) else set()
+
+
+def scenario_texts() -> set:
+    """Тексты маршрутов, которые видит человек: заголовок, «когда», пояснения шагов.
+
+    Читается тем же правилом, что и `cockpit/aurora_cockpit.scenarios()` (их сверяет проверка):
+    переводить нужно то, что панель покажет, — команды и флаги остаются как есть.
+    """
+    path = os.path.join(KIT, "cockpit", "scenarios.txt")
+    out = set()
+    if not os.path.isfile(path):
+        return out
+    for line in open(path, encoding="utf-8"):
+        line = line.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = re.match(r"\[([\w-]+)\]\s*([^|]+?)\s*(?:\|\s*(.*))?$", line.strip())
+        if m:
+            tail = [x.strip() for x in (m.group(3) or "").split("|")]
+            out |= {m.group(2).strip(), tail[0] if tail else ""}
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        if parts[0].startswith("-"):
+            out.add(parts[0].lstrip("- ").strip())
+        if len(parts) > 1:
+            out.add(parts[1])
+    return {t for t in out if re.search("[а-яА-ЯёЁ]", t)}
+
+
+def skin_ids() -> set:
+    folder = os.path.join(KIT, "cockpit", "skins")
+    return {f[:-4] for f in os.listdir(folder) if f.endswith(".css")} if os.path.isdir(folder) else set()
+
+
+def flag_texts() -> tuple:
+    """(пояснения флагов, метапеременные) всех команд реестра — из `--help` самих скриптов.
+
+    Пояснение флага пишется один раз, в скрипте, и по-русски; панель показывает его в окне
+    запуска. Метапеременная — слово в `--out ПУТЬ`: тоже русское, если автор так написал.
+    """
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    try:
+        import kit_commands as KC
+    except ImportError:
+        return set(), set()
+    cwd = os.getcwd()
+    os.chdir(KIT)                         # `dev:` команды видны только из кита
+    try:
+        helps, metas = set(), set()
+        for row in KC.read_registry():
+            for text in KC.flag_help(row["impl"]).values():
+                if re.search("[а-яА-ЯёЁ]", text):
+                    helps.add(text)
+            for meta in KC.flag_args(row["impl"]).values():
+                if re.search("[а-яА-ЯёЁ]", meta):
+                    metas.add(meta)
+            args = KC.args_of(row["impl"])
+            for token in args.split():
+                if re.search("[а-яА-ЯёЁ]", token):
+                    metas.add(token)
+    finally:
+        os.chdir(cwd)
+    return helps, metas
+
+
+def data_expected() -> dict:
+    """{раздел: набор ключей, которые обязан покрыть перевод} — по самим реестрам."""
+    helps, metas = flag_texts()
+    out = {"scenarios": scenario_texts(), "skins": skin_ids(), "messages": message_skeletons(),
+           "connectors": connector_ids(), "flags": helps, "flag_args": metas}
+    reg = os.path.join(KIT, "commands.txt")
+    if os.path.isfile(reg):
+        names = set()
+        for line in open(reg, encoding="utf-8"):
+            parts = [p.strip() for p in line.split("|")]
+            if line.strip() and not line.startswith("#") and len(parts) == 7:
+                names.add(parts[1])
+        out["commands"] = names
+    return out
+
+
+def data_rows(code: str) -> list:
+    """[(раздел, есть, нужно, чего нет, лишнее)] для одного языка."""
+    path = os.path.join(I18N, "data", code + ".json")
+    data = {}
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except ValueError as e:
+            print(f"kit_i18n: data/{code}.json не разобран: {e}", file=sys.stderr)
+    rows = []
+    for section, need in sorted(data_expected().items()):
+        have = {k for k, v in (data.get(section) or {}).items() if str(v).strip()}
+        rows.append((section, len(have & need), len(need), sorted(need - have),
+                     sorted(set(data.get(section) or {}) - need)))
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Языки интерфейса панели")
     ap.add_argument("--check", action="store_true", help="полнота каждого каталога")
@@ -222,6 +387,21 @@ def main() -> int:
                 bad = True
             mark = f"{len(have)} из {len(base_keys)}"
             print(f"| {title} | `{code}` | {mark} | {len(lack)} |")
+
+    for code in rows:
+        if code == BASE:
+            continue
+        for section, have, need, lack, extra in data_rows(code):
+            print(f"| данные: {section} | `{code}` | {have} из {need} | {len(lack)} |")
+            if lack:
+                bad = True
+                troubles.append(f"данные `{section}` на `{code}`: нет перевода у "
+                                + ", ".join(f"`{k}`" for k in lack[:6])
+                                + (f" и ещё {len(lack) - 6}" if len(lack) > 6 else ""))
+            if extra:
+                bad = True
+                troubles.append(f"данные `{section}` на `{code}`: перевод того, чего в реестре уже нет — "
+                                + ", ".join(f"`{k}`" for k in extra[:6]))
 
     if troubles:
         print("\n## Что не сходится\n")
