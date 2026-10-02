@@ -303,17 +303,12 @@ def first_sentence(text: str) -> str:
 
 
 def load_cards() -> dict:
+    """{имя файла: Card}. Служебное и архив — не карточки: снятое из базы знанием не служит."""
     cards = {}
-    for dirpath, _, files in os.walk(ROOT):
-        if "/meta" in dirpath.replace("\\", "/"):
-            continue
-        for f in files:
-            if not f.endswith(".md") or f.startswith("_") or f == "index.md":
-                continue
-            p = os.path.join(dirpath, f)
-            text = read_card_text(p)
-            if text is not None:
-                cards[os.path.splitext(f)[0]] = Card(p, text)
+    for p in walk_md(ROOT, skip_service=True, skip_archive=True):
+        text = read_card_text(p)
+        if text is not None:
+            cards[os.path.splitext(os.path.basename(p))[0]] = Card(p, text)
     return cards
 
 

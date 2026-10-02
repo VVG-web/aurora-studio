@@ -125,7 +125,8 @@ def card_path(project: str, name: str) -> str:
     safe = os.path.basename(name.strip()).removesuffix(".md")
     root = os.path.join(project, "AuroraKnowledgeDB")
     for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        # архив — снятое из базы (слитые двойники, заглушки): знанием оно уже не служит
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "_archive"]
         if safe + ".md" in files:
             return os.path.join(dirpath, safe + ".md")
     return ""
@@ -167,7 +168,16 @@ def search(project: str, query: str, limit: int) -> str:
     Возвращаем не пак, а список: ассистенту дешевле сначала увидеть двадцать строк и
     выбрать, чем получить пятьдесят тысяч знаков и разбираться в них самому.
     """
-    sys.path.insert(0, str(SCRIPTS))
+    # Каталог процесса один на все потоки, а ctx_pack ищет карточки по относительному пути:
+    # пока один вызов сидит в проекте, другой не должен вернуть каталог на прежнее место.
+    # Без замка шестая часть параллельных поисков отвечала «база ничего не знает».
+    with SEARCH_LOCK:
+        return _search_locked(project, query, limit)
+
+
+def _search_locked(project: str, query: str, limit: int) -> str:
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
     cwd = os.getcwd()
     try:
         os.chdir(project)
@@ -210,6 +220,7 @@ sys.stdout = sys.stderr
 # Вызовы инструментов идут каждый в своём потоке: долгий kb_ask не держит ping и поиск.
 # Ответы по одному каналу пишутся под замком, иначе две строки JSON слипнутся.
 WRITE_LOCK = threading.Lock()
+SEARCH_LOCK = threading.Lock()
 MAX_CALLS = 8
 CALL_SLOTS = threading.BoundedSemaphore(MAX_CALLS)
 
