@@ -52,6 +52,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 PROTOCOL = "2024-11-05"
@@ -102,7 +103,10 @@ TOOLS = [
 ]
 
 
-def run(project: str, script: str, args: list, timeout: int = 600) -> str:
+ASK_TIMEOUT = 240       # kb_ask ждёт модель проекта; дольше ассистент всё равно не ждёт
+
+
+def run(project: str, script: str, args: list, timeout: int = 120) -> str:
     """Команда движка проекта. Ни один инструмент не пишет — только читает."""
     path = os.path.join(project, ".opencode", "scripts", script)
     if not os.path.isfile(path):
@@ -152,7 +156,8 @@ def call_tool(project: str, name: str, args: dict) -> str:
         return run(project, "make_kinds.py", [f"--kind={kind}"] if kind else [])
     if name == "kb_ask":
         return run(project, "agent_runner.py",
-                   ["--task", "ask", f"--question={args.get('question', '')}"])
+                   ["--task", "ask", f"--question={args.get('question', '')}"],
+                   timeout=ASK_TIMEOUT)
     return f"Инструмента {name} нет. Доступны: " + ", ".join(t["name"] for t in TOOLS)
 
 
@@ -202,14 +207,34 @@ CHANNEL = sys.stdout
 sys.stdout = sys.stderr
 
 
+# Вызовы инструментов идут каждый в своём потоке: долгий kb_ask не держит ping и поиск.
+# Ответы по одному каналу пишутся под замком, иначе две строки JSON слипнутся.
+WRITE_LOCK = threading.Lock()
+MAX_CALLS = 8
+CALL_SLOTS = threading.BoundedSemaphore(MAX_CALLS)
+
+
 def reply(msg_id, result=None, error=None) -> None:
     out = {"jsonrpc": "2.0", "id": msg_id}
     out["error" if error else "result"] = error or result
-    CHANNEL.write(json.dumps(out, ensure_ascii=False) + "\n")
-    CHANNEL.flush()
+    line = json.dumps(out, ensure_ascii=False) + "\n"
+    with WRITE_LOCK:
+        CHANNEL.write(line)
+        CHANNEL.flush()
+
+
+def answer_call(project: str, msg_id, params: dict) -> None:
+    try:
+        text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
+    except Exception as e:                          # noqa: BLE001 — сессия важнее вызова
+        text = f"Инструмент не отработал: {type(e).__name__}: {e}"
+    finally:
+        CALL_SLOTS.release()
+    reply(msg_id, {"content": [{"type": "text", "text": text}]})
 
 
 def serve(project: str) -> int:
+    calls = []
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -232,17 +257,18 @@ def serve(project: str) -> int:
                       + f" База проекта «{os.path.basename(project)}»."} for tool in TOOLS]
             reply(msg_id, {"tools": named})
         elif method == "tools/call":
-            params = msg.get("params") or {}
-            try:
-                text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
-            except Exception as e:                  # noqa: BLE001 — сессия важнее вызова
-                text = f"Инструмент не отработал: {type(e).__name__}: {e}"
-            reply(msg_id, {"content": [{"type": "text", "text": text}]})
+            CALL_SLOTS.acquire()        # восьмой одновременный вызов ждёт свободного места
+            t = threading.Thread(target=answer_call, daemon=True,
+                                 args=(project, msg_id, msg.get("params") or {}))
+            calls[:] = [c for c in calls if c.is_alive()] + [t]
+            t.start()
         elif method == "ping":
             reply(msg_id, {})
         elif msg_id is not None:
             reply(msg_id, error={"code": -32601, "message": f"нет метода {method}"})
         # уведомления (notifications/*) ответа не требуют — молчим
+    for t in calls:                 # ассистент закрыл вход: даём начатым вызовам ответить
+        t.join(timeout=30)
     return 0
 
 

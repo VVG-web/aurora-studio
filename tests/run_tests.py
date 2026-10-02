@@ -12096,7 +12096,8 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
         input="\n".join(json.dumps(c) for c in calls), capture_output=True, text=True,
         timeout=180)
     lines = [l for l in proc.stdout.splitlines() if l.strip()]
-    got = [json.loads(l) for l in lines]          # падает, если в канал попал чужой текст
+    got = sorted((json.loads(l) for l in lines),   # падает, если в канал попал чужой текст
+                 key=lambda m: m["id"])            # вызовы идут в потоках — порядок не обещан
     assert len(got) == 4, [l[:80] for l in lines]
     assert got[0]["result"]["serverInfo"]["name"].startswith("aurora-"), got[0]
     names = {t["name"] for t in got[1]["result"]["tools"]}
@@ -12138,10 +12139,57 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
         [sys.executable, str(KIT / "scripts" / "aurora_mcp.py"), "--project", str(root)],
         input="\n".join(json.dumps(c) for c in bad), capture_output=True, text=True,
         timeout=180)
-    got = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    got = sorted((json.loads(l) for l in proc.stdout.splitlines() if l.strip()),
+                 key=lambda m: m["id"])
     assert len(got) == 3, f"сервер упал на кривом аргументе: {proc.stderr[-300:]}"
     assert "usage:" not in got[1]["result"]["content"][0]["text"], \
         "тема «--index» разобрана как флаг ctx_pack"
+
+
+@test
+def test_a_slow_mcp_call_does_not_block_the_others(tmp: Path):
+    """Долгий kb_ask (минуты) не держит ping и поиск; ответы не слипаются в канале."""
+    import io
+    import threading
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    M = importlib.import_module("aurora_mcp")
+    release = threading.Event()
+    real_call, real_channel, real_stdin = M.call_tool, M.CHANNEL, sys.stdin
+    out = io.StringIO()
+
+    def fake_call(project, name, args):
+        if name == "kb_ask":
+            release.wait(20)
+            return "медленный ответ"
+        return "быстрый ответ"
+
+    msgs = [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "kb_ask", "arguments": {"question": "?"}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "kb_search", "arguments": {"query": "x"}}}]
+    try:
+        M.call_tool, M.CHANNEL = fake_call, out
+        sys.stdin = io.StringIO("\n".join(json.dumps(m) for m in msgs))
+        t = threading.Thread(target=M.serve, args=("/tmp/нет",), daemon=True)
+        t.start()
+        for _ in range(100):                      # быстрые ответы приходят, пока kb_ask висит
+            ids = [json.loads(l)["id"] for l in out.getvalue().splitlines() if l.strip()]
+            if {2, 3} <= set(ids):
+                break
+            time.sleep(0.05)
+        assert {2, 3} <= set(ids) and 1 not in ids, \
+            f"ping и поиск ждали долгий вызов: {ids}"
+        release.set()
+        t.join(10)
+        rows = [json.loads(l) for l in out.getvalue().splitlines() if l.strip()]
+        assert sorted(r["id"] for r in rows) == [1, 2, 3], "ответ потерян или слип в канале"
+        assert not t.is_alive(), "сервер не завершился после закрытия входа"
+    finally:
+        release.set()
+        M.call_tool, M.CHANNEL, sys.stdin = real_call, real_channel, real_stdin
+    assert M.ASK_TIMEOUT < 600, "kb_ask снова ждёт десять минут"
 
 
 @test
