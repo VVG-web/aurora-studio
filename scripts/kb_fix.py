@@ -831,6 +831,20 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
 ARTIFACT_CODE_RE = re.compile(r"^(?:US|AC|REQ|SPEC|(?i:epic|эпик))[\s\-_.]*\d+(?:\.\d+)*$")
 
 
+def is_code_name(stem: str, title: str, src: str = "", section: str = "Concepts") -> bool:
+    """Имя называет бумагу (US, AC, Epic), а не сущность — по правилу линтера.
+
+    Одно правило на два шага: `--stubs` не заводит такую заготовку, `--drop-code-stubs`
+    убирает уже заведённые. Пока правила были разными, «Починить базу» каждый раз писала
+    `RU.PRJ.US-3.2.5` и следующим шагом уносила её в архив.
+    """
+    from kb_lint import artifact_kind
+    if ARTIFACT_CODE_RE.match(stem):
+        return True
+    return artifact_kind(stem, title, src, section, None) in ("User Story",
+                                                              "Acceptance Criteria", "Epic")
+
+
 def plan_stubs(cards: dict, idx, plan: Plan, root: str):
     """Завести карточку-заготовку под каждую ссылку, которой не на что указывать.
 
@@ -903,6 +917,8 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
 
         # короткая заглавная строка — это термин, ему место в глоссарии
         section = "Glossary" if (len(safe) <= 12 and safe.upper() == safe) else "Concepts"
+        if is_code_name(safe, clean, "", section):
+            continue          # код артефакта с приставкой проекта: заготовку унёс бы `--drop-code-stubs`
         path = os.path.join(root, section, safe + ".md").replace("\\", "/")
         if path in cards or os.path.exists(path):
             continue
@@ -1182,12 +1198,9 @@ def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
         # («RU.PRJ.US-3.2.5») и код с названием («US-4.2.1 Создание черновика») он зовёт
         # артефактом, а ремонт по голому коду их не брал — и пустышки висели на человеке
         # навсегда (PRJ-C 29.09.2026: 11 штук).
-        from kb_lint import artifact_kind
         section = rel.split("/")[1] if rel.count("/") >= 2 else ""
-        kind = artifact_kind(c.stem, (c.fm.get("title") or c.stem).strip().strip('"'),
-                             (card_sources(c.text) or [""])[0], section, None)
-        if not ARTIFACT_CODE_RE.match(c.stem) and kind not in ("User Story",
-                                                               "Acceptance Criteria", "Epic"):
+        if not is_code_name(c.stem, (c.fm.get("title") or c.stem).strip().strip('"'),
+                            (card_sources(c.text) or [""])[0], section):
             continue
         plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                              os.path.basename(rel)).replace("\\", "/")))
