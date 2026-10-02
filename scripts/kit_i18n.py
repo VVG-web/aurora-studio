@@ -98,12 +98,24 @@ def used_in(module: str = "") -> set:
         # (`t("commands.ns." + ns)`). И то, и другое — употребление, а не мусор.
         if module:
             keys |= set(re.findall(r'"(%s\.[\w.]+)"' % re.escape(module), text))
+        # Справка у кнопки: `data-help="ключ"` просит три строки — `ключ.what`, `.how`,
+        # `.result` (так их собирает панель). Сам «ключ» в каталоге не живёт, и без этого
+        # правила проверка ругалась на сорок ключей, которые на экране работают.
+        # Имя, дописываемое в коде (`"help.files.filter_" + name`), даёт начало ключа.
+        helps = set()
+        for h, tail in re.findall(r'data-help"?\s*[:=]\s*"([\w.]+)"(\s*\+)?', text):
+            helps.add(h)
+            if tail:
+                keys.add(h)                 # начало, покрывает все ключи с ним (`covers`)
+            else:
+                keys |= {h + ".what", h + ".how", h + ".result"}
+        keys -= {h for h in helps if h + ".what" in keys}
     return keys
 
 
 def covers(used: set, key: str) -> bool:
-    """Ключ спрошен целиком или покрыт началом, собранным в коде (`commands.ns.`)."""
-    return key in used or any(u.endswith(".") and key.startswith(u) for u in used)
+    """Ключ спрошен целиком или покрыт началом, собранным в коде (`commands.ns.`, `help.files.filter_`)."""
+    return key in used or any(u.endswith((".", "_")) and key.startswith(u) for u in used)
 
 
 def keys_of(data: dict) -> set:
@@ -183,7 +195,7 @@ def main() -> int:
         # список маршрутов) живут в каталоге ядра и переводятся один раз.
         core_keys = keys_of(load(BASE)) if mod else set()
         lost = sorted(u for u in used
-                      if not u.endswith(".") and u not in base_keys and u not in core_keys)
+                      if not u.endswith((".", "_")) and u not in base_keys and u not in core_keys)
         if lost:
             bad = True
             troubles.append(f"{title}: спрашивает ключи, которых нет в `{BASE}` — "
