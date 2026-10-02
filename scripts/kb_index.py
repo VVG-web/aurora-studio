@@ -39,7 +39,7 @@ import os
 import re
 import sys
 
-from aurora_common import KB_ROOT, frontmatter, status_rank, walk_md
+from aurora_common import KB_ROOT, frontmatter, status_rank, undated, walk_md, write_if_changed
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 MARK = "<!-- generated: kb_index.py — правки будут потеряны -->"
@@ -241,11 +241,11 @@ def main() -> int:
                 continue
             adopted.append((section, len(missing(old, rows))))
         new = render(section, rows, preamble(old) if old else ())
-        if old == new:
+        if old is not None and undated(old) == undated(new):
             continue
         written += 1
         if a.apply:
-            open(target, "w", encoding="utf-8").write(new)
+            write_if_changed(target, new)
 
     print("| Раздел | Карточек |")
     print("|---|---|")
@@ -288,8 +288,8 @@ def main() -> int:
         if old is not None and MARK not in old and not a.force:
             print("Корневой index.md рукотворный — пропущен (--force перезапишет)")
         elif a.apply:
-            open(root_target, "w", encoding="utf-8").write("\n".join(lines) + "\n")
-            print(f"Корневой индекс: {root_target}")
+            if write_if_changed(root_target, "\n".join(lines) + "\n"):
+                print(f"Корневой индекс: {root_target}")
 
     # Что делать дальше — одна строка и ровно та, которая поможет. «Повторите с --apply»
     # там, где записывать нечего, отправляет человека нажимать кнопку впустую: работу

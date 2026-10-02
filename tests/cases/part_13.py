@@ -1817,3 +1817,40 @@ def test_repair_does_not_create_code_stubs_that_it_archives_next(tmp: Path):
     assert not (kb / "Concepts/RU.PRJ.US-3.2.5.md").exists(), "заготовка под код с приставкой заведена"
     cp = run("kb_fix.py", "--drop-code-stubs", "--apply", "--allow-dirty", cwd=root, expect_rc=None)
     assert "0 в архив" in cp.stdout, f"второй шаг нашёл, что убрать:\n{cp.stdout[:500]}"
+
+
+@test
+def test_generated_files_are_not_rewritten_for_the_date_alone(tmp: Path):
+    """Индекс и карта не переписываются, если изменилась одна дата сборки.
+
+    kb:index, kb:moc и kb:trace-table каждый новый день переписывали файлы ради строки
+    «обновлено …»: в git сотни правок без единой новой ссылки.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import undated, write_if_changed
+    f = tmp / "map.md"
+    text = "---\nupdated: 2026-01-02\n---\n\n_Карточек: 3 · собрано 2026-01-02_\n"
+    assert write_if_changed(str(f), text), "новый файл не записан"
+    newer = text.replace("2026-01-02", "2026-03-04")
+    assert not write_if_changed(str(f), newer), "переписали ради одной даты"
+    assert f.read_text(encoding="utf-8") == text
+    assert write_if_changed(str(f), newer.replace("Карточек: 3", "Карточек: 4")), \
+        "изменение содержимого не записано"
+    j = '{\n "date": "2026-01-02",\n "tasks": 3\n}'
+    assert undated(j) == undated(j.replace("2026-01-02", "2026-05-05")) != undated(j.replace("3", "4"))
+
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Бумага.md", "Тело.", status="knowledge")
+    run("kb_index.py", "--root-index", "--apply", cwd=root, expect_rc=0)
+    kb = root / "AuroraKnowledgeDB"
+    files = [kb / "index.md", kb / "Concepts/_index.md"]
+    stale = {}
+    for p in files:
+        t = p.read_text(encoding="utf-8")
+        old = re.sub(r"обновлено \S+", "обновлено 2020-01-01", t)
+        assert old != t, f"в {p.name} нет даты сборки"
+        p.write_text(old, encoding="utf-8")
+        stale[p] = old
+    run("kb_index.py", "--root-index", "--apply", cwd=root, expect_rc=0)
+    for p, old in stale.items():
+        assert p.read_text(encoding="utf-8") == old, f"{p.name} переписан ради даты"
