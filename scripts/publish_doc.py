@@ -29,14 +29,13 @@ import html
 import json
 import os
 import re
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy,
+from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, git_commit,
                            frontmatter,
                            set_field, split_frontmatter)
 
@@ -70,15 +69,6 @@ class Writer(Api):
 
 
 # ------------------------------------------------------------ markdown → storage
-
-def git_commit() -> str:
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=30)
-        return out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
-        return ""
-
 
 def code_macro(lang: str, code: str) -> str:
     lang = LANG_MAP.get((lang or "").strip().lower(), "none")

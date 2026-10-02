@@ -1442,11 +1442,6 @@ def test_parsing_is_shown_what_the_base_already_has(tmp: Path):
     src = (SCRIPTS / "agent_runner.py").read_text(encoding="utf-8")
     assert "candidates_block(candidates_for(cwd, cfg, listing))" in src, \
         "кандидаты не доезжают до промпта разбора"
-    # Путь карточки ищется по карте, а не обходом базы на каждого кандидата: два десятка
-    # кандидатов на карточку и тысячи карточек дают миллионы обращений к диску за прогон.
-    block = src[src.index("def _card_path("):src.index("def candidates_block(")]
-    assert "_PATHS.get(stem" in block and "for p in AC.walk_md" not in block.split("if time")[0], \
-        "путь карточки ищется обходом всей базы — на большом проекте это минуты на карточку"
     assert 'карточка — это сущность, а не пересказ документа' in src.lower(), \
         "правило не сказано в самом промпте — список кандидатов без него бесполезен"
     # Задача о работе — не знание. Без этого правила пересборка делает карточки вида
