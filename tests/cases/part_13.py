@@ -2411,8 +2411,8 @@ def test_a_path_on_another_drive_does_not_stop_the_engine(tmp: Path):
     def other_drive(*_a):
         raise ValueError("path is on mount 'C:', start on mount 'D:'")
 
-    assert safe_relpath("/a/b/c", "/a", relpath=other_drive) == "/a/b/c"
-    assert safe_relpath("/a/b/c", "/a") == "b/c"
+    assert safe_relpath("/a/b/c", "/a", relpath=other_drive) == "/a/b/c", "другой диск: нужен абсолютный путь"
+    assert safe_relpath("/a/b/c", "/a").replace("\\", "/") == "b/c", "обычный относительный путь изменился"
     assert section_of("C:/Users/me/proj/AuroraKnowledgeDB/Concepts/Заявка.md", relpath=other_drive) \
         == "Concepts"
     assert section_of("C:\\Users\\me\\proj\\AuroraKnowledgeDB\\Glossary\\a.md", relpath=other_drive) \
