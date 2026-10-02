@@ -2004,3 +2004,44 @@ def test_the_embedding_index_is_replaced_whole_or_not_at_all(tmp: Path):
             "сбой посреди записи испортил прежний индекс"
     finally:
         os.chdir(old)
+
+
+@test
+def test_a_crash_between_the_two_index_files_is_seen_as_a_stale_index(tmp: Path):
+    """Новые вектора при старой карте — индекс чужой, а не «свежий».
+
+    `embeddings.bin` и `embeddings.json` подменяются двумя операциями. Обрыв между ними
+    при том же числе карточек и другом порядке оставлял пару, которая проходила сверку
+    числа строк: `kb:embed` доверял старым хешам и держал чужие вектора до `--all`.
+    """
+    import array
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    E = importlib.import_module("kb_embed")
+    root = make_project(tmp)
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        E.META = os.path.join("AuroraKnowledgeDB", "meta")
+        E.VECTORS = os.path.join(E.META, "embeddings.bin")
+        E.INDEX = os.path.join(E.META, "embeddings.json")
+        E._FILE_CACHE.clear()
+        first = {"А": {"hash": "a", "row": 0}, "Б": {"hash": "b", "row": 1}}
+        E.save_index("m", 2, first, array.array("f", [1, 0, 0, 1]), None)
+        assert set(E.load_index()["cards"]) == {"А", "Б"}, "целый индекс не читается"
+        old_json = open(E.INDEX, encoding="utf-8").read()
+        swapped = {"Б": {"hash": "b", "row": 0}, "А": {"hash": "a", "row": 1}}
+        E.save_index("m", 2, swapped, array.array("f", [0, 1, 1, 0]), None)
+        assert E.load_index()["cards"]["Б"]["row"] == 0, "новый индекс не читается"
+        # обрыв после подмены векторов: карта осталась прежней
+        open(E.INDEX, "w", encoding="utf-8").write(old_json)
+        E._FILE_CACHE.clear()
+        assert E.load_index()["cards"] == {}, "пара из разных записей принята за целый индекс"
+        # индекс прежнего формата без отпечатка читается как раньше
+        legacy = json.loads(old_json)
+        legacy.pop("bin")
+        open(E.INDEX, "w", encoding="utf-8").write(json.dumps(legacy))
+        E._FILE_CACHE.clear()
+        assert set(E.load_index()["cards"]) == {"А", "Б"}, "индекс без отпечатка отвергнут"
+    finally:
+        os.chdir(old)
