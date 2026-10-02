@@ -128,6 +128,9 @@ your-project/
 
 ## Документация
 
+Короткие ответы, по вопросу на страницу, — в **[wiki](wiki/ru/README.md)** ([English](wiki/README.md)): её можно
+читать прямо здесь, на GitHub. Полные документы:
+
 | Кому | Что читать |
 |---|---|
 | Всем, сначала | [Обзор](docs/readme/01-overview.md) → [Лёгкий старт](docs/readme/02-quickstart.md) |

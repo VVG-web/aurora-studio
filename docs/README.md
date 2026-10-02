@@ -31,6 +31,7 @@ flowchart TD
 | 4 | [Практика](readme/04-practice.md) | [Practice](en/readme/04-practice.md) | ситуация → команда · situation → command |
 | 5 | [Уход за базой](readme/05-gardening.md) | [Looking after the base](en/readme/05-gardening.md) | как знание зреет, что остаётся человеку · how knowledge matures, what is left for a human |
 | 6 | [Spec-Driven Development](readme/06-sdd.md) | [Spec-Driven Development](en/readme/06-sdd.md) | требования → спека → приёмка · requirements → spec → acceptance |
+| — | [Wiki](../wiki/ru/README.md) | [Wiki](../wiki/README.md) | короткие страницы-ответы, читаются прямо на GitHub · short answer pages, read right on GitHub |
 
 ## Модель знания · The knowledge model
 

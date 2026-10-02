@@ -1,0 +1,81 @@
+name: wiki-sync
+# Страницы папки wiki/ читаются прямо в репозитории; этот workflow даёт им вторую жизнь во
+# вкладке Wiki — GitHub Wiki это отдельный репозиторий `<имя>.wiki.git`, и источником истины
+# остаётся wiki/ здесь: правки, сделанные во вкладке, при следующей выкладке перезапишутся.
+#
+# Срабатывает после изменения страниц в master и вручную (Actions → wiki-sync → Run workflow).
+#
+# Вики-репозиторий GitHub создаёт лишь когда на вкладке Wiki сохранена первая страница.
+# Пока её нет (или Wiki выключена в Settings → Features), клонировать нечего: workflow
+# говорит об этом и заканчивается успешно — красный значок из-за незаведённой вкладки
+# никому не нужен. Страницы при этом проверяются всегда.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "wiki/**"
+      - "scripts/wiki_build.py"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Проверить страницы
+        run: python3 scripts/wiki_build.py --check
+
+      - name: Забрать репозиторий Wiki
+        id: clone
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e
+          if git clone --quiet "https://x-access-token:${TOKEN}@github.com/${REPO}.wiki.git" "$RUNNER_TEMP/wiki" 2>/dev/null; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Wiki не заведена::Репозитория ${REPO}.wiki нет: включите Wiki в Settings → Features и сохраните на вкладке Wiki любую первую страницу (она будет заменена). Страницы проверены, выкладывать пока некуда."
+            {
+              echo "### Wiki не заведена"
+              echo
+              echo "Страницы проверены, выкладка пропущена. Включите Wiki в Settings → Features и сохраните"
+              echo "на вкладке Wiki любую первую страницу — следующий запуск выложит всё."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Собрать и выложить
+        if: steps.clone.outputs.ready == 'true'
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/wiki_build.py --out "$RUNNER_TEMP/wiki" --repo "$REPO" --branch "$BRANCH"
+          cd "$RUNNER_TEMP/wiki"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Страницы не изменились — выкладывать нечего."
+            echo "### Wiki актуальна — изменений нет" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "wiki: страницы из ${SHA:0:7}"
+          git push --quiet origin HEAD
+          echo "### Wiki обновлена из ${SHA:0:7}" >> "$GITHUB_STEP_SUMMARY"

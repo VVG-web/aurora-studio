@@ -148,6 +148,10 @@ The documentation is bilingual: the Russian one lies in `docs/` (that is how the
   `skills/aurora-vault/references/` and are not copied into human documents — they are linked.
 - `docs/knowledge-rules.md`, `knowledge-rules-tldr.md` and `накопление-знания.md` travel to projects with the engine
   (`engine_manifest.txt`) and are pinned by tests: when changing them, run the tests.
+- **The wiki** — answer pages in `wiki/` (English) and `wiki/ru/` (Russian), the same set in both; a new page is a pair of files
+  and a link from `README.md` and `_Sidebar.md`. `python3 scripts/wiki_build.py --check` verifies links, anchors, pairs and
+  reachability, and the tests do the same; the `wiki-sync` workflow publishes the pages into the Wiki tab — the source of truth
+  stays in the repository. When you change behaviour, change the page in the same pull request.
 - Diagrams are mermaid, so that they render on GitHub and are edited as text. Colons inside state and node labels without quotes
   break parsing — quote the label or avoid the colon.
 - Numbers and versions in documents are either computed (`commands.md`) or dated; "forty commands" goes stale faster than it seems.
