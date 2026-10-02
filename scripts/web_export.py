@@ -27,18 +27,29 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
 import time
+from datetime import date, timedelta
 import urllib.parse
 import urllib.error
 import urllib.request
 
+from aurora_common import utc_today
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
                           is_promoted_document, report_stale, verify)
 
 DEFAULT_OUT = "Sources/Web"
+# Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
+# Кэш лежит в проекте рядом с кэшем Confluence. Изменили `to_markdown` так, что меняется
+# вывод, — поднимите CONVERTER: кэш сбросится, и следующий прогон пройдёт всё зеркало.
+CONVERTER = 1
+PAGE_CACHE = os.path.join(".opencode", "cache", "web_pages.json")
+# Вложение страницы версию страницы не меняет, поэтому раз в неделю проходим всё заново.
+CACHE_FRESH_DAYS = 7
+NOT_MODIFIED = "304"
 TIMEOUT = 30
 # Вложению — своё окно. Страница отдаётся за секунды, а приказ на десять мегабайт по
 # медленному каналу не успевает и за полминуты: на живой выгрузке так потерялись два
@@ -161,22 +172,28 @@ def slug(url: str, title: str) -> str:
     return portable_name(base, ext=f"-{tail}.md") or f"page-{tail}.md"
 
 
-def _get(url: str, token: str, timeout: int) -> tuple:
+def _get(url: str, token: str, timeout: int, headers: dict | None = None,
+         meta: dict | None = None) -> tuple:
     """(байты, кодировка, ошибка) с повтором при обрыве связи.
 
     Повторяем ровно то, что лечится ожиданием: таймаут и сброс соединения. Ответ «404»
     или «403» повтором не исправить — на таких выходим сразу, чтобы не молотить чужой
     сервер и не растягивать прогон на пустом месте.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": AGENT, **(headers or {})})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     last = ""
     for attempt in range(1, RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
+                if meta is not None:
+                    meta["etag"] = r.headers.get("ETag") or ""
+                    meta["modified"] = r.headers.get("Last-Modified") or ""
                 return r.read(), (r.headers.get_content_charset() or "utf-8"), ""
         except urllib.error.HTTPError as e:
+            if e.code == 304 and headers:
+                return b"", "", NOT_MODIFIED        # не изменилась: это ответ, а не сбой
             return b"", "", f"HTTP {e.code}"       # ответ сервера, повтор не поможет
         except Exception as e:  # noqa: BLE001 — причина уходит в отчёт словами
             last = f"{type(e).__name__}: {e}"
@@ -185,10 +202,59 @@ def _get(url: str, token: str, timeout: int) -> tuple:
     return b"", "", f"{last} (попыток: {RETRIES})"
 
 
-def fetch(url: str, token: str = "") -> tuple:
-    """(html, ошибка). Страницу читаем как есть: разбор — ниже и детерминированный."""
-    raw, enc, err = _get(url, token, TIMEOUT)
+def fetch(url: str, token: str = "", known: dict | None = None,
+          meta: dict | None = None) -> tuple:
+    """(html, ошибка). Страницу читаем как есть: разбор — ниже и детерминированный.
+
+    `known` — запомненные ETag и Last-Modified: сервер, у которого страница не менялась,
+    отвечает 304, и тогда ошибка равна `NOT_MODIFIED`, а тела нет. В `meta` кладём
+    валидаторы свежего ответа для кэша.
+    """
+    cond = {}
+    if known and known.get("etag"):
+        cond["If-None-Match"] = known["etag"]
+    if known and known.get("modified"):
+        cond["If-Modified-Since"] = known["modified"]
+    raw, enc, err = _get(url, token, TIMEOUT, cond or None, meta)
     return ("" if err else raw.decode(enc, errors="replace")), err
+
+
+def load_page_cache() -> dict:
+    try:
+        with open(PAGE_CACHE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_page_cache(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(PAGE_CACHE), exist_ok=True)
+        with open(PAGE_CACHE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def cache_usable(entry, mirror_out: str, trusted: bool, seed: str, feed: bool,
+                 today: str) -> bool:
+    """Можно ли спросить сервер «не менялась ли», а не качать страницу заново.
+
+    Только если страница на месте, конвертер тот же, настройка страницы (доверие, раздел,
+    лента) не менялась, запись свежее недели и есть чем спросить сервер. Иначе файл
+    остался бы со старым доверием или без обновлённого разбора.
+    """
+    if not isinstance(entry, dict) or entry.get("conv") != CONVERTER:
+        return False
+    if not (entry.get("etag") or entry.get("modified")):
+        return False
+    if (bool(entry.get("trusted")) != bool(trusted) or entry.get("seed") != seed
+            or bool(entry.get("feed")) != bool(feed)):
+        return False
+    if entry.get("at", "") < (date.fromisoformat(today) - timedelta(days=CACHE_FRESH_DAYS)).isoformat():
+        return False
+    return os.path.isfile(os.path.join(mirror_out, entry.get("rel", "")))
 
 
 # Есть ли чем разбирать HTML. Проверяется ОДИН раз и здесь, а не угадывается по пустому
@@ -562,8 +628,11 @@ def run(a) -> int:
           f"глубина обхода: **{opt['depth']}** · вложения: "
           f"**{'скачиваем' if opt['assets'] else 'нет'}** · "
           f"потолок страниц на адрес: {opt['max_pages']}\n")
-    failed = files_total = 0
+    failed = files_total = unchanged = 0
     seen: set = set()
+    today = utc_today()
+    cache = {} if getattr(a, "force", False) else load_page_cache()
+    fresh_cache: dict = {}
     for seed, trusted, feed in pages:
         queue = [(seed, 0)]
         taken = 0
@@ -574,7 +643,23 @@ def run(a) -> int:
             if url in seen:
                 continue
             seen.add(url)
-            html, err = fetch(url, token)
+            known = cache.get(url)
+            if known and not cache_usable(known, mirror.out, trusted, seed, feed, today):
+                known = None
+            meta: dict = {}
+            html, err = fetch(url, token, known, meta)
+            if err == NOT_MODIFIED and known:
+                rel = known["rel"]
+                unchanged += 1
+                taken += 1
+                fresh_cache[url] = known
+                mirror.rows.append((url, trusted, rel, "без изменений"))
+                print(f"  ✅ [{taken}/{opt['max_pages']}] {url} → {rel} · не менялась (304)",
+                      flush=True)
+                if depth + 1 < opt["depth"]:
+                    queue += [(l, depth + 1) for l in known.get("links", []) if l not in seen]
+                time.sleep(PAUSE)
+                continue
             if err:
                 failed += 1
                 print(f"  ✗ {url} — {err}")
@@ -639,6 +724,11 @@ def run(a) -> int:
                     text, _ = store(body, [])
                 status = "без изменений" if was == text else ("обновлена" if was else "новая")
             mirror.rows.append((url, trusted, rel, status))
+            if a.apply and (meta.get("etag") or meta.get("modified")):
+                fresh_cache[url] = {"etag": meta.get("etag", ""), "modified": meta.get("modified", ""),
+                                    "rel": rel, "links": list(links), "trusted": bool(trusted),
+                                    "seed": seed, "feed": bool(feed), "conv": CONVERTER,
+                                    "at": today}
             files_total += len(saved)
             taken += 1
             if saved:
@@ -662,6 +752,7 @@ def run(a) -> int:
               "карточки стоит перевести на новую")
     if a.apply:
         mirror.write_state()
+        save_page_cache(fresh_cache)
     keep = {r[2] for r in mirror.rows if r[2] != "—"}
     extra = [r for r in mirror.disk_rels(only_md=False)
              if os.path.basename(r) not in keep and not r.startswith(ASSET_DIR)
@@ -682,7 +773,8 @@ def run(a) -> int:
             print(f"\nУдалено файлов снятых ссылок: {gone} "
                   f"(на {len(cited)} ссылаются карточки — оставлены)")
     print(f"\n{'✅' if a.apply else '(dry-run)'} страниц: {len(seen) - failed} · "
-          f"вложений: {files_total} · ошибок: {failed} · зеркало: {mirror.out}")
+          f"вложений: {files_total} · ошибок: {failed} · зеркало: {mirror.out}"
+          + (f" · не менялись (304): {unchanged}" if unchanged else ""))
     if not a.apply:
         print("Записать: `--apply`")
     return 1 if failed else 0
@@ -702,6 +794,8 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="записать файлы")
     ap.add_argument("--prune", action="store_true", help="убрать файлы снятых ссылок")
     ap.add_argument("--verify", action="store_true", help="гейт детерминизма: две выгрузки подряд")
+    ap.add_argument("--force", action="store_true",
+                    help="не спрашивать сервер «не менялась ли»: скачать и разобрать всё заново")
     a = ap.parse_args()
     if a.verify:
         return verify(lambda out: run(argparse.Namespace(out=out, apply=True,
