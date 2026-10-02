@@ -388,7 +388,7 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
         # Заголовок в теле — то, что человек видит в Obsidian. Оставить его прежним
         # значит переименовать карточку наполовину: в списке одно имя, в документе другое.
         rest = card.text[card.fm_end:]
-        rest = re.sub(r"^(#\s+).*$", lambda m: m.group(1) + clean, rest, count=1, flags=re.M)
+        rest = re.sub(r"^(#\s+).*$", lambda m, clean=clean: m.group(1) + clean, rest, count=1, flags=re.M)
         plan.write(path, "---" + new_head + rest)
         if new_rel != rel:
             plan.renames.append((path, new_rel))
@@ -747,7 +747,7 @@ def plan_titles(cards: dict, plan: Plan, root: str = ROOT) -> tuple:
         old = (probe.fm.get("title") or "").strip().strip('"')
         title = title_from_stem(old or probe.stem)
         if old and title != old and normalize_title(title) == normalize_title(old):
-            head = re.sub(r"^title:.*$", lambda _m: f'title: "{title}"', head, count=1, flags=re.M)
+            head = re.sub(r"^title:.*$", lambda _m, title=title: f'title: "{title}"', head, count=1, flags=re.M)
             heads += 1
         # `rest` начинается с закрывающей черты шапки; тезис — первая строка после неё.
         cut = rest.find("\n", 1)
@@ -1831,7 +1831,7 @@ def plan_aliases(cards: dict, plan: Plan, drop: bool = False):
         paths = list(dict.fromkeys(paths))       # одна карточка — не спор с самой собой
         if len(paths) < 2:
             continue
-        def fits(p):
+        def fits(p, alias=alias):
             c = cards[p]
             return fold(alias) in (fold(c.stem), fold((c.fm.get("title") or "").strip('"')))
         winner = next((p for p in paths if fits(p)), paths[0])

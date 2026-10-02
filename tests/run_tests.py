@@ -3261,7 +3261,7 @@ def test_skills_describe_the_engine_as_it_is_now(tmp: Path):
                            for f in (KIT / "skills").rglob("*.md"))
     for line in everywhere.splitlines():
         if "status: verified" in line or "status: in-review" in line:
-            assert False, f"скилл предписывает снятый статус: {line.strip()[:90]}"
+            raise AssertionError(f"скилл предписывает снятый статус: {line.strip()[:90]}")
 
     # и наоборот: действующая модель знания должна быть названа
     assert "docs/knowledge-rules.md" in vault, \
@@ -5939,7 +5939,7 @@ def test_writing_a_field_refuses_to_touch_the_body(tmp: Path):
     # нельзя — так рождается ровно то повреждение, от которого эта функция и заведена
     try:
         A.with_fields("Просто текст без шапки\n", {"kind": "knowledge"})
-        assert False, "поле поставлено карточке без шапки"
+        raise AssertionError("поле поставлено карточке без шапки")
     except ValueError:
         pass
 
@@ -22541,7 +22541,7 @@ def test_cockpit_serves_module_catalogues_together(tmp: Path):
 def test_cockpit_core_mounts_modules_and_keeps_menu(tmp: Path):
     """Ядро умеет поднимать раздел из папки, а меню собирается по группам и порядку."""
     # Здесь нужен именно монолит: проверяем, что переехавший раздел из него ушёл.
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")  # noqa: PANEL
+    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")  # монолит панели читаем сознательно
 
     for needed in ("async function loadModules", "async function mountModule",
                    "function moduleCtx", "/api/modules", "navgroup"):
