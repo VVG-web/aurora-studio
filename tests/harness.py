@@ -77,6 +77,19 @@ def run(script: str, *args, cwd: Path, expect_rc=None) -> subprocess.CompletedPr
     return cp
 
 
+def ui_source() -> str:
+    """Страница панели целиком: оболочка index.html и подставляемые в неё panel.css/panel.js.
+
+    Тем же правилом, каким её собирает сервер (`aurora_cockpit.ui_source`): проверка
+    «в панели есть X» не должна зависеть от того, в каком из файлов X лежит.
+    """
+    folder = KIT / "cockpit" / "ui"
+    html = (folder / "index.html").read_text(encoding="utf-8")
+    return re.sub(r"^<!--@include ([\w.-]+)-->\n",
+                  lambda m: (folder / m.group(1)).read_text(encoding="utf-8"),
+                  html, flags=re.M)
+
+
 def panel_sources() -> str:
     """Панель целиком: ядро плюс все модули.
 
@@ -87,7 +100,7 @@ def panel_sources() -> str:
     По той же причине сюда входят и каталоги строк ядра (`cockpit/i18n/*.json`): надпись
     живёт там, а не в коде, и проверка «человеку сказано то-то» обязана читать её оттуда.
     """
-    parts = [(KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")]
+    parts = [ui_source()]
     lang = KIT / "cockpit" / "i18n"
     if lang.is_dir():
         for f in sorted(lang.glob("*.json")):

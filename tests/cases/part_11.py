@@ -10,6 +10,7 @@ import sys
 import textwrap
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     SCRIPTS,
     _mirror_page,
@@ -1060,8 +1061,8 @@ def test_thinking_advice_matches_the_measurement(tmp: Path):
     ките обязан говорить это, иначе по нему выключат рассуждения и испортят базу.
     """
     for rel in ("skills/aurora-vault/SKILL.md", "scripts/agent_core.py", "commands.txt",
-                "cockpit/ui/index.html"):
-        text = (KIT / rel).read_text(encoding="utf-8")
+                "cockpit/ui"):
+        text = ui_source() if rel == "cockpit/ui" else (KIT / rel).read_text(encoding="utf-8")
         assert "тезис выходит не хуже" not in text and "в 11 раз быстрее и не хуже" not in text, \
             f"{rel}: снова обещано, что без рассуждений тезис не хуже"
     skill = (KIT / "skills/aurora-vault/SKILL.md").read_text(encoding="utf-8")
@@ -1545,7 +1546,7 @@ def test_extract_tells_the_cycle_how_many_cards_wait_for_a_thesis(tmp: Path):
     rep = R.report_extract(res, True)
     m = _re.search(r"·\s*осталось:\s*(\d+)", rep)
     assert m and int(m.group(1)) == 1, f"вынос не сказал, что новая карточка ждёт тезиса:\n{rep[:400]}"
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     assert "/·\\s*осталось:\\s*(\\d+)/" in ui, "цикл маршрута читает остаток по другому образцу"
 
 

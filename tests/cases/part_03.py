@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     SCRIPTS,
     _js_function,
@@ -755,7 +756,7 @@ def test_machine_mcp_secrets_never_reach_the_browser(tmp: Path):
         ck.KIT = old_kit
 
     # Маска — одна на панель: раздел берёт её из ответа сервера, а не держит свою копию.
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     for fn in ("async function renderMcpKit(", "function mcpCard(", "function mcpPairs(",
                "function openMcpCard(", "function openMcpRaw("):
         assert "••••••" not in _js_function(ui, fn), f"{fn} держит свою копию маски"
@@ -843,7 +844,7 @@ def test_mcp_paste_understands_zed(tmp: Path):
 @test
 def test_kit_setup_has_machine_mcp_section(tmp: Path):
     """«Настройка кита» показывает серверы машины карточками и умеет вставку и весь файл."""
-    ui = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    ui = ui_source()
     setup = _js_function(ui, "async function renderSetup(")
     assert "renderMcpKit()" in setup, "в «Настройке кита» нет раздела MCP"
     assert "drawSetupJump(box)" in setup, "длинная страница без переходов — раздел не найти"

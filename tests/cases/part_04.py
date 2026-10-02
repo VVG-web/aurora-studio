@@ -11,6 +11,7 @@ import sys
 import time
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     SCRIPTS,
     card,
@@ -1280,8 +1281,10 @@ def test_settings_form_drops_the_dead_trust_key_and_clears_to_defaults(tmp: Path
     assert "trust_statuses: [Закрыто, Разработка, Тестирование" in text \
         and "trusted_sources: [Raw/contract, Raw/customer" in text and "trusted_branches: [" in text, \
         f"очищенное поле не вернуло значения по умолчанию:\n{text}"
-    for rel in ("cockpit/ui/index.html", "templates/aurora.config.yaml.template"):
-        assert "trusted_sections" not in (KIT / rel).read_text(encoding="utf-8"), \
+    for rel, src in (("cockpit/ui", ui_source()),
+                     ("templates/aurora.config.yaml.template",
+                      (KIT / "templates/aurora.config.yaml.template").read_text(encoding="utf-8"))):
+        assert "trusted_sections" not in src, \
             f"{rel} всё ещё предлагает мёртвый ключ"
 
 

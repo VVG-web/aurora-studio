@@ -123,7 +123,7 @@ The panel's third-party libraries (`cockpit/vendor/`) are not edited — only re
   schema change is marked **BREAKING** with a migration step.
 - A commit message starts with the version: `vX.Y.Z: the gist`.
 - **How to release, in short:** 1) raise `VERSION`; 2) add a `## X.Y.Z — the gist` entry to `CHANGELOG.md`;
-  3) raise `UI_VERSION` in `cockpit/ui/index.html` (a test checks it); 4) merge to `master`. CI does the rest (see below).
+  3) raise `UI_VERSION` in `cockpit/ui/panel.js` (a test checks it); 4) merge to `master`. CI does the rest (see below).
 - **CI creates the tag and the GitHub Release** — `.github/workflows/release.yml`. After a green `engine-tests` on
   `master` it looks at `VERSION`: if that version has no Release yet, it puts the tag `vX.Y.Z` on the commit that
   raised `VERSION` (like the earlier tags) and publishes the Release. The title `vX.Y.Z — the gist` and the text come

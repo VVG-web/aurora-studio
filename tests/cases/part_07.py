@@ -10,6 +10,7 @@ import sys
 import time
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     KITCHEN,
     SCRIPTS,
@@ -444,7 +445,7 @@ def test_interface_language_is_a_file_not_a_rewrite(tmp: Path):
     finally:
         bad.unlink()
     assert not ck.i18n_catalogue("ru")["warning"], "предупреждение на исправном каталоге"
-    assert 'if (d.warning) toast(' in (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8"), \
+    assert 'if (d.warning) toast(' in ui_source(), \
         "сервер назвал поломку, а панель её не показывает"
 
     ui = panel_sources()

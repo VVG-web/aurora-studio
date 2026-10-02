@@ -12,6 +12,7 @@ import textwrap
 import time
 
 from harness import (  # noqa: F401
+    ui_source,
     KIT,
     SCRIPTS,
     _cockpit_on,
@@ -338,7 +339,7 @@ def test_buttons_explain_themselves_after_a_pause(tmp: Path):
     Просьба пользователя 24.09.2026: подсказка — что кнопка делает, пример использования
     и пример результата, — и появляется через несколько секунд, а не сразу.
     """
-    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    html = ui_source()
     assert "const HELP_DELAY = 2000" in html and "function showHelp" in html, "механизма подсказок нет"
     view = html.split('id="view-files"')[1].split("</section>")[0]
     ids = re.findall(r'id="(file\w+)"[^>]*data-help="([^"]+)"', view)
@@ -374,7 +375,7 @@ def test_files_counter_counts_every_file(tmp: Path):
     d = ck.file_tree(str(proj), limit=10)
     assert d["total"] == 30 and d["count"] == 10 and d["truncated"], d
     assert ck.FILES_LIMIT >= 20000, "предел списка снова мал для живых проектов"
-    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    html = ui_source()
     assert '$("#navFiles").textContent = d.total' in html, "счётчик снова считает длину списка"
 
 
@@ -909,7 +910,7 @@ def test_trust_flows_from_the_user_story(tmp: Path):
     assert [(r["page_id"], r["trusted"]) for r in got] == [("900", False), ("100", True)], got
     assert "trusted: false" not in (root / "aurora.config.yaml").read_text(encoding="utf-8"), \
         "«не отмечено» записано как «не доверять» — у корня это «работают правила»"
-    html = (KIT / "cockpit/ui/index.html").read_text(encoding="utf-8")
+    html = ui_source()
     assert 'title: t("proj.root_trust_hint")' in html and "onchange:e=>r.trusted=" in html, \
         "у корня синка в форме нет галочки «доверять»"
     for lang in ("ru", "en"):
