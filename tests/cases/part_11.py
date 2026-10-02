@@ -171,7 +171,7 @@ def test_search_quality_refuses_instead_of_reporting_zero(tmp: Path):
         encoding="utf-8")
     env = {**os.environ, "AURORA_EMBED_MODEL": "bge-m3", "AURORA_TESTS_ISOLATED": "1"}
     cp = subprocess.run([sys.executable, str(SCRIPTS / "kb_search_quality.py")],
-                        cwd=str(root), capture_output=True, text=True, env=env)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     assert cp.returncode == 1, f"молча посчитал на чужом индексе: {cp.stdout}"
     said = cp.stdout + cp.stderr
     assert "e5-large" in said and "bge-m3" in said, \
@@ -184,7 +184,7 @@ def test_search_quality_refuses_instead_of_reporting_zero(tmp: Path):
         json.dumps({"model": "bge-m3", "dim": 2, "cards": {"Карточка": {"row": 0}}}),
         encoding="utf-8")
     cp = subprocess.run([sys.executable, str(SCRIPTS / "kb_search_quality.py")],
-                        cwd=str(root), capture_output=True, text=True, env=env)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     assert cp.returncode == 0, (
         "молодая база объявлена поломкой: маршрут «Починить базу» покажет ошибку там, "
         f"где просто нечего мерить\n{cp.stdout}{cp.stderr}")
@@ -579,7 +579,7 @@ def test_engine_settings_reach_commands_but_secrets_do_not(tmp: Path):
     # опечатка в переменной окружения не проходит молча
     card(root, "Concepts/Любая.md", "Любое знание.", status="knowledge", kind="knowledge")
     cp = subprocess.run([sys.executable, str(SCRIPTS / "ctx_pack.py"), "любая", "--no-log"],
-                        cwd=str(root), capture_output=True, text=True,
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace",
                         env={**os.environ, "AURORA_RETRIEVAL": "pagerannk=1"})
     assert "pagerannk" in cp.stderr, f"опечатка в переменной прошла молча:\n{cp.stderr[:300]}"
 
@@ -689,7 +689,7 @@ def test_run_summary_counts_everything_the_human_asked(tmp: Path):
     for rel in ("Concepts/A.md", "Concepts/B.md", "Concepts/C.md", "Concepts/D.md"):
         (kb / rel).parent.mkdir(parents=True, exist_ok=True)
         (kb / rel).write_text("# " + rel + "\n", encoding="utf-8")
-    g = lambda *args: subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True)
+    g = lambda *args: subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace")
     g("init", "-q"); g("add", "-A")
     g("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "база")
     since = RS.git_head(str(repo))
@@ -916,7 +916,7 @@ def test_embed_gateway_hiccup_does_not_stop_the_route(tmp: Path):
            "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1",
            "AURORA_AGENT_REQUEST_TIMEOUT": "5"}
     cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/kb_embed.py"), "--apply"],
-                        cwd=str(root), capture_output=True, text=True, env=env, timeout=120)
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120)
     assert cp.returncode == 1, \
         f"сбой шлюза векторов снова останавливает маршрут: код {cp.returncode}\n{cp.stderr[-400:]}"
     assert "индекс не тронут" in cp.stderr, f"сбой не назван человеку:\n{cp.stderr[-400:]}"
@@ -972,7 +972,7 @@ def test_embed_keeps_what_it_counted_before_the_gateway_dropped(tmp: Path):
            "AURORA_AGENT_REQUEST_TIMEOUT": "5"}
     run_embed = lambda: subprocess.run(
         [sys.executable, str(root / ".opencode/scripts/kb_embed.py"), "--apply"],
-        cwd=str(root), capture_output=True, text=True, env=env, timeout=120)
+        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120)
     try:
         cp = run_embed()
         total = int(re.search(r"Пересчитать: (\d+)", cp.stdout).group(1))
@@ -1721,7 +1721,7 @@ def test_sync_follows_moves_and_prunes_only_the_gone(tmp: Path):
         sys.argv = ["confluence_export.py", "--prune"]
         sys.exit(C.main())
     """)
-    cp = subprocess.run([sys.executable, "-c", script], cwd=str(root), capture_output=True, text=True)
+    cp = subprocess.run([sys.executable, "-c", script], cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stdout + cp.stderr
     left = sorted(p.name for p in (root / "Sources/Confluence").rglob("*.md") if "Старая" in str(p))
     assert left == [], f"старые копии и удалённая страница остались: {left}\n{cp.stdout}"

@@ -108,12 +108,12 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
 
     lint = KIT / "scripts/kb_lint.py"
     whole = subprocess.run([sys.executable, str(lint), "--summary"], cwd=root,
-                           capture_output=True, text=True).stdout
+                           capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "ошибок 2" in whole, f"подготовка сломалась: {whole}"
 
     mine = subprocess.run([sys.executable, str(lint), "--only",
                            "AuroraKnowledgeDB/Concepts/Моя.md", "--summary"],
-                          cwd=root, capture_output=True, text=True)
+                          cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "ошибок 0" in mine.stdout, \
         f"за чужие ошибки отвечает тот, кто их не делал:\n{mine.stdout}"
     assert mine.returncode == 0, "чистый файл, а код возврата ненулевой"
@@ -122,7 +122,7 @@ def test_hook_judges_what_you_commit_not_the_whole_base(tmp: Path):
     lst = root / "список.txt"
     lst.write_text("AuroraKnowledgeDB/Concepts/Чужая.md\n", encoding="utf-8")
     by_file = subprocess.run([sys.executable, str(lint), "--only-from", str(lst), "--summary"],
-                             cwd=root, capture_output=True, text=True).stdout
+                             cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "ошибок 2" in by_file, \
         f"список путей из файла не сработал — а через оболочку кириллица не доходит:\n{by_file}"
 
@@ -160,7 +160,7 @@ def test_correction_is_a_layer_not_a_one_time_edit(tmp: Path):
 
     def run_fix(*args):
         return subprocess.run([sys.executable, str(script), *args], cwd=root,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     # Владельца нет — заводить нечего: применить такое исправление будет некуда.
     bad = run_fix("--new", "Такой-карточки-нет", "--text", "что-то")
@@ -237,7 +237,7 @@ def test_correction_asks_instead_of_deciding(tmp: Path):
 
     def run_fix(*args):
         return subprocess.run([sys.executable, str(script), *args], cwd=root,
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     run_fix("--new", "Заявка", "--text", "на самом деле иначе")
     run_fix("--apply")
@@ -275,7 +275,7 @@ def test_correction_asks_instead_of_deciding(tmp: Path):
     lost = run_fix("--list")
     assert "осиротела" in lost.stdout or "Осиротели" in lost.stdout or True
     fresh = subprocess.run([sys.executable, str(script), "--new", "Заявка", "--text", "x"],
-                           cwd=root, capture_output=True, text=True)
+                           cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert fresh.returncode == 1, "исправление заведено на исчезнувшую карточку"
 
 
@@ -472,7 +472,7 @@ def test_card_is_named_after_the_object_not_the_paper(tmp: Path):
                     'type: process\nstatus: knowledge\n---\n\n'
                     "# AC-3.4.2 Отправка начислений\n\nТело. [[Другая]]\n", encoding="utf-8")
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--names", "--apply"],
-                        cwd=root, capture_output=True, text=True)
+                        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode in (0, 1), cp.stderr[:300]
     made = list((root / "AuroraKnowledgeDB" / "Concepts").glob("*.md"))
     assert len(made) == 1 and made[0].name == "Отправка-начислений.md", \
@@ -519,7 +519,7 @@ def test_section_is_the_type_written_as_a_folder(tmp: Path):
         encoding="utf-8")
 
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--sections", "--apply"],
-                        cwd=root, capture_output=True, text=True)
+                        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode in (0, 1), cp.stderr[:300]
     assert (kb / "Processes" / "Алгоритм.md").is_file(), "процесс остался среди понятий"
     assert (kb / "Glossary" / "Термин.md").is_file(), "словарная статья осталась в справочниках"
@@ -933,26 +933,29 @@ def test_names_pass_on_windows_macos_and_linux(tmp: Path):
     assert a.casefold() != b.casefold() and b.endswith("_22"), \
         f"соседние страницы, различимые только регистром, легли в одну папку: {a} / {b}"
 
-    # живая база: непереносимое имя карточки чинится вместе со ссылками
-    root = make_project(tmp, git=True)
-    bad = card(root, "Processes/Запуск-HDFS->Hive.md", status="draft", body="Порядок запуска.")
-    card(root, "Concepts/Kafka.md", status="draft", body="Шина. См. [[Запуск-HDFS->Hive]].")
-    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fx"],
-                   cwd=str(root), check=True)
-    doc = run("aurora_doctor.py", cwd=root).stdout
-    assert "имена: карточки — 1" in doc and "kb_names.py --apply" in doc, \
-        f"доктор не назвал непереносимое имя и способ починки:\n{doc[-800:]}"
-    dry = run("kb_names.py", cwd=root, expect_rc=0).stdout
-    assert "Запуск-HDFS->Hive.md" in dry and bad.exists(), f"показ без --apply что-то изменил:\n{dry}"
-    run("kb_names.py", "--apply", cwd=root, expect_rc=0)
-    assert (root / "AuroraKnowledgeDB/meta/graphify/graph.json").is_file(), \
-        "после починки имён граф не пересобран — сервер графа отвечал бы по старым путям"
-    assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
-        "карточка с «>» в имени не переименована"
-    text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
-    assert "[[Запуск-HDFS-Hive" in text and "HDFS->Hive]]" not in text, \
-        f"ссылка на переименованную карточку не поправлена:\n{text}"
+    # живая база: непереносимое имя карточки чинится вместе со ссылками.
+    # На Windows файл с «>» в имени не создать вовсе (ровно об этом правило), поэтому
+    # живую базу с таким именем проверяет только POSIX.
+    if os.name != "nt":
+        root = make_project(tmp, git=True)
+        bad = card(root, "Processes/Запуск-HDFS->Hive.md", status="draft", body="Порядок запуска.")
+        card(root, "Concepts/Kafka.md", status="draft", body="Шина. См. [[Запуск-HDFS->Hive]].")
+        subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fx"],
+                       cwd=str(root), check=True)
+        doc = run("aurora_doctor.py", cwd=root).stdout
+        assert "имена: карточки — 1" in doc and "kb_names.py --apply" in doc, \
+            f"доктор не назвал непереносимое имя и способ починки:\n{doc[-800:]}"
+        dry = run("kb_names.py", cwd=root, expect_rc=0).stdout
+        assert "Запуск-HDFS->Hive.md" in dry and bad.exists(), f"показ без --apply что-то изменил:\n{dry}"
+        run("kb_names.py", "--apply", cwd=root, expect_rc=0)
+        assert (root / "AuroraKnowledgeDB/meta/graphify/graph.json").is_file(), \
+            "после починки имён граф не пересобран — сервер графа отвечал бы по старым путям"
+        assert not bad.exists() and (root / "AuroraKnowledgeDB/Processes/Запуск-HDFS-Hive.md").is_file(), \
+            "карточка с «>» в имени не переименована"
+        text = (root / "AuroraKnowledgeDB/Concepts/Kafka.md").read_text(encoding="utf-8")
+        assert "[[Запуск-HDFS-Hive" in text and "HDFS->Hive]]" not in text, \
+            f"ссылка на переименованную карточку не поправлена:\n{text}"
 
     # правило видят все модели, работающие с базой (Т-85)
     for rel in ("templates/agents/AGENTS.md.template", "skills/aurora-vault/SKILL.md",
@@ -975,7 +978,7 @@ def test_kit_files_pass_on_every_os(tmp: Path):
     C = importlib.import_module("aurora_common")
     rels = [r for r in subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"],
                                       cwd=str(KIT), capture_output=True,
-                                      text=True).stdout.split("\0") if r]
+                                      text=True, encoding="utf-8", errors="replace").stdout.split("\0") if r]
     assert len(rels) > 100, "список файлов кита не прочитан"
     bad = [(r, C.path_problems(r)) for r in rels if C.path_problems(r)]
     assert not bad, f"файлы кита не пройдут на одной из систем: {bad[:5]}"
@@ -1281,7 +1284,7 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
     if not vpy.exists():
         return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
     cp = subprocess.run([str(vpy), str(KIT / "scripts/agents/pydantic_ai_adapter.py"), "--selfcheck"],
-                        capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, stdin=subprocess.DEVNULL)
     out = json.loads(cp.stdout.strip().splitlines()[-1])
     assert out["ok"], f"установленная версия {out.get('version')} не прошла самопроверку: {out['problems']}"
 

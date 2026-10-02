@@ -57,7 +57,7 @@ STUCK_WHY = {
 def run(script: str, *args, stdout_only: bool = False) -> str:
     try:
         p = subprocess.run([sys.executable, os.path.join(HERE, script), *args],
-                           capture_output=True, text=True, timeout=600)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         return (p.stdout or "") if stdout_only else (p.stdout or "") + (p.stderr or "")
     except Exception as e:                                    # noqa: BLE001
         return f"(не выполнилось: {e})"
@@ -188,7 +188,7 @@ def main() -> int:
                         "«Настройки проекта» → «Проект»"))
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "kb_kind.py")],
-                           capture_output=True, text=True, timeout=600)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         no_kind = num(r.stdout or "", r"Проставить: (\d+)")
     except Exception:                                    # noqa: BLE001
         no_kind = 0

@@ -80,7 +80,7 @@ def scan_git(mirror: str, ref: str) -> dict:
         # -z: пути через NUL и без экранирования — иначе кириллица приезжает как \320\...
         # и git show по такому пути не находит файл (в живом проекте так потерялось 90% карты).
         listing = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", ref, "--", mirror],
-                                 capture_output=True, text=True, check=True).stdout
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
     except Exception as e:  # noqa: BLE001
         print(f"kb_remap: не читается ревизия {ref}: {e}", file=sys.stderr)
         return {}
@@ -90,7 +90,7 @@ def scan_git(mirror: str, ref: str) -> dict:
             continue
         try:
             blob = subprocess.run(["git", "show", f"{ref}:{path}"],
-                                  capture_output=True, text=True).stdout[:4000]
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace").stdout[:4000]
         except Exception:
             continue
         m = ID_RE.search(blob)

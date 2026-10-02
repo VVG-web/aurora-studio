@@ -24,6 +24,13 @@ import os
 import re
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SNAP = os.path.join("AuroraKnowledgeDB", "meta", "smoke_snapshot.json")
@@ -36,7 +43,7 @@ def run(project: str, script: str, args: list) -> str:
         path = os.path.join(KIT, "scripts", script)
     try:
         p = subprocess.run([sys.executable, path, *args], cwd=project,
-                           capture_output=True, text=True, timeout=600)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         return (p.stdout or "") + (p.stderr or "")
     except Exception as e:
         return f"ОШИБКА ЗАПУСКА: {e}"

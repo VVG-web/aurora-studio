@@ -122,7 +122,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Пересобрать метрики и дашборд после правки файлов настроек."""
         for script in REBUILD_CHAIN:
             r = subprocess.run([sys.executable, script],
-                               cwd=BASE_DIR, capture_output=True, text=True)
+                               cwd=BASE_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode != 0:
                 tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
                 self.send_json(500, {"ok": False, "step": os.path.basename(script),

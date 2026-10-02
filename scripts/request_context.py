@@ -120,7 +120,7 @@ def read_context(cwd: str, paths: list) -> tuple:
                              f"{FOLDER_FILES}")
                 files = files[:FOLDER_FILES]
         for f in files:
-            frel = os.path.relpath(f, os.path.realpath(cwd))
+            frel = os.path.relpath(f, os.path.realpath(cwd)).replace(os.sep, "/")
             if is_secret(frel):
                 continue
             if used >= TOTAL_CAP:
@@ -159,7 +159,7 @@ def save_attachment(cwd: str, name: str, data: bytes) -> dict:
         n += 1
     target.write_bytes(data)
     trim_context(cwd)
-    return {"path": str(target.relative_to(cwd)), "name": target.name, "bytes": len(data)}
+    return {"path": target.relative_to(cwd).as_posix(), "name": target.name, "bytes": len(data)}
 
 
 def trim_context(cwd: str, keep_days: int = KEEP_DAYS) -> int:
@@ -241,7 +241,7 @@ def mentions(text: str, cwd: str, mcp_names=(), kit: str = "") -> dict:
             continue
         full = inside(cwd, token)
         if full and os.path.exists(full):
-            files.append(os.path.relpath(full, os.path.realpath(cwd)))
+            files.append(os.path.relpath(full, os.path.realpath(cwd)).replace(os.sep, "/"))
     return {"skills": skills, "mcp": list(dict.fromkeys(mcp)), "files": list(dict.fromkeys(files))}
 
 
@@ -274,11 +274,11 @@ def suggest(cwd: str, query: str, mcp_names=(), kit: str = "", limit: int = 20) 
         dirs[:] = sorted(d for d in dirs if d not in NEVER_DIRS and not d.startswith("."))
         rel_base = os.path.relpath(base, root)
         for d in dirs:
-            rel = os.path.normpath(os.path.join(rel_base, d))
+            rel = os.path.normpath(os.path.join(rel_base, d)).replace(os.sep, "/")
             if low in rel.lower():
                 out.append({"kind": "dir", "value": rel, "label": rel + "/"})
         for n in sorted(names):
-            rel = os.path.normpath(os.path.join(rel_base, n))
+            rel = os.path.normpath(os.path.join(rel_base, n)).replace(os.sep, "/")
             if is_text_name(n) and not is_secret(rel) and low in rel.lower():
                 out.append({"kind": "file", "value": rel, "label": rel})
         if len(out) >= limit * 3:
@@ -286,5 +286,5 @@ def suggest(cwd: str, query: str, mcp_names=(), kit: str = "", limit: int = 20) 
     # Короткие пути и совпадения в имени — выше: человек обычно помнит имя, а не глубину.
     def rank(x):
         name = os.path.basename(x["value"]).lower()
-        return (x["kind"] != "mcp", low not in name, x["value"].count(os.sep), len(x["value"]))
+        return (x["kind"] != "mcp", low not in name, x["value"].count("/"), len(x["value"]))
     return sorted(out, key=rank)[:limit]

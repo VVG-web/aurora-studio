@@ -301,7 +301,7 @@ def refresh_hooks(target: Path) -> str:
     mode = m.group(1) if m else "ratchet"
     cp = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"),
                          "--install", "--mode", mode, "--force"],
-                        cwd=str(target), capture_output=True, text=True)
+                        cwd=str(target), capture_output=True, text=True, encoding="utf-8", errors="replace")
     return mode if cp.returncode == 0 else ""
 
 
@@ -315,13 +315,17 @@ def tracked_but_ignored(target: Path) -> list:
     try:
         p = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "ls-files", "-ci",
                             "--exclude-standard"],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         paths = [l for l in p.stdout.splitlines() if l.strip()] if p.returncode == 0 else []
         if not paths:
             return []
+        # Байтами: текстовый режим на Windows превращает `\n` в `\r\n`, и git получал
+        # каждый путь с хвостом `\r`.
         v = subprocess.run(["git", "-C", str(target), "-c", "core.quotepath=off", "check-ignore",
-                            "-v", "--no-index", "--stdin"], input="\n".join(paths) + "\n",
-                           capture_output=True, text=True, timeout=30)
+                            "-v", "--no-index", "--stdin"],
+                           input=("\n".join(paths) + "\n").encode("utf-8"),
+                           capture_output=True, timeout=30)
+        v_out = v.stdout.decode("utf-8", "replace")
     except (OSError, subprocess.SubprocessError):
         return []
     sys.path.insert(0, str(KIT / "scripts"))
@@ -332,7 +336,7 @@ def tracked_but_ignored(target: Path) -> list:
     kit_rules = {l.strip() for l in GITIGNORE_BLOCK.splitlines()
                  if l.strip() and not l.strip().startswith("#")}
     out = []
-    for line in v.stdout.splitlines():
+    for line in v_out.splitlines():
         where, _, path = line.partition("\t")
         pattern = where.split(":", 2)[-1] if where.count(":") >= 2 else ""
         if pattern.strip() in kit_rules and path.strip():

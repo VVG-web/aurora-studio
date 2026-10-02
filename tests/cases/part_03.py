@@ -494,7 +494,7 @@ def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
     for cand in ("/usr/bin/python3", "python3.9", "python3.10", "python3.11"):
         try:
             v = subprocess.run([cand, "-c", "import sys; print(sys.version_info[:2] < (3, 12))"],
-                               capture_output=True, text=True, timeout=20)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
         except (OSError, subprocess.SubprocessError):
             continue
         if v.returncode == 0 and v.stdout.strip() == "True":
@@ -507,7 +507,7 @@ def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
     out = tmp / "pyc"
     cp = subprocess.run([old, "-m", "compileall", "-q",
                          str(KIT / "scripts"), str(KIT / "cockpit"), str(KIT / "aurora.py")],
-                        capture_output=True, text=True, timeout=300,
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
                         env={**os.environ, "PYTHONPYCACHEPREFIX": str(out)})
     assert cp.returncode == 0, f"движок не компилируется на {old}:\n{(cp.stdout + cp.stderr)[-800:]}"
 
@@ -714,7 +714,10 @@ def test_machine_mcp_secrets_never_reach_the_browser(tmp: Path):
         r = act({"action": "import", "text": paste})
         assert r.get("ok"), r
         path = tmp / "local/mcp.json"
-        assert oct(path.stat().st_mode & 0o777) == "0o600", "файл с токенами читают все"
+        # Права доступа по битам — понятие POSIX: на Windows `chmod` трогает лишь признак
+        # «только чтение», а доступ к файлу решает ACL папки профиля.
+        assert os.name == "nt" or oct(path.stat().st_mode & 0o777) == "0o600", \
+            "файл с токенами читают все"
 
         st = state()
         seen = json.dumps(st, ensure_ascii=False)

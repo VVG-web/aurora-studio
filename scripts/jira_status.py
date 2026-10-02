@@ -314,7 +314,7 @@ def main() -> int:
                   "- " + ", ".join(s["id"] for s in ms["no_task"][:15]) +
                   (" …" if len(ms["no_task"]) > 15 else ""), ""]
         if ms["no_story"]:
-            L += [f"**Задачи с номером истории, которой нет в `{US_DIR}/`: "
+            L += [f"**Задачи с номером истории, которой нет в `{US_DIR.replace(os.sep, '/')}/`: "
                   f"{len(ms['no_story'])}** — разработка идёт без описанной истории:", "",
                   "- " + ", ".join(f"{u} ({i['key']})" for u, i in ms["no_story"][:15]) +
                   (" …" if len(ms["no_story"]) > 15 else ""), ""]

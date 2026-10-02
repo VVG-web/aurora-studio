@@ -46,7 +46,7 @@ def _call(script: str, payload: dict, timeout: int = 600) -> dict | None:
     env["GRAPHIFY_OUT"] = os.path.join(scratch, "graphify-out")
     try:
         p = subprocess.run([vpy, "-c", script], input=json.dumps(payload, ensure_ascii=False),
-                           capture_output=True, text=True, timeout=timeout, env=env,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env,
                            cwd=scratch)
     except (OSError, subprocess.SubprocessError):
         return None

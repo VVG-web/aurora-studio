@@ -22,6 +22,13 @@ import argparse
 import os
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 # Шаги цепочки лежат рядом: в ките — reports/analyst/, в проекте — .opencode/reports/analyst/
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

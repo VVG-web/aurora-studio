@@ -42,12 +42,12 @@ def test_update_removes_retired_engine_files(tmp: Path):
                                              encoding="utf-8")
 
     dry = subprocess.run([sys.executable, str(KIT / "scripts/aurora_update.py"), str(root)],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "kb_queue.py" in dry.stdout and "Выведены из движка" in dry.stdout, dry.stdout[:800]
     assert (scripts / "kb_queue.py").is_file(), "dry-run удалил файл"
 
     subprocess.run([sys.executable, str(KIT / "scripts/aurora_update.py"), str(root), "--apply"],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert not (scripts / "kb_queue.py").exists(), "выведенный скрипт остался в проекте"
     assert (scripts / "мой_скрипт.py").is_file(), "обновление удалило чужой файл"
     assert (scripts / "kb_trace.py").is_file(), "новый скрипт не разложен"
@@ -598,7 +598,7 @@ def test_an_update_archive_cannot_write_outside_the_kit(tmp: Path):
     finally:
         restore()
     assert "подозрительный путь" in r.get("error", ""), f"архив с обратной косой принят: {r}"
-    assert not (tmp / "evil.txt").exists() and (kit / "VERSION").read_text().strip() == "1.0.0"
+    assert not (tmp / "evil.txt").exists() and (kit / "VERSION").read_text(encoding="utf-8").strip() == "1.0.0"
 
 
 @test
@@ -1800,7 +1800,7 @@ def test_updating_the_engine_refreshes_the_git_hook(tmp: Path):
     assert "плотность ошибок" not in hook.read_text(encoding="utf-8")
 
     cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_update.py"), str(root),
-                         "--apply"], capture_output=True, text=True)
+                         "--apply"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stdout + cp.stderr
     fresh = hook.read_text(encoding="utf-8")
     assert "плотность ошибок" in fresh, \
@@ -1810,6 +1810,6 @@ def test_updating_the_engine_refreshes_the_git_hook(tmp: Path):
     # чужой хук остаётся чужим
     hook.write_text("#!/bin/sh\n# мой собственный хук\nexit 0\n", encoding="utf-8")
     subprocess.run([sys.executable, str(SCRIPTS / "aurora_update.py"), str(root),
-                    "--apply"], capture_output=True, text=True)
+                    "--apply"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "мой собственный хук" in hook.read_text(encoding="utf-8"), \
         "чужой хук перезаписан молча — потеряна работа человека"

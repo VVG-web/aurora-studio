@@ -16,6 +16,14 @@ import os
 import re
 import subprocess
 import unicodedata
+import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 
@@ -923,7 +931,7 @@ def git_dirty(path: str = ".") -> list:
     """Отслеживаемые файлы с незакоммиченными правками (неотслеживаемые не мешают)."""
     try:
         out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--", path],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except Exception:
         return []
     if out.returncode != 0:
@@ -935,7 +943,7 @@ def git_commit() -> str:
     """Короткий хеш текущего коммита; пусто, если это не git или git недоступен."""
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
         return ""
@@ -979,6 +987,140 @@ def load_env(path) -> dict:
     return out
 
 
+def safe_relpath(path, start=None, relpath=None) -> str:
+    """`os.path.relpath`, который не падает, когда пути на разных дисках Windows.
+
+    `relpath("C:\\x", "D:\\y")` — `ValueError: path is on mount 'C:', start on mount 'D:'`:
+    относительного пути между дисками нет. Движок спрашивал его от текущей папки, и проект на
+    одном диске при запуске с другого ронял разбор. Нет относительного — отдаём абсолютный.
+    """
+    relpath = relpath or os.path.relpath
+    try:
+        return relpath(path) if start is None else relpath(path, start)
+    except ValueError:
+        return os.fspath(path)
+
+
+def section_of(path: str, root: str = KB_ROOT, relpath=None) -> str:
+    """Раздел базы, в котором лежит карточка: первая папка под корнем базы.
+
+    Корень задан относительно текущей папки, а путь карточки бывает абсолютным и лежащим на
+    другом диске Windows — тогда относительного пути нет, и раздел берётся по имени корня в
+    самом пути.
+    """
+    path = os.fspath(path).replace("\\", "/")
+    try:
+        rel = (relpath or os.path.relpath)(os.path.dirname(path), root)
+    except ValueError:
+        parts = os.path.dirname(path).split("/")
+        name = os.path.basename(root.replace("\\", "/").rstrip("/"))
+        rel = "/".join(parts[parts.index(name) + 1:]) if name in parts else ""
+    return rel.replace("\\", "/").split("/")[0]
+
+
+def stdin_is_terminal(stream=None, kernel32=None) -> bool:
+    """Сидит ли за вводом человек. На Windows `isatty()` для `NUL` отвечает «да».
+
+    Запуск из скрипта, панели или ассистента отдаёт процессу `stdin=DEVNULL`; на POSIX
+    `isatty()` честно говорит «нет», а на Windows файл `NUL` — символьное устройство, и
+    ответ «да»: `aurora.py new` шёл задавать вопросы в пустоту и падал на первом `input()`
+    с `EOFError`. Настоящая консоль отличается тем, что у её дескриптора читается режим
+    (`GetConsoleMode`); у `NUL`, трубы и файла — нет. `kernel32` подставляется снаружи.
+    """
+    stream = sys.stdin if stream is None else stream
+    try:
+        if stream is None or not stream.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if os.name != "nt" and kernel32 is None:
+        return True
+    import ctypes
+    k = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
+    STD_INPUT_HANDLE = -10
+    mode = ctypes.c_ulong()
+    return bool(k.GetConsoleMode(k.GetStdHandle(STD_INPUT_HANDLE), ctypes.byref(mode)))
+
+
+def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
+                 pause: float = 0.025) -> None:
+    """`os.replace` с повтором на Windows: файл, который сейчас читают, туда не подменить.
+
+    На POSIX подмена файла не зависит от того, открыт ли он у других: читатель дочитывает
+    старый, новый встаёт на место. На Windows файл, открытый другим потоком или процессом,
+    подмене не поддаётся — `PermissionError` (WinError 5 или 32), хотя прав хватает. Так
+    неделимая запись манифеста и индексов падала на ровном месте, стоило кому-то в этот
+    миг их читать. Занятость проходит за миллисекунды: ждём и пробуем снова, а на другой
+    системе `PermissionError` — настоящий отказ в правах, и он поднимается сразу.
+    """
+    import time
+    retry = (os.name == "nt") if windows is None else windows
+    for n in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not retry or n == attempts - 1:
+                raise
+            time.sleep(pause * min(n + 1, 8))
+
+
+def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:
+    """`pid_alive` для Windows: `OpenProcess` + `GetExitCodeProcess`, без сигналов.
+
+    На Windows `os.kill(pid, 0)` не «проверяет»: сигнал 0 там — тот же код завершения,
+    и вызов прерывает процесс. Замок пишущего прогона, который проверял «жив ли
+    держатель» таким способом, убивал держателя — а в тестах и сам тестовый прогон,
+    чей pid лежал в замке. `kernel32` и `last_error` подставляются снаружи: проверить
+    логику можно и на другой системе.
+    """
+    import ctypes
+    if kernel32 is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        last_error = ctypes.get_last_error
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    ERROR_ACCESS_DENIED = 5
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        # Нет доступа — процесс есть, просто чужой; любая другая ошибка — процесса нет.
+        return last_error() == ERROR_ACCESS_DENIED
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def pid_alive(pid: int) -> bool:
+    """Жив ли процесс. Отказ в правах — ЖИВ.
+
+    `os.kill(pid, 0)` отвечает тремя способами: тишиной (жив), `ProcessLookupError`
+    (мёртв) и `PermissionError` (жив, но сигналить ему нам не дано — процесс чужой).
+    Все три — `OSError`, и один общий `except` записывал чужой процесс в мёртвые:
+    замок снимался, и второй пишущий прогон заходил в базу поверх первого. Ровно это и
+    случается с прогоном, чей родитель ушёл, — процесс усыновляет системный, а сигналить
+    ему обычному пользователю нельзя.
+
+    Windows — отдельный путь (`_win_pid_alive`): там `os.kill` убивает, а не проверяет.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _win_pid_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def child_env(project: str = "", **extra) -> dict:
     """Окружение дочернего процесса: без отладочного мусора, с настройками движка.
 
@@ -994,6 +1136,10 @@ def child_env(project: str = "", **extra) -> dict:
     лишний способ их обронить.
     """
     env = {k: v for k, v in os.environ.items() if not k.startswith("Malloc")}
+    # Дочерний Python на Windows пишет в трубу в кодовой странице системы (cp1251/cp1252):
+    # русский текст и «—» ломают протокол или превращаются в «?». UTF-8 — язык движка.
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     kit = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for base in (kit, project or os.getcwd()):
         for k, v in load_env(os.path.join(base, ENV_FILE)).items():
@@ -1173,7 +1319,7 @@ class Card:
         self.text = text
         self.stem = os.path.splitext(os.path.basename(self.path))[0]
         self.fm = frontmatter(text)
-        self.section = os.path.relpath(os.path.dirname(self.path), root).split(os.sep)[0]
+        self.section = section_of(self.path, root)
 
     @property
     def status(self) -> str:

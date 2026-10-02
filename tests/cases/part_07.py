@@ -198,7 +198,7 @@ def test_base_graph_shows_the_base_not_a_guess(tmp: Path):
         "зеркала» перестала проверять то, ради чего написана"
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_graph.py"),
                          "--cards-json", str(out)], cwd=root,
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, f"граф без зеркала не построился:\n{cp.stderr[:400]}"
     data = json.loads(out.read_text(encoding="utf-8"))
 
@@ -554,7 +554,7 @@ def test_files_section_is_reachable_and_explains_itself(tmp: Path):
         subprocess.run([sys.executable, "-c",
             "import sys, json; sys.path.insert(0, %r); import aurora_cockpit as ck;"
             " print(json.dumps(ck.modules()))" % str(KIT / "cockpit")],
-            capture_output=True, text=True).stdout)}
+            capture_output=True, text=True, encoding="utf-8", errors="replace").stdout)}
     assert orders["work"] < 50 < orders["ask"], \
         "раздел «Файлы» стоит не после «Продуктивности»"
     assert 'if (view==="files") renderFiles();' in ui, "переход в раздел ничего не рисует"
@@ -608,13 +608,13 @@ def test_skills_land_in_one_shared_folder(tmp: Path):
     assert "symlink_to" in body, "остальные harness должны получать ссылку, а не копию"
 
     out = subprocess.run([sys.executable, str(src), "--status"],
-                         cwd=str(KIT), capture_output=True, text=True)
+                         cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert out.returncode == 0, out.stderr[:300]
     for name in ("aurora-vault", "aurora-dev"):
         assert name in out.stdout, f"скилл {name} не попал в установку"
 
     dry = subprocess.run([sys.executable, str(src)], cwd=str(KIT),
-                         capture_output=True, text=True).stdout
+                         capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "--apply" in dry or "делать нечего" in dry, \
         "без --apply установка обязана только показывать"
 
@@ -641,7 +641,7 @@ def test_dev_skill_is_installable_and_asks_for_coverage(tmp: Path):
     # GitHub — задание собрать не из чего, и проверяется только сам скилл.
     if KITCHEN.is_dir():
         cov = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--cover"],
-                             cwd=str(KIT), capture_output=True, text=True)
+                             cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert cov.returncode == 0, cov.stderr[:300]
         task = cov.stdout
         assert "ЗАДАНИЕ АССИСТЕНТУ" in task, "нет блока для копирования в другой диалог"
@@ -733,7 +733,7 @@ def test_agent_work_rolls_back_whole(tmp: Path):
     (root / "Artifacts" / "human-edit.md").write_text("правил человек", encoding="utf-8")
     R.commit_result(str(root), "agent:build", "источников разобрано: 1", True)
     left = subprocess.run(["git", "status", "--porcelain", "-uall"], cwd=str(root),
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "human-edit" in left, "коммит агента забрал чужую работу вне базы знаний"
 
 
@@ -1197,7 +1197,7 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
               "params": {"name": "kb_card", "arguments": {"name": "Обеспечение"}}}]
     proc = subprocess.run(
         [sys.executable, str(KIT / "scripts" / "aurora_mcp.py"), "--project", str(root)],
-        input="\n".join(json.dumps(c) for c in calls), capture_output=True, text=True,
+        input="\n".join(json.dumps(c) for c in calls), capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=180)
     lines = [l for l in proc.stdout.splitlines() if l.strip()]
     got = sorted((json.loads(l) for l in lines),   # падает, если в канал попал чужой текст
@@ -1241,7 +1241,7 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
            {"jsonrpc": "2.0", "id": 3, "method": "ping"}]
     proc = subprocess.run(
         [sys.executable, str(KIT / "scripts" / "aurora_mcp.py"), "--project", str(root)],
-        input="\n".join(json.dumps(c) for c in bad), capture_output=True, text=True,
+        input="\n".join(json.dumps(c) for c in bad), capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=180)
     got = sorted((json.loads(l) for l in proc.stdout.splitlines() if l.strip()),
                  key=lambda m: m["id"])

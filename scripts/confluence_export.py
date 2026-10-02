@@ -49,7 +49,7 @@ from sources_core import (CONFIG, RestApi, WikiMirror, block, config_text, no_ac
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
-from aurora_common import PATH_CHARS, TODAY, portable_name  # noqa: E402
+from aurora_common import PATH_CHARS, TODAY, portable_name, safe_relpath  # noqa: E402
 
 DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
@@ -708,8 +708,9 @@ class Exporter(WikiMirror):
         self.fresh: dict = {}
         # Длина пути считается от корня проекта: зеркало лежит в `Sources/Confluence/`,
         # и эти знаки Windows тоже засчитывает.
-        where = os.path.relpath(os.path.abspath(out), os.getcwd()).replace("\\", "/")
-        self.prefix_len = len(where if not where.startswith("..") else DEFAULT_OUT) + 1
+        where = safe_relpath(os.path.abspath(out), os.getcwd()).replace("\\", "/")
+        outside = where.startswith("..") or os.path.isabs(where)      # и другой диск Windows
+        self.prefix_len = len(DEFAULT_OUT if outside else where) + 1
 
     def save_assets(self, page_id: str, rel: str, names: list) -> str:
         """Скачать вложения схем рядом со страницей и вернуть ссылки на них.

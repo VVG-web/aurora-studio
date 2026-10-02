@@ -50,6 +50,13 @@
 """
 from __future__ import annotations
 import subprocess, sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parent
@@ -65,7 +72,9 @@ def cmd_new(target: str, extra: list[str]) -> int:
     # Диалог настройки требует терминала. Когда его нет — запуск из скрипта, из панели,
     # из ассистента — вопросы задавать некому, и раньше команда падала на первом же
     # `input()` с EOFError, оставляя развёрнутую, но ненастроенную папку.
-    quiet = "--non-interactive" in extra or not sys.stdin.isatty()
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import stdin_is_terminal
+    quiet = "--non-interactive" in extra or not stdin_is_terminal()
     extra = [x for x in extra if x != "--non-interactive"]
 
     print(f"→ Разворачиваю Aurora в {tgt}\n", flush=True)

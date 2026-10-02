@@ -42,3 +42,24 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt
       - name: Full suite on the oldest supported Python
         run: python3 tests/run_tests.py
+  windows:
+    # Кит ставят и на Windows (start-aurora.bat, install_aurora.py). Кодировка консоли и
+    # файлов там cp125x, пути с «\\», открытые файлы нельзя переименовать, нет fcntl и
+    # bash — на ubuntu этого не видно. UTF-8-режим сознательно не включаем: аналитик его не
+    # включает.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Engine dependencies
+        run: python -m pip install --quiet -r requirements.txt
+      - name: Smoke (source-scan invariants)
+        run: python tests/run_tests.py --smoke
+      # Полный набор идёт и после красной проверки инвариантов: за один прогон нужен весь
+      # список падений на Windows, а не первое из них.
+      - name: Full suite
+        if: success() || failure()
+        run: python tests/run_tests.py

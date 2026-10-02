@@ -27,6 +27,13 @@ import re
 import stat
 import subprocess
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 from pathlib import Path
 
 MARKER = "# aurora-hook v1"
@@ -287,7 +294,7 @@ def scan_push() -> int:
         # человек читает предупреждение и не понимает, что именно убирать.
         cp = subprocess.run(["git", "-c", "core.quotepath=false",
                              "log", "-p", "--no-color", "--unified=0", *rng],
-                            capture_output=True, text=True, errors="replace")
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         path = "?"
         for row in cp.stdout.splitlines():
             if row.startswith("+++ b/"):
@@ -327,7 +334,7 @@ def is_kit() -> bool:
 
 def git_dir() -> Path | None:
     try:
-        out = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, check=True)
+        out = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
         return Path(out.stdout.strip())
     except Exception:
         return None
@@ -339,7 +346,7 @@ def current_errors() -> int | None:
         return None
     try:
         out = subprocess.run([sys.executable, str(lint), "--summary"],
-                             capture_output=True, text=True).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     except Exception:
         return None
     m = re.search(r"ошибок\s+(\d+)", out)
@@ -400,7 +407,7 @@ def main() -> int:
         elif is_kit():
             print("pre-push: не установлен — ветки кухни можно случайно опубликовать")
         if BASELINE.is_file():
-            print(f"базовая линия ошибок: {BASELINE.read_text().strip()}")
+            print(f"базовая линия ошибок: {BASELINE.read_text(encoding='utf-8').strip()}")
         errs = current_errors()
         if errs is not None:
             print(f"сейчас ошибок kb_lint: {errs}")

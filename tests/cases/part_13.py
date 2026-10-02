@@ -28,6 +28,7 @@ from harness import (  # noqa: F401
     make_project,
     panel_sources,
     run,
+    set_home,
     stub_messages,
     test,
 )
@@ -84,17 +85,17 @@ def test_the_kit_updates_itself_from_an_archive_install(tmp: Path):
     finally:
         restore()
     assert r.get("ok") and r["from"] == "1.0.0" and r["to"] == "1.1.0" and r["restart"], r
-    assert (kit / "VERSION").read_text().strip() == "1.1.0"
-    assert (kit / "scripts/a.py").read_text() == "new\n", "файл поставки не заменён"
+    assert (kit / "VERSION").read_text(encoding="utf-8").strip() == "1.1.0"
+    assert (kit / "scripts/a.py").read_text(encoding="utf-8") == "new\n", "файл поставки не заменён"
     assert os.access(kit / "scripts/new.sh", os.X_OK), "исполняемый файл потерял права"
     assert not (kit / "scripts/gone.py").exists(), "устаревший файл прошлой поставки остался"
-    assert (kit / "local/private_terms.txt").read_text() == "СЕКРЕТ\n", "тронуто личное"
-    assert (kit / ".env.test").read_text() == "TOKEN=1\n", "тронуты личные настройки"
+    assert (kit / "local/private_terms.txt").read_text(encoding="utf-8") == "СЕКРЕТ\n", "тронуто личное"
+    assert (kit / ".env.test").read_text(encoding="utf-8") == "TOKEN=1\n", "тронуты личные настройки"
     assert (kit / "mine.txt").exists(), "убран чужой файл, которого не было в прошлой поставке"
     backup = Path(r["backup"])
-    assert (backup / "scripts/a.py").read_text() == "old\n" and (backup / "scripts/gone.py").exists(), \
+    assert (backup / "scripts/a.py").read_text(encoding="utf-8") == "old\n" and (backup / "scripts/gone.py").exists(), \
         "заменённое и убранное не сохранены копией"
-    assert "scripts/new.sh" in json.loads((kit / ".aurora-install.json").read_text())["files"]
+    assert "scripts/new.sh" in json.loads((kit / ".aurora-install.json").read_text(encoding="utf-8"))["files"]
 
 
 @test
@@ -108,21 +109,21 @@ def test_the_kit_updates_itself_as_a_clone_even_after_a_history_rewrite(tmp: Pat
     """
     def git(cwd, *a):
         r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
-                           cwd=str(cwd), capture_output=True, text=True)
+                           cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert r.returncode == 0, (a, r.stderr)
         return r.stdout.strip()
 
     up = tmp / "upstream"
     up.mkdir()
     git(up, "init", "-q", "-b", "master")
-    (up / "VERSION").write_text("1.0.0\n")
-    (up / "CHANGELOG.md").write_text("## 1.0.0 — начало\n")
+    (up / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    (up / "CHANGELOG.md").write_text("## 1.0.0 — начало\n", encoding="utf-8")
     git(up, "add", "-A")
     git(up, "commit", "-q", "-m", "1.0.0")
     kit = tmp / "kit"
     git(tmp, "clone", "-q", str(up), str(kit))
-    (up / "VERSION").write_text("1.1.0\n")
-    (up / "CHANGELOG.md").write_text("## 1.1.0 — вперёд\n\n## 1.0.0 — начало\n")
+    (up / "VERSION").write_text("1.1.0\n", encoding="utf-8")
+    (up / "CHANGELOG.md").write_text("## 1.1.0 — вперёд\n\n## 1.0.0 — начало\n", encoding="utf-8")
     git(up, "commit", "-q", "-am", "1.1.0")
     ck, restore = _cockpit_on(kit)
     try:
@@ -130,16 +131,16 @@ def test_the_kit_updates_itself_as_a_clone_even_after_a_history_rewrite(tmp: Pat
         assert r.get("ok") and r["to"] == "1.1.0" and r["how"] == "git", r
         # история на GitHub переписана: тот же 1.1.0 другим коммитом, поверх — 1.2.0
         git(up, "commit", "-q", "--amend", "-m", "1.1.0 (переписан)")
-        (up / "VERSION").write_text("1.2.0\n")
+        (up / "VERSION").write_text("1.2.0\n", encoding="utf-8")
         git(up, "commit", "-q", "-am", "1.2.0")
         r = ck.kit_update()
         assert r.get("ok") and r["to"] == "1.2.0", r
         assert any("aurora-backup/1.1.0-" in n for n in r["notes"]), r["notes"]
         assert "aurora-backup/1.1.0-" in git(kit, "branch", "--list", "aurora-backup/*")
         # свой коммит в ките — кнопка отказывается, ничего не трогая
-        (up / "VERSION").write_text("1.3.0\n")
+        (up / "VERSION").write_text("1.3.0\n", encoding="utf-8")
         git(up, "commit", "-q", "--amend", "-am", "1.3.0, история снова переписана")
-        (kit / "mine.txt").write_text("своё\n")
+        (kit / "mine.txt").write_text("своё\n", encoding="utf-8")
         git(kit, "add", "mine.txt")
         git(kit, "commit", "-q", "-m", "своя правка")
         head = git(kit, "rev-parse", "HEAD")
@@ -226,8 +227,7 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
     (home / ".claude" / "skills" / "grilling").mkdir(parents=True)
     (home / ".claude" / "skills" / "grilling" / "SKILL.md").write_text(
         "---\nname: grilling\n---\nИнтервью раундами по дереву решений.\n", encoding="utf-8")
-    was = os.environ.get("HOME")
-    os.environ["HOME"] = str(home)
+    restore_home = set_home(home)
     try:
         m = RC.mentions('Добавь AC /grill-me, истории в @"Requirements/Истории пользователей.md", '
                         "поищи через @Tavily и /Users/кто-то/путь не навык", str(root), ["tavily"])
@@ -237,9 +237,10 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
         assert m["files"] == ["Requirements/Истории пользователей.md"], m["files"]
         assert "Интервью раундами" in RC.skills_block(m["skills"])
         # без личного навыка grill-me ведёт на навык кита
-        os.environ["HOME"] = str(tmp / "пустой")
+        restore_home()
+        restore_home = set_home(tmp / "пустой")
         path, body = RC.find_skill("grill-me", str(root), str(KIT))
-        assert path.endswith("aurora-grill/SKILL.md") and body, "grill-me не нашёл навык кита"
+        assert path.replace("\\", "/").endswith("aurora-grill/SKILL.md") and body, "grill-me не нашёл навык кита"
         # подсказки: / — навыки, @ — файлы, папки и серверы; секретов в подсказках нет
         assert any(i["value"] == "/aurora-grill" for i in RC.suggest(str(root), "/grill", [], str(KIT)))
         hints = RC.suggest(str(root), "@ист", ["tavily"], str(KIT))
@@ -247,10 +248,7 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
         assert not any(".env" in i["value"] for i in RC.suggest(str(root), "@env", [], str(KIT)))
         assert RC.suggest(str(root), "@tav", ["tavily"], str(KIT))[0]["kind"] == "mcp"
     finally:
-        if was is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = was
+        restore_home()
 
 
 @test
@@ -366,7 +364,7 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
         print(json.dumps({"seen": seen, "returns": json.loads(out)}, ensure_ascii=False))
     """), encoding="utf-8")
     cp = subprocess.run([str(vpy), str(scenario), str(KIT / "scripts" / "agents"), str(tmp)],
-                        capture_output=True, text=True, timeout=240)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240)
     assert cp.returncode == 0, cp.stderr[-1500:]
     d = json.loads(cp.stdout.strip().splitlines()[-1])
     assert d["seen"][0] == [["mcp_connect"], False], f"сервер поднят до нужды: {d['seen'][0]}"
@@ -889,7 +887,7 @@ def test_cockpit_scripts_parse(tmp: Path):
     def check(name: str, code: str, module: bool):
         f = tmp / (name + (".mjs" if module else ".js"))
         f.write_text(code, encoding="utf-8")
-        cp = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+        cp = subprocess.run([node, "--check", str(f)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert cp.returncode == 0, f"{name} не разбирается:\n{cp.stderr.strip()[:800]}"
 
     ui = ui_source()
@@ -963,7 +961,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
     assert all("Шаг первый" not in p for p in blocks), "своё знание страницы принято за шаблон"
     assert (root / ".opencode/cache/template_blocks.json").is_file(), "словарь не закэширован"
 
-    rel = str(paths[5].relative_to(root))
+    rel = paths[5].relative_to(root).as_posix()
     cp = run("build_plan.py", "--slice", rel, "--slice-chars", "900", cwd=root)
     head = cp.stdout.split("ЗАДАНИЕ АССИСТЕНТУ")[0]
     assert "ОБЯЗАТЕЛЬНО писать комментарий" not in head, f"шаблон в превью:\n{head}"
@@ -971,7 +969,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
     assert "| Код | RYk:ALG-105 |" in head, "шапку таблицы спрятали вместе со строкой"
     assert "считает сумму налога" in head and "Шаг первый" in head, head
 
-    canon = str(paths[0].relative_to(root))
+    canon = paths[0].relative_to(root).as_posix()
     assert blocks[TEMPLATE_PAR] == canon, blocks[TEMPLATE_PAR]
     head0 = run("build_plan.py", "--slice", canon, "--slice-chars", "900", cwd=root).stdout
     assert "ОБЯЗАТЕЛЬНО писать комментарий" in head0, "канонический источник потерял абзац"
@@ -989,7 +987,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
                     "налоговый орган по телекоммуникационному каналу связи в течение суток, "
                     "а при отказе канала — повторить отправку через час и записать попытку в "
                     "журнал обмена с указанием времени и кода ошибки шлюза.\n", encoding="utf-8")
-    slice_ = run("build_plan.py", "--slice", str(only.relative_to(root)), cwd=root).stdout
+    slice_ = run("build_plan.py", "--slice", only.relative_to(root).as_posix(), cwd=root).stdout
     assert A.TEMPLATE_ONLY in slice_, slice_
     R = importlib.import_module("agent_runner")
     rows = R.SECTION_RE.findall(slice_.split("ЗАДАНИЕ АССИСТЕНТУ")[0])
@@ -1010,7 +1008,7 @@ def test_a_card_born_of_the_page_template_is_archived_and_its_sources_replanned(
     import importlib, json
     sys.path.insert(0, str(SCRIPTS))
     root = make_project(tmp)
-    paths = [str(p.relative_to(root)) for p in _template_mirror(root)]
+    paths = [p.relative_to(root).as_posix() for p in _template_mirror(root)]
     q = lambda srcs: "".join(f"### {s}\n\n# Описание\n\n{TEMPLATE_PAR}\n\nАлгоритм {i}.\n\n"
                              for i, s in enumerate(srcs))
     srcs_block = lambda srcs: "sources:\n" + "".join(f'  - "{s}"\n' for s in srcs)
@@ -1072,7 +1070,7 @@ def test_the_author_of_a_thesis_sees_repeated_knowledge_but_not_service_text(tmp
     AG = importlib.import_module("agent_core")
     R = importlib.import_module("agent_runner")
     root = make_project(tmp)
-    paths = [str(p.relative_to(root)) for p in _template_mirror(root)]
+    paths = [p.relative_to(root).as_posix() for p in _template_mirror(root)]
     rule = ("Отчёт состоит из ячеек, значения которых заполняются статическим и динамическим "
             "текстом по правилам раздела форматов")
     for p in paths:
@@ -1346,7 +1344,7 @@ def test_a_document_is_parsed_once_even_when_its_copy_is_named_differently(tmp: 
     old = d / "Старый.converted.md"
     old.write_text("расшифровка " * 40, encoding="utf-8")
     (d / "Старый.md").write_text("копия человека " * 40, encoding="utf-8")
-    rel = lambda p: str(p.relative_to(root)).replace("\\\\", "/")
+    rel = lambda p: p.relative_to(root).as_posix()
     assert B.human_twin(str(machine)).endswith("Памятка_для_перевозчиков.md")
     assert B.human_twin(str(old)).endswith("Старый.md")
     assert not B.human_twin(str(human)), "копия человека объявлена машинной"
@@ -1698,7 +1696,7 @@ def test_the_interface_catalogues_agree_with_the_panel(tmp: Path):
     а проверка искала голый «ключ». Красное, к которому привыкли, перестаёт быть сигналом.
     """
     cp = subprocess.run([sys.executable, str(KIT / "scripts" / "kit_i18n.py"), "--check"],
-                        capture_output=True, text=True, timeout=120)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     assert cp.returncode == 0, cp.stdout[-1500:] + cp.stderr[-500:]
 
 
@@ -1774,7 +1772,7 @@ def test_mcp_search_survives_parallel_calls_and_ignores_the_archive(tmp: Path):
     lines.append(json.dumps({"jsonrpc": "2.0", "id": 900, "method": "tools/call", "params": {
         "name": "kb_card", "arguments": {"name": "Старый-двойник"}}}))
     cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_mcp.py"), "--project", str(root)],
-                        input="\n".join(lines) + "\n", capture_output=True, text=True,
+                        input="\n".join(lines) + "\n", capture_output=True, text=True, encoding="utf-8", errors="replace",
                         timeout=180, cwd=str(tmp))
     answers = {}
     for line in cp.stdout.splitlines():
@@ -2137,3 +2135,293 @@ def test_a_live_card_wins_over_its_archived_copy_and_dead_maps_leave(tmp: Path):
     text = (root / "AuroraKnowledgeDB/Concepts/Ссылки.md").read_text(encoding="utf-8")
     assert "[[ER-Объект-учета-ЮЛ]]" in text and "[[ER_Объект_учета_ЮЛ]]" not in text, text
     assert "Документ--Старая-расшифровка" not in text, f"ссылка на ушедшую карту осталась:\n{text}"
+
+
+@test
+def test_checking_a_pid_never_stops_the_process(tmp: Path):
+    """Вопрос «жив ли процесс» не должен его убивать — ни на какой системе.
+
+    `os.kill(pid, 0)` на Windows не проверяет, а завершает процесс. Замок пишущего прогона
+    проверял держателя именно им: на windows-latest проверка убила сам тестовый прогон,
+    чей pid лежал в замке. Живой дочерний процесс после вопроса обязан остаться живым,
+    а завершённый и собранный — стать мёртвым; чужой pid 0 и отрицательные — не жив.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import pid_alive
+    import agent_runner
+    assert agent_runner.pid_alive is pid_alive, "у замка и панели должна быть одна проверка"
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        for _ in range(3):
+            assert pid_alive(child.pid), "живой процесс назван мёртвым"
+        assert child.poll() is None, "вопрос «жив ли процесс» завершил процесс"
+    finally:
+        child.terminate()
+        child.wait(timeout=30)
+    assert not pid_alive(child.pid), "завершённый процесс назван живым"
+    assert pid_alive(os.getpid())
+    assert not pid_alive(0) and not pid_alive(-5)
+
+
+@test
+def test_windows_pid_check_reads_the_exit_code_not_a_signal(tmp: Path):
+    """Ветка Windows сверяется с кодом завершения и считает «нет доступа» признаком жизни.
+
+    На другой системе `kernel32` подставляется: проверяем логику выбора, а не сам вызов.
+    STILL_ACTIVE (259) — идёт; любой другой код — закончился; не открылся с ошибкой 5 —
+    процесс чужой и жив; не открылся с другой ошибкой — его нет; ручка закрывается всегда.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import ctypes
+    from aurora_common import _win_pid_alive
+
+    class Kernel32:
+        def __init__(self, handle, exit_code=259, ok=1):
+            self.handle, self.exit_code, self.ok = handle, exit_code, ok
+            self.closed, self.opened = [], []
+
+        def OpenProcess(self, access, inherit, pid):
+            self.opened.append((access, inherit, pid))
+            return self.handle
+
+        def GetExitCodeProcess(self, handle, ref):
+            ref._obj.value = self.exit_code
+            return self.ok
+
+        def CloseHandle(self, handle):
+            self.closed.append(handle)
+
+    assert ctypes.c_ulong  # ref._obj — сама c_ulong, в которую пишет GetExitCodeProcess
+    k = Kernel32(77, 259)
+    assert _win_pid_alive(4321, k, lambda: 0) is True and k.closed == [77]
+    assert k.opened == [(0x1000, False, 4321)], "права шире «спросить состояние» не нужны"
+    k = Kernel32(77, 0)
+    assert _win_pid_alive(4321, k, lambda: 0) is False and k.closed == [77]
+    k = Kernel32(77, 0, ok=0)
+    assert _win_pid_alive(4321, k, lambda: 0) is True, "не смогли спросить — не объявляем мёртвым"
+    assert k.closed == [77]
+    assert _win_pid_alive(4321, Kernel32(0), lambda: 5) is True, "чужой процесс записан в мёртвые"
+    assert _win_pid_alive(4321, Kernel32(0), lambda: 87) is False, "несуществующий pid назван живым"
+
+
+@test
+def test_child_processes_speak_utf8_whatever_the_system_codepage(tmp: Path):
+    """Дочерний Python пишет в трубу UTF-8, а не в кодовой странице системы.
+
+    На Windows труба без этого кодируется в cp1251/cp1252: кириллица в ответе адаптера
+    превращалась в «?» или роняла запись. Значение, заданное человеком, сильнее умолчания.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import child_env
+    saved = {k: os.environ.pop(k, None) for k in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    try:
+        env = child_env()
+        assert env["PYTHONUTF8"] == "1" and env["PYTHONIOENCODING"] == "utf-8", env
+        assert "PYTHONUTF8" not in os.environ, "умолчание просочилось в окружение самого процесса"
+        os.environ["PYTHONIOENCODING"] = "cp866"
+        assert child_env()["PYTHONIOENCODING"] == "cp866", "явная настройка человека затёрта"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    for k in ("PYTHONUTF8", "PYTHONIOENCODING"):
+        os.environ.pop(k, None)
+    try:
+        out = subprocess.run([sys.executable, "-c", "print('Проверка — ✓')"], capture_output=True,
+                             env=child_env())
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    assert out.returncode == 0, out.stderr.decode("utf-8", "replace")
+    assert out.stdout.decode("utf-8").strip() == "Проверка — ✓", out.stdout
+
+
+@test
+def test_replacing_a_busy_file_waits_on_windows_and_fails_at_once_elsewhere(tmp: Path):
+    """Подмена файла, который кто-то читает, на Windows ждёт; на другой системе — не ждёт.
+
+    Неделимая запись манифеста, индексов и настроек — это «записать рядом и подменить».
+    На Windows подмена файла, открытого другим потоком, падает с `PermissionError`
+    (WinError 5 или 32) на ровном месте: на windows-latest так падала параллельная запись
+    манифеста. Занятость проходит за миллисекунды, а на POSIX тот же `PermissionError` —
+    настоящий отказ в правах, и ждать его бессмысленно.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import replace_file
+    src, dst = tmp / "new.json", tmp / "manifest.json"
+    src.write_text("новый", encoding="utf-8")
+    dst.write_text("старый", encoding="utf-8")
+
+    real, calls = os.replace, []
+
+    def busy(times):
+        def fake(a, b):
+            calls.append(1)
+            if len(calls) <= times:
+                raise PermissionError(5, "Access is denied")
+            return real(a, b)
+        return fake
+
+    try:
+        os.replace = busy(3)
+        replace_file(src, dst, windows=True, pause=0.001)
+        assert len(calls) == 4, f"ждали три отказа и успех, было вызовов: {len(calls)}"
+        assert dst.read_text(encoding="utf-8") == "новый" and not src.exists()
+
+        calls.clear()
+        src.write_text("ещё", encoding="utf-8")
+        os.replace = busy(99)
+        try:
+            replace_file(src, dst, windows=False)
+        except PermissionError:
+            assert len(calls) == 1, "на POSIX отказ в правах повторяют — это ждёт зря"
+        else:
+            raise AssertionError("отказ в правах проглочен")
+
+        calls.clear()
+        try:
+            replace_file(src, dst, windows=True, attempts=5, pause=0.001)
+        except PermissionError:
+            assert len(calls) == 5, f"повторов должно быть ровно {5}, было {len(calls)}"
+        else:
+            raise AssertionError("вечная занятость не поднята ошибкой")
+    finally:
+        os.replace = real
+    assert dst.read_text(encoding="utf-8") == "новый", "при отказе файл-приёмник испорчен"
+
+    for site in ("build_plan.py", "kb_embed.py", "agent_core.py", "agent_runner.py"):
+        code = (SCRIPTS / site).read_text(encoding="utf-8")
+        assert "os.replace(" not in code, f"{site}: запись мимо replace_file — на Windows упадёт"
+
+
+@test
+def test_every_script_speaks_utf8_even_into_a_legacy_codepage_pipe(tmp: Path):
+    """Скрипт с русским выводом не падает, когда труба в однобайтной кодовой странице.
+
+    На Windows вывод в трубу идёт в cp1251/cp1252, и первая же русская строка — это
+    `UnicodeEncodeError`. Пять скриптов (`kit_i18n`, `kb_retrieval`, `sources_registry`,
+    `agent_probe`, `dev_qa`) не переключали вывод и роняли тест проверки каталогов
+    интерфейса. Здесь кодовая страница трубы подменяется переменной окружения, поэтому
+    дефект виден и на Linux: справка каждого скрипта обязана выйти кодом 0 и читаться как
+    UTF-8, и обязана это делать вне зависимости от окружения родителя.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+    env["PYTHONIOENCODING"] = "cp1252"
+    bad = []
+    checked = 0
+    for f in sorted(SCRIPTS.glob("*.py")):
+        code = f.read_text(encoding="utf-8")
+        if "__main__" not in code or "argparse.ArgumentParser" not in code:
+            continue
+        cp = subprocess.run([sys.executable, str(f), "--help"], capture_output=True, env=env,
+                            timeout=60)
+        checked += 1
+        err = cp.stderr.decode("utf-8", "replace")
+        if cp.returncode != 0 or "UnicodeEncodeError" in err:
+            bad.append(f"{f.name}: rc={cp.returncode} {err.strip().splitlines()[-1:]}")
+    assert checked > 20, f"справку проверили у {checked} скриптов — перечень не нашёлся"
+    assert not bad, "\n".join(bad)
+
+
+@test
+def test_a_null_device_is_not_a_terminal_on_windows(tmp: Path):
+    """`stdin=DEVNULL` — не терминал, даже когда `isatty()` отвечает «да».
+
+    На Windows `NUL` — символьное устройство, и `isatty()` для него истинно: `aurora.py new`
+    из скрипта, панели или ассистента шёл задавать вопросы в пустоту и падал на первом
+    `input()` с `EOFError`. Настоящая консоль отличается тем, что читается её режим.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import stdin_is_terminal
+
+    class Stream:
+        def __init__(self, tty):
+            self.tty = tty
+
+        def isatty(self):
+            return self.tty
+
+    class Kernel32:
+        def __init__(self, console):
+            self.console = console
+
+        def GetStdHandle(self, which):
+            assert which == -10, "спрашивали не стандартный ввод"
+            return 7
+
+        def GetConsoleMode(self, handle, ref):
+            return 1 if self.console else 0
+
+    assert stdin_is_terminal(Stream(False), Kernel32(True)) is False, "файл или труба названы терминалом"
+    assert stdin_is_terminal(Stream(True), Kernel32(False)) is False, "NUL назван терминалом"
+    assert stdin_is_terminal(Stream(True), Kernel32(True)) is True, "консоль не узнана"
+    assert stdin_is_terminal(None, Kernel32(True)) is False, "нет stdin — это не терминал"
+    cp = subprocess.run([sys.executable, "-c",
+                         "import sys; sys.path.insert(0, %r); "
+                         "from aurora_common import stdin_is_terminal; "
+                         "print(stdin_is_terminal())" % str(SCRIPTS)],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace")
+    assert cp.stdout.strip() == "False", f"DEVNULL принят за терминал: {cp.stdout!r} {cp.stderr[-200:]}"
+
+
+@test
+def test_a_gitignored_folder_with_a_russian_name_is_recognised(tmp: Path):
+    """Папка по-русски, закрытая `.gitignore`, — вне схемы допустима, как и латинская.
+
+    `git check-ignore` печатает не-ASCII пути в кавычках с восьмеричными кодами
+    («\\320\\241…»), и доктор не узнавал в них свою папку: рабочая папка с русским именем,
+    честно закрытая правилом, считалась нарушением схемы. А на Windows текстовый режим
+    подпроцесса превращал `\\n` в `\\r\\n`, и git получал каждый путь с хвостом `\\r`.
+    Пути идут байтами и через NUL.
+    """
+    root = make_project(tmp, git=True)
+    (root / "СвояПапка").mkdir()
+    (root / "СвояПапка" / "файл.md").write_text("текст", encoding="utf-8")
+    (root / "Чужая").mkdir()
+    (root / "Чужая" / "файл.md").write_text("текст", encoding="utf-8")
+    (root / ".gitignore").write_text("СвояПапка/\n", encoding="utf-8")
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    D = importlib.import_module("aurora_doctor")
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        got = D.git_ignored(["СвояПапка", "Чужая"])
+        assert got == {"СвояПапка"}, f"закрытая русская папка не узнана: {got}"
+        assert D.git_ignored([]) == set()
+    finally:
+        os.chdir(old)
+
+
+@test
+def test_a_path_on_another_drive_does_not_stop_the_engine(tmp: Path):
+    """Путь на другом диске Windows не роняет разбор: относительного пути между дисками нет.
+
+    `os.path.relpath("C:\\\\x", "D:\\\\y")` — `ValueError: path is on mount 'C:', start on mount
+    'D:'`. Карточка, чей путь абсолютный и лежит на другом диске, чем текущая папка, роняла
+    разбор раздела (`Card.section`), а синк Confluence падал на подсчёте длины пути. Здесь
+    диск «чужой» подменяется функцией, которая бросает ту же ошибку.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import KB_ROOT, Card, safe_relpath, section_of
+
+    def other_drive(*_a):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+    assert safe_relpath("/a/b/c", "/a", relpath=other_drive) == "/a/b/c", "другой диск: нужен абсолютный путь"
+    assert safe_relpath("/a/b/c", "/a").replace("\\", "/") == "b/c", "обычный относительный путь изменился"
+    assert section_of("C:/Users/me/proj/AuroraKnowledgeDB/Concepts/Заявка.md", relpath=other_drive) \
+        == "Concepts"
+    assert section_of("C:\\Users\\me\\proj\\AuroraKnowledgeDB\\Glossary\\a.md", relpath=other_drive) \
+        == "Glossary"
+    assert section_of("C:/elsewhere/a.md", relpath=other_drive) == "", "корня базы нет в пути"
+    assert section_of(f"{KB_ROOT}/Systems/АИС.md") == "Systems"
+    assert Card("/x/AuroraKnowledgeDB/Roles/Роль.md", "---\ntitle: Роль\n---\n", root="/x/AuroraKnowledgeDB").section \
+        == "Roles"
+
+    src = (SCRIPTS / "confluence_export.py").read_text(encoding="utf-8")
+    assert "os.path.relpath(os.path.abspath(out), os.getcwd())" not in src, \
+        "синк снова считает путь от текущей папки напрямую — на другом диске он упадёт"

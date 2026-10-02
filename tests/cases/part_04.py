@@ -400,9 +400,9 @@ def test_the_panel_script_actually_parses(tmp: Path):
                     "поставьте любой из них, иначе SyntaxError доедет до человека")
     src = tmp / "panel.js"
     src.write_text(js, encoding="utf-8")
-    cmd = ([engine, "--check", str(src)] if engine.endswith("node")
+    cmd = ([engine, "--check", str(src)] if Path(engine).stem.lower() == "node"
            else [engine, "check", "--no-lock", str(src)])
-    cp = subprocess.run(cmd, capture_output=True, text=True)
+    cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, ("скрипт панели не разбирается — в браузере не выполнится "
                                 f"ни одна строка:\n{(cp.stderr or cp.stdout)[:800]}")
 
@@ -701,8 +701,8 @@ console.log(JSON.stringify({
 """
     src = tmp / "chips.js"
     src.write_text(harness, encoding="utf-8")
-    cmd = [engine, str(src)] if engine.endswith("node") else [engine, "run", "--quiet", str(src)]
-    cp = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    cmd = [engine, str(src)] if Path(engine).stem.lower() == "node" else [engine, "run", "--quiet", str(src)]
+    cp = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert cp.returncode == 0 and cp.stdout.strip(), \
         f"функция отметки не выполнилась:\n{(cp.stderr or cp.stdout)[:800]}"
     r = json.loads(cp.stdout.strip().splitlines()[-1])
@@ -1176,7 +1176,7 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
     (tmp / "u").mkdir()
     up = make_project(tmp / "u")
     cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_update.py"), str(up), "--apply"],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, cp.stdout[-800:] + cp.stderr[-800:]
     cfg_text = (up / "aurora.config.yaml").read_text(encoding="utf-8")
     assert "trust_statuses: [Закрыто" in cfg_text and "trusted_branches: [" in cfg_text, \

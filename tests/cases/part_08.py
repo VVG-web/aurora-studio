@@ -395,7 +395,7 @@ def test_dev_section_hides_behind_seven_taps(tmp: Path):
     run = next(r for r in dev if r["cmd"] == "dev:qa-run")
     out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"),
                           *run["fixed_flags"], "TS-000-нет-такого"],
-                         cwd=str(KIT), capture_output=True, text=True,
+                         cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace",
                          env={**os.environ, "AURORA_QA_RUNNING": "1"})
     assert out.returncode != 2, f"кнопка «Запустить» уронит команду:\n{out.stderr[:300]}"
     assert "нет" in out.stderr, "неизвестный сценарий должен называться по имени"
@@ -416,11 +416,11 @@ def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
     if not KITCHEN.is_dir():
         return      # кухня разработки не в git: на чистой копии кита (GitHub) реестра нет
     out = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--check"],
-                         cwd=str(KIT), capture_output=True, text=True)
+                         cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert out.returncode == 0, f"реестр QA кита разошёлся:\n{out.stdout}"
 
     lst = subprocess.run([sys.executable, str(KIT / "scripts/dev_qa.py"), "--list"],
-                         cwd=str(KIT), capture_output=True, text=True).stdout
+                         cwd=str(KIT), capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     assert "Кейсов:" in lst and "TS-001" in lst, lst[:400]
     assert "Ни в один сценарий не входят" not in lst, \
         f"есть кейсы, которые не гоняются ни разу:\n{lst[-400:]}"
@@ -437,7 +437,7 @@ def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
     (proj / ".opencode/scripts/dev_qa.py").write_text(
         (KIT / "scripts/dev_qa.py").read_text(encoding="utf-8"), encoding="utf-8")
     r = subprocess.run([sys.executable, ".opencode/scripts/dev_qa.py", "--list"],
-                       cwd=str(proj), capture_output=True, text=True)
+                       cwd=str(proj), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode != 0 and "не кит" in r.stderr, \
         f"QA-контур запустился в проекте:\n{r.stdout}{r.stderr}"
 

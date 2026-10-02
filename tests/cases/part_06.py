@@ -451,7 +451,7 @@ def test_two_writing_runs_do_not_share_one_base(tmp: Path):
     # Процесс, которому нам не дано сигналить, — ЖИВ, а не мёртв. Системный процесс
     # усыновляет любой прогон, чей родитель ушёл; записав его в мёртвые, движок снимал
     # замок и пускал второго писателя в базу.
-    held["pid"] = 1
+    held["pid"] = 4 if os.name == "nt" else 1       # системный процесс; на Windows это «System»
     lock.write_text(_j.dumps(held), encoding="utf-8")
     got_sys, busy_sys = ar.writing_lock(str(root), "distill")
     assert not got_sys, "замок чужого процесса снят: отказ в правах принят за смерть"
@@ -577,7 +577,7 @@ def test_a_stub_is_named_like_a_real_card(tmp: Path):
         encoding="utf-8")
 
     cp = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--stubs", "--apply"],
-                        cwd=root, capture_output=True, text=True)
+                        cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, f"заготовки не завелись:\n{cp.stdout[-400:]}{cp.stderr[-400:]}"
 
     made = {p.name for p in (kb / "Concepts").glob("*.md")}
@@ -591,7 +591,7 @@ def test_a_stub_is_named_like_a_real_card(tmp: Path):
     head = (kb / "Concepts" / "Получение-сальдо-по-Заявителям.md").read_text(encoding="utf-8")
     assert "US-3.6.6" in head, "код документа потерян — ссылка по нему никуда не приведёт"
     lint = subprocess.run([sys.executable, str(KIT / "scripts/kb_lint.py"), "--summary"],
-                          cwd=root, capture_output=True, text=True)
+                          cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert "ошибок 0" in lint.stdout, (
         "заготовка родилась битой: ссылка, ради которой её завели, до неё не доходит\n"
         + lint.stdout[-400:])
@@ -1403,7 +1403,7 @@ def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
         subprocess.run(["git", "add", "-A"], cwd=root, check=True)
         subprocess.run(git + ["commit", "-qm", msg, "--no-verify"], cwd=root, check=True)
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
-                              capture_output=True, text=True).stdout.strip()
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 
     (root / "чисто.md").write_text("маршрут не спотыкается о флаг\n", encoding="utf-8")
     base = commit("основа")
@@ -1412,7 +1412,7 @@ def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
         return subprocess.run(
             [sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"],
             cwd=root, input=f"refs/heads/main {new_} refs/heads/main {old}\n",
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     # 1. Утечка, которая не дожила до итогового дерева: заведена и убрана в диапазоне.
     (root / "утечка.json").write_text('{"url": "https://api.example.com/v1"}\n', encoding="utf-8")

@@ -49,7 +49,7 @@ from aurora_common import KB_ROOT, body, frontmatter, is_placeholder  # noqa: E4
 META = os.path.join(KB_ROOT, "meta")
 VECTORS = os.path.join(META, "embeddings.bin")
 INDEX = os.path.join(META, "embeddings.json")
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 BATCH = 32                 # столько текстов за один запрос: шлюз отвечает ~секунду
 PIECE = 1500               # символов в одном куске карточки
 PIECE_OVERLAP = 200        # нахлёст: мысль, разрезанная границей, найдётся хотя бы раз
@@ -446,13 +446,13 @@ def save_index(model: str, dim: int, cards: dict, out: "array.array", pf) -> Non
         out.tofile(f)
         per_row.tofile(f)
     digest = _digest(tmp)
-    os.replace(tmp, VECTORS)
+    replace_file(tmp, VECTORS)
     tmp = INDEX + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"model": model, "dim": dim, "built": TODAY,
                    "cards": cards, "pf": len(axes), "bin": digest},
                   f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, INDEX)
+    replace_file(tmp, INDEX)
 
 
 def search(query: str, cfg: dict, model: str, limit: int = 40) -> list:

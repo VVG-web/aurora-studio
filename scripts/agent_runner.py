@@ -64,7 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES, fold  # noqa: E402
+from aurora_common import QUOTES, fold, replace_file  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -113,8 +113,8 @@ def prune_runs(runs: Path, task: str) -> int:
         except OSError:
             pass
     return len(old)
-from aurora_common import (local_now, local_view, utc_label, utc_slug,  # noqa: E402
-                           utc_stamp, utc_today)
+from aurora_common import (local_now, local_view, pid_alive, utc_label,  # noqa: E402,F401
+                           utc_slug, utc_stamp, utc_today)
 TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
@@ -204,7 +204,7 @@ SAME_FAIL_LIMIT = 3      # одна и та же команда с теми же
 # ------------------------------------------------------------------ git-чекпойнт
 
 def git(*args: str, cwd: str = ".") -> tuple:
-    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
@@ -279,7 +279,7 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     if not os.path.isfile(path):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
     p = subprocess.run([sys.executable, path, *args], cwd=cwd,
-                       capture_output=True, text=True, timeout=timeout)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": ((p.stdout or "") + (p.stderr or "")).strip(), "refused": ""}
 
@@ -350,27 +350,6 @@ def _bp_flag(args: list, flag: str, default: str = "") -> str:
 
 
 LOCK = os.path.join(".opencode", "state", "agent.lock")
-
-
-def pid_alive(pid: int) -> bool:
-    """Жив ли процесс. Отказ в правах — ЖИВ.
-
-    `os.kill(pid, 0)` отвечает тремя способами: тишиной (жив), `ProcessLookupError`
-    (мёртв) и `PermissionError` (жив, но сигналить ему нам не дано — процесс чужой).
-    Все три — `OSError`, и один общий `except` записывал чужой процесс в мёртвые:
-    замок снимался, и второй пишущий прогон заходил в базу поверх первого. Ровно это и
-    случается с прогоном, чей родитель ушёл, — процесс усыновляет системный, а сигналить
-    ему обычному пользователю нельзя.
-    """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def writing_lock(cwd: str, task: str):
@@ -918,7 +897,7 @@ def place_definition(root: str, term: str, definition: str, came_from: str,
             f'kind: knowledge\n{sources_block(donor_sources or [])}'
             f'created: {TODAY_STR}\nupdated: {TODAY_STR}\n'
             f'built: machine\nrelated: []\n---\n\n# {term}\n\n{line}\n\n{note}\n')
-        return path
+        return path.replace("\\", "/")     # пути движка — в posix-виде, как у `walk_md`
 
     text = open(existing, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
@@ -1644,7 +1623,7 @@ def save_clash_seen(cwd: str, seen: dict) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(seen, f, ensure_ascii=False, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+    replace_file(tmp, path)
 
 
 def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
@@ -2998,7 +2977,7 @@ def _pick(ranked: list, limit: int, skip: str, AC, stubs: bool = True) -> list:
         stub = AC.is_placeholder(c.fm, c.text)
         if stub and not stubs:
             continue
-        section = os.path.relpath(os.path.dirname(c.path), AC.KB_ROOT).split(os.sep)[0]
+        section = AC.section_of(c.path)
         brief = (c.summary or "")[:CAND_SUMMARY]
         if stub:
             # Кто на неё ссылается — единственное, по чему видно, в каком смысле имя

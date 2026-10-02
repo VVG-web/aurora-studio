@@ -2612,7 +2612,7 @@ def git_dirty(root: str) -> list:
     """Отслеживаемые файлы базы с незакоммиченными правками (неотслеживаемые не мешают)."""
     try:
         out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--", root],
-                             capture_output=True, text=True, timeout=60)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except Exception:
         return []
     if out.returncode != 0:

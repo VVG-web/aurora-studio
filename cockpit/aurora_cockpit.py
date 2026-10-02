@@ -33,6 +33,13 @@ import signal
 import subprocess
 import tempfile
 import sys
+for _s in (sys.stdin, sys.stdout, sys.stderr):
+    # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
+    # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -48,7 +55,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
-                           utc_slug, utc_stamp, yaml_scalar)
+                           replace_file, utc_slug, utc_stamp, yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
@@ -498,7 +505,7 @@ def file_changed_since_publish(project: str, rel: str, fm: dict) -> bool:
     if not commit:
         return False
     r = subprocess.run(["git", "-C", project, "diff", "--quiet", commit, "--", rel],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.returncode == 1        # 0 — не менялся, 1 — менялся, прочее — не выяснили
 
 
@@ -532,7 +539,7 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(text)
-        os.replace(tmp, full)
+        replace_file(tmp, full)
     except OSError as e:
         try:
             os.remove(tmp)
@@ -561,7 +568,7 @@ def lint_one(project: str, rel: str) -> dict:
     # записан. Человек видел ошибку после успешного сохранения и сохранял снова.
     try:
         r = subprocess.run([sys.executable, script, "--only", rel],
-                           cwd=project, capture_output=True, text=True, timeout=20)
+                           cwd=project, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except subprocess.TimeoutExpired:
         return {"rc": None, "lines": ["линтер не ответил за 20 секунд — файл сохранён, "
                                       "проверьте базу отдельно: kb:lint"]}
@@ -622,7 +629,7 @@ def corrections_state(project: str) -> dict:
         return {"count": 0, "ask": 0, "items": []}
     try:
         r = subprocess.run([sys.executable, script, "--check"], cwd=project,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     except (OSError, subprocess.SubprocessError):
         return {"count": 0, "ask": 0, "items": []}
     items = []
@@ -654,7 +661,7 @@ def graph_state(project: str, rebuild: bool = False) -> dict:
         try:
             r = subprocess.run([sys.executable, script, "--cards-json", path,
                                 "--allow-dirty"],
-                               cwd=project, capture_output=True, text=True, timeout=600)
+                               cwd=project, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         except (OSError, subprocess.SubprocessError) as e:
             return f"граф не посчитался: {e}"
         if os.path.isfile(path) and os.path.getmtime(path) > before:
@@ -761,7 +768,7 @@ def git_out(project: str, *args, timeout: int = 60) -> tuple:
     """(код, stdout, stderr) от git в проекте. Ни один вызов не идёт через оболочку."""
     try:
         r = subprocess.run(["git", "-C", project, *args], capture_output=True,
-                           text=True, timeout=timeout)
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
     except (OSError, subprocess.SubprocessError) as e:
         return 1, "", str(e)
@@ -852,7 +859,7 @@ def git_commit(project: str, message: str, paths: list = None,
         message += "\n\n[храповик пропущен из панели]"
     try:
         r = subprocess.run(["git", "-C", project, "commit", "-m", message],
-                           capture_output=True, text=True, timeout=300, env=env)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, env=env)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": str(e)}
     tail = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
@@ -944,7 +951,7 @@ def about() -> dict:
     def git(*args, default=""):
         try:
             r = subprocess.run(["git", "-C", KIT, *args], capture_output=True,
-                               text=True, timeout=20)
+                               text=True, encoding="utf-8", errors="replace", timeout=20)
             return r.stdout.strip() if r.returncode == 0 else default
         except Exception:
             return default
@@ -975,7 +982,7 @@ INSTALL_MANIFEST = ".aurora-install.json"   # что поставил архив
 
 
 def _kit_git(*args, timeout: int = 120):
-    return subprocess.run(["git", "-C", KIT, *args], capture_output=True, text=True,
+    return subprocess.run(["git", "-C", KIT, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
                           timeout=timeout)
 
 
@@ -1180,7 +1187,7 @@ def _update_archive(st: dict) -> dict:
             f.write(data)
         if (files[rel].external_attr >> 16) & 0o111:
             os.chmod(tmp, 0o755)
-        os.replace(tmp, dst)
+        replace_file(tmp, dst)
     # Убираем только то, что прошлый архив поставил сам, а новый уже не везёт. Без списка
     # прошлой поставки не убираем ничего: чужой файл в папке кита — не наш.
     for rel in old:
@@ -1354,7 +1361,7 @@ def mcp_write(servers: dict, project: str = "") -> dict:
             f.write(json.dumps({"mcpServers": servers}, ensure_ascii=False, indent=2) + "\n")
         if not project:
             os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     except OSError as e:
         return {"error": f"не удалось записать {label}: {e}"}
     return {"ok": True, "path": path, "count": len(servers)}
@@ -1976,7 +1983,7 @@ def update_all_projects(roots: list, apply: bool) -> dict:
         args = [sys.executable, os.path.join(KIT, "scripts", "aurora_update.py"), p["path"]]
         if apply:
             args.append("--apply")
-        cp = subprocess.run(args, capture_output=True, text=True, timeout=600)
+        cp = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         ok = cp.returncode == 0
         done += ok
         failed += not ok
@@ -2017,7 +2024,7 @@ def kit_version() -> str:
 def git_branch(path: str) -> str:
     try:
         out = subprocess.run(["git", "-C", path, "branch", "--show-current"],
-                             capture_output=True, text=True, timeout=15)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         return out.stdout.strip()
     except Exception:
         return ""
@@ -2026,7 +2033,7 @@ def git_branch(path: str) -> str:
 def git_dirty_count(path: str) -> int:
     try:
         out = subprocess.run(["git", "-C", path, "status", "--porcelain"],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         return len([l for l in out.stdout.splitlines() if l.strip()
                     and "__pycache__" not in l])
     except Exception:
@@ -2068,7 +2075,7 @@ def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tu
         return 127, f"нет скрипта {script}"
     try:
         p = subprocess.run([sys.executable, path, *args], cwd=project,
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired:
         return 124, f"{script}: превышено время ожидания {timeout} с"
@@ -2097,7 +2104,7 @@ def report_state(project: str) -> dict:
     p = None
     try:
         p = subprocess.run([sys.executable, "-c", probe, pkg], cwd=project,
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         cfg = json.loads(p.stdout[p.stdout.index("{"):p.stdout.rindex("}") + 1])
     except Exception as e:
         # Разбор чужого вывода без самого вывода — это «substring not found» и тупик:
@@ -2517,7 +2524,7 @@ def who(project: str) -> str:
     """Имя из git этого проекта — тем же, кем подписаны коммиты рядом."""
     try:
         p = subprocess.run(["git", "config", "user.name"], cwd=project,
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
         if p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip()
     except Exception:
@@ -2961,10 +2968,10 @@ def card_text(project: str, rel: str) -> dict:
     text = read_text(path, limit=200_000)
     # Что изменилось с момента приёмки: по хэшу этого не показать, а git помнит.
     diff = subprocess.run(["git", "-C", project, "diff", "-U2", "--", rel],
-                          capture_output=True, text=True, timeout=60).stdout
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60).stdout
     if not diff.strip():
         diff = subprocess.run(["git", "-C", project, "diff", "-U2", "HEAD~1", "--", rel],
-                              capture_output=True, text=True, timeout=60).stdout
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60).stdout
     return {"path": rel, "text": text[:120_000], "diff": diff[:20_000]}
 
 
@@ -3142,7 +3149,7 @@ def agent_ping(project: str) -> dict:
     script = script_path(project or KIT, "agent_core.py")
     try:
         p = subprocess.run([sys.executable, script, "--ping", "--json"],
-                           cwd=project or KIT, capture_output=True, text=True, timeout=180)
+                           cwd=project or KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
         return json.loads(p.stdout.strip().splitlines()[-1])
     except Exception as e:  # noqa: BLE001
         return {"error": f"ping не выполнен: {type(e).__name__}: {e}"}
@@ -3152,7 +3159,7 @@ def agent_venv_install() -> dict:
     """Поставить/обновить Pydantic AI. Синхронно: локальная панель, пользователь ждёт."""
     try:
         p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "agent_core.py"),
-                            "--venv-install"], capture_output=True, text=True, timeout=900)
+                            "--venv-install"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         CACHE.pop("env", None)      # строка в «Установке» обязана обновиться
         return {"ok": p.returncode == 0, "log": (p.stdout + p.stderr).strip()[-600:]}
     except Exception as e:  # noqa: BLE001
@@ -3245,7 +3252,7 @@ def start_job(project: str, cmd: str, extra: list) -> str:
             mark_running(job["id"], cmd, project, True)
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, bufsize=1)
+                                 text=True, encoding="utf-8", errors="replace", bufsize=1)
             job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
             for line in p.stdout:
                 with JOBS_LOCK:
@@ -4106,7 +4113,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p = subprocess.run([sys.executable, path, "--target", project, "--json", "-"],
                                input=json.dumps(answers, ensure_ascii=False),
-                               capture_output=True, text=True, timeout=120)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
         except Exception as e:
             return {"error": str(e)}
         if p.returncode != 0:
@@ -4165,7 +4172,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             os.makedirs(target, exist_ok=True)
             p = subprocess.run([sys.executable, *args], capture_output=True,
-                               text=True, timeout=300)
+                               text=True, encoding="utf-8", errors="replace", timeout=300)
         except Exception as e:
             return {"error": str(e)}
         if p.returncode != 0:
