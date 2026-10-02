@@ -141,10 +141,13 @@ _FILE_CACHE: dict = {}
 
 
 def _stamp(path: str):
-    """Отпечаток файла: (размер, время правки). Нет файла — None."""
+    """Отпечаток файла: (размер, время правки, inode). Нет файла — None.
+
+    Файлы подменяются целиком (`os.replace`), поэтому inode меняется, даже когда размер тот же
+    и файловая система не успела сдвинуть время правки."""
     try:
         st = os.stat(path)
-        return (st.st_size, st.st_mtime_ns)
+        return (st.st_size, st.st_mtime_ns, st.st_ino)
     except OSError:
         return None
 
@@ -160,9 +163,29 @@ def _cached(path: str, kind: str, make):
     return value
 
 
+def _digest(path: str) -> str:
+    """Отпечаток содержимого файла векторов; нет файла — пусто."""
+    h = hashlib.md5()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
 def load_index() -> dict:
-    """{имя: {hash, row}} плюс размерность и модель. Битый индекс — просто пустой."""
-    return _cached(INDEX, "index", _read_index)
+    """{имя: {hash, row}} плюс размерность и модель. Битый индекс — просто пустой.
+
+    Карта хранит отпечаток файла векторов, с которым записана. Обрыв между подменой двух
+    файлов оставлял новые вектора при старой карте: число строк то же, порядок другой, и
+    `kb:embed` доверял старым хешам. Расхождение отпечатка — индекс чужой, то есть пустой."""
+    idx = _cached(INDEX, "index", _read_index)
+    want = idx.get("bin")
+    if want and _cached(VECTORS, "digest", lambda: _digest(VECTORS)) != want:
+        return {"model": "", "dim": 0, "built": "", "cards": {}}
+    return idx
 
 
 def _read_index() -> dict:
@@ -422,11 +445,12 @@ def save_index(model: str, dim: int, cards: dict, out: "array.array", pf) -> Non
             f.write(struct.pack(f"<{len(flat)}d", *flat))
         out.tofile(f)
         per_row.tofile(f)
+    digest = _digest(tmp)
     os.replace(tmp, VECTORS)
     tmp = INDEX + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"model": model, "dim": dim, "built": TODAY,
-                   "cards": cards, "pf": len(axes)},
+                   "cards": cards, "pf": len(axes), "bin": digest},
                   f, ensure_ascii=False, indent=1, sort_keys=True)
     os.replace(tmp, INDEX)
 
