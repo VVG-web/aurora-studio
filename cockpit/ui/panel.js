@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.149.4";
+const UI_VERSION = "1.149.5";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3405,7 +3405,8 @@ function openMcpCard(scope, name, seed){
     const r = await mcpPost(scope, {action:"save_server", name: newName,
                                     rename_from: seed ? "" : name, spec});
     if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
-    toast(t(scope === "project" ? "mcp.saved" : "mcpk.saved", {n: r.count}), "ok");
+    toast(r.unchanged ? t("mcp.unchanged")
+          : t(scope === "project" ? "mcp.saved" : "mcpk.saved", {n: r.count}), "ok");
     done();
   };
   const title = ro ? t("mcp.ro_title", {name})
@@ -3768,7 +3769,7 @@ async function renderProject(){
       saveButton("yaml", t("dirty.yaml"), t("yaml.save"), async ()=>{
         const r = await api("/api/config",{method:"POST",
           body:JSON.stringify({project:S.project.path, text: ta.value})});
-        if (r.ok){ toast(t("yaml.saved", {backup: r.backup}));
+        if (r.ok){ toast(r.unchanged ? t("yaml.unchanged") : t("yaml.saved", {backup: r.backup}));
           setDirty("yaml", t("dirty.yaml"), false);
           S.state = await api("/api/state");
           S.project = S.state.projects.find(p=>p.path===S.project.path) || S.project;
