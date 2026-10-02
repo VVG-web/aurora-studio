@@ -179,7 +179,8 @@ def cmd_gap(base: str) -> int:
         print(f"Со времени {base} изменений в движке нет — покрывать нечего.")
         return 0
     cases, scen = docs(CASES), docs(SCEN)
-    tests = (KIT / "tests" / "run_tests.py").read_text(encoding="utf-8", errors="ignore")
+    tests = "\n".join(f.read_text(encoding="utf-8", errors="ignore")
+                      for f in sorted((KIT / "tests").rglob("*.py")))
 
     print(f"# Покрытие изменений — {TODAY}\n")
     print(f"База сравнения: {base} · изменённых файлов: {len(files)}\n")
@@ -234,7 +235,7 @@ def cmd_cover(base: str) -> int:
 
 2. По каждому утверждению реши, чем оно закрывается:
    • **автотест** — если поведение воспроизводится за секунды на временной папке.
-     Это предпочтительный вариант ВСЕГДА. Допиши тест в tests/run_tests.py рядом с
+     Это предпочтительный вариант ВСЕГДА. Допиши тест в tests/cases/ (каркас — tests/harness.py) рядом с
      соседями по теме, прогони весь набор, добейся зелёного.
    • **тест-кейс QA** — только если автотестом нельзя: нужен живой Confluence или Jira,
      браузер, база в тысячу карточек, замер времени, оценка читаемости вывода.
