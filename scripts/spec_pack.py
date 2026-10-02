@@ -41,7 +41,7 @@ def anchor(name: str) -> str:
 
 def load_cards() -> dict:
     cards = {}
-    for path in walk_md(KB_ROOT, skip_service=True):
+    for path in walk_md(KB_ROOT, skip_service=True, skip_archive=True):
         text = read_card_text(path)
         if text is None:
             continue

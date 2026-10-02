@@ -1748,3 +1748,53 @@ def test_one_status_scale_orders_merges_indexes_and_maps(tmp: Path):
              if "[[Бумага|" in l or "[[Аргумент|" in l]
     assert any("[[Бумага|" in l and "не проверено" not in l for l in lines), lines
     assert any("[[Аргумент|" in l and "не проверено" in l for l in lines), lines
+
+
+@test
+def test_mcp_search_survives_parallel_calls_and_ignores_the_archive(tmp: Path):
+    """Параллельные `kb_search` не мешают друг другу, а снятое в `_archive` не находится.
+
+    С 1.147.7 вызовы идут по потокам, а поиск меняет каталог процесса: первый закончивший
+    возвращал его на место под ногами у остальных, и шестая часть вызовов отвечала
+    «база ничего не знает». Архив же (слитые двойники, заглушки) читался как знание.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Бумага.md", "Зебракадабра — понятие, которое знает база.", status="knowledge")
+    arch = root / "AuroraKnowledgeDB" / "_archive"
+    arch.mkdir(exist_ok=True)
+    (arch / "Старый-двойник.md").write_text(
+        '---\ntitle: "Старый двойник"\ntype: concept\nstatus: knowledge\n---\n\n'
+        "Зебракадабра: слитая и снятая карточка.\n", encoding="utf-8")
+
+    calls = 48
+    lines = [json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}})]
+    lines += [json.dumps({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {
+        "name": "kb_search", "arguments": {"query": "зебракадабра", "limit": 5}}})
+        for i in range(1, calls + 1)]
+    lines.append(json.dumps({"jsonrpc": "2.0", "id": 900, "method": "tools/call", "params": {
+        "name": "kb_card", "arguments": {"name": "Старый-двойник"}}}))
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_mcp.py"), "--project", str(root)],
+                        input="\n".join(lines) + "\n", capture_output=True, text=True,
+                        timeout=180, cwd=str(tmp))
+    answers = {}
+    for line in cp.stdout.splitlines():
+        msg = json.loads(line)
+        if msg["id"] not in (0,):
+            answers[msg["id"]] = msg["result"]["content"][0]["text"]
+    searches = [t for i, t in answers.items() if i != 900]
+    assert len(searches) == calls, f"ответили не все: {len(searches)} из {calls}\n{cp.stderr[-500:]}"
+    bad = [t for t in searches if not t.startswith("Найдено карточек: 1")]
+    assert not bad, f"{len(bad)} из {calls} параллельных поисков ответили не то: {bad[0][:200]}"
+    assert all("Бумага" in t and "Старый-двойник" not in t for t in searches), \
+        "в выдаче архивная карточка"
+    assert "в базе нет" in answers[900], "kb_card отдала карточку из архива"
+
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        P = importlib.import_module("ctx_pack")
+        assert "Старый-двойник" not in P.load_cards(), "ctx_pack читает архив"
+    finally:
+        os.chdir(old)
