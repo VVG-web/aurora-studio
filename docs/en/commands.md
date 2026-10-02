@@ -1,6 +1,6 @@
 # Command reference
 
-A short English reference of every command in the registry (`commands.txt`) for engine version **1.147.1**. The complete
+A short English reference of every command in the registry (`commands.txt`) for engine version **1.147.19**. The complete
 reference with modifiers, taken live from the scripts' `--help`, is the generated Russian [../commands.md](../commands.md), or
 `python3 aurora.py list <project>` in a terminal. Русская версия: [../commands.md](../commands.md).
 
