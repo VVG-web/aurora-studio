@@ -293,3 +293,52 @@ def test_the_panel_does_not_start_the_same_command_twice_at_once(tmp: Path):
         ck.JOBS.clear()
         ck.command_by_name, ck.script_path, ck.write_runlog, ck.mark_running = saved
         restore()
+
+
+@test
+def test_setup_wizard_without_a_terminal_ends_cleanly(tmp: Path):
+    """Мастер настройки без терминала не падает трассировкой: конец ввода — это «оставить как есть».
+
+    Запущенный из скрипта, конвейера или закрытым `stdin`, мастер читал `input()` и падал
+    с `EOFError` на первом вопросе — человек видел страницу трассировки вместо слов. Конец
+    ввода теперь значит то же, что пустая строка: оставить текущее значение и перейти
+    к следующему; Ctrl+C говорит, что ничего не записано, и выходит кодом 130.
+    """
+    root = make_project(tmp)
+    (root / "aurora.config.yaml").write_text(
+        'project:\n  name: "Старое имя"\n  slug: old\natlassian:\n  confluence:\n    space: SP\n'
+        '  jira:\n    project_key: KEY\n', encoding="utf-8")
+    script = str(root / ".opencode/scripts/aurora_setup.py")
+
+    def wizard(stdin_text):
+        return subprocess.run([sys.executable, script, "--target", str(root)],
+                              input=stdin_text, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+    cp = wizard("")
+    assert cp.returncode == 0, f"мастер упал без ввода:\n{cp.stderr[-400:]}"
+    assert "Traceback" not in cp.stderr and "EOFError" not in cp.stderr, cp.stderr[-300:]
+    assert "Старое имя" in (root / "aurora.config.yaml").read_text(encoding="utf-8"), \
+        "конец ввода изменил значение, которое надо было оставить"
+    assert "ввод закончился" in cp.stdout, "человеку не сказано, что остальное оставлено как было"
+
+    cp = wizard("Новое имя\n")                     # один ответ, дальше ввода нет
+    assert cp.returncode == 0 and "Новое имя" in (root / "aurora.config.yaml").read_text(encoding="utf-8"), \
+        f"ответ до конца ввода не записан:\n{cp.stdout[-300:]}{cp.stderr[-300:]}"
+
+    sys.path.insert(0, str(SCRIPTS))
+    import builtins
+    import importlib
+    S = importlib.import_module("aurora_setup")
+    before = (root / "aurora.config.yaml").read_text(encoding="utf-8")
+    real_input, real_argv = builtins.input, sys.argv
+
+    def interrupted(*_a):
+        raise KeyboardInterrupt
+    try:
+        builtins.input = interrupted
+        sys.argv = ["aurora_setup.py", "--target", str(root)]
+        rc = S.main()
+    finally:
+        builtins.input, sys.argv = real_input, real_argv
+    assert rc == 130, f"Ctrl+C: ждали код 130, получили {rc}"
+    assert (root / "aurora.config.yaml").read_text(encoding="utf-8") == before, "прерванный мастер что-то записал"

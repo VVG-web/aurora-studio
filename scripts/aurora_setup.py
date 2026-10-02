@@ -483,6 +483,24 @@ def run_answers(target: Path, answers: dict) -> int:
     return 0
 
 
+INPUT_ENDED = False
+
+
+def read_line(prompt: str) -> str:
+    """Строка ответа. Конец ввода — не авария: это пустая строка, то есть «оставить как есть».
+
+    Запущенный из скрипта, конвейера или с закрытым `stdin`, мастер падал с `EOFError` на первом
+    же вопросе и показывал человеку трассировку.
+    """
+    global INPUT_ENDED
+    try:
+        return input(prompt)
+    except EOFError:
+        INPUT_ENDED = True
+        print()
+        return ""
+
+
 def run(target: Path, interactive: bool):
     cfg_path = target / "aurora.config.yaml"
     c = read_config(cfg_path)
@@ -494,7 +512,7 @@ def run(target: Path, interactive: bool):
     def ask(prompt, cur, allow_empty=True):
         if not interactive:
             return cur
-        raw = input(f"  {prompt} [{cur}]: ").strip()
+        raw = read_line(f"  {prompt} [{cur}]: ").strip()
         if not raw:
             return cur
         return raw
@@ -527,7 +545,7 @@ def run(target: Path, interactive: bool):
             add_more = True
         while add_more:
             n = len(c["sync_roots"]) + 1
-            pid = input(f"    {n}) page_id (Enter — закончить): ").strip()
+            pid = read_line(f"    {n}) page_id (Enter — закончить): ").strip()
             if not pid:
                 break
             if not pid.isdigit():
@@ -539,7 +557,7 @@ def run(target: Path, interactive: bool):
                 else:
                     print("       нужен номер страницы из URL (…viewpage.action?pageId=NNN)")
                     continue
-            title = input("       название (Enter — по номеру): ").strip() or f"page {pid}"
+            title = read_line("       название (Enter — по номеру): ").strip() or f"page {pid}"
             # Галочка «доверять»: раздел доверен целиком, без задач и историй. Ставят её
             # справочным разделам — логической модели, описанию форматов.
             trusted = ask("       доверять разделу целиком, без задач? [y/N]", "n").lower()
@@ -573,6 +591,9 @@ def run(target: Path, interactive: bool):
     reconcile_sync_skills(target, c["slug"])
     write_config(cfg_path, c)
     print(f"\n✅ Записано: {cfg_path}")
+    if INPUT_ENDED:
+        print("   (ввод закончился — остальные значения оставлены как были; "
+              "изменить позже: запустите скрипт снова)")
     print(f"   Confluence space {c['conf_space']} · {len(c['sync_roots'])} корневых страниц · Jira {c['jira_key']}")
     print("\nДальше:")
     print("  • проверка:  в панели `kit:doctor`")
@@ -603,7 +624,12 @@ def main():
             print(f"aurora_setup: не разобран JSON с ответами: {e}", file=sys.stderr)
             return 2
         return run_answers(target, answers)
-    return run(target, interactive=not a.non_interactive)
+    try:
+        return run(target, interactive=not a.non_interactive)
+    except KeyboardInterrupt:
+        # Конфиг пишется в самом конце, поэтому прерванный мастер не оставляет ничего.
+        print("\nПрервано — ничего не записано.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
