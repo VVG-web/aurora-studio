@@ -128,6 +128,9 @@ your-project/
 
 ## Documentation
 
+Short answers, one question per page, are in the **[wiki](wiki/README.md)** ([по-русски](wiki/ru/README.md)) —
+read right here on GitHub. The full documents:
+
 | For | Read |
 |---|---|
 | Everyone, first | [Overview](docs/en/readme/01-overview.md) → [Quick start](docs/en/readme/02-quickstart.md) |
