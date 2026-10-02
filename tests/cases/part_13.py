@@ -1854,3 +1854,57 @@ def test_generated_files_are_not_rewritten_for_the_date_alone(tmp: Path):
     run("kb_index.py", "--root-index", "--apply", cwd=root, expect_rc=0)
     for p, old in stale.items():
         assert p.read_text(encoding="utf-8") == old, f"{p.name} переписан ради даты"
+
+
+@test
+def test_clashes_remember_what_they_have_examined(tmp: Path):
+    """`agent:clashes` не разбирает заново то, что уже посмотрел.
+
+    Отметка «соседей смотрели» ставилась после каждой пары и перезаписывалась более
+    старой датой: карточка с двумя изменившимися соседями возвращала в очередь первого.
+    А группы «об одном предмете» по совпадению текста не отмечались вовсе — каждый
+    прогон отправлял их к модели заново и каждый раз не находил противоречий.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Ссылающаяся.md", status="draft", kind="knowledge",
+         distilled="2026-09-01", updated="2026-09-01",
+         body="По правилам из [[Сосед-1]] и [[Сосед-2]].")
+    card(root, "Concepts/Сосед-1.md", status="draft", kind="knowledge",
+         distilled="2026-09-04", updated="2026-09-04", body="Правило первое изменилось.")
+    card(root, "Concepts/Сосед-2.md", status="draft", kind="knowledge",
+         distilled="2026-09-02", updated="2026-09-02", body="Правило второе изменилось.")
+    card(root, "Concepts/Срок-А.md", status="draft", kind="knowledge",
+         body="Срок подтверждения — пять дней с даты подачи.")
+    card(root, "Concepts/Срок-Б.md", status="draft", kind="knowledge",
+         body="Срок подтверждения — пять рабочих дней с даты подачи.")
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+    calls = []
+
+    def clean(c, role, messages, **kw):
+        calls.append(1)
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": json.dumps({"clashes": []})}
+    R.clash_groups = lambda cwd, cfg, limit=0: [["Срок-А", "Срок-Б"]]
+    cwd = str(root)
+
+    assert len(R.neighbours_behind(cwd)) == 2
+    R.run_clashes(cfg, cwd, call=clean)
+    assert len(calls) == 3, f"первый прогон: ждали 2 пары и 1 группу, было {len(calls)}"
+    stamp = (root / "AuroraKnowledgeDB/Concepts/Ссылающаяся.md").read_text(encoding="utf-8")
+    assert 'neighbours: "2026-09-04"' in stamp or "neighbours: 2026-09-04" in stamp, \
+        f"отметка не по самой новой дате соседей:\n{stamp[:300]}"
+    assert R.neighbours_behind(cwd) == [], "разобранные пары вернулись в очередь"
+
+    calls.clear()
+    R.run_clashes(cfg, cwd, call=clean)
+    assert calls == [], f"второй прогон снова пошёл к модели: {len(calls)} вызовов"
+
+    p = root / "AuroraKnowledgeDB/Concepts/Срок-Б.md"
+    p.write_text(p.read_text(encoding="utf-8").replace("рабочих", "календарных"),
+                 encoding="utf-8")
+    R.run_clashes(cfg, cwd, call=clean)
+    assert len(calls) == 1, "изменился текст группы, а её не посмотрели снова"

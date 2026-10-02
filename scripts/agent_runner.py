@@ -1581,27 +1581,70 @@ def neighbours_behind(cwd: str) -> list:
     return out
 
 
-def neighbour_stamp(cwd: str, stem: str) -> str:
+def card_paths(cwd: str) -> dict:
+    """{имя карточки: путь} по живой базе, без архива — один обход на весь прогон."""
+    from aurora_common import KB_ROOT, walk_md
+    return {os.path.basename(p)[:-3]: p
+            for p in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True)}
+
+
+def neighbour_stamp(cwd: str, stem: str, paths: dict | None = None) -> str:
     """Дата тезиса соседа — до неё карточка считается сверенной."""
-    from aurora_common import KB_ROOT, frontmatter, walk_md
-    for path in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
-        if os.path.basename(path)[:-3] == stem:
-            fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
-            return (fm.get("distilled") or "").strip().strip('"')
-    return ""
+    from aurora_common import frontmatter
+    path = (paths if paths is not None else card_paths(cwd)).get(stem)
+    if not path:
+        return ""
+    fm = frontmatter(open(path, encoding="utf-8", errors="ignore").read())
+    return (fm.get("distilled") or "").strip().strip('"')
 
 
-def mark_neighbours(cwd: str, stem: str, upto: str) -> None:
-    """Отметить, до какой даты тезисов соседей карточку уже сверяли."""
-    from aurora_common import KB_ROOT, walk_md, with_fields
-    if not upto:
+def mark_neighbours(cwd: str, stem: str, upto: str, paths: dict | None = None) -> None:
+    """Отметить, до какой даты тезисов соседей карточку уже сверяли.
+
+    Отметка только растёт: старая дата поверх новой вернула бы в очередь соседей,
+    которых уже разобрали.
+    """
+    from aurora_common import frontmatter, with_fields
+    path = (paths if paths is not None else card_paths(cwd)).get(stem)
+    if not path or not upto:
         return
-    for path in walk_md(os.path.join(cwd, KB_ROOT), skip_service=True, skip_archive=True):
-        if os.path.basename(path)[:-3] != stem:
-            continue
-        text = open(path, encoding="utf-8", errors="ignore").read()
-        open(path, "w", encoding="utf-8").write(with_fields(text, {"neighbours": upto}))
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    if (frontmatter(text).get("neighbours") or "").strip().strip('"') >= upto:
         return
+    open(path, "w", encoding="utf-8").write(with_fields(text, {"neighbours": upto}))
+
+
+CLASH_SEEN = os.path.join("AuroraKnowledgeDB", "meta", "clash-seen.json")
+
+
+def clash_print(cwd: str, group: list) -> str:
+    """Отпечаток группы: имена и тела карточек. Изменился текст — группу пора смотреть снова."""
+    import build_plan as BP
+    from aurora_common import body_hash, card_body
+    parts = []
+    for name in group[:8]:
+        path = BP.find_card(name, cwd)
+        text = open(path, encoding="utf-8", errors="ignore").read() if path else ""
+        parts.append(f"{name}:{body_hash(card_body(text))}")
+    return hashlib.md5("\n".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def load_clash_seen(cwd: str) -> dict:
+    try:
+        with open(os.path.join(cwd, CLASH_SEEN), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_clash_seen(cwd: str, seen: dict) -> None:
+    path = os.path.join(cwd, CLASH_SEEN)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(seen, f, ensure_ascii=False, indent=1, sort_keys=True)
+    os.replace(tmp, path)
 
 
 def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
@@ -1680,12 +1723,25 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
     # расхождение уже вероятно, а групп по совпадению текста в базе тысячи, и до соседей
     # прогон доходил бы через раз. Дубликаты между двумя источниками пар отсеиваем.
     behind = neighbours_behind(cwd)
-    groups = behind + [g for g in clash_groups(cwd, cfg, limit)
-                       if sorted(g) not in [sorted(b) for b in behind]]
+    behind_keys = {tuple(sorted(b)) for b in behind}
+    text_groups = [g for g in clash_groups(cwd, cfg) if tuple(sorted(g)) not in behind_keys]
+    # Группу, в которой модель уже не нашла противоречий, повторно не разбираем, пока не
+    # изменился текст её карточек: «посмотрели и разошлись» — результат, и его записывают.
+    seen = load_clash_seen(cwd)
+    prints = {tuple(g): clash_print(cwd, g) for g in text_groups}
+    fresh = [g for g in text_groups if seen.get("|".join(sorted(g))) != prints[tuple(g)]]
+    groups = behind + fresh
     if limit:
         groups = groups[:limit]
-    print(f"Пар «сосед изменился»: {len(behind)} · всего групп: {len(groups)} · "
-          f"бюджет {cfg['budget_min']} мин", flush=True)
+    print(f"Пар «сосед изменился»: {len(behind)} · групп по тексту: {len(fresh)} "
+          f"(уже разобрано: {len(text_groups) - len(fresh)}) · бюджет {cfg['budget_min']} мин",
+          flush=True)
+    # Отметка «соседей смотрели» ставится карточке один раз, когда разобраны ВСЕ её пары, и
+    # по самой новой дате соседей: пара за парой она бы опускалась на более старую дату.
+    left, stamps, failed = {}, {}, set()
+    for g in behind:
+        left[g[0]] = left.get(g[0], 0) + 1
+    paths = card_paths(cwd)
     steps = []
     for i, g in enumerate(groups, 1):
         if time.time() > budget:
@@ -1695,12 +1751,23 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
             break
         s = solve_clash(cfg, cwd, g, call, deadline=budget)
         steps.append(s)
-        # Пару посмотрели — записываем это, чем бы ни кончилось. Иначе те же 134 пары
-        # уходят к модели при каждом прогоне и каждый раз не находят противоречия.
-        if s["status"] not in ("сбой", "стоп") and len(g) == 2 and g in behind:
-            mark_neighbours(cwd, g[0], neighbour_stamp(cwd, g[1]))
+        done = s["status"] not in ("сбой", "стоп")
+        if len(g) == 2 and g in behind:
+            if done:
+                stamps.setdefault(g[0], []).append(neighbour_stamp(cwd, g[1], paths))
+                left[g[0]] -= 1
+                if left[g[0]] == 0 and g[0] not in failed:
+                    mark_neighbours(cwd, g[0], max(stamps[g[0]]), paths)
+            else:
+                failed.add(g[0])
+        elif done and s["status"] == "чисто":
+            seen["|".join(sorted(g))] = prints[tuple(g)]
         print(f"  [{i}/{len(groups)}] {', '.join(g[:3])} → "
               + (f"споров {len(s['clashes'])}" if s["clashes"] else s["status"]), flush=True)
+    live = {"|".join(sorted(g)) for g in text_groups}
+    seen = {k: v for k, v in seen.items() if k in live}
+    if seen or os.path.isfile(os.path.join(cwd, CLASH_SEEN)):
+        save_clash_seen(cwd, seen)
     found = sum(len(s["clashes"]) for s in steps)
     return {"steps": steps, "groups": len(groups), "found": found,
             "seconds": round(time.time() - started, 1)}
