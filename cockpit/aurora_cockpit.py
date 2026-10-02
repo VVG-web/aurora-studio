@@ -879,17 +879,53 @@ def localized_extras(state: dict, lang: str) -> dict:
 
 
 def localized_sources(data: dict, lang: str) -> dict:
-    """Модули источников: название и описание коннектора — из его перевода, если он есть."""
-    tr = data_catalogue(lang).get("connectors") or {}
-    if not tr:
+    """Модули источников: название и описание коннектора — из его перевода, если он есть.
+
+    Не только они: манифест несёт и пояснения полей настройки, способа входа и роли в базе
+    (`settings[].what`, `auth.what`, `role_what`). Их перевод — по самому русскому тексту,
+    как у маршрутов: одна фраза встречается у нескольких коннекторов.
+    """
+    cat = data_catalogue(lang)
+    tr = cat.get("connectors") or {}
+    texts = cat.get("connector_texts") or {}
+    if not tr and not texts:
         return data
+
+    def say(text):
+        return texts.get(text) or text
 
     def one(m):
         t = tr.get(m.get("id") or m.get("module") or "") or {}
-        return {**m, "title": t.get("title") or m.get("title"), "what": t.get("what") or m.get("what")}
+        out = {**m, "title": t.get("title") or m.get("title"), "what": t.get("what") or m.get("what")}
+        if m.get("role_what"):
+            out["role_what"] = say(m["role_what"])
+        if isinstance(m.get("auth"), dict) and m["auth"].get("what"):
+            out["auth"] = {**m["auth"], "what": say(m["auth"]["what"])}
+        if isinstance(m.get("settings"), list):
+            out["settings"] = [{**s, "what": say(s["what"])} if isinstance(s, dict) and s.get("what") else s
+                               for s in m["settings"]]
+        return out
     return {**data, "installed": [one(m) for m in data.get("installed", [])],
             "instances": [({**i, "title": (tr.get(i.get("module") or "") or {}).get("title")
                             or i.get("title")}) for i in data.get("instances", [])]}
+
+
+def localized_kinds(data: dict, lang: str) -> dict:
+    """Реестр видов артефактов: названия видов, которые дал движок, — на языке интерфейса.
+
+    Название вида, заведённое человеком в конфиге проекта, не трогается: переводится только то,
+    что совпадает с названием из движка (`make_kinds.KNOWN`) — по идентификатору вида.
+    """
+    tr = data_catalogue(lang).get("kinds") or {}
+    if not tr or "kinds" not in data:
+        return data
+    known = data.get("known") or {}
+    kinds = {}
+    for k, rec in (data.get("kinds") or {}).items():
+        if tr.get(k) and rec.get("title") == known.get(k):
+            rec = {**rec, "title": tr[k]}
+        kinds[k] = rec
+    return {**data, "known": {k: tr.get(k) or v for k, v in known.items()}, "kinds": kinds}
 
 
 def localized_skins(rows: list, lang: str) -> list:
@@ -3066,8 +3102,8 @@ def agent_state(project: str) -> dict:
         # угадывает по чужой конфигурации — та меняется без нашего ведома.
         "mcp": sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {})),
         "target": target,
-        "target_label": (f"проект «{os.path.basename(project)}»" if project
-                         else "глобально (кит) — общая настройка всех проектов"),
+        # Подпись «проект «X»» собирает страница на языке интерфейса: сервер отдаёт имя, а не фразу.
+        "target_name": os.path.basename(project) if project else "",
         "adapter": cfg["adapter"], "thinking": cfg["thinking"],
         "thinking_roles": cfg.get("thinking_roles") or {},
         "max_steps": cfg["max_steps"], "budget_min": cfg["budget_min"],
@@ -3830,8 +3866,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"files": artifact_files(project, q.get("kind", [""])[0])})
         elif u.path == "/api/kinds":
             project = (q.get("project") or [""])[0]
-            self.send_json(kinds_read(project) if project and self._known(project)
-                           else {"error": "проект не выбран"})
+            self.send_json(localized_kinds(kinds_read(project), request_lang(q))
+                           if project and self._known(project) else {"error": "проект не выбран"})
         elif u.path == "/api/ask/threads":
             project = (q.get("project") or [""])[0]
             self.send_json(ask_threads(project) if project and self._known(project)

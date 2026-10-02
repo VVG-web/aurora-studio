@@ -100,6 +100,9 @@ def used_in(module: str = "") -> set:
         text = open(path, encoding="utf-8", errors="ignore").read()
         keys |= set(re.findall(r'data-i18n(?:-ph|-title|-aria|-html)?="([^"]+)"', text))
         keys |= set(re.findall(r'\bt\("([a-z][\w.]+)"', text))
+        # `t(условие ? "ключ.а" : "ключ.б")` — оба ключа спрашиваются, один из них на экране.
+        for a, b in re.findall(r'\bt\([^()?]*\?\s*"([a-z][\w.]+)"\s*:\s*"([a-z][\w.]+)"', text):
+            keys |= {a, b}
         # Ключ бывает не написан целиком: имя документа лежит в таблице раздела
         # (`["docs/…", "reference.doc.start"]`), а имя группы собирается из куска
         # (`t("commands.ns." + ns)`). И то, и другое — употребление, а не мусор.
@@ -188,6 +191,19 @@ def message_skeletons() -> set:
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr == "append" and node.args):
                 add(node.args[0])
+    # Реестр видов артефактов: причины, по которым вид не годится, рождает `make_kinds.py` —
+    # `check` кладёт их вторым элементом пары, `out_problem` возвращает.
+    kinds = os.path.join(KIT, "scripts", "make_kinds.py")
+    if os.path.isfile(kinds):
+        for node in ast.walk(ast.parse(open(kinds, encoding="utf-8").read())):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append" and node.args
+                    and isinstance(node.args[0], ast.Tuple) and len(node.args[0].elts) == 2):
+                add(node.args[0].elts[1])
+            elif isinstance(node, ast.FunctionDef) and node.name == "out_problem":
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Return) and sub.value is not None:
+                        add(sub.value)
     return out
 
 
@@ -195,6 +211,31 @@ def connector_ids() -> set:
     folder = os.path.join(KIT, "connectors")
     return {d for d in os.listdir(folder)
             if os.path.isfile(os.path.join(folder, d, "connector.json"))} if os.path.isdir(folder) else set()
+
+
+def connector_texts() -> set:
+    """Пояснения из манифестов коннекторов, которые видит человек: поля настройки, вход, роль в базе."""
+    out = set()
+    folder = os.path.join(KIT, "connectors")
+    for d in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        path = os.path.join(folder, d, "connector.json")
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            m = json.load(f)
+        out |= {m.get("role_what") or "", (m.get("auth") or {}).get("what") or ""}
+        out |= {s.get("what") or "" for s in m.get("settings") or [] if isinstance(s, dict)}
+    return {t for t in out if re.search("[а-яА-ЯёЁ]", t)}
+
+
+def kind_ids() -> set:
+    """Виды артефактов, названия которых дал движок (`make_kinds.KNOWN`)."""
+    sys.path.insert(0, os.path.join(KIT, "scripts"))
+    try:
+        import make_kinds as MK
+    except ImportError:
+        return set()
+    return set(MK.KNOWN)
 
 
 def scenario_texts() -> set:
@@ -264,7 +305,8 @@ def data_expected() -> dict:
     """{раздел: набор ключей, которые обязан покрыть перевод} — по самим реестрам."""
     helps, metas = flag_texts()
     out = {"scenarios": scenario_texts(), "skins": skin_ids(), "messages": message_skeletons(),
-           "connectors": connector_ids(), "flags": helps, "flag_args": metas}
+           "connectors": connector_ids(), "connector_texts": connector_texts(), "kinds": kind_ids(),
+           "flags": helps, "flag_args": metas}
     reg = os.path.join(KIT, "commands.txt")
     if os.path.isfile(reg):
         names = set()

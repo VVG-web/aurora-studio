@@ -502,6 +502,8 @@
   "agent.about_project": "Here is only what this project overrides. A field marked «from the kit» is taken from the machine's common setting — change it there, otherwise the change touches one project while you wait for it everywhere.",
   "agent.about_kit": "The chain of LLM backends for the built-in agent, common to every project. A ring: every call starts from the first; one that is unavailable or busy is skipped, one that recovered is picked up by itself.",
   "agent.target": "It is saved into: ",
+  "agent.target_project": "project «{name}»",
+  "agent.target_global": "global (the kit) — a setting shared by all projects",
   "agent.embed_title": "Embeddings — the search by meaning",
   "agent.embed_about": "The address is empty — the vectors are computed by the same ring as the chat. Fill it in if the vector model runs as a separate service. The check is agent:ping, the index is kb:embed.",
   "agent.f_model": "model ",
