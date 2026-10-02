@@ -1700,3 +1700,51 @@ def test_the_interface_catalogues_agree_with_the_panel(tmp: Path):
     cp = subprocess.run([sys.executable, str(KIT / "scripts" / "kit_i18n.py"), "--check"],
                         capture_output=True, text=True, timeout=120)
     assert cp.returncode == 0, cp.stdout[-1500:] + cp.stderr[-500:]
+
+
+@test
+def test_one_status_scale_orders_merges_indexes_and_maps(tmp: Path):
+    """Знание выше черновика везде: в слиянии двойников, оглавлении, карте и пакете.
+
+    Шкала доверия сменилась в 1.89 (`knowledge` вместо ступеней приёмки), а таблицы рангов
+    остались по две-три штуки: в `kb_fix` она не знала `knowledge`, и `kb:dedupe --merge-all`
+    оставлял длинный черновик, вливая в него короткое знание; в оглавлении знание шло после
+    черновиков; в каждой карте оно было подписано «не проверено».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    ranks = [AC.status_rank(s) for s in ("knowledge", "draft", "", "placeholder", "deprecated")]
+    assert ranks[0] > ranks[1] > ranks[2] > ranks[3] == ranks[4] == 0, ranks
+    assert AC.status_rank("verified") == AC.status_rank("knowledge"), "легаси-статус потерял вес"
+    assert AC.status_rank('"knowledge"') == AC.status_rank("knowledge"), "кавычки в шапке"
+
+    root = make_project(tmp, git=True)
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        K = importlib.import_module("kb_fix")
+        def mk(stem: str, status: str, body: str):
+            path = f"AuroraKnowledgeDB/Concepts/{stem}.md"
+            return path, K.Card(path, f'---\ntitle: "{stem}"\nstatus: {status}\n---\n\n# {stem}\n\n{body}\n')
+        a, b = mk("Платёж", "knowledge", "Короткий тезис."), mk("Платеж", "draft", "Длинный тезис. " * 20)
+        winner, losers, why = K.pick_winner(dict([a, b]), [a[0], b[0]], {})
+    finally:
+        os.chdir(old)
+    assert winner == a[0] and why == "статус", f"слияние оставило черновик: {winner} ({why})"
+
+    kb = root / "AuroraKnowledgeDB"
+    card(root, "Concepts/Аргумент.md", "Тезис черновика.", status="draft")
+    card(root, "Concepts/Бумага.md", "Тезис знания.", status="knowledge")
+    card(root, "Concepts/Вексель.md", "Тезис импорта.", status="imported")
+    run("kb_index.py", "--apply", "--section", "Concepts", cwd=root)
+    rows = [l for l in (kb / "Concepts/_index.md").read_text(encoding="utf-8").splitlines()
+            if l.startswith("| [[")]
+    order = [re.match(r"\| \[\[([^\]]+)\]\]", l).group(1) for l in rows]
+    assert order == ["Бумага", "Аргумент", "Вексель"], f"знание не первым в оглавлении: {order}"
+
+    run("kb_moc.py", "--apply", "--allow-dirty", cwd=root)
+    lines = [l for f in (kb / "MOC").glob("*.md") for l in f.read_text(encoding="utf-8").splitlines()
+             if "[[Бумага|" in l or "[[Аргумент|" in l]
+    assert any("[[Бумага|" in l and "не проверено" not in l for l in lines), lines
+    assert any("[[Аргумент|" in l and "не проверено" in l for l in lines), lines

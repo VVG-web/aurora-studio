@@ -41,14 +41,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aurora_common import (KB_ROOT, card_body, inbound_counts,  # noqa: E402
-                           is_placeholder, load_cards)
+from aurora_common import (KB_ROOT, TRUSTED, card_body, inbound_counts,  # noqa: E402
+                           is_placeholder, load_cards, status_rank)
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 SHINGLE = 8          # длина куска в словах
 SKETCH = 96          # сколько наименьших хешей держим от карточки
 MIN_WORDS = 60       # короче — сравнивать нечего: совпадут случайно
-STATUS_RANK = {"knowledge": 3, "draft": 2, "placeholder": 0, "deprecated": 0, "": 1}
 
 
 def shingles(text: str) -> set:
@@ -111,11 +110,11 @@ def keeper(paths: list, cards: dict, inbound: dict) -> tuple:
     """Кого предложить оставить и почему. Решает человек — это подсказка, не приговор."""
     def rank(p):
         c = cards[p]
-        return (STATUS_RANK.get(c.status, 1), inbound.get(c.stem, 0), len(c.text))
+        return (status_rank(c.status), inbound.get(c.stem, 0), len(c.text))
     best = max(paths, key=rank)
     c = cards[best]
     why = []
-    if STATUS_RANK.get(c.status, 1) >= 3:
+    if c.status in TRUSTED:
         why.append(f"статус {c.status}")
     if inbound.get(c.stem, 0):
         why.append(f"на неё ссылаются {inbound[c.stem]}")

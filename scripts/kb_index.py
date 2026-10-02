@@ -39,7 +39,7 @@ import os
 import re
 import sys
 
-from aurora_common import KB_ROOT, frontmatter, walk_md
+from aurora_common import KB_ROOT, frontmatter, status_rank, walk_md
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 MARK = "<!-- generated: kb_index.py — правки будут потеряны -->"
@@ -47,8 +47,7 @@ WIKI = re.compile(r"\[\[([^\]|#]+)")
 STUB = "Индекс раздела. Карточек:"   # заготовка установщика — наш файл
 ENTRY = ("|", "-", "*", "+")     # строка таблицы или списка: так выглядит запись оглавления
 SKIP_SECTIONS = {"meta", "_archive", "_assets", "_inbox"}
-# canonical — легаси-статус (убран в 1.10.0), сортируем как verified
-STATUS_ORDER = {"canonical": 1, "verified": 1, "in-review": 2, "draft": 3, "imported": 4}
+# Порядок строк — по `aurora_common.status_rank`: знание выше черновика, заготовки внизу.
 
 
 def first_sentence(text: str, limit: int = 120) -> str:
@@ -96,7 +95,7 @@ def collect(section_dir: str) -> list:
             "names": {stem} | {a.strip().strip('"\'') for a in
                                (fm.get("aliases") or "").strip("[]").split(",") if a.strip()},
         })
-    rows.sort(key=lambda r: (STATUS_ORDER.get(r["status"], 9), r["stem"]))
+    rows.sort(key=lambda r: (-status_rank(r["status"]), r["stem"]))
     return rows
 
 

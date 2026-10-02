@@ -28,7 +28,7 @@ import subprocess
 import sys
 
 from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, link_targets,
-                           read_card_text, walk_md)
+                           read_card_text, trust_header, walk_md)
 
 OUT_DIR = os.path.join("Deliverables", "work", "spec-packs")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -37,18 +37,6 @@ from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на
 def anchor(name: str) -> str:
     """Якорь внутри файла: снаружи базы wiki-ссылки не кликаются."""
     return "#" + re.sub(r"[^0-9a-zA-Zа-яА-ЯёЁ]+", "-", name.lower()).strip("-")
-
-
-def trust_header(fm: dict, section: str) -> str:
-    st = (fm.get("status") or "").strip() or "без статуса"
-    if st == "deprecated":
-        return f"[deprecated | заменено: {fm.get('superseded_by', '—')} | только история]"
-    if st in TRUSTED:
-        return (f"[{st} | проверено {fm.get('verified', '—')} | владелец "
-                f"{fm.get('owner', '—')} | годно до {fm.get('review_by', '—')}]")
-    if section == "Reference":
-        return "[reference | справочник домена]"
-    return f"[{st} | НЕ ПРОВЕРЕНО ЧЕЛОВЕКОМ | не считать фактом]"
 
 
 def load_cards() -> dict:
