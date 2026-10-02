@@ -139,3 +139,59 @@ def test_mcp_reports_a_failed_tool_as_an_error_not_as_knowledge(tmp: Path):
             raise AssertionError(f"{script} {kw}: сбой не стал отказом")
     assert not res[8].get("isError") and "Обеспечение" in text(8), f"обычный поиск: {res[8]}"
     assert not res[9].get("isError") and "Правила обеспечения" in text(9), f"обычная карточка: {res[9]}"
+
+
+@test
+def test_installing_a_skill_never_leaves_the_agent_without_it(tmp: Path):
+    """Обновление скилла не оставляет агента без скилла: сбой копирования не стирает прежний.
+
+    Установка сносила установленную папку (`rmtree`) и только потом копировала новую: сбой
+    посреди копирования — диск, права, обрыв — оставлял `/aurora-vault` без единого файла, а
+    повторный запуск видел «новый» и не знал, что было. Копия теперь делается рядом, подмена —
+    переименованием; и ссылка для другого harness, которую Windows без прав не создаёт, не
+    обрывает установку после того, как скиллы уже стоят.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    IS = importlib.import_module("install_skills")
+    src, home, link_dir = tmp / "kit-skills", tmp / "home-skills", tmp / "cfg" / "opencode" / "skills"
+    (src / "aurora-x").mkdir(parents=True)
+    (src / "aurora-x" / "SKILL.md").write_text("новая версия\n", encoding="utf-8")
+    (src / "aurora-x" / "more.md").write_text("ещё файл\n", encoding="utf-8")
+    (home / "aurora-x").mkdir(parents=True)
+    (home / "aurora-x" / "SKILL.md").write_text("прежняя версия\n", encoding="utf-8")
+    saved = (IS.SRC, IS.HOME_SKILLS, IS.LINK_DIRS, shutil.copytree)
+    IS.SRC, IS.HOME_SKILLS, IS.LINK_DIRS = src, home, (link_dir,)
+    try:
+        def broken(a, b, *args, **kw):
+            Path(b).mkdir(parents=True)
+            (Path(b) / "SKILL.md").write_text("обрывок", encoding="utf-8")
+            raise OSError("нет места на диске")
+        shutil.copytree = broken
+        try:
+            IS.cmd_install(True)
+        except OSError:
+            pass
+        assert (home / "aurora-x" / "SKILL.md").read_text(encoding="utf-8") == "прежняя версия\n", \
+            "сбой копирования стёр установленный скилл"
+        assert sorted(p.name for p in home.iterdir()) == ["aurora-x"], \
+            f"после сбоя в каталоге скиллов остался мусор: {sorted(p.name for p in home.iterdir())}"
+    finally:
+        shutil.copytree = saved[3]
+
+    # ссылку для другого harness создать нельзя (Windows без прав): скиллы уже стоят, установка идёт дальше
+    real_link = Path.symlink_to
+    link_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    def denied(self, *a, **kw):
+        raise OSError(1314, "Требуемый клиентом привилегий не хватает")
+    try:
+        Path.symlink_to = denied
+        rc = IS.cmd_install(True)
+    finally:
+        Path.symlink_to = real_link
+        IS.SRC, IS.HOME_SKILLS, IS.LINK_DIRS = saved[:3]
+    assert rc == 0, "отказ в создании ссылки оборвал установку"
+    assert (home / "aurora-x" / "SKILL.md").read_text(encoding="utf-8") == "новая версия\n", "скилл не обновился"
+    assert (home / "aurora-x" / "more.md").is_file()
+    assert sorted(p.name for p in home.iterdir()) == ["aurora-x"], "после установки остался временный каталог"

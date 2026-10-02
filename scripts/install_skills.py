@@ -56,6 +56,41 @@ def same(a: Path, b: Path) -> bool:
     return all(same(a / d, b / d) for d in cmp.common_dirs)
 
 
+def replace_skill(src: Path, dst: Path) -> None:
+    """Положить копию скилла на место прежней — так, чтобы сбой не оставил агента без скилла.
+
+    Прежняя папка сносилась до копирования: диск, права или обрыв посреди `copytree`
+    оставляли `/aurora-vault` без единого файла. Копия делается рядом, под служебным именем, и
+    ставится на место переименованием; прежняя уходит в сторону и сносится только после того,
+    как новая встала. Любой сбой убирает за собой временное и оставляет установленное как было.
+    """
+    fresh = dst.with_name(dst.name + ".aurora-new")
+    old = dst.with_name(dst.name + ".aurora-old")
+    for stale in (fresh, old):                      # след прерванной прошлой установки
+        if stale.is_symlink() or stale.is_file():
+            stale.unlink()
+        elif stale.is_dir():
+            shutil.rmtree(stale, ignore_errors=True)
+    try:
+        shutil.copytree(src, fresh)
+        moved = False
+        if dst.is_symlink() or dst.is_file():
+            dst.unlink()
+        elif dst.is_dir():
+            dst.rename(old)
+            moved = True
+        try:
+            fresh.rename(dst)
+        except OSError:
+            if moved:                               # новая не встала — возвращаем прежнюю
+                old.rename(dst)
+            raise
+    except BaseException:
+        shutil.rmtree(fresh, ignore_errors=True)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+
+
 def plan() -> list:
     """[(имя, состояние)] — что произойдёт с каждым скиллом."""
     out = []
@@ -111,11 +146,7 @@ def cmd_install(apply: bool) -> int:
     HOME_SKILLS.mkdir(parents=True, exist_ok=True)
     for name, _ in todo:
         dst = HOME_SKILLS / name
-        if dst.is_symlink() or dst.is_file():
-            dst.unlink()
-        elif dst.is_dir():
-            shutil.rmtree(dst)
-        shutil.copytree(SRC / name, dst)
+        replace_skill(SRC / name, dst)
         print(f"✅ {dst}")
 
     # ссылки для остальных harness: один источник правды вместо копий
@@ -125,11 +156,19 @@ def cmd_install(apply: bool) -> int:
         link_dir.mkdir(parents=True, exist_ok=True)
         for name, _ in rows:
             link = link_dir / name
-            if link.is_symlink():
-                link.unlink()
-            elif link.exists():
-                continue          # чужая настоящая папка — не трогаем
-            link.symlink_to(HOME_SKILLS / name, target_is_directory=True)
+            try:
+                if link.is_symlink():
+                    link.unlink()
+                elif link.exists():
+                    continue          # чужая настоящая папка — не трогаем
+                link.symlink_to(HOME_SKILLS / name, target_is_directory=True)
+            except OSError as e:
+                # Windows без прав разработчика символьных ссылок не создаёт. Скиллы к этому
+                # моменту уже стоят в общем каталоге, и обрывать установку из-за ссылки для
+                # второго harness нечестно: говорим, чего нет, и идём дальше.
+                print(f"⚠️ ссылка {link} не создана: {e}. Скилл лежит в {HOME_SKILLS / name}: "
+                      "укажите этот каталог harness'у или скопируйте скилл туда сами")
+                continue
             print(f"↪ {link} → {HOME_SKILLS / name}")
 
     print(f"\nГотово: {len(todo)}. Скиллы доступны из любого диалога — /aurora-vault, "
