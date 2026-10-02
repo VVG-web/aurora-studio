@@ -224,7 +224,7 @@ def apply_mirror(root: str, mirror: str, plan: list) -> dict:
                 else:
                     shutil.copy2(a, b)          # старую папку уберёт follow_moves вместе со страницей
 
-            def relink(m):
+            def relink(m, item=item, stem=stem):
                 name = item["assets"].get(m.group("name"), m.group("name"))
                 return f"- [{name}]({stem}_assets/{urllib.parse.quote(name)})"
             head, body = _split(text)

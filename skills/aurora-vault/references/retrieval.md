@@ -164,7 +164,7 @@ Every card included in a prompt is prefixed with a one-line trust header:
 
 Алгоритм сборки пака — не константа, а набор переключателей в `ctx_pack.RETRIEVAL`.
 Это **единая точка настройки для всех потребителей контекста**: `ctx:context`,
-`agent:ask`, `agent:make`, MCP `search` и подсказка разбора читают один словарь,
+`agent:ask`, `agent:make`, MCP `kb_search` и подсказка разбора читают один словарь,
 поэтому улучшение ретрива доезжает до всех сразу, а вилка в поведении невозможна.
 
 | Ключ | Что делает | Дефолт |

@@ -324,7 +324,7 @@ def undo_identifiers(known: dict, apply: bool, say: bool = True) -> dict:
         text = open(path, encoding="utf-8").read()
         own, sep, rest = text.partition("## Источник (перенесено дословно)")
         own = re.sub(r"^#\s+(" + re.escape(cyr) + "|" + re.escape(name) + r")\s*$",
-                     lambda _m: f"# {lat}", own, count=1, flags=re.M)
+                     lambda _m, lat=lat: f"# {lat}", own, count=1, flags=re.M)
         text = own + sep + rest
         text = re.sub(r'^(title:\s*)"?[^"\n]*"?\s*$', f'\\1"{lat}"', text, count=1,
                       flags=re.M)

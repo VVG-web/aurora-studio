@@ -20,10 +20,8 @@ jobs:
         run: python3 tests/run_tests.py --smoke
       - name: Full suite
         run: python3 tests/run_tests.py
-      # Не блокирует: показывает неиспользуемые импорты/переменные и замыкания в цикле,
-      # чтобы мёртвый код не копился снова. Станет обязательным, когда счётчик будет нулевым.
-      - name: Lint (ruff, advisory)
-        continue-on-error: true
+      # Неиспользуемые импорты и переменные и замыкания в цикле: мёртвый код не копится.
+      - name: Lint (ruff)
         run: |
           python3 -m pip install --quiet ruff
           ruff check --select F401,F841,B023 --output-format github scripts cockpit reports aurora.py

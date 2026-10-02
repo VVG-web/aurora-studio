@@ -680,7 +680,8 @@ def run(a) -> int:
             rel = slug(url, title)
             path = os.path.join(mirror.out, rel)
 
-            def store(md: str, files: list, write: bool = True) -> tuple:
+            def store(md: str, files: list, write: bool = True, url=url, title=title,
+                      trusted=trusted, seed=seed, feed=feed, path=path) -> tuple:
                 text = card_text(url, title, trusted, md, seed, files, feed)
                 was = open(path, encoding="utf-8").read() if os.path.isfile(path) else None
                 if a.apply and write and was != text:

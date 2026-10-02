@@ -202,7 +202,7 @@ def lazy_mcp_toolsets(config: dict, guard: dict = None, root: str = ".", role: s
     if not servers:
         return []
     try:
-        from dataclasses import dataclass, field
+        from dataclasses import dataclass, field  # noqa: F401 — проверка, что пакет на месте
         from fastmcp import Client
         from pydantic_ai.mcp import MCPToolset
         from pydantic_ai.toolsets import DynamicToolset, FunctionToolset, WrapperToolset
