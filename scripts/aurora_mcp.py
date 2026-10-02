@@ -256,15 +256,16 @@ def answer_call(project: str, msg_id, params: dict) -> None:
 
 def serve(project: str) -> int:
     calls = []
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            continue
+
+    def handle(msg) -> None:
+        if not isinstance(msg, dict):
+            # Не объект JSON-RPC: число, строка, null. Ответ с `id: null` — по спецификации; а
+            # `msg.get` на нём раньше обрывал весь сервер, и ассистент терял базу посреди работы.
+            reply(None, error={"code": -32600, "message": "Invalid Request: ожидался объект JSON-RPC"})
+            return
         method, msg_id = msg.get("method"), msg.get("id")
+        params = msg.get("params")
+        params = params if isinstance(params, dict) else {}
         if method == "initialize":
             reply(msg_id, {"protocolVersion": PROTOCOL,
                            "capabilities": {"tools": {}},
@@ -280,7 +281,7 @@ def serve(project: str) -> int:
         elif method == "tools/call":
             CALL_SLOTS.acquire()        # восьмой одновременный вызов ждёт свободного места
             t = threading.Thread(target=answer_call, daemon=True,
-                                 args=(project, msg_id, msg.get("params") or {}))
+                                 args=(project, msg_id, params))
             calls[:] = [c for c in calls if c.is_alive()] + [t]
             t.start()
         elif method == "ping":
@@ -288,6 +289,19 @@ def serve(project: str) -> int:
         elif msg_id is not None:
             reply(msg_id, error={"code": -32601, "message": f"нет метода {method}"})
         # уведомления (notifications/*) ответа не требуют — молчим
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        # Пакет (массив запросов) протокол 2024-11-05 не знает, но терпит его: каждый элемент
+        # разбирается отдельно, пустой пакет — тоже Invalid Request.
+        for one in (msg if msg != [] and isinstance(msg, list) else [msg]):
+            handle(one)
     for t in calls:                 # ассистент закрыл вход: даём начатым вызовам ответить
         t.join(timeout=30)
     return 0
