@@ -384,7 +384,14 @@
     "путь файла принят за папку: {} → такой каталог появляется, когда в «папке результата» вида документа стоит путь к файлу; перенесите содержимое в стандартную папку и удалите каталог": "a file path was taken for a folder: {} → such a directory appears when the «result folder» of a document kind holds a file path; move the content into the standard folder and delete the directory",
     "регистр папок схемы расходится с индексом git: {} → на Linux/CI это станет разными папками; почините: git mv <имя> <имя>_tmp && git mv <имя>_tmp <Имя>": "the case of schema folders differs from the git index: {} → on Linux/CI these become different folders; fix: git mv <name> <name>_tmp && git mv <name>_tmp <Name>",
     "структурные папки вне схемы движка: {} → перенесите содержимое в стандартную папку или в Workspaces/<задача>/; если папка нужна именно этому проекту — объявите её в aurora.config.yaml (paths → extra_structure_dirs); новый тип для всех проектов — только релизом kit'а": "structural folders outside the engine schema: {} → move the content into a standard folder or into Workspaces/<task>/; if the folder is needed by this project specifically — declare it in aurora.config.yaml (paths → extra_structure_dirs); a new type for all projects — only by a kit release",
-    "схема: {} папок, факт: не хватает {}, лишних {}": "schema: {} folders, actual: {} missing, {} extra"
+    "схема: {} папок, факт: не хватает {}, лишних {}": "schema: {} folders, actual: {} missing, {} extra",
+    "«{}» — путь к файлу, а не папка: движок создал бы каталог с именем файла": "«{}» is the path of a file, not a folder: the engine would create a directory named like a file",
+    "не указан шаблон": "no template is given",
+    "не указана папка результата": "no output folder is given",
+    "папки результата нет: {}/": "the output folder does not exist: {}/",
+    "путь абсолютный, а папка результата лежит внутри проекта": "the path is absolute, but the output folder lives inside the project",
+    "путь выходит за пределы проекта": "the path leaves the project",
+    "шаблона нет на диске: {}": "the template is not on the disk: {}"
   },
   "connectors": {
     "confluence-dc": {
@@ -724,5 +731,29 @@
     "ВАРИАНТЫ": "VARIANTS",
     "ПУТЬ": "PATH",
     "Ч": "H"
+  },
+  "connector_texts": {
+    "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",
+    "адрес сервера Confluence": "the Confluence server address",
+    "ключ пространства": "the space key",
+    "корни синка: page_id страниц, от которых идёт обход": "sync roots: the page_id of each page the walk starts from",
+    "страницы вики: артефакты, доверие которых берётся из связанных задач": "wiki pages: artifacts whose trust comes from the linked issues",
+    "персональный токен Jira (JIRA_PAT) либо JIRA_USER + JIRA_PASSWORD": "a Jira personal token (JIRA_PAT) or JIRA_USER + JIRA_PASSWORD",
+    "адрес сервера Jira": "the Jira server address",
+    "ключ проекта": "the project key",
+    "запрос по умолчанию": "the default query",
+    "задачи трекера: их статус решает, доверять ли артефакту": "tracker issues: their status decides whether an artifact is trusted",
+    "не нужен для открытых страниц; WEB_PERSONAL_TOKEN — если сайт просит Bearer": "not needed for open pages; WEB_PERSONAL_TOKEN if the site asks for a Bearer token",
+    "список страниц: url и галочка «доверять»": "the list of pages: a url and a «trust» tick"
+  },
+  "kinds": {
+    "ac": "Acceptance Criteria",
+    "us": "User Story",
+    "algorithm": "Algorithm",
+    "opz": "Task Statement (OPZ)",
+    "rp": "User Guide (RP)",
+    "test-case": "Test Case",
+    "test-scenario": "Test Scenario",
+    "us-review": "Review of someone else's story"
   }
 }

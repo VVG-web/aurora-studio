@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.149.7";
+const UI_VERSION = "1.149.8";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -3173,9 +3173,8 @@ async function renderMcp(scope){
   const cards = el("div", {class:"grid tiles"});
   names.forEach(n => cards.append(mcpCard(scope, n, d.servers[n], d.mask,
                                           probe && probe[n])));
-  const here = scope === "project" ? "mcp" : "mcpk";
   box.append(el("div", {class:"card", style:"padding:20px"},
-    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t(here + ".about")),
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t(scope === "project" ? "mcp.about" : "mcpk.about")),
     d.error ? el("div", {class:"warnbox"}, d.error) : null,
     el("div", {class:"row", style:"gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px"},
       el("button", {class:"btn sm primary", onclick:()=>openMcpCard(scope, "")}, t("mcpk.add")),
@@ -3184,7 +3183,7 @@ async function renderMcp(scope){
       el("span", {class:"muted mono", style:"font-size:11.5px;overflow-wrap:anywhere"},
         d.path || "")),
     names.length ? cards
-                 : el("div", {class:"muted", style:"font-size:13px"}, t(here + ".empty"))));
+                 : el("div", {class:"muted", style:"font-size:13px"}, t(scope === "project" ? "mcp.empty" : "mcpk.empty"))));
   if (scope !== "project") return;
 
   // Серверы машины работают и в этом проекте, а правятся только в «Настройке кита».
@@ -4153,7 +4152,8 @@ async function renderAgentCard(box, scope){
     el("p",{class:"muted",style:"font-size:13px;margin:0 0 8px"},
       scope === "project" ? t("agent.about_project") : t("agent.about_kit")),
     el("div",{class:"warnbox",style:"margin-bottom:12px"},
-      t("agent.target"), el("b",{}, a.target_label), el("br",{}),
+      t("agent.target"), el("b",{}, a.target_name ? t("agent.target_project", {name: a.target_name})
+                                                : t("agent.target_global")), el("br",{}),
       el("span",{class:"mono",style:"font-size:11.5px"}, a.target)),
     // Блоков столько, сколько шлюзов объявлено, плюс один пустой для следующего.
     // Жёсткие три не давали объявить четвёртый — а вектора могут жить именно на нём,

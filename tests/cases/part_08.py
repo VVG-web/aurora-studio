@@ -355,7 +355,7 @@ def test_agent_wired_into_engine(tmp: Path):
     ui = panel_sources()
     assert "renderAgentCard" in ui and "Проверить соединение" in ui, \
         "в Настройке нет раздела «Агент»"
-    assert "target_label" in ui, "цель записи (кит или проект) не показывается человеку"
+    assert "target_name" in ui, "цель записи (кит или проект) не показывается человеку"
     assert "Pydantic AI" in ui, "нет установки Pydantic AI из панели"
 
     doc = (KIT / "scripts/aurora_doctor.py").read_text(encoding="utf-8")
