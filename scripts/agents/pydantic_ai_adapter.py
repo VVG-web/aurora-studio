@@ -131,39 +131,6 @@ def servers_for_role(config: dict, role: str = "") -> dict:
     return out
 
 
-def mcp_toolsets(config: dict, guard: dict = None, root: str = ".",
-                 role: str = "") -> list:
-    """Подключённые MCP-серверы — для того, чего движок не умеет сам.
-
-    Конфиг приходит в стандартной форме (`{"mcpServers": {...}}`) — той же, что у Claude
-    Code и Cursor: изобретать свою значило бы заставить человека держать две.
-
-    Сервера объявляет проект, а не панель угадывает по чужой конфигурации: чужая меняется
-    без нашего ведома, и панель начала бы врать о том, что доступно.
-
-    Toolset строится **по серверу**, а не один на всех: сторож привязан к конкретному
-    серверу, и знать, чей это вызов, можно только так.
-    """
-    servers = servers_for_role(config, role)
-    if not servers:
-        return []
-    try:
-        from fastmcp import Client
-        from pydantic_ai.mcp import MCPToolset
-    except ImportError:
-        return []
-    out = []
-    for name, spec in servers.items():
-        one = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
-                                     if k not in SPEC_ONLY}}}
-        hook = call_hook(name, spec, guard, root)
-        try:
-            out.append(MCPToolset(Client(one), process_tool_call=hook).prefixed(tool_prefix(name)))
-        except Exception:  # noqa: BLE001 — сервер может быть не поднят: это не повод падать
-            continue
-    return out
-
-
 def mcp_catalog(servers: dict) -> str:
     """Каталог серверов для инструкций модели: имя и назначение, без инструментов."""
     lines = [f"- {name}" + (f" — {spec.get('about')}" if (spec or {}).get("about") else "")

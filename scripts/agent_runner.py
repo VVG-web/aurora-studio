@@ -3027,25 +3027,6 @@ def candidates_for(cwd: str, cfg: dict, query: str, limit: int = CANDIDATES,
     return hybrid_rank(cwd, query, limit, stubs=stubs)
 
 
-# Карта «имя карточки → путь», собранная один раз на обход базы. Без неё поиск пути
-# обходил всю базу заново на КАЖДОГО кандидата: два десятка кандидатов на карточку и
-# тысячи карточек в базе дают миллионы обращений к диску на один прогон.
-_PATHS: dict = {}
-_PATHS_AT = 0.0
-PATHS_TTL = 120.0        # база меняется по ходу прогона: карту освежаем
-
-
-def _card_path(stem: str) -> str:
-    """Путь карточки по имени. Пусто — карточки нет (индекс отстал от базы)."""
-    global _PATHS, _PATHS_AT
-    import aurora_common as AC
-    if time.time() - _PATHS_AT > PATHS_TTL:
-        _PATHS = {os.path.basename(p)[:-3]: p
-                  for p in AC.walk_md(AC.KB_ROOT, skip_service=True, skip_archive=True)}
-        _PATHS_AT = time.time()
-    return _PATHS.get(stem, "")
-
-
 def links_block(rows: list) -> str:
     """Список карточек, на которые можно ссылаться, — для тезиса и связывания.
 

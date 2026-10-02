@@ -24,11 +24,10 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import subprocess
 import sys
 
-from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, link_targets,
-                           read_card_text, trust_header, walk_md)
+from aurora_common import (KB_ROOT, TRUSTED, as_list, body, frontmatter, git_commit,
+                           link_targets, read_card_text, trust_header, walk_md)
 
 OUT_DIR = os.path.join("Deliverables", "work", "spec-packs")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -62,15 +61,6 @@ def resolve(name: str, cards: dict) -> str:
                 return stem
     hits = sorted(s for s in cards if s.startswith(name + "-"))
     return hits[0] if len(hits) == 1 else ""
-
-
-def git_commit() -> str:
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=30)
-        return out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
-        return ""
 
 
 def blocking_questions(cards: dict, spec_stem: str) -> list:

@@ -31,20 +31,11 @@ import sys
 
 from aurora_common import (KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
                            clean_copy,
-                           frontmatter, set_field, split_frontmatter, walk_md)
+                           frontmatter, git_commit, set_field, split_frontmatter, walk_md)
 
 WORK = "Deliverables/work"
 RELEASED = "Deliverables/released"
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-
-
-def git_commit() -> str:
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=30)
-        return out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
-        return ""
 
 
 def card_statuses() -> dict:

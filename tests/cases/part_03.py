@@ -55,14 +55,14 @@ def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
     assert A.mcp_config(str(root)) == {}, "битый конфиг уронил чтение вместо тишины"
 
     ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
-    assert "def mcp_toolsets(" in ad, "адаптер не умеет подключать MCP"
+    assert "def lazy_mcp_toolsets(" in ad, "адаптер не умеет подключать MCP"
     assert "MCPToolset(Client(one)" in ad, "серверы подключаются не стандартной формой"
     # Toolset строится по серверу, а не один на всех: сторож на исходящее привязан к
     # конкретному серверу, и узнать, чей это вызов, можно только так.
-    assert "for name, spec in servers.items():" in ad, \
+    assert "def factory_for(name: str, spec: dict):" in ad, \
         "все серверы в одном toolset — сторож не поймёт, чей запрос уходит наружу"
-    block = ad.split("def mcp_toolsets(")[1].split("def outbound_hook(")[0]
-    assert "except Exception:  # noqa" in block, \
+    block = ad.split("def lazy_mcp_toolsets(")[1].split("def call_hook(")[0]
+    assert "except Exception as e:  # noqa" in block, \
         "неподнятый сервер уронит прогон — а он может быть просто выключен"
 
     # и это видно человеку: настроил или нет
@@ -599,7 +599,6 @@ def test_mcp_tools_never_collide_with_the_agents_own(tmp: Path):
     src = (SCRIPTS / "agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
     lazy = src.split("def lazy_mcp_toolsets(")[1].split("def call_hook(")[0]
     assert ".prefixed(tool_prefix(name))" in lazy, "инструменты серверов снова без приставки"
-    assert ".prefixed(tool_prefix(name))" in src.split("def mcp_toolsets(")[1].split("def mcp_catalog(")[0]
     assert "aurora-graph_graph_stats" in P.mcp_catalog({"aurora-graph": {}}), \
         "модель не знает, как называются инструменты подключённого сервера"
     assert '"tools_called": tools_called(' in src, "по ответу не понять, какие инструменты вызваны"
@@ -768,7 +767,8 @@ def test_mcp_paste_understands_the_shapes_people_copy(tmp: Path):
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
     ck = importlib.import_module("aurora_cockpit")
-    P = ck.mcp_parse_paste
+    def P(text):
+        return ck.mcp_read_paste(text)[:2]
     shapes = {
         '{"mcpServers": {"a": {"command": "npx", "args": ["x"]}}}': ["a"],
         '{"servers": {"b": {"type": "stdio", "command": "uvx"}}}': ["b"],

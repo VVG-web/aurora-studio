@@ -1189,7 +1189,10 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
                  "Классификаторы_документов", "Контракты", "Протоколы_встреч", "_архив"):
         (conf / name).mkdir(parents=True, exist_ok=True)
     (conf / "Глоссарий.md").write_text("# Глоссарий\n", encoding="utf-8")
-    got = AC.trusted_branch_sources(str(root))
+    def branches(kinds=AC.TRUSTED_BRANCHES_DEFAULT):
+        return [f"Sources/Confluence/{n}" for n in sorted(os.listdir(conf))
+                if not n.startswith((".", "_")) and AC.branch_kind(n, kinds)]
+    got = branches()
     for need in ("Нормативно-справочная_информация_(НСИ)", "Справочники_номенклатуры",
                  "Классификаторы_документов", "Глоссарий.md"):
         assert f"Sources/Confluence/{need}" in got, f"справочная ветка не узнана по названию: {need} · {got}"
@@ -1199,7 +1202,7 @@ def test_trust_defaults_are_a_setting_written_into_the_config(tmp: Path):
             f"вики доверена по названию — справочник или задача, не папка: {no}"
     assert not AC.branch_kind("GUI_-_Экранные_формы"), "GUI снова справочная — это постановка"
     assert not AC.branch_kind("Полный_перечень_работ"), "название узнано по куску слова"
-    assert AC.trusted_branch_sources(str(root), ("Контракты",)) == ["Sources/Confluence/Контракты"]
+    assert branches(("Контракты",)) == ["Sources/Confluence/Контракты"]
 
     cfg = root / "aurora.config.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace(

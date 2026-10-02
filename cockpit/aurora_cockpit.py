@@ -1261,11 +1261,6 @@ def mcp_servers_of(project: str = "") -> tuple:
     return {k: v for k, v in servers.items() if isinstance(v, dict)}, ""
 
 
-def mcp_kit_servers() -> tuple:
-    """(серверы, ошибка) из файла машины."""
-    return mcp_servers_of("")
-
-
 def mcp_mask(servers: dict) -> dict:
     """Копия серверов, где вместо каждого секрета стоит маска. Её и видит браузер."""
     out = {}
@@ -1363,10 +1358,6 @@ def mcp_write(servers: dict, project: str = "") -> dict:
     except OSError as e:
         return {"error": f"не удалось записать {label}: {e}"}
     return {"ok": True, "path": path, "count": len(servers)}
-
-
-def mcp_write_kit(servers: dict) -> dict:
-    return mcp_write(servers, "")
 
 
 def mcp_new_secrets(servers: dict) -> str:
@@ -1519,12 +1510,6 @@ def _mcp_from_zed(name: str, spec: dict) -> tuple:
             + (f"; ключ перенесён в секреты машины: {', '.join(env)}" if env else "")
             + (f"; не хватает {', '.join(lost)} — впишите в карточке сервера" if lost else ""))
     return out, note
-
-
-def mcp_parse_paste(text: str) -> tuple:
-    """(серверы, ошибка) из вставленной настройки — см. `mcp_read_paste`."""
-    servers, why, _notes = mcp_read_paste(text)
-    return servers, why
 
 
 def mcp_read_paste(text: str) -> tuple:

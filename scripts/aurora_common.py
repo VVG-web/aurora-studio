@@ -931,6 +931,16 @@ def git_dirty(path: str = ".") -> list:
     return [l for l in out.stdout.splitlines() if l.strip()]
 
 
+def git_commit() -> str:
+    """Короткий хеш текущего коммита; пусто, если это не git или git недоступен."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=30)
+        return out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 def git_guard(path: str, allow_dirty: bool, what: str = "операция") -> bool:
     """Массовая запись по грязному дереву делает откат невозможным. → можно ли писать."""
     import sys
@@ -1109,19 +1119,6 @@ def branch_kind(name: str, kinds=TRUSTED_BRANCHES_DEFAULT) -> str:
         if k and re.search(rf"(?<!\w){re.escape(k)}(?!\w)", plain):
             return kind
     return ""
-
-
-def trusted_branch_sources(root: str = ".", kinds=TRUSTED_BRANCHES_DEFAULT) -> list:
-    """Верхние ветки зеркала вики, в имени которых стоит одно из доверенных названий.
-
-    Ветки ищутся при каждом вызове: новая ветка, пришедшая синком, доверена сразу, без
-    правки настроек.
-    """
-    base = os.path.join(root, "Sources", "Confluence")
-    if not os.path.isdir(base):
-        return []
-    return [f"Sources/Confluence/{n}" for n in sorted(os.listdir(base))
-            if not n.startswith((".", "_")) and branch_kind(n, kinds)]
 
 
 def inbound_counts(root: str, skip_nav: bool = False) -> dict:

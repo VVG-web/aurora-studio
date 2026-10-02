@@ -184,10 +184,6 @@ def get_config() -> dict:
     }
 
 
-def load_config() -> dict:
-    return get_config()
-
-
 def ensure_dirs() -> None:
     for d in (DATA_DIR, YEARS_DIR, REPORT_DIR, os.path.dirname(ROSTER_PATH)):
         os.makedirs(d, exist_ok=True)

@@ -72,14 +72,6 @@ from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на
 
 # ---------------------------------------------------------------- утилиты имён
 
-def _is_cyr(ch: str) -> bool:
-    return "Ѐ" <= ch <= "ӿ"
-
-
-def _is_lat(ch: str) -> bool:
-    return ("A" <= ch <= "Z") or ("a" <= ch <= "z")
-
-
 
 
 
