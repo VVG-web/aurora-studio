@@ -319,7 +319,7 @@ aurora-studio/
 ├── scaffold/                 Templates · TemplatesCommon · Prompts — стартовое содержимое
 ├── reports/analyst/          дашборд эффективности аналитиков
 ├── examples/                 образцы
-├── tests/                    run_tests.py · make_corpus.py · smoke_live.py · corpus/
+├── tests/                    run_tests.py · harness.py · cases/ · make_corpus.py · smoke_live.py · corpus/
 ├── docs/                     документация (русская; английская — docs/en/)
 ├── start-aurora.command · start-aurora.bat
 └── aurora.env.local.example

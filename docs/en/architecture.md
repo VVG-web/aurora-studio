@@ -314,7 +314,7 @@ aurora-studio/
 ├── scaffold/                 Templates · TemplatesCommon · Prompts — the starter content
 ├── reports/analyst/          the analyst-efficiency dashboard
 ├── examples/                 samples
-├── tests/                    run_tests.py · make_corpus.py · smoke_live.py · corpus/
+├── tests/                    run_tests.py · harness.py · cases/ · make_corpus.py · smoke_live.py · corpus/
 ├── docs/                     documentation (Russian; English — docs/en/)
 ├── start-aurora.command · start-aurora.bat
 └── aurora.env.local.example
