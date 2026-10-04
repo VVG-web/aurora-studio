@@ -2942,3 +2942,33 @@ def test_a_multiline_question_keeps_the_thread_header_intact(tmp: Path):
         frontmatter(text)
     assert "# Разговор с базой — Как работает доверие карточек? Вторая / строка\n" in text
     assert R.read_thread(path)[0]["q"].count("\n") == 2, "сам вопрос должен остаться как был"
+
+
+def test_dead_map_links_leave_the_last_line_and_keep_crlf(tmp: Path):
+    """Ссылка на ушедшую карту документа уходит и с последней строки файла без `\\n`.
+
+    Строка без перевода строки в конце не находилась, и ссылку превращали в слова, оставляя
+    в заготовке «- Документ--Нет». А снятие ссылок читало карточки с пересборкой переводов
+    строк: файл с CRLF целиком становился LF, хотя менялась одна строка.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    stub = card(root, "Concepts/Заг.md", "_Заготовка: имя названо._\n\n## Упоминается в\n\n"
+                "- [[Документ--Нет]]", status="placeholder", tags="[заготовка]")
+    stub.write_text(stub.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8")
+    run("kb_fix.py", "--links", "--apply", "--allow-dirty", cwd=root)
+    assert "Документ--Нет" not in stub.read_text(encoding="utf-8"), stub.read_text(encoding="utf-8")
+    sys.path.insert(0, str(SCRIPTS))
+    import kb_moc
+    crlf = kb / "Concepts/Crlf.md"
+    crlf.write_bytes("---\r\ntitle: Crlf\r\n---\r\n\r\nСм. [[Документ--Док]] и текст.\r\n\r\n"
+                     "- [[Документ--Док]]\r\n- [[Жив]]\r\n".encode("utf-8"))
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        assert kb_moc.drop_links_to({"Документ--Док"}) == 1
+    finally:
+        os.chdir(cwd)
+    data = crlf.read_bytes()
+    assert b"\r\n" in data and data.count(b"\n") == data.count(b"\r\n"), data
+    assert "См. Док и текст." in data.decode("utf-8") and b"[[\xd0\x96\xd0\xb8\xd0\xb2]]" in data

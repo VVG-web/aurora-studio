@@ -660,7 +660,8 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
         if dead:
             base = plan.file_writes.get(path, c.text)
             for line in dead:
-                base = base.replace(line + "\n", "")
+                # последняя строка файла может быть без перевода строки — её тоже убираем
+                base = re.sub(r"^" + re.escape(line) + r"[ \t]*(?:\r?\n|\Z)", "", base, flags=re.M)
             plan.file_writes[path] = base
             plan.notes.append(f"  заготовка {path}: убрано мёртвых упоминаний {len(dead)}")
         if mapping:
