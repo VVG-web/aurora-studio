@@ -6246,8 +6246,9 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 step = solve_conflict(cfg, cwd, alias, cards, apply, use_critic, call=call,
                                       deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")))
                 with progress_lock:
-                    if stop.is_set() or time.time() > budget or len(steps) >= cfg["max_steps"]:
-                        return
+                    # Шаг уже сделан и, с `apply`, записан в базу: выбросить его из отчёта
+                    # значит оставить правку, о которой прогон не знает. Лимиты проверяются
+                    # до начала работы, а не после неё.
                     steps.append(step)
                     say(f"  {progress(len(steps) - 1, total, started)} · потоков "
                         f"{effective} · «{alias[:50]}» …")
