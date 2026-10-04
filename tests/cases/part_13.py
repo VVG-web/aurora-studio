@@ -2972,3 +2972,24 @@ def test_dead_map_links_leave_the_last_line_and_keep_crlf(tmp: Path):
     data = crlf.read_bytes()
     assert b"\r\n" in data and data.count(b"\n") == data.count(b"\r\n"), data
     assert "См. Док и текст." in data.decode("utf-8") and b"[[\xd0\x96\xd0\xb8\xd0\xb2]]" in data
+
+
+def test_two_documents_with_one_file_name_get_two_maps(tmp: Path):
+    """Документы с одинаковым именем файла из разных папок не пишут одну карту.
+
+    Вторая карта затирала первую: на каждом прогоне «записано 2, без изменений 0», а знание
+    первого документа в картах не оставалось.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    for d, n in (("A", "Один"), ("A", "Два"), ("B", "Три"), ("B", "Четыре")):
+        card(root, f"Concepts/{n}.md", f"Знание {n}. " * 5, status="knowledge",
+             sources=f'\n  - "Sources/Confluence/{d}/Док.md"')
+    (root / "moc_groups.txt").write_text("Концепты: Concepts\n", encoding="utf-8")
+    run("kb_moc.py", "--by-source", "--apply", "--allow-dirty", cwd=root)
+    maps = sorted(p.name for p in (kb / "MOC").glob("Документ--*.md"))
+    assert maps == ["Документ--A-Док.md", "Документ--B-Док.md"], maps
+    second = run("kb_moc.py", "--by-source", "--apply", "--allow-dirty", cwd=root).stdout
+    assert "без изменений: 2" in second, second[-300:]
+    a, b = [(kb / "MOC" / m).read_text(encoding="utf-8") for m in maps]
+    assert "[[Один|" in a and "[[Три|" not in a and "[[Три|" in b, (a, b)
