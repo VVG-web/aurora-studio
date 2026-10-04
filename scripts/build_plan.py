@@ -321,7 +321,11 @@ TERMS_SOURCE = re.compile(
 TEMPLATE_NAME = re.compile(r"(?i)шаблон|template|_tpl\b")
 
 
-RETIRED_RE = re.compile(r"(?i)(\[\s*не[_ ]?использ|не[_ ]используем|\(устаревш|^удалить[_ ])")
+# Метка стоит в начале имени («[не_используем]ALG-029»), в скобках одним словом («… (Устаревший)»,
+# «… (не используем)») или это «Удалить_или_…». Слово внутри обычного названия — «Не используемые
+# поля», «Правила (устаревшие поля)», «Удалить_лишние_пробелы» — метка не отзыва, и страница живая.
+RETIRED_RE = re.compile(r"(?i)(^\s*\[\s*не[_ ]?использ|\(\s*не[_ ]используем\s*\)"
+                        r"|\(\s*устаревш(?:ий|ая|ое|ие)?\s*\)|^удалить[_ ]или[_ ])")
 
 
 def retired_page(path: str) -> bool:
@@ -332,7 +336,8 @@ def retired_page(path: str) -> bool:
     PRJ-C их разбирали как живые, и в базу шло знание, которое сами авторы отозвали.
     """
     parts = path.replace("\\", "/").split("/")
-    return any(p.lower() == "архив" or RETIRED_RE.search(p) for p in parts[1:])
+    return any(os.path.splitext(p)[0].lower() == "архив" or RETIRED_RE.search(p)
+               for p in parts[1:])
 
 
 def _doc_key(name: str) -> str:

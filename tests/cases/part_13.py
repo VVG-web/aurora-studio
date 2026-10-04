@@ -2695,3 +2695,23 @@ def test_no_two_scripts_keep_a_copy_of_the_same_function(_t):
                 if difflib.SequenceMatcher(None, a[2], b[2], autojunk=False).ratio() >= 0.9:
                     twins.append(f"{name}: {a[0]}:{a[1]} ≈ {b[0]}:{b[1]}")
     assert not twins, "копии одной функции в разных скриптах:\n  " + "\n  ".join(twins)
+
+
+@test
+def test_a_live_page_with_retired_words_in_its_title_is_still_parsed(_t):
+    """Слово из метки отзыва внутри обычного названия страницу не выводит из разбора.
+
+    «Не используемые поля», «Правила (устаревшие поля)», «Удалить_лишние_пробелы» — живые
+    страницы; из плана они пропадали молча, а папка «Не используемые…» уносила всё поддерево.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import build_plan as B
+    base = "Sources/Confluence/Алгоритмы/"
+    for live in ("Не используемые поля.md", "Не используемые в расчёте/index.md",
+                 "Правила (устаревшие поля).md", "Статус не используемый.md",
+                 "Удалить_лишние_пробелы_в_ФИО.md"):
+        assert not B.retired_page(base + live), f"живая страница сочтена отозванной: {live}"
+    for gone in ("[не_используем]ALG-029.md", "Вариант_(Устаревший)/index.md",
+                 "ALG-1 (не используем).md", "Удалить_или_переиспользовать_ALG-145.md",
+                 "Архив/ALG-061.md", "Архив.md"):
+        assert B.retired_page(base + gone), f"отозванная страница в разборе: {gone}"
