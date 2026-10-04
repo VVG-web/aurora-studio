@@ -287,15 +287,20 @@ def drop_links_to(names: set, root: str = "AuroraKnowledgeDB") -> int:
             if not f.endswith(".md"):
                 continue
             path = os.path.join(dp, f)
-            text = open(path, encoding="utf-8", errors="ignore").read()
+            # newline="" и surrogateescape: перевод строки и непонятные байты карточки
+            # возвращаются в файл такими, какими пришли
+            with open(path, encoding="utf-8", errors="surrogateescape", newline="") as fh:
+                text = fh.read()
             if "[[" not in text or not any(n in text for n in names):
                 continue
             lines = [l for l in text.split("\n")
                      if not ((m := item.match(l)) and m.group(1).strip() in names)]
-            new = inline.sub(lambda m: (m.group(2) or m.group(1)) if m.group(1).strip() in names
+            new = inline.sub(lambda m: (m.group(2) or m.group(1).strip().replace("Документ--", "", 1)
+                                        .replace("-", " ")) if m.group(1).strip() in names
                              else m.group(0), "\n".join(lines))
             if new != text:
-                open(path, "w", encoding="utf-8").write(new)
+                with open(path, "w", encoding="utf-8", errors="surrogateescape", newline="") as fh:
+                    fh.write(new)
                 changed += 1
     return changed
 
