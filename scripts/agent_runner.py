@@ -1656,14 +1656,15 @@ def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0
     step = {"group": group, "clashes": [], "status": "чисто", "why": "", "backends": []}
     from aurora_common import card_body
     import build_plan as BP
-    rows = []
+    rows, shown = [], {}
     for name in group[:8]:
         path = BP.find_card(name, cwd)
         if not path:
             continue
         text = open(path, encoding="utf-8", errors="ignore").read()
         body = card_body(text).split("## Источник", 1)[0]
-        rows.append(f"### {name}\n\n" + " ".join(body.split())[:1400])
+        shown[name] = " ".join(body.split())[:1400]       # ровно то, что увидит модель
+        rows.append(f"### {name}\n\n" + shown[name])
     if len(rows) < 2:
         step.update(status="пропущена", why="карточек группы уже нет")
         return step
@@ -1675,17 +1676,23 @@ def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0
     if not r["ok"]:
         step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
-    found = (parse_json(r["text"]) or {}).get("clashes")
-    if found is None:
+    parsed = parse_json(r["text"])
+    found = parsed.get("clashes") if isinstance(parsed, dict) else None
+    if not isinstance(found, list):
         step.update(status="сбой", why="модель ответила не JSON")
         return step
     known = set(group)
     for c in found:
+        if not isinstance(c, dict) or not isinstance(c.get("cards") or [], list):
+            continue                      # «clashes»: ["oops"] — не находка, а мусор
         pair = [str(x).strip() for x in (c.get("cards") or [])][:2]
         a, b = str(c.get("a") or "").strip(), str(c.get("b") or "").strip()
         # Цитата обязана быть дословной: спор о том, чего никто не писал, дороже
         # необнаруженного. Не нашли цитату в карточке — находку не берём.
         if len(pair) != 2 or not all(p in known for p in pair) or len(a) < 15 or len(b) < 15:
+            continue
+        said = " ".join(shown.get(p, "") for p in pair)
+        if " ".join(a.split()) not in said or " ".join(b.split()) not in said:
             continue
         step["clashes"].append({"cards": pair, "about": str(c.get("about") or "")[:80],
                                 "a": a[:300], "b": b[:300]})

@@ -2717,6 +2717,7 @@ def test_a_live_page_with_retired_words_in_its_title_is_still_parsed(_t):
         assert B.retired_page(base + gone), f"отозванная страница в разборе: {gone}"
 
 
+@test
 def test_a_stub_without_a_status_line_gets_one_once(tmp: Path):
     """Заготовка, у которой строки `status:` нет совсем, получает её — и один раз.
 
@@ -2787,6 +2788,7 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
         f"пуш-хук не нашёл python за заглушкой python3: rc={cp.returncode}\n{cp.stdout}{cp.stderr}"
 
 
+@test
 def test_a_later_repair_step_keeps_what_an_earlier_one_wrote(tmp: Path):
     """Шаг ремонта берёт карточку из плана, а не с диска: правка прежнего шага не теряется.
 
@@ -2821,6 +2823,7 @@ def test_a_later_repair_step_keeps_what_an_earlier_one_wrote(tmp: Path):
     assert rel(machine) not in text.split("## Источник", 1)[0], "копия не снята"
 
 
+@test
 def test_the_readonly_guard_sees_the_path_the_way_the_filesystem_does(tmp: Path):
     """`./Sources/x.md` и `Artifacts/../Sources/x.md` — те же источники, и запись в них закрыта.
 
@@ -2851,6 +2854,7 @@ def test_the_readonly_guard_sees_the_path_the_way_the_filesystem_does(tmp: Path)
     assert mod.why_readonly("AuroraKnowledgeDB/Decisions/./DR-1.md") == ""
 
 
+@test
 def test_the_dashboard_server_serves_only_the_report_and_refuses_strangers(tmp: Path):
     """Сервер дашборда раздаёт папку отчёта, а не весь проект, и не слушает чужие страницы.
 
@@ -2902,6 +2906,7 @@ def test_the_dashboard_server_serves_only_the_report_and_refuses_strangers(tmp: 
         proc.wait(timeout=10)
 
 
+@test
 def test_the_panel_forgets_old_finished_jobs(_t):
     """Законченные задания не копятся в памяти панели вечно, идущие остаются.
 
@@ -2924,6 +2929,7 @@ def test_the_panel_forgets_old_finished_jobs(_t):
     mod.JOBS.clear()
 
 
+@test
 def test_a_multiline_question_keeps_the_thread_header_intact(tmp: Path):
     """Вопрос в несколько строк не ломает шапку журнала разговора.
 
@@ -2944,6 +2950,7 @@ def test_a_multiline_question_keeps_the_thread_header_intact(tmp: Path):
     assert R.read_thread(path)[0]["q"].count("\n") == 2, "сам вопрос должен остаться как был"
 
 
+@test
 def test_dead_map_links_leave_the_last_line_and_keep_crlf(tmp: Path):
     """Ссылка на ушедшую карту документа уходит и с последней строки файла без `\\n`.
 
@@ -2974,6 +2981,7 @@ def test_dead_map_links_leave_the_last_line_and_keep_crlf(tmp: Path):
     assert "См. Док и текст." in data.decode("utf-8") and b"[[\xd0\x96\xd0\xb8\xd0\xb2]]" in data
 
 
+@test
 def test_two_documents_with_one_file_name_get_two_maps(tmp: Path):
     """Документы с одинаковым именем файла из разных папок не пишут одну карту.
 
@@ -2995,6 +3003,7 @@ def test_two_documents_with_one_file_name_get_two_maps(tmp: Path):
     assert "[[Один|" in a and "[[Три|" not in a and "[[Три|" in b, (a, b)
 
 
+@test
 def test_a_garbage_model_reply_is_not_a_verdict_on_twins_and_translit(tmp: Path):
     """Ответ «извините, не могу» не становится вердиктом «разные сущности» или «не транслит».
 
@@ -3029,3 +3038,40 @@ def test_a_garbage_model_reply_is_not_a_verdict_on_twins_and_translit(tmp: Path)
                                               "log": [], "text": '{"cyrillic": ""}'}
     assert R.solve_translit(cfg, str(root / "AuroraKnowledgeDB/Concepts/Profil-abonenta.md"),
                             call=empty)["status"] == "не транслит"
+
+
+@test
+def test_a_clash_quote_must_be_found_in_the_cards_and_junk_items_do_not_crash(tmp: Path):
+    """Цитата спора обязана найтись в показанном модели тексте карточек; мусор не роняет прогон.
+
+    Код проверял только длину цитаты, хотя комментарий обещал «не нашли в карточке — не
+    берём»: выдуманные цитаты становились «спором». А ответ вида {"clashes": ["oops"]}
+    падал `AttributeError` на всём прогоне, теряя отметки уже разобранных групп.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    card(root, "Concepts/Срок-А.md", status="draft", kind="knowledge",
+         body="Срок подтверждения — пять дней с даты подачи.")
+    card(root, "Concepts/Срок-Б.md", status="draft", kind="knowledge",
+         body="Срок подтверждения — три дня с даты подачи.")
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+
+    def reply(payload):
+        return lambda c, role, messages, **kw: {"ok": True, "backend": 1, "model": "m",
+                                                "log": [], "text": json.dumps(
+                                                    payload, ensure_ascii=False)}
+    group = ["Срок-А", "Срок-Б"]
+    made_up = R.solve_clash(cfg, str(root), group, call=reply({"clashes": [
+        {"cards": group, "about": "срок", "a": "полностью выдуманная цитата один",
+         "b": "полностью выдуманная цитата два"}]}))
+    assert made_up["clashes"] == [] and made_up["status"] == "чисто", made_up
+    spaced = R.solve_clash(cfg, str(root), group, call=reply({"clashes": [
+        {"cards": group, "about": "срок", "a": "Срок подтверждения —  пять дней\nс даты подачи.",
+         "b": "Срок подтверждения — три дня с даты подачи."}]}))
+    assert len(spaced["clashes"]) == 1, spaced
+    for junk in ({"clashes": ["oops"]}, {"clashes": [{"cards": "Срок-А"}]}):
+        assert R.solve_clash(cfg, str(root), group, call=reply(junk))["clashes"] == []
+    assert R.solve_clash(cfg, str(root), group, call=reply({"clashes": "none"}))["status"] == "сбой"
