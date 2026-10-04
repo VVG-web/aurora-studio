@@ -1921,6 +1921,27 @@ def near_named(cwd: str, cfg: dict, subject: str, skip: str) -> list:
     return out[:12]
 
 
+def task_body_stamp(text: str) -> str:
+    """Отпечаток тела карточки: правка текста снимает отметку «оставлена» сама."""
+    import hashlib
+    from aurora_common import card_body
+    return hashlib.sha1(" ".join(card_body(text).split()).encode("utf-8")).hexdigest()[:12]
+
+
+def mark_task_kept(path: str) -> None:
+    """Запомнить, что карточку из задачи осмотрели и оставили: по этому тексту не спрашиваем."""
+    from aurora_common import with_fields
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(with_fields(text, {"tasks_kept": task_body_stamp(text)}))
+
+
+def task_kept(path: str) -> bool:
+    from aurora_common import frontmatter
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    return (frontmatter(text).get("tasks_kept") or "").strip().strip('"') == task_body_stamp(text)
+
+
 def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
                     deadline: float = 0.0) -> dict:
     """Перенести знание задачи в карточку предмета. → шаг отчёта."""
@@ -1940,11 +1961,21 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
     if not r["ok"]:
         step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
-    verdict = parse_json(r["text"]) or {}
+    verdict = parse_json(r["text"])
+    if not isinstance(verdict, dict) or not (verdict.get("into") or verdict.get("subject")
+                                             or verdict.get("keep") is True):
+        # Ни переноса, ни имени, ни явного «оставить»: это не вердикт. Молчаливое «оставлена»
+        # без отметки отправляло карточку к модели на каждом прогоне.
+        step.update(status="сбой", why="ответ модели не разобран: нет решения")
+        return step
     step["why"] = str(verdict.get("why") or "")[:200]
 
     into = str(verdict.get("into") or "").strip()
     subject = str(verdict.get("subject") or "").strip()
+    if not into and not subject:
+        if apply:
+            mark_task_kept(path)
+        return step
     if into:
         if into not in {n for n, _s, _b in rows}:
             step.update(status="сбой", why=f"названа карточка не из списка: «{into}»")
@@ -2009,7 +2040,7 @@ def run_tasks(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
     """Пройти по карточкам, сделанным из задач Jira, и вернуть знание предмету."""
     started = time.time()
     budget = started + cfg["budget_min"] * 60
-    todo = jira_task_cards(cwd)
+    todo = [p for p in jira_task_cards(cwd) if not task_kept(p)]   # оставленные не переспрашиваем
     if limit:
         todo = todo[:limit]
     print(f"Карточек из задач: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)

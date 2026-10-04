@@ -3075,3 +3075,45 @@ def test_a_clash_quote_must_be_found_in_the_cards_and_junk_items_do_not_crash(tm
     for junk in ({"clashes": ["oops"]}, {"clashes": [{"cards": "Срок-А"}]}):
         assert R.solve_clash(cfg, str(root), group, call=reply(junk))["clashes"] == []
     assert R.solve_clash(cfg, str(root), group, call=reply({"clashes": "none"}))["status"] == "сбой"
+
+
+@test
+def test_a_task_card_kept_as_it_is_is_not_asked_about_again(tmp: Path):
+    """Карточка из задачи, которую модель велела оставить, не уходит к ней на каждом прогоне.
+
+    «Оставить как есть» было результатом без отметки: карточка снова попадала в список, и
+    каждый прогон `agent:tasks` платил обращением к модели за тот же вопрос. Отметка держит
+    отпечаток тела — правка текста возвращает карточку на осмотр. Непонятный ответ — сбой.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=True)
+    path = card(root, "Concepts/Разработка-таблицы-Тест.md", status="draft", kind="knowledge",
+                sources='["Sources/JIRA/T-1.md"]',
+                body="Нужно разработать таблицу тест для хранения ставок и периодов действия.")
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}, "max_steps": 10, "parallel": 1}
+    calls = []
+
+    def says(text):
+        def f(c, role, messages, **kw):
+            calls.append(role)
+            return {"ok": True, "backend": 1, "model": "m", "log": [], "text": text}
+        return f
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        assert R.jira_task_cards(str(root)), "карточка не признана задачей Jira"
+        for _ in range(2):
+            res = R.run_tasks(cfg, str(root), True, call=says('{"keep": true, "why": "предмет"}'))
+        assert len(calls) == 1, f"оставленную карточку спросили {len(calls)} раза"
+        path.write_text(path.read_text(encoding="utf-8") + "\nДобавили абзац.\n", encoding="utf-8")
+        R.run_tasks(cfg, str(root), True, call=says('{"keep": true}'))
+        assert len(calls) == 2, "правка текста не вернула карточку на осмотр"
+        calls.clear()
+        path.write_text(path.read_text(encoding="utf-8") + "\nЕщё абзац.\n", encoding="utf-8")
+        res = R.run_tasks(cfg, str(root), True, call=says("не JSON"))
+        assert [s["status"] for s in res["steps"]] == ["сбой"], res["steps"]
+    finally:
+        os.chdir(cwd)
