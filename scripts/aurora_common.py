@@ -993,11 +993,33 @@ def git_guard(path: str, allow_dirty: bool, what: str = "операция") -> b
 ENV_FILE = ".env.aurora.local"       # файл настроек движка: кит, затем проект
 
 
+_REAL_KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def personal_kit_file(path) -> bool:
+    """Личный файл настоящего кита (`ENV_FILE`, `local/mcp.json`) в прогоне тестов?
+
+    Прогон тестов (`AURORA_TESTS_ISOLATED`) не читает личную настройку машины: иначе счёт
+    зависит от того, чья машина его запустила. Изоляция агента ловила это для вызова без
+    кита, а панель передаёт кит явно и читала и ключи шлюзов, и MCP-серверы разработчика —
+    три теста английского режима краснели на машине и зеленели в CI (4.10.2026). Тест,
+    которому нужна настройка машины, заводит свой временный кит.
+    """
+    if not os.environ.get("AURORA_TESTS_ISOLATED"):
+        return False
+    try:
+        p = os.path.realpath(os.fspath(path))
+    except (OSError, TypeError):
+        return False
+    kit = os.path.realpath(_REAL_KIT)
+    return p in (os.path.join(kit, ENV_FILE), os.path.join(kit, "local", "mcp.json"))
+
+
 def load_env(path) -> dict:
     """Пары `КЛЮЧ=значение` из файла настроек движка. Одна на всех: настройку читают и
     агент, и панель, и дочерние процессы — разойтись в прочтении им нельзя."""
     p = os.fspath(path)
-    if not os.path.isfile(p):
+    if not os.path.isfile(p) or personal_kit_file(p):
         return {}
     out = {}
     for line in open(p, encoding="utf-8", errors="ignore").read().splitlines():

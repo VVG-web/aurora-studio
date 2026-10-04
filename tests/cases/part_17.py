@@ -56,3 +56,25 @@ def test_returning_a_stub_its_look_survives_the_whole_repair(tmp: Path):
     assert "Traceback" not in cp.stderr, cp.stderr[-600:]
     text = (root / "AuroraKnowledgeDB/Concepts/Авторизация.md").read_text(encoding="utf-8")
     assert "status: placeholder" in text and "заготовка понятия, в которой" not in text, text
+
+
+@test
+def test_the_test_run_never_reads_the_developers_personal_kit_files(_t):
+    """Прогон тестов не читает личные файлы настоящего кита — ни ключи шлюзов, ни MCP.
+
+    Изоляция агента ловила это для вызова без кита, а панель передаёт кит явно: на машине
+    разработчика три теста английского режима видели его MCP-сервер и кольцо эмбеддингов и
+    краснели, а в CI были зелёными (4.10.2026). Тесту, которому нужна настройка машины,
+    положено заводить свой временный кит — его файлы читаются как обычно.
+    """
+    import importlib
+    import os
+    sys.path.insert(0, str(SCRIPTS))
+    A = importlib.import_module("aurora_common")
+    kit = os.path.dirname(str(SCRIPTS))
+    assert os.environ.get("AURORA_TESTS_ISOLATED"), "прогон идёт без изоляции"
+    assert A.personal_kit_file(os.path.join(kit, A.ENV_FILE))
+    assert A.personal_kit_file(os.path.join(kit, "local", "mcp.json"))
+    assert A.load_env(os.path.join(kit, A.ENV_FILE)) == {}
+    assert not A.personal_kit_file(os.path.join(str(_t), A.ENV_FILE)), \
+        "временный кит теста объявлен личным — тесты настроек машины ослепнут"

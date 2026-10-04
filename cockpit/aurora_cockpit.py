@@ -55,7 +55,8 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
-                           replace_file, utc_slug, utc_stamp, yaml_scalar)
+                           personal_kit_file, replace_file, utc_slug, utc_stamp,
+                           yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
@@ -1504,7 +1505,7 @@ def mcp_servers_of(project: str = "") -> tuple:
     """(серверы, ошибка) из файла проекта или машины. Нет файла — пусто и без ошибки."""
     path = mcp_file(project)
     label = "mcp.json проекта" if project else "local/mcp.json"
-    if not os.path.isfile(path):
+    if not os.path.isfile(path) or personal_kit_file(path):
         return {}, ""
     try:
         data = json.loads(read_text(path) or "{}")
@@ -1965,9 +1966,13 @@ def _registry() -> list:
     """
     stamp = os.path.getmtime(os.path.join(KIT, "VERSION")) if os.path.isfile(
         os.path.join(KIT, "VERSION")) else 0
-    if "registry" in CACHE and CACHE.get("registry_stamp") == stamp:
+    # Кэш в памяти помнит, ДЛЯ КАКОГО кита и в каком виде собран реестр — как и ключ на
+    # диске. Без этого реестр временного кита (без `dev:`) оставался в памяти процесса после
+    # возврата `KIT`, и следующие проверки «из кита видно разработку» краснели через раз.
+    mem = (KIT, stamp, kit_is_source())
+    if "registry" in CACHE and CACHE.get("registry_stamp") == mem:
         return CACHE["registry"]
-    CACHE["registry_stamp"] = stamp
+    CACHE["registry_stamp"] = mem
     # Кэш на диске: сборка реестра запускает `--help` у полусотни скриптов, и это секунды
     # на КАЖДОМ старте панели — а меняется он только вместе с версией ядра и реестром
     # команд. Ключ — обе метки; не сошлись, значит пересобираем.

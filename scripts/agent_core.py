@@ -933,6 +933,9 @@ def kit_mcp_path(kit=None) -> Path:
 
 def read_mcp_servers(path) -> dict:
     """`mcpServers` из файла в стандартной форме; нет файла или он битый — пусто."""
+    from aurora_common import personal_kit_file
+    if personal_kit_file(path):
+        return {}
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
