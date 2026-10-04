@@ -2849,3 +2849,54 @@ def test_the_readonly_guard_sees_the_path_the_way_the_filesystem_does(tmp: Path)
         assert out.get("error"), (rel, out)
     assert kb_card.is_file(), "карточка базы знаний удалена в обход охраны"
     assert mod.why_readonly("AuroraKnowledgeDB/Decisions/./DR-1.md") == ""
+
+
+def test_the_dashboard_server_serves_only_the_report_and_refuses_strangers(tmp: Path):
+    """Сервер дашборда раздаёт папку отчёта, а не весь проект, и не слушает чужие страницы.
+
+    Раздавался корень проекта: `/.env.aurora.local` с токенами, `/.git/config` и база знаний
+    отдавались по HTTP без проверки, а `GET /__rebuild` запускал пять скриптов от имени любой
+    страницы в браузере.
+    """
+    import socket
+    import time
+    import urllib.error
+    import urllib.request
+    root = make_project(tmp)
+    (root / ".env.aurora.local").write_text("JIRA_PERSONAL_TOKEN=SECRET123\n", encoding="utf-8")
+    rep = root / "Artifacts/reports"
+    rep.mkdir(parents=True, exist_ok=True)
+    (rep / "page.html").write_text("<html>отчёт</html>", encoding="utf-8")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen([sys.executable, str(KIT / "reports/analyst/serve_dashboard.py"),
+                             "--port", str(port)], cwd=str(root),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def get(path, headers=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode("utf-8", "replace")
+    try:
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        assert get("/Artifacts/reports/page.html")[0] == 200, "отчёт не отдаётся"
+        code, body = get("/.env.aurora.local")
+        assert code == 404 and "SECRET123" not in body, (code, body)
+        assert get("/aurora.config.yaml")[0] == 404, "конфиг проекта отдаётся"
+        assert get("/Artifacts/reports/../../.env.aurora.local")[0] == 404
+        assert get("/Artifacts/reports/page.html", {"Host": "evil.com"})[0] == 403, \
+            "ответил на чужое имя хоста"
+        code, _ = get("/__rebuild", {"Sec-Fetch-Site": "cross-site"})
+        assert code == 403, "пересборку запустила чужая страница"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
