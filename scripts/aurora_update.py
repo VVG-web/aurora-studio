@@ -364,6 +364,25 @@ def refresh_gitignore(target: Path) -> list:
         return []
 
 
+def refresh_gitattributes(target: Path) -> list:
+    """Дописать в .gitattributes правила кита — сейчас одно: пусковой .bat без перевода строк.
+
+    Обновление кладёт start-aurora.bat с CRLF, а git с core.autocrlf=input сохранял его в
+    истории проекта с LF: на Mac этого не видно, а на Windows клон проекта получал
+    пусковой файл, в котором cmd.exe не находит меток goto. У самого кита правило есть
+    давно; проекты его не получали.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        from install_aurora import merge_gitignore, GITATTRIBUTES_BLOCK
+    except Exception:
+        return []
+    try:
+        return merge_gitignore(target / ".gitattributes", GITATTRIBUTES_BLOCK)
+    except OSError:
+        return []
+
+
 def config_defaults(target: Path, ignore: list) -> tuple:
     """(новый текст, что записать) — значения доверия по умолчанию для конфига проекта.
 
@@ -484,11 +503,13 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     (target / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
     refreshed = refresh_hooks(target)
     ignored = refresh_gitignore(target)
+    attrs = refresh_gitattributes(target)
     stamp_version(target, kv)
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
           + (f", хук обновлён ({refreshed})" if refreshed else "")
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
+          + (f", в .gitattributes дописано правил: {len(attrs)}" if attrs else "")
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
           + f". Версия → {kv}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")

@@ -123,6 +123,15 @@ AuroraKnowledgeDB/meta/graphify/
 """
 
 
+# Правила .gitattributes, которые движок держит в проекте. Пусковой файл Windows кит пишет
+# с CRLF, но без правила git с core.autocrlf=input (обычная настройка Mac) сохраняет его в
+# истории с одними LF — и на Windows из клона проекта cmd.exe промахивается мимо меток goto.
+GITATTRIBUTES_BLOCK = """
+# Пусковой файл Windows — концы строк CRLF как есть: с одними LF cmd.exe промахивается мимо goto
+/start-aurora.bat -text
+"""
+
+
 def merge_gitignore(path, block: str = "") -> list:
     """Дописать в .gitignore недостающие правила кита. → какие строки добавлены.
 
@@ -575,6 +584,9 @@ Do not hardcode another teammate's credentials in skills or rules.
         added = merge_gitignore(gi)
         self.log(f"  appended: .gitignore ({len(added)} правил)" if added
                  else "  skip (exists): .gitignore")
+        attrs = merge_gitignore(self.target / ".gitattributes", GITATTRIBUTES_BLOCK)
+        self.log(f"  appended: .gitattributes ({len(attrs)} правил)" if attrs
+                 else "  skip (exists): .gitattributes")
 
     def write_report(self):
         report = f"""---

@@ -78,3 +78,45 @@ def test_the_test_run_never_reads_the_developers_personal_kit_files(_t):
     assert A.load_env(os.path.join(kit, A.ENV_FILE)) == {}
     assert not A.personal_kit_file(os.path.join(str(_t), A.ENV_FILE)), \
         "временный кит теста объявлен личным — тесты настроек машины ослепнут"
+
+
+@test
+def test_the_windows_launcher_keeps_crlf_in_the_projects_git(tmp: Path):
+    """Пусковой .bat проекта попадает в git с CRLF, а не с LF.
+
+    Кит пишет start-aurora.bat с CRLF, но у проектов не было .gitattributes: git с
+    core.autocrlf=input (обычная настройка Mac) сохранял файл с одними LF. В PRJ-A он так и
+    лежал в истории 4.10.2026 — на Windows из такого клона cmd.exe промахивается мимо меток
+    goto. Правило кладут и установка, и обновление движка.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    U = importlib.import_module("aurora_update")
+    bat = b"@echo off\r\ngoto :start\r\n:start\r\necho ok\r\n"
+
+    def staged(repo: Path) -> bytes:
+        repo.mkdir(exist_ok=True)
+        (repo / "start-aurora.bat").write_bytes(bat)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=input", "add", "-A"],
+                       check=True, capture_output=True)
+        return subprocess.run(["git", "-C", str(repo), "cat-file", "blob", ":start-aurora.bat"],
+                              check=True, capture_output=True).stdout
+
+    assert b"\r\n" not in staged(tmp / "без правила"), \
+        "без правила git должен был срезать CRLF — проверка ничего не ловит"
+
+    repo = tmp / "проект"
+    repo.mkdir()
+    (repo / ".gitattributes").write_text("*.png binary\n", encoding="utf-8")
+    added = U.refresh_gitattributes(repo)
+    assert added == ["/start-aurora.bat -text"], added
+    assert U.refresh_gitattributes(repo) == [], "повторное обновление дописало правило ещё раз"
+    attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.png binary" in attrs, "строка человека потерялась"
+    assert staged(repo) == bat, "пусковой файл ушёл в git проекта не байт в байт"
+
+    upd = (SCRIPTS / "aurora_update.py").read_text(encoding="utf-8")
+    inst = (SCRIPTS / "install_aurora.py").read_text(encoding="utf-8")
+    assert "refresh_gitattributes(target)" in upd, "обновление движка не кладёт правило"
+    assert '".gitattributes", GITATTRIBUTES_BLOCK' in inst, "установка не кладёт правило"
