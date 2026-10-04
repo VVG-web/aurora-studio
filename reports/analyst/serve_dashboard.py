@@ -18,6 +18,10 @@ import paths
 PACKAGE_ROOT = paths.PROJECT_ROOT
 BASE_DIR = PACKAGE_ROOT
 
+# Что раздаётся наружу: папка отчёта и папка настроек. Корень проекта целиком раздавать
+# нельзя — в нём `.env.aurora.local` с токенами и вся база знаний.
+SERVED_DIRS = [os.path.dirname(paths.OUTPUT_PATH), os.path.dirname(paths.ROSTER_PATH)]
+
 # Known config files (name -> absolute path)
 CONFIG_FILES = {
     "roster": paths.ROSTER_PATH,
@@ -81,7 +85,47 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # при создании обработчика, поэтому chdir внутри do_GET уже ни на что не влиял.
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
+    def host_ok(self) -> bool:
+        """Запрос пришёл на петлевой адрес. Иначе чужая страница, чьё имя перенаправили на
+        127.0.0.1 (DNS rebinding), читала бы файлы проекта через этот сервер."""
+        host = (self.headers.get("Host") or "").strip()
+        host = host[:host.index("]") + 1] if host.startswith("[") and "]" in host \
+            else host.split(":")[0]
+        return host in ("127.0.0.1", "localhost", "[::1]")
+
+    def same_site(self) -> bool:
+        """Действия (пересборка, редактор) не принимаются со страниц других сайтов.
+
+        Браузер сам сообщает происхождение запроса (`Sec-Fetch-Site`); у запроса «из
+        адресной строки» и у дашборда оно `none` или `same-origin`, у чужой страницы —
+        `cross-site`. Клиент без заголовка (curl) — не браузер, и чужой страницей быть не может.
+        """
+        return self.headers.get("Sec-Fetch-Site", "same-origin") in ("same-origin", "none")
+
+    def servable(self) -> bool:
+        """Раздаётся только папка отчёта и папка настроек: корень проекта — это ещё `.env`,
+        `.git` и вся база знаний."""
+        from urllib.parse import unquote, urlsplit
+        rel = os.path.normpath(unquote(urlsplit(self.path).path).lstrip("/"))
+        full = os.path.realpath(os.path.join(BASE_DIR, rel))
+        if any(part.startswith(".") for part in rel.replace("\\", "/").split("/") if part != "."):
+            return False
+        for allowed in SERVED_DIRS:
+            allowed = os.path.realpath(allowed)
+            if full == allowed or full.startswith(allowed + os.sep):
+                return True
+        return False
+
     def do_GET(self):
+        if not self.host_ok():
+            self.send_json(403, {"ok": False, "error": "сервер отвечает только на localhost"})
+            return
+        if self.path.startswith(('/__open/', '/__reveal/', '/__rebuild')) and not self.same_site():
+            self.send_json(403, {"ok": False, "error": "действие принимается только со страницы дашборда"})
+            return
+        if not self.path.startswith(('/__open/', '/__reveal/', '/__rebuild')) and not self.servable():
+            self.send_json(404, {"ok": False, "error": "нет такого файла"})
+            return
         # Check for __open/ endpoint
         if self.path.startswith('/__open/'):
             self.handle_open_file()
@@ -97,6 +141,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         # Otherwise serve static files from BASE_DIR
         super().do_GET()
+
+    def do_HEAD(self):
+        # HEAD отдаёт размер и дату того же файла — охрана у него та же, что у GET
+        if not self.host_ok() or not self.servable():
+            self.send_response(404)
+            self.end_headers()
+            return
+        super().do_HEAD()
 
     def send_json(self, code, payload):
         body = json.dumps(payload, ensure_ascii=False).encode()
