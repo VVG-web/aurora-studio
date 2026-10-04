@@ -469,7 +469,11 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     for c in writes + seeds:
         dst = target / c.path
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(c.new_text, encoding="utf-8")
+        # .bat — с CRLF при любой системе (с одними LF cmd.exe промахивается мимо меток goto).
+        text = c.new_text
+        if dst.suffix == ".bat":
+            text = text.replace("\r\n", "\n").replace("\n", "\r\n")
+        dst.write_bytes(text.encode("utf-8"))
         if dst.suffix in (".command", ".sh"):
             dst.chmod(0o755)     # без бита исполнения двойной щелчок не сработает
     for r in retired:

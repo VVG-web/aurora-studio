@@ -89,7 +89,18 @@ fi
 # и через эту дыру в публичный репозиторий уехали рабочая папка чужого инструмента
 # и файл состояния прогона с именем живого проекта.
 if [ -f scripts/aurora_hooks.py ]; then
-  printf '%s\n' "$input" | python3 scripts/aurora_hooks.py --scan-push || exit 1
+# Интерпретатор проверяем запуском: на Windows нет `python3` (есть `python` и `py`),
+# а `python3` из WindowsApps — заглушка магазина, которая не запускается.
+PY=
+for c in python3 python 'py -3'; do
+  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+done
+  if [ -z "$PY" ]; then
+    echo "aurora: нет Python 3.9+ — содержимое пуша проверить нечем, пуш остановлен." >&2
+    echo "        Осознанно: git push --no-verify" >&2
+    exit 1
+  fi
+  printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push || exit 1
 fi
 exit 0
 """
@@ -104,6 +115,17 @@ HOOK = '''#!/bin/sh
 LINT=".opencode/scripts/kb_lint.py"
 MODE_EARLY="{mode}"
 [ -f "$LINT" ] || exit 0
+
+# Интерпретатор проверяем запуском: на Windows нет `python3` (есть `python` и `py`),
+# а `python3` из WindowsApps — заглушка магазина, которая не запускается.
+PY=
+for c in python3 python 'py -3'; do
+  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+done
+if [ -z "$PY" ]; then
+  echo "aurora: нет Python 3.9+ — проверка базы пропущена" >&2
+  exit 0
+fi
 
 # Храповик снят — кнопкой панели или коммитом оборота маршрута. Обе проверки ниже тогда
 # ничего не решают, только печатают: а линтер всей базы на каждом коммите маршрута
@@ -124,12 +146,12 @@ STAGED_LIST=$(mktemp)
 git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM \\
     -- AuroraKnowledgeDB > "$STAGED_LIST" 2>/dev/null
 if [ -s "$STAGED_LIST" ]; then
-  MINE=$(python3 "$LINT" --only-from "$STAGED_LIST" --summary 2>&1)
+  MINE=$($PY "$LINT" --only-from "$STAGED_LIST" --summary 2>&1)
   MINE_ERR=$(printf '%s' "$MINE" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
   if [ -n "$MINE_ERR" ] && [ "$MINE_ERR" -gt 0 ] && [ "$MODE_EARLY" != "warn" ]; then
     echo "$MINE"
     echo "aurora: в том, что вы коммитите, ошибок $MINE_ERR — они ваши, не чужие."
-    python3 "$LINT" --only-from "$STAGED_LIST" 2>&1 | head -20
+    $PY "$LINT" --only-from "$STAGED_LIST" 2>&1 | head -20
     echo "        Починить: в панели «Команды» → kb:repair (в терминале:"
     echo "                  python3 .opencode/scripts/kb_fix.py --all --apply)"
     echo "        Всё равно зафиксировать: кнопка «Зафиксировать всё равно» в панели"
@@ -140,7 +162,7 @@ if [ -s "$STAGED_LIST" ]; then
 fi
 rm -f "$STAGED_LIST"
 
-OUT=$(python3 "$LINT" --summary 2>&1)
+OUT=$($PY "$LINT" --summary 2>&1)
 ERRORS=$(printf '%s' "$OUT" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
 CARDS=$(printf '%s' "$OUT" | sed -n 's/.*карточек \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
 [ -z "$ERRORS" ] && exit 0
@@ -205,16 +227,21 @@ TERMS="{terms}"
 [ -f "$TERMS" ] || exit 0
 # Проверяет Python, а не grep: шаблон с кириллицей у grep зависит от локали, и под
 # LANG=C (Linux, проверка GitHub) он молча ничего не находил — коммит проходил.
-PY=$(command -v python3 || command -v python)
+# Интерпретатор проверяем запуском: на Windows нет `python3` (есть `python` и `py`),
+# а `python3` из WindowsApps — заглушка магазина, которая не запускается.
+PY=
+for c in python3 python 'py -3'; do
+  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+done
 if [ -z "$PY" ]; then
-  echo "aurora: нет python3 — сообщение коммита проверить нечем, коммит остановлен." >&2
+  echo "aurora: нет Python 3.9+ — сообщение коммита проверить нечем, коммит остановлен." >&2
   echo "        Осознанно: git commit --no-verify" >&2
   exit 1
 fi
 # Скрипт — из самого репозитория; нет его там — тот, которым хук поставлен.
 SCAN=scripts/aurora_hooks.py
 [ -f "$SCAN" ] || SCAN="{script}"
-exec "$PY" "$SCAN" --scan-msg "$1"
+exec $PY "$SCAN" --scan-msg "$1"
 """
 
 

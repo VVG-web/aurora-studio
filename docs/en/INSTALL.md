@@ -40,6 +40,10 @@ From the kit root:
 python3 aurora.py new /absolute/path/to/your-project
 ```
 
+On Windows write `py -3` (or `python`) instead of `python3`: Python from python.org or winget does not
+install a `python3` command, and the one in WindowsApps is a Store stub. `start-aurora.bat` and the git hooks pick the
+interpreter themselves.
+
 The command does four steps:
 
 1. **Layout** (`install_aurora.py`): folders by `structure_dirs.txt`, a copy of the engine into

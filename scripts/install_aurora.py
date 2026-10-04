@@ -483,7 +483,9 @@ _Мета-вопросы:_
             if self.dry_run:
                 self.log(f"  would write: {name}")
                 continue
-            path.write_text(text, encoding="utf-8")
+            # .bat — с CRLF при любой системе: с одними LF cmd.exe промахивается мимо меток goto.
+            path.write_bytes((text.replace("\r\n", "\n").replace("\n", "\r\n") if name.endswith(".bat")
+                              else text).encode("utf-8"))
             if name.endswith(".command"):
                 path.chmod(0o755)
             self.log(f"  wrote: {name}")
