@@ -2715,3 +2715,23 @@ def test_a_live_page_with_retired_words_in_its_title_is_still_parsed(_t):
                  "ALG-1 (не используем).md", "Удалить_или_переиспользовать_ALG-145.md",
                  "Архив/ALG-061.md", "Архив.md"):
         assert B.retired_page(base + gone), f"отозванная страница в разборе: {gone}"
+
+
+def test_a_stub_without_a_status_line_gets_one_once(tmp: Path):
+    """Заготовка, у которой строки `status:` нет совсем, получает её — и один раз.
+
+    Подмена искала строку, не находила, а отчёт всё равно писал «статус поставлен»:
+    файл не менялся, и каждый следующий прогон делал вид, что чинит то же самое.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    stub = kb / "Concepts/БезСтатуса.md"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text('---\ntitle: "БезСтатуса"\ntype: concept\ntags: [заготовка]\n---\n\n'
+                    "# БезСтатуса\n\n_Заготовка: имя названо._\n", encoding="utf-8")
+    first = run("kb_fix.py", "--stub-text", "--apply", "--allow-dirty", cwd=root).stdout
+    text = stub.read_text(encoding="utf-8")
+    assert "status: placeholder" in text, text
+    assert "поставлен у 1" in first, first
+    second = run("kb_fix.py", "--stub-text", "--apply", "--allow-dirty", cwd=root).stdout
+    assert "поставлен у 0" in second and stub.read_text(encoding="utf-8") == text, second
