@@ -247,18 +247,31 @@ def inside(root: str, path: str) -> str:
     return full if full == root or full.startswith(root + os.sep) else ""
 
 
+def norm_rel(rel: str) -> str:
+    """Путь от корня проекта в том виде, в каком его увидит `inside`: без `./`, `a/../`,
+    ведущего слэша и с прямыми слэшами.
+
+    Охрана «только для чтения» сверяла приставку с тем, что прислал браузер, а `inside`
+    нормализовал путь уже после: `./Sources/x.md` и `Artifacts/../Sources/x.md` проходили
+    охрану и записывались в источники.
+    """
+    rel = os.path.normpath((rel or "").replace("\\", "/").lstrip("/")).replace("\\", "/")
+    return "" if rel == "." else rel
+
+
 def why_readonly(rel: str, text: str = "") -> str:
     """Почему этот файл нельзя править — словами, а не флагом.
 
     Пустая строка значит «правится». Причина нужна в заголовке страницы: запрет без
     объяснения человек обходит через системный проводник, и мы теряем и запрет, и след.
     """
-    rel = rel.replace("\\", "/")
+    rel = norm_rel(rel)
+    low = rel.lower()          # macOS и Windows различают регистр не всегда: `sources/` — тоже источники
     for prefix, why in READONLY:
-        if rel == prefix or rel.startswith(prefix + "/"):
+        if low == prefix.lower() or low.startswith(prefix.lower() + "/"):
             return why
-    if rel.startswith("AuroraKnowledgeDB/"):
-        if any(rel.startswith(w + "/") or rel == w for w in KB_WRITABLE):
+    if low.startswith("auroraknowledgedb/"):
+        if any(low.startswith(w.lower() + "/") or low == w.lower() for w in KB_WRITABLE):
             return ""
         return ("карточка выведена из источников: правится корректирующим артефактом, "
                 "а не здесь — иначе следующая сборка сотрёт правку")
@@ -410,7 +423,7 @@ def file_delete(project: str, rel: str) -> dict:
     ro = why_readonly(rel, read_text(full, limit=4000))
     if ro:
         return {"error": f"файл только для чтения: {ro}"}
-    if rel.replace("\\", "/").startswith("AuroraKnowledgeDB/"):
+    if norm_rel(rel).lower().startswith("auroraknowledgedb/"):
         return {"error": "из базы знаний не удаляют: устаревшее заменяют через "
                          "kb:supersede, неверное правят корректировкой. Инвариант 2"}
     try:
