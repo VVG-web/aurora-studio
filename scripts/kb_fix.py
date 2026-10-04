@@ -1766,7 +1766,15 @@ def plan_stub_text(cards: dict, plan: Plan) -> tuple:
             fixed_text.append(c.stem)
         status = (c.fm.get("status") or "").strip().strip('"')
         if status != PLACEHOLDER:
-            head = re.sub(r"^status:.*$", f"status: {PLACEHOLDER}", head, count=1, flags=re.M)
+            if re.search(r"^status:", head, re.M):
+                head = re.sub(r"^status:.*$", f"status: {PLACEHOLDER}", head, count=1, flags=re.M)
+            else:
+                # Строки статуса нет вовсе: подмена не находила её, а отчёт всё равно писал
+                # «поставлен» — на каждом прогоне заново. Ставим строку перед закрытием шапки.
+                end = head.find("\n---", 3)
+                if end < 0:
+                    continue
+                head = head[:end] + f"\nstatus: {PLACEHOLDER}" + head[end:]
             fixed_status.append(c.stem)
             changed = True
         if changed:
