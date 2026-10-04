@@ -2666,3 +2666,32 @@ def test_script_help_does_not_print_paths_in_the_native_separator(tmp: Path):
                         continue
                     bad.append(f"{f.name}:{node.lineno}: {{{expr}}}")
     assert not bad, "в справке путь подставлен как есть:\n" + "\n".join(bad)
+
+
+@test
+def test_no_two_scripts_keep_a_copy_of_the_same_function(_t):
+    """Одна и та же функция в двух скриптах не живёт: общее лежит в `aurora_common`.
+
+    `kb_fix` держал свою `git_dirty` и `check_git_guard` рядом с `aurora_common.git_guard`:
+    копии отличались одним словом в сообщении и разошлись бы на первой же правке, а отказ
+    «грязное дерево» у ремонта и у остальных команд объяснялся бы по-разному.
+    """
+    import ast as _ast
+    import difflib
+    by: dict = {}
+    for path in sorted(SCRIPTS.glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        for node in _ast.parse(src).body:
+            if isinstance(node, _ast.FunctionDef) and node.name != "main":
+                seg = _ast.get_source_segment(src, node) or ""
+                # имя параметра и подпись не в счёт: копия с другим именем аргумента — всё та же копия
+                body = re.sub(r"^def \w+\([^)]*\)[^:]*:", "", seg)
+                if len(body) >= 250:
+                    by.setdefault(node.name, []).append((path.name, node.lineno, body))
+    twins = []
+    for name, defs in by.items():
+        for i, a in enumerate(defs):
+            for b in defs[i + 1:]:
+                if difflib.SequenceMatcher(None, a[2], b[2], autojunk=False).ratio() >= 0.9:
+                    twins.append(f"{name}: {a[0]}:{a[1]} ≈ {b[0]}:{b[1]}")
+    assert not twins, "копии одной функции в разных скриптах:\n  " + "\n  ".join(twins)
