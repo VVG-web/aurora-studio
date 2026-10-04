@@ -128,6 +128,16 @@ def live_only(paths: list) -> list:
     return live or paths
 
 
+def current(path: str, c: "Card", plan) -> "Card":
+    """Карточка в том виде, в каком её оставили прежние шаги этого прогона.
+
+    Шаги пишут в план, а не на диск: следующий шаг, взявший `c.text`, затирал правку
+    предыдущего (`--links` вместе с `--terms`, `--template` или `--copies`) — отчёт говорил
+    «исправлено», а в файле оставалось старое. Берём текст из плана, если он там есть.
+    """
+    return Card(path, plan.file_writes[path]) if path in plan.file_writes else c
+
+
 class Index:
     """Разрешение имён: точное, по регистру, по гомоглифам, по алиасам."""
 
@@ -1055,6 +1065,7 @@ def plan_term_definitions(cards: dict, plan: Plan) -> list:
     moc = {c.stem for p, c in cards.items() if "/MOC/" in "/" + p.replace("\\", "/")}
     done = []
     for path, c in sorted(cards.items()):
+        c = current(path, c, plan)
         if ("/_archive/" in path or path.replace("\\", "/").startswith(("Templates/", "Prompts/"))
                 or not c.has_frontmatter or not is_placeholder(c.fm, c.text)):
             continue
@@ -1438,6 +1449,7 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
         kinds = {}
     bare_pars = {p.rstrip(". ") for p in blocks if kinds.get(p) == "service"}
     for path, c in sorted(cards.items()):
+        c = current(path, c, plan)
         rel = path.replace("\\", "/")
         if (is_service(rel) or "/_archive/" in rel or "/MOC/" in rel
                 or c.stem.startswith("_") or is_placeholder(c.fm, c.text)):
@@ -1581,6 +1593,7 @@ def plan_copies(cards: dict, plan: Plan) -> tuple:
     trimmed, archived = [], []
     gone: dict = {}
     for path, c in sorted(cards.items()):
+        c = current(path, c, plan)
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
             continue

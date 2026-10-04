@@ -2785,3 +2785,37 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
                         timeout=30, env={"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp)})
     assert cp.returncode == 0 and "scanned" in cp.stdout, \
         f"пуш-хук не нашёл python за заглушкой python3: rc={cp.returncode}\n{cp.stdout}{cp.stderr}"
+
+
+def test_a_later_repair_step_keeps_what_an_earlier_one_wrote(tmp: Path):
+    """Шаг ремонта берёт карточку из плана, а не с диска: правка прежнего шага не теряется.
+
+    `--links` исправлял ссылку, затем `--copies` брал `c.text` с диска и писал карточку без
+    этой правки: отчёт говорил «исправлено», а в файле оставалось прежнее. То же у
+    `--terms` и `--template`.
+    """
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    d = root / "Raw/customer/FAQ"
+    d.mkdir(parents=True)
+    human = d / "Памятка_для_перевозчиков.md"
+    human.write_text("# Памятка\n\n> **Источник:** `Памятка для перевозчиков.pdf`\n\n"
+                     + "Перевозчик предъявляет QR-код. " * 20, encoding="utf-8")
+    machine = d / "Памятка для перевозчиков.md"
+    machine.write_text('---\ntitle: "П"\nconverted_from: "Raw/customer/FAQ/Памятка для '
+                       'перевозчиков.pdf"\n---\n\n' + "Перевозчик код. " * 20, encoding="utf-8")
+    rel = lambda p: p.relative_to(root).as_posix()  # noqa: E731
+    card(root, "Processes/Предъявление-кода.md",
+         f"Перевозчик. См. [[жив-карточка]].\n\n## Источник (перенесено дословно)\n\n"
+         f"### {rel(human)}\n\nИз копии.\n\n### {rel(machine)}\n\nИз расшифровки.\n",
+         status="knowledge", kind="knowledge", distilled="2026-09-20",
+         sources=f'\n  - "{rel(human)}"\n  - "{rel(machine)}"')
+    card(root, "Concepts/Жив-карточка.md", "x", status="knowledge")
+    man = kb / "meta/manifest.json"
+    man.parent.mkdir(parents=True, exist_ok=True)
+    man.write_text(json.dumps({"sources": {rel(human): {"cards": 1}, rel(machine): {"cards": 2}}}),
+                   encoding="utf-8")
+    run("kb_fix.py", "--links", "--copies", "--apply", "--allow-dirty", cwd=root)
+    text = (kb / "Processes/Предъявление-кода.md").read_text(encoding="utf-8")
+    assert "[[Жив-карточка]]" in text and "[[жив-карточка]]" not in text, text
+    assert rel(machine) not in text.split("## Источник", 1)[0], "копия не снята"
