@@ -1496,13 +1496,15 @@ def test_a_route_says_why_a_step_did_not_start_and_saves_its_tail(tmp: Path):
         "причина отказа не попадает в консоль"
     assert "refused: why" in refuse and "rc:2" in refuse, \
         "отказ неотличим от упавшей команды"
-    run = ui[ui.index("async function runRoute("):ui.index("async function resumeLastRoute(")]
-    assert "note: res.refused" in run, "в событиях шага нет причины отказа"
-    assert "ROUTE.refused ?" in run, "итог маршрута говорит «не отработала» вместо причины"
-    tail = run[run.index("const bad = ROUTE.failed"):run.index("ROUTE = null;")]
-    assert '"/api/git/commit"' in tail and "if (write && S.project)" in tail, \
+    # Маршрут ведёт сервер (1.152.0): события, итог и хвост — его.
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert 'ev["note"] = res["refused"]' in rr, "в событиях шага нет причины отказа"
+    assert '(self.refused + ". ") if self.refused else t("route.cmd_failed")' in rr, \
+        "итог маршрута говорит «не отработала» вместо причины"
+    tail = rr[rr.index("def _finish"):rr.index("def _close")]
+    assert "if self.write:" in tail and 'self._commit(t("route.commit_route"' in tail, \
         "результат маршрута после цикла не фиксируется"
-    assert "skip_ratchet:true" in tail and 't("route.not_saved"' in tail, \
+    assert "git_commit(self.project, message, None, True)" in rr and 't("route.not_saved"' in tail, \
         "фиксация хвоста встанет на храповике или провалится молча"
 
 

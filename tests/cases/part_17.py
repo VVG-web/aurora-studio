@@ -220,3 +220,103 @@ def test_a_link_to_a_mirror_page_becomes_a_link_to_its_code(tmp: Path):
         "индекс кода не заведён — ссылка осталась битой"
     lint = run("kb_lint.py", cwd=root, expect_rc=None).stdout
     assert "US-3.6.28" not in lint, lint[-600:]
+
+
+@test
+def test_a_card_left_without_its_page_goes_to_the_archive(tmp: Path):
+    """Машинная карточка, чья страница ушла из зеркала, не висит в базе без опоры.
+
+    PRJ-A 4.10.2026: страница о внутреннем учёте времени ушла из Confluence, ремонт снял
+    источник, и две карточки месяц стояли «без класса» — ни доверия, ни способа проверить.
+    Решено: такая карточка уходит в архив, ссылки на неё становятся словами. Тема папки,
+    которую переименовали (PRJ-B: «Налоговые_декларации» → «ALG_Налоговые_декларации»),
+    сводится с темой новой папки: синоним и ссылки переходят к живой. Слово человека
+    держит карточку в базе.
+    """
+    root = make_project(tmp, git=True)
+    new_dir = root / "Sources/Confluence/Алгоритмы/ALG_Налоговые_декларации"
+    new_dir.mkdir(parents=True)
+    (new_dir / "Страница.md").write_text("---\ntitle: x\n---\n\nтекст\n", encoding="utf-8")
+    src = lambda p: f'\n  - "{p}"'
+    card(root, "Concepts/ALG-Налоговые-декларации.md", "Тема папки.", built="machine",
+         tags="[тема]", sources=src("Sources/Confluence/Алгоритмы/ALG_Налоговые_декларации"))
+    card(root, "Concepts/Налоговые-декларации.md", "Тема папки.", built="machine",
+         tags="[тема]", sources=src("Sources/Confluence/Алгоритмы/Налоговые_декларации"))
+    card(root, "Processes/Учёт-времени.md", "Учёт времени по неделям.", built="machine",
+         kind="knowledge", sources=src("Sources/Confluence/Команда/Учёт.md"))
+    card(root, "Processes/Отпуск.md", "Отпуск.\n\n## Исправления человеком\n\n- верно\n",
+         built="machine", kind="knowledge", sources=src("Sources/Confluence/Команда/Отпуск.md"))
+    card(root, "Concepts/Читатель.md",
+         "См. [[Налоговые-декларации]] и [[Учёт-времени|учёт]].", built="machine")
+    out = run("kb_fix.py", "--gone-sources", "--apply", "--allow-dirty", cwd=root).stdout
+    kb = root / "AuroraKnowledgeDB"
+    assert "сведена в тему ALG-Налоговые-декларации" in out, out[-800:]
+    assert (kb / "_archive/Налоговые-декларации.md").is_file(), "прежняя тема осталась в базе"
+    assert (kb / "_archive/Учёт-времени.md").is_file(), "карточка без опоры осталась в базе"
+    assert (kb / "Processes/Отпуск.md").is_file(), "слово человека не удержало карточку"
+    reader = (kb / "Concepts/Читатель.md").read_text(encoding="utf-8")
+    assert "[[ALG-Налоговые-декларации]]" in reader, reader
+    assert "[[Учёт-времени" not in reader and "учёт" in reader, reader
+    live = (kb / "Concepts/ALG-Налоговые-декларации.md").read_text(encoding="utf-8")
+    assert "Налоговые-декларации" in live.split("---")[1], "прежнее имя не стало синонимом"
+    gone = (kb / "_archive/Учёт-времени.md").read_text(encoding="utf-8")
+    assert "знание ушло вместе с ней" in gone, "в истории не сказано, почему карточка ушла"
+
+
+@test
+def test_the_golden_reference_follows_its_lost_targets_by_meaning(tmp: Path):
+    """Эталон с пропавшими целями: имя — механикой, остальное — модель по ответу, не по похожести.
+
+    На PRJ-C 14 контрольных вопросов месяц указывали на пропавшие карточки: строки принимал
+    только человек, и замер качества мерил пустоту. 4.10.2026 пользователь передал это
+    движку. Цель, сменившая имя (слияние с `superseded_by`), переводится сразу; для остальных
+    модель смотрит кандидатов и переписывает строку, только если ответ в тексте есть. Нет —
+    строка остаётся: потерянное знание должно быть видно.
+    """
+    import json
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    AG = importlib.import_module("agent_core")
+    root = make_project(tmp, git=True)
+    card(root, "Concepts/Движение-платежа.md",
+         "Платёж проходит путь от банка до казначейства через расчётный центр.",
+         status="knowledge", kind="knowledge")
+    arch = root / "AuroraKnowledgeDB/_archive"
+    arch.mkdir(parents=True, exist_ok=True)
+    (arch / "Старое-имя.md").write_text('---\ntitle: "Старое-имя"\nstatus: deprecated\n'
+                                        'superseded_by: "[[Движение-платежа]]"\n---\n\nx\n',
+                                        encoding="utf-8")
+    gold = root / "AuroraKnowledgeDB/meta/golden_questions.md"
+    gold.parent.mkdir(parents=True, exist_ok=True)
+    gold.write_text("# Эталон\n\n| # | Вопрос | Эталон | Карточки |\n|---|---|---|---|\n"
+                    "| 1 | Какой путь проходит платёж до казначейства? | от банка до казначейства "
+                    "| [[Путь-платежа-ОП]] |\n"
+                    "| 2 | Сколько стоит обслуживание платежа в банке? | бесплатно | [[Тарифы]] |\n"
+                    "| 3 | Как движется платёж по счетам? | через расчётный центр | [[Старое-имя]] |\n",
+                    encoding="utf-8")
+    asked = []
+
+    def model(c, role, messages, **kw):
+        text = messages[0]["content"]
+        asked.append(text)
+        pick = "Движение-платежа" if "Какой путь" in text else ""
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": json.dumps({"card": pick, "why": "ответ в тексте" if pick else "нет"},
+                                   ensure_ascii=False)}
+
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+    res = R.run_golden(cfg, str(root), True, call=model)
+    text = gold.read_text(encoding="utf-8")
+    assert res["moved"] == 1, res
+    assert "| [[Движение-платежа]] |\n| 2" in text, "строка 1 не переведена:\n" + text
+    assert "[[Тарифы]]" in text, "строка без ответа в кандидатах переписана — прибор подогнан"
+    assert "через расчётный центр | [[Движение-платежа]]" in text, "слияние не прослежено"
+    assert not any("Как движется" in a for a in asked), "модель спрашивали о решённом механикой"
+    allowed, _why = AG.write_allowed("kb_search_quality.py",
+                                     ["--golden-remap", "--accept", "1", "--apply"])
+    assert not allowed, "агенту дали принимать строку по одной похожести"
+    scen = (SCRIPTS.parent / "cockpit/scenarios.txt").read_text(encoding="utf-8")
+    assert scen.index("agent:golden") < scen.index("ops:search-quality | "), \
+        "эталон чинится после замера — замер мерит пустоту"

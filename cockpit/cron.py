@@ -494,9 +494,12 @@ class Scheduler:
                 it.update(status="failed", note="no_route", finished=now_iso())
                 return
             resume = {"skipSigs": it["done"]} if it.get("done") else None
-            res = RR.RouteRun(ck, project, sc, it.get("write", True), lang=lang, log=log,
-                              stop=self.stop_event, on_job=on_job, on_step=on_step,
-                              resume=resume).run()
+            route = RR.RouteRun(ck, project, sc, it.get("write", True), lang=lang, log=log,
+                                stop=self.stop_event, on_job=on_job, on_step=on_step,
+                                resume=resume, trigger="cron", parent=run["id"])
+            if hasattr(ck, "route_register"):
+                ck.route_register(route, project)
+            res = route.run()
             it["title"] = sc["title"]
             it["run_id"] = res.get("run_id", "")
             status = {"passed": "passed", "stall": "stall", "offline": "offline",
@@ -511,7 +514,8 @@ class Scheduler:
             return
         log("▸ " + (it["cmd"] + " " + " ".join(it["args"])).strip())
         res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
-                         on_job=on_job)
+                         on_job=on_job, parent=run["id"])
+        it["run_id"] = res.get("run_id", "")
         for line in res["lines"][-LOG_KEEP:]:
             log(line)
         on_step((it["cmd"] + " " + " ".join(it["args"])).strip(), res["rc"])

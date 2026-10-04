@@ -718,7 +718,9 @@ def test_run_summary_counts_everything_the_human_asked(tmp: Path):
         "без git изменения базы выданы за посчитанные"
 
     ui = panel_sources()
-    assert "/api/git/head?project=" in ui and '"/api/run/summary"' in ui, \
+    # Маршрут ведёт сервер (1.152.0): итог складывает он, тем же `run_summary`.
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert "ck.RS.git_head(self.project)" in rr and "ck.RS.route(self.project, head" in rr, \
         "маршрут в панели не собирает итог прогона"
     assert ui.count("consoleLine(out, l)") >= 2 and "startsWith(SUMMARY_MARK)) return;" in ui, \
         "машинная строка итога показывается человеку в консоли"
@@ -1546,8 +1548,8 @@ def test_extract_tells_the_cycle_how_many_cards_wait_for_a_thesis(tmp: Path):
     rep = R.report_extract(res, True)
     m = _re.search(r"·\s*осталось:\s*(\d+)", rep)
     assert m and int(m.group(1)) == 1, f"вынос не сказал, что новая карточка ждёт тезиса:\n{rep[:400]}"
-    ui = ui_source()
-    assert "/·\\s*осталось:\\s*(\\d+)/" in ui, "цикл маршрута читает остаток по другому образцу"
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert 'r"·\\s*осталось:\\s*(\\d+)"' in rr, "цикл маршрута читает остаток по другому образцу"
 
 
 @test

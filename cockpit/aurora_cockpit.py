@@ -40,7 +40,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError, OSError):
         pass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import threading
 import time
@@ -60,6 +60,7 @@ from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
+import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -2852,14 +2853,182 @@ def run_archive(project: str, limit: int = 0) -> list:
 
 
 def trim_runs(project: str) -> None:
-    """Оставить последние RUNS_KEEP прогонов, старые — удалить: хронология без роста диска."""
+    """Оставить последние RUNS_KEEP запусков, старые — удалить: хронология без роста диска.
+
+    Считаются запуски, а не папки: шаги маршрута лежат своими папками с пометкой
+    родителя, и счёт по папкам на долгом «Обновить базу» (сотня шагов) удалял бы саму папку
+    маршрута посреди прогона. Шаг живёт, пока жив его родитель; идущий прогон не трогаем.
+    """
     base = runs_dir(project)
     try:
         dirs = sorted(os.listdir(base))
     except OSError:
         return
-    for d in dirs[:-RUNS_KEEP]:
+    metas = {d: RR.read_meta(os.path.join(base, d)) for d in dirs}
+    # Запуск — папка без родителя в этом архиве. Шаг цепочки расписания (родитель — запись
+    # расписания, а не папка) считается запуском сам по себе.
+    owner = {d: ((metas[d] or {}).get("parent") or d) for d in dirs}
+    owner = {d: (o if o in metas else d) for d, o in owner.items()}
+    tops = [d for d in dirs if owner[d] == d]
+    keep = set(tops[-RUNS_KEEP:])
+    for d in dirs:
+        if (metas[d] or {}).get("status") == "running":
+            continue
+        if owner[d] in keep or (metas[owner[d]] or {}).get("status") == "running":
+            continue
         shutil.rmtree(os.path.join(base, d), ignore_errors=True)
+
+
+HISTORY_ENTRIES = 60000      # записей журнала в ответ: дальше — обрезка с головы и пометка
+
+
+def history(project: str, limit: int = RUNS_SHOW) -> list:
+    """История запусков проекта: одна строка — один запуск, свежие сверху.
+
+    Раньше консоль показывала две половинчатые картины: журнал (по строке на команду,
+    последний прогон) и архив (по строке на папку). Один маршрут «Обновить базу» давал в
+    архиве полсотни строк — по одной на шаг, а журнал помнил только последний запуск каждой
+    команды. Теперь строка — то, что человек запустил: команда, маршрут или цепочка
+    расписания; раскрытие показывает весь её вывод.
+    """
+    rows = []
+    archive = run_archive(project)
+    windows = _legacy_route_windows(project, archive)
+    for item in archive:
+        base = os.path.dirname(item["path"])
+        meta = RR.read_meta(base)
+        if meta.get("parent"):
+            continue                 # шаг маршрута или цепочки — внутри родителя
+        rid = item["id"]
+        if not meta and _inside_legacy_route(rid, windows):
+            continue                 # шаг маршрута прежнего вида — по времени его событий
+        if meta:
+            rows.append({"id": rid, "kind": meta.get("kind") or "command",
+                         "title": meta.get("title") or rid, "scId": meta.get("scId", ""),
+                         "started": meta.get("started", ""), "finished": meta.get("finished", ""),
+                         "seconds": meta.get("seconds"), "status": meta.get("status", ""),
+                         "rc": meta.get("rc"), "who": meta.get("who", ""),
+                         "kit": meta.get("kit", ""), "trigger": meta.get("trigger", ""),
+                         "write": meta.get("write")})
+            continue
+        # Папка прежнего вида, без `meta.json`: шаги маршрута тогда не помечались родителем,
+        # и отличить их нельзя — показываем как были, со временем из имени.
+        legacy_route = rid.endswith("-route") or not os.path.isfile(item["path"])
+        rows.append({"id": rid, "kind": "route" if legacy_route else "command",
+                     "title": rid, "started": "", "legacy": True, "status": "", "rc": None})
+    for run in CRON.list_runs(CRON.KEEP_RUNS):
+        mine = [it for it in run.get("items", []) if it.get("project") == project]
+        if not mine:
+            continue
+        rows.append({"id": "cron-" + run["id"], "kind": "cron", "title": run.get("name", ""),
+                     "started": _local_iso_utc(run.get("started", "")),
+                     "finished": _local_iso_utc(run.get("finished", "")),
+                     "status": run.get("status", ""), "trigger": run.get("trigger", ""),
+                     "items": len(mine),
+                     "passed": sum(1 for it in mine if it.get("status") == "passed")})
+    rows.sort(key=lambda r: r.get("started") or _started_from_id(r["id"]), reverse=True)
+    return rows[:limit] if limit else rows
+
+
+def _legacy_route_windows(project: str, archive: list) -> list:
+    """[(начало, конец)] маршрутов прежнего вида — по их `events.jsonl` (время в UTC).
+
+    До 1.152.0 маршрут вела страница: шаги писали свои папки без пометки родителя, а от
+    маршрута оставался журнал событий. По времени событий шаги и находятся.
+    """
+    out = []
+    for item in archive:
+        if not item["id"].endswith("-route"):
+            continue
+        base = os.path.dirname(item["path"])
+        if RR.read_meta(base):
+            continue
+        try:
+            with open(os.path.join(base, "events.jsonl"), encoding="utf-8") as f:
+                evs = [json.loads(line) for line in f if line.strip()]
+        except (OSError, ValueError):
+            continue
+        times = [e.get(k, "")[:19] for e in evs if isinstance(e, dict) for k in ("start", "end")]
+        times = [x for x in times if x]
+        if times:
+            out.append((min(times), max(times)))
+    return out
+
+
+def _inside_legacy_route(rid: str, windows: list) -> bool:
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})Z-", rid)
+    if not m or not windows:
+        return False
+    at = f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}:{m[6]}"
+    return any(a <= at <= b for a, b in windows)
+
+
+def _local_iso_utc(value: str) -> str:
+    """Время расписания (местное, без зоны) → UTC с «Z», как у остальной истории."""
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _started_from_id(rid: str) -> str:
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(Z?)", rid or "")
+    return f"{m[1]}-{m[2]}-{m[3]}T{m[4]}:{m[5]}:{m[6]}Z" if m else ""
+
+
+def _entries_of(project: str, rid: str) -> list:
+    """Журнал одного прогона записями {k, s}: маршрут — как шёл, команда — её вывод."""
+    base = os.path.join(runs_dir(project), rid)
+    out = []
+    try:
+        with open(os.path.join(base, "transcript.jsonl"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict) and "s" in e:
+                    out.append({"k": str(e.get("k") or "out"), "s": str(e["s"])})
+        return out
+    except OSError:
+        pass
+    text = read_run_console(project, rid)
+    return [{"k": "out", "s": l} for l in (text.get("text") or text.get("error") or "").splitlines()
+            if not l.startswith(RS.MARK)]
+
+
+def history_run(project: str, rid: str) -> dict:
+    """Всё, что было видно в консоли, пока запуск шёл. → {entries, meta} или {error}."""
+    rid = str(rid or "")
+    if rid.startswith("cron-"):
+        run = CRON._read_json(CRON.run_path(rid[len("cron-"):]), {}) \
+            if re.match(r"^cron-[\w-]{1,64}$", rid) else {}
+        if not run:
+            return {"error": "прогон не найден"}
+        entries = []
+        for it in run.get("items", []):
+            if it.get("project") != project:
+                continue
+            what = it.get("title") or it.get("route") or (
+                (it.get("cmd", "") + " " + " ".join(it.get("args") or [])).strip())
+            entries.append({"k": "head", "s": f"▸ {what} · {it.get('status', '')}"
+                            + (f" · {it['note']}" if it.get("note") else "")})
+            rid_it = it.get("run_id") or ""
+            if rid_it and any(r["id"] == rid_it for r in run_archive(project)):
+                entries += _entries_of(project, rid_it)
+            else:
+                entries += [{"k": "out", "s": l} for l in it.get("log") or []]
+        meta = {k: run.get(k) for k in ("name", "status", "started", "finished", "trigger")}
+    else:
+        if not any(r["id"] == rid for r in run_archive(project)):
+            return {"error": "архив прогона не найден"}
+        entries = _entries_of(project, rid)
+        meta = RR.read_meta(os.path.join(runs_dir(project), rid))
+    cut = max(0, len(entries) - HISTORY_ENTRIES)
+    if cut:
+        entries = [{"k": "note", "s": f"… первые {cut} строк не показаны — полный журнал в "
+                                        f".opencode/runs/{rid}/console.log"}] + entries[cut:]
+    return {"entries": entries, "meta": meta}
 
 
 def read_run_console(project: str, run_id: str) -> dict:
@@ -3015,7 +3184,9 @@ def project_activity(project: str) -> dict:
                  "alive": pid > 0 and pid_alive(pid)}
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    st = read_route_state(project)
+    # Идущий маршрут пишет «сделанное» после каждого шага — на случай перезапуска панели.
+    # Пока он жив, эта запись — не «остановлен», а ход работы: Мостик показывает задание.
+    st = None if routes_live(project) else read_route_state(project)
     route = ({k: st.get(k) for k in ("title", "step", "reason", "at", "attempts", "nextRetryAt")}
              if st else None)
     return {"running": running, "agent": agent, "route": route}
@@ -3472,7 +3643,7 @@ def extras_install(extra_id: str) -> dict:
 
 # ----------------------------------------------------------------- выполнение
 
-def start_job(project: str, cmd: str, extra: list) -> str:
+def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
     row = command_by_name(cmd)
     if not row or not row["runnable"]:
         raise ValueError(f"команда «{cmd}» не запускается панелью")
@@ -3488,7 +3659,8 @@ def start_job(project: str, cmd: str, extra: list) -> str:
     job_id = secrets.token_hex(8)
     run_id = utc_slug() + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
-           "out": [], "started": time.time(), "done": False, "run_id": run_id}
+           "out": [], "started": time.time(), "done": False, "run_id": run_id,
+           "parent": parent}
     with JOBS_LOCK:
         # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
         # заводим, а отдаём идущее задание: двойной щелчок, вторая вкладка или повтор после
@@ -3514,6 +3686,13 @@ def start_job(project: str, cmd: str, extra: list) -> str:
                 run_log = open(os.path.join(run_cdir, "console.log"), "w", encoding="utf-8")
             except OSError:
                 run_log = None
+            # Строка истории: что запущено, кем и когда. Шаг маршрута помечен родителем —
+            # история показывает маршрут одной строкой, а не россыпью его шагов.
+            RR.write_meta(run_cdir, {"kind": "step" if parent else "command", "id": run_id,
+                                     "parent": parent, "title": (cmd + " " + " ".join(args)).strip(),
+                                     "cmd": cmd, "args": args, "started": utc_stamp(),
+                                     "who": who(project), "kit": kit_version(),
+                                     "status": "running"})
             # Python буферизует stdout, когда на том конце не терминал: длинная команда
             # (синк на семьсот страниц, прогон агента) молчала минутами, а потом
             # вываливала всё разом. Человек в это время не знает, работает она или висит.
@@ -3555,9 +3734,15 @@ def start_job(project: str, cmd: str, extra: list) -> str:
                     run_log.close()
                 except OSError:
                     pass
-                trim_runs(project)
             job["done"] = True
             job["finished"] = time.time()
+            meta = RR.read_meta(os.path.join(runs_dir(project), run_id))
+            if meta:
+                meta.update(status="done", rc=job["rc"], finished=utc_stamp(),
+                            seconds=int(job["finished"] - job["started"]))
+                RR.write_meta(os.path.join(runs_dir(project), run_id), meta)
+            if run_log is not None:
+                trim_runs(project)
             mark_running(job["id"], cmd, project, False)
             write_runlog(project, cmd, job["rc"], (cmd + " " + " ".join(args)).strip(),
                          int(job["finished"] - job["started"]))
@@ -3921,6 +4106,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(about())
         elif u.path == "/api/scenarios":
             self.send_json({"scenarios": localized_scenarios(scenarios(), request_lang(q))})
+        elif u.path == "/api/route/live":
+            self.send_json(route_live(q.get("id", [""])[0],
+                                      int((q.get("since") or ["0"])[0] or 0)))
+        elif u.path == "/api/history":
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json({"runs": history(project)})
+        elif u.path == "/api/history/run":
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(history_run(project, q.get("id", [""])[0]))
+        elif u.path == "/api/routes":
+            project = q.get("project", [""])[0]
+            if not self._known(project):
+                return
+            self.send_json({"routes": routes_live(project)})
         elif u.path == "/api/cron":
             # Расписание — свойство машины: проекты все, а не выбранный на Мостике.
             st = scheduler().state()
@@ -4031,6 +4234,26 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             self.send_json({"error": "тело запроса не разобрано"}, 400)
+            return
+        if u.path == "/api/route/run":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            # Маршрут по проекту со старым движком не начинаем — тот же отказ, что у шага.
+            if (gap := version_gap(project)):
+                self.send_json({"error": f"Маршрут не начат: {gap}"}, 409)
+                return
+            res = route_start(project, str(payload.get("scId") or ""),
+                              bool(payload.get("write", True)),
+                              payload.get("resume") if isinstance(payload.get("resume"), dict)
+                              else None, request_lang(q))
+            self.send_json(res, 200 if res.get("route") and not res.get("error") else 409)
+            return
+        if u.path == "/api/route/stop":
+            self.send_json(route_action(str(payload.get("id") or ""), "stop"))
+            return
+        if u.path == "/api/route/wake":
+            self.send_json(route_action(str(payload.get("id") or ""), "wake"))
             return
         if (u.path == "/api/cron/save" or u.path == "/api/cron/delete"
                 or u.path == "/api/cron/toggle" or u.path == "/api/cron/start"
@@ -4493,6 +4716,97 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.send_json({"error": "проект не найден среди обнаруженных"}, 400)
         return False
+
+
+# Идущие маршруты кнопки «Пройти»: ведёт их процесс панели, страница только смотрит.
+ROUTES: dict = {}
+ROUTES_LOCK = threading.Lock()
+
+
+def route_start(project: str, sc_id: str, write: bool, resume: dict | None = None,
+                lang: str = DEFAULT_LANG) -> dict:
+    """Начать маршрут в процессе панели. → {route: id} или {error}.
+
+    Закрытая вкладка маршрут больше не останавливает: он идёт здесь, а журнал прогона —
+    тот же, что видно в консоли, — пишется в `.opencode/runs/<id>/`.
+    """
+    sc = RR.scenario(sys.modules[__name__], sc_id)
+    if not sc:
+        return {"error": f"маршрута «{sc_id}» нет в cockpit/scenarios.txt"}
+    with ROUTES_LOCK:
+        for r in ROUTES.values():
+            if r["project"] == project and not r["run"].done_flag:
+                return {"error": "в проекте уже идёт маршрут", "route": r["id"],
+                        "scId": r["run"].sc.get("id"), "write": r["run"].write}
+    run = RR.RouteRun(sys.modules[__name__], project, sc, write, lang=lang, resume=resume,
+                      trigger="button")
+    rid = run.run_id
+    mark = "route-" + rid
+
+    def worker():
+        mark_running(mark, sc["title"], project, True)
+        try:
+            run.run()
+        except Exception as e:  # noqa: BLE001 — маршрут обязан кончиться записью, а не тишиной
+            run.say("err", f"■ маршрут упал: {type(e).__name__}: {e}")
+            run._close({"ok": False, "reason": "failed", "failed": "", "note": str(e),
+                        "steps": run.done, "lines": [], "run_id": rid, "found": []})
+        finally:
+            mark_running(mark, "", project, False)
+    with ROUTES_LOCK:
+        ROUTES[rid] = {"id": rid, "project": project, "run": run, "started": time.time()}
+        # Законченные маршруты держим, пока страница может их дочитать; старые — прочь.
+        done = sorted((r for r in ROUTES.values() if r["run"].done_flag),
+                      key=lambda r: r["started"])
+        for r in done[:-10]:
+            ROUTES.pop(r["id"], None)
+    threading.Thread(target=worker, daemon=True, name="aurora-route").start()
+    return {"route": rid}
+
+
+def route_register(run, project: str) -> None:
+    """Маршрут, который ведёт не кнопка (расписание), — в тот же реестр: консоль проекта,
+    открытая во время ночного прогона, подключается к его журналу, как к маршруту кнопки."""
+    with ROUTES_LOCK:
+        ROUTES[run.run_id] = {"id": run.run_id, "project": project, "run": run,
+                              "started": time.time()}
+
+
+def route_live(rid: str, since: int) -> dict:
+    """Что нового в маршруте с записи `since`: строки журнала, полоса хода, ожидание, итог."""
+    with ROUTES_LOCK:
+        r = ROUTES.get(rid)
+    if not r:
+        return {"error": "маршрут не найден — панель перезапускали, пока он шёл"}
+    run = r["run"]
+    entries, nxt = run.journal.since(since)
+    out = {"id": rid, "entries": entries, "next": nxt, "done": run.done_flag,
+           "bar": run.bar, "wait": run.wait, "job": run.job,
+           "scId": run.sc.get("id"), "write": run.write}
+    if run.done_flag:
+        out["result"] = {k: run.result.get(k) for k in
+                         ("ok", "reason", "failed", "note", "steps", "found", "run_id")}
+    return out
+
+
+def route_action(rid: str, what: str) -> dict:
+    with ROUTES_LOCK:
+        r = ROUTES.get(rid)
+    if not r or r["run"].done_flag:
+        return {"error": "маршрут уже закончился"}
+    if what == "stop":
+        r["run"].stop.set()
+    elif what == "wake":
+        r["run"].wake.set()
+    return {"ok": True}
+
+
+def routes_live(project: str) -> list:
+    with ROUTES_LOCK:
+        return [{"id": r["id"], "scId": r["run"].sc.get("id"), "write": r["run"].write,
+                 "started": r["started"]}
+                for r in ROUTES.values()
+                if r["project"] == project and not r["run"].done_flag]
 
 
 SCHED = None      # планировщик раздела «Cron»; поднимает его main(), тесты — scheduler()

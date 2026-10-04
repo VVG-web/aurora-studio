@@ -43,7 +43,7 @@ dry-run, git-guard и журнал. Прямая правка файлов мо�
 уточнении контекст собирается по всему разговору, а не по последней фразе: «а если он
 ИП?» сама по себе не находит в базе ничего — тему держит предыдущий вопрос.
 
-Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:relink` · `agent:make`
+Панель: `agent:aliases` · `agent:build` · `agent:ask` · `agent:distill` · `agent:extract` · `agent:twins` · `agent:tasks` · `agent:clashes` · `agent:relink` · `agent:translit` · `agent:make` · `agent:golden`
 """
 from __future__ import annotations
 
@@ -2445,6 +2445,145 @@ def report_twins(res: dict, apply: bool) -> str:
                      + (f" — {s['why']}" if s["why"] else ""))
         else:
             L.append(f"- {s['status']}: {s['why']}")
+    return "\n".join(L)
+
+
+# ------------------------------------------------------------------ задача: эталон
+
+PROMPT_GOLDEN = """Ты сверяешь контрольный вопрос базы знаний с кандидатами в ответ.
+
+Эталон — список вопросов, на которые база обязана отвечать, и карточек, где лежит ответ.
+Карточка, на которую указывал вопрос, пропала: её слили, переименовали или разобрали заново.
+Движок нашёл похожие карточки. Твоя работа — сказать, **в какой из них лежит эталонный
+ответ**, или что ни в одной.
+
+Вопрос: {question}
+Эталонный ответ: {answer}
+Пропавшая карточка: {lost}
+
+Кандидаты:
+
+{candidates}
+
+Правила, они же критерии проверки:
+
+1. Подходит карточка, из текста которой эталонный ответ **следует**: те же факты, та же
+   сущность. Похожая тема, соседний процесс, общий раздел — не ответ.
+2. Эталон — измерительный прибор. Подогнать его под базу значит перестать замечать, что
+   знание потеряно. Ответа нет ни в одном кандидате — так и скажи: пустой ответ честнее.
+3. Выбирай из кандидатов, не придумывай имён.
+
+Ответь строго одним JSON-объектом:
+
+{{"card": "<имя карточки из кандидатов или пустая строка>", "why": "<одна фраза>"}}
+"""
+
+
+def solve_golden(cfg: dict, cwd: str, row: dict, apply: bool, call=None,
+                 deadline: float = 0.0) -> dict:
+    """Решить одну строку эталона с пропавшей целью. → шаг отчёта.
+
+    До 4.10.2026 переезд цели предлагался списком, а принимал его человек — и строки
+    копились: на PRJ-C 14 вопросов месяц указывали на пропавшие карточки, а замер качества
+    поиска по ним мерил пустоту. Теперь судит модель, но строго: переписывается только
+    строка, ответ на которую есть в тексте кандидата (решение пользователя 4.10.2026).
+    """
+    call = call or AG.call_role
+    step = {"num": row.get("num"), "status": "оставлено", "card": "", "why": "",
+            "lost": row.get("lost") or [], "backends": []}
+    from aurora_common import card_body
+    import build_plan as BP
+    blocks = []
+    for name in row.get("candidates") or []:
+        path = BP.find_card(name, cwd)
+        if path:
+            text = open(path, encoding="utf-8", errors="ignore").read()
+            blocks.append(f"### {name}\n\n" + " ".join(card_body(text).split())[:1200])
+    if not blocks:
+        step.update(status="без кандидата", why="поиск не нашёл живой карточки по вопросу")
+        return step
+    r = call(cfg, "critic", [{"role": "user", "content": PROMPT_GOLDEN.format(
+        question=row.get("q", ""), answer=row.get("answer", "") or "—",
+        lost=", ".join(step["lost"]), candidates="\n\n".join(blocks))}],
+        deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
+    step["backends"].append(r.get("backend"))
+    if not r["ok"]:
+        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
+        return step
+    verdict = parse_json(r["text"])
+    if not isinstance(verdict, dict) or "card" not in verdict:
+        step.update(status="сбой", why="ответ модели не разобран: нет поля «card»")
+        return step
+    card = str(verdict.get("card") or "").strip()
+    step["why"] = str(verdict.get("why") or "")[:200]
+    if not card:
+        return step                      # ответа нет ни в одном — строка остаётся
+    if card not in (row.get("candidates") or []):
+        step.update(status="сбой", why=f"названа карточка не из кандидатов: «{card}»")
+        return step
+    step.update(card=card, status="переведено" if apply else "перевёл бы")
+    if apply:
+        res = run_command(cwd, "kb_search_quality.py",
+                          ["--golden-remap", "--set", f"{row['num']}={card}", "--apply"])
+        if not res["ok"]:
+            # Причина — первой строкой вывода команды, а не его хвостом: хвост трассировки
+            # («~~~~^^^^») ничего не называет.
+            step.update(status="сбой", why=res.get("refused")
+                        or ((res["out"] or "").strip().splitlines() or ["?"])[0][:200])
+    return step
+
+
+def run_golden(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> dict:
+    """Эталон с пропавшими целями: сначала механика (слияния, синонимы), потом модель."""
+    started = time.time()
+    budget = started + cfg["budget_min"] * 60
+    followed = run_command(cwd, "kb_search_quality.py",
+                           ["--golden-remap", "--follow"] + (["--apply"] if apply else []))
+    moved = len(re.findall(r"^- строка \d+:", followed.get("out") or "", re.M))
+    got = run_command(cwd, "kb_search_quality.py", ["--golden-remap", "--json"], timeout=900)
+    # Вывод — stdout вместе с stderr: предупреждение «индекса нет» может встать после JSON.
+    rows = []
+    for line in reversed((got.get("out") or "").splitlines()):
+        if line.startswith("["):
+            try:
+                rows = json.loads(line)
+            except ValueError:
+                rows = []
+            break
+    if limit:
+        rows = rows[:limit]
+    steps = []
+    for i, row in enumerate(rows, 1):
+        if time.time() > budget:
+            steps.append({"num": None, "status": "стоп", "card": "", "lost": [], "why":
+                          f"бюджет {cfg['budget_min']} мин исчерпан, осталось "
+                          f"{len(rows) - i + 1}", "backends": []})
+            break
+        steps.append(solve_golden(cfg, cwd, row, apply, call, deadline=budget))
+    done = sum(1 for s in steps if s["status"] in ("переведено", "перевёл бы"))
+    return {"steps": steps, "rows": len(rows), "moved": moved, "remapped": done,
+            "failed": "" if got["ok"] else (got.get("refused")
+                                            or ((got["out"] or "").strip().splitlines() or ["?"])[0]),
+            "seconds": round(time.time() - started, 1)}
+
+
+def report_golden(res: dict, apply: bool) -> str:
+    L = [f"# Эталон: пропавшие цели — {utc_label()}", "",
+         f"Переведено по имени (слияние, синоним): **{res['moved']}** · строк для модели: "
+         f"**{res['rows']}** · переведено моделью: **{res['remapped']}** · {res['seconds']} с", ""]
+    if res.get("failed"):
+        L += [f"Предложения не собраны: {res['failed']}", ""]
+    if not apply:
+        L += ["(предпросмотр) Эталон не тронут. Применить: `--apply`.", ""]
+    L += ["Строка переписывается, только если ответ на вопрос есть в тексте карточки-кандидата. "
+          "Нет ни в одной — строка остаётся, и линтер честно показывает потерянное знание.", ""]
+    for s in res["steps"][:60]:
+        if s["status"] in ("переведено", "перевёл бы"):
+            L.append(f"- строка {s['num']}: {', '.join(s['lost'])} → **{s['card']}** — {s['why']}")
+        elif s["status"] == "оставлено":
+            L.append(f"- строка {s['num']}: ответа нет ни в одном кандидате — {s['why']}")
+        else:
+            L.append(f"- строка {s['num']}: {s['status']} — {s['why']}")
     return "\n".join(L)
 
 
@@ -6459,7 +6598,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Агентский цикл: задача, оракул, журнал")
     ap.add_argument("--task", default="aliases",
                     choices=["aliases", "build", "ask", "distill", "extract",
-                             "twins", "tasks", "clashes", "relink", "translit", "make"],
+                             "twins", "tasks", "clashes", "relink", "translit", "make",
+                             "golden"],
                     help="aliases — разобрать конфликты синонимов; "
                          "build — разобрать партию источников на карточки; "
                          "make — произвести артефакт: обогащение, план с вопросами, "
@@ -6763,6 +6903,9 @@ def main() -> int:
     elif a.task == "twins":
         res = run_twins(cfg, cwd, a.apply, a.limit)
         text = report_twins(res, a.apply)
+    elif a.task == "golden":
+        res = run_golden(cfg, cwd, a.apply, a.limit)
+        text = report_golden(res, a.apply)
     elif a.task == "tasks":
         res = run_tasks(cfg, cwd, a.apply, a.limit)
         text = report_tasks(res, a.apply)
@@ -6852,6 +6995,13 @@ def main() -> int:
                                  not a.no_checkpoint)
             print(f"Результат агента: {done.get('why')}")
         return 0
+    if a.task == "golden":
+        if a.apply and (res["moved"] or res["remapped"]):
+            done = commit_result(cwd, "agent:golden",
+                                 f"эталон: по имени {res['moved']}, моделью {res['remapped']}",
+                                 not a.no_checkpoint)
+            print(f"Результат агента: {done.get('why')}")
+        return 0 if not res.get("failed") else 2
     if a.task == "twins":
         if a.apply and res["merged"]:
             done = commit_result(cwd, "agent:twins", f"слито групп: {res['merged']}",

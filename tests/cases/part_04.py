@@ -535,9 +535,11 @@ def test_fix_button_is_offered_only_for_what_repair_can_fix(tmp: Path):
             or 'fresh ? ctx.ui.goRoute("fix"' in ui) \
         and ('"Что решить вам"' in ui or "health.go_decide" in ui), \
         "Мостик снова зовёт «Починить» при любой ошибке, а не при новой"
-    assert 'sc.id === "fix" ? null : fixButton(f.what)' in ui, \
+    assert 'sc.id === "fix" ? null : fixButton(x.what)' in ui, \
         "итог «Починить базу» предлагает запустить ремонт, который только что прошёл"
-    assert 't("route.found_times", {n: s.times})' in ui, \
+    # Строку «нашла, что чинить» пишет в журнал маршрута сервер — одну на команду.
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert 't("route.found_times", n=n)' in rr and "times[x[\"cmd\"]]" in rr, \
         "итог маршрута повторяет одну строку на каждый шаг"
     sys.path.insert(0, str(KIT / "cockpit"))
     import importlib
@@ -558,7 +560,7 @@ def test_finding_carries_a_button_not_a_riddle(tmp: Path):
         "команда, вернувшая 1, снова осталась без кнопки «Применить»"
     assert "const FIX_RUN" in ui and "function fixButton" in ui, \
         "находка объясняет лечение словами, но запустить его из панели нельзя"
-    assert "fixButton(f.what)" in ui, "кнопка лечения не доходит до итогов маршрута"
+    assert "fixButton(x.what)" in ui, "кнопка лечения не доходит до итогов маршрута"
     # Решение человека кнопкой не подменяется: --force затирает чужой текст
     assert "--force" not in ui.split("const FIX_RUN")[1].split("};")[0], \
         "в кнопку лечения попал --force: это решение человека, а не автоматика"
@@ -752,22 +754,51 @@ def test_route_counts_its_own_steps_and_resumes_inside_the_lap(tmp: Path):
     всегда начинало цикл с первого шага первого оборота: в маршруте, где вся работа в цикле,
     это читалось и работало как запуск заново.
     """
-    ui = panel_sources()
-    run = ui[ui.index("async function runRoute("):ui.index("async function resumeLastRoute(")]
-    assert "if (st.cycle) ROUTE.inLap = st.cycleIdx; else ROUTE.done++;" in run, \
-        "шаги цикла снова идут в общий счёт маршрута — вернётся «шаг 36 из 20»"
-    assert "cycleIdx: inCycle ? ++cycleIdx : 0" in run, "у шага цикла нет номера в обороте"
-    assert "routeCycle = (ROUTE.lap && !ROUTE.stalled)" in run and "cycleAt: routeCycle" in run, \
+    # Маршрут ведёт сервер (`cockpit/route_runner.py`, 1.152.0) — проверяем его журнал.
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    fake = importlib.import_module("cases.part_18").FakePanel
+    sc = {"id": "update", "title": "Обновить базу", "group": "база", "steps": [
+        {"manual": False, "cmd": "kb:repair", "why": "до", "flags": []},
+        {"manual": False, "cycle": "цикл:", "why": ""},
+        {"manual": False, "cmd": "agent:build", "why": "разбор", "flags": []},
+        {"manual": False, "cmd": "kb:lint", "why": "проверка", "flags": []},
+        {"manual": False, "cycle": "конец цикла", "why": ""},
+        {"manual": False, "cmd": "kb:moc", "why": "после", "flags": []}]}
+    script = {"kb:repair": [(0, [])], "kb:lint": [(0, [])], "kb:moc": [(0, [])],
+              "agent:build": [(0, ["Источников в плане: 5 → 3"]), (0, ["Источников в плане: 3 → 1"]),
+                              (0, ["Источников в плане: 1 → 0"])]}
+    ck = fake(tmp, script, [sc])
+    run = rr.RouteRun(ck, str(tmp), sc, True)
+    run.run()
+    heads = [e["s"] for e in run.journal.entries if e["k"] == "head"]
+    assert heads[0].startswith("▸ шаг 1 из 2 ·"), heads
+    assert heads[-1].startswith("▸ шаг 2 из 2 ·"), \
+        "шаги цикла снова идут в общий счёт маршрута — вернётся «шаг 36 из 20»: " + heads[-1]
+    assert any("шаг 2 из 2 в обороте · оборот 3" in h for h in heads), heads
+
+    ck = fake(tmp, dict(script, **{"agent:build": [(0, ["Источников в плане: 3 → 0"])]}), [sc])
+    run = rr.RouteRun(ck, str(tmp), sc, True,
+                      resume={"skipSigs": ["kb:repair"], "cycleAt": {"lap": 1, "inLap": 2}})
+    run.run()
+    # Первый оборот продолжения неполный: пройденный `agent:build` пропущен, остаток по
+    # такому обороту не меряется — следующий оборот идёт целиком.
+    assert [c[1] for c in ck.calls] == ["kb:lint", "agent:build", "kb:lint", "kb:moc"], \
+        "продолжение не пропускает пройденные шаги оборота: " + str([c[1] for c in ck.calls])
+    notes = [e["s"] for e in run.journal.entries if e["k"] == "note"]
+    assert any("оборота пропущен" in n for n in notes), notes
+    # Состояние для «Продолжить» пишется после каждого шага: и сделанное, и место в обороте.
+    ck = fake(tmp, {"kb:repair": [(0, [])], "agent:build": [(2, ["упало"])],
+                    "kb:lint": [(0, [])], "kb:moc": [(0, [])]}, [sc])
+    rr.RouteRun(ck, str(tmp), sc, True).run()
+    assert ck.route_state["done"] == ["kb:repair"], ck.route_state
+    assert ck.route_state["cycleAt"] == {"lap": 1, "inLap": 1}, \
         "остановленный маршрут не запоминает, на каком шаге оборота встал"
-    assert "st.cycleIdx < CYCLE_AT.inLap" in run, "продолжение не пропускает пройденные шаги оборота"
-    assert "if (CYCLE_AT && ROUTE.lap === 1) continue;" in run, \
-        "неполный оборот продолжения меряет остаток и может объявить застой или конец работы"
-    assert "done: routeDoneSigs(), cycleAt:" in run, \
-        "ожидание сети сохраняет состояние без сделанного — продолжение после перезапуска начнёт сначала"
+    ui = panel_sources()
     resume = ui[ui.index("async function resumeLastRoute("):ui.index("function dropResumeButtons(")]
-    assert "cycleAt: last.cycleAt" in resume, "кнопка «Продолжить» не передаёт место в обороте"
-    assert "done: state.done || [], cycleAt: state.cycleAt || null" in ui, \
-        "«не ждать сеть» затирает сделанное в состоянии маршрута"
+    assert "cycleAt: last.cycleAt" in resume and "last.done" in resume, \
+        "кнопка «Продолжить» не передаёт сделанное и место в обороте"
 
 
 @test
@@ -1579,7 +1610,8 @@ def test_running_command_survives_a_page_reload(tmp: Path):
         "к работающему заданию нельзя подключиться — его вывод потерян навсегда"
     assert "busyElsewhere" in ui and "не ставит задания в очередь" in ui, \
         "второй запуск поверх работающего идёт молча, а это гонка, а не очередь"
-    assert ui.index("await busyElsewhere(sc.title)") < ui.index("const steps"), \
+    run = ui[ui.index("async function runRoute("):ui.index("async function attachRoute(")]
+    assert run.index("await busyElsewhere(sc.title)") < run.index('"/api/route/run"'), \
         "маршрут спрашивает про занятость после того, как начал"
 
 

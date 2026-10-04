@@ -1,17 +1,19 @@
-"""Маршрут без браузера — для расписания (раздел «Cron») и командной строки.
+"""Маршрут панели — один исполнитель для кнопки «Пройти», расписания («Cron») и терминала.
 
-Кнопка «Пройти» ведёт маршрут из открытой страницы панели (`runRoute` в cockpit/ui/panel.js):
-закрыли вкладку — маршрут встал на текущем шаге. Ночному расписанию так нельзя: в 20:00
-вкладки может не быть вовсе. Здесь те же правила, что у кнопки, но в процессе панели:
+До 1.152.0 кнопка вела маршрут из открытой страницы: закрыли вкладку — маршрут встал, а от
+прогона в архиве оставались только выводы отдельных шагов, по строке на шаг. Теперь маршрут
+всегда идёт в процессе панели (или `aurora.py route`), а страница только смотрит:
 
 - шаги по порядку; остановка на коде 2 и выше и на убитом процессе (код меньше нуля);
 - блок «цикл:» повторяется оборотами: остаток работы считается по видам, каждый оборот
   фиксируется в git, застой и предохранитель в 12 оборотов останавливают маршрут;
 - шаг, упавший по сети, ждёт бэкенды: 15 минут между попытками, 30 секунд, если шаг всё
-  же сделал работу, — до восьми попыток;
-- хвост маршрута фиксируется в git, итог складывает движок (`run_summary`), события шагов и
-  состояние остановленного маршрута пишутся туда же, куда их пишет кнопка, — поэтому
-  «Продолжить маршрут» в панели работает и после ночного прогона.
+  же сделал работу, — до восьми попыток; «Проверить сейчас» будит ожидание;
+- хвост маршрута фиксируется в git, итог складывает движок (`run_summary`), состояние
+  остановленного маршрута пишется для «Продолжить маршрут»;
+- журнал прогона — всё, что видно в консоли, пока маршрут идёт: заголовки шагов, вывод
+  каждого шага, обороты, итог (`.opencode/runs/<id>/console.log` и `transcript.jsonl`).
+  Шаги пишут свои папки с пометкой родителя, и история показывает маршрут одной строкой.
 
 Модуль панели приходит параметром `ck`, а не импортом: панель запущена как `__main__`, и
 `import aurora_cockpit` отсюда поднял бы вторую копию модуля с пустым списком заданий.
@@ -21,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -100,9 +103,23 @@ class Texts:
         return re.sub(r"<[^>]+>", "", s)
 
 
-def _rtime() -> str:
-    """Метка прогона в местном времени — как `rtime()` у кнопки: архив один на оба пути."""
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+def _slug() -> str:
+    """Метка прогона в UTC — как у заданий панели: архив сортируется одной хронологией."""
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+
+
+def _who(ck, project: str) -> str:
+    try:
+        return ck.who(project)
+    except Exception:  # noqa: BLE001 — подпись не повод ронять маршрут
+        return ""
+
+
+def _kit(ck) -> str:
+    try:
+        return ck.kit_version()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def plan(ck, sc: dict, write: bool) -> list:
@@ -140,15 +157,18 @@ def job_project(ck, project: str, cmd: str) -> str:
     return project
 
 
-def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None) -> dict:
+def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
+            parent: str = "", on_lines=None) -> dict:
     """Запустить команду заданием панели и дождаться конца. → {rc, lines, refused, stopped}.
 
     Задание то же, что у кнопки: оно видно в «Консоли», пишет архив прогона и журнал
-    запусков, а «Прервать» в панели его останавливает.
+    запусков, а «Прервать» в панели его останавливает. `parent` — прогон, частью которого
+    шаг идёт (маршрут, цепочка расписания): история покажет его внутри родителя.
+    `on_lines(строки)` получает вывод по мере появления — для журнала маршрута.
     """
     where = job_project(ck, project, cmd)
     try:
-        job_id = ck.start_job(where, cmd, list(args))
+        job_id = ck.start_job(where, cmd, list(args), parent=parent)
     except ValueError as e:
         return {"rc": 2, "lines": [str(e)], "refused": str(e)}
     if on_job:
@@ -163,6 +183,8 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None) -> d
             since += len(new)
             done, rc, run_id = job["done"], job["rc"], job.get("run_id", "")
         lines += new
+        if new and on_lines:
+            on_lines(new)
         if done:
             break
         if stop is not None and stop.is_set() and not asked:
@@ -181,6 +203,80 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None) -> d
             "job": job_id, "run_id": run_id}
 
 
+class Journal:
+    """Журнал прогона маршрута: то, что видно в консоли, — в памяти, в файлах и по запросу.
+
+    Запись — {k: вид, s: текст}. Виды: `head` — заголовок шага, `out` — вывод шага,
+    `note` — ход маршрута (оборот, пропуск, коммит), `warn`, `err`, `sum` — итог. По виду
+    страница красит строку так же, как красила при живом прогоне.
+    """
+    KEEP = 30000                 # записей в памяти; файл хранит всё
+
+    def __init__(self, base: str):
+        self.base = base
+        self.lock = threading.Lock()
+        self.entries: list = []
+        self.offset = 0          # сколько записей ушло из памяти с головы
+        os.makedirs(base, exist_ok=True)
+        self._log = open(os.path.join(base, "console.log"), "a", encoding="utf-8")
+        self._jsonl = open(os.path.join(base, "transcript.jsonl"), "a", encoding="utf-8")
+
+    def add(self, kind: str, text: str) -> None:
+        with self.lock:
+            self.entries.append({"k": kind, "s": text})
+            if len(self.entries) > self.KEEP:
+                drop = len(self.entries) - self.KEEP
+                del self.entries[:drop]
+                self.offset += drop
+            try:
+                self._log.write(text + "\n")
+                self._jsonl.write(json.dumps({"k": kind, "s": text}, ensure_ascii=False) + "\n")
+                self._log.flush()
+                self._jsonl.flush()
+            except (OSError, ValueError):
+                pass
+
+    def since(self, n: int) -> tuple:
+        """Записи с номера `n` (сквозного) → (записи, следующий номер)."""
+        with self.lock:
+            start = max(0, n - self.offset)
+            out = list(self.entries[start:])
+            return out, self.offset + len(self.entries)
+
+    def close(self) -> None:
+        for f in (self._log, self._jsonl):
+            try:
+                f.close()
+            except OSError:
+                pass
+
+
+def write_meta(base: str, meta: dict) -> None:
+    """`meta.json` прогона: что это было, кто, когда, чем кончилось — строка истории."""
+    try:
+        os.makedirs(base, exist_ok=True)
+        tmp = os.path.join(base, "meta.json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, os.path.join(base, "meta.json"))
+    except OSError:
+        pass
+
+
+def read_meta(base: str) -> dict:
+    try:
+        with open(os.path.join(base, "meta.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _iso(ts: float | None = None) -> str:
+    return datetime.fromtimestamp(ts if ts is not None else time.time(),
+                                  timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class RouteRun:
     """Один проход маршрута по одному проекту.
 
@@ -190,14 +286,25 @@ class RouteRun:
     """
 
     def __init__(self, ck, project: str, sc: dict, write: bool = True, lang: str = "ru",
-                 log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None):
+                 log=None, stop=None, on_job=None, on_step=None, resume: dict | None = None,
+                 trigger: str = "cli", parent: str = ""):
         self.ck, self.project, self.sc, self.write = ck, project, sc, write
         self.t = Texts(ck, lang)
         self.lang = lang
         self.log = log or (lambda text: None)
-        self.stop = stop
+        self.stop = stop if stop is not None else threading.Event()
+        self.wake = threading.Event()          # «Проверить сейчас» во время ожидания сети
         self.on_job = on_job or (lambda job_id, cmd: None)
         self.on_step = on_step or (lambda sig, rc: None)
+        self.trigger, self.parent = trigger, parent
+        self.bar: dict = {}                    # полоса хода: шаг, оборот, команда
+        self.wait: dict = {}                   # ожидание сети: команда, попытка, когда
+        self.job = ""                          # задание текущего шага
+        self.children: list = []               # папки шагов в архиве
+        self.result: dict = {}
+        self.done_flag = False
+        self.prev_end = 0.0                    # конец прошлого шага — длительность в журнале
+        self.resumed = bool(resume.get("skipSigs") or resume.get("cycleAt")) if resume else False
         resume = resume or {}
         self.skip = set(resume.get("skipSigs") or [])
         at = resume.get("cycleAt") or None
@@ -207,7 +314,20 @@ class RouteRun:
         self.done = self.lap = self.in_lap = 0
         self.failed = self.refused = ""
         self.stopped = self.stalled = False
-        self.run_id = _rtime() + "-route"
+        self.run_id = _slug() + "-route"
+        self.base = os.path.join(ck.runs_dir(project), self.run_id)
+        self.journal = Journal(self.base)
+        self.started = time.time()
+        self.meta = {"kind": "route", "id": self.run_id, "title": sc.get("title", ""),
+                     "scId": sc.get("id", ""), "write": write, "trigger": trigger,
+                     "parent": parent, "started": _iso(self.started),
+                     "who": _who(ck, project), "kit": _kit(ck), "status": "running"}
+        write_meta(self.base, self.meta)
+
+    def say(self, kind: str, text: str) -> None:
+        """Строка журнала: в консоль страницы, в файл прогона и тому, кто ведёт маршрут."""
+        self.journal.add(kind, text)
+        self.log(text)
 
     # ------------------------------------------------------------- один шаг
 
@@ -220,13 +340,28 @@ class RouteRun:
         while time.time() < end:
             if self._stopping():
                 return False
+            if self.wake.is_set():
+                self.wake.clear()
+                break
             time.sleep(min(POLL_S, max(0.0, end - time.time())))
         return not self._stopping()
 
     def exec_step(self, cmd: str, args: list) -> dict:
-        res = run_job(self.ck, self.project, cmd, args, stop=self.stop, on_job=self.on_job)
+        def on_job(job_id, name):
+            self.job = job_id
+            self.on_job(job_id, name)
+
+        def on_lines(lines):
+            for line in lines:
+                if not str(line).startswith(self.ck.RS.MARK):    # машинная строка итога
+                    self.say("out", line)
+        res = run_job(self.ck, self.project, cmd, args, stop=self.stop, on_job=on_job,
+                      parent=self.run_id, on_lines=on_lines)
+        self.job = ""
+        if res.get("run_id"):
+            self.children.append(res["run_id"])
         if res.get("refused"):
-            self.log("■ " + self.t("step.not_started", why=res["refused"]))
+            self.say("err", "■ " + self.t("step.not_started", why=res["refused"]))
         if res.get("stopped"):
             self.stopped = True
         return res
@@ -239,6 +374,24 @@ class RouteRun:
             ev["note"] = res["refused"]
         self.events.append(ev)
         self.on_step((st["cmd"] + " " + " ".join(st["args"])).strip(), res["rc"])
+        self._progress()
+
+    def _state(self, reason: str) -> dict:
+        return {"scId": self.sc["id"], "runId": self.run_id, "title": self.sc["title"],
+                "write": self.write, "reason": reason, "step": self.done,
+                "cycleAt": ({"lap": self.lap, "inLap": self.in_lap}
+                            if self.lap and not self.stalled else None),
+                "done": sorted(self.skip | {(e["cmd"] + " " + " ".join(e["args"])).strip()
+                                            for e in self.events if e["rc"] == 0}),
+                "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+
+    def _progress(self) -> None:
+        """Сделанное — после каждого шага: перезапуск панели посреди маршрута убивает его, и
+        «Продолжить маршрут» обязан знать, с какого места. Конец маршрута запись заменит."""
+        try:
+            self.ck.write_route_state(self.project, self._state("interrupted"))
+        except Exception:  # noqa: BLE001 — запись продолжения не повод ронять шаг
+            pass
 
     def _wait_network(self, st: dict) -> str:
         """Шаг упал по сети: ждём бэкенды и повторяем. → continue | failed | stopped | capped."""
@@ -248,12 +401,18 @@ class RouteRun:
         cmd = (st["cmd"] + " " + " ".join(st["args"])).strip()
         while True:
             if attempt >= OFFLINE_TRIES:
-                self.log(self.t("route.wait_capped", n=OFFLINE_TRIES))
+                self.wait = {}
+                self.say("err", self.t("route.wait_capped", n=OFFLINE_TRIES))
                 self.offline_attempts = attempt
                 return "capped"
             when = datetime.fromtimestamp(time.time() + wait).strftime("%H:%M")
-            self.log(self.t("route.wait_line", cmd=cmd, n=attempt, of=OFFLINE_TRIES, time=when))
-            if not self._sleep(wait):
+            self.wait = {"cmd": cmd, "attempt": attempt, "of": OFFLINE_TRIES,
+                         "at": _iso(time.time() + wait)}
+            self.say("warn", self.t("route.wait_line", cmd=cmd, n=attempt, of=OFFLINE_TRIES,
+                                    time=when))
+            slept = self._sleep(wait)
+            self.wait = {}
+            if not slept:
                 return "stopped"
             start = time.time()
             res = self.exec_step(st["cmd"], st["args"])
@@ -272,13 +431,14 @@ class RouteRun:
         sig = (st["cmd"] + " " + " ".join(st["args"])).strip()
         if self.skip and not st["cycle"] and sig in self.skip:
             self.done += 1
-            self.log(self.t("route.skip_step", step=self.done, of=self.total, cmd=st["cmd"]))
+            self.say("note", self.t("route.skip_step", step=self.done, of=self.total,
+                                    cmd=st["cmd"]))
             return {"rc": 0, "skipped": True, "lines": []}
         if self.cycle_at and st["cycle"] and self.lap == 1 \
                 and st["cycleIdx"] < self.cycle_at["inLap"]:
             self.in_lap = st["cycleIdx"]
-            self.log(self.t("route.skip_lap_step", step=st["cycleIdx"], of=self.cycle_size,
-                            cmd=st["cmd"]))
+            self.say("note", self.t("route.skip_lap_step", step=st["cycleIdx"],
+                                    of=self.cycle_size, cmd=st["cmd"]))
             return {"rc": 0, "skipped": True, "lines": []}
         if st["cycle"]:
             self.in_lap = st["cycleIdx"]
@@ -287,14 +447,25 @@ class RouteRun:
         lap = self.t("route.lap_mark", lap=self.lap) if self.lap else ""
         where = (self.t("route.where_lap", step=self.in_lap, of=self.cycle_size) if self.lap
                  else self.t("route.where", step=self.done, of=self.total))
-        self.log(self.t("route.step_head", where=where, lap=lap, cmd=sig, why=st["why"]))
+        self.bar = {"done": self.done, "total": self.total, "lap": self.lap,
+                    "inLap": self.in_lap, "cycleSize": self.cycle_size, "cmd": st["cmd"],
+                    "since": _iso()}
+        self.say("head", self.t("route.step_head", where=where, lap=lap, cmd=sig, why=st["why"]))
         start = time.time()
+        # Длительность прошлого шага — единственный симптом букса на длинном маршруте.
+        self.say("note", self.t("route.step_started",
+                                time=datetime.fromtimestamp(start).strftime("%H:%M:%S"))
+                 + (self.t("route.prev_took", dur=self._dur(start - self.prev_end))
+                    if self.prev_end else self.t("route.first_step")))
         res = self.exec_step(st["cmd"], st["args"])
-        self._event(st, start, time.time(), res)
+        self.prev_end = time.time()
+        self._event(st, start, self.prev_end, res)
         if res.get("refused"):
             self.refused = res["refused"]
+        # Хвост вывода шага, «нашедшего, что чинить», — для кнопок «Починить» в итоге.
         self.summary.append({"cmd": st["cmd"], "rc": res["rc"],
-                             "summary": self.ck.RS.parse(res["lines"])})
+                             "summary": self.ck.RS.parse(res["lines"]),
+                             "tail": res["lines"][-300:] if res["rc"] == 1 else []})
         if res["rc"] == 1 and looks_offline(res["lines"]) and not self.stopped:
             how = self._wait_network(st)
             if how == "continue":
@@ -309,6 +480,11 @@ class RouteRun:
         return res
 
     # -------------------------------------------------------------- маршрут
+
+    def _dur(self, sec: float) -> str:
+        sec = max(0, int(round(sec)))
+        return (self.t("dur.sec", n=sec) if sec < 60
+                else self.t("dur.min_sec", m=sec // 60, s=sec % 60))
 
     def _commit(self, message: str) -> dict:
         return self.ck.git_commit(self.project, message, None, True)
@@ -325,10 +501,13 @@ class RouteRun:
             # Кнопка встаёт на первом шаге с тем же отказом сервера: один прогон двумя
             # версиями движка — не «частично сработало».
             why = t("step.not_started", why="Маршрут не начат: " + gap)
-            self.log("■ " + why)
-            return {"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
-                    "note": why, "steps": 0, "lines": [], "run_id": self.run_id}
+            self.say("err", "■ " + why)
+            res = {"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
+                   "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []}
+            return self._close(res)
         head = ck.RS.git_head(self.project)
+        if self.resumed:
+            self.say("ok", t("route.resumed", title=self.sc["title"]))
         i = 0
         while i < len(steps):
             if self._stopping():
@@ -375,32 +554,33 @@ class RouteRun:
                               else k)
             tail = ", ".join(f"{name(k)}: {v}" for k, v in kinds.items())
             if not kinds:
-                self.log(t("route.no_left"))
+                self.say("note", t("route.no_left"))
                 return True
             left = sum(kinds.values())
             if left == 0:
                 saved = self._commit(t("route.commit_done", title=self.sc["title"],
                                        laps=t("route.laps", n=self.lap)))
-                self.log(t("route.work_over", laps=t("route.laps", n=self.lap))
+                self.say("ok", t("route.work_over", laps=t("route.laps", n=self.lap))
                          + (t("route.committed_as", commit=saved["commit"])
                             if saved.get("ok") else ""))
                 return True
             moved = [k for k in kinds if k not in prev or kinds[k] < prev[k]]
             if not moved and self.lap > 1:
-                self.log(t("route.stalled_line", tail=tail))
+                self.say("warn", t("route.stalled_line", tail=tail))
                 self.stalled = True
                 return False
             grew = [k for k in kinds if k in prev and kinds[k] > prev[k]]
             if grew:
-                self.log(t("route.grew", list=", ".join(f"{name(k)} {prev[k]}→{kinds[k]}"
-                                                         for k in grew)))
+                self.say("note", t("route.grew", list=", ".join(
+                    f"{name(k)} {prev[k]}→{kinds[k]}" for k in grew)))
             prev = dict(kinds)
             saved = self._commit(t("route.commit_lap", lap=self.lap, title=self.sc["title"],
                                    left=left))
-            self.log(t("route.lap_saved", commit=saved["commit"], tail=tail) if saved.get("ok")
+            self.say("note", t("route.lap_saved", commit=saved["commit"], tail=tail)
+                     if saved.get("ok")
                      else t("route.lap_unsaved", tail=tail, why=saved.get("error") or "?"))
             if self.lap == CYCLE_LIMIT:
-                self.log(t("route.limit", laps=t("route.laps", n=CYCLE_LIMIT), tail=tail))
+                self.say("warn", t("route.limit", laps=t("route.laps", n=CYCLE_LIMIT), tail=tail))
                 self.stalled = True
                 return False
         return True
@@ -410,19 +590,38 @@ class RouteRun:
         bad = self.failed or ("stall" if self.stalled else "")
         reason = ("stall" if self.stalled else "offline" if self.offline
                   else "stopped" if self.stopped else "failed" if self.failed else "passed")
+        # Итоговая фраза — та, что страница писала в конце консоли: теперь она в журнале и
+        # видна в истории так же, как была видна вживую.
+        if self.stalled:
+            self.say("err", t("route.stalled_why"))
+        elif bad:
+            self.say("err", t("route.stopped_by_you", cmd=bad) if self.stopped
+                     else t("route.stopped_on", cmd=bad,
+                            why=(self.refused + ". ") if self.refused else t("route.cmd_failed")))
+        else:
+            self.say("ok", t("route.passed", title=self.sc["title"],
+                             steps=t("route.steps_n", n=self.done)))
         if self.write:
             how = (t("route.how_stalled") if self.stalled
                    else t("route.how_stopped", cmd=bad) if bad else t("route.how_passed"))
             saved = self._commit(t("route.commit_route", title=self.sc["title"], how=how))
             if saved.get("ok"):
-                self.log(t("route.saved", commit=saved["commit"]))
+                self.say("note", t("route.saved", commit=saved["commit"]))
             elif "нечего фиксировать" not in (saved.get("error") or ""):      # данные движка
-                self.log(t("route.not_saved", why=saved.get("error") or "?"))
+                self.say("warn", t("route.not_saved", why=saved.get("error") or "?"))
         totals = ck.RS.route(self.project, head, time.time() - started, self.summary,
                              lang=self.lang)
         lines = totals.get("lines") or []
         for line in lines:
-            self.log(line)
+            self.say("sum", line)
+        # «Нашла, что чинить» — одна строка на команду, сколько бы шагов она ни заняла.
+        times: dict = {}
+        for x in self.summary:
+            if x["rc"] == 1:
+                times[x["cmd"]] = times.get(x["cmd"], 0) + 1
+        for cmd, n in times.items():
+            self.say("warn", t("route.found", cmd=cmd)
+                     + (t("route.found_times", n=n) if n > 1 else ""))
         if self.events:
             try:
                 base = os.path.join(ck.runs_dir(self.project), self.run_id)
@@ -435,19 +634,28 @@ class RouteRun:
         if reason == "passed":
             ck.clear_route_state(self.project)
         else:
-            state = {"scId": self.sc["id"], "runId": self.run_id, "title": self.sc["title"],
-                     "write": self.write, "reason": reason, "step": self.done,
-                     "cycleAt": ({"lap": self.lap, "inLap": self.in_lap}
-                                 if self.lap and not self.stalled else None),
-                     "done": sorted(self.skip | {(e["cmd"] + " " + " ".join(e["args"])).strip()
-                                                 for e in self.events if e["rc"] == 0}),
-                     "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+            state = self._state(reason)
             if reason == "offline":
                 state["attempts"] = getattr(self, "offline_attempts", OFFLINE_TRIES)
             ck.write_route_state(self.project, state)
-        return {"ok": reason == "passed", "reason": reason, "failed": self.failed,
-                "note": self.refused, "steps": self.done, "lines": lines,
-                "run_id": self.run_id}
+        res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,
+               "note": self.refused, "steps": self.done, "lines": lines,
+               "run_id": self.run_id,
+               "found": [{"cmd": x["cmd"], "lines": x["tail"]} for x in self.summary
+                         if x["rc"] == 1 and x.get("tail")]}
+        return self._close(res)
+
+    def _close(self, res: dict) -> dict:
+        """Конец прогона: итог в `meta.json`, журнал закрыт, ожидающие увидят `done`."""
+        self.bar, self.wait, self.job = {}, {}, ""
+        self.meta.update(status=res["reason"], ok=res["ok"], failed=res.get("failed", ""),
+                         note=res.get("note", ""), finished=_iso(),
+                         seconds=round(time.time() - self.started), steps=self.children)
+        write_meta(self.base, self.meta)
+        self.journal.close()
+        self.result = res
+        self.done_flag = True
+        return res
 
 
 def run_route(ck, project: str, sc_id: str, write: bool = True, **kw) -> dict:

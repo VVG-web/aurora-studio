@@ -98,6 +98,11 @@ def used_in(module: str = "") -> set:
         ui_dir = os.path.dirname(UI)
         files = [os.path.join(ui_dir, f) for f in sorted(os.listdir(ui_dir))
                  if f.endswith((".html", ".js"))] if os.path.isdir(ui_dir) else [UI]
+        # Маршрут ведёт сервер панели: строки хода маршрута (шаг, оборот, коммит, итог)
+        # пишет `cockpit/route_runner.py` тем же каталогом ядра, что и страница.
+        runner = os.path.join(os.path.dirname(MODULES), "route_runner.py")
+        if os.path.isfile(runner):
+            files.append(runner)
     keys = set()
     for path in files:
         if not os.path.isfile(path):

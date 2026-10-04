@@ -257,55 +257,162 @@ def golden_rows() -> tuple:
     return rows, lines
 
 
-def golden_remap(cfg: dict, model: str, accept: set, apply: bool) -> int:
-    """Предложить, куда переехали пропавшие цели эталона; записать — только принятые строки.
-
-    Эталон — измерительный прибор: прибор, который сам подгоняется под базу, перестаёт
-    ловить деградацию. Поэтому ссылки не переписываются сами (решение заказчика 15.09).
-    Кандидаты ищутся по тексту вопроса И эталонного ответа — по имени карточки нельзя:
-    похожесть имени даёт промахи вроде «ЛКИ» → «ЛК».
-    """
-    rows, lines = golden_rows()
+def alive_cards() -> set:
+    """Имена карточек со знанием: не заготовки и не архив."""
     alive = set()
     for path in walk_md(KB_ROOT, skip_service=True, skip_archive=True):
         head = open(path, encoding="utf-8", errors="ignore").read(4000)
         if not is_placeholder(frontmatter(head), head):
             alive.add(os.path.basename(path)[:-3])
-    proposals = []
+    return alive
+
+
+def heirs(alive: set) -> dict:
+    """{пропавшее имя: живая карточка} — там, где наследник однозначен без модели.
+
+    Слитая карточка уходит в архив с `superseded_by: "[[Победитель]]"`, переименованная
+    оставляет прежнее имя синонимом. Это не подгонка прибора под базу: знание то же самое,
+    сменилось имя, и вопрос эталона по-прежнему спрашивает о нём.
+    """
+    from aurora_common import aliases as card_aliases
+    out, taken = {}, {}
+    for path in walk_md(KB_ROOT, skip_service=True, skip_archive=True):
+        stem = os.path.basename(path)[:-3]
+        if stem not in alive:
+            continue
+        for a in card_aliases(open(path, encoding="utf-8", errors="ignore").read(8000)):
+            a = a.strip().replace(" ", "-")
+            if a and a not in alive:
+                taken.setdefault(a, set()).add(stem)
+    out.update({a: next(iter(s)) for a, s in taken.items() if len(s) == 1})
+    arch = os.path.join(KB_ROOT, "_archive")
+    succ = {}
+    if os.path.isdir(arch):
+        for name in os.listdir(arch):
+            if not name.endswith(".md"):
+                continue
+            head = open(os.path.join(arch, name), encoding="utf-8", errors="ignore").read(4000)
+            m = re.search(r'^superseded_by:\s*"?\[\[([^\]|#]+)', head, re.M)
+            if m:
+                succ[name[:-3]] = m.group(1).strip()
+    for old in succ:
+        cur, hops = old, 0
+        while cur in succ and hops < 6:
+            cur, hops = succ[cur], hops + 1
+        if cur in alive:
+            out.setdefault(old, cur)
+    return out
+
+
+def _rewrite_row(line: str, moves: dict) -> str:
+    """Перевести ссылки строки эталона {пропавшая: живая}; повторы одной цели свернуть."""
+    for old, new in moves.items():
+        line = re.sub(r"\[\[" + re.escape(old) + r"(\|[^\]]*)?\]\]", f"[[{new}]]", line)
+    for new in set(moves.values()):
+        target = re.escape(f"[[{new}]]")
+        line = re.sub(rf"{target}(?:\s*,\s*{target})+", f"[[{new}]]", line)
+    return line
+
+
+def golden_proposals(cfg: dict, model: str, alive: set | None = None) -> list:
+    """[{line, num, q, answer, lost, candidates}] — строки эталона с пропавшими целями."""
+    rows, _lines = golden_rows()
+    alive = alive if alive is not None else alive_cards()
+    out = []
     for i, num, q, answer, cards in rows:
         lost = [c for c in cards if c not in alive]
         if not lost or not q:
             continue
         hits = ranked(f"{q} {answer}".strip(), cfg, model)
-        candidates = [n for n, _s in hits if n in alive and n not in cards][:3]
-        proposals.append((i, num, q, lost, candidates))
+        out.append({"line": i, "num": num, "q": q, "answer": answer, "lost": lost,
+                    "candidates": [n for n, _s in hits if n in alive and n not in cards][:3]})
+    return out
+
+
+def golden_follow(apply: bool) -> int:
+    """Перевести пропавшие цели к однозначным наследникам — без модели и без человека."""
+    rows, lines = golden_rows()
+    alive = alive_cards()
+    heir = heirs(alive)
+    changed = []
+    for i, num, _q, _answer, cards in rows:
+        moves = {c: heir[c] for c in cards if c not in alive and c in heir}
+        if moves:
+            lines[i] = _rewrite_row(lines[i], moves)
+            changed.append((num, moves))
+    print(f"# Эталон: цели, сменившие имя — {TODAY}\n")
+    for num, moves in changed:
+        print(f"- строка {num}: " + ", ".join(f"{a} → {b}" for a, b in moves.items()))
+    if not changed:
+        print("Переименованных и слитых целей нет.")
+    elif apply:
+        with open(GOLDEN, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print(f"\n✅ Переведено строк: {len(changed)}")
+    else:
+        print("\n(dry-run) Записать: `--golden-remap --follow --apply`.")
+    return 0
+
+
+def golden_set(choices: dict, apply: bool) -> int:
+    """Записать выбранную цель для строк {номер: карточка}: так пишет решение `agent:golden`."""
+    rows, lines = golden_rows()
+    alive = alive_cards()
+    changed, refused = [], []
+    for i, num, _q, _answer, cards in rows:
+        target = choices.get(num)
+        if not target:
+            continue
+        lost = [c for c in cards if c not in alive]
+        if target not in alive or not lost:
+            refused.append(num)
+            continue
+        lines[i] = _rewrite_row(lines[i], {c: target for c in lost})
+        changed.append(num)
+    if changed and apply:
+        with open(GOLDEN, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    print(f"{'✅ Переписаны' if apply else '(dry-run) Переписал бы'} строки эталона: "
+          f"{', '.join(map(str, changed)) or 'ни одной'}"
+          + (f" · отказано (цель не жива или строка цела): {', '.join(map(str, refused))}"
+             if refused else ""))
+    return 0 if not refused else 1
+
+
+def golden_remap(cfg: dict, model: str, accept: set, apply: bool, as_json: bool = False) -> int:
+    """Предложить, куда переехали пропавшие цели эталона; записать — только принятые строки.
+
+    Эталон — измерительный прибор: прибор, который сам подгоняется под базу, перестаёт
+    ловить деградацию. Поэтому похожесть сама ничего не переписывает: строку принимает
+    человек (`--accept`) или `agent:golden`, когда модель нашла в кандидате эталонный ответ
+    (решение пользователя 4.10.2026). Кандидаты ищутся по тексту вопроса И эталонного ответа —
+    по имени карточки нельзя: похожесть имени даёт промахи вроде «ЛКИ» → «ЛК».
+    """
+    rows, lines = golden_rows()
+    proposals = golden_proposals(cfg, model)
+    if as_json:
+        print(json.dumps(proposals, ensure_ascii=False))
+        return 0
     print(f"# Эталон: куда переехали цели — {TODAY}\n")
     if not proposals:
         print("Все цели эталона живы — переписывать нечего.")
         return 0
     print("| № | Вопрос | Пропала | Кандидаты (первый — предложение) |")
     print("|---|---|---|---|")
-    for _i, num, q, lost, candidates in proposals:
-        print(f"| {num} | {q[:70]} | {', '.join(lost)} | "
-              f"{', '.join(candidates) or '— не нашлось'} |")
+    for p in proposals:
+        print(f"| {p['num']} | {p['q'][:70]} | {', '.join(p['lost'])} | "
+              f"{', '.join(p['candidates']) or '— не нашлось'} |")
     if not (apply and accept):
         print("\nПроверьте предложения глазами: подходит ли первый кандидат как ответ на вопрос.\n"
               "Принять выбранные строки: `ops:search-quality --golden-remap --accept 3,7 --apply`.")
         return 0
     changed = []
-    for i, num, _q, lost, candidates in proposals:
-        if num not in accept or not candidates:
+    for p in proposals:
+        if p["num"] not in accept or not p["candidates"]:
             continue
-        line = lines[i]
-        for name in lost:
-            line = re.sub(r"\[\[" + re.escape(name) + r"(\|[^\]]*)?\]\]",
-                          f"[[{candidates[0]}]]", line)
-        # Пропавших целей в строке бывает несколько, и все переезжают в одну карточку:
-        # без свёртки ячейка читалась как «[[X]], [[X]], [[X]]».
-        target = re.escape(f"[[{candidates[0]}]]")
-        line = re.sub(rf"{target}(?:\s*,\s*{target})+", f"[[{candidates[0]}]]", line)
-        lines[i] = line
-        changed.append(num)
+        lines[p["line"]] = _rewrite_row(lines[p["line"]],
+                                        {c: p["candidates"][0] for c in p["lost"]})
+        changed.append(p["num"])
     if changed:
         with open(GOLDEN, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
@@ -491,6 +598,16 @@ def main() -> int:
     ap.add_argument("--golden-remap", action="store_true",
                     help="предложить, куда переехали пропавшие цели эталона (пишет только "
                          "строки из --accept вместе с --apply)")
+    ap.add_argument("--accept", default="", metavar="N,M",
+                    help="с --golden-remap: какие строки эталона принять (первый кандидат)")
+    ap.add_argument("--follow", action="store_true",
+                    help="с --golden-remap: перевести цели, сменившие имя (слияние, синоним), "
+                         "без модели")
+    ap.add_argument("--set", dest="set_rows", action="append", default=[], metavar="N=КАРТОЧКА",
+                    help="с --golden-remap: записать выбранную цель строки (так пишет "
+                         "agent:golden)")
+    ap.add_argument("--json", action="store_true",
+                    help="с --golden-remap: предложения машинночитаемо")
     ap.add_argument("--compare", default="", metavar="ВАРИАНТЫ",
                     help="A/B-замер вариантов ретрива через запятую: base, related, "
                          "backlinks, collapsed, pagerank или свои k=v+k=v. "
@@ -501,6 +618,16 @@ def main() -> int:
         print(f"kb_search_quality: нет {KB_ROOT}/ — запускайте из корня проекта",
               file=sys.stderr)
         return 1
+    # Переезд по имени и запись выбранной цели индексу не нужны: механика и решение модели.
+    if a.golden_remap and a.follow:
+        return golden_follow(a.apply)
+    if a.golden_remap and a.set_rows:
+        choices = {}
+        for item in a.set_rows:
+            num, _sep, name = item.partition("=")
+            if num.strip().isdigit() and name.strip():
+                choices[int(num)] = name.strip()
+        return golden_set(choices, a.apply)
 
     # Индекса нет — мерить всё равно есть что: выборка гибридная и без векторов идёт по
     # словам, ровно так же, как в этом случае отвечают человеку. Замер обязан показывать
@@ -527,7 +654,7 @@ def main() -> int:
 
     if a.golden_remap:
         return golden_remap(cfg, model, {int(x) for x in a.accept.split(",") if x.strip().isdigit()},
-                            a.apply)
+                            a.apply, a.json)
 
     print(f"# Качество поиска — {TODAY}\n")
 

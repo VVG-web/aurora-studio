@@ -71,15 +71,18 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
     step = ui[at:ui.index("\n}\n", at)]
     assert "armStop(res.job)" in step, "у шага маршрута нет кнопки «Прервать»"
     assert "armStop(null)" in step, "кнопка остаётся висеть после конца шага"
-    assert "ROUTE.stopped" in ui, \
+    # Маршрут останавливает сервер: «Прервать» шлёт остановку маршруту, а итог называет её
+    # прерыванием человека, а не отказом команды.
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert '"/api/route/stop"' in ui and 't("route.stopped_by_you", cmd=bad) if self.stopped' in rr, \
         "прерывание человеком показывается как отказ команды: «разберитесь с ней»"
     assert "restartPanel" in ui and "Перезапустить панель" in ui, \
         "полоса про устаревший процесс всё ещё отсылает в терминал"
     # Прерванный процесс возвращает отрицательный код: «код 2 и выше» его пропускало,
     # и маршрут после осознанного прерывания шёл дальше.
-    assert "const failed = rc => rc >= 2 || rc < 0;" in ui, \
+    assert 'res["rc"] >= 2 or res["rc"] < 0' in rr, \
         "маршрут не считает прерывание поводом остановиться"
-    assert "rc >= 2){ ROUTE.failed" not in ui, "остались проверки, пропускающие прерывание"
+    assert 'res["rc"] >= 2:' not in rr, "остались проверки, пропускающие прерывание"
 
     # Отметка ставится вокруг запуска команды, а не где-то рядом.
     run = src[src.index("mark_running(job[\"id\"], cmd, project, True)") - 400:]
@@ -389,22 +392,22 @@ def test_a_flaky_gateway_is_not_a_dead_one(tmp: Path):
     Пятнадцать минут — верная пауза для лежащего шлюза и вредная для мигающего. Отличать
     их можно по тому, что шаг напечатал о сделанном: есть работа — есть связь.
     """
-    ui = panel_sources()
-
-    assert "ROUTE_FLAKY_RETRY_MS" in ui, \
+    # Ожидание сети ведёт сервер (`cockpit/route_runner.py`, 1.152.0).
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    rr = importlib.import_module("route_runner")
+    assert rr.FLAKY_RETRY_S <= 60 < rr.OFFLINE_RETRY_S, \
         "нет короткой паузы для мигающего шлюза — маршрут снова будет стоять при живых бэкендах"
-    assert "const madeProgress" in ui, "нет признака «шаг сделал работу»"
-
     # Признак ищем в тех числах, которые шаги печатают на самом деле.
-    for pat in ("переписано:", "разобрано", "уточнено:", "тезисов:"):
-        assert pat in ui[ui.index("const DID_WORK"):ui.index("const madeProgress") + 400], \
-            f"признак прогресса не знает про «{pat}» — такой шаг сочтут безрезультатным"
-
-    body = ui[ui.index("const attempt = async () =>"):]
-    body = body[:body.index("const manualRetry")]
-    assert "madeProgress" in body, \
+    for line in ("переписано: 12", "разобрано 3 из 15", "уточнено: 4", "тезисов: 7"):
+        assert rr.made_progress([line]), \
+            f"признак прогресса не знает про «{line}» — такой шаг сочтут безрезультатным"
+    assert not rr.made_progress(["переписано: 0", "Connection refused"])
+    src = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    body = src[src.index("def _wait_network"):src.index("def run_one")]
+    assert "made_progress" in body, \
         "автоповтор не различает мигающий шлюз и лежащий — вернётся простой на два часа"
-    assert "if (!flaky) cy.attempt++" in body, (
+    assert "if not flaky:\n                    attempt += 1" in body, (
         "попытки считаются и для мигающего шлюза: восемь удачных попыток подряд исчерпают "
         "лимит и остановят ожидание, хотя связь есть и работа идёт")
 
@@ -656,33 +659,29 @@ def test_resuming_a_route_continues_instead_of_starting_over(tmp: Path):
     3. Сигнатуры сделанного брались только из `events.jsonl` последней попытки, а он у
        каждой попытки свой — на третьей попытке работа первой считалась несделанной.
     """
-    ui = panel_sources()
-
-    skip = ui[ui.index("if (SKIP_SIGS && !st.cycle && SKIP_SIGS.has(sig)){"):]
-    skip = skip[:skip.index("return {rc:0, skipped:true")]
-    assert "ROUTE.done++" in skip, (
+    # Маршрут ведёт сервер (1.152.0): счётчик, пропуски и сделанное — его забота.
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    p18 = importlib.import_module("cases.part_18")
+    sc = p18._route()                      # kb:repair, (человек), kb:lint
+    ck = p18.FakePanel(tmp, {"kb:repair": [(0, [])], "kb:lint": [(2, ["упало"])]}, [sc])
+    run = rr.RouteRun(ck, str(tmp), sc, True, resume={"skipSigs": ["kb:repair --apply"]})
+    run.run()
+    notes = [e["s"] for e in run.journal.entries if e["k"] == "note"]
+    assert any("шаг 1/2 пропущен" in n for n in notes), (
         "пропущенный шаг не увеличивает счётчик — продолжение после семи сделанных шагов "
-        "покажет «шаг 1 из N», и человек прочтёт это как «началось заново»")
-    assert 't("route.skip_step", {step: ROUTE.done, of: ROUTE.total' in skip, \
-        "строка пропуска не называет номер шага: непонятно, сколько уже позади"
+        "покажет «шаг 1 из N», и человек прочтёт это как «началось заново»: " + str(notes))
+    heads = [e["s"] for e in run.journal.entries if e["k"] == "head"]
+    assert heads == [h for h in heads if h.startswith("▸ шаг 2 из 2")], heads
+    assert "kb:repair --apply" in ck.route_state["done"], \
+        "сделанное прошлой попытки не переносится — на третьей попытке работа первой повторится"
 
-    # Смотрим только маршрут: у одиночной команды и у подключения к прогону очистка
-    # консоли уместна — там начинается новый вывод, а не продолжается прежний.
-    body = ui[ui.index("async function runRoute("):]
-    body = body[:body.index("\nasync function ")] if "\nasync function " in body else body
-    assert 'const out = $("#consoleOut"); out.innerHTML = "";' not in body, (
+    ui = panel_sources()
+    body = ui[ui.index("async function attachRoute("):ui.index("function finishRoute(")]
+    assert 'if (!resumed) out.innerHTML = "";' in body, (
         "маршрут стирает консоль безусловно — продолжение уносит вывод прошлой попытки, "
         "ради которого кнопку и нажимают")
-    assert "if (resume) out.append" in body and "else out.innerHTML" in body, \
-        "нет ветки «продолжение не стирает вывод»"
-
-    assert "const CARRIED = new Set(SKIP_SIGS || [])" in ui, \
-        "сделанное не переносится между попытками"
-    assert "new Set(last.done || [])" in ui, (
-        "продолжение читает только events.jsonl последней попытки — работа первой "
-        "попытки на третьей будет сделана заново")
-    assert "done:[...CARRIED" in ui, \
-        "накопленное не сохраняется в состоянии маршрута и не переживёт перезапуск панели"
 
 
 @test
@@ -818,10 +817,11 @@ def test_run_archive_keeps_the_full_console_history(tmp: Path):
     assert '"/api/run/logs"' in src and '"/api/run/file"' in src, "нет маршрутов архива"
 
     ui = panel_sources()
-    for token in ("function renderArchiveBox(", "function archiveWhen(", "function rtime(",
+    # С 1.152.0 история — одна строка на запуск, раскрытие — весь журнал запуска.
+    for token in ("function renderHistory(", "function archiveWhen(", "function rtime(",
                   "function fmtDur(", 'id="exportMd"', "Продолжить маршрут",
-                  "const SILENCE_MS = 120000;", '"/api/run/logs?project="',
-                  '"/api/run/file?project="', '"/api/run/steps"'):
+                  "const SILENCE_MS = 120000;", '"/api/history?project="',
+                  '"/api/history/run?project="', "function drawEntries("):
         assert token in ui, f"консоль потеряла: {token}"
     assert "Date.now() - lastLineAt > SILENCE_MS" in ui, "шаг молчит без предупреждения"
     assert "Date.now() - POLL_LAST_OUT > SILENCE_MS" in ui, \
@@ -892,16 +892,23 @@ def test_a_stalled_route_is_an_stop_not_a_pass(tmp: Path):
     ставит ROUTE.stalled, баннер его честно называет, а продолжение пропускает только шаги
     с кодом ровно 0 — код 1 («отработала и нашла, что чинить») повторять надо.
     """
+    import importlib
+    sys.path.insert(0, str(KIT / "cockpit"))
+    rr = importlib.import_module("route_runner")
+    p18 = importlib.import_module("cases.part_18")
+    sc = p18._route(cycle=True)
+    ck = p18.FakePanel(tmp, {"kb:repair": [(1, ["## битые ссылки: 2"])],
+                             "agent:build": [(0, ["Источников в плане: 9 → 4"])],
+                             "kb:lint": [(0, [])]}, [sc])
+    res = rr.RouteRun(ck, str(tmp), sc, True).run()
+    assert res["reason"] == "stall" and not res["ok"], \
+        "застой не помечен — не отличить его от прохода и не дать «Продолжить»: " + str(res)
+    assert ck.route_state and ck.route_state["reason"] == "stall", \
+        "застой не оставил состояния — «Продолжить маршрут» не появится"
+    assert "kb:repair --apply" not in ck.route_state["done"], \
+        "продолжение пропускает шаг с кодом 1 — он «нашёл, что чинить», а не прошёл"
     ui = panel_sources()
-    assert "ROUTE.stalled = true" in ui, \
-        "застой не помечен флагом — не отличить его от прохода и не дать «Продолжить»"
-    assert "ROUTE.failed || ROUTE.stalled" in ui, \
-        "застой не считается остановкой: bad решает по одному ROUTE.failed"
     assert "застой" in ui, "в интерфейсе нет «застой» — баннер не честен о причине"
-    assert "if (st.rc===0||st.rc===1) sigs.add" not in ui, \
-        "продолжение до сих пор пропускает шаги с кодом 1 — они «нашли, что чинить», а не прошли"
-    assert "if (st.rc===0) sigs.add" in ui, \
-        "продолжение собирает сигнатуры не только с успешных шагов"
     assert "Продолжить маршрут" in ui, "кнопку продолжения потеряли совсем"
 
 
@@ -954,7 +961,10 @@ def test_a_stopped_route_survives_a_panel_restart(tmp: Path):
     ui = panel_sources()
     assert '"/api/route/state?project="' in ui, \
         "вкладка «Консоль» не читает состояние остановленного маршрута при загрузке"
-    assert '"/api/route/state", {method:"POST"' in ui, \
+    # Состояние пишет сам маршрут — после каждого шага и в конце (сервер, 1.152.0).
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert "ck.write_route_state(self.project, state)" in rr \
+        and 'self.ck.write_route_state(self.project, self._state("interrupted"))' in rr, \
         "конец маршрута не пишет состояние в проект"
     assert "остановлен в" in ui, \
         "на кнопке после перезапуска нет времени и причины остановки"
@@ -971,26 +981,17 @@ def test_a_stalled_route_stops_honestly_and_resume_skips_only_success(tmp: Path)
     требованию выставляет оба флага разом.
     """
     ui = panel_sources()
-
-    assert "ROUTE.stalled = true;" in ui, \
-        "флаг застоя не ставится — по нему отличается «застой» от «пройден»"
-    assert "const bad = ROUTE.failed || ROUTE.stalled;" in ui, \
-        "решение «остановить» не учитывает застой — bad решает по одному ROUTE.failed"
-    assert "остановлен: застой — работа не убывает" in ui, \
-        "нет честной жёлтой плашки о причине застоя"
-    assert 'className = "chip warn"' in ui, \
-        "плашка застоя не жёлтая — выглядит как успех"
-    assert "if (bad && S.lastRoute && S.project){" in ui, \
-        "кнопка «Продолжить маршрут» не связана с состоянием bad"
-
-    assert "if (st.rc===0) sigs.add" in ui, \
-        "продолжение не собирает сигнатуры только с успешных шагов"
-    assert "if (st.rc===0||st.rc===1) sigs.add" not in ui, \
-        "продолжение снова пропускает rc 1 — а их повторять надо"
-
-    assert 'ROUTE.stopped ? "stopped"' in ui, \
-        "причина остановки в кнопке не читает код остановки по застою"
-    assert "ROUTE.stopped = st.cmd; ROUTE.failed = st.cmd" in ui, \
+    fin = ui[ui.index("function finishRoute("):ui.index("async function resumeLastRoute(")]
+    assert 'r.reason === "stall"' in fin and 't("route.rc_stalled")' in fin \
+        and 'className = "chip warn"' in fin, "плашка застоя не жёлтая или не названа"
+    assert "if (bad && S.lastRoute && S.project){" in fin, \
+        "кнопка «Продолжить маршрут» не связана с остановкой"
+    rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert 'for e in self.events if e["rc"] == 0' in rr, \
+        "продолжение пропускает не только успешные шаги — код 1 повторять надо"
+    assert '"stall" if self.stalled else "offline" if self.offline' in rr \
+        and '"stopped" if self.stopped' in rr, "причина остановки смешивает застой и прерывание"
+    assert "self.stopped, self.failed = True, steps[k][\"cmd\"]" in rr, \
         "стоп цикла по требованию не выставляет оба флага остановки"
 
 
@@ -1006,46 +1007,29 @@ def test_a_route_waits_for_the_network_like_the_engine(tmp: Path):
     выйти из ожидания руками («Попробовать сейчас» / «не ждать»).
     """
     engine = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
-    ui = panel_sources()
-
+    # С 1.152.0 маршрут ведёт сервер: признаки офлайна он берёт из движка, а не копией.
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    rr = importlib.import_module("route_runner")
     m = re.search(r"OFFLINE_SIGNS\s*=\s*[\[(](.*?)[\])]", engine, re.S)
     assert m, "в agent_runner не найден список OFFLINE_SIGNS"
     engine_signs = set(re.findall(r"[\"']([^\"']+)[\"']", m.group(1)))
-
-    start = ui.index("const OFFLINE_SIGNS = [") + len("const OFFLINE_SIGNS = [")
-    end = ui.index("];", start)
-    ui_block = ui[start:end]
-    ui_signs = set(re.findall(r"[\"']([^\"']+)[\"']", ui_block))
-
-    assert engine_signs == ui_signs, \
-        "офлайн-признаки панели и движка разошлись: в панели лишние " \
-        + repr(sorted(ui_signs - engine_signs)) + ", не хватает " \
-        + repr(sorted(engine_signs - ui_signs))
-
-    assert "const ROUTE_OFFLINE_RETRY_MS = 15 * 60 * 1000;" in ui, \
-        "нет паузы ожидания сети (15 минут)"
-    assert "const ROUTE_OFFLINE_TRIES = 8;" in ui, \
-        "нет лимита попыток ожидания сети"
-    assert "const looksOffline" in ui, "нет проверки текста на офлайн"
-    # Все вызовы передают вывод шага массивом строк (буфер runStep), а не строкой: проверка
-    # обязана принимать и то и другое. (text||"").toLowerCase() на массиве — TypeError, и
-    # первый шаг с кодом 1 убивает весь маршрут без единой строки в консоли («Починить
-    # базу» останавливался на 1/13, 2026-08-30).
-    m_lo = re.search(r"const looksOffline\s*=\s*text\s*=>\s*\{(.*?)\};", ui, re.S)
-    assert m_lo, "не найдена реализация looksOffline"
-    assert "Array.isArray" in m_lo.group(1) and ".join(" in m_lo.group(1), "looksOffline не принимает массив строк: маршрут гибнет на первом шаге с кодом 1"
-    assert "const waitNetworkCycle" in ui, "нет цикла ожидания сети"
+    assert set(rr.offline_signs()) == engine_signs, "офлайн-признаки маршрута и движка разошлись"
+    assert rr.OFFLINE_RETRY_S == 15 * 60, "нет паузы ожидания сети (15 минут)"
+    assert rr.OFFLINE_TRIES == 8, "нет лимита попыток ожидания сети"
+    # Вывод шага — массив строк: проверка обязана принимать его, а не только строку
+    # («Починить базу» останавливался на 1/13, 2026-08-30, когда она падала на массиве).
+    assert rr.looks_offline(["шаг", "Connection refused"]) and not rr.looks_offline(["ok"])
+    ui = panel_sources()
     assert "ждёт сеть (попытка" in ui, "нет текста о состоянии ожидания сети"
     assert "Перестал ждать сеть:" in ui, "нет текста о потолке ожидания"
-    assert ui.count("Попробовать сейчас") >= 2, \
-        "кнопка «Попробовать сейчас» не во всех ветках ожидания (живой цикл, потолок, догон)"
-    assert "не ждать" in ui, "нет кнопки выйти из ожидания без сети"
-
-    assert "attempts: cy.attempt" in ui and "nextRetryAt: cy.nextRetryAt" in ui, \
-        "не сохраняются попытка и время следующего повтора для перезапуска"
-    assert "if (state.reason === \"offline\")" in ui, \
-        "догон остановленного на сети маршрута не распознаёт причину offline"
-    assert "showOfflineResume(state)" in ui, "нет продолжения после возвращения сети"
+    live = ui[ui.index("async function attachRoute("):ui.index("function finishRoute(")]
+    assert '"/api/route/wake"' in live and 't("route.wait_now")' in live, \
+        "кнопка «Попробовать сейчас» не будит ожидание сервера"
+    assert 't("route.wait_stop")' in live, "нет кнопки выйти из ожидания без сети"
+    src = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    assert 'state["attempts"]' in src, \
+        "потолок ожидания не сохраняет число попыток для продолжения"
     assert "attempts: last.attempts" in ui, \
         "продолжение не переносит счётчик попыток из сохранённого состояния"
 
@@ -1275,29 +1259,26 @@ def test_route_works_until_the_work_is_done_and_saves_each_lap(tmp: Path):
     коммита прерванная работа осталась бы незафиксированной, а двенадцать команд движка
     не работают по грязному дереву — следующий запуск встал бы на первом шаге.
     """
-    ui = panel_sources()
-    at = ui.index("const leftByKind = lines =>")
-    fn = ui[at:at + 700]
-    assert "Источников в плане" in fn and "осталось:" in fn, \
-        "остаток считается по одному виду работы — маршрут закончится раньше работы"
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    rr = importlib.import_module("route_runner")
+    got = rr.left_by_kind(["Источников в плане: 9 → 4", "тезисы · осталось: 12"])
     # Виды работы считаются РАЗДЕЛЬНО. Сложенные в один максимум, они врали: разбор
     # добавляет карточки, переосмысление их разбирает, суммарный остаток стоит — и цикл
     # объявлял гонку застоем. На живой базе он так и встал на 814.
-    assert 'out["источники"]' in fn and 'out["карточки"]' in fn, \
-        "остатки разных видов работы слиты в одно число"
-    cycle0 = ui[ui.index("for (ROUTE.lap = 1"):ui.index("ROUTE.lap = 0;")]
-    assert "const moved = names.filter" in cycle0, \
+    assert got == {"источники": 4, "карточки": 12}, \
+        "остатки разных видов работы слиты в одно число или считается один вид: " + str(got)
+    src = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
+    cycle = src[src.index("def _cycle"):src.index("def _finish")]
+    assert "moved = [k for k in kinds if k not in prev or kinds[k] < prev[k]]" in cycle, \
         "цикл встаёт, когда не убыл общий остаток, а не когда не сдвинулось ничего"
-    assert 't("route.grew"' in cycle0, \
+    assert 't("route.grew"' in cycle, \
         "гонка разбора с переосмыслением не названа человеку числами"
-
-    cycle = ui[ui.index("for (ROUTE.lap = 1"):ui.index("ROUTE.lap = 0;")]
-    assert '"/api/git/commit"' in cycle, "оборот не фиксируется — прерванный прогон пропадёт"
-    assert "skip_ratchet:true" in cycle, \
-        "фиксация оборота упрётся в храповик: ночной прогон встанет посреди базы"
+    assert 'self._commit(t("route.commit_lap"' in cycle and "git_commit(self.project, message, None, True)" in src, \
+        "оборот не фиксируется или упрётся в храповик — ночной прогон встанет посреди базы"
     assert 't("route.lap_unsaved"' in cycle, \
         "неудачная фиксация проходит молча — человек решит, что работа сохранена"
-    assert "CYCLE_LIMIT" in ui, "у цикла нет предохранителя"
+    assert rr.CYCLE_LIMIT == 12, "у цикла нет предохранителя"
 
     # Вариаций прогона быть не должно: маршрут один и работает до конца.
     scen = (KIT / "cockpit/scenarios.txt").read_text(encoding="utf-8")

@@ -41,7 +41,8 @@ import re
 import shutil
 import sys
 
-from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS, is_meeting,
+from aurora_common import (CORRECTIONS, FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+                           is_meeting,
                            sources_block,
                            RETIRED_STATUS, STUB_MARK,
                            STUB_BODY, Card as BaseCard, card_body, card_sources,
@@ -1693,7 +1694,7 @@ def _mirror_codes(top: str) -> dict:
 
 
 def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
-    """Источник карточки, которого нет на диске. → (переведено, снято, записей исправлено).
+    """Источник карточки, которого нет на диске. → (переведено, снято, исправлено, в архив).
 
     Синк убирает из зеркала удалённые страницы, а карточки продолжали называть их в
     `sources`: на PRJ-C 19 таких, и этого не чинил никто — `ops:stats` отчитывался о них на
@@ -1704,9 +1705,15 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
       путь переводится;
     - запись испорчена: два пути через «;», свободный текст вместо пути — разрезается или
       уходит в историю;
-    - страницы нет — путь снимается, в истории — строка. Дословный текст остаётся: это то,
-      что страница говорила. Карточка без источников остаётся в базе, но доверия ей не на
-      что опереться (`kb:trust` — «класс не определён»), и это видно.
+    - страницы нет — путь снимается, в истории — строка;
+    - папка темы переименована («Налоговые_декларации» → «ALG_Налоговые_декларации» в PRJ-B):
+      тема переводится на новую папку, а если под новую папку тема уже заведена — сводится
+      в неё: синоним и входящие ссылки переходят к живой теме, прежняя уходит в архив;
+    - машинная карточка осталась без единого источника, потому что её страница ушла из
+      зеркала (удалена, помечена устаревшей), — карточка уходит в архив: знание отозвано
+      вместе со страницей, и опереться ему не на что. Так решено 4.10.2026 по двум карточкам
+      PRJ-A о внутреннем учёте времени: страница ушла, карточки месяц висели «без класса».
+      Слово человека («Исправления человеком») держит карточку в базе — его не теряем.
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import build_plan as BP
@@ -1720,15 +1727,61 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
         hits = codes[top].get(m.group(1).lower().replace("_", "-"), []) if m else []
         return hits[0] if len(hits) == 1 else ""
 
-    moved, dropped, fixed = [], [], []
+    def theme(c) -> bool:
+        return "тема" in (c.fm.get("tags") or "")
+
+    def renamed_dir(path: str) -> str:
+        """Папка темы под новым именем: та же родительская, имя содержит прежнее или наоборот."""
+        parent, leaf = os.path.split(path.rstrip("/"))
+        if not os.path.isdir(parent):
+            return ""
+        key = re.sub(r"[\W_]+", "", leaf.lower())
+        if len(key) < 5:
+            return ""
+        hits = [d for d in sorted(os.listdir(parent))
+                if os.path.isdir(os.path.join(parent, d))
+                and (key in re.sub(r"[\W_]+", "", d.lower())
+                     or re.sub(r"[\W_]+", "", d.lower()) in key)]
+        return f"{parent}/{hits[0]}" if len(hits) == 1 else ""
+
+    def orphan(c) -> bool:
+        """Машинная карточка, которой без источника опереться не на что."""
+        return ((c.fm.get("built") or "").strip() == "machine"
+                and not is_placeholder(c.fm, c.text) and CORRECTIONS not in c.text)
+
+    themes: dict = {}                    # папка → путь живой темы
+    for path, c in cards.items():
+        if "/_archive/" not in path.replace("\\", "/") and theme(c):
+            for s in card_sources(c.text):
+                themes.setdefault(s, path)
+
+    moved, dropped, fixed, retired = [], [], [], []
+    gone_cards: dict = {}                # имя → заголовок: ссылки на них станут словами
+    into: dict = {}                      # имя прежней темы → имя живой
     for path, c in sorted(cards.items()):
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel or "/MOC/" in rel:
             continue
         srcs = card_sources(c.text)
         if not srcs:
+            # Страницу сняли прошлым ремонтом, карточка осталась ни на чём. Тема узнаёт свою
+            # папку по записи в истории — переименованную сводим с живой темой.
+            if GONE_NOTE in c.text and orphan(c):
+                was = re.findall(GONE_NOTE + r": `([^`]+)`", c.text)
+                live = [themes[d] for d in map(renamed_dir, was) if d and d in themes] \
+                    if theme(c) else []
+                if live:
+                    keep = cards[live[0]]
+                    plan.write(live[0], add_alias(
+                        Card(live[0], plan.file_writes.get(live[0], keep.text)), c.stem))
+                    into[c.stem] = keep.stem
+                    _retire(c, path, plan, {}, retired, [], f"папка темы переименована — "
+                            f"сведена в тему [[{keep.stem}]]", keep.stem)
+                else:
+                    _retire(c, path, plan, gone_cards, retired)
             continue
         new_srcs, notes, remap = [], [], {}
+        merge_to = ""
         for s in srcs:
             parts = [x.strip() for x in s.split(";")] if ";" in s else [s]
             if len(parts) > 1:
@@ -1742,16 +1795,34 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
                     new_srcs.append(x)
                     continue
                 other = (x + "/index.md") if os.path.isfile(x + "/index.md") else code_twin(x)
+                if not other and theme(c) and not x.endswith(".md"):
+                    other = renamed_dir(x)
+                    if other and themes.get(other, path) != path:
+                        merge_to = themes[other]
+                        notes.append(f"папка переименована: `{x}` → `{other}`; тема для неё "
+                                     f"уже есть — [[{cards[merge_to].stem}]]")
+                        continue
                 if other:
                     new_srcs.append(other)
                     remap[x] = other
                     moved.append((c.stem, x, other))
                     notes.append(f"страница переехала: `{x}` → `{other}`")
                     continue
-                notes.append(f"источника больше нет в зеркале: `{x}`")
+                notes.append(f"{GONE_NOTE}: `{x}`")
                 dropped.append((c.stem, x))
         new_srcs = list(dict.fromkeys(new_srcs))
         if new_srcs == srcs and not notes:
+            continue
+        if merge_to:
+            keep = cards[merge_to]
+            plan.write(merge_to, add_alias(Card(merge_to, plan.file_writes.get(merge_to, keep.text)),
+                                           c.stem))
+            into[c.stem] = keep.stem
+            _retire(c, path, plan, {}, retired, notes, f"сведена в тему [[{keep.stem}]]",
+                    keep.stem)
+            continue
+        if not new_srcs and orphan(c) and any(n.startswith(GONE_NOTE) for n in notes):
+            _retire(c, path, plan, gone_cards, retired, notes)
             continue
         text = plan.file_writes.get(path, c.text)
         head_end = text.find("\n---", 3)
@@ -1765,7 +1836,36 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
         else:
             rest = rest.rstrip() + "\n\n" + FOOTER + "\n" + line + "\n"
         plan.write(path, head + rest)
-    return moved, dropped, sorted(set(fixed))
+    if gone_cards or into:
+        leaving = {m[0] for m in plan.moves}
+        for path, c in cards.items():
+            if path.replace("\\", "/") in leaving:
+                continue
+            base = plan.file_writes.get(path, c.text)
+            new = rewrite_links(base, into) if into else base
+            new = _unlink_archived(new, gone_cards) if gone_cards else new
+            if new != base:
+                plan.write(path, new)
+    return moved, dropped, sorted(set(fixed)), retired
+
+
+GONE_NOTE = "источника больше нет в зеркале"
+
+
+def _retire(c, path: str, plan: Plan, gone_cards: dict, retired: list, notes: list = None,
+            why: str = "", to: str = "") -> None:
+    """В архив — с записью в истории, почему: через месяц иначе не понять, куда делась."""
+    why = why or "снята в архив: страницы-источника больше нет в зеркале — знание ушло вместе с ней"
+    rel = path.replace("\\", "/")
+    text = plan.file_writes.get(path, c.text)
+    lines = "".join(f"\n- {TODAY}: {n}" for n in (notes or []) + [why])
+    text = (text.rstrip() + lines + "\n") if FOOTER in text else (
+        text.rstrip() + "\n\n" + FOOTER + "\n" + lines + "\n")
+    plan.write(path, text)
+    plan.moves.append((rel, os.path.join(ROOT, "_archive", os.path.basename(rel)).replace("\\", "/")))
+    if not to:
+        gone_cards[c.stem] = (c.fm.get("title") or "").strip().strip('"') or c.stem
+    retired.append((c.stem, to))
 
 
 THESIS_MARKS = ("distilled", "distilled_by", "distilled_was", "extracted", "relinked",
@@ -2984,10 +3084,13 @@ def main() -> int:
             for name in texts[:10]:
                 head.append(f"- {name}")
         if a.gone_sources:
-            moved, gone, fixed = plan_gone_sources(cards, plan)
+            moved, gone, fixed, retired = plan_gone_sources(cards, plan)
             head.append(f"## Источник, которого нет на диске: переведено на новый путь "
                         f"{len(moved)}, снято {len(gone)}, испорченных записей исправлено "
-                        f"{len(fixed)}")
+                        f"{len(fixed)}, карточек в архив {len(retired)}")
+            for name, to in retired[:15]:
+                head.append(f"- {name}: " + (f"сведена в тему {to}" if to
+                                             else "в архив — опереться не на что"))
             for name, old_p, new_p in moved[:10]:
                 head.append(f"- {name}: {old_p} → {new_p}")
             for name, old_p in gone[:10]:

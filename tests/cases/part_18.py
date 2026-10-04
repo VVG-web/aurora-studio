@@ -47,6 +47,7 @@ class FakePanel:
         self.runs = tmp / "runs"
         self.busy = set()
         self.marks = {}
+        self.parents = []
         strings = json.loads((COCKPIT / "i18n" / "ru.json").read_text(encoding="utf-8"))
         strings.update(json.loads((COCKPIT / "modules" / "cron" / "i18n" / "ru.json")
                                   .read_text(encoding="utf-8")))
@@ -64,8 +65,9 @@ class FakePanel:
         return ({"cmd": name, "ns": name.split(":")[0], "runnable": True,
                  "flags": ["--apply", "--residue", "--cards"]} if name in self.script else None)
 
-    def start_job(self, project, cmd, args):
+    def start_job(self, project, cmd, args, parent=""):
         self.calls.append((project, cmd, list(args)))
+        self.parents.append(parent)
         answers = self.script[cmd]
         rc, lines = answers.pop(0) if len(answers) > 1 else answers[0]
         job_id = "j%d" % len(self.calls)
@@ -81,6 +83,12 @@ class FakePanel:
 
     def runs_dir(self, project):
         return str(self.runs)
+
+    def who(self, project):
+        return "Тестировщик"
+
+    def kit_version(self):
+        return "9.9.9"
 
     def version_gap(self, project):
         return self.gap
@@ -204,19 +212,25 @@ def test_the_server_route_waits_for_the_network(tmp: Path):
 
 
 @test
-def test_the_server_route_and_the_button_share_their_rules(_t):
-    """Пороги и признаки — одни у кнопки и у сервера: расходятся — расходятся и прогоны."""
+def test_the_page_leaves_the_route_to_the_server(_t):
+    """Маршрут ведёт один исполнитель — сервер; страница его запускает и смотрит.
+
+    До 1.152.0 правила маршрута жили в двух местах: в странице (кнопка «Пройти») и на сервере
+    (расписание). Пороги сверял тест, но две реализации одного правила всё равно
+    расходятся — и закрытая вкладка останавливала маршрут кнопки. Теперь в странице нет ни
+    оборотов, ни коммитов, ни ожидания сети: только запуск, журнал и кнопки.
+    """
     rr, _ = _modules()
     ui = (COCKPIT / "ui" / "panel.js").read_text(encoding="utf-8")
-    block = ui[ui.index("const DID_WORK"):ui.index("const madeProgress")]
-    js = re.findall(r"/(.+?)/", block)
-    assert [p.replace("\\\\", "\\") for p in rr.DID_WORK] == js, (rr.DID_WORK, js)
-    assert f"const CYCLE_LIMIT = {rr.CYCLE_LIMIT};" in ui
-    assert f"const ROUTE_OFFLINE_TRIES = {rr.OFFLINE_TRIES};" in ui
-    assert f"ROUTE_OFFLINE_RETRY_MS = {rr.OFFLINE_RETRY_S // 60} * 60 * 1000" in ui
-    assert f"ROUTE_FLAKY_RETRY_MS = {rr.FLAKY_RETRY_S} * 1000" in ui
+    run = ui[ui.index("async function runRoute("):ui.index("function finishRoute(")]
+    assert '"/api/route/run"' in run and "/api/route/live?id=" in run, \
+        "кнопка «Пройти» ведёт маршрут не через сервер"
+    for gone in ("CYCLE_LIMIT", "OFFLINE_SIGNS", "DID_WORK", "leftByKind"):
+        assert gone not in ui, f"в странице снова своя логика маршрута: {gone}"
+    # Ручная фиксация в странице есть, но маршрут свои обороты страницей не фиксирует.
+    assert "/api/git/commit" not in run, "маршрут страницы снова коммитит обороты сам"
     from agent_runner import OFFLINE_SIGNS
-    assert rr.offline_signs() == OFFLINE_SIGNS
+    assert rr.offline_signs() == OFFLINE_SIGNS, "признаки офлайна маршрута — не движковые"
 
 
 def _task(**kw):
@@ -494,5 +508,75 @@ def test_stop_interrupts_the_running_step_and_skips_the_rest(tmp: Path):
         assert [i["status"] for i in run["items"]] == ["stopped", "skipped"], run["items"]
         assert run["items"][1]["note"] == "stopped", run["items"]
         assert [c[1] for c in ck.calls] == ["kb:repair"], "после остановки цепочка пошла дальше"
+    finally:
+        restore()
+
+
+@test
+def test_the_history_shows_one_row_per_launch_and_the_whole_output(tmp: Path):
+    """История консоли: одна строка — один запуск, раскрытие — весь вывод, как он шёл.
+
+    Один маршрут «Обновить базу» давал в архиве полсотни строк — по одной на шаг, а журнал
+    помнил только последний запуск каждой команды. Шаги нового маршрута помечены родителем,
+    шаги маршрута прежнего вида узнаются по времени его событий.
+    """
+    sys.path.insert(0, str(COCKPIT))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    rr, _ = _modules()
+    restore = set_home(tmp / "home")
+    try:
+        project = tmp / "p"
+        runs = project / ".opencode" / "runs"
+
+        def put(rid, meta=None, console="", events=None, transcript=None):
+            d = runs / rid
+            d.mkdir(parents=True)
+            if meta is not None:
+                rr.write_meta(str(d), meta)
+            if console:
+                (d / "console.log").write_text(console, encoding="utf-8")
+            if events is not None:
+                (d / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events),
+                                                encoding="utf-8")
+            if transcript is not None:
+                (d / "transcript.jsonl").write_text(
+                    "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in transcript),
+                    encoding="utf-8")
+
+        # прежний маршрут страницы: события и россыпь шагов без родителя
+        put("20261001-100000-route", events=[
+            {"cmd": "kb:repair", "start": "2026-10-01T07:00:05.000Z", "end": "2026-10-01T07:00:09.000Z"},
+            {"cmd": "kb:lint", "start": "2026-10-01T07:01:00.000Z", "end": "2026-10-01T07:01:30.000Z"}])
+        put("20261001-070005Z-aaaaaa", console="ремонт")
+        put("20261001-070100Z-bbbbbb", console="линтер")
+        # новый маршрут и его шаг; отдельная команда
+        put("20261002-080000Z-route", meta={"kind": "route", "id": "20261002-080000Z-route",
+            "title": "Починить базу", "scId": "fix", "status": "passed",
+            "started": "2026-10-02T08:00:00Z"},
+            transcript=[{"k": "head", "s": "▸ шаг 1 из 1 · kb:repair"}, {"k": "out", "s": "✅ готово"}])
+        put("20261002-080001Z-cccccc", meta={"kind": "step", "parent": "20261002-080000Z-route",
+                                             "status": "done", "rc": 0}, console="шаг")
+        put("20261003-090000Z-dddddd", meta={"kind": "command", "title": "kb:lint --residue",
+                                             "status": "done", "rc": 1,
+                                             "started": "2026-10-03T09:00:00Z"}, console="⚠️ нашла")
+        rows = ck.history(str(project))
+        assert [(r["kind"], r["id"]) for r in rows] == [
+            ("command", "20261003-090000Z-dddddd"), ("route", "20261002-080000Z-route"),
+            ("route", "20261001-100000-route")], rows
+        got = ck.history_run(str(project), "20261002-080000Z-route")
+        assert got["entries"] == [{"k": "head", "s": "▸ шаг 1 из 1 · kb:repair"},
+                                  {"k": "out", "s": "✅ готово"}], got
+        assert ck.history_run(str(project), "../чужое").get("error"), "раскрылся путь мимо архива"
+        # уборка считает запуски: шаги живут вместе со своим маршрутом
+        saved = ck.RUNS_KEEP
+        ck.RUNS_KEEP = 2
+        try:
+            ck.trim_runs(str(project))
+        finally:
+            ck.RUNS_KEEP = saved
+        left = sorted(p.name for p in runs.iterdir())
+        assert "20261002-080001Z-cccccc" in left and "20261002-080000Z-route" in left, left
+        assert "20261003-090000Z-dddddd" in left, left
     finally:
         restore()

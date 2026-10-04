@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.151.0";
+const UI_VERSION = "1.152.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1094,7 +1094,8 @@ function activityChips(act, now){
     ? t("act.lock_note", {task: agent.task || t("act.agent"), pid: agent.pid}) : "";
   if (route){
     const labels = {stall: t("act.reason_stall"), failed: t("act.reason_failed"),
-                    offline: t("act.reason_offline"), stopped: t("act.reason_stopped")};
+                    offline: t("act.reason_offline"), stopped: t("act.reason_stopped"),
+                    interrupted: t("act.reason_interrupted")};
     const waiting = route.reason === "offline" && route.nextRetryAt > now;
     return [{cls:"warn",
       text: (waiting ? t("act.route_waiting") : t("act.route_halted"))
@@ -1942,26 +1943,8 @@ const NEAR_BOTTOM = 40;   // px: «внизу» — не пиксель в пи�
 // но убивать её нельзя: честная `kb:build` идёт часами. Предупреждаем один раз и ждём дальше;
 // «Прервать» — уже решение человека, а не автомата.
 const SILENCE_MS = 120000;
-// Офлайн-пауза в маршруте: бэкенды отвалились, а не дело сломалось. Признаки — точная
-// копия OFFLINE_SIGNS из scripts/agent_runner.py — инвариант проверяет автотест.
-const OFFLINE_SIGNS = ["timed out", "timeout", "connection error", "connection refused",
-                     "ни один бэкенд", "temporarily unavailable", "failed to establish",  // данные движка
-                     "name or service not known", "ssl", "network is unreachable"];
-const ROUTE_OFFLINE_RETRY_MS = 15 * 60 * 1000;   // между попытками достучаться до бэкендов
-const ROUTE_FLAKY_RETRY_MS = 30 * 1000;          // шлюз мигает, а не лежит: пробуем сразу
-// Шаг сделал работу — значит бэкенды отвечают, просто через раз. На живом прогоне так и
-// было: девять попыток подряд, каждая переписывала по 12–15 карточек и всё равно уходила
-// в пятнадцатиминутное ожидание. За четыре с половиной часа около двух ушло в простой.
-// Признак прогресса ищем в выводе самих шагов — числа, которые они печатают о сделанном.
-const DID_WORK = [/переписано:\s*([1-9]\d*)/, /разобрано\s+([1-9]\d*)\s+из/,
-                  /уточнено:\s*([1-9]\d*)/, /тезисов:\s*([1-9]\d*)/];
-const madeProgress = lines => {
-  const t = (Array.isArray(lines) ? lines.join("\n") : (lines || ""));
-  return DID_WORK.some(rx => rx.test(t));
-};
-const ROUTE_OFFLINE_TRIES = 8;                        // лимит: 8 попыток ≈ 2 часа, дальше — ручками
-const looksOffline = text => { const t = (Array.isArray(text) ? text.join("\n") : (text||"")).toLowerCase();
-  return OFFLINE_SIGNS.some(s => t.includes(s)); };
+// Ожидание сети, обороты и застой маршрута считает сервер (`cockpit/route_runner.py`):
+// маршрут идёт в процессе панели, а страница только показывает его журнал.
 function stickToBottom(box){
   if (box.dataset.follow === "0") return;
   box.scrollTop = box.scrollHeight;
@@ -1995,7 +1978,7 @@ function armStop(jobId){
     const r = await api("/api/job/stop", {method:"POST", quiet:true,
       body: JSON.stringify({id: jobId})});
     if (r.error) toast(r.error, "warn");
-    else { ROUTE.stopped = true; toast(t("console.stopped")); }
+    else toast(t("console.stopped"));
   };
 }
 
@@ -2141,503 +2124,220 @@ function findings(lines){
 // прерывания шёл дальше — ровно то, чего человек и не хотел.
 const failed = rc => rc >= 2 || rc < 0;
 
-function drawRouteBar(cmd){
+function drawRouteBar(bar0){
   const bar = $("#routeBar");
   if (!bar) return;
-  if (!cmd || !ROUTE){ bar.hidden = true; bar.textContent = ""; return; }
+  const b = bar0 || {};
+  if (!b.cmd || !ROUTE){ bar.hidden = true; bar.textContent = ""; return; }
   bar.hidden = false;
   bar.innerHTML = "";
-  bar.append(el("span",{}, ROUTE.lap
-      ? t("route.bar_lap", {lap: ROUTE.lap, step: ROUTE.inLap, of: ROUTE.cycleSize})
-      : t("route.bar_step", {step: ROUTE.done, of: ROUTE.total})),
-             el("span",{class:"rb-dim"}, " · " + cmd));
+  bar.append(el("span",{}, b.lap
+      ? t("route.bar_lap", {lap: b.lap, step: b.inLap, of: b.cycleSize})
+      : t("route.bar_step", {step: b.done, of: b.total})),
+             el("span",{class:"rb-dim"}, " · " + b.cmd));
 }
 
-/* ---------------- производство артефакта ----------------
+/* Строка консоли — по виду записи журнала. Вывод шага красим по маркерам самого движка
+   (`lineClass`), ход маршрута — по смыслу: заголовок шага, пометка, предупреждение, итог.
+   Тот же рисовальщик у живого маршрута и у раскрытой строки истории: что было видно,
+   пока прогон шёл, то и видно потом. */
+function lineClass(l){
+  /* Красили по вхождению слова: путь к файлу, в имени которого есть «ошибки»,
+     становился красным, хотя ничего не сломалось. Красим только сообщения самого
+     движка — те, что начинаются с маркера или знака, — и никогда пункты списка. */
+  const listItem = /^\s*(\d+\.|[-•])\s/.test(l);
+  return listItem ? ""
+    : /^\s*(❌|ERROR\b|FAIL\b)|^\s*[a-z_]+: (ошибка|не найден|отказ)/i.test(l) ? "err"
+    : /^\s*(✅|OK:)|детерминизм подтверждён/i.test(l) ? "ok"
+    : /^\s*(⚠️|WARN\b)/i.test(l) ? "warn"
+    : /^\s*(#|—|\.\.\.)/.test(l) ? "dim" : "";
+}
+let SUM_FIRST = true;            // первая строка итога — заголовок, остальные — его строки
+function entryNode(e){
+  const s = String(e.s == null ? "" : e.s);
+  if (e.k === "head") return el("div",{class:"ok",style:"margin-top:10px"}, s);
+  if (e.k === "note") return el("div",{class:"dim"}, s);
+  if (e.k === "warn" || e.k === "err" || e.k === "ok") return el("div",{class:e.k}, s);
+  if (e.k === "sum"){
+    const first = SUM_FIRST; SUM_FIRST = false;
+    return el("div", first ? {class:"ok",style:"margin-top:12px"}
+                           : {class:"dim",style:"white-space:pre"}, s);
+  }
+  return el("div",{class:lineClass(s)}, s);
+}
+function drawEntries(out, entries){
+  SUM_FIRST = true;
+  (entries||[]).forEach(e=>out.append(entryNode(e)));
+}
 
-   Цепочка длинная и с человеком посередине: планировщик спрашивает, аналитик отвечает.
-   Состояние держит движок в сессии, панель только показывает и передаёт ответы — иначе
-   закрытая вкладка означала бы потерянную работу. */
+/* ---------------- маршрут ----------------
+
+   Маршрут ведёт процесс панели (`cockpit/route_runner.py`): тот же исполнитель, что у
+   расписания и `aurora.py route`. Страница его запускает и смотрит журнал. Закрыли вкладку —
+   маршрут идёт дальше; открыли снова — консоль подключается к нему с того же места. Раньше
+   маршрут жил в странице, умирал вместе с ней, а в архиве от него оставалась россыпь шагов. */
+function routeSteps(sc, write){
+  const steps = [];
+  for (const st of sc.steps.filter(s=>!s.manual && !s.cycle)){
+    const r = S.state.commands.find(x=>x.cmd===st.cmd);
+    if (!r || !r.runnable) continue;
+    steps.push({cmd: st.cmd, args: (st.flags||[]).filter(f=>write || f!=="--apply")});
+  }
+  return steps;
+}
+
 async function runRoute(sc, write, resume){
   if (!S.project) return toast(t("route.pick_project"), "warn");
   if (await busyElsewhere(sc.title)) return;
-  // Итог прогона считает изменения базы от этой точки — по git, чтобы учесть и шаги-скрипты.
-  const routeHead = ((await api("/api/git/head?project=" + encodeURIComponent(S.project.path),
-                               {quiet:true})) || {}).head || "";
-  const routeStarted = Date.now();
-  // Блок «цикл:» повторяется партиями: разобрали, осмыслили, связали, закоммитили — и
-  // снова. Разметка сохраняется до фильтрации, иначе граница блока потеряется вместе с
-  // недоступной командой внутри него.
-  const raw = sc.steps.filter(st=>!st.manual);
-  const steps = [];
-  let inCycle = false, cycleIdx = 0;
-  for (const st of raw){
-    if (st.cycle === "цикл:"){ inCycle = true; cycleIdx = 0; continue; }     // данные движка
-    if (st.cycle === "конец цикла"){ inCycle = false; continue; }            // данные движка
-    const r = S.state.commands.find(x=>x.cmd===st.cmd);
-    if (!r || !r.runnable) continue;
-    // Номер шага внутри оборота — по нему продолжение находит место остановки.
-    steps.push({cmd:st.cmd, why:st.why, cycle:inCycle, cycleIdx: inCycle ? ++cycleIdx : 0,
-                args:(st.flags||[]).filter(f=>write || f!=="--apply")});
-  }
+  const steps = routeSteps(sc, write);
   const writes = steps.filter(st=>st.args.includes("--apply"));
-  if (write && writes.length && !confirm(t("route.ask", {title: sc.title,
+  if (!resume && write && writes.length && !confirm(t("route.ask", {title: sc.title,
       steps: steps.length, writes: writes.length,
       list: writes.map(s=>"  " + s.cmd + " " + s.args.join(" ")).join("\n")}))) return;
+  const res = await api("/api/route/run", {method:"POST", quiet:true, body: JSON.stringify({
+    project: S.project.path, scId: sc.id, write,
+    resume: resume ? {skipSigs: [...(resume.skipSigs || [])], attempts: resume.attempts || 0,
+                      cycleAt: resume.cycleAt || null} : null})});
+  if (!res || !res.route || res.error){
+    // Уже идёт маршрут (кнопка в другой вкладке, расписание) — подключаемся к нему, а не
+    // заводим второй поверх.
+    if (res && res.route){
+      toast(res.error || "", "warn");
+      const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
+      const live = (d.scenarios || []).find(x=>x.id === res.scId) || sc;
+      return attachRoute(res.route, live, res.write !== false);
+    }
+    show("console");
+    $("#consoleOut").append(el("div",{class:"err"},
+      "■ " + t("step.not_started", {why: (res && res.error) || t("step.refused")})));
+    return toast((res && res.error) || t("step.refused"), "err");
+  }
+  attachRoute(res.route, sc, write, !!resume);
+}
 
+async function attachRoute(id, sc, write, resumed){
   show("console");
   const out = $("#consoleOut");
-  // Продолжение — это продолжение, а не новый прогон: вывод прошлой попытки остаётся на
-  // экране. Стирать его значит отнять у человека то, ради чего он и жмёт «продолжить», —
-  // увидеть, что уже сделано. Кнопки и отложенные правки при этом сбрасываем: они от
-  // прошлой попытки и повторному нажатию не подлежат.
-  if (resume) out.append(el("div",{class:"ok",style:"margin-top:14px"},
-    t("route.resumed", {title: sc.title})));
-  else out.innerHTML = "";
+  if (!resumed) out.innerHTML = "";
   $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
-  // `total` считал ВСЕ строки маршрута, а блок цикла повторяется партиями: на третьем
-  // обороте счётчик показывал сорок седьмой шаг из двадцати — число росло, предел стоял,
-  // и понять по нему, сколько осталось, было нельзя. Считаем раздельно: шаги маршрута —
-  // по списку, шаги внутри оборота — своим счётом.
-  ROUTE = {title:sc.title, done:0, total:steps.filter(s=>!s.cycle).length,
-           cycleSize:steps.filter(s=>s.cycle).length || 1, inLap:0, failed:null, lap:0};
-  const summary = [];
-  let prevEnd = 0;           // конец предыдущего шага — отсюда длительность текущего
-  const stepEvents = [];      // каждый шаг: начало, конец, длительность, итоговый код
-  const routeRunId = rtime() + "-route";   // id этого маршрута для архива событий
-  // Следующей попытке (кнопка «Продолжить маршрут») нужны тот же сценарий и те же события,
-  // что были у этой: что уже сделано — знает только архив, а по нему не восстановишь, каким
-  // флагом (--apply) шёл маршрут и в какой вкладке. Храним контекст, пока не стартует новый.
-  S.lastRoute = {scId: sc.id, write, runId: routeRunId, title: sc.title};
-  // Сигнатуры шагов, которые прошлая попытка уже завершила успехом (0 или 1). Только их
-  // и пропускаем при продолжении; нецикличные и неудавшиеся гоняем заново.
-  const SKIP_SIGS = (resume && resume.skipSigs) ? resume.skipSigs : null;
-  // Сделанное копится между попытками. Каждая попытка пишет СВОЙ events.jsonl, и если
-  // помнить только его, то на третьей попытке шаги первой считаются несделанными и
-  // гоняются заново. Список переносим и сохраняем в состоянии маршрута — тогда он
-  // переживает и перезапуск панели.
-  const CARRIED = new Set(SKIP_SIGS || []);
-  // Где встал прошлый маршрут внутри оборота. Цикл при продолжении шёл с первого шага
-  // первого оборота, а в «Обновить базу» почти вся работа — в цикле: продолжение
-  // выглядело и работало как запуск заново. Шаги оборота до места остановки уже прошли.
-  const CYCLE_AT = (resume && resume.cycleAt && resume.cycleAt.inLap > 1) ? resume.cycleAt : null;
-  const routeDoneSigs = () => [...CARRIED, ...stepEvents.filter(e=>e.rc===0)
-                                  .map(e=>e.cmd + " " + (e.args||[]).join(" "))];
-  // Офлайн-эпизод продолжается после перезапуска: `attempts` из сохранённого состояния
-  // переносим в первый эпизод текущего прогона (не сбрасываем счёт); дальше — с нуля.
-  let offlineCarry = (resume && typeof resume.attempts === "number") ? resume.attempts : 0;
-
-  // Сколько источников осталось разобрать — это печатает сам agent:build последней
-  // строкой. Панель не гадает и не считает файлы: цикл вертится, пока движок говорит,
-  // что работа есть, и останавливается, когда число перестало убывать.
-  // Сколько работы осталось ПОСЛЕ оборота — по всем видам сразу, а не только по
-  // источникам. Раньше считались одни источники: они кончались, цикл завершался, и
-  // маршрут отчитывался «пройден» при восьмистах карточках без единого тезиса. База
-  // «знает всё, что появилось в источниках» — это про знание, а не про разбор.
-  // Остатки — по видам работы РАЗДЕЛЬНО. Сложенные в один максимум, они врали: разбор
-  // добавляет карточки, переосмысление их разбирает, и суммарный остаток стоит на месте,
-  // хотя работа идёт. Цикл объявлял это «крутиться впустую» и вставал.
-  const leftByKind = lines => {
-    const out = {};
-    for (const l of (lines||[])){
-      const src = /Источников в плане:\s*(\d+)\s*→\s*(\d+)/.exec(l);   // данные движка
-      if (src) out["источники"] = Number(src[2]);                       // данные движка
-      const rest = /·\s*осталось:\s*(\d+)/.exec(l);                     // данные движка
-      if (rest) out["карточки"] = Number(rest[1]);                      // данные движка
-    }
-    return out;
+  ROUTE = {id, title: sc.title, scId: sc.id, write};
+  S.lastRoute = {scId: sc.id, write, runId: id, title: sc.title};
+  SUM_FIRST = true;
+  const stop = $("#consoleStop");
+  stop.hidden = false;
+  stop.onclick = async () => {
+    if (!confirm(t("console.stop_ask"))) return;
+    await api("/api/route/stop", {method:"POST", quiet:true, body: JSON.stringify({id})});
+    toast(t("console.stopped"));
   };
-
-  // Ожидание сети: шаг упал по сети (rc 1 + признак офлайна из движка), а не по делу. Ждём
-  // по таймеру во вкладке, пока бэкенды не ответят, и держим маршрут на месте. Каждая
-  // попытка — тот же шаг через runStep и новая запись в events.jsonl (это ожидаемо).
-  const waitNetworkCycle = (st) => new Promise(resolve => {
-    const cmd = st.cmd + " " + st.args.join(" ");
-    const cy = {attempt: offlineCarry + 1, nextRetryAt: Date.now() + ROUTE_OFFLINE_RETRY_MS,
-                timer: null, capped: false, resolve};
-    offlineCarry = 0;   // переносим только первый эпизод (продолжение после перезапуска)
-    const done = o => { if (cy.timer){ clearTimeout(cy.timer); cy.timer = null; } resolve(o); };
-    const emit = r => stepEvents.push({cmd: st.cmd, args: st.args,
-      start: new Date().toISOString(), end: new Date().toISOString(),
-      duration_s: 0, rc: r.rc});
-    const persist = () => { if (!S.project) return;
-      api("/api/route/state", {method:"POST", quiet:true, body: JSON.stringify({
-        project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
-          runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
-          write:S.lastRoute&&S.lastRoute.write, reason:"offline", step: st.cmd,
-          done: routeDoneSigs(), cycleAt: st.cycle ? {lap: ROUTE.lap, inLap: st.cycleIdx} : null,
-          attempts: cy.attempt, nextRetryAt: cy.nextRetryAt, at: new Date().toISOString()}})}); };
-    const holder = el("div",{class:"warn", style:"margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap"});
-    out.append(holder);
-    const renderWait = () => {
-      holder.innerHTML = "";
-      const when = new Date(cy.nextRetryAt).toLocaleTimeString(
-        S.lang === "en" ? "en-GB" : "ru-RU", {hour:"2-digit", minute:"2-digit"});
+  const holder = el("div",{class:"warn", style:"margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap", hidden:""});
+  let since = 0, waitShown = "";
+  for (;;){
+    const d = await api(`/api/route/live?id=${encodeURIComponent(id)}&since=${since}`, {quiet:true});
+    if (!d || d.error){
+      out.append(el("div",{class:"err"}, t("step.job_lost")));
+      break;
+    }
+    (d.entries||[]).forEach(e=>{
+      if (e.k === "out") CONSOLE_LINES.push(e.s);
+      out.append(entryNode(e));
+    });
+    since = d.next;
+    watchScroll(out); stickToBottom(out);
+    drawRouteBar(d.bar);
+    if (d.bar && d.bar.cmd){
+      $("#consoleCmd").textContent = `${sc.title} · ` + (d.bar.lap
+        ? t("route.where_lap", {step: d.bar.inLap, of: d.bar.cycleSize})
+          + t("route.lap_mark", {lap: d.bar.lap})
+        : t("route.where", {step: d.bar.done, of: d.bar.total})) + ": " + d.bar.cmd;
+      $("#consoleRc").textContent = t("route.running"); $("#consoleRc").className = "chip";
+    }
+    // Ожидание сети ведёт сервер; страница даёт разбудить его или не ждать вовсе.
+    const w = d.wait || {};
+    if (w.cmd && waitShown !== w.at){
+      waitShown = w.at;
+      holder.innerHTML = ""; holder.hidden = false;
+      const when = new Date(w.at).toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU",
+                                                     {hour:"2-digit", minute:"2-digit"});
       holder.append(el("span",{class:"chip warn"}, t("route.wait_chip")),
-        el("div",{style:"flex:1;min-width:220px"},
-          t("route.wait_line", {cmd, n: cy.attempt, of: ROUTE_OFFLINE_TRIES, time: when})),
-        el("button",{class:"btn sm gold", onclick:manualRetry}, t("route.wait_now")),
-        el("button",{class:"btn sm", onclick:notWait}, t("route.wait_stop")));
-    };
-    const renderCapped = () => {
-      cy.capped = true; cy.nextRetryAt = null;
-      holder.innerHTML = "";
-      holder.append(el("span",{class:"chip warn"}, t("route.wait_chip")),
-        el("div",{style:"flex:1;min-width:220px"},
-          t("route.wait_capped", {n: ROUTE_OFFLINE_TRIES})),
-        el("button",{class:"btn sm gold", onclick:manualRetry}, t("route.wait_now")));
-      persist();
-    };
-    const schedule = () => { cy.timer = setTimeout(attempt, Math.max(0, cy.nextRetryAt - Date.now())); };
-    const attempt = async () => {
-      cy.timer = null;
-      const r = await runStep(st.cmd, st.args); emit(r);
-      if (r.rc >= 2) return done("failed");
-      if (r.rc === 1 && looksOffline(r.lines||[])){
-        // Шаг сделал работу и всё же споткнулся — это помехи, а не «сети нет».
-        // Ждать четверть часа тут значит стоять при живых бэкендах.
-        const flaky = madeProgress(r.lines || []);
-        if (!flaky) cy.attempt++;
-        if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
-        cy.nextRetryAt = Date.now() + (flaky ? ROUTE_FLAKY_RETRY_MS : ROUTE_OFFLINE_RETRY_MS);
-        persist(); renderWait(); schedule();
-        return;
-      }
-      done("continue");
-    };
-    const manualRetry = async () => {
-      if (cy.timer){ clearTimeout(cy.timer); cy.timer = null; }
-      const r = await runStep(st.cmd, st.args); emit(r);
-      if (r.rc >= 2) return done("failed");
-      if (r.rc === 1 && looksOffline(r.lines||[])){
-        if (cy.capped){
-          holder.innerHTML = "";
-          holder.append(el("div",{}, t("route.wait_again_failed")),
-            el("button",{class:"btn sm gold", onclick:manualRetry}, t("route.wait_now")));
-          return;
-        }
-        cy.attempt++;
-        if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
-        cy.nextRetryAt = Date.now() + ROUTE_OFFLINE_RETRY_MS;
-        persist(); renderWait(); schedule();
-        return;
-      }
-      done("continue");
-    };
-    const notWait = () => done("stopped");
-    if (cy.attempt >= ROUTE_OFFLINE_TRIES) return renderCapped();
-    persist(); renderWait(); schedule();
-  });
-  const runOne = async (st) => {
-    // Продолжение маршрута: этот нецикличный шаг уже отработал в прошлой попытке (код 0 или
-    // 1) — повторять его незачем, счет не раздувается. Цикличные не трогаем: они заново
-    // оценивают остаток работы по живому выводу движения. Сигнатуры в SKIP_SIGS не оказалось —
-    // архив пуст или шаг падал — значит, гоняем как обычно.
-    const sig = st.cmd + " " + st.args.join(" ");
-    if (SKIP_SIGS && !st.cycle && SKIP_SIGS.has(sig)){
-      // Пропущенный — это ПРОЙДЕННЫЙ, и в счётчике он обязан стоять. Иначе продолжение
-      // после семи сделанных шагов показывает «шаг 1 из 20», и человек справедливо
-      // читает это как «всё началось заново».
-      ROUTE.done++;
-      drawRouteBar(st.cmd);
-      out.append(el("div",{class:"dim"},
-        t("route.skip_step", {step: ROUTE.done, of: ROUTE.total, cmd: st.cmd})));
-      return {rc:0, skipped:true, lines:[]};
-    }
-    if (CYCLE_AT && st.cycle && ROUTE.lap === 1 && st.cycleIdx < CYCLE_AT.inLap){
-      ROUTE.inLap = st.cycleIdx;
-      drawRouteBar(st.cmd);
-      out.append(el("div",{class:"dim"},
-        t("route.skip_lap_step", {step: st.cycleIdx, of: ROUTE.cycleSize, cmd: st.cmd})));
-      return {rc:0, skipped:true, lines:[]};
-    }
-    // Шаги цикла в счёт маршрута не идут: `total` — это шаги ВНЕ цикла, а цикл повторяется.
-    // Исправление из 1.100.41 развело счёт только внутри оборота, а общий счётчик по-прежнему
-    // прибавлял повторы — после цикла панель показывала «шаг 36 из 20».
-    if (st.cycle) ROUTE.inLap = st.cycleIdx; else ROUTE.done++;
-    drawRouteBar(st.cmd);
-    const lap = ROUTE.lap ? t("route.lap_mark", {lap: ROUTE.lap}) : "";
-    const where = ROUTE.lap
-      ? t("route.where_lap", {step: ROUTE.inLap, of: ROUTE.cycleSize})
-      : t("route.where", {step: ROUTE.done, of: ROUTE.total});
-    // Системные часы на входе в шаг: «началось в» — это календарь, а не счётчик,
-    // чтобы после прогона сверяться с журналом и другими прогонами.
-    const stepStart = Date.now();
-    $("#consoleCmd").textContent = `${sc.title} · ${where}${lap}: `
-      + st.cmd + " " + st.args.join(" ");
-    $("#consoleRc").textContent = t("route.running"); $("#consoleRc").className = "chip";
-    out.append(el("div",{class:"ok",style:"margin-top:10px"}, t("route.step_head",
-      {where, lap, cmd: (st.cmd + " " + st.args.join(" ")).trim(), why: st.why})));
-    // Длительность прошлого шага — единственный симптом букса на длинном маршруте: один
-    // шаг «всегда так шёл», пока не видно, что соседний занял втрое больше обычного.
-    out.append(el("div",{class:"dim"},
-      t("route.step_started", {time: new Date(stepStart)
-          .toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU")})
-      + (prevEnd ? t("route.prev_took", {dur: fmtDur((stepStart - prevEnd) / 1000)})
-                 : t("route.first_step"))));
-    const res = await runStep(st.cmd, st.args);
-    const stepEnd = Date.now();
-    prevEnd = stepEnd;
-    // Каждый шаг — одна строка в events.jsonl маршрута: данные для разбора, когда живой
-    // буфер консоли давно остыл. ISO-время пишем, чтобы не зависеть от часового пояса.
-    stepEvents.push({cmd: st.cmd, args: st.args,
-                    start: new Date(stepStart).toISOString(),
-                    end: new Date(stepEnd).toISOString(),
-                    duration_s: Math.round((stepEnd - stepStart) / 1000),
-                    rc: res.rc, ...(res.refused ? {note: res.refused} : {})});
-    if (res.refused) ROUTE.refused = res.refused;
-    summary.push({cmd:st.cmd, rc:res.rc, skipped:res.skipped,
-                  found: res.rc === 1 ? findings(res.lines||[]) : [],
-                  summ: parseSummaries(res.lines||[])});
-    // rc 1 с признаком сети — пауза ожидания, а не «нашла, что чинить»: маршрут остаётся
-    // на этом шаге. Цикл решает по флагу `ended`; обычный успех/отказ проходят как раньше.
-    const cyc = (res.rc === 1 && looksOffline(res.lines||[])) ? await waitNetworkCycle(st) : null;
-    if (cyc === "continue") summary[summary.length-1].rc = 0;
-    if (cyc === "stopped"){ ROUTE.stopped = st.cmd; ROUTE.failed = st.cmd;
-      return {rc:0, lines:res.lines, ended:"stopped"}; }
-    if (cyc === "failed") return {rc:2, lines:res.lines};
-    return cyc === "continue" ? {rc:0, lines:res.lines} : res;
-  };
-
-  ROUTE.stopped = false;            // прерывание человеком — не то же самое, что отказ
-  // Предохранитель, а не режим работы. Стояло 500 — и цикл, который не сходится, мог
-  // крутиться часами, выглядя долгим прогоном. Живой случай: один источник, который
-  // движок не мог отметить разобранным, держал маршрут сорок оборотов подряд, и понять
-  // это по экрану было нельзя. Дюжина оборотов — это уже симптом, а не работа.
-  const CYCLE_LIMIT = 12;
-  let i = 0;
-  outer:
-  while (i < steps.length){
-    if (!steps[i].cycle){
-      const res = await runOne(steps[i]);
-      if (res.ended) break;
-      if (failed(res.rc)){ ROUTE.failed = steps[i].cmd; break; }
-      i++;
-      continue;
-    }
-    // блок цикла: от i до первого нецикличного шага
-    let end = i;
-    while (end < steps.length && steps[end].cycle) end++;
-    let prev = {};
-    for (ROUTE.lap = 1; ROUTE.lap <= CYCLE_LIMIT; ROUTE.lap++){
-      let kinds = {};
-      for (let k = i; k < end; k++){
-        const res = await runOne(steps[k]);
-        if (res.ended) break outer;
-        const {rc, lines} = res;
-        if (failed(rc)){ ROUTE.failed = steps[k].cmd; break outer; }
-        Object.assign(kinds, leftByKind(lines));
-      }
-      // Первый оборот продолжения неполный: часть его шагов пропущена, и остаток по нему
-      // не считается — «ноль» или «не убыло» здесь сказали бы о пропуске, а не о работе.
-      if (CYCLE_AT && ROUTE.lap === 1) continue;
-      // Вид работы движок называет по-русски; человеку показываем на его языке, а
-      // незнакомый вид оставляем как есть — движку виднее, что он посчитал.
-      const kindName = k => { const v = t("route.kind." + k);
-                              return v === "route.kind." + k ? k : v; };
-      const names = Object.keys(kinds);
-      const left = names.length ? names.reduce((s, k) => s + kinds[k], 0) : null;
-      if (left === null){
-        out.append(el("div",{class:"dim"}, t("route.no_left")));
-        break;
-      }
-      if (left === 0){
-        const saved = await api("/api/git/commit", {method:"POST", quiet:true,
-          body: JSON.stringify({project:S.project.path, skip_ratchet:true,
-            message: t("route.commit_done", {title: sc.title,
-              laps: t("route.laps", {n: ROUTE.lap})})})});
-        out.append(el("div",{class:"ok"},
-          t("route.work_over", {laps: t("route.laps", {n: ROUTE.lap})})
-          + (saved.ok ? t("route.committed_as", {commit: saved.commit}) : "")));
-        break;
-      }
-      // Встаём, только если НИ ОДИН вид работы не сдвинулся. Пока хоть что-то убывает,
-      // прогон идёт: разбор может добавлять карточки быстрее, чем переосмысление их
-      // разбирает, — это не застой, а гонка, и о ней надо сказать числами.
-      const moved = names.filter(k => prev[k] === undefined || kinds[k] < prev[k]);
-      if (!moved.length && ROUTE.lap > 1){
-        out.append(el("div",{class:"warn"}, t("route.stalled_line",
-          {tail: names.map(k => `${kindName(k)}: ${kinds[k]}`).join(", ")})));
-        ROUTE.stalled = true;   // застой — остановка, а не проход: даём «Продолжить маршрут»
-        break;
-      }
-      const grew = names.filter(k => prev[k] !== undefined && kinds[k] > prev[k]);
-      if (grew.length)
-        out.append(el("div",{class:"dim"}, t("route.grew",
-          {list: grew.map(k => `${kindName(k)} ${prev[k]}→${kinds[k]}`).join(", ")})));
-      prev = {...kinds};
-      // Фиксируем результат оборота. Прогон идёт часами, и человек вправе выключить его
-      // в любую минуту: без коммита прерванная работа осталась бы незафиксированной, а
-      // двенадцать команд движка не работают по грязному дереву — следующий запуск
-      // встал бы на первом же шаге.
-      const saved = await api("/api/git/commit", {method:"POST", quiet:true,
-        body: JSON.stringify({project:S.project.path, skip_ratchet:true,
-          message: t("route.commit_lap", {lap: ROUTE.lap, title: sc.title, left})})});
-      const tail = names.map(k => `${kindName(k)}: ${kinds[k]}`).join(", ");
-      out.append(el("div",{class:"dim"}, saved.ok
-        ? t("route.lap_saved", {commit: saved.commit, tail})
-        : t("route.lap_unsaved", {tail, why: saved.error || "?"})));
-      // Упёрлись в предохранитель — это не «долгий прогон», а несходящийся цикл, и
-      // сказать об этом надо прямо, назвав, что именно не убывает.
-      if (ROUTE.lap === CYCLE_LIMIT){
-        out.append(el("div",{class:"warn"}, t("route.limit",
-          {laps: t("route.laps", {n: CYCLE_LIMIT}), tail})));
-        ROUTE.stalled = true;
-      }
-    }
-    ROUTE.lap = 0;
-    i = end;
+        el("div",{style:"flex:1;min-width:220px", html: t("route.wait_line",
+          {cmd: esc(w.cmd), n: w.attempt, of: w.of, time: when})}),
+        el("button",{class:"btn sm gold", onclick: () => api("/api/route/wake",
+          {method:"POST", quiet:true, body: JSON.stringify({id})})}, t("route.wait_now")),
+        el("button",{class:"btn sm", onclick: () => api("/api/route/stop",
+          {method:"POST", quiet:true, body: JSON.stringify({id})})}, t("route.wait_stop")));
+      out.append(holder);
+    } else if (!w.cmd && waitShown){ waitShown = ""; holder.hidden = true; }
+    if (d.done){ finishRoute(d.result || {}, sc, write); break; }
+    await new Promise(ok=>setTimeout(ok, 600));
   }
-  const bad = ROUTE.failed || ROUTE.stalled;
-  // Причина остановки — для файла маршрута; считается до `ROUTE = null`, где поля гаснут.
-  const routeReason = ROUTE.stalled ? "stall" : ROUTE.stopped ? "stopped"
-    : ROUTE.failed ? "failed" : "stopped",
-        routeDone = ROUTE.done,
-        // Застой гоняет цикл заново: работа не двигалась, и начинать с середины оборота незачем.
-        routeCycle = (ROUTE.lap && !ROUTE.stalled) ? {lap: ROUTE.lap, inLap: ROUTE.inLap} : null;
+  stop.hidden = true; stop.onclick = null;
+  ROUTE = null;
   drawRouteBar(null);
-  if (ROUTE.stalled){
+}
+
+/* Конец маршрута: шапка консоли, кнопки «Починить» по находкам, «Продолжить» и здоровье.
+   Строки итога уже в журнале — их написал сервер, страница их только показала. */
+function finishRoute(r, sc, write){
+  const out = $("#consoleOut");
+  const bad = r.reason !== "passed";
+  if (r.reason === "stall"){
     $("#consoleCmd").textContent = t("route.head_stalled", {title: sc.title});
     $("#consoleRc").textContent = t("route.rc_stalled");
     $("#consoleRc").className = "chip warn";
-    out.append(el("div",{class:"err",style:"margin-top:12px"}, t("route.stalled_why")));
   } else {
     $("#consoleCmd").textContent = bad ? t("route.head_stopped", {title: sc.title})
                                        : t("route.head_passed", {title: sc.title});
-    $("#consoleRc").textContent = bad ? t("route.rc_stopped", {cmd: bad})
-                                      : t("route.rc_passed", {n: ROUTE.done});
+    $("#consoleRc").textContent = bad ? t("route.rc_stopped", {cmd: r.failed || "—"})
+                                      : t("route.rc_passed", {n: r.steps || 0});
     $("#consoleRc").className = "chip " + (bad ? "bad" : "ok");
-    out.append(el("div",{class:bad?"err":"ok",style:"margin-top:12px"},
-      bad ? (ROUTE.stopped
-          ? t("route.stopped_by_you", {cmd: bad})
-          : t("route.stopped_on", {cmd: bad,
-              why: ROUTE.refused ? ROUTE.refused + ". " : t("route.cmd_failed")}))
-          : t("route.passed", {title: sc.title,
-              steps: t("route.steps_n", {n: ROUTE.done})})));
   }
-  // Хвост маршрута — в git, как и каждый оборот. Шаги после цикла (карты, оглавления,
-  // трассировка, доверие) пишут в базу, а фиксировался только оборот: в PRJ-A 22.09 после
-  // «пройден» в проекте осталось 163 незакоммиченных файла. Следующий прогон смешал бы их
-  // со своей работой, а первый же чекпойнт агента записал бы их «работой человека».
-  // Остановленный маршрут фиксируем тоже: сообщение об остановке обещает, что сделанное
-  // сохранено.
-  if (write && S.project){
-    const how = ROUTE.stalled ? t("route.how_stalled")
-      : bad ? t("route.how_stopped", {cmd: bad}) : t("route.how_passed");
-    const saved = await api("/api/git/commit", {method:"POST", quiet:true,
-      body: JSON.stringify({project:S.project.path, skip_ratchet:true,
-        message: t("route.commit_route", {title: sc.title, how})})});
-    if (saved.ok)
-      out.append(el("div",{class:"dim"}, t("route.saved", {commit: saved.commit})));
-    else if (!/нечего фиксировать/.test(saved.error || ""))      // данные движка
-      out.append(el("div",{class:"warn"}, t("route.not_saved", {why: saved.error || "?"})));
-  }
-  // Итог прогона: время, модель, документы, карточки, ошибки. Составляет его движок
-  // (`run_summary`) — тот же, что печатает итог одиночного агента: правило одно.
-  const totals = await api("/api/run/summary", {method:"POST", quiet:true, body: JSON.stringify({
-    project: S.project.path, since: routeHead, seconds: (Date.now() - routeStarted) / 1000,
-    steps: summary.map(s=>({cmd: s.cmd, rc: s.rc, summary: s.summ || []}))})});
-  ((totals && totals.lines) || []).forEach((l, i)=>out.append(el("div",
-    {class: i ? "dim" : "ok", style: i ? "white-space:pre" : "margin-top:12px"}, l)));
-  // Одна команда бывает шагом маршрута несколько раз (в «Починить базу» — семь ремонтов).
-  // Семь одинаковых строк «нашла, что чинить» ничего не сообщают — даём одну, с числом шагов.
-  const once = new Map();
-  summary.filter(s=>s.rc===1).forEach(s=>{
-    const was = once.get(s.cmd);
-    if (was){ was.times++; was.found.push(...s.found); }
-    else once.set(s.cmd, {cmd:s.cmd, times:1, found:[...s.found]});
-  });
-  [...once.values()].forEach(s=>{
-    out.append(el("div",{class:"warn"}, t("route.found", {cmd: s.cmd})
-      + (s.times > 1 ? t("route.found_times", {n: s.times}) : "") + ":"));
-    if (!s.found.length)
-      out.append(el("div",{class:"dim"}, t("route.found_above")));
-    s.found.forEach(f=>{
-      // В самой «Починить базу» кнопка «Починить: kb:repair» — круг: ремонт только что прошёл,
-      // и остаток ему не по силам.
-      const btn = sc.id === "fix" ? null : fixButton(f.what);
+  // Что нашли шаги и чем это чинят — кнопками. В самой «Починить базу» кнопка «Починить:
+  // kb:repair» — круг: ремонт только что прошёл, и остаток ему не по силам.
+  (r.found || []).forEach(f=>{
+    findings(f.lines || []).forEach(x=>{
+      const btn = sc.id === "fix" ? null : fixButton(x.what);
       out.append(el("div",{class:"dim row",style:"gap:10px;align-items:center"},
         el("span",{style:"flex:1"},
-          `      ${engineWord(f.what)}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : "")),
+          `      ${f.cmd} · ${engineWord(x.what)}: ${x.n}` + (x.fix ? `  →  ${x.fix}` : "")),
         btn));
     });
   });
-  // Застрял или остановлен — даём ручку не перезапускать маршрут целиком, а дойти до конца
-  // с пропуском уже сделанного. Кнопку вешаем в `#consoleApply`: новый прогон чистит его
-  // в самом начале, так что продолжить можно только один раз — дальше маршрут живёт сам.
   if (bad && S.lastRoute && S.project){
     dropResumeButtons();
-    $("#consoleApply").append(el("button",{class:"btn sm gold resume-route",
-      onclick:()=>resumeLastRoute(S.lastRoute)},
-      t("route.resume_btn", {title: S.lastRoute.title, slug: S.project.slug})));
-  }
-  ROUTE = null;
-  // События шагов сохраняем даже на остановке: именно прерванный маршрут чаще всего и
-  // разбирают. POST в фоне — маршрут уже отработал, ждать его не нужно.
-  if (stepEvents.length && S.project){
-    api("/api/run/steps", {method:"POST", quiet:true,
-      body: JSON.stringify({project:S.project.path, run:routeRunId, steps:stepEvents})});
-  }
-
-  // Последний остановленный маршрут — в проект, «Продолжить маршрут» переживает перезапуск
-  // вкладки и панели. Прошёл целиком — запись стираем: продолжать больше нечего. POST в фоне,
-  // маршрут уже отработал. Причина уже посчитана в `routeReason` до `ROUTE = null`.
-  if (S.project){
-    const body = bad
-      ? {project:S.project.path, state:{scId:S.lastRoute&&S.lastRoute.scId,
-           runId:S.lastRoute&&S.lastRoute.runId, title:S.lastRoute&&S.lastRoute.title,
-           write:S.lastRoute&&S.lastRoute.write, reason:routeReason, step:routeDone,
-           cycleAt: routeCycle,
-           done:[...CARRIED, ...stepEvents.filter(e=>e.rc===0)
-                              .map(e=>e.cmd + " " + (e.args||[]).join(" "))],
-           at:new Date().toISOString()}}
-      : {project:S.project.path, clear:true};
-    api("/api/route/state", {method:"POST", quiet:true, body: JSON.stringify(body)});
+    api("/api/route/state?project="+encodeURIComponent(S.project.path), {quiet:true})
+      .then(d=>{ if (d && d.state) $("#consoleApply").append(el("button",{class:"btn sm gold resume-route",
+        onclick:()=>resumeLastRoute(d.state)},
+        t("route.resume_btn", {title: sc.title, slug: S.project.slug}))); });
   }
   if (S.project){ const p = S.project;
     api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
       renderOverview();
-      if (mine){ renderHistory(); refreshModules(); }});
-    // Результат маршрута панель фиксирует сама (см. выше). Не прошла фиксация — храповик,
-    // занятый git — и незакоммиченное остаётся: следующий прогон смешает свою работу с
-    // этой, и молчать об этом нечестно.
-    // Эндпоинт с проектами один и тот же — `/api/state`. Здесь стоял `/api/projects`,
-    // которого у сервера нет: вместо предупреждения о незакоммиченной работе человек
-    // получал всплывающее «неизвестный маршрут» в конце каждого пишущего маршрута.
+      if (mine){ loadRuns(); refreshModules(); }});
     if (write) api("/api/state").then(st=>{
       const me = (st.projects||[]).find(x=>x.path===p.path);
       if (me && me.dirty) out.append(el("div",{class:"warn",style:"margin-top:8px"},
         t("route.dirty", {n: me.dirty})));
     });
   }
-  toast(routeReason === "stall" ? t("route.toast_stall")
-    : bad ? t("route.toast_stopped", {cmd: bad}) : t("route.toast_passed", {title: sc.title}),
-        bad ? "err" : "ok");
+  drawLiveJobs();              // задания маршрута кончились — карточка «идёт сейчас» не висит
+  toast(r.reason === "stall" ? t("route.toast_stall")
+    : bad ? t("route.toast_stopped", {cmd: r.failed || "—"})
+    : t("route.toast_passed", {title: sc.title}), bad ? "err" : "ok");
 }
 
-/* Кнопка «Продолжить маршрут» — именованная функция: её зовут и конец маршрута, и кнопка
-   после перезапуска вкладки. Пропускаем только шаги, завершившиеся именно успехом (rc 0):
-   rc 1 — «отработала и нашла, что чинить», и повторять её надо, а не считать сделанной. */
+/* Кнопка «Продолжить маршрут». Сделанное знает сервер: оно в состоянии маршрута, которое он
+   пишет после каждого шага, — поэтому продолжение переживает и закрытую вкладку, и
+   перезапуск панели. Пропускаются только шаги, завершившиеся успехом (rc 0): rc 1 —
+   «отработала и нашла, что чинить», её повторять надо. */
 async function resumeLastRoute(last){
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
   const sc2 = (d.scenarios||[]).find(s=>s.id===last.scId);
   if (!sc2) return toast(t("route.not_found"), "warn");
-  // Живой буфер уже остыл; события шагов ушли в архив в конце маршрута. Файла нет —
-  // события просто пустые, и продолжение становится честным полным повтором без вреда.
-  const ev = await api("/api/run/steps?project="+encodeURIComponent(S.project.path)
-    +"&run="+encodeURIComponent(last.runId), {quiet:true});
-  // Накопленное за прошлые попытки (из состояния маршрута) плюс события последней:
-  // события живут по одному файлу на попытку, и без объединения третья попытка забыла
-  // бы всё, что сделала первая.
-  const sigs = new Set(last.done || []);
-  ((ev&&ev.steps)||[]).forEach(st=>{
-    if (st.rc===0) sigs.add(st.cmd+" "+(st.args||[]).join(" "));
-  });
-  runRoute(sc2, last.write, {skipSigs: sigs, attempts: last.attempts, cycleAt: last.cycleAt});
+  runRoute(sc2, last.write, {skipSigs: last.done || [], attempts: last.attempts,
+                             cycleAt: last.cycleAt});
 }
 
-/* Кнопка «Продолжить маршрут» после перезапуска: состояние остановленного маршрута читается
-   из проекта на загрузке консоли. Время остановки — часами, причина — человеческой подписью. */
 /* Кнопки «Продолжить маршрут» — ровно одна, и она про ТЕКУЩИЙ проект.
 
    Консоль читает состояние при каждом входе и дорисовывала кнопку, не убирая прежнюю.
@@ -2649,14 +2349,19 @@ function dropResumeButtons(){
   $("#consoleApply").querySelectorAll(".resume-route").forEach(b => b.remove());
 }
 
-
+/* Вход в консоль: идёт маршрут — подключаемся к нему; не идёт, а прошлый остановился
+   (застой, отказ, сеть, перезапуск панели) — даём «Продолжить маршрут». */
 async function showLastRoute(state){
   dropResumeButtons();
-  if (!state || !S.project || ROUTE !== null) return;
-  // Сценарий мог пропасть из `cockpit/scenarios.txt` — продолжать нечего, кнопку не рисуем.
+  if (!S.project || ROUTE !== null) return;
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
-  if (!(d.scenarios||[]).some(s=>s.id===state.scId)) return;
-  if (state.reason === "offline"){ showOfflineResume(state); return; }
+  const live = await api("/api/routes?project="+encodeURIComponent(S.project.path), {quiet:true});
+  const now = ((live && live.routes) || [])[0];
+  if (now){
+    const sc = (d.scenarios||[]).find(s=>s.id===now.scId);
+    if (sc) return attachRoute(now.id, sc, now.write, false);
+  }
+  if (!state || !(d.scenarios||[]).some(s=>s.id===state.scId)) return;
   const when = state.at ? new Date(state.at)
     .toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU",
                         {hour:"2-digit",minute:"2-digit"}) : "";
@@ -2664,48 +2369,11 @@ async function showLastRoute(state){
     : state.reason === "failed" ? t("act.reason_failed")
     : state.reason === "offline" ? t("act.reason_offline")
     : state.reason === "stopped" ? t("act.reason_stopped")
+    : state.reason === "interrupted" ? t("act.reason_interrupted")
     : t("act.reason_other");
   $("#consoleApply").append(el("button",{class:"btn sm gold resume-route",
     onclick:()=>resumeLastRoute(state)},
     t("resume.stopped_at", {title: state.title, slug: S.project.slug, when, why: label})));
-}
-
-// Офлайн-пауза после перезапуска вкладки: таймер жил в закрытом окне и мог прогореть.
-// Просроченный тик — продолжаем маршрут сразу (кэтч-ап); будущий — рисуем ожидание и
-// заводим таймер заново; упёршийся в лимит — только ручные «Попробовать сейчас».
-function showOfflineResume(state){
-  dropResumeButtons();
-  const holder = el("div",{class:"warn resume-route", style:"margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap"});
-  const btn = () => el("button",{class:"btn sm gold",
-    onclick:()=>{ holder.remove(); resumeLastRoute(state); }}, t("route.wait_now"));
-  const notWait = () => { if (S.project)
-      api("/api/route/state",{method:"POST", quiet:true,
-        body: JSON.stringify({project:S.project.path, state:{
-          scId:state.scId, runId:state.runId, title:state.title, write:state.write,
-          reason:"stopped", step:state.step, attempts:state.attempts||0,
-          done: state.done || [], cycleAt: state.cycleAt || null,
-          nextRetryAt:null, at:new Date().toISOString()}})});
-    holder.remove(); };
-  if (state.attempts >= ROUTE_OFFLINE_TRIES){
-    holder.append(el("span",{class:"chip warn"}, t("route.wait_chip")),
-      el("div",{style:"flex:1"}, t("route.wait_capped", {n: ROUTE_OFFLINE_TRIES})),
-      btn());
-    $("#consoleApply").append(holder);
-    return;
-  }
-  if (!state.nextRetryAt || state.nextRetryAt <= Date.now()){
-    resumeLastRoute(state); return;      // тик был пропущен — дождали сеть, продолжаем сейчас
-  }
-  const when = new Date(state.nextRetryAt).toLocaleTimeString(
-    S.lang === "en" ? "en-GB" : "ru-RU", {hour:"2-digit", minute:"2-digit"});
-  holder.append(el("span",{class:"chip warn"}, t("route.wait_chip")),
-    el("div",{style:"flex:1"}, t("route.wait_line",
-      {cmd: state.step, n: state.attempts, of: ROUTE_OFFLINE_TRIES, time: when})),
-    btn(),
-    el("button",{class:"btn sm", onclick:notWait}, t("route.wait_stop")));
-  $("#consoleApply").append(holder);
-  setTimeout(()=>{ if (ROUTE === null) resumeLastRoute(state); else holder.remove(); },
-    Math.max(0, state.nextRetryAt - Date.now()));
 }
 
 let CONSOLE_LINES = [];      // строки текущего прогона: из них собирается задание
@@ -2734,16 +2402,7 @@ async function poll(id, since, label){
   (d.lines||[]).forEach(l=>{
     if (String(l).startsWith(SUMMARY_MARK)) return;   // машинная строка итога — для панели
     CONSOLE_LINES.push(l);
-    /* Красили по вхождению слова: путь к файлу, в имени которого есть «ошибки»,
-       становился красным, хотя ничего не сломалось. Красим только сообщения самого
-       движка — те, что начинаются с маркера или знака, — и никогда пункты списка. */
-    const listItem = /^\s*(\d+\.|[-•])\s/.test(l);
-    const cls = listItem ? ""
-      : /^\s*(❌|ERROR\b|FAIL\b)|^\s*[a-z_]+: (ошибка|не найден|отказ)/i.test(l) ? "err"
-      : /^\s*(✅|OK:)|детерминизм подтверждён/i.test(l) ? "ok"
-      : /^\s*(⚠️|WARN\b)/i.test(l) ? "warn"
-      : /^\s*(#|—|\.\.\.)/.test(l) ? "dim" : "";
-    out.append(el("div",{class:cls}, l));
+    out.append(el("div",{class:lineClass(l)}, l));
   });
   watchScroll(out); stickToBottom(out);
   if (outLines.length){ POLL_LAST_OUT = Date.now(); POLL_SILENT = false; }
@@ -2861,19 +2520,6 @@ function rcMark(rc){
 // «выберите проект» при выбранном проекте — и это читалось как «журнал потерян».
 function runs(){ return S.runs || (S.health && S.health.runs) || {}; }
 
-async function loadRuns(){
-  if (!S.project) return;
-  // Архив прогонов читаем рядом с журналом: оба мгновенные, и вместе они дают полную
-  // картину «что запускали» — строки журнала (последний прогон команды) поверх, полные
-  // выводы прошлых прогонов под ними, в секции «Архив прогонов».
-  const [d, a] = await Promise.all([
-    api("/api/runlog?project=" + encodeURIComponent(S.project.path), {quiet:true}),
-    api("/api/run/logs?project=" + encodeURIComponent(S.project.path), {quiet:true}),
-  ]);
-  if (d && d.runs) S.runs = d.runs;
-  S.runArchive = (a && a.archive && a.archive.length) ? a.archive : null;
-  renderHistory();
-}
 function lastRun(cmd){ return runs()[cmd]; }
 
 /* Список переживает сессии, поэтому одного времени мало: без даты «14:20» назавтра
@@ -2881,13 +2527,8 @@ function lastRun(cmd){ return runs()[cmd]; }
 // Итог прогона агент печатает и для человека, и одной машинной строкой для панели: её
 // консоль не показывает, а итог маршрута собирает из неё числа шагов.
 const SUMMARY_MARK = "AURORA-SUMMARY ";
-function parseSummaries(lines){
-  return (lines||[]).filter(l=>String(l).startsWith(SUMMARY_MARK)).map(l=>{
-    try { return JSON.parse(String(l).slice(SUMMARY_MARK.length)); } catch(e){ return null; }
-  }).filter(Boolean);
-}
 function consoleLine(out, l){
-  if (!String(l).startsWith(SUMMARY_MARK)) out.append(el("div",{class:"dim"}, l));
+  if (!String(l).startsWith(SUMMARY_MARK)) out.append(el("div",{class:lineClass(l)}, l));
 }
 
 function histWhen(iso){
@@ -2926,66 +2567,84 @@ function archiveWhen(runId){
   return histWhen(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${m[7]}`);
 }
 
-// Полные выводы прошлых прогонов .opencode/runs. Живут отдельной секцией под журналом и
-// не трогают живой вывод: раскрыть старый лог здесь можно, не сбивая идущий прогон, а
-// открытых может быть несколько — старый и новый сравнивают, глядя на оба сразу.
-function renderArchiveBox(box, archived){
-  if (!archived || !archived.length) return;
-  box.append(el("div",{class:"list-item dim",
-      style:"margin-top:14px;font-size:12px;letter-spacing:.05em;text-transform:uppercase"},
-    t("archive.title")),
-    el("div",{class:"muted",style:"font-size:12px;margin:2px 14px 8px"},
-      t("archive.about")));
-  archived.forEach(item=>{
-    const runId = item.id || "";
-    const arrow = el("span",{class:"muted",style:"font-size:12px"},"▸");
-    const pre = el("pre",{class:"mono",
-      style:"margin:0;padding:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:420px;overflow:auto"},
-      el("span",{class:"muted"}, t("archive.loading")));
-    const body = el("div",{style:"display:none;padding:0 14px 8px"}, pre);
-    let loaded = false;          // полный вывод тянем с диска один раз, дальше из кэша
-    box.append(
-      el("div",{class:"list-item",style:"cursor:pointer",
-        title: t("archive.expand"),
-        onclick:async ()=>{
-          const open = body.style.display !== "none";
-          body.style.display = open ? "none" : "";
-          arrow.textContent = open ? "▸" : "▾";
-          if (open || loaded) return;
-          loaded = true;
-          const d = await api("/api/run/file?project=" + encodeURIComponent(S.project.path)
-            + "&run=" + encodeURIComponent(runId), {quiet:true});
-          pre.textContent = (d && d.text) ? d.text
-            : ((d && d.error) ? d.error : t("archive.failed"));
-        }},
-        arrow,
-        el("span",{class:"mono",style:"flex:1;overflow:hidden;text-overflow:ellipsis"},
-          runId),
-        el("span",{class:"muted",style:"font-size:12px"}, archiveWhen(runId))),
-      body);
-  });
+/* История запусков: одна строка — один запуск.
+
+   Было две половинчатые картины: журнал (строка на команду, только последний прогон) и
+   архив (строка на папку). Один маршрут «Обновить базу» давал в архиве полсотни строк — по
+   одной на шаг, а раскрытая строка показывала кусок одного шага. Теперь строка — то, что
+   запустили: команда, маршрут или цепочка расписания, — а раскрытие показывает весь вывод
+   так же, как он шёл в консоли: шаги, обороты, итог. */
+const HIST_TONE = {passed:"ok", failed:"bad", stall:"warn", stopped:"warn", offline:"warn",
+                   interrupted:"warn", running:"gold", missed:"warn"};
+function histStatus(r){
+  if (r.legacy) return {cls:"", what: t("hist.legacy")};
+  if (r.status === "running") return {cls:"gold", what: t("hist.running")};
+  if (r.kind === "command" || r.kind === "step"){
+    const m = rcMark(r.rc);
+    return {cls: m.cls, what: r.rc === 0 ? "ok" : t("history.rc", {rc: r.rc})};
+  }
+  return {cls: HIST_TONE[r.status] || "", what: t("hist.status." + (r.status || "failed"))};
+}
+function histTitle(r){
+  if (r.kind === "route" && r.scId && S.scenarios){
+    const sc = (S.scenarios.scenarios || []).find(x=>x.id === r.scId);
+    if (sc) return sc.title;
+  }
+  return r.title || r.id;
+}
+async function loadRuns(){
+  if (!S.project) return;
+  const [d, h] = await Promise.all([
+    api("/api/runlog?project=" + encodeURIComponent(S.project.path), {quiet:true}),
+    api("/api/history?project=" + encodeURIComponent(S.project.path), {quiet:true}),
+    S.scenarios || (S.scenarios = await api("/api/scenarios", {quiet:true})),
+  ]);
+  if (d && d.runs) S.runs = d.runs;
+  S.history = (h && h.runs) || [];
+  renderHistory();
 }
 function renderHistory(){
   const box = $("#historyBox"); box.innerHTML="";
   if (!S.project){
     box.append(el("div",{class:"list-item muted"}, t("history.pick_project"))); return; }
-  const rows = Object.entries(runs()).map(([cmd, r])=>({cmd, ...r}))
-    .sort((a, b)=> String(b.at).localeCompare(String(a.at)));
-  const archived = (S.runArchive && S.runArchive.length) ? S.runArchive : null;
-  if (!rows.length && !archived){
-    box.append(el("div",{class:"list-item muted"},
-      t("history.empty"))); return; }
-  rows.slice(0,20).forEach(h=>box.append(el("div",{class:"list-item"},
-    el("span",{class:"chip "+rcMark(h.rc).cls, title:rcMark(h.rc).what},
-      h.rc===0 ? "ok" : t("history.rc", {rc: h.rc})),
-    el("span",{class:"mono",style:"flex:1",title:h.line}, h.cmd),
-    h.who ? el("span",{class:"chip"}, h.who) : null,
-    h.kit ? el("span",{class:"chip mono", title: t("history.kit_hint")},
-      "kit " + h.kit) : null,
-    el("span",{class:"muted",style:"font-size:12px"}, histWhen(h.at)))));
-  // Архив (полные выводы) под журналом: у одной команды есть и «последний прогон» здесь,
-  // и полные выводы прошлых прогонов ниже. Один без другого был бы половинчатой картиной.
-  renderArchiveBox(box, archived);
+  const rows = S.history || [];
+  if (!rows.length){
+    box.append(el("div",{class:"list-item muted"}, t("history.empty"))); return; }
+  rows.forEach(r=>{
+    const st = histStatus(r);
+    const arrow = el("span",{class:"muted",style:"font-size:12px"},"▸");
+    const view = el("div",{class:"console",style:"max-height:560px;margin:0 14px 10px"});
+    const body = el("div",{hidden:""}, view);
+    let loaded = false;
+    const when = r.started ? histWhen(r.started) : archiveWhen(r.id);
+    box.append(el("div",{class:"list-item",style:"cursor:pointer", title: t("hist.expand"),
+      onclick: async ()=>{
+        body.hidden = !body.hidden;
+        arrow.textContent = body.hidden ? "▸" : "▾";
+        // Идущий запуск дочитываем при каждом раскрытии: его журнал ещё растёт.
+        if (body.hidden || (loaded && r.status !== "running")) return;
+        loaded = true;
+        view.innerHTML = "";
+        view.append(el("div",{class:"dim"}, t("archive.loading")));
+        const d = await api("/api/history/run?project=" + encodeURIComponent(S.project.path)
+          + "&id=" + encodeURIComponent(r.id), {quiet:true});
+        view.innerHTML = "";
+        if (!d || d.error) return view.append(el("div",{class:"err"}, (d && d.error) || t("archive.failed")));
+        drawEntries(view, d.entries);
+      }},
+      arrow,
+      el("span",{class:"chip " + st.cls, title: st.what}, st.what),
+      el("span",{class:"chip"}, t("hist.kind." + (r.kind || "command"))),
+      el("span",{class: r.kind === "command" ? "mono" : "",
+                 style:"flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"},
+        histTitle(r) + (r.kind === "route" && r.write === false ? " · " + t("hist.preview") : "")
+        + (r.kind === "cron" && r.items ? " · " + t("hist.items", {ok: r.passed || 0, of: r.items}) : "")),
+      r.trigger === "cron" ? el("span",{class:"chip gold"}, t("hist.by_cron")) : null,
+      r.who ? el("span",{class:"chip"}, r.who) : null,
+      r.kit ? el("span",{class:"chip mono", title: t("history.kit_hint")}, "kit " + r.kit) : null,
+      r.seconds != null ? el("span",{class:"muted",style:"font-size:12px"}, fmtDur(r.seconds)) : null,
+      el("span",{class:"muted",style:"font-size:12px"}, when)), body);
+  });
 }
 $("#projectReload").onclick = ()=>{ if (confirmLeave()) renderProject(); };
 $("#clearConsole").onclick = ()=>{ $("#consoleOut").innerHTML=""; followAgain($("#consoleOut")); };
@@ -3618,8 +3277,33 @@ async function renderProject(){
       value:A[key]||"", oninput:e=>A[key]=e.target.value}), "form", t("dirty.form")));
 
   const rootsBox = el("div",{});
+  // Повтор корня — тот же номер страницы или то же название. В PRJ-C корень был записан
+  // дважды с 10.08: синк обходил поддерево два раза, а среди девятнадцати строк в порядке
+  // добавления повтор глазом не находился. Сортировка ставит повторы рядом, метка называет.
+  const rootKey = r => (r.title || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const rootTwins = () => {
+    const ids = {}, names = {};
+    A.sync_roots.forEach(r => {
+      const id = (r.page_id || "").trim(), nm = rootKey(r);
+      if (id) ids[id] = (ids[id] || 0) + 1;
+      if (nm) names[nm] = (names[nm] || 0) + 1;
+    });
+    return r => ids[(r.page_id || "").trim()] > 1 || names[rootKey(r)] > 1;
+  };
+  const sortRoots = by => {
+    const val = r => by === "id" ? (r.page_id || "").trim().padStart(20, "0") : rootKey(r);
+    A.sync_roots.sort((a, b) => val(a).localeCompare(val(b), S.lang || "ru"));
+    drawRoots();
+    setDirty("form", t("dirty.form"), true);
+  };
   const drawRoots = () => {
     rootsBox.innerHTML = "";
+    const twin = rootTwins();
+    if (A.sync_roots.length > 1)
+      rootsBox.append(el("div",{class:"row",style:"gap:6px;margin-bottom:8px"},
+        el("span",{class:"muted",style:"font-size:12px"}, t("proj.roots_sort")),
+        el("button",{class:"btn sm", onclick:()=>sortRoots("title")}, t("proj.sort_title")),
+        el("button",{class:"btn sm", onclick:()=>sortRoots("id")}, t("proj.sort_id"))));
     A.sync_roots.forEach((r, i) => rootsBox.append(el("div",{class:"row",style:"margin-bottom:8px"},
       watch(el("input",{class:"btn mono",style:"width:190px;font-weight:400",
         placeholder: t("proj.root_id_ph"), value:r.page_id,
@@ -3634,6 +3318,8 @@ async function renderProject(){
         watch(el("input",{type:"checkbox", checked: r.trusted ? "" : null,
           onchange:e=>r.trusted=e.target.checked}), "form", t("dirty.form")),
         t("proj.trust")),
+      twin(r) ? el("span",{class:"chip warn", title: t("proj.root_dup_hint")}, t("proj.root_dup"))
+              : null,
       el("button",{class:"btn sm danger", title: t("proj.drop"),
         onclick:()=>{A.sync_roots.splice(i,1); drawRoots();
                      setDirty("form", t("dirty.form"), true);}},"✕"))));
@@ -3732,6 +3418,18 @@ async function renderProject(){
             return;      // не пишем заведомо нерабочий корень
           }
         }
+        // Один корень — одна строка: повтор по номеру страницы сводится при сохранении,
+        // галочка «доверять» остаётся, если стояла хоть у одного из повторов.
+        const seen = new Map(), before = A.sync_roots.length;
+        A.sync_roots = A.sync_roots.filter(r => {
+          const id = (r.page_id || "").trim();
+          if (!id || !seen.has(id)){ if (id) seen.set(id, r); return true; }
+          const first = seen.get(id);
+          first.trusted = first.trusted || r.trusted;
+          if (!(first.title || "").trim()) first.title = r.title;
+          return false;
+        });
+        if (A.sync_roots.length < before){ drawRoots(); toast(t("proj.roots_deduped")); }
         const r = await api("/api/setup",{method:"POST",
           body:JSON.stringify({project:S.project.path, ...A})});
         e.target.disabled = false;

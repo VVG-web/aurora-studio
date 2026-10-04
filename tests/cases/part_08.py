@@ -1202,14 +1202,14 @@ def test_only_one_resume_button_and_it_names_its_project(tmp: Path):
     ui = panel_sources()
     assert "function dropResumeButtons()" in ui, \
         "прежние кнопки продолжения не убираются — они будут копиться при каждом входе"
-    for where in ("async function showLastRoute", "function showOfflineResume"):
-        body = ui.split(where)[1][:400]
+    for where in ("async function showLastRoute", "function finishRoute"):
+        body = ui.split(where)[1][:2600]
         assert "dropResumeButtons()" in body, \
             f"{where} рисует кнопку, не убрав прежнюю"
     # каждая кнопка продолжения помечена — иначе их не найти, чтобы убрать
-    assert ui.count("resume-route") >= 4, \
+    assert ui.count("resume-route") >= 3, \
         "не все кнопки продолжения помечены классом: часть переживёт очистку"
-    assert "S.project.slug" in ui.split("async function showLastRoute")[1][:1200], \
+    assert "S.project.slug" in ui.split("async function showLastRoute")[1][:2400], \
         "в подписи нет проекта — при двух проектах снова не понять, какая кнопка чья"
 
 
@@ -1252,7 +1252,10 @@ def test_the_cycle_stops_when_it_stops_converging(tmp: Path):
     нельзя. Дюжина оборотов — уже симптом, а не работа.
     """
     ui = panel_sources()
-    assert "const CYCLE_LIMIT = 12;" in ui, \
+    # Цикл ведёт сервер (1.152.0): предохранитель — его.
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    assert importlib.import_module("route_runner").CYCLE_LIMIT == 12, \
         "предохранитель снова велик — несходящийся цикл будет выглядеть долгим прогоном"
     assert "цикл не сошёлся за" in ui, \
         "упор в предохранитель не назван: человек не отличит его от честной работы"
