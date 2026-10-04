@@ -1638,14 +1638,13 @@ def save_clash_seen(cwd: str, seen: dict) -> None:
     replace_file(tmp, path)
 
 
-def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
-    """[[имена карточек]] — группы, говорящие об одном. Считает `kb_twins`, порог мягче.
+def read_twin_groups(cwd: str, min_score: float) -> list:
+    """Группы из отчёта `kb_twins`: [[имена карточек]]. Разбор один для двойников и споров.
 
-    Противоречие живёт там, где карточки об одном предмете, но текст разошёлся. Порог
-    двойников (0.6) для этого высок: полностью совпадающие карточки как раз не спорят.
-    Берём 0.35 — «об одном предмете, сказано по-разному».
+    `--limit 0` обязателен: отчёт по умолчанию печатает сорок групп, а читаем мы именно
+    печатное. Без него ход молча брал бы сорок из пятисот и выглядел бы завершённым.
     """
-    r = run_command(cwd, "kb_twins.py", ["--min", "0.35", "--limit", "0"])
+    r = run_command(cwd, "kb_twins.py", ["--min", str(min_score), "--limit", "0"])
     if not r["ok"]:
         return []
     groups, cur = [], []
@@ -1658,7 +1657,17 @@ def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
             cur.append(line.split("`")[1])
     if cur:
         groups.append(cur)
-    groups = [g for g in groups if len(g) > 1]
+    return groups
+
+
+def clash_groups(cwd: str, cfg: dict, limit: int = 0) -> list:
+    """[[имена карточек]] — группы, говорящие об одном. Считает `kb_twins`, порог мягче.
+
+    Противоречие живёт там, где карточки об одном предмете, но текст разошёлся. Порог
+    двойников (0.6) для этого высок: полностью совпадающие карточки как раз не спорят.
+    Берём 0.35 — «об одном предмете, сказано по-разному».
+    """
+    groups = [g for g in read_twin_groups(cwd, 0.35) if len(g) > 1]
     return groups[:limit] if limit else groups
 
 
@@ -2247,22 +2256,7 @@ def report_translit(res: dict, apply: bool) -> str:
 
 def twin_groups(cwd: str, min_score: float = 0.6, limit: int = 0) -> list:
     """Группы карточек-двойников по содержимому. Считает `kb_twins`, здесь — разбор."""
-    # `--limit 0` обязателен: отчёт по умолчанию печатает сорок групп, а читаем мы именно
-    # печатное. Без него ход молча брал бы сорок из пятисот и выглядел бы завершённым.
-    r = run_command(cwd, "kb_twins.py", ["--min", str(min_score), "--limit", "0"])
-    if not r["ok"]:
-        return []
-    groups, cur = [], []
-    for line in r["out"].splitlines():
-        if line.startswith("## "):
-            if cur:
-                groups.append(cur)
-            cur = []
-        elif line.startswith("- `"):
-            name = line.split("`")[1]
-            cur.append(name)
-    if cur:
-        groups.append(cur)
+    groups = read_twin_groups(cwd, min_score)
     # Живые карточки, названные формами одного слова («Заявители» и «Заявитель»): текст у
     # них разный, и сходство по тексту их не находит, а правило слить их не вправе. Судит
     # модель — до 1.146.0 `kb:dedupe` отдавал эти пары человеку.

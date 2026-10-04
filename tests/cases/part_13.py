@@ -3151,3 +3151,39 @@ def test_extract_does_not_erase_a_definition_added_while_the_model_was_thinking(
     assert def_b in a.read_text(encoding="utf-8"), \
         f"чужое определение стёрто устаревшей записью: {out}\n{a.read_text(encoding='utf-8')}"
     assert out["status"] == "вынесено", out
+
+
+@test
+def test_clash_groups_and_twin_groups_read_the_twins_report_the_same_way(_t):
+    """Группы двойников и группы для споров читаются из отчёта `kb_twins` одним разбором.
+
+    Разбор был написан дважды слово в слово; правка формата отчёта в одном месте оставила бы
+    второе читать пустоту. Оба обязаны просить весь отчёт (`--limit 0`), а не первые сорок.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib.util
+    # свежая копия модуля: другие тесты подменяют функции общего и не всегда возвращают
+    spec = importlib.util.spec_from_file_location("agent_runner_twins_copy",
+                                                  str(SCRIPTS / "agent_runner.py"))
+    R = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    report = ("# twins\n\n## группа 1\n- `Один` · x\n- `Два` · y\n\n## группа 2\n- `Три`\n\n"
+              "## группа 3\n- `Четыре`\n- `Пять`\n- `Шесть`\n")
+    seen = []
+    real = R.run_command
+
+    def fake(cwd, script, args, timeout=300):
+        seen.append((script, list(args)))
+        if script == "kb_twins.py":
+            return {"ok": True, "out": report}
+        return {"ok": False, "out": ""}
+    R.run_command = fake
+    try:
+        clash = R.clash_groups("x", {})
+        twins = R.twin_groups("x")
+    finally:
+        R.run_command = real
+    assert clash == twins == [["Один", "Два"], ["Четыре", "Пять", "Шесть"]], (clash, twins)
+    for script, args in seen:
+        if script == "kb_twins.py":
+            assert args[-2:] == ["--limit", "0"], args
