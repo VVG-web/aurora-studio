@@ -3117,3 +3117,37 @@ def test_a_task_card_kept_as_it_is_is_not_asked_about_again(tmp: Path):
         assert [s["status"] for s in res["steps"]] == ["сбой"], res["steps"]
     finally:
         os.chdir(cwd)
+
+
+@test
+def test_extract_does_not_erase_a_definition_added_while_the_model_was_thinking(tmp: Path):
+    """Вынос пишет карточку по свежему тексту: чужое определение, дописанное в неё, не стирается.
+
+    Второй поток успевал вынести определение в ту самую карточку, а первый после своего вызова
+    модели записывал её по тексту, прочитанному до этого: из источника определение уже
+    вырезано, из получателя стёрто — знание пропадало, хотя «текст не может пропасть».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp, git=True)
+    def_a = "ФЦОД — федеральный центр обработки данных, который принимает отчёты."
+    def_b = "Баланс — сводка остатков по счетам за период, формируемая ежемесячно."
+    a = card(root, "Concepts/Баланс.md", "Про баланс. " + def_a + " Дальше текст.",
+             status="draft", kind="knowledge", distilled="2026-09-01")
+    b = card(root, "Concepts/Отчёт.md", "Про отчёт. " + def_b + " Дальше текст.",
+             status="draft", kind="knowledge", distilled="2026-09-01")
+    text_a, text_b = a.read_text(encoding="utf-8"), b.read_text(encoding="utf-8")
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        R.apply_extract_plan(str(root), str(b), text_b, R.thesis_of(text_b),
+                             [{"term": "Баланс", "definition": def_b}], True)
+        assert def_b in a.read_text(encoding="utf-8"), "определение не легло в карточку «Баланс»"
+        out = R.apply_extract_plan(str(root), str(a), text_a, R.thesis_of(text_a),
+                                   [{"term": "ФЦОД", "definition": def_a}], True)
+    finally:
+        os.chdir(cwd)
+    assert def_b in a.read_text(encoding="utf-8"), \
+        f"чужое определение стёрто устаревшей записью: {out}\n{a.read_text(encoding='utf-8')}"
+    assert out["status"] == "вынесено", out

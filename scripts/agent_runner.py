@@ -790,7 +790,19 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
             # файла нет, и такая ссылка не разрешается. Поймано на живой пересборке.
             place_definition(root, term, definition, os.path.basename(path)[:-3],
                              donor_sources=donor)
-        open(path, "w", encoding="utf-8").write(text.replace(thesis, new_thesis, 1))
+        # Карточку читаем заново: пока модель думала, соседний поток мог дописать в эту же
+        # карточку чужое определение (она бывает местом назначения). Запись по тексту,
+        # прочитанному до вызова модели, стирала бы его — а из карточки-источника оно уже
+        # вырезано: знание пропадало вовсе.
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            fresh = f.read()
+        if thesis not in fresh:
+            out["status"] = "сбой"
+            out["note"] = (out["note"] + "; карточка изменилась во время осмотра — "
+                           "тезис не тронут, определения лежат в своих карточках").strip("; ")
+            return out
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(fresh.replace(thesis, new_thesis, 1))
     mark_examined(path, frontmatter(open(path, encoding="utf-8", errors="ignore").read()))
     return out
 
