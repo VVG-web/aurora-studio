@@ -39,7 +39,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 
 from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS, is_meeting,
@@ -48,7 +47,7 @@ from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            STUB_BODY, Card as BaseCard, card_body, card_sources,
                            is_placeholder,
                            aliases as card_aliases, card_filename as normalize_title,
-                           frontmatter,
+                           frontmatter, git_guard,
                            fix_mixed_script, fold, fold_hard, leaf_name,
                            is_service, link_refs, not_a_card_link, project_file,
                            path_problems, rewrite_links, set_field, translit_names,
@@ -2608,34 +2607,6 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
 
 # ---------------------------------------------------------------------- main
 
-def git_dirty(root: str) -> list:
-    """Отслеживаемые файлы базы с незакоммиченными правками (неотслеживаемые не мешают)."""
-    try:
-        out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--", root],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    except Exception:
-        return []
-    if out.returncode != 0:
-        return []
-    return [l for l in out.stdout.splitlines() if l.strip()]
-
-
-def check_git_guard(root: str, allow_dirty: bool) -> bool:
-    """Массовая запись по грязному дереву делает откат невозможным — предупредить и остановить."""
-    dirty = git_dirty(root)
-    if not dirty or allow_dirty:
-        if dirty:
-            print(f"⚠️  git-guard отключён: в {root}/ есть {len(dirty)} незакоммиченных файлов — "
-                  "правки ремонта смешаются с вашими.\n")
-        return True
-    print(f"❌ git-guard: в {root}/ {len(dirty)} незакоммиченных файлов.", file=sys.stderr)
-    print("   Ремонт пишет разом в сотни карточек — по грязному дереву откат станет невозможным.",
-          file=sys.stderr)
-    print("   Сначала: git add -A && git commit -m 'WIP до ремонта базы'", file=sys.stderr)
-    print("   Осознанно продолжить: добавьте --allow-dirty", file=sys.stderr)
-    return False
-
-
 # Предел длины имени — самый строгий из трёх систем: Linux (ext4) меряет его в БАЙТАХ
 # UTF-8, до 255. macOS и Windows считают знаки, поэтому имя в 300 байт кириллицей там
 # создаётся без ошибки — а на Linux такой репозиторий не выгружается. Кириллица занимает
@@ -3075,7 +3046,7 @@ def main() -> int:
     # план пересобирается и применяется снова — до неподвижной точки (максимум 3 прохода).
     applied, skipped_total, passes = False, 0, 0
     if a.apply:
-        if not check_git_guard(a.root, a.allow_dirty):
+        if not git_guard(a.root, a.allow_dirty, "ремонт базы"):
             return 2
         skipped_total += apply_plan(plan)
         applied, passes = True, 1
