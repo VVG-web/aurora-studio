@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 import json
 import subprocess
 import sys
@@ -209,3 +210,50 @@ def test_the_models_section_is_additive_and_native(_t):
                       ('t("models.add_role")', "свою роль добавить нельзя")):
         assert need in view, why
     assert '"embeddings"' in view and '"ocr"' in view, "OCR и эмбеддинги устроены иначе, чем LLM"
+
+
+@test
+def test_every_module_a_shipped_script_imports_is_shipped(_t):
+    """Скрипт, уезжающий в проект, не импортирует модуль кита, который туда не едет.
+
+    1.153.0 вышел с `agent_core`, импортирующим новый `model_config`, — а в манифест движка
+    модуль не попал. В ките всё работало (тесты идут из `scripts/`), в каждом проекте
+    любая команда агента падала на `ModuleNotFoundError`. Проверка — по разбору импортов,
+    в том числе ленивых внутри функций и через `importlib.import_module`.
+    """
+    shipped = set()
+    for line in (KIT / "engine_manifest.txt").read_text(encoding="utf-8").splitlines():
+        if "=>" in line and not line.lstrip().startswith("#"):
+            src = line.split("=>", 1)[0].strip()
+            if src.startswith("scripts/") and src.endswith(".py"):
+                shipped.add(Path(src).stem)
+    # модули источников едут правилом (connectors): скрипт каждого — в .opencode/scripts/
+    for man in (KIT / "connectors").glob("*/connector.json"):
+        meta = json.loads(man.read_text(encoding="utf-8"))
+        script = (meta.get("run") or {}).get("script") or meta.get("script") or ""
+        if script.endswith(".py"):
+            shipped.add(Path(script).stem)
+    # берётся из самого кита: aurora_update кладёт KIT/scripts в sys.path перед импортом
+    from_kit = {"install_aurora"}
+    kit_mods = {p.stem for p in (KIT / "scripts").glob("*.py")}
+    missing = {}
+    for stem in sorted(shipped):
+        src = KIT / "scripts" / f"{stem}.py"
+        if not src.is_file():
+            continue
+        for n in ast.walk(ast.parse(src.read_text(encoding="utf-8"))):
+            names = []
+            if isinstance(n, ast.Import):
+                names = [a.name.split(".")[0] for a in n.names]
+            elif isinstance(n, ast.ImportFrom) and n.module and n.level == 0:
+                names = [n.module.split(".")[0]]
+            elif isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "import_module" \
+                    and n.args and isinstance(n.args[0], ast.Constant) \
+                    and isinstance(n.args[0].value, str):
+                names = [n.args[0].value.split(".")[0]]
+            for m in names:
+                if m in kit_mods and m not in shipped and m not in from_kit:
+                    missing.setdefault(m, set()).add(stem)
+    assert len(shipped) > 40, "манифест движка не прочитан"
+    assert not missing, ("модули кита не едут в проект, а их импортируют уезжающие скрипты — "
+                         f"впишите в engine_manifest.txt: {dict((k, sorted(v)) for k, v in missing.items())}")
