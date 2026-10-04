@@ -36,6 +36,9 @@ when a deep Confluence branch would not fit.
 - **Paths** in the engine's own reports and in the panel use `/` everywhere, whatever the system.
 - **Symlinks** need a privilege. The skill installer copies skills into `~/.claude/skills` and, if it cannot create a link for
   another harness, says so and carries on.
+- **There is no `python3`.** Python from python.org and from `winget` installs `python` and the `py` launcher, not `python3`; a `python3` from `WindowsApps` is a Store stub. Run scripts as `py -3 script.py` or `python script.py`. The git hooks and the project's `start-aurora.bat` pick the interpreter by running it (`python3`, `python`, `py -3`, 3.9+).
+- **Git hooks need Git for Windows.** The hooks are `sh` scripts run by the shell that ships with Git for Windows; without it they do not run. `start-aurora.bat` checks for git.
+- **No execute bit and no `0600`.** NTFS has no execute bit, so launch scripts through `py -3`. The `0600` mode on files with keys and tokens protects nothing on Windows (access follows the folder's permissions): keep the project in your user profile, not in a shared folder.
 - **Line endings.** A git checkout with `autocrlf` turns kit files into CRLF; the engine reads them as text, so this is harmless.
 - **Different drives.** A project on `D:` while the shell is on `C:` works: the engine does not assume one drive.
 
