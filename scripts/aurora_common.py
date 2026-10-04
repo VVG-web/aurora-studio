@@ -27,6 +27,28 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 
 from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 
+# Падение скрипта — код 3, а не 1. Python при необработанном исключении выходит с кодом 1, а
+# 1 у движка значит «есть находки» (линтер, ремонт): маршрут шёл дальше и рапортовал «пройден».
+# На PRJ-C 1.10.2026 `kb:repair --stub-text` трижды падал с трассировкой внутри «Починить
+# базу», а итог маршрута был чистым. Код 2 и выше маршрут считает несработавшим шагом.
+CRASH_RC = 3
+
+
+def _crash_exit(tp, value, tb):
+    sys.__excepthook__(tp, value, tb)
+    if issubclass(tp, KeyboardInterrupt):
+        return
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    os._exit(CRASH_RC)
+
+
+if sys.excepthook is sys.__excepthook__:
+    sys.excepthook = _crash_exit
+
 
 # Время — ОДНО правило на движок: фиксируем в UTC, показываем в часовом поясе системы.
 # Журналы, замеры, файлы состояния и имена прогонов пишутся в UTC с явной пометкой зоны

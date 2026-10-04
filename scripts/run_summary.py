@@ -227,7 +227,13 @@ def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru") -
     s["seconds"] = round(seconds or 0, 1)
     for st in steps or []:
         rc = int(st.get("rc") or 0)
-        if rc >= 2:
+        if rc == 3:
+            # Код 3 — необработанная ошибка скрипта (`aurora_common.CRASH_RC`): шаг упал.
+            _err(s, f"step {st.get('cmd')} crashed: unhandled error (code 3), traceback in "
+                    "the step output" if lang == "en"
+                 else f"шаг {st.get('cmd')} упал: необработанная ошибка (код 3) — трассировка "
+                      "в выводе шага")
+        elif rc >= 2:
             _err(s, f"step {st.get('cmd')} failed (code {rc})" if lang == "en"
                  else f"шаг {st.get('cmd')} не отработал (код {rc})")
     delta = kb_delta(cwd, since)

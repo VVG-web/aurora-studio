@@ -2235,9 +2235,15 @@ def drop_false_redistill(text: str) -> tuple:
     дословным текстом этой же карточки или целиком в него входит. Настоящая пересборка
     хранит настоящий тезис и остаётся.
     """
-    if FOOTER not in text or QUOTES not in text:
+    if FOOTER not in text:
         return text, 0
     body, foot = text.split(FOOTER, 1)
+    # Заголовок дословного раздела бывает и только в истории — под «прежним тезисом»:
+    # так у заготовки, которой `--stub-text` вернул её вид. Проверка «есть в тексте»
+    # пропускала такую карточку дальше, и разбор падал (`IndexError`) — на PRJ-C 1.10.2026
+    # ремонт «Починить базу» трижды обрывался на этом месте, а маршрут считал его пройденным.
+    if QUOTES not in body:
+        return text, 0
     source = " ".join(body.split(QUOTES, 1)[1].split())
     dropped = 0
 
