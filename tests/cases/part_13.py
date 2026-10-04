@@ -2900,3 +2900,25 @@ def test_the_dashboard_server_serves_only_the_report_and_refuses_strangers(tmp: 
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_the_panel_forgets_old_finished_jobs(_t):
+    """Законченные задания не копятся в памяти панели вечно, идущие остаются.
+
+    Каждое задание держит до четырёх тысяч строк вывода и сам процесс; нигде не снимались.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cockpit_jobs", KIT / "cockpit" / "aurora_cockpit.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SCRIPTS))
+    spec.loader.exec_module(mod)
+    mod.JOBS.clear()
+    for n in range(60):
+        mod.JOBS[f"d{n}"] = {"id": f"d{n}", "done": True, "finished": n, "out": ["x"] * 5}
+    mod.JOBS["live"] = {"id": "live", "done": False, "out": []}
+    with mod.JOBS_LOCK:
+        gone = mod.trim_jobs(keep=10)
+    assert gone == 50 and len(mod.JOBS) == 11, (gone, len(mod.JOBS))
+    assert "live" in mod.JOBS, "идущее задание забыто"
+    assert "d59" in mod.JOBS and "d0" not in mod.JOBS, "забыты не самые старые"
+    mod.JOBS.clear()
