@@ -3233,3 +3233,51 @@ def test_a_session_id_cannot_leave_the_workspaces_folder(tmp: Path):
     assert not (tmp / "evil" / "session.json").read_text(encoding="utf-8").count("../evil")
     R.save_session(str(root), "doc-2026-10-04_010203", {"sid": "ok"})
     assert R.load_session(str(root), "doc-2026-10-04_010203") == {"sid": "ok"}
+
+
+@test
+def test_a_meeting_with_an_unwritten_card_is_not_marked_as_parsed(tmp: Path):
+    """Встреча, в которой одна карточка не записалась, не отмечается разобранной.
+
+    Сбой записи одной карточки тихо выпадал из счёта, а встреча помечалась разобранной:
+    реплики этой карточки не возвращались в план никогда.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    A = importlib.import_module("agent_core")
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    src = "Raw/meetings/2026-09-11/Запись экрана 2026-09-09 в 15_39_25_1/transcript.md"
+    (root / src).parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[0:00:00] [SPEAKER_01] Слышно меня?", "[0:00:03] [SPEAKER_02] Да, слышно.",
+             "[0:00:05] [SPEAKER_01] Реестр деклараций сортируется по дате подачи.",
+             "[0:00:09] [SPEAKER_01] Новые сверху, по двадцать строк.",
+             "[0:00:14] [SPEAKER_02] Ставка пени снижена до 0,1 процента в день.",
+             "[0:00:20] [SPEAKER_01] Хорошо, до связи."]
+    (root / src).write_text("---\ntitle: \"transcript\"\n---\n\n# transcript\n\n"
+                            + "\n".join(lines) + "\n", encoding="utf-8")
+    card(root, "Concepts/Пени.md", "Пени начисляются за каждый день просрочки.",
+         kind="knowledge", status="knowledge")
+
+    def fake(cfg_, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [], "text": json.dumps(
+            {"parts": [{"title": "Реестр деклараций", "from": 3, "to": 3,
+                        "to_section": "Concepts"},
+                       {"into": "Пени", "from": 4, "to": 4}]}, ensure_ascii=False)}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    real = R.run_build_plan
+
+    def flaky(cwd, args):
+        if "--card" in args and "Реестр деклараций" in args:
+            return {"ok": False, "out": "диск полон", "why": "диск полон"}
+        return real(cwd, args)
+    R.run_build_plan = flaky
+    try:
+        step = R.solve_meeting(cfg, str(root), "Встречи", src, True, call=fake)
+    finally:
+        R.run_build_plan = real
+    assert step["status"] == "сбой" and "не записано карточек 1" in step["note"], step
+    mf = root / "AuroraKnowledgeDB/meta/manifest.json"
+    man = json.loads(mf.read_text(encoding="utf-8")) if mf.exists() else {}
+    assert src not in man.get("sources", {}) or not man["sources"][src].get("cards"), man

@@ -3801,7 +3801,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         return step
     cards = [dict(row, title=row["title"] if not row["into"] else "")
              for _r, rows in done for row in rows if row["title"] or row["into"]]
-    made = []
+    made, lost = [], []
     for card in merge_same_target(cards):
         spec = num_ranges(section_set(card["sections"]))
         into = card.get("into") or ""
@@ -3818,6 +3818,15 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             into = card["title"]
         if res["ok"]:
             made.append(f"«{into or card['title']}» ← реплики {spec}")
+        else:
+            lost.append(f"«{into or card['title']}»: " + (res.get("why") or res["out"][:120]))
+    if lost:
+        # Карточка не записана — отмечать встречу разобранной нельзя: её куски выпали бы из
+        # плана навсегда. Записанное остаётся (блок источника при повторе заменяется), а
+        # встреча вернётся следующим оборотом целиком.
+        step.update(status="сбой", note=f"встреча {when}: не записано карточек {len(lost)} — "
+                    + "; ".join(lost[:3]))
+        return step
     if apply:
         res = (run_build_plan(cwd, ["--done", source, "--cards", str(len(made))]) if made else
                run_build_plan(cwd, ["--done", source, "--empty",
