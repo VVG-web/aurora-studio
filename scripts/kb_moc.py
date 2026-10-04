@@ -276,6 +276,41 @@ def code_mentions(cards: dict) -> dict:
     return out
 
 
+def doc_map_names(sources: list) -> dict:
+    """Имя файла и заголовок карты каждого документа: {источник: (файл, заголовок)}.
+
+    Одно правило для записи и уборки. Имя берётся из имени файла источника. У двух
+    документов из разных папок оно одно («index.md» у каждой страницы с вложенными,
+    «Спецификация.md» в двух разделах), и вторая карта затирала первую: на каждом прогоне
+    «записано: 2» и ни одного «без изменений». Такие получают в имя папку; не помогла и она —
+    короткий отпечаток пути.
+    """
+    def make(label: str) -> tuple:
+        title = "Документ · " + label
+        return re.sub(r"[^\w\- ]", "", title).strip().replace(" ", "-") + ".md", title
+
+    def own(src: str) -> str:
+        return os.path.basename(src).removesuffix(".md")
+
+    def parent(src: str) -> str:
+        return os.path.basename(os.path.dirname(src))
+
+    count: dict = {}
+    for src in sources:
+        count[make(own(src))[0]] = count.get(make(own(src))[0], 0) + 1
+    out = {src: make(own(src) if count[make(own(src))[0]] == 1 else parent(src) + " " + own(src))
+           for src in sources}
+    taken: dict = {}
+    for f, _t in out.values():
+        taken[f] = taken.get(f, 0) + 1
+    for src in sources:
+        if taken[out[src][0]] > 1:
+            import hashlib
+            digest = hashlib.sha1(src.encode("utf-8")).hexdigest()[:6]
+            out[src] = make(parent(src) + " " + own(src) + " " + digest)
+    return out
+
+
 def drop_links_to(names: set, root: str = "AuroraKnowledgeDB") -> int:
     """Убрать из базы ссылки на эти имена. → в скольких файлах."""
     item = re.compile(r"^\s*[-*]\s*\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|[^\]]*)?\]\]\s*$")
@@ -436,10 +471,10 @@ def main() -> int:
         print("| Документ | Карточек | Файл карты |")
         print("|---|---|---|")
         written = same = 0
+        names = doc_map_names(sorted(big))
         for src in sorted(big):
             items = sorted(big[src], key=lambda c: c["title"].lower())
-            name = "Документ · " + os.path.basename(src).removesuffix(".md")
-            fname = re.sub(r"[^\w\- ]", "", name).strip().replace(" ", "-") + ".md"
+            fname, name = names[src]
             path = os.path.join(MOC_DIR, fname)
             if os.path.isfile(path) and not machine_made(path):
                 print(f"  ⚠️  {path} написан руками — не трогаю")
@@ -462,8 +497,7 @@ def main() -> int:
         # Карта документа, который больше не даёт карточек, обязана уйти: её не порождают,
         # значит и не переписывают, и она вечно ссылается на то, чего в базе нет. На живом
         # проекте карта удалённых доавроровских карточек держала пятнадцать битых ссылок.
-        produced = {re.sub(r"[^\w\- ]", "", "Документ · " + os.path.basename(s)
-                           .removesuffix(".md")).strip().replace(" ", "-") + ".md" for s in big}
+        produced = {f for f, _t in names.values()}
         stale = [os.path.join(MOC_DIR, f) for f in
                  (sorted(os.listdir(MOC_DIR)) if os.path.isdir(MOC_DIR) else [])
                  if f.startswith("Документ--") and f not in produced
