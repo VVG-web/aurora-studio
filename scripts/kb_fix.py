@@ -575,6 +575,23 @@ def source_file(name: str) -> str:
     return ""
 
 
+# Код в начале имени страницы: за номером обязан идти разделитель — иначе
+# «US-3.6.28_Название» отдало бы «US-3.6», отступив до точки.
+PAGE_CODE_RE = re.compile(r"^(US|AC|REQ|SPEC|[Ee]pic|EPIC|[Ээ]пик)[\s\-_.]?(\d+(?:\.\d+)*)(?!\.?\d)(?=[._\s\-])")
+
+
+def mirror_page_code(leaf: str) -> str:
+    """Код истории, если `leaf` — имя страницы зеркала, начинающееся с кода. Иначе пусто.
+
+    Голый код («US-3.6.28») сюда не попадает: он уже узел базы, его ведёт `--by-code`.
+    """
+    from kb_moc import canonical_code
+    m = PAGE_CODE_RE.match(leaf)
+    if not m or not source_file(leaf + ".md"):
+        return ""
+    return canonical_code(m.group(1), m.group(2))
+
+
 def plan_links(cards: dict, idx: Index, plan: Plan):
     fixed = alias_added = 0
     reported = set()
@@ -604,6 +621,15 @@ def plan_links(cards: dict, idx: Index, plan: Plan):
             if target.lower().endswith(".md") and source_file(target):
                 mapping[target] = None          # None — снять разметку, оставить текст
                 plan.notes.append(f"  ссылка на файл [[{target}]] снята в {path}")
+                continue
+            # Ссылка на страницу зеркала по её имени, а не на карточку: модель написала имя
+            # файла истории вместо кода — `[[US-3.6.28._Приём_и_обработка_…|AC-3.6.28]]` в
+            # PRJ-C 4.10.2026. Узел базы для истории — её код: `kb:moc --by-code` заводит
+            # индекс коду, на который ссылаются, и ссылка оживает тем же маршрутом.
+            code = mirror_page_code(leaf)
+            if code:
+                mapping[target] = code
+                plan.notes.append(f"  ссылка на страницу зеркала [[{target}]] → [[{code}]] в {path}")
                 continue
             # Ссылка на шаблон или промпт проекта (`[[spec_template]]`): файл лежит вне базы,
             # Obsidian его не откроет, карточкой он не станет. Снимаем разметку, имя остаётся

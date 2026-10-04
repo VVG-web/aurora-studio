@@ -58,6 +58,8 @@ from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
                            personal_kit_file, replace_file, utc_slug, utc_stamp,
                            yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -3919,6 +3921,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(about())
         elif u.path == "/api/scenarios":
             self.send_json({"scenarios": localized_scenarios(scenarios(), request_lang(q))})
+        elif u.path == "/api/cron":
+            # Расписание — свойство машины: проекты все, а не выбранный на Мостике.
+            st = scheduler().state()
+            st["projects"] = [{"name": p["name"], "path": p["path"]}
+                              for p in find_projects(self.server.roots)]
+            st["routes"] = [{"id": r["id"], "title": r["title"], "group": r["group"]}
+                            for r in localized_scenarios(scenarios(), request_lang(q))]
+            self.send_json(st)
+        elif u.path == "/api/cron/run":
+            run_id = q.get("id", [""])[0]
+            if not re.match(r"^[\w-]{1,64}$", run_id):
+                self.send_json({"error": "недопустимый id прогона"}, 400)
+                return
+            run = CRON._read_json(CRON.run_path(run_id), {})
+            self.send_json(run if run else {"error": "прогон не найден"}, 200 if run else 404)
         elif u.path == "/api/skins":
             self.send_json({"skins": localized_skins(skins(), request_lang(q))})
         elif u.path == "/api/modules":
@@ -4014,6 +4031,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             self.send_json({"error": "тело запроса не разобрано"}, 400)
+            return
+        if (u.path == "/api/cron/save" or u.path == "/api/cron/delete"
+                or u.path == "/api/cron/toggle" or u.path == "/api/cron/start"
+                or u.path == "/api/cron/stop"):
+            self.send_json(cron_action(u.path[len("/api/cron/"):], payload,
+                                       find_projects(self.server.roots)))
             return
         if u.path == "/api/run/summary":
             # Итог маршрута складывает движок (`run_summary`) — тот же составитель, что у
@@ -4472,6 +4495,53 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
 
+SCHED = None      # планировщик раздела «Cron»; поднимает его main(), тесты — scheduler()
+
+
+def scheduler():
+    """Планировщик расписания. Без main() (тесты, модуль из командной строки) — не запущенный:
+    им можно сохранять задания и смотреть историю, но тикать он не будет."""
+    global SCHED
+    if SCHED is None:
+        SCHED = CRON.Scheduler(sys.modules[__name__], lambda: find_projects(load_roots()))
+    return SCHED
+
+
+def cron_action(action: str, payload: dict, projects: list) -> dict:
+    """Правка расписания из раздела «Cron». Ошибка — код для каталога строк раздела."""
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "bad_task"}
+    tasks = CRON.load_tasks()
+    tid = str(payload.get("id") or "")
+    if action == "save":
+        task, err = CRON.clean_task(sys.modules[__name__], payload.get("task") or {}, projects)
+        if err:
+            return {"ok": False, "error": err}
+        tasks = [t for t in tasks if t["id"] != task["id"]] + [task]
+        CRON.save_tasks(sorted(tasks, key=lambda t: (t["time"], t["name"].lower())))
+        CRON.mark_past(task)
+        return {"ok": True, "task": task}
+    if action == "stop":
+        # Останавливают идущую цепочку, а не задание: номер задания тут не нужен.
+        return scheduler().stop()
+    if not any(t["id"] == tid for t in tasks):
+        return {"ok": False, "error": "no_task"}
+    if action == "delete":
+        CRON.save_tasks([t for t in tasks if t["id"] != tid])
+        return {"ok": True}
+    if action == "toggle":
+        for t in tasks:
+            if t["id"] == tid:
+                t["enabled"] = bool(payload.get("enabled"))
+                if t["enabled"]:
+                    CRON.mark_past(t)
+        CRON.save_tasks(tasks)
+        return {"ok": True}
+    if action == "start":
+        return scheduler().enqueue(tid, "manual")
+    return {"ok": False, "error": "bad_action"}
+
+
 def stop_job(job_id: str) -> dict:
     """Прервать прогон. Мягко, потом жёстко.
 
@@ -4681,6 +4751,10 @@ def main() -> int:
     # Реестр собираем сразу, в фоне: после обновления кита его кэш недействителен, и без
     # этого первый же запрос страницы висел, пока `--help` обходил все скрипты.
     threading.Thread(target=registry, daemon=True).start()
+    # Расписание тикает в этом процессе: панель не запущена — цепочки не идут.
+    global SCHED
+    SCHED = CRON.Scheduler(sys.modules[__name__], lambda: find_projects(srv.roots))
+    SCHED.start()
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

@@ -1349,6 +1349,53 @@ def card_stem_safe(name: str) -> str:
     return portable_name(re.sub(r"\s+", "-", name), max_chars=120) or "Тема"
 
 
+# Отпечаток входа `--cards`: база и зеркала, по которым считаются связи. Совпал с прошлым
+# записанным проходом — связи в карточках уже те, что дал бы новый счёт.
+CARDS_STAMP = os.path.join(".opencode", "state", "links-cards.json")
+
+
+def inputs_stamp(*roots: str) -> str:
+    """Отпечаток деревьев по именам, размерам и времени правки — без чтения файлов.
+
+    Оборот «Обновить базу», в котором разбор не дал ни одной карточки (на PRJ-C 30.09 —
+    один источник отклонён), всё равно гонял связывание по всей базе: 72 секунды ради
+    того же результата. Обход с `stat` стоит доли секунды.
+    """
+    import hashlib
+    h = hashlib.sha1()
+    for root in roots:
+        for dirpath, dirs, files in os.walk(root):
+            dirs.sort()
+            for f in sorted(files):
+                if not f.endswith(".md"):
+                    continue
+                full = os.path.join(dirpath, f)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                h.update(f"{full}\0{st.st_size}\0{st.st_mtime_ns}\n".encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+def cards_stamp_matches(stamp: str, max_related: int) -> bool:
+    try:
+        with open(CARDS_STAMP, encoding="utf-8") as f:
+            was = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return was.get("stamp") == stamp and was.get("max_related") == max_related
+
+
+def save_cards_stamp(stamp: str, max_related: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(CARDS_STAMP), exist_ok=True)
+        with open(CARDS_STAMP, "w", encoding="utf-8") as f:
+            json.dump({"stamp": stamp, "max_related": max_related}, f)
+    except OSError:
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Граф связей: RY-ключи и номера историй")
     ap.add_argument("--story", help="разобрать одну историю целиком (например 4.4.2)")
@@ -1398,6 +1445,15 @@ def main() -> int:
     if not os.path.isdir(a.conf):
         print(f"kb_graph: нет {a.conf}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
+
+    stamp = ""
+    if a.cards and a.apply and os.path.isdir(KB_DIR):
+        stamp = inputs_stamp(KB_DIR, a.conf, a.jira)
+        if cards_stamp_matches(stamp, a.max_related):
+            print(f"# Связи в карточках — {TODAY}\n")
+            print("- без изменений: база и зеркала те же, что при прошлом проходе, — "
+                  "связи в карточках уже на месте")
+            return 0
 
     g = Graph()
     g.read_confluence(a.conf)
@@ -1497,6 +1553,9 @@ def main() -> int:
         if a.apply and not git_guard(KB_DIR, a.allow_dirty, "перенос связей в карточки"):
             return 2   # отказ писать — не находка, а несделанная работа: маршрут стоит
         st = apply_card_links(pairs, a.apply, a.max_related)
+        if a.apply:
+            # Отпечаток — после записи: свои правки карточек не должны выглядеть изменением.
+            save_cards_stamp(inputs_stamp(KB_DIR, a.conf, a.jira), a.max_related)
         print(f"# Связи в карточках — {TODAY}\n")
         print(f"- карточек в графе: {len(pairs)}")
         for k, v in st.items():

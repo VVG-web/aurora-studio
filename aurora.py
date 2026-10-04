@@ -7,6 +7,8 @@
                                       (scaffold + интерактивная настройка)
   python3 aurora.py setup <target>    только (пере)настройка проекта
   python3 aurora.py cockpit           панель управления в браузере (все проекты машины)
+  python3 aurora.py route <target> <маршрут>  маршрут панели из терминала (update, fix, …;
+                                      без --apply — как «Посмотреть»)
   python3 aurora.py update <target>   обновить движок в проекте до версии kit
                                       (dry-run; запись — с --apply)
 
@@ -185,6 +187,8 @@ def main() -> int:
         return cmd_new(rest[0], rest[1:])
     if cmd == "cockpit":
         return sh([str(KIT / "cockpit" / "aurora_cockpit.py"), *rest])
+    if cmd == "route":
+        return sh([str(KIT / "cockpit" / "route_runner.py"), *rest])
     if cmd == "setup":
         return cmd_setup(rest[0] if rest else ".", rest[1:])
     if cmd == "update":

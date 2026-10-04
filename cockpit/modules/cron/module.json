@@ -1,0 +1,13 @@
+{
+  "id": "cron",
+  "name": { "ru": "Cron", "en": "Cron" },
+  "about": {
+    "ru": "Расписание: маршруты и команды по времени, цепочки по всем проектам. Идёт, пока работает панель.",
+    "en": "Schedule: routines and commands by time, chains across all projects. Runs while the panel is running."
+  },
+  "group": "machine",
+  "order": 35,
+  "needs": [],
+  "commands": [],
+  "for": "1.151.0"
+}

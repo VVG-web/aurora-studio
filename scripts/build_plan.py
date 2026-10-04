@@ -1522,6 +1522,10 @@ def sources_in_use() -> set:
 # оставляют запас на пересказы и служебные страницы, но ловят «59 КБ → одна карточка».
 THIN_KB_PER_CARD = 15
 THIN_HEAD_RATIO = 3          # заголовков втрое больше, чем карточек, — темы остались
+# Сколько тонких источников «Починить базу» возвращает в план за проход. Перечитывает их
+# «Обновить базу» моделью: на PRJ-C 4.10.2026 тонких было 236, и вернуть их разом значило
+# бы одну ночь на перечитку вместо обычного обновления. Крупные — первыми.
+THIN_REOPEN_CAP = 25
 
 
 def card_counts() -> dict:
@@ -1551,12 +1555,20 @@ def thin_sources(manifest: dict, group: str) -> list:
     даёт одну карточку.
     """
     counts = card_counts()
+    rechecked = manifest.get("thin_rechecked") or {}
     out = []
     for path in sorted(manifest.get("sources") or {}):
         if group and not path.startswith(group):
             continue
         n = counts.get(path, 0)
         if n == 0 or not os.path.isfile(path):
+            continue
+        # Отозванную авторами страницу не перечитывают: её знание в базу не идёт вовсе.
+        if retired_page(path):
+            continue
+        # Перечитан после прошлой отметки и с тех пор не менялся: второй разбор того же
+        # текста дал столько же — значит, это законно короткий пересказ, а не обрыв.
+        if rechecked.get(path) and rechecked[path] == file_hash(path):
             continue
         size = os.path.getsize(path)
         text = open(path, encoding="utf-8", errors="ignore").read()
@@ -1719,14 +1731,22 @@ def thin_report(manifest: dict, group: str, apply: bool) -> int:
     if len(rows) > 30:
         print(f"- … ещё {len(rows) - 30}")
     print("\nПересказ на сорок страниц законно даёт одну карточку — это подозрение, а не "
-          "приговор.\nВернуть в план: --thin --reopen --apply (можно сузить --group).")
+          "приговор.\nВернуть в план: --thin --reopen --apply (можно сузить --group). "
+          f"За проход — не больше {THIN_REOPEN_CAP}, крупные первыми; перечитанный и "
+          "оставшийся тонким источник второй раз не возвращается, пока не изменится.")
     if not apply:
         print("\n(dry-run) Ничего не записано.")
         return 0
-    for path, *_ in rows:
+    take = rows[:THIN_REOPEN_CAP]
+    rechecked = manifest.setdefault("thin_rechecked", {})
+    for path, *_ in take:
         manifest["sources"].pop(path, None)
+        rechecked[path] = file_hash(path)
     save_manifest(manifest)
-    print(f"\n✅ Возвращено в план: {len(rows)}. Проверьте: build_plan.py --status")
+    left = len(rows) - len(take)
+    print(f"\n✅ Возвращено в план: {len(take)}"
+          + (f", остальные {left} — в следующие проходы" if left else "")
+          + ". Перечитает их «Обновить базу».")
     return 0
 
 

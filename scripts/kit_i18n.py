@@ -89,6 +89,11 @@ def used_in(module: str = "") -> set:
         base = os.path.join(MODULES, module)
         files = [os.path.join(r, f) for r, _d, fs in os.walk(base) for f in fs
                  if f.endswith((".js", ".html"))]
+        # Серверная часть раздела (`cockpit/cron.py` у расписания) пишет свои строки —
+        # сообщение коммита, например, — тем же каталогом раздела.
+        server = os.path.join(os.path.dirname(MODULES), module + ".py")
+        if os.path.isfile(server):
+            files.append(server)
     else:
         ui_dir = os.path.dirname(UI)
         files = [os.path.join(ui_dir, f) for f in sorted(os.listdir(ui_dir))

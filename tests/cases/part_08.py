@@ -1006,7 +1006,11 @@ def test_kb_graph_writes_links_into_cards(tmp: Path):
     assert "# Алгоритм" in a, "тело карточки пострадало"
 
     second = run("kb_graph.py", "--cards", "--apply", cwd=root)
-    assert "связей добавлено: 0" in second.stdout, "повторный прогон дублирует связи"
+    # База та же — шаг кончается сразу (1.151.0); без отпечатка — честный пересчёт с нулём.
+    assert "без изменений" in second.stdout, second.stdout[:400]
+    (root / ".opencode/state/links-cards.json").unlink()
+    third = run("kb_graph.py", "--cards", "--apply", cwd=root)
+    assert "связей добавлено: 0" in third.stdout, "повторный прогон дублирует связи"
 
 
 

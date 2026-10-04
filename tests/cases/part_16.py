@@ -26,6 +26,7 @@ EXCUSES = {
     ("/api/state", ".commands[].alias"): "русские псевдонимы команд — имена, которые вводят руками",
     ("/api/scenarios", ".scenarios[].group"): "ключ группы маршрутов («база», «продуктивность»), а не подпись",
     ("/api/scenarios", ".scenarios[].steps[].cycle"): "метки разметки маршрута («цикл:», «конец цикла»)",
+    ("/api/cron", ".routes[].group"): "тот же ключ группы маршрутов, по нему раздел заготавливает цепочку",
     ("/api/kit/status", ".notes[]"): "журнал изменений пишется по-русски: это документ, граница описана в CHANGELOG 1.149.0",
     ("/api/about", ".releases[]"): "то же: записи CHANGELOG",
     ("/api/config", ".text"): "сам файл конфигурации проекта",
@@ -62,7 +63,7 @@ CRAWLED = (
     "/api/kinds", "/api/artifacts", "/api/about", "/api/agent", "/api/kit/status", "/api/git",
     "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",
-    "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin",
+    "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",
@@ -80,6 +81,7 @@ NOT_CRAWLED = {
     "/api/files/clean": "перечень временных файлов проекта",
     "/api/doc": "документация проекта и кита — тексты документов",
     "/api/job": "вывод запуска — вывод движка, он остаётся русским",
+    "/api/cron/run": "журнал прогона цепочки — вывод шагов движка, он остаётся русским",
 }
 
 

@@ -102,6 +102,27 @@ flowchart TD
 "Fix the base" and "Rebuild" are assembled of the same steps; the full lists are in `cockpit/scenarios.txt`. Steps
 done by a human are marked in routes and are not run.
 
+### Routes on a schedule and from the terminal
+
+The **Cron** section (the "Machine" group) puts routes and single commands on a timetable and chains them: "at 20:00
+run 'Update the base' and 'Fix the base' in every project". The "Maintain all projects" button prepares exactly that
+chain — the base routes except the rebuild from scratch. The panel server runs the chain, no page needs to be open,
+but the panel itself must be running. Rules:
+
+- chains run one at a time, the next one waits in the queue;
+- a route follows the same rules as the "Run" button: laps with a commit, stop on stall and failure, waiting for the
+  network; a route stopped at night continues with "Resume route";
+- a project busy with other work makes the step wait up to two hours, then the step is skipped;
+- a failed step either lets the chain carry on or stops it, as chosen in the task;
+- a time missed while the panel was down is caught up no later than 15 minutes, otherwise the run is recorded as
+  missed; if the panel restarts in the middle of a chain, the new one continues it;
+- a writing command outside a route is committed to git right away.
+
+The schedule lives in `~/.aurora/cron-tasks.json`, the history in `~/.aurora/cron-runs/`.
+
+The same runner is available from the terminal: `python3 aurora.py route <project> <route> --apply` (without
+`--apply` it behaves like "Preview").
+
 ## 3. The path of one card
 
 The condition to go on, and the price of skipping each step.
@@ -207,6 +228,7 @@ raise `CONVERTER`, and the next sync passes everything.
 |---|---|---|
 | every day, 10 minutes | the morning round | the "Update the base" route or `sync:*` → `sync:audit` → `sync:diff` → `ops:stats` |
 | after every sync | trust | `ops:trace-table` → `kb:trust` (the route does it itself) |
+| every night | maintenance without a human | the Cron section: "Update the base" and "Fix the base" in every project |
 | weekly | hygiene | "Fix the base" → `ops:todo` → `kb:garden` |
 | monthly | navigation and quality | `kb:moc --suggest`, `ops:search-quality`, `ops:gaps` |
 | development is going on | tracing | `sync:jira-status` → `ops:trace` → `make:spec-pack` |
