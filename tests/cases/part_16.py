@@ -172,3 +172,85 @@ def test_every_get_route_of_the_panel_is_either_crawled_or_excused(tmp: Path):
                          f"(tests/cases/part_16.py): {unknown}")
     gone = sorted((set(CRAWLED) | set(NOT_CRAWLED)) - routes)
     assert not gone, f"в списках путь, которого в сервере больше нет: {gone}"
+
+
+@test
+def test_engine_words_shown_in_the_panel_have_an_english_label(tmp: Path):
+    """Слова линтера и статистики на экране — через таблицу `ENGINE_WORDS`, а не как есть.
+
+    Названия видов ошибок («битые ссылки»), причины недоверия («задачи ещё в работе») и
+    заглушки («(нет status)») печатает движок по-русски. Панель ищет по ним числа, поэтому
+    ключами остаются они, а подпись человеку берётся из каталога строк. Новый вид ошибки в
+    `kb_lint.py` без строки в таблице показывался бы в английском режиме русским.
+    """
+    import ast
+    lint = ast.parse((SCRIPTS / "kb_lint.py").read_text(encoding="utf-8"))
+    titles = set()
+    for node in ast.walk(lint):
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "kinds" for t in node.targets) \
+                and isinstance(node.value, ast.List):
+            for tup in node.value.elts:
+                if isinstance(tup, ast.Tuple) and len(tup.elts) == 3 \
+                        and isinstance(tup.elts[1], ast.Constant):
+                    titles.add(tup.elts[1].value)
+    assert len(titles) >= 10, f"виды ошибок линтера не найдены: {titles}"
+    stats = (SCRIPTS / "aurora_stats.py").read_text(encoding="utf-8")
+    words = set(titles) | {"прочее"} | set(re.findall(r'trust_why\["([^"]+)"\]', stats)) \
+        | {"(нет status)", "(нет kind)"}
+    panel = (KIT / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    table = dict(re.findall(r'^\s*"([^"]+)": "(word\.[\w.]+)",', panel, re.M))
+    lacking = sorted(w for w in words if w not in table)
+    assert not lacking, f"слова движка без подписи в ENGINE_WORDS (panel.js): {lacking}"
+    ru = json.loads((KIT / "cockpit/i18n/ru.json").read_text(encoding="utf-8"))
+    en = json.loads((KIT / "cockpit/i18n/en.json").read_text(encoding="utf-8"))
+    for ru_word, key in table.items():
+        assert ru.get(key) == ru_word, f"{key}: русская подпись должна совпадать со словом движка"
+        assert en.get(key) and not CYR.search(en[key].replace("(", "")), f"{key}: нет английской подписи"
+
+
+@test
+def test_reference_opens_english_documents_in_the_english_panel(tmp: Path):
+    """«Справка» на английском читает издания из `docs/en/`, а не русский текст под английским заголовком.
+
+    Английские издания есть у документов `docs/readme/`, справочника команд, плана и
+    требований к панели. У остальных (скиллы для агента, журнал изменений) перевода нет,
+    и страница говорит об этом строкой, а не молчит.
+    """
+    view = (KIT / "cockpit/modules/reference/view.js").read_text(encoding="utf-8")
+    docs = re.findall(r'\["((?:docs|skills)/[^"]+|CHANGELOG\.md)", "reference\.doc\.\w+"\]', view)
+    assert len(docs) >= 15, f"оглавление справки не найдено: {docs}"
+    mapped = dict(re.findall(r'"(docs/[\w./-]+\.md)": "(docs/en/[\w./-]+\.md)"', view))
+    for path in docs:
+        if path.startswith("docs/readme/"):
+            mapped[path] = "docs/en/" + path[len("docs/"):]
+    assert len(mapped) >= 9, mapped
+    for ru_path, en_path in mapped.items():
+        assert (KIT / ru_path).is_file(), f"{ru_path}: нет русского оригинала"
+        assert (KIT / en_path).is_file(), f"{ru_path} → {en_path}: нет английского издания"
+    for key in ("reference.ru_only",):
+        for lang in ("ru", "en"):
+            cat = json.loads((KIT / f"cockpit/modules/reference/i18n/{lang}.json").read_text(encoding="utf-8"))
+            assert cat.get(key), f"{lang}: нет строки {key}"
+
+
+@test
+def test_route_summary_reads_in_english_for_the_english_panel(tmp: Path):
+    """Итог маршрута в консоли английской панели — по-английски; русский вид не меняется.
+
+    Итог составляет `run_summary`, и панель просит его с `lang=en`. Вывод агента в терминале
+    (`render` без языка) остаётся русским, как весь вывод движка.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    RS = importlib.import_module("run_summary")
+    s = RS.empty()
+    s.update(seconds=75, model_calls=3, tokens_in=1000, tokens_out=500, gen_seconds=10,
+             docs_done=2, cards_known=True, cards_created=4)
+    ru = "\n".join(RS.render(s))
+    en = "\n".join(RS.render(s, "Run summary", "en"))
+    assert "Модель: токенов" in ru and "1 мин 15 с" in ru, ru
+    assert not CYR.search(en), en
+    assert "1 min 15 s" in en and "created 4" in en, en
+    steps = [{"cmd": "sync:confluence", "rc": 2}]
+    out = RS.route(str(tmp), "", 5, steps, lang="en")
+    assert not CYR.search("\n".join(out["lines"])), out["lines"]
+    assert "step sync:confluence failed (code 2)" in "\n".join(out["lines"])

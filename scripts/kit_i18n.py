@@ -108,6 +108,9 @@ def used_in(module: str = "") -> set:
         # (`t("commands.ns." + ns)`). И то, и другое — употребление, а не мусор.
         if module:
             keys |= set(re.findall(r'"(%s\.[\w.]+)"' % re.escape(module), text))
+        else:
+            # Слова движка на экране: таблица `ENGINE_WORDS` держит ключи строками.
+            keys |= set(re.findall(r'"(word\.[\w.]+)"', text))
         # Справка у кнопки: `data-help="ключ"` просит три строки — `ключ.what`, `.how`,
         # `.result` (так их собирает панель). Сам «ключ» в каталоге не живёт, и без этого
         # правила проверка ругалась на сорок ключей, которые на экране работают.
@@ -165,6 +168,10 @@ def message_skeletons() -> set:
     out = set()
 
     def add(node):
+        if isinstance(node, ast.BoolOp):         # `что-то or "нет сети"` — запасной текст тоже сообщение
+            for v in node.values:
+                add(v)
+            return
         s = _skeleton(node)
         if s and re.search("[а-яА-ЯёЁ]", s):
             out.add(s.strip())
@@ -176,6 +183,12 @@ def message_skeletons() -> set:
                 for k, v in zip(node.keys, node.values):
                     if isinstance(k, ast.Constant) and k.value in MESSAGE_KEYS:
                         add(v)
+            elif isinstance(node, ast.Assign):
+                # `st["error"] = "…"` — то же сообщение, записанное в ответ присваиванием
+                for tgt in node.targets:
+                    if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
+                            and tgt.slice.value in MESSAGE_KEYS):
+                        add(node.value)
             elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
                 for a in node.exc.args:
                     add(a)

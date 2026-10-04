@@ -156,7 +156,7 @@ function baseCards(ctx, h, st){
       sub: el("span", {},
         Object.entries(why)
           .filter(([n]) => n !== "доверенные" && n !== "из встреч (вне доли)")  // данные движка
-          .map(([n, v]) => `${v} — ${n}`).join(" · ") || t("health.trust_why_old"),
+          .map(([n, v]) => `${v} — ${ctx.ui.engineWord(n)}`).join(" · ") || t("health.trust_why_old"),
         st.meetings ? el("div", {style: "margin-top:4px"},
                          t("health.trust_meetings", {n: st.meetings})) : null),
       hint: t("health.trust_hint"),
@@ -185,7 +185,7 @@ function baseCards(ctx, h, st){
       go: ctx.ui.goCmd("ops:trace-table", ["--apply"], t("health.go_trace"))}),
     card({title: t("health.errors"), value: lint.errors ?? "—",
       sub: ((lint.errors || 0) && !fresh ? t("health.errors_stuck") + " · " : "")
-           + (Object.entries(kinds).slice(0, 3).map(([n, v]) => `${v} ${n}`).join(" · ")
+           + (Object.entries(kinds).slice(0, 3).map(([n, v]) => `${v} ${ctx.ui.engineWord(n)}`).join(" · ")
               || t("health.errors_none")),
       tone: (lint.errors || 0) ? "warn" : "",
       go: (lint.errors || 0) ? fixOrDecide() : null}),
@@ -286,7 +286,7 @@ function showList(ctx, title, about, rows){
 }
 
 function statusBar(ctx, statuses){
-  const {el} = ctx;
+  const {el} = ctx, label = ctx.ui.engineWord;
   const order = ["verified", "in-review", "draft", "imported", "deprecated"];
   const color = {verified:"--tier-verified", "in-review":"--tier-inreview", draft:"--tier-draft",
     imported:"--tier-imported", deprecated:"--tier-deprecated"};
@@ -300,9 +300,9 @@ function statusBar(ctx, statuses){
     const v = statuses[k];
     if (!v) return;
     const c = color[k] ? `var(${color[k]})` : "var(--tier-imported)";
-    bar.append(el("div", {style:`width:${v / total * 100}%;background:${c}`, title:`${k}: ${v}`}));
+    bar.append(el("div", {style:`width:${v / total * 100}%;background:${c}`, title:`${label(k)}: ${v}`}));
     legend.append(el("span", {class:"chip tier"},
-      el("span", {class:"dot", style:`background:${c}`}), `${k} · ${v}`));
+      el("span", {class:"dot", style:`background:${c}`}), `${label(k)} · ${v}`));
   });
   return el("div", {}, bar, legend);
 }

@@ -3990,7 +3990,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(RS.route(project, payload.get("since", ""),
                                     float(payload.get("seconds") or 0),
-                                    payload.get("steps") or []))
+                                    payload.get("steps") or [],
+                                    lang=request_lang(parse_qs(urlparse(self.path).query))))
             return
         if u.path == "/api/config":
             project = payload.get("project", "")
