@@ -4812,12 +4812,19 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             title=spec.get("title") or st["kind"], template=template[:8000],
             plan=st["plan"], draft=st["draft"],
             agnostic_check=AGNOSTIC_CHECK if agnostic else "")}], deadline=deadline)
-        verdict = parse_json(r["text"]) if r["ok"] else {}
-        st["issues"] = (verdict or {}).get("issues") or []
+        if not r["ok"]:
+            return {"ok": False, "sid": sid, "why": "критик не ответил, документ не проверен: "
+                    + model_fail_note(r)}
+        verdict = parse_json(r["text"])
+        if not isinstance(verdict, dict):
+            # Мусор вместо вердикта — не «замечаний нет»: иначе документ уйдёт в `ready`.
+            return {"ok": False, "sid": sid,
+                    "why": "критик не вернул вердикта, документ не проверен — повторите шаг"}
+        st["issues"] = verdict.get("issues") or []
         # Покрытие заполняет критик, а не планировщик: это свойство документа, а не
         # опроса. Планировщик мог спросить про крайние случаи, получить ответ и всё
         # равно не дойти до них в плане.
-        st["coverage"] = clean_coverage((verdict or {}).get("coverage"))
+        st["coverage"] = clean_coverage(verdict.get("coverage"))
         stages["reviewed"] = TODAY_STR
         st["path"] = write_artifact(cwd, st)
         save_session(cwd, sid, st)
@@ -4828,6 +4835,12 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         mo = run_momus(cfg, st["pack"], f"Документ «{spec.get('title') or st['kind']}»",
                        st["draft"], call)
         st["momus"] = mo
+        if not mo.get("ok"):
+            # Проверка не состоялась — этап не пройден, иначе документ станет `ready`
+            # без единой проверки на выдумки.
+            save_session(cwd, sid, st)
+            return {"ok": False, "sid": sid,
+                    "why": "Момус не проверил документ: " + (mo.get("why") or "нет вердикта")}
         stages["checked"] = TODAY_STR
         st["path"] = write_artifact(cwd, st)
         save_session(cwd, sid, st)
