@@ -2993,3 +2993,39 @@ def test_two_documents_with_one_file_name_get_two_maps(tmp: Path):
     assert "без изменений: 2" in second, second[-300:]
     a, b = [(kb / "MOC" / m).read_text(encoding="utf-8") for m in maps]
     assert "[[Один|" in a and "[[Три|" not in a and "[[Три|" in b, (a, b)
+
+
+def test_a_garbage_model_reply_is_not_a_verdict_on_twins_and_translit(tmp: Path):
+    """Ответ «извините, не могу» не становится вердиктом «разные сущности» или «не транслит».
+
+    Нераспознанный ответ превращался в пустой словарь, а пустой словарь читался как «не
+    сливать» (карточки получали раздел «Не путать», и группу больше не спрашивали) и как
+    «переводить нечего» (имя навсегда уходило из словаря переводов).
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    same = "Профиль обслуживания абонента задаёт перечень доступных услуг в биллинге. " * 4
+    card(root, "Concepts/Профиль-абонента.md", status="knowledge", kind="knowledge", body=same)
+    card(root, "Concepts/Что-такое-профиль.md", status="draft", kind="knowledge", body=same)
+    card(root, "Concepts/Profil-abonenta.md", status="draft", kind="knowledge", body=same)
+    cfg = {"request_timeout": 60, "budget_min": 5, "backends": [], "thinking": False,
+           "thinking_roles": {}, "embed": {"model": "m"}}
+
+    def garbage(c, role, messages, **kw):
+        return {"ok": True, "backend": 1, "model": "m", "log": [],
+                "text": "извините, не могу ответить"}
+
+    step = R.solve_twins(cfg, str(root), ["Профиль-абонента", "Что-такое-профиль"],
+                         apply=True, call=garbage)
+    assert step["status"] == "сбой" and not step.get("apart"), step
+    text = (root / "AuroraKnowledgeDB/Concepts/Профиль-абонента.md").read_text(encoding="utf-8")
+    assert "Не путать" not in text, "мусорный ответ записан как решение «разные»"
+    one = R.solve_translit(cfg, str(root / "AuroraKnowledgeDB/Concepts/Profil-abonenta.md"),
+                           call=garbage)
+    assert one["status"] == "сбой", one
+    empty = lambda c, role, messages, **kw: {"ok": True, "backend": 1, "model": "m",  # noqa: E731
+                                              "log": [], "text": '{"cyrillic": ""}'}
+    assert R.solve_translit(cfg, str(root / "AuroraKnowledgeDB/Concepts/Profil-abonenta.md"),
+                            call=empty)["status"] == "не транслит"
