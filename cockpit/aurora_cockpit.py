@@ -74,6 +74,20 @@ STARTED = time.time()
 ENGINE = os.path.getmtime(os.path.abspath(__file__))
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+KEEP_DONE_JOBS = 40      # законченные задания, которые ещё можно открыть в консоли
+
+
+def trim_jobs(keep: int = KEEP_DONE_JOBS) -> int:
+    """Забыть самые старые законченные задания сверх `keep`. → сколько забыто.
+
+    Каждое задание держит до четырёх тысяч строк вывода и процесс; законченные нигде не
+    снимались, и панель, открытая неделями, росла с каждым запуском. Идущие не трогаются.
+    Вызывать под `JOBS_LOCK`.
+    """
+    done = sorted((j for j in JOBS.values() if j["done"]), key=lambda j: j.get("finished", 0))
+    for j in done[:max(0, len(done) - keep)]:
+        JOBS.pop(j["id"], None)
+    return max(0, len(done) - keep)
 CACHE: dict = {}
 REGISTRY_CACHE = os.path.join(KIT, "cockpit", ".registry-cache.json")
 
@@ -3477,6 +3491,7 @@ def start_job(project: str, cmd: str, extra: list) -> str:
             if (not running["done"] and running["project"] == project
                     and running["cmd"] == cmd and running["args"] == args):
                 return running["id"]
+        trim_jobs()
         JOBS[job_id] = job
 
     def worker():
