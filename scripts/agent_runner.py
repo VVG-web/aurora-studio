@@ -2115,7 +2115,13 @@ def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> di
     if not r["ok"]:
         step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
-    said = str((parse_json(r["text"]) or {}).get("cyrillic") or "").strip()
+    data = parse_json(r["text"])
+    if not isinstance(data, dict) or "cyrillic" not in data:
+        # Без ключа это не «не транслит», а непонятный ответ: пустое имя навсегда вносило
+        # карточку в словарь как не подлежащую переводу.
+        step.update(status="сбой", why="ответ модели не разобран: нет поля cyrillic")
+        return step
+    said = str(data.get("cyrillic") or "").strip()
     if not said:
         step.update(status="не транслит", why="английские слова или идентификатор")
         return step
@@ -2325,9 +2331,14 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
     if not r["ok"]:
         step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
         return step
-    verdict = parse_json(r["text"]) or {}
+    verdict = parse_json(r["text"])
+    if not isinstance(verdict, dict) or not isinstance(verdict.get("merge"), bool):
+        # Не ответ, а мусор: «извините, не могу» нельзя принять за «это разные сущности» —
+        # такой вердикт записывался в карточки раздела «Не путать» и закрывал группу навсегда.
+        step.update(status="сбой", why="ответ модели не разобран: нет решения «merge»")
+        return step
     step["why"] = str(verdict.get("why") or "")[:200]
-    if not verdict.get("merge"):
+    if not verdict["merge"]:
         if apply:
             step["apart"] = mark_apart(cwd, group, step["why"])
         return step
