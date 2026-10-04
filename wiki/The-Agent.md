@@ -8,20 +8,20 @@ definitions, answering questions, producing artifacts. **Script first, model sec
 dedupe, sync, trust, links) are deterministic scripts with a dry-run; the model only judges, and it writes only through
 whitelisted engine commands.
 
-Without a configured gateway everything that does not need a model still works.
+Without configured models everything that does not need them still works.
 
-## Gateways and roles
+## Roles and chains
 
-A **backend** is any OpenAI-compatible gateway (corporate, cloud, local `llama.cpp` or vLLM). Backends are numbered and
-form a **ring**: a call goes to the first; an unavailable or busy one is skipped, a recovered one is picked up on the
-next request.
+A **provider** is any OpenAI-compatible API (a corporate gateway, cloud, local `llama.cpp` or vLLM). A **backend** is
+"provider + model" in a role. Each role has its own **chain** of backends: a call goes to the first; an unavailable or
+busy one is skipped, a recovered one is picked up on the next request.
 
 ```mermaid
 flowchart LR
-  CALL["agent task"] --> R{"ring<br>№1 → №2 → …"}
+  CALL["role task"] --> R{"role chain<br>primary → fallback → …"}
   R -->|"answers"| OK["result"]
-  R -->|"down or busy"| NEXT["next gateway"] --> R
-  R -->|"three failures in a row"| STOP["stop: it is the gateway,<br>not the cards"]
+  R -->|"down or busy"| NEXT["next backend"] --> R
+  R -->|"three failures in a row"| STOP["stop: it is the provider,<br>not the cards"]
 ```
 
 | Role | Does |
@@ -39,36 +39,27 @@ A second model that reads the agent's output and the source and marks every clai
 **"no support"**. Claims without support are listed for a human (`ops:todo`) and are not carried into documents.
 `agent:distill --recheck` checks them again.
 
-## Settings in one place
+## One setup per kit
 
-Set in `.env.aurora.local` (project) or the kit's own file (shared); priority **environment > project > kit**:
+Models are set up **once per kit** — the panel's **"Models"** section, the file `<kit>/local/models.json`; every
+project uses it, none has its own. First the **providers** (URL, key, width), then in the LLM, OCR and embeddings
+tabs the **roles**, each with a chain of "provider + model" backends: the first is the primary, "+" adds a fallback,
+the order changes by dragging, a fallback can be switched off. A provider can be added right from a role. Details —
+[INSTALL](../docs/en/INSTALL.md#models--one-setup-per-kit).
 
-```bash
-AURORA_AGENT_BACKEND_1_URL=https://llm.example.com/v1
-AURORA_AGENT_BACKEND_1_KEY=<key>
-AURORA_AGENT_BACKEND_1_MODEL_WORKER=<model for routine steps>
-AURORA_AGENT_BACKEND_1_MODEL_QA=<Momus model>
-AURORA_AGENT_BACKEND_2_URL=http://<local-server>:8081/v1      # a spare
-AURORA_AGENT_BACKEND_2_MODEL=<one model for all roles>
-```
+## OCR and embeddings — the same pattern
 
-Per-gateway knobs (`…_CONTEXT`, `…_PARALLEL`, `…_FALLBACK`, `…_WIDTH`, `…_TEMPLATE_KWARGS`) and run-wide ones
-(`AURORA_AGENT_PARALLEL`, `AURORA_AGENT_THINKING`, `AURORA_AGENT_BUDGET_MIN`, `AURORA_AGENT_REQUEST_TIMEOUT`) are
-listed in the [INSTALL table](../docs/en/INSTALL.md#llm-gateways). The panel's **Project settings** has the same form.
-
-## Vectors and scans have their own rings
-
-Semantic search (`kb:embed`) and scan recognition (`kb:ingest-office`) use their own models (`AURORA_EMBED_*`,
-`AURORA_OCR_*`). The chat, vector and recognition rings are independent. All texts go to the same gateway as the agent:
-if your perimeter forbids sending materials out, do not switch on semantics and scans.
+Semantic search (`kb:embed`) and scan recognition (`kb:ingest-office`) have the same roles and chains. An
+embeddings fallback uses only the same model: vectors of different models do not compare. All texts go to the
+providers of the setup: if your perimeter forbids sending materials out, do not switch on semantics and scans.
 
 ## Checking the chain
 
 | Command | Shows |
 |---|---|
-| `agent:ping` | every backend by a live request: roles, speed; an empty answer counts as a refusal |
+| `agent:ping` | every backend of the LLM chains by a live request: roles, speed; an empty answer counts as a refusal |
 | `agent:probe` | "no connection", "wrong key" or "no such model"; the model list; `--why` — which layer of the request is rejected |
-| `agent:width` | how many simultaneous requests each gateway holds |
+| `agent:width` | how many simultaneous requests each provider holds |
 | `agent:pydantic` | what goes to the gateway through Pydantic AI and whether the installed version is compatible |
 
 ## Safety properties

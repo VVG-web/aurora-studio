@@ -67,7 +67,7 @@ def test_mcp_is_declared_by_the_project_not_guessed(tmp: Path):
 
     # и это видно человеку: настроил или нет
     ui = panel_sources()
-    assert "У проекта своих серверов нет" in ui and "не объявлены" in ui, \
+    assert "У проекта своих серверов нет" in ui and "Серверов пока нет. Это норма" in ui, \
         "панель молчит про MCP — человек не узнает ни что подключено, ни что это норма"
 
 
@@ -254,8 +254,8 @@ def test_settings_groups_fold_like_quickstart_routes(tmp: Path):
     project = _js_function(ui, "async function renderProject(")
     for gid in ('"project:form"', '"project:tokens"', '"project:mcp"', '"project:yaml"'):
         assert gid in project, f"в «Настройках проекта» нет группы {gid}"
-    agent = _js_function(ui, "async function renderAgentCard(")
-    assert '"project:agent" : "setup:agent"' in agent, "кольцо шлюзов не свёрнуто в группу"
+    agent = _js_function(ui, "async function renderModelsCard(")
+    assert '"project:agent" : "setup:agent"' in agent, "карточка моделей не свёрнута в группу"
     assert '"project:kinds"' in _js_function(ui, "async function renderKinds("), \
         "виды артефактов не свёрнуты в группу"
     for page in (setup, project):
@@ -1352,9 +1352,9 @@ def test_kit_and_project_settings_are_separate(tmp: Path):
     «почему правка не подействовала на другом проекте» повторялся, и ответить на него по
     виду формы было нельзя.
 
-    Теперь у поля есть происхождение: сервер отдаёт `own` — что задано в самом проекте, —
-    и всё остальное помечается «из кита». Без этой пометки человек правит унаследованное
-    значение, считая его своим.
+    С 1.153.0 вопрос снят целиком: модели настраиваются один раз на кит (раздел «Модели»),
+    у проекта своего слоя нет вовсе — и «почему не подействовало на другом проекте» больше
+    не возникает. Проверяем, что слоя действительно нет.
     """
     ui = panel_sources()
     srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
@@ -1370,10 +1370,11 @@ def test_kit_and_project_settings_are_separate(tmp: Path):
     assert len(calls) == 1, \
         f"реестр артефактов рисуется {len(calls)} раз(а) — он принадлежит проекту, и место у него одно"
 
-    # происхождение значения приходит с сервера, а не угадывается формой
-    assert '"own": sorted(own)' in srv, "сервер не говорит, что задано в самом проекте"
-    assert "const inherited = k =>" in ui and '"из кита"' in ui, \
-        "форма не помечает унаследованные поля"
+    # у проекта нет своего слоя моделей: ни записи в .env, ни слияния «кит < проект»
+    assert "def agent_write_env(" not in srv and '"/api/agent/env"' not in srv, \
+        "панель снова пишет настройку моделей в .env проекта"
+    assert 'renderModelsCard(box, "project")' in ui and "renderAgentCard" not in ui, \
+        "в настройках проекта снова своя карточка моделей"
 
     # общая настройка называется общей: подпись пункта меню тоже часть ответа
     assert 'data-i18n="nav.setup">Настройка кита<' in ui, \
@@ -1783,8 +1784,9 @@ def test_route_progress_is_visible_from_any_tab(tmp: Path):
     assert 'drawRouteBar(null)' in ui, "полоса не гаснет после маршрута"
     assert '$("#routeBar").onclick' in ui, "по полосе нельзя вернуться к прогону"
 
-    # роли бэкендов должны быть видны человеку, а не только в .env
-    for field in ("PARALLEL", "FALLBACK", "WIDTH", "CONTEXT"):
-        assert f'pre+"{field}"' in ui, f"поле {field} не выведено в панель"
-    assert "первый: всегда в параллель и всегда запасной" in ui, \
-        "первому бэкенду показывают галочки, которые ничего не решают"
+    # роли бэкендов видны человеку, а не только в файле: раздел «Модели» (1.153.0)
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    for field in ('inp("width"', "p.parallel", "b.context", 't("models.add_fallback")'):
+        assert field in view, f"поле {field} не выведено в панель"
+    assert 't("models.primary")' in view and 't("models.fallback_n"' in view, \
+        "в цепочке не видно, кто основной, а кто запасной по порядку"

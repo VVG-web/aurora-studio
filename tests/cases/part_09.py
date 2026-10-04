@@ -669,17 +669,25 @@ def test_ocr_ring_is_separate_and_never_falls_back_to_chat(tmp: Path):
     # Панель показывает и пишет ключи распознавания. Выпуск 1.104.0 ушёл без этого: кольцо
     # существовало только в файле настроек, панель о нём не знала и честно писала «отстала
     # от ядра». Человек не видит, что путь выключен, и ищет, почему скан остался пустым.
+    # С 1.153.0 распознавание — возможность раздела «Модели»: роль `document`, цепочка
+    # «провайдер + модель», и у каждого запасного своя зрячая модель.
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    assert '"ocr"' in view and 'num("dpi"' in view and 'num("max_pages"' in view, \
+        "в панели нечем настроить распознавание"
     ui = panel_sources()
-    for key in ('pre+"OCR_MODEL"', 'pre+"OCR_URL"', '"AURORA_OCR_MODEL"',
-                '"AURORA_OCR_FALLBACK"', '"AURORA_OCR_DPI"', '"AURORA_OCR_MAX_PAGES"'):
-        assert key in ui, f"панель не пишет {key} — кольцо распознавания не настроить из формы"
-    assert "выключено: модель не названа" in ui, \
-        "форма показывает пустое кольцо распознавания как настроенное"
-    srv = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
-    assert '"ocr_model"' in srv and '"ocr":' in srv, \
-        "сервер панели не отдаёт настройки распознавания — форме нечего показать"
-    assert 'hasattr(AG, "ocr_ring")' in srv, \
-        "проект на движке до 1.104.0 уронит весь экран настроек на отсутствующем ocr_ring"
+    assert "скан честно остаётся неразобранным" in ui, \
+        "форма не говорит, что без бэкенда распознавание выключено"
+    import importlib
+    MC = importlib.import_module("model_config")
+    data, _ = MC.normalize({"providers": [{"id": "v", "url": "http://vision/v1"},
+                                          {"id": "w", "url": "http://work/v1"}],
+        "capabilities": {"ocr": {"roles": [{"id": "document", "backends": [
+            {"provider": "v", "model": "glm-ocr"}, {"provider": "w", "model": "qwen-vl"}]}]}}})
+    assert [(r["url"], r["model"]) for r in ocr_ring(MC.to_config(data))] == \
+        [("http://vision/v1", "glm-ocr"), ("http://work/v1", "qwen-vl")], \
+        "запасной распознавания потерял свою модель"
+    assert ocr_ring(MC.to_config(MC.normalize({})[0])) == [], \
+        "распознавание включилось без бэкенда"
 
 
 @test
@@ -1402,7 +1410,7 @@ def test_a_slow_backend_is_not_a_dead_one(tmp: Path):
     assert slow.get("timed_out"), "вызов не отличил молчание по сроку от отказа"
     joined = " ".join(slow["log"])
     assert "не уложился" in joined, f"таймаут назван чужим именем: {slow['log']}"
-    assert "REQUEST_TIMEOUT" in joined, \
+    assert "сроком запроса" in joined and "«Модели»" in joined, \
         f"человеку не назван рычаг — он пойдёт чинить связь: {slow['log']}"
     assert "ни один бэкенд не ответил осмысленно" not in joined, \
         "итог по-прежнему читается как «серверов нет»"
@@ -1465,7 +1473,7 @@ def test_the_check_gets_as_long_as_the_answer_took(tmp: Path):
                          "model": "m", "backend": 2, "seconds": 534.3, "momus": mo},
                         "вопрос", cfg)
     assert "не успел" in text and "420" in text, text
-    assert "REQUEST_TIMEOUT" in text, "человеку не назван рычаг"
+    assert "срок запроса" in text and "«Модели»" in text, "человеку не назван рычаг"
     assert "не проверил ответ" not in text, \
         "медленную проверку по-прежнему объявляют несостоявшейся без причины"
 
@@ -1491,7 +1499,7 @@ def test_probe_asks_the_same_settings_and_every_role_model(tmp: Path):
     importlib.reload(P)
 
     src = (KIT / "scripts/agent_probe.py").read_text(encoding="utf-8")
-    assert "AG.raw_config()" in src and "AG.parse_config" in src, \
+    assert "AG.config()" in src, \
         "проверка снова читает настройку сама — разойдётся с движком"
     assert "def read_env" not in src, "осталась своя копия чтения .env"
 

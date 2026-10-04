@@ -11,9 +11,9 @@
   python3 .opencode/scripts/agent_core.py --venv-status   # стоит ли Pydantic AI и какой версии
   python3 .opencode/scripts/agent_core.py --venv-install  # поставить/обновить в ~/.aurora/venv
 
-Настройка — только `.env`-файлы, один механизм: глобальный в ките (`.env.aurora.local`),
-проект переопределяет любую переменную в своём `.env.aurora.local`. Приоритет:
-переменные окружения > проект > кит. Ключи и адреса в git не попадают.
+Настройка моделей — одна на кит: `<кит>/local/models.json` (`model_config.py`): провайдеры,
+возможности (LLM, OCR, эмбеддинги), роли и цепочки запасных бэкендов. Проектной настройки
+моделей нет — все проекты машины работают одной. Ключи и адреса в git не попадают.
 
 Цепочка бэкендов — кольцо, не лестница: каждый вызов обходит список с верха, поэтому
 восстановившийся корпоративный шлюз (починили VPN) подхватывается на следующем же
@@ -77,8 +77,35 @@ def _roots() -> tuple:
     return root, project
 
 
+def kit_env(kit) -> dict:
+    """Прежняя настройка моделей из `.env.aurora.local` кита — только для переноса в
+    `local/models.json` при первом запуске. Сам файл не правится никогда."""
+    from aurora_common import ENV_FILE
+    return dict(load_env(Path(kit) / ENV_FILE))
+
+
+def config() -> dict:
+    """Конфигурация моделей движка — одна на кит (`local/models.json`).
+
+    Проект её не переопределяет: переменные моделей в `.env.aurora.local` проекта больше
+    не действуют (doctor называет их). Файла ещё нет — он собирается один раз из `.env`
+    кита. В прогоне тестов (`AURORA_TESTS_ISOLATED`) — только окружение, как раньше:
+    личная настройка машины в тесты не попадает.
+    """
+    if os.environ.get("AURORA_TESTS_ISOLATED"):
+        return parse_config(raw_config())
+    import model_config as MC
+    kit, _project = _roots()
+    data = MC.load(kit, kit_env(kit))
+    cfg = MC.to_config(data)
+    if data.get("error"):
+        cfg["error"] = data["error"]
+    return cfg
+
+
 def raw_config() -> dict:
-    """Слои настройки: кит < проект < окружение. Побеждает более близкий к запуску.
+    """Прежние слои `.env`: кит < окружение. Их читают перенос в `local/models.json` и
+    прогон тестов; рабочая настройка движка — `config()`.
 
     `AURORA_TESTS_ISOLATED=1` отключает файловые слои и оставляет только окружение. Это
     для прогона тестов: иначе тест, объявивший один бэкенд с узким окном, видит ещё три
@@ -93,10 +120,8 @@ def raw_config() -> dict:
     """
     if os.environ.get("AURORA_TESTS_ISOLATED"):
         return {k: v for k, v in os.environ.items() if k.startswith("AURORA_AGENT_")}
-    kit, project = _roots()
+    kit, _project = _roots()
     merged = dict(load_env(kit / ".env.aurora.local"))
-    if project is not None:
-        merged.update(load_env(project / ".env.aurora.local"))
     merged.update({k: v for k, v in os.environ.items() if k.startswith("AURORA_AGENT_")})
     return merged
 
@@ -813,7 +838,13 @@ def looks_like_overflow(err: str, body) -> bool:
                                    "reduce the length", "превышен контекст"))
 
 
-def ring_order(cfg: dict, prefer: int = 0) -> list:
+def role_chain(cfg: dict, role: str) -> list:
+    """Бэкенды роли по порядку (настройка кита). Пустая роль — роль `worker`."""
+    llm = (cfg.get("chains") or {}).get("llm") or {}
+    return list(llm.get(role) or llm.get("worker") or [])
+
+
+def ring_order(cfg: dict, prefer: int = 0, role: str | None = None) -> list:
     """Порядок обхода бэкендов для одного вызова.
 
     Без `prefer` — как раньше: с первого, восстановившийся подхватывается сразу. С
@@ -822,6 +853,12 @@ def ring_order(cfg: dict, prefer: int = 0) -> list:
     ради пропускной способности, не обязан подменять упавшего — иначе весь поток заданий
     сойдётся на одной модели, и параллельность обернётся очередью.
     """
+    if cfg.get("chains") is not None:
+        # Настройка кита: у роли своя цепочка — основной и запасные в том порядке, который
+        # задал человек. `prefer` — провайдер слота параллельного прогона: его бэкенд первым.
+        ch = role_chain(cfg, role or "worker")
+        mine = next((b for b in ch if b["n"] == prefer), None) if prefer else None
+        return ([mine] + [b for b in ch if b is not mine]) if mine else ch
     backends = [b for b in cfg["backends"] if b.get("chat", True)]
     if not prefer:
         # Первый — всегда; остальные — только объявленные запасными. `FALLBACK=0` — это
@@ -847,7 +884,7 @@ def parallel_cap(raw) -> int:
         return 1
 
 
-def pool(cfg: dict) -> list:
+def pool(cfg: dict, role: str = "worker") -> list:
     """Слоты параллельного прогона: номер бэкенда на каждый его свободный поток.
 
     Ширина у каждого шлюза своя — корпоративный держит десяток запросов, домашняя
@@ -861,8 +898,18 @@ def pool(cfg: dict) -> list:
     включённый в параллель сервер llama.cpp с одним слотом получил 83 потока из 99
     (PRJ-A 22.09.2026): очередь на его стороне, и 99 карточек подряд упали по сроку.
     """
-    chat = [b for b in cfg["backends"] if b.get("chat", True)]
-    usable = [b for b in chat if b.get("parallel", True)] or chat[:1]
+    if cfg.get("chains") is not None:
+        # Провайдеры цепочки роли, каждый один раз: первый всегда, остальные — если берутся
+        # в параллель (настройка провайдера).
+        chat, seen = [], set()
+        for b in role_chain(cfg, role):
+            if b["n"] not in seen:
+                seen.add(b["n"])
+                chat.append(b)
+        usable = [b for i, b in enumerate(chat) if i == 0 or b.get("parallel", True)]
+    else:
+        chat = [b for b in cfg["backends"] if b.get("chat", True)]
+        usable = [b for b in chat if b.get("parallel", True)] or chat[:1]
     cap = cfg.get("parallel", 1)
     if cap == AUTO:
         # Каждый шлюз даёт то, что про себя объявил; не объявивший даёт один. Это не
@@ -1186,11 +1233,13 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     if retry_primary_asked():
         log.append("человек попросил вернуться на основного — отметки сняты")
 
-    if not cfg["backends"]:
+    if not cfg["backends"] or (cfg.get("chains") is not None and not role_chain(cfg, role)):
         _note_failure("бэкенды модели не настроены")
-        return {"ok": False, "log": ["бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
+        return {"ok": False, "log": [f"у роли {role} нет бэкендов: раздел «Модели» панели → LLM"
+                                     if cfg.get("chains") is not None else
+                                     "бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
 
-    order = ring_order(cfg, prefer)
+    order = ring_order(cfg, prefer, role)
     while time.time() < deadline:
         ring += 1
         # Может ли следующий круг дать другой ответ. Внятный отказ (400/401/404), запрос
@@ -1383,7 +1432,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     if attempts and slow == attempts:
         log.append(f"никто не уложился в срок: {int(req_timeout)} с на запрос. "
                    "Это медленно, а не мёртво — модель отвечает, но дольше отпущенного. "
-                   "Лечится AURORA_AGENT_REQUEST_TIMEOUT, а не ожиданием")
+                   "Лечится сроком запроса (раздел «Модели», общие настройки), а не "
+                   "ожиданием")
     else:
         log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
     _note_failure("модель не уложилась в срок" if attempts and slow == attempts
@@ -1398,11 +1448,10 @@ def mask(key: str) -> str:
 
 
 def cmd_show() -> int:
-    cfg = parse_config(raw_config())
-    kit, project = _roots()
+    cfg = config()
+    kit, _project = _roots()
     print(f"# Агент — собранная конфигурация · {TODAY}\n")
-    print(f"Слои: кит {kit / '.env.aurora.local'}"
-          + (f" ← проект {project / '.env.aurora.local'}" if project else " (проект не выбран)"))
+    print(f"Настройка моделей кита (одна на все проекты): {kit / 'local' / 'models.json'}")
     roles_off = [r for r, v in (cfg.get("thinking_roles") or {}).items()
                  if v in ("0", "false", "no")]
     if roles_off:
@@ -1411,12 +1460,14 @@ def cmd_show() -> int:
           f"шагов ≤ {cfg['max_steps']} · бюджет {cfg['budget_min']} мин · "
           f"таймаут запроса {cfg['request_timeout']} с\n")
     if not cfg["backends"]:
-        print("Бэкенды не настроены. Панель: «Настройка» → «Агент», либо руками в "
-              ".env.aurora.local (AURORA_AGENT_BACKEND_1_URL=…).")
+        print("Провайдеры не настроены: раздел «Модели» панели.")
         return 1
     for b in cfg["backends"]:
-        roles = " · ".join(f"{r}={role_model(b, r) or '—'}" for r in ROLES)
-        print(f"№{b['n']} {b['url']} · ключ {mask(b['key'])}\n    {roles}")
+        print(f"№{b['n']} {b.get('name') or ''} {b['url']} · ключ {mask(b['key'])}")
+    for cap, roles in (cfg.get("chains") or {}).items():
+        for role, ch in roles.items():
+            print(f"  {cap}/{role}: " + (" → ".join(f"№{b['n']} {b['model']}" for b in ch)
+                                         or "— нет бэкендов"))
     ok, version = venv_status()
     print(f"\nPydantic AI: {'установлен, ' + version if ok else 'не установлен'} ({VENV})"
           + ("" if ok else " — работает stdlib-фолбэк; поставить: --venv-install"))
@@ -1505,7 +1556,7 @@ def probe_width(cfg: dict, b: dict, steps=PROBE_STEPS, heavy: bool = False) -> d
 
 def cmd_probe(as_json: bool, heavy: bool = False) -> int:
     """`--probe-width`: замерить ширину каждого шлюза и назвать числа, а не мнение."""
-    cfg = parse_config(raw_config())
+    cfg = config()
     if not cfg["backends"]:
         print("agent_core: бэкенды не объявлены — мерить нечего", file=sys.stderr)
         return 1
@@ -1582,11 +1633,21 @@ def cmd_ping(as_json: bool) -> int:
     здесь только осмысленный непустой ответ. Thinking для ping выключен: это проверка
     связности, а не качества; в рабочих вызовах он включён конфигом.
     """
-    cfg = parse_config(raw_config())
+    cfg = config()
     rows = []
-    for b in cfg["backends"]:
+    if cfg.get("chains") is not None:
+        # Настройка кита: каждый «провайдер + модель» из цепочек LLM — один раз.
+        targets, seen = [], set()
+        for ch in (cfg["chains"].get("llm") or {}).values():
+            for b in ch:
+                if (b["n"], b["model"]) not in seen:
+                    seen.add((b["n"], b["model"]))
+                    targets.append(b)
+    else:
+        targets = cfg["backends"]
+    for b in targets:
         model = role_model(b, "worker")
-        row = {"n": b["n"], "url": b["url"], "model": model}
+        row = {"n": b["n"], "url": b["url"], "model": model, "name": b.get("name", "")}
         if not model:
             row.update(status="нет модели", ok=False)
             rows.append(row)
@@ -1601,17 +1662,26 @@ def cmd_ping(as_json: bool) -> int:
         # же минуту пользуются другие программы, и каждая следующая проверка повторяет ту
         # же строку: сама проверка и была причиной, по которой отметку не снимали.
         DOWN.pop(b["n"], None)
-        r = call_role({**cfg, "backends": [b], "request_timeout": 45}, "worker",
+        one = {**cfg, "backends": [b], "request_timeout": 45}
+        if cfg.get("chains") is not None:
+            one["chains"] = {"llm": {"worker": [b]}}
+        r = call_role(one, "worker",
                       [{"role": "user", "content": "Повтори одно слово: готов"}],
                       thinking=False, max_tokens=60,
                       deadline=time.time() + 45, sleep=lambda s: None)
         if r["ok"]:
             row.update(status="ок", ok=True, seconds=r["seconds"], answer=r["text"][:60])
         else:
-            fails = [l for l in r["log"] if not l.startswith("дедлайн")]
+            # Причина — строка самого бэкенда («№1 flash: …»), а не итог круга: «отказы
+            # внятные или шлюзы в карантине» ничего не говорят про опечатку в адресе.
+            fails = [l for l in r["log"] if l.startswith("№")] \
+                or [l for l in r["log"] if not l.startswith("дедлайн")]
             reason = fails[-1].split(": ", 1)[-1] if fails else "нет ответа"
             if "Connection refused" in reason:
                 reason = "недоступен (connection refused)"
+            elif "nodename nor servname" in reason or "Name or service not known" in reason \
+                    or "getaddrinfo failed" in reason:
+                reason = "адрес не найден (DNS): проверьте адрес провайдера"
             row.update(status=reason, ok=False)
         rows.append(row)
 
@@ -1655,6 +1725,17 @@ def embed_ring(cfg: dict) -> list:
     e = cfg.get("embed") or {}
     model = (e.get("model") or "").strip().lower()
     ring, seen = [], set()
+    if cfg.get("chains") is not None:
+        # Настройка кита: цепочка роли `index`. Запасной берётся только с ТОЙ ЖЕ моделью —
+        # вектора другой модели лежат в другом пространстве и молча портят поиск.
+        ch = (cfg["chains"].get("embeddings") or {}).get("index") or []
+        first = (ch[0]["model"] or "").strip().lower() if ch else ""
+        for b in ch:
+            if (b["model"] or "").strip().lower() == first and b["url"] not in seen:
+                seen.add(b["url"])
+                ring.append({"url": b["url"], "key": b.get("key", ""), "n": b["n"],
+                             "model": b["model"], "why": f"{b.get('name')}: {b['model']}"})
+        return ring
 
     def add(url: str, key: str, n: int, why: str) -> None:
         url = (url or "").rstrip("/")
@@ -1689,6 +1770,12 @@ def ocr_ring(cfg: dict) -> list:
     кольцо пустое, распознавание выключено, файл остаётся неразобранным и отчёт это скажет.
     """
     o = cfg.get("ocr") or {}
+    if cfg.get("chains") is not None:
+        # Настройка кита: цепочка роли `document`. У каждого запасного своя зрячая модель —
+        # другая модель прочтёт скан, а не положит вектора в чужое пространство.
+        return [{"url": b["url"], "key": b.get("key", ""), "n": b["n"], "model": b["model"],
+                 "why": f"{b.get('name')}: {b['model']}"}
+                for b in (cfg["chains"].get("ocr") or {}).get("document") or []]
     model = (o.get("model") or "").strip().lower()
     if not model:
         return []
@@ -1807,7 +1894,7 @@ def pydantic_settings(cfg: dict, venv: tuple | None = None) -> dict:
 
 
 def cmd_pydantic(as_json: bool, check: bool = False) -> int:
-    cfg = parse_config(raw_config())
+    cfg = config()
     if check:
         ok, version = venv_status()
         adapter_selfcheck(version, force=True) if ok else None

@@ -1012,7 +1012,8 @@ def personal_kit_file(path) -> bool:
     except (OSError, TypeError):
         return False
     kit = os.path.realpath(_REAL_KIT)
-    return p in (os.path.join(kit, ENV_FILE), os.path.join(kit, "local", "mcp.json"))
+    return p in (os.path.join(kit, ENV_FILE), os.path.join(kit, "local", "mcp.json"),
+                 os.path.join(kit, "local", "models.json"))
 
 
 def load_env(path) -> dict:

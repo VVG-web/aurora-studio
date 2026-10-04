@@ -285,8 +285,6 @@
     "карточки нет на диске": "the card is not on disk",
     "разговора нет": "there is no such conversation",
     "в проекте нет aurora.config.yaml": "the project has no aurora.config.yaml",
-    "правка проекта без пути к нему: в общую настройку кита она не пишется — выберите проект и повторите": "a project edit without a path to the project: it is not written to the kit's shared settings — choose a project and repeat",
-    "правка кита адресована проекту: общая настройка машины меняется только в разделе «Настройка»": "a kit edit addressed to a project: the machine's shared settings are changed only in the «The kit's setup» section",
     "проверка совместимости есть только у Pydantic AI": "a compatibility check exists only for Pydantic AI",
     "Pydantic AI не установлен": "Pydantic AI is not installed",
     "неизвестная надстройка: {}": "unknown add-on: {}",
@@ -376,7 +374,6 @@
     "имена: {} — {} путей не пройдут на Windows, macOS или Linux ({}). Чинить: {}": "names: {} — {} paths will not pass on Windows, macOS or Linux ({}). Fix with: {}",
     "имя типа — латиница, цифры и дефис: {}": "a kind name is Latin letters, digits and a hyphen: {}",
     "модуль {} заявил зеркало {}/, а папки нет (создать: aurora.py update <проект> --structure-only --apply)": "module {} declared the mirror {}/, but there is no folder (create it: aurora.py update <project> --structure-only --apply)",
-    "не агентские переменные: {}": "not agent variables: {}",
     "не установлены модули: {}": "modules not installed: {}",
     "не хватает {} стандартных папок (создать: aurora.py update <проект> --structure-only --apply)": "{} standard folders are missing (create them: aurora.py update <project> --structure-only --apply)",
     "нет .env.aurora.local — для CLI скопируйте aurora.env.local.example (MCP-авторизация всё равно в Cursor)": "there is no .env.aurora.local — for the CLI copy aurora.env.local.example (MCP authorization is in Cursor anyway)",
@@ -402,7 +399,10 @@
     "на GitHub не нашлось файла VERSION — обновляться не из чего": "there is no VERSION file on GitHub — nothing to update from",
     "не удалось узнать версию на GitHub: {}": "could not find out the version on GitHub: {}",
     "нет сети": "no network",
-    "кэш графа не прочитан: {}": "the graph cache could not be read: {}"
+    "кэш графа не прочитан: {}": "the graph cache could not be read: {}",
+    "{}: переменные моделей больше не действуют — настройка моделей одна на кит (раздел «Модели»); уберите их: {}{}": "{}: model variables no longer apply — the model setup is one per kit (the «Models» section); remove them: {}{}",
+    "адрес провайдера — http(s)://…": "the provider address is http(s)://…",
+    "настройка не разобрана": "the setup could not be read"
   },
   "connectors": {
     "confluence-dc": {

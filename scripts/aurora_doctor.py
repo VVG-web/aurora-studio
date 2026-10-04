@@ -559,18 +559,31 @@ def main() -> int:
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         import agent_core as _ag
-        _cfg = _ag.parse_config(_ag.raw_config())
+        _cfg = _ag.config()
         if _cfg["backends"]:
             _ok, _v = _ag.venv_status()
             _chat = [b for b in _cfg["backends"] if b.get("chat", True)]
             _vec = _ag.embed_ring(_cfg)
-            print(f"агент: шлюзов чата {len(_chat)} · векторных {len(_vec)}"
+            print(f"агент: провайдеров чата {len(_chat)} · векторных {len(_vec)}"
                   f" · адаптер {_cfg['adapter']}"
                   + (f" ({_v})" if _ok else " — venv не установлен, stdlib-фолбэк")
-                  + " · проверить: agent:ping")
+                  + " · настройка одна на кит · проверить: agent:ping")
         else:
-            print("агент: не настроен (это не ошибка) — панель: «Настройка» → «Агент»")
+            print("агент: не настроен (это не ошибка) — панель: раздел «Модели»")
     except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        pass
+    # С 1.153.0 модели настраиваются одним файлом кита. Переменные моделей в `.env`
+    # проекта больше не действуют: сказать об этом, чтобы человек не правил их впустую.
+    # Файл не трогаем — он человека; называем только имена, не значения.
+    try:
+        from aurora_common import ENV_FILE, load_env
+        _left = sorted(k for k in load_env(ROOT / ENV_FILE)
+                       if k.startswith(("AURORA_AGENT_", "AURORA_EMBED_", "AURORA_OCR_")))
+        if _left:
+            warns.append(f"{ENV_FILE}: переменные моделей больше не действуют — настройка "
+                         f"моделей одна на кит (раздел «Модели»); уберите их: "
+                         + ", ".join(_left[:6]) + (" …" if len(_left) > 6 else ""))
+    except Exception:  # noqa: BLE001
         pass
     # режим приватности — свойство контура, человек должен видеть его при онбординге
     print(f"приватность: privacy.scrub = {privacy_mode()}"

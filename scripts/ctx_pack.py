@@ -387,7 +387,7 @@ def semantic(topic: str, limit: int) -> dict:
     try:
         import agent_core as AG
         import kb_embed as E
-        cfg = AG.parse_config(AG.raw_config())
+        cfg = AG.config()
         if not E.endpoints(cfg):
             return {}
         return {name: sim for name, sim in E.search(topic, cfg, cfg["embed"]["model"], limit)}
@@ -878,7 +878,7 @@ def main() -> int:
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             import agent_core as AG
-            cfg = AG.parse_config(AG.raw_config())
+            cfg = AG.config()
             a.budget = AG.prompt_budget(cfg, reserve_chars=len("".join(out)) + 4000)
             if a.budget:
                 out.append(f"\n> Объём пака ограничен окном модели: {a.budget} символов.\n")

@@ -41,7 +41,6 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 from datetime import datetime, timezone
-from pathlib import Path
 import threading
 import time
 import traceback
@@ -633,9 +632,9 @@ def reveal(project: str, rel: str, mode: str = "folder") -> dict:
 
 
 def backend_models(n: str) -> dict:
-    """Список моделей одного шлюза. Ключ наружу не отдаём — только имена моделей."""
+    """Список моделей одного провайдера (по номеру). Ключ наружу не отдаём — только имена."""
     import agent_core as AG
-    cfg = AG.parse_config(AG.raw_config())
+    cfg = agent_cfg()
     try:
         num = int(n)
     except ValueError:
@@ -644,6 +643,95 @@ def backend_models(n: str) -> dict:
     if not b:
         return {"error": f"шлюза №{num} нет в кольце"}
     return AG.models_of(b)
+
+
+# ---------------------------------------------------------------- модели кита
+
+def models_data() -> dict:
+    """Настройка моделей кита (`local/models.json`) — одна на все проекты машины."""
+    import agent_core as AG
+    import model_config as MC
+    return MC.load(KIT, AG.kit_env(KIT))
+
+
+def agent_cfg() -> dict:
+    """Конфигурация движка из настройки кита — то, чем будут работать все проекты."""
+    import model_config as MC
+    return MC.to_config(models_data())
+
+
+MODEL_ENV_RE = re.compile(r"^AURORA_(AGENT|EMBED|OCR)_")
+
+
+def project_model_leftovers(projects: list) -> list:
+    """Проекты, в `.env.aurora.local` которых остались переменные моделей. С 1.153.0 они не
+    действуют — настройка моделей одна на кит. Файл не правим (это файл человека), а
+    называем имена переменных: значения не выходят наружу никогда."""
+    from aurora_common import ENV_FILE, load_env
+    out = []
+    for p in projects:
+        path = os.path.join(p["path"], ENV_FILE)
+        if not os.path.isfile(path):
+            continue
+        keys = sorted(k for k in load_env(path) if MODEL_ENV_RE.match(k))
+        if keys:
+            out.append({"name": p["name"], "path": p["path"], "keys": keys})
+    return out
+
+
+def models_state(projects: list) -> dict:
+    """Раздел «Модели»: настройка кита без ключей, и что из неё следует для движка."""
+    import agent_core as AG
+    import model_config as MC
+    data = models_data()
+    cfg = MC.to_config(data)
+    pool = AG.pool(cfg) if cfg["backends"] else []
+    return {
+        "models": MC.masked(data),
+        "error": data.get("error", ""),
+        "path": str(MC.models_path(KIT)),
+        "types": list(MC.PROVIDER_TYPES),
+        "engine_roles": {c: [r for r, _n in MC.ENGINE_ROLES[c]] for c in MC.CAPABILITIES},
+        # Сколько запросов пойдёт на самом деле: потолок прогона обрезает сумму ширин.
+        "slots": len(pool),
+        "slot_split": [[n, pool.count(n)] for n in sorted(set(pool))],
+        # Кольцо векторов — с отсеянными запасными другой модели: видно, куда пойдёт запрос.
+        "embed_ring": [{"n": r["n"], "model": r.get("model", ""), "why": r["why"]}
+                       for r in AG.embed_ring(cfg)],
+        "projects": [p["name"] for p in projects],
+        "leftovers": project_model_leftovers(projects),
+        "venv": dict(zip(("ok", "version"), AG.venv_status())),
+    }
+
+
+def models_save(payload: dict) -> dict:
+    """Записать настройку кита целиком. Ключ маской — «не трогали»: подставляем прежний."""
+    import model_config as MC
+    new = payload.get("models")
+    if not isinstance(new, dict):
+        return {"ok": False, "error": "настройка не разобрана"}
+    old = models_data()
+    return MC.save(KIT, MC.unmask(new, old))
+
+
+def models_list(payload: dict) -> dict:
+    """Список моделей провайдера — и заведённого, и только что вписанного в форму.
+
+    Ключ приходит из формы (новый провайдер ещё не сохранён) или маской — тогда берём
+    сохранённый. Наружу уходят только имена моделей."""
+    import agent_core as AG
+    import model_config as MC
+    url = str(payload.get("url") or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        return {"error": "адрес провайдера — http(s)://…"}
+    secret = str(payload.get("key") or "")
+    if secret == MC.MASK or not secret:
+        # Маска или пусто — ключ сохранённого провайдера, если он есть.
+        old = next((p for p in models_data()["providers"]
+                    if p["id"] == payload.get("id")), None) or {}
+        secret = old.get("key", "")
+    got = AG.models_of({"n": 0, "url": url, "key": secret})
+    return {k: v for k, v in got.items() if k in ("models", "error")}
 
 
 def corrections_state(project: str) -> dict:
@@ -3272,117 +3360,43 @@ def environment() -> dict:
 
 # ----------------------------------------------------------------- встроенный агент
 
-def agent_state(project: str) -> dict:
-    """Конфигурация агента глазами панели: ключи маской, цель записи названа явно.
+def agent_state(project: str = "") -> dict:
+    """Конфигурация агента глазами панели — одна на кит; `project` больше ничего не меняет.
 
-    Слои те же, что у самого агента: кит < проект. Панель не изобретает свой разбор —
-    импортирует agent_core, чтобы форма и движок никогда не разошлись в прочтении.
+    Читают её «Спросить» (выбор провайдера) и «Здоровье». Ключи — только «заполнен ли».
     """
     import agent_core as AG
-    env = dict(AG.load_env(Path(KIT) / ".env.aurora.local"))
-    if project:
-        env.update(AG.load_env(Path(project) / ".env.aurora.local"))
-    cfg = AG.parse_config(env)
-    venv_ok, venv_ver = AG.venv_status()
-    target = (os.path.join(project, ".env.aurora.local") if project
-              else os.path.join(KIT, ".env.aurora.local"))
-    # Что задано В САМОМ проекте, а что пришло из кита. Без этого форма показывает
-    # слитое значение, человек правит поле — и не понимает, почему на соседнем проекте
-    # ничего не изменилось: он смотрел на унаследованное и считал его своим.
-    own = {}
-    if project:
-        own = {k: v for k, v in AG.load_env(Path(project) / ".env.aurora.local").items()}
-    # Китовые значения ролей отдельно: с ними форма может сказать не только «задано в
-    # проекте», но и что именно этим перекрыто.
-    kit_cfg = AG.parse_config(dict(AG.load_env(Path(KIT) / ".env.aurora.local")))
-    kit_models = {b["n"]: dict(b["models"] or {}) for b in kit_cfg["backends"]}
-    for n, models in kit_models.items():
-        base = next((x["model"] for x in kit_cfg["backends"] if x["n"] == n), "")
-        for role in ("worker", "planner", "critic", "qa"):
-            models.setdefault(role, base)
-    ocr = cfg.get("ocr") or {}
+    cfg = agent_cfg()
+    pool = AG.pool(cfg) if cfg["backends"] else []
     return {
-        "own": sorted(own),
-        # Что подключено через MCP: панель показывает объявленное проектом, а не
-        # угадывает по чужой конфигурации — та меняется без нашего ведома.
-        "mcp": sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {})),
-        "target": target,
-        # Подпись «проект «X»» собирает страница на языке интерфейса: сервер отдаёт имя, а не фразу.
-        "target_name": os.path.basename(project) if project else "",
+        "source": "models",
         "adapter": cfg["adapter"], "thinking": cfg["thinking"],
         "thinking_roles": cfg.get("thinking_roles") or {},
         "max_steps": cfg["max_steps"], "budget_min": cfg["budget_min"],
-        "request_timeout": cfg["request_timeout"],
-        "parallel": cfg.get("parallel", 1),
-        # Сколько запросов пойдёт НА САМОМ ДЕЛЕ. Два числа в форме — «потоков» у шлюза
-        # и общее «одновременно» — перемножаются не так, как ждёт человек: общий потолок
-        # ОБРЕЗАЕТ сумму ширин. Поставив шлюзу девять потоков при потолке 1, человек
-        # получает один запрос и уверен, что настроил девять. Считаем тем же кодом,
-        # которым считает движок, и показываем результат.
-        "slots": len(AG.pool(cfg)) if cfg.get("backends") else 0,
-        # И РАСКЛАД по шлюзам, не только число. Потолок прогона обрезает список слотов
-        # с начала: опустив «одновременно» до четырёх при кольце 10+1, человек получает
-        # четыре слота на первом шлюзе и НОЛЬ на втором — второй в параллельной работе
-        # не участвует вовсе. Числа «фактически: 4» для этого мало.
-        "slot_split": ([[n, AG.pool(cfg).count(n)]
-                        for n in sorted(set(AG.pool(cfg)))] if cfg.get("backends") else []),
-        # `kit_models` — что задано В КИТЕ, до наложения проекта. Форма показывала только
-        # слитое значение, и переопределение проекта было невидимо: человек выставлял в
-        # ките «flash на все роли», проект молча перекрывал worker на «27b», а понять это
-        # можно было лишь прочитав лог прогона. Теперь панель говорит, что кого перекрыло.
-        "backends": [{"n": b["n"], "url": b["url"], "key_set": bool(b["key"]),
-                      "model": b["model"], "models": b["models"],
-                      "kit_models": kit_models.get(b["n"], {}),
-                      "context": b.get("context", 0),
-                      "parallel": b.get("parallel", True),
-                      "fallback": b.get("fallback", True),
-                      "width": b.get("width", 1),
-                      # Чат и вектора — разные кольца: шлюз может держать только одно из
-                      # двух. Форме это нужно, чтобы не предлагать чат-модели там, где
-                      # поднят лишь сервис векторов, и наоборот.
-                      "chat": b.get("chat", True),
+        "request_timeout": cfg["request_timeout"], "parallel": cfg.get("parallel", 1),
+        "slots": len(pool),
+        "slot_split": [[n, pool.count(n)] for n in sorted(set(pool))],
+        "mcp": sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {})),
+        "backends": [{"n": b["n"], "name": b.get("name", ""), "url": b["url"],
+                      "key_set": bool(b["key"]), "model": b["model"], "models": b["models"],
+                      "context": b.get("context", 0), "width": b.get("width", 0),
+                      "parallel": b.get("parallel", True), "chat": b.get("chat", True),
                       "embed_model": b.get("embed_model", ""),
-                      "embed_url": b.get("embed_url", ""),
-                      # Зрячая модель — третье кольцо, устроено как вектора: шлюз может
-                      # держать только её, и тогда в чатовое кольцо он не берётся.
-                      "ocr_model": b.get("ocr_model", ""),
-                      "ocr_url": b.get("ocr_url", ""),
-                      # Свои поля chat-шаблона шлюза (как extraBody у opencode) и ошибка
-                      # разбора — опечатка в JSON не должна молча выключать поле.
-                      "template": b.get("template") or {},
-                      "template_error": b.get("template_error", "")}
+                      "ocr_model": b.get("ocr_model", "")}
                      for b in cfg["backends"]],
-        # Ключ наружу не отдаём никогда — только «заполнен или нет», как и у бэкендов.
-        "embed": {"url": cfg["embed"]["url"], "model": cfg["embed"]["model"],
-                  "key_set": bool(cfg["embed"]["key"]),
-                  "fallback": bool(cfg["embed"].get("fallback")),
-                  # Кольцо векторов целиком: человек должен видеть, куда ПОЙДЁТ запрос,
-                  # а не только то, что он вписал в поля. Ключи сюда не попадают.
-                  "ring": [{"url": r["url"], "n": r["n"], "why": r["why"]}
-                           for r in AG.embed_ring(cfg)]},
-        # Распознавание сканов — своё кольцо. Модель не названа — путь выключен, и форма
-        # должна сказать это прямо, а не показать пустое кольцо как «всё настроено».
-        # Проект на движке до 1.104.0 кольца не знает: без проверки весь экран настроек
-        # падал бы на одном отсутствующем имени — так уже пропадали блоки MCP.
-        "ocr": {"url": ocr.get("url", ""), "model": ocr.get("model", ""),
-                "key_set": bool(ocr.get("key")),
-                "fallback": bool(ocr.get("fallback")),
-                "dpi": ocr.get("dpi", 130), "max_pages": ocr.get("max_pages", 60),
-                "ring": [{"url": r["url"], "n": r["n"], "why": r["why"]}
-                         for r in (AG.ocr_ring(cfg) if hasattr(AG, "ocr_ring") else [])]},
-        "venv": {"ok": venv_ok, "version": venv_ver, "path": str(AG.VENV)},
+        "embed": {"model": cfg["embed"]["model"],
+                  "ring": [{"n": r["n"], "why": r["why"]} for r in AG.embed_ring(cfg)]},
+        "ocr": {"model": (cfg.get("ocr") or {}).get("model", ""),
+                "ring": [{"n": r["n"], "why": r["why"]} for r in AG.ocr_ring(cfg)]},
+        "venv": dict(zip(("ok", "version"), AG.venv_status()), path=str(AG.VENV)),
     }
 
 
-def pydantic_state(project: str) -> dict:
-    """Настройки Pydantic AI — то же, что печатает `agent:pydantic`: по шлюзам и ролям,
-    что уйдёт в запрос. Слои те же, что у агента (кит < проект); ключей в ответе нет."""
+def pydantic_state(project: str = "") -> dict:
+    """Настройки Pydantic AI — то же, что печатает `agent:pydantic`: по провайдерам и ролям,
+    что уйдёт в запрос. Настройка одна на кит; ключей в ответе нет."""
     import agent_core as AG
-    from aurora_common import ENV_FILE
-    env = dict(AG.load_env(Path(KIT) / ENV_FILE))
-    if project:
-        env.update(AG.load_env(Path(project) / ENV_FILE))
-    return AG.pydantic_settings(AG.parse_config(env))
+    return AG.pydantic_settings(agent_cfg())
 
 
 # Категории линтера, по которым человек принимает решения о карточках. Всё остальное
@@ -3532,49 +3546,6 @@ def kinds_write(project: str, kinds: dict) -> dict:
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return {"ok": True, "kinds": len(kinds), "target": path}
-
-
-def agent_write_env(project: str, vars: dict, scope: str = "") -> dict:
-    """Дописать/заменить AURORA_AGENT_* в целевом .env, не трогая остальные строки.
-
-    Пустое значение удаляет переменную. Ключи вне AURORA_AGENT_ не принимаются: эта
-    ручка настраивает агента, а не редактирует произвольные секреты.
-
-    `scope` — из какой карточки пришла правка. Он не уточняет цель, а **сторожит** её:
-    настройки кита общие для всех проектов, настройки проекта — только его. Пустой путь
-    при `scope="project"` означал бы «правку проекта записать всем», и это молчаливо
-    поменяло бы поведение остальных проектов. Такой запрос отвергается.
-    """
-    if scope == "project" and not project:
-        return {"error": "правка проекта без пути к нему: в общую настройку кита она "
-                         "не пишется — выберите проект и повторите"}
-    if scope == "kit" and project:
-        return {"error": "правка кита адресована проекту: общая настройка машины "
-                         "меняется только в разделе «Настройка»"}
-    # AURORA_EMBED_* — тот же контур агента: свой сервис векторов у него бывает
-    # отдельным (свой адрес, свой ключ, своя модель), но настраивается он здесь же.
-    bad = [k for k in vars if not k.startswith(("AURORA_AGENT_", "AURORA_EMBED_"))]
-    if bad:
-        return {"error": "не агентские переменные: " + ", ".join(bad[:3])}
-    target = Path(project or KIT) / ".env.aurora.local"
-    lines = target.read_text(encoding="utf-8").splitlines() if target.is_file() else []
-    for key, value in vars.items():
-        value = (value or "").strip()
-        hit = next((i for i, l in enumerate(lines)
-                    if l.split("=")[0].strip() == key), None)
-        if value:
-            if hit is None:
-                lines.append(f"{key}={value}")
-            else:
-                lines[hit] = f"{key}={value}"
-        elif hit is not None:
-            del lines[hit]
-    target.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
-    try:
-        os.chmod(target, 0o600)
-    except OSError:
-        pass
-    return {"ok": True, "target": str(target), "written": len(vars)}
 
 
 def agent_ping(project: str) -> dict:
@@ -4099,6 +4070,8 @@ class Handler(BaseHTTPRequestHandler):
                            else {"error": "проект не выбран"})
         elif u.path == "/api/agent":
             self.send_json(agent_state(q.get("project", [""])[0]))
+        elif u.path == "/api/models":
+            self.send_json(models_state(find_projects(self.server.roots)))
         elif u.path == "/api/agent/pydantic":
             project = (q.get("project") or [""])[0]
             self.send_json(pydantic_state(project if project and self._known(project) else ""))
@@ -4443,12 +4416,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "проект не выбран"})
             self.send_json(kinds_write(project, payload.get("kinds") or {}))
             return
-        if u.path == "/api/agent/env":
-            project = payload.get("project", "")
-            if project and not self._known(project):
-                return
-            self.send_json(agent_write_env(project, payload.get("vars") or {},
-                                           payload.get("scope", "")))
+        if u.path == "/api/models/save":
+            self.send_json(models_save(payload))
+            return
+        if u.path == "/api/models/list":
+            self.send_json(models_list(payload))
             return
         if u.path == "/api/agent/retry-primary":
             # Провайдер упал, агент ушёл на запасного и не трогает основного 15 минут.

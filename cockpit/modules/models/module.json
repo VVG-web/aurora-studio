@@ -1,0 +1,13 @@
+{
+  "id": "models",
+  "name": { "ru": "Модели", "en": "Models" },
+  "about": {
+    "ru": "Провайдеры и модели — одни на все проекты: LLM, распознавание сканов и вектора, у каждой роли цепочка запасных.",
+    "en": "Providers and models — one setup for all projects: LLM, scan recognition and embeddings, each role with a fallback chain."
+  },
+  "group": "machine",
+  "order": 32,
+  "needs": [],
+  "commands": ["agent:ping", "agent:width", "agent:pydantic"],
+  "for": "1.153.0"
+}

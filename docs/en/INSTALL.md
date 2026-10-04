@@ -176,77 +176,52 @@ hand out its credentials, while sync scripts go to Confluence and Jira directly 
 
 Check that a token is accepted: `python3 .opencode/scripts/jira_export.py --limit 1`.
 
-Agent settings are read by the same mechanism from two layers: a file in the kit's folder (shared) and the
-project's file (overrides). Priority: **environment variables > project > kit**.
-
 ## The built-in agent
 
 Needed by the `agent:*` commands, semantic search (`kb:embed`) and scan recognition. Without it everything
 else works.
 
-### LLM gateways
+### Models — one setup per kit
 
-A backend is any OpenAI-compatible gateway (corporate, cloud, local `llama.cpp`/vLLM). They are declared by
-number, as a **ring**: a call goes from the first; an unavailable or busy one is skipped, a recovered one is
-picked up on the next request.
+Models are set up **once per kit** and apply to all its projects: the "Models" section of the panel, the
+file `<kit>/local/models.json` (outside git, mode 600). A project has no model setup of its own. The order
+follows the need:
 
-```bash
-# .env.aurora.local
-AURORA_AGENT_BACKEND_1_URL=https://llm.example.com/v1
-AURORA_AGENT_BACKEND_1_KEY=<key, if the gateway needs it>
-AURORA_AGENT_BACKEND_1_MODEL_WORKER=<model for routine steps>
-AURORA_AGENT_BACKEND_1_MODEL_PLANNER=<planner model>
-AURORA_AGENT_BACKEND_1_MODEL_CRITIC=<critic model>
-AURORA_AGENT_BACKEND_1_MODEL_QA=<Momus model>
+1. **Providers** — connections: a name, a type (`openai`, `llama.cpp`, `vllm`, `sglang`, `ollama`, `tei`),
+   the URL of an OpenAI-compatible API, a key, the width (how many requests it holds at once — "Measure
+   gateways" measures it), "in parallel" and the model's template fields (JSON, e.g.
+   `{"reasoning_effort": "xhigh"}`). A work gateway and a home server live side by side.
+2. **LLM, OCR, embeddings** — three tabs built the same way. Each has **roles**: for LLM `worker` (routine
+   steps), `planner` (boundaries), `critic` (a check before writing), `qa` (Momus); for OCR `document`; for
+   embeddings `index`; you can add your own. Engine roles cannot be deleted; an empty LLM role follows the
+   `worker` chain.
+3. **A backend** is "provider + model" in a role. The first is the primary, the "+" button adds a fallback.
+   The chain can be dragged into order, a fallback switched off without deleting it. A provider can be
+   added right from the backend's dropdown, a model picked from the list the provider itself returned.
 
-AURORA_AGENT_BACKEND_2_URL=http://<local-server>:8081/v1
-AURORA_AGENT_BACKEND_2_MODEL=<one model for all roles>
-```
+When the primary does not answer, the call goes to the next in the chain, with its own model; an unavailable
+provider is left alone for 15 minutes. An embeddings fallback uses the same model as the primary: vectors of
+different models do not compare. An OCR fallback may be another model. Scans have no defaults: a guessed
+model name gives not a refusal but a coherent fabrication in the primary source's transcript.
 
-| Variable | Meaning |
-|---|---|
-| `AURORA_AGENT_BACKEND_<n>_URL`, `_KEY` | the URL and key of gateway n (up to 16) |
-| `…_MODEL_WORKER`, `_PLANNER`, `_CRITIC`, `_QA` | a model per role; `…_MODEL` — one model for all roles |
-| `…_CONTEXT` | the model's context window on this gateway: an obviously huge request goes to a model with a wider window |
-| `…_PARALLEL`, `…_FALLBACK` | the gateway's role: carries the stream of jobs / a spare. The first gateway is always both |
-| `…_WIDTH` | how many simultaneous requests this gateway holds (measured by `agent:width`) |
-| `…_TEMPLATE_KWARGS` | the model's chat-template fields (JSON), e.g. `{"reasoning_effort": "xhigh"}` |
-| `AURORA_AGENT_ADAPTER` | `pydantic_ai` (when installed) or `openai_compat` — direct HTTP |
-| `AURORA_AGENT_PARALLEL` | the ceiling of simultaneous requests for the whole run |
-| `AURORA_AGENT_THINKING`, `AURORA_AGENT_THINKING_<ROLE>` | reasoning: a general switch and per role (`=0` turns it off; never off for `qa` and the critic) |
-| `AURORA_AGENT_MAX_STEPS`, `AURORA_AGENT_BUDGET_MIN`, `AURORA_AGENT_REQUEST_TIMEOUT` | steps, the budget in minutes, the request timeout |
+Shared by all roles: the cap of simultaneous requests ("auto" — the sum of provider widths), the request
+timeout, the agent's steps and budget, the call method (`pydantic_ai` or direct HTTP). A failure on one card
+does not stop the run; three failures in a row do — that is the provider, not the cards.
 
-The roles: `worker` — routine steps, `planner` — boundaries, `critic` — a check before writing, `qa` — Momus.
-A failure on one card does not stop the run; three failures in a row do — that is the gateway, not the cards.
-
-### Vectors and scans — their own rings
-
-```bash
-# the semantic index (kb:embed): empty — the same ring as chat computes it
-AURORA_EMBED_MODEL=bge-m3
-AURORA_EMBED_URL=http://vectors.example.com/v1
-AURORA_AGENT_BACKEND_4_EMBED_MODEL=bge-m3     # or on a gateway: it joins the vector ring
-
-# scan recognition (kb:ingest-office): no model named — the path is off
-AURORA_OCR_MODEL=glm-ocr
-AURORA_OCR_DPI=130
-AURORA_OCR_MAX_PAGES=60
-```
-
-The chat, vector and recognition rings are **independent**: a gateway without a chat model does not enter the
-chat ring. Numbers may have gaps. For scans there is deliberately no default: a guessed model name gives not a
-refusal but a coherent fabrication in the primary source's transcript.
+The old `AURORA_AGENT_*`, `AURORA_EMBED_*`, `AURORA_OCR_*` variables of the kit's `.env.aurora.local` move into
+`models.json` by themselves, once (or `python3 scripts/model_config.py --migrate`); the file itself is not
+changed. In a project's `.env` they no longer apply — `doctor` names them.
 
 ### Checking
 
 | Command | What it shows |
 |---|---|
-| `agent:ping` | every backend by a live request: roles, speed; an empty answer counts as a refusal |
+| `agent:ping` | every backend of the LLM chains by a live request: roles, speed; an empty answer counts as a refusal |
 | `agent:probe` | "no connection", "wrong key" or "no such model"; the gateway's model list; `--why` — which layer of the request the gateway rejects |
 | `agent:width` | how many simultaneous requests each gateway holds |
 | `agent:pydantic` | what goes to the gateway through Pydantic AI per role and whether the version passed the compatibility check |
 
-All texts go to the same gateway as the agent: if your perimeter forbids sending materials out, do not switch
+All texts go to the providers of the model setup: if your perimeter forbids sending materials out, do not switch
 on semantics and scans — everything else works without them.
 
 ## 5. Check readiness
@@ -268,7 +243,7 @@ Make the first commit: `git init && git add -A && git commit -m "Bootstrap Auror
 ## 6. The first week
 
 1. [ ] Re-run `aurora_setup.py` if any setting was skipped.
-2. [ ] Fill in `.env.aurora.local` (Confluence and Jira tokens, LLM gateways) and check `kit:doctor`, `agent:ping`.
+2. [ ] Fill in `.env.aurora.local` (Confluence and Jira tokens), add providers and roles in the "Models" section and check `kit:doctor`, `agent:ping`.
 3. [ ] Read `AGENTS.md` and `.opencode/skills/aurora-vault/SKILL.md`.
 4. [ ] Put evidence into `Raw/` (contract, spec, meeting transcripts).
 5. [ ] Run the "Update the base" route in the panel (Preview first).

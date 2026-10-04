@@ -1053,13 +1053,17 @@ def test_embeddings_are_configured_separately(tmp: Path):
     assert len(ends) == 1 and ends[0]["url"] == "http://vectors.example.com/v1", ends
     assert "gateway" not in json.dumps(ends), "чат-бэкенды подмешались к своему сервису"
 
-    # панель настраивает те же переменные и не выпускает ключ наружу
-    sys.path.insert(0, str(KIT / "cockpit"))
-    ck = importlib.import_module("aurora_cockpit")
-    assert "не агентские" in (ck.agent_write_env("", {"PATH": "/tmp"}).get("error") or ""), \
-        "панель приняла постороннюю переменную"
-    assert not (ck.agent_write_env(str(tmp), {"AURORA_EMBED_MODEL": "e5-large"}).get("error")), \
-        "панель не приняла настройку эмбеддингов"
+    # С 1.153.0 свой сервис векторов — свой провайдер в настройке кита: та же развязка,
+    # только объявляется в разделе «Модели», а не переменными .env.
+    MC = importlib.import_module("model_config")
+    data, _ = MC.normalize({"providers": [
+        {"id": "gw", "url": "http://gateway/v1", "key": "k"},
+        {"id": "tei", "url": "http://vectors.example.com/v1/", "key": "e", "type": "tei"}],
+        "capabilities": {"embeddings": {"roles": [{"id": "index", "backends": [
+            {"provider": "tei", "model": "e5-large"}]}]}}})
+    ends = E.endpoints(MC.to_config(data))
+    assert [e["url"] for e in ends] == ["http://vectors.example.com/v1"], ends
+    assert "gateway" not in json.dumps(ends), "чат-провайдер подмешался к своему сервису"
 
 
 @test
@@ -1115,65 +1119,70 @@ def test_embedding_ring_is_independent_from_the_chat_ring(tmp: Path):
     finally:
         E.load_index, AG.http_json = saved_index, saved_http
 
-    ui = panel_sources()
-    assert "AURORA_EMBED_FALLBACK" in ui and 'pre+"EMBED_MODEL"' in ui, \
-        "в панели нечем объявить модель векторов и запасной путь"
-    assert "backendBlock(1), backendBlock(2), backendBlock(3)" not in ui, \
-        "блоки шлюзов снова жёстко три — четвёртый негде объявить"
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    assert '"embeddings"' in view and "otherSpace" in view, \
+        "в панели нечем объявить модель векторов и не видно запасного другой модели"
+    # Та же развязка в настройке кита: запасной другой модели в кольцо не входит.
+    MC = importlib.import_module("model_config")
+    data, _ = MC.normalize({"providers": [{"id": "a", "url": "http://vec4/v1"},
+                                          {"id": "b", "url": "http://vec5/v1"},
+                                          {"id": "c", "url": "http://vec6/v1"}],
+        "capabilities": {"embeddings": {"roles": [{"id": "index", "backends": [
+            {"provider": "a", "model": "bge-m3"}, {"provider": "b", "model": "e5-large"},
+            {"provider": "c", "model": "bge-m3"}]}]}}})
+    assert [r["url"] for r in E.endpoints(MC.to_config(data))] == \
+        ["http://vec4/v1", "http://vec6/v1"], "в кольцо векторов вошла другая модель"
 
 
 @test
-def test_agent_card_writes_where_it_reads(tmp: Path):
-    """Карточка агента сохраняет туда же, откуда читает.
+def test_the_model_setup_is_written_once_for_the_kit(tmp: Path):
+    """Настройка моделей пишется один раз — в кит, и её не перекрывает ни один проект.
 
-    Панель показывает две карточки: общая настройка машины и то, что переопределяет
-    проект. Читали они по-разному, а писали одинаково — «есть выбранный проект, значит
-    туда». Правка в карточке кита уезжала в проект, карточка кита перечитывала кит и
-    показывала прежнее: человек нажимал «Сохранить» и видел, что всё сбросилось, — а
-    настройка тем временем меняла один проект вместо машины.
+    Прежде было две карточки: кит и проект. Читали они по-разному, писали в разные .env,
+    и проект молча перекрывал модель кита — 326 вызовов тяжёлой модели там, где ждали
+    быструю. С 1.153.0 настройка одна (`local/models.json`), ключи наружу — маской, и маска
+    при сохранении значит «ключ не трогали».
     """
-    ui = panel_sources()
-    card = ui[ui.index("async function renderAgentCard"):]
-    card = card[:card.index("\n/* ")] if "\n/* " in card else card
-
-    assert "const scopeTarget = (scope === \"project\" && S.project)" in card, \
-        "цель карточки не вычисляется из её же области"
-    for call in ("/api/agent/env", "/api/agent/ping"):
-        i = card.index(call)
-        body = card[i:i + 260]
-        assert "scopeTarget" in body, f"{call} шлёт не цель карточки, а выбранный проект"
-    assert "S.project?S.project.path:\"\"" not in card and \
-           "S.project ? S.project.path : \"\"" not in card.replace(
-               "const scopeTarget = (scope === \"project\" && S.project) ? S.project.path : \"\";", ""), \
-        "осталось место, где карточка пишет в выбранный проект помимо своей области"
-
-    # у карточек разные ключи «несохранённого»: правка в одной не метит другую
-    assert 'const dirtyKey = "agent-" + scope;' in card, \
-        "обе карточки делят один ключ — предупреждение об изменениях будет врать"
-
-    # карточка называет свою область, и запись сверяется с ней
-    assert '{project: scopeTarget, scope, vars:AGV}' in card, \
-        "карточка не сообщает серверу, из какой она области"
-
-    # сама запись кладёт переменные в тот файл, который назван целью
-    sys.path.insert(0, str(KIT / "cockpit"))
-    import importlib
-    ck = importlib.import_module("aurora_cockpit")
-    project = tmp / "proj"
-    project.mkdir()
-    r = ck.agent_write_env(str(project), {"AURORA_AGENT_PARALLEL": "4"}, "project")
-    assert r.get("ok") and str(project) in r["target"], r
-    assert "AURORA_AGENT_PARALLEL=4" in (project / ".env.aurora.local").read_text(encoding="utf-8")
-
-    # Настройки кита общие для всех проектов, настройки проекта — только его. Пути,
-    # ведущие из одной области в другую, закрыты: иначе правка одного проекта молча
-    # меняет поведение остальных.
-    lost = ck.agent_write_env("", {"AURORA_AGENT_PARALLEL": "9"}, "project")
-    assert "без пути" in (lost.get("error") or ""), \
-        f"правка проекта ушла бы в общую настройку кита: {lost}"
-    stray = ck.agent_write_env(str(project), {"AURORA_AGENT_PARALLEL": "9"}, "kit")
-    assert "только в разделе" in (stray.get("error") or ""), \
-        f"правка кита ушла бы в проект: {stray}"
+    from harness import _cockpit_on
+    kit = tmp / "kit"
+    (kit / "local").mkdir(parents=True)
+    ck, restore = _cockpit_on(kit)
+    try:
+        saved = ck.models_save({"models": {"providers": [
+            {"id": "work", "name": "Рабочий", "url": "http://work.example/v1", "key": "секрет-1"},
+            {"id": "home", "name": "Дома", "url": "http://home.example/v1", "type": "llama.cpp"}],
+            "capabilities": {"llm": {"roles": [{"id": "worker", "backends": [
+                {"provider": "work", "model": "flash"},
+                {"provider": "home", "model": "27b"}]}]}}}})
+        assert saved.get("ok"), saved
+        stored = json.loads((kit / "local" / "models.json").read_text(encoding="utf-8"))
+        assert stored["providers"][0]["key"] == "секрет-1", "ключ не сохранён в настройке кита"
+        state = ck.models_state([])
+        assert "секрет-1" not in json.dumps(state, ensure_ascii=False), "ключ ушёл наружу"
+        assert state["models"]["providers"][0]["key"] == "••••••", "заполненный ключ не помечен"
+        # страница присылает настройку обратно с маской — ключ остаётся прежним
+        back = state["models"]
+        back["providers"][1]["name"] = "Домашний"
+        assert ck.models_save({"models": back}).get("ok")
+        stored = json.loads((kit / "local" / "models.json").read_text(encoding="utf-8"))
+        assert stored["providers"][0]["key"] == "секрет-1", "маска затёрла ключ"
+        assert stored["providers"][1]["name"] == "Домашний"
+        # у проекта нет своего слоя: переменные его .env больше ничего не меняют
+        proj = tmp / "p"
+        proj.mkdir()
+        (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+        from aurora_common import ENV_FILE
+        (proj / ENV_FILE).write_text("AURORA_AGENT_BACKEND_1_MODEL_WORKER=тяжёлая\n",
+                                     encoding="utf-8")
+        st = ck.agent_state(str(proj))
+        assert [b["models"].get("worker") for b in st["backends"]] == ["flash", "27b"], \
+            st["backends"]
+        assert "тяжёлая" not in json.dumps(st, ensure_ascii=False), "проект перекрыл модель кита"
+        left = ck.project_model_leftovers([{"name": "P", "path": str(proj)}])
+        assert left and left[0]["keys"] == ["AURORA_AGENT_BACKEND_1_MODEL_WORKER"], left
+        assert "тяжёлая" not in json.dumps(left, ensure_ascii=False), "значение ушло наружу"
+    finally:
+        restore()
 
 
 @test

@@ -352,10 +352,10 @@ def test_panel_says_how_many_requests_actually_go(tmp: Path):
     ck = importlib.import_module("aurora_cockpit")
     importlib.reload(ck)
     src = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
-    assert '"slots": len(AG.pool(cfg))' in src, \
+    assert "pool = AG.pool(cfg)" in src and '"slots": len(pool)' in src, \
         "панель считает параллельность своим способом, а не тем же, что движок"
     ui = panel_sources()
-    assert "фактически: " in ui and "обрезает потоки шлюзов" in ui, \
+    assert "Фактически одновременно" in ui and "обрезает" in ui, \
         "человеку не сказано, сколько запросов уйдёт на самом деле"
 
 
@@ -860,8 +860,9 @@ def test_thinking_is_switched_on_explicitly_in_every_request(tmp: Path):
     view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
     assert '"/api/agent/pydantic"' in view and 'x.id === "pydantic-ai"' in view, \
         "в «Установке» нет кнопки с настройками Pydantic AI"
-    ui = ui_source()
-    assert 'pre+"TEMPLATE_KWARGS"' in ui, "поля шаблона шлюза нельзя задать в панели"
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    assert "p.template = " in view and 't("models.p_template")' in view, \
+        "поля шаблона провайдера нельзя задать в панели"
 
 
 @test

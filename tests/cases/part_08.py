@@ -344,18 +344,21 @@ def test_agent_wired_into_engine(tmp: Path):
     man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
     assert "scripts/agent_core.py" in man, "агент не едет в проекты с обновлением движка"
     tpl = (KIT / "templates/aurora.env.local.example").read_text(encoding="utf-8")
-    assert "AURORA_AGENT_BACKEND_1_URL" in tpl, "шаблон .env не документирует агента"
-    assert "example.com" in tpl, "в шаблоне должны быть плейсхолдеры, а не живые адреса"
+    assert "local/models.json" in tpl and "раздел «Модели»" in tpl, \
+        "шаблон .env не говорит, где теперь настраиваются модели"
+    assert "AURORA_AGENT_BACKEND_1_URL=" not in tpl, "шаблон снова учит настраивать модели в .env"
     assert not re.search(r"^#?\s*AURORA_AGENT_\w*KEY=[A-Za-z0-9_\-]{16,}", tpl, re.M), \
         "в шаблон попал похожий на настоящий ключ"
 
     ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
-    for route in ("/api/agent", "/api/agent/env", "/api/agent/ping", "/api/agent/venv"):
+    for route in ("/api/agent", "/api/agent/ping", "/api/agent/venv", "/api/models",
+                  "/api/models/save", "/api/models/list"):
         assert route in ck, f"в панели нет ручки {route}"
     ui = panel_sources()
-    assert "renderAgentCard" in ui and "Проверить соединение" in ui, \
-        "в Настройке нет раздела «Агент»"
-    assert "target_name" in ui, "цель записи (кит или проект) не показывается человеку"
+    assert "renderModelsCard" in ui and "Проверить связь" in ui, \
+        "в панели нет раздела «Модели»"
+    assert "Действует во всех проектах машины" in ui, \
+        "не сказано, что настройка моделей одна на все проекты"
     assert "Pydantic AI" in ui, "нет установки Pydantic AI из панели"
 
     doc = (KIT / "scripts/aurora_doctor.py").read_text(encoding="utf-8")
@@ -1153,40 +1156,34 @@ def test_a_long_card_is_indexed_whole_not_just_its_beginning(tmp: Path):
 
 @test
 def test_the_panel_shows_which_model_actually_takes_the_role(tmp: Path):
-    """Под ролью видно, какая модель её возьмёт и откуда это значение.
+    """У роли видно, какие модели её возьмут и в каком порядке, — без слияния слоёв.
 
-    Форма показывала только СВОЁ поле, а работало слитое: кит < проект. Человек выставлял
-    в ките «flash на все роли», проект молча перекрывал `worker` на «27b» — и понять это
-    можно было единственным способом: запустить прогон и прочитать в логе, кто ответил.
-    На живом проекте так и вышло: 326 вызовов тяжёлой модели там, где ожидали быструю.
+    Форма показывала только СВОЁ поле, а работало слитое «кит < проект»: на живом проекте
+    326 вызовов тяжёлой модели там, где ожидали быструю. С 1.153.0 слоёв нет: роль — это
+    цепочка «провайдер + модель», и движок идёт по ней ровно в показанном порядке.
     """
-    sys.path.insert(0, str(KIT / "cockpit"))
     sys.path.insert(0, str(SCRIPTS))
     import importlib
-    C = importlib.import_module("aurora_cockpit")
-
-    proj = tmp / "проект"
-    (proj / "AuroraKnowledgeDB").mkdir(parents=True)
-    # Адрес шлюза — свой: без него №1 существовал только там, где он задан в ките (на
-    # машине разработчика), и на чистой копии кита тест падал `StopIteration`.
-    (proj / ".env.aurora.local").write_text(
-        "AURORA_AGENT_BACKEND_1_URL=http://gw.example/v1\n"
-        "AURORA_AGENT_BACKEND_1_MODEL_WORKER=тяжёлая\n", encoding="utf-8")
-    st = C.agent_state(str(proj))
-    b1 = next(b for b in st["backends"] if b["n"] == 1)
-    assert b1["models"].get("worker") == "тяжёлая", \
-        why(b1["models"]) or "действующая модель роли не та, что задана в проекте"
-    assert "kit_models" in b1, \
-        "панель не получает китовых значений — сказать «перекрывает» ей будет нечем"
-    assert (prefix := "AURORA_AGENT_BACKEND_1_MODEL_WORKER") in st["own"], \
-        why(st["own"]) or "не видно, что значение задано именно в проекте"
-    assert prefix  # имя переменной названо в тесте, чтобы правка ключа его сломала
-
-    ui = panel_sources()
-    assert "работает: " in ui and "перекрывает " in ui, \
-        "под ролью не сказано, какая модель её возьмёт и что она перекрывает"
-    assert "модель не задана — роль не поедет" in ui, \
-        "пустая роль молчит: человек узнает о ней на прогоне"
+    AG = importlib.import_module("agent_core")
+    MC = importlib.import_module("model_config")
+    data, _ = MC.normalize({"providers": [{"id": "a", "url": "http://a.example/v1"},
+                                          {"id": "b", "url": "http://b.example/v1"}],
+        "capabilities": {"llm": {"roles": [
+            {"id": "worker", "backends": [{"provider": "a", "model": "flash"},
+                                          {"provider": "b", "model": "27b"}]},
+            {"id": "critic", "backends": [{"provider": "b", "model": "27b"},
+                                          {"provider": "a", "model": "flash", "enabled": False}]}]}}})
+    cfg = MC.to_config(data)
+    assert [(b["n"], b["model"]) for b in AG.ring_order(cfg, 0, "worker")] == \
+        [(1, "flash"), (2, "27b")], "порядок запасных роли не тот, что показан"
+    assert [(b["n"], b["model"]) for b in AG.ring_order(cfg, 0, "critic")] == [(2, "27b")], \
+        "у роли своя цепочка не держится или выключенный запасной идёт в работу"
+    # пустая роль движка идёт по цепочке разбора, а не молчит
+    assert [b["model"] for b in AG.ring_order(cfg, 0, "qa")] == ["flash", "27b"]
+    view = (KIT / "cockpit/modules/models/view.js").read_text(encoding="utf-8")
+    assert 't("models.role_empty_engine", {name:' in view, "пустая роль молчит о том, кто её возьмёт"
+    assert 't("models.role_empty_default." + cap)' in view, \
+        "пустая роль по умолчанию отсылает сама к себе вместо «возможность выключена»"
 
 
 @test

@@ -575,7 +575,7 @@ def main() -> int:
     if not os.path.isdir(KB_ROOT):
         print(f"kb_embed: нет {KB_ROOT}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
-    cfg = AG.parse_config(AG.raw_config())
+    cfg = AG.config()
     model = cfg["embed"]["model"]
     texts = card_texts()
     idx = load_index()
@@ -611,8 +611,8 @@ def main() -> int:
         print("\n(dry-run) Ничего не записано. Досчитать: `kb:embed --apply`")
         return 0
     if not endpoints(cfg):
-        print("kb_embed: некуда идти за векторами. Задайте AURORA_EMBED_URL или настройте "
-              "бэкенды агента: панель «Настройка» → «Агент»", file=sys.stderr)
+        print("kb_embed: некуда идти за векторами: у роли эмбеддингов нет бэкендов. "
+              "Раздел «Модели» панели → «Эмбеддинги»", file=sys.stderr)
         return 1
     if not stale and not gone:
         print("\n✅ Индекс актуален.")

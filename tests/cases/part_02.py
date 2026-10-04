@@ -492,7 +492,7 @@ def test_project_settings_page_draws_every_block(tmp: Path):
 
     body = _js_function(ui, "async function renderProject(")
     blocks = ['t("mcp.title"', 'renderMcp("project")', 't("yaml.title")',
-              'renderAgentCard(box, "project")', "renderKinds(box)", "drawSetupJump(box)"]
+              'renderModelsCard(box, "project")', "renderKinds(box)", "drawSetupJump(box)"]
     for b in blocks:
         assert b in body, f"на странице настроек проекта нет блока {b}"
     where = [body.index(b) for b in blocks]
@@ -517,16 +517,18 @@ def test_project_settings_page_draws_every_block(tmp: Path):
             stub.append(ui[max(0, i - 24):m.end()].strip())
     assert not stub, f"метод массива у объекта-заглушки оборвёт отрисовку: {stub}"
 
-    card = _js_function(ui, "async function renderAgentCard(")
-    assert '["worker","planner","critic","qa"]' in card, "в карточке агента нет моделей по ролям"
+    # Модели проекта — ссылка на раздел «Модели»: настройка одна на кит (1.153.0).
+    card = _js_function(ui, "async function renderModelsCard(")
+    assert 'show("models")' in card, "карточка моделей не ведёт в раздел «Модели»"
     # падение отрисовки обязано выйти на экран, а не прятаться в консоли
     assert 'addEventListener("unhandledrejection"' in ui and 'addEventListener("error"' in ui, \
         "исключение на странице снова пройдёт молча"
 
     root = make_project(tmp)
     a = ck.agent_state(str(root))
-    assert a.get("target", "").endswith(".env.aurora.local") and "own" in a and "mcp" in a, \
-        f"карточке агента проекта нечего показать: {sorted(a)}"
+    assert a.get("source") == "models" and "mcp" in a and "backends" in a, \
+        f"агент проекта читает не настройку кита: {sorted(a)}"
+    assert "own" not in a and "target" not in a, "у проекта снова свой слой настройки моделей"
 
 
 @test

@@ -4151,7 +4151,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
         if fails[key] >= SAME_FAIL_LIMIT:
             return f"одна и та же ошибка {SAME_FAIL_LIMIT} раза подряд: {key}"
         if cfg["debug"]:
-            return "AURORA_AGENT_DEBUG=1: стоп на первой ошибке"
+            return "отладка включена: стоп на первой ошибке"
         return ""
 
     if width == 1:
@@ -4262,7 +4262,7 @@ def verdict_build(res: dict, apply: bool) -> tuple:
         made = len(done) + len(human)
         if made and res["left"] > made:
             why.append(f"при таком темпе прогонов ещё ~{-(-res['left'] // made)} "
-                       f"(лимит шага: AURORA_AGENT_MAX_STEPS, бюджет: AURORA_AGENT_BUDGET_MIN)")
+                       f"(шаги и бюджет — раздел «Модели», общие настройки)")
     return ok, "; ".join(why) or f"источников разобрано: {len(done)}, ошибок не прибавилось"
 
 
@@ -5447,8 +5447,8 @@ def report_ask(res: dict, question: str, cfg: dict) -> str:
             if mo.get("timed_out"):
                 L += ["", f"⚠️ **Момус не успел проверить ответ**: модель не уложилась в "
                       f"{int(mo.get('given') or cfg['request_timeout'])} с. Она отвечает — "
-                      "просто дольше отпущенного: поднимите "
-                      "`AURORA_AGENT_REQUEST_TIMEOUT`. Ответ ниже никем не сверен — "
+                      "просто дольше отпущенного: поднимите срок запроса "
+                      "(раздел «Модели», общие настройки). Ответ ниже никем не сверен — "
                       "читайте как черновик."]
             else:
                 L += ["", f"⚠️ **Момус не проверил ответ**: {mo.get('why', 'причина неизвестна')}. "
@@ -6331,7 +6331,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                     break
                 if cfg["debug"]:
                     steps.append({"alias": "—", "status": "стоп",
-                                  "note": "AURORA_AGENT_DEBUG=1: стоп на первой ошибке",
+                                  "note": "отладка включена: стоп на первой ошибке",
                                   "backends": [], "degraded": False})
                     break
     else:
@@ -6692,7 +6692,7 @@ def main() -> int:
             print(f"| {t['title']} | {t['turns']} | {t['last']} | `{t['path']}` |")
         return 0
 
-    cfg = AG.parse_config(AG.raw_config())
+    cfg = AG.config()
     if not cfg["backends"]:
         print("agent_runner: агент не настроен — панель «Настройка» → «Агент», "
               "проверка: agent:ping", file=sys.stderr)

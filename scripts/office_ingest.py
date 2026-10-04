@@ -268,7 +268,7 @@ def conv_pdf_ocr(src: str) -> str | None:
     except Exception:
         return None
     try:
-        cfg = AG.parse_config(AG.raw_config())
+        cfg = AG.config()
         ring = AG.ocr_ring(cfg)
     except Exception:
         return None
@@ -281,7 +281,7 @@ def conv_pdf_ocr(src: str) -> str | None:
     name = os.path.basename(src)
     if limit < len(doc):
         print(f"  … {name}: страниц {len(doc)}, распознаю первые {limit} "
-              f"(потолок AURORA_OCR_MAX_PAGES)")
+              f"(потолок страниц: раздел «Модели» → OCR)")
     pages = []
     for i in range(limit):
         b64 = base64.b64encode(doc[i].get_pixmap(dpi=dpi).tobytes("jpeg")).decode()
@@ -289,7 +289,7 @@ def conv_pdf_ocr(src: str) -> str | None:
         for backend in ring:
             st, data, err, _dt = AG.http_json(
                 backend["url"] + "/chat/completions",
-                {"model": model, "max_tokens": 4000,
+                {"model": backend.get("model") or model, "max_tokens": 4000,
                  "messages": [{"role": "user", "content": [
                      {"type": "text", "text": OCR_PROMPT},
                      {"type": "image_url",

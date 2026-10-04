@@ -52,8 +52,8 @@ settings".
 
 **3. Put the tokens in.** Copy `aurora.env.local.example` to `.env.aurora.local` next to
 `aurora.config.yaml` and fill in `CONFLUENCE_PERSONAL_TOKEN` and `JIRA_PERSONAL_TOKEN`. The file is
-git-ignored; secrets never go into git. For the built-in agent, declare the LLM gateways here too — see
-[INSTALL](../INSTALL.md#the-built-in-agent).
+git-ignored; secrets never go into git. The built-in agent's models are set up not here but once per kit,
+in the panel's "Models" section — see [INSTALL](../INSTALL.md#the-built-in-agent).
 
 **4. Check readiness.**
 

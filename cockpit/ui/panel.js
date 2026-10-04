@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.152.0";
+const UI_VERSION = "1.153.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -232,22 +232,6 @@ function applyI18n(root = document){
     const v = I18N[n.dataset.i18nHtml]; if (v) n.innerHTML = v; });
 }
 
-async function loadModels(n, btn){
-  const was = btn.textContent;
-  btn.textContent = t("models.asking"); btn.disabled = true;
-  try {
-    const d = await api("/api/agent/models?n=" + encodeURIComponent(n), {quiet:true});
-    const list = $("#models-" + n);
-    if (d.error || !list){ toast(d.error || t("models.nowhere"), "warn"); return; }
-    list.innerHTML = "";
-    (d.models || []).forEach(m => list.append(el("option",{value:m})));
-    // Число называем вслух: пустой выпадающий список выглядит как «сломалось»,
-    // а «шлюз отдал 0 моделей» — это ответ.
-    toast(t("models.got", {n, count: (d.models||[]).length}));
-  } finally {
-    btn.textContent = was; btn.disabled = false;
-  }
-}
 
 function drawLangPicker(){
   const sel = $("#langSel");
@@ -2737,9 +2721,8 @@ async function renderSetup(){
       el("span",{class:"muted",style:"font-size:12px"}, t("setup.git_note"))));
   sgroup(box, "setup:new", t("setup.new_title")).append(newBox);
 
-  // Кольцо бэкендов — общая настройка машины: адреса, ключи, модели, окна, ширины.
-  // Проект может переопределить своё, и это видно в «Настройках проекта».
-  await renderAgentCard(box, "kit");
+  // Модели — общая настройка машины и всех её проектов: раздел «Модели».
+  await renderModelsCard(box, "kit");
   MCPK.kit.box = sgroup(box, "setup:mcp", t("mcpk.title"));
   await renderMcpKit();
   drawSetupJump(box);
@@ -3502,7 +3485,7 @@ async function renderProject(){
         t("yaml.reread")),
       el("span",{class:"muted",style:"font-size:12px"}, t("yaml.note")))));
 
-  await renderAgentCard(box, "project");
+  await renderModelsCard(box, "project");
   await renderKinds(box);
   drawSetupJump(box);
 }
@@ -3727,326 +3710,20 @@ function copyButton(text){
 /* Раздел открывается семью нажатиями на «О проекте» — как «Для разработчиков» в Android.
    Прятать его нужно не ради секретности, а ради честности интерфейса: команды `dev:`
    относятся к самому движку, аналитику они ничего не дают и только шумят в меню. */
-async function renderAgentCard(box, scope){
-  // scope: "kit" — общее кольцо машины; "project" — что переопределено в проекте.
-  // Значения приходят слитыми (кит < проект), а `own` говорит, что задано здесь.
-  // Куда эта карточка смотрит И куда пишет. Одно значение на оба направления: пока цель
-  // записи вычислялась отдельно («есть выбранный проект — пишем туда»), карточка кита
-  // читала из кита, а сохраняла в проект. Человек нажимал «Сохранить» и видел прежние
-  // значения — правка уезжала в проект, о котором он в этот момент не думал.
-  const scopeTarget = (scope === "project" && S.project) ? S.project.path : "";
-  const q = scopeTarget ? "?project=" + encodeURIComponent(scopeTarget) : "";
-  const a = await api("/api/agent" + q);
-  const own = new Set(a.own || []);
-  const inherited = k => scope === "project" && !own.has(k);
-  if (a.error){ box.append(el("div",{class:"card",style:"padding:16px"}, a.error)); return; }
-  const AGV = {};                                    // копятся только правки, не всё подряд
-  const dirtyKey = "agent-" + scope;
-  const dirtyName = scope === "project" ? t("dirty.agent_project") : t("dirty.agent");
-  const touch = (k, v) => { AGV[k] = v; setDirty(dirtyKey, dirtyName, true); };
-
-  const fld = (key, label, val, ph, type) => el("label",{style:"display:block;margin-bottom:8px"},
-    el("div",{class:"muted",style:"font-size:12px;margin-bottom:3px"}, label,
-      inherited(key) ? el("span",{class:"chip",style:"margin-left:6px;font-size:10.5px"},
-                          t("agent.from_kit")) : null),
-    el("input",{class:"btn",type:type||"text",style:"width:100%;font-weight:400",
-      value: val||"", placeholder: ph||"", oninput:e=>touch(key, e.target.value)}));
-
-  const backendBlock = (n) => {
-    const b = (a.backends||[]).find(x=>x.n===n) || {url:"",key_set:false,model:"",models:{}};
-    const pre = `AURORA_AGENT_BACKEND_${n}_`;
-    return el("div",{style:"border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px"},
-      el("div",{class:"row",style:"justify-content:space-between;margin-bottom:6px"},
-        el("b",{}, t("agent.backend", {n}) + (n===1 ? t("agent.backend_first") : "")),
-        b.url ? el("span",{class:"chip ok"}, t("agent.set_up"))
-              : el("span",{class:"chip"}, t("agent.empty"))),
-      fld(pre+"URL", t("agent.url"), b.url, "https://llm.example.com/v1"),
-      fld(pre+"KEY", t("agent.key")
-          + (b.key_set ? t("agent.key_set") : t("agent.key_none")),
-          "", b.key_set?"••••••":"", "password"),
-      // Имя модели вписывали руками, и опечатка выглядела как «шлюз не отвечает»:
-      // сервер честно отвечает «нет такой модели», а человек ищет сеть. Список берём
-      // у самого шлюза, но поле остаётся полем ввода: свои имена никто не отменял.
-      el("label",{style:"display:block;margin-bottom:8px"},
-        el("div",{class:"muted",style:"font-size:11px"},
-          t("agent.model_all")),
-        el("div",{class:"row",style:"gap:6px"},
-          el("input",{class:"btn",style:"flex:1;font-weight:400",value:b.model||"",
-            list:"models-"+n,
-            oninput:e=>touch(pre+"MODEL", e.target.value)}),
-          el("button",{class:"btn",style:"white-space:nowrap",
-            title: t("agent.models_ask"),
-            onclick:e=>loadModels(n, e.target)}, t("agent.models_list")))),
-      el("datalist",{id:"models-"+n}),
-      // Окно контекста узнать из API нельзя, а порезано оно у каждого шлюза по-своему:
-      // одна и та же модель держит 252 000 у одного и 196 608 у другого. Пусто — движок
-      // не считает и не отказывает; объявлено — заведомо большой запрос уходит следующей
-      // модели в кольце вместо того, чтобы погасить эту ошибкой на 15 минут.
-      fld(pre+"CONTEXT", t("agent.context"),
-          b.context ? String(b.context) : "", t("agent.context_ph"), "number"),
-      // Свои поля chat-шаблона модели — как extraBody у opencode. Включение рассуждений
-      // сюда не пишут: движок кладёт enable_thinking в каждый запрос сам, по роли.
-      fld(pre+"TEMPLATE_KWARGS", t("agent.template"),
-          b.template && Object.keys(b.template).length ? JSON.stringify(b.template) : "",
-          t("agent.template_ph")),
-      b.template_error ? el("div",{class:"chip warn",style:"margin:-4px 0 8px;font-size:11.5px"},
-          t("agent.template_bad", {why: b.template_error})) : null,
-      // Первый бэкенд всегда и в параллель, и запасной — галочки ему не нужны. У
-      // остальных это разные роли: один держит поток запросов, другой ждёт своей
-      // очереди на случай отказа, и путать их дорого.
-      el("div",{class:"row",style:"gap:14px;flex-wrap:wrap;margin:2px 0 8px"},
-        n===1 ? el("span",{class:"muted",style:"font-size:12px"}, t("agent.first_note"))
-              : el("label",{class:"row",style:"gap:6px;font-size:12px",
-                    title: t("agent.parallel_hint")},
-                  el("input",{type:"checkbox", checked:(b.parallel!==false)?"":null,
-                    onchange:e=>touch(pre+"PARALLEL", e.target.checked?"1":"0")}),
-                  t("agent.parallel")),
-        n===1 ? null
-              : el("label",{class:"row",style:"gap:6px;font-size:12px",
-                    title: t("agent.fallback_hint")},
-                  el("input",{type:"checkbox", checked:(b.fallback!==false)?"":null,
-                    onchange:e=>touch(pre+"FALLBACK", e.target.checked?"1":"0")}),
-                  t("agent.fallback")),
-        el("label",{class:"row",style:"gap:6px;font-size:12px",
-              title: t("agent.width_hint")},
-          t("agent.width"), el("input",{class:"btn",style:"width:78px;font-weight:400",
-            type:"number", value:b.width||1,
-            oninput:e=>touch(pre+"WIDTH", e.target.value)}))),
-      // Вектора — своё кольцо. Шлюз может держать только их: объявите модель, и он
-      // войдёт в кольцо эмбеддингов, не попав в чатовое. Пусто — шлюз векторов не считает.
-      el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;margin:2px 0 6px"},
-        el("label",{style:"flex:1;min-width:170px"},
-          el("div",{class:"muted",style:"font-size:11px"}, t("agent.embed_model_here")),
-          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
-            value:b.embed_model||"", placeholder: t("agent.embed_model_ph"),
-            oninput:e=>touch(pre+"EMBED_MODEL", e.target.value)})),
-        el("label",{style:"flex:1;min-width:170px"},
-          el("div",{class:"muted",style:"font-size:11px"}, t("agent.embed_url_here")),
-          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
-            value:(b.embed_url && b.embed_url !== b.url) ? b.embed_url : "",
-            placeholder: t("agent.same_as_chat"),
-            oninput:e=>touch(pre+"EMBED_URL", e.target.value)})),
-        b.chat === false
-          ? el("span",{class:"chip", title: t("agent.no_chat_hint")},
-              b.ocr_model && !b.embed_model ? t("agent.only_ocr")
-              : b.ocr_model ? t("agent.embed_and_ocr") : t("agent.only_embed"))
-          : null),
-      // Распознавание сканов — третье кольцо, устроено как вектора. Пусто — шлюз сканы
-      // не читает; в чатовое кольцо этот путь не проваливается никогда.
-      el("div",{class:"row",style:"gap:8px;flex-wrap:wrap;margin:2px 0 6px"},
-        el("label",{style:"flex:1;min-width:170px"},
-          el("div",{class:"muted",style:"font-size:11px"}, t("agent.ocr_model_here")),
-          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
-            value:b.ocr_model||"", placeholder: t("agent.ocr_model_ph"),
-            oninput:e=>touch(pre+"OCR_MODEL", e.target.value)})),
-        el("label",{style:"flex:1;min-width:170px"},
-          el("div",{class:"muted",style:"font-size:11px"}, t("agent.ocr_url_here")),
-          el("input",{class:"btn mono",style:"width:100%;font-weight:400;font-size:12px",
-            value:(b.ocr_url && b.ocr_url !== b.url) ? b.ocr_url : "",
-            placeholder: t("agent.same_as_chat"),
-            oninput:e=>touch(pre+"OCR_URL", e.target.value)}))),
-      // Под каждой ролью — та модель, которая ДЕЙСТВИТЕЛЬНО возьмёт её запрос, и
-      // откуда это значение пришло. Форма показывала только своё поле, а работало
-      // слитое: человек выставлял в ките «flash на все роли», проект молча перекрывал
-      // worker на «27b», и понять это можно было лишь прочитав лог прогона.
-      el("div",{class:"row",style:"gap:8px;flex-wrap:wrap"},
-        ...["worker","planner","critic","qa"].map(r => {
-          const key = pre + "MODEL_" + r.toUpperCase();
-          const own_here = own.has(key);
-          const eff = (b.models||{})[r] || b.model || "";
-          const from = !eff ? ""
-            : own_here ? t("agent.role_in_project")
-            : (scope === "project" ? t("agent.role_from_kit") : t("agent.role_here"));
-          const overrides = own_here && (b.kit_models||{})[r] && (b.kit_models||{})[r] !== eff
-            ? t("agent.role_overrides", {model: (b.kit_models||{})[r]}) : "";
-          return el("label",{style:"flex:1;min-width:150px"},
-            el("div",{class:"muted",style:"font-size:11px"}, r),
-            el("input",{class:"btn",style:"width:100%;font-weight:400;font-size:12px",
-              value:(b.models||{})[r]||"", list:"models-"+n,
-              placeholder: b.model ? "" : t("agent.role_not_set"),
-              oninput:e=>touch(key, e.target.value)}),
-            el("div",{class:"muted",style:"font-size:10.5px;margin-top:2px"},
-              eff ? t("agent.role_works", {model: eff, from: from + overrides})
-                  : t("agent.role_none")));
-        })));
-  };
-
-  const pingBox = el("div",{});
-  const card = el("div",{class:"card",style:"padding:20px;margin-bottom:18px"},
-    el("p",{class:"muted",style:"font-size:13px;margin:0 0 8px"},
-      scope === "project" ? t("agent.about_project") : t("agent.about_kit")),
-    el("div",{class:"warnbox",style:"margin-bottom:12px"},
-      t("agent.target"), el("b",{}, a.target_name ? t("agent.target_project", {name: a.target_name})
-                                                : t("agent.target_global")), el("br",{}),
-      el("span",{class:"mono",style:"font-size:11.5px"}, a.target)),
-    // Блоков столько, сколько шлюзов объявлено, плюс один пустой для следующего.
-    // Жёсткие три не давали объявить четвёртый — а вектора могут жить именно на нём,
-    // и человеку негде было это записать.
-    ...(() => {
-      const have = (a.backends || []).map(b => b.n);
-      const nums = [...new Set([...have, 1, 2, 3])].sort((x, y) => x - y);
-      return [...nums, Math.max(3, ...nums) + 1].map(backendBlock);
-    })(),
-    // Вектора часто живут отдельным сервисом: своя модель, свой адрес, иногда без
-    // ключа. Пусто — берётся кольцо агента; в инфраструктуре с одним шлюзом настраивать
-    // нечего, а при переезде не приходится править файлы руками.
-    el("div",{style:"border-top:1px solid var(--line);margin:14px 0 10px;padding-top:12px"},
-      el("div",{style:"font-weight:700;margin-bottom:4px"}, t("agent.embed_title")),
-      el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
-        t("agent.embed_about")),
-      el("div",{class:"row",style:"gap:10px;flex-wrap:wrap"},
-        el("label",{}, t("agent.f_model"), el("input",{class:"btn mono",style:"width:150px",
-          value:(a.embed&&a.embed.model)||"", placeholder:"bge-m3",
-          oninput:e=>touch("AURORA_EMBED_MODEL", e.target.value)})),
-        el("label",{}, t("agent.f_url"), el("input",{class:"btn mono",style:"width:260px",
-          value:(a.embed&&a.embed.url)||"", placeholder: t("agent.as_agent"),
-          oninput:e=>touch("AURORA_EMBED_URL", e.target.value)})),
-        el("label",{}, t("agent.f_key"), el("input",{class:"btn mono",style:"width:150px",
-          type:"password", placeholder:(a.embed&&a.embed.key_set)
-            ? t("agent.key_there") : t("agent.key_no"),
-          oninput:e=>touch("AURORA_EMBED_KEY", e.target.value)}))),
-      el("label",{class:"row",style:"gap:6px;margin-top:10px"},
-        el("input",{type:"checkbox", checked:(a.embed&&a.embed.fallback)?"":null,
-          onchange:e=>touch("AURORA_EMBED_FALLBACK", e.target.checked?"1":"0")}),
-        t("agent.embed_fallback")),
-      el("div",{class:"muted",style:"font-size:12px;margin-top:4px"},
-        t("agent.embed_same_model")),
-      el("div",{class:"muted mono",style:"font-size:11.5px;margin-top:6px"},
-        t("agent.ring", {ring: ((a.embed&&a.embed.ring)||[])
-          .map(r=>r.url + " — " + r.why).join("  →  ") || "—"}))),
-    // Распознавание сканов. Модель не названа — путь выключен, и форма говорит это прямо:
-    // угадывать имя нельзя, угаданная модель даёт не отказ, а выдумку в транскрипте.
-    el("div",{style:"border-top:1px solid var(--line);margin:14px 0 10px;padding-top:12px"},
-      el("div",{style:"font-weight:700;margin-bottom:4px"}, t("agent.ocr_title")),
-      el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
-        t("agent.ocr_about")),
-      el("div",{class:"row",style:"gap:10px;flex-wrap:wrap"},
-        el("label",{}, t("agent.f_model"), el("input",{class:"btn mono",style:"width:150px",
-          value:(a.ocr&&a.ocr.model)||"", placeholder:"glm-ocr",
-          oninput:e=>touch("AURORA_OCR_MODEL", e.target.value)})),
-        el("label",{}, t("agent.f_url"), el("input",{class:"btn mono",style:"width:260px",
-          value:(a.ocr&&a.ocr.url)||"", placeholder: t("agent.ocr_url_ph"),
-          oninput:e=>touch("AURORA_OCR_URL", e.target.value)})),
-        el("label",{}, t("agent.f_key"), el("input",{class:"btn mono",style:"width:150px",
-          type:"password", placeholder:(a.ocr&&a.ocr.key_set)
-            ? t("agent.key_there") : t("agent.key_no"),
-          oninput:e=>touch("AURORA_OCR_KEY", e.target.value)})),
-        el("label",{}, t("agent.f_dpi"), el("input",{class:"btn",style:"width:64px",
-          value:(a.ocr&&a.ocr.dpi)||130,
-          oninput:e=>touch("AURORA_OCR_DPI", e.target.value)})),
-        el("label",{}, t("agent.f_pages"), el("input",{class:"btn",style:"width:64px",
-          value:(a.ocr&&a.ocr.max_pages)||60,
-          oninput:e=>touch("AURORA_OCR_MAX_PAGES", e.target.value)}))),
-      el("label",{class:"row",style:"gap:6px;margin-top:10px"},
-        el("input",{type:"checkbox", checked:(a.ocr&&a.ocr.fallback)?"":null,
-          onchange:e=>touch("AURORA_OCR_FALLBACK", e.target.checked?"1":"0")}),
-        t("agent.ocr_fallback")),
-      el("div",{class:"muted mono",style:"font-size:11.5px;margin-top:6px"},
-        (a.ocr && a.ocr.model)
-          ? t("agent.ring", {ring: (a.ocr.ring||[]).map(r=>r.url + " — " + r.why).join("  →  ")
-                                   || t("agent.ocr_ring_none")})
-          : t("agent.ocr_off"))),
-    el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;margin:6px 0 12px"},
-      el("label",{class:"row",style:"gap:6px"},
-        el("input",{type:"checkbox", checked:a.thinking?"":null,
-          onchange:e=>touch("AURORA_AGENT_THINKING", e.target.checked?"1":"0")}),
-        t("agent.thinking")),
-      el("label",{}, t("agent.f_steps"), el("input",{class:"btn",style:"width:64px",
-        value:a.max_steps,
-        oninput:e=>touch("AURORA_AGENT_MAX_STEPS", e.target.value)})),
-      el("label",{}, t("agent.f_budget"), el("input",{class:"btn",style:"width:64px",
-        value:a.budget_min,
-        oninput:e=>touch("AURORA_AGENT_BUDGET_MIN", e.target.value)})),
-      // Разбор карточки — это ожидание ответа шлюза, а не работа машины: пока модель
-      // думает над одной, процессор простаивает. Ставить больше, чем шлюз держит
-      // параллельных запросов, бессмысленно — очередь просто переедет на его сторону.
-      el("label",{title: t("agent.at_once_hint")},
-        t("agent.at_once"), el("input",{class:"btn",style:"width:92px",
-        value:(a.parallel === -1 ? t("agent.auto") : (a.parallel || 1)),
-        title: t("agent.at_once_field_hint"),
-        oninput:e=>touch("AURORA_AGENT_PARALLEL", e.target.value)})),
-      // Итог называем числом. Два поля — «потоков» у шлюза и общее «одновременно» —
-      // складываются не так, как ждёт человек: общий потолок ОБРЕЗАЕТ сумму ширин, и
-      // девять потоков при потолке 1 дают один запрос. Молча это выглядит как «настроил,
-      // а быстрее не стало».
-      // Режим, о котором знает только подсказка при наведении, не существует. Пишем
-      // словами рядом с полем — и кнопкой, которая избавляет от угадывания вовсе.
-      el("button",{class:"btn", style:"white-space:nowrap",
-        title: t("agent.measure_hint"),
-        onclick:async ()=>{
-          if (!S.state) return;
-          show("console");
-          const res = await api("/api/run", {method:"POST", body: JSON.stringify(
-            {project:"", cmd:"agent:width", args:[]})});
-          if (res.job) poll(res.job, 0, "agent:width");
-        }}, t("agent.measure")),
-      el("span",{class:"sub", id:"slotsNote", title: t("agent.slots_hint")},
-        t("agent.slots", {n: a.slots || 1})
-        + ((a.slot_split || []).length
-           ? " (" + a.slot_split.map(([n,k]) => "№" + n + "×" + k).join(", ") + ")" : "")
-        + ((a.slots || 1) < (a.backends || []).reduce((s,b)=>s+(b.width||1),0)
-           ? t("agent.slots_cut") : "")),
-      el("div",{class:"muted", style:"font-size:12px;flex-basis:100%;margin-top:4px"},
-        t("agent.at_once_about")),
-      // Рассуждения по ролям. Без них тезис пишется в разы быстрее, но втрое чаще
-      // утверждает без опоры (замер PRJ-A 21.09.2026); Момус без них слепнет.
-      el("div",{class:"row",style:"gap:10px;flex-wrap:wrap;flex-basis:100%;margin-top:6px"},
-        el("span",{class:"sub"}, t("agent.thinking_roles")),
-        ...["worker","planner","critic","qa"].map(r => {
-          const own = (a.thinking_roles || {})[r];
-          const on = own === "" || own === undefined
-            ? !!a.thinking : !["0","false","no"].includes(String(own));
-          return el("label",{class:"row",style:"gap:4px;font-size:12px",
-            title: t("agent.thinking_role_hint")},
-            el("input",{type:"checkbox", checked:on?"":null,
-              onchange:e=>touch("AURORA_AGENT_THINKING_" + r.toUpperCase(),
-                                e.target.checked ? "1" : "0")}), r);
-        })),
-      el("label",{}, t("agent.adapter"), el("select",{class:"btn",
-          onchange:e=>touch("AURORA_AGENT_ADAPTER", e.target.value)},
-        ...["pydantic_ai","openai_compat"].map(v=>el("option",{value:v,
-            selected:a.adapter===v?"":null}, v))))),
-    el("div",{class:"row",style:"gap:10px"},
-      saveButton(dirtyKey, dirtyName, t("agent.save"), async e=>{
-        if (!Object.keys(AGV).length) return toast(t("agent.nothing"), "warn");
-        const r = await api("/api/agent/env",{method:"POST",
-          body:JSON.stringify({project: scopeTarget, scope, vars:AGV})});
-        if (r.ok){ toast(t("agent.saved", {target: r.target}));
-                   setDirty(dirtyKey, dirtyName, false);
-                   scope === "project" ? renderProject() : renderSetup(); }
-      }),
-      el("button",{class:"btn sm",onclick:async e=>{
-        e.target.disabled = true; e.target.textContent = t("agent.checking");
-        pingBox.innerHTML = "";
-        const r = await api("/api/agent/ping",{method:"POST",
-          body:JSON.stringify({project: scopeTarget})});
-        e.target.disabled = false; e.target.textContent = t("agent.check");
-        (r.backends||[]).forEach(b=>pingBox.append(el("div",{class:"mono",
-          style:"font-size:12.5px;margin-top:4px"},
-          (b.ok?"✅ ":"✗ ") + "№" + b.n + " " + b.url + " · " + (b.model||"—") + " · " +
-          (b.ok ? t("agent.ping_ok", {sec: b.seconds, answer: b.answer}) : b.status))));
-        if (r.error) pingBox.append(el("div",{class:"warnbox"}, r.error));
-      }}, t("agent.check")),
-      el("span",{class:"muted",style:"font-size:12px"},
-        a.venv.ok ? t("agent.venv_ok", {version: a.venv.version}) : t("agent.venv_no")),
-      el("button",{class:"btn sm",onclick:async e=>{
-        e.target.disabled = true; e.target.textContent = t("agent.venv_installing");
-        const r = await api("/api/agent/venv",{method:"POST",body:"{}"});
-        e.target.disabled = false; e.target.textContent = t("agent.venv_install_btn");
-        toast(r.ok ? t("agent.venv_done") : (r.error || t("agent.venv_failed")),
-              r.ok ? "ok" : "err");
-        if (r.ok) renderSetup();
-      }}, a.venv.ok ? t("agent.venv_update") : t("agent.venv_install"))),
-    pingBox,
-    // MCP нужен только там, где движок чего-то не умеет сам: публикация и заведение
-    // задач умеют работать и без него. Пусто — это норма, а не недонастройка.
-    el("div",{style:"border-top:1px solid var(--line);margin:14px 0 0;padding-top:12px"},
-      el("div",{class:"muted",style:"font-size:12px"},
-        (a.mcp||[]).length ? t("agent.mcp_list", {list: a.mcp.join(", ")})
-                            : t("agent.mcp_none"))));
-
+/* Модели — одни на кит и все его проекты (раздел «Модели»). Здесь — только где они живут:
+   прежняя карточка «Агент» писала переменные в `.env` кита или проекта, и проект мог молча
+   перекрыть модель кита. С 1.153.0 проектной настройки моделей нет. */
+async function renderModelsCard(box, scope){
+  const a = await api("/api/agent", {quiet:true});
+  const chains = (a && a.backends || []).filter(b => b.chat).length;
   sgroup(box, scope === "project" ? "project:agent" : "setup:agent",
-         scope === "project" ? t("agent.title_project") : t("agent.title_kit")).append(card);
+         t("models_link.title")).append(el("div",{class:"card",style:"padding:16px 20px;margin-bottom:18px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"},
+      scope === "project" ? t("models_link.project") : t("models_link.kit")),
+    el("div",{class:"row",style:"gap:10px"},
+      el("span",{class:"chip " + (chains ? "ok" : "warn")},
+        chains ? t("models_link.ready", {n: chains}) : t("models_link.empty")),
+      el("button",{class:"btn sm primary", onclick:()=>show("models")}, t("models_link.open")))));
 }
 
 /* ---------------- о проекте ---------------- */

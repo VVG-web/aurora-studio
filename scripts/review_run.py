@@ -908,7 +908,7 @@ def main() -> int:
     api, ccfg = _connect()
     reader = Reader(api, ccfg["base_url"], CACHE, args.as_of)
     import agent_core as AG
-    cfg = AG.parse_config(AG.raw_config())
+    cfg = AG.config()
     batch = bool(args.cql or args.pages_file or len(args.page) > 1)
 
     if not batch:

@@ -184,14 +184,16 @@ Roles are what the model does; a separate model can be assigned to each.
 | `critic` | checks a proposal before writing (the `--critic` flag) |
 | `qa` | **Momus**: reads an answer claim by claim — each has either support with a quote, or "no support", or a contradiction |
 
-Gateways are an ordered **ring**, not a ladder: every call goes from the first; a gateway that is unavailable,
-busy or gave an empty answer is skipped, and a recovered one is picked up on the next request. Configured in
-`.env.aurora.local` (kit < project < environment); details and variable names are in
-[INSTALL](INSTALL.md#the-built-in-agent). Parallelism is a property of the gateway: each has its own width, the
-ceiling for the whole run is `AURORA_AGENT_PARALLEL`; `agent:width` measures the width instead of asking. A
-failure on one card does not stop the run, three in a row do (that is the gateway, not the cards).
+Each role has its own ordered **chain** of "provider + model" backends: every call goes from the first; one
+that is unavailable, busy or gave an empty answer is skipped, and a recovered one is picked up on the next
+request. There is one setup per kit — `<kit>/local/models.json`, the panel's "Models" section; a project has
+none of its own. Details are in [INSTALL](INSTALL.md#the-built-in-agent). Parallelism is a property of the
+provider: each has its own width, the ceiling for the whole run is in the section's shared settings;
+`agent:width` measures the width instead of asking. A failure on one card does not stop the run, three in a row
+do (that is the provider, not the cards).
 
-The embedding ring (`kb:embed`) and the scan-recognition ring (`kb:ingest-office`) are independent of the chat ring.
+OCR (`kb:ingest-office`) and embeddings (`kb:embed`) are built the same way: roles and chains of their own. An
+embeddings fallback uses only the same model.
 
 ### How the agent does the work
 
