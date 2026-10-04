@@ -3187,3 +3187,22 @@ def test_clash_groups_and_twin_groups_read_the_twins_report_the_same_way(_t):
     for script, args in seen:
         if script == "kb_twins.py":
             assert args[-2:] == ["--limit", "0"], args
+
+
+@test
+def test_a_source_parsed_by_paragraphs_counts_as_parsed_for_the_oracle(_t):
+    """Источник, разобранный по абзацам, оракул сборки считает разобранным.
+
+    Статус «разобран по абзацам» ставил `--done` в плане, но в списки оракула и отчёта не
+    входил: движок насчитывал одного разобранного, агент «объявлял» нуль, и удавшийся
+    прогон считался ложью — без commit и без ремонта ссылок.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    res = {"steps": [{"alias": "Raw/project/Расшифровка.md", "status": "разобран по абзацам",
+                      "note": "карточек: 2"}],
+           "before": {"errors": 0, "done": 0}, "after": {"errors": 0, "done": 1},
+           "total": 1, "left": 0}
+    ok, why = R.verdict_build(res, True)
+    assert ok, why

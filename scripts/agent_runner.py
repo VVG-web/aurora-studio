@@ -4062,7 +4062,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 executor.shutdown(wait=False, cancel_futures=True)
 
     after_left, after_done = build_left(cwd) if apply else (before_left, before_done)
-    if apply and any(s.get("status") == "разобран" for s in steps):
+    if apply and any(s.get("status") in ("разобран", "разобран по абзацам") for s in steps):
         # Текст страницы переносится дословно, и ссылки в нём ведут на страницы и вопросы по
         # их именам — ремонт находит им карточку. Чиним до счёта: оракул судит о том, что
         # ремонту не по силам, а не о том, до чего ремонт ещё не дошёл («14 → 22» на PRJ-C
@@ -4077,6 +4077,12 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             "left": len(sources) - len([s for s in steps if s["status"] != "стоп"])}
 
 
+# Итоги, после которых в плане стало на источник меньше: оракул, отчёт и ремонт ссылок считают
+# разобранное по одному списку. «Разобран по абзацам» (источник без заголовков, границы
+# предложил планировщик) в списки не входил, и оракул объявлял удавшийся прогон ложью.
+BUILT = ("разобран", "разобрал бы", "разобран по абзацам")
+
+
 def verdict_build(res: dict, apply: bool) -> tuple:
     """Оракул сборки: разобранное посчитал движок, а не модель.
 
@@ -4084,8 +4090,7 @@ def verdict_build(res: dict, apply: bool) -> tuple:
     сколько он объявил разобранными, и ошибок в базе не прибавилось». Карточки без связей
     не считаются: их связывает следующий шаг (`lint_errors(orphans=False)`).
     """
-    done = [s for s in res["steps"] if s["status"] in ("разобран", "разобрал бы",
-                                                       "пусто — отмечено", "отметил бы пустым")]
+    done = [s for s in res["steps"] if s["status"] in BUILT + ("пусто — отмечено", "отметил бы пустым")]
     human = [s for s in res["steps"] if s["status"] == "без секций — человеку"]
     bad = [s for s in res["steps"] if s["status"] in ("сбой", "отклонено критиком",
                                                       "отклонено проверкой", "стоп")]
@@ -6283,7 +6288,7 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
     for s in res["steps"]:
         L.append(f"| {s['alias'][:70]} | {s['status']} |")
 
-    made = [s for s in res["steps"] if s["status"] in ("разобран", "разобрал бы")]
+    made = [s for s in res["steps"] if s["status"] in BUILT]
     if made:
         L += ["", "## Какие карточки собраны", ""]
         L += [f"- {s['alias']}: {s['note']}" for s in made]
