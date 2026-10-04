@@ -2819,3 +2819,33 @@ def test_a_later_repair_step_keeps_what_an_earlier_one_wrote(tmp: Path):
     text = (kb / "Processes/Предъявление-кода.md").read_text(encoding="utf-8")
     assert "[[Жив-карточка]]" in text and "[[жив-карточка]]" not in text, text
     assert rel(machine) not in text.split("## Источник", 1)[0], "копия не снята"
+
+
+def test_the_readonly_guard_sees_the_path_the_way_the_filesystem_does(tmp: Path):
+    """`./Sources/x.md` и `Artifacts/../Sources/x.md` — те же источники, и запись в них закрыта.
+
+    Охрана сверяла приставку с сырой строкой браузера, а путь нормализовался уже после неё:
+    так через `./` писали в зеркала и удаляли карточки базы знаний.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cockpit_ro", KIT / "cockpit" / "aurora_cockpit.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SCRIPTS))
+    spec.loader.exec_module(mod)
+    root = make_project(tmp)
+    src = root / "Sources/Confluence/x.md"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("зеркало", encoding="utf-8")
+    kb_card = card(root, "Concepts/Карточка.md", "тело", status="knowledge")
+    for rel in ("Sources/Confluence/x.md", "./Sources/Confluence/x.md",
+                "Artifacts/../Sources/Confluence/x.md", "/Sources/Confluence/x.md",
+                "sources/Confluence/x.md"):
+        out = mod.file_write(str(root), rel, "подмена")
+        assert "только для чтения" in out.get("error", ""), (rel, out)
+    assert src.read_text(encoding="utf-8") == "зеркало", "источник перезаписан в обход охраны"
+    for rel in ("./AuroraKnowledgeDB/Concepts/Карточка.md",
+                "Artifacts/../AuroraKnowledgeDB/Concepts/Карточка.md"):
+        out = mod.file_delete(str(root), rel)
+        assert out.get("error"), (rel, out)
+    assert kb_card.is_file(), "карточка базы знаний удалена в обход охраны"
+    assert mod.why_readonly("AuroraKnowledgeDB/Decisions/./DR-1.md") == ""
