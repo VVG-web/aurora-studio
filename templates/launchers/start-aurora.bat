@@ -4,10 +4,12 @@ chcp 65001 >nul
 cd /d "%~dp0"
 set KIT_HINT={{KIT_PATH}}
 
-where py >nul 2>&1 && (set PY=py -3) || (
-  where python >nul 2>&1 && (set PY=python) || (
-    echo Не найден Python 3. Установите: https://www.python.org/downloads/
-    pause & exit /b 1))
+call :find_py
+if not defined PY (
+  echo Не найден Python 3.9 или новее. Установите: https://www.python.org/downloads/
+  pause
+  exit /b 1
+)
 
 set KIT=
 if exist "%KIT_HINT%\aurora.py" set KIT=%KIT_HINT%
@@ -39,3 +41,11 @@ if "%choice%"=="0" exit /b 0
 echo.
 pause
 goto menu
+
+REM Интерпретатор проверяется запуском, а не поиском по PATH: python.exe из
+REM WindowsApps - ярлык Microsoft Store, он открывает магазин вместо Python.
+:find_py
+set "PY="
+py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=py -3" && exit /b 0
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=python" && exit /b 0
+exit /b 0

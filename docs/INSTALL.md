@@ -40,6 +40,10 @@ flowchart LR
 python3 aurora.py new /absolute/path/to/your-project
 ```
 
+На Windows вместо `python3` пишут `py -3` (или `python`): Python с python.org и из winget не
+ставит команду `python3`, а та, что лежит в WindowsApps, — заглушка магазина. Пусковой файл
+`start-aurora.bat` и хуки git выбирают интерпретатор сами.
+
 Команда делает четыре шага:
 
 1. **Раскладка** (`install_aurora.py`): папки по `structure_dirs.txt`, копия движка в `.opencode/`,

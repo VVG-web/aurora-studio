@@ -2735,3 +2735,53 @@ def test_a_stub_without_a_status_line_gets_one_once(tmp: Path):
     assert "поставлен у 1" in first, first
     second = run("kb_fix.py", "--stub-text", "--apply", "--allow-dirty", cwd=root).stdout
     assert "поставлен у 0" in second and stub.read_text(encoding="utf-8") == text, second
+
+
+@test
+def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
+    """Пусковой файл в проекте и хуки git ищут Python запуском, а `.bat` пишется с CRLF.
+
+    На Windows нет `python3` (есть `python` и `py`), а `python3` из WindowsApps —
+    заглушка магазина. Пуш-хук звал `python3` напрямую и на такой машине останавливал
+    любой пуш; `.bat` в проекте искал Python через `where` и принимал заглушку; с одними
+    LF (установка с macOS или из WSL) cmd.exe промахивается мимо меток `goto`.
+    """
+    tpl = (KIT / "templates/launchers/start-aurora.bat").read_text(encoding="utf-8")
+    assert ":find_py" in tpl and "sys.version_info >= (3, 9)" in tpl and "where py" not in tpl, \
+        "шаблон .bat проекта снова доверяет поиску по PATH"
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    inst = importlib.import_module("install_aurora")
+    target = tmp / "proj"
+    target.mkdir()
+    ins = inst.Installer(target, "Demo", None, None, None, True, False)
+    ins.install_launchers()
+    bat = (target / "start-aurora.bat").read_bytes()
+    assert bat.count(b"\r\n") == bat.count(b"\n") > 5, "установленный .bat без CRLF"
+    sys.path.insert(0, str(KIT / "scripts"))
+    H = importlib.import_module("aurora_hooks")
+    for name in ("HOOK", "PUSH_HOOK", "MSG_HOOK"):
+        body = getattr(H, name)
+        assert "python3 \"$LINT\"" not in body and "| python3 " not in body, \
+            f"хук {name} зовёт python3 напрямую"
+        assert "'py -3'" in body, f"хук {name} не пробует py -3"
+    sh = shutil.which("sh")
+    if not sh or os.name == "nt":
+        return
+    fake = tmp / "bin"
+    fake.mkdir()
+    (fake / "python3").write_text("#!/bin/sh\necho 'Python was not found' >&2\nexit 9\n", encoding="utf-8")
+    (fake / "python3").chmod(0o755)
+    (fake / "python").symlink_to(sys.executable)
+    repo = tmp / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts/aurora_hooks.py").write_text(
+        "import sys\nsys.stdin.read()\nprint('scanned')\n", encoding="utf-8")
+    hook = repo / "pre-push"
+    hook.write_text(H.PUSH_HOOK.format(marker=H.PUSH_MARKER,
+                                       branches=" ".join(H.PRIVATE_BRANCHES)), encoding="utf-8")
+    cp = subprocess.run([sh, str(hook), "origin", "https://github.com/x/y.git"], cwd=str(repo),
+                        input="", capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        timeout=30, env={"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp)})
+    assert cp.returncode == 0 and "scanned" in cp.stdout, \
+        f"пуш-хук не нашёл python за заглушкой python3: rc={cp.returncode}\n{cp.stdout}{cp.stderr}"
