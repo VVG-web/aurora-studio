@@ -3346,3 +3346,39 @@ def test_a_failed_critic_or_momus_does_not_make_the_document_ready(tmp: Path):
     assert r["ok"] and R.load_session(str(root), sid)["stages"].get("checked"), r
     assert "status: ready" in (root / R.load_session(str(root), sid)["path"]).read_text(
         encoding="utf-8")
+
+
+@test
+def test_a_parallel_alias_step_finished_after_the_stop_is_still_reported(tmp: Path):
+    """Шаг разбора синонимов, закончившийся уже после стопа, остаётся в отчёте.
+
+    Раньше параллельная ветка проверяла стоп и бюджет ПОСЛЕ solve_conflict: поток,
+    пришедший последним за стопом, молча выбрасывал свой шаг, хотя правка уже была записана
+    в базу. Прогон не знал о ней: ни в отчёте, ни в «left».
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import threading
+    import agent_core as A, agent_runner as R
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    cfg["parallel"], cfg["max_steps"] = 4, 10
+    barrier, done = threading.Barrier(4), []
+
+    def fake_solve(cfg_, cwd, alias, cards, apply, use_critic, call=None, deadline=None):
+        barrier.wait(timeout=20)         # все четыре потока уже начали работу
+        done.append(alias)
+        return {"alias": alias, "status": "сбой", "note": "модель молчит", "backends": [],
+                "degraded": False}       # одна ошибка подряд: прогон встаёт на стоп
+
+    saved = (R.read_conflicts, R.lint_conflicts, R.lint_errors, R.solve_conflict, R.AG.pool)
+    R.read_conflicts = lambda cwd: [(f"alias{i}", [f"Карточка-{i}"]) for i in range(4)]
+    R.lint_conflicts, R.lint_errors = (lambda cwd: 4), (lambda cwd: 0)
+    R.solve_conflict, R.AG.pool = fake_solve, (lambda cfg_: [1, 2, 3, 4])
+    try:
+        res = R.run_aliases(cfg, str(tmp), True, False, 0, call=lambda *a, **k: None)
+    finally:
+        (R.read_conflicts, R.lint_conflicts, R.lint_errors, R.solve_conflict,
+         R.AG.pool) = saved
+    assert len(done) == 4, done
+    assert len(res["steps"]) == len(done), \
+        f"сделано {len(done)} шагов, в отчёте {len(res['steps'])}: правка есть, следа нет"
