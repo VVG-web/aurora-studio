@@ -3281,3 +3281,68 @@ def test_a_meeting_with_an_unwritten_card_is_not_marked_as_parsed(tmp: Path):
     mf = root / "AuroraKnowledgeDB/meta/manifest.json"
     man = json.loads(mf.read_text(encoding="utf-8")) if mf.exists() else {}
     assert src not in man.get("sources", {}) or not man["sources"][src].get("cards"), man
+
+
+@test
+def test_a_failed_critic_or_momus_does_not_make_the_document_ready(tmp: Path):
+    """Не ответивший критик и Момус без вердикта не проходят этап, а не «замечаний нет».
+
+    Раньше сбой критика давал пустой список замечаний, а Момус без вердикта всё равно
+    отмечал этап «checked»: документ уезжал со `status: ready` без единой проверки.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/AC.md").write_text("# AC\n\n## Предусловия\n", encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "Критерии приёмки"\n'
+                          '    template: "Templates/AC.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    for i in range(6):
+        card(root, f"Concepts/Заявка-{i}.md",
+             f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
+             status="knowledge", kind="knowledge")
+    mode = {"critic": "down", "qa": "ok"}
+
+    def fake(cfg_, role, messages, **kw):
+        base = {"backend": 1, "model": "m", "tps": 9, "log": []}
+        if role == "planner":
+            return dict(base, ok=True, text=json.dumps({"questions": [], "plan": "1. Раздел"},
+                                                       ensure_ascii=False))
+        if role == "critic":
+            if mode["critic"] == "down":
+                return dict(base, ok=False, text="", why="таймаут")
+            if mode["critic"] == "junk":
+                return dict(base, ok=True, text="не знаю")
+            return dict(base, ok=True, text=json.dumps({"ok": True, "issues": []}))
+        if role == "qa":
+            return dict(base, ok=True, text="разбор без вердикта" if mode["qa"] == "none"
+                        else "ВЕРДИКТ: ЧИСТО")
+        return dict(base, ok=True, text="# AC\n\n## Предусловия\n\nЗаявка создана.")
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    r = R.run_make(cfg, str(root), "ac", "статусы заявки", "", "", True, call=fake)
+    assert not r["ok"] and "критик" in r["why"], r
+    sid = r["sid"]
+    st = R.load_session(str(root), sid)
+    assert not st["stages"].get("reviewed"), "критик не ответил, а этап отмечен пройденным"
+
+    mode["critic"] = "junk"
+    r = R.run_make(cfg, str(root), "", "", sid, "", True, call=fake)
+    assert not r["ok"] and not R.load_session(str(root), sid)["stages"].get("reviewed"), r
+
+    mode["critic"], mode["qa"] = "ok", "none"
+    r = R.run_make(cfg, str(root), "", "", sid, "", True, call=fake)
+    st = R.load_session(str(root), sid)
+    assert not r["ok"] and "Момус" in r["why"], r
+    assert st["stages"].get("reviewed") and not st["stages"].get("checked"), st["stages"]
+    assert "status: draft" in (root / st["path"]).read_text(encoding="utf-8")
+
+    mode["qa"] = "ok"
+    r = R.run_make(cfg, str(root), "", "", sid, "", True, call=fake)
+    assert r["ok"] and R.load_session(str(root), sid)["stages"].get("checked"), r
+    assert "status: ready" in (root / R.load_session(str(root), sid)["path"]).read_text(
+        encoding="utf-8")
