@@ -217,7 +217,7 @@ def merge(items) -> dict:
     return s
 
 
-def route(cwd: str, since: str, seconds: float, steps: list) -> dict:
+def route(cwd: str, since: str, seconds: float, steps: list, lang: str = "ru") -> dict:
     """Итог маршрута: итоги шагов плюс изменения базы за весь маршрут по git."""
     items = []
     for st in steps or []:
@@ -228,7 +228,8 @@ def route(cwd: str, since: str, seconds: float, steps: list) -> dict:
     for st in steps or []:
         rc = int(st.get("rc") or 0)
         if rc >= 2:
-            _err(s, f"шаг {st.get('cmd')} не отработал (код {rc})")
+            _err(s, f"step {st.get('cmd')} failed (code {rc})" if lang == "en"
+                 else f"шаг {st.get('cmd')} не отработал (код {rc})")
     delta = kb_delta(cwd, since)
     # Карточки маршрута — только по git: у шагов они посчитаны каждым от своего коммита, и
     # сумма таких счётов выдала бы одну карточку за несколько.
@@ -236,60 +237,76 @@ def route(cwd: str, since: str, seconds: float, steps: list) -> dict:
              cards_updated=(delta or {}).get("updated", 0),
              cards_marked=(delta or {}).get("marked", 0),
              cards_deleted=(delta or {}).get("deleted", 0), cards_known=delta is not None)
-    return {"lines": render(s, "Итог прогона"), "data": s}
+    return {"lines": render(s, "Run summary" if lang == "en" else "Итог прогона", lang), "data": s}
 
 
-def human_time(sec) -> str:
+def human_time(sec, lang: str = "ru") -> str:
     sec = int(round(sec or 0))
     h, rest = divmod(sec, 3600)
     m, s = divmod(rest, 60)
+    hh, mm, ss = ("h", "min", "s") if lang == "en" else ("ч", "мин", "с")
     if h:
-        return f"{h} ч {m} мин"
+        return f"{h} {hh} {m} {mm}"
     if m:
-        return f"{m} мин {s} с"
-    return f"{s} с"
+        return f"{m} {mm} {s} {ss}"
+    return f"{s} {ss}"
 
 
 def _n(x) -> str:
     return f"{int(x or 0):,}".replace(",", " ")
 
 
-def render(s: dict, title: str = "Итог прогона") -> list:
-    """Итог словами — одинаково в терминале, в журнале агента и в консоли панели."""
-    L = [f"■ {title}", f"  Время: {human_time(s.get('seconds'))}"]
+def render(s: dict, title: str = "Итог прогона", lang: str = "ru") -> list:
+    """Итог словами — одинаково в терминале, в журнале агента и в консоли панели.
+
+    Английский — только для панели (`lang="en"`): вывод агента в терминале остаётся русским,
+    как весь вывод движка.
+    """
+    en = lang == "en"
+
+    def w(ru, eng):
+        return eng if en else ru
+    L = [f"■ {title}", f"  {w('Время', 'Time')}: {human_time(s.get('seconds'), lang)}"]
     calls = s.get("model_calls") or 0
+    cached = (f" · {w('из кэша ответов', 'from the answer cache')} {_n(s.get('model_cached'))}"
+              if s.get("model_cached") else "")
     if calls:
         t_in, t_out = s.get("tokens_in") or 0, s.get("tokens_out") or 0
         gen = s.get("gen_seconds") or 0
         tps = f"{t_out / gen:.1f}" if gen else "—"
-        L.append(f"  Модель: токенов {_n(t_in + t_out)} (вход {_n(t_in)} · выход {_n(t_out)})"
-                 f" · в среднем {tps} ток/с · вызовов {_n(calls)}"
-                 + (f", неудачных {_n(s.get('model_failed'))}" if s.get("model_failed") else "")
-                 + (f" · из кэша ответов {_n(s.get('model_cached'))}" if s.get("model_cached") else ""))
+        L.append(f"  {w('Модель', 'Model')}: {w('токенов', 'tokens')} {_n(t_in + t_out)} "
+                 f"({w('вход', 'in')} {_n(t_in)} · {w('выход', 'out')} {_n(t_out)})"
+                 f" · {w('в среднем', 'on average')} {tps} {w('ток/с', 'tok/s')} · "
+                 f"{w('вызовов', 'calls')} {_n(calls)}"
+                 + (f", {w('неудачных', 'failed')} {_n(s.get('model_failed'))}"
+                    if s.get("model_failed") else "") + cached)
     else:
-        L.append("  Модель: не вызывалась" + (f" · из кэша ответов {_n(s.get('model_cached'))}"
-                                               if s.get("model_cached") else ""))
-    L.append(f"  Документы: обработано {_n(s.get('docs_done'))} · пропущено "
-             f"{_n(s.get('docs_skipped'))} · не удалось разобрать {_n(s.get('docs_failed'))}")
-    failed = f"не удалось создать/обновить {_n(s.get('cards_failed'))}"
+        L.append(f"  {w('Модель: не вызывалась', 'Model: not called')}" + cached)
+    L.append(f"  {w('Документы', 'Documents')}: {w('обработано', 'processed')} {_n(s.get('docs_done'))}"
+             f" · {w('пропущено', 'skipped')} {_n(s.get('docs_skipped'))}"
+             f" · {w('не удалось разобрать', 'could not be parsed')} {_n(s.get('docs_failed'))}")
+    failed = f"{w('не удалось создать/обновить', 'could not create/update')} {_n(s.get('cards_failed'))}"
+    cards = w("Карточки", "Cards")
     if s.get("cards_known"):
-        L.append(f"  Карточки: создано {_n(s.get('cards_created'))} · обновлено/дополнено "
-                 f"{_n(s.get('cards_updated'))} · удалено {_n(s.get('cards_deleted'))} · {failed}"
-                 + (f" · служебных отметок {_n(s.get('cards_marked'))}" if s.get("cards_marked")
-                    else ""))
+        L.append(f"  {cards}: {w('создано', 'created')} {_n(s.get('cards_created'))} · "
+                 f"{w('обновлено/дополнено', 'updated/extended')} {_n(s.get('cards_updated'))} · "
+                 f"{w('удалено', 'deleted')} {_n(s.get('cards_deleted'))} · {failed}"
+                 + (f" · {w('служебных отметок', 'service marks')} {_n(s.get('cards_marked'))}"
+                    if s.get("cards_marked") else ""))
     else:
-        L.append(f"  Карточки: изменения базы не посчитаны (предпросмотр или проект не в git)"
-                 f" · {failed}")
+        L.append(f"  {cards}: " + w("изменения базы не посчитаны (предпросмотр или проект не в git)",
+                                    "base changes not counted (preview or the project is not in git)")
+                 + f" · {failed}")
     errs = s.get("errors") or {}
     total = sum(errs.values())
     if total:
-        L.append(f"  Ошибки: {_n(total)}")
+        L.append(f"  {w('Ошибки', 'Errors')}: {_n(total)}")
         kinds = sorted(errs.items(), key=lambda kv: (-kv[1], kv[0]))
         L += [f"    · {kind} — {_n(n)}" for kind, n in kinds[:12]]
         if len(kinds) > 12:
-            L.append(f"    · … и ещё видов: {len(kinds) - 12}")
+            L.append(f"    · … {w('и ещё видов', 'and more kinds')}: {len(kinds) - 12}")
     else:
-        L.append("  Ошибки: не было")
+        L.append(f"  {w('Ошибки: не было', 'Errors: none')}")
     return L
 
 

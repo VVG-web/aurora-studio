@@ -391,7 +391,11 @@
     "папки результата нет: {}/": "the output folder does not exist: {}/",
     "путь абсолютный, а папка результата лежит внутри проекта": "the path is absolute, but the output folder lives inside the project",
     "путь выходит за пределы проекта": "the path leaves the project",
-    "шаблона нет на диске: {}": "the template is not on the disk: {}"
+    "шаблона нет на диске: {}": "the template is not on the disk: {}",
+    "на GitHub не нашлось файла VERSION — обновляться не из чего": "there is no VERSION file on GitHub — nothing to update from",
+    "не удалось узнать версию на GitHub: {}": "could not find out the version on GitHub: {}",
+    "нет сети": "no network",
+    "кэш графа не прочитан: {}": "the graph cache could not be read: {}"
   },
   "connectors": {
     "confluence-dc": {

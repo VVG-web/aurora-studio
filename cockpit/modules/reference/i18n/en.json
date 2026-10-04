@@ -21,5 +21,6 @@
   "reference.doc.build": "Extracting knowledge",
   "reference.doc.migration": "Migrating a project",
   "reference.doc.panel": "Requirements for this panel",
-  "reference.doc.changelog": "Kit version history"
+  "reference.doc.changelog": "Kit version history",
+  "reference.ru_only": "This document exists only in Russian."
 }

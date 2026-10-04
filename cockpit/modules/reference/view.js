@@ -26,6 +26,16 @@ const DOCS = [
   ["CHANGELOG.md", "reference.doc.changelog"],
 ];
 
+// Английские издания лежат в `docs/en/`; у остальных документов перевода нет — это
+// справочники для агента (скиллы) и журнал изменений, и они читаются по-русски.
+const EN_DOCS = {
+  "docs/commands.md": "docs/en/commands.md",
+  "docs/roadmap.md": "docs/en/roadmap.md",
+  "docs/control-panel-ui-requirements.md": "docs/en/control-panel.md",
+};
+const docPath = (ctx, path) => ctx.lang !== "en" ? path
+  : EN_DOCS[path] || (path.startsWith("docs/readme/") ? "docs/en/" + path.slice(5) : path);
+
 export function mount(ctx){
   ctx.root.dataset.module = "reference";
   const list = ctx.$("#docList");
@@ -36,7 +46,7 @@ export function mount(ctx){
       ctx.el("div", {},
         ctx.el("div", {style:"font-weight:600;font-size:13.5px"}, ctx.t(key)),
         ctx.el("div", {class:"mono", style:"font-size:11px;color:var(--text-muted);"
-          + "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, path))));
+          + "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, docPath(ctx, path)))));
 }
 
 export async function refresh(ctx, payload){
@@ -47,9 +57,13 @@ export async function refresh(ctx, payload){
 async function open(ctx, path){
   const body = ctx.$("#docBody");
   body.innerHTML = '<span class="spin"></span>';
-  const d = await ctx.api("/api/doc?path=" + encodeURIComponent(path));
-  body.innerHTML = d.text ? ctx.fmt.md(d.text)
-                          : ctx.t("reference.failed", {path: ctx.fmt.esc(path)});
+  const real = docPath(ctx, path);
+  const d = await ctx.api("/api/doc?path=" + encodeURIComponent(real));
+  // Нет английского издания — говорим об этом, а не оставляем русский текст под английским заголовком.
+  const note = ctx.lang === "en" && real === path && !path.startsWith("docs/en/")
+    ? `<p class="muted">${ctx.t("reference.ru_only")}</p>` : "";
+  body.innerHTML = d.text ? note + ctx.fmt.md(d.text)
+                          : ctx.t("reference.failed", {path: ctx.fmt.esc(real)});
   body.scrollIntoView({block:"start"});
 }
 

@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.150.4";
+const UI_VERSION = "1.150.5";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2086,6 +2086,32 @@ const FIX_HINT = {
   "MISSING": "@missing",
   "COLLISION": "@collision",
 };
+// Слова самого движка на экране: так печатают линтер, статистика и аудит. Ключом остаются они
+// (по ним панель ищет числа), а подпись человеку берётся из каталога строк.
+const ENGINE_WORDS = {
+  "битые ссылки": "word.broken_links",  // данные движка
+  "оглавления отстали от базы": "word.index_behind",  // данные движка
+  "контрольные вопросы без карточки-источника": "word.golden_orphan",  // данные движка
+  "одинаковые alias у разных карточек": "word.dup_alias",  // данные движка
+  "карточки без связей": "word.no_links",  // данные движка
+  "поле шапки попало в текст карточки": "word.header_leak",  // данные движка
+  "статус вне шкалы": "word.bad_status",  // данные движка
+  "карточки без шапки": "word.no_header",  // данные движка
+  "артефакты, попавшие в базу знаний": "word.artifacts_in_kb",  // данные движка
+  "карточки без типа": "word.no_type",  // данные движка
+  "тип не по разделу": "word.type_mismatch",  // данные движка
+  "прочее": "word.other",  // данные движка
+  "доверенные": "word.trusted",  // данные движка
+  "из встреч (вне доли)": "word.meetings",  // данные движка
+  "связей с задачами нет": "word.no_tasks",  // данные движка
+  "задачи ещё в работе": "word.tasks_open",  // данные движка
+  "доверие не считалось": "word.not_computed",  // данные движка
+  "(нет status)": "word.no_status",  // данные движка
+  "(нет kind)": "word.no_kind",  // данные движка
+  "ПОСТОРОННИЕ": "word.foreign",  // данные движка
+};
+const engineWord = n => ENGINE_WORDS[n] ? t(ENGINE_WORDS[n]) : n;
+
 // Совет — либо готовая строка команды, либо надпись из каталога (собачка впереди).
 const fixHint = v => v && v[0] === "@" ? t("fix.hint." + v.slice(1)) : v;
 
@@ -2532,7 +2558,7 @@ async function runRoute(sc, write, resume){
       const btn = sc.id === "fix" ? null : fixButton(f.what);
       out.append(el("div",{class:"dim row",style:"gap:10px;align-items:center"},
         el("span",{style:"flex:1"},
-          `      ${f.what}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : "")),
+          `      ${engineWord(f.what)}: ${f.n}` + (f.fix ? `  →  ${f.fix}` : "")),
         btn));
     });
   });
@@ -3894,7 +3920,7 @@ function moduleCtx(id, root){
     fmt: {ago, kb, when: histWhen, esc, tick, md, mdLite, rtime, howLong},
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
     // перехода к маршруту — иначе в каждом разделе они разъедутся.
-    ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton},
+    ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord},
     openPath, isEngineCmd, hideDev,
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.
