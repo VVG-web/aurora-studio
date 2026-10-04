@@ -25,6 +25,8 @@ when a deep Confluence branch would not fit.
 
 - **Launch:** double-click `start-aurora.bat`. It looks for Python, offers to install what is missing and opens the panel.
 - **Python:** the launchers try `python` and `py` before trusting a stub; Python 3.9+ and git are required.
+- **Installing what is missing:** `start-aurora.bat` offers `winget install -e --id Python.Python.3.12` and `winget install -e --id Git.Git` (it asks first, `[y/N]`). `winget` must be available; without it the file prints the download pages (python.org, git-scm.com) and stops. After a `winget` install close the window and run the file again: the new `PATH` is visible only to new windows.
+- **The Microsoft Store shortcut:** a `python.exe` from `WindowsApps` opens the Store instead of running Python. The file checks the interpreter by running it, not by finding it on `PATH`, so such a shortcut is not taken for Python.
 - **Open files cannot be replaced.** Windows refuses to replace a file another process is reading. The engine's atomic writes
   (manifest, vector index, settings) wait and retry instead of failing.
 - **Another process's pid.** The writing-run lock asks the system whether the holder is alive through the Windows API,
