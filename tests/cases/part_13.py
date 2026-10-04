@@ -2922,3 +2922,23 @@ def test_the_panel_forgets_old_finished_jobs(_t):
     assert "live" in mod.JOBS, "идущее задание забыто"
     assert "d59" in mod.JOBS and "d0" not in mod.JOBS, "забыты не самые старые"
     mod.JOBS.clear()
+
+
+def test_a_multiline_question_keeps_the_thread_header_intact(tmp: Path):
+    """Вопрос в несколько строк не ломает шапку журнала разговора.
+
+    Заголовок брался срезом вопроса как есть: перевод строки внутри кавычек шапки обрывал
+    `title:` на первой строке, а остальные строки вопроса уходили в заголовок `#` мимо него.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import agent_runner as R
+    from aurora_common import frontmatter
+    path = tmp / "t.md"
+    R.append_turn(path, 'Как работает\nдоверие "карточек"?\nВторая \\ строка', "ответ", "н", "ask")
+    text = path.read_text(encoding="utf-8")
+    head = text.split("\n---\n", 1)[0]
+    assert head.count("\n") == 4, f"шапка разъехалась на лишние строки:\n{head}"
+    assert frontmatter(text)["title"] == "Как работает доверие карточек? Вторая / строка", \
+        frontmatter(text)
+    assert "# Разговор с базой — Как работает доверие карточек? Вторая / строка\n" in text
+    assert R.read_thread(path)[0]["q"].count("\n") == 2, "сам вопрос должен остаться как был"

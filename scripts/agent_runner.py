@@ -4302,9 +4302,12 @@ def append_turn(path: Path, question: str, answer: str, note: str, mode: str) ->
     path.parent.mkdir(parents=True, exist_ok=True)
     now = utc_label()
     if not path.is_file():
-        head = ["---", "type: ask-thread", f'title: "{question[:80].replace(chr(34), "")}"',
+        # Заголовок — одна строка: перевод строки в вопросе рвал кавычки в шапке (заголовок
+        # обрезался до первой строки), а обратная косая — YAML-экранирование.
+        title = re.sub(r"\s+", " ", question).strip()[:80].replace('"', "").replace("\\", "/")
+        head = ["---", "type: ask-thread", f'title: "{title}"',
                 f"created: {now}", f"mode: {mode}", "---", "",
-                f"# Разговор с базой — {question[:80]}", "",
+                f"# Разговор с базой — {title}", "",
                 "_Журнал диалога: вопросы аналитика и ответы модели по карточкам базы. "
                 "Файл ведёт панель (`agent:ask`), править его руками незачем — но читать "
                 "можно и в Obsidian._", ""]
