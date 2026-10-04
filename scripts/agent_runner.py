@@ -4538,8 +4538,25 @@ def make_session_dir(cwd: str, kind: str) -> Path:
     return d
 
 
+SID_RE = re.compile(r"[\w][\w.-]*\Z")
+
+
+def session_dir(cwd: str, sid: str) -> Path:
+    """Папка сессии строго внутри `Workspaces/`. Имя вида `../../x` её не покидает.
+
+    Идентификатор приходит из командной строки и из формы панели; без проверки он
+    становился частью пути, и сессия читалась и писалась где угодно рядом с проектом.
+    """
+    if not SID_RE.match(sid or "") or ".." in sid:
+        raise ValueError(f"недопустимый идентификатор сессии: {sid!r}")
+    return Path(cwd) / "Workspaces" / sid
+
+
 def load_session(cwd: str, sid: str) -> dict:
-    f = Path(cwd) / "Workspaces" / sid / "session.json"
+    try:
+        f = session_dir(cwd, sid) / "session.json"
+    except ValueError:
+        return {}
     try:
         return json.loads(f.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -4547,7 +4564,7 @@ def load_session(cwd: str, sid: str) -> dict:
 
 
 def save_session(cwd: str, sid: str, data: dict) -> None:
-    d = Path(cwd) / "Workspaces" / sid
+    d = session_dir(cwd, sid)
     d.mkdir(parents=True, exist_ok=True)
     (d / "session.json").write_text(json.dumps(data, ensure_ascii=False, indent=1),
                                     encoding="utf-8")

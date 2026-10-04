@@ -3206,3 +3206,30 @@ def test_a_source_parsed_by_paragraphs_counts_as_parsed_for_the_oracle(_t):
            "total": 1, "left": 0}
     ok, why = R.verdict_build(res, True)
     assert ok, why
+
+
+@test
+def test_a_session_id_cannot_leave_the_workspaces_folder(tmp: Path):
+    """Идентификатор сессии `../../x` не выводит чтение и запись за `Workspaces/`.
+
+    Идентификатор приходит из командной строки и формы панели и без проверки становился
+    частью пути: `session.json` читался и создавался в любой папке рядом с проектом.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    R = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    outside = tmp / "evil"
+    outside.mkdir()
+    (outside / "session.json").write_text('{"sid": "x"}', encoding="utf-8")
+    for bad in ("../evil", "..", "a/../../evil", "/etc", "", "a b/c"):
+        assert R.load_session(str(root), bad) == {}, bad
+        try:
+            R.save_session(str(root), bad, {"sid": bad})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"save_session принял {bad!r}")
+    assert not (tmp / "evil" / "session.json").read_text(encoding="utf-8").count("../evil")
+    R.save_session(str(root), "doc-2026-10-04_010203", {"sid": "ok"})
+    assert R.load_session(str(root), "doc-2026-10-04_010203") == {"sid": "ok"}
