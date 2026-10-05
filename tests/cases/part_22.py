@@ -159,6 +159,14 @@ def test_a_folder_guide_is_never_content(tmp: Path):
     assert "README.md" in BP.SKIP, "план разбора возьмёт описание папки документом"
     ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
     assert ck.count("is_folder_guide(") >= 3, "панель покажет описание шаблоном или артефактом"
+    B = importlib.import_module("bots")
+    (root / "bots").mkdir(exist_ok=True)
+    (root / "bots" / "README.md").write_text("# Боты проекта\n", encoding="utf-8")
+    (root / "bots" / "Анализ.md").write_text("---\nname: Анализ\n---\nПромпт\n", encoding="utf-8")
+    assert [b["file"] for b in B.list_bots(root, with_checks=False)] == ["bots/Анализ.md"], \
+        "описание папки ботов стало ботом"
+    assert "bots" in (KIT / "structure_dirs.txt").read_text(encoding="utf-8").split(), \
+        "папка ботов вне схемы — kit:doctor назовёт её ошибкой"
 
 
 @test

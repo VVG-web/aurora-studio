@@ -124,6 +124,7 @@ Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,d
 Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
 Scripts/                      скрипты проекта (свои обработчики, разовые миграции)
+bots/                         боты проекта: промпт, MCP, навыки, вложения, расписание (раздел «Боты»)
 Templates/ · TemplatesCommon/ · Prompts/ · Settings/
 start-aurora.command · start-aurora.bat      пусковые файлы
 ```

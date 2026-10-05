@@ -124,6 +124,7 @@ Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,d
 Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
 Scripts/                      the project's own scripts (handlers, one-off migrations)
+bots/                         the project's bots: prompt, MCP, skills, attachments, schedule ("Bots")
 Templates/ · TemplatesCommon/ · Prompts/ · Settings/
 start-aurora.command · start-aurora.bat      launch files
 ```

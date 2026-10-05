@@ -63,7 +63,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import kit_root  # noqa: E402 — кит: сам скрипт или указатель копии движка
+from aurora_common import is_folder_guide, kit_root  # noqa: E402 — кит; описание папки — не бот
 
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
@@ -437,6 +437,8 @@ def list_bots(project, with_checks: bool = True) -> list:
     skills = skill_names(project) if with_checks else None
     out = []
     for path in sorted(folder.glob("*.md"), key=lambda p: p.name.lower()):
+        if is_folder_guide(path):
+            continue                       # README.md — описание папки от кита, а не бот
         bot = read(project, rel_of(project, path))
         if not bot:
             continue
