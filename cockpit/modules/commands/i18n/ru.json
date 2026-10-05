@@ -17,5 +17,6 @@
   "commands.ns.make": "make: производство артефактов",
   "commands.ns.ship": "ship: наружу",
   "commands.ns.ops": "ops: управление и отчётность",
-  "commands.ns.agent": "agent: встроенный агент"
+  "commands.ns.agent": "agent: встроенный агент",
+  "commands.ns.git": "git: Git проекта"
 }

@@ -1,0 +1,12 @@
+{
+  "id": "gitlab",
+  "title": "GitLab",
+  "version": "1.0.0",
+  "since": "1.154.0",
+  "api": "/api/v4",
+  "auth": ["system", "token", "password", "ssh"],
+  "about": {
+    "ru": "GitLab на своём сервере или gitlab.com: вход по токену, проект с подгруппами, уровень доступа (отправка — с Developer), ветка по умолчанию.",
+    "en": "Self-hosted GitLab or gitlab.com: token sign-in, projects with subgroups, access level (pushing needs Developer), default branch."
+  }
+}

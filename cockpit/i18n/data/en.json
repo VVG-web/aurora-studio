@@ -92,7 +92,13 @@
     "dev:qa-gap": "What changed in code and what covers it; the decision \"automatic test or case\" is taken by the model.",
     "dev:qa-cover": "Cover what was done: a coverage table and a ready task for the assistant to add tests, cases and scenarios.",
     "dev:qa-run": "Run a scenario with a journal: automatic tests, a step checklist, a report in `Development/QA/runs/`.",
-    "dev:qa-new": "Create a test case or scenario from a template with the next free number."
+    "dev:qa-new": "Create a test case or scenario from a template with the next free number.",
+    "git:status": "Project Git: branch, link to the server, how much is not sent and how much is new on the server, changes by group, conflicts, the last commit; `--fetch` asks the server first. Problems come with the cause and the fix.",
+    "git:update": "Update the project from the server with the strategy from the setup (fast-forward only, merge, or put your changes on top); uncommitted work is not lost. A conflict gives the file list and a version choice in the «Git» section; `--auto` — a run by automation, only if it is switched on.",
+    "git:push": "Send the project to the server: uncommitted work is committed first by the message template, a branch with no link to the server gets linked; the server moved ahead — `--update-first`. Sign-in comes from the project setup; the token gets into neither the URL nor the command line.",
+    "git:commit": "Commit the project's changes with a message from the setup template or your own (`--message`); Aurora's hooks run, the ratchet is lifted only by an explicit `--skip-ratchet`.",
+    "git:fix": "One-click fixes: abort or finish an update, take your or the server's version of a file, link the branch to the server, create the repository, switch to the project branch, remove a password from the server URL.",
+    "git:check": "Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server."
   },
   "scenarios": {
     "Обновить базу": "Update the base",
@@ -402,7 +408,15 @@
     "кэш графа не прочитан: {}": "the graph cache could not be read: {}",
     "{}: переменные моделей больше не действуют — настройка моделей одна на кит (раздел «Модели»); уберите их: {}{}": "{}: model variables no longer apply — the model setup is one per kit (the «Models» section); remove them: {}{}",
     "адрес провайдера — http(s)://…": "the provider address is http(s)://…",
-    "настройка не разобрана": "the setup could not be read"
+    "настройка не разобрана": "the setup could not be read",
+    "сертификат проверяется только у адреса https://": "a certificate is checked only for an https:// address",
+    "в ките нет модуля «{}»": "the kit has no module «{}»",
+    "модуль «{}» из кита не загрузился: {}": "the module «{}» from the kit did not load: {}",
+    "в адресе нет сервера": "the address has no server",
+    "отпечаток изменился с момента показа — доверие не выдано": "the fingerprint changed since it was shown — trust not granted",
+    "GitHub не ответил: {}": "GitHub did not answer: {}",
+    "сервер {}:{} не отдал сертификат: {}": "server {}:{} did not give a certificate: {}",
+    "в адаптере нет check() или clone_urls()": "the adapter has no check() or clone_urls()"
   },
   "connectors": {
     "confluence-dc": {
@@ -728,7 +742,26 @@
     "прогон сценария; без значения — все подряд": "run a scenario; without a value — all in a row",
     "записать изменения (иначе только показ)": "write the changes (otherwise only show)",
     "завести журнал прогона в runs/ (для --run)": "start a run journal in runs/ (for --run)",
-    "завести документ: case|scenario и название": "create a document: case|scenario and a title"
+    "завести документ: case|scenario и название": "create a document: case|scenario and a title",
+    "состояние git проекта": "the project's git status",
+    "обновить проект с сервера": "update the project from the server",
+    "отправить на сервер (незафиксированное сначала фиксируется)": "send to the server (uncommitted work is committed first)",
+    "зафиксировать изменения": "commit the changes",
+    "проверить вход и репозиторий на сервере": "check the sign-in and the repository on the server",
+    "модули провайдеров: что стоит, что в ките": "provider modules: what is installed, what is in the kit",
+    "со статусом: спросить сервер о новом": "with the status: ask the server what is new",
+    "как объединять при обновлении": "how to join changes when updating",
+    "сообщение фиксации (по умолчанию — шаблон настройки)": "the commit message (by default — the setup template)",
+    "отправить без фиксации изменений": "send without committing changes",
+    "перед отправкой обновить": "update before sending",
+    "перед обновлением зафиксировать": "commit before updating",
+    "фиксировать, даже если храповик против (решение человека)": "commit even if the ratchet objects (a human's decision)",
+    "запуск автоматикой: работает, только если она включена на это событие": "a run by automation: works only if it is switched on for this event",
+    "папка проекта (по умолчанию — текущая)": "the project folder (by default — the current one)",
+    "итог одной строкой JSON": "the result as one JSON line",
+    "починка одним действием (что — в --what)": "a one-click fix (what — in --what)",
+    "что чинить: abort, continue, mine, theirs, resolved, set-upstream, init, checkout, use-branch, strip-url, fix-key-perms": "what to fix: abort, continue, mine, theirs, resolved, set-upstream, init, checkout, use-branch, strip-url, fix-key-perms",
+    "файл для --what mine|theirs|resolved": "the file for --what mine|theirs|resolved"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

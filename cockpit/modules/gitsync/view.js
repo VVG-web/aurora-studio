@@ -1,0 +1,695 @@
+/* Git — раздел-модуль: сервер проекта, обновление, отправка, автоматика.
+
+   Работу делает движок (scripts/git_sync.py): страница показывает состояние, правит
+   настройку проекта и запускает действия заданиями панели — они видны в «Консоли» и в
+   истории запусков. Неудача приходит кодом с действиями; слова к коду — в каталоге
+   раздела, запасной текст — от движка. Секреты приходят маской: маска значит «не трогали». */
+
+const MASK = "••••••";
+const ACTION_OF = {"git:update": "update", "git:push": "push", "git:commit": "commit",
+                   "git:fix": "fix", "git:status": "fetch"};
+const RX = {
+  url: /^https?:\/\/[^\s/@]+(:\d{1,5})?(\/\S*)?$/i,
+  scp: /^[\w.-]+@[\w.-]+:\S+$/,
+  ssh: /^ssh:\/\/\S+$/i,
+  path: /^~?[\w.-]+(\/[\w.-]+)+$/,
+  remote: /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+  email: /^[^@\s]+@[^@\s]+\.[^@\s]+$/,
+  local: /^(file:\/\/\S+|\/\S+|[A-Za-z]:[\\/]\S*|\\\\\S+)$/,
+};
+const PLACEHOLDER = /\{(\w+)\}/g;
+const key = v => String(v || "").replace(/-/g, "_");     // ff-only → ff_only: ключ каталога
+
+let D = null, TAB = "state", FORM = null, CRED = null, DIRTY = false;
+let CHECK = null, BUSY = "", LAST = null, ERRS = {}, CERT = null, PROJECT = "";
+const ERR_NODES = {};
+
+export function mount(ctx){
+  ctx.root.dataset.module = "gitsync";
+}
+
+export async function refresh(ctx, payload){
+  if (payload && payload.tab) TAB = payload.tab;
+  if (PROJECT !== ctx.project.path){
+    PROJECT = ctx.project.path;
+    DIRTY = false; CHECK = null; CERT = null; ERRS = {}; LAST = null;
+  }
+  await load(ctx, true);
+}
+
+const clone = x => JSON.parse(JSON.stringify(x));
+
+async function load(ctx, keepForm){
+  const d = await ctx.api("/api/gitsync?project=" + encodeURIComponent(ctx.project.path),
+                          {quiet: true});
+  if (!d || d.error || !d.status){
+    ctx.$("#gitsyncBody").textContent = (d && d.error) || ctx.t("gitsync.load_failed");
+    return;
+  }
+  D = d;
+  if (!(keepForm && DIRTY)){
+    FORM = clone(d.settings);
+    CRED = {...d.credentials, ssh_key_text: ""};
+    DIRTY = false; ERRS = {};
+  } else {
+    // Автоматику правят и на вкладке состояния — несохранённая настройка её не затирает.
+    FORM.auto_update = clone(d.settings.auto_update);
+    FORM.auto_push = clone(d.settings.auto_push);
+  }
+  draw(ctx);
+}
+
+// Строка каталога, а нет её — запасной текст движка.
+function tr(ctx, key, fallback, vars){
+  const s = ctx.t(key, vars || {});
+  return s === key ? (fallback || key) : s;
+}
+
+function draw(ctx){
+  drawNotes(ctx);
+  drawTabs(ctx);
+  const box = ctx.$("#gitsyncBody");
+  box.innerHTML = "";
+  box.append(TAB === "setup" ? setupTab(ctx) : stateTab(ctx));
+}
+
+/* ---------------------------------------------------------------- шапка */
+
+function drawNotes(ctx){
+  const {t, el} = ctx;
+  const box = ctx.$("#gitsyncNotes");
+  box.innerHTML = "";
+  if (!D.status.repo) return;
+  if (!D.saved)
+    box.append(el("div", {class: "note", style: "margin-bottom:10px"},
+      t("gitsync.not_saved"), " ",
+      el("button", {class: "btn sm", onclick: () => { TAB = "setup"; draw(ctx); }},
+        t("gitsync.a.open_setup"))));
+  const mod = D.status.module || {};
+  if (mod.state === "missing" || mod.state === "outdated")
+    box.append(el("div", {class: "warnbox"},
+      el("b", {}, mod.state === "missing"
+        ? t("gitsync.mod_missing", {name: mod.title || mod.id})
+        : t("gitsync.mod_outdated", {name: mod.title || mod.id, have: mod.installed,
+                                     kit: mod.available})),
+      el("div", {class: "muted", style: "font-size:12.5px;margin:4px 0 8px"},
+        t("gitsync.mod_why")),
+      el("div", {class: "row", style: "gap:8px"},
+        el("button", {class: "btn sm primary", onclick: () => installModule(ctx, mod.id)},
+          mod.state === "missing" ? t("gitsync.a.install_module") : t("gitsync.a.update_module")),
+        el("button", {class: "btn sm", onclick: () => ctx.show("install")},
+          t("gitsync.a.open_install")))));
+}
+
+function drawTabs(ctx){
+  const {t, el} = ctx;
+  const box = ctx.$("#gitsyncTabs");
+  box.innerHTML = "";
+  ["state", "setup"].forEach(id => box.append(el("button", {
+    class: "btn sm" + (TAB === id ? " primary" : ""), role: "tab",
+    "aria-selected": String(TAB === id),
+    onclick: () => { TAB = id; draw(ctx); }},
+    t("gitsync.tab." + id), id === "setup" && DIRTY
+      ? el("span", {class: "chip warn", style: "margin-left:6px"}, t("gitsync.unsaved")) : null)));
+}
+
+/* ---------------------------------------------------------------- состояние */
+
+function stateTab(ctx){
+  const {el} = ctx;
+  const st = D.status;
+  const box = el("div", {});
+  if (!st.repo){
+    (st.problems || []).forEach(p => box.append(problemView(ctx, p)));
+    return box;
+  }
+  box.append(summaryCard(ctx, st));
+  const loud = (st.problems || []).filter(p => p.level !== "info"
+    && !["conflict", "in_progress"].includes(p.code));
+  const quiet = (st.problems || []).filter(p => p.level === "info"
+    && !p.code.startsWith("module_"));
+  loud.forEach(p => box.append(problemView(ctx, p)));
+  quiet.forEach(p => box.append(problemView(ctx, p)));
+  if ((st.conflicts || []).length || st.operation) box.append(conflictsCard(ctx, st));
+  // Идёт разбор конфликта — его карточка и есть ответ; отказ, который его начал, не дублируем.
+  const resolving = (st.conflicts || []).length || st.operation;
+  const last = lastFailure(ctx, resolving);
+  if (last) box.append(last);
+  box.append(autoCard(ctx));
+  box.append(changesCard(ctx, st));
+  box.append(logCard(ctx));
+  return box;
+}
+
+const hostOf = url => {
+  const m = String(url || "").match(/^(?:\w+:\/\/)?(?:[^@/]+@)?([^/:]+)(?::(\d+))?/);
+  return m ? m[1] + (m[2] ? ":" + m[2] : "") : "";
+};
+
+function changedCount(st){
+  return new Set([...(st.staged || []), ...(st.unstaged || []), ...(st.untracked || [])]).size;
+}
+
+function summaryCard(ctx, st){
+  const {t, el} = ctx;
+  const changed = changedCount(st);
+  const hasRemote = (st.remotes || []).includes(st.remote);
+  let sync;
+  if (!hasRemote) sync = t("gitsync.sync_no_remote");
+  else if (!st.on_server) sync = t("gitsync.sync_not_on_server");
+  else if (!st.ahead && !st.behind) sync = t("gitsync.sync_same");
+  else sync = [st.behind ? t("gitsync.sync_behind", {n: st.behind}) : "",
+               st.ahead ? t("gitsync.sync_ahead", {n: st.ahead}) : ""].filter(Boolean).join(" · ");
+  const lc = st.last_commit || {};
+  const busy = BUSY ? el("div", {class: "row", style: "gap:8px;margin-top:10px"},
+    el("span", {class: "spin"}),
+    el("span", {class: "muted"}, t("gitsync.busy", {what: t("gitsync.act." + ACTION_OF[BUSY])}))) : null;
+  const msg = el("input", {class: "btn", style: "flex:1;min-width:200px;font-weight:400",
+    placeholder: t("gitsync.commit_ph", {tpl: D.settings.message})});
+  // Посреди разбора конфликта обновлять, отправлять и фиксировать нельзя — кнопки ждут.
+  const resolving = (st.conflicts || []).length || st.operation;
+  const off = BUSY || resolving ? "" : null;
+  const updateFirst = !resolving && st.behind > 0;
+  const pushFirst = hasRemote && !resolving && !updateFirst && (st.ahead > 0 || changed > 0 || !st.on_server);
+  return el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
+    el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-bottom:10px"},
+      el("span", {class: "chip"}, t("gitsync.prov." + st.provider)),
+      el("span", {class: "chip mono", title: t("gitsync.branch_hint")},
+        st.branch || t("gitsync.no_branch")),
+      hasRemote && hostOf(st.remote_url) ? el("span", {class: "chip mono", title: st.remote_url},
+        hostOf(st.remote_url)) : null,
+      el("span", {class: "muted mono", style: "font-size:12px"}, st.remote_url || "")),
+    el("div", {style: "font-size:15px;font-weight:600"}, sync),
+    el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"},
+      st.fetched_at ? t("gitsync.fetched", {ago: ctx.fmt.ago(st.fetched_at)})
+                    : t("gitsync.never_fetched")),
+    el("div", {style: "margin-top:8px"},
+      changed ? t("gitsync.changes_n", {n: changed}) : t("gitsync.changes_none")),
+    lc.hash ? el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"},
+      t("gitsync.last_commit", {subject: lc.subject, author: lc.author,
+                                when: ctx.fmt.when(lc.when)})) : null,
+    el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:14px"},
+      el("button", {class: "btn" + (updateFirst ? " primary" : ""), disabled: off,
+        title: t("gitsync.update_hint", {how: t("gitsync.strat." + key(D.settings.strategy))}),
+        onclick: () => act(ctx, "git:update")}, t("gitsync.update")),
+      el("button", {class: "btn" + (pushFirst ? " primary" : ""), disabled: off,
+        title: t("gitsync.push_hint"), onclick: () => act(ctx, "git:push")}, t("gitsync.push")),
+      el("button", {class: "btn", disabled: off, title: t("gitsync.fetch_hint"),
+        onclick: () => act(ctx, "git:status", ["--fetch"])}, t("gitsync.fetch"))),
+    changed ? el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:10px"}, msg,
+      el("button", {class: "btn", disabled: off, title: t("gitsync.commit_hint"),
+        onclick: () => act(ctx, "git:commit", msg.value.trim()
+          ? ["--message=" + msg.value.trim()] : [])}, t("gitsync.commit"))) : null,
+    busy);
+}
+
+function problemView(ctx, p, action){
+  const {t, el} = ctx;
+  const vars = {...p, current: p.current || "", wanted: p.wanted || "",
+                name: (p.module && (p.module.title || p.module.id)) || ""};
+  const tone = p.level === "info" ? "note" : p.level === "warn" ? "warnbox" : "warnbox dangerbox";
+  const files = p.files || [];
+  const fields = p.fields || [];
+  return el("div", {class: tone, style: p.level === "info" ? "margin:8px 0" : ""},
+    el("b", {}, tr(ctx, "gitsync.p." + p.code, p.title, vars)),
+    el("div", {class: p.level === "info" ? "" : "muted", style: "font-size:12.5px;margin-top:3px"},
+      tr(ctx, "gitsync.fix." + p.code, p.fix, vars)),
+    files.length ? el("div", {class: "mono", style: "font-size:12px;margin-top:6px"},
+      files.slice(0, 12).join(", ") + (files.length > 12 ? " …" : "")) : null,
+    fields.length ? el("div", {style: "font-size:12.5px;margin-top:6px"},
+      ...fields.map(f => el("div", {}, "· " + (f.field ? t("gitsync.field." + f.field) + ": " : "")
+                                   + tr(ctx, "gitsync.f." + f.code, f.code)))) : null,
+    (p.actions || []).length ? el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:8px"},
+      ...p.actions.map((a, i) => el("button", {class: "btn sm" + (i === 0 ? " primary" : ""),
+        disabled: BUSY ? "" : null, onclick: () => doAction(ctx, a, p, action)},
+        t("gitsync.a." + a)))) : null,
+    p.raw ? el("details", {style: "margin-top:8px"},
+      el("summary", {class: "muted", style: "cursor:pointer;font-size:12px"}, t("gitsync.raw")),
+      el("pre", {class: "mono", style: "font-size:11.5px;white-space:pre-wrap;margin:6px 0 0"},
+        p.raw)) : null);
+}
+
+// Последнее действие кончилось отказом — показываем его причину и починку, пока следующее
+// не пройдёт: автоматика, упавшая ночью, не должна теряться в журнале.
+function lastFailure(ctx, resolving){
+  const {t, el} = ctx;
+  const entries = Object.values(D.last || {}).filter(e => e && e.at);
+  if (!entries.length) return null;
+  const e = entries.sort((a, b) => b.at.localeCompare(a.at))[0];
+  if (e.ok || !e.problem) return null;
+  if (resolving && ["conflict", "in_progress", "conflict_markers"].includes(e.problem.code)) return null;
+  return el("div", {style: "margin:8px 0"},
+    el("div", {class: "muted", style: "font-size:12.5px;margin-bottom:-4px"},
+      t("gitsync.last_failed", {what: t("gitsync.act." + e.action),
+                                trigger: t("gitsync.tr." + (e.trigger || "manual")),
+                                when: ctx.fmt.when(e.at)})),
+    problemView(ctx, {...e.problem, level: "error"}, e.action));
+}
+
+function conflictsCard(ctx, st){
+  const {t, el} = ctx;
+  const files = st.conflicts || [];
+  const fx = (what, file) => act(ctx, "git:fix", ["--what=" + what, ...(file ? ["--file=" + file] : [])]);
+  const off = BUSY ? "" : null;
+  return el("div", {class: "card", id: "gitsyncConflicts", style: "padding:16px 18px;margin:12px 0"},
+    el("b", {}, t("gitsync.conflicts_title", {op: t("gitsync.op." + key(st.operation || "merge"))})),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("gitsync.conflicts_about")),
+    ...files.map(f => el("div", {class: "list-item", style: "flex-wrap:wrap;align-items:center"},
+      el("span", {class: "mono", style: "flex:1;min-width:200px;font-size:12.5px"}, f),
+      el("button", {class: "btn sm", disabled: off, title: t("gitsync.mine_hint"),
+        onclick: () => fx("mine", f)}, t("gitsync.mine")),
+      el("button", {class: "btn sm", disabled: off, title: t("gitsync.theirs_hint"),
+        onclick: () => fx("theirs", f)}, t("gitsync.theirs")),
+      el("button", {class: "btn sm", onclick: () => ctx.openPath(f)}, t("gitsync.open_file")),
+      el("button", {class: "btn sm", disabled: off, title: t("gitsync.resolved_hint"),
+        onclick: () => fx("resolved", f)}, t("gitsync.resolved")))),
+    files.length ? null : el("div", {class: "muted", style: "font-size:12.5px"}, t("gitsync.conflicts_none_left")),
+    el("div", {class: "row", style: "gap:8px;margin-top:12px"},
+      el("button", {class: "btn primary", disabled: files.length || BUSY ? "" : null,
+        onclick: () => fx("continue")}, t("gitsync.a.continue")),
+      el("button", {class: "btn danger", disabled: off, onclick: () => fx("abort")},
+        t("gitsync.a.abort"))));
+}
+
+/* ---------------------------------------------------------------- автоматика */
+
+function autoCard(ctx){
+  const {t, el} = ctx;
+  const s = D.settings, o = D.options;
+  const block = (group, on, title) => {
+    const cur = clone(s[group]);
+    const save = () => saveAuto(ctx, {[group]: cur});
+    const every = el("input", {class: "btn", type: "number", min: o.min_every,
+      style: "width:80px;font-weight:400", value: String(cur.every_min)});
+    every.onchange = () => { cur.every_min = Math.max(o.min_every, Number(every.value) || o.min_every); save(); };
+    return el("div", {style: "flex:1;min-width:260px"},
+      el("label", {class: "flagline", style: "font-weight:600"},
+        el("input", {type: "checkbox", checked: cur.enabled ? "" : null,
+          onchange: e => { cur.enabled = e.target.checked; save(); }}), title),
+      ...on.map(x => el("label", {class: "flagline", style: "padding-left:24px"},
+        el("input", {type: "checkbox", checked: cur.on.includes(x) ? "" : null,
+          disabled: cur.enabled ? null : "",
+          onchange: e => { cur.on = e.target.checked ? [...cur.on, x] : cur.on.filter(y => y !== x); save(); }}),
+        t("gitsync.on." + x),
+        x === "interval" ? el("span", {class: "row", style: "gap:6px;margin-left:8px"},
+          every, t("gitsync.minutes")) : null)));
+  };
+  return el("div", {class: "card", style: "padding:16px 18px;margin:14px 0"},
+    el("b", {}, t("gitsync.auto_title")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("gitsync.auto_about")),
+    el("div", {class: "row", style: "gap:24px;flex-wrap:wrap;align-items:flex-start"},
+      block("auto_update", o.update_on, t("gitsync.auto_update")),
+      block("auto_push", o.push_on, t("gitsync.auto_push"))));
+}
+
+async function saveAuto(ctx, patch){
+  const settings = {...clone(D.settings), ...patch};
+  const r = await ctx.api("/api/gitsync/settings", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, settings})});
+  if (!r || !r.ok){
+    ERRS = fieldErrors((r && r.problems) || []);
+    TAB = "setup";
+    ctx.toast(ctx.t("gitsync.auto_needs_setup"), "warn");
+    await load(ctx, true);
+    return;
+  }
+  ctx.toast(ctx.t("gitsync.saved"), "ok");
+  await load(ctx, true);
+}
+
+/* ---------------------------------------------------------------- изменения и журнал */
+
+function changesCard(ctx, st){
+  const {t, el} = ctx;
+  const group = (key, files) => files.length ? el("div", {style: "margin-top:8px"},
+    el("div", {class: "muted", style: "font-size:12px"}, t("gitsync.group." + key, {n: files.length})),
+    ...files.slice(0, 200).map(f => el("div", {class: "mono", style: "font-size:12px;cursor:pointer",
+      title: t("gitsync.open_file"), onclick: () => ctx.openPath(f)}, f))) : null;
+  if (!changedCount(st)) return el("div", {});
+  return el("details", {class: "card", style: "padding:12px 18px;margin:12px 0"},
+    el("summary", {style: "cursor:pointer;font-weight:600"},
+      t("gitsync.changes_title", {n: changedCount(st)})),
+    group("staged", st.staged || []), group("unstaged", st.unstaged || []),
+    group("untracked", st.untracked || []));
+}
+
+// Итог действия словами интерфейса: по числам записи, а не по фразе движка.
+function entryText(ctx, e){
+  const {t} = ctx;
+  if (e.skipped) return t("gitsync.skipped." + e.skipped);
+  if (!e.ok) return tr(ctx, "gitsync.p." + e.code, e.summary || e.code, {});
+  if (e.action === "update") return e.nothing ? t("gitsync.ok.update_none")
+    : t("gitsync.ok.update", {n: e.behind || 0, files: e.files || 0});
+  if (e.action === "push") return e.nothing ? t("gitsync.ok.push_none")
+    : t("gitsync.ok.push", {n: e.pushed || 0});
+  if (e.action === "commit") return e.nothing ? t("gitsync.ok.commit_none")
+    : t("gitsync.ok.commit", {commit: e.commit || "", files: e.files || 0});
+  if (e.action === "fetch") return t("gitsync.ok.fetch", {behind: e.behind || 0, ahead: e.ahead || 0});
+  return t("gitsync.ok.fix");
+}
+
+function logCard(ctx){
+  const {t, el} = ctx;
+  const rows = D.log || [];
+  return el("details", {class: "card", style: "padding:12px 18px;margin:12px 0"},
+    el("summary", {style: "cursor:pointer;font-weight:600"}, t("gitsync.log_title")),
+    rows.length ? null : el("div", {class: "muted", style: "margin-top:8px"}, t("gitsync.log_empty")),
+    ...rows.map(e => el("div", {class: "list-item", style: "padding:6px 0;align-items:center"},
+      el("span", {class: "muted", style: "min-width:120px;font-size:12px"}, ctx.fmt.when(e.at)),
+      el("span", {class: "chip " + (e.skipped ? "" : e.ok ? "ok" : "bad"), style: "flex:none"},
+        t("gitsync.act." + e.action)),
+      el("span", {class: "muted", style: "font-size:12px;min-width:120px"},
+        t("gitsync.tr." + (e.trigger || "manual"))),
+      el("span", {style: "flex:1;font-size:12.5px"}, entryText(ctx, e)))));
+}
+
+/* ---------------------------------------------------------------- действия */
+
+async function act(ctx, cmd, args = []){
+  if (BUSY) return;
+  BUSY = cmd; LAST = {cmd, args};
+  draw(ctx);
+  let res = null;
+  try { res = await ctx.run(cmd, args); } finally { BUSY = ""; }
+  await load(ctx, true);
+  const what = ACTION_OF[cmd];
+  const e = (D.last || {})[what];
+  if (res && res.refused) ctx.toast(res.refused, "err");
+  else if (e && e.ok) ctx.toast(entryText(ctx, e), "ok");
+  else if (e && e.problem) ctx.toast(tr(ctx, "gitsync.p." + e.problem.code, e.problem.title, e.problem), "err");
+  else if (res && res.rc) ctx.toast(ctx.t("gitsync.failed_console"), "err");
+}
+
+function doAction(ctx, id, p, action){
+  const run = (cmd, args) => act(ctx, cmd, args || []);
+  const tab = (name, after) => { TAB = name; draw(ctx); if (after) after(); };
+  ({
+    open_setup: () => tab("setup"),
+    open_credentials: () => tab("setup", () => ctx.$("#gitsyncAuth")?.scrollIntoView({behavior: "smooth"})),
+    check: () => tab("setup", () => runCheck(ctx)),
+    retry: () => LAST ? run(LAST.cmd, LAST.args) : run(action === "push" ? "git:push" : "git:update"),
+    push: () => run("git:push"),
+    commit: () => run("git:commit"),
+    set_upstream: () => run("git:fix", ["--what=set-upstream"]),
+    update_then_push: () => run("git:push", ["--update-first"]),
+    update_merge: () => run("git:update", ["--strategy=merge"]),
+    update_rebase: () => run("git:update", ["--strategy=rebase"]),
+    show_conflicts: () => ctx.$("#gitsyncConflicts")?.scrollIntoView({behavior: "smooth"}),
+    abort: () => run("git:fix", ["--what=abort"]),
+    continue: () => run("git:fix", ["--what=continue"]),
+    commit_then_update: () => run("git:update", ["--commit-first"]),
+    commit_anyway: () => run(action === "push" ? "git:push" : "git:commit", ["--skip-ratchet"]),
+    trust_cert: () => tab("setup", () => certShow(ctx)),
+    init: () => run("git:fix", ["--what=init"]),
+    checkout_branch: () => run("git:fix", ["--what=checkout"]),
+    use_current_branch: () => run("git:fix", ["--what=use-branch"]),
+    strip_url: () => run("git:fix", ["--what=strip-url"]),
+    fix_key_perms: () => run("git:fix", ["--what=fix-key-perms"]),
+    install_module: () => installModule(ctx, (p && p.module && p.module.id) || D.settings.provider),
+    update_module: () => installModule(ctx, (p && p.module && p.module.id) || D.settings.provider),
+    open_install: () => ctx.show("install"),
+  }[id] || (() => {}))();
+}
+
+async function installModule(ctx, id){
+  const r = await ctx.api("/api/gitmods/install", {method: "POST", quiet: true,
+    body: JSON.stringify({id})});
+  ctx.toast(r && r.ok ? ctx.t("gitsync.mod_done", {name: id, v: r.version})
+                      : (r && r.error) || ctx.t("gitsync.mod_failed"), r && r.ok ? "ok" : "err");
+  await load(ctx, true);
+}
+
+/* ---------------------------------------------------------------- настройка */
+
+function validBranch(b){
+  if (!b || /^[-/]/.test(b) || /(\/|\.|\.lock)$/.test(b) || b === "@") return false;
+  if (["..", "@{", "//", "\\"].some(x => b.includes(x))) return false;
+  return !/[\x00-\x20\x7f~^:?*[]/.test(b);
+}
+
+function isUrl(v){ return RX.url.test(v) || RX.scp.test(v) || RX.ssh.test(v) || RX.local.test(v); }
+
+// Те же правила, что у движка (git_sync.normalize): подсветка сразу, а не после сохранения.
+function validate(){
+  const e = {}, f = FORM, c = CRED;
+  if (f.instance && !RX.url.test(f.instance)) e.instance = "url";
+  const repo = (f.repo || "").trim();
+  if (repo && !isUrl(repo)){
+    if (!RX.path.test(repo.replace(/^\/+|\/+$/g, "").replace(/\.git$/, ""))) e.repo = "repo";
+    else if (!f.instance) e.instance = "required";
+  }
+  if (!RX.remote.test(f.remote || "")) e.remote = "name";
+  if (f.branch && !validBranch(f.branch)) e.branch = "branch";
+  if (f.author_email && !RX.email.test(f.author_email)) e.author_email = "email";
+  const unknown = [...(f.message || "").matchAll(PLACEHOLDER)].map(m => m[1])
+    .filter(x => !D.options.placeholders.includes(x));
+  if (unknown.length) e.message = "placeholder";
+  if ((c.auth === "token" || c.auth === "password") && !c.secret) e.secret = "required";
+  if (c.auth === "password" && !c.user) e.user = "required";
+  if (c.auth === "token" && !c.user && f.provider !== "gitlab"
+      && !(f.provider === "bitbucket" && /bitbucket\.org/.test(f.instance || ""))) e.user = "required_for_token";
+  if (c.ssh_key_text && !/PRIVATE KEY/.test(c.ssh_key_text)) e.ssh_key_text = "key_format";
+  return e;
+}
+
+function fieldErrors(problems){
+  const e = {};
+  (problems || []).forEach(p => { if (p.field) e[p.field] = p.code; });
+  return e;
+}
+
+function showErrs(ctx){
+  Object.entries(ERR_NODES).forEach(([k, n]) => {
+    n.textContent = ERRS[k] ? tr(ctx, "gitsync.f." + ERRS[k], ERRS[k]) : "";
+  });
+}
+
+function touch(ctx){
+  DIRTY = true;
+  ERRS = validate();
+  showErrs(ctx);
+  drawTabs(ctx);
+  const bar = ctx.$("#gitsyncSave");
+  if (bar) bar.disabled = false;
+}
+
+function field(ctx, key, label, input, hint){
+  const {el} = ctx;
+  const err = el("div", {style: "font-size:12px;color:var(--danger);min-height:0"});
+  ERR_NODES[key] = err;
+  return el("label", {style: "display:block;flex:1;min-width:220px;margin-bottom:10px"},
+    el("div", {class: "muted", style: "font-size:12px;margin-bottom:3px"}, label),
+    input, hint ? el("div", {class: "muted", style: "font-size:11.5px;margin-top:3px"}, hint) : null, err);
+}
+
+function input(ctx, obj, key, attrs){
+  const x = ctx.el("input", {class: "btn" + (attrs && attrs.mono ? " mono" : ""),
+    style: "width:100%;font-weight:400", ...(attrs || {}), mono: null});
+  x.value = obj[key] == null ? "" : String(obj[key]);
+  x.oninput = () => { obj[key] = x.value; touch(ctx); };
+  return x;
+}
+
+function select(ctx, obj, key, values, labelOf, redraw){
+  const s = ctx.el("select", {class: "btn", style: "width:100%"},
+    ...values.map(v => ctx.el("option", {value: v, selected: obj[key] === v ? "" : null}, labelOf(v))));
+  s.onchange = () => { obj[key] = s.value; touch(ctx); if (redraw) draw(ctx); };
+  return s;
+}
+
+function preview(ctx){
+  const now = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  const vals = {project: ctx.project.name, branch: FORM.branch || D.status.branch || "main",
+    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+    time: `${pad(now.getHours())}:${pad(now.getMinutes())}`, count: "3",
+    files: "a.md, b.md, c.md", trigger: ctx.t("gitsync.tr.manual")};
+  return (FORM.message || "").replace(PLACEHOLDER, (m, k) => vals[k] ?? m);
+}
+
+function setupTab(ctx){
+  const {t, el} = ctx;
+  for (const k of Object.keys(ERR_NODES)) delete ERR_NODES[k];
+  if (!D.status.repo){
+    const box = el("div", {});
+    (D.status.problems || []).forEach(p => box.append(problemView(ctx, p)));
+    return box;
+  }
+  const o = D.options, f = FORM, c = CRED;
+  const mod = (D.modules || {})[f.provider] || {};
+  const modChip = f.provider === "generic" ? el("span", {class: "chip"}, t("gitsync.mod_builtin"))
+    : mod.state === "ok" ? el("span", {class: "chip ok"}, t("gitsync.mod_ok", {v: mod.installed}))
+    : el("span", {class: "row", style: "gap:6px"},
+        el("span", {class: "chip warn"}, mod.state === "outdated"
+          ? t("gitsync.mod_old", {v: mod.installed}) : t("gitsync.mod_none")),
+        el("button", {class: "btn sm", onclick: () => installModule(ctx, f.provider)},
+          mod.state === "outdated" ? t("gitsync.a.update_module") : t("gitsync.a.install_module")));
+  const where = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
+    el("b", {}, t("gitsync.s_server")),
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;margin-top:10px;align-items:flex-start"},
+      field(ctx, "provider", t("gitsync.field.provider"),
+        select(ctx, f, "provider", o.providers, v => t("gitsync.prov." + v), true)),
+      el("div", {style: "padding-top:22px"}, modChip)),
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+      field(ctx, "instance", t("gitsync.field.instance"),
+        input(ctx, f, "instance", {mono: true, placeholder: "https://git.example.com:3000"}),
+        t("gitsync.h.instance")),
+      field(ctx, "repo", t("gitsync.field.repo"),
+        input(ctx, f, "repo", {mono: true, placeholder: t("gitsync.ph.repo." + f.provider)}),
+        t("gitsync.h.repo"))),
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+      field(ctx, "branch", t("gitsync.field.branch"),
+        input(ctx, f, "branch", {mono: true, placeholder: D.status.branch || "main",
+                                 list: "gitsyncBranches"}), t("gitsync.h.branch")),
+      field(ctx, "remote", t("gitsync.field.remote"),
+        input(ctx, f, "remote", {mono: true, placeholder: "origin"}), t("gitsync.h.remote"))),
+    el("datalist", {id: "gitsyncBranches"},
+      ...(((CHECK && CHECK.steps || []).find(s => s.id === "git") || {}).branches || [])
+        .map(b => el("option", {value: b}))));
+
+  const sec = el("input", {class: "btn mono", type: "password", autocomplete: "off",
+    style: "width:100%;font-weight:400",
+    placeholder: c.secret === MASK ? t("gitsync.secret_set") : t("gitsync.secret_none")});
+  const had = c.secret === MASK;
+  sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); touch(ctx); };
+  const keyText = el("textarea", {class: "btn mono", rows: 3, style: "width:100%;font-weight:400;font-size:11.5px",
+    placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----"});
+  keyText.oninput = () => { c.ssh_key_text = keyText.value; touch(ctx); };
+  const auth = el("div", {class: "card", id: "gitsyncAuth", style: "padding:16px 18px;margin-bottom:14px"},
+    el("b", {}, t("gitsync.s_auth")),
+    el("div", {style: "margin-top:10px"},
+      field(ctx, "auth", t("gitsync.field.auth"),
+        select(ctx, c, "auth", o.auths, v => t("gitsync.auth." + v), true), t("gitsync.h.auth." + c.auth))),
+    c.auth === "token" || c.auth === "password" ? el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+      field(ctx, "user", t("gitsync.field.user"), input(ctx, c, "user", {autocomplete: "off"}),
+        t("gitsync.h.user." + (c.auth === "token" ? "token" : "password"))),
+      field(ctx, "secret", c.auth === "token" ? t("gitsync.field.token") : t("gitsync.field.password"),
+        sec, had ? t("gitsync.h.secret_keep") : t("gitsync.h.token." + f.provider))) : null,
+    c.auth === "ssh" ? el("div", {},
+      field(ctx, "ssh_key", t("gitsync.field.ssh_key"),
+        input(ctx, c, "ssh_key", {mono: true, placeholder: "~/.ssh/id_ed25519"}), t("gitsync.h.ssh_key")),
+      field(ctx, "ssh_key_text", t("gitsync.field.ssh_key_text"), keyText, t("gitsync.h.ssh_key_text"))) : null,
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:center;margin-top:4px"},
+      el("label", {class: "flagline"},
+        el("input", {type: "checkbox", checked: f.tls.verify ? "" : null,
+          onchange: e => { f.tls.verify = e.target.checked; touch(ctx); }}),
+        t("gitsync.tls_verify")),
+      el("button", {class: "btn sm", onclick: () => certShow(ctx)}, t("gitsync.a.trust_cert"))),
+    f.tls.ca_file ? el("div", {class: "muted mono", style: "font-size:11.5px"},
+      t("gitsync.ca_file", {path: f.tls.ca_file})) : null,
+    certBox(ctx));
+
+  const commitCard = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
+    el("b", {}, t("gitsync.s_commit")),
+    el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;margin-top:10px"},
+      field(ctx, "author_name", t("gitsync.field.author_name"), input(ctx, f, "author_name")),
+      field(ctx, "author_email", t("gitsync.field.author_email"),
+        input(ctx, f, "author_email", {placeholder: "name@example.com"}))),
+    field(ctx, "message", t("gitsync.field.message"), input(ctx, f, "message", {mono: true}),
+      t("gitsync.h.message", {list: o.placeholders.map(x => "{" + x + "}").join(" ")})),
+    el("div", {class: "muted", style: "font-size:12px;margin:-4px 0 10px"},
+      t("gitsync.preview", {text: preview(ctx)})),
+    field(ctx, "strategy", t("gitsync.field.strategy"),
+      select(ctx, f, "strategy", o.strategies, v => t("gitsync.strat." + key(v)), true),
+      t("gitsync.strat_hint." + key(f.strategy))),
+    el("label", {class: "flagline"},
+      el("input", {type: "checkbox", checked: f.commit_on_push ? "" : null,
+        onchange: e => { f.commit_on_push = e.target.checked; touch(ctx); }}),
+      t("gitsync.commit_on_push")));
+
+  const bar = el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin:6px 0 14px"},
+    el("button", {class: "btn primary", id: "gitsyncSave", disabled: DIRTY ? null : "",
+      onclick: () => saveSetup(ctx)}, t("gitsync.save")),
+    el("button", {class: "btn", onclick: () => { DIRTY = false; load(ctx, false); }}, t("gitsync.revert")),
+    el("span", {style: "flex:1"}),
+    el("button", {class: "btn", onclick: () => runCheck(ctx)}, t("gitsync.a.check")));
+  const box = el("div", {}, where, auth, commitCard, bar, checkView(ctx));
+  setTimeout(() => showErrs(ctx), 0);
+  return box;
+}
+
+async function saveSetup(ctx){
+  ERRS = validate();
+  if (Object.keys(ERRS).length){ showErrs(ctx); return ctx.toast(ctx.t("gitsync.save_fix"), "warn"); }
+  const r = await ctx.api("/api/gitsync/settings", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, settings: FORM, credentials: CRED})});
+  if (!r || !r.ok){
+    ERRS = fieldErrors(r && r.problems);
+    showErrs(ctx);
+    return ctx.toast((r && r.error) || ctx.t("gitsync.save_fix"), "err");
+  }
+  ctx.toast(ctx.t("gitsync.saved"), "ok");
+  (r.notes || []).forEach(n => ctx.toast(n, "ok"));
+  DIRTY = false;
+  await load(ctx, false);
+}
+
+async function runCheck(ctx){
+  CHECK = {busy: true};
+  draw(ctx);
+  const r = await ctx.api("/api/gitsync/check", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, settings: FORM, credentials: CRED})});
+  CHECK = r || {ok: false, steps: []};
+  draw(ctx);
+}
+
+function checkView(ctx){
+  const {t, el} = ctx;
+  if (!CHECK) return el("div", {});
+  if (CHECK.busy) return el("div", {class: "row", style: "gap:8px"}, el("span", {class: "spin"}),
+    el("span", {class: "muted"}, t("gitsync.checking")));
+  const sg = CHECK.suggest || {};
+  const apply = (label, fn) => el("button", {class: "btn sm", onclick: () => { fn(); touch(ctx); draw(ctx); }}, label);
+  return el("div", {class: "card", style: "padding:14px 18px;margin-bottom:14px"},
+    el("b", {}, CHECK.ok ? t("gitsync.check_ok") : t("gitsync.check_bad")),
+    ...(CHECK.steps || []).map(s => el("div", {class: "row", style: "gap:8px;margin-top:6px;font-size:12.5px"},
+      el("span", {class: "chip " + (s.ok ? "ok" : s.ok === null ? "" : "bad")},
+        s.ok ? "✓" : s.ok === null ? "·" : "✗"),
+      el("span", {}, t("gitsync.step." + s.id, {login: s.login || "", branch: s.detail || ""})),
+      s.id === "api" && s.ok === null ? el("span", {class: "muted"}, t("gitsync.step.api_off")) : null,
+      s.detail && s.id !== "branch" ? el("span", {class: "muted mono", style: "font-size:11.5px"}, s.detail) : null)),
+    el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:8px"},
+      sg.provider && sg.provider !== FORM.provider ? apply(t("gitsync.use_provider",
+        {name: t("gitsync.prov." + sg.provider)}), () => { FORM.provider = sg.provider; }) : null,
+      sg.user && !CRED.user ? apply(t("gitsync.use_user", {user: sg.user}), () => { CRED.user = sg.user; }) : null,
+      sg.branch && sg.branch !== FORM.branch ? apply(t("gitsync.use_branch", {branch: sg.branch}),
+        () => { FORM.branch = sg.branch; }) : null),
+    sg.empty ? el("div", {class: "note", style: "margin-top:8px"}, t("gitsync.repo_empty")) : null,
+    CHECK.problem ? problemView(ctx, {...CHECK.problem, level: "error"}, "check") : null);
+}
+
+/* ---------------------------------------------------------------- сертификат */
+
+async function certShow(ctx){
+  CERT = {busy: true};
+  draw(ctx);
+  const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, action: "show",
+                          url: FORM.instance || D.status.remote_url})});
+  CERT = r || {ok: false};
+  draw(ctx);
+}
+
+function certBox(ctx){
+  const {t, el} = ctx;
+  if (!CERT) return null;
+  if (CERT.busy) return el("div", {class: "row", style: "gap:8px;margin-top:8px"}, el("span", {class: "spin"}));
+  if (!CERT.ok) return el("div", {class: "warnbox"}, CERT.error || t("gitsync.cert_failed"));
+  return el("div", {class: "warnbox"},
+    el("b", {}, t("gitsync.cert_title", {host: CERT.host + ":" + CERT.port})),
+    el("div", {class: "muted", style: "font-size:12.5px;margin:4px 0"}, t("gitsync.cert_about")),
+    el("div", {class: "mono", style: "font-size:12px;word-break:break-all"}, "SHA-256 " + CERT.sha256),
+    el("div", {class: "row", style: "gap:8px;margin-top:8px"},
+      el("button", {class: "btn sm primary", onclick: async () => {
+        const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
+          body: JSON.stringify({project: ctx.project.path, action: "trust", sha256: CERT.sha256,
+                                url: FORM.instance || D.status.remote_url})});
+        ctx.toast(r && r.ok ? t("gitsync.cert_trusted") : (r && r.error) || t("gitsync.cert_failed"),
+                  r && r.ok ? "ok" : "err");
+        CERT = null;
+        await load(ctx, false);
+      }}, t("gitsync.cert_trust")),
+      el("button", {class: "btn sm", onclick: () => { CERT = null; draw(ctx); }}, t("gitsync.cancel"))));
+}
+
+export default {mount, refresh};

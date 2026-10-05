@@ -73,6 +73,7 @@ scripts/kb_trust.py        => .opencode/scripts/kb_trust.py
 scripts/kb_kind.py         => .opencode/scripts/kb_kind.py
 scripts/agent_core.py    => .opencode/scripts/agent_core.py
 scripts/model_config.py  => .opencode/scripts/model_config.py
+scripts/git_sync.py      => .opencode/scripts/git_sync.py
 scripts/aurora_extras.py => .opencode/scripts/aurora_extras.py
 scripts/agent_runner.py  => .opencode/scripts/agent_runner.py
 scripts/request_context.py => .opencode/scripts/request_context.py

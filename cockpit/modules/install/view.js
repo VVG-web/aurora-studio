@@ -32,6 +32,7 @@ export async function refresh(ctx){
   });
   box.append(card);
   box.append(extrasCard(ctx));
+  box.append(gitModsCard(ctx));
 
   if (!ctx.project) return;
   const p = ctx.project;
@@ -48,6 +49,7 @@ export async function refresh(ctx){
   pc.append(line(p.jira_token, t("install.jira_token"), "sync:jira, sync:jira-status"));
   pc.append(line(!p.behind, t("install.engine_ok"),
     t("install.engine_what", {engine: p.engine, kit: p.kit}), "kit:update"));
+  if (p.git_provider && p.git_provider !== "generic") pc.append(gitModLine(ctx, p.git_provider));
   const h = ctx.health;
   if (h){
     pc.append(line(h.lint.baseline !== null, t("install.ratchet"),
@@ -80,6 +82,96 @@ function extrasCard(ctx){
   };
   draw(false);
   return wrap;
+}
+
+/* Модули Git-провайдеров: Gitea, GitLab, Bitbucket. Ставятся из кита в ~/.aurora/
+   git-providers/; «на GitHub» — версия в последнем состоянии кита, чтобы было видно, что
+   кит пора обновить. Обычный git-сервер работает без модуля: он встроен в движок. */
+let GITMODS = null;
+
+async function loadGitMods(ctx, fresh){
+  GITMODS = await ctx.api("/api/gitmods" + (fresh ? "?fresh=1" : ""), {quiet:true});
+  return GITMODS;
+}
+
+async function installGitMod(ctx, id, after){
+  const r = await ctx.api("/api/gitmods/install", {method:"POST", quiet:true,
+    body: JSON.stringify({id})});
+  ctx.toast(r && r.ok ? ctx.t("install.gm_done", {name: id, v: r.version})
+                      : (r && r.error) || ctx.t("install.gm_failed"), r && r.ok ? "ok" : "err");
+  after(false);
+}
+
+function gitModsCard(ctx){
+  const {t, el} = ctx;
+  const wrap = el("div", {style:"margin-top:18px"});
+  const draw = async (fresh) => {
+    wrap.innerHTML = "";
+    wrap.append(el("h2", {}, t("install.gm_title")),
+      el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("install.gm_about")));
+    const body = el("div", {class:"card"}, el("span", {class:"spin"}));
+    wrap.append(body);
+    const d = await loadGitMods(ctx, fresh);
+    body.innerHTML = "";
+    ((d && d.modules) || []).forEach(m => {
+      const have = m.installed;
+      const label = !have ? t("install.gm_install") : m.update ? t("install.gm_update", {v: m.kit})
+                  : t("install.gm_latest");
+      const about = (m.about && (m.about[ctx.lang] || m.about.ru)) || "";
+      body.append(el("div", {class:"list-item", style:"align-items:flex-start"},
+        el("span", {class:"chip " + (have ? (m.update ? "warn" : "ok") : ""), style:"flex:none"},
+          have ? (m.update ? t("install.ex_old") : t("install.have")) : t("install.missing")),
+        el("div", {style:"flex:1;min-width:0"},
+          el("div", {style:"font-weight:600"}, m.title),
+          el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"}, about),
+          el("div", {style:"font-size:12.5px;margin-top:4px"},
+            [have ? t("install.gm_installed", {v: have}) : t("install.ex_missing"),
+             m.kit ? t("install.gm_kit", {v: m.kit}) : "",
+             m.github ? t("install.gm_github", {v: m.github}) : ""].filter(Boolean).join(" · ")),
+          m.github_newer ? el("div", {class:"muted", style:"font-size:12px"},
+            t("install.gm_github_newer", {v: m.github})) : null),
+        el("button", {class:"btn sm" + (!have || m.update ? " primary" : ""),
+          disabled: have && !m.update ? "" : null, title: m.path,
+          onclick: async (e) => {
+            e.target.disabled = true; e.target.textContent = t("install.ex_busy");
+            await installGitMod(ctx, m.id, draw);
+          }}, label)));
+    });
+    body.append(el("div", {class:"list-item"},
+      el("span", {class:"chip ok", style:"flex:none"}, t("install.have")),
+      el("div", {style:"flex:1"}, el("div", {style:"font-weight:600"}, t("install.gm_generic")),
+        el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"}, t("install.gm_generic_about")))));
+    if (d && d.error) body.append(el("div", {class:"muted"}, d.error));
+    body.append(el("div", {class:"row", style:"margin-top:8px"},
+      el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.ex_check"))));
+  };
+  draw(false);
+  return wrap;
+}
+
+// Проект пользуется провайдером, чей модуль не стоит или отстал от кита, — строка с
+// прямой установкой, без похода в раздел «Git».
+function gitModLine(ctx, provider){
+  const {t, el} = ctx;
+  const row = el("div", {class:"list-item"}, el("span", {class:"spin"}));
+  (async () => {
+    const d = GITMODS || await loadGitMods(ctx, false);
+    const m = ((d && d.modules) || []).find(x => x.id === provider);
+    row.innerHTML = "";
+    if (!m) return row.remove();
+    const ok = m.installed && !m.update;
+    row.append(
+      el("span", {class:"chip " + (ok ? "ok" : "warn"), style:"flex:none"}, ok ? "✓" : t("install.missing")),
+      el("div", {style:"flex:1"}, el("div", {style:"font-weight:600"}, t("install.gm_project", {name: m.title})),
+        el("div", {class:"muted", style:"font-size:12.5px"},
+          !m.installed ? t("install.gm_project_missing") : m.update
+            ? t("install.gm_project_old", {have: m.installed, kit: m.kit}) : t("install.gm_project_ok", {v: m.installed}))),
+      ok ? null : el("button", {class:"btn sm primary", onclick: async (e) => {
+        e.target.disabled = true;
+        await installGitMod(ctx, m.id, () => ctx.show("install"));
+      }}, m.installed ? t("install.gm_update", {v: m.kit}) : t("install.gm_install")));
+  })();
+  return row;
 }
 
 function extraRow(ctx, x, redraw){

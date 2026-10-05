@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.151.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.154.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -134,6 +134,17 @@
 | `agent:pydantic` | настройки Pydantic AI: что уходит в шлюз по каждой роли — модель, включены ли рассуждения, поля chat-шаблона (extra_body) и срок запроса, прошла ли установленная версия проверку совместимости с Авророй (`--check` — проверить заново). Ключей в выводе нет | скрипт | `agent_core.py --pydantic` | `--ping --probe-width --heavy --show --check --venv-status --venv-install --mcp-probe --json` | 1.139.0 |
 | `agent:ping` | встроенный агент: проверить цепочку моделей — каждый бэкенд живым запросом, пустой ответ считается отказом | скрипт | `agent_core.py --ping` | `--probe-width --heavy --show --pydantic --check --venv-status --venv-install --mcp-probe --json` | 1.56.0 |
 | `agent:probe` (`probe`) | живая проверка связи: опрашивает каждый шлюз сейчас, карантин не читает; различает «нет связи», «ключ» и «нет такой модели» и показывает список моделей шлюза; `--why` проверяет запрос послойно — какой именно кусок шлюз не принимает | скрипт | `agent_probe.py` | `--timeout --models --why` | 1.100.27 |
+
+## `git: — Git проекта: сервер, обновление, отправка`
+
+| Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
+|---|---|---|---|---|---|
+| `git:status` | Git проекта: ветка, связь с сервером, сколько не отправлено и сколько нового на сервере, изменения по группам, конфликты, последняя фиксация; `--fetch` — сначала спросить сервер. Неполадки — с причиной и тем, чем они чинятся | скрипт | `git_sync.py --status` `(--status | | | | {abort,continue,mine,theirs,resolved,set-upstream,init,checkout,use-branch,strip-url,fix-key-perms} | |` | `--update --push --commit --fix --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --file --auto --project --json` | 1.154.0 |
+| `git:update` | обновить проект с сервера стратегией из настройки (только перемотка, слияние или перенос своих поверх); незафиксированное не теряется. Конфликт — список файлов и выбор версии в разделе «Git»; `--auto` — запуск автоматикой, только если она включена | скрипт | `git_sync.py --update` `(--status | | | | {abort,continue,mine,theirs,resolved,set-upstream,init,checkout,use-branch,strip-url,fix-key-perms} | |` | `--status --push --commit --fix --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --file --auto --project --json` | 1.154.0 |
+| `git:push` | отправить проект на сервер: незафиксированное сначала фиксируется по шаблону сообщения, ветка без связи с сервером связывается; сервер ушёл вперёд — `--update-first`. Вход — из настройки проекта, токен не попадает ни в адрес, ни в командную строку | скрипт | `git_sync.py --push` `(--status | | | | {abort,continue,mine,theirs,resolved,set-upstream,init,checkout,use-branch,strip-url,fix-key-perms} | |` | `--status --update --commit --fix --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --file --auto --project --json` | 1.154.0 |
+| `git:commit` | зафиксировать изменения проекта сообщением по шаблону настройки или своим (`--message`); хуки Авроры работают, храповик снимается только явным `--skip-ratchet` | скрипт | `git_sync.py --commit` `(--status | | | | {abort,continue,mine,theirs,resolved,set-upstream,init,checkout,use-branch,strip-url,fix-key-perms} | |` | `--status --update --push --fix --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --file --auto --project --json` | 1.154.0 |
+| `git:fix` | починка одним действием: отменить или завершить обновление, взять свою или серверную версию файла, связать ветку с сервером, создать репозиторий, перейти на ветку проекта, убрать пароль из адреса сервера | скрипт | `git_sync.py --fix` `(--status | | | | {abort,continue,mine,theirs,resolved,set-upstream,init,checkout,use-branch,strip-url,fix-key-perms} | |` | `--status --update --push --commit --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --file --auto --project --json` | 1.154.0 |
+| `git:check` | проверить подключение: адрес, вход и права через API провайдера (если его модуль стоит), доступ git к репозиторию и ветка на сервере | скрипт | `git_sync.py --check` `(--status | | | | {abort,continue,mine,theirs,resolved,set-upstream,init,checkout,use-branch,strip-url,fix-key-perms} | |` | `--status --update --push --commit --fix --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --file --auto --project --json` | 1.154.0 |
 
 ## `dev: — разработка движка (только в ките)`
 

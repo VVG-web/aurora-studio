@@ -1,0 +1,12 @@
+{
+  "id": "bitbucket",
+  "title": "Bitbucket",
+  "version": "1.0.0",
+  "since": "1.154.0",
+  "api": "/rest/api/1.0",
+  "auth": ["system", "token", "password", "ssh"],
+  "about": {
+    "ru": "Bitbucket Server / Data Center на своём сервере и bitbucket.org: токен доступа, проверка репозитория, ветка по умолчанию, адреса клонирования (/scm/ и SSH-порт 7999).",
+    "en": "Self-hosted Bitbucket Server / Data Center and bitbucket.org: access token, repository check, default branch, clone URLs (/scm/ and SSH port 7999)."
+  }
+}

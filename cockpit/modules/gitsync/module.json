@@ -1,0 +1,13 @@
+{
+  "id": "gitsync",
+  "name": { "ru": "Git", "en": "Git" },
+  "about": {
+    "ru": "Сервер проекта: состояние, обновление и отправка вручную и автоматически, понятные причины неудач и починка в один клик.",
+    "en": "The project's server: status, update and push by hand or automatically, plain reasons for failures and one-click fixes."
+  },
+  "group": "project",
+  "order": 55,
+  "needs": ["project"],
+  "commands": ["git:status", "git:update", "git:push", "git:commit", "git:fix", "git:check"],
+  "for": "1.154.0"
+}

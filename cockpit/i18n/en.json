@@ -62,6 +62,7 @@
   "editor.publish": "Publish",
   "editor.stale": "Published {date}, changed since — the page is behind",
   "git.title": "Changes",
+  "git.more": "Server and automation →",
   "git.clean": "Everything is committed",
   "git.norepo": "The project is not under git — nothing to commit",
   "git.count": "Uncommitted files: {n}",
@@ -291,6 +292,10 @@
   "route.saved": "  the route result is committed: {commit}",
   "route.not_saved": "  the route result is not committed: {why}",
   "route.found": "  {cmd} — found things to fix (this is not a route error)",
+  "route.git_update": "▶ Git: updating the project from the server before the route",
+  "route.git_update_failed": "  Git: the update did not go through — the route runs on what the project has; the cause and the fix are in the «Git» section",
+  "route.git_push": "▶ Git: sending the route result to the server",
+  "route.git_push_failed": "  Git: sending did not go through — the work is safe in the project; the cause and the fix are in the «Git» section",
   "route.found_times": " · steps: {n}",
   "route.resume_btn": "Continue «{title}» · {slug}",
   "route.dirty": "■ The project has {n} uncommitted files — this is the route's result. Commit them separately, otherwise the next run mixes its work with this one.",
@@ -763,5 +768,9 @@
   "models_link.project": "A project has no model setup of its own: every project on the machine uses the kit's setup — the «Models» section.",
   "models_link.ready": "LLM providers: {n}",
   "models_link.empty": "models are not set up",
-  "models_link.open": "Open «Models»"
+  "models_link.open": "Open «Models»",
+  "git_link.title": "Project Git",
+  "git_link.about": "Server, sign-in, branch, message template and update/send automation — each project has its own. All of it is in the «Git» section.",
+  "git_link.open": "Open the «Git» section",
+  "git_link.alert": "Git automation failed"
 }

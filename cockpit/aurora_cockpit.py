@@ -41,6 +41,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 from datetime import datetime, timezone
+from pathlib import Path
 import threading
 import time
 import traceback
@@ -60,6 +61,8 @@ import run_summary as RS                         # noqa: E402 — итог пр�
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
+import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
+import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -1224,6 +1227,15 @@ def git_push(project: str, remote: str = "") -> dict:
     человек уверен, что работа уехала."""
     if not os.path.isdir(os.path.join(project, ".git")):
         return {"error": "проект не под git"}
+    if GS.load_saved(project):
+        # Настроен раздел «Git» — отправляем его путём: тем же входом (токен, ключ,
+        # сертификат), что и кнопка раздела, и с той же записью в журнал проекта.
+        res = GS.push(project, do_commit=False)
+        if res["ok"]:
+            return {"ok": True, "remote": GS.load(project)["remote"], "tail": res["summary"]}
+        prob = res.get("problem") or {}
+        return {"error": f"{prob.get('title', 'отправка не прошла')} — {prob.get('fix', '')}",
+                "tail": prob.get("raw", ""), "code": prob.get("code", "")}
     _, remotes, _ = git_out(project, "remote")
     names = remotes.split()
     if not names:
@@ -1234,6 +1246,63 @@ def git_push(project: str, remote: str = "") -> dict:
     if rc != 0:
         return {"error": f"отправка не прошла ({target})", "tail": tail[-1500:]}
     return {"ok": True, "remote": target, "tail": tail[-800:] or "уже всё отправлено"}
+
+# ----------------------------------------------------- Git проекта: раздел «Git»
+
+GITAUTO = None
+
+
+def git_auto():
+    """Автоматика Git. Без main() — не тикающая: события и решения работают, тика нет."""
+    global GITAUTO
+    if GITAUTO is None:
+        GITAUTO = GITA.GitAuto(sys.modules[__name__], lambda: find_projects(load_roots()))
+    return GITAUTO
+
+
+def git_auto_wanted(project: str, action: str, trigger: str) -> bool:
+    """Маршруту: обновлять ли проект перед ним и отправлять ли после."""
+    try:
+        return GITA.GitAuto.wanted(GS.load_saved(project), action, trigger)
+    except Exception:  # noqa: BLE001 — сломанная настройка Git не роняет маршрут
+        return False
+
+
+def gitsync_state(project: str) -> dict:
+    """Всё для раздела «Git»: состояние, настройка (секреты — маской), журнал действий."""
+    return {"status": GS.status(project), **GS.masked_settings_view(project),
+            "log": GS.read_log(project, 40), "last": GS.read_last(project),
+            "modules": {m: GS.module_state(m, Path(KIT)) for m in GS.PROVIDERS},
+            "options": {"providers": list(GS.PROVIDERS), "auths": list(GS.AUTHS),
+                        "strategies": list(GS.STRATEGIES), "update_on": list(GS.UPDATE_ON),
+                        "push_on": list(GS.PUSH_ON), "placeholders": list(GS.PLACEHOLDERS),
+                        "min_every": GS.MIN_EVERY},
+            "ticking": GITAUTO is not None and getattr(GITAUTO, "started", False)}
+
+
+def gitsync_cert(project: str, payload: dict) -> dict:
+    """Сертификат сервера проекта: показать отпечаток или довериться ему по отпечатку."""
+    s = GS.load(project)
+    url = str(payload.get("url") or s.get("instance") or GS.repo_url(s, GS.cred_load(project)))
+    if not re.match(r"^https://", url or "", re.I):
+        return {"ok": False, "error": "сертификат проверяется только у адреса https://"}
+    if payload.get("action") == "trust":
+        return GS.trust_cert(project, url, str(payload.get("sha256") or ""))
+    info = GS.cert_info(url)
+    info.pop("pem", None)
+    return info
+
+
+def gitmods_state(fresh: bool = False) -> dict:
+    """Модули Git-провайдеров для «Установки»: что стоит, что в ките, что на GitHub."""
+    try:
+        slug, branch, _web = kit_repo()
+        gh = GS.github_versions(slug, branch, fresh)
+    except Exception as e:  # noqa: BLE001 — без сети список всё равно показывается
+        return {"modules": GS.module_rows(Path(KIT), {}),
+                "error": f"GitHub не ответил: {str(e)[:160]}"}
+    return {"modules": GS.module_rows(Path(KIT), gh)}
+
 
 # --------------------------------------------------------------- быстрый старт
 
@@ -2284,6 +2353,9 @@ def project_card(path: str) -> dict:
         "jira_token": filled("JIRA_PERSONAL_TOKEN") or filled("JIRA_PAT"),
         "git_branch": git_branch(path),
         "dirty": git_dirty_count(path),
+        # Упавшая автоматика Git — отметка на пункте меню, пока следующая не пройдёт.
+        "git_alert": bool(GS.alert(path)),
+        "git_provider": GS.provider_quick(path),
     }
 
 
@@ -3901,6 +3973,13 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/extras":
             self.send_json(localized_extras(extras_state(fresh=bool(q.get("fresh"))),
                                             request_lang(q)))
+        elif u.path == "/api/gitmods":
+            self.send_json(gitmods_state(fresh=bool(q.get("fresh"))))
+        elif u.path == "/api/gitsync":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(gitsync_state(project))
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())
@@ -4444,6 +4523,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/extras/install":
             self.send_json(extras_install(str(payload.get("id") or "")))
+            return
+        if u.path == "/api/gitmods/install":
+            self.send_json(GS.install_module(str(payload.get("id") or ""), Path(KIT)))
+            return
+        if u.path in ("/api/gitsync/settings", "/api/gitsync/check", "/api/gitsync/event",
+                      "/api/gitsync/cert"):
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            if u.path == "/api/gitsync/settings":
+                self.send_json(GS.save(project, payload.get("settings") or {},
+                                       payload.get("credentials")))
+            elif u.path == "/api/gitsync/check":
+                self.send_json(GS.check(project, payload.get("settings"),
+                                        payload.get("credentials")))
+            elif u.path == "/api/gitsync/event":
+                self.send_json(git_auto().event(project, str(payload.get("event") or "")))
+            elif u.path == "/api/gitsync/cert":
+                self.send_json(gitsync_cert(project, payload))
             return
         if u.path == "/api/extras/check":
             self.send_json(extras_check(str(payload.get("id") or "")))
@@ -5041,6 +5139,10 @@ def main() -> int:
     global SCHED
     SCHED = CRON.Scheduler(sys.modules[__name__], lambda: find_projects(srv.roots))
     SCHED.start()
+    # Автоматика Git проектов — тоже в этом процессе, как и расписание.
+    global GITAUTO
+    GITAUTO = GITA.GitAuto(sys.modules[__name__], lambda: find_projects(srv.roots))
+    GITAUTO.start()
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

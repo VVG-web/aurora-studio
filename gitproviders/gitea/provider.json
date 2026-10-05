@@ -1,0 +1,12 @@
+{
+  "id": "gitea",
+  "title": "Gitea",
+  "version": "1.0.0",
+  "since": "1.154.0",
+  "api": "/api/v1",
+  "auth": ["system", "token", "password", "ssh"],
+  "about": {
+    "ru": "Gitea и Forgejo на своём сервере: вход по токену, проверка репозитория и права записи, ветка по умолчанию, адреса клонирования.",
+    "en": "Self-hosted Gitea and Forgejo: token sign-in, repository and write-access check, default branch, clone URLs."
+  }
+}

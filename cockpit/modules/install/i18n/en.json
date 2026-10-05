@@ -54,5 +54,22 @@
   "install.ex_compat_none": "compatibility with Aurora is checked on the first model call",
   "install.ex_compat_ok": "compatible with Aurora ✓ {at}",
   "install.ex_compat_bad": "failed the compatibility check: {why} — calls go over plain HTTP",
-  "install.ex_compat_check": "Check compatibility"
+  "install.ex_compat_check": "Check compatibility",
+  "install.gm_title": "Git provider modules",
+  "install.gm_about": "They check sign-in, rights and the repository through the server API and know its URLs. Updating and sending projects work without them. Installed from the kit into ~/.aurora/git-providers/.",
+  "install.gm_installed": "{v} installed",
+  "install.gm_kit": "{v} in the kit",
+  "install.gm_github": "{v} on GitHub",
+  "install.gm_github_newer": "GitHub already has {v} — update the kit first, then the module.",
+  "install.gm_install": "Install",
+  "install.gm_update": "Update to {v}",
+  "install.gm_latest": "Latest",
+  "install.gm_done": "Module {name} {v} installed",
+  "install.gm_failed": "The module was not installed",
+  "install.gm_generic": "Other git server",
+  "install.gm_generic_about": "Any server over https or ssh: built into the engine, no module needed.",
+  "install.gm_project": "The project's Git module: {name}",
+  "install.gm_project_ok": "{v} installed",
+  "install.gm_project_missing": "not installed: the API sign-in and rights check is unavailable; updating and sending work",
+  "install.gm_project_old": "outdated: {have} installed, {kit} in the kit"
 }

@@ -186,8 +186,11 @@ def message_skeletons() -> set:
         if s and re.search("[а-яА-ЯёЁ]", s):
             out.add(s.strip())
 
-    server = os.path.join(KIT, "cockpit", "aurora_cockpit.py")
-    if os.path.isfile(server):
+    # Сервер панели и движковые модули, чьи ответы панель отдаёт как есть: отказ установки
+    # модуля Git или проверки сертификата приходит из `git_sync` в том же поле `error`.
+    servers = [os.path.join(KIT, "cockpit", "aurora_cockpit.py"),
+               os.path.join(KIT, "scripts", "git_sync.py")]
+    for server in [x for x in servers if os.path.isfile(x)]:
         for node in ast.walk(ast.parse(open(server, encoding="utf-8").read())):
             if isinstance(node, ast.Dict):
                 for k, v in zip(node.keys, node.values):

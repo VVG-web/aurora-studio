@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.153.1";
+const UI_VERSION = "1.154.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -781,6 +781,7 @@ async function drawGit(){
   if (!g.repo){ box.append(el("span",{class:"sub"}, g.why || t("git.norepo"))); return; }
   const head = el("div",{class:"row", style:"gap:10px;align-items:center;flex-wrap:wrap"},
     el("b",{}, t("git.title")),
+    el("button",{class:"btn sm", onclick:()=>show("gitsync")}, t("git.more")),
     el("span",{class:"pill mono"}, g.branch || "—"),
     el("span",{class:"sub"}, g.count ? t("git.count",{n:g.count}) : t("git.clean")));
   if (g.ahead) head.append(el("span",{class:"pill"}, t("git.ahead", {n:g.ahead})));
@@ -1289,6 +1290,10 @@ async function pick(p, go=true){
   // не отвязать вовсе.
   S.runs = null; loadRuns();
   renderProjBadge();
+  // Автоматика Git: «обновлять при открытии проекта». Решает сервер по настройке проекта,
+  // и он же не даёт дёргать сервер чаще раза в десять минут; итог — в журнале раздела «Git».
+  api("/api/gitsync/event", {method:"POST", quiet:true,
+    body: JSON.stringify({project: p.path, event: "open"})});
   if (go) show("health");
   S.health = null; refreshModules();
   const h = await api("/api/health?project=" + encodeURIComponent(p.path));
@@ -1339,6 +1344,9 @@ function navBadges(p, h){
     (n, x)=> n + (x.no_state ? 1 : (x.missing||0) + (x.orphan||0)), 0);
   setBadge("mirrors", mm || "", mm > 0);
   setBadge("version", p.behind ? "!" : "", !!p.behind);
+  // Упавшая автоматика Git — до следующего удачного запуска: ночной отказ отправки иначе
+  // заметили бы, только открыв раздел.
+  setBadge("gitsync", p.git_alert ? "!" : "", !!p.git_alert);
 }
 
 // Пересчёт здоровья по требованию раздела: раздел не ходит в api сам, потому что
@@ -3486,6 +3494,7 @@ async function renderProject(){
       el("span",{class:"muted",style:"font-size:12px"}, t("yaml.note")))));
 
   await renderModelsCard(box, "project");
+  renderGitCard(box);
   await renderKinds(box);
   drawSetupJump(box);
 }
@@ -3724,6 +3733,17 @@ async function renderModelsCard(box, scope){
       el("span",{class:"chip " + (chains ? "ok" : "warn")},
         chains ? t("models_link.ready", {n: chains}) : t("models_link.empty")),
       el("button",{class:"btn sm primary", onclick:()=>show("models")}, t("models_link.open")))));
+}
+
+// Git проекта настраивается в своём разделе: сервер, вход, автоматика. Здесь — только
+// указатель на него, чтобы настройка не жила в двух местах.
+function renderGitCard(box){
+  const p = S.project;
+  sgroup(box, "project:git", t("git_link.title")).append(el("div",{class:"card",style:"padding:16px 20px;margin-bottom:18px"},
+    el("p",{class:"muted",style:"font-size:13px;margin:0 0 10px"}, t("git_link.about")),
+    el("div",{class:"row",style:"gap:10px"},
+      p && p.git_alert ? el("span",{class:"chip bad"}, t("git_link.alert")) : null,
+      el("button",{class:"btn sm primary", onclick:()=>show("gitsync")}, t("git_link.open")))));
 }
 
 /* ---------------- о проекте ---------------- */

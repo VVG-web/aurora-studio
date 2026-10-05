@@ -17,5 +17,6 @@
   "commands.ns.make": "make: producing artifacts",
   "commands.ns.ship": "ship: outward",
   "commands.ns.ops": "ops: management and reporting",
-  "commands.ns.agent": "agent: the built-in agent"
+  "commands.ns.agent": "agent: the built-in agent",
+  "commands.ns.git": "git: project Git"
 }

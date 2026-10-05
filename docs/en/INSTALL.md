@@ -224,6 +224,60 @@ changed. In a project's `.env` they no longer apply — `doctor` names them.
 All texts go to the providers of the model setup: if your perimeter forbids sending materials out, do not switch
 on semantics and scans — everything else works without them.
 
+## Project Git
+
+Each project has its own server and its own sign-in — the panel's **"Git"** section (project
+group). The setup lives in the project's `.git/aurora/git.json`: it never goes into history and
+stays with the clone. Tokens and passwords live outside the project, in
+`~/.aurora/git/credentials.json` (mode 600); a pasted SSH key goes to `~/.aurora/git/keys/`. The
+token is written neither into the server URL nor into git's command line: git takes it from an
+environment variable through its own credential mechanism.
+
+| Field | Meaning |
+|---|---|
+| Provider | Gitea, GitLab, Bitbucket or another git server |
+| Server address | your own server with its port: `https://git.example.com:3000` |
+| Repository | `owner/name` (GitLab — with subgroups, Bitbucket — `KEY/repository`) or a full address: `https://…`, `git@…`, a network folder |
+| How to sign in | as set up in git on this machine (keychain, ssh-agent) · access token · username and password · SSH key |
+| Branch, server name | the project branch (empty — the one open now) and the remote's name (usually `origin`) |
+| Author, message template | the commit author's name and email; placeholders `{project} {date} {time} {branch} {count} {files} {trigger}` |
+| How to update | fast-forward only (the default, the safest), merge, or yours on top of the server's |
+| Certificate | verification is on; for your own server with its own certificate — "Trust" by the SHA-256 fingerprint: exactly that certificate is saved, verification stays on |
+
+Fields are checked as you type; "Check connection" asks the provider API and git itself and offers
+to fill in what it found: the login, the default branch, the provider by the server's answer.
+
+**Actions** are the section's buttons and the commands `git:status`, `git:update`, `git:push`,
+`git:commit`, `git:fix`, `git:check`. They run as panel jobs and show up in the "Console" and the
+run history. Sending first commits what is uncommitted by the template and links the branch to the
+server by itself.
+
+**Automation** is per project:
+- update — when the project is opened, on schedule, before a route;
+- send — after a successful route, after a commit (once commits stop for two minutes), on schedule.
+
+It works while the panel runs and leaves alone a project where a route, a command or the agent is
+running. Each run's result is in the section's journal and in the "Console"; a failure marks the
+"Git" menu item until the next run succeeds. Failed automation is retried at most every 15 minutes.
+
+**Failures** come in words, with advice and a button:
+- sign-in refused → check the token;
+- the branch is not linked to the server → link it;
+- the server moved ahead → update and send;
+- the changes diverged → merge, or put yours on top of the server's;
+- a conflict → the file list and a version choice ("keep mine", "take the server's", fix by hand),
+  then finish or cancel the update;
+- an unknown certificate → trust it by fingerprint;
+- a password in the server URL → move it to the protected store;
+- the provider module is outdated → update it.
+
+The raw git output is shown below, folded.
+
+**Provider modules** (Gitea, GitLab, Bitbucket) check sign-in, rights and the repository through the
+server API and know the default branch and the clone URLs (Bitbucket — `/scm/` and SSH port 7999).
+They are installed and updated on the "Install" page, next to the engine add-ons, into
+`~/.aurora/git-providers/`. Without a module, updating and sending work with any git server.
+
 ## 5. Check readiness
 
 ```bash

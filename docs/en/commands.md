@@ -139,6 +139,17 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `agent:ping` | Check the model chain by a live request: every backend, roles, speed; an empty answer counts as a refusal. | script | 1.56.0 |
 | `agent:probe` (`probe`) | A live connectivity check: asks every gateway now; tells "no connection", "wrong key" and "no such model" apart and shows the model list; `--why` checks the request layer by layer. | script | 1.100.27 |
 
+## `git:` — Project Git: server, update, push
+
+| Command | What it does | Executor | Since |
+|---|---|---|---|
+| `git:status` | Project Git: branch, link to the server, how much is not sent and how much is new on the server, changes by group, conflicts, the last commit; `--fetch` asks the server first. Problems come with the cause and the fix. | script | 1.154.0 |
+| `git:update` | Update the project from the server with the strategy from the setup (fast-forward only, merge, or put your changes on top); uncommitted work is not lost. A conflict gives the file list and a version choice in the «Git» section; `--auto` — a run by automation, only if it is switched on. | script | 1.154.0 |
+| `git:push` | Send the project to the server: uncommitted work is committed first by the message template, a branch with no link to the server gets linked; the server moved ahead — `--update-first`. Sign-in comes from the project setup; the token gets into neither the URL nor the command line. | script | 1.154.0 |
+| `git:commit` | Commit the project's changes with a message from the setup template or your own (`--message`); Aurora's hooks run, the ratchet is lifted only by an explicit `--skip-ratchet`. | script | 1.154.0 |
+| `git:fix` | One-click fixes: abort or finish an update, take your or the server's version of a file, link the branch to the server, create the repository, switch to the project branch, remove a password from the server URL. | script | 1.154.0 |
+| `git:check` | Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server. | script | 1.154.0 |
+
 ## `dev:` — QA of the engine
 
 | Command | What it does | Executor | Since |

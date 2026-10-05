@@ -1672,7 +1672,7 @@ def test_every_command_is_reachable_in_the_panel(tmp: Path):
         "раздел разработки собирается не по тому же правилу"
 
     # ни одна команда не потерялась и не показана дважды
-    titles = {"kit", "sync", "kb", "ctx", "make", "ship", "ops", "dev", "agent"}
+    titles = {"kit", "sync", "kb", "ctx", "make", "ship", "ops", "dev", "agent", "git"}
     lost = [r["cmd"] for r in rows if r["ns"] not in titles]
     assert not lost, f"команды вне известных групп — в панели им нет места: {lost}"
     # Подписи групп уехали в каталог раздела «Команды»: проверяем ключ, а не форму

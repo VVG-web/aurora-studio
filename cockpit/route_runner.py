@@ -489,6 +489,21 @@ class RouteRun:
     def _commit(self, message: str) -> dict:
         return self.ck.git_commit(self.project, message, None, True)
 
+    def _git(self, action: str, trigger: str) -> None:
+        """Автоматика Git проекта перед маршрутом и после него — если она включена.
+
+        Шаг идёт заданием, как и остальные: его вывод — в журнале маршрута, папка — внутри
+        маршрута в истории. Неудача маршрут не роняет: обновление не прошло — маршрут идёт
+        на том, что есть у проекта, и говорит это вслух; отправка не прошла — работа цела
+        локально, и раздел «Git» скажет, что с этим делать."""
+        wanted = getattr(self.ck, "git_auto_wanted", None)
+        if not self.write or not wanted or not wanted(self.project, action, trigger):
+            return
+        self.say("head", self.t("route.git_" + action))
+        res = self.exec_step(f"git:{action}", [f"--auto={trigger}"])
+        if res.get("rc"):
+            self.say("warn", self.t("route.git_" + action + "_failed"))
+
     def run(self) -> dict:
         ck, t = self.ck, self.t
         steps = plan(ck, self.sc, self.write)
@@ -505,6 +520,8 @@ class RouteRun:
             res = {"ok": False, "reason": "failed", "failed": steps[0]["cmd"] if steps else "",
                    "note": why, "steps": 0, "lines": [], "run_id": self.run_id, "found": []}
             return self._close(res)
+        if not self.resumed:
+            self._git("update", "before_route")
         head = ck.RS.git_head(self.project)
         if self.resumed:
             self.say("ok", t("route.resumed", title=self.sc["title"]))
@@ -622,6 +639,8 @@ class RouteRun:
         for cmd, n in times.items():
             self.say("warn", t("route.found", cmd=cmd)
                      + (t("route.found_times", n=n) if n > 1 else ""))
+        if reason == "passed":
+            self._git("push", "after_route")
         if self.events:
             try:
                 base = os.path.join(ck.runs_dir(self.project), self.run_id)

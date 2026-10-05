@@ -1702,7 +1702,8 @@ def test_only_neutral_hosts_in_tracked_files(tmp: Path):
              "127.0.0.1", "github.com", "www.apache.org", "www.python.org",
              "schemas.openxmlformats.org", "cdn.jsdelivr.net", "openfontlicense.org",
              "raw.githubusercontent.com",   # обновление кита читает VERSION с GitHub (1.124.0)
-             "pypi.org"}   # надстройки движка сверяют версию, которую поставит pip (1.138.0)
+             "pypi.org",   # надстройки движка сверяют версию, которую поставит pip (1.138.0)
+             "bitbucket.org"}   # облачный Bitbucket — сервер модуля провайдера Git (1.154.0)
     def ok(host: str) -> bool:
         h = host.lower().rstrip(".")
         if h in allow or any(h.endswith("." + a) for a in allow):
