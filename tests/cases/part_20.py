@@ -576,3 +576,120 @@ def test_the_install_page_names_what_needs_no_module(_t):
     assert "движ" in ru["install.gm_generic_version"] and "GitHub" in ru["install.gm_about"]
     rows = {r["id"] for r in _gs().module_rows(KIT)}
     assert {"github", "gitlab", "bitbucket", "gitea"} <= rows
+
+
+@test
+def test_a_clone_line_fills_the_server_and_the_login(tmp: Path):
+    """Строку из `git clone` вставляют целиком: провайдер, сервер, репозиторий, ветка, логин и
+    способ входа разбираются сами; git ходит ровно по вставленному адресу; пароль из адреса
+    в настройку не попадает; логин в адресе (как у Bitbucket) — не ошибка."""
+    GS = _gs()
+    restore = set_home(tmp / "home")
+    try:
+        for mid in ("gitea", "gitlab", "bitbucket", "github"):
+            assert GS.install_module(mid, KIT)["ok"]
+        cases = {
+            "git clone https://Name@bitbucket.org/team/proj.git":
+                ("bitbucket", "https://bitbucket.org", "team/proj", "password", "Name", ""),
+            "git clone -b develop git@bitbucket.org:team/proj.git":
+                ("bitbucket", "https://bitbucket.org", "team/proj", "ssh", "", "develop"),
+            "git clone https://bb.example.com/scm/prj/repo.git":
+                ("bitbucket", "https://bb.example.com", "PRJ/repo", "password", "", ""),
+            "git clone https://bb.example.com/bitbucket/scm/~me/repo.git my-dir":
+                ("bitbucket", "https://bb.example.com/bitbucket", "~me/repo", "password", "", ""),
+            "git clone ssh://git@bb.example.com:7999/prj/repo.git":
+                ("bitbucket", "https://bb.example.com", "PRJ/repo", "ssh", "", ""),
+            "git clone --depth 1 https://gitlab.example.com/g/sub/p.git":
+                ("gitlab", "https://gitlab.example.com", "g/sub/p", "password", "", ""),
+            "git clone https://github.com/o/r.git":
+                ("github", "https://github.com", "o/r", "token", "", ""),
+            "https://git.example.com:3100/o/r.git":
+                ("generic", "https://git.example.com:3100", "o/r", "password", "", ""),
+        }
+        for line, (prov, inst, repo, auth, user, branch) in cases.items():
+            r = GS.parse_clone(line)
+            got = (r["provider"], r["instance"], r["repo"], r["auth"], r["user"], r["branch"])
+            assert r["ok"] and got == (prov, inst, repo, auth, user, branch), (line, got)
+            url = line.split()[-2] if line.endswith("my-dir") else line.split()[-1]
+            same = lambda u: GS.strip_userinfo(u).lower().removesuffix(".git")  # noqa: E731
+            assert same(GS.repo_url(r, {"auth": r["auth"]})) == same(url), \
+                f"git пойдёт не туда, куда указывает строка: {line}"
+        r = GS.parse_clone("git clone https://me:p%40ss@git.example.com/o/r.git")
+        assert r["secret"] == "p@ss" and r["secret_in_url"] and "p@ss" not in r["repo"] + r["url"]
+        assert GS.parse_clone("git clone")["code"] == "no_url"
+        assert GS.parse_clone("просто текст")["code"] == "bad_url"
+        assert GS.parse_clone("/srv/git/x.git")["auth"] == "system"
+        assert r["cloud"] is False and GS.parse_clone("git clone https://bitbucket.org/t/p.git")["cloud"]
+        # логин в адресе — не замечание, пароль — замечание
+        s, probs = GS.normalize({"repo": "https://Name@bitbucket.org/team/proj.git"})
+        assert not probs and s["repo"] == "https://bitbucket.org/team/proj.git", probs
+    finally:
+        restore()
+
+
+@test
+def test_a_connection_works_when_git_gets_in_even_if_the_api_refuses(tmp: Path):
+    """У bitbucket.org git входит с именем пользователя и API-токеном, а API ждёт e-mail
+    Atlassian: отказ API при работающем git — пометка, а не «подключение не работает»."""
+    GS = _gs()
+    restore = set_home(tmp / "home")
+    project = _repo(tmp / "p")
+    (project / "a.md").write_text("a", encoding="utf-8")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-q", "-m", "a")
+    bare = _server(tmp)
+    saved = GS.load_adapter
+
+    class Fake:
+        code = "auth"
+
+        @staticmethod
+        def clone_urls(cfg):
+            return {"http": str(bare), "ssh": str(bare)}
+
+        @classmethod
+        def check(cls, cfg, http):
+            return {"ok": False, "code": cls.code, "detail": "401", "login": "", "repo": {}}
+    GS.load_adapter = lambda mid: Fake
+    try:
+        settings = {"provider": "bitbucket", "instance": "https://bitbucket.org", "repo": "team/proj"}
+        cred = {"auth": "password", "user": "Name", "secret": "api-token"}
+        r = GS.check(project, settings, cred)
+        api = next(x for x in r["steps"] if x["id"] == "api")
+        assert r["ok"] and r["problem"] is None and api["ok"] is None and api["note"] == "api_login", r
+        Fake.code = "network"
+        r = GS.check(project, settings, cred)
+        assert r["ok"] and next(x for x in r["steps"] if x["id"] == "api")["note"] == "api_failed"
+        Fake.clone_urls = staticmethod(lambda cfg: {"http": str(tmp / "нет.git"), "ssh": ""})
+        r = GS.check(project, settings, cred)
+        assert not r["ok"] and r["problem"], "git не достаёт до репозитория, а проверка сказала «работает»"
+    finally:
+        GS.load_adapter = saved
+        restore()
+
+
+@test
+def test_the_git_section_connects_with_a_clone_line(_t):
+    """В разделе «Git» — карточка «Подключить по строке git clone»: разбор у движка, выбор
+    способа входа, основной или дополнительный сервер, проверка тем же входом, сохранение и
+    «Отправить» сразу после подключения."""
+    view = (KIT / "cockpit/modules/gitsync/view.js").read_text(encoding="utf-8")
+    for need, why in (('"/api/gitsync/parse"', "строку git clone разбирает не движок"),
+                      ("function quickCard(", "нет карточки подключения строкой"),
+                      ("quickCard(ctx), where", "карточка подключения не первая в настройке"),
+                      ('"/api/gitsync/check"', "подключение не проверяется перед сохранением"),
+                      ("D.options.auths.map(", "способ входа не выбрать"),
+                      ('act(ctx, "git:push", q.done.main', "после подключения не отправить проект"),
+                      ("function pullUser(", "логин из адреса не переходит во «Вход»"),
+                      ('"gitsync.h.bbcloud."', "у bitbucket.org нет подсказки про API-токен")):
+        assert need in view, why
+    ck = (KIT / "cockpit/aurora_cockpit.py").read_text(encoding="utf-8")
+    assert 'u.path == "/api/gitsync/parse"' in ck and "GS.parse_clone(" in ck
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/modules/gitsync/i18n/{lang}.json").read_text(encoding="utf-8"))
+        for k in ("gitsync.q.title", "gitsync.q.err.no_url", "gitsync.q.err.bad_url",
+                  "gitsync.h.bbcloud.password", "gitsync.h.bbcloud.user", "gitsync.h.bbcloud.token",
+                  "gitsync.step.api_login", "gitsync.step.api_failed", "gitsync.q.target.main",
+                  "gitsync.q.target.mirror", "gitsync.q.done", "gitsync.q.push_now"):
+            assert k in cat, (lang, k)
+

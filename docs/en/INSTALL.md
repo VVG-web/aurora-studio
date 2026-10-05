@@ -247,6 +247,21 @@ environment variable through its own credential mechanism.
 Fields are checked as you type; "Check connection" asks the provider API and git itself and offers
 to fill in what it found: the login, the default branch, the provider by the server's answer.
 
+**Connect with a git clone line** is the first card of the setup. Copy the clone line from the
+repository page (the Clone button) and paste it whole: the provider, server, repository, branch (`-b`)
+and login are parsed by themselves — for a self-hosted Bitbucket both the `/scm/…` path and SSH on port
+7999. Then the sign-in method (login and password, token, SSH key or as set up on the machine), the
+password and "Check and connect": the check uses the same sign-in, then the server is saved as the main
+one (`origin`) or an additional one, and "Push the project to this server" pushes it right away. A
+password from the line is not written into the address — it goes to the password field.
+
+**bitbucket.org:** the account password does not work for git. The login is the Bitbucket username (not
+the e-mail, case matters; it is in the git clone line), and instead of the password — an API token:
+avatar → Account settings → Security → Create and manage API tokens → Create API token with scopes →
+Bitbucket, scopes `read:repository` and `write:repository`. The bitbucket.org API expects the e-mail
+with the same token, so the API check may refuse the sign-in — if git accepted it, the connection works.
+A self-hosted Bitbucket (Server / Data Center) takes both a login with a password and an HTTP access token.
+
 **There can be several servers.** The main one (`origin`) is the work server: updating comes from
 it, sending goes to it. Additional ones — for example, your own `gitea` next to the work GitLab or
 Bitbucket — each have their own address and sign-in; sending goes to the main server and to the

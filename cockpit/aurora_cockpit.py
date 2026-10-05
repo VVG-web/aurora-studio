@@ -4601,6 +4601,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(bots_action(u.path.rsplit("/", 1)[1], project, payload))
             return
+        if u.path == "/api/gitsync/parse":
+            # Строка из `git clone` → сервер, репозиторий, ветка, логин. Ничего не пишет.
+            self.send_json(GS.parse_clone(str(payload.get("text") or "")))
+            return
         if u.path == "/api/gitmods/install":
             self.send_json(GS.install_module(str(payload.get("id") or ""), Path(KIT)))
             return

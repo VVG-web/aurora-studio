@@ -21,7 +21,7 @@ const PLACEHOLDER = /\{(\w+)\}/g;
 const key = v => String(v || "").replace(/-/g, "_");     // ff-only → ff_only: ключ каталога
 
 let D = null, TAB = "state", FORM = null, CRED = null, MCRED = [], DIRTY = false;
-let CHECK = null, BUSY = "", LAST = null, ERRS = {}, CERT = null, PROJECT = "";
+let CHECK = null, BUSY = "", LAST = null, ERRS = {}, CERT = null, PROJECT = "", QUICK = null;
 const ERR_NODES = {};
 const NO_CRED = {auth: "system", user: "", secret: "", ssh_key: "", ssh_key_text: ""};
 const blankMirror = () => ({remote: "", provider: "generic", instance: "", repo: "",
@@ -35,7 +35,7 @@ export async function refresh(ctx, payload){
   if (payload && payload.tab) TAB = payload.tab;
   if (PROJECT !== ctx.project.path){
     PROJECT = ctx.project.path;
-    DIRTY = false; CHECK = null; CERT = null; ERRS = {}; LAST = null;
+    DIRTY = false; CHECK = null; CERT = null; ERRS = {}; LAST = null; QUICK = null;
   }
   await load(ctx, true);
 }
@@ -520,8 +520,19 @@ function showErrs(ctx){
   });
 }
 
+// Логин в адресе (так даёт строку клонирования Bitbucket) уходит в «Вход», адрес — без
+// него. Пароль в адресе не трогаем: движок уберёт его с замечанием.
+function pullUser(srv, cred){
+  const m = /^(https?:\/\/)([^\/@\s:]+)@(.*)$/i.exec(srv.repo || "");
+  if (!m) return;
+  srv.repo = m[1] + m[3];
+  if (cred && !cred.user) cred.user = decodeURIComponent(m[2]);
+}
+
 function touch(ctx){
   DIRTY = true;
+  pullUser(FORM, CRED);
+  (FORM.mirrors || []).forEach((m, i) => pullUser(m, MCRED[i]));
   ERRS = validate();
   showErrs(ctx);
   drawTabs(ctx);
@@ -605,7 +616,7 @@ function setupTab(ctx){
 
   const auth = el("div", {class: "card", id: "gitsyncAuth", style: "padding:16px 18px;margin-bottom:14px"},
     el("b", {}, t("gitsync.s_auth")),
-    ...authFields(ctx, c, f.provider, ""),
+    ...authFields(ctx, c, f.provider, "", f.instance),
     el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:center;margin-top:4px"},
       el("label", {class: "flagline"},
         el("input", {type: "checkbox", checked: f.tls.verify ? "" : null,
@@ -640,14 +651,29 @@ function setupTab(ctx){
     el("button", {class: "btn", onclick: () => { DIRTY = false; load(ctx, false); }}, t("gitsync.revert")),
     el("span", {style: "flex:1"}),
     el("button", {class: "btn", onclick: () => runCheck(ctx)}, t("gitsync.a.check")));
-  const box = el("div", {}, where, demoteBox(ctx), auth, mirrorsCard(ctx), commitCard, bar, checkView(ctx));
+  const box = el("div", {}, quickCard(ctx), where, demoteBox(ctx), auth, mirrorsCard(ctx), commitCard, bar,
+    checkView(ctx));
   setTimeout(() => showErrs(ctx), 0);
   return box;
 }
 
+// bitbucket.org: git ходит с именем пользователя и API-токеном вместо пароля — подсказки свои.
+const bbCloud = (provider, instance) => provider === "bitbucket"
+  && /^(https?:\/\/)?(www\.)?bitbucket\.org(\/|:|$)/i.test(instance || "");
+
+function secretHint(ctx, auth, provider, instance){
+  if (bbCloud(provider, instance)) return ctx.t("gitsync.h.bbcloud." + (auth === "token" ? "token" : "password"));
+  return auth === "token" ? ctx.t("gitsync.h.token." + provider) : ctx.t("gitsync.h.password");
+}
+
+function userHint(ctx, auth, provider, instance){
+  if (bbCloud(provider, instance) && auth === "password") return ctx.t("gitsync.h.bbcloud.user");
+  return ctx.t("gitsync.h.user." + (auth === "token" ? "token" : "password"));
+}
+
 // Вход одного сервера: способ, логин и токен (пароль) или SSH-ключ. `pre` — приставка поля
 // у дополнительного сервера («mirrors.0.»): так подсветка находит его поле, а не основного.
-function authFields(ctx, c, provider, pre){
+function authFields(ctx, c, provider, pre, instance){
   const {t, el} = ctx;
   const o = D.options;
   const sec = el("input", {class: "btn mono", type: "password", autocomplete: "off",
@@ -664,9 +690,9 @@ function authFields(ctx, c, provider, pre){
         select(ctx, c, "auth", o.auths, v => t("gitsync.auth." + v), true), t("gitsync.h.auth." + c.auth))),
     c.auth === "token" || c.auth === "password" ? el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
       field(ctx, pre + "user", t("gitsync.field.user"), input(ctx, c, "user", {autocomplete: "off"}),
-        t("gitsync.h.user." + (c.auth === "token" ? "token" : "password"))),
+        userHint(ctx, c.auth, provider, instance)),
       field(ctx, pre + "secret", c.auth === "token" ? t("gitsync.field.token") : t("gitsync.field.password"),
-        sec, had ? t("gitsync.h.secret_keep") : t("gitsync.h.token." + provider))) : null,
+        sec, had ? t("gitsync.h.secret_keep") : secretHint(ctx, c.auth, provider, instance))) : null,
     c.auth === "ssh" ? el("div", {},
       field(ctx, pre + "ssh_key", t("gitsync.field.ssh_key"),
         input(ctx, c, "ssh_key", {mono: true, placeholder: "~/.ssh/id_ed25519"}), t("gitsync.h.ssh_key")),
@@ -715,7 +741,7 @@ function mirrorsCard(ctx){
           input(ctx, m, "instance", {mono: true, placeholder: "https://git.example.com:3000"})),
         field(ctx, pre + "repo", t("gitsync.field.repo"),
           input(ctx, m, "repo", {mono: true, placeholder: t("gitsync.ph.repo." + m.provider)}))),
-      ...authFields(ctx, MCRED[i], m.provider, pre),
+      ...authFields(ctx, MCRED[i], m.provider, pre, m.instance),
       el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:center"},
         el("label", {class: "flagline"},
           el("input", {type: "checkbox", checked: m.with_primary ? "" : null,
@@ -770,12 +796,7 @@ function checkView(ctx){
   const target = mi >= 0 ? FORM.mirrors[mi] : FORM, cred = mi >= 0 ? MCRED[mi] : CRED;
   return el("div", {class: "card", style: "padding:14px 18px;margin-bottom:14px"},
     el("b", {}, (CHECK.remote ? CHECK.remote + ": " : "") + (CHECK.ok ? t("gitsync.check_ok") : t("gitsync.check_bad"))),
-    ...(CHECK.steps || []).map(s => el("div", {class: "row", style: "gap:8px;margin-top:6px;font-size:12.5px"},
-      el("span", {class: "chip " + (s.ok ? "ok" : s.ok === null ? "" : "bad")},
-        s.ok ? "✓" : s.ok === null ? "·" : "✗"),
-      el("span", {}, t("gitsync.step." + s.id, {login: s.login || "", branch: s.detail || ""})),
-      s.id === "api" && s.ok === null ? el("span", {class: "muted"}, t("gitsync.step.api_off")) : null,
-      s.detail && s.id !== "branch" ? el("span", {class: "muted mono", style: "font-size:11.5px"}, s.detail) : null)),
+    ...stepsView(ctx, CHECK),
     el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:8px"},
       sg.provider && target && sg.provider !== target.provider ? apply(t("gitsync.use_provider",
         {name: t("gitsync.prov." + sg.provider)}), () => { target.provider = sg.provider; }) : null,
@@ -784,6 +805,185 @@ function checkView(ctx){
         () => { FORM.branch = sg.branch; }) : null),
     sg.empty ? el("div", {class: "note", style: "margin-top:8px"}, t("gitsync.repo_empty")) : null,
     CHECK.problem ? problemView(ctx, {...CHECK.problem, level: "error"}, "check") : null);
+}
+
+function stepsView(ctx, check){
+  const {t, el} = ctx;
+  return (check.steps || []).map(s => el("div", {class: "row", style: "gap:8px;margin-top:6px;font-size:12.5px;flex-wrap:wrap"},
+    el("span", {class: "chip " + (s.ok ? "ok" : s.ok === null ? "" : "bad")},
+      s.ok ? "✓" : s.ok === null ? "·" : "✗"),
+    el("span", {}, t("gitsync.step." + s.id, {login: s.login || "", branch: s.detail || ""})),
+    s.id === "api" && s.ok === null ? el("span", {class: "muted"},
+      s.note ? t("gitsync.step." + s.note, {reason: tr(ctx, "gitsync.p." + s.code, s.code)}) : t("gitsync.step.api_off")) : null,
+    s.detail && s.id !== "branch" && !(s.id === "api" && s.ok === null && !s.note)
+      ? el("span", {class: "muted mono", style: "font-size:11.5px"}, s.detail) : null));
+}
+
+/* ---------------------------------------------------------------- подключение строкой git clone */
+
+// Строку со страницы репозитория (кнопка Clone) вставляют целиком: сервер, репозиторий,
+// ветку и логин разбирает движок (git_sync.parse_clone), человек выбирает способ входа и
+// вводит пароль. «Проверить и подключить» — проверка тем же входом, затем сохранение.
+const quick = () => QUICK || (QUICK = {text: "", parsed: null, cred: {...NO_CRED, auth: "password"},
+  target: "", name: "", busy: false, check: null, problems: null, done: null, timer: null});
+
+function quickCard(ctx){
+  const {t, el} = ctx;
+  const q = quick();
+  const text = el("input", {class: "btn mono", style: "width:100%;font-weight:400", autocomplete: "off",
+    placeholder: "git clone https://name@bitbucket.org/team/project.git"});
+  text.value = q.text;
+  text.oninput = () => {
+    q.text = text.value; q.check = null; q.problems = null; q.done = null;
+    clearTimeout(q.timer);
+    q.timer = setTimeout(() => parseQuick(ctx), 300);
+  };
+  return el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
+    el("b", {}, t("gitsync.q.title")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("gitsync.q.about")),
+    text,
+    el("div", {id: "gitsyncQuick"}, ...quickBody(ctx)));
+}
+
+function drawQuick(ctx){
+  const box = ctx.$("#gitsyncQuick");
+  if (box){ box.innerHTML = ""; box.append(...quickBody(ctx)); }
+}
+
+async function parseQuick(ctx){
+  const q = quick();
+  if (!q.text.trim()){ q.parsed = null; return drawQuick(ctx); }
+  const r = await ctx.api("/api/gitsync/parse", {method: "POST", quiet: true,
+    body: JSON.stringify({text: q.text})});
+  q.parsed = r || {ok: false, code: "bad_url"};
+  if (q.parsed.ok){
+    q.cred = {...q.cred, auth: q.parsed.auth, user: q.parsed.user || q.cred.user,
+              secret: q.parsed.secret || q.cred.secret};
+    const mainSet = !!(D.settings.repo || "").trim();
+    q.target = q.target || (mainSet ? "mirror" : "main");
+    if (!q.name) q.name = freeName(q.parsed.provider === "generic" ? "server" : q.parsed.provider);
+  }
+  drawQuick(ctx);
+}
+
+function freeName(base){
+  const taken = new Set([D.settings.remote, ...(D.settings.mirrors || []).map(m => m.remote),
+                         ...(D.status.remotes || [])]);
+  let name = base, n = 2;
+  while (taken.has(name)) name = base + "-" + n++;
+  return name;
+}
+
+function quickBody(ctx){
+  const {t, el} = ctx;
+  const q = quick(), p = q.parsed;
+  if (!p) return [];
+  if (!p.ok) return [el("div", {style: "font-size:12.5px;color:var(--danger);margin-top:8px"},
+    t("gitsync.q.err." + p.code))];
+  const c = q.cred;
+  const out = [el("div", {class: "row", style: "gap:6px;flex-wrap:wrap;margin:10px 0"},
+    el("span", {class: "chip ok"}, t("gitsync.prov." + p.provider)),
+    p.instance ? el("span", {class: "chip mono"}, p.instance) : null,
+    el("span", {class: "chip mono"}, p.repo),
+    p.branch ? el("span", {class: "chip"}, t("gitsync.q.branch", {branch: p.branch})) : null)];
+  if (p.secret_in_url) out.push(el("div", {class: "note", style: "margin-bottom:10px"}, t("gitsync.q.secret_moved")));
+  const method = el("select", {class: "btn", style: "width:100%"},
+    ...D.options.auths.map(v => el("option", {value: v, selected: c.auth === v ? "" : null}, t("gitsync.auth." + v))));
+  method.onchange = () => { c.auth = method.value; q.check = null; drawQuick(ctx); };
+  out.push(qField(ctx, t("gitsync.field.auth"), method, t("gitsync.h.auth." + c.auth)));
+  if (c.auth === "password" || c.auth === "token"){
+    const user = el("input", {class: "btn", style: "width:100%;font-weight:400", autocomplete: "off", value: c.user || ""});
+    user.oninput = () => { c.user = user.value.trim(); };
+    const sec = el("input", {class: "btn mono", type: "password", autocomplete: "new-password",
+      style: "width:100%;font-weight:400"});
+    sec.value = c.secret || "";
+    sec.oninput = () => { c.secret = sec.value; };
+    out.push(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+      qField(ctx, t("gitsync.field.user"), user, userHint(ctx, c.auth, p.provider, p.instance)),
+      qField(ctx, c.auth === "token" ? t("gitsync.field.token") : t("gitsync.field.password"), sec,
+        secretHint(ctx, c.auth, p.provider, p.instance))));
+  } else if (c.auth === "ssh"){
+    const key = el("input", {class: "btn mono", style: "width:100%;font-weight:400",
+      placeholder: "~/.ssh/id_ed25519", value: c.ssh_key || ""});
+    key.oninput = () => { c.ssh_key = key.value.trim(); };
+    out.push(qField(ctx, t("gitsync.field.ssh_key"), key, t("gitsync.h.ssh_key")));
+  }
+  const target = el("select", {class: "btn", style: "width:100%"},
+    ...["main", "mirror"].map(v => el("option", {value: v, selected: q.target === v ? "" : null},
+      t("gitsync.q.target." + v, {remote: D.settings.remote || "origin"}))));
+  target.onchange = () => { q.target = target.value; drawQuick(ctx); };
+  const row = el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+    qField(ctx, t("gitsync.q.where"), target,
+      q.target === "main" && (D.settings.repo || "").trim() ? t("gitsync.q.replace_main") : ""));
+  if (q.target === "mirror"){
+    const name = el("input", {class: "btn mono", style: "width:100%;font-weight:400", value: q.name});
+    name.oninput = () => { q.name = name.value.trim(); };
+    row.append(qField(ctx, t("gitsync.field.mirror_remote"), name, t("gitsync.q.name_hint")));
+  }
+  out.push(row);
+  out.push(el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+    el("button", {class: "btn primary", disabled: q.busy ? "" : null, onclick: () => connectQuick(ctx, false)},
+      t("gitsync.q.connect")),
+    q.busy ? el("span", {class: "spin"}) : null,
+    q.check && !q.check.ok && !q.busy ? el("button", {class: "btn", onclick: () => connectQuick(ctx, true)},
+      t("gitsync.q.save_anyway")) : null));
+  if (q.check) out.push(el("div", {style: "margin-top:10px"},
+    el("b", {}, q.check.ok ? t("gitsync.check_ok") : t("gitsync.check_bad")), ...stepsView(ctx, q.check),
+    (q.check.suggest || {}).empty ? el("div", {class: "note", style: "margin-top:8px"}, t("gitsync.repo_empty")) : null,
+    q.check.problem ? problemView(ctx, {...q.check.problem, level: "error", actions: []}, "check") : null));
+  if (q.problems) out.push(problemView(ctx, {code: "settings", level: "error", fields: q.problems, actions: []}, "check"));
+  if (q.done) out.push(el("div", {class: "note", style: "margin-top:10px"},
+    el("div", {}, t("gitsync.q.done", {remote: q.done.remote, url: q.done.url})),
+    el("div", {class: "row", style: "gap:8px;margin-top:8px"},
+      el("button", {class: "btn sm primary", disabled: BUSY ? "" : null,
+        onclick: () => act(ctx, "git:push", q.done.main ? [] : ["--remote=" + q.done.remote])},
+        t("gitsync.q.push_now")))));
+  return out;
+}
+
+function qField(ctx, label, control, hint){
+  const {el} = ctx;
+  return el("label", {style: "display:block;flex:1;min-width:220px;margin-bottom:10px"},
+    el("div", {class: "muted", style: "font-size:12px;margin-bottom:3px"}, label), control,
+    hint ? el("div", {class: "muted", style: "font-size:11.5px;margin-top:3px"}, hint) : null);
+}
+
+async function connectQuick(ctx, force){
+  const q = quick(), p = q.parsed;
+  if (!p || !p.ok || q.busy) return;
+  if (DIRTY && !confirm(ctx.t("gitsync.q.dirty_ask"))) return;
+  const settings = clone(D.settings);
+  settings.mirrors = settings.mirrors || [];
+  const server = {provider: p.provider, instance: p.instance, repo: p.repo, tls: {verify: true, ca_file: ""}};
+  const main = q.target !== "mirror";
+  const remote = main ? (settings.remote || "origin") : q.name;
+  if (main){ Object.assign(settings, server); if (p.branch) settings.branch = p.branch; }
+  else settings.mirrors.push({remote, ...server, with_primary: true});
+  const cred = {...NO_CRED, ...q.cred};
+  q.problems = null; q.done = null;
+  if (!force){
+    q.busy = true; q.check = null; drawQuick(ctx);
+    const r = await ctx.api("/api/gitsync/check", {method: "POST", quiet: true,
+      body: JSON.stringify({project: ctx.project.path, settings, remote: main ? "" : remote, credentials: cred})});
+    q.busy = false;
+    q.check = r || {ok: false, steps: []};
+    if (!q.check.ok) return drawQuick(ctx);
+  }
+  const mc = {};
+  (D.settings.mirrors || []).forEach(m => { mc[m.remote] = (D.mirror_credentials || {})[m.remote] || NO_CRED; });
+  if (!main) mc[remote] = cred;
+  const r = await ctx.api("/api/gitsync/settings", {method: "POST", quiet: true,
+    body: JSON.stringify({project: ctx.project.path, settings,
+                          credentials: main ? cred : D.credentials, mirror_credentials: mc})});
+  if (!r || !r.ok){
+    q.problems = (r && r.problems) || [{field: "", code: "required"}];
+    return drawQuick(ctx);
+  }
+  (r.notes || []).forEach(n => ctx.toast(n, "ok"));
+  q.done = {remote, main, url: p.url};
+  q.cred = {...q.cred, secret: ""};
+  DIRTY = false;
+  await load(ctx, false);
 }
 
 /* ---------------------------------------------------------------- сертификат */

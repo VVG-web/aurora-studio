@@ -9,5 +9,5 @@
   "order": 100,
   "needs": ["project"],
   "commands": ["sync:audit", "sync:diff", "sync:jira-status", "kit:remap-sources"],
-  "for": "1.156.0"
+  "for": "1.157.0"
 }

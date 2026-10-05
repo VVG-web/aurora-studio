@@ -358,6 +358,93 @@ def guess_provider(url: str) -> str:
     return "generic"
 
 
+# Ключи `git clone`, за которыми идёт значение: адрес — первое слово, которое не ключ и не
+# его значение.
+CLONE_ARGS = {"-b", "--branch", "-o", "--origin", "--depth", "-c", "--config", "--reference",
+              "--reference-if-able", "--separate-git-dir", "-u", "--upload-pack", "-j", "--jobs",
+              "--filter", "--template", "--shallow-since", "--shallow-exclude", "--bundle-uri",
+              "--server-option"}
+
+
+def parse_clone(text: str) -> dict:
+    """Строка из `git clone` (или просто адрес) → сервер проекта: провайдер, адрес сервера,
+    репозиторий, ветка, логин и способ входа.
+
+    Репозиторий записывается как «владелец/имя» у сервера, только если git по ним соберёт
+    тот же адрес, что вставлен, — иначе полным адресом: ходить git будет ровно туда.
+    Пароль из адреса отделяется и в настройку не пишется: панель кладёт его в поле пароля.
+    """
+    raw = " ".join(str(text or "").replace("\\\n", " ").split())
+    try:
+        words = shlex.split(raw)
+    except ValueError:
+        words = raw.split()
+    if words[:2] == ["git", "clone"]:
+        words = words[2:]
+    elif words[:1] == ["clone"]:
+        words = words[1:]
+    branch, url, i = "", "", 0
+    while i < len(words):
+        w = words[i]
+        if w in ("-b", "--branch") and i + 1 < len(words):
+            branch, i = words[i + 1], i + 2
+        elif w.startswith("--branch="):
+            branch, i = w.split("=", 1)[1], i + 1
+        elif w in CLONE_ARGS:
+            i += 2
+        elif w.startswith("-"):
+            i += 1
+        else:
+            url = w
+            break
+    if not url:
+        return {"ok": False, "code": "no_url"}
+    user, secret = url_userinfo(url)
+    clean = strip_userinfo(url)
+    if not is_url(clean):
+        return {"ok": False, "code": "bad_url", "url": clean}
+    ssh = bool(SCP_RX.match(clean) or SSH_URL_RX.match(clean))
+    host = _host(clean)
+    provider = guess_provider(clean)
+    path = ""
+    if ssh:
+        path = clean.split(":", 1)[1] if SCP_RX.match(clean) else urllib.parse.urlparse(clean).path
+        instance = f"https://{host}" if host else ""
+    elif URL_RX.match(clean):
+        u = urllib.parse.urlparse(clean)
+        instance, path = f"{u.scheme}://{u.netloc}", u.path
+    else:
+        instance = ""                                       # папка или file:// — как есть
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    # Свой Bitbucket (Server / Data Center): …/scm/<ключ>/<репозиторий>.git, по SSH — порт
+    # 7999 и тот же путь без scm.
+    if "/scm/" in "/" + path + "/" or (ssh and provider == "generic" and ":7999/" in clean):
+        provider = "bitbucket"
+        head, _, tail = ("/" + path).rpartition("/scm/") if "/scm/" in "/" + path else ("", "", path)
+        if head and not ssh:
+            instance += head
+        parts = tail.strip("/").split("/")
+        if len(parts) == 2:
+            key = parts[0] if parts[0].startswith("~") else parts[0].upper()
+            path = f"{key}/{parts[1]}"
+    local = bool(LOCAL_RX.match(clean))
+    out = {"ok": True, "provider": provider, "instance": "", "repo": clean, "branch": branch,
+           "auth": "ssh" if ssh else "system" if local else "token" if provider == "github" else "password",
+           "user": "" if ssh else user, "secret": "" if ssh else secret,
+           "secret_in_url": bool(secret), "url": clean, "host": host,
+           "cloud": host.lower() in ("bitbucket.org", "www.bitbucket.org") and provider == "bitbucket"}
+    if path and PATH_RX.match(path) and instance:
+        s = {"provider": provider, "instance": instance, "repo": path}
+        same = lambda a: a.lower().rstrip("/").removesuffix(".git")    # noqa: E731
+        if same(repo_url(s, {"auth": out["auth"]})) == same(clean):
+            out.update(instance=instance, repo=path)
+    if not out["instance"] and URL_RX.match(clean):
+        out["instance"] = instance                          # сервер — для API и сертификата
+    return out
+
+
 def problem(code: str, raw: str = "", **extra) -> dict:
     title, fix, actions = PROBLEMS.get(code, PROBLEMS["unknown"])
     return {"code": code, "title": title, "fix": fix, "actions": list(actions),
@@ -732,7 +819,10 @@ def _server(d: dict, bad, pre: str) -> dict:
     out["instance"] = strip_userinfo(inst)
     repo = str(d.get("repo") or "").strip()
     if repo != strip_userinfo(repo):
-        bad(pre + "repo", "creds_in_url")
+        # Логин в адресе (так даёт строку клонирования Bitbucket) — не секрет: убирается
+        # молча, логин берут в «Вход». Пароль в адресе — замечание: он не хранится.
+        if url_userinfo(repo)[1]:
+            bad(pre + "repo", "creds_in_url")
         repo = strip_userinfo(repo)
     if repo and not is_url(repo):
         repo = repo.strip("/")
@@ -1901,8 +1991,17 @@ def _check(project, s: dict, c: dict) -> dict:
                   "branches": heads[:50]})
     if rc and not prob:
         prob = problem(classify(tail), tail)
+    api = next((x for x in steps if x["id"] == "api"), None)
+    if rc == 0 and prob and api and api["ok"] is False:
+        # Git достаёт до репозитория, API сервера — нет. Частый случай: у bitbucket.org git
+        # ждёт имя пользователя, а API — e-mail Atlassian с тем же токеном; или у адреса,
+        # собранного из SSH, веб-сервер на другом порту. Проект ходит через git — значит,
+        # подключение работает; права на запись скажет первая отправка.
+        api.update(ok=None, note="api_login" if prob["code"] == "auth" else "api_failed",
+                   code=prob["code"])
+        prob = None
     want = s["branch"] or (suggest.get("branch") or "")
-    if rc == 0 and want:
+    if rc == 0 and want and heads:                   # пустой сервер: ветку заведёт отправка
         steps.append({"id": "branch", "ok": want in heads, "detail": want})
     if rc == 0 and not heads:
         suggest["empty"] = True
