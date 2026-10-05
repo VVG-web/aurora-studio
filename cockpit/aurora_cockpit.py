@@ -54,8 +54,8 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
-from aurora_common import (child_env, local_view, mtime_stamp,  # noqa: E402
-                           personal_kit_file, replace_file, utc_slug, utc_stamp,
+from aurora_common import (child_env, engine_dir, is_folder_guide, local_view,  # noqa: E402
+                           mtime_stamp, personal_kit_file, replace_file, utc_slug, utc_stamp,
                            yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -594,7 +594,7 @@ def lint_one(project: str, rel: str) -> dict:
     файл мимо панели. Молчать — значит копить находки к общему прогону, когда уже не
     помнишь, что менял.
     """
-    script = os.path.join(project, ".opencode", "scripts", "kb_lint.py")
+    script = os.path.join(project, engine_dir(project), "scripts", "kb_lint.py")
     if not os.path.isfile(script):
         return {}
     # Сохранение не зависит от линтера. Он читает базу целиком, и на большой базе или
@@ -746,7 +746,7 @@ def corrections_state(project: str) -> dict:
     решения, а не решает сам. Пока не ответили, исправление продолжает действовать —
     снимать проверенное по подозрению значит менять его на неподтверждённое.
     """
-    script = os.path.join(project, ".opencode", "scripts", "kb_corrections.py")
+    script = os.path.join(project, engine_dir(project), "scripts", "kb_corrections.py")
     folder = os.path.join(project, "Raw", "corrections")
     if not os.path.isfile(script) or not os.path.isdir(folder):
         return {"count": 0, "ask": 0, "items": []}
@@ -774,7 +774,7 @@ def graph_state(project: str, rebuild: bool = False) -> dict:
     честнее, чем свежесть любой ценой: видно, насколько картинка отстала.
     """
     path = os.path.join(project, "AuroraKnowledgeDB", "meta", "graph.json")
-    script = os.path.join(project, ".opencode", "scripts", "kb_graph.py")
+    script = os.path.join(project, engine_dir(project), "scripts", "kb_graph.py")
 
     def build() -> str:
         """Пересчитать. Пустая строка — получилось; иначе причина словами."""
@@ -2546,7 +2546,7 @@ def script_path(project: str, script: str) -> str:
     """Где взять скрипт: kit-сторонние — всегда из kit'а, остальные — из движка проекта."""
     if script in KIT_SIDE:
         return os.path.join(KIT, "scripts", script)
-    path = os.path.join(project, ".opencode", "scripts", script)
+    path = os.path.join(project, engine_dir(project), "scripts", script)
     return path if os.path.isfile(path) else os.path.join(KIT, "scripts", script)
 
 
@@ -2571,7 +2571,7 @@ def report_state(project: str) -> dict:
     Читаем через тот же `paths.py`, что и сам отчёт: иначе панель и генератор
     расходятся в том, где лежит ростер, и человек правит не тот файл.
     """
-    pkg = os.path.join(project, ".opencode", "reports", "analyst")
+    pkg = os.path.join(project, engine_dir(project), "reports", "analyst")
     if not os.path.isdir(pkg):
         pkg = os.path.join(KIT, "reports", "analyst")
     if not os.path.isdir(pkg):
@@ -2790,8 +2790,8 @@ def ping_state(project: str, out: str = "", rc: int = 0) -> dict:
     Результат кладём на диск: без него плитка после перезагрузки панели показывала бы
     «не проверялось», хотя человек проверял пять минут назад, — и он проверял бы снова.
     """
-    path = os.path.join(project, ".opencode", PING_FILE) if os.path.isdir(
-        os.path.join(project, ".opencode")) else os.path.join(KIT, PING_FILE)
+    path = os.path.join(project, engine_dir(project), PING_FILE) if os.path.isdir(
+        os.path.join(project, engine_dir(project))) else os.path.join(KIT, PING_FILE)
     if out:
         # Считаем ровно по тем строкам, которые печатает `agent_core --ping`: «✅ №N» и
         # «✗ №N». Первая версия искала «❌», которого скрипт не пишет вовсе, — и плитка
@@ -2913,7 +2913,7 @@ def source_health(project: str) -> dict:
                 dirs[:] = [d for d in dirs if not d.startswith(".")]
                 stale = "_outdated" in dirpath or "_archive" in dirpath
                 for f in files:
-                    if not f.endswith(".md"):
+                    if not f.endswith(".md") or is_folder_guide(f):
                         continue
                     if stale:
                         archived += 1
@@ -2971,12 +2971,21 @@ def last_agent_run(project: str) -> dict:
 
 # ------------------------------------------------------- журнал запусков проекта
 
-RUNLOG = os.path.join(".opencode", "run_log.md")
+# С 1.158.0 журнал — в `AuroraKnowledgeDB/meta/`: движок ушёл из git, а журнал команде нужен.
+RUNLOG = os.path.join("AuroraKnowledgeDB", "meta", "run_log.md")
+RUNLOG_LEGACY = os.path.join(".opencode", "run_log.md")
+def runlog_path(project: str) -> str:
+    """Журнал запусков проекта; у проекта с движком ещё в `.opencode/` — прежний файл."""
+    if engine_dir(project) == ".opencode":
+        return os.path.join(project, RUNLOG_LEGACY)
+    return os.path.join(project, RUNLOG)
+
+
 RUNLOG_HEAD = """# Журнал запусков
 
 Кто и когда последний раз запускал команду Авроры в этом проекте. Файл лежит в git
-рядом с движком, поэтому ответ на «когда обновляли зеркала» есть у всей команды, а не
-только у того, у кого открыта вкладка панели.
+(`AuroraKnowledgeDB/meta/`), поэтому ответ на «когда обновляли зеркала» есть у всей
+команды, а не только у того, у кого открыта вкладка панели.
 
 Пишет панель (Cockpit) после каждого запуска — по строке на команду, последний прогон.
 Запуски из терминала сюда не попадают: у них нет общей точки, через которую проходят все
@@ -2991,7 +3000,7 @@ RUNLOG_HEAD = """# Журнал запусков
 def read_runlog(project: str) -> dict:
     """Журнал → {команда: запись}. Пустой файл, чужие правки и мусор — просто нет записи."""
     runs = {}
-    for line in read_text(os.path.join(project, RUNLOG), limit=200_000).splitlines():
+    for line in read_text(runlog_path(project), limit=200_000).splitlines():
         c = [x.strip() for x in line.strip().strip("|").split("|")] if line.startswith("|") else []
         # Колонка «Секунд» появилась в 1.71.0: строки старого журнала читаются как были.
         if len(c) not in (6, 7) or not c[0] or c[0] in ("Команда", "---") or set(c[0]) == {"-"}:
@@ -3030,7 +3039,7 @@ def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> N
         f"| {c} | {r['at']} | {r['rc']} | {r['kit']} | {r['who']} | {r['line']} "
         f"| {r.get('secs') or ''} |\n"
         for c, r in sorted(runs.items()))
-    path = os.path.join(project, RUNLOG)
+    path = runlog_path(project)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -3039,14 +3048,14 @@ def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> N
         pass    # журнал — удобство, а не результат работы: не записался, так не записался
 
 
-RUNS_KEEP = 50      # столько последних прогонов храним в `.opencode/runs` — хронология для сравнения
+RUNS_KEEP = 50      # столько последних прогонов храним в `.aurora/runs` — хронология для сравнения
 RUNS_SHOW = 30      # столько показываем в «Консоли»; остальные лежат файлами и открываются по id
 
 
 def runs_dir(project: str) -> str:
     """Папка архива прогонов: полный вывод каждой команды, чтобы старый и новый можно было
     сравнить после перезапуска, а не только в живом буфере процесса."""
-    return os.path.join(project, ".opencode", "runs")
+    return os.path.join(project, engine_dir(project), "runs")
 
 
 def run_archive(project: str, limit: int = 0) -> list:
@@ -3246,13 +3255,13 @@ def history_run(project: str, rid: str) -> dict:
     cut = max(0, len(entries) - HISTORY_ENTRIES)
     if cut:
         entries = [{"k": "note", "s": f"… первые {cut} строк не показаны — полный журнал в "
-                                        f".opencode/runs/{rid}/console.log"}] + entries[cut:]
+                                        f".aurora/runs/{rid}/console.log"}] + entries[cut:]
     return {"entries": entries, "meta": meta}
 
 
 def read_run_console(project: str, run_id: str) -> dict:
     """Полный текст архивированного прогона. Раньше жил только в памяти процесса
-    и пропадал на перезапуске — теперь лежит в `.opencode/runs/<id>/console.log`."""
+    и пропадал на перезапуске — теперь лежит в `.aurora/runs/<id>/console.log`."""
     # Имя приходит из браузера — сверяем со списком того, что действительно лежит в
     # архиве, а не чистим строку. `basename` пропускал «..»: путь уходил на уровень выше.
     # Тот же приём, что у истории отчётов: чего нет в списке, того не выдаём.
@@ -3342,7 +3351,7 @@ def route_state_path(project: str) -> str:
     # как «работу агента», и состояние панели попадало бы в коммит, про который сказано
     # «ровно то, что менял агент». Это след работающей панели — ему место рядом с
     # архивом прогонов, за `.gitignore`.
-    return os.path.join(project, ".opencode", "state", "last_route.json")
+    return os.path.join(project, engine_dir(project), "state", "last_route.json")
 
 
 def read_route_state(project: str):
@@ -3593,7 +3602,7 @@ def kinds_read(project: str) -> dict:
             "problems": [{"kind": k, "why": w} for k, w in MK.check(project, kinds)],
             "templates": sorted(
                 f for f in os.listdir(os.path.join(project, "Templates"))
-                if f.endswith(".md")) if os.path.isdir(os.path.join(project, "Templates")) else []}
+                if f.endswith(".md") and not is_folder_guide(f)) if os.path.isdir(os.path.join(project, "Templates")) else []}
 
 
 sys.path.insert(0, os.path.join(KIT, "scripts"))
@@ -3608,7 +3617,7 @@ def artifact_files(project: str, kind: str) -> list:
         return []
     out = []
     for name in sorted(os.listdir(folder)):
-        if not name.endswith(".md"):
+        if not name.endswith(".md") or is_folder_guide(name):
             continue
         path = os.path.join(folder, name)
         head = read_text(path, limit=4000)
@@ -4077,7 +4086,7 @@ class Handler(BaseHTTPRequestHandler):
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
         elif u.path == "/api/run/logs":
-            # Хронология архивов прогонов (каждый прогон — папка в `.opencode/runs`).
+            # Хронология архивов прогонов (каждый прогон — папка в `.aurora/runs`).
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
@@ -4085,7 +4094,7 @@ class Handler(BaseHTTPRequestHandler):
                          if project else {"archive": []})
 
         elif u.path == "/api/run/file":
-            # Полный вывод прошлого прогона из архива `.opencode/runs`. В отличие от
+            # Полный вывод прошлого прогона из архива `.aurora/runs`. В отличие от
             # `/api/job` он читается из файла, а не из памяти: живой прогон идёт своим
             # буфером, архив — этим, и раскрытие старого не трогает текущий вывод.
             project = q.get("project", [""])[0]
@@ -4534,7 +4543,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(mcp_kit_action(payload))
             return
         if u.path == "/api/context/upload":
-            # Вложение к задаче: только текст, в `.opencode/context/<день>/` проекта — папку
+            # Вложение к задаче: только текст, в `.aurora/context/<день>/` проекта — папку
             # временного контекста запросов, закрытую .gitignore и чистящуюся сама.
             project = payload.get("project", "")
             if not self._known(project):
@@ -4737,7 +4746,7 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             return {"error": "нет aurora.config.yaml"}
         block = ["# Подключённые модули источников: id — он же имя папки в Sources/.",
-                 "# Что установлено: `python3 .opencode/scripts/sources_registry.py`.",
+                 "# Что установлено: `python3 .aurora/scripts/sources_registry.py`.",
                  "sources:"]
         for mid in modules:
             path = known[mid]["mirror"]["default_path"].rstrip("/")
@@ -4881,7 +4890,7 @@ def route_start(project: str, sc_id: str, write: bool, resume: dict | None = Non
     """Начать маршрут в процессе панели. → {route: id} или {error}.
 
     Закрытая вкладка маршрут больше не останавливает: он идёт здесь, а журнал прогона —
-    тот же, что видно в консоли, — пишется в `.opencode/runs/<id>/`.
+    тот же, что видно в консоли, — пишется в `.aurora/runs/<id>/`.
     """
     sc = RR.scenario(sys.modules[__name__], sc_id)
     if not sc:

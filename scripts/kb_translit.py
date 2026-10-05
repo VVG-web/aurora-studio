@@ -22,9 +22,9 @@
     |---|---|---|---|
     | SPR-001-Statusy-tarifa | SPR-001 Статусы тарифа | 2026-09-03 | kb:translit |
 
-  python3 .opencode/scripts/kb_translit.py              # что найдено и что предложено
-  python3 .opencode/scripts/kb_translit.py --apply      # дописать находки в словарь
-  python3 .opencode/scripts/kb_translit.py --rename --apply   # переименовать по словарю
+  python3 .aurora/scripts/kb_translit.py              # что найдено и что предложено
+  python3 .aurora/scripts/kb_translit.py --apply      # дописать находки в словарь
+  python3 .aurora/scripts/kb_translit.py --rename --apply   # переименовать по словарю
 
 Зависимостей нет.
 """

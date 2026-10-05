@@ -46,7 +46,7 @@ with a `connector.json`; see [source modules](../docs/en/connectors.md).
 | `CONFLUENCE_PERSONAL_TOKEN`, `JIRA_PERSONAL_TOKEN` (or user + password) | `.env.aurora.local` (git-ignored) |
 
 Sync scripts talk to Confluence and Jira directly over REST. The Atlassian MCP in your editor does not help them: it
-does not hand out its credentials. Check a token: `python3 .opencode/scripts/jira_export.py --limit 1`.
+does not hand out its credentials. Check a token: `python3 .aurora/scripts/jira_export.py --limit 1`.
 
 ## Checking a mirror
 

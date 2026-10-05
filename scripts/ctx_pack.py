@@ -6,10 +6,10 @@
 Раньше их выполняла модель «по памяти»: шапка могла потеряться, `imported` — уехать в
 контекст как факт, а `usage.log` (топливо очереди верификации) не вестись вовсе.
 
-  python3 .opencode/scripts/ctx_pack.py "Заявка"                 # пак по теме
-  python3 .opencode/scripts/ctx_pack.py "Заявка" --mode ask      # + история: deprecated и отклонённые DR
-  python3 .opencode/scripts/ctx_pack.py "Заявка" --budget 8000   # ограничить объём (символов)
-  python3 .opencode/scripts/ctx_pack.py "Заявка" --save          # + файл в Artifacts/drafts/
+  python3 .aurora/scripts/ctx_pack.py "Заявка"                 # пак по теме
+  python3 .aurora/scripts/ctx_pack.py "Заявка" --mode ask      # + история: deprecated и отклонённые DR
+  python3 .aurora/scripts/ctx_pack.py "Заявка" --budget 8000   # ограничить объём (символов)
+  python3 .aurora/scripts/ctx_pack.py "Заявка" --save          # + файл в Artifacts/drafts/
 
 Режимы (`--mode`) по таблице retrieval.md:
   generate (по умолчанию), review — только knowledge (доверенный источник)

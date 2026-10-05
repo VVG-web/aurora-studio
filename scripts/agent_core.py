@@ -5,11 +5,11 @@
 Этот скрипт — фаза 1: разобрать настройку, дойти до живой модели по цепочке бэкендов и
 честно сказать, что работает. Агентский цикл (задачи, оракулы) строится поверх — фаза 2.
 
-  python3 .opencode/scripts/agent_core.py --ping          # каждый бэкенд: жив, занят, пуст
-  python3 .opencode/scripts/agent_core.py --probe-width   # сколько запросов держит шлюз
-  python3 .opencode/scripts/agent_core.py --show          # собранная конфигурация (ключи маской)
-  python3 .opencode/scripts/agent_core.py --venv-status   # стоит ли Pydantic AI и какой версии
-  python3 .opencode/scripts/agent_core.py --venv-install  # поставить/обновить в ~/.aurora/venv
+  python3 .aurora/scripts/agent_core.py --ping          # каждый бэкенд: жив, занят, пуст
+  python3 .aurora/scripts/agent_core.py --probe-width   # сколько запросов держит шлюз
+  python3 .aurora/scripts/agent_core.py --show          # собранная конфигурация (ключи маской)
+  python3 .aurora/scripts/agent_core.py --venv-status   # стоит ли Pydantic AI и какой версии
+  python3 .aurora/scripts/agent_core.py --venv-install  # поставить/обновить в ~/.aurora/venv
 
 Настройка моделей — одна на кит: `<кит>/local/models.json` (`model_config.py`): провайдеры,
 возможности (LLM, OCR, эмбеддинги), роли и цепочки запасных бэкендов. Проектной настройки
@@ -63,11 +63,11 @@ def _roots() -> tuple:
     """(кит, проект|None) — откуда собирать .env.
 
     Скрипт живёт либо в ките (`scripts/`), либо в копии движка проекта
-    (`.opencode/scripts/`); проектом считается текущая папка с `aurora.config.yaml`.
+    (`.aurora/scripts/`); проектом считается текущая папка с `aurora.config.yaml`.
     """
     here = Path(__file__).resolve().parent
     root = here.parent
-    if root.name == ".opencode":
+    if root.name in (".aurora", ".opencode"):        # движок проекта; .opencode — до 1.158
         project = root.parent
         kit_ptr = root / "kit_path.txt"
         kit = Path(kit_ptr.read_text(encoding="utf-8").strip()) if kit_ptr.is_file() else project

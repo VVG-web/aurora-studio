@@ -14,15 +14,15 @@ entrypoint: SKILL.md
 ## Зеркало делает скрипт, не модель
 
 ```bash
-python3 .opencode/scripts/confluence_export.py            # обновить зеркало
-python3 .opencode/scripts/confluence_export.py --verify   # гейт детерминизма
-python3 .opencode/scripts/sync_audit.py                   # целостность после синка
+python3 .aurora/scripts/confluence_export.py            # обновить зеркало
+python3 .aurora/scripts/confluence_export.py --verify   # гейт детерминизма
+python3 .aurora/scripts/sync_audit.py                   # целостность после синка
 ```
 
 Почему так: когда markdown пишет LLM, одна и та же страница выгружается каждый раз чуть
 иначе — git показывает правку там, где её нет, и синк перестают запускать. Конвертация
 кодом даёт байт-в-байт одинаковый файл. Процедура целиком —
-`.opencode/skills/aurora-vault/references/maintenance.md`, раздел `sync:confluence`.
+`.aurora/skills/aurora-vault/references/maintenance.md`, раздел `sync:confluence`.
 
 Настройки — `aurora.config.yaml` (`base_url`, `space`, `sync_roots`).
 Доступ — `CONFLUENCE_PAT` в `.env.aurora.local` (Data Center 7.9+) либо

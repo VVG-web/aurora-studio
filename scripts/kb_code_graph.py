@@ -13,8 +13,8 @@
   • код — папки из `graphify: code_dirs: [...]` в aurora.config.yaml: их разбирает
     graphify (tree-sitter, без модели), если он установлен (см. «Установка» панели).
 
-  python3 .opencode/scripts/kb_code_graph.py            # что нашлось
-  python3 .opencode/scripts/kb_code_graph.py --apply    # записать meta/graphify/code.json
+  python3 .aurora/scripts/kb_code_graph.py            # что нашлось
+  python3 .aurora/scripts/kb_code_graph.py --apply    # записать meta/graphify/code.json
 
 Панель: `kb:code-graph`
 """
@@ -36,7 +36,7 @@ TABLE = re.compile(r"\b(?:from|join|update|into)\s+([A-Za-z_][\w]*(?:\.[A-Za-z_]
 # Слова SQL, которые встают после FROM/JOIN, но таблицами не являются.
 NOT_TABLE = {"select", "dual", "lateral", "unnest", "generate_series", "values", "table",
              "only", "json_array_elements", "jsonb_array_elements", "set"}
-SKIP_DIRS = {".git", ".opencode", "node_modules", "_archive", "venv", ".venv"}
+SKIP_DIRS = {".git", ".aurora", "node_modules", "_archive", "venv", ".venv"}
 
 
 def sql_sources(root: str) -> list:

@@ -6,9 +6,9 @@
 MCP убирает посредника — ассистент сам ищет в базе, читает карточки и задаёт ей вопросы,
 пока думает над вашей задачей.
 
-  python3 .opencode/scripts/aurora_mcp.py                 # сервер на stdio, проект = cwd
-  python3 .opencode/scripts/aurora_mcp.py --project PATH  # явный проект
-  python3 .opencode/scripts/aurora_mcp.py --selftest      # проверить без ассистента
+  python3 .aurora/scripts/aurora_mcp.py                 # сервер на stdio, проект = cwd
+  python3 .aurora/scripts/aurora_mcp.py --project PATH  # явный проект
+  python3 .aurora/scripts/aurora_mcp.py --selftest      # проверить без ассистента
 
 Один сервер — одна база. Проектов у аналитика несколько, и смешивать их базы в одном
 инструменте нельзя: знание одного заказчика не должно попасть в артефакт другого, а
@@ -131,7 +131,7 @@ def run(project: str, script: str, args: list, timeout: int = 120, fail_from: in
     считается код от `fail_from`; `kb_ask` отвечает кодом 1, когда ни одна модель не ответила,
     и для него это сбой.
     """
-    path = os.path.join(project, ".opencode", "scripts", script)
+    path = os.path.join(project, ".aurora", "scripts", script)
     if not os.path.isfile(path):
         path = str(SCRIPTS / script)
     try:
@@ -397,7 +397,7 @@ def config_block(projects: list) -> dict:
     for path in projects:
         servers["aurora-" + slug(path)] = {
             "command": sys.executable,
-            "args": [os.path.join(path, ".opencode", "scripts", "aurora_mcp.py"),
+            "args": [os.path.join(path, ".aurora", "scripts", "aurora_mcp.py"),
                      "--project", path]}
     return {"mcpServers": servers}
 

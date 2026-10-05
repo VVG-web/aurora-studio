@@ -5,8 +5,8 @@
 неверный тип означает либо потерю дословного текста, либо мёртвую карточку, которую
 никогда не переосмыслят.
 
-  python3 .opencode/scripts/kb_kind.py            # что будет проставлено
-  python3 .opencode/scripts/kb_kind.py --apply
+  python3 .aurora/scripts/kb_kind.py            # что будет проставлено
+  python3 .aurora/scripts/kb_kind.py --apply
 
 Три типа и их правила:
 

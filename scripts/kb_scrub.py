@@ -5,9 +5,9 @@
 паспорта и СНИЛС. Линтер ловит токены и пароли, но не ПДн, а регламент требует
 анонимизации — и требует её до того, как текст уедет в контекст модели или в Confluence.
 
-  python3 .opencode/scripts/kb_scrub.py                 # отчёт: где и что
-  python3 .opencode/scripts/kb_scrub.py --apply         # закрыть маркерами
-  python3 .opencode/scripts/kb_scrub.py --include-raw --apply
+  python3 .aurora/scripts/kb_scrub.py                 # отчёт: где и что
+  python3 .aurora/scripts/kb_scrub.py --apply         # закрыть маркерами
+  python3 .aurora/scripts/kb_scrub.py --include-raw --apply
 
 Режим задаётся проектом: `privacy.scrub` в `aurora.config.yaml` — `off` / `report` /
 `mask`. Это свойство контура, а не вкуса: если репозиторий уезжает в закрытый git, а те

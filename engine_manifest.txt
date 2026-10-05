@@ -7,8 +7,8 @@
 #
 # Формат строки:  <путь-в-kit>  =>  <путь-в-проекте>
 # Спец-правила (в скобках после →) обрабатываются update-скриптом:
-#   (connectors) — модули источников: манифест каждого кладётся в .opencode/connectors/,
-#              скрипт запуска — в .opencode/scripts/, а тело sync-скилла размножается
+#   (connectors) — модули источников: манифест каждого кладётся в .aurora/connectors/,
+#              скрипт запуска — в .aurora/scripts/, а тело sync-скилла размножается
 #              по существующим папкам скиллов проекта с сохранением slug в имени.
 #              Тело НЕ перезаписывается (проект дорабатывает его под свой контур) —
 #              новая версия ложится рядом как <файл>.new
@@ -17,117 +17,118 @@
 
 # --- проводник по базе знаний: его читает любой ассистент, открывший папку ---
 templates/meta/READING.md               => AuroraKnowledgeDB/README.md
-docs/knowledge-rules.md                 => .opencode/docs/knowledge-rules.md
-docs/накопление-знания.md               => .opencode/docs/накопление-знания.md
-docs/knowledge-rules-tldr.md            => .opencode/docs/knowledge-rules-tldr.md
+docs/knowledge-rules.md                 => .aurora/docs/knowledge-rules.md
+docs/накопление-знания.md               => .aurora/docs/накопление-знания.md
+docs/knowledge-rules-tldr.md            => .aurora/docs/knowledge-rules-tldr.md
 
 # --- скилл grill-me: его читает и планировщик панели, и ассистент в чате ---
-skills/aurora-grill/SKILL.md                => .opencode/skills/aurora-grill/SKILL.md
-skills/aurora-grill/skill.json              => .opencode/skills/aurora-grill/skill.json
+skills/aurora-grill/SKILL.md                => .aurora/skills/aurora-grill/SKILL.md
+skills/aurora-grill/skill.json              => .aurora/skills/aurora-grill/skill.json
 
 # --- скилл aurora-vault (полностью engine-managed) ---
-skills/aurora-vault/SKILL.md            => .opencode/skills/aurora-vault/SKILL.md
-skills/aurora-vault/skill.json          => .opencode/skills/aurora-vault/skill.json
-skills/aurora-vault/references/build.md        => .opencode/skills/aurora-vault/references/build.md
-skills/aurora-vault/references/frontmatter.md  => .opencode/skills/aurora-vault/references/frontmatter.md
-skills/aurora-vault/references/retrieval.md    => .opencode/skills/aurora-vault/references/retrieval.md
-skills/aurora-vault/references/workflows.md    => .opencode/skills/aurora-vault/references/workflows.md
-skills/aurora-vault/references/migration.md    => .opencode/skills/aurora-vault/references/migration.md
+skills/aurora-vault/SKILL.md            => .aurora/skills/aurora-vault/SKILL.md
+skills/aurora-vault/skill.json          => .aurora/skills/aurora-vault/skill.json
+skills/aurora-vault/references/build.md        => .aurora/skills/aurora-vault/references/build.md
+skills/aurora-vault/references/frontmatter.md  => .aurora/skills/aurora-vault/references/frontmatter.md
+skills/aurora-vault/references/retrieval.md    => .aurora/skills/aurora-vault/references/retrieval.md
+skills/aurora-vault/references/workflows.md    => .aurora/skills/aurora-vault/references/workflows.md
+skills/aurora-vault/references/migration.md    => .aurora/skills/aurora-vault/references/migration.md
 
-skills/aurora-vault/references/maintenance.md  => .opencode/skills/aurora-vault/references/maintenance.md
+skills/aurora-vault/references/maintenance.md  => .aurora/skills/aurora-vault/references/maintenance.md
 
 # --- скрипты движка ---
 # общий модуль примитивов: его импортируют остальные скрипты
-scripts/aurora_common.py => .opencode/scripts/aurora_common.py
+scripts/aurora_common.py => .aurora/scripts/aurora_common.py
 # общая часть синка и реестр модулей источников
-scripts/sources_core.py     => .opencode/scripts/sources_core.py
-scripts/sources_registry.py => .opencode/scripts/sources_registry.py
-scripts/kb_lint.py       => .opencode/scripts/kb_lint.py
+scripts/sources_core.py     => .aurora/scripts/sources_core.py
+scripts/sources_registry.py => .aurora/scripts/sources_registry.py
+scripts/kb_lint.py       => .aurora/scripts/kb_lint.py
 # Эти три ставились установкой, но в манифест не попали — и потому не обновлялись
 # никогда: проект годами держал версию времён своего создания, при том что
 # `aurora_version.txt` исправно показывал свежую. Один прогон двумя версиями движка,
 # только молча.
-scripts/kb_embed.py      => .opencode/scripts/kb_embed.py
-scripts/kb_search_quality.py => .opencode/scripts/kb_search_quality.py
-scripts/run_summary.py       => .opencode/scripts/run_summary.py
-scripts/kb_translit.py   => .opencode/scripts/kb_translit.py
-scripts/kb_twins.py      => .opencode/scripts/kb_twins.py
-scripts/kb_gaps.py       => .opencode/scripts/kb_gaps.py
-scripts/agent_probe.py   => .opencode/scripts/agent_probe.py
-scripts/make_kinds.py    => .opencode/scripts/make_kinds.py
-scripts/aurora_mcp.py    => .opencode/scripts/aurora_mcp.py
-scripts/kb_fix.py        => .opencode/scripts/kb_fix.py
-scripts/kb_names.py      => .opencode/scripts/kb_names.py
+scripts/kb_embed.py      => .aurora/scripts/kb_embed.py
+scripts/kb_search_quality.py => .aurora/scripts/kb_search_quality.py
+scripts/run_summary.py       => .aurora/scripts/run_summary.py
+scripts/kb_translit.py   => .aurora/scripts/kb_translit.py
+scripts/kb_twins.py      => .aurora/scripts/kb_twins.py
+scripts/kb_gaps.py       => .aurora/scripts/kb_gaps.py
+scripts/agent_probe.py   => .aurora/scripts/agent_probe.py
+scripts/make_kinds.py    => .aurora/scripts/make_kinds.py
+scripts/aurora_mcp.py    => .aurora/scripts/aurora_mcp.py
+scripts/kb_fix.py        => .aurora/scripts/kb_fix.py
+scripts/kb_names.py      => .aurora/scripts/kb_names.py
 # Страница графа без сети (kb:graph-export): библиотека рисования и её лицензия
-cockpit/vendor/cytoscape/dist/cytoscape.min.js => .opencode/vendor/cytoscape.min.js
-cockpit/vendor/cytoscape/LICENSE => .opencode/vendor/cytoscape.LICENSE
-scripts/kb_corrections.py => .opencode/scripts/kb_corrections.py
-scripts/kb_retrieval.py  => .opencode/scripts/kb_retrieval.py
-scripts/kb_remap.py      => .opencode/scripts/kb_remap.py
-scripts/build_plan.py    => .opencode/scripts/build_plan.py
-scripts/spec_pack.py     => .opencode/scripts/spec_pack.py
-scripts/kb_index.py      => .opencode/scripts/kb_index.py
-scripts/kb_trace.py      => .opencode/scripts/kb_trace.py
-scripts/kb_trace_table.py  => .opencode/scripts/kb_trace_table.py
-scripts/kb_trust.py        => .opencode/scripts/kb_trust.py
-scripts/kb_kind.py         => .opencode/scripts/kb_kind.py
-scripts/agent_core.py    => .opencode/scripts/agent_core.py
-scripts/model_config.py  => .opencode/scripts/model_config.py
-scripts/git_sync.py      => .opencode/scripts/git_sync.py
-scripts/bots.py          => .opencode/scripts/bots.py
-scripts/aurora_extras.py => .opencode/scripts/aurora_extras.py
-scripts/agent_runner.py  => .opencode/scripts/agent_runner.py
-scripts/request_context.py => .opencode/scripts/request_context.py
-scripts/agents/pydantic_ai_adapter.py => .opencode/scripts/agents/pydantic_ai_adapter.py
-scripts/agents/graphify_adapter.py => .opencode/scripts/agents/graphify_adapter.py
-scripts/ship_doc.py      => .opencode/scripts/ship_doc.py
-scripts/kb_scrub.py      => .opencode/scripts/kb_scrub.py
-scripts/kb_schema.py     => .opencode/scripts/kb_schema.py
-scripts/kb_graph.py      => .opencode/scripts/kb_graph.py
-scripts/kb_code_graph.py => .opencode/scripts/kb_code_graph.py
-scripts/kb_reset.py      => .opencode/scripts/kb_reset.py
-scripts/kb_moc.py        => .opencode/scripts/kb_moc.py
-moc_groups.txt           => .opencode/moc_groups.txt
-scripts/publish_doc.py   => .opencode/scripts/publish_doc.py
-scripts/review_run.py    => .opencode/scripts/review_run.py
-scripts/kit_commands.py  => .opencode/scripts/kit_commands.py
-scripts/kb_supersede.py  => .opencode/scripts/kb_supersede.py
-scripts/ctx_pack.py      => .opencode/scripts/ctx_pack.py
-scripts/sync_audit.py    => .opencode/scripts/sync_audit.py
-scripts/aurora_stats.py  => .opencode/scripts/aurora_stats.py
-scripts/aurora_todo.py       => .opencode/scripts/aurora_todo.py
-scripts/office_ingest.py => .opencode/scripts/office_ingest.py
-scripts/web_export.py    => .opencode/scripts/web_export.py
-scripts/jira_status.py   => .opencode/scripts/jira_status.py
-scripts/aurora_hooks.py  => .opencode/scripts/aurora_hooks.py
-scripts/aurora_setup.py  => .opencode/scripts/aurora_setup.py
-scripts/aurora_doctor.py => .opencode/scripts/aurora_doctor.py
-scripts/aurora_update.py => .opencode/scripts/aurora_update.py
-scripts/report_analyst.py => .opencode/scripts/report_analyst.py
+cockpit/vendor/cytoscape/dist/cytoscape.min.js => .aurora/vendor/cytoscape.min.js
+cockpit/vendor/cytoscape/LICENSE => .aurora/vendor/cytoscape.LICENSE
+scripts/kb_corrections.py => .aurora/scripts/kb_corrections.py
+scripts/kb_retrieval.py  => .aurora/scripts/kb_retrieval.py
+scripts/kb_remap.py      => .aurora/scripts/kb_remap.py
+scripts/build_plan.py    => .aurora/scripts/build_plan.py
+scripts/spec_pack.py     => .aurora/scripts/spec_pack.py
+scripts/kb_index.py      => .aurora/scripts/kb_index.py
+scripts/kb_trace.py      => .aurora/scripts/kb_trace.py
+scripts/kb_trace_table.py  => .aurora/scripts/kb_trace_table.py
+scripts/kb_trust.py        => .aurora/scripts/kb_trust.py
+scripts/kb_kind.py         => .aurora/scripts/kb_kind.py
+scripts/agent_core.py    => .aurora/scripts/agent_core.py
+scripts/model_config.py  => .aurora/scripts/model_config.py
+scripts/git_sync.py      => .aurora/scripts/git_sync.py
+scripts/bots.py          => .aurora/scripts/bots.py
+scripts/aurora_extras.py => .aurora/scripts/aurora_extras.py
+scripts/agent_runner.py  => .aurora/scripts/agent_runner.py
+scripts/request_context.py => .aurora/scripts/request_context.py
+scripts/agents/pydantic_ai_adapter.py => .aurora/scripts/agents/pydantic_ai_adapter.py
+scripts/agents/graphify_adapter.py => .aurora/scripts/agents/graphify_adapter.py
+scripts/ship_doc.py      => .aurora/scripts/ship_doc.py
+scripts/kb_scrub.py      => .aurora/scripts/kb_scrub.py
+scripts/kb_schema.py     => .aurora/scripts/kb_schema.py
+scripts/kb_graph.py      => .aurora/scripts/kb_graph.py
+scripts/kb_code_graph.py => .aurora/scripts/kb_code_graph.py
+scripts/kb_reset.py      => .aurora/scripts/kb_reset.py
+scripts/kb_moc.py        => .aurora/scripts/kb_moc.py
+moc_groups.txt           => .aurora/moc_groups.txt
+scripts/publish_doc.py   => .aurora/scripts/publish_doc.py
+scripts/review_run.py    => .aurora/scripts/review_run.py
+scripts/kit_commands.py  => .aurora/scripts/kit_commands.py
+scripts/kb_supersede.py  => .aurora/scripts/kb_supersede.py
+scripts/ctx_pack.py      => .aurora/scripts/ctx_pack.py
+scripts/sync_audit.py    => .aurora/scripts/sync_audit.py
+scripts/aurora_stats.py  => .aurora/scripts/aurora_stats.py
+scripts/aurora_todo.py       => .aurora/scripts/aurora_todo.py
+scripts/office_ingest.py => .aurora/scripts/office_ingest.py
+scripts/web_export.py    => .aurora/scripts/web_export.py
+scripts/jira_status.py   => .aurora/scripts/jira_status.py
+scripts/aurora_hooks.py  => .aurora/scripts/aurora_hooks.py
+scripts/aurora_setup.py  => .aurora/scripts/aurora_setup.py
+scripts/aurora_doctor.py => .aurora/scripts/aurora_doctor.py
+scripts/aurora_update.py => .aurora/scripts/aurora_update.py
+scripts/folder_guides.py => .aurora/scripts/folder_guides.py
+scripts/report_analyst.py => .aurora/scripts/report_analyst.py
 
 # --- отчёт «эффективность аналитиков» (ops:report) ---
 # Пакет целиком движковый: проектного в нём нет ничего, всё приходит из
 # aurora.config.yaml. Шаблоны ростера и событий кладутся вариантом (seed) —
 # заполненные человеком файлы обновление не трогает.
-reports/analyst/README.md                     => .opencode/reports/analyst/README.md
-reports/analyst/paths.py                      => .opencode/reports/analyst/paths.py
-reports/analyst/make_extended.py              => .opencode/reports/analyst/make_extended.py
-reports/analyst/make_analyst_metrics.py       => .opencode/reports/analyst/make_analyst_metrics.py
-reports/analyst/update_analyst_metrics.py     => .opencode/reports/analyst/update_analyst_metrics.py
-reports/analyst/verify_weekly_by_person.py    => .opencode/reports/analyst/verify_weekly_by_person.py
-reports/analyst/assignee_resolver.py          => .opencode/reports/analyst/assignee_resolver.py
-reports/analyst/process_confluence.py         => .opencode/reports/analyst/process_confluence.py
-reports/analyst/jira_api.py                   => .opencode/reports/analyst/jira_api.py
-reports/analyst/fetch_issues.py               => .opencode/reports/analyst/fetch_issues.py
-reports/analyst/fetch_full.py                 => .opencode/reports/analyst/fetch_full.py
-reports/analyst/fetch_subtasks.py             => .opencode/reports/analyst/fetch_subtasks.py
-reports/analyst/fetch_confluence_metadata.py  => .opencode/reports/analyst/fetch_confluence_metadata.py
-reports/analyst/serve_dashboard.py            => .opencode/reports/analyst/serve_dashboard.py
+reports/analyst/README.md                     => .aurora/reports/analyst/README.md
+reports/analyst/paths.py                      => .aurora/reports/analyst/paths.py
+reports/analyst/make_extended.py              => .aurora/reports/analyst/make_extended.py
+reports/analyst/make_analyst_metrics.py       => .aurora/reports/analyst/make_analyst_metrics.py
+reports/analyst/update_analyst_metrics.py     => .aurora/reports/analyst/update_analyst_metrics.py
+reports/analyst/verify_weekly_by_person.py    => .aurora/reports/analyst/verify_weekly_by_person.py
+reports/analyst/assignee_resolver.py          => .aurora/reports/analyst/assignee_resolver.py
+reports/analyst/process_confluence.py         => .aurora/reports/analyst/process_confluence.py
+reports/analyst/jira_api.py                   => .aurora/reports/analyst/jira_api.py
+reports/analyst/fetch_issues.py               => .aurora/reports/analyst/fetch_issues.py
+reports/analyst/fetch_full.py                 => .aurora/reports/analyst/fetch_full.py
+reports/analyst/fetch_subtasks.py             => .aurora/reports/analyst/fetch_subtasks.py
+reports/analyst/fetch_confluence_metadata.py  => .aurora/reports/analyst/fetch_confluence_metadata.py
+reports/analyst/serve_dashboard.py            => .aurora/reports/analyst/serve_dashboard.py
 reports/analyst/templates/roster.csv          => (seed) Settings/report-roster.csv
 reports/analyst/templates/events.csv          => (seed) Settings/report-events.csv
 
 # --- схема структуры папок (фиксирована движком; doctor сверяет по ней факт) ---
-structure_dirs.txt       => .opencode/structure_dirs.txt
+structure_dirs.txt       => .aurora/structure_dirs.txt
 
 # --- пусковые файлы в корне проекта (меню: doctor, stats, setup, панель) ---
 templates/launchers/start-aurora.command => (launcher) start-aurora.command
@@ -135,10 +136,10 @@ templates/launchers/start-aurora.bat     => (launcher) start-aurora.bat
 
 # --- образец файла с личными доступами (сам .env.aurora.local движок не трогает) ---
 templates/aurora.env.local.example => aurora.env.local.example
-templates/aurora.env.local.example => .opencode/aurora.env.local.example
+templates/aurora.env.local.example => .aurora/aurora.env.local.example
 
 # --- реестр команд (kit:list читает его; модификаторы берёт из самих скриптов) ---
-commands.txt             => .opencode/commands.txt
+commands.txt             => .aurora/commands.txt
 
 # --- модули источников: манифест, скрипт запуска и шаблон sync-скилла ---
 # Список не перечисляется поимённо: что лежит в connectors/, то и раскладывается.
@@ -159,10 +160,10 @@ scaffold/TemplatesCommon => (seed) TemplatesCommon
 # --- выведено из состава движка: обновление удаляет эти файлы в проекте ---
 # Формат: «- <путь в проекте>». Список ведётся руками: угадывать, наш это файл или
 # проектный, обновление права не имеет.
-- .opencode/scripts/kb_queue.py       # 1.44.0 → aurora_stats.py --queue
-- .opencode/scripts/kb_classify.py    # 1.44.0 → kb_lint.py
-- .opencode/scripts/kb_impact.py      # 1.44.0 → kb_trace.py --impact
-- .opencode/scripts/aurora_trace.py   # 1.44.0 → kb_trace.py --requirements
-- .opencode/scripts/sync_diff.py      # 1.44.0 → sync_audit.py --drift
-- .opencode/scripts/export_doc.py     # 1.44.0 → ship_doc.py --export
-- .opencode/scripts/release_doc.py    # 1.44.0 → ship_doc.py --release
+- .aurora/scripts/kb_queue.py       # 1.44.0 → aurora_stats.py --queue
+- .aurora/scripts/kb_classify.py    # 1.44.0 → kb_lint.py
+- .aurora/scripts/kb_impact.py      # 1.44.0 → kb_trace.py --impact
+- .aurora/scripts/aurora_trace.py   # 1.44.0 → kb_trace.py --requirements
+- .aurora/scripts/sync_diff.py      # 1.44.0 → sync_audit.py --drift
+- .aurora/scripts/export_doc.py     # 1.44.0 → ship_doc.py --export
+- .aurora/scripts/release_doc.py    # 1.44.0 → ship_doc.py --release

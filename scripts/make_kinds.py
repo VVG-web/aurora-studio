@@ -18,9 +18,9 @@ git и читается любой IDE:
         template: Templates/proektnoe_reshenie_template.md
         out: Deliverables/work
 
-  python3 .opencode/scripts/make_kinds.py            # таблица: тип → шаблон → папка
-  python3 .opencode/scripts/make_kinds.py --kind ac  # один тип, машинно (для ассистента)
-  python3 .opencode/scripts/make_kinds.py --json     # всё машинно
+  python3 .aurora/scripts/make_kinds.py            # таблица: тип → шаблон → папка
+  python3 .aurora/scripts/make_kinds.py --kind ac  # один тип, машинно (для ассистента)
+  python3 .aurora/scripts/make_kinds.py --json     # всё машинно
 
 Скрипт ничего не пишет: он отвечает на вопрос «чем и куда», а сам артефакт создаёт
 человек или ассистент. Проверяет он ровно одно — что объявленное существует: шаблон,

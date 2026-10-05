@@ -21,7 +21,7 @@
 Из корня репозитория-эталона:
 
 ```
-python3 .opencode/scripts/aurora_init.py ~/projects/НОВЫЙ \
+python3 .aurora/scripts/aurora_init.py ~/projects/НОВЫЙ \
     --name "ABVAT" --slug ABVAT \
     --confluence-url https://confluence.example.com --confluence-space ABVAT \
     --jira-url https://jira.example.com --jira-key ABVAT
@@ -60,7 +60,7 @@ ingest-команды** — по природе документа, а не по
    (`viewpage.action?pageId=XXXX`). Тянется страница и всё её поддерево.
 3. **Аутентификация** — `auth.mode: mcp_user`: каждый аналитик логинится в Cursor MCP
    (mcp-atlassian) своим аккаунтом. Токены в git не кладём (см. `DR-0002` про секреты).
-4. Проверка готовности: `python3 .opencode/scripts/aurora_doctor.py`.
+4. Проверка готовности: `python3 .aurora/scripts/aurora_doctor.py`.
 
 ## Шаг 4 — первое наполнение базы
 
@@ -84,14 +84,14 @@ Jira. Пока она ниже 20 %, действует bootstrap-режим (ч
 `source:` у карточек указывает на старые пути):
 
 ```
-1. python3 .opencode/scripts/kb_remap.py --snapshot     # карта page_id → путь ДО переезда
+1. python3 .aurora/scripts/kb_remap.py --snapshot     # карта page_id → путь ДО переезда
 2. git add -A && git commit -m "WIP до переезда зеркала"  # чистое дерево для отката
-3. python3 .opencode/scripts/confluence_export.py       # собрать зеркало заново
-4. python3 .opencode/scripts/confluence_export.py --prune  # убрать файлы старого зеркала
-5. python3 .opencode/scripts/kb_remap.py                # dry-run: что перенацелится
-6. python3 .opencode/scripts/kb_remap.py --apply
-7. python3 .opencode/scripts/sync_audit.py              # должно быть 0/0/0/0
-8. python3 .opencode/scripts/aurora_stats.py            # «битые источники» — остаток на разбор
+3. python3 .aurora/scripts/confluence_export.py       # собрать зеркало заново
+4. python3 .aurora/scripts/confluence_export.py --prune  # убрать файлы старого зеркала
+5. python3 .aurora/scripts/kb_remap.py                # dry-run: что перенацелится
+6. python3 .aurora/scripts/kb_remap.py --apply
+7. python3 .aurora/scripts/sync_audit.py              # должно быть 0/0/0/0
+8. python3 .aurora/scripts/aurora_stats.py            # «битые источники» — остаток на разбор
 ```
 
 Забыли снять снимок на шаге 1 — карта достаётся из истории:

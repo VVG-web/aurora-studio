@@ -5,8 +5,8 @@
 Вычислять его можно, только зная, с какими задачами связан артефакт: статус задачи и
 решает, устоялась постановка или ещё меняется.
 
-  python3 .opencode/scripts/kb_trace_table.py            # что получилось
-  python3 .opencode/scripts/kb_trace_table.py --apply    # записать таблицу
+  python3 .aurora/scripts/kb_trace_table.py            # что получилось
+  python3 .aurora/scripts/kb_trace_table.py --apply    # записать таблицу
 
 Связи бывают двух родов.
 

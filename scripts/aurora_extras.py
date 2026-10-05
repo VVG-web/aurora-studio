@@ -311,7 +311,7 @@ def kit_mcp_file() -> Path:
     кит по `kit_path.txt`."""
     kit = KIT
     ptr = KIT / "kit_path.txt"
-    if KIT.name == ".opencode" and ptr.is_file():
+    if KIT.name in (".aurora", ".opencode") and ptr.is_file():    # движок проекта; .opencode — до 1.158
         kit = Path(ptr.read_text(encoding="utf-8").strip())
     return kit / "local" / "mcp.json"
 

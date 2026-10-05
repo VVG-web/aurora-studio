@@ -44,11 +44,11 @@ cd aurora-studio
 python3 aurora.py new /path/to/your-project
 ```
 
-Команда разложит папки, скопирует движок в `.opencode/`, спросит настройки (имя и slug проекта,
+Команда разложит папки, скопирует движок в `.aurora/`, спросит настройки (имя и slug проекта,
 Confluence — адрес, пространство и корневые страницы, Jira — адрес, ключ проекта и JQL) и положит
 навыки в общий каталог агента (`~/.claude/skills`), чтобы `/aurora-vault` находился в любом
 диалоге. То же делает панель: «Настройка кита» → «Подключить новый проект». Любой ответ можно
-поправить позже — `python3 .opencode/scripts/aurora_setup.py` из проекта или «Настройки проекта».
+поправить позже — `python3 .aurora/scripts/aurora_setup.py` из проекта или «Настройки проекта».
 
 **3. Положите токены.** Скопируйте `aurora.env.local.example` в `.env.aurora.local` рядом с
 `aurora.config.yaml` и заполните `CONFLUENCE_PERSONAL_TOKEN` и `JIRA_PERSONAL_TOKEN`. Файл закрыт
@@ -130,7 +130,7 @@ python3 aurora.py lint . --summary
 
 ```bash
 python3 aurora.py stats .
-python3 .opencode/scripts/aurora_todo.py        # то же, что команда ops:todo
+python3 .aurora/scripts/aurora_todo.py        # то же, что команда ops:todo
 ```
 
 Сколько карточек, какая доля `knowledge`, что осталось человеку и почему это не кнопка.

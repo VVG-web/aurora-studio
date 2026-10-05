@@ -158,14 +158,14 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
 
     «Когда последний раз обновляли зеркала» спрашивает вся команда, а ответ, лежащий в
     localStorage одного браузера, отвечает только одному человеку. Поэтому: файл в
-    `.opencode/`, версия ядра и автор в записи, и чтение его панелью обратно.
+    `.aurora/`, версия ядра и автор в записи, и чтение его панелью обратно.
     """
     sys.path.insert(0, str(KIT / "cockpit"))
     import aurora_cockpit as ck
     root = make_project(tmp)
     ck.write_runlog(str(root), "sync:jira", 0, "sync:jira --force")
     ck.write_runlog(str(root), "kit:doctor", 1, "kit:doctor")
-    log = (root / ".opencode/run_log.md")
+    log = (root / "AuroraKnowledgeDB/meta/run_log.md")       # с 1.158.0 — не в папке движка
     assert log.is_file(), "журнал не лёг в проект — команда его не увидит"
     runs = ck.read_runlog(str(root))
     assert set(runs) == {"sync:jira", "kit:doctor"}, runs

@@ -149,7 +149,7 @@ flowchart LR
   language. The output of the commands themselves (the console, the linter's reports) stays Russian: it is the engine's
   language, not the panel's.
 - **Jobs** live in the panel's process: `/api/jobs` returns the running ones, so reloading the page neither hides a working
-  command nor provokes a second route on top of it. The archive of recent runs is `.opencode/runs/` (outside git).
+  command nor provokes a second route on top of it. The archive of recent runs is `.aurora/runs/` (outside git).
 - **Data.** Where a command supports `--json` (`stats`), the panel takes it; the rest it parses by key lines (`ERROR:`,
   `WARN:`, `OK:`, "errors N", `MISSING`/`ORPHAN`).
 

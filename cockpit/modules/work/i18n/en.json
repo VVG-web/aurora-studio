@@ -68,7 +68,7 @@
   "work.help.publish.result": "Below — finished documents, when each was published, and publish buttons.",
   "work.help.attach.what": "Attach an external text file to the task (md, txt, json, py…).",
   "work.help.attach.how": "A customer brief in .md from your disk.",
-  "work.help.attach.result": "A chip with the file name; the planner and the writer get its text. A copy is kept 14 days in .opencode/context.",
+  "work.help.attach.result": "A chip with the file name; the planner and the writer get its text. A copy is kept 14 days in .aurora/context.",
   "work.help.ref_remove.what": "Remove a mention or an attachment from the task.",
   "work.help.ref_remove.how": "A wrong @file got into the task — click ×.",
   "work.help.ref_remove.result": "The chip is gone; the file will not go into the task.",

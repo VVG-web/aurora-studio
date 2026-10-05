@@ -292,4 +292,4 @@ GitHub падала на такой заготовке, не дойдя до с�
 разговоры, исправления), эти правила уже соблюдают. Правило для всех, кто пишет
 руками, — человека и любой модели.
 
-Проверка — `python3 .opencode/scripts/aurora_doctor.py` (строки «имена:»); починка — `python3 .opencode/scripts/kb_names.py --apply` (команда `kb:names`): пути зеркала Confluence, имена карточек со ссылками, записи git, различимые только регистром.
+Проверка — `python3 .aurora/scripts/aurora_doctor.py` (строки «имена:»); починка — `python3 .aurora/scripts/kb_names.py --apply` (команда `kb:names`): пути зеркала Confluence, имена карточек со ссылками, записи git, различимые только регистром.

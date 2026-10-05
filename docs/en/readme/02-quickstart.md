@@ -43,11 +43,11 @@ opens the panel.
 python3 aurora.py new /path/to/your-project
 ```
 
-The command lays out the folders, copies the engine into `.opencode/`, asks for the settings (project
+The command lays out the folders, copies the engine into `.aurora/`, asks for the settings (project
 name and slug; Confluence — URL, space and root pages; Jira — URL, project key and JQL) and puts the
 skills into the agent's shared folder (`~/.claude/skills`) so that `/aurora-vault` is found in any
 conversation. The panel does the same: "The kit's setup" → "Connect a new project". Any answer can be
-changed later — `python3 .opencode/scripts/aurora_setup.py` from the project, or "The project's
+changed later — `python3 .aurora/scripts/aurora_setup.py` from the project, or "The project's
 settings".
 
 **3. Put the tokens in.** Copy `aurora.env.local.example` to `.env.aurora.local` next to
@@ -127,7 +127,7 @@ Broken links, lost headers, stray secrets. Takes a second.
 
 ```bash
 python3 aurora.py stats .
-python3 .opencode/scripts/aurora_todo.py        # the same as the ops:todo command
+python3 .aurora/scripts/aurora_todo.py        # the same as the ops:todo command
 ```
 
 How many cards, what share is `knowledge`, what is left for a human and why it is not a button.

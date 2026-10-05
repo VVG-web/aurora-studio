@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.157.1";
+const UI_VERSION = "1.158.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1584,7 +1584,7 @@ function drawRun(){
       outward?el("span",{class:"chip gold"}, t("run.changes_outside")):null),
     el("p",{class:"muted",style:"font-size:13.5px;margin:10px 0 4px",html:tick(r.what)}),
     el("div",{class:"mono",style:"font-size:12px;color:var(--text-muted)"},
-      ".opencode/scripts/" + r.impl + (r.args? " " + r.args : "")));
+      ".aurora/scripts/" + r.impl + (r.args? " " + r.args : "")));
   // Список флагов панель читает из kit'а, а запускает копию скрипта из движка проекта.
   // Пока движок не обновлён, новый флаг существует только на экране: скрипт ответит
   // «unrecognized argument» и кодом 2, и выглядит это как поломка панели.
@@ -2537,7 +2537,7 @@ function rcMark(rc){
     : rc === 1 ? {cls:"warn", what:t("run.warn")}
     : {cls:"bad", what:t("run.bad")};
 }
-/* Журнал запусков живёт в проекте (`.opencode/run_log.md`) и ездит по git вместе с ним:
+/* Журнал запусков живёт в проекте (`AuroraKnowledgeDB/meta/run_log.md`) и ездит по git вместе с ним:
    «когда последний раз обновляли зеркала» — вопрос ко всей команде, а не к одному
    браузеру. Панель его только показывает; пишет сервер после каждого запуска. */
 // Журнал запусков живёт отдельно от здоровья: читается мгновенно, а здоровье зовёт
@@ -2569,7 +2569,7 @@ function histWhen(iso){
     : d.toLocaleDateString(loc, {day:"2-digit", month:"2-digit"}) + " " + hm;
 }
 // Метка для имён в формате серверного архива прогонов: YYYYMMDD-HHMMSS. Без разделителей
-// в дате — так лежат папки в .opencode/runs, и наш id не спутать с чужим.
+// в дате — так лежат папки в .aurora/runs, и наш id не спутать с чужим.
 function rtime(d){
   d = d || new Date();
   const p = n => String(n).padStart(2, "0");

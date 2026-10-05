@@ -76,8 +76,8 @@ related: []
 | 3 | убраны ступень `canonical` и поле `audience` | 1.10.0 |
 
 ```bash
-python3 .opencode/scripts/kb_schema.py            # что в базе и что изменится
-python3 .opencode/scripts/kb_schema.py --apply
+python3 .aurora/scripts/kb_schema.py            # что в базе и что изменится
+python3 .aurora/scripts/kb_schema.py --apply
 ```
 
 ## Requirement extras (type: requirement)

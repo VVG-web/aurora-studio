@@ -18,10 +18,10 @@
      ли она. Не спрашивать значит молча похоронить либо его правку, либо обновление от
      заказчика.
 
-  python3 .opencode/scripts/kb_corrections.py --new "Заявка" --text "статусов пять, а не четыре"
-  python3 .opencode/scripts/kb_corrections.py --list
-  python3 .opencode/scripts/kb_corrections.py --check          # что могло устареть
-  python3 .opencode/scripts/kb_corrections.py --apply          # записать в карточки
+  python3 .aurora/scripts/kb_corrections.py --new "Заявка" --text "статусов пять, а не четыре"
+  python3 .aurora/scripts/kb_corrections.py --list
+  python3 .aurora/scripts/kb_corrections.py --check          # что могло устареть
+  python3 .aurora/scripts/kb_corrections.py --apply          # записать в карточки
 
 Панель: `kb:correct`
 """

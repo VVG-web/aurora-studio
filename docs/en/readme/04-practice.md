@@ -4,7 +4,7 @@
 >
 > One command is run in three ways. **With a panel button** (`python3 aurora.py cockpit`) — the default
 > path. **From the terminal** — `python3 aurora.py <verb> <project> [flags]` or a script from
-> `.opencode/scripts/`. **Through the assistant** in the repository — `/aurora-vault <command>`: this is
+> `.aurora/scripts/`. **Through the assistant** in the repository — `/aurora-vault <command>`: this is
 > how procedure commands that need work with meaning are executed. The command name is the same
 > everywhere: `kb:repair`, `ctx:context`, `agent:make`.
 

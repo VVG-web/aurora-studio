@@ -12,13 +12,13 @@ Artifacts, Workspaces, Templates/, Prompts/) не трогается.
 
 Правила манифеста:
   обычная строка          — перезаписать файл 1:1
-  (sync) <kind>           — обновить тело каждого .opencode/skills/<kind>-<slug>/SKILL.md,
+  (sync) <kind>           — обновить тело каждого .claude/skills/<kind>-<slug>/SKILL.md,
                             подставив имя/slug из конфига (slug в имени папки сохраняется)
   (agents) AGENTS.md      — регенерировать из шаблона с полями проекта из конфига
   (seed) <dir>            — вариант (1): не перезаписывать; новые/изменённые файлы
                             положить рядом как <файл>.new для ручного сравнения
 
-Проект может отказаться от обновлений отдельных путей — `.opencode/update_ignore.txt`
+Проект может отказаться от обновлений отдельных путей — `aurora.update_ignore.txt`
 (glob-шаблоны, по одному в строке). Полезно для шаблонов, локализованных под проект:
 иначе update предлагает одни и те же .new на каждом запуске.
 
@@ -32,19 +32,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aurora_common import utc_today  # noqa: E402 — дата в UTC, одна на движок
+import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
 
 def find_kit() -> Path:
     """Где лежит kit. Копия этого скрипта живёт и в проекте — она обновлять не умеет.
 
     Обновление берёт файлы из kit'а: манифест, схему папок, версию. Если скрипт запущен
-    из `.opencode/scripts/` проекта, рядом лежит `kit_path.txt` — путь, записанный при
+    из `.aurora/scripts/` проекта, рядом лежит `kit_path.txt` — путь, записанный при
     установке. Тогда работаем от него, а не от папки проекта: иначе update решит, что
     проект и есть kit, и упадёт на отсутствующем манифесте.
     """
     here = Path(__file__).resolve().parents[1]
     if (here / "engine_manifest.txt").is_file():
         return here
-    hint = here / "kit_path.txt"          # .opencode/kit_path.txt
+    hint = here / "kit_path.txt"          # .aurora/kit_path.txt
     if hint.is_file():
         kit = Path(hint.read_text(encoding="utf-8").strip()).expanduser()
         if (kit / "engine_manifest.txt").is_file():
@@ -131,6 +132,217 @@ def retired_paths() -> list:
     return out
 
 
+# ---------- переезд движка из `.opencode/` (1.158.0) ----------
+#
+# До 1.158.0 движок жил в `.opencode/` — папке харнесса OpenCode — и ездил по git проекта.
+# Теперь он в своей `.aurora/` и вне git: харнессы у каждого свои, движок — копия кита.
+# Переезд раскладывает прежнюю папку по смыслу, ничего чужого не удаляя:
+#   данные движка (состояние, прогоны, вложения, кэш) → `.aurora/`;
+#   журнал запусков → `AuroraKnowledgeDB/meta/run_log.md` (в git: он нужен команде);
+#   update_ignore → `aurora.update_ignore.txt` в корне проекта;
+#   навыки проекта → `.claude/skills/` (общие, в git); скрипты проекта → `Scripts/`;
+#   копии кита убираются — их заново ставит обновление в `.aurora/`;
+#   файлы самого OpenCode и всё незнакомое остаются на месте и называются в отчёте.
+
+LEGACY = ".opencode"
+ENGINE = ".aurora"
+LEGACY_DATA = ("state", "runs", "cache", "context")
+# Что движок клал в `.opencode/` сам — копии кита: их ставит обновление в `.aurora/`.
+LEGACY_ENGINE_DIRS = ("connectors", "docs", "vendor", "reports", "__pycache__")
+LEGACY_ENGINE_FILES = ("commands.txt", "structure_dirs.txt", "moc_groups.txt", "scenarios.txt",
+                       "kit_path.txt", "aurora.env.local.example")
+# Скрипты, выведенные из кита раньше, чем появился список `- <путь>` в манифесте.
+KIT_LEFTOVERS = ("kb_verify.py",)
+JUNK = (".DS_Store", "Thumbs.db", "desktop.ini")
+# Где у проекта бывают ссылки на пути движка: шаблоны, промпты, навыки, свои скрипты.
+REWRITE_DIRS = ("Templates", "Prompts", "TemplatesCommon", "Scripts", ".claude/skills")
+REWRITE_EXT = (".md", ".txt", ".py", ".sh", ".json", ".yaml", ".yml")
+
+
+def legacy_paths(text: str) -> str:
+    """Пути прежней раскладки (до 1.158.0) → новые: навыки кита и движок — `.aurora/`,
+    навыки проекта — `.claude/skills/`, журнал — `AuroraKnowledgeDB/meta/`."""
+    if LEGACY + "/" not in text:
+        return text
+    text = re.sub(r"\.opencode/skills/(?!aurora-)", ".claude/skills/", text)
+    text = text.replace(".opencode/run_log.md", "AuroraKnowledgeDB/meta/run_log.md")
+    text = text.replace(".opencode/update_ignore.txt", UPDATE_IGNORE)
+    return text.replace(".opencode/", ".aurora/")
+
+
+def relayout_rewrite(target: Path) -> list:
+    """Поправить пути движка в файлах проекта (после переезда). → поправленные пути."""
+    done = []
+    for base in REWRITE_DIRS:
+        root = target / base
+        if not root.is_dir():
+            continue
+        for p in sorted(root.rglob("*")):
+            if not p.is_file() or p.suffix.lower() not in REWRITE_EXT or p.name.endswith(".new"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            fixed = legacy_paths(text)
+            if fixed != text:
+                p.write_text(fixed, encoding="utf-8")
+                done.append(p.relative_to(target).as_posix())
+    return done
+
+
+def _kit_script_names() -> set:
+    names = {p.name for p in (KIT / "scripts").rglob("*") if p.is_file()}
+    names |= {Path(dst).name for _src, dst in parse_manifest()}
+    return names | set(KIT_LEFTOVERS)
+
+
+def _kit_skill_names() -> set:
+    return {p.name for p in (KIT / "skills").iterdir() if p.is_dir()}
+
+
+def relayout_plan(target: Path) -> dict:
+    """Что переезд сделает в проекте: {moves: [(откуда, куда)], drop: [пути], keep: [пути],
+    clash: [(откуда, куда)]}. Пути — от корня проекта. Нет `.opencode/` — пусто."""
+    old = target / LEGACY
+    out = {"moves": [], "drop": [], "keep": [], "clash": []}
+    if not old.is_dir():
+        return out
+
+    def move(src: str, dst: str):
+        (out["clash"] if (target / dst).exists() else out["moves"]).append((src, dst))
+
+    for name in sorted(p.name for p in old.iterdir()):
+        rel = f"{LEGACY}/{name}"
+        if name in JUNK:
+            out["drop"].append(rel)
+        elif name in LEGACY_DATA:
+            for child in sorted((old / name).iterdir()):
+                move(f"{rel}/{child.name}", f"{ENGINE}/{name}/{child.name}")
+        elif name == "run_log.md":
+            move(rel, "AuroraKnowledgeDB/meta/run_log.md")
+        elif name == "update_ignore.txt":
+            move(rel, UPDATE_IGNORE)
+        elif name == "ping-state.json":
+            move(rel, f"{ENGINE}/{name}")
+        elif name == "skills":
+            kit = _kit_skill_names()
+            for sk in sorted(p for p in (old / name).iterdir()):
+                if sk.name in kit or sk.name in JUNK:
+                    out["drop"].append(f"{rel}/{sk.name}")
+                elif sk.is_dir() and (sk / "SKILL.md").is_file():
+                    move(f"{rel}/{sk.name}", f".claude/skills/{sk.name}")
+                else:
+                    out["keep"].append(f"{rel}/{sk.name}")
+        elif name == "scripts":
+            kit = _kit_script_names()
+            for sc in sorted(p for p in (old / name).iterdir()):
+                if sc.name in kit or sc.is_dir() or sc.name in JUNK or sc.name == ".gitkeep":
+                    out["drop"].append(f"{rel}/{sc.name}")
+                else:
+                    move(f"{rel}/{sc.name}", f"Scripts/{sc.name}")
+        elif name in LEGACY_ENGINE_DIRS or name in LEGACY_ENGINE_FILES:
+            out["drop"].append(rel)
+        else:
+            out["keep"].append(rel)           # OpenCode (package.json, node_modules…) и чужое
+    return out
+
+
+def relayout_moves(target: Path, rp: dict) -> list:
+    """Переложить данные, журнал, навыки и скрипты проекта. → что не вышло."""
+    import shutil
+    failed = []
+    for src, dst in rp["moves"]:
+        s, d = target / src, target / dst
+        try:
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(s), str(d))
+        except OSError as e:
+            failed.append(f"{src} → {dst}: {e}")
+    ui = target / UPDATE_IGNORE
+    if ui.is_file():
+        # Пути в списке — к навыкам на прежнем месте: правило должно указывать на новое.
+        text = ui.read_text(encoding="utf-8")
+        fixed = re.sub(r"\.(?:opencode|aurora)/skills/", ".claude/skills/", text)
+        if fixed != text:
+            ui.write_text(fixed, encoding="utf-8")
+    return failed
+
+
+def relayout_cleanup(target: Path, rp: dict) -> list:
+    """Убрать из `.opencode/` копии кита — после того как движок встал в `.aurora/`.
+    Пустую папку — тоже. → что не вышло."""
+    import shutil
+    failed = []
+    for rel in rp["drop"]:
+        p = target / rel
+        try:
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(p)
+            elif p.exists() or p.is_symlink():
+                p.unlink()
+        except OSError as e:
+            failed.append(f"{rel}: {e}")
+    old = target / LEGACY
+    for d in sorted((x for x in old.rglob("*") if x.is_dir()), key=lambda x: -len(x.parts)) \
+            if old.is_dir() else []:
+        try:
+            d.rmdir()                          # только пустые: непустую rmdir не тронет
+        except OSError:
+            pass
+    try:
+        old.rmdir()
+    except OSError:
+        pass
+    return failed
+
+
+def agent_running(target: Path) -> str:
+    """Идёт ли в проекте пишущий прогон агента (замок на новом или прежнем месте)."""
+    from aurora_common import pid_alive
+    for base in (ENGINE, LEGACY):
+        lock = target / base / "state" / "agent.lock"
+        try:
+            held = json.loads(lock.read_text(encoding="utf-8"))
+            if pid_alive(int(held.get("pid") or 0)):
+                return f"{held.get('task')} (pid {held.get('pid')})"
+        except (OSError, ValueError, TypeError):
+            continue
+    return ""
+
+
+def print_guides(guides: list) -> None:
+    if not guides:
+        return
+    new = [g for g in guides if g[2] == "create"]
+    print(f"\nОписания папок (README.md): создать {len(new)}, обновить {len(guides) - len(new)}")
+    for rel, _text, kind in guides[:60]:
+        print(f"  {'+' if kind == 'create' else '~'} {rel}")
+
+
+def print_relayout(rp: dict) -> None:
+    if not (rp["moves"] or rp["drop"] or rp["clash"]):
+        return
+    print("Переезд движка из .opencode/ в .aurora/ (1.158.0):")
+    data = {}
+    for src, dst in rp["moves"]:
+        parts = src.split("/")
+        if len(parts) > 2 and parts[1] in LEGACY_DATA:
+            data.setdefault(parts[1], 0)
+            data[parts[1]] += 1
+            continue
+        print(f"  → {src}  ⇒  {dst}")
+    for name, n in sorted(data.items()):
+        print(f"  → {LEGACY}/{name}/ ({n})  ⇒  {ENGINE}/{name}/")
+    for src, dst in rp["clash"]:
+        print(f"  ! {src}: на месте уже есть {dst} — остаётся как было, сравните сами")
+    if rp["drop"]:
+        print(f"  − копии кита в .opencode/ уберутся после установки движка: {len(rp['drop'])}")
+    for rel in rp["keep"]:
+        print(f"  · {rel} — не движок (OpenCode или ваше), остаётся")
+    print()
+
+
 # ---------- планирование изменений ----------
 
 class Change:
@@ -156,14 +368,20 @@ def _external_target(target: Path, dst: Path):
             return None
 
 
+UPDATE_IGNORE = "aurora.update_ignore.txt"       # с 1.158.0 — в корне проекта, в git
+
+
 def load_ignore(target: Path) -> list:
-    """Пути, которые проект сознательно ведёт по-своему (`.opencode/update_ignore.txt`).
+    """Пути, которые проект сознательно ведёт по-своему (`aurora.update_ignore.txt`).
 
     Без этого списка `update` бесконечно предлагает одни и те же `.new` для шаблонов,
     локализованных под проект: их отвергают, а на следующем обновлении они возвращаются.
-    Формат: по одному glob-шаблону в строке, `#` — комментарий.
+    Формат: по одному glob-шаблону в строке, `#` — комментарий. До 1.158.0 файл лежал в
+    папке движка — читаем и оттуда, пока перенос его не переложил.
     """
-    path = target / ".opencode" / "update_ignore.txt"
+    path = target / UPDATE_IGNORE
+    if not path.is_file():
+        path = target / LEGACY / "update_ignore.txt"
     if not path.is_file():
         return []
     out = []
@@ -189,6 +407,11 @@ def plan(target: Path, f: dict):
             old = dst.read_text(encoding="utf-8")
             if old == new_text:
                 return  # идентично — нечего делать
+            if legacy_paths(old) == new_text:
+                # Разница только в путях движка (`.opencode/` → `.aurora/`, 1.158.0): это
+                # не правка кита, а переезд — поправить на месте, без `.new` на разбор.
+                changes.append(Change("write", rel_dst, new_text, "пути движка → .aurora/", ext))
+                return
             if seed:
                 changes.append(Change("seed-new", rel_dst + ".new", new_text,
                                       "изменён в kit — рядом положен .new (вариант 1)", ext))
@@ -206,7 +429,7 @@ def plan(target: Path, f: dict):
         if rule == "connectors":
             for man in sorted((KIT / src).glob("*/connector.json")):
                 m = json.loads(man.read_text(encoding="utf-8"))
-                diff_or_new(f".opencode/connectors/{m['id']}.json",
+                diff_or_new(f".aurora/connectors/{m['id']}.json",
                             man.read_text(encoding="utf-8"))
                 script = m.get("run", {}).get("script", "")
                 if script:
@@ -216,16 +439,16 @@ def plan(target: Path, f: dict):
                     body = man.parent / script
                     body = body if body.is_file() else KIT / "scripts" / script
                     if body.is_file():
-                        diff_or_new(f".opencode/scripts/{script}",
+                        diff_or_new(f".aurora/scripts/{script}",
                                     body.read_text(encoding="utf-8"))
                 skill, tpl = m.get("run", {}).get("skill", ""), man.parent / "SKILL.md"
                 # Тело sync-скилла проект часто дорабатывает под свой контур (правила
                 # синка, батчи, ссылки на файлы правил). Поэтому НЕ перезаписываем: если
                 # файл есть и отличается — кладём kit-версию рядом как .new.
                 if skill and tpl.is_file():
-                    for folder in sorted((target / ".opencode/skills").glob(f"{skill}-*")):
+                    for folder in sorted((target / ".claude/skills").glob(f"{skill}-*")):
                         if folder.is_dir():
-                            diff_or_new(f".opencode/skills/{folder.name}/SKILL.md",
+                            diff_or_new(f".claude/skills/{folder.name}/SKILL.md",
                                         fill(tpl.read_text(encoding="utf-8"), f), seed=True)
         elif rule == "launcher":
             # путь к kit'у подставляем при раскладке: у каждой машины он свой
@@ -349,7 +572,7 @@ def refresh_gitignore(target: Path) -> list:
 
     Тот же класс, что и с хуком: правило живёт в ките, а в проекте лежит копия, снятая
     при установке. Обновление движка возило новый установщик и не трогало файл — и
-    `.opencode/state/` остался вне игнора на проектах, заведённых до этого правила.
+    `.aurora/state/` остался вне игнора на проектах, заведённых до этого правила.
     Замок агента попал под контроль версий и после каждого прогона оставлял дерево
     грязным; чекпойнт агента делает `git add -A` и утащил бы его в историю как работу.
     """
@@ -425,7 +648,9 @@ def run(target: Path, apply: bool, structure_only: bool = False):
 
     # режим «только структура»: папки + штамп версии, движок не трогаем
     if structure_only:
-        if not new_dirs and pv == kv:
+        guides = FG.plan(target, KIT)
+        print_guides(guides)
+        if not new_dirs and pv == kv and not guides:
             print("✅ Структура актуальна, версия совпадает — изменений нет.")
             return 0
         if not apply:
@@ -435,8 +660,11 @@ def run(target: Path, apply: bool, structure_only: bool = False):
             p = target / d
             p.mkdir(parents=True, exist_ok=True)
             (p / ".gitkeep").touch()
+        guides = FG.plan(target, KIT)
+        FG.apply(target, guides)
         stamp_version(target, kv)
-        print(f"✅ Создано папок: {len(new_dirs)}. Версия → {kv}. Движок не тронут.")
+        print(f"✅ Создано папок: {len(new_dirs)}, описаний папок: {len(guides)}. Версия → {kv}. "
+              "Движок не тронут.")
         return 0
 
     changes = plan(target, f)
@@ -444,8 +672,12 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     seeds = [c for c in changes if c.kind == "seed-new"]
     retired = [r for r in retired_paths() if (target / r).is_file()]
     cfg_text, cfg_done = config_defaults(target, ignored)
+    rp = relayout_plan(target)
+    # Файлы OpenCode и чужое остаются в `.opencode/` навсегда — это не переезд.
+    moving = bool(rp["moves"] or rp["drop"] or rp["clash"])
+    guides = FG.plan(target, KIT)
 
-    if not changes and not new_dirs and not retired and not cfg_done:
+    if not changes and not new_dirs and not retired and not cfg_done and not moving and not guides:
         print("✅ Движок и структура уже актуальны — изменений нет.")
         if apply and pv != kv:
             stamp_version(target, kv)
@@ -461,6 +693,7 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         print("   Это нормально при модели «общий движок через симлинк», но по одному")
         print("   проекту вы обновляете общий движок. Если не этого хотели — прервите.\n")
 
+    print_relayout(rp)
     print(f"Инженерные файлы к перезаписи: {len(writes)}")
     for c in writes:
         tag = "  ⚠️shared" if c.external else ""
@@ -476,11 +709,20 @@ def run(target: Path, apply: bool, structure_only: bool = False):
 
     if cfg_done:
         print(f"\nКонфиг проекта — значения доверия по умолчанию: {', '.join(cfg_done)}")
+    print_guides(guides)
 
     if not apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply, чтобы применить.")
         return 0
 
+    busy = agent_running(target) if moving else ""
+    if busy:
+        # Переезд перекладывает состояние прогона из-под работающего агента.
+        print(f"\n⛔ В проекте идёт прогон агента: {busy}. Переезд движка — после него.",
+              file=sys.stderr)
+        return 3
+    failed = relayout_moves(target, rp) if moving else []
+    rewritten = relayout_rewrite(target)
     for d in new_dirs:
         p = target / d
         p.mkdir(parents=True, exist_ok=True)
@@ -499,8 +741,12 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         (target / r).unlink()
     if cfg_done:
         (target / "aurora.config.yaml").write_text(cfg_text, encoding="utf-8")
-    (target / ".opencode").mkdir(parents=True, exist_ok=True)
-    (target / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    (target / ".aurora").mkdir(parents=True, exist_ok=True)
+    (target / ".aurora/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    if moving:
+        failed += relayout_cleanup(target, rp)
+    guides = FG.plan(target, KIT)        # после папок схемы и переезда: им тоже описания
+    FG.apply(target, guides)
     refreshed = refresh_hooks(target)
     ignored = refresh_gitignore(target)
     attrs = refresh_gitattributes(target)
@@ -511,13 +757,24 @@ def run(target: Path, apply: bool, structure_only: bool = False):
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
           + (f", в .gitattributes дописано правил: {len(attrs)}" if attrs else "")
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
+          + (f", описаний папок: {len(guides)}" if guides else "")
+          + (f", пути движка поправлены в {len(rewritten)} файлах проекта" if rewritten else "")
+          + (f", переезд в .aurora/: перенесено {len(rp['moves'])}, "
+             f"убрано копий кита {len(rp['drop'])}" if moving else "")
           + f". Версия → {kv}")
+    for line in failed:
+        print(f"   ⚠️ не вышло: {line}")
     print("   Проверьте: в панели `kit:doctor`, затем git diff")
     stuck = tracked_but_ignored(target)
     if stuck:
         # Правило .gitignore не снимает с учёта то, что уже попало в историю: такие файлы
         # продолжают меняться в каждом коммите. Снять — решение о git проекта, не движка.
-        tops = sorted({"/".join(p.split("/")[:3]) for p in stuck})
+        def top(p: str) -> str:
+            parts = p.split("/")
+            # `.claude/skills/` остаётся в git — снимаем только соседей, а не всю `.claude`.
+            n = 2 if parts[0] == ".claude" else 1 if parts[0].startswith(".") else 3
+            return "/".join(parts[:n])
+        tops = sorted({top(p) for p in stuck})
         print(f"   В git уже лежат файлы, которые теперь закрыты .gitignore: {len(stuck)}. "
               "Снять с учёта, не трогая диск:\n"
               + "\n".join(f"     git rm -r --cached -q \"{t}\"" for t in tops[:5]))
@@ -539,7 +796,7 @@ def kit_is_reachable() -> bool:
     print("\nЧто делать:", file=sys.stderr)
     print("  1) запустите из самого kit'а:  python3 <kit>/aurora.py update <проект>", file=sys.stderr)
     print("  2) либо запишите путь к kit'у: echo /путь/к/aurora-studio > "
-          "<проект>/.opencode/kit_path.txt", file=sys.stderr)
+          "<проект>/.aurora/kit_path.txt", file=sys.stderr)
     return False
 
 

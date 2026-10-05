@@ -6,9 +6,9 @@
 `Sources/JIRA/` (после `sync:jira`), сопоставляет задачи с требованиями по полю `jira:` и
 печатает отчёт: что можно двигать в `implemented`, что зависло, что отменено.
 
-  python3 .opencode/scripts/jira_status.py                # отчёт
-  python3 .opencode/scripts/jira_status.py --apply        # записать наблюдаемое состояние
-  python3 .opencode/scripts/jira_status.py --link --apply # проставить jira: по упоминаниям
+  python3 .aurora/scripts/jira_status.py                # отчёт
+  python3 .aurora/scripts/jira_status.py --apply        # записать наблюдаемое состояние
+  python3 .aurora/scripts/jira_status.py --link --apply # проставить jira: по упоминаниям
 
 **`implemented` скрипт не проставляет.** Требование выполнено, когда это подтвердила
 приёмка (`ship:acceptance`), а не когда разработчик перетащил карточку в «Готово».

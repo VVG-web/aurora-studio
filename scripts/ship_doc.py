@@ -9,8 +9,8 @@ frontmatter (`export_doc.py`, `release_doc.py`):
   --release           инвариант 6, сданное неизменяемо: снапшот в `Deliverables/released/`,
                       дата передачи в рабочей копии, коммит базы на момент передачи
 
-  python3 .opencode/scripts/ship_doc.py Deliverables/work/ОПЗ_v1.md --export docx
-  python3 .opencode/scripts/ship_doc.py Deliverables/work/ОПЗ_v2.1.md --release --apply
+  python3 .aurora/scripts/ship_doc.py Deliverables/work/ОПЗ_v1.md --export docx
+  python3 .aurora/scripts/ship_doc.py Deliverables/work/ОПЗ_v2.1.md --release --apply
 
 Экспорт — производная копия: истина остаётся в markdown, в git. Перезаписать снапшот
 нельзя: одна версия — один файл. Изменился документ — это новая версия, а не правка

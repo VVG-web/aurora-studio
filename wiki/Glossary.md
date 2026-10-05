@@ -5,7 +5,7 @@
 | Term | Meaning |
 |---|---|
 | **Aurora Studio / the kit** | This repository: the engine, skills, templates and the panel. Deployed into a project, which then carries its own copy |
-| **Project** | A folder with `aurora.config.yaml` and the fixed layout. Holds its own engine copy in `.opencode/` and its own knowledge |
+| **Project** | A folder with `aurora.config.yaml` and the fixed layout. Holds its own engine copy in `.aurora/` and its own knowledge |
 | **Card** | A Markdown file with the knowledge about one entity. [The card](The-Card.md) |
 | **Kind** (`kind`) | `dictionary`, `document` or `knowledge` — decides who may edit the body |
 | **Status** | `knowledge`, `draft`, `placeholder`, `index`, `deprecated` — the trust class |

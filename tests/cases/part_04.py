@@ -609,7 +609,7 @@ def test_bridge_knows_what_runs_and_what_stopped(tmp: Path):
 
     quiet, busy = tmp / "quiet", tmp / "busy"
     for d in (quiet, busy):
-        (d / ".opencode/state").mkdir(parents=True)
+        (d / ".aurora/state").mkdir(parents=True)
     assert ck.project_activity(str(quiet)) == {"running": [], "agent": None, "route": None}, \
         "у тихого проекта нашлась работа, которой нет"
 
@@ -627,7 +627,7 @@ def test_bridge_knows_what_runs_and_what_stopped(tmp: Path):
     assert [j["cmd"] for j in act["running"]] == ["agent:build"], \
         f"в идущих не то: закончившееся или чужое задание — {act['running']}"
 
-    lock = busy / ".opencode/state/agent.lock"
+    lock = busy / ".aurora/state/agent.lock"
     lock.write_text(json.dumps({"pid": os.getpid(), "task": "agent:build", "since": "17:55:00"}),
                     encoding="utf-8")
     agent = ck.project_activity(str(busy))["agent"]
@@ -645,7 +645,7 @@ def test_bridge_knows_what_runs_and_what_stopped(tmp: Path):
     lock.write_text("{порван", encoding="utf-8")
     assert ck.project_activity(str(busy))["agent"] is None, "порванный замок уронил отметку"
 
-    (busy / ".opencode/state/last_route.json").write_text(json.dumps(
+    (busy / ".aurora/state/last_route.json").write_text(json.dumps(
         {"scId": "update", "runId": "r1", "title": "Обновить базу", "write": True,
          "reason": "offline", "step": "agent:build", "attempts": 1,
          "nextRetryAt": 1789401064942, "at": "2026-09-14T15:36:04.942Z"}), encoding="utf-8")
@@ -961,12 +961,12 @@ def test_lint_reads_golden_questions_not_engine_reports(tmp: Path):
 def test_health_report_names_panel_commands(tmp: Path):
     """Отчёт о здоровье называет команды панели, а не пути к скриптам.
 
-    Живой случай: «Дальше» предлагал `python3 .opencode/scripts/kb_queue.py` — скрипта нет в
+    Живой случай: «Дальше» предлагал `python3 .aurora/scripts/kb_queue.py` — скрипта нет в
     движке вовсе, а человек нажимает кнопку, а не набирает python3.
     """
     src = (KIT / "scripts/aurora_stats.py").read_text(encoding="utf-8")
     tail = src[src.index('"## Дальше"'):src.index("def append_metrics(")]
-    assert "python3 .opencode/scripts" not in tail and "kb_queue" not in tail, tail[:400]
+    assert "python3 .aurora/scripts" not in tail and "kb_queue" not in tail, tail[:400]
     for cmd in ("`ops:todo`", "`kb:lint`", "`kb:repair`", "`sync:audit`"):
         assert cmd in tail, f"в «Дальше» нет {cmd}"
 
@@ -1806,8 +1806,8 @@ def test_saving_does_not_silently_overwrite(tmp: Path):
 
     # И линтер после сохранения не имеет права решать судьбу сохранения: он читает базу
     # целиком, на большой базе висел до потолка — а файл к тому моменту уже записан.
-    (root / ".opencode" / "scripts").mkdir(parents=True)
-    (root / ".opencode" / "scripts" / "kb_lint.py").write_text(
+    (root / ".aurora" / "scripts").mkdir(parents=True)
+    (root / ".aurora" / "scripts" / "kb_lint.py").write_text(
         "import time; time.sleep(300)", encoding="utf-8")
     slow = ck.file_write(str(root), "Artifacts/ac/AC-1.md", "# AC\n\nещё\n")
     assert slow.get("ok"), "зависший линтер отменил сохранение"

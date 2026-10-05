@@ -14,7 +14,7 @@
 3. **Продукты** (`Artifacts/`, `Deliverables/`) — произведённая работа; обратно в промпты как
    «истина» не подаётся.
 
-Инварианты, которые не нарушают никогда, — в `.opencode/skills/aurora-vault/SKILL.md` проекта и в
+Инварианты, которые не нарушают никогда, — в `.aurora/skills/aurora-vault/SKILL.md` проекта и в
 [правилах базы знаний](knowledge-rules.md).
 
 ## Фазы внедрения
@@ -80,15 +80,15 @@ flowchart LR
 
 1. Откройте **проект** (не кит) корнем рабочей области IDE.
 2. Убедитесь, что `AGENTS.md` подхвачен как инструкция проекта.
-3. Навыки лежат в `.opencode/skills/`; `kit:skills --apply` кладёт их в общий каталог агента
+3. Навыки лежат в `.aurora/skills/`; `kit:skills --apply` кладёт их в общий каталог агента
    (`~/.claude/skills`) — тогда `/aurora-vault` находится в любом диалоге.
 4. По желанию подключите Atlassian MCP для sync-навыков и **базу знаний как MCP** (`kit:mcp`:
    готовая строка для Claude Code, Cursor, OpenCode; сервер только читает).
 
 | Инструмент | Что настроить |
 |---|---|
-| Cursor | правила `.cursor/rules/atlassian.mdc`; открыть корень проекта |
-| Claude Code, OpenCode | навыки из `.opencode/skills/aurora-vault/`; команды `/aurora-vault <команда>` |
+| Cursor | открыть корень проекта: `AGENTS.md` и навыки `.claude/skills/` он читает сам |
+| Claude Code, OpenCode | навыки кита ставит `kit:skills` в `~/.claude/skills/`; навыки проекта — `.claude/skills/`; команды `/aurora-vault <команда>` |
 | Любой | `kit:mcp` → запись `mcpServers` с именем `aurora-<slug>` |
 
 ## Перенос накопленной базы

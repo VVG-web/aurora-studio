@@ -6,9 +6,9 @@
 аннулировании»: общих слов нет, а тема одна. Это не недостаток словесного поиска — это
 его граница, и закрывается она эмбеддингами.
 
-  python3 .opencode/scripts/kb_embed.py --status     # что в индексе, что устарело
-  python3 .opencode/scripts/kb_embed.py --apply      # досчитать недостающее
-  python3 .opencode/scripts/kb_embed.py --apply --all # пересчитать всё заново
+  python3 .aurora/scripts/kb_embed.py --status     # что в индексе, что устарело
+  python3 .aurora/scripts/kb_embed.py --apply      # досчитать недостающее
+  python3 .aurora/scripts/kb_embed.py --apply --all # пересчитать всё заново
 
 Зависимостей не добавляет: вектора считает та же модель, к которой уже ходит агент
 (`AURORA_AGENT_EMBED_MODEL`, по умолчанию `bge-m3`), скалярное произведение — stdlib.

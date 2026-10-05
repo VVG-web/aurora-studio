@@ -6,10 +6,10 @@
 механика. Без неё `build` на живом проекте пришлось резать руками на фазы P1–P5 и писать
 отчёты вручную.
 
-  python3 .opencode/scripts/build_plan.py                     # план: что осталось, партиции
-  python3 .opencode/scripts/build_plan.py --partition 2       # только партия №2
-  python3 .opencode/scripts/build_plan.py --done <файл> --cards N   # отметить обработанным
-  python3 .opencode/scripts/build_plan.py --status            # прогресс по манифесту
+  python3 .aurora/scripts/build_plan.py                     # план: что осталось, партиции
+  python3 .aurora/scripts/build_plan.py --partition 2       # только партия №2
+  python3 .aurora/scripts/build_plan.py --done <файл> --cards N   # отметить обработанным
+  python3 .aurora/scripts/build_plan.py --status            # прогресс по манифесту
 
 Порядок обхода задан `build.md` (сначала терминология, потом то, что на неё ссылается):
 Reference → Statuses → Raw/project → Sources/Confluence → Sources/JIRA. Внутри группы —
@@ -73,7 +73,8 @@ GROUPS = [
     # их статусам класс доверия карточки. Оба читают зеркало напрямую, минуя план, —
     # поэтому исключение задач из разбора ничего из этого не ломает.
 ]
-SKIP = ("sync_state.md", "update_log.md", "manifest.json", "_index.md", "index.md")
+# README.md — описание папки от кита (`folder_guides.py`), а не документ проекта.
+SKIP = ("sync_state.md", "update_log.md", "manifest.json", "_index.md", "index.md", "README.md")
 
 # Раздел базы → тип карточки (тот же список, что в kb_lint и kb_fix).
 # Код документа в начале имени: «AC-3.4.2 Отправка начислений», «US-4.2.19 Поиск в поле».
@@ -518,7 +519,7 @@ def task_prompt(num: int, part: list, total: int = 0) -> str:
 /aurora-vault kb:build
 
 Работай по скиллу aurora-vault, раздел build
-(.opencode/skills/aurora-vault/references/build.md и frontmatter.md).
+(.aurora/skills/aurora-vault/references/build.md и frontmatter.md).
 
 Разбери партию {num} — {len(part)} источников, по порядку:
 
@@ -528,10 +529,10 @@ def task_prompt(num: int, part: list, total: int = 0) -> str:
 источника по очереди:
 
 1. Раскадровка — какие в источнике секции:
-     python3 .opencode/scripts/build_plan.py --slice {first}
+     python3 .aurora/scripts/build_plan.py --slice {first}
 
 2. По списку секций реши, где границы тем и как они называются. На каждую карточку:
-     python3 .opencode/scripts/build_plan.py --card "Имя карточки" \\
+     python3 .aurora/scripts/build_plan.py --card "Имя карточки" \\
          --source {first} --sections 1,2 --to Concepts --apply
 
    • --sections — номера из раскадровки, подряд идущие пишутся как 3-5
@@ -560,7 +561,7 @@ def task_prompt(num: int, part: list, total: int = 0) -> str:
    разделите её на несколько.
 
 4. Отметь источник разобранным:
-     python3 .opencode/scripts/build_plan.py --done {first}
+     python3 .aurora/scripts/build_plan.py --done {first}
 
    Отметка проверяется по базе: без карточек она не поставится. Источник, из которого
    знания не выходит, отмечай явно: --done <файл> --empty "<почему пусто>"
@@ -791,7 +792,7 @@ def slice_report(path: str, chars: int = 110) -> int:
 переписывать текст. Реши только две вещи: где границы темы и как она называется.
 
 На каждую карточку дай одну команду:
-  python3 .opencode/scripts/build_plan.py --card "Имя карточки" \\
+  python3 .aurora/scripts/build_plan.py --card "Имя карточки" \\
       --source {path} --sections 1,2 --to Concepts --apply
 
   • --sections    номера из списка выше; подряд идущие можно писать как 3-5

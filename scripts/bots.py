@@ -30,7 +30,7 @@ YAML — что ему дано, в теле — сам промпт.
   `Workspaces/bots/<бот>/<прогон>/`.
 
 Итог прогона — `report.md` в той же папке (пишет код, по ответу модели) и строка состояния в
-`.opencode/state/bots/<бот>.json`: её показывают список ботов и раздел «Cron». Неудача —
+`.aurora/state/bots/<бот>.json`: её показывают список ботов и раздел «Cron». Неудача —
 причина словами, совет и действие (`problem.code`, `problem.actions`).
 
 Расписание — поле `cron`: пять полей cron (минута час день месяц день-недели) или
@@ -66,7 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import kit_root  # noqa: E402 — кит: сам скрипт или указатель копии движка
 
 BOTS_DIR = "bots"
-STATE_DIR = (".opencode", "state", "bots")
+STATE_DIR = (".aurora", "state", "bots")
 OUT_DIR = ("Workspaces", "bots")
 FIELDS = ("name", "description", "mcp", "skills", "attachments", "cron", "enabled")
 LISTS = ("mcp", "skills", "attachments")
@@ -102,7 +102,7 @@ PROBLEMS = {
                     "Добавьте его в «Настройка кита» → MCP-серверы машины (или в mcp.json "
                     "проекта) либо уберите из бота.", ["open_setup", "open_bots"]),
     "skill_unknown": ("Навык не найден",
-                      "Положите SKILL.md в .opencode/skills/<имя>/ проекта, в skills/ кита или в "
+                      "Положите SKILL.md в .claude/skills/<имя>/ проекта, в skills/ кита или в "
                       "~/.claude/skills/<имя>/ — или уберите навык из бота.", ["open_bots"]),
     "attachment_missing": ("Вложения нет в проекте",
                            "Проверьте путь — он считается от корня проекта — или уберите "

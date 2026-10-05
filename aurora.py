@@ -12,7 +12,7 @@
   python3 aurora.py update <target>   обновить движок в проекте до версии kit
                                       (dry-run; запись — с --apply)
 
-Обслуживание проекта (то же самое можно запускать изнутри проекта из .opencode/scripts/):
+Обслуживание проекта (то же самое можно запускать изнутри проекта из .aurora/scripts/):
 
   python3 aurora.py list <target>     справочник команд: что есть, чем исполняется
   python3 aurora.py doctor <target>   готовность проекта + сверка структуры папок
@@ -48,7 +48,7 @@
 `new` вызывает install_aurora.py (раскладка файлов), затем aurora_setup.py
 (интерактивные вопросы: Confluence base/space/страницы, Jira key/JQL и прочее).
 Настройку можно перезапустить когда угодно из самого проекта:
-  cd <target> && python3 .opencode/scripts/aurora_setup.py
+  cd <target> && python3 .aurora/scripts/aurora_setup.py
 """
 from __future__ import annotations
 import subprocess, sys
@@ -88,7 +88,7 @@ def cmd_new(target: str, extra: list[str]) -> int:
     # 2. настройка проекта
     print("\n→ Настройка проекта" + (" (без вопросов: нет терминала)" if quiet else "")
           + "\n", flush=True)
-    rc = sh([str(tgt / ".opencode/scripts/aurora_setup.py"), "--target", str(tgt)]
+    rc = sh([str(tgt / ".aurora/scripts/aurora_setup.py"), "--target", str(tgt)]
             + (["--non-interactive"] if quiet else []))
     if rc != 0:
         return rc
@@ -108,7 +108,7 @@ def cmd_new(target: str, extra: list[str]) -> int:
 
 def cmd_setup(target: str, extra: list[str]) -> int:
     tgt = Path(target).expanduser().resolve()
-    setup = tgt / ".opencode/scripts/aurora_setup.py"
+    setup = tgt / ".aurora/scripts/aurora_setup.py"
     if not setup.is_file():
         setup = SCRIPTS / "aurora_setup.py"
     return sh([str(setup), "--target", str(tgt), *extra])
@@ -153,7 +153,7 @@ def cmd_tool(name: str, target: str, extra: list[str]) -> int:
     # В реестре у команды может стоять фиксированный флаг («queue» — это
     # `aurora_stats.py --queue`): один скрипт, несколько именованных входов.
     file, *fixed = TOOLS[name].split()
-    script = tgt / ".opencode/scripts" / file
+    script = tgt / ".aurora/scripts" / file
     if not script.is_file():
         script = SCRIPTS / file
     return subprocess.call([sys.executable, str(script), *fixed, *extra], cwd=str(tgt))

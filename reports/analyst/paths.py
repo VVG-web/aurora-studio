@@ -72,7 +72,7 @@ CONFIG_PATH = os.path.join(PROJECT_ROOT, "aurora.config.yaml")
 DEFAULTS = {
     "roster": "Settings/report-roster.csv",
     "events": "Settings/report-events.csv",
-    "data_dir": ".opencode/cache/reports/analyst",
+    "data_dir": ".aurora/cache/reports/analyst",
     "output": "Artifacts/reports/{project}_analyst_extended.html",
 }
 

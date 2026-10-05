@@ -38,7 +38,7 @@ SAMPLE = 12          # сколько имён держать в снимке: �
 
 
 def run(project: str, script: str, args: list) -> str:
-    path = os.path.join(project, ".opencode", "scripts", script)
+    path = os.path.join(project, ".aurora", "scripts", script)
     if not os.path.isfile(path):
         path = os.path.join(KIT, "scripts", script)
     try:

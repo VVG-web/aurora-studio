@@ -79,12 +79,12 @@ Examples (adapt to your domain):
 `Artifacts/<тип>/` — **произведённый документ** (черновик → ревью → публикация), НЕ знание.
 
 **Список типов закрыт и одинаков во всех проектах Авроры** (источник правды —
-`.opencode/structure_dirs.txt`). Свои типы в проекте не заводятся: `create <неизвестный тип>`
+`.aurora/structure_dirs.txt`). Свои типы в проекте не заводятся: `create <неизвестный тип>`
 отказывает. Всё нестандартное — черновики, подборки, эксперименты, вспомогательные файлы,
 картинки — живёт в `Workspaces/<задача>/`, где ограничений нет. Нужен новый тип всем
 проектам → PR в kit (`structure_dirs.txt` + таблицы `SKILL.md`/`conventions.md` + CHANGELOG),
 и он приезжает во все проекты через `aurora.py update`. Проверка факта:
-`python3 .opencode/scripts/aurora_doctor.py --structure`.
+`python3 .aurora/scripts/aurora_doctor.py --structure`.
 
 Стандартные типы (**этот список — источник правды**; в SKILL.md на него ссылка):
 

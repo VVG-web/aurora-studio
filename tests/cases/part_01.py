@@ -1445,14 +1445,14 @@ def test_new_project_works_without_a_terminal(tmp: Path):
     assert "EOFError" not in cp.stderr, cp.stderr[-300:]
     assert (target / "aurora.config.yaml").is_file(), "конфиг не создан"
     assert (target / "AuroraKnowledgeDB").is_dir(), "структура не развёрнута"
-    assert (target / ".opencode/scripts/kb_lint.py").is_file(), "движок не разложен"
+    assert (target / ".aurora/scripts/kb_lint.py").is_file(), "движок не разложен"
     assert "aurora.py setup" in cp.stdout, \
         "не сказано, как довести настройку до конца"
 
     # проект пригоден к работе сразу: команды не падают на пустой базе
     for args in (["kb_lint.py", "--summary"], ["build_plan.py", "--status"],
                  ["aurora_stats.py"], ["kb_trust.py"]):
-        r = subprocess.run([sys.executable, str(target / ".opencode/scripts" / args[0]),
+        r = subprocess.run([sys.executable, str(target / ".aurora/scripts" / args[0]),
                             *args[1:]], cwd=str(target), capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert r.returncode == 0, f"{args[0]} на свежем проекте: rc={r.returncode}\n{r.stderr[:300]}"
 
@@ -1465,21 +1465,21 @@ def test_update_works_from_project_copy(tmp: Path):
     обновления: скрипт считал корнем kit'а сам проект.
     """
     root = make_project(tmp)
-    (root / ".opencode/scripts").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(SCRIPTS / "aurora_update.py", root / ".opencode/scripts/aurora_update.py")
+    (root / ".aurora/scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SCRIPTS / "aurora_update.py", root / ".aurora/scripts/aurora_update.py")
     (root / "aurora.config.yaml").write_text(
         'project:\n  name: "T"\n  slug: T\n', encoding="utf-8")
 
     # без подсказки — понятная ошибка, а не стек
-    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/aurora_update.py"), "."],
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/aurora_update.py"), "."],
                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 2, f"ожидался управляемый отказ, а не {cp.returncode}"
     assert "Traceback" not in cp.stderr, "человек получает трассировку вместо объяснения"
     assert "kit_path.txt" in cp.stderr, "не сказано, как починить"
 
     # с подсказкой — обычная работа
-    (root / ".opencode/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
-    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/aurora_update.py"), "."],
+    (root / ".aurora/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/aurora_update.py"), "."],
                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 0, f"с подсказкой обновление должно работать:\n{cp.stderr[:400]}"
     assert "kit " in cp.stdout, "не показана версия kit'а"
@@ -1499,7 +1499,7 @@ def test_kit_ships_no_project_data(tmp: Path):
     tracked = [p for p in subprocess.run(["git", "ls-files", "-z"], cwd=str(KIT),
                                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split("\0") if p]
     project_dirs = ("AuroraKnowledgeDB/", "Sources/", "Raw/", "Artifacts/",
-                    "Deliverables/", "Workspaces/", ".opencode/")
+                    "Deliverables/", "Workspaces/", ".aurora/")
     stray = [p for p in tracked
              if not p.startswith(("tests/corpus/", "scaffold/", "templates/", "examples/"))
              and any(d in p for d in project_dirs)]

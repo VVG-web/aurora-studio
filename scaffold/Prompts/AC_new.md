@@ -9,7 +9,7 @@ skill: "/aurora-vault make:create ac"
 
 Критерии пишутся **после** истории и отдельно от неё: так они остаются проверяемыми, а
 история — читаемой. Сначала соберите контекст:
-`python3 .opencode/scripts/ctx_pack.py "<тема>"`.
+`python3 .aurora/scripts/ctx_pack.py "<тема>"`.
 
 ---
 

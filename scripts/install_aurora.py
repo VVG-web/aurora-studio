@@ -7,13 +7,13 @@ Usage:
 
 What it does:
   1. Creates Aurora trust-layer folders (Sources, Raw, AuroraKnowledgeDB, …)
-  2. Copies aurora-vault skill + kb_lint.py + aurora_doctor.py into .opencode/
+  2. Copies aurora-vault skill + kb_lint.py + aurora_doctor.py into .aurora/
   3. Writes aurora.config.yaml (project settings) + aurora.env.local.example
   4. Writes AGENTS.md from template (Karpathy + Aurora rules)
   5. Seeds meta (conventions, golden_questions, metrics, releases, manifest, index)
   6. Copies Templates/ and Prompts/; docs stay in the kit (pointer in meta/)
   7. Scaffolds Confluence/Jira sync skills (read config, not hardcode JQL)
-  8. Writes thin .cursor/rules/atlassian.mdc and .gitignore entries
+  8. Writes .gitignore entries (the engine and harness folders stay out of git)
 
 Safe by default: never overwrites existing files unless --force.
 """
@@ -65,9 +65,8 @@ def _schema_dirs() -> list[str]:
 
 # Служебные папки движка (не часть схемы знаний, поэтому не в structure_dirs.txt).
 ENGINE_DIRS = [
-    ".opencode/skills/aurora-vault/references",
-    ".opencode/scripts",
-    ".cursor/rules",
+    ".aurora/skills/aurora-vault/references",
+    ".aurora/scripts",
 ]
 
 TRUST_DIRS = _schema_dirs() + ENGINE_DIRS
@@ -88,10 +87,22 @@ __pycache__/
 ~$*
 *.log
 
+# Движок Авроры — копия кита: `aurora.py update` ставит её из кита, версия записана в
+# AuroraKnowledgeDB/meta/aurora_version.txt. Внутри — и состояние, прогоны, вложения, кэш.
+.aurora/
+# Папки харнессов — агентов и редакторов — у каждого свои: настройки, планы, кэш. Общие
+# у проекта только навыки: `.claude/skills/` остаётся в git.
+.cursor/
+.opencode/
+.codex/
+.gemini/
+.windsurf/
+.claude/*
+!.claude/skills/
+
 # Служебное состояние инструментов. Правило Авроры: что закрыто .gitignore,
 # то допустимо вне схемы папок — doctor такие пути не считает нарушением.
 .sisyphus/
-.opencode/node_modules/
 node_modules/
 .venv/
 # Браузерные MCP-инструменты сбрасывают логи консоли и слепки страниц в текущую
@@ -99,19 +110,6 @@ node_modules/
 # слепок чужой страницы в истории git.
 .playwright-mcp/
 .puppeteer/
-# Архив прогонов панели: полный лог консоли каждого запуска, полсотни последних. Там
-# имена карточек, пути источников и куски ответов модели — а чекпойнт агента делает
-# `git add -A` по всему дереву и утащил бы это в историю проекта под видом работы человека.
-.opencode/runs/
-# Состояние панели: какой маршрут остановлен и на чём. След работы, а не исходник.
-.opencode/state/
-# Вложения к запросам «Продуктивности»: внешние файлы, приложенные к задаче. Временный
-# контекст, а не знание: живут две недели, и в историю проекта им не место.
-.opencode/context/
-# Выгрузки отчёта аналитика (`reports/analyst`): метаданные Confluence и задачи Jira, из
-# которых собирается дашборд. Производная, пересобирается каждым запуском отчёта, а
-# чекпойнт агента (`git add -A`) утаскивал её в историю проекта под видом работы человека.
-.opencode/cache/
 # Семантический индекс — производная от карточек: бинарь на мегабайты, меняется
 # целиком при смене модели и пересобирается за минуты (`kb:embed --apply`).
 AuroraKnowledgeDB/meta/embeddings.bin
@@ -137,7 +135,7 @@ def merge_gitignore(path, block: str = "") -> list:
 
     Раньше установка смотрела на файл целиком: есть в нём старые строки — значит
     настроен, не трогаем. Правила, добавленные в кит позже, до заведённых проектов не
-    доезжали никогда. Так `.opencode/state/` — рантайм-состояние прогона — остался вне
+    доезжали никогда. Так `.aurora/state/` — рантайм-состояние прогона — остался вне
     игнора на двух живых проектах, а на одном замок агента попал под контроль версий и
     после каждого прогона оставлял дерево грязным.
 
@@ -244,12 +242,12 @@ class Installer:
     def install_skill(self):
         self.log("== aurora-vault skill ==")
         skill_src = KIT_ROOT / "skills/aurora-vault"
-        self.copy_file(skill_src / "SKILL.md", ".opencode/skills/aurora-vault/SKILL.md")
+        self.copy_file(skill_src / "SKILL.md", ".aurora/skills/aurora-vault/SKILL.md")
         for ref in (skill_src / "references").glob("*.md"):
-            self.copy_file(ref, f".opencode/skills/aurora-vault/references/{ref.name}")
+            self.copy_file(ref, f".aurora/skills/aurora-vault/references/{ref.name}")
         # skill.json берём из kit'а, а не пишем свой: два источника одного файла
         # означают, что update будет вечно предлагать перезапись сразу после установки
-        self.copy_file(skill_src / "skill.json", ".opencode/skills/aurora-vault/skill.json")
+        self.copy_file(skill_src / "skill.json", ".aurora/skills/aurora-vault/skill.json")
         # Список инженерных файлов — один на весь kit: `engine_manifest.txt`. Свой
         # хардкод здесь уже расходился с манифестом (три скрипта новый проект не получал
         # до первого `kit:update`), поэтому раскладку ведёт манифест, а не память.
@@ -257,11 +255,11 @@ class Installer:
             if src.name.endswith(".py") and src.parent.name == "scripts":
                 self.copy_file(src, dst)
         # схема структуры папок: движок сверяет по ней факт (doctor --structure)
-        self.copy_file(KIT_ROOT / "structure_dirs.txt", ".opencode/structure_dirs.txt")
+        self.copy_file(KIT_ROOT / "structure_dirs.txt", ".aurora/structure_dirs.txt")
         # реестр команд: справочник kit:list собирается из него
-        self.copy_file(KIT_ROOT / "commands.txt", ".opencode/commands.txt")
+        self.copy_file(KIT_ROOT / "commands.txt", ".aurora/commands.txt")
         # где лежит kit: копии setup/update внутри проекта берут отсюда манифест и версию
-        self.write(".opencode/kit_path.txt", str(KIT_ROOT) + "\n")
+        self.write(".aurora/kit_path.txt", str(KIT_ROOT) + "\n")
 
     def install_project_config(self):
         self.log("== aurora.config.yaml ==")
@@ -513,10 +511,10 @@ _Мета-вопросы:_
                    "не заводилась своя стареющая копия.\n\n"
                    f"- набор для людей: `<kit>/docs/readme/` — обзор, лёгкий старт,\n"
                    "  регламент, практика, уход за базой, спецификации;\n"
-                   "- справочник команд: `python3 .opencode/scripts/kit_commands.py`;\n"
+                   "- справочник команд: `python3 .aurora/scripts/kit_commands.py`;\n"
                    "- панель управления: `python3 <kit>/aurora.py cockpit`.\n\n"
                    "Процедуры, по которым работает ассистент, лежат в проекте:\n"
-                   "`.opencode/skills/aurora-vault/`.\n")
+                   "`.aurora/skills/aurora-vault/`.\n")
 
     def install_connectors(self):
         """Модули источников: манифест, скрипт запуска, папка зеркала и sync-скилл.
@@ -527,14 +525,14 @@ _Мета-вопросы:_
         self.log("== модули источников ==")
         for man in sorted((KIT_ROOT / "connectors").glob("*/connector.json")):
             m = json.loads(man.read_text(encoding="utf-8"))
-            self.copy_file(man, f".opencode/connectors/{m['id']}.json")
+            self.copy_file(man, f".aurora/connectors/{m['id']}.json")
             script = (m.get("run") or {}).get("script", "")
             if script:
                 # скрипт может лежать рядом с манифестом (доустановленный модуль) или
                 # в scripts/ kit'а (встроенный — его же импортируют панель и publish_doc)
                 src = man.parent / script
                 self.copy_file(src if src.is_file() else KIT_ROOT / "scripts" / script,
-                               f".opencode/scripts/{script}")
+                               f".aurora/scripts/{script}")
             mirror = (m.get("mirror") or {}).get("default_path", "")
             if mirror:
                 self.ensure_dir(mirror)
@@ -547,33 +545,14 @@ _Мета-вопросы:_
                     .replace("{{PROJECT_NAME}}", self.name)
                     .replace("{{CONFLUENCE_SPACE}}", self.confluence)
                     .replace("{{JIRA_KEY}}", self.jira))
-            self.write(f".opencode/skills/{name}/SKILL.md", body)
+            # Навык проекта — общий для команды: `.claude/skills/` в git, движок — нет.
+            self.write(f".claude/skills/{name}/SKILL.md", body)
             self.write(
-                f".opencode/skills/{name}/skill.json",
+                f".claude/skills/{name}/skill.json",
                 json.dumps({"name": name,
                             "description": f"{m.get('title', m['id'])} → {mirror}",
                             "entrypoint": "SKILL.md"}, indent=2, ensure_ascii=False) + "\n",
             )
-
-    def install_cursor_rules(self):
-        self.log("== .cursor/rules ==")
-        self.write(
-            ".cursor/rules/atlassian.mdc",
-            """---
-alwaysApply: true
----
-
-# Atlassian MCP tool
-
-Project Atlassian settings live in **`aurora.config.yaml`** (`atlassian.*`).
-
-- Confluence space / sync roots: `atlassian.confluence`
-- Jira project / default JQL: `atlassian.jira`
-- Auth: **your** Cursor MCP login (`atlassian.auth.mode: mcp_user`). Never commit tokens.
-
-Do not hardcode another teammate's credentials in skills or rules.
-""",
-        )
 
     def install_gitignore(self):
         self.log("== .gitignore ==")
@@ -613,7 +592,7 @@ created: {TODAY}
 1. Open `aurora.config.yaml` — set Confluence `sync_roots` and verify Jira JQL.
 2. Copy `aurora.env.local.example` → `.env.aurora.local` (optional; personal only).
 3. Authenticate **your** Atlassian account in Cursor MCP (mcp-atlassian).
-4. Run: `python3 .opencode/scripts/aurora_doctor.py`
+4. Run: `python3 .aurora/scripts/aurora_doctor.py`
 5. Put evidence into `Raw/`; then `/aurora-vault build` or ingest.
 6. Read HTML guides in `Artifacts/drafts/`.
 """
@@ -637,7 +616,6 @@ created: {TODAY}
         self.install_launchers()
         self.install_docs()
         self.install_connectors()
-        self.install_cursor_rules()
         self.install_gitignore()
         self.write_report()
         print("\nDone." + (" (dry-run — no files written)" if self.dry_run else ""))

@@ -10,10 +10,10 @@
 обычный текст. Карточка, не попавшая ни в одну группу, уходит в «Разное»: MOC существует
 ради того, чтобы вход был у каждой.
 
-  python3 .opencode/scripts/kb_moc.py            # что получится (dry-run)
-  python3 .opencode/scripts/kb_moc.py --apply    # записать MOC/*.md
-  python3 .opencode/scripts/kb_moc.py --orphans  # только брошенные карточки
-  python3 .opencode/scripts/kb_moc.py --suggest  # что ещё просится в отдельную карту
+  python3 .aurora/scripts/kb_moc.py            # что получится (dry-run)
+  python3 .aurora/scripts/kb_moc.py --apply    # записать MOC/*.md
+  python3 .aurora/scripts/kb_moc.py --orphans  # только брошенные карточки
+  python3 .aurora/scripts/kb_moc.py --suggest  # что ещё просится в отдельную карту
 
 `--suggest` не пишет ничего: он показывает, где база доросла до новой карты. База растёт
 неравномерно — сегодня организаций две, а через месяц у одной из них десяток проектов и
@@ -53,17 +53,17 @@ MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\.md\)")
 def read_groups() -> list:
     """[(имя, [правила], подпись)] — из `moc_groups.txt`.
 
-    Ищем сначала в проекте (`.opencode/`), потом рядом со скриптом, потом в ките по
+    Ищем сначала в проекте (`.aurora/`), потом рядом со скриптом, потом в ките по
     подсказке `kit_path.txt`: правила таксономии проект вправе держать свои.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     hint = ""
     for probe in (os.path.join(here, "..", "kit_path.txt"),
-                  os.path.join(".opencode", "kit_path.txt")):
+                  os.path.join(".aurora", "kit_path.txt")):
         if os.path.isfile(probe):
             hint = open(probe, encoding="utf-8").read().strip()
             break
-    for path in (os.path.join(".opencode", GROUPS_FILE),
+    for path in (os.path.join(".aurora", GROUPS_FILE),
                  os.path.join(here, "..", GROUPS_FILE),
                  os.path.join(hint, GROUPS_FILE) if hint else "",
                  GROUPS_FILE):

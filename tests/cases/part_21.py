@@ -28,7 +28,7 @@ def _project(tmp: Path) -> Path:
     (p / "aurora.config.yaml").write_text("project:\n  name: Demo\n", encoding="utf-8")
     (p / "mcp.json").write_text(json.dumps({"mcpServers": {
         "jira-mcp": {"command": "echo"}, "confluence-mcp": {"command": "echo"}}}), encoding="utf-8")
-    sk = p / ".opencode" / "skills" / "evaluation-skill"
+    sk = p / ".aurora" / "skills" / "evaluation-skill"
     sk.mkdir(parents=True)
     (sk / "SKILL.md").write_text("---\nname: evaluation-skill\n---\nОценивай по разделам шаблона.\n",
                                  encoding="utf-8")

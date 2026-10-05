@@ -188,7 +188,7 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
 
     Просьба пользователя 24.09.2026: в «Продуктивности» ссылаться на файл или папку проекта
     через `@`, прикладывать внешний текстовый файл, звать навык (`/grill-me`) и MCP-сервер
-    прямо из текста задачи. Вложения живут в `.opencode/context/<день>/`.
+    прямо из текста задачи. Вложения живут в `.aurora/context/<день>/`.
     """
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
@@ -203,12 +203,12 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
 
     # вложение: текст — да, двоичное, секрет и чужое расширение — нет
     ok = RC.save_attachment(str(root), "Постановка.md", "Нужна кнопка «Выгрузить»".encode())
-    assert ok.get("path", "").startswith(".opencode/context/") and (root / ok["path"]).is_file(), ok
+    assert ok.get("path", "").startswith(".aurora/context/") and (root / ok["path"]).is_file(), ok
     assert "error" in RC.save_attachment(str(root), "a.png", b"\x89PNG\x00\x00")
     assert "error" in RC.save_attachment(str(root), "x.txt", b"\x00\x01\x02")
     assert "error" in RC.save_attachment(str(root), ".env", b"A=1")
     # старые папки вложений чистятся
-    old = root / ".opencode" / "context" / "2020-01-01"
+    old = root / ".aurora" / "context" / "2020-01-01"
     old.mkdir(parents=True)
     assert RC.trim_context(str(root)) == 1 and not old.exists()
 
@@ -388,7 +388,7 @@ def test_productivity_takes_mentions_and_attachments(tmp: Path):
     import importlib
     sys.path.insert(0, str(KIT / "scripts"))
     IA = importlib.import_module("install_aurora")
-    assert ".opencode/context/" in IA.GITIGNORE_BLOCK, "вложения уедут в git проекта"
+    assert ".aurora/" in IA.GITIGNORE_BLOCK.splitlines(), "вложения уедут в git проекта"
     assert "scripts/request_context.py" in (KIT / "engine_manifest.txt").read_text(encoding="utf-8"), \
         "модуль контекста не доедет до проектов"
 
@@ -959,7 +959,7 @@ def test_page_template_is_hidden_from_the_model_but_quotes_stay_verbatim(tmp: Pa
     blocks = A.template_blocks(str(root))
     assert TEMPLATE_PAR in blocks and TEMPLATE_ROW in blocks, sorted(blocks)[:5]
     assert all("Шаг первый" not in p for p in blocks), "своё знание страницы принято за шаблон"
-    assert (root / ".opencode/cache/template_blocks.json").is_file(), "словарь не закэширован"
+    assert (root / ".aurora/cache/template_blocks.json").is_file(), "словарь не закэширован"
 
     rel = paths[5].relative_to(root).as_posix()
     cp = run("build_plan.py", "--slice", rel, "--slice-chars", "900", cwd=root)
@@ -1543,7 +1543,7 @@ def test_the_sync_skips_pages_whose_version_did_not_change(tmp: Path):
             first.walk(r, [])
         first.save_cache()
         assert sorted(fetched) == ["10", "11", "12"], f"корень обойдён дважды: {fetched}"
-        assert (root / ".opencode/cache/confluence_pages.json").is_file()
+        assert (root / ".aurora/cache/confluence_pages.json").is_file()
 
         fetched.clear()
         ver["12"] = 2

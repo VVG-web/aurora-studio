@@ -2,11 +2,11 @@
 """aurora_doctor.py — check Aurora project onboarding readiness.
 
 Run from project root:
-  python3 .opencode/scripts/aurora_doctor.py
-  python3 .opencode/scripts/aurora_doctor.py --structure   # подробно по структуре папок
+  python3 .aurora/scripts/aurora_doctor.py
+  python3 .aurora/scripts/aurora_doctor.py --structure   # подробно по структуре папок
 
 Проверяет конфиг, скиллы, секреты в git, версию движка и **фиксированную структуру папок**
-(схема движка `.opencode/structure_dirs.txt` одинакова во всех проектах Авроры: свои типы
+(схема движка `.aurora/structure_dirs.txt` одинакова во всех проектах Авроры: свои типы
 артефактов и свои разделы базы не заводятся — для всего нестандартного есть `Workspaces/`).
 
 Exit 0 if OK / warnings only; 1 if blocking errors.
@@ -31,7 +31,7 @@ ROOT = Path.cwd()
 CONFIG = ROOT / "aurora.config.yaml"
 ENV_LOCAL = ROOT / ".env.aurora.local"
 ENV_EXAMPLE = ROOT / "aurora.env.local.example"
-SKILL = ROOT / ".opencode" / "skills" / "aurora-vault" / "SKILL.md"
+SKILL = ROOT / ".aurora" / "skills" / "aurora-vault" / "SKILL.md"
 AGENTS = ROOT / "AGENTS.md"
 
 SECRET_PATTERNS = [
@@ -43,9 +43,8 @@ SECRET_PATTERNS = [
 TRACKED_SCAN_GLOBS = [
     "aurora.config.yaml",
     "AGENTS.md",
-    ".cursor/rules/**/*.mdc",
-    ".opencode/skills/**/*.md",
-    ".opencode/skills/**/*.json",
+    ".claude/skills/**/*.md",
+    ".claude/skills/**/*.json",
 ]
 
 
@@ -82,7 +81,7 @@ def scan_secrets() -> list[str]:
         for rx in SECRET_PATTERNS:
             if rx.search(text):
                 hits.append(f"{pattern}: возможный секрет ({rx.pattern[:40]}…)")
-    skills = ROOT / ".opencode" / "skills"
+    skills = ROOT / ".aurora" / "skills"
     if skills.is_dir():
         for p in skills.rglob("*"):
             if p.suffix.lower() not in {".md", ".json", ".mdc", ".yml", ".yaml"}:
@@ -98,10 +97,13 @@ def scan_secrets() -> list[str]:
     return hits
 
 
-STRUCTURE_FILE = ROOT / ".opencode" / "structure_dirs.txt"
+STRUCTURE_FILE = ROOT / ".aurora" / "structure_dirs.txt"
 # Папки самого движка и системы контроля версий — они часть инструмента, не схемы.
 # Всё остальное вне схемы допустимо ТОЛЬКО если закрыто .gitignore (см. git_ignored).
-ENGINE_DIRS_TOP = {".git", ".opencode", ".cursor", ".claude"}
+# Харнессы — папки агентов и редакторов (у каждого свои, вне git); `.opencode` — ещё и
+# прежнее место движка до 1.158.0.
+ENGINE_DIRS_TOP = {".git", ".aurora", ".claude", ".cursor", ".opencode", ".codex", ".gemini",
+                   ".windsurf", ".agents"}
 # Внутри этих корней второй уровень задаётся движком (свои подпапки заводить нельзя).
 MANAGED_ROOTS = ("Artifacts", "AuroraKnowledgeDB", "Raw", "Sources", "Deliverables")
 
@@ -115,7 +117,7 @@ def artifact_dirs() -> dict:
     зеркала. Иначе выходит ловушка: человек объявил папку в панели, движок её создал,
     а doctor тут же назвал её нарушением схемы.
     """
-    sys.path.insert(0, str(ROOT / ".opencode" / "scripts"))
+    sys.path.insert(0, str(ROOT / ".aurora" / "scripts"))
     try:
         import make_kinds as MK
     except ImportError:
@@ -158,7 +160,7 @@ def mirror_owners() -> dict:
     того, чем команда пользуется. Поэтому легитимность папки в `Sources/` определяет
     реестр модулей, а не список в файле схемы.
     """
-    sys.path.insert(0, str(ROOT / ".opencode" / "scripts"))
+    sys.path.insert(0, str(ROOT / ".aurora" / "scripts"))
     try:
         import sources_registry as R
     except ImportError:
@@ -311,7 +313,7 @@ def check_structure(verbose: bool = False):
     lines: list[str] = []
     schema = read_structure()
     if not schema:
-        warns.append("нет .opencode/structure_dirs.txt — движок старее 1.3.0, "
+        warns.append("нет .aurora/structure_dirs.txt — движок старее 1.3.0, "
                      "обновите: python3 <kit>/aurora.py update <проект> --apply")
         return errors, warns, lines
 
@@ -502,7 +504,7 @@ def main() -> int:
                 warns.append(f"atlassian.auth.mode={auth.get('mode')!r} — токены не должны быть в yaml")
 
     if not SKILL.exists():
-        errors.append("нет .opencode/skills/aurora-vault/SKILL.md")
+        errors.append("нет .aurora/skills/aurora-vault/SKILL.md")
     if not AGENTS.exists():
         warns.append("нет AGENTS.md")
 

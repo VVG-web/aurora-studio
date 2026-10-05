@@ -1,6 +1,6 @@
 # Retrieval policy — how to feed AuroraKnowledgeDB into LLM context
 
-> **Собирается скриптом.** Правила ниже реализованы в `.opencode/scripts/ctx_pack.py`:
+> **Собирается скриптом.** Правила ниже реализованы в `.aurora/scripts/ctx_pack.py`:
 > `ctx_pack.py "<тема>" [--mode generate|review|ask|evaluate] [--budget N]`. Агент
 > запускает его и работает с готовым паком, а не собирает контекст «по памяти» — так
 > шапки доверия, фильтр статусов, релизный фильтр и запись в `meta/usage.log`

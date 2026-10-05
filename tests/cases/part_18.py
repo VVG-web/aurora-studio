@@ -527,7 +527,7 @@ def test_the_history_shows_one_row_per_launch_and_the_whole_output(tmp: Path):
     restore = set_home(tmp / "home")
     try:
         project = tmp / "p"
-        runs = project / ".opencode" / "runs"
+        runs = project / ".aurora" / "runs"
 
         def put(rid, meta=None, console="", events=None, transcript=None):
             d = runs / rid

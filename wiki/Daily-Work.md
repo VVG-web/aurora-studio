@@ -6,7 +6,7 @@
 One command can be run three ways, and the name is the same everywhere (`kb:repair`, `ctx:context`, `agent:make`):
 
 1. **a panel button** — the default path;
-2. **the terminal** — `python3 aurora.py <verb> <project> [flags]`, or a script from `.opencode/scripts/`;
+2. **the terminal** — `python3 aurora.py <verb> <project> [flags]`, or a script from `.aurora/scripts/`;
 3. **the assistant** — `/aurora-vault <command>`, for procedure commands that need meaning.
 
 ## The rhythm

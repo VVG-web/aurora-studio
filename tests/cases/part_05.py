@@ -972,7 +972,7 @@ def test_kit_files_pass_on_every_os(tmp: Path):
     """Файлы самого кита — и в ките, и там, куда их кладёт обновление в проекте.
 
     Кит выгружают на Windows, macOS и Linux, а его файлы ещё и уезжают в проекты под
-    `.opencode/`: путь там длиннее. Правило то же, что для базы, — самое строгое из трёх.
+    `.aurora/`: путь там длиннее. Правило то же, что для базы, — самое строгое из трёх.
     """
     import importlib
     sys.path.insert(0, str(SCRIPTS))
@@ -1504,7 +1504,7 @@ def test_graph_hops_in_search_wait_for_measurement(tmp: Path):
         importlib.reload(P)
 
     man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
-    assert ".opencode/vendor/cytoscape.min.js" in man and ".opencode/vendor/cytoscape.LICENSE" in man, \
+    assert ".aurora/vendor/cytoscape.min.js" in man and ".aurora/vendor/cytoscape.LICENSE" in man, \
         "библиотека страницы графа не доедет до проектов"
     assert (KIT / "cockpit/vendor/cytoscape/dist/cytoscape.min.js").is_file()
 

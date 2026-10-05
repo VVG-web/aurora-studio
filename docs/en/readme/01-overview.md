@@ -195,7 +195,7 @@ are in the [Lifecycle](../lifecycle.md).
 | Word | Meaning |
 |---|---|
 | **kit** | this repository: engine, skills, templates, panel; projects are deployed from it |
-| **engine** | the scripts in the project's `.opencode/scripts/` (a copy from the kit) |
+| **engine** | the scripts in the project's `.aurora/scripts/` (a copy from the kit) |
 | **mirror** | an export of an external system into `Sources/`: a file per page or issue |
 | **source** | the file a card was born from: a mirror or `Raw/` |
 | **thesis** | the entity's definition written by the model; the verbatim source lies under it |

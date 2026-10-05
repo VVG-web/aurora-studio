@@ -41,6 +41,7 @@ Artifacts/
 Deliverables/
 Workspaces/
 .opencode/
+.aurora/
 aurora.config.yaml
 !tests/corpus/**
 

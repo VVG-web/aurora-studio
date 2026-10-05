@@ -6,8 +6,8 @@
 Публикация — механика: конвертация markdown → storage, баннер «правки здесь будут
 потеряны», запись соответствия «файл ↔ страница» обратно в артефакт.
 
-  python3 .opencode/scripts/publish_doc.py Artifacts/reports/итог.md        # что уйдёт
-  python3 .opencode/scripts/publish_doc.py Artifacts/reports/итог.md --apply
+  python3 .aurora/scripts/publish_doc.py Artifacts/reports/итог.md        # что уйдёт
+  python3 .aurora/scripts/publish_doc.py Artifacts/reports/итог.md --apply
 
 Без `--apply` не отправляется ничего: печатается диагноз, страница-получатель и первые
 строки storage. Новая страница создаётся только с `--parent <page_id>` (или

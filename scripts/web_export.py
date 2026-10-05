@@ -6,9 +6,9 @@
 Confluence и Jira, но **отдельным блоком настроек**: страница из интернета и страница
 корпоративной вики приходят из разных мест и доверяются по разным правилам.
 
-  python3 .opencode/scripts/web_export.py                # выгрузить по списку
-  python3 .opencode/scripts/web_export.py --verify       # гейт детерминизма
-  python3 .opencode/scripts/web_export.py --prune        # убрать файлы снятых ссылок
+  python3 .aurora/scripts/web_export.py                # выгрузить по списку
+  python3 .aurora/scripts/web_export.py --verify       # гейт детерминизма
+  python3 .aurora/scripts/web_export.py --prune        # убрать файлы снятых ссылок
 
 Доверие объявляется НА КАЖДУЮ ССЫЛКУ, а не на модуль целиком: закон и национальный
 стандарт доверены, чужой блог с пересказом — нет. Галочка человека уходит в шапку
@@ -46,7 +46,7 @@ DEFAULT_OUT = "Sources/Web"
 # Кэш лежит в проекте рядом с кэшем Confluence. Изменили `to_markdown` так, что меняется
 # вывод, — поднимите CONVERTER: кэш сбросится, и следующий прогон пройдёт всё зеркало.
 CONVERTER = 1
-PAGE_CACHE = os.path.join(".opencode", "cache", "web_pages.json")
+PAGE_CACHE = os.path.join(".aurora", "cache", "web_pages.json")
 # Вложение страницы версию страницы не меняет, поэтому раз в неделю проходим всё заново.
 CACHE_FRESH_DAYS = 7
 NOT_MODIFIED = "304"

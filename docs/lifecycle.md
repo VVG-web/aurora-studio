@@ -208,7 +208,7 @@ stateDiagram-v2
 
 | Отметка | Где живёт | На какой вопрос отвечает | Кто ставит |
 |---|---|---|---|
-| версия страницы / `updated` задачи | `sync_state.md`, `update_log.md`; кэш `.opencode/cache/confluence_pages.json` | «качать ли заново» | синк, автоматически |
+| версия страницы / `updated` задачи | `sync_state.md`, `update_log.md`; кэш `.aurora/cache/confluence_pages.json` | «качать ли заново» | синк, автоматически |
 | хеш источника | `AuroraKnowledgeDB/meta/manifest.json` | «разбирать ли заново» | разбор, с проверкой по базе |
 | `source_synced` в карточке | шапка карточки | «не изменился ли источник под уже разобранным знанием» | разбор и `sync:diff` |
 

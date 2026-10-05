@@ -12,7 +12,7 @@ project:
 skills:
   required:
     - name: aurora-vault
-      via: repo   # .opencode/skills/aurora-vault/
+      via: repo   # .aurora/skills/aurora-vault/
   recommended:
     - name: mcp-atlassian
       via: cursor-mcp
@@ -23,7 +23,7 @@ skills:
       via: repo
 
 # Подключённые модули источников: id — он же имя папки в Sources/.
-# Что установлено: `python3 .opencode/scripts/sources_registry.py`.
+# Что установлено: `python3 .aurora/scripts/sources_registry.py`.
 # Секции нет — работают модули, встроенные в kit (Confluence и Jira).
 sources:
   - id: Confluence
@@ -109,7 +109,7 @@ reports:
     events: Settings/report-events.csv
     # Выгрузки Jira и Confluence, из которых считается отчёт. Кэш, а не результат:
     # удалить можно, следующий прогон без --skip-fetch соберёт заново.
-    data_dir: .opencode/cache/reports/analyst
+    data_dir: .aurora/cache/reports/analyst
     output: Artifacts/reports/{project}_analyst_extended.html
 
 bootstrap:

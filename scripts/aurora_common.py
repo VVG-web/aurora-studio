@@ -5,7 +5,7 @@
 восьми, карта гомоглифов — в двух. Любая правка требовала повторить её везде, и однажды
 кто-то бы забыл. Здесь — единственная реализация того, что нужно всем.
 
-Модуль лежит рядом со скриптами (`.opencode/scripts/`), поэтому обычный `import
+Модуль лежит рядом со скриптами (`.aurora/scripts/`), поэтому обычный `import
 aurora_common` работает: Python кладёт папку запускаемого скрипта первой в `sys.path`.
 Внешних зависимостей нет.
 """
@@ -293,6 +293,13 @@ def clean_copy(text: str) -> str:
 
 
 SERVICE_NAMES = {"index.md", "_index.md", "manifest.json", "README.md"}
+# Описание папки (`README.md`, его кладёт кит — `folder_guides.py`): объясняет папку, а не
+# лежит в ней содержимым — не источник, не шаблон, не артефакт и не карточка.
+FOLDER_GUIDE = "README.md"
+
+
+def is_folder_guide(path) -> bool:
+    return os.path.basename(str(path)) == FOLDER_GUIDE
 
 # Визуально неразличимые буквы: латиница ↔ кириллица.
 LAT2CYR = {
@@ -814,13 +821,14 @@ def is_service(path: str) -> bool:
 # ------------------------------------------------------------------ обход и ссылки
 
 def walk_md(root: str, skip_service: bool = False, skip_archive: bool = False):
-    """Все markdown-файлы под корнем (пути в posix-виде)."""
+    """Все markdown-файлы под корнем (пути в posix-виде). Описание папки (`README.md` от
+    кита) не содержимое ни в одной папке — его обход не отдаёт никогда."""
     for dirpath, _, files in os.walk(root):
         p = dirpath.replace("\\", "/")
         if skip_archive and "/_archive" in p:
             continue
         for f in files:
-            if not f.endswith(".md"):
+            if not f.endswith(".md") or f == FOLDER_GUIDE:
                 continue
             full = os.path.join(dirpath, f).replace("\\", "/")
             if skip_service and is_service(full):
@@ -995,13 +1003,30 @@ ENV_FILE = ".env.aurora.local"       # файл настроек движка: �
 
 _REAL_KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Папка движка в проекте. До 1.158.0 движок жил в `.opencode/` — папке харнесса OpenCode;
+# теперь своя `.aurora/`, вне git: харнессы у каждого свои, а движок — копия кита.
+ENGINE_DIR = ".aurora"
+LEGACY_ENGINE_DIR = ".opencode"
+ENGINE_DIRS = (ENGINE_DIR, LEGACY_ENGINE_DIR)
+
+
+def engine_dir(project) -> str:
+    """Папка движка проекта (имя от корня проекта): `.aurora`, а у проекта, который ещё не
+    обновлялся с 1.158.0, — прежняя `.opencode`. Новый движок всегда в `.aurora`."""
+    root = str(project)
+    if os.path.isdir(os.path.join(root, ENGINE_DIR, "scripts")):
+        return ENGINE_DIR
+    if os.path.isdir(os.path.join(root, LEGACY_ENGINE_DIR, "scripts")):
+        return LEGACY_ENGINE_DIR
+    return ENGINE_DIR
+
 
 def kit_root():
     """Кит: сам скрипт в `scripts/` кита либо копия движка проекта с указателем на кит
-    (`.opencode/kit_path.txt`). Указателя нет или кит пропал — None."""
+    (`.aurora/kit_path.txt`). Указателя нет или кит пропал — None."""
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
-    if root.name == ".opencode":
+    if root.name in ENGINE_DIRS:
         ptr = root / "kit_path.txt"
         if ptr.is_file():
             kit = Path(ptr.read_text(encoding="utf-8").strip())
@@ -1688,7 +1713,7 @@ TEMPLATE_ONLY = "(только шаблон страницы — знания н
 TEMPLATE_MIN_FILES = 20      # абзац дословно в стольких файлах зеркала — шаблон
 TEMPLATE_MIN_CHARS = 25      # короче — «Нет», «---», заголовок таблицы: не абзац
 TEMPLATE_MIRRORS = ("Sources",)
-TEMPLATE_CACHE = os.path.join(".opencode", "cache", "template_blocks.json")
+TEMPLATE_CACHE = os.path.join(".aurora", "cache", "template_blocks.json")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
 _TEMPLATE_MEMO: dict = {}
 
@@ -1767,7 +1792,7 @@ def _mirror_files(root: str) -> list:
 def template_blocks(root: str = ".") -> dict:
     """{абзац: канонический источник} — шаблон пространства, общий на весь движок.
 
-    Считается по зеркалу один раз и кэшируется в `.opencode/cache/`: подпись — число, объём
+    Считается по зеркалу один раз и кэшируется в `.aurora/cache/`: подпись — число, объём
     и время правки файлов. Синк поменял страницу — словарь пересчитается сам.
     """
     import json

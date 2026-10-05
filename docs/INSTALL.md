@@ -46,7 +46,7 @@ python3 aurora.py new /absolute/path/to/your-project
 
 Команда делает четыре шага:
 
-1. **Раскладка** (`install_aurora.py`): папки по `structure_dirs.txt`, копия движка в `.opencode/`,
+1. **Раскладка** (`install_aurora.py`): папки по `structure_dirs.txt`, копия движка в `.aurora/`,
    `aurora.config.yaml`, образец секретов, `AGENTS.md`, служебные файлы `AuroraKnowledgeDB/meta/`,
    шаблоны и промпты, sync-навыки, правила `.gitignore`.
 2. **Настройка** (`aurora_setup.py`): интерактивные вопросы — имя и slug проекта (slug попадает в
@@ -89,7 +89,7 @@ python3 scripts/install_aurora.py \
 
 ```bash
 cd /path/to/your-project
-python3 .opencode/scripts/aurora_setup.py
+python3 .aurora/scripts/aurora_setup.py
 ```
 
 В панели: «Настройки проекта». Форма там спрашивает то же и пишет тем же скриптом; ниже — весь
@@ -100,32 +100,47 @@ python3 .opencode/scripts/aurora_setup.py
 ```text
 AGENTS.md                     правила для любого агента, открывшего папку
 aurora.config.yaml            настройки проекта (в git)
+aurora.update_ignore.txt      по желанию: пути, которые проект ведёт сам — update их не трогает (glob)
 aurora.env.local.example      образец → .env.aurora.local (вне git)
 .gitignore                    правила движка дописываются построчно, чужие строки не трогаются
-.cursor/rules/atlassian.mdc   ссылка на aurora.config.yaml для Cursor
-.opencode/
-  scripts/                    движок (копия из кита)
-  skills/aurora-vault/        навык и справочники процедур
-  skills/aurora-grill/        навык интервью для планирования
-  skills/confluence-sync-<Slug>/ · jira-export-<Slug>/   sync-навыки проекта
+.aurora/                      движок — копия кита, вне git (ставит и обновляет `aurora.py update`)
+  scripts/                    скрипты движка
+  skills/aurora-vault/ · aurora-grill/    навыки кита и справочники процедур
   connectors/                 манифесты подключённых модулей источников
   docs/                       правила базы знаний (едут с движком)
   reports/analyst/            дашборд эффективности аналитиков
   vendor/                     библиотека графа без сети
+  state/ · runs/ · context/ · cache/      состояние, прогоны, вложения, кэш
   structure_dirs.txt · commands.txt · moc_groups.txt · kit_path.txt
-  update_ignore.txt           по желанию: пути, которые проект ведёт сам (glob)
+.claude/skills/               навыки проекта — общие, в git: sync-навыки confluence-sync-<Slug>,
+                              jira-export-<Slug> и ваши
 Sources/                      зеркала подключённых модулей: Confluence, JIRA, Web
 Raw/{laws,contract,customer,project,meetings,examples,corrections}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
-                              _inbox, meta
+                              _inbox, meta (там же run_log.md — журнал запусков)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
 Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
+Scripts/                      скрипты проекта (свои обработчики, разовые миграции)
 Templates/ · TemplatesCommon/ · Prompts/ · Settings/
 start-aurora.command · start-aurora.bat      пусковые файлы
 ```
+
+В каждой папке схемы лежит **`README.md`** — короткое описание: для чего папка, что сюда класть
+и чего нет, кто пишет и можно ли заводить вложенные папки, не нарушая правил кита. Текст ведёт кит
+(блок между метками обновляется с движком), свои заметки пишут ниже метки конца. Движок такие файлы
+содержимым не считает: это не источник, не шаблон, не артефакт и не карточка.
+
+**Папки харнессов — у каждого свои.** `.cursor/`, `.opencode/`, `.codex/`, `.gemini/`, `.windsurf/`
+и `.claude/` (кроме `.claude/skills/`) закрыты `.gitignore`, и обновление кита в них не пишет:
+настройки, планы и кэш агента у каждого локальные. Общие у проекта — навыки в `.claude/skills/`.
+До 1.158.0 движок жил в `.opencode/` и ездил по git; `aurora.py update` переносит его в `.aurora/`
+сам: данные движка — туда же, журнал запусков — в `AuroraKnowledgeDB/meta/`, навыки проекта — в
+`.claude/skills/`, свои скрипты проекта — в `Scripts/`, файлы самого OpenCode остаются на месте.
+После переезда новому участнику достаточно склонировать проект и запустить
+`aurora.py update <проект> --apply` — движок встанет из кита.
 
 Список папок **фиксирован движком** (`structure_dirs.txt`) и одинаков во всех проектах Авроры;
 нестандартное лежит в `Workspaces/<задача>/`. Папка, нужная только этому проекту (наследие прежней
@@ -174,7 +189,7 @@ start-aurora.command · start-aurora.bat      пусковые файлы
 | `JIRA_PERSONAL_TOKEN` (или `JIRA_PAT`) | токен Jira Server / Data Center |
 | `JIRA_USER` + `JIRA_PASSWORD` | запасной вариант |
 
-Проверить принятие токена: `python3 .opencode/scripts/jira_export.py --limit 1`.
+Проверить принятие токена: `python3 .aurora/scripts/jira_export.py --limit 1`.
 
 ## Встроенный агент
 
@@ -351,9 +366,9 @@ MCP-серверам и инструментам нужен Pydantic AI («Ус�
 
 ```bash
 cd /path/to/your-project
-python3 .opencode/scripts/aurora_doctor.py --structure
-python3 .opencode/scripts/kb_lint.py --summary
-python3 .opencode/scripts/aurora_hooks.py --install    # храповик pre-commit
+python3 .aurora/scripts/aurora_doctor.py --structure
+python3 .aurora/scripts/kb_lint.py --summary
+python3 .aurora/scripts/aurora_hooks.py --install    # храповик pre-commit
 ```
 
 Ожидаемо: `doctor` — OK или только предупреждения (он проверяет конфиг, навыки, секреты в git, версию
@@ -367,7 +382,7 @@ python3 .opencode/scripts/aurora_hooks.py --install    # храповик pre-co
 
 1. [ ] Перезапустить `aurora_setup.py`, если какая-то настройка была пропущена.
 2. [ ] Заполнить `.env.aurora.local` (токены Confluence и Jira), завести провайдеров и роли в разделе «Модели» и проверить `kit:doctor`, `agent:ping`.
-3. [ ] Прочитать `AGENTS.md` и `.opencode/skills/aurora-vault/SKILL.md`.
+3. [ ] Прочитать `AGENTS.md` и `.aurora/skills/aurora-vault/SKILL.md`.
 4. [ ] Положить доказательства в `Raw/` (договор, ТЗ, расшифровки встреч).
 5. [ ] В панели запустить маршрут «Обновить базу» (сначала «Посмотреть»).
 6. [ ] Подключить базу ассистенту: `kit:mcp` печатает готовую строку для Claude Code, Cursor, OpenCode.
@@ -397,7 +412,7 @@ git -C /path/to/your-project add -A && git -C /path/to/your-project commit -m "U
 > каждый проект, который её делит.
 
 Выведенные из состава движка файлы `update` удаляет сам (список ведётся в манифесте). Свои пути
-можно оградить в `.opencode/update_ignore.txt`.
+можно оградить в `aurora.update_ignore.txt` в корне проекта.
 
 ## 8. Проект уже накопил кучу документов
 

@@ -26,7 +26,7 @@ project is deployed with defaults — finish the settings later with `python3 au
 
 A project folder with a **fixed layout** (the same in every Aurora project): `Sources/` (mirrors, written only by sync),
 `Raw/` (immutable evidence), `AuroraKnowledgeDB/` (the cards), `Artifacts/`, `Deliverables/`, `Workspaces/`, and
-`.opencode/` with a copy of the engine. Details: [INSTALL](../docs/en/INSTALL.md#2-what-appears-in-the-project).
+`.aurora/` with a copy of the engine. Details: [INSTALL](../docs/en/INSTALL.md#2-what-appears-in-the-project).
 
 ## The first fifteen minutes
 

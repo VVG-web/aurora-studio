@@ -24,8 +24,8 @@
 (`settings_block` манифеста), а не дублируются в реестре: разбирать `sync_roots`
 умеет только сам Confluence-модуль.
 
-  python3 .opencode/scripts/sources_registry.py           # что установлено и что подключено
-  python3 .opencode/scripts/sources_registry.py --json
+  python3 .aurora/scripts/sources_registry.py           # что установлено и что подключено
+  python3 .aurora/scripts/sources_registry.py --json
 
 Панель: `sync:sources`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -47,7 +47,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
         pass
 
 CONFIG = "aurora.config.yaml"
-PROJECT_DIR = ".opencode/connectors"    # манифесты, скопированные в проект
+PROJECT_DIR = ".aurora/connectors"    # манифесты, скопированные в проект
 KIT_DIR = "connectors"                  # манифесты в самом kit'е
 KINDS = ("wiki", "board")
 # Роль зеркала в доверии. `tasks` — трекер: статус задачи решает, доверять ли артефакту.
@@ -67,7 +67,7 @@ def kit_root() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
     if os.path.isdir(os.path.join(os.path.dirname(here), KIT_DIR)):
         return os.path.dirname(here)
-    mark = os.path.join(os.path.dirname(here), "kit_path.txt")   # .opencode/kit_path.txt
+    mark = os.path.join(os.path.dirname(here), "kit_path.txt")   # .aurora/kit_path.txt
     if os.path.isfile(mark):
         path = open(mark, encoding="utf-8").read().strip()
         if os.path.isdir(os.path.join(path, KIT_DIR)):

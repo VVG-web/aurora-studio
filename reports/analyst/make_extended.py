@@ -6,7 +6,7 @@
 имя, год, адреса Jira и Confluence, пути к ростеру и событиям — приходит из
 `aurora.config.yaml` через `paths.py`; в самом генераторе проектных констант нет.
 
-  python3 .opencode/reports/analyst/make_extended.py
+  python3 .aurora/reports/analyst/make_extended.py
 
 Панель: `ops:report`
 """
@@ -202,7 +202,7 @@ DATA = {
     # Готовая команда пересборки: вставляется в терминал, когда дашборд открыт
     # из файла и кнопка не может ничего запустить сама. Называем команду так, как
     # она называется в панели и в реестре, а не путём к скрипту.
-    "rebuild_cmd": "python3 .opencode/scripts/report_analyst.py --skip-fetch",
+    "rebuild_cmd": "python3 .aurora/scripts/report_analyst.py --skip-fetch",
     # Файлы настроек: путь от корня проекта (по нему файл открывается в браузере,
     # если serve_dashboard.py не запущен и дашборд отдаёт обычная статика) и папка —
     # её показывает кнопка «Папка».
@@ -820,7 +820,7 @@ function setCfgStatus(html, kind) {
   cfgStatus.className = 'note' + (kind ? ' ' + kind : '');
 }
 
-const SERVE_CMD = 'python3 .opencode/tmp_eff/serve_dashboard.py --html';
+const SERVE_CMD = 'python3 .aurora/tmp_eff/serve_dashboard.py --html';
 const REBUILD_CMD = DATA.rebuild_cmd;
 const noServer = e => /failed to fetch|networkerror|load failed/i.test(e.message || '');
 

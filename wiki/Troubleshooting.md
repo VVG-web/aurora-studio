@@ -19,7 +19,7 @@ Engine scripts explain the reason instead of just failing. The common cases:
 
 | Symptom | Cause and fix |
 |---|---|
-| **"no token — set CONFLUENCE_PERSONAL_TOKEN"** | Sync scripts go to Confluence and Jira directly; your editor's MCP does not help. Copy `aurora.env.local.example` to `.env.aurora.local` and fill it in. Check: `python3 .opencode/scripts/jira_export.py --limit 1`. |
+| **"no token — set CONFLUENCE_PERSONAL_TOKEN"** | Sync scripts go to Confluence and Jira directly; your editor's MCP does not help. Copy `aurora.env.local.example` to `.env.aurora.local` and fill it in. Check: `python3 .aurora/scripts/jira_export.py --limit 1`. |
 | **A sync skill looks at the wrong space or JQL** | The values live in `aurora.config.yaml`, not in the skill: edit the config or run `aurora_setup.py` again. |
 | **Timeouts, half the pages missing** | The pages the walk did not reach stay in the state; run the sync again. `--prune` refuses to delete after an export with errors. |
 | **A page moved in Confluence** | `kit:remap-sources`, then `kb:repair --gone-sources`. |

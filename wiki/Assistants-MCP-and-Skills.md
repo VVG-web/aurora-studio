@@ -37,12 +37,12 @@ machine. The format is the same for all clients:
 ```json
 {"mcpServers": {
   "aurora-alpha": {"command": "python3",
-                   "args": ["<project>/.opencode/scripts/aurora_mcp.py", "--project", "<project>"]}}}
+                   "args": ["<project>/.aurora/scripts/aurora_mcp.py", "--project", "<project>"]}}}
 ```
 
 Servers of the machine (shared by all projects) live in the kit's `local/mcp.json`; a project's own in the project's
 `mcp.json`. The panel's **Project settings** edits both; secrets never go into a project's `mcp.json` (it goes to git).
-Selftest without an assistant: `python3 .opencode/scripts/aurora_mcp.py --selftest`.
+Selftest without an assistant: `python3 .aurora/scripts/aurora_mcp.py --selftest`.
 
 ## Skills
 

@@ -97,9 +97,9 @@ connectors/<id>/
 ## Как модуль попадает в проект
 
 1. Папка кладётся в `connectors/` kit'а.
-2. `aurora.py update <проект> --apply` разносит манифест в `.opencode/connectors/<id>.json`,
-   скрипт — в `.opencode/scripts/`, а тело sync-скилла — в существующие папки скиллов
-   проекта (перезаписи нет: kit-версия ложится рядом как `.new`).
+2. `aurora.py update <проект> --apply` разносит манифест в `.aurora/connectors/<id>.json`,
+   скрипт — в `.aurora/scripts/`, а тело sync-скилла — в существующие папки скиллов
+   проекта `.claude/skills/<скилл>-<проект>/` (перезаписи нет: kit-версия ложится рядом как `.new`).
 3. Модуль подключается к проекту в `aurora.config.yaml`:
 
 ```yaml
@@ -112,7 +112,7 @@ sources:
    То же самое делает панель: «Зеркала» → «Модули источников» → отметить и сохранить.
 4. Папку зеркала заводит `update` (или `--structure-only`).
 
-Проверить, что получилось: `python3 .opencode/scripts/sources_registry.py`.
+Проверить, что получилось: `python3 .aurora/scripts/sources_registry.py`.
 
 ## Отключение
 

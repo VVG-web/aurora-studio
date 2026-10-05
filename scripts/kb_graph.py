@@ -23,12 +23,12 @@
 `RU.PRJ.DOC.UI-003` → `UI`, `ER.AS.Dop.Id` → `ER`. Проект называет свои артефакты сам,
 и навязывать ему чужую таксономию незачем.
 
-  python3 .opencode/scripts/kb_graph.py                 # отчёт: граф и разрывы
-  python3 .opencode/scripts/kb_graph.py --write         # + MOC/Связи.md в базе знаний
-  python3 .opencode/scripts/kb_graph.py --json links.json
-  python3 .opencode/scripts/kb_graph.py --story 4.4.2   # одна история целиком
-  python3 .opencode/scripts/kb_graph.py --cards         # что добавится в related: карточек
-  python3 .opencode/scripts/kb_graph.py --cards --apply # записать связи в карточки
+  python3 .aurora/scripts/kb_graph.py                 # отчёт: граф и разрывы
+  python3 .aurora/scripts/kb_graph.py --write         # + MOC/Связи.md в базе знаний
+  python3 .aurora/scripts/kb_graph.py --json links.json
+  python3 .aurora/scripts/kb_graph.py --story 4.4.2   # одна история целиком
+  python3 .aurora/scripts/kb_graph.py --cards         # что добавится в related: карточек
+  python3 .aurora/scripts/kb_graph.py --cards --apply # записать связи в карточки
 
 Связи живут в зеркале, а работают в базе: карточка знает свой `source:`, страница знает
 свои ключи — значит связь между карточками выводится, а не выдумывается. `--cards`
@@ -1034,7 +1034,7 @@ def write_insights(path: str, done: dict) -> None:
 
 
 def _cytoscape_js() -> str:
-    """Библиотека рисования графа: в проекте — `.opencode/vendor/`, в ките — рядом с панелью."""
+    """Библиотека рисования графа: в проекте — `.aurora/vendor/`, в ките — рядом с панелью."""
     here = os.path.dirname(os.path.abspath(__file__))
     for cand in (os.path.join(here, "..", "vendor", "cytoscape.min.js"),
                  os.path.join(here, "..", "cockpit", "vendor", "cytoscape", "dist",
@@ -1351,7 +1351,7 @@ def card_stem_safe(name: str) -> str:
 
 # Отпечаток входа `--cards`: база и зеркала, по которым считаются связи. Совпал с прошлым
 # записанным проходом — связи в карточках уже те, что дал бы новый счёт.
-CARDS_STAMP = os.path.join(".opencode", "state", "links-cards.json")
+CARDS_STAMP = os.path.join(".aurora", "state", "links-cards.json")
 
 
 def inputs_stamp(*roots: str) -> str:

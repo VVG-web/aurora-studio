@@ -4,7 +4,7 @@
 человека, разбирают упоминания здесь, а не каждый по-своему:
 
 - `@путь` или `@"путь с пробелами"` — файл или папка проекта: текст идёт в задание модели;
-- вложение — внешний текстовый файл, сохранённый панелью в `.opencode/context/<день>/`;
+- вложение — внешний текстовый файл, сохранённый панелью в `.aurora/context/<день>/`;
 - `/имя` — навык (SKILL.md): проект → кит → `~/.claude/skills`; его метод идёт в задание;
 - `@имя` MCP-сервера — сервер подключается к прогону сразу, остальные — по требованию.
 
@@ -19,7 +19,7 @@ import shutil
 import time
 from pathlib import Path
 
-CONTEXT_DIR = Path(".opencode") / "context"   # вложения запросов; закрыто .gitignore
+CONTEXT_DIR = Path(".aurora") / "context"   # вложения запросов; закрыто .gitignore
 KEEP_DAYS = 14                                 # дольше вложения не живут: это не архив
 FILE_CAP = 60_000                              # знаков с одного файла
 TOTAL_CAP = 160_000                            # знаков на все файлы запроса
@@ -140,7 +140,7 @@ def read_context(cwd: str, paths: list) -> tuple:
 
 
 def save_attachment(cwd: str, name: str, data: bytes) -> dict:
-    """Сохранить вложение в `.opencode/context/<день>/`. → {path} или {error}."""
+    """Сохранить вложение в `.aurora/context/<день>/`. → {path} или {error}."""
     base = os.path.basename(str(name or "").replace("\\", "/")).strip()
     base = re.sub(r"[^\w.\- ]+", "_", base)[:120].strip(" .") or "вложение.txt"
     if not is_text_name(base):
@@ -177,9 +177,15 @@ def trim_context(cwd: str, keep_days: int = KEEP_DAYS) -> int:
 
 
 def skill_dirs(cwd: str, kit: str = "") -> list:
+    """Где искать навык, по старшинству: навыки проекта (`.claude/skills/` — общие, в git;
+    `.agents/skills/` — нейтральная папка других агентов), копия движка (`.aurora/skills`,
+    до 1.158.0 — `.opencode/skills`), кит, личные навыки машины."""
     kit = kit or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return [os.path.join(cwd, ".opencode", "skills"), os.path.join(kit, "skills"),
-            os.path.join(os.path.expanduser("~"), ".claude", "skills")]
+    home = os.path.expanduser("~")
+    return [os.path.join(cwd, ".claude", "skills"), os.path.join(cwd, ".agents", "skills"),
+            os.path.join(cwd, ".aurora", "skills"), os.path.join(cwd, ".opencode", "skills"),
+            os.path.join(kit, "skills"), os.path.join(home, ".claude", "skills"),
+            os.path.join(home, ".agents", "skills")]
 
 
 def find_skill(name: str, cwd: str, kit: str = "") -> tuple:

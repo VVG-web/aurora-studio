@@ -5,9 +5,9 @@
 ради чего всё затевалось: агент доводит задачу до конца сам, а достижение цели проверяет
 не он, а команда движка.
 
-  python3 .opencode/scripts/agent_runner.py --task aliases          # что будет сделано
-  python3 .opencode/scripts/agent_runner.py --task aliases --apply  # с записью в базу
-  python3 .opencode/scripts/agent_runner.py --task build --partition 1 --apply --critic
+  python3 .aurora/scripts/agent_runner.py --task aliases          # что будет сделано
+  python3 .aurora/scripts/agent_runner.py --task aliases --apply  # с записью в базу
+  python3 .aurora/scripts/agent_runner.py --task build --partition 1 --apply --critic
 
 Две задачи, устроенные одинаково:
 
@@ -208,7 +208,8 @@ def git(*args: str, cwd: str = ".") -> tuple:
     return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
 
 
-ENGINE_JOURNALS = {".opencode/run_log.md"}
+# Журнал запусков пишет панель; до 1.158.0 он лежал в папке движка.
+ENGINE_JOURNALS = {"AuroraKnowledgeDB/meta/run_log.md", ".opencode/run_log.md"}
 
 
 def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
@@ -222,7 +223,8 @@ def checkpoint(cwd: str, task: str, enabled: bool) -> dict:
     rc, _out, _err = git("rev-parse", "--is-inside-work-tree", cwd=cwd)
     if rc != 0:
         return {"ok": False, "why": "проект не под git — отката не будет", "sha": ""}
-    dirty = git("status", "--porcelain", cwd=cwd)[1]
+    # `-uall` — файлы поштучно: новая папка иначе видна одной строкой, и журнал в ней не узнать.
+    dirty = git("status", "--porcelain", "-uall", cwd=cwd)[1]
     # Журнал запусков панели — не работа человека: он меняется после каждого шага, и
     # чекпойнт перед каждым agent:* коммитил только его («работа человека
     # зафиксирована» — на PRJ-A 22.09.2026 четверть коммитов прогона). Он уйдёт со
@@ -275,7 +277,7 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     allowed, why = AG.write_allowed(script, args)
     if not allowed:
         return {"ok": False, "refused": why, "rc": None, "out": ""}
-    path = os.path.join(cwd, ".opencode", "scripts", script)
+    path = os.path.join(cwd, ".aurora", "scripts", script)
     if not os.path.isfile(path):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
     p = subprocess.run([sys.executable, path, *args], cwd=cwd,
@@ -301,7 +303,7 @@ _DEFAULT_CARD_SECTION = "Concepts"
 
 def _bp_path(cwd: str) -> str:
     """Тот же файл, что выбрал бы run_command: движок проекта, затем кит."""
-    path = os.path.join(cwd, ".opencode", "scripts", "build_plan.py")
+    path = os.path.join(cwd, ".aurora", "scripts", "build_plan.py")
     if not os.path.isfile(path):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_plan.py")
     return path
@@ -349,7 +351,8 @@ def _bp_flag(args: list, flag: str, default: str = "") -> str:
     return default
 
 
-LOCK = os.path.join(".opencode", "state", "agent.lock")
+LOCK = os.path.join(".aurora", "state", "agent.lock")
+LOCK_LEGACY = os.path.join(".opencode", "state", "agent.lock")
 
 
 def writing_lock(cwd: str, task: str):
@@ -366,13 +369,18 @@ def writing_lock(cwd: str, task: str):
     держит — иначе прогон, убитый по Ctrl+C, запирал бы базу навсегда.
     """
     path = os.path.join(cwd, LOCK)
-    try:
-        with open(path, encoding="utf-8") as f:
-            held = json.load(f)
-        pid = int(held.get("pid") or 0)
-        alive = pid > 0 and pid_alive(pid)
-    except (OSError, ValueError, TypeError):
-        alive, held = False, {}
+    # Проект, переезжающий с 1.158: прогон прежнего движка держит замок в `.opencode/state`.
+    alive, held = False, {}
+    for probe in (path, os.path.join(cwd, LOCK_LEGACY)):
+        try:
+            with open(probe, encoding="utf-8") as f:
+                held = json.load(f)
+            pid = int(held.get("pid") or 0)
+            alive = pid > 0 and pid_alive(pid)
+        except (OSError, ValueError, TypeError):
+            alive, held = False, {}
+        if alive:
+            break
     if alive:
         return False, (f"уже идёт пишущий прогон: {held.get('task')} "
                        f"(pid {held.get('pid')}, с {local_view(held.get('since'))})")
@@ -3447,7 +3455,7 @@ PROMPT_TEMPLATE_KINDS = """Ниже — абзацы и строки, котор
 
 Ответь строго JSON: {{"service": [номера служебных]}}"""
 
-TEMPLATE_KINDS = os.path.join(".opencode", "cache", "template_kinds.json")
+TEMPLATE_KINDS = os.path.join(".aurora", "cache", "template_kinds.json")
 _SERVICE_BLOCKS: dict = {}
 
 
@@ -4725,7 +4733,7 @@ def grill_method(cwd: str = "") -> str:
     в панели, и ассистент в чате. Копия в промпте разошлась бы с ней на первой же правке,
     и никто бы не заметил, какая из двух настоящая.
     """
-    for base in (os.path.join(cwd, ".opencode", "skills"),
+    for base in (os.path.join(cwd, ".aurora", "skills"),
                  os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                               "skills")):
         path = os.path.join(base, "aurora-grill", "SKILL.md")
@@ -6625,7 +6633,7 @@ def main() -> int:
                     help="хватит расспросов: строить план по тому, что известно")
     ap.add_argument("--context", metavar="ПУТЬ", action="append", default=[],
                     help="файл или папка проекта в контекст задачи (для --task make); "
-                         "повторяется. Вложения панель кладёт в .opencode/context/")
+                         "повторяется. Вложения панель кладёт в .aurora/context/")
     ap.add_argument("--thread", metavar="ID", default="",
                     help="продолжить разговор: уточняющий вопрос с контекстом прошлых "
                          "ответов (id — имя файла в meta/ask/ без .md)")

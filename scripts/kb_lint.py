@@ -11,7 +11,7 @@
      с 1.44.0 здесь, а не в отдельном `kb:classify`: проверка карточек живёт в одном месте.
 
 Легаси-карточки без status валидны (= imported) и не флагуются за отсутствие полей.
-Запуск из корня репозитория: python3 .opencode/scripts/kb_lint.py [--summary]
+Запуск из корня репозитория: python3 .aurora/scripts/kb_lint.py [--summary]
 Выход: код 0 если ошибок нет, 1 если есть (пригодно для pre-commit/CI).
 
 Панель: `kb:lint`
@@ -468,7 +468,7 @@ def main():
         re.compile(r"(?i)ATLASSIAN_API_TOKEN\s*=\s*\S+"),
         re.compile(r"(?i)password\s*[:=]\s*[^\s#]+"),
     ]
-    for scan_root in (".opencode/skills", ".cursor/rules"):
+    for scan_root in (".claude/skills", ".agents/skills"):
         if not os.path.isdir(scan_root):
             continue
         for dirpath, _, files in os.walk(scan_root):

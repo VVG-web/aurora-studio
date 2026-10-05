@@ -58,7 +58,7 @@ Transform imperative tasks into declarative goals:
 
 # {{PROJECT_NAME}} Repository — Knowledge Framework «Аврора»
 
-Это **база знаний проекта {{PROJECT_NAME}}** для команды аналитиков: Obsidian-markdown в git, обслуживается фреймворком «Аврора». Единственный инструмент управления базой — skill **`/aurora-vault`** (`.opencode/skills/aurora-vault/SKILL.md` — прочти его первым, там карта папок, команды и инварианты).
+Это **база знаний проекта {{PROJECT_NAME}}** для команды аналитиков: Obsidian-markdown в git, обслуживается фреймворком «Аврора». Единственный инструмент управления базой — skill **`/aurora-vault`** (`.aurora/skills/aurora-vault/SKILL.md` — прочти его первым, там карта папок, команды и инварианты).
 
 **Настройки проекта:** `aurora.config.yaml` (space, JQL, sync roots, recommended skills). Секреты — только в `.env.aurora.local` (не в git) или в личном Cursor MCP.
 
@@ -78,7 +78,7 @@ Transform imperative tasks into declarative goals:
 
 ## Ключевые правила для любого агента
 
-> Полный список инвариантов — в `.opencode/skills/aurora-vault/SKILL.md` (раздел
+> Полный список инвариантов — в `.aurora/skills/aurora-vault/SKILL.md` (раздел
 > «Invariants»). Ниже — то, что нужно помнить до открытия скилла; при расхождении
 > прав SKILL.md.
 
@@ -87,7 +87,7 @@ Transform imperative tasks into declarative goals:
 3. **Ничего не удаляй**: устаревшее → `supersede` (deprecated + `_archive/`). Decision Records неизменяемы.
 4. **Артефакт ≠ знание**: результаты генерации в `Artifacts/`, знание попадает в базу только из источников через разбор (`kb:build`, `agent:build`), а не копированием из артефакта.
 5. **Именование** — `AuroraKnowledgeDB/meta/conventions.md` (слои PascalCase, категории lowercase, артефакты `YYYY-MM-DD_<тип>_<объект>.md`).
-6. **Структура папок фиксирована движком** (`.opencode/structure_dirs.txt`) и одинакова во всех проектах Авроры. Не создавай новых папок верхнего уровня, разделов `AuroraKnowledgeDB/` и типов `Artifacts/<тип>/`. Всё нестандартное — в `Workspaces/<задача>/`. Проверка: `python3 .opencode/scripts/aurora_doctor.py --structure`.
+6. **Структура папок фиксирована движком** (`.aurora/structure_dirs.txt`) и одинакова во всех проектах Авроры. Не создавай новых папок верхнего уровня, разделов `AuroraKnowledgeDB/` и типов `Artifacts/<тип>/`. Всё нестандартное — в `Workspaces/<задача>/`. Проверка: `python3 .aurora/scripts/aurora_doctor.py --structure`. В каждой папке схемы лежит `README.md` — для чего папка, что туда класть и можно ли заводить подпапки: прочти его, прежде чем класть файл или создавать папку. Свои скрипты проекта — в `Scripts/`, навыки проекта — в `.claude/skills/`; движок (`.aurora/`) и папки харнессов (`.cursor/`, `.opencode/`, `.claude/` кроме `skills/`) — вне git, у каждого свои.
 7. **Массовую механику делай скриптом, не обходом базы:** `kb_lint.py` (найти) → `kb_fix.py` (починить) → `kb_trust.py` (пересчитать доверие) → `sync_audit.py` (целостность зеркал) → `aurora_stats.py` (числа). Модель интерпретирует отчёт и принимает решения, требующие суждения.
 8. **Sync:** Confluence — skill `confluence-sync-{{PROJECT_SLUG}}`; Jira — `jira-export-{{PROJECT_SLUG}}`; параметры — **`aurora.config.yaml`**; пишут только в `Sources/`.
 9. **Секреты:** не коммитить Atlassian token/password; каждый пользователь логинится в MCP своим аккаунтом.
@@ -103,7 +103,7 @@ Transform imperative tasks into declarative goals:
    - буквы в составной форме NFC: macOS умеет хранить «й» и «ё» разложенными, и Linux читает
      такое имя как другое.
 
-   Проверка — `python3 .opencode/scripts/aurora_doctor.py` (строки «имена:»); починка — `python3 .opencode/scripts/kb_names.py --apply` (команда `kb:names`): пути зеркала Confluence, имена карточек со ссылками, записи git, различимые только регистром.
+   Проверка — `python3 .aurora/scripts/aurora_doctor.py` (строки «имена:»); починка — `python3 .aurora/scripts/kb_names.py --apply` (команда `kb:names`): пути зеркала Confluence, имена карточек со ссылками, записи git, различимые только регистром.
 
 ## Конфиденциальность (осторожный дефолт)
 
@@ -116,12 +116,12 @@ Transform imperative tasks into declarative goals:
 
 - Проектные настройки Atlassian/skills: `aurora.config.yaml`
 - Локальные секреты (не в git): `.env.aurora.local` ← `aurora.env.local.example`
-- Онбординг-проверка: `python3 .opencode/scripts/aurora_doctor.py`
-- Схема frontmatter карточек: `.opencode/skills/aurora-vault/references/frontmatter.md`
+- Онбординг-проверка: `python3 .aurora/scripts/aurora_doctor.py`
+- Схема frontmatter карточек: `.aurora/skills/aurora-vault/references/frontmatter.md`
 - Процедуры команд (build, verify, diff, garden, spec, trace…): `references/workflows.md`
 - Механические процедуры (repair, dedupe, queue, sync-audit, stats): `references/maintenance.md`
 - Политика контекста для LLM: `references/retrieval.md` (+ лог употребления `meta/usage.log`)
-- Схема структуры папок (фиксирована): `.opencode/structure_dirs.txt`
+- Схема структуры папок (фиксирована): `.aurora/structure_dirs.txt`
 - Golden questions: `AuroraKnowledgeDB/meta/golden_questions.md`
 - Метрики: `AuroraKnowledgeDB/meta/metrics.md`
 - Релизы (`applies_to`): `AuroraKnowledgeDB/meta/releases.md`

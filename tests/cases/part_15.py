@@ -266,7 +266,7 @@ def test_wiki_pages_only_name_commands_and_paths_that_exist(tmp: Path):
                                        KIT / "cockpit" / base, KIT / "tests" / base)
                            if c.is_file()), None)
             if script is None:
-                continue                      # `.opencode/scripts/…` — путь внутри проекта
+                continue                      # `.aurora/scripts/…` — путь внутри проекта
             source = script.read_text(encoding="utf-8")
             if script.name == "run_tests.py":        # его флаги разбирает harness.py
                 source += (KIT / "tests" / "harness.py").read_text(encoding="utf-8")

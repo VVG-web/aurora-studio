@@ -10,13 +10,13 @@
 Два режима на одном движке:
 
   одна страница — независимая оценка и подсказки автору, что исправить:
-    python3 .opencode/scripts/review_run.py --page <адрес или номер>            # отчёт в вывод
-    python3 .opencode/scripts/review_run.py --page <адрес или номер> --apply    # и в Artifacts/reviews/
+    python3 .aurora/scripts/review_run.py --page <адрес или номер>            # отчёт в вывод
+    python3 .aurora/scripts/review_run.py --page <адрес или номер> --apply    # и в Artifacts/reviews/
 
   пакет — ретроспектива: сотни страниц, сводка, продолжение после обрыва:
-    python3 .opencode/scripts/review_run.py --cql 'space = X and title ~ "US-*"' --name retro-2025
-    python3 .opencode/scripts/review_run.py --cql '...' --name retro-2025 --as-of 2025-12-31 --apply
-    python3 .opencode/scripts/review_run.py --summary Artifacts/reviews/batch_retro-2025
+    python3 .aurora/scripts/review_run.py --cql 'space = X and title ~ "US-*"' --name retro-2025
+    python3 .aurora/scripts/review_run.py --cql '...' --name retro-2025 --as-of 2025-12-31 --apply
+    python3 .aurora/scripts/review_run.py --summary Artifacts/reviews/batch_retro-2025
 
 Без `--apply` пакет ничего не вызывает: печатает, что будет оценено и сколько это вызовов
 модели. Повторный запуск с тем же `--name` продолжает с места: оценённые страницы
@@ -53,7 +53,7 @@ from aurora_common import utc_label, utc_slug  # noqa: E402 — время од�
 
 TEMPLATE = "review_v2.0.md"
 REVIEWS = "Artifacts/reviews"
-CACHE = ".opencode/state/review_cache"   # служебное: закрыто .gitignore, в историю проекта не идёт
+CACHE = ".aurora/state/review_cache"   # служебное: закрыто .gitignore, в историю проекта не идёт
 WEIGHT = {"критичный": 5, "важный": 3, "мелкий": 1}
 SEV_KEY = {"критичный": "critical", "важный": "major", "мелкий": "minor"}
 ANSWERS = ("yes", "no", "na", "unknown")

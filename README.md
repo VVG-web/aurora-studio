@@ -123,7 +123,7 @@ your-project/
 ├── Deliverables/             work/ (drafts) · released/ (frozen) · _archive/
 ├── Workspaces/               sandboxes for large tasks
 ├── Templates/ · TemplatesCommon/ · Prompts/ · Settings/
-└── .opencode/                the engine copy: scripts, skills, schema, kit_path.txt
+└── .aurora/                the engine copy: scripts, skills, schema, kit_path.txt
 ```
 
 ## Documentation

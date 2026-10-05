@@ -26,7 +26,7 @@ python3 aurora.py cockpit                        # открыть локальн
 
 Папку проекта с **фиксированной раскладкой** (одинаковой во всех проектах Авроры): `Sources/` (зеркала, пишутся только
 синком), `Raw/` (неизменяемые доказательства), `AuroraKnowledgeDB/` (карточки), `Artifacts/`, `Deliverables/`,
-`Workspaces/` и `.opencode/` с копией движка. Подробности: [INSTALL](../../docs/INSTALL.md).
+`Workspaces/` и `.aurora/` с копией движка. Подробности: [INSTALL](../../docs/INSTALL.md).
 
 ## Первые пятнадцать минут
 

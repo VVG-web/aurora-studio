@@ -6,11 +6,11 @@
 с какой версии) и сами скрипты — модификаторы берутся живьём из `--help`, поэтому
 список флагов не может разойтись с кодом.
 
-  python3 .opencode/scripts/kit_commands.py                  # весь справочник
-  python3 .opencode/scripts/kit_commands.py kb                # один неймспейс
-  python3 .opencode/scripts/kit_commands.py --search зеркал   # поиск по описанию
-  python3 .opencode/scripts/kit_commands.py --md docs/commands.md
-  python3 .opencode/scripts/kit_commands.py --check           # реестр против движка
+  python3 .aurora/scripts/kit_commands.py                  # весь справочник
+  python3 .aurora/scripts/kit_commands.py kb                # один неймспейс
+  python3 .aurora/scripts/kit_commands.py --search зеркал   # поиск по описанию
+  python3 .aurora/scripts/kit_commands.py --md docs/commands.md
+  python3 .aurora/scripts/kit_commands.py --check           # реестр против движка
 
 Панель: `kit:list`
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -325,7 +325,7 @@ def where(row: dict) -> str:
     impl = row["impl"]
     if impl.endswith(".md"):
         return f"skills/aurora-vault/references/{impl}"
-    return f".opencode/scripts/{impl}"
+    return f".aurora/scripts/{impl}"
 
 
 def render_text(rows: list) -> str:
@@ -349,7 +349,7 @@ def render_md(rows: list, version: str) -> str:
          f"Справочник собран автоматически (`kit:list`) для версии движка **{version}**.",
          "Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;",
          "остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:",
-         "он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.", "",
+         "он перезаписывается командой `python3 .aurora/scripts/kit_commands.py --md`.", "",
          "Короткие имена в скобках — исторические алиасы, работают всегда.",
          "«Исполнитель» показывает, где проходит граница: **скрипт** — детерминированная",
          "механика, её результат воспроизводим; **модель** — работа со смыслом;",

@@ -6,8 +6,8 @@
 карточкам класс. На каждом прогоне заново — статус задачи в Jira меняется, и база обязана
 меняться вместе с ним.
 
-  python3 .opencode/scripts/kb_trust.py           # что изменится
-  python3 .opencode/scripts/kb_trust.py --apply   # записать классы
+  python3 .aurora/scripts/kb_trust.py           # что изменится
+  python3 .aurora/scripts/kb_trust.py --apply   # записать классы
 
 Четыре класса источника и что они дают карточке:
 

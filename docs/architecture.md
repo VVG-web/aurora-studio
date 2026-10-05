@@ -12,7 +12,7 @@
 - **Кит** (этот репозиторий) — движок, навыки, шаблоны, панель. Ставится один раз на машину,
   обновляется `git pull` или кнопкой в панели.
 - **Проект** — отдельный git-репозиторий с базой знаний. Он **получает копию движка** в
-  `.opencode/` и живёт дальше сам: может отстать от кита, может обновиться по команде.
+  `.aurora/` и живёт дальше сам: может отстать от кита, может обновиться по команде.
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ flowchart LR
   subgraph PRJ["Проект (свой git-репозиторий)"]
     direction TB
     CFG["aurora.config.yaml<br>.env.aurora.local"]
-    ENG[".opencode/<br>scripts · skills · connectors<br>structure_dirs.txt · commands.txt"]
+    ENG[".aurora/<br>scripts · skills · connectors<br>structure_dirs.txt · commands.txt"]
     DATA["Sources · Raw · AuroraKnowledgeDB<br>Artifacts · Deliverables · Workspaces"]
     AG["AGENTS.md"]
   end
@@ -52,9 +52,9 @@ flowchart LR
   `Sources/`, `Deliverables/`, `Artifacts/`, `Workspaces/` не трогаются никогда.
 - Шаблоны (`Templates/`, `Prompts/`, `TemplatesCommon/`) идут правилом **seed**: файл проекта не
   затирается, новая версия кита ложится рядом как `<файл>.new` для ручного сравнения.
-- Отказаться от обновления отдельных путей можно в `.opencode/update_ignore.txt` (glob-шаблоны).
+- Отказаться от обновления отдельных путей можно в `aurora.update_ignore.txt` в корне проекта (glob-шаблоны).
 - Версия движка в проекте записана в `AuroraKnowledgeDB/meta/aurora_version.txt`; путь к ките —
-  в `.opencode/kit_path.txt`. Копия `aurora_update.py` в проекте находит кит по нему.
+  в `.aurora/kit_path.txt`. Копия `aurora_update.py` в проекте находит кит по нему.
 - Если навык проекта — символическая ссылка на общий каталог, `update` предупредит: запись
   попадёт в общую цель, и обновится каждый проект, который её делит.
 
@@ -63,7 +63,7 @@ flowchart LR
 | Строка в `engine_manifest.txt` | Что делает `update` |
 |---|---|
 | `src => dst` | перезаписывает файл 1:1 |
-| `(connectors)` | кладёт манифест модуля в `.opencode/connectors/`, скрипт запуска — в `.opencode/scripts/`, тело sync-навыка размножает по навыкам проекта; **тело не перезаписывает** — новая версия рядом как `.new` |
+| `(connectors)` | кладёт манифест модуля в `.aurora/connectors/`, скрипт запуска — в `.aurora/scripts/`, тело sync-навыка размножает по навыкам проекта; **тело не перезаписывает** — новая версия рядом как `.new` |
 | `(agents) AGENTS.md` | регенерирует из шаблона, подставляя имя, slug и ключи из `aurora.config.yaml` |
 | `(seed) dir` | не перезаписывает; новое и изменённое кладёт как `.new` |
 | `(launcher)` | пусковые файлы в корне проекта |
@@ -285,7 +285,7 @@ git-guard. Он читает, правит движок. Готовые стро
 | `AuroraKnowledgeDB/meta/graphify/` | граф базы для MCP и выгрузок | нет (производная) |
 | `AuroraKnowledgeDB/meta/embeddings.*` | семантический индекс | нет (пересобирается) |
 | `Sources/<Зеркало>/sync_state.md`, `update_log.md` | состояние зеркала | да |
-| `.opencode/cache/`, `runs/`, `state/`, `context/` | кэши, архив прогонов панели, состояние маршрутов, вложения | нет |
+| `.aurora/cache/`, `runs/`, `state/`, `context/` | кэши, архив прогонов панели, состояние маршрутов, вложения | нет |
 
 ## 8. Тесты
 

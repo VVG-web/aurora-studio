@@ -12,9 +12,9 @@
 сданный заказчику документ, собранный на карточке, которая изменилась или оказалась
 непроверенной.
 
-  python3 .opencode/scripts/kb_trace.py --impact Основной-объект
-  python3 .opencode/scripts/kb_trace.py --explain Deliverables/work/ОПЗ_v1.md
-  python3 .opencode/scripts/kb_trace.py --requirements
+  python3 .aurora/scripts/kb_trace.py --impact Основной-объект
+  python3 .aurora/scripts/kb_trace.py --explain Deliverables/work/ОПЗ_v1.md
+  python3 .aurora/scripts/kb_trace.py --requirements
 
 Панель: `ops:impact` (флаги --impact) · `ops:trace` (флаги --requirements)
 В отчётах и рекомендациях называйте эту команду так, как она называется в панели
@@ -317,7 +317,7 @@ def requirements() -> int:
         for dp, _, _ in os.walk("AuroraKnowledgeDB")) else "`Raw/contract/`"
     hdr = (
         "# Трассировка требований — сквозная таблица\n\n"
-        f"> 🤖 **Генерируется** скриптом `.opencode/scripts/aurora_trace.py` ({TODAY}). "
+        f"> 🤖 **Генерируется** скриптом `.aurora/scripts/aurora_trace.py` ({TODAY}). "
         "Ручные правки будут потеряны — меняйте карточки требований (поле `epics:`).\n"
         f"> Источники: договор и ТЗ проекта (реестр — {registry}, решение об источнике — DR); "
         "реестр историй — `Raw/project/Activity_Epic_US.md`.\n\n"

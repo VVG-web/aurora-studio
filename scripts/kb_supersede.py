@@ -8,9 +8,9 @@
 
 Всё перечисленное — механика, решение «это устарело» принимает человек.
 
-  python3 .opencode/scripts/kb_supersede.py <старая> <преемник>          # что будет сделано
-  python3 .opencode/scripts/kb_supersede.py <старая> <преемник> --apply
-  python3 .opencode/scripts/kb_supersede.py <старая> <преемник> --dr DR-0007-выбор-шины --apply
+  python3 .aurora/scripts/kb_supersede.py <старая> <преемник>          # что будет сделано
+  python3 .aurora/scripts/kb_supersede.py <старая> <преемник> --apply
+  python3 .aurora/scripts/kb_supersede.py <старая> <преемник> --dr DR-0007-выбор-шины --apply
 
 Имена — как в wiki-ссылках (без .md). Преемник должен существовать: замена «в никуда»
 оставила бы базу с deprecated-карточкой и битой ссылкой.

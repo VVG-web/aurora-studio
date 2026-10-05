@@ -46,7 +46,7 @@ flowchart LR
 | `CONFLUENCE_PERSONAL_TOKEN`, `JIRA_PERSONAL_TOKEN` (или пользователь + пароль) | `.env.aurora.local` (вне git) |
 
 Скрипты синка ходят в Confluence и Jira напрямую по REST. MCP Atlassian в вашем редакторе им не помогает: он не отдаёт свои
-учётные данные. Проверить токен: `python3 .opencode/scripts/jira_export.py --limit 1`.
+учётные данные. Проверить токен: `python3 .aurora/scripts/jira_export.py --limit 1`.
 
 ## Как проверить зеркало
 

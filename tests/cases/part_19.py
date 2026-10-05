@@ -227,7 +227,7 @@ def test_every_module_a_shipped_script_imports_is_shipped(_t):
             src = line.split("=>", 1)[0].strip()
             if src.startswith("scripts/") and src.endswith(".py"):
                 shipped.add(Path(src).stem)
-    # модули источников едут правилом (connectors): скрипт каждого — в .opencode/scripts/
+    # модули источников едут правилом (connectors): скрипт каждого — в .aurora/scripts/
     for man in (KIT / "connectors").glob("*/connector.json"):
         meta = json.loads(man.read_text(encoding="utf-8"))
         script = (meta.get("run") or {}).get("script") or meta.get("script") or ""

@@ -87,14 +87,14 @@ def test_update_route_spends_no_time_on_idle_steps(tmp: Path):
     before = len(g("log", "--oneline").stdout.splitlines())
     env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
            "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
-    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/agent_runner.py"),
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/agent_runner.py"),
                          "--task", "aliases", "--apply", "--critic"],
                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=300)
     assert cp.returncode == 0 and "Конфликтов синонимов: 0" in cp.stdout, cp.stdout + cp.stderr
     assert "Оракул" not in cp.stdout and len(g("log", "--oneline").stdout.splitlines()) == before, \
         "холостые синонимы гоняли оракула или сделали коммит"
     # хук при снятом храповике базу не проверяет: линтер-заглушка оставила бы след
-    lint = root / ".opencode/scripts/kb_lint.py"
+    lint = root / ".aurora/scripts/kb_lint.py"
     lint.write_text("open('lint-ran', 'w').write('1')\nprint('карточек 1 · ошибок 0')\n",
                     encoding="utf-8")
     hooks = subprocess.run([sys.executable, str(SCRIPTS / "aurora_hooks.py"), "--install", "--force"],
@@ -717,13 +717,13 @@ def test_analyst_rework_is_counted_apart_for_each_person(tmp: Path):
     не узнавался в проектах, где статус называется «Анализ», а не «Аналитика».
     """
     root = tmp / "p"
-    data = root / ".opencode/cache/reports/analyst"
+    data = root / ".aurora/cache/reports/analyst"
     data.mkdir(parents=True)
     (root / "Settings").mkdir()
     (root / "aurora.config.yaml").write_text(
         'project:\n  name: "P"\n  slug: "P"\n\natlassian:\n  jira:\n    project_key: "P"\n\n'
         "reports:\n  analyst:\n    year: 2026\n    roster: Settings/roster.csv\n"
-        "    events: Settings/events.csv\n    data_dir: .opencode/cache/reports/analyst\n"
+        "    events: Settings/events.csv\n    data_dir: .aurora/cache/reports/analyst\n"
         "    output: Artifacts/reports/{project}_analyst_extended.html\n", encoding="utf-8")
     (root / "Settings/roster.csv").write_text("ФИО;Роль\nАналитик А;Аналитик\nАналитик Б;Аналитик\n",
                                               encoding="utf-8")
@@ -1376,7 +1376,7 @@ def test_an_empty_build_plan_costs_nothing(tmp: Path):
     before = count()
     env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
            "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1", "AURORA_AGENT_BACKEND_1_MODEL": "m"}
-    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/agent_runner.py"),
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/agent_runner.py"),
                          "--task", "build", "--apply", "--critic"],
                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=300)
     assert cp.returncode == 0, cp.stderr[-600:]
@@ -1388,7 +1388,8 @@ def test_an_empty_build_plan_costs_nothing(tmp: Path):
     sys.path.insert(0, str(SCRIPTS))
     import importlib
     R = importlib.import_module("agent_runner")
-    log = root / ".opencode/run_log.md"
+    log = root / "AuroraKnowledgeDB/meta/run_log.md"
+    log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("| kb:kind | 2026-09-22 | 0 |\n", encoding="utf-8")
     got = R.checkpoint(str(root), "agent:distill", True)
     assert got["ok"] and got["committed"] == 0 and count() == before, \

@@ -9,11 +9,11 @@
 чуть иначе — git показывал правки там, где их нет, а `sync_audit` не мог проверить
 состояние. Здесь конвертация — код: одна и та же задача даёт байт-в-байт один файл.
 
-  python3 .opencode/scripts/jira_export.py                     # по default_jql из конфига
-  python3 .opencode/scripts/jira_export.py --jql "project = X AND updated >= -7d"
-  python3 .opencode/scripts/jira_export.py --verify            # гейт детерминизма
-  python3 .opencode/scripts/jira_export.py --force             # перечитать всё
-  python3 .opencode/scripts/jira_export.py --comments          # с комментариями
+  python3 .aurora/scripts/jira_export.py                     # по default_jql из конфига
+  python3 .aurora/scripts/jira_export.py --jql "project = X AND updated >= -7d"
+  python3 .aurora/scripts/jira_export.py --verify            # гейт детерминизма
+  python3 .aurora/scripts/jira_export.py --force             # перечитать всё
+  python3 .aurora/scripts/jira_export.py --comments          # с комментариями
 
 Стабильность по построению: в шапке нет даты экспорта, имя файла — ключ задачи
 (`PRJ-1182.md`), инкрементальность по полю `updated` самой задачи.

@@ -6,9 +6,9 @@
 `build.md` предписывает их обновлять, а на деле их никто не трогает — и карточка без
 записи в индексе считается «сиротой» при гигиене.
 
-  python3 .opencode/scripts/kb_index.py                  # что изменится
-  python3 .opencode/scripts/kb_index.py --apply
-  python3 .opencode/scripts/kb_index.py --root-index --apply   # + корневой index.md
+  python3 .aurora/scripts/kb_index.py                  # что изменится
+  python3 .aurora/scripts/kb_index.py --apply
+  python3 .aurora/scripts/kb_index.py --root-index --apply   # + корневой index.md
 
 Файл индекса помечается как генерируемый. Рукотворный `_index.md` без этой пометки
 скрипт не трогает — сначала скажет, что он не его: чужой текст не затирается молча.

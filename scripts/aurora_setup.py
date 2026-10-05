@@ -4,7 +4,7 @@
 Читает и перезаписывает `aurora.config.yaml` в целевом проекте. Запускается:
   • автоматически из `aurora.py new <target>` при первичной установке;
   • вручную из корня проекта в любой момент, чтобы изменить/дополнить настройки:
-        python3 .opencode/scripts/aurora_setup.py
+        python3 .aurora/scripts/aurora_setup.py
 
 Если `aurora.config.yaml` уже есть — режим редактирования: текущие значения показываются
 в [квадратных скобках], пустой ввод оставляет как есть.
@@ -109,8 +109,8 @@ def source_sections(target: Path, slug: str) -> tuple:
     items = R.instances(str(target))
     if not items:
         return "", ""
-    src = ["\n# Подключённые модули источников. Манифесты — в .opencode/connectors/,",
-           "# что установлено и что подключено — `python3 .opencode/scripts/sources_registry.py`.",
+    src = ["\n# Подключённые модули источников. Манифесты — в .aurora/connectors/,",
+           "# что установлено и что подключено — `python3 .aurora/scripts/sources_registry.py`.",
            "sources:"]
     skills = []
     for i in items:
@@ -308,7 +308,7 @@ def write_config(path: Path, c: dict):
             pages = pages.replace("\n  pages: []", "\n  pages:\n" + rows)
     sources, sync_skills = source_sections(path.parent, c["slug"])
     text = f"""# Aurora project configuration (committed). Schema version 1.
-# Отредактировать в любой момент: python3 .opencode/scripts/aurora_setup.py
+# Отредактировать в любой момент: python3 .aurora/scripts/aurora_setup.py
 # Секреты (токены) сюда НЕ класть — они в .env.aurora.local (gitignored).
 # Агенты и sync-скиллы читают константы проекта ТОЛЬКО отсюда.
 
@@ -406,7 +406,7 @@ def reconcile_sync_skills(target: Path, slug: str):
     install мог создать их с угаданным slug; если пользователь сменил slug в setup —
     переименовываем, чтобы конфиг и папки совпадали. Работает без доступа к kit.
     """
-    skdir = target / ".opencode/skills"
+    skdir = target / ".claude/skills"
     if not skdir.is_dir():
         return
     for kind in skill_prefixes(target):

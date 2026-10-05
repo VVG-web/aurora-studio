@@ -120,12 +120,12 @@ def test_mcp_reports_a_failed_tool_as_an_error_not_as_knowledge(tmp: Path):
     # код 1 у движка — «отработала и нашла, что сказать»: по теме ничего нет — это ответ базы, а не сбой;
     # у `kb_ask` код 1 значит «ни одна модель не ответила», и там это отказ
     fake = tmp / "fake"
-    (fake / ".opencode/scripts").mkdir(parents=True)
+    (fake / ".aurora/scripts").mkdir(parents=True)
     # Тексты латиницей: эти скрипты не переключают вывод на UTF-8, как движок, и на Windows
     # труба в cp1252 не пропустила бы русский (см. тест о кодировке дочерних процессов).
-    (fake / ".opencode/scripts/exit1.py").write_text("print('nothing found'); raise SystemExit(1)\n",
+    (fake / ".aurora/scripts/exit1.py").write_text("print('nothing found'); raise SystemExit(1)\n",
                                                      encoding="utf-8")
-    (fake / ".opencode/scripts/exit2.py").write_text("print('broken'); raise SystemExit(2)\n",
+    (fake / ".aurora/scripts/exit2.py").write_text("print('broken'); raise SystemExit(2)\n",
                                                      encoding="utf-8")
     sys.path.insert(0, str(SCRIPTS))
     import importlib
@@ -308,7 +308,7 @@ def test_setup_wizard_without_a_terminal_ends_cleanly(tmp: Path):
     (root / "aurora.config.yaml").write_text(
         'project:\n  name: "Старое имя"\n  slug: old\natlassian:\n  confluence:\n    space: SP\n'
         '  jira:\n    project_key: KEY\n', encoding="utf-8")
-    script = str(root / ".opencode/scripts/aurora_setup.py")
+    script = str(root / ".aurora/scripts/aurora_setup.py")
 
     def wizard(stdin_text):
         return subprocess.run([sys.executable, script, "--target", str(root)],

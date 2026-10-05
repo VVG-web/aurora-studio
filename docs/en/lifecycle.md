@@ -204,7 +204,7 @@ trusted) but does not assign them; `kb:trust` moves a base to the new scale in o
 
 | Mark | Where it lives | The question it answers | Who sets it |
 |---|---|---|---|
-| a page version / an issue's `updated` | `sync_state.md`, `update_log.md`; the cache `.opencode/cache/confluence_pages.json` | "download again?" | sync, automatically |
+| a page version / an issue's `updated` | `sync_state.md`, `update_log.md`; the cache `.aurora/cache/confluence_pages.json` | "download again?" | sync, automatically |
 | the source's hash | `AuroraKnowledgeDB/meta/manifest.json` | "parse again?" | parsing, checked against the base |
 | `source_synced` in a card | the card's header | "did the source change under already-parsed knowledge?" | parsing and `sync:diff` |
 

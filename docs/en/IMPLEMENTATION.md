@@ -13,7 +13,7 @@ An LLM agent hallucinates when all Markdown looks the same. Aurora separates:
    from issue statuses and the source's origin;
 3. **Products** (`Artifacts/`, `Deliverables/`) — produced work; it is not fed back into prompts as "truth".
 
-The invariants that are never broken are in the project's `.opencode/skills/aurora-vault/SKILL.md` and in the
+The invariants that are never broken are in the project's `.aurora/skills/aurora-vault/SKILL.md` and in the
 [knowledge rules](knowledge-rules.md).
 
 ## Rollout phases
@@ -78,15 +78,15 @@ syncs: `ctx:eval` on the golden questions. Once per release: `kb:schema`, `tests
 
 1. Open the **project** (not the kit) as the IDE's workspace root.
 2. Make sure `AGENTS.md` is picked up as the project's instruction.
-3. Skills lie in `.opencode/skills/`; `kit:skills --apply` puts them in the agent's shared folder (`~/.claude/skills`) —
+3. Skills lie in `.aurora/skills/`; `kit:skills --apply` puts them in the agent's shared folder (`~/.claude/skills`) —
    then `/aurora-vault` is found in any conversation.
 4. Optionally connect the Atlassian MCP for sync skills and **the knowledge base as an MCP** (`kit:mcp`: a ready line for
    Claude Code, Cursor, OpenCode; the server only reads).
 
 | Tool | What to set up |
 |---|---|
-| Cursor | the rules `.cursor/rules/atlassian.mdc`; open the project root |
-| Claude Code, OpenCode | skills from `.opencode/skills/aurora-vault/`; the commands `/aurora-vault <command>` |
+| Cursor | open the project root: it reads `AGENTS.md` and the `.claude/skills/` skills itself |
+| Claude Code, OpenCode | `kit:skills` installs the kit's skills into `~/.claude/skills/`; the project's skills are in `.claude/skills/`; the commands `/aurora-vault <command>` |
 | Any | `kit:mcp` → an `mcpServers` entry named `aurora-<slug>` |
 
 ## Migrating an accumulated base

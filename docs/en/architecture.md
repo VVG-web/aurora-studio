@@ -12,7 +12,7 @@ There are two things, and they must not be confused.
 - **The kit** (this repository) — the engine, skills, templates, the panel. Installed once on a machine,
   updated with `git pull` or a button in the panel.
 - **The project** — a separate git repository with a knowledge base. It **receives a copy of the engine** in
-  `.opencode/` and lives on by itself: it may fall behind the kit and may be updated on command.
+  `.aurora/` and lives on by itself: it may fall behind the kit and may be updated on command.
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ flowchart LR
   subgraph PRJ["The project (its own git repository)"]
     direction TB
     CFG["aurora.config.yaml<br>.env.aurora.local"]
-    ENG[".opencode/<br>scripts · skills · connectors<br>structure_dirs.txt · commands.txt"]
+    ENG[".aurora/<br>scripts · skills · connectors<br>structure_dirs.txt · commands.txt"]
     DATA["Sources · Raw · AuroraKnowledgeDB<br>Artifacts · Deliverables · Workspaces"]
     AG["AGENTS.md"]
   end
@@ -52,9 +52,9 @@ What follows from this:
   `Deliverables/`, `Artifacts/`, `Workspaces/` are never touched.
 - Templates (`Templates/`, `Prompts/`, `TemplatesCommon/`) follow the **seed** rule: the project's file is not
   overwritten, the new kit version lands next to it as `<file>.new` for manual comparison.
-- Individual paths can be opted out of updates in `.opencode/update_ignore.txt` (glob patterns).
+- Individual paths can be opted out of updates in `aurora.update_ignore.txt` in the project root (glob patterns).
 - The engine version in a project is recorded in `AuroraKnowledgeDB/meta/aurora_version.txt`; the path to the
-  kit is in `.opencode/kit_path.txt`. The project's copy of `aurora_update.py` finds the kit through it.
+  kit is in `.aurora/kit_path.txt`. The project's copy of `aurora_update.py` finds the kit through it.
 - If a project's skill is a symbolic link to a shared folder, `update` warns: the write goes to the shared
   target and every project that shares it gets updated.
 
@@ -63,7 +63,7 @@ What follows from this:
 | A line in `engine_manifest.txt` | What `update` does |
 |---|---|
 | `src => dst` | overwrites the file 1:1 |
-| `(connectors)` | puts a module's manifest in `.opencode/connectors/`, its launch script in `.opencode/scripts/`, multiplies the sync skill's body across the project's skills; **does not overwrite the body** — the new version lands next to it as `.new` |
+| `(connectors)` | puts a module's manifest in `.aurora/connectors/`, its launch script in `.aurora/scripts/`, multiplies the sync skill's body across the project's skills; **does not overwrite the body** — the new version lands next to it as `.new` |
 | `(agents) AGENTS.md` | regenerates from the template, substituting the name, slug and keys from `aurora.config.yaml` |
 | `(seed) dir` | does not overwrite; puts the new and changed as `.new` |
 | `(launcher)` | launch files in the project root |
@@ -282,7 +282,7 @@ as a list, no shell, an undeclared flag is rejected) and does not accept arbitra
 | `AuroraKnowledgeDB/meta/graphify/` | the base's graph for MCP and exports | no (derived) |
 | `AuroraKnowledgeDB/meta/embeddings.*` | the semantic index | no (rebuilt) |
 | `Sources/<Mirror>/sync_state.md`, `update_log.md` | the mirror's state | yes |
-| `.opencode/cache/`, `runs/`, `state/`, `context/` | caches, the panel's run archive, routes' state, attachments | no |
+| `.aurora/cache/`, `runs/`, `state/`, `context/` | caches, the panel's run archive, routes' state, attachments | no |
 
 ## 8. Tests
 

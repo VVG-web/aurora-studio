@@ -34,10 +34,10 @@
 разом**: одно число без истории говорит мало, а «R@1 упал с 0.81 до 0.62 после пополнения»
 говорит всё.
 
-  python3 .opencode/scripts/kb_search_quality.py                 # 200 карточек выборкой
-  python3 .opencode/scripts/kb_search_quality.py --sample 500    # шире выборка
-  python3 .opencode/scripts/kb_search_quality.py --golden        # ещё и эталонные вопросы
-  python3 .opencode/scripts/kb_search_quality.py --apply         # записать замер в историю
+  python3 .aurora/scripts/kb_search_quality.py                 # 200 карточек выборкой
+  python3 .aurora/scripts/kb_search_quality.py --sample 500    # шире выборка
+  python3 .aurora/scripts/kb_search_quality.py --golden        # ещё и эталонные вопросы
+  python3 .aurora/scripts/kb_search_quality.py --apply         # записать замер в историю
 
 Считает **той же выборкой, которой отвечают человеку** — гибридной `ctx_pack.fuse`:
 слова с весом по редкости плюс близость по смыслу. До 1.100.38 замер ходил в

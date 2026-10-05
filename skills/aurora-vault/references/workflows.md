@@ -105,8 +105,8 @@ A spec may be handed off ONLY when:
 аналитики. **Сборка механическая — скриптом**, модели тут делать нечего:
 
 ```bash
-python3 .opencode/scripts/spec_pack.py SPEC-012           # состав и DoR-риски
-python3 .opencode/scripts/spec_pack.py SPEC-012 --apply   # записать бандл
+python3 .aurora/scripts/spec_pack.py SPEC-012           # состав и DoR-риски
+python3 .aurora/scripts/spec_pack.py SPEC-012 --apply   # записать бандл
 ```
 
 Скрипт складывает один самодостаточный markdown-файл:
@@ -151,9 +151,9 @@ python3 .opencode/scripts/spec_pack.py SPEC-012 --apply   # записать б�
 **Публикация — скриптом:**
 
 ```bash
-python3 .opencode/scripts/publish_doc.py Artifacts/reports/итог.md              # что уйдёт
-python3 .opencode/scripts/publish_doc.py Artifacts/reports/итог.md --apply
-python3 .opencode/scripts/publish_doc.py <файл> --parent <page_id> --apply      # новая страница
+python3 .aurora/scripts/publish_doc.py Artifacts/reports/итог.md              # что уйдёт
+python3 .aurora/scripts/publish_doc.py Artifacts/reports/итог.md --apply
+python3 .aurora/scripts/publish_doc.py <файл> --parent <page_id> --apply      # новая страница
 ```
 
 Без `--apply` не отправляется ничего. Новой странице нужен `--parent`, иначе корни
@@ -186,7 +186,7 @@ Confluence быть не должно.
 
 ## export <документ> — офисный формат для передачи
 
-Скрипт: `python3 .opencode/scripts/ship_doc.py <файл> --export docx|pdf [--reference <шаблон.docx>]`.
+Скрипт: `python3 .aurora/scripts/ship_doc.py <файл> --export docx|pdf [--reference <шаблон.docx>]`.
 Убирает frontmatter, разрезолвливает wiki-ссылки, конвертирует pandoc'ом, кладёт результат
 рядом. Требует pandoc. Экспорт — производная копия: правки вносятся в markdown и документ
 экспортируется заново; правка docx «на месте» разрывает связь с базой. Факт передачи
@@ -402,7 +402,7 @@ Object: Confluence page (via MCP or `Sources/Confluence/...`) or local file.
 `type: requirement` скрипт отклоняет замену (код возврата 2) без двух ответов:
 
 ```bash
-python3 .opencode/scripts/kb_supersede.py <старая> <преемник> \
+python3 .aurora/scripts/kb_supersede.py <старая> <преемник> \
     --changed "что именно стало другим против прежней редакции" \
     --migration "что делать с реализованным по старой: переделать, оставить, проверить" \
     --apply
@@ -435,7 +435,7 @@ aurora_stats.py --queue           # что верифицировать перв
 
 ## context <тема> — context pack для любого запроса
 
-Запустить `python3 .opencode/scripts/ctx_pack.py "<тема>" [--mode …] [--budget …]` и
+Запустить `python3 .aurora/scripts/ctx_pack.py "<тема>" [--mode …] [--budget …]` и
 работать с готовым паком; вручную контекст не собирать (правила и режимы —
 `retrieval.md`, процедура — `maintenance.md`). Сохранить копию для внешнего чата:
 `--save` кладёт файл в `Artifacts/drafts/`.
@@ -475,7 +475,7 @@ validate). Вопрос один: **чего база не знала или з�
 
 ## status — здоровье базы
 
-Числа даёт `python3 .opencode/scripts/aurora_stats.py` (статусы, доля `knowledge`, режим
+Числа даёт `python3 .aurora/scripts/aurora_stats.py` (статусы, доля `knowledge`, режим
 bootstrap, протухшее, сироты, битые источники, REQ/DR/спеки, артефакты с `based_on`,
 поставляемые документы на непроверенных основаниях). Модель их не пересчитывает —
 комментирует динамику и называет три ближайших действия. Подробно — `maintenance.md`.

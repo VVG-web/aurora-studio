@@ -29,12 +29,12 @@ from harness import (  # noqa: F401
 def test_update_removes_retired_engine_files(tmp: Path):
     """Слитые скрипты уезжают из проекта, а не остаются рядом работать по-своему.
 
-    После слияния команда исполняется другим файлом, но прежняя копия в `.opencode/scripts`
+    После слияния команда исполняется другим файлом, но прежняя копия в `.aurora/scripts`
     продолжала запускаться руками и расходиться с kit'ом. Список выведенных ведётся в
     манифесте (строки `- путь`) — угадывать «наш файл или проектный» обновление не вправе.
     """
     root = make_project(tmp)
-    scripts = root / ".opencode/scripts"
+    scripts = root / ".aurora/scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     (scripts / "kb_queue.py").write_text("# старая копия\n", encoding="utf-8")
     (scripts / "мой_скрипт.py").write_text("# проектный\n", encoding="utf-8")
@@ -443,7 +443,7 @@ def test_registry_drives_mirrors_and_audit(tmp: Path):
     по объявленному виду хранилища, а `--source` сужает проверку до одного зеркала.
     """
     root = make_project(tmp, git=True)   # doctor считает проект без git ошибкой: откатывать нечем
-    (root / ".opencode/connectors/demo-board.json").write_text(json.dumps({
+    (root / ".aurora/connectors/demo-board.json").write_text(json.dumps({
         "id": "demo-board", "title": "Демо-доска", "kind": "board",
         "what": "выдуманный источник для теста",
         "mirror": {"default_path": "Sources/Demo", "state": "update_log.md"},

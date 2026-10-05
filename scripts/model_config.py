@@ -215,7 +215,7 @@ def save(kit, data: dict) -> dict:
     root = Path(kit)
     if (root / "aurora.config.yaml").is_file() and not (root / "scripts" / "model_config.py").is_file():
         return {"ok": False, "error": f"{root} — папка проекта, а не кита: настройка моделей "
-                                      "пишется только в кит (нет .opencode/kit_path.txt?)"}
+                                      "пишется только в кит (нет .aurora/kit_path.txt?)"}
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

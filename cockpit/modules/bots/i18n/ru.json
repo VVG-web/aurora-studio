@@ -90,7 +90,7 @@
   "bots.p.mcp_unknown": "MCP-сервер не настроен",
   "bots.fix.mcp_unknown": "Добавьте его в «Настройка кита» → MCP-серверы машины (или в mcp.json проекта) либо снимите галочку.",
   "bots.p.skill_unknown": "Навык не найден",
-  "bots.fix.skill_unknown": "Положите SKILL.md в .opencode/skills/<имя>/ проекта, в skills/ кита или ~/.claude/skills/<имя>/ — или снимите галочку.",
+  "bots.fix.skill_unknown": "Положите SKILL.md в .claude/skills/<имя>/ проекта, в skills/ кита или ~/.claude/skills/<имя>/ — или снимите галочку.",
   "bots.p.attachment_missing": "Вложения нет в проекте",
   "bots.fix.attachment_missing": "Путь считается от корня проекта: поправьте его или уберите вложение.",
   "bots.p.attachment_secret": "Вложение — секреты или служебная папка",

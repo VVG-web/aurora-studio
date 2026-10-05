@@ -917,7 +917,7 @@ def test_embed_gateway_hiccup_does_not_stop_the_route(tmp: Path):
     env = {**os.environ, "AURORA_TESTS_ISOLATED": "1",
            "AURORA_AGENT_BACKEND_1_URL": "http://127.0.0.1:9/v1",
            "AURORA_AGENT_REQUEST_TIMEOUT": "5"}
-    cp = subprocess.run([sys.executable, str(root / ".opencode/scripts/kb_embed.py"), "--apply"],
+    cp = subprocess.run([sys.executable, str(root / ".aurora/scripts/kb_embed.py"), "--apply"],
                         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120)
     assert cp.returncode == 1, \
         f"сбой шлюза векторов снова останавливает маршрут: код {cp.returncode}\n{cp.stderr[-400:]}"
@@ -973,7 +973,7 @@ def test_embed_keeps_what_it_counted_before_the_gateway_dropped(tmp: Path):
            "AURORA_AGENT_BACKEND_1_URL": f"http://127.0.0.1:{srv.server_address[1]}/v1",
            "AURORA_AGENT_REQUEST_TIMEOUT": "5"}
     run_embed = lambda: subprocess.run(
-        [sys.executable, str(root / ".opencode/scripts/kb_embed.py"), "--apply"],
+        [sys.executable, str(root / ".aurora/scripts/kb_embed.py"), "--apply"],
         cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=120)
     try:
         cp = run_embed()

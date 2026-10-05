@@ -7,8 +7,8 @@
 внутренние якоря (снаружи базы они не работают). Модели тут делать нечего — а вот терять
 основание при ручной сборке она умеет.
 
-  python3 .opencode/scripts/spec_pack.py SPEC-012           # что войдёт в бандл
-  python3 .opencode/scripts/spec_pack.py SPEC-012 --apply
+  python3 .aurora/scripts/spec_pack.py SPEC-012           # что войдёт в бандл
+  python3 .aurora/scripts/spec_pack.py SPEC-012 --apply
 
 Гейт Definition of Ready проверяется механически (см. `workflows.md`): REQ не в `agreed`,
 открытые вопросы, блокирующие спеку, основания ниже `verified`. Нарушения не блокируют

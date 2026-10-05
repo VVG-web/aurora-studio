@@ -25,9 +25,9 @@
 «оставить» «убрать»`. Скрипт называет группу, показывает, чем карточки похожи, и
 предлагает, кого оставить, — по объёму, статусу и входящим ссылкам.
 
-  python3 .opencode/scripts/kb_twins.py                 # отчёт
-  python3 .opencode/scripts/kb_twins.py --min 0.5       # мягче порог (по умолчанию 0.6)
-  python3 .opencode/scripts/kb_twins.py --report meta/twins.md
+  python3 .aurora/scripts/kb_twins.py                 # отчёт
+  python3 .aurora/scripts/kb_twins.py --min 0.5       # мягче порог (по умолчанию 0.6)
+  python3 .aurora/scripts/kb_twins.py --report meta/twins.md
 
 Зависимостей нет.
 """

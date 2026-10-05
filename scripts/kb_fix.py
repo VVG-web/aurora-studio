@@ -21,9 +21,9 @@
   --all          = --links --homoglyphs --frontmatter --titles --dupes
 
 Запуск из корня проекта:
-  python3 .opencode/scripts/kb_fix.py --all                 # что будет сделано
-  python3 .opencode/scripts/kb_fix.py --all --apply         # применить
-  python3 .opencode/scripts/kb_fix.py --merge КАРТА-А КАРТА-Б --apply
+  python3 .aurora/scripts/kb_fix.py --all                 # что будет сделано
+  python3 .aurora/scripts/kb_fix.py --all --apply         # применить
+  python3 .aurora/scripts/kb_fix.py --merge КАРТА-А КАРТА-Б --apply
 
 Ничего не удаляет: deprecated-карточки переезжают в _archive/, файлы только переименовываются.
 Выход: 0 — нечего чинить или всё применено; 1 — остались нерешаемые случаи (нужен человек).
@@ -1471,7 +1471,7 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
     # Строку тезиса снимаем, только если это служебный текст шаблона — так решила модель
     # (`agent_runner.service_template`, кэш проекта). Повтор-знание в тезисе — правда.
     try:
-        kinds = json.load(open(os.path.join(".opencode", "cache", "template_kinds.json"),
+        kinds = json.load(open(os.path.join(".aurora", "cache", "template_kinds.json"),
                                encoding="utf-8"))
     except (OSError, ValueError):
         kinds = {}

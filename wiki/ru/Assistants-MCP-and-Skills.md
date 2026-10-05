@@ -37,12 +37,12 @@
 ```json
 {"mcpServers": {
   "aurora-alpha": {"command": "python3",
-                   "args": ["<проект>/.opencode/scripts/aurora_mcp.py", "--project", "<проект>"]}}}
+                   "args": ["<проект>/.aurora/scripts/aurora_mcp.py", "--project", "<проект>"]}}}
 ```
 
 Серверы машины (общие для всех проектов) лежат в `local/mcp.json` кита; свои у проекта — в `mcp.json` проекта. Раздел
 панели **Настройки проекта** правит оба; секреты в `mcp.json` проекта не попадают (он уходит в git). Самопроверка без
-ассистента: `python3 .opencode/scripts/aurora_mcp.py --selftest`.
+ассистента: `python3 .aurora/scripts/aurora_mcp.py --selftest`.
 
 ## Скиллы
 

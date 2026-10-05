@@ -47,7 +47,7 @@ interpreter themselves.
 The command does four steps:
 
 1. **Layout** (`install_aurora.py`): folders by `structure_dirs.txt`, a copy of the engine into
-   `.opencode/`, `aurora.config.yaml`, a sample of secrets, `AGENTS.md`, the service files of
+   `.aurora/`, `aurora.config.yaml`, a sample of secrets, `AGENTS.md`, the service files of
    `AuroraKnowledgeDB/meta/`, templates and prompts, sync skills, `.gitignore` rules.
 2. **Setup** (`aurora_setup.py`): interactive questions — project name and slug (the slug goes into the
    sync skills' names), Confluence (URL, space, root pages by `page_id` from the URL `…pageId=NNN`), Jira
@@ -89,7 +89,7 @@ them:
 
 ```bash
 cd /path/to/your-project
-python3 .opencode/scripts/aurora_setup.py
+python3 .aurora/scripts/aurora_setup.py
 ```
 
 In the panel: "The project's settings". The form there asks the same and writes with the same script; below it
@@ -100,32 +100,48 @@ is the whole config as text, for what the form lacks.
 ```text
 AGENTS.md                     rules for any agent that opens the folder
 aurora.config.yaml            project settings (in git)
+aurora.update_ignore.txt      optional: paths the project keeps itself — update leaves them (glob)
 aurora.env.local.example      a sample → .env.aurora.local (outside git)
 .gitignore                    engine rules appended line by line, other lines untouched
-.cursor/rules/atlassian.mdc   a pointer to aurora.config.yaml for Cursor
-.opencode/
-  scripts/                    the engine (a copy from the kit)
-  skills/aurora-vault/        the skill and the procedure references
-  skills/aurora-grill/        the planning-interview skill
-  skills/confluence-sync-<Slug>/ · jira-export-<Slug>/   the project's sync skills
+.aurora/                      the engine — a copy of the kit, outside git (`aurora.py update` installs it)
+  scripts/                    engine scripts
+  skills/aurora-vault/ · aurora-grill/    kit skills and the procedure references
   connectors/                 manifests of connected source modules
   docs/                       the knowledge rules (they travel with the engine)
   reports/analyst/            the analyst-efficiency dashboard
   vendor/                     the offline graph library
+  state/ · runs/ · context/ · cache/      state, runs, attachments, cache
   structure_dirs.txt · commands.txt · moc_groups.txt · kit_path.txt
-  update_ignore.txt           optional: paths the project keeps itself (glob)
+.claude/skills/               the project's skills — shared, in git: sync skills confluence-sync-<Slug>,
+                              jira-export-<Slug> and your own
 Sources/                      mirrors of connected modules: Confluence, JIRA, Web
 Raw/{laws,contract,customer,project,meetings,examples,corrections}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
-                              _inbox, meta
+                              _inbox, meta (run_log.md — the run journal — is there too)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
 Deliverables/{work,work/spec-packs,released,_archive}/
 Workspaces/_archive/
+Scripts/                      the project's own scripts (handlers, one-off migrations)
 Templates/ · TemplatesCommon/ · Prompts/ · Settings/
 start-aurora.command · start-aurora.bat      launch files
 ```
+
+Every schema folder holds a **`README.md`** — a short description: what the folder is for, what goes
+in and what does not, who writes it and whether nested folders are allowed without breaking the kit's
+rules. The kit keeps the text (the block between the markers is updated with the engine); your own
+notes go below the end marker. The engine never treats these files as content: not a source, a
+template, an artifact or a card.
+
+**Harness folders are personal.** `.cursor/`, `.opencode/`, `.codex/`, `.gemini/`, `.windsurf/` and
+`.claude/` (except `.claude/skills/`) are covered by `.gitignore`, and kit updates do not write there:
+every person keeps their agent's settings, plans and cache locally. The project shares its skills in
+`.claude/skills/`. Before 1.158.0 the engine lived in `.opencode/` and travelled in git; `aurora.py
+update` moves it to `.aurora/` by itself: the engine's data goes there too, the run journal to
+`AuroraKnowledgeDB/meta/`, project skills to `.claude/skills/`, the project's own scripts to
+`Scripts/`, OpenCode's own files stay. After the move a new teammate clones the project and runs
+`aurora.py update <project> --apply` — the engine is installed from the kit.
 
 The folder list is **fixed by the engine** (`structure_dirs.txt`) and identical in every Aurora project;
 anything non-standard lies in `Workspaces/<task>/`. A folder needed only by this project (legacy of an old
@@ -174,7 +190,7 @@ hand out its credentials, while sync scripts go to Confluence and Jira directly 
 | `JIRA_PERSONAL_TOKEN` (or `JIRA_PAT`) | a token for Jira Server / Data Center |
 | `JIRA_USER` + `JIRA_PASSWORD` | a fallback |
 
-Check that a token is accepted: `python3 .opencode/scripts/jira_export.py --limit 1`.
+Check that a token is accepted: `python3 .aurora/scripts/jira_export.py --limit 1`.
 
 ## The built-in agent
 
@@ -351,9 +367,9 @@ not set up, the bot ran out of time or tool calls. MCP servers and tools need Py
 
 ```bash
 cd /path/to/your-project
-python3 .opencode/scripts/aurora_doctor.py --structure
-python3 .opencode/scripts/kb_lint.py --summary
-python3 .opencode/scripts/aurora_hooks.py --install    # the pre-commit ratchet
+python3 .aurora/scripts/aurora_doctor.py --structure
+python3 .aurora/scripts/kb_lint.py --summary
+python3 .aurora/scripts/aurora_hooks.py --install    # the pre-commit ratchet
 ```
 
 Expected: `doctor` — OK or warnings only (it checks the config, skills, secrets in git, the engine version,
@@ -367,7 +383,7 @@ Make the first commit: `git init && git add -A && git commit -m "Bootstrap Auror
 
 1. [ ] Re-run `aurora_setup.py` if any setting was skipped.
 2. [ ] Fill in `.env.aurora.local` (Confluence and Jira tokens), add providers and roles in the "Models" section and check `kit:doctor`, `agent:ping`.
-3. [ ] Read `AGENTS.md` and `.opencode/skills/aurora-vault/SKILL.md`.
+3. [ ] Read `AGENTS.md` and `.aurora/skills/aurora-vault/SKILL.md`.
 4. [ ] Put evidence into `Raw/` (contract, spec, meeting transcripts).
 5. [ ] Run the "Update the base" route in the panel (Preview first).
 6. [ ] Connect the base to the assistant: `kit:mcp` prints a ready line for Claude Code, Cursor, OpenCode.
@@ -396,7 +412,7 @@ fast-forward only; it refuses on uncommitted edits).
 > that shares it.
 
 Files removed from the engine's composition are deleted by `update` itself (the list is kept in the manifest). Your
-own paths can be fenced off in `.opencode/update_ignore.txt`.
+own paths can be fenced off in `aurora.update_ignore.txt` in the project root.
 
 ## 8. The project has already piled up documents
 

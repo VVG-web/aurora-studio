@@ -90,7 +90,7 @@
   "bots.p.mcp_unknown": "The MCP server is not set up",
   "bots.fix.mcp_unknown": "Add it in «Kit setup» → machine MCP servers (or the project's mcp.json) or untick it.",
   "bots.p.skill_unknown": "The skill is not found",
-  "bots.fix.skill_unknown": "Put SKILL.md into the project's .opencode/skills/<name>/, the kit's skills/ or ~/.claude/skills/<name>/ — or untick it.",
+  "bots.fix.skill_unknown": "Put SKILL.md into the project's .claude/skills/<name>/, the kit's skills/ or ~/.claude/skills/<name>/ — or untick it.",
   "bots.p.attachment_missing": "The attachment is not in the project",
   "bots.fix.attachment_missing": "The path is from the project root: fix it or remove the attachment.",
   "bots.p.attachment_secret": "The attachment is secrets or a service folder",

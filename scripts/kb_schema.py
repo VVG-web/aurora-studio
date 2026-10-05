@@ -6,9 +6,9 @@
 не написано, по какой схеме она сделана, проверить это невозможно — и невозможно понять,
 прошла ли миграция до конца.
 
-  python3 .opencode/scripts/kb_schema.py                 # что в базе: версии и разрывы
-  python3 .opencode/scripts/kb_schema.py --apply         # довести карточки до текущей
-  python3 .opencode/scripts/kb_schema.py --to 3 --apply  # до конкретной версии
+  python3 .aurora/scripts/kb_schema.py                 # что в базе: версии и разрывы
+  python3 .aurora/scripts/kb_schema.py --apply         # довести карточки до текущей
+  python3 .aurora/scripts/kb_schema.py --to 3 --apply  # до конкретной версии
 
 Цепочка переходов объявлена в `MIGRATIONS`: каждая ступень знает, что именно она меняет,
 и применяется ровно один раз. Карточка без `schema_version` считается версией 1 — это

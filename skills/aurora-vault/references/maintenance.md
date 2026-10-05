@@ -1,7 +1,7 @@
 # Maintenance — механические процедуры (repair, dedupe, queue, audit, stats)
 
 Правило набора: **сначала скрипт, потом суждение.** Каждая команда здесь начинается с
-детерминированного прогона в `.opencode/scripts/`; модель не обходит базу сама, а
+детерминированного прогона в `.aurora/scripts/`; модель не обходит базу сама, а
 интерпретирует отчёт и принимает решения, которые скрипт принимать не имеет права.
 
 Все скрипты по умолчанию ничего не пишут (dry-run). Запись — явным `--apply`.
@@ -13,7 +13,7 @@
 Чинит то, что ломается механически: битые wiki-ссылки, имена со смешанной
 кириллицей/латиницей, отсутствующий frontmatter у легаси-карточек.
 
-1. Прогон: `python3 .opencode/scripts/kb_fix.py --all` (dry-run) → отчёт: сколько ссылок
+1. Прогон: `python3 .aurora/scripts/kb_fix.py --all` (dry-run) → отчёт: сколько ссылок
    чинится, сколько файлов переименуется, что не решается.
 2. Прочитать секцию «Не решается автоматически» — это ссылки на несуществующие карточки.
    По каждой решить: (а) карточка потерялась → восстановить из источника; (б) ссылка на
@@ -30,8 +30,8 @@
 ## `--titles` — заголовок вместо имени файла
 
 ```bash
-python3 .opencode/scripts/kb_fix.py --titles            # что поправится
-python3 .opencode/scripts/kb_fix.py --titles --apply
+python3 .aurora/scripts/kb_fix.py --titles            # что поправится
+python3 .aurora/scripts/kb_fix.py --titles --apply
 ```
 
 Заголовок — имя сущности, имя файла — для ссылок. Модель видит базу по именам файлов, и
@@ -43,8 +43,8 @@ python3 .opencode/scripts/kb_fix.py --titles --apply
 ## `kb:retire` — поля, выведенные из схемы
 
 ```bash
-python3 .opencode/scripts/kb_fix.py --retire            # что уберётся
-python3 .opencode/scripts/kb_fix.py --retire --apply
+python3 .aurora/scripts/kb_fix.py --retire            # что уберётся
+python3 .aurora/scripts/kb_fix.py --retire --apply
 ```
 
 Схема иногда теряет поле: `audience` и `confirmed_by` убраны в 1.10.0 вместе со ступенью
@@ -103,7 +103,7 @@ python3 .opencode/scripts/kb_fix.py --retire --apply
 Acceptance Criteria, эпики и задачи. Они попадают в context pack как «факты» — модель
 начинает считать черновик продукта истиной.
 
-1. `python3 .opencode/scripts/kb_lint.py` — линтер называет четыре вида находок:
+1. `python3 .aurora/scripts/kb_lint.py` — линтер называет четыре вида находок:
    артефакты в знаниях, тип не совпадает с разделом, тип вне схемы, карточки без типа.
    Отдельной команды `kb:classify` с 1.44.0 нет: проверка карточек живёт в одном месте.
 2. Что скрипт НЕ считает артефактом: коды предметной области (`ALG-095`, `BP-005`,
@@ -132,10 +132,10 @@ Acceptance Criteria, эпики и задачи. Они попадают в cont
 Доверие в Авроре **вычисляется, а не присваивается**. Очереди верификации больше нет:
 вопрос «с чего начать проверку» отпал вместе с самой проверкой.
 
-1. `python3 .opencode/scripts/kb_trace_table.py --apply` — таблица связей «артефакт ↔
+1. `python3 .aurora/scripts/kb_trace_table.py --apply` — таблица связей «артефакт ↔
    задача»: прямые (совпавший номер, ссылка) и косвенные (трассировка до двух переходов).
    У каждой связи записано, чем она доказана.
-2. `python3 .opencode/scripts/kb_trust.py` — что изменится, затем `--apply`.
+2. `python3 .aurora/scripts/kb_trust.py` — что изменится, затем `--apply`.
    Класс источника: `raw`, `trusted`, `draft`, `unknown`; карточка получает `status`
    (`knowledge` либо `draft`), `trust`, `trust_basis` словами и дату пересчёта.
 3. Одна связанная задача в статусе черновика перевешивает десять готовых: пока она в
@@ -167,7 +167,7 @@ Acceptance Criteria, эпики и задачи. Они попадают в cont
 
 ## `sync:sources` — какие зеркала вообще есть
 
-`python3 .opencode/scripts/sources_registry.py` — что установлено и что подключено к
+`python3 .aurora/scripts/sources_registry.py` — что установлено и что подключено к
 проекту. Зеркала наливают **подключаемые модули**: движок знает не про Confluence и Jira,
 а про два вида хранилищ — `wiki` (дерево страниц) и `board` (плоский список задач).
 Confluence и Jira Data Center идут в комплекте; остальные добавляются папкой в
@@ -180,7 +180,7 @@ Confluence и Jira Data Center идут в комплекте; остальны�
 
 ## `agent:translit` — словарь имён заполняет модель
 
-Скрипт: `python3 .opencode/scripts/agent_runner.py --task translit --apply`.
+Скрипт: `python3 .aurora/scripts/agent_runner.py --task translit --apply`.
 
 Источники приходят с разными именами: часть по-русски, часть транслитом. Карточка
 наследует имя источника, в тексте соседних карточек то же понятие названо кириллицей —
@@ -203,7 +203,7 @@ Confluence и Jira Data Center идут в комплекте; остальны�
 
 ## `sync:web` — страницы сайтов в кеш проекта
 
-Скрипт: `python3 .opencode/scripts/web_export.py` (модуль `web`, вид `board`, роль
+Скрипт: `python3 .aurora/scripts/web_export.py` (модуль `web`, вид `board`, роль
 `artifacts`). Читает список адресов из блока `web:` конфига и сохраняет каждую страницу
 отдельным файлом в `Sources/Web/`.
 
@@ -217,9 +217,9 @@ Confluence и Jira Data Center идут в комплекте; остальны�
 настраиваются отдельными блоками панели и доверяются по разным правилам.
 
 ```bash
-python3 .opencode/scripts/web_export.py            # что будет выгружено
-python3 .opencode/scripts/web_export.py --apply    # записать
-python3 .opencode/scripts/web_export.py --verify   # гейт детерминизма
+python3 .aurora/scripts/web_export.py            # что будет выгружено
+python3 .aurora/scripts/web_export.py --apply    # записать
+python3 .aurora/scripts/web_export.py --verify   # гейт детерминизма
 ```
 
 Снятая галочка вступает в силу на ближайшем `kb:trust`: карточки, выведенные из этой
@@ -227,7 +227,7 @@ python3 .opencode/scripts/web_export.py --verify   # гейт детермини
 
 ## `sync:confluence` — детерминированное зеркало
 
-Скрипт: `python3 .opencode/scripts/confluence_export.py` (модуль `confluence-dc`, вид
+Скрипт: `python3 .aurora/scripts/confluence_export.py` (модуль `confluence-dc`, вид
 `wiki`). Чистый REST-клиент: на сервер Confluence ничего не ставится, работает с
 Data Center/Server и Cloud.
 
@@ -263,7 +263,7 @@ fenced-блоки, info/note/warning — в цитаты, ссылки `ac:link`
 
 ## `sync:jira` — детерминированное зеркало задач
 
-`python3 .opencode/scripts/jira_export.py [--jql "…"] [--comments] [--verify]`
+`python3 .aurora/scripts/jira_export.py [--jql "…"] [--comments] [--verify]`
 (модуль `jira-dc`, вид `board`).
 
 Тот же принцип, что у Confluence: конвертация кодом, а не моделью. Вики-разметка Jira
@@ -286,9 +286,9 @@ fenced-блоки, info/note/warning — в цитаты, ссылки `ac:link`
 `req_status` требования остаётся `agreed` навсегда.
 
 ```bash
-python3 .opencode/scripts/jira_status.py                 # отчёт
-python3 .opencode/scripts/jira_status.py --apply         # записать наблюдаемое состояние
-python3 .opencode/scripts/jira_status.py --link --apply  # проставить jira: по упоминаниям
+python3 .aurora/scripts/jira_status.py                 # отчёт
+python3 .aurora/scripts/jira_status.py --apply         # записать наблюдаемое состояние
+python3 .aurora/scripts/jira_status.py --link --apply  # проставить jira: по упоминаниям
 ```
 
 Запускать после `sync:jira` — скрипт читает зеркало, а не Jira. Что он даёт:
@@ -312,7 +312,7 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 Проверяются все подключённые зеркала: список даёт реестр модулей, правила сверки —
 вид хранилища. Одно зеркало — `--source <id>`, машинный итог для панели — `--json`.
 
-1. `python3 .opencode/scripts/sync_audit.py` → MISSING / MOVED / ORPHAN / COLLISION / STALE.
+1. `python3 .aurora/scripts/sync_audit.py` → MISSING / MOVED / ORPHAN / COLLISION / STALE.
 2. Разбор:
    - **MISSING** (в состоянии есть, файла нет) → досинхронизировать страницы по page_id.
    - **ORPHAN** (файл есть, в состоянии нет) → либо страница удалена/переименована в
@@ -328,7 +328,7 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 
 ## `sync:diff` — дрейф источников
 
-`python3 .opencode/scripts/sync_audit.py --drift [--all] [--stamp --apply]`.
+`python3 .aurora/scripts/sync_audit.py --drift [--all] [--stamp --apply]`.
 
 Сравнивает хеш файла-источника с полем `source_hash` карточки. Инвариант 3 запрещает
 синку переписывать проверенное — значит расхождение должен разобрать человек:
@@ -346,7 +346,7 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 
 ## `ship:release` — фиксация переданной версии
 
-`python3 .opencode/scripts/ship_doc.py --release Deliverables/work/<док>.md [--binary <файл>] --apply`.
+`python3 .aurora/scripts/ship_doc.py --release Deliverables/work/<док>.md [--binary <файл>] --apply`.
 
 1. Снапшот в `Deliverables/released/<DOC>_v<версия>_<дата>.md` — неизменяем. Повторная
    заморозка той же версии блокируется: изменился документ — это новая версия.
@@ -359,7 +359,7 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 
 ## `ops:status` / `ops:stats` — здоровье базы
 
-1. `python3 .opencode/scripts/aurora_stats.py` — все числа считаются здесь; модель их не
+1. `python3 .aurora/scripts/aurora_stats.py` — все числа считаются здесь; модель их не
    пересчитывает и не «оценивает на глаз».
 2. Прокомментировать: динамику доли `knowledge`, риски (карточки без связей,
    битые источники, поставляемые документы на непроверенных основаниях), что делать дальше.
@@ -372,7 +372,7 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 Движок работает с markdown, а ТЗ, инструкции и вопросы-ответы приходят в docx/pdf/xlsx.
 Без конвертации они невидимы для `ingest-raw` и `build`.
 
-1. `python3 .opencode/scripts/office_ingest.py` (весь `Raw/`) или с конкретным путём;
+1. `python3 .aurora/scripts/office_ingest.py` (весь `Raw/`) или с конкретным путём;
    `--dry-run` — посмотреть план.
 2. Рядом с оригиналом появляется `<имя>.md` с шапкой провенанса (`converted_from`,
    `converter`, `source_hash`) и предупреждением «истина — оригинал». **Оригинал не
@@ -388,7 +388,7 @@ python3 .opencode/scripts/jira_status.py --link --apply  # проставить 
 
 ## `ctx:context` — пак собирается скриптом
 
-`python3 .opencode/scripts/ctx_pack.py "<тема>" [--mode generate|review|ask|evaluate]`.
+`python3 .aurora/scripts/ctx_pack.py "<тема>" [--mode generate|review|ask|evaluate]`.
 
 Отбор карточек, фильтр по статусу и релизу, шапки доверия, преамбула, справочник
 аббревиатур и бюджет — правила из `retrieval.md`, а не понимание. Модель получает
@@ -445,7 +445,7 @@ deprecated-карточку и битую ссылку.
 
 ## Храповик: защита от накопления ошибок
 
-1. `python3 .opencode/scripts/aurora_hooks.py --install` — режим **храповика**: текущее
+1. `python3 .aurora/scripts/aurora_hooks.py --install` — режим **храповика**: текущее
    число ошибок линтера фиксируется как базовая линия; коммит падает, только если ошибок
    стало больше. Меньше — линия автоматически опускается.
 2. Это единственный режим, применимый к легаси-базе: блокировать коммиты при тысяче
@@ -455,7 +455,7 @@ deprecated-карточку и битую ссылку.
 
 ## `kit:structure` — фиксированная структура
 
-1. `python3 .opencode/scripts/aurora_doctor.py --structure`.
+1. `python3 .aurora/scripts/aurora_doctor.py --structure`.
 2. Недостающие стандартные папки → `aurora.py update <проект> --structure-only --apply`.
 3. Лишние папки (свои типы артефактов, свои разделы базы, свои корни) — ошибка схемы:
    содержимое переносится в `Workspaces/<задача>/`, а если тип нужен всем проектам —
@@ -472,9 +472,9 @@ deprecated-карточку и битую ссылку.
 по доверию (`knowledge` выше `draft`), взять первую содержательную строку.
 
 ```bash
-python3 .opencode/scripts/kb_index.py                 # что изменится
-python3 .opencode/scripts/kb_index.py --apply
-python3 .opencode/scripts/kb_index.py --apply --root-index   # + общий index.md базы
+python3 .aurora/scripts/kb_index.py                 # что изменится
+python3 .aurora/scripts/kb_index.py --apply
+python3 .aurora/scripts/kb_index.py --apply --root-index   # + общий index.md базы
 ```
 
 Рукотворные `_index.md` (без пометки генерации в первой строке) скрипт **не трогает**.
@@ -500,9 +500,9 @@ python3 .opencode/scripts/kb_index.py --apply --root-index   # + общий inde
 модели или на витрину.
 
 ```bash
-python3 .opencode/scripts/kb_scrub.py                    # отчёт: где и что
-python3 .opencode/scripts/kb_scrub.py --apply            # закрыть маркерами [ПДн: …]
-python3 .opencode/scripts/kb_scrub.py --include-raw      # заглянуть и в доказательства
+python3 .aurora/scripts/kb_scrub.py                    # отчёт: где и что
+python3 .aurora/scripts/kb_scrub.py --apply            # закрыть маркерами [ПДн: …]
+python3 .aurora/scripts/kb_scrub.py --include-raw      # заглянуть и в доказательства
 ```
 
 **Режим задаётся проектом**, а не решается каждый раз заново: `privacy.scrub` в

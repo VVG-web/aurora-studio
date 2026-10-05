@@ -9,10 +9,10 @@
 **Оригинал остаётся нетронутым** — он и есть доказательство (инвариант 6); транскрипт —
 машинная копия для извлечения карточек, и это в нём написано.
 
-  python3 .opencode/scripts/office_ingest.py                    # разобрать весь Raw/
-  python3 .opencode/scripts/office_ingest.py Raw/contract/ТЗ.docx
-  python3 .opencode/scripts/office_ingest.py --dry-run          # что будет сделано
-  python3 .opencode/scripts/office_ingest.py --force            # перечитать уже собранные
+  python3 .aurora/scripts/office_ingest.py                    # разобрать весь Raw/
+  python3 .aurora/scripts/office_ingest.py Raw/contract/ТЗ.docx
+  python3 .aurora/scripts/office_ingest.py --dry-run          # что будет сделано
+  python3 .aurora/scripts/office_ingest.py --force            # перечитать уже собранные
 
 Конвертеры (каскад, берётся первый доступный):
   pandoc      — лучший markdown для docx/pptx (таблицы, заголовки)
@@ -40,7 +40,7 @@ from xml.etree import ElementTree as ET
 
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".opencode", ".cursor", ".claude"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".aurora", ".cursor", ".claude"}
 MAX_DOCX_XML = 200_000_000     # байт после распаковки: больше — не документ, а бомба
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 

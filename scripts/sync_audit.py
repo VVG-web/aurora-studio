@@ -18,10 +18,10 @@ wiki (дерево страниц с номерами) или board (плоск�
   STALE       — состояние синка старше N дней (по умолчанию 14)
 
 Запуск из корня проекта:
-  python3 .opencode/scripts/sync_audit.py
-  python3 .opencode/scripts/sync_audit.py --source Confluence
-  python3 .opencode/scripts/sync_audit.py --stale-days 7 --report Artifacts/reports/2026-07-26_sync_audit.md
-  python3 .opencode/scripts/sync_audit.py --json      # для панели
+  python3 .aurora/scripts/sync_audit.py
+  python3 .aurora/scripts/sync_audit.py --source Confluence
+  python3 .aurora/scripts/sync_audit.py --stale-days 7 --report Artifacts/reports/2026-07-26_sync_audit.md
+  python3 .aurora/scripts/sync_audit.py --json      # для панели
 
 Ничего не меняет. Выход: 0 — расхождений нет; 1 — есть (нужен досинк или чистка).
 

@@ -269,6 +269,6 @@ and the kit's GitHub check failed on such a stub without reaching the check itse
 The names the engine composes (cards from titles, mirror pages, artifacts, conversations, corrections) already follow
 these rules. The rule is for everyone who writes by hand — a human and any model.
 
-The check — `python3 .opencode/scripts/aurora_doctor.py` (the "names:" lines); the fix — `python3
-.opencode/scripts/kb_names.py --apply` (the `kb:names` command): Confluence mirror paths, card names with links, git
+The check — `python3 .aurora/scripts/aurora_doctor.py` (the "names:" lines); the fix — `python3
+.aurora/scripts/kb_names.py --apply` (the `kb:names` command): Confluence mirror paths, card names with links, git
 entries distinguishable only by case.

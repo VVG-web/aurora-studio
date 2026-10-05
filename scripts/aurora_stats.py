@@ -6,9 +6,9 @@
 поставки. Команда `status` обязана начинать с этого скрипта и комментировать его числа.
 
 Запуск из корня проекта:
-  python3 .opencode/scripts/aurora_stats.py               # дашборд
-  python3 .opencode/scripts/aurora_stats.py --json        # то же машинно
-  python3 .opencode/scripts/aurora_stats.py --append-metrics   # + строка в meta/metrics.md
+  python3 .aurora/scripts/aurora_stats.py               # дашборд
+  python3 .aurora/scripts/aurora_stats.py --json        # то же машинно
+  python3 .aurora/scripts/aurora_stats.py --append-metrics   # + строка в meta/metrics.md
 
 Ничего не меняет (кроме --append-metrics, который дописывает одну строку в журнал замеров).
 

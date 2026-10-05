@@ -268,11 +268,11 @@ def test_graph_is_a_way_into_the_card(tmp: Path):
     # Кэш — производная, а не работа человека: битый файл чинится сам.
     proj = tmp / "гп"
     (proj / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
-    (proj / ".opencode" / "scripts").mkdir(parents=True)
+    (proj / ".aurora" / "scripts").mkdir(parents=True)
     (proj / "aurora.config.yaml").write_text("project:\n  name: Г\n", encoding="utf-8")
-    shutil.copy(KIT / "scripts/kb_graph.py", proj / ".opencode/scripts/kb_graph.py")
+    shutil.copy(KIT / "scripts/kb_graph.py", proj / ".aurora/scripts/kb_graph.py")
     for dep in ("aurora_common.py",):
-        shutil.copy(KIT / "scripts" / dep, proj / ".opencode/scripts" / dep)
+        shutil.copy(KIT / "scripts" / dep, proj / ".aurora/scripts" / dep)
     (proj / "AuroraKnowledgeDB" / "Concepts" / "Одна.md").write_text(
         "---\ntype: concept\nstatus: knowledge\n---\n\n# Одна\n", encoding="utf-8")
     cache = proj / "AuroraKnowledgeDB" / "meta" / "graph.json"
@@ -902,7 +902,7 @@ def test_long_step_reports_progress_and_duration(tmp: Path):
     assert again["agent:build"]["secs"] == 754, again
 
     # журнал старого формата (без колонки секунд) читается по-прежнему
-    path = root / ".opencode" / "run_log.md"
+    path = root / "AuroraKnowledgeDB" / "meta" / "run_log.md"
     path.write_text(path.read_text(encoding="utf-8").replace(" | 754 |", " |"),
                     encoding="utf-8")
     old = ck.read_runlog(str(root))

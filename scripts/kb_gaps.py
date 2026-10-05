@@ -20,9 +20,9 @@
 Ничего не правит. Это отчёт: что чинится командой — сказано прямо, что решает человек —
 названо человеком.
 
-  python3 .opencode/scripts/kb_gaps.py                 # отчёт
-  python3 .opencode/scripts/kb_gaps.py --min-mentions 3  # порог для «понятия без карточки»
-  python3 .opencode/scripts/kb_gaps.py --report meta/gaps.md
+  python3 .aurora/scripts/kb_gaps.py                 # отчёт
+  python3 .aurora/scripts/kb_gaps.py --min-mentions 3  # порог для «понятия без карточки»
+  python3 .aurora/scripts/kb_gaps.py --report meta/gaps.md
 
 Зависимостей нет.
 """

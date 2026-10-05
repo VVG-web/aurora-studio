@@ -13,10 +13,10 @@ entrypoint: SKILL.md
 ## Зеркало делает скрипт, не модель
 
 ```bash
-python3 .opencode/scripts/web_export.py            # показать, что будет выгружено
-python3 .opencode/scripts/web_export.py --apply    # записать в кеш проекта
-python3 .opencode/scripts/web_export.py --verify   # гейт детерминизма
-python3 .opencode/scripts/web_export.py --prune --apply   # убрать файлы снятых ссылок
+python3 .aurora/scripts/web_export.py            # показать, что будет выгружено
+python3 .aurora/scripts/web_export.py --apply    # записать в кеш проекта
+python3 .aurora/scripts/web_export.py --verify   # гейт детерминизма
+python3 .aurora/scripts/web_export.py --prune --apply   # убрать файлы снятых ссылок
 ```
 
 Модель страницы не переписывает. Одна и та же страница обязана давать байт-в-байт один

@@ -10,11 +10,11 @@
 и git видит правку там, где её нет. Здесь конвертация — код: одна и та же страница даёт
 байт-в-байт один и тот же файл.
 
-  python3 .opencode/scripts/confluence_export.py                 # выгрузить корни из aurora.config.yaml
-  python3 .opencode/scripts/confluence_export.py --roots 642568785
-  python3 .opencode/scripts/confluence_export.py --verify        # прогнать дважды и сверить (гейт детерминизма)
-  python3 .opencode/scripts/confluence_export.py --force         # переписать зеркало целиком
-  python3 .opencode/scripts/confluence_export.py --prune         # убрать зеркала удалённых страниц
+  python3 .aurora/scripts/confluence_export.py                 # выгрузить корни из aurora.config.yaml
+  python3 .aurora/scripts/confluence_export.py --roots 642568785
+  python3 .aurora/scripts/confluence_export.py --verify        # прогнать дважды и сверить (гейт детерминизма)
+  python3 .aurora/scripts/confluence_export.py --force         # переписать зеркало целиком
+  python3 .aurora/scripts/confluence_export.py --prune         # убрать зеркала удалённых страниц
 
 Что важно для git-зеркала (и чем это отличается от RAG-выгрузок):
   • имя файла НЕ содержит версию и дату — иначе каждая правка страницы создаёт новый файл;
@@ -56,7 +56,7 @@ STATE = WikiMirror.state_name
 # Версия конвертера страниц. Изменили `to_markdown` так, что меняется вывод, — поднимите:
 # кэш страниц сбросится, и синк один раз пройдёт всё зеркало полностью.
 CONVERTER = 1
-PAGE_CACHE = os.path.join(".opencode", "cache", "confluence_pages.json")
+PAGE_CACHE = os.path.join(".aurora", "cache", "confluence_pages.json")
 CACHE_FRESH_SINCE = (date.fromisoformat(TODAY) - timedelta(days=7)).isoformat()
 
 

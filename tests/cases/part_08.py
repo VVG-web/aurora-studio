@@ -435,11 +435,11 @@ def test_dev_qa_keeps_the_test_registry_honest(tmp: Path):
 
     # в проекте контур разработки не работает и не показывается
     proj = tmp / "project"
-    (proj / ".opencode/scripts").mkdir(parents=True)
+    (proj / ".aurora/scripts").mkdir(parents=True)
     (proj / "aurora.config.yaml").write_text('project:\n  name: "T"\n', encoding="utf-8")
-    (proj / ".opencode/scripts/dev_qa.py").write_text(
+    (proj / ".aurora/scripts/dev_qa.py").write_text(
         (KIT / "scripts/dev_qa.py").read_text(encoding="utf-8"), encoding="utf-8")
-    r = subprocess.run([sys.executable, ".opencode/scripts/dev_qa.py", "--list"],
+    r = subprocess.run([sys.executable, ".aurora/scripts/dev_qa.py", "--list"],
                        cwd=str(proj), capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert r.returncode != 0 and "не кит" in r.stderr, \
         f"QA-контур запустился в проекте:\n{r.stdout}{r.stderr}"
@@ -1011,7 +1011,7 @@ def test_kb_graph_writes_links_into_cards(tmp: Path):
     second = run("kb_graph.py", "--cards", "--apply", cwd=root)
     # База та же — шаг кончается сразу (1.151.0); без отпечатка — честный пересчёт с нулём.
     assert "без изменений" in second.stdout, second.stdout[:400]
-    (root / ".opencode/state/links-cards.json").unlink()
+    (root / ".aurora/state/links-cards.json").unlink()
     third = run("kb_graph.py", "--cards", "--apply", cwd=root)
     assert "связей добавлено: 0" in third.stdout, "повторный прогон дублирует связи"
 
@@ -1764,7 +1764,7 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     Тот же класс, что был с git-хуком: правило живёт в ките, а в проекте лежит копия,
     снятая при установке. Установка смотрела на файл целиком — «есть старые строки,
     значит настроен» — и не добавляла ничего. На двух живых проектах так и остался вне
-    игнора `.opencode/state/`: рантайм-состояние прогона. На одном замок агента попал
+    игнора `.aurora/state/`: рантайм-состояние прогона. На одном замок агента попал
     под контроль версий, и после каждого прогона дерево оставалось грязным, а чекпойнт
     агента делает `git add -A` и утащил бы замок в историю под видом работы человека.
 
@@ -1778,11 +1778,11 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     gi.write_text("# мой файл\n.DS_Store\n.env\nMyOwnFolder/\n", encoding="utf-8")
     added = merge_gitignore(gi)
     text = gi.read_text(encoding="utf-8")
-    assert ".opencode/state/" in text, \
+    assert ".aurora/" in text.splitlines(), \
         "правило кита не доехало — состояние прогона снова попадёт под контроль версий"
     assert "MyOwnFolder/" in text, "строка человека потерялась при дописывании"
     assert text.count(".DS_Store") == 1, "уже имевшееся правило продублировано"
-    assert ".opencode/state/" in added and ".DS_Store" not in added, \
+    assert ".aurora/" in added and ".DS_Store" not in added, \
         "отчёт врёт о том, что было добавлено"
 
     second = merge_gitignore(gi)
@@ -1800,11 +1800,16 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     # Кэш отчёта аналитика — производная (29.09.2026: у двух проектов он уже лежал в git,
     # его утащил чекпойнт агента). Правило закрывает новое, а про уже попавшее в историю
     # обновление говорит, как снять его с учёта, — само git проекта не трогает.
-    assert ".opencode/cache/" in GITIGNORE_BLOCK, "кэш отчёта аналитика снова уедет в git"
+    assert ".aurora/" in GITIGNORE_BLOCK.splitlines(), "кэш отчёта аналитика снова уедет в git"
+    # Харнессы — у каждого свои, а навыки проекта общие (1.158.0).
+    for rule in (".cursor/", ".opencode/", ".codex/", ".gemini/", ".windsurf/", ".claude/*", "!.claude/skills/"):
+        assert rule in GITIGNORE_BLOCK.splitlines(), f"нет правила харнесса: {rule}"
+    assert GITIGNORE_BLOCK.index(".claude/*") < GITIGNORE_BLOCK.index("!.claude/skills/"), \
+        "навыки проекта закрыты: исключение должно идти после правила"
     U = importlib.import_module("aurora_update")
     repo = tmp / "репо"
-    (repo / ".opencode/cache/reports").mkdir(parents=True)
-    (repo / ".opencode/cache/reports/issues.json").write_text("{}", encoding="utf-8")
+    (repo / ".aurora/cache/reports").mkdir(parents=True)
+    (repo / ".aurora/cache/reports/issues.json").write_text("{}", encoding="utf-8")
     (repo / "Карточка.md").write_text("x", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
@@ -1816,6 +1821,6 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     with open(repo / ".gitignore", "a", encoding="utf-8") as f:
         f.write("\n# своё правило человека\nWorkspaces/\n")
     # своё правило человека — его дело: «снять с учёта» его рабочие файлы не предлагаем
-    assert U.tracked_but_ignored(repo) == [".opencode/cache/reports/issues.json"], \
+    assert U.tracked_but_ignored(repo) == [".aurora/cache/reports/issues.json"], \
         U.tracked_but_ignored(repo)
     assert "git rm -r --cached" in upd and "tracked_but_ignored(target)" in upd

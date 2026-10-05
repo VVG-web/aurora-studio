@@ -44,7 +44,7 @@ updated: 2026-08-07
 
 | # | Действие | Ожидаемый результат |
 |---|---|---|
-| 1 | `python3 .opencode/scripts/build_plan.py --done Sources/Confluence/Страница.md` | код возврата `1`; в stderr строка «отметка не поставлена»; `meta/manifest.json` не изменился |
+| 1 | `python3 .aurora/scripts/build_plan.py --done Sources/Confluence/Страница.md` | код возврата `1`; в stderr строка «отметка не поставлена»; `meta/manifest.json` не изменился |
 | 2 | создать карточку с `source: "Sources/Confluence/Страница.md"` | файл появился |
 | 3 | повторить шаг 1 | код возврата `0`; в stdout «обработан, карточек 1»; в `manifest.json` запись с хешем и датой |
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """kb_names.py — привести имена проекта к правилам Windows, macOS и Linux сразу.
 
-  python3 .opencode/scripts/kb_names.py            # что не так и что будет сделано
-  python3 .opencode/scripts/kb_names.py --apply    # сделать
+  python3 .aurora/scripts/kb_names.py            # что не так и что будет сделано
+  python3 .aurora/scripts/kb_names.py --apply    # сделать
 
 Панель: `kb:names`
 

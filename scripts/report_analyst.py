@@ -3,11 +3,11 @@
 
 Цепочка: выгрузка из Jira и Confluence → метрики → HTML. Всё проектное
 (имя, год, адреса, ростер, события) берётся из `aurora.config.yaml`; сами шаги
-цепочки лежат в `.opencode/reports/analyst/`.
+цепочки лежат в `.aurora/reports/analyst/`.
 
-  python3 .opencode/scripts/report_analyst.py                # выгрузить и собрать
-  python3 .opencode/scripts/report_analyst.py --skip-fetch   # по уже выгруженному
-  python3 .opencode/scripts/report_analyst.py --serve        # и открыть дашборд
+  python3 .aurora/scripts/report_analyst.py                # выгрузить и собрать
+  python3 .aurora/scripts/report_analyst.py --skip-fetch   # по уже выгруженному
+  python3 .aurora/scripts/report_analyst.py --serve        # и открыть дашборд
 
 Токены — в `.env.aurora.local` (он в .gitignore): JIRA_PERSONAL_TOKEN,
 CONFLUENCE_PAT. В сам конфиг они не пишутся.
@@ -30,7 +30,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-# Шаги цепочки лежат рядом: в ките — reports/analyst/, в проекте — .opencode/reports/analyst/
+# Шаги цепочки лежат рядом: в ките — reports/analyst/, в проекте — .aurora/reports/analyst/
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "reports", "analyst")
 sys.path.insert(0, HERE)
@@ -147,7 +147,7 @@ def main() -> int:
             for m in missing:
                 print(f"   — {m}", file=sys.stderr)
             print("   Положите их в .env.aurora.local либо соберите по уже выгруженному:"
-                  "\n   python3 .opencode/scripts/report_analyst.py --skip-fetch", file=sys.stderr)
+                  "\n   python3 .aurora/scripts/report_analyst.py --skip-fetch", file=sys.stderr)
             return 1
 
     fetch = [] if a.skip_fetch else FETCH

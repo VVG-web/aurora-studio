@@ -89,8 +89,8 @@ The manifest is JSON, not YAML: it is read by the engine, not by a human, and ha
 ## How a module gets into a project
 
 1. The folder is put into the kit's `connectors/`.
-2. `aurora.py update <project> --apply` spreads the manifest into `.opencode/connectors/<id>.json`, the script into
-   `.opencode/scripts/`, and the sync skill's body into the project's existing skill folders (no overwriting: the kit
+2. `aurora.py update <project> --apply` spreads the manifest into `.aurora/connectors/<id>.json`, the script into
+   `.aurora/scripts/`, and the sync skill's body into the project's existing skill folders (no overwriting: the kit
    version lands next to it as `.new`).
 3. The module is connected to the project in `aurora.config.yaml`:
 
@@ -104,7 +104,7 @@ sources:
    The panel does the same: "Mirrors" → "Source modules" → tick and save.
 4. The mirror folder is created by `update` (or `--structure-only`).
 
-Check the result: `python3 .opencode/scripts/sources_registry.py`.
+Check the result: `python3 .aurora/scripts/sources_registry.py`.
 
 ## Disconnecting
 

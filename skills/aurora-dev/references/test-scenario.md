@@ -36,7 +36,7 @@ updated: 2026-08-07
 ### Шаг 1 · Зеркало
 
 ```bash
-python3 .opencode/scripts/confluence_export.py --force
+python3 .aurora/scripts/confluence_export.py --force
 ```
 
 Состояние после: в `Sources/Confluence/` файлы, `sync_state.md` заполнен, `sync:audit`
@@ -45,10 +45,10 @@ python3 .opencode/scripts/confluence_export.py --force
 ### Шаг 2 · Разбор
 
 ```bash
-python3 .opencode/scripts/build_plan.py --slice Sources/Confluence/<файл>
-python3 .opencode/scripts/build_plan.py --card "Имя" --source Sources/Confluence/<файл> \
+python3 .aurora/scripts/build_plan.py --slice Sources/Confluence/<файл>
+python3 .aurora/scripts/build_plan.py --card "Имя" --source Sources/Confluence/<файл> \
     --sections 1,2 --to Concepts --apply
-python3 .opencode/scripts/build_plan.py --done Sources/Confluence/<файл>
+python3 .aurora/scripts/build_plan.py --done Sources/Confluence/<файл>
 ```
 
 Состояние после: карточка в базе, запись в `manifest.json`, источник исчез из плана.
@@ -56,8 +56,8 @@ python3 .opencode/scripts/build_plan.py --done Sources/Confluence/<файл>
 ### Шаг 3 · Доверие
 
 ```bash
-python3 .opencode/scripts/kb_trace_table.py --apply
-python3 .opencode/scripts/kb_trust.py --apply
+python3 .aurora/scripts/kb_trace_table.py --apply
+python3 .aurora/scripts/kb_trust.py --apply
 ```
 
 Состояние после: у карточки `status: knowledge` либо `draft`, а в `trust_basis` названы

@@ -4,9 +4,9 @@
 Иногда база расходится с реальностью настолько, что чинить дороже, чем построить заново:
 пятьсот карточек с чужой разметкой, сотни двойников, половина без типа.
 
-  python3 .opencode/scripts/kb_reset.py            # что будет удалено (dry-run)
-  python3 .opencode/scripts/kb_reset.py --apply    # обнулить базу
-  python3 .opencode/scripts/kb_reset.py --keep-handmade --apply   # кроме рукотворного
+  python3 .aurora/scripts/kb_reset.py            # что будет удалено (dry-run)
+  python3 .aurora/scripts/kb_reset.py --apply    # обнулить базу
+  python3 .aurora/scripts/kb_reset.py --keep-handmade --apply   # кроме рукотворного
 
 **Что удаляется:** всё содержимое `AuroraKnowledgeDB/` — карточки всех разделов, журнал
 решений, вопросы, рукотворные справочники, оглавления, архив, `meta/`. Пустые папки

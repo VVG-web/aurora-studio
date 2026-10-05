@@ -19,7 +19,7 @@
 
 | Симптом | Причина и что делать |
 |---|---|
-| **«нет токена — задайте CONFLUENCE_PERSONAL_TOKEN»** | Скрипты синхронизации ходят в Confluence и Jira напрямую; MCP вашего редактора не помогает. Скопируйте `aurora.env.local.example` в `.env.aurora.local` и заполните. Проверка: `python3 .opencode/scripts/jira_export.py --limit 1`. |
+| **«нет токена — задайте CONFLUENCE_PERSONAL_TOKEN»** | Скрипты синхронизации ходят в Confluence и Jira напрямую; MCP вашего редактора не помогает. Скопируйте `aurora.env.local.example` в `.env.aurora.local` и заполните. Проверка: `python3 .aurora/scripts/jira_export.py --limit 1`. |
 | **Скилл синхронизации смотрит не в то пространство или JQL** | Значения живут в `aurora.config.yaml`, а не в скилле: поправьте конфиг или запустите `aurora_setup.py` ещё раз. |
 | **Таймауты, половины страниц нет** | Страницы, до которых обход не дошёл, остаются в состоянии; запустите синхронизацию снова. `--prune` отказывается удалять после выгрузки с ошибками. |
 | **Страницу перенесли в Confluence** | `kit:remap-sources`, затем `kb:repair --gone-sources`. |

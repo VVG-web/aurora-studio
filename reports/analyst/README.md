@@ -4,8 +4,8 @@
 по статусам, фильтры по типу задачи и по человеку. Открывается файлом, без сервера.
 
 ```bash
-python3 .opencode/scripts/report_analyst.py                # выгрузить и собрать
-python3 .opencode/scripts/report_analyst.py --skip-fetch   # собрать по выгруженному
+python3 .aurora/scripts/report_analyst.py                # выгрузить и собрать
+python3 .aurora/scripts/report_analyst.py --skip-fetch   # собрать по выгруженному
 ```
 
 В панели — `ops:report`.
@@ -21,7 +21,7 @@ reports:
     # years: [2024, 2025, 2026]             # ограничить набор (иначе — по данным)
     roster: Settings/report-roster.csv      # ФИО;Email;Роль;Прежние ФИО
     events: Settings/report-events.csv      # weeks;name;caption;severity
-    data_dir: .opencode/cache/reports/analyst
+    data_dir: .aurora/cache/reports/analyst
     output: Artifacts/reports/{project}_analyst_extended.html
 ```
 

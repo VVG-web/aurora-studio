@@ -12,14 +12,14 @@ LLM-синка). Что не легло по id — пробуется по но
 
 Порядок при переезде:
 
-  1. python3 .opencode/scripts/kb_remap.py --snapshot      # ДО переэкспорта: снять карту
-  2. python3 .opencode/scripts/confluence_export.py        # пересобрать зеркало
-  3. python3 .opencode/scripts/kb_remap.py                 # посмотреть, что изменится
-  4. python3 .opencode/scripts/kb_remap.py --apply
+  1. python3 .aurora/scripts/kb_remap.py --snapshot      # ДО переэкспорта: снять карту
+  2. python3 .aurora/scripts/confluence_export.py        # пересобрать зеркало
+  3. python3 .aurora/scripts/kb_remap.py                 # посмотреть, что изменится
+  4. python3 .aurora/scripts/kb_remap.py --apply
 
 Снимок забыли снять — карту можно достать из истории git:
 
-  python3 .opencode/scripts/kb_remap.py --from-git HEAD~1
+  python3 .aurora/scripts/kb_remap.py --from-git HEAD~1
 
 Ничего не удаляет: правит только строки `source:` в карточках.
 

@@ -50,8 +50,8 @@ flowchart LR
 # локальная проверка на свежем проекте
 python3 aurora.py new /tmp/aurora-demo --non-interactive
 cd /tmp/aurora-demo
-python3 .opencode/scripts/aurora_doctor.py --structure
-python3 .opencode/scripts/kb_lint.py --summary
+python3 .aurora/scripts/aurora_doctor.py --structure
+python3 .aurora/scripts/kb_lint.py --summary
 
 # тесты кита (из корня кита)
 python3 tests/run_tests.py --smoke          # инварианты по исходникам, быстро
@@ -98,7 +98,7 @@ CI (`.github/workflows/test.yml`): `--smoke` и полный прогон на P
 1. Скрипт в `scripts/`; в docstring строка `Панель: \`<набор>:<команда>\`` — тест сверяет её с реестром.
 2. Строка в `commands.txt`: `набор | команда | алиасы | исполнитель | реализация | с версии | описание`.
    Исполнитель — `скрипт`, `модель` или `скрипт+модель`.
-3. Файл в `engine_manifest.txt` (`scripts/x.py => .opencode/scripts/x.py`), иначе он не доедет до
+3. Файл в `engine_manifest.txt` (`scripts/x.py => .aurora/scripts/x.py`), иначе он не доедет до
    проектов.
 4. Строка в таблице `skills/aurora-vault/SKILL.md` и, если это процедура, в `references/`.
 5. Перегенерировать справочник: `python3 scripts/kit_commands.py --md docs/commands.md` (вручную файл

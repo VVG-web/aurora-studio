@@ -46,8 +46,8 @@ flowchart LR
 # a local check on a fresh project
 python3 aurora.py new /tmp/aurora-demo --non-interactive
 cd /tmp/aurora-demo
-python3 .opencode/scripts/aurora_doctor.py --structure
-python3 .opencode/scripts/kb_lint.py --summary
+python3 .aurora/scripts/aurora_doctor.py --structure
+python3 .aurora/scripts/kb_lint.py --summary
 
 # the kit's tests (from the kit root)
 python3 tests/run_tests.py --smoke          # invariants from the sources, fast
@@ -95,7 +95,7 @@ f-string).
    registry.
 2. A line in `commands.txt`: `set | command | aliases | executor | implementation | since version | description`. The executor
    is `скрипт`, `модель` or `скрипт+модель`.
-3. A file in `engine_manifest.txt` (`scripts/x.py => .opencode/scripts/x.py`), otherwise it will not reach projects.
+3. A file in `engine_manifest.txt` (`scripts/x.py => .aurora/scripts/x.py`), otherwise it will not reach projects.
 4. A line in the table of `skills/aurora-vault/SKILL.md` and, if it is a procedure, in `references/`.
 5. Regenerate the reference: `python3 scripts/kit_commands.py --md docs/commands.md` (the file is not edited by hand). The
    English description of the command and of its new flags goes into `cockpit/i18n/data/en.json` (sections `commands`,

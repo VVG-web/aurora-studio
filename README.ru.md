@@ -123,7 +123,7 @@ your-project/
 ├── Deliverables/             work/ (черновики) · released/ (заморожено) · _archive/
 ├── Workspaces/               песочницы больших задач
 ├── Templates/ · TemplatesCommon/ · Prompts/ · Settings/
-└── .opencode/                копия движка: скрипты, навыки, схема, kit_path.txt
+└── .aurora/                копия движка: скрипты, навыки, схема, kit_path.txt
 ```
 
 ## Документация

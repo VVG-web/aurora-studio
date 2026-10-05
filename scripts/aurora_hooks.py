@@ -9,10 +9,10 @@
 ошибок стало БОЛЬШЕ базовой линии. Стало меньше — линия автоматически опускается (и
 больше уже не поднимется). Так легаси-долг не блокирует работу, но и не растёт.
 
-  python3 .opencode/scripts/aurora_hooks.py --install            # храповик (рекомендуется)
-  python3 .opencode/scripts/aurora_hooks.py --install --mode block   # падать на любой ошибке
-  python3 .opencode/scripts/aurora_hooks.py --install --mode warn    # только предупреждать
-  python3 .opencode/scripts/aurora_hooks.py --status | --uninstall
+  python3 .aurora/scripts/aurora_hooks.py --install            # храповик (рекомендуется)
+  python3 .aurora/scripts/aurora_hooks.py --install --mode block   # падать на любой ошибке
+  python3 .aurora/scripts/aurora_hooks.py --install --mode warn    # только предупреждать
+  python3 .aurora/scripts/aurora_hooks.py --status | --uninstall
 
 Обойти хук в экстренном случае: `git commit --no-verify`.
 
@@ -112,7 +112,7 @@ HOOK = '''#!/bin/sh
 # Обойти храповик: AURORA_SKIP_RATCHET=1 git commit  (или кнопка в панели)
 # Обойти всё, включая проверку внутренних названий: git commit --no-verify
 
-LINT=".opencode/scripts/kb_lint.py"
+LINT=".aurora/scripts/kb_lint.py"
 MODE_EARLY="{mode}"
 [ -f "$LINT" ] || exit 0
 
@@ -153,7 +153,7 @@ if [ -s "$STAGED_LIST" ]; then
     echo "aurora: в том, что вы коммитите, ошибок $MINE_ERR — они ваши, не чужие."
     $PY "$LINT" --only-from "$STAGED_LIST" 2>&1 | head -20
     echo "        Починить: в панели «Команды» → kb:repair (в терминале:"
-    echo "                  python3 .opencode/scripts/kb_fix.py --all --apply)"
+    echo "                  python3 .aurora/scripts/kb_fix.py --all --apply)"
     echo "        Всё равно зафиксировать: кнопка «Зафиксировать всё равно» в панели"
     echo "                  (в терминале: AURORA_SKIP_RATCHET=1 git commit …)"
     rm -f "$STAGED_LIST"
@@ -179,7 +179,7 @@ case "$MODE" in
     ;;
   block)
     if [ "$ERRORS" -gt 0 ]; then
-      echo "aurora: коммит остановлен — почините базу: python3 .opencode/scripts/kb_fix.py --all"
+      echo "aurora: коммит остановлен — почините базу: python3 .aurora/scripts/kb_fix.py --all"
       exit 1
     fi
     ;;
@@ -368,7 +368,7 @@ def git_dir() -> Path | None:
 
 
 def current_errors() -> int | None:
-    lint = Path(".opencode/scripts/kb_lint.py")
+    lint = Path(".aurora/scripts/kb_lint.py")
     if not lint.is_file():
         return None
     try:

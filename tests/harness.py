@@ -137,18 +137,18 @@ def make_project(tmp: Path, git: bool = False) -> Path:
         line = line.strip()
         if line and not line.startswith("#"):
             (root / line).mkdir(parents=True, exist_ok=True)
-    (root / ".opencode" / "scripts").mkdir(parents=True, exist_ok=True)
-    shutil.copy(KIT / "structure_dirs.txt", root / ".opencode" / "structure_dirs.txt")
+    (root / ".aurora" / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy(KIT / "structure_dirs.txt", root / ".aurora" / "structure_dirs.txt")
     for s in SCRIPTS.glob("*.py"):
-        shutil.copy(s, root / ".opencode" / "scripts" / s.name)
+        shutil.copy(s, root / ".aurora" / "scripts" / s.name)
     # модули источников: манифесты и папки их зеркал (в проекте это делает install/update)
-    (root / ".opencode" / "connectors").mkdir(parents=True, exist_ok=True)
+    (root / ".aurora" / "connectors").mkdir(parents=True, exist_ok=True)
     for man in (KIT / "connectors").glob("*/connector.json"):
         m = json.loads(man.read_text(encoding="utf-8"))
-        shutil.copy(man, root / ".opencode" / "connectors" / f"{m['id']}.json")
+        shutil.copy(man, root / ".aurora" / "connectors" / f"{m['id']}.json")
         (root / m["mirror"]["default_path"]).mkdir(parents=True, exist_ok=True)
-    (root / ".opencode" / "skills" / "aurora-vault").mkdir(parents=True, exist_ok=True)
-    (root / ".opencode" / "skills" / "aurora-vault" / "SKILL.md").write_text("stub", encoding="utf-8")
+    (root / ".aurora" / "skills" / "aurora-vault").mkdir(parents=True, exist_ok=True)
+    (root / ".aurora" / "skills" / "aurora-vault" / "SKILL.md").write_text("stub", encoding="utf-8")
     (root / "aurora.config.yaml").write_text(
         'project:\n  name: "Test"\n  slug: "Test"\natlassian:\n  confluence:\n'
         '    space: "T"\n  jira:\n    project_key: "T"\n', encoding="utf-8")
