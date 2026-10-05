@@ -229,7 +229,7 @@ on semantics and scans — everything else works without them.
 Each project has its own server and its own sign-in — the panel's **"Git"** section (project
 group). The setup lives in the project's `.git/aurora/git.json`: it never goes into history and
 stays with the clone. Tokens and passwords live outside the project, in
-`~/.aurora/git/credentials.json` (mode 600); a pasted SSH key goes to `~/.aurora/git/keys/`. The
+`~/.aurora/git/credentials.json` (mode 600 on macOS and Linux, the user profile on Windows); a pasted SSH key goes to `~/.aurora/git/keys/`. The
 token is written neither into the server URL nor into git's command line: git takes it from an
 environment variable through its own credential mechanism.
 

@@ -63,13 +63,17 @@ def test_each_project_keeps_its_own_git_setup_and_secrets_stay_outside(tmp: Path
                     {"auth": "token", "user": "me", "secret": "tok-abcdef-123"})
         assert r["ok"], r
         assert GS.save(b, {"provider": "generic", "repo": str(tmp / "srv.git")}, None)["ok"]
-        assert (a / ".git" / "aurora" / "git.json").is_file()
+        assert (a / ".git" / "aurora" / "git.json").is_file(), "настройка не легла в .git/aurora"
         assert GS.load(a)["provider"] == "gitea" and GS.load(b)["provider"] == "generic", \
             "настройка проекта перетекла в соседний"
         assert _git(a, "status", "--porcelain") == "", "настройка Git легла в рабочее дерево"
         assert _git(a, "remote", "get-url", "origin") == "https://git.example.com:3100/team/a.git"
         cred = tmp / "home" / ".aurora" / "git" / "credentials.json"
-        assert cred.is_file() and oct(cred.stat().st_mode & 0o777) == "0o600"
+        assert cred.is_file(), "учётные данные не сохранены вне проекта"
+        # Права 600 — на POSIX. На Windows chmod их не ставит: там файл закрыт тем, что
+        # лежит в профиле пользователя (%USERPROFILE%\.aurora), чужие профили его не видят.
+        if os.name != "nt":
+            assert oct(cred.stat().st_mode & 0o777) == "0o600", "файл секретов открыт другим"
         for f in (a / ".git" / "config", a / ".git" / "aurora" / "git.json"):
             assert "tok-abcdef-123" not in f.read_text(encoding="utf-8"), f"токен лёг в {f.name}"
         assert GS.cred_masked(a)["secret"] == GS.MASK
