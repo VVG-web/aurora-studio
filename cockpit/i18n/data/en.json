@@ -98,7 +98,10 @@
     "git:push": "Send the project to the server: uncommitted work is committed first by the message template, a branch with no link to the server gets linked; the server moved ahead — `--update-first`. Sign-in comes from the project setup; the token gets into neither the URL nor the command line.",
     "git:commit": "Commit the project's changes with a message from the setup template or your own (`--message`); Aurora's hooks run, the ratchet is lifted only by an explicit `--skip-ratchet`.",
     "git:fix": "One-click fixes: abort or finish an update, take your or the server's version of a file, link the branch to the server, create the repository, switch to the project branch, remove a password from the server URL.",
-    "git:check": "Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server."
+    "git:check": "Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server.",
+    "bot:run": "Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself.",
+    "bot:check": "Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs.",
+    "bot:list": "The project's bots: schedule and next run, the last run's outcome, problems."
   },
   "scenarios": {
     "Обновить базу": "Update the base",
@@ -416,7 +419,10 @@
     "отпечаток изменился с момента показа — доверие не выдано": "the fingerprint changed since it was shown — trust not granted",
     "GitHub не ответил: {}": "GitHub did not answer: {}",
     "сервер {}:{} не отдал сертификат: {}": "server {}:{} did not give a certificate: {}",
-    "в адаптере нет check() или clone_urls()": "the adapter has no check() or clone_urls()"
+    "в адаптере нет check() или clone_urls()": "the adapter has no check() or clone_urls()",
+    "бота нет": "there is no such bot",
+    "нет такого действия": "no such action",
+    "файл бота — только .md в папке bots/ проекта": "a bot file is only a .md in the project's bots/ folder"
   },
   "connectors": {
     "confluence-dc": {
@@ -763,7 +769,12 @@
     "что чинить: abort, continue, mine, theirs, resolved, set-upstream, init, checkout, use-branch, strip-url, fix-key-perms": "what to fix: abort, continue, mine, theirs, resolved, set-upstream, init, checkout, use-branch, strip-url, fix-key-perms",
     "файл для --what mine|theirs|resolved": "the file for --what mine|theirs|resolved",
     "с --push: отправить только на этот сервер (основной или дополнительный)": "with --push: send only to this server (main or additional)",
-    "с --what demote-origin: новое имя прежнего основного сервера (по умолчанию gitea)": "with --what demote-origin: the new name of the former main server (gitea by default)"
+    "с --what demote-origin: новое имя прежнего основного сервера (по умолчанию gitea)": "with --what demote-origin: the new name of the former main server (gitea by default)",
+    "боты проекта с расписанием и итогом": "the project's bots with schedule and outcome",
+    "проверить бота, не запуская": "check a bot without running it",
+    "запустить бота": "run a bot",
+    "файл бота: bots/<имя>.md": "the bot file: bots/<name>.md",
+    "кто запустил: человек или расписание": "who started it: a human or the schedule"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

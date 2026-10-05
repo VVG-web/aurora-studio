@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.155.0";
+const UI_VERSION = "1.156.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -626,6 +626,33 @@ async function mountEditor(text){
     },
     input(){ markDirty(); }
   });
+}
+
+// Редактор markdown «как в Файлах» — для разделов-модулей: тот же Vditor, тот же вид
+// (разметка, просмотр рядом или «как в Word») и тот же выбор вида, что запомнили в «Файлах».
+// → обещание редактора; `onInput` — на каждую правку.
+async function markdownEditor(host, text, {onInput, height, mode} = {}){
+  await ensureVditor();
+  const view = mode || localStorage.getItem("aurora-editor-mode") || "sv";
+  return new Promise(ok => {
+    const ed = new Vditor(host, {
+      lang: S.lang === "ru" ? "ru_RU" : "en_US", mode: view,
+      height: height || Math.max(320, Math.round((window.innerHeight || 900) * 0.5)),
+      cache: {enable: false}, toolbarConfig: {pin: true},
+      preview: {math: {engine: "KaTeX"}, mode: "both", actions: [], delay: 800},
+      cdn: "/vendor/vditor",
+      after(){ ed.setValue(text || ""); ok(ed); },
+      input(){ onInput && onInput(); }
+    });
+  });
+}
+
+// Раздел другого проекта: выбрать проект и открыть раздел с грузом. Нужен разделам машины
+// («Cron»), у которых в строке — чужой проект, а не выбранный на Мостике.
+async function openProject(path, view, payload){
+  const p = (S.state && S.state.projects || []).find(x => x.path === path);
+  if (p && (!S.project || S.project.path !== p.path)) await pick(p, false);
+  show(view, payload);
 }
 
 function diffLines(a, b){
@@ -3610,8 +3637,9 @@ function moduleCtx(id, root){
     fmt: {ago, kb, when: histWhen, esc, tick, md, mdLite, rtime, howLong},
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
     // перехода к маршруту — иначе в каждом разделе они разъедутся.
-    ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord},
-    openPath, isEngineCmd, hideDev,
+    ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
+         editor: markdownEditor},
+    openPath, isEngineCmd, hideDev, openProject,
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.
     runs: {last: lastRun, mark: rcMark},

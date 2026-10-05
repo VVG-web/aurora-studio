@@ -150,6 +150,14 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | `git:fix` | One-click fixes: abort or finish an update, take your or the server's version of a file, link the branch to the server, create the repository, switch to the project branch, remove a password from the server URL. | script | 1.154.0 |
 | `git:check` | Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server. | script | 1.154.0 |
 
+## `bot:` — Project bots: prompt, MCP, skills, schedule
+
+| Command | What it does | Executor | Since |
+|---|---|---|---|
+| `bot:run` | Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself. | script + model | 1.156.0 |
+| `bot:check` | Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs. | script | 1.156.0 |
+| `bot:list` (`bots`) | The project's bots: schedule and next run, the last run's outcome, problems. | script | 1.156.0 |
+
 ## `dev:` — QA of the engine
 
 | Command | What it does | Executor | Since |

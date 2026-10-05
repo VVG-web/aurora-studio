@@ -47,6 +47,7 @@ NS_TITLE = {
     "ops": "ops: — управление и отчётность",
     "agent": "agent: — встроенный агент",
     "git": "git: — Git проекта: сервер, обновление, отправка",
+    "bot": "bot: — боты проекта: промпт, MCP, навыки, расписание",
     # Разработка самого движка. В проекте на основе Авроры этих команд нет: их исполнитель
     # не входит в engine_manifest.txt, и показывать их аналитику значит врать про состав.
     "dev": "dev: — разработка движка (только в ките)",
@@ -387,6 +388,7 @@ EN_NS = {"kit": "The engine and the project", "sync": "Mirrors of external syste
          "kb": "Extraction and the life of knowledge", "ctx": "Using knowledge",
          "make": "Producing artifacts", "ship": "Outward", "ops": "Management and reporting",
          "agent": "The built-in agent", "git": "Project Git: server, update, push",
+         "bot": "Project bots: prompt, MCP, skills, schedule",
          "dev": "QA of the engine"}
 EN_KIND = {"скрипт": "script", "модель": "model", "скрипт+модель": "script + model"}
 
@@ -448,7 +450,7 @@ def check(rows: list) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Справочник команд Aurora")
-    ap.add_argument("namespace", nargs="?", help="показать один набор: kit, sync, kb, ctx, make, ship, ops, agent, git")
+    ap.add_argument("namespace", nargs="?", help="показать один набор: kit, sync, kb, ctx, make, ship, ops, agent, git, bot")
     ap.add_argument("--search", help="искать по имени и описанию")
     ap.add_argument("--md", nargs="?", const="",
                     help="записать markdown-справочник (в проекте — AuroraKnowledgeDB/meta/)")

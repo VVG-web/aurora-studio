@@ -596,7 +596,9 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             "mcp": payload.get("mcp") or {}, "mcp_active": payload.get("mcp_active") or [],
             "guard": payload.get("guard") or {},
             "role": payload.get("role") or "",
-            "tool_calls": TOOL_CALLS if tools else 0}
+            # Папка, куда бот кладёт файлы результата: инструмент записи есть только у него.
+            "outdir": payload.get("outdir") or "",
+            "tool_calls": (payload.get("tool_calls") or TOOL_CALLS) if tools else 0}
     slot = {"done": threading.Event(), "out": None}
     with _HUB_LOCK:
         _HUB["seq"] += 1
@@ -611,7 +613,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
             pending.pop(rid, None)
         return None, None, ADAPTER_FAIL + f"труба закрыта ({type(e).__name__})", time.time() - t0
     # У вызова с инструментами несколько запросов к модели — и срок на каждый.
-    wait = timeout * (1 + (TOOL_CALLS if tools else 0)) + 30
+    wait = timeout * (1 + task["tool_calls"]) + 30
     if not slot["done"].wait(wait):
         with _HUB_LOCK:
             pending.pop(rid, None)
@@ -631,7 +633,8 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
 
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
-ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active"})
+ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
+                          "tool_calls"})
 
 
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
@@ -1155,7 +1158,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               prefer: int = 0, history: list | None = None,
               tools: bool = False, guard_text: list | None = None,
               trim: tuple | None = None, request_timeout: float | None = None,
-              mcp_active: list | None = None) -> dict:
+              mcp_active: list | None = None, mcp_only: list | None = None,
+              outdir: str = "", tool_calls: int = 0) -> dict:
     """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
@@ -1166,7 +1170,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
     think = role_thinks(cfg, role) if thinking is None else thinking
     key = ""
     if (_cache_on() and transport is None and not history and not tools and not trim
-            and not mcp_active):
+            and not mcp_active and not outdir):
         key = _cache_key(cfg, role, messages, think, max_tokens)
         hit = _cache_get(key)
         if hit and hit.get("text"):
@@ -1176,7 +1180,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         ring=0, log=["ответ из кэша: тот же вызов уже был"], tokens_in=0,
                         tokens_out=0, tps=0.0, url="")
     r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
-                   prefer, history, tools, guard_text, trim, request_timeout, mcp_active)
+                   prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
+                   mcp_only, outdir, tool_calls)
     if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
         _cache_put(key, r)
     return r
@@ -1188,7 +1193,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
               prefer: int = 0, history: list | None = None,
               tools: bool = False, guard_text: list | None = None,
               trim: tuple | None = None, request_timeout: float | None = None,
-              mcp_active: list | None = None) -> dict:
+              mcp_active: list | None = None, mcp_only: list | None = None,
+              outdir: str = "", tool_calls: int = 0) -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
@@ -1293,7 +1299,17 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             if tools:
                 payload["tools_root"] = os.getcwd()
                 payload["mcp"] = mcp_config(os.getcwd())
+                if mcp_only is not None:
+                    # Бот видит только свои серверы: прогон по расписанию идёт без человека,
+                    # и сервер, которого в боте нет, не должен подключаться «по требованию».
+                    every = payload["mcp"].get("mcpServers") or {}
+                    mine = {k: v for k, v in every.items() if k in mcp_only}
+                    payload["mcp"] = {"mcpServers": mine} if mine else {}
                 payload["mcp_active"] = list(mcp_active or [])
+                if outdir:
+                    payload["outdir"] = outdir
+                if tool_calls:
+                    payload["tool_calls"] = int(tool_calls)
                 # Сторож на исходящее собирается ЗДЕСЬ, а не в адаптере: нормализация
                 # слов должна быть той же, что в поиске по базе, а она живёт в движке.
                 # `ready` — отметка, что сторож действительно собран. Без неё адаптер

@@ -96,5 +96,10 @@
   "cron.err.no_task": "Задания уже нет",
   "cron.err.queued": "Это задание уже идёт или ждёт в очереди",
   "cron.err.nothing": "Сейчас ничего не идёт",
-  "cron.err.bad_action": "Неизвестное действие"
+  "cron.err.bad_action": "Неизвестное действие",
+  "cron.bot": "бот",
+  "cron.bot_cron_hint": "Выражение cron из файла бота: минута час день месяц день-недели",
+  "cron.bot_cron_bad": "расписание с ошибкой — поправьте в «Ботах»",
+  "cron.bot_where": "{file} · проект {project}",
+  "cron.bot_edit": "Изменить в «Ботах»"
 }

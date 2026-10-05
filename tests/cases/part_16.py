@@ -64,7 +64,7 @@ CRAWLED = (
     "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
-    "/api/history", "/api/routes",
+    "/api/history", "/api/routes", "/api/bots",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",
@@ -88,6 +88,7 @@ NOT_CRAWLED = {
     "/api/history/run": "журнал запуска — вывод движка, он остаётся русским",
     "/api/route/live": "журнал идущего маршрута — вывод движка, он остаётся русским",
     "/api/models": "настройка моделей — данные человека: имена провайдеров и ролей",
+    "/api/bots/file": "файл бота проекта — промпт и шапка, написанные человеком",
 }
 
 

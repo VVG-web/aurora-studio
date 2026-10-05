@@ -78,6 +78,8 @@ export default { mount, refresh };
 | `ui.metric`, `ui.metricCard` | плитки метрик — одни на всю панель |
 | `ui.kindChip(kind)` | чип исполнителя команды: скрипт, модель или оба |
 | `ui.skillLine(text)`, `ui.copyButton(text)` | строка задания ассистенту и кнопка «Скопировать» |
+| `ui.editor(host, text, {onInput})` | редактор markdown «как в Файлах» (Vditor, тот же вид) → обещание редактора |
+| `openProject(path, view, payload)` | выбрать другой проект и открыть его раздел — для разделов машины |
 | `ui.goRoute(id, label)`, `ui.goCmd(cmd, args, label)` | переход «починить это» с плитки |
 | `aura(project)` | цвет проекта и причина: тот же ответ, что на Мостике |
 | `fmt` | `ago`, `kb`, `when`, `howLong`, `esc`, `tick`, `md`, `mdLite`, `rtime` — единые формат и экранирование |

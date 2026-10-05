@@ -287,6 +287,50 @@ They are installed and updated on the "Install" page, next to the engine add-ons
 `~/.aurora/git-providers/`. Without a module, updating and sending work with any git server through
 git itself — this path is built into the engine and is updated together with the kit.
 
+## Project bots
+
+A bot is a reusable model task: a prompt, MCP servers, skills and project files, run by hand or on a
+schedule. Each bot is a `bots/<name>.md` file in the project root (you see it in "Files" and in git):
+
+```markdown
+---
+name: Jira label analyzer
+description: Jira issues with a label — evaluation by a template, a file and a comment in the issue
+mcp:
+  - jira-mcp
+  - confluence-mcp
+skills:
+  - evaluation-skill
+attachments:
+  - templates/evaluation-template.md
+cron: "0 9 * * 1-5"
+enabled: true
+---
+Find all Jira issues with label `X`… Evaluate by the [template](../templates/evaluation-template.md)…
+```
+
+| Field | Meaning |
+|---|---|
+| `mcp` | the bot's MCP servers — from "Kit setup" → machine MCP servers and the project's `mcp.json`. Connected right away; the bot sees no others |
+| `skills` | skills (SKILL.md) of the project, the kit or `~/.claude/skills` — their method goes into the task |
+| `attachments` | project files and folders, paths from the root. References, not copies: at run time their text goes to the bot, and it can read them in full. Secrets and service folders are not given |
+| `cron` | five cron fields (minute hour day month weekday) or `@hourly`, `@daily`, `@weekly`, `@monthly` |
+| `enabled` | the schedule is on: the bot is in the "Cron" section by itself |
+
+The panel's **"Bots"** section (project group): on the left — the list with the schedule and the last
+run's outcome; on the right — the prompt in the same editor as "Files" and the setup: MCP servers and
+skills by ticks, attachments by picking project files and folders ("Insert link" puts a link into the
+prompt), the schedule as an expression or a preset ("weekdays at 9:00") with the next runs. Fields are
+checked as you type; "Add to cron" switches the schedule on in one click. "Example: Jira issue analyzer"
+creates the bot from the task together with the evaluation template.
+
+At run time (`bot:run` — by a button or on schedule) the bot gets the prompt, the skills' method, the
+attachments' text, its MCP servers and the project's reading tools; it writes result files with the
+`save_output` tool into `Workspaces/bots/<bot>/<run>/` and can pass their path to an MCP server (for
+example, to attach to a Jira issue). `report.md` with the bot's answer lies there too. A failure comes in
+words with advice: a server or skill is not set up, an attachment is missing, no Pydantic AI, models are
+not set up, the bot ran out of time or tool calls. MCP servers and tools need Pydantic AI ("Install").
+
 ## 5. Check readiness
 
 ```bash

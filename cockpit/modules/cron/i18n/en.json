@@ -96,5 +96,10 @@
   "cron.err.no_task": "The task no longer exists",
   "cron.err.queued": "This task is already running or queued",
   "cron.err.nothing": "Nothing is running now",
-  "cron.err.bad_action": "Unknown action"
+  "cron.err.bad_action": "Unknown action",
+  "cron.bot": "bot",
+  "cron.bot_cron_hint": "The cron expression from the bot file: minute hour day month weekday",
+  "cron.bot_cron_bad": "the schedule has an error — fix it in «Bots»",
+  "cron.bot_where": "{file} · project {project}",
+  "cron.bot_edit": "Edit in «Bots»"
 }

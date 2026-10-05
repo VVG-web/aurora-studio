@@ -22,6 +22,10 @@
 - Пишущая команда вне маршрута фиксируется в git сразу: незакоммиченное следующий маршрут
   смешал бы со своей работой, а чекпойнт агента записал бы его работой человека.
 
+Боты проектов с расписанием (`bots/*.md`, поле `cron`) — тоже задания расписания: их
+источник — файл бота, и правят их в разделе «Боты». Планировщик читает их на каждом тике,
+запускает `bot:run` по выражению cron и держит в истории наравне с остальными.
+
 Хранится в домашней папке — `~/.aurora/cron-tasks.json`, история в `~/.aurora/cron-runs/`,
 как и список корней проектов: расписание — свойство машины, а не кита и не проекта, и
 переживает переустановку кита.
@@ -37,6 +41,11 @@ import time
 from datetime import datetime, timedelta
 
 import route_runner as RR
+
+try:
+    import bots as BOTS               # движок: боты проектов (scripts/bots.py)
+except ImportError:                   # кит без ботов — расписание работает и так
+    BOTS = None
 
 TICK_S = 20                       # как часто панель сверяется с расписанием
 GRACE = timedelta(minutes=15)     # опоздание, которое ещё догоняем
@@ -153,6 +162,70 @@ def clean_task(ck, raw: dict, projects: list) -> tuple:
             "on_fail": "stop" if raw.get("on_fail") == "stop" else "next",
             "lang": str(raw.get("lang") or ck.DEFAULT_LANG)[:8],
             "steps": steps}, ""
+
+
+def bot_tasks(projects: list, lang: str = "ru") -> list:
+    """Боты проектов с расписанием — задания расписания. Источник — файлы `bots/*.md`."""
+    if BOTS is None:
+        return []
+    out = []
+    for p in projects or []:
+        try:
+            rows = BOTS.list_bots(p["path"], with_checks=False)
+        except Exception:  # noqa: BLE001 — битый бот одного проекта не гасит расписание
+            continue
+        for b in rows:
+            meta = b["meta"]
+            if not meta.get("cron"):
+                continue
+            _spec, err = BOTS.parse_cron(meta["cron"])
+            out.append({
+                "id": BOTS.bot_id(p["path"], b["file"]), "source": "bot", "name": meta["name"],
+                "bot": b["file"], "project": p["path"], "project_name": p.get("name", ""),
+                "cron": meta["cron"], "cron_error": err,
+                "enabled": bool(meta.get("enabled")) and not err,
+                "time": "", "days": [], "date": "", "order": "projects", "on_fail": "next",
+                "lang": lang, "bot_last": b.get("last") or {},
+                "steps": [{"kind": "command", "project": p["path"], "cmd": "bot:run",
+                           "args": [f"--bot={b['file']}", "--trigger=cron"]}]})
+    return out
+
+
+def bot_slot(task: dict, now: datetime) -> datetime | None:
+    """Последняя минута расписания бота не позже `now` в пределах `GRACE` — или None.
+
+    Тик раз в 20 секунд, но тик может и запоздать (панель была занята), а выражение cron
+    срабатывает на одной минуте: смотрим назад на опоздание, которое ещё догоняем."""
+    if BOTS is None or not task.get("enabled"):
+        return None
+    spec, err = BOTS.parse_cron(task.get("cron") or "")
+    if err:
+        return None
+    t = now.replace(second=0, microsecond=0)
+    edge = now - GRACE
+    while t >= edge:
+        if BOTS.matches(spec, t):
+            return t
+        t -= timedelta(minutes=1)
+    return None
+
+
+def bot_next(task: dict, now: datetime | None = None) -> str:
+    if BOTS is None or not task.get("enabled"):
+        return ""
+    spec, err = BOTS.parse_cron(task.get("cron") or "")
+    runs = BOTS.next_runs(spec, now or datetime.now(), 1) if not err else []
+    return now_iso(runs[0]) if runs else ""
+
+
+def mark_bot_past(task: dict, now: datetime | None = None) -> None:
+    """Бота только что включили или поменяли расписание — прошедшую минуту не догоняем:
+    иначе бот на 9:00, сохранённый в 9:05, сработал бы сразу же."""
+    s = bot_slot(task, now or datetime.now())
+    if s:
+        state = _read_json(state_file(), {})
+        state.setdefault("fired", {})[task["id"]] = now_iso(s)
+        _write_json(state_file(), state)
 
 
 def slot(task: dict, day: datetime) -> datetime | None:
@@ -338,6 +411,12 @@ class Scheduler:
             if task.get("date"):
                 task["enabled"] = False      # разовое отработало — выключаем
                 save_tasks(tasks)
+        for task in bot_tasks(self.projects_fn(), self.ck.DEFAULT_LANG):
+            s = bot_slot(task, now)
+            if s and fired.get(task["id"]) != now_iso(s):
+                fired[task["id"]] = now_iso(s)
+                changed = True
+                self.enqueue(task["id"], "schedule")
         if changed:
             _write_json(state_file(), {"fired": fired})
         self._next()
@@ -364,7 +443,7 @@ class Scheduler:
             if self.current or not self.queue:
                 return
             task_id, trigger, resume = self.queue.pop(0)
-            task = next((t for t in load_tasks() if t["id"] == task_id), None)
+            task = self.find(task_id)
             if not task:
                 return
             run = self._new_run(task, trigger, resume)
@@ -372,6 +451,14 @@ class Scheduler:
             self.stop_event = threading.Event()
         threading.Thread(target=self._run, args=(task, run), daemon=True,
                          name="aurora-cron-run").start()
+
+    def find(self, task_id: str) -> dict | None:
+        """Задание по номеру: из расписания или бот проекта."""
+        task = next((t for t in load_tasks() if t["id"] == task_id), None)
+        if task or not str(task_id).startswith("bot-"):
+            return task
+        return next((t for t in bot_tasks(self.projects_fn(), self.ck.DEFAULT_LANG)
+                     if t["id"] == task_id), None)
 
     def stop(self) -> dict:
         with self.lock:
@@ -551,5 +638,9 @@ class Scheduler:
         for t in tasks:
             t["next"] = next_run(t)
             t["last"] = last.get(t["id"])
+        for t in bot_tasks(self.projects_fn(), self.ck.DEFAULT_LANG):
+            t["next"] = bot_next(t)
+            t["last"] = last.get(t["id"])
+            tasks.append(t)
         return {"tasks": tasks, "current": cur, "queue": queue,
                 "runs": [brief(r) for r in runs], "now": now_iso()}

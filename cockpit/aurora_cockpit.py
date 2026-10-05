@@ -63,6 +63,7 @@ import cron as CRON                              # noqa: E402 — расписа
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
+import bots as BOTS                              # noqa: E402 — боты проектов: раздел «Боты»
 
 # Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
 # иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
@@ -1303,6 +1304,63 @@ def gitmods_state(fresh: bool = False) -> dict:
         return {"modules": GS.module_rows(Path(KIT), {}),
                 "error": f"GitHub не ответил: {str(e)[:160]}"}
     return {"modules": GS.module_rows(Path(KIT), gh)}
+
+
+# ----------------------------------------------------------- боты проекта: «Боты»
+
+def bots_state(project: str) -> dict:
+    """Всё для раздела «Боты»: боты с расписанием и итогом, что можно выбрать в боте."""
+    rows = BOTS.list_bots(project)
+    for b in rows:
+        b["id"] = BOTS.bot_id(project, b["file"])
+    return {"bots": rows, "mcp": BOTS.mcp_names(project), "skills": BOTS.skill_names(project),
+            "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR}
+
+
+def bot_file(project: str, rel: str) -> dict:
+    bot = BOTS.read(project, rel)
+    if not bot:
+        return {"error": "бота нет"}
+    return {"file": bot["file"], "meta": bot["meta"], "body": bot["body"],
+            "problems": BOTS.validate(project, bot["meta"], bot["body"]),
+            "schedule": BOTS.schedule(bot["meta"]), "last": BOTS.last_run(project, bot["file"]),
+            "id": BOTS.bot_id(project, bot["file"]), "mtime": bot["mtime"]}
+
+
+def _bot_cron_mark(project: str, rel: str) -> None:
+    """Сохранённый бот с расписанием: прошедшую минуту его расписания не догоняем."""
+    task = next((t for t in CRON.bot_tasks([{"path": project, "name": ""}]) if t["bot"] == rel), None)
+    if task:
+        CRON.mark_bot_past(task)
+
+
+def bots_action(action: str, project: str, payload: dict) -> dict:
+    """Правка ботов из раздела. Пишется только `bots/*.md` проекта."""
+    rel = str(payload.get("file") or "")
+    name = str(payload.get("name") or "")
+    if action == "validate":
+        meta = BOTS.clean_meta(payload.get("meta") or {})
+        return {"problems": BOTS.validate(project, meta, str(payload.get("body") or "")),
+                "schedule": BOTS.schedule(meta)}
+    if action == "save":
+        res = BOTS.write(project, rel, payload.get("meta") or {}, str(payload.get("body") or ""))
+        if res.get("ok"):
+            _bot_cron_mark(project, res["file"])
+        return res
+    if action == "create":
+        return BOTS.create(project, name)
+    if action == "example":
+        res = BOTS.create_example(project)
+        if res.get("ok"):
+            _bot_cron_mark(project, res["file"])
+        return res
+    if action == "duplicate":
+        return BOTS.duplicate(project, rel, name)
+    if action == "rename":
+        return BOTS.rename(project, rel, name)
+    if action == "delete":
+        return BOTS.delete(project, rel)
+    return {"ok": False, "error": "нет такого действия"}
 
 
 # --------------------------------------------------------------- быстрый старт
@@ -3974,6 +4032,16 @@ class Handler(BaseHTTPRequestHandler):
         elif u.path == "/api/extras":
             self.send_json(localized_extras(extras_state(fresh=bool(q.get("fresh"))),
                                             request_lang(q)))
+        elif u.path == "/api/bots":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(bots_state(project))
+        elif u.path == "/api/bots/file":
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(bot_file(project, (q.get("file") or [""])[0]))
         elif u.path == "/api/gitmods":
             self.send_json(gitmods_state(fresh=bool(q.get("fresh"))))
         elif u.path == "/api/gitsync":
@@ -4525,6 +4593,14 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/extras/install":
             self.send_json(extras_install(str(payload.get("id") or "")))
             return
+        if u.path in ("/api/bots/save", "/api/bots/validate", "/api/bots/create",
+                      "/api/bots/duplicate", "/api/bots/rename", "/api/bots/delete",
+                      "/api/bots/example"):
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(bots_action(u.path.rsplit("/", 1)[1], project, payload))
+            return
         if u.path == "/api/gitmods/install":
             self.send_json(GS.install_module(str(payload.get("id") or ""), Path(KIT)))
             return
@@ -4911,6 +4987,22 @@ def cron_action(action: str, payload: dict, projects: list) -> dict:
     if action == "stop":
         # Останавливают идущую цепочку, а не задание: номер задания тут не нужен.
         return scheduler().stop()
+    if tid.startswith("bot-"):
+        # Бот — задание расписания, но живёт в файле проекта: включение пишется туда, а
+        # правка и удаление — в разделе «Боты».
+        bt = next((t for t in CRON.bot_tasks(projects) if t["id"] == tid), None)
+        if not bt:
+            return {"ok": False, "error": "no_task"}
+        if action == "start":
+            return scheduler().enqueue(tid, "manual")
+        if action == "toggle":
+            bot = BOTS.read(bt["project"], bt["bot"])
+            on = bool(payload.get("enabled"))
+            BOTS.write(bt["project"], bt["bot"], {**bot["meta"], "enabled": on}, bot["body"])
+            if on:
+                CRON.mark_bot_past({**bt, "enabled": True})
+            return {"ok": True}
+        return {"ok": False, "error": "bad_action"}
     if not any(t["id"] == tid for t in tasks):
         return {"ok": False, "error": "no_task"}
     if action == "delete":

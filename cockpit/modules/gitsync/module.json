@@ -9,5 +9,5 @@
   "order": 55,
   "needs": ["project"],
   "commands": ["git:status", "git:update", "git:push", "git:commit", "git:fix", "git:check"],
-  "for": "1.155.0"
+  "for": "1.156.0"
 }

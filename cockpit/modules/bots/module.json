@@ -1,0 +1,13 @@
+{
+  "id": "bots",
+  "name": { "ru": "Боты", "en": "Bots" },
+  "about": {
+    "ru": "Повторяемые задания модели: промпт, MCP-серверы, навыки и файлы проекта — вручную или по расписанию.",
+    "en": "Reusable model tasks: a prompt, MCP servers, skills and project files — run by hand or on a schedule."
+  },
+  "group": "project",
+  "order": 45,
+  "needs": ["project"],
+  "commands": ["bot:run", "bot:check", "bot:list"],
+  "for": "1.156.0"
+}

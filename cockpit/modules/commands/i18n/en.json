@@ -18,5 +18,6 @@
   "commands.ns.ship": "ship: outward",
   "commands.ns.ops": "ops: management and reporting",
   "commands.ns.agent": "agent: the built-in agent",
-  "commands.ns.git": "git: project Git"
+  "commands.ns.git": "git: project Git",
+  "commands.ns.bot": "bot: project bots"
 }

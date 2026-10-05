@@ -929,9 +929,17 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
     assert "def register_tools(" in ad, "инструменты не регистрируются"
     for tool in ("read_file", "list_dir", "kb_search", "kb_context", "artifact_spec"):
         assert f"def {tool}(" in ad, f"нет инструмента {tool}"
-    # ни одного на запись: файл пишет движок, а не модель
+    # ни одного на запись: файл пишет движок, а не модель. Исключение одно — бот (1.156.0):
+    # `save_output` пишет только в папку его прогона и подключается, только когда движок дал
+    # эту папку (`outdir`); у общих инструментов записи нет по-прежнему.
+    common = ad[ad.index("def register_tools("):ad.index("def register_output(")]
     for forbidden in ("def write_file", "def save_", "def create_file", "def apply_"):
-        assert forbidden not in ad, f"у модели появился инструмент записи: {forbidden}"
+        assert forbidden not in common, f"у модели появился инструмент записи: {forbidden}"
+    out = ad[ad.index("def register_output("):ad.index("def tolerant_body(")]
+    assert "os.path.basename(name" in out and "os.path.join(base, clean)" in out, \
+        "инструмент записи бота пишет не в папку прогона"
+    assert 'if task.get("outdir"):\n            register_output(' in ad, \
+        "инструмент записи подключается не только боту"
     assert 'raise ValueError("путь вне проекта")' in ad, \
         "инструменты не держат границу проекта — модель прочитает что угодно на машине"
     # Границы проекта мало: секреты лежат ВНУТРИ него. Модель, прочитавшая

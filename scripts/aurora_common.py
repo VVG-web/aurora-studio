@@ -996,6 +996,20 @@ ENV_FILE = ".env.aurora.local"       # файл настроек движка: �
 _REAL_KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def kit_root():
+    """Кит: сам скрипт в `scripts/` кита либо копия движка проекта с указателем на кит
+    (`.opencode/kit_path.txt`). Указателя нет или кит пропал — None."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    if root.name == ".opencode":
+        ptr = root / "kit_path.txt"
+        if ptr.is_file():
+            kit = Path(ptr.read_text(encoding="utf-8").strip())
+            return kit if kit.is_dir() else None
+        return None
+    return root
+
+
 def personal_kit_file(path) -> bool:
     """Личный файл настоящего кита (`ENV_FILE`, `local/mcp.json`) в прогоне тестов?
 

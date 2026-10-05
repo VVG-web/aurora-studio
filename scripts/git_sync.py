@@ -61,6 +61,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from aurora_common import kit_root  # noqa: E402 — кит: сам скрипт или указатель копии движка
+
 MASK = "••••••"
 PROVIDERS = ("github", "gitlab", "bitbucket", "gitea", "generic")
 AUTHS = ("system", "token", "password", "ssh")
@@ -374,18 +376,6 @@ def result(action: str, ok: bool, summary: str = "", prob: dict | None = None, *
 
 
 # ---------------------------------------------------------------- кит и модули
-
-def kit_root() -> Path | None:
-    """Кит: сам скрипт в `scripts/` кита либо копия движка проекта с указателем на кит."""
-    here = Path(__file__).resolve().parent
-    root = here.parent
-    if root.name == ".opencode":
-        ptr = root / "kit_path.txt"
-        if ptr.is_file():
-            kit = Path(ptr.read_text(encoding="utf-8").strip())
-            return kit if kit.is_dir() else None
-        return None
-    return root
 
 
 def bundled_dir(kit: Path | None = None) -> Path | None:

@@ -161,6 +161,7 @@ function taskRow(ctx, task){
   const post = (path, body) => ctx.api(path, {method: "POST", quiet: true,
     body: JSON.stringify({id: task.id, ...(body || {})})});
   const last = task.last;
+  if (task.source === "bot") return botRow(ctx, task, post);
   return el("div", {class: "list-item", style: "align-items:flex-start"},
     el("div", {style: "flex:1;min-width:0"},
       el("div", {class: "row", style: "gap:8px"},
@@ -196,6 +197,42 @@ function taskRow(ctx, task){
         await post("/api/cron/delete");
         refresh(ctx);
       }}, t("cron.delete"))));
+}
+
+// Бот проекта: расписание живёт в его файле (`bots/*.md`), правят его в разделе «Боты».
+// Здесь — запуск, включение и переход к боту; удалять бота отсюда незачем.
+function botRow(ctx, task, post){
+  const {t, el} = ctx;
+  const last = task.last;
+  return el("div", {class: "list-item", style: "align-items:flex-start"},
+    el("div", {style: "flex:1;min-width:0"},
+      el("div", {class: "row", style: "gap:8px;flex-wrap:wrap"},
+        el("span", {class: "chip gold"}, t("cron.bot")),
+        el("b", {}, task.name),
+        el("span", {class: "chip " + (task.enabled ? "ok" : "")},
+          task.enabled ? t("cron.on") : t("cron.off")),
+        el("span", {class: "chip mono", title: t("cron.bot_cron_hint")}, task.cron),
+        task.cron_error ? el("span", {class: "chip warn"}, t("cron.bot_cron_bad")) : null,
+        task.next ? el("span", {class: "muted"}, t("cron.next", {when: ctx.fmt.when(task.next)}))
+          : null,
+        last ? el("span", {class: "chip " + (STATUS_TONE[last.status] || ""),
+          title: ctx.fmt.when(last.started)},
+          t("cron.last", {status: t("cron.status." + last.status)})) : null),
+      el("div", {class: "muted", style: "font-size:13px;margin-top:6px"},
+        t("cron.bot_where", {file: task.bot, project: task.project_name || task.project}))),
+    el("div", {class: "row", style: "gap:6px"},
+      el("button", {class: "btn sm primary", onclick: async () => {
+        const r = await post("/api/cron/start");
+        if (r && r.ok) ctx.toast(t("cron.started", {name: task.name}), "ok");
+        else ctx.toast(t("cron.err." + ((r && r.error) || "bad_task")), "warn");
+        refresh(ctx);
+      }}, t("cron.run_now")),
+      el("button", {class: "btn sm", onclick: () => ctx.openProject(task.project, "bots", {file: task.bot})},
+        t("cron.bot_edit")),
+      task.cron_error ? null : el("button", {class: "btn sm", onclick: async () => {
+        await post("/api/cron/toggle", {enabled: !task.enabled});
+        refresh(ctx);
+      }}, task.enabled ? t("cron.disable") : t("cron.enable"))));
 }
 
 /* ---------------------------------------------------------------- редактор */

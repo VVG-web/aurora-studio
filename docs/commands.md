@@ -1,6 +1,6 @@
 # Команды Aurora Studio
 
-Справочник собран автоматически (`kit:list`) для версии движка **1.155.0**.
+Справочник собран автоматически (`kit:list`) для версии движка **1.156.0**.
 Модификаторы взяты из `--help` самих скриптов, поэтому не расходятся с кодом;
 остальное — из реестра `commands.txt`. Править руками этот файл бессмысленно:
 он перезаписывается командой `python3 .opencode/scripts/kit_commands.py --md`.
@@ -145,6 +145,14 @@
 | `git:commit` | зафиксировать изменения проекта сообщением по шаблону настройки или своим (`--message`); хуки Авроры работают, храповик снимается только явным `--skip-ratchet` | скрипт | `git_sync.py --commit` `(--status | | | | | |` | `--status --update --push --fix --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --what --file --remote --name --auto --project --json` | 1.154.0 |
 | `git:fix` | починка одним действием: отменить или завершить обновление, взять свою или серверную версию файла, связать ветку с сервером, создать репозиторий, перейти на ветку проекта, убрать пароль из адреса сервера | скрипт | `git_sync.py --fix` `(--status | | | | | |` | `--status --update --push --commit --check --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --what --file --remote --name --auto --project --json` | 1.154.0 |
 | `git:check` | проверить подключение: адрес, вход и права через API провайдера (если его модуль стоит), доступ git к репозиторию и ветка на сервере | скрипт | `git_sync.py --check` `(--status | | | | | |` | `--status --update --push --commit --fix --modules --fetch --strategy --message --no-commit --update-first --commit-first --skip-ratchet --what --file --remote --name --auto --project --json` | 1.154.0 |
+
+## `bot: — боты проекта: промпт, MCP, навыки, расписание`
+
+| Команда | Что делает | Исполнитель | Чем | Модификаторы | С версии |
+|---|---|---|---|---|---|
+| `bot:run` | запустить бота проекта (`--bot bots/<имя>.md`): его промпт, MCP-серверы, навыки и вложения — модели с инструментами; отчёт и файлы результата — в `Workspaces/bots/<бот>/<прогон>/`, итог — в списке ботов и в разделе «Cron». Бот с расписанием запускается сам | скрипт+модель | `bots.py --run` `(--list | |` | `--list --check --bot --trigger --project --json` | 1.156.0 |
+| `bot:check` | проверить бота, не запуская: расписание (cron), MCP-серверы, навыки и пути вложений — с ближайшими запусками | скрипт | `bots.py --check` `(--list | |` | `--list --run --bot --trigger --project --json` | 1.156.0 |
+| `bot:list` (`bots`) | боты проекта: расписание и ближайший запуск, итог последнего прогона, замечания | скрипт | `bots.py --list` `(--list | |` | `--check --run --bot --trigger --project --json` | 1.156.0 |
 
 ## `dev: — разработка движка (только в ките)`
 

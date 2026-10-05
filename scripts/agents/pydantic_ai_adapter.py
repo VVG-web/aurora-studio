@@ -448,6 +448,36 @@ def register_tools(agent, allowed: list) -> None:
         return engine("make_kinds.py", ["--kind", kind] if kind else [])
 
 
+def register_output(agent, outdir: str) -> None:
+    """Запись — только у ботов и только в папку их прогона (`Workspaces/bots/<бот>/<прогон>/`).
+
+    Бот делает работу без человека: оценку, отчёт, файл, который потом прикладывают к задаче
+    Jira. Писать куда угодно модель не может — имя файла чистится, папка задана движком, и
+    всё записанное прогоном лежит в одном месте, которое видно в его журнале.
+    """
+    import os
+
+    base = os.path.abspath(outdir)
+
+    @agent.tool_plain
+    def save_output(name: str, text: str) -> str:
+        """Сохранить файл результата (оценку, отчёт) в папку прогона бота. Возвращает полный
+        путь: его можно передать инструменту, который прикладывает файл (например, к задаче
+        Jira)."""
+        clean = re.sub(r"[^\w.\- ]+", "_", os.path.basename(name or "")).strip(" .")[:120]
+        clean = clean or "result.md"
+        if not os.path.splitext(clean)[1]:
+            clean += ".md"
+        try:
+            os.makedirs(base, exist_ok=True)
+            path = os.path.join(base, clean)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text or "")
+            return path
+        except OSError as e:
+            return f"не сохранён: {e}"
+
+
 def tolerant_body(raw: bytes) -> bytes:
     """Ответ шлюза, приведённый к стандарту там, где строгий клиент OpenAI на нём падает.
 
@@ -710,6 +740,8 @@ def runtime():
                       output_type=Optional[str], toolsets=toolsets or None)
         if task.get("tools"):
             register_tools(agent, task["tools"])
+        if task.get("outdir"):
+            register_output(agent, task["outdir"])
         if key is not None:
             agents[key] = (agent, state)
         return agent, state
