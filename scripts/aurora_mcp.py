@@ -8,12 +8,19 @@ MCP убирает посредника — ассистент сам ищет �
 
   python3 .aurora/scripts/aurora_mcp.py                 # сервер на stdio, проект = cwd
   python3 .aurora/scripts/aurora_mcp.py --project PATH  # явный проект
+  python3 <кит>/scripts/aurora_mcp.py --all             # все проекты машины, проект — в вызове
   python3 .aurora/scripts/aurora_mcp.py --selftest      # проверить без ассистента
 
 Один сервер — одна база. Проектов у аналитика несколько, и смешивать их базы в одном
 инструменте нельзя: знание одного заказчика не должно попасть в артефакт другого, а
 модель, увидев две карточки с одинаковым именем из разных проектов, не различит их.
 Поэтому проект задаётся при запуске, а не спрашивается у модели в каждом вызове.
+
+Режим `--all` (1.159.0) — один сервер на все проекты машины, для ассистента, которому
+неудобно держать по серверу на базу (OpenCode в общей папке). Смешения нет и здесь:
+каждый инструмент требует `project` — слаг из `kb_projects`, — ищет в одной базе и
+начинает ответ с её имени. Поиск тот же, что в «Спросить» и «Продуктивности»
+(`ctx_pack.fuse`: слова и смысл по индексу `kb:embed`).
 
 Подключение (Claude Code, OpenCode, Cursor — формат один). Готовые записи на все проекты
 машины печатает `kit:mcp`; вручную это выглядит так:
@@ -108,6 +115,60 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["question"], "properties": {
          "question": {"type": "string"}}}},
 ]
+
+
+PROJECT_ARG = {"type": "string",
+               "description": "слаг проекта из kb_projects: в какой базе искать"}
+TOOLS_ALL = [
+    {"name": "kb_projects",
+     "description": "Проекты Авроры на этой машине: слаг, название и есть ли база. Слаг "
+                    "передаётся в project каждого инструмента — базы проектов не смешиваются.",
+     "inputSchema": {"type": "object", "properties": {}}},
+] + [{**t, "inputSchema": {**t["inputSchema"],
+                           "required": ["project", *t["inputSchema"].get("required", [])],
+                           "properties": {"project": PROJECT_ARG,
+                                          **t["inputSchema"]["properties"]}}}
+     for t in TOOLS]
+
+
+def project_map(here: str = "") -> dict:
+    """{слаг: путь} — проекты машины (те же корни, что у панели). Повтор слага — с номером."""
+    out = {}
+    for path in known_projects(here or str(SCRIPTS.parent)):
+        if not os.path.isdir(os.path.join(path, "AuroraKnowledgeDB")):
+            continue
+        if os.path.isfile(os.path.join(path, "engine_manifest.txt")):
+            continue                        # сам кит — не проект, хоть база у него и есть
+        key, n = slug(path), 2
+        while key in out:
+            key, n = f"{slug(path)}-{n}", n + 1
+        out[key] = path
+    return out
+
+
+def resolve_project(value: str) -> tuple:
+    """(слаг, путь) по слагу или имени папки, без учёта регистра. Не нашли — отказ со списком."""
+    want = (value or "").strip().lower()
+    projects = project_map()
+    for key, path in projects.items():
+        if want in (key.lower(), os.path.basename(path).lower()):
+            return key, path
+    known = ", ".join(sorted(projects)) or "нет ни одного"
+    raise ToolError(f"Проекта «{value}» нет. Доступны: {known} (kb_projects).")
+
+
+def call_tool_all(name: str, args: dict) -> str:
+    """Вызов в режиме «все проекты»: проект — обязательный аргумент, ответ — с его именем."""
+    if not isinstance(args, dict):
+        raise ToolError("arguments должны быть объектом «имя → значение».")
+    if name == "kb_projects":
+        rows = [f"- {key} · {os.path.basename(path)} · движок {version(path)}"
+                for key, path in project_map().items()]
+        return ("Проекты Авроры на этой машине (слаг · папка · версия):\n" + "\n".join(rows)
+                if rows else "Проектов Авроры на этой машине не найдено.")
+    key, path = resolve_project(need(args, "project", "слаг проекта из kb_projects"))
+    rest = {k: v for k, v in args.items() if k != "project"}
+    return f"Проект «{key}».\n\n" + call_tool(path, name, rest)
 
 
 ASK_TIMEOUT = 240       # kb_ask ждёт модель проекта; дольше ассистент всё равно не ждёт
@@ -279,7 +340,8 @@ def reply(msg_id, result=None, error=None) -> None:
 def answer_call(project: str, msg_id, params: dict) -> None:
     failed = False
     try:
-        text = call_tool(project, params.get("name", ""), params.get("arguments") or {})
+        name, args = params.get("name", ""), params.get("arguments") or {}
+        text = call_tool(project, name, args) if project else call_tool_all(name, args)
     except ToolError as e:
         text, failed = str(e), True
     except Exception as e:                          # noqa: BLE001 — сессия важнее вызова
@@ -307,12 +369,15 @@ def serve(project: str) -> int:
         if method == "initialize":
             reply(msg_id, {"protocolVersion": PROTOCOL,
                            "capabilities": {"tools": {}},
-                           "serverInfo": {"name": "aurora-" + slug(project),
+                           "serverInfo": {"name": "aurora-" + slug(project) if project else "aurora",
                                           "version": version(project)}})
         elif method == "tools/list":
             # Имя проекта в описании каждого инструмента: у ассистента их может быть
             # подключено несколько, и «найти карточки» без указания базы — это приглашение
             # перепутать заказчиков.
+            if not project:                 # все проекты: база — в аргументе project
+                reply(msg_id, {"tools": TOOLS_ALL})
+                return
             named = [{**tool, "description": tool["description"]
                       + f" База проекта «{os.path.basename(project)}»."} for tool in TOOLS]
             reply(msg_id, {"tools": named})
@@ -391,6 +456,20 @@ def known_projects(here: str) -> list:
     return found
 
 
+def client_configs() -> dict:
+    """Готовая настройка сервера «все проекты» для других агентов: запуск из кита, тем же
+    Python, что панель. OpenCode — ключ `mcp` (type local, command массивом); Claude Code и
+    Cursor — `mcpServers`."""
+    script = str(SCRIPTS / "aurora_mcp.py")
+    return {
+        "opencode": {"mcp": {"aurora": {"type": "local", "enabled": True,
+                                        "command": [sys.executable, script, "--all"]}}},
+        "mcpServers": {"mcpServers": {"aurora": {"command": sys.executable,
+                                                 "args": [script, "--all"]}}},
+        "projects": sorted(project_map()),
+    }
+
+
 def config_block(projects: list) -> dict:
     """{mcpServers: …} на все проекты сразу: по серверу на базу, имя со слагом."""
     servers = {}
@@ -431,11 +510,45 @@ def selftest(project: str) -> int:
     return 0
 
 
+def selftest_all() -> int:
+    """Проверка режима «все проекты»: список баз, поиск в первой и готовые настройки."""
+    print(f"# MCP-сервер Авроры {version()} · все проекты машины\n")
+    cfg = client_configs()
+    print("## OpenCode (opencode.json — в проекте или ~/.config/opencode/)\n")
+    print(json.dumps(cfg["opencode"], ensure_ascii=False, indent=2))
+    print("\n## Claude Code, Cursor (mcpServers)\n")
+    print(json.dumps(cfg["mcpServers"], ensure_ascii=False, indent=2))
+    print("\n## kb_projects\n")
+    print(call_tool_all("kb_projects", {}))
+    if not cfg["projects"]:
+        return 1
+    first = cfg["projects"][0]
+    print(f"\n## kb_search в «{first}»\n")
+    try:
+        print(call_tool_all("kb_search", {"project": first, "query": "обеспечение", "limit": 5})[:600])
+    except ToolError as e:
+        print(f"ОТКАЗ: {e}")
+        return 1
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="MCP-сервер базы знаний Авроры")
     ap.add_argument("--project", default=os.getcwd(), help="корень проекта (по умолчанию cwd)")
     ap.add_argument("--selftest", action="store_true", help="проверить инструменты без ассистента")
+    ap.add_argument("--all", action="store_true",
+                    help="все проекты машины: проект — аргумент project каждого инструмента")
+    ap.add_argument("--configs", action="store_true",
+                    help="с --all: готовые настройки для OpenCode и Claude Code/Cursor (JSON)")
     a = ap.parse_args()
+    if a.all and a.configs:
+        CHANNEL.write(json.dumps(client_configs(), ensure_ascii=False) + "\n")
+        return 0
+    if a.all:
+        if a.selftest:
+            sys.stdout = CHANNEL
+            return selftest_all()
+        return serve("")
     project = os.path.abspath(a.project)
     if not os.path.isdir(os.path.join(project, "AuroraKnowledgeDB")):
         print(f"aurora_mcp: в {project} нет AuroraKnowledgeDB/ — это не проект Авроры",

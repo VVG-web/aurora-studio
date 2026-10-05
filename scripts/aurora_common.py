@@ -1178,6 +1178,32 @@ def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:
         kernel32.CloseHandle(handle)
 
 
+# Где программы лежат после установки, даже если PATH процесса о них ещё не знает: winget
+# и MSI на Windows дописывают PATH только для новых окон, а панель, перезапущенная из
+# старого терминала, его не видит; на macOS панель из Finder не видит brew.
+BIN_PLACES = {
+    "pandoc": [r"%LOCALAPPDATA%\Pandoc\pandoc.exe", r"%ProgramFiles%\Pandoc\pandoc.exe"],
+    "git": [r"%ProgramFiles%\Git\cmd\git.exe", r"%LOCALAPPDATA%\Programs\Git\cmd\git.exe"],
+}
+POSIX_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin")
+
+
+def find_bin(name: str) -> str:
+    """Путь к программе: сначала PATH, затем стандартные места установки. Нет — пусто."""
+    import shutil
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name == "nt":
+        places = [os.path.expandvars(p) for p in BIN_PLACES.get(name, [])]
+    else:
+        places = [os.path.join(d, name) for d in POSIX_BIN_DIRS]
+    for p in places:
+        if "%" not in p and os.path.isfile(p):
+            return p
+    return ""
+
+
 def pid_alive(pid: int) -> bool:
     """Жив ли процесс. Отказ в правах — ЖИВ.
 

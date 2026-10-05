@@ -241,6 +241,19 @@ changed. In a project's `.env` they no longer apply — `doctor` names them.
 All texts go to the providers of the model setup: if your perimeter forbids sending materials out, do not switch
 on semantics and scans — everything else works without them.
 
+## Aurora search for other agents (MCP)
+
+The same search as in "Ask" and "Productivity" (words and meaning by the `kb:embed` index) is
+available to any agent as an MCP server: OpenCode, Claude Code, Cursor. One server for all projects
+of the machine — `aurora_mcp.py --all` from the kit; every tool takes `project` — the project slug,
+bases are never mixed. `kb_projects` lists the projects, `kb_search` searches, `kb_card` reads a
+card, `kb_context` builds a context pack, `kb_index` gives the table of contents, `artifact_spec` —
+how to make the project's artifact, `kb_ask` asks the base. Read-only.
+
+Copy the setup in "Kit setup" → "Machine MCP servers" → "Aurora search for other agents": for
+OpenCode into `opencode.json` (the project folder or `~/.config/opencode/`), for Claude Code and
+Cursor into `mcpServers`. From a terminal: `python3 <kit>/scripts/aurora_mcp.py --all --selftest`.
+
 ## Project Git
 
 Each project has its own server and its own sign-in — the panel's **"Git"** section (project

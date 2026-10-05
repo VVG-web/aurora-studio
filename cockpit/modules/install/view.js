@@ -8,17 +8,42 @@ export function mount(ctx){
   ctx.root.dataset.module = "install";
 }
 
+// Проверить заново, не перезапуская панель: после установки из терминала или winget.
+async function recheck(ctx){
+  const r = await ctx.api("/api/env?fresh=1", {quiet: true});
+  if (r && r.env){ ctx.state.env = r.env; await refresh(ctx); }
+}
+
+// Пакет — в Python панели (`python -m pip install`), затем проверка тем же Python.
+async function pipInstall(ctx, item, btn){
+  btn.disabled = true;
+  btn.textContent = ctx.t("install.installing");
+  const r = await ctx.api("/api/env/install", {method: "POST", quiet: true,
+    body: JSON.stringify({name: item.pip})});
+  if (r && r.ok) ctx.toast(ctx.t("install.installed_ok", {name: item.name}), "ok");
+  else ctx.toast(ctx.t("install.err." + ((r && r.code) || "pip_failed"), {name: item.name})
+                 + (r && r.output ? "\n" + r.output.slice(-400) : ""), "err");
+  await recheck(ctx);
+}
+
 export async function refresh(ctx){
   const {t, el} = ctx;
   const box = ctx.$("#installBody");
   box.innerHTML = "";
   const e = ctx.state.env;
-  box.append(el("div", {class:"row", style:"margin-bottom:14px"},
+  box.append(el("div", {class:"row", style:"margin-bottom:6px;flex-wrap:wrap"},
     el("span", {class:"chip ok"}, "Python " + e.python),
     el("span", {class:"chip"}, "kit " + ctx.state.kit.version),
     el("span", {class:"chip mono"}, ctx.state.kit.path)));
+  // Пакеты проверяются и ставятся в Python панели: на Windows `pip3` в терминале часто
+  // принадлежит другому Python, и «установленное» панель не видит.
+  if (e.python_path) box.append(el("div", {class:"muted", style:"font-size:12.5px;margin-bottom:14px"},
+    t("install.python_path", {path: e.python_path})));
 
   const card = el("div", {class:"card"});
+  card.append(el("div", {class:"row", style:"gap:8px;align-items:center;margin-bottom:6px"},
+    el("span", {class:"muted", style:"flex:1;font-size:12.5px"}, t("install.recheck_hint")),
+    el("button", {class:"btn sm", onclick: () => recheck(ctx)}, t("install.recheck"))));
   e.items.forEach(i => {
     card.append(el("div", {class:"list-item"},
       el("span", {class:"chip " + (i.ok ? "ok" : "warn"), style:"flex:none"},
@@ -28,7 +53,9 @@ export async function refresh(ctx){
         el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"},
           t("install.enables", {what: i.enables})),
         i.ok ? null : el("div", {class:"mono",
-          style:"font-size:12px;margin-top:6px;color:var(--text-muted)"}, i.install))));
+          style:"font-size:12px;margin-top:6px;color:var(--text-muted);overflow-wrap:anywhere"}, i.install)),
+      !i.ok && i.pip ? el("button", {class:"btn sm primary", style:"flex:none",
+        onclick: ev => pipInstall(ctx, i, ev.target)}, t("install.do_install")) : null));
   });
   box.append(card);
   box.append(extrasCard(ctx));

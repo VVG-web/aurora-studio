@@ -2081,7 +2081,23 @@ def mcp_state(project: str = "") -> dict:
 
 
 def mcp_kit_state() -> dict:
-    return mcp_state("")
+    return {**mcp_state(""), "aurora": aurora_mcp_configs()}
+
+
+def aurora_mcp_configs() -> dict:
+    """Поиск Авроры для других агентов (OpenCode, Claude Code, Cursor): настройка сервера
+    «все проекты» — спрашиваем сам сервер: импорт уводит stdout панели в его протокол."""
+    if "aurora_mcp" in CACHE:
+        return CACHE["aurora_mcp"]
+    try:
+        p = subprocess.run([sys.executable, os.path.join(KIT, "scripts", "aurora_mcp.py"),
+                            "--all", "--configs"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30)
+        out = json.loads(p.stdout.strip().splitlines()[-1]) if p.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        out = {}
+    CACHE["aurora_mcp"] = out
+    return out
 
 
 def mcp_kit_action(payload: dict) -> dict:
@@ -3440,25 +3456,70 @@ def sources(project: str) -> dict:
         return {"installed": [], "instances": [], "error": out.strip()[:300]}
 
 
-def environment() -> dict:
+# Пакеты Python, без которых не работают команды: имя для pip, модуль для проверки.
+ENV_PY = (("beautifulsoup4", ("bs4",), "sync:confluence — разбор storage-разметки"),
+          ("markdownify", ("markdownify",), "sync:confluence — HTML → markdown"),
+          ("lxml", ("lxml",), "sync:confluence — быстрый парсер"),
+          ("markitdown", ("markitdown",), "kb:ingest-office — docx/pptx → markdown"),
+          ("openpyxl", ("openpyxl",), "kb:ingest-office — xlsx"),
+          ("pypdf", ("pypdf", "fitz"), "kb:ingest-office — pdf"))
+# Программы: как поставить на каждой системе. На Windows — winget: он есть в Windows 11.
+ENV_BIN = {"git": {"darwin": "brew install git", "nt": "winget install --id Git.Git -e",
+                   "linux": "sudo apt install git"},
+           "pandoc": {"darwin": "brew install pandoc",
+                      "nt": "winget install --id JohnMacFarlane.Pandoc -e",
+                      "linux": "sudo apt install pandoc"}}
+
+
+def platform_key() -> str:
+    return "nt" if os.name == "nt" else "darwin" if sys.platform == "darwin" else "linux"
+
+
+def pip_command(pkg: str) -> str:
+    """Установка в ТОТ Python, которым работает панель: `pip3` в терминале на Windows часто
+    принадлежит другому Python, и пакет «ставится», а панель его не видит."""
+    exe = f'"{sys.executable}"' if " " in sys.executable else sys.executable
+    return f"{exe} -m pip install {pkg}"
+
+
+def refresh_import_paths() -> None:
+    """Пакет, поставленный после запуска панели, должен находиться без перезапуска: pip
+    без прав кладёт его в папку пользователя, а её нет в путях, если при старте её не было."""
+    import site
+    try:
+        user = site.getusersitepackages()
+        if user and os.path.isdir(user) and user not in sys.path:
+            site.addsitedir(user)
+    except Exception:  # noqa: BLE001
+        pass
+    importlib.invalidate_caches()
+
+
+def environment(fresh: bool = False) -> dict:
     """Что установлено на машине и какие команды от этого зависят.
 
     Наличие модуля проверяем поиском, а не импортом: `import markitdown` тянет за собой
     половину экосистемы и занимал секунды на каждом открытии панели — а панели нужно
-    знать только «есть или нет». Результат держим до перезапуска: список установленного
-    за сессию не меняется, а если поставили пакет — панель перезапускают.
+    знать только «есть или нет». Результат держим, пока не попросят проверить заново
+    (`fresh`): кнопка «Проверить снова» и установка пакета из панели.
+
+    Пакеты проверяются в Python панели — его путь страница показывает, и команда
+    установки ставит именно в него. Программы ищутся и вне PATH (`find_bin`): на Windows
+    winget дописывает PATH только новым окнам.
     """
-    if "env" in CACHE:
+    if "env" in CACHE and not fresh:
         return CACHE["env"]
+    from aurora_common import find_bin
+    refresh_import_paths()
 
-    def has_module(name):
-        try:
-            return importlib.util.find_spec(name) is not None
-        except Exception:  # noqa: BLE001
-            return False
-
-    def has_bin(name):
-        return shutil.which(name) is not None
+    def has_module(names):
+        for name in names:
+            try:
+                if importlib.util.find_spec(name) is not None:
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
 
     mcp = os.path.expanduser("~/.cursor/mcp.json")
     mcp_ok = False
@@ -3469,33 +3530,41 @@ def environment() -> dict:
             mcp_ok = any("atlas" in k.lower() for k in srv)
         except Exception:
             mcp_ok = False
-    out = {
-        "python": sys.version.split()[0],
-        "items": [
-            {"name": "git", "ok": has_bin("git"), "kind": "bin",
-             "enables": "всё: движок работает поверх git", "install": "brew install git"},
-            {"name": "pandoc", "ok": has_bin("pandoc"), "kind": "bin",
-             "enables": "ship:export — markdown → docx/pdf", "install": "brew install pandoc"},
-            {"name": "beautifulsoup4", "ok": has_module("bs4"), "kind": "py",
-             "enables": "sync:confluence — разбор storage-разметки",
-             "install": "pip3 install beautifulsoup4"},
-            {"name": "markdownify", "ok": has_module("markdownify"), "kind": "py",
-             "enables": "sync:confluence — HTML → markdown", "install": "pip3 install markdownify"},
-            {"name": "lxml", "ok": has_module("lxml"), "kind": "py",
-             "enables": "sync:confluence — быстрый парсер", "install": "pip3 install lxml"},
-            {"name": "markitdown", "ok": has_module("markitdown"), "kind": "py",
-             "enables": "kb:ingest-office — docx/pptx → markdown", "install": "pip3 install markitdown"},
-            {"name": "openpyxl", "ok": has_module("openpyxl"), "kind": "py",
-             "enables": "kb:ingest-office — xlsx", "install": "pip3 install openpyxl"},
-            {"name": "pypdf", "ok": has_module("pypdf") or has_module("fitz"), "kind": "py",
-             "enables": "kb:ingest-office — pdf", "install": "pip3 install pypdf"},
-            {"name": "Atlassian MCP в Cursor", "ok": mcp_ok, "kind": "mcp",
-             "enables": "работа ассистента с Confluence/Jira из редактора",
-             "install": "Cursor → Settings → MCP → mcp-atlassian"},
-        ],
-    }
+    plat = platform_key()
+    items = [
+        {"name": "git", "ok": bool(find_bin("git")), "kind": "bin",
+         "enables": "всё: движок работает поверх git", "install": ENV_BIN["git"][plat]},
+        {"name": "pandoc", "ok": bool(find_bin("pandoc")), "kind": "bin",
+         "enables": "ship:export — markdown → docx/pdf", "install": ENV_BIN["pandoc"][plat]},
+    ]
+    for pkg, mods, what in ENV_PY:
+        items.append({"name": pkg, "ok": has_module(mods), "kind": "py", "pip": pkg,
+                      "enables": what, "install": pip_command(pkg)})
+    items.append({"name": "Atlassian MCP в Cursor", "ok": mcp_ok, "kind": "mcp",
+                  "enables": "работа ассистента с Confluence/Jira из редактора",
+                  "install": "Cursor → Settings → MCP → mcp-atlassian"})
+    out = {"python": sys.version.split()[0], "python_path": sys.executable,
+           "platform": plat, "items": items}
     CACHE["env"] = out
     return out
+
+
+def env_install(name: str) -> dict:
+    """Поставить пакет Python из списка страницы — в Python панели. → {ok, code, output}.
+    Ставится только известное: имя приходит со страницы и в командную строку не уходит."""
+    pkg = next((p for p, _m, _w in ENV_PY if p == name), "")
+    if not pkg:
+        return {"ok": False, "code": "unknown", "output": ""}
+    try:
+        p = subprocess.run([sys.executable, "-m", "pip", "install", pkg], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=900)
+        ok, tail = p.returncode == 0, ((p.stdout or "") + (p.stderr or "")).strip()[-1500:]
+    except (OSError, subprocess.SubprocessError) as e:
+        ok, tail = False, f"{type(e).__name__}: {e}"
+    env = environment(fresh=True)
+    seen = next((i["ok"] for i in env["items"] if i.get("pip") == pkg), False)
+    code = "" if ok and seen else "not_seen" if ok else "pip_failed"
+    return {"ok": ok and seen, "code": code, "output": tail}
 
 
 # ----------------------------------------------------------------- встроенный агент
@@ -4058,6 +4127,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(gitsync_state(project))
+        elif u.path == "/api/env":
+            # «Проверить снова» на странице «Установка»: без перезапуска панели.
+            self.send_json({"env": localized_environment(environment(fresh=bool(q.get("fresh"))),
+                                                         request_lang(q))})
         elif u.path == "/api/mcp/kit":
             # Серверы машины: значения секретов заменены маской — см. `mcp_mask`.
             self.send_json(mcp_kit_state())
@@ -4609,6 +4682,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(bots_action(u.path.rsplit("/", 1)[1], project, payload))
+            return
+        if u.path == "/api/env/install":
+            # Пакет Python из списка «Установки» — в Python панели (`env_install`).
+            self.send_json(env_install(str(payload.get("name") or "")))
             return
         if u.path == "/api/gitsync/parse":
             # Строка из `git clone` → сервер, репозиторий, ветка, логин. Ничего не пишет.

@@ -773,5 +773,10 @@
   "git_link.about": "Server, sign-in, branch, message template and update/send automation — each project has its own. All of it is in the «Git» section.",
   "git_link.open": "Open the «Git» section",
   "git_link.alert": "Git automation failed",
-  "editor.mode_md_only": "The «like Word» view is for markdown only: other files are edited as markup, otherwise the editor would rewrite them by markdown rules"
+  "editor.mode_md_only": "The «like Word» view is for markdown only: other files are edited as markup, otherwise the editor would rewrite them by markdown rules",
+  "mcpk.aurora_title": "Aurora search for other agents",
+  "mcpk.aurora_about": "The same search as in «Ask» and «Productivity» (words and meaning by the kb:embed index) — as an MCP server for OpenCode, Claude Code or Cursor. One server for all projects of the machine: every tool takes project — the project slug, bases are never mixed. Tools: kb_projects, kb_search, kb_card, kb_context, kb_index, artifact_spec, kb_ask. Read-only.",
+  "mcpk.aurora_projects": "Project slugs:",
+  "mcpk.aurora_opencode": "OpenCode — opencode.json in the folder or ~/.config/opencode/",
+  "mcpk.aurora_claude": "Claude Code, Cursor — mcpServers (.mcp.json, ~/.cursor/mcp.json)"
 }

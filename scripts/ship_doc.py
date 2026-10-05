@@ -30,7 +30,7 @@ import subprocess
 import sys
 
 from aurora_common import (KB_ROOT, LINK_RE, TRUSTED, as_list, body as md_body,
-                           clean_copy,
+                           clean_copy, find_bin,
                            frontmatter, git_commit, set_field, split_frontmatter, walk_md)
 
 WORK = "Deliverables/work"
@@ -57,8 +57,13 @@ def flatten_links(text: str) -> str:
 
 def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) -> int:
     """Документ → docx/pdf/html/odt через pandoc."""
-    if not shutil.which("pandoc"):
-        print("ship_doc: нужен pandoc — `brew install pandoc` (или apt/choco)", file=sys.stderr)
+    # Не только PATH: на Windows winget кладёт pandoc в %LOCALAPPDATA%\Pandoc, а PATH
+    # процесса, запущенного до установки, о нём не знает.
+    pandoc = find_bin("pandoc")
+    if not pandoc:
+        print("ship_doc: нужен pandoc — macOS: `brew install pandoc`, Windows: "
+              "`winget install --id JohnMacFarlane.Pandoc -e`, Linux: `sudo apt install pandoc`",
+              file=sys.stderr)
         return 1
     raw = open(source, encoding="utf-8").read()
     fm = frontmatter(raw)
@@ -75,7 +80,7 @@ def export(source: str, fmt: str, reference: str, out: str, keep_links: bool) ->
         warnings.append("frontmatter без `type: deliverable`")
 
     target = out or os.path.splitext(source)[0] + "." + fmt
-    cmd = ["pandoc", "-f", "gfm", "-o", target, "--from", "gfm", "--standalone"]
+    cmd = [pandoc, "-f", "gfm", "-o", target, "--from", "gfm", "--standalone"]
     if reference and fmt == "docx":
         if not os.path.isfile(reference):
             print(f"ship_doc: нет эталона оформления {reference}", file=sys.stderr)

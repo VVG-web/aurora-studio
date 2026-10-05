@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.158.1";
+const UI_VERSION = "1.159.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2869,6 +2869,27 @@ function mcpSource(scope){
   return (MCPK[scope].state || {}).servers || {};
 }
 
+// Поиск Авроры для других агентов: один сервер на все проекты машины, проект — аргумент
+// `project` каждого инструмента. Настройку отдаёт сам сервер (`aurora_mcp.py --all --configs`).
+function auroraSearchCard(a){
+  const block = (title, obj) => {
+    const text = JSON.stringify(obj, null, 2);
+    return el("div", {style:"margin-top:12px"},
+      el("div", {class:"row", style:"gap:8px;align-items:center"},
+        el("b", {style:"font-size:13px"}, title), el("div", {class:"spacer"}), copyButton(text)),
+      el("pre", {class:"mono", style:"font-size:11.5px;white-space:pre-wrap;overflow-wrap:anywhere;"
+        + "margin:6px 0 0;padding:10px;border-radius:8px;background:var(--surface-2)"}, text));
+  };
+  return el("div", {class:"card", style:"padding:20px;margin-top:14px"},
+    el("b", {}, t("mcpk.aurora_title")),
+    el("p", {class:"muted", style:"font-size:13px;margin:6px 0 0"}, t("mcpk.aurora_about")),
+    (a.projects || []).length ? el("div", {class:"row", style:"gap:6px;flex-wrap:wrap;margin-top:8px"},
+      el("span", {class:"muted", style:"font-size:12.5px"}, t("mcpk.aurora_projects")),
+      ...a.projects.map(x => el("span", {class:"chip mono"}, x))) : null,
+    block(t("mcpk.aurora_opencode"), a.opencode),
+    block(t("mcpk.aurora_claude"), a.mcpServers));
+}
+
 async function renderMcpKit(){ return renderMcp("kit"); }
 
 async function renderMcp(scope){
@@ -2893,7 +2914,7 @@ async function renderMcp(scope){
         d.path || "")),
     names.length ? cards
                  : el("div", {class:"muted", style:"font-size:13px"}, t(scope === "project" ? "mcp.empty" : "mcpk.empty"))));
-  if (scope !== "project") return;
+  if (scope !== "project"){ if (d.aurora && d.aurora.opencode) box.append(auroraSearchCard(d.aurora)); return; }
 
   // Серверы машины работают и в этом проекте, а правятся только в «Настройке кита».
   const kit = d.kit || {};

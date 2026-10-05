@@ -72,5 +72,14 @@
   "install.gm_project_ok": "{v} installed",
   "install.gm_project_missing": "not installed: the API sign-in and rights check is unavailable; updating and sending work",
   "install.gm_project_old": "outdated: {have} installed, {kit} in the kit",
-  "install.gm_generic_version": "built into engine {v} · updated together with the kit"
+  "install.gm_generic_version": "built into engine {v} · updated together with the kit",
+  "install.python_path": "The panel's Python: {path}. Packages are checked and installed into it — with «Install» or the command below.",
+  "install.recheck": "Check again",
+  "install.recheck_hint": "Installed from a terminal or winget — check again, no restart needed.",
+  "install.do_install": "Install",
+  "install.installing": "Installing…",
+  "install.installed_ok": "{name} is installed",
+  "install.err.pip_failed": "pip did not install {name}",
+  "install.err.not_seen": "{name} is installed, but the panel's Python does not see it — restart the panel",
+  "install.err.unknown": "{name} is not on the install list"
 }

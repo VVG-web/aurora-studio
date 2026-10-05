@@ -72,5 +72,14 @@
   "install.gm_project_ok": "стоит {v}",
   "install.gm_project_missing": "не установлен: проверка входа и прав через API недоступна, обновление и отправка работают",
   "install.gm_project_old": "устарел: стоит {have}, в ките {kit}",
-  "install.gm_generic_version": "встроено в движок {v} · обновляется вместе с китом"
+  "install.gm_generic_version": "встроено в движок {v} · обновляется вместе с китом",
+  "install.python_path": "Python панели: {path}. Пакеты проверяются и ставятся именно в него — кнопкой «Установить» или командой ниже.",
+  "install.recheck": "Проверить снова",
+  "install.recheck_hint": "Поставили из терминала или winget — проверьте снова, перезапуск не нужен.",
+  "install.do_install": "Установить",
+  "install.installing": "Ставлю…",
+  "install.installed_ok": "{name} установлен",
+  "install.err.pip_failed": "pip не установил {name}",
+  "install.err.not_seen": "{name} установлен, но Python панели его не видит — перезапустите панель",
+  "install.err.unknown": "Пакета {name} нет в списке установки"
 }
