@@ -273,7 +273,8 @@ not cancel sending to the others.
 **Actions** are the section's buttons and the commands `git:status`, `git:update`, `git:push`,
 `git:commit`, `git:fix`, `git:check`. They run as panel jobs and show up in the "Console" and the
 run history. Sending first commits what is uncommitted by the template and links the branch to the
-server by itself.
+server by itself. The ".gitignore" button opens the "what git leaves out" rules in "Files" (no file —
+it creates one).
 
 **Automation** is per project:
 - update — when the project is opened, on schedule, before a route;

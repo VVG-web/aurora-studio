@@ -331,5 +331,8 @@
   "gitsync.h.bbcloud.token": "bitbucket.org: токен доступа репозитория (Repository settings → Access tokens, Repositories: Read и Write) или API-токен аккаунта. Логин можно не указывать.",
   "gitsync.step.api_login": "— API сервера не принял этот вход, а git принял; у bitbucket.org API ждёт e-mail Atlassian. Работе проекта это не мешает",
   "gitsync.step.api_failed": "— API сервера не ответил ({reason}), а git достаёт до репозитория: этого достаточно",
-  "gitsync.h.password": "Пароль вашей учётной записи на сервере. Если вход по паролю закрыт (например, двухфакторной защитой), выберите «Токен доступа»."
+  "gitsync.h.password": "Пароль вашей учётной записи на сервере. Если вход по паролю закрыт (например, двухфакторной защитой), выберите «Токен доступа».",
+  "gitsync.gitignore": ".gitignore",
+  "gitsync.gitignore_create": "Создать .gitignore",
+  "gitsync.gitignore_hint": "Что git не берёт в проект — правила .gitignore: открыть в «Файлах»"
 }

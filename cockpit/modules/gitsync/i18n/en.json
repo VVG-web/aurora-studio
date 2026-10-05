@@ -331,5 +331,8 @@
   "gitsync.h.bbcloud.token": "bitbucket.org: a repository access token (Repository settings → Access tokens, Repositories: Read and Write) or an account API token. The login can stay empty.",
   "gitsync.step.api_login": "— the server API did not accept this sign-in but git did; the bitbucket.org API expects the Atlassian e-mail. It does not affect the project",
   "gitsync.step.api_failed": "— the server API did not answer ({reason}), but git reaches the repository: that is enough",
-  "gitsync.h.password": "The password of your account on the server. If password sign-in is closed (e.g. by two-factor protection), pick «Access token»."
+  "gitsync.h.password": "The password of your account on the server. If password sign-in is closed (e.g. by two-factor protection), pick «Access token».",
+  "gitsync.gitignore": ".gitignore",
+  "gitsync.gitignore_create": "Create .gitignore",
+  "gitsync.gitignore_hint": "What git leaves out of the project — the .gitignore rules: open in «Files»"
 }

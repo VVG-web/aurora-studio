@@ -772,5 +772,6 @@
   "git_link.title": "Project Git",
   "git_link.about": "Server, sign-in, branch, message template and update/send automation — each project has its own. All of it is in the «Git» section.",
   "git_link.open": "Open the «Git» section",
-  "git_link.alert": "Git automation failed"
+  "git_link.alert": "Git automation failed",
+  "editor.mode_md_only": "The «like Word» view is for markdown only: other files are edited as markup, otherwise the editor would rewrite them by markdown rules"
 }

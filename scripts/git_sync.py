@@ -1401,6 +1401,7 @@ def status(project, fetch: bool = False) -> dict:
     return {
         "mirrors": mirrors,
         "repo": True, "project": project, "saved": saved, "provider": s["provider"],
+        "gitignore": (Path(project) / ".gitignore").is_file(),
         "branch": branch, "wanted_branch": want, "upstream": st["upstream"],
         "remote": remote, "remotes": remotes, "remote_url": strip_userinfo(url),
         "on_server": on_server, "ahead": ahead, "behind": behind,

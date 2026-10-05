@@ -693,3 +693,27 @@ def test_the_git_section_connects_with_a_clone_line(_t):
                   "gitsync.q.target.mirror", "gitsync.q.done", "gitsync.q.push_now"):
             assert k in cat, (lang, k)
 
+
+
+@test
+def test_gitignore_opens_from_the_git_section_as_plain_markup(tmp: Path):
+    """Кнопка «.gitignore» в разделе «Git» открывает правила в «Файлах» (нет файла — заводит);
+    не-markdown файл редактор правит только разметкой: «как в Word» переписал бы `#` и `*`."""
+    GS = _gs()
+    restore = set_home(tmp / "home")
+    try:
+        project = _repo(tmp / "p")
+        assert GS.status(str(project))["gitignore"] is False
+        (project / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        assert GS.status(str(project))["gitignore"] is True
+    finally:
+        restore()
+    view = (KIT / "cockpit/modules/gitsync/view.js").read_text(encoding="utf-8")
+    fn = view[view.index("async function openGitignore("):view.index("function problemView(")]
+    assert 'ctx.openPath(".gitignore")' in fn and '"/api/files/write"' in fn
+    assert "onclick: () => openGitignore(ctx)" in view, "кнопки «.gitignore» в разделе нет"
+    panel = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    mount = panel[panel.index("async function mountEditor("):panel.index("F.ed = new Vditor(")]
+    assert 'md ? (localStorage.getItem("aurora-editor-mode") || "sv") : "sv"' in mount, \
+        "не-markdown файл откроется видом «как в Word» и будет переписан"
+    assert 'mode: heavy || !md ? "editor" : "both"' in panel, "у .gitignore предпросмотр рисует # заголовком"

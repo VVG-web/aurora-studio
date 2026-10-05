@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.157.0";
+const UI_VERSION = "1.157.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -580,8 +580,13 @@ function destroyEditor(){
 
 async function mountEditor(text){
   destroyEditor();
-  const mode = localStorage.getItem("aurora-editor-mode") || "sv";
+  // «Как в Word» пересобирает текст по правилам markdown: в .gitignore, YAML или скрипте
+  // `#` стал бы заголовком, а `*` — экранированным. Такие файлы правятся только разметкой.
+  const md = /\.(md|markdown)$/i.test(F.path || "");
+  const mode = md ? (localStorage.getItem("aurora-editor-mode") || "sv") : "sv";
   $("#fileMode").value = mode;
+  $("#fileMode").disabled = !md;
+  $("#fileMode").title = md ? "" : t("editor.mode_md_only");
   await ensureVditor();
   // Живой предпросмотр перерисовывает документ целиком. На карточке в 11 КБ редактор
   // сам сообщил про 20 секунд, а в живой базе есть карточки по 170 КБ — на них это
@@ -595,7 +600,8 @@ async function mountEditor(text){
       (window.innerHeight || document.documentElement.clientHeight || 900) * 0.62)),
     cache:{enable:false},
     toolbarConfig:{pin:true},
-    preview:{ math:{engine:"KaTeX"}, mode: heavy ? "editor" : "both", actions:[],
+    // Предпросмотр — у markdown; у .gitignore или YAML он рисовал бы `#` заголовком.
+    preview:{ math:{engine:"KaTeX"}, mode: heavy || !md ? "editor" : "both", actions:[],
               delay: 800 },
     cdn: "/vendor/vditor",
     after(){

@@ -222,12 +222,27 @@ function summaryCard(ctx, st){
       el("button", {class: "btn" + (pushFirst ? " primary" : ""), disabled: off,
         title: t("gitsync.push_hint"), onclick: () => act(ctx, "git:push")}, t("gitsync.push")),
       el("button", {class: "btn", disabled: off, title: t("gitsync.fetch_hint"),
-        onclick: () => act(ctx, "git:status", ["--fetch"])}, t("gitsync.fetch"))),
+        onclick: () => act(ctx, "git:status", ["--fetch"])}, t("gitsync.fetch")),
+      el("span", {style: "flex:1"}),
+      el("button", {class: "btn", title: t("gitsync.gitignore_hint"), onclick: () => openGitignore(ctx)},
+        st.gitignore === false ? t("gitsync.gitignore_create") : t("gitsync.gitignore"))),
     changed ? el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:10px"}, msg,
       el("button", {class: "btn", disabled: off, title: t("gitsync.commit_hint"),
         onclick: () => act(ctx, "git:commit", msg.value.trim()
           ? ["--message=" + msg.value.trim()] : [])}, t("gitsync.commit"))) : null,
     busy);
+}
+
+// Правила «что git не берёт в проект» — в редакторе «Файлов». Файла нет — заводим пустой:
+// установка Авроры его пишет, но проект мог прийти и без него.
+async function openGitignore(ctx){
+  if (D.status.gitignore === false){
+    const r = await ctx.api("/api/files/write", {method: "POST", quiet: true,
+      body: JSON.stringify({project: ctx.project.path, path: ".gitignore", text: "", expect: ""})});
+    if (!r || r.error) return ctx.toast((r && r.error) || ctx.t("gitsync.failed_console"), "err");
+    D.status.gitignore = true;
+  }
+  ctx.openPath(".gitignore");
 }
 
 function problemView(ctx, p, action){
