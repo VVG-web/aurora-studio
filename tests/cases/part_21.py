@@ -196,7 +196,9 @@ def test_a_bot_sees_only_its_mcp_servers_and_writes_only_into_its_run_folder(tmp
         os.chdir(cwd)
     assert r["ok"], r
     assert list(sent["mcp"]["mcpServers"]) == ["jira-mcp"], "бот увидел чужие MCP-серверы"
-    assert sent["outdir"].endswith("Workspaces/bots/b/1") and sent["tool_calls"] == 40
+    assert Path(sent["outdir"]).parts[-4:] == ("Workspaces", "bots", "b", "1"), \
+        f"папка прогона не дошла до адаптера: {sent.get('outdir')}"
+    assert sent["tool_calls"] == 40, "предел вызовов инструментов бота не дошёл до адаптера"
     assert {"outdir", "tool_calls"} <= AG.ADAPTER_ONLY, "служебные поля ушли бы в HTTP-запрос"
     sys.path.insert(0, str(SCRIPTS / "agents"))
     import importlib
