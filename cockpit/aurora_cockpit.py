@@ -1287,7 +1287,8 @@ def gitsync_cert(project: str, payload: dict) -> dict:
     if not re.match(r"^https://", url or "", re.I):
         return {"ok": False, "error": "сертификат проверяется только у адреса https://"}
     if payload.get("action") == "trust":
-        return GS.trust_cert(project, url, str(payload.get("sha256") or ""))
+        return GS.trust_cert(project, url, str(payload.get("sha256") or ""),
+                             str(payload.get("remote") or "") or None)
     info = GS.cert_info(url)
     info.pop("pem", None)
     return info
@@ -4534,10 +4535,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if u.path == "/api/gitsync/settings":
                 self.send_json(GS.save(project, payload.get("settings") or {},
-                                       payload.get("credentials")))
+                                       payload.get("credentials"),
+                                       payload.get("mirror_credentials")))
             elif u.path == "/api/gitsync/check":
                 self.send_json(GS.check(project, payload.get("settings"),
-                                        payload.get("credentials")))
+                                        payload.get("credentials"),
+                                        str(payload.get("remote") or "") or None))
             elif u.path == "/api/gitsync/event":
                 self.send_json(git_auto().event(project, str(payload.get("event") or "")))
             elif u.path == "/api/gitsync/cert":

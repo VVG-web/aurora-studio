@@ -20,9 +20,12 @@ const RX = {
 const PLACEHOLDER = /\{(\w+)\}/g;
 const key = v => String(v || "").replace(/-/g, "_");     // ff-only → ff_only: ключ каталога
 
-let D = null, TAB = "state", FORM = null, CRED = null, DIRTY = false;
+let D = null, TAB = "state", FORM = null, CRED = null, MCRED = [], DIRTY = false;
 let CHECK = null, BUSY = "", LAST = null, ERRS = {}, CERT = null, PROJECT = "";
 const ERR_NODES = {};
+const NO_CRED = {auth: "system", user: "", secret: "", ssh_key: "", ssh_key_text: ""};
+const blankMirror = () => ({remote: "", provider: "generic", instance: "", repo: "",
+                            tls: {verify: true, ca_file: ""}, with_primary: true});
 
 export function mount(ctx){
   ctx.root.dataset.module = "gitsync";
@@ -47,9 +50,20 @@ async function load(ctx, keepForm){
     return;
   }
   D = d;
+  // Отметка «!» на пункте меню — та же, что считает сервер (git_sync.alert): последняя
+  // автоматика не прошла. Кнопка, которая всё починила, снимает её сразу, без перезагрузки.
+  const alert = Object.values(d.last || {}).some(e => e && !e.ok && e.trigger && e.trigger !== "manual");
+  if (ctx.project && !!ctx.project.git_alert !== alert){
+    ctx.project.git_alert = alert;
+    ctx.reloadHealth();
+  }
   if (!(keepForm && DIRTY)){
     FORM = clone(d.settings);
+    FORM.mirrors = FORM.mirrors || [];
     CRED = {...d.credentials, ssh_key_text: ""};
+    // Вход у каждого дополнительного сервера свой; массив идёт рядом с FORM.mirrors.
+    MCRED = FORM.mirrors.map(m => ({...NO_CRED, ...((d.mirror_credentials || {})[m.remote] || {}),
+                                    ssh_key_text: ""}));
     DIRTY = false; ERRS = {};
   } else {
     // Автоматику правят и на вкладке состояния — несохранённая настройка её не затирает.
@@ -161,6 +175,9 @@ function summaryCard(ctx, st){
   else sync = [st.behind ? t("gitsync.sync_behind", {n: st.behind}) : "",
                st.ahead ? t("gitsync.sync_ahead", {n: st.ahead}) : ""].filter(Boolean).join(" · ");
   const lc = st.last_commit || {};
+  const mirrors = st.mirrors || [];
+  // Пока рабочий сервер не задан, отправка идёт на дополнительные «вместе с основным».
+  const canPush = hasRemote || mirrors.some(m => m.exists && m.with_primary);
   const busy = BUSY ? el("div", {class: "row", style: "gap:8px;margin-top:10px"},
     el("span", {class: "spin"}),
     el("span", {class: "muted"}, t("gitsync.busy", {what: t("gitsync.act." + ACTION_OF[BUSY])}))) : null;
@@ -170,7 +187,8 @@ function summaryCard(ctx, st){
   const resolving = (st.conflicts || []).length || st.operation;
   const off = BUSY || resolving ? "" : null;
   const updateFirst = !resolving && st.behind > 0;
-  const pushFirst = hasRemote && !resolving && !updateFirst && (st.ahead > 0 || changed > 0 || !st.on_server);
+  const pushFirst = canPush && !resolving && !updateFirst
+    && (st.ahead > 0 || changed > 0 || !st.on_server || mirrors.some(m => m.ahead || !m.on_server));
   return el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
     el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-bottom:10px"},
       el("span", {class: "chip"}, t("gitsync.prov." + st.provider)),
@@ -180,6 +198,15 @@ function summaryCard(ctx, st){
         hostOf(st.remote_url)) : null,
       el("span", {class: "muted mono", style: "font-size:12px"}, st.remote_url || "")),
     el("div", {style: "font-size:15px;font-weight:600"}, sync),
+    ...mirrors.map(m => el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:6px;font-size:12.5px;align-items:center"},
+      el("span", {class: "chip mono"}, m.remote),
+      el("span", {}, !m.exists ? t("gitsync.mirror_missing") : !m.on_server ? t("gitsync.mirror_new")
+        : m.ahead ? t("gitsync.mirror_ahead", {n: m.ahead}) : t("gitsync.mirror_same")),
+      m.with_primary ? el("span", {class: "chip", title: t("gitsync.with_primary")},
+        t("gitsync.with_primary_chip")) : null,
+      m.exists ? el("button", {class: "btn sm", disabled: off,
+        onclick: () => act(ctx, "git:push", ["--remote=" + m.remote])},
+        t("gitsync.push_to", {name: m.remote})) : null)),
     el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"},
       st.fetched_at ? t("gitsync.fetched", {ago: ctx.fmt.ago(st.fetched_at)})
                     : t("gitsync.never_fetched")),
@@ -211,13 +238,13 @@ function problemView(ctx, p, action){
   const files = p.files || [];
   const fields = p.fields || [];
   return el("div", {class: tone, style: p.level === "info" ? "margin:8px 0" : ""},
-    el("b", {}, tr(ctx, "gitsync.p." + p.code, p.title, vars)),
+    el("b", {}, (p.remote ? p.remote + ": " : "") + tr(ctx, "gitsync.p." + p.code, p.title, vars)),
     el("div", {class: p.level === "info" ? "" : "muted", style: "font-size:12.5px;margin-top:3px"},
       tr(ctx, "gitsync.fix." + p.code, p.fix, vars)),
     files.length ? el("div", {class: "mono", style: "font-size:12px;margin-top:6px"},
       files.slice(0, 12).join(", ") + (files.length > 12 ? " …" : "")) : null,
     fields.length ? el("div", {style: "font-size:12.5px;margin-top:6px"},
-      ...fields.map(f => el("div", {}, "· " + (f.field ? t("gitsync.field." + f.field) + ": " : "")
+      ...fields.map(f => el("div", {}, "· " + (f.field ? fieldName(ctx, f.field) + ": " : "")
                                    + tr(ctx, "gitsync.f." + f.code, f.code)))) : null,
     (p.actions || []).length ? el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:8px"},
       ...p.actions.map((a, i) => el("button", {class: "btn sm" + (i === 0 ? " primary" : ""),
@@ -227,6 +254,13 @@ function problemView(ctx, p, action){
       el("summary", {class: "muted", style: "cursor:pointer;font-size:12px"}, t("gitsync.raw")),
       el("pre", {class: "mono", style: "font-size:11.5px;white-space:pre-wrap;margin:6px 0 0"},
         p.raw)) : null);
+}
+
+// «mirrors.0.repo» → «Дополнительный сервер 1 · Репозиторий»
+function fieldName(ctx, field){
+  const m = String(field).match(/^mirrors\.(\d+)\.(\w+)$/);
+  return m ? ctx.t("gitsync.field.mirror_n", {n: Number(m[1]) + 1}) + " · " + ctx.t("gitsync.field." + m[2])
+           : ctx.t("gitsync.field." + field);
 }
 
 // Последнее действие кончилось отказом — показываем его причину и починку, пока следующее
@@ -340,6 +374,10 @@ function entryText(ctx, e){
   if (!e.ok) return tr(ctx, "gitsync.p." + e.code, e.summary || e.code, {});
   if (e.action === "update") return e.nothing ? t("gitsync.ok.update_none")
     : t("gitsync.ok.update", {n: e.behind || 0, files: e.files || 0});
+  if (e.action === "push" && (e.targets || []).length)
+    return e.targets.map(x => !x.ok ? x.remote + ": " + tr(ctx, "gitsync.p." + x.code, x.code)
+      : x.nothing ? t("gitsync.ok.target_none", {remote: x.remote})
+      : t("gitsync.ok.target", {remote: x.remote, n: x.pushed || 0})).join(" · ");
   if (e.action === "push") return e.nothing ? t("gitsync.ok.push_none")
     : t("gitsync.ok.push", {n: e.pushed || 0});
   if (e.action === "commit") return e.nothing ? t("gitsync.ok.commit_none")
@@ -376,7 +414,8 @@ async function act(ctx, cmd, args = []){
   const e = (D.last || {})[what];
   if (res && res.refused) ctx.toast(res.refused, "err");
   else if (e && e.ok) ctx.toast(entryText(ctx, e), "ok");
-  else if (e && e.problem) ctx.toast(tr(ctx, "gitsync.p." + e.problem.code, e.problem.title, e.problem), "err");
+  else if (e && e.problem) ctx.toast((e.problem.remote ? e.problem.remote + ": " : "")
+    + tr(ctx, "gitsync.p." + e.problem.code, e.problem.title, e.problem), "err");
   else if (res && res.rc) ctx.toast(ctx.t("gitsync.failed_console"), "err");
 }
 
@@ -399,7 +438,7 @@ function doAction(ctx, id, p, action){
     continue: () => run("git:fix", ["--what=continue"]),
     commit_then_update: () => run("git:update", ["--commit-first"]),
     commit_anyway: () => run(action === "push" ? "git:push" : "git:commit", ["--skip-ratchet"]),
-    trust_cert: () => tab("setup", () => certShow(ctx)),
+    trust_cert: () => tab("setup", () => certShow(ctx, p && p.remote)),
     init: () => run("git:fix", ["--what=init"]),
     checkout_branch: () => run("git:fix", ["--what=checkout"]),
     use_current_branch: () => run("git:fix", ["--what=use-branch"]),
@@ -436,7 +475,7 @@ function validate(){
   const repo = (f.repo || "").trim();
   if (repo && !isUrl(repo)){
     if (!RX.path.test(repo.replace(/^\/+|\/+$/g, "").replace(/\.git$/, ""))) e.repo = "repo";
-    else if (!f.instance) e.instance = "required";
+    else if (!f.instance && f.provider !== "github") e.instance = "required";   // у GitHub пусто — github.com
   }
   if (!RX.remote.test(f.remote || "")) e.remote = "name";
   if (f.branch && !validBranch(f.branch)) e.branch = "branch";
@@ -446,9 +485,26 @@ function validate(){
   if (unknown.length) e.message = "placeholder";
   if ((c.auth === "token" || c.auth === "password") && !c.secret) e.secret = "required";
   if (c.auth === "password" && !c.user) e.user = "required";
-  if (c.auth === "token" && !c.user && f.provider !== "gitlab"
+  if (c.auth === "token" && !c.user && !["gitlab", "github"].includes(f.provider)
       && !(f.provider === "bitbucket" && /bitbucket\.org/.test(f.instance || ""))) e.user = "required_for_token";
   if (c.ssh_key_text && !/PRIVATE KEY/.test(c.ssh_key_text)) e.ssh_key_text = "key_format";
+  const names = new Set([f.remote]);
+  (f.mirrors || []).forEach((m, i) => {
+    const pre = `mirrors.${i}.`;
+    if (!RX.remote.test(m.remote || "")) e[pre + "remote"] = "name";
+    else if (names.has(m.remote)) e[pre + "remote"] = "duplicate";
+    names.add(m.remote);
+    if (m.instance && !RX.url.test(m.instance)) e[pre + "instance"] = "url";
+    const r = (m.repo || "").trim();
+    if (!r) e[pre + "repo"] = "required";
+    else if (!isUrl(r)){
+      if (!RX.path.test(r.replace(/^\/+|\/+$/g, "").replace(/\.git$/, ""))) e[pre + "repo"] = "repo";
+      else if (!m.instance && m.provider !== "github") e[pre + "instance"] = "required";
+    }
+    const mc = MCRED[i] || NO_CRED;
+    if ((mc.auth === "token" || mc.auth === "password") && !mc.secret) e[pre + "secret"] = "required";
+    if (mc.auth === "password" && !mc.user) e[pre + "user"] = "required";
+  });
   return e;
 }
 
@@ -547,28 +603,9 @@ function setupTab(ctx){
       ...(((CHECK && CHECK.steps || []).find(s => s.id === "git") || {}).branches || [])
         .map(b => el("option", {value: b}))));
 
-  const sec = el("input", {class: "btn mono", type: "password", autocomplete: "off",
-    style: "width:100%;font-weight:400",
-    placeholder: c.secret === MASK ? t("gitsync.secret_set") : t("gitsync.secret_none")});
-  const had = c.secret === MASK;
-  sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); touch(ctx); };
-  const keyText = el("textarea", {class: "btn mono", rows: 3, style: "width:100%;font-weight:400;font-size:11.5px",
-    placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----"});
-  keyText.oninput = () => { c.ssh_key_text = keyText.value; touch(ctx); };
   const auth = el("div", {class: "card", id: "gitsyncAuth", style: "padding:16px 18px;margin-bottom:14px"},
     el("b", {}, t("gitsync.s_auth")),
-    el("div", {style: "margin-top:10px"},
-      field(ctx, "auth", t("gitsync.field.auth"),
-        select(ctx, c, "auth", o.auths, v => t("gitsync.auth." + v), true), t("gitsync.h.auth." + c.auth))),
-    c.auth === "token" || c.auth === "password" ? el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
-      field(ctx, "user", t("gitsync.field.user"), input(ctx, c, "user", {autocomplete: "off"}),
-        t("gitsync.h.user." + (c.auth === "token" ? "token" : "password"))),
-      field(ctx, "secret", c.auth === "token" ? t("gitsync.field.token") : t("gitsync.field.password"),
-        sec, had ? t("gitsync.h.secret_keep") : t("gitsync.h.token." + f.provider))) : null,
-    c.auth === "ssh" ? el("div", {},
-      field(ctx, "ssh_key", t("gitsync.field.ssh_key"),
-        input(ctx, c, "ssh_key", {mono: true, placeholder: "~/.ssh/id_ed25519"}), t("gitsync.h.ssh_key")),
-      field(ctx, "ssh_key_text", t("gitsync.field.ssh_key_text"), keyText, t("gitsync.h.ssh_key_text"))) : null,
+    ...authFields(ctx, c, f.provider, ""),
     el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:center;margin-top:4px"},
       el("label", {class: "flagline"},
         el("input", {type: "checkbox", checked: f.tls.verify ? "" : null,
@@ -603,8 +640,93 @@ function setupTab(ctx){
     el("button", {class: "btn", onclick: () => { DIRTY = false; load(ctx, false); }}, t("gitsync.revert")),
     el("span", {style: "flex:1"}),
     el("button", {class: "btn", onclick: () => runCheck(ctx)}, t("gitsync.a.check")));
-  const box = el("div", {}, where, auth, commitCard, bar, checkView(ctx));
+  const box = el("div", {}, where, demoteBox(ctx), auth, mirrorsCard(ctx), commitCard, bar, checkView(ctx));
   setTimeout(() => showErrs(ctx), 0);
+  return box;
+}
+
+// Вход одного сервера: способ, логин и токен (пароль) или SSH-ключ. `pre` — приставка поля
+// у дополнительного сервера («mirrors.0.»): так подсветка находит его поле, а не основного.
+function authFields(ctx, c, provider, pre){
+  const {t, el} = ctx;
+  const o = D.options;
+  const sec = el("input", {class: "btn mono", type: "password", autocomplete: "off",
+    style: "width:100%;font-weight:400",
+    placeholder: c.secret === MASK ? t("gitsync.secret_set") : t("gitsync.secret_none")});
+  const had = c.secret === MASK;
+  sec.oninput = () => { c.secret = sec.value || (had ? MASK : ""); touch(ctx); };
+  const keyText = el("textarea", {class: "btn mono", rows: 3, style: "width:100%;font-weight:400;font-size:11.5px",
+    placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----"});
+  keyText.oninput = () => { c.ssh_key_text = keyText.value; touch(ctx); };
+  return [
+    el("div", {style: "margin-top:10px"},
+      field(ctx, pre + "auth", t("gitsync.field.auth"),
+        select(ctx, c, "auth", o.auths, v => t("gitsync.auth." + v), true), t("gitsync.h.auth." + c.auth))),
+    c.auth === "token" || c.auth === "password" ? el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+      field(ctx, pre + "user", t("gitsync.field.user"), input(ctx, c, "user", {autocomplete: "off"}),
+        t("gitsync.h.user." + (c.auth === "token" ? "token" : "password"))),
+      field(ctx, pre + "secret", c.auth === "token" ? t("gitsync.field.token") : t("gitsync.field.password"),
+        sec, had ? t("gitsync.h.secret_keep") : t("gitsync.h.token." + provider))) : null,
+    c.auth === "ssh" ? el("div", {},
+      field(ctx, pre + "ssh_key", t("gitsync.field.ssh_key"),
+        input(ctx, c, "ssh_key", {mono: true, placeholder: "~/.ssh/id_ed25519"}), t("gitsync.h.ssh_key")),
+      field(ctx, pre + "ssh_key_text", t("gitsync.field.ssh_key_text"), keyText, t("gitsync.h.ssh_key_text"))) : null,
+  ];
+}
+
+// Основной сервер — в дополнительные: `git remote rename origin gitea` вместе с настройкой
+// и входом. Основным станет рабочий сервер, когда его укажут выше.
+function demoteBox(ctx){
+  const {t, el} = ctx;
+  const st = D.status;
+  if (!(st.remotes || []).includes(D.settings.remote) || DIRTY) return null;
+  const name = el("input", {class: "btn mono", style: "width:140px;font-weight:400", value: "gitea"});
+  return el("details", {class: "card", style: "padding:12px 18px;margin-bottom:14px"},
+    el("summary", {style: "cursor:pointer;font-weight:600"}, t("gitsync.demote_title", {remote: D.settings.remote})),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:6px 0 10px"},
+      t("gitsync.demote_about", {remote: D.settings.remote})),
+    el("div", {class: "row", style: "gap:8px;align-items:center"},
+      el("span", {class: "muted"}, t("gitsync.field.name")), name,
+      el("button", {class: "btn sm primary", disabled: BUSY ? "" : null,
+        onclick: () => act(ctx, "git:fix", ["--what=demote-origin", "--name=" + name.value.trim()])},
+        t("gitsync.demote"))));
+}
+
+function mirrorsCard(ctx){
+  const {t, el} = ctx;
+  const o = D.options, f = FORM;
+  const box = el("div", {class: "card", style: "padding:16px 18px;margin-bottom:14px"},
+    el("b", {}, t("gitsync.s_mirrors")),
+    el("p", {class: "muted", style: "font-size:12.5px;margin:4px 0 10px"}, t("gitsync.mirrors_about")));
+  f.mirrors.forEach((m, i) => {
+    const pre = `mirrors.${i}.`;
+    MCRED[i] = MCRED[i] || {...NO_CRED};
+    box.append(el("div", {class: "card", style: "padding:12px 14px;margin-bottom:10px"},
+      el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:flex-start"},
+        field(ctx, pre + "remote", t("gitsync.field.mirror_remote"),
+          input(ctx, m, "remote", {mono: true, placeholder: "gitea"})),
+        field(ctx, pre + "provider", t("gitsync.field.provider"),
+          select(ctx, m, "provider", o.providers, v => t("gitsync.prov." + v), true)),
+        el("button", {class: "btn sm danger", style: "margin-top:20px", onclick: () => {
+          f.mirrors.splice(i, 1); MCRED.splice(i, 1); touch(ctx); draw(ctx); }},
+          t("gitsync.mirror_remove"))),
+      el("div", {class: "row", style: "gap:12px;flex-wrap:wrap"},
+        field(ctx, pre + "instance", t("gitsync.field.instance"),
+          input(ctx, m, "instance", {mono: true, placeholder: "https://git.example.com:3000"})),
+        field(ctx, pre + "repo", t("gitsync.field.repo"),
+          input(ctx, m, "repo", {mono: true, placeholder: t("gitsync.ph.repo." + m.provider)}))),
+      ...authFields(ctx, MCRED[i], m.provider, pre),
+      el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:center"},
+        el("label", {class: "flagline"},
+          el("input", {type: "checkbox", checked: m.with_primary ? "" : null,
+            onchange: e => { m.with_primary = e.target.checked; touch(ctx); }}),
+          t("gitsync.with_primary")),
+        m.remote ? el("button", {class: "btn sm", onclick: () => runCheck(ctx, m.remote)},
+          t("gitsync.check_server", {name: m.remote})) : null)));
+  });
+  box.append(el("button", {class: "btn sm", onclick: () => {
+    f.mirrors.push(blankMirror()); MCRED.push({...NO_CRED}); touch(ctx); draw(ctx); }},
+    t("gitsync.mirror_add")));
   return box;
 }
 
@@ -612,7 +734,9 @@ async function saveSetup(ctx){
   ERRS = validate();
   if (Object.keys(ERRS).length){ showErrs(ctx); return ctx.toast(ctx.t("gitsync.save_fix"), "warn"); }
   const r = await ctx.api("/api/gitsync/settings", {method: "POST", quiet: true,
-    body: JSON.stringify({project: ctx.project.path, settings: FORM, credentials: CRED})});
+    body: JSON.stringify({project: ctx.project.path, settings: FORM, credentials: CRED,
+                          mirror_credentials: Object.fromEntries(
+                            FORM.mirrors.map((m, i) => [m.remote, MCRED[i] || NO_CRED]))})});
   if (!r || !r.ok){
     ERRS = fieldErrors(r && r.problems);
     showErrs(ctx);
@@ -624,12 +748,14 @@ async function saveSetup(ctx){
   await load(ctx, false);
 }
 
-async function runCheck(ctx){
+async function runCheck(ctx, remote){
   CHECK = {busy: true};
   draw(ctx);
+  const i = remote ? FORM.mirrors.findIndex(m => m.remote === remote) : -1;
   const r = await ctx.api("/api/gitsync/check", {method: "POST", quiet: true,
-    body: JSON.stringify({project: ctx.project.path, settings: FORM, credentials: CRED})});
-  CHECK = r || {ok: false, steps: []};
+    body: JSON.stringify({project: ctx.project.path, settings: FORM, remote: remote || "",
+                          credentials: i >= 0 ? MCRED[i] : CRED})});
+  CHECK = {...(r || {ok: false, steps: []}), remote: remote || "", index: i};
   draw(ctx);
 }
 
@@ -640,8 +766,10 @@ function checkView(ctx){
     el("span", {class: "muted"}, t("gitsync.checking")));
   const sg = CHECK.suggest || {};
   const apply = (label, fn) => el("button", {class: "btn sm", onclick: () => { fn(); touch(ctx); draw(ctx); }}, label);
+  const mi = CHECK.index >= 0 ? CHECK.index : -1;
+  const target = mi >= 0 ? FORM.mirrors[mi] : FORM, cred = mi >= 0 ? MCRED[mi] : CRED;
   return el("div", {class: "card", style: "padding:14px 18px;margin-bottom:14px"},
-    el("b", {}, CHECK.ok ? t("gitsync.check_ok") : t("gitsync.check_bad")),
+    el("b", {}, (CHECK.remote ? CHECK.remote + ": " : "") + (CHECK.ok ? t("gitsync.check_ok") : t("gitsync.check_bad"))),
     ...(CHECK.steps || []).map(s => el("div", {class: "row", style: "gap:8px;margin-top:6px;font-size:12.5px"},
       el("span", {class: "chip " + (s.ok ? "ok" : s.ok === null ? "" : "bad")},
         s.ok ? "✓" : s.ok === null ? "·" : "✗"),
@@ -649,10 +777,10 @@ function checkView(ctx){
       s.id === "api" && s.ok === null ? el("span", {class: "muted"}, t("gitsync.step.api_off")) : null,
       s.detail && s.id !== "branch" ? el("span", {class: "muted mono", style: "font-size:11.5px"}, s.detail) : null)),
     el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;margin-top:8px"},
-      sg.provider && sg.provider !== FORM.provider ? apply(t("gitsync.use_provider",
-        {name: t("gitsync.prov." + sg.provider)}), () => { FORM.provider = sg.provider; }) : null,
-      sg.user && !CRED.user ? apply(t("gitsync.use_user", {user: sg.user}), () => { CRED.user = sg.user; }) : null,
-      sg.branch && sg.branch !== FORM.branch ? apply(t("gitsync.use_branch", {branch: sg.branch}),
+      sg.provider && target && sg.provider !== target.provider ? apply(t("gitsync.use_provider",
+        {name: t("gitsync.prov." + sg.provider)}), () => { target.provider = sg.provider; }) : null,
+      sg.user && cred && !cred.user ? apply(t("gitsync.use_user", {user: sg.user}), () => { cred.user = sg.user; }) : null,
+      sg.branch && mi < 0 && sg.branch !== FORM.branch ? apply(t("gitsync.use_branch", {branch: sg.branch}),
         () => { FORM.branch = sg.branch; }) : null),
     sg.empty ? el("div", {class: "note", style: "margin-top:8px"}, t("gitsync.repo_empty")) : null,
     CHECK.problem ? problemView(ctx, {...CHECK.problem, level: "error"}, "check") : null);
@@ -660,13 +788,20 @@ function checkView(ctx){
 
 /* ---------------------------------------------------------------- сертификат */
 
-async function certShow(ctx){
+// Сертификат основного сервера или дополнительного (`remote`) — по его адресу.
+function certUrl(remote){
+  if (!remote) return FORM.instance || D.status.remote_url;
+  const m = (FORM.mirrors || []).find(x => x.remote === remote) || {};
+  const st = (D.status.mirrors || []).find(x => x.remote === remote) || {};
+  return m.instance || st.url || m.repo || "";
+}
+
+async function certShow(ctx, remote){
   CERT = {busy: true};
   draw(ctx);
   const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
-    body: JSON.stringify({project: ctx.project.path, action: "show",
-                          url: FORM.instance || D.status.remote_url})});
-  CERT = r || {ok: false};
+    body: JSON.stringify({project: ctx.project.path, action: "show", url: certUrl(remote)})});
+  CERT = {...(r || {ok: false}), remote: remote || ""};
   draw(ctx);
 }
 
@@ -683,7 +818,7 @@ function certBox(ctx){
       el("button", {class: "btn sm primary", onclick: async () => {
         const r = await ctx.api("/api/gitsync/cert", {method: "POST", quiet: true,
           body: JSON.stringify({project: ctx.project.path, action: "trust", sha256: CERT.sha256,
-                                url: FORM.instance || D.status.remote_url})});
+                                url: certUrl(CERT.remote), remote: CERT.remote || ""})});
         ctx.toast(r && r.ok ? t("gitsync.cert_trusted") : (r && r.error) || t("gitsync.cert_failed"),
                   r && r.ok ? "ok" : "err");
         CERT = null;

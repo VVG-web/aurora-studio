@@ -56,7 +56,7 @@
   "install.ex_compat_bad": "не прошёл проверку совместимости: {why} — работа идёт прямым HTTP",
   "install.ex_compat_check": "Проверить совместимость",
   "install.gm_title": "Модули Git-провайдеров",
-  "install.gm_about": "Проверяют вход, права и репозиторий через API сервера и знают его адреса. Обновление и отправка проектов работают и без них. Ставятся из кита в ~/.aurora/git-providers/.",
+  "install.gm_about": "Проверяют вход, права и репозиторий через API сервера и знают его адреса: GitHub, GitLab, Bitbucket, Gitea. Обновление и отправка проектов работают и без них. Ставятся из кита в ~/.aurora/git-providers/.",
   "install.gm_installed": "стоит {v}",
   "install.gm_kit": "в ките {v}",
   "install.gm_github": "на GitHub {v}",
@@ -66,10 +66,11 @@
   "install.gm_latest": "Последняя",
   "install.gm_done": "Модуль {name} {v} установлен",
   "install.gm_failed": "Модуль не установился",
-  "install.gm_generic": "Другой git-сервер",
-  "install.gm_generic_about": "Любой сервер по https или ssh: встроен в движок, модуль не нужен.",
+  "install.gm_generic": "Обычный git — без модуля",
+  "install.gm_generic_about": "Для сервера, у которого нет модуля: любой адрес https, ssh или сетевая папка. Обновление и отправка работают самим git; проверки входа и прав через API нет — для неё поставьте модуль провайдера выше.",
   "install.gm_project": "Git-модуль проекта: {name}",
   "install.gm_project_ok": "стоит {v}",
   "install.gm_project_missing": "не установлен: проверка входа и прав через API недоступна, обновление и отправка работают",
-  "install.gm_project_old": "устарел: стоит {have}, в ките {kit}"
+  "install.gm_project_old": "устарел: стоит {have}, в ките {kit}",
+  "install.gm_generic_version": "встроено в движок {v} · обновляется вместе с китом"
 }

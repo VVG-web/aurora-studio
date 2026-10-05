@@ -235,7 +235,7 @@ environment variable through its own credential mechanism.
 
 | Field | Meaning |
 |---|---|
-| Provider | Gitea, GitLab, Bitbucket or another git server |
+| Provider | GitHub, GitLab, Bitbucket, Gitea or another git server (no module) |
 | Server address | your own server with its port: `https://git.example.com:3000` |
 | Repository | `owner/name` (GitLab — with subgroups, Bitbucket — `KEY/repository`) or a full address: `https://…`, `git@…`, a network folder |
 | How to sign in | as set up in git on this machine (keychain, ssh-agent) · access token · username and password · SSH key |
@@ -246,6 +246,14 @@ environment variable through its own credential mechanism.
 
 Fields are checked as you type; "Check connection" asks the provider API and git itself and offers
 to fill in what it found: the login, the default branch, the provider by the server's answer.
+
+**There can be several servers.** The main one (`origin`) is the work server: updating comes from
+it, sending goes to it. Additional ones — for example, your own `gitea` next to the work GitLab or
+Bitbucket — each have their own address and sign-in; sending goes to the main server and to the
+additional ones marked "with the main" (or separately by "Send to …"). "Make origin an additional
+server" is `git remote rename origin gitea` together with its setup and sign-in; until the work
+server is given, sending goes only to the additional ones. A failure of one server is named and does
+not cancel sending to the others.
 
 **Actions** are the section's buttons and the commands `git:status`, `git:update`, `git:push`,
 `git:commit`, `git:fix`, `git:check`. They run as panel jobs and show up in the "Console" and the
@@ -273,10 +281,11 @@ running. Each run's result is in the section's journal and in the "Console"; a f
 
 The raw git output is shown below, folded.
 
-**Provider modules** (Gitea, GitLab, Bitbucket) check sign-in, rights and the repository through the
+**Provider modules** (GitHub and GitHub Enterprise, GitLab, Bitbucket, Gitea) check sign-in, rights and the repository through the
 server API and know the default branch and the clone URLs (Bitbucket — `/scm/` and SSH port 7999).
 They are installed and updated on the "Install" page, next to the engine add-ons, into
-`~/.aurora/git-providers/`. Without a module, updating and sending work with any git server.
+`~/.aurora/git-providers/`. Without a module, updating and sending work with any git server through
+git itself — this path is built into the engine and is updated together with the kit.
 
 ## 5. Check readiness
 

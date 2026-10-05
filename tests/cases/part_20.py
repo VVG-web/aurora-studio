@@ -341,8 +341,27 @@ def test_provider_modules_install_update_and_check_through_api(tmp: Path):
         (fake / "gitproviders" / "gitea" / "adapter.py").write_text("x = 1\n", encoding="utf-8")
         assert not GS.install_module("gitea", fake)["ok"]
         assert json.loads(man.read_text(encoding="utf-8"))["version"] == "0.0.1", "битый модуль заменил рабочий"
-        for mid in ("gitea", "gitlab", "bitbucket"):
+        for mid in ("gitea", "gitlab", "bitbucket", "github"):
             assert GS.install_module(mid, KIT)["ok"]
+        gh = GS.load_adapter("github")
+        pub = {"instance": "", "repo": "me/proj", "auth": "token", "user": "", "secret": "t"}
+        http = _Http({"api.github.com/user": (200, {"login": "me"}, {}),
+                      "api.github.com/repos/me/proj": (200, {"default_branch": "main",
+                                                            "permissions": {"push": True}}, {})})
+        r = gh.check(pub, http)
+        assert r["ok"] and r["login"] == "me" and http.seen[0][1]["Authorization"] == "Bearer t", r
+        ghe = {**pub, "instance": "https://ghe.example.com"}
+        http = _Http({"/api/v3/user": (200, {"login": "me"}, {}),
+                      "/api/v3/repos/me/proj": (200, {"permissions": {"push": False}}, {})})
+        assert gh.check(ghe, http)["code"] == "forbidden" and http.seen[0][0].startswith("https://ghe.example.com/api/v3/")
+        assert gh.clone_urls(pub) == {"http": "https://github.com/me/proj.git",
+                                      "ssh": "git@github.com:me/proj.git", "web": "https://github.com/me/proj"}
+        assert GS.guess_provider("https://github.com/me/proj.git") == "github"
+        assert GS.guess_provider("git@github.com:me/proj.git") == "github"
+        s_gh = GS.normalize({"provider": "github", "repo": "me/proj"})
+        assert not s_gh[1], "github.com без адреса сервера отвергнут"
+        assert GS.repo_url(s_gh[0], {"auth": "token"}) == "https://github.com/me/proj.git"
+        assert GS.default_user(s_gh[0]) == "x-access-token"
         gitea, gitlab, bb = (GS.load_adapter(m) for m in ("gitea", "gitlab", "bitbucket"))
         cfg = {"instance": "https://git.example.com:3100", "repo": "team/a", "auth": "token",
                "user": "", "secret": "t"}
@@ -456,7 +475,7 @@ def test_git_commands_are_registered_and_the_engine_ships_them(_t):
         assert f"| {cmd} |" in reg, cmd
     man = (KIT / "engine_manifest.txt").read_text(encoding="utf-8")
     assert "scripts/git_sync.py" in man and "gitproviders" not in man
-    for mid in ("gitea", "gitlab", "bitbucket"):
+    for mid in ("github", "gitlab", "bitbucket", "gitea"):
         meta = json.loads((KIT / "gitproviders" / mid / "provider.json").read_text(encoding="utf-8"))
         assert meta["id"] == mid and re.fullmatch(r"\d+\.\d+\.\d+", meta["version"])
         assert (KIT / "gitproviders" / mid / "adapter.py").is_file()
@@ -479,3 +498,81 @@ def test_every_flag_the_git_section_sends_is_accepted_by_its_command(_t):
         for flag in re.findall(r'"(--[\w-]+)', args):
             assert flag in row["flags"] and flag not in row["fixed_flags"], \
                 f"{cmd} {flag}: панель откажет «флаг не объявлен»"
+
+
+@test
+def test_a_project_sends_to_its_work_server_and_its_own_gitea(tmp: Path):
+    """Два сервера: рабочий `origin` (обновление и отправка) и свой `gitea` (копия).
+    Прежний основной переезжает в дополнительные одним действием — `git remote rename`
+    вместе с настройкой и входом; пока рабочий не задан, отправка идёт на `gitea`."""
+    GS = _gs()
+    restore = set_home(tmp / "home")
+    try:
+        gitea = _server(tmp)
+        work = tmp / "work.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(work)], check=True)
+        p = _repo(tmp / "p")
+        (p / "a.md").write_text("1\n", encoding="utf-8")
+        _git(p, "add", "-A")
+        _git(p, "commit", "-q", "-m", "a")
+        _git(p, "remote", "add", "origin", str(gitea))
+        _git(p, "push", "-q", "-u", "origin", "main")
+        assert GS.save(p, {"repo": str(gitea)}, {"auth": "token", "user": "me", "secret": "gtok-1"})["ok"]
+        r = GS.fix(p, "demote-origin", name="gitea")
+        assert r["ok"], r
+        assert _git(p, "remote") == "gitea" and _git(p, "rev-parse", "--abbrev-ref", "@{u}") == "gitea/main"
+        s = GS.load(p)
+        assert s["repo"] == "" and [m["remote"] for m in s["mirrors"]] == ["gitea"]
+        assert GS.cred_load(p, "gitea")["secret"] == "gtok-1" and GS.cred_load(p)["secret"] == "", \
+            "вход прежнего основного сервера не переехал вместе с ним"
+        GS.save(p, s, {"auth": "system"}, {"gitea": {"auth": "system"}})
+        assert GS.fix(p, "demote-origin", name="gitea")["problem"]["code"] == "no_remote"
+        (p / "b.md").write_text("2\n", encoding="utf-8")
+        GS.commit(p, "b")
+        r = GS.push(p, do_commit=False)
+        assert r["ok"] and [t["remote"] for t in r["targets"]] == ["gitea"], r
+        assert GS.update(p)["problem"]["code"] == "no_remote", "обновление пошло с дополнительного сервера"
+        assert GS.save(p, {**GS.load(p), "repo": str(work)}, None, None)["ok"]
+        assert set(_git(p, "remote").split()) == {"origin", "gitea"}
+        (p / "c.md").write_text("3\n", encoding="utf-8")
+        GS.commit(p, "c")
+        r = GS.push(p, do_commit=False)
+        assert r["ok"] and [t["remote"] for t in r["targets"]] == ["origin", "gitea"], r
+        assert _git(p, "rev-parse", "--abbrev-ref", "@{u}") == "origin/main", "ветка не связана с рабочим"
+        assert "c" in _git(gitea, "log", "--format=%s", "main").split()
+        assert GS.push(p, do_commit=False, only="gitea")["targets"][0]["nothing"]
+        st = GS.status(p)
+        assert [(m["remote"], m["ahead"]) for m in st["mirrors"]] == [("gitea", 0)]
+        # отказ одного сервера не прячет удачу другого и называет, кто отказал
+        s = GS.load(p)
+        s["mirrors"][0]["repo"] = str(tmp / "nowhere.git")
+        GS.save(p, s, None, None)
+        (p / "d.md").write_text("4\n", encoding="utf-8")
+        GS.commit(p, "d")
+        r = GS.push(p, do_commit=False)
+        assert not r["ok"] and r["problem"]["remote"] == "gitea", r
+        assert [t["ok"] for t in r["targets"]] == [True, False], "отправка на рабочий потерялась"
+        assert GS.read_log(p)[0]["targets"][1]["code"] == r["problem"]["code"]
+        # вход у дополнительного свой; убрали сервер — убран и его вход
+        s["mirrors"][0]["repo"] = str(gitea)
+        GS.save(p, s, None, {"gitea": {"auth": "token", "user": "me", "secret": "gtok-2"}})
+        assert GS.cred_load(p, "gitea")["secret"] == "gtok-2" and GS.cred_load(p)["auth"] == "system"
+        assert GS.masked_settings_view(p)["mirror_credentials"]["gitea"]["secret"] == GS.MASK
+        GS.save(p, {**GS.load(p), "mirrors": []}, None, None)
+        assert GS.cred_load(p, "gitea")["secret"] == "", "вход убранного сервера остался лежать"
+        bad = GS.normalize({"remote": "origin", "mirrors": [{"remote": "origin", "repo": "/x.git"}]})[1]
+        assert {"field": "mirrors.0.remote", "code": "duplicate"} in bad
+    finally:
+        restore()
+
+
+@test
+def test_the_install_page_names_what_needs_no_module(_t):
+    """«Без модуля» — не безымянный провайдер, которому неоткуда обновляться: это сам git,
+    часть движка, и обновляется он вместе с китом. GitHub — свой модуль со своей версией."""
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    assert 't("install.gm_generic_version", {v: ctx.state.kit.version})' in view
+    ru = json.loads((KIT / "cockpit/modules/install/i18n/ru.json").read_text(encoding="utf-8"))
+    assert "движ" in ru["install.gm_generic_version"] and "GitHub" in ru["install.gm_about"]
+    rows = {r["id"] for r in _gs().module_rows(KIT)}
+    assert {"github", "gitlab", "bitbucket", "gitea"} <= rows

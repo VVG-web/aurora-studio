@@ -761,7 +761,9 @@
     "итог одной строкой JSON": "the result as one JSON line",
     "починка одним действием (что — в --what)": "a one-click fix (what — in --what)",
     "что чинить: abort, continue, mine, theirs, resolved, set-upstream, init, checkout, use-branch, strip-url, fix-key-perms": "what to fix: abort, continue, mine, theirs, resolved, set-upstream, init, checkout, use-branch, strip-url, fix-key-perms",
-    "файл для --what mine|theirs|resolved": "the file for --what mine|theirs|resolved"
+    "файл для --what mine|theirs|resolved": "the file for --what mine|theirs|resolved",
+    "с --push: отправить только на этот сервер (основной или дополнительный)": "with --push: send only to this server (main or additional)",
+    "с --what demote-origin: новое имя прежнего основного сервера (по умолчанию gitea)": "with --what demote-origin: the new name of the former main server (gitea by default)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

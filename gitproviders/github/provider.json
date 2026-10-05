@@ -1,0 +1,12 @@
+{
+  "id": "github",
+  "title": "GitHub",
+  "version": "1.0.0",
+  "since": "1.155.0",
+  "api": "https://api.github.com · <сервер>/api/v3",
+  "auth": ["system", "token", "ssh"],
+  "about": {
+    "ru": "GitHub и GitHub Enterprise Server: вход по токену доступа, проверка репозитория и права записи, ветка по умолчанию, адреса клонирования.",
+    "en": "GitHub and GitHub Enterprise Server: access-token sign-in, repository and write-access check, default branch, clone URLs."
+  }
+}

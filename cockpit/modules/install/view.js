@@ -137,10 +137,14 @@ function gitModsCard(ctx){
             await installGitMod(ctx, m.id, draw);
           }}, label)));
     });
+    // Без модуля работает сам git: API нет, спрашивать сервер, кто он, не о чем. Отдельной
+    // версии у этого пути нет — он часть движка и обновляется вместе с китом.
     body.append(el("div", {class:"list-item"},
       el("span", {class:"chip ok", style:"flex:none"}, t("install.have")),
       el("div", {style:"flex:1"}, el("div", {style:"font-weight:600"}, t("install.gm_generic")),
-        el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"}, t("install.gm_generic_about")))));
+        el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"}, t("install.gm_generic_about")),
+        el("div", {style:"font-size:12.5px;margin-top:4px"},
+          t("install.gm_generic_version", {v: ctx.state.kit.version})))));
     if (d && d.error) body.append(el("div", {class:"muted"}, d.error));
     body.append(el("div", {class:"row", style:"margin-top:8px"},
       el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.ex_check"))));

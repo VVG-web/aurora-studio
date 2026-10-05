@@ -9,9 +9,10 @@
 
   python3 git_sync.py --status [--fetch] [--json]
   python3 git_sync.py --update [--strategy ff-only|merge|rebase] [--commit-first]
-  python3 git_sync.py --push [--message ТЕКСТ] [--no-commit] [--update-first]
+  python3 git_sync.py --push [--message ТЕКСТ] [--no-commit] [--update-first] [--remote ИМЯ]
   python3 git_sync.py --commit [--message ТЕКСТ] [--skip-ratchet]
   python3 git_sync.py --fix --what abort|continue|mine|theirs|resolved|set-upstream|init|checkout|use-branch|strip-url|fix-key-perms [--file ПУТЬ]
+  python3 git_sync.py --fix --what demote-origin [--name gitea]   # основной сервер → дополнительный
   python3 git_sync.py --check          # вход, репозиторий и ветка на сервере
   python3 git_sync.py --modules        # модули провайдеров: что стоит, что в ките
 
@@ -19,10 +20,14 @@
 чинится: панель получает код (`problem.code`) и действия (`problem.actions`), командная
 строка — те же слова. Сырой вывод git идёт ниже, для того, кто хочет разобраться сам.
 
+Серверов у проекта может быть несколько: основной (`origin` — рабочий; с него обновление,
+на него отправка) и дополнительные (например, свой `gitea`) — со своим адресом и входом;
+отправка идёт на основной и на дополнительные, отмеченные «вместе с основным».
+
 Автоматика (`--auto СОБЫТИЕ`) делает работу, только если в настройке проекта она включена
 на это событие: устаревший тик или чужой вызов ничего не обновит и не отправит.
 
-Провайдеры — модули: Gitea, GitLab, Bitbucket (`gitproviders/<id>/` в ките, ставятся в
+Провайдеры — модули: GitHub, GitLab, Bitbucket, Gitea (`gitproviders/<id>/` в ките, ставятся в
 `~/.aurora/git-providers/` со страницы «Установка»). Без модуля работает любой git-сервер:
 модуль добавляет проверку входа и прав через API, ветку по умолчанию и адреса клонирования.
 
@@ -57,14 +62,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MASK = "••••••"
-PROVIDERS = ("gitea", "gitlab", "bitbucket", "generic")
+PROVIDERS = ("github", "gitlab", "bitbucket", "gitea", "generic")
 AUTHS = ("system", "token", "password", "ssh")
 STRATEGIES = ("ff-only", "merge", "rebase")
 UPDATE_ON = ("open", "interval", "before_route")
 PUSH_ON = ("after_route", "after_commit", "interval")
 PLACEHOLDERS = ("project", "date", "time", "branch", "count", "files", "trigger")
 FIXES = ("abort", "continue", "mine", "theirs", "resolved", "set-upstream", "init",
-         "checkout", "use-branch", "strip-url", "fix-key-perms")
+         "checkout", "use-branch", "strip-url", "fix-key-perms", "demote-origin")
 MIN_EVERY = 5                 # минут: чаще ходить на сервер незачем
 DEBOUNCE_S = 120              # «после фиксации» — когда фиксации перестали сыпаться
 OPEN_EVERY_S = 600            # «при открытии» — не чаще раза в десять минут
@@ -93,6 +98,9 @@ DEFAULTS = {
     "tls": {"verify": True, "ca_file": ""},
     "auto_update": {"enabled": False, "on": ["open"], "every_min": 60},
     "auto_push": {"enabled": False, "on": ["after_route"], "every_min": 60},
+    # Дополнительные серверы: свой адрес и вход у каждого. Обновление идёт только с
+    # основного; отправка — на основной и на те, у кого «вместе с основным».
+    "mirrors": [],
 }
 CRED_DEFAULT = {"auth": "system", "user": "", "secret": "", "ssh_key": ""}
 
@@ -337,6 +345,8 @@ def _host(url: str) -> str:
 
 def guess_provider(url: str) -> str:
     host = _host(url).lower()
+    if host == "github.com" or host.endswith(".github.com") or host.startswith("github."):
+        return "github"
     if "gitlab" in host:
         return "gitlab"
     if "bitbucket" in host:
@@ -578,6 +588,8 @@ def default_user(s: dict) -> str:
     условный, остальным нужен настоящий (его подставляет «Проверить подключение»)."""
     if s.get("provider") == "gitlab":
         return "oauth2"
+    if s.get("provider") == "github":
+        return "x-access-token"
     if s.get("provider") == "bitbucket" and "bitbucket.org" in (s.get("instance") or ""):
         return "x-token-auth"
     return "aurora"
@@ -662,28 +674,7 @@ def normalize(data) -> tuple:
     def bad(field, code):
         probs.append({"field": field, "code": code})
 
-    prov = str(d.get("provider") or "generic").strip().lower()
-    if prov not in PROVIDERS:
-        bad("provider", "unknown")
-        prov = "generic"
-    s["provider"] = prov
-    inst = str(d.get("instance") or "").strip().rstrip("/")
-    if inst and not URL_RX.match(inst):
-        bad("instance", "url")
-    s["instance"] = strip_userinfo(inst)
-    repo = str(d.get("repo") or "").strip()
-    if repo != strip_userinfo(repo):
-        bad("repo", "creds_in_url")
-        repo = strip_userinfo(repo)
-    if repo and not is_url(repo):
-        repo = repo.strip("/")
-        if repo.endswith(".git"):
-            repo = repo[:-4]
-        if not PATH_RX.match(repo):
-            bad("repo", "repo")
-        elif not inst:
-            bad("instance", "required")
-    s["repo"] = repo
+    s.update(_server(d, bad, ""))
     remote = str(d.get("remote") or "origin").strip()
     if not REMOTE_RX.match(remote):
         bad("remote", "name")
@@ -705,11 +696,22 @@ def normalize(data) -> tuple:
     strat = str(d.get("strategy") or "ff-only")
     s["strategy"] = strat if strat in STRATEGIES else "ff-only"
     s["commit_on_push"] = _bool(d.get("commit_on_push"), True)
-    tls = d.get("tls") if isinstance(d.get("tls"), dict) else {}
-    ca = str(tls.get("ca_file") or "").strip()
-    if ca and not Path(os.path.expanduser(ca)).is_file():
-        bad("ca_file", "missing")
-    s["tls"] = {"verify": _bool(tls.get("verify"), True), "ca_file": os.path.expanduser(ca) if ca else ""}
+    mirrors, names = [], {remote}
+    for i, m in enumerate(d.get("mirrors") if isinstance(d.get("mirrors"), list) else []):
+        if not isinstance(m, dict):
+            continue
+        pre = f"mirrors.{i}."
+        ms = _server(m, bad, pre)
+        name = str(m.get("remote") or "").strip()
+        if not REMOTE_RX.match(name):
+            bad(pre + "remote", "name")
+        elif name in names:
+            bad(pre + "remote", "duplicate")
+        names.add(name)
+        if not ms["repo"]:
+            bad(pre + "repo", "required")
+        mirrors.append({"remote": name, **ms, "with_primary": _bool(m.get("with_primary"), True)})
+    s["mirrors"] = mirrors
     for key, allowed in (("auto_update", UPDATE_ON), ("auto_push", PUSH_ON)):
         src = d.get(key) if isinstance(d.get(key), dict) else {}
         on = [x for x in (src.get("on") if isinstance(src.get("on"), list) else DEFAULTS[key]["on"])
@@ -723,6 +725,57 @@ def normalize(data) -> tuple:
             every = MIN_EVERY
         s[key] = {"enabled": enabled, "on": on, "every_min": every}
     return s, probs
+
+
+def _server(d: dict, bad, pre: str) -> dict:
+    """Провайдер, адрес сервера, репозиторий и сертификат — у основного сервера и у каждого
+    дополнительного одинаково. Замечания — с приставкой поля (`mirrors.0.repo`)."""
+    out = {}
+    prov = str(d.get("provider") or "generic").strip().lower()
+    if prov not in PROVIDERS:
+        bad(pre + "provider", "unknown")
+        prov = "generic"
+    out["provider"] = prov
+    inst = str(d.get("instance") or "").strip().rstrip("/")
+    if inst and not URL_RX.match(inst):
+        bad(pre + "instance", "url")
+    out["instance"] = strip_userinfo(inst)
+    repo = str(d.get("repo") or "").strip()
+    if repo != strip_userinfo(repo):
+        bad(pre + "repo", "creds_in_url")
+        repo = strip_userinfo(repo)
+    if repo and not is_url(repo):
+        repo = repo.strip("/")
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        if not PATH_RX.match(repo):
+            bad(pre + "repo", "repo")
+        elif not inst and prov != "github":          # у GitHub пустой адрес — github.com
+            bad(pre + "instance", "required")
+    out["repo"] = repo
+    tls = d.get("tls") if isinstance(d.get("tls"), dict) else {}
+    ca = str(tls.get("ca_file") or "").strip()
+    if ca and not Path(os.path.expanduser(ca)).is_file():
+        bad(pre + "ca_file", "missing")
+    out["tls"] = {"verify": _bool(tls.get("verify"), True),
+                  "ca_file": os.path.expanduser(ca) if ca else ""}
+    return out
+
+
+def server_view(s: dict, remote: str | None = None) -> dict:
+    """Настройка глазами одного сервера: у дополнительного свои провайдер, адрес,
+    репозиторий и сертификат, остальное (автор, шаблон) — общее."""
+    if not remote or remote == s.get("remote"):
+        return s
+    m = next((x for x in s.get("mirrors") or [] if x["remote"] == remote), None)
+    if not m:
+        return {**s, "remote": remote, "repo": "", "instance": "", "provider": "generic"}
+    return {**s, **{k: m[k] for k in ("provider", "instance", "repo", "tls")}, "remote": remote}
+
+
+def mirror_names(s: dict, with_primary_only: bool = False) -> list:
+    return [m["remote"] for m in s.get("mirrors") or []
+            if m["remote"] and (m["with_primary"] or not with_primary_only)]
 
 
 def derived(project) -> dict:
@@ -766,9 +819,15 @@ def project_key(project) -> str:
     return str(Path(project).resolve())
 
 
-def cred_load(project) -> dict:
+def cred_key(project, remote: str | None = None) -> str:
+    """Ключ секретов: основной сервер — путь проекта, дополнительный — путь#имя."""
+    return project_key(project) + (f"#{remote}" if remote else "")
+
+
+def cred_load(project, remote: str | None = None) -> dict:
     data = _read_json(cred_file(), {})
-    got = data.get(project_key(project)) if isinstance(data.get(project_key(project)), dict) else {}
+    key = cred_key(project, remote)
+    got = data.get(key) if isinstance(data.get(key), dict) else {}
     c = {**CRED_DEFAULT, **{k: str(v) for k, v in got.items() if k in CRED_DEFAULT}}
     if c["auth"] not in AUTHS:
         c["auth"] = "system"
@@ -777,15 +836,15 @@ def cred_load(project) -> dict:
     return c
 
 
-def cred_masked(project) -> dict:
-    c = cred_load(project)
+def cred_masked(project, remote: str | None = None) -> dict:
+    c = cred_load(project, remote)
     return {**c, "secret": MASK if c["secret"] else ""}
 
 
-def cred_merge(project, given: dict | None) -> tuple:
+def cred_merge(project, given: dict | None, remote: str | None = None) -> tuple:
     """(учётные данные, замечания): маска — «не трогали», пусто — «убрать», вставленный
     ключ — в файл с правами 600 вне проекта."""
-    old = cred_load(project)
+    old = cred_load(project, remote)
     g = given if isinstance(given, dict) else {}
     c = dict(old)
     probs = []
@@ -804,7 +863,7 @@ def cred_merge(project, given: dict | None) -> tuple:
         if "PRIVATE KEY" not in text:
             probs.append({"field": "ssh_key_text", "code": "key_format"})
         else:
-            c["ssh_key"] = str(_store_key(project, text))
+            c["ssh_key"] = str(_store_key(project, text, remote))
     if c["auth"] in ("token", "password") and not c["secret"]:
         probs.append({"field": "secret", "code": "required"})
     if c["auth"] == "password" and not c["user"]:
@@ -814,7 +873,7 @@ def cred_merge(project, given: dict | None) -> tuple:
     return c, probs
 
 
-def _store_key(project, text: str) -> Path:
+def _store_key(project, text: str, remote: str | None = None) -> Path:
     keys = aurora_home() / "git" / "keys"
     keys.mkdir(parents=True, exist_ok=True)
     try:
@@ -822,7 +881,7 @@ def _store_key(project, text: str) -> Path:
         os.chmod(keys, 0o700)
     except OSError:
         pass
-    path = keys / (hashlib.sha1(project_key(project).encode("utf-8")).hexdigest()[:12] + ".key")
+    path = keys / (hashlib.sha1(cred_key(project, remote).encode("utf-8")).hexdigest()[:12] + ".key")
     tmp = path.with_suffix(".tmp")
     tmp.write_text(text.replace("\r\n", "\n").strip() + "\n", encoding="utf-8")
     try:
@@ -833,10 +892,15 @@ def _store_key(project, text: str) -> Path:
     return path
 
 
-def cred_save(project, c: dict) -> None:
+def cred_save(project, c: dict | None, remote: str | None = None) -> None:
+    """Записать секреты сервера; None — убрать их (сервер больше не дополнительный)."""
     path = cred_file()
     data = _read_json(path, {})
-    data[project_key(project)] = {k: c.get(k, "") for k in CRED_DEFAULT}
+    if c is None:
+        if data.pop(cred_key(project, remote), None) is None:
+            return
+    else:
+        data[cred_key(project, remote)] = {k: c.get(k, "") for k in CRED_DEFAULT}
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
@@ -846,7 +910,9 @@ def cred_save(project, c: dict) -> None:
 
 
 def masked_settings_view(project) -> dict:
-    return {"settings": load(project), "credentials": cred_masked(project),
+    s = load(project)
+    return {"settings": s, "credentials": cred_masked(project),
+            "mirror_credentials": {n: cred_masked(project, n) for n in mirror_names(s)},
             "saved": bool(settings_file(project) and settings_file(project).is_file())}
 
 
@@ -869,7 +935,7 @@ def repo_url(s: dict, c: dict) -> str:
                 return urls[want]
         except Exception:                                    # noqa: BLE001
             pass
-    inst = s.get("instance") or ""
+    inst = s.get("instance") or ("https://github.com" if s.get("provider") == "github" else "")
     if not inst:
         return ""
     if want == "ssh":
@@ -877,8 +943,19 @@ def repo_url(s: dict, c: dict) -> str:
     return f"{inst}/{repo}.git"
 
 
-def apply_to_repo(project, s: dict, c: dict) -> list:
-    """Записать в репозиторий то, что git хранит сам: адрес сервера и автора. → заметки."""
+def apply_to_repo(project, s: dict, c: dict, mirror_creds: dict | None = None) -> list:
+    """Записать в репозиторий то, что git хранит сам: адреса серверов и автора. → заметки."""
+    notes = _apply_remote(project, s, c)
+    for name in mirror_names(s):
+        notes += _apply_remote(project, server_view(s, name),
+                               (mirror_creds or {}).get(name) or cred_load(project, name))
+    for key, val in (("user.name", s.get("author_name")), ("user.email", s.get("author_email"))):
+        if val and git_ok(project, "config", "--local", key) != val:
+            run_git(project, ["config", "--local", key, val])
+    return notes
+
+
+def _apply_remote(project, s: dict, c: dict) -> list:
     notes = []
     url = repo_url(s, c)
     remotes = git_ok(project, "remote").split()
@@ -894,29 +971,45 @@ def apply_to_repo(project, s: dict, c: dict) -> list:
         else:
             run_git(project, ["remote", "add", s["remote"], url])
             notes.append(f"добавлен сервер {s['remote']} → {url}")
-    for key, val in (("user.name", s.get("author_name")), ("user.email", s.get("author_email"))):
-        if val and git_ok(project, "config", "--local", key) != val:
-            run_git(project, ["config", "--local", key, val])
     return notes
 
 
-def save(project, settings: dict, creds: dict | None = None) -> dict:
-    """Сохранить настройку проекта и учётные данные. Есть замечания — не сохраняется ничего."""
+def _token_user(s: dict, c: dict, pre: str) -> list:
+    if c["auth"] == "token" and not c["user"] and s["provider"] not in ("gitlab", "github") \
+            and not (s["provider"] == "bitbucket" and "bitbucket.org" in s["instance"]):
+        return [{"field": pre + "user", "code": "required_for_token"}]
+    return []
+
+
+def save(project, settings: dict, creds: dict | None = None,
+         mirror_creds: dict | None = None) -> dict:
+    """Сохранить настройку проекта и учётные данные всех её серверов. Есть замечания —
+    не сохраняется ничего."""
     s, probs = normalize(settings)
     c, cprobs = cred_merge(project, creds)
-    probs += cprobs
-    if c["auth"] == "token" and not c["user"] and s["provider"] not in ("gitlab",) \
-            and not (s["provider"] == "bitbucket" and "bitbucket.org" in s["instance"]):
-        probs.append({"field": "user", "code": "required_for_token"})
+    probs += cprobs + _token_user(s, c, "")
+    given = mirror_creds if isinstance(mirror_creds, dict) else {}
+    mc = {}
+    for i, m in enumerate(s["mirrors"]):
+        cm, mp = cred_merge(project, given.get(m["remote"]), m["remote"])
+        probs += [{**p, "field": f"mirrors.{i}." + p["field"]} for p in mp]
+        probs += _token_user(server_view(s, m["remote"]), cm, f"mirrors.{i}.")
+        mc[m["remote"]] = cm
     if probs:
         return {"ok": False, "problems": probs}
     d = store_dir(project)
     if not d:
         return {"ok": False, "problems": [{"field": "", "code": "no_repo"}]}
+    old = load_saved(project) or {}
     _write_json(d / "git.json", s)
     cred_save(project, c)
-    notes = apply_to_repo(project, s, c)
-    return {"ok": True, "notes": notes, "settings": s, "credentials": cred_masked(project)}
+    for name, cm in mc.items():
+        cred_save(project, cm, name)
+    for gone in set(mirror_names(old)) - set(mc):
+        cred_save(project, None, gone)
+    notes = apply_to_repo(project, s, c, mc)
+    return {"ok": True, "notes": notes, "settings": s, "credentials": cred_masked(project),
+            "mirror_credentials": {n: cred_masked(project, n) for n in mc}}
 
 
 # ---------------------------------------------------------------- журнал и состояние
@@ -949,7 +1042,7 @@ def record(project, res: dict, trigger: str = "manual") -> None:
              "ok": bool(res.get("ok")), "skipped": res.get("skipped", ""),
              "summary": res.get("summary", ""), "code": prob.get("code", "")}
     # Числа итога — отдельно от фразы: панель пишет итог на языке интерфейса по ним.
-    for k in ("behind", "ahead", "files", "pushed", "commit", "nothing", "fix"):
+    for k in ("behind", "ahead", "files", "pushed", "commit", "nothing", "fix", "targets"):
         if k in res:
             entry[k] = res[k]
     try:
@@ -1159,14 +1252,19 @@ def status(project, fetch: bool = False) -> dict:
     remote = s["remote"]
     probs = []
     fetched = None
-    if fetch and remote in remotes:
-        rc, o, e = run_git(project, ["fetch", "--prune", remote], s, c, NET_TIMEOUT, network=True)
-        if rc:
-            probs.append(problem(classify(o + "\n" + e), o + "\n" + e, level="error",
-                                 source="fetch"))
-        else:
+    if fetch:
+        for name in [remote] + mirror_names(s):
+            if name not in remotes:
+                continue
+            rc, o, e = run_git(project, ["fetch", "--prune", name], server_view(s, name),
+                               c if name == remote else cred_load(project, name),
+                               NET_TIMEOUT, network=True)
+            if rc:
+                probs.append(problem(classify(o + "\n" + e), o + "\n" + e, level="error",
+                                     source="fetch", **({} if name == remote else {"remote": name})))
+            fetched = (fetched is not False) and rc == 0
+        if fetched:
             write_state(project, fetched_at=time.time())
-        fetched = rc == 0
     rc, raw, err = run_git(project, ["status", "--porcelain=v2", "--branch", "-z"])
     st = parse_status(raw) if rc == 0 else parse_status("")
     op = operation(gd)
@@ -1204,7 +1302,24 @@ def status(project, fetch: bool = False) -> dict:
     mod = module_state(s["provider"])
     if mod["state"] in ("missing", "outdated"):
         probs.append(problem("module_" + mod["state"], level="info", module=mod))
+    mirrors = []
+    for m in s["mirrors"]:
+        name = m["remote"]
+        ref = f"refs/remotes/{name}/{want}" if want else ""
+        known = bool(ref and ref_exists(project, ref))
+        mirrors.append({
+            "remote": name, "provider": m["provider"], "with_primary": m["with_primary"],
+            "exists": name in remotes,
+            "url": strip_userinfo(git_ok(project, "remote", "get-url", name)) if name in remotes else "",
+            "on_server": known,
+            "ahead": count(project, f"{ref}..HEAD") if known else 0,
+            "behind": count(project, f"HEAD..{ref}") if known else 0,
+            "module": module_state(m["provider"]),
+        })
+        if name not in remotes:
+            probs.append(problem("no_remote", level="warn", remote=name))
     return {
+        "mirrors": mirrors,
         "repo": True, "project": project, "saved": saved, "provider": s["provider"],
         "branch": branch, "wanted_branch": want, "upstream": st["upstream"],
         "remote": remote, "remotes": remotes, "remote_url": strip_userinfo(url),
@@ -1224,8 +1339,11 @@ def has_changes(project) -> bool:
 
 # ---------------------------------------------------------------- действия
 
-def _context(project, action: str):
-    """Общие проверки перед действием → (s, c, branch, remote) или результат с причиной."""
+def _context(project, action: str, need_remote: bool = True):
+    """Общие проверки перед действием → (s, c, branch, remote) или результат с причиной.
+
+    Отправке основной сервер не обязателен: пока рабочий сервер не задан, проект может
+    отправляться на дополнительные."""
     if not has_git():
         return result(action, False, prob=problem("no_git"))
     if not git_dir(project):
@@ -1248,7 +1366,7 @@ def _context(project, action: str):
     if s["branch"] and branch != s["branch"]:
         return result(action, False, prob=problem("other_branch", current=branch,
                                                   wanted=s["branch"]))
-    if s["remote"] not in git_ok(project, "remote").split():
+    if need_remote and s["remote"] not in git_ok(project, "remote").split():
         return result(action, False, prob=problem("no_remote"))
     return s, c, branch, s["remote"]
 
@@ -1414,17 +1532,50 @@ def update(project, strategy: str | None = None, trigger: str = "manual",
         return _done(project, res, trigger)
 
 
-def _push(project, message, do_commit, trigger, update_first, skip_ratchet) -> dict:
-    ctx = _context(project, "push")
+def _push_one(project, s: dict, c: dict, remote: str, branch: str, primary: bool) -> dict:
+    """Отправка на один сервер. Ветку с сервером связывает только основной: дополнительные
+    принимают копию, обновление с них не идёт."""
+    target = f"refs/remotes/{remote}/{branch}"
+    known = ref_exists(project, target)
+    ahead = count(project, f"{target}..HEAD") if known else count(project, "HEAD")
+    upstream = git_ok(project, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    linked = upstream == f"{remote}/{branch}"
+    if known and ahead == 0 and (linked or not primary):
+        return {"remote": remote, "ok": True, "nothing": True, "pushed": 0,
+                "summary": f"{remote}: всё уже на сервере"}
+    args = ["push", remote, f"HEAD:refs/heads/{branch}"]
+    if primary and not linked:
+        args.insert(1, "--set-upstream")
+    rc, o, e = run_git(project, args, s, c, NET_TIMEOUT, network=True)
+    tail = (o + "\n" + e).strip()
+    if rc:
+        return {"remote": remote, "ok": False, "pushed": 0, "summary": "",
+                "problem": problem(classify(tail), tail, remote=remote)}
+    if primary:
+        _ensure_upstream(project, remote, branch)
+    return {"remote": remote, "ok": True, "pushed": ahead,
+            "summary": f"{remote}: отправлено фиксаций {ahead}"}
+
+
+def _push(project, message, do_commit, trigger, update_first, skip_ratchet,
+          only: str | None = None) -> dict:
+    ctx = _context(project, "push", need_remote=False)
     if isinstance(ctx, dict):
         return ctx
     s, c, branch, remote = ctx
-    gd = git_dir(project)
-    if operation(gd) or conflict_files(project):
-        return result("push", False, prob=problem("in_progress", files=conflict_files(project),
-                                                  operation=operation(gd)))
+    remotes = git_ok(project, "remote").split()
+    if only:
+        if only not in remotes:
+            return result("push", False, prob=problem("no_remote", remote=only))
+        names = [only]
+    else:
+        # Основной — если он есть; дополнительные — те, что «вместе с основным».
+        names = ([remote] if remote in remotes else []) + \
+            [n for n in mirror_names(s, with_primary_only=True) if n in remotes]
+    if not names:
+        return result("push", False, prob=problem("no_remote"))
     notes = []
-    if update_first:
+    if update_first and remote in names:
         r = _update(project, None, trigger, False, action="push")
         if not r["ok"]:
             return r
@@ -1436,44 +1587,40 @@ def _push(project, message, do_commit, trigger, update_first, skip_ratchet) -> d
         notes.append(r["summary"])
     if not git_ok(project, "rev-parse", "--verify", "--quiet", "HEAD"):
         return result("push", False, prob=problem("no_commits"))
-    target = f"refs/remotes/{remote}/{branch}"
-    upstream = git_ok(project, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-    known = ref_exists(project, target)
-    ahead = count(project, f"{target}..HEAD") if known else count(project, "HEAD")
-    if known and upstream and ahead == 0:
-        write_state(project, pushed_head=git_ok(project, "rev-parse", "HEAD"))
-        return result("push", True, "; ".join(notes + ["всё уже на сервере: отправлять нечего"]),
-                      nothing=True)
-    args = ["push", remote, f"HEAD:refs/heads/{branch}"]
-    if not upstream:
-        args.insert(1, "--set-upstream")
-    rc, o, e = run_git(project, args, s, c, NET_TIMEOUT, network=True)
-    tail = (o + "\n" + e).strip()
-    if rc:
-        return result("push", False, "; ".join(notes), prob=problem(classify(tail), tail))
-    _ensure_upstream(project, remote, branch)
-    # Только что говорили с сервером — его состояние известно на эту минуту.
-    write_state(project, pushed_head=git_ok(project, "rev-parse", "HEAD"), fetched_at=time.time())
-    return result("push", True, "; ".join(notes + [f"отправлено фиксаций: {ahead} → "
-                                                   f"{remote}/{branch}"]), pushed=ahead)
+    targets = [_push_one(project, server_view(s, n), c if n == remote else cred_load(project, n),
+                         n, branch, n == remote) for n in names]
+    ok = all(t["ok"] for t in targets)
+    if ok:
+        # Только что говорили с сервером — его состояние известно на эту минуту.
+        write_state(project, pushed_head=git_ok(project, "rev-parse", "HEAD"),
+                    fetched_at=time.time())
+    if remote not in remotes and not only:
+        notes.append(f"основной сервер {remote} не задан — отправлено только на дополнительные")
+    summary = "; ".join(notes + [t["summary"] for t in targets if t["summary"]])
+    brief = [{k: t.get(k) for k in ("remote", "ok", "pushed", "nothing")} |
+             {"code": (t.get("problem") or {}).get("code", "")} for t in targets]
+    first_bad = next((t["problem"] for t in targets if not t["ok"]), None)
+    return result("push", ok, summary, prob=first_bad, targets=brief,
+                  pushed=sum(t["pushed"] for t in targets),
+                  nothing=all(t.get("nothing") for t in targets))
 
 
 def push(project, message: str | None = None, do_commit: bool = True, trigger: str = "manual",
-         update_first: bool = False, skip_ratchet: bool = False) -> dict:
+         update_first: bool = False, skip_ratchet: bool = False, only: str | None = None) -> dict:
     project = str(Path(project).resolve())
     if not git_dir(project):
         return _done(project, result("push", False, prob=problem("no_repo")), trigger)
     with OpLock(project, "push") as lk:
         if not lk.ok:
             return _done(project, result("push", False, prob=problem("busy")), trigger)
-        res = _push(project, message, do_commit, trigger, update_first, skip_ratchet)
+        res = _push(project, message, do_commit, trigger, update_first, skip_ratchet, only)
         if trigger != "manual":
             write_state(project, **({"auto_push_fail_at": time.time()} if not res["ok"]
                                     else {"auto_push_fail_at": 0}))
         return _done(project, res, trigger)
 
 
-def fix(project, what: str, file: str = "", trigger: str = "manual") -> dict:
+def fix(project, what: str, file: str = "", trigger: str = "manual", name: str = "") -> dict:
     """Починка одним действием — то, что панель предлагает рядом с причиной."""
     project = str(Path(project).resolve())
     if what not in FIXES:
@@ -1486,9 +1633,41 @@ def fix(project, what: str, file: str = "", trigger: str = "manual") -> dict:
     with OpLock(project, "fix") as lk:
         if not lk.ok:
             return _done(project, result("fix", False, prob=problem("busy")), trigger)
-        res = _fix(project, gd, what, file)
+        res = _demote(project, name or "gitea") if what == "demote-origin" \
+            else _fix(project, gd, what, file)
         res["fix"] = what
         return _done(project, res, trigger)
+
+
+def _demote(project, name: str) -> dict:
+    """Основной сервер — в дополнительные под новым именем: `git remote rename origin gitea`
+    вместе с его настройкой и входом. Основным станет рабочий сервер, когда его укажут."""
+    s = load(project)
+    old = s["remote"]
+    remotes = git_ok(project, "remote").split()
+    if old not in remotes:
+        return result("fix", False, prob=problem("no_remote"))
+    if not REMOTE_RX.match(name or ""):
+        return result("fix", False, prob=problem("settings", fields=[{"field": "name", "code": "name"}]))
+    if name in remotes:
+        return result("fix", False, prob=problem("settings", fields=[{"field": "name",
+                                                                      "code": "duplicate"}]))
+    url = strip_userinfo(git_ok(project, "remote", "get-url", old))
+    rc, o, e = run_git(project, ["remote", "rename", old, name])
+    if rc:
+        return result("fix", False, prob=problem(classify(o + e), o + "\n" + e))
+    provider = s["provider"] if s["provider"] != "generic" else guess_provider(url)
+    mirror = {"remote": name, "provider": provider, "instance": s["instance"], "repo": url,
+              "tls": s["tls"], "with_primary": True}
+    cred_save(project, cred_load(project), name)
+    cred_save(project, dict(CRED_DEFAULT))
+    data = {**s, "provider": "generic", "instance": "", "repo": "",
+            "tls": {"verify": True, "ca_file": ""},
+            "mirrors": [m for m in s["mirrors"] if m["remote"] != name] + [mirror]}
+    _write_json(store_dir(project) / "git.json", normalize(data)[0])
+    return result("fix", True, f"сервер {old} теперь называется {name} и стал дополнительным: "
+                               f"отправка идёт и на него; укажите рабочий сервер как основной "
+                               f"({old})")
 
 
 def _fix_init(project) -> dict:
@@ -1572,7 +1751,7 @@ def _fix(project, gd: Path, what: str, file: str) -> dict:
             rc, o, e = run_git(project, ["branch", f"--set-upstream-to={remote}/{branch}"])
             return result("fix", rc == 0, f"ветка {branch} связана с {remote}/{branch}" if rc == 0
                           else "", prob=None if rc == 0 else problem(classify(o + e), o + e))
-        res = _push(project, None, False, "manual", False, False)
+        res = _push(project, None, False, "manual", False, False, remote)
         res["action"] = "fix"
         return res
     if what == "checkout":
@@ -1661,16 +1840,19 @@ def make_http(tls: dict | None):
     return http
 
 
-def check(project, settings: dict | None = None, creds: dict | None = None) -> dict:
+def check(project, settings: dict | None = None, creds: dict | None = None,
+          remote: str | None = None) -> dict:
     """Проверка подключения по настройке (в том числе ещё не сохранённой): API провайдера,
     если его модуль стоит, и сам git — `ls-remote` с тем же входом."""
     project = str(Path(project).resolve())
     s = normalize(settings)[0] if settings is not None else load(project)
+    mirror = remote if remote and remote != s["remote"] else None
+    s = server_view(s, mirror)
     tmp_key = None
     if creds is not None:
         given = dict(creds)
         text = str(given.pop("ssh_key_text", "") or "").strip()
-        c = cred_merge(project, given)[0]
+        c = cred_merge(project, given, mirror)[0]
         if text:
             # Проверка не сохраняет ничего: вставленный ключ живёт во временном файле.
             tmp_key = aurora_home() / "git" / "keys" / f"check-{os.getpid()}.key"
@@ -1679,7 +1861,7 @@ def check(project, settings: dict | None = None, creds: dict | None = None) -> d
             os.chmod(tmp_key, 0o600)
             c["ssh_key"] = str(tmp_key)
     else:
-        c = cred_load(project)
+        c = cred_load(project, mirror)
     try:
         return _check(project, s, c)
     finally:
@@ -1748,6 +1930,11 @@ def detect_provider(base: str, tls: dict | None = None) -> str:
     своего сервера по имени не угадать — спрашиваем сам сервер его открытыми адресами."""
     http = make_http(tls)
     base = base.rstrip("/")
+    if _host(base).lower() in ("github.com", "www.github.com"):
+        return "github"
+    st, data, _e, _h = http(base + "/api/v3/meta", timeout=8)
+    if st == 200 and isinstance(data, dict) and "verifiable_password_authentication" in data:
+        return "github"
     st, data, _e, _h = http(base + "/api/v1/version", timeout=8)
     if st == 200 and isinstance(data, dict) and data.get("version"):
         return "gitea"
@@ -1780,7 +1967,7 @@ def cert_info(url: str) -> dict:
             "sha256": ":".join(fp[i:i + 2] for i in range(0, len(fp), 2))}
 
 
-def trust_cert(project, url: str, sha256: str) -> dict:
+def trust_cert(project, url: str, sha256: str, remote: str | None = None) -> dict:
     """Доверять сертификату сервера: сохранить его и указать git и API именно его, а не
     выключать проверку. Отпечаток сверяется — подмена между показом и согласием не пройдёт."""
     info = cert_info(url)
@@ -1794,7 +1981,12 @@ def trust_cert(project, url: str, sha256: str) -> dict:
     path.write_text(info["pem"], encoding="utf-8")
     f = settings_file(project)
     data = _read_json(f, {}) if f and f.is_file() else load(project)
-    data["tls"] = {"verify": True, "ca_file": str(path)}
+    tls = {"verify": True, "ca_file": str(path)}
+    mirror = next((m for m in data.get("mirrors") or [] if remote and m.get("remote") == remote), None)
+    if mirror is not None:
+        mirror["tls"] = tls
+    else:
+        data["tls"] = tls
     s = normalize(data)[0]
     if store_dir(project):
         _write_json(store_dir(project) / "git.json", s)
@@ -1810,7 +2002,7 @@ def _print_result(res: dict) -> None:
         return
     if res.get("summary"):
         print(f"· {res['summary']}")
-    print(f"✗ {prob['title']}")
+    print(f"✗ {(prob.get('remote') + ': ') if prob.get('remote') else ''}{prob['title']}")
     print(f"  Что сделать: {prob['fix']}")
     files = prob.get("files") or []
     if files:
@@ -1864,6 +2056,10 @@ def main(argv=None) -> int:
     ap.add_argument("--what", choices=FIXES, help="что чинить: abort, continue, mine, theirs, resolved, "
                     "set-upstream, init, checkout, use-branch, strip-url, fix-key-perms")
     ap.add_argument("--file", default="", help="файл для --what mine|theirs|resolved")
+    ap.add_argument("--remote", default="", help="с --push: отправить только на этот сервер "
+                                                 "(основной или дополнительный)")
+    ap.add_argument("--name", default="", help="с --what demote-origin: новое имя прежнего "
+                                               "основного сервера (по умолчанию gitea)")
     ap.add_argument("--auto", choices=UPDATE_ON + PUSH_ON,
                     help="запуск автоматикой: работает, только если она включена на это событие")
     ap.add_argument("--project", default=".", help="папка проекта (по умолчанию — текущая)")
@@ -1923,11 +2119,12 @@ def main(argv=None) -> int:
     if a.update:
         res = update(project, a.strategy, trigger, a.commit_first)
     elif a.push:
-        res = push(project, a.message, not a.no_commit, trigger, a.update_first, a.skip_ratchet)
+        res = push(project, a.message, not a.no_commit, trigger, a.update_first, a.skip_ratchet,
+                   a.remote or None)
     elif a.commit:
         res = commit(project, a.message, a.skip_ratchet, trigger)
     else:
-        res = fix(project, a.what, a.file, trigger)
+        res = fix(project, a.what, a.file, trigger, a.name)
     if a.json:
         print(json.dumps(res, ensure_ascii=False))
     else:
