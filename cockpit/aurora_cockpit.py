@@ -1314,6 +1314,7 @@ def bots_state(project: str) -> dict:
     for b in rows:
         b["id"] = BOTS.bot_id(project, b["file"])
     return {"bots": rows, "mcp": BOTS.mcp_names(project), "skills": BOTS.skill_names(project),
+            "roles": BOTS.llm_roles(),
             "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR}
 
 

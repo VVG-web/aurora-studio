@@ -377,6 +377,13 @@ example, to attach to a Jira issue). `report.md` with the bot's answer lies ther
 words with advice: a server or skill is not set up, an attachment is missing, no Pydantic AI, models are
 not set up, the bot ran out of time or tool calls. MCP servers and tools need Pydantic AI ("Install").
 
+**The bot's model** is a role from the "Models" section (a "provider → model" chain in order); "Parsing and theses" by
+default. A role of your own for bots, with a stronger model, is handy. The bot's MCP servers are connected right
+away. The bot has no scripts, command line or environment variables: write its prompt for its tools — MCP, project
+files, the knowledge base, `save_output`; it reads its past runs from `Workspaces/bots/<bot>/`. A run without tools
+is not a success: if the call bypassed Pydantic AI or the model called no tool while it had its MCP, the run is
+recorded as failed with the reason, and the report names the role, the model and every tool call.
+
 ## 5. Check readiness
 
 ```bash

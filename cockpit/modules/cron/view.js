@@ -3,8 +3,8 @@
    Ведёт расписание сервер панели (cockpit/cron.py): страница только показывает задания,
    правит их и смотрит за идущей цепочкой. Закрыли вкладку — цепочка идёт дальше. */
 
-const STATUS_TONE = {passed: "ok", failed: "bad", stall: "warn", offline: "warn",
-  stopped: "warn", interrupted: "warn", missed: "warn", running: "gold",
+const STATUS_TONE = {passed: "ok", partial: "ok", failed: "bad", stall: "warn", offline: "warn",
+  stopped: "warn", interrupted: "warn", missed: "warn", running: "gold", deferred: "warn",
   skipped: "", pending: ""};
 const LIVE_MS = 4000;          // как часто смотреть на идущую цепочку
 let DATA = null, EDIT = null, OPEN_RUN = "", timer = null;
@@ -136,6 +136,8 @@ function itemRow(ctx, it){
     : (it.cmd + " " + (it.args || []).join(" ")).trim();
   return el("div", {class: "list-item", style: "padding:6px 0"},
     chip(ctx, it.status),
+    it.retry ? el("span", {class: "chip", title: it.first ? ctx.t("cron.first_try", {status:
+      ctx.t("cron.status." + it.first.status)}) : ""}, ctx.t("cron.retry")) : null,
     el("span", {style: "font-weight:600"}, it.project_name),
     el("span", {class: it.kind === "route" ? "" : "mono"}, what),
     it.failed ? el("span", {class: "mono muted"}, it.failed) : null,
@@ -426,7 +428,8 @@ async function drawDetail(ctx, id, box){
   if (!run || run.error) return box.append(el("div", {class: "muted"}, t("cron.no_detail")));
   if (run.status === "missed")
     box.append(el("div", {class: "muted", style: "padding:6px 12px"},
-      t("cron.missed_line", {when: ctx.fmt.when(run.slot)})));
+      t(run.note === "already_running" ? "cron.missed_running" : "cron.missed_line",
+        {when: ctx.fmt.when(run.slot)})));
   if (run.error) box.append(el("div", {class: "err"}, run.error));
   (run.items || []).forEach(it => {
     box.append(el("div", {style: "padding:0 12px"}, itemRow(ctx, it)));

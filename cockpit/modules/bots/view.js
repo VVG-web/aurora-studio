@@ -268,7 +268,7 @@ function drawTop(ctx){
 function drawChecks(ctx){
   const {t, el} = ctx;
   const probs = (CHECK && CHECK.problems) || [];
-  for (const field of ["mcp", "skills", "attachments", "cron", "body"]){
+  for (const field of ["role", "mcp", "skills", "attachments", "cron", "body"]){
     const slot = ctx.$("#botsProb-" + field);
     if (!slot) continue;
     slot.innerHTML = "";
@@ -303,6 +303,7 @@ function drawConfig(ctx){
   if (!box || !CUR) return;
   box.innerHTML = "";
   box.append(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:stretch"},
+    configCard(ctx, t("bots.role"), t("bots.role_about"), rolePanel(ctx), "role"),
     configCard(ctx, t("bots.mcp"), t("bots.mcp_about"), mcpPanel(ctx), "mcp"),
     configCard(ctx, t("bots.skills"), t("bots.skills_about"), skillsPanel(ctx), "skills"),
     configCard(ctx, t("bots.attachments"), t("bots.attachments_about"), attachmentsPanel(ctx), "attachments"),
@@ -335,6 +336,26 @@ function checklist(ctx, key, have, filter){
     el("span", {class: "mono", style: "font-size:12.5px"}, n),
     have.includes(n) ? null : el("span", {class: "chip warn"}, t("bots.missing")))));
   return list;
+}
+
+// Модель бота — роль из раздела «Модели»: цепочка «провайдер → модель» по порядку. Пусто —
+// роль движка по умолчанию («Разбор и тезисы»). Своя роль для ботов заводится там же.
+function rolePanel(ctx){
+  const {t, el} = ctx;
+  const roles = D.roles || [];
+  const cur = FORM.role || "";
+  const named = r => r.name || tr(ctx, "bots.role_name." + r.id, r.id);
+  const label = r => named(r) + (r.models.length ? " — " + r.models.join(" → ") : "");
+  const worker = roles.find(r => r.id === "worker");
+  const sel = el("select", {class: "btn", style: "width:100%"},
+    el("option", {value: "", selected: cur ? null : ""},
+      t("bots.role_default", {name: worker ? named(worker) : "worker"})),
+    ...(cur && !roles.some(r => r.id === cur) ? [el("option", {value: cur, selected: ""}, cur)] : []),
+    ...roles.map(r => el("option", {value: r.id, selected: r.id === cur ? "" : null}, label(r))));
+  sel.onchange = () => { FORM.role = sel.value; touch(ctx); };
+  return el("div", {}, sel,
+    el("button", {class: "btn sm", style: "margin-top:8px", onclick: () => ctx.show("models")},
+      t("bots.a.open_models")));
 }
 
 function mcpPanel(ctx){

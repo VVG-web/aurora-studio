@@ -13,6 +13,15 @@
 - Проект занят (в нём идёт команда панели или пишущий прогон агента) — шаг ждёт до двух
   часов, потом пропускается с пометкой. Ночной маршрут поверх ручной работы человека
   испортил бы обе.
+- Проект — единица цепочки. Шаг проекта провалился (команда упала, шлюзы не отвечают,
+  маршрут не сдвинул базу ни на коммит) — остальные шаги ЭТОГО проекта откладываются
+  («Починить» после несостоявшегося «Обновить» бессмысленна), цепочка идёт к следующему
+  проекту, а в конце возвращается к отложенным один раз и продолжает с места остановки.
+  Застой на хвосте, когда база за маршрут менялась, — «частично», не провал: проект
+  обновлён, следующие его шаги идут. Срока у шага нет: долгое размышление модели — не
+  повод бросать работу, которую потом придётся начинать заново.
+- Проекты идут в том порядке, в каком впервые встречаются в шагах задания; шаг «все
+  проекты» ставит их в порядке панели там, где стоит сам.
 - Время, пропущенное, пока панель не работала, не догоняется позже чем через `GRACE`: ночной
   разбор посреди рабочего дня, потому что панель подняли в десять утра, — сюрприз хуже
   пропуска. Пропуск пишется в историю.
@@ -55,6 +64,8 @@ BUSY_POLL_S = 30
 KEEP_RUNS = 60                    # столько прогонов цепочек храним в истории
 LOG_KEEP = 400                    # строк журнала на шаг цепочки
 MAX_STEPS = 50
+# Итоги шага, после которых проект откладывается: дальше его шаги смысла не имеют.
+BAD = ("failed", "stall", "offline")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ALL = "*"
@@ -296,8 +307,13 @@ def expand(task: dict, projects: list) -> list:
             for path in (every if st["project"] == ALL else [st["project"]]):
                 out.append(item(st, path))
     else:
-        order = list(every) + [st["project"] for st in task["steps"]
-                               if st["project"] != ALL and st["project"] not in every]
+        # Порядок первого появления в шагах; шаг «все проекты» вставляет их в порядке панели
+        # там, где стоит сам.
+        order = []
+        for st in task["steps"]:
+            for p in (every if st["project"] == ALL else [st["project"]]):
+                if p not in order:
+                    order.append(p)
         for path in order:
             for st in task["steps"]:
                 if st["project"] in (ALL, path):
@@ -405,7 +421,8 @@ class Scheduler:
             fired[task["id"]] = now_iso(s)
             changed = True
             if now - s <= GRACE:
-                self.enqueue(task["id"], "schedule")
+                if not self.enqueue(task["id"], "schedule").get("ok"):
+                    self._missed(task, s, "already_running")
             else:
                 self._missed(task, s)
             if task.get("date"):
@@ -421,11 +438,13 @@ class Scheduler:
             _write_json(state_file(), {"fired": fired})
         self._next()
 
-    def _missed(self, task: dict, s: datetime) -> None:
+    def _missed(self, task: dict, s: datetime, why: str = "") -> None:
+        """Время задания прошло без прогона: панель не работала или то же задание ещё шло
+        (`already_running`) — второй его прогон в очередь не встаёт, но в историю пишется."""
         run = {"id": datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2),
                "task": task["id"], "name": task["name"], "trigger": "schedule",
                "status": "missed", "slot": now_iso(s), "started": now_iso(),
-               "finished": now_iso(), "items": []}
+               "finished": now_iso(), "items": [], "note": why}
         save_run(run)
         trim_runs()
 
@@ -512,26 +531,22 @@ class Scheduler:
         lang = task.get("lang") or ck.DEFAULT_LANG
         halted = ""
         try:
-            for it in run["items"]:
-                if it["status"] != "pending":
-                    continue
-                if halted:
-                    it.update(status="skipped", note=halted)
-                    continue
-                if self.stop_event.is_set():
-                    halted = "stopped"
-                    it.update(status="skipped", note="stopped")
-                    continue
-                self._item(task, run, it, lang)
+            halted = self._pass(task, run, lang, run["items"], halted)
+            # Отложенные проекты — ещё раз, когда остальные готовы: провал бывает от
+            # занятого шлюза или обрыва связи, а через час их уже нет. Один раз: второй
+            # провал подряд — уже не случайность, и цепочка не крутится по кругу.
+            again = [it for it in run["items"] if it["status"] == "deferred"]
+            if again and not halted:
+                retry = {it["project"] for it in again}
+                for it in run["items"]:
+                    if it["project"] in retry and it["status"] in BAD + ("deferred",):
+                        it["first"] = {"status": it["status"], "note": it.get("note", "")}
+                        it.update(status="pending", note="", retry=True)
                 save_run(run)
-                if it["status"] == "stopped":
-                    halted = "stopped"
-                elif it["status"] in ("failed", "stall", "offline") \
-                        and task.get("on_fail") == "stop":
-                    halted = "chain_stopped"
+                halted = self._pass(task, run, lang, run["items"], halted, retry=True)
             st = [it["status"] for it in run["items"]]
             run["status"] = ("stopped" if halted == "stopped"
-                             else "passed" if all(s in ("passed",) for s in st)
+                             else "passed" if all(s in ("passed", "partial") for s in st)
                              else "failed")
         except Exception as e:  # noqa: BLE001 — прогон должен закончиться записью, а не тишиной
             run["status"], run["error"] = "failed", f"{type(e).__name__}: {e}"
@@ -542,6 +557,42 @@ class Scheduler:
             with self.lock:
                 self.current = None
             self._next()
+
+    def _pass(self, task: dict, run: dict, lang: str, items: list, halted: str,
+              retry: bool = False) -> str:
+        """Один проход по шагам цепочки. Шаг проекта провалился — остальные шаги того же
+        проекта откладываются (`deferred`), цепочка идёт дальше. → причина остановки."""
+        blocked: set = set()
+        for it in items:
+            if it["status"] != "pending":
+                continue
+            if halted:
+                it.update(status="skipped", note=halted)
+                continue
+            if self.stop_event.is_set():
+                halted = "stopped"
+                it.update(status="skipped", note="stopped")
+                continue
+            if it["project"] in blocked:
+                # Повтор не откладывает дальше: второй провал проекта — его итог.
+                it.update(status="skipped" if retry else "deferred",
+                          note="after_retry_failure" if retry else "after_failure")
+                save_run(run)
+                continue
+            self._item(task, run, it, lang)
+            save_run(run)
+            if it["status"] == "stopped":
+                halted = "stopped"
+            elif it["status"] in BAD:
+                if task.get("on_fail") == "stop":
+                    halted = "chain_stopped"
+                else:
+                    blocked.add(it["project"])
+                    if not retry:              # к проекту вернёмся в конце цепочки
+                        it.update(status="deferred", note=it.get("note") or it["status"],
+                                  failed_as=it["status"])
+                        save_run(run)
+        return halted
 
     def _item(self, task: dict, run: dict, it: dict, lang: str) -> None:
         ck = self.ck
@@ -591,6 +642,9 @@ class Scheduler:
             it["run_id"] = res.get("run_id", "")
             status = {"passed": "passed", "stall": "stall", "offline": "offline",
                       "stopped": "stopped"}.get(res["reason"], "failed")
+            if status == "stall" and res.get("progressed"):
+                # База за маршрут менялась, не двигается только хвост — проект обновлён.
+                status = "partial"
             it.update(status=status, failed=res.get("failed", ""), note=res.get("note", ""),
                       finished=now_iso())
             return

@@ -57,6 +57,17 @@ def made_progress(lines) -> bool:
     return any(re.search(rx, text) for rx in DID_WORK)
 
 
+def _head(project: str) -> str:
+    """HEAD проекта; не под git или git не ответил — пусто."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", project, "rev-parse", "HEAD"], capture_output=True,
+                           text=True, timeout=15)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def left_by_kind(lines) -> dict:
     """Сколько работы осталось после оборота — по видам раздельно, как у кнопки."""
     out = {}
@@ -314,6 +325,10 @@ class RouteRun:
         self.done = self.lap = self.in_lap = 0
         self.failed = self.refused = ""
         self.stopped = self.stalled = False
+        # Продвинулся ли маршрут: каждый шаг агента и каждый оборот фиксируют работу в git,
+        # и сдвиг HEAD — честный признак, что база менялась. По нему расписание отличает
+        # «застрял на хвосте, проект обновлён» от «не обновилось ничего» (6.10.2026).
+        self.head0 = _head(project)
         self.run_id = _slug() + "-route"
         self.base = os.path.join(ck.runs_dir(project), self.run_id)
         self.journal = Journal(self.base)
@@ -657,7 +672,9 @@ class RouteRun:
             if reason == "offline":
                 state["attempts"] = getattr(self, "offline_attempts", OFFLINE_TRIES)
             ck.write_route_state(self.project, state)
+        head = _head(self.project)
         res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,
+               "progressed": bool(head and head != self.head0),
                "note": self.refused, "steps": self.done, "lines": lines,
                "run_id": self.run_id,
                "found": [{"cmd": x["cmd"], "lines": x["tail"]} for x in self.summary

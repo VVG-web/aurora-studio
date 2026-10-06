@@ -112,5 +112,18 @@
   "bots.cron_field.hour": "hour (0–23)",
   "bots.cron_field.dom": "day of month (1–31)",
   "bots.cron_field.month": "month (1–12 or jan–dec)",
-  "bots.cron_field.dow": "weekday (0–7 or sun–sat)"
+  "bots.cron_field.dow": "weekday (0–7 or sun–sat)",
+  "bots.role": "Model",
+  "bots.role_about": "A role from the «Models» section: a «provider → model» chain in order. You can add a role of your own for bots, with a stronger model.",
+  "bots.role_default": "Default — «{name}»",
+  "bots.p.role_unknown": "No such model role",
+  "bots.fix.role_unknown": "Pick a role from the «Models» section or add it there.",
+  "bots.p.no_tools": "The bot answered without tools",
+  "bots.fix.no_tools": "The call bypassed Pydantic AI — no MCP servers and files. The reason is in the report; check Pydantic AI on the «Install» page.",
+  "bots.p.no_tool_calls": "The bot called no tools",
+  "bots.fix.no_tool_calls": "The bot's MCP servers were connected, but the model answered with text. Say in the prompt which tool to call first (e.g. the Jira issue search), or pick a role with a stronger model.",
+  "bots.role_name.worker": "Parsing and theses",
+  "bots.role_name.planner": "Planner and extraction",
+  "bots.role_name.critic": "Critic (Momus)",
+  "bots.role_name.qa": "Answers to questions"
 }

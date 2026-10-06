@@ -68,10 +68,10 @@ from aurora_common import is_folder_guide, kit_root  # noqa: E402 — кит; о
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
 OUT_DIR = ("Workspaces", "bots")
-FIELDS = ("name", "description", "mcp", "skills", "attachments", "cron", "enabled")
+FIELDS = ("name", "description", "role", "mcp", "skills", "attachments", "cron", "enabled")
 LISTS = ("mcp", "skills", "attachments")
 TOOL_CALLS = 40                  # бот ходит по задачам Jira: шагов больше, чем у разбора
-ROLE = "worker"
+ROLE = "worker"                  # роль модели по умолчанию; бот выбирает свою (поле `role`)
 
 ALIASES = {"@hourly": "0 * * * *", "@daily": "0 0 * * *", "@midnight": "0 0 * * *",
            "@weekly": "0 0 * * 0", "@monthly": "0 0 1 * *", "@yearly": "0 0 1 1 *",
@@ -124,9 +124,21 @@ PROBLEMS = {
                      "Проверьте связь в разделе «Модели»; если сервер перегружен — повторите "
                      "позже.", ["open_models", "retry"]),
     "busy": ("Бот уже работает", "Дождитесь конца прогона.", ["retry"]),
+    "role_unknown": ("Роли модели нет",
+                     "Выберите роль из раздела «Модели» или заведите её там.",
+                     ["open_models", "open_bots"]),
+    "no_tools": ("Бот ответил без инструментов",
+                 "Вызов прошёл мимо Pydantic AI — без MCP-серверов и файлов. Причина — в "
+                 "отчёте; проверьте Pydantic AI на странице «Установка».",
+                 ["open_install", "retry"]),
+    "no_tool_calls": ("Бот не вызвал ни одного инструмента",
+                      "MCP-серверы бота были подключены, но модель ответила текстом. Скажите в "
+                      "промпте прямо, какой инструмент звать первым (например, поиск задач "
+                      "Jira), или выберите роль с моделью посильнее.",
+                      ["open_bots", "retry"]),
 }
 BLOCKING = {"no_prompt", "mcp_unknown", "skill_unknown", "attachment_missing",
-            "attachment_secret"}
+            "attachment_secret", "role_unknown"}
 
 
 # ---------------------------------------------------------------- мелочи
@@ -216,8 +228,8 @@ def parse(text: str) -> dict:
         elif cur is not None:
             cur[2].append(line)
             cur[3].append(line)
-    meta = {"name": "", "description": "", "mcp": [], "skills": [], "attachments": [],
-            "cron": "", "enabled": False}
+    meta = {"name": "", "description": "", "role": "", "mcp": [], "skills": [],
+            "attachments": [], "cron": "", "enabled": False}
     extra = []
     for key, first, rest, raw in blocks:
         if key in LISTS:
@@ -242,6 +254,8 @@ def _q(v: str) -> str:
 
 def dump(meta: dict, body: str, extra: list | None = None) -> str:
     lines = ["---", f"name: {_q(meta.get('name'))}", f"description: {_q(meta.get('description'))}"]
+    if meta.get("role"):
+        lines.append(f"role: {_q(meta['role'])}")
     for key in LISTS:
         items = [str(x) for x in meta.get(key) or [] if str(x).strip()]
         lines.append(f"{key}:" + ("" if items else " []"))
@@ -344,6 +358,27 @@ def mcp_names(project) -> list:
     return sorted((AG.mcp_config(str(project)).get("mcpServers") or {}))
 
 
+def llm_roles() -> list:
+    """Роли моделей из раздела «Модели»: [{id, name, models}] — из них бот выбирает свою.
+    Роль — цепочка «провайдер → модель» по порядку; свою роль для ботов заводят там же."""
+    try:
+        import agent_core as AG
+        import model_config as MC
+        kit = kit_root()
+        data = MC.load(kit, AG.kit_env(kit)) if kit else {}
+    except Exception:  # noqa: BLE001 — без настройки моделей ролей просто нет
+        return []
+    engine = dict(MC.ENGINE_ROLES.get("llm", ()))
+    out = []
+    for r in ((data.get("capabilities") or {}).get("llm") or {}).get("roles") or []:
+        rid, name = r.get("id", ""), r.get("name") or r.get("id", "")
+        # Имя роли движка, которое человек не менял, панель пишет на языке интерфейса.
+        out.append({"id": rid, "name": "" if engine.get(rid) == name else name,
+                    "models": [b.get("model", "") for b in r.get("backends") or []
+                               if b.get("enabled")]})
+    return [r for r in out if r["id"]]
+
+
 def skill_names(project) -> list:
     import request_context as RC
     kit = kit_root()
@@ -361,6 +396,8 @@ def validate(project, meta: dict, body: str | None = None, mcp: list | None = No
         _spec, err = parse_cron(meta["cron"])
         if err:
             probs.append({"field": "cron", "code": "cron_invalid", "detail": err})
+    if meta.get("role") and meta["role"] not in {r["id"] for r in llm_roles()}:
+        probs.append({"field": "role", "code": "role_unknown", "detail": meta["role"]})
     known = set(mcp if mcp is not None else mcp_names(project))
     for name in meta.get("mcp") or []:
         if name not in known:
@@ -470,6 +507,7 @@ def clean_meta(meta: dict) -> dict:
     out = {"name": " ".join(str(m.get("name") or "").split())[:120],
            "description": " ".join(str(m.get("description") or "").split())[:300],
            "cron": " ".join(str(m.get("cron") or "").split()),
+           "role": re.sub(r"[^\w.\-]", "", str(m.get("role") or ""))[:60],
            "enabled": bool(m.get("enabled"))}
     for key in LISTS:
         vals = m.get(key) if isinstance(m.get(key), list) else []
@@ -605,10 +643,17 @@ INSTRUCTIONS = """Ты — бот проекта «{project}»: «{name}». Ра
 вопросов не задавай, делай задание до конца тем, что у тебя есть.
 
 Инструменты:
-- MCP-серверы бота: {mcp}. Их инструменты называются с именем сервера впереди.
+- MCP-серверы бота: {mcp}. Они УЖЕ подключены — `mcp_connect` для них не нужен; их
+  инструменты называются с именем сервера впереди (`mcp-atlassian_jira_search`).
 - `read_file`, `list_dir` — файлы проекта; `kb_search`, `kb_context` — база знаний проекта.
 - `save_output(name, text)` — сохранить файл результата; вернёт полный путь, который можно
   передать инструменту, прикладывающему файл.
+- Прошлые прогоны этого бота — `{runs}/` (`list_dir`, `read_file`): так продолжают работу,
+  начатую раньше. Своей памяти между прогонами у тебя нет.
+
+Скриптов, командной строки и переменных окружения у тебя нет: всё, что задание называет
+«скриптом» или «переменной», делай сам этими инструментами или напиши, что не вышло.
+Начни с вызова инструмента, а не с рассуждения о том, что его нет.
 
 Правила:
 - Действия во внешних системах (комментарии, вложения, изменения задач) — только те, что
@@ -686,8 +731,9 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
         return {"ok": False, "problem": problem(p["code"], p.get("detail", ""), field=p["field"],
                                                 more=[x["detail"] for x in blocking[1:]])}
     cfg = AG.config()
-    if not AG.role_chain(cfg, ROLE):
-        return {"ok": False, "problem": problem("no_models")}
+    role = meta.get("role") or ROLE
+    if not AG.role_chain(cfg, role):
+        return {"ok": False, "problem": problem("no_models", role)}
     adapter_ok = cfg.get("adapter") == "pydantic_ai" and AG.venv_status()[0]
     if not adapter_ok and meta.get("mcp") and call is None:
         return {"ok": False, "problem": problem("no_adapter")}
@@ -716,14 +762,15 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
         say("  без Pydantic AI: инструментов нет, бот ответит текстом")
     from git_sync import project_name
     system = INSTRUCTIONS.format(project=project_name(project), name=meta["name"],
-                                 mcp=", ".join(meta.get("mcp") or []) or "нет")
+                                 mcp=", ".join(meta.get("mcp") or []) or "нет",
+                                 runs="/".join((*OUT_DIR, Path(rel).stem)))
     prompt = "".join(b for b in blocks if b) + "## Задание\n\n" + body.strip()
     budget = float(cfg.get("budget_min") or 20) * 60
     call = call or AG.call_role
     cwd = os.getcwd()
     os.chdir(project)                    # инструменты и MCP работают от корня проекта
     try:
-        r = call(cfg, ROLE, [{"role": "system", "content": system},
+        r = call(cfg, role, [{"role": "system", "content": system},
                              {"role": "user", "content": prompt}],
                  deadline=time.time() + budget, tools=True,
                  mcp_active=list(meta.get("mcp") or []), mcp_only=list(meta.get("mcp") or []),
@@ -737,23 +784,47 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
         report = _report(project, outdir, meta, trigger, "", prob)
         return {"ok": False, "problem": prob, "report": report, "outputs": outputs}
     text = (r.get("text") or "").strip()
-    report = _report(project, outdir, meta, trigger, text, None)
+    run_info = {"role": role, "model": r.get("model", ""), "via": r.get("via", ""),
+                "tools": list(r.get("tools_called") or [])}
+    if meta.get("mcp") and call is AG.call_role:
+        prob = None
+        if run_info["via"] != "pydantic_ai":
+            prob = problem("no_tools", AG.ADAPTER.get("fallback_why") or run_info["via"] or "?")
+        elif not run_info["tools"]:
+            prob = problem("no_tool_calls", ", ".join(meta["mcp"]))
+        if prob:
+            report = _report(project, outdir, meta, trigger, text, prob, run_info)
+            return {"ok": False, "problem": prob, "report": report, "outputs": outputs,
+                    "summary": re.sub(r"\s+", " ", re.sub(r"[#*`>|]", "", text))[:400]}
+    report = _report(project, outdir, meta, trigger, text, None, run_info)
     summary = re.sub(r"\s+", " ", re.sub(r"[#*`>|]", "", text))[:400]
     say(f"✓ готово: отчёт {report}" + (f", файлов результата: {len(outputs)}" if outputs else ""))
     return {"ok": True, "summary": summary, "report": report, "outputs": outputs,
             "model": r.get("model", "")}
 
 
-def _report(project, outdir: Path, meta: dict, trigger: str, text: str, prob: dict | None) -> str:
+def _report(project, outdir: Path, meta: dict, trigger: str, text: str, prob: dict | None,
+            info: dict | None = None) -> str:
     """Отчёт прогона пишет код — по ответу модели или по причине отказа."""
+    from collections import Counter
     from aurora_common import utc_label
+    info = info or {}
+    calls = Counter(info.get("tools") or [])
     head = [f"# Бот «{meta['name']}» — {utc_label()}", "",
-            f"- Запуск: {trigger}", f"- MCP: {', '.join(meta.get('mcp') or []) or '—'}",
+            f"- Запуск: {trigger}",
+            f"- Модель: роль «{info.get('role') or meta.get('role') or ROLE}»"
+            + (f" · {info['model']}" if info.get("model") else "")
+            + (f" · через {info['via']}" if info.get("via") else ""),
+            f"- MCP: {', '.join(meta.get('mcp') or []) or '—'}",
             f"- Навыки: {', '.join(meta.get('skills') or []) or '—'}",
-            f"- Вложения: {', '.join(meta.get('attachments') or []) or '—'}", ""]
+            f"- Вложения: {', '.join(meta.get('attachments') or []) or '—'}",
+            "- Вызовы инструментов: " + (", ".join(f"{k} ×{v}" for k, v in calls.most_common())
+                                          if calls else "ни одного"), ""]
     if prob:
         head += [f"## Не вышло: {prob['title']}", "", prob["fix"], "",
                  f"`{prob.get('detail', '')}`" if prob.get("detail") else ""]
+        if text:
+            head += ["", "## Ответ модели", "", text]
     else:
         head += ["## Ответ бота", "", text]
     path = outdir / "report.md"

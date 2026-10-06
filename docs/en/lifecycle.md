@@ -109,11 +109,21 @@ run 'Update the base' and 'Fix the base' in every project". The "Maintain all pr
 chain — the base routes except the rebuild from scratch. The panel server runs the chain, no page needs to be open,
 but the panel itself must be running. Rules:
 
-- chains run one at a time, the next one waits in the queue;
+- chains run one at a time, the next one waits in the queue (bots are tasks of the same queue); a task that fires
+  while it is still running does not start a second run — the history says "missed";
+- projects go in the order they are named in the task's steps; "all projects" — in the panel's order;
 - a route follows the same rules as the "Run" button: laps with a commit, stop on stall and failure, waiting for the
-  network; a route stopped at night continues with "Resume route";
+  network; a route stopped at night continues with "Resume route". A step has no time limit: a model thinking for
+  long is not a reason to drop the work;
 - a project busy with other work makes the step wait up to two hours, then the step is skipped;
-- a failed step either lets the chain carry on or stops it, as chosen in the task;
+- a project is the unit of a chain. A project step failed (the command crashed, gateways do not answer, the route did
+  not move the base by a single commit) — the remaining steps of that project are deferred: "Fix" after an update
+  that did not happen is pointless. The chain goes on to the next project and at the end comes back to the deferred
+  ones once, continuing where they stopped. A second failure is the project's outcome;
+- a stall at the tail while the base did change during the route is "partly", not a failure: the project is updated
+  and its next steps run. A card the thesis step parked for a human (a dictionary longer than the window, with no
+  boundaries found) is not counted as work left until it changes;
+- the task can say "on failure — stop the chain": then it stops at the first failure;
 - a time missed while the panel was down is caught up no later than 15 minutes, otherwise the run is recorded as
   missed; if the panel restarts in the middle of a chain, the new one continues it;
 - a writing command outside a route is committed to git right away.

@@ -100,6 +100,12 @@ def config() -> dict:
     cfg = MC.to_config(data)
     if data.get("error"):
         cfg["error"] = data["error"]
+    # Адаптер включает `default_transport` по ADAPTER, а не по настройке. Прежний путь
+    # (`parse_config`) ставил его сам; с 1.153.0 настройка идёт отсюда, и без этой строки
+    # каждый вызов шёл прямым HTTP: «Спросить», «Продуктивность» и боты остались без
+    # инструментов и MCP, а модель честно отвечала «инструментов нет» (6.10.2026).
+    ADAPTER["name"] = cfg.get("adapter") or "pydantic_ai"
+    ADAPTER["fallback_why"] = ""
     return cfg
 
 
@@ -628,7 +634,10 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
     body = {"choices": [{"message": {"content": out.get("text") or "",
                                      "reasoning_content": out.get("reasoning") or ""},
                          "finish_reason": out.get("finish") or "stop"}],
-            "usage": out.get("usage") or {}}
+            "usage": out.get("usage") or {},
+            # Чем шёл вызов и что модель вызывала: бот без единого вызова инструмента при
+            # своих MCP — не «отработал», а «ответил текстом» (6.10.2026).
+            "aurora": {"via": "pydantic_ai", "tools_called": list(out.get("tools_called") or [])}}
     return 200, body, "", dt
 
 
@@ -1430,7 +1439,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "ring": ring, "log": log, "url": b["url"],
                         "tokens_in": int(usage.get("prompt_tokens") or 0),
                         "tokens_out": out_tokens,
-                        "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0}
+                        "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0,
+                        "via": (body.get("aurora") or {}).get("via", "http"),
+                        "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])}
             finally:
                 with _SEM_LOCK:
                     INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 1) - 1

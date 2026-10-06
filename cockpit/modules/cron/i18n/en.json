@@ -101,5 +101,15 @@
   "cron.bot_cron_hint": "The cron expression from the bot file: minute hour day month weekday",
   "cron.bot_cron_bad": "the schedule has an error — fix it in «Bots»",
   "cron.bot_where": "{file} · project {project}",
-  "cron.bot_edit": "Edit in «Bots»"
+  "cron.bot_edit": "Edit in «Bots»",
+  "cron.status.partial": "partly",
+  "cron.status.deferred": "deferred",
+  "cron.note.after_failure": "the project is deferred: its previous step failed — the chain comes back to it at the end",
+  "cron.note.after_retry_failure": "the retry did not help: the project's previous step failed again",
+  "cron.note.stall": "the route did not move the base by a single commit — coming back at the end",
+  "cron.note.failed": "the step failed — coming back at the end",
+  "cron.note.offline": "model gateways did not answer — coming back at the end",
+  "cron.retry": "retry",
+  "cron.first_try": "first time: {status}",
+  "cron.missed_running": "at {when} the same task was still running — a second run was not started"
 }

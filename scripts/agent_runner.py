@@ -5899,6 +5899,49 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
     return step
 
 
+# Карточки, которые тезисы откладывают «человеку» (словарь длиннее окна, а границ планировщик
+# не нашёл; части уже вынесены): пока файл тот же, спрашивать модель о нём снова незачем —
+# ответ будет тем же. Без этой памяти такая карточка вечно стояла в «осталось», и маршрут
+# «Обновить базу» кончался застоем на последнем обороте, хотя проект обновлён (PRJ-B, 6.10.2026).
+PARKED = os.path.join(".aurora", "state", "distill_parked.json")
+PARKED_STATUSES = ("человеку", "слишком длинная")
+
+
+def _card_sig(path: str) -> str:
+    import hashlib
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha1(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def parked_cards(cwd: str) -> dict:
+    """{путь от проекта: отпечаток} — отложенные карточки на момент откладывания."""
+    try:
+        data = json.load(open(os.path.join(cwd, PARKED), encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def park_card(cwd: str, path: str) -> None:
+    data = parked_cards(cwd)
+    data[os.path.relpath(path, cwd).replace("\\", "/")] = _card_sig(path)
+    full = os.path.join(cwd, PARKED)
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def still_parked(cwd: str, path: str, parked: dict) -> bool:
+    rel = os.path.relpath(path, cwd).replace("\\", "/")
+    return rel in parked and parked[rel] == _card_sig(path)
+
+
 def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     """Очередь переосмысления: карточки знания без тезиса и словари, переросшие окно.
 
@@ -5913,6 +5956,7 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
     """
     from aurora_common import card_body, frontmatter, is_placeholder, walk_md
     window = AG.prompt_budget(cfg, reserve_chars=len(PROMPT_DISTILL) + 400)
+    parked = parked_cards(cwd)
     todo = []
     for p in walk_md(os.path.join(cwd, "AuroraKnowledgeDB"), skip_service=True,
                      skip_archive=True):
@@ -5949,6 +5993,8 @@ def distill_queue(cfg: dict, cwd: str, defer_refresh: bool = False) -> list:
             src = text.split(QUOTES, 1)[-1]
             if len(src) > window * MAX_PARTS:
                 todo.append(p)
+    # Отложенное «человеку» и не изменившееся с тех пор — не работа движка: остатком не считаем.
+    todo = [p for p in todo if not still_parked(cwd, p, parked)]
     # Порядок — по имени, как у связывания и выноса: обход папок отдаёт файлы как придётся,
     # и один и тот же прогон брал бы карточки в разном порядке от машины к машине.
     todo.sort()
@@ -6068,6 +6114,10 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         nonlocal unsupported
         steps.append(step)
         tried.append(path)
+        if apply and step["status"] in PARKED_STATUSES:
+            # Ждёт человека — в следующие обороты не считаем. Разрезанная ниже карточка
+            # меняется, и её отпечаток с запомненным уже не совпадёт.
+            park_card(cwd, path)
         if apply and step.get("head") is not None and commit and commit_every:
             written[0] += 1          # коммит — ниже, когда тезис уже записан
         say(f"  {progress(done, total, started)}"
