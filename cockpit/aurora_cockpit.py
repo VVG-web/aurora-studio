@@ -709,6 +709,31 @@ def models_state(projects: list) -> dict:
     }
 
 
+def llm_calls_state(lang: str) -> dict:
+    """«Где работают модели»: каталог вызовов (`scripts/llm_calls.json`) на языке интерфейса
+    и живые цепочки ролей из настройки кита — для вкладки «Модели → Где работают» и подсказок
+    к кнопкам. Ключей в ответе нет: только имена провайдеров и моделей."""
+    import llm_calls as LC
+    import model_config as MC
+    out = LC.for_panel(lang)
+    data = models_data()
+    names = {p["id"]: p.get("name") or p["id"] for p in data.get("providers") or []}
+    defaults = {r: n for c in MC.CAPABILITIES for r, n in MC.ENGINE_ROLES[c]}
+    roles = {}
+    for cap in MC.CAPABILITIES:
+        for r in ((data.get("capabilities") or {}).get(cap) or {}).get("roles") or []:
+            roles[r["id"]] = {
+                "cap": cap, "name": r.get("name") or r["id"],
+                "default_name": r.get("name") == defaults.get(r["id"]),
+                "thinking": (r.get("thinking", True) is not False) if cap == "llm" else None,
+                "chain": [{"provider": names.get(b.get("provider"), b.get("provider") or ""),
+                           "model": b.get("model") or ""}
+                          for b in r.get("backends") or []
+                          if b.get("enabled", True) is not False and b.get("model")]}
+    out.update(roles=roles, default_role=dict(MC.DEFAULT_ROLE))
+    return out
+
+
 def models_save(payload: dict) -> dict:
     """Записать настройку кита целиком. Ключ маской — «не трогали»: подставляем прежний."""
     import model_config as MC
@@ -3866,6 +3891,69 @@ def bots_brief(project: str) -> list:
         return []
 
 
+def _bot_rel(project: str, file: str) -> str:
+    """Файл бота только из папки bots/ проекта: путь приходит из браузера."""
+    rel = str(file or "").replace("\\", "/")
+    if not re.match(r"^bots/[^/]+\.md$", rel):
+        raise ValueError("файл бота — только .md в папке bots/ проекта")
+    if not os.path.isfile(os.path.join(project, rel)):
+        raise ValueError("бота нет")
+    return rel
+
+
+# Реплика разбора идёт минутами (модели с рассуждениями). Окно могут закрыть и открыть снова,
+# а вторая реплика к тому же боту, пока идёт первая, писала бы разговор наперегонки: пока
+# реплика идёт, вторая получает отказ, а окно ждёт и подхватывает ответ из файла разговора.
+COACH_BUSY: dict = {}
+COACH_LOCK = threading.Lock()
+
+
+def _coach_key(project: str, rel: str) -> tuple:
+    return os.path.realpath(project), rel
+
+
+def coach_state(project: str, file: str) -> dict:
+    """Разговор о промпте бота: реплики, идёт ли реплика сейчас, когда спрашивали
+    инструменты серверов."""
+    import bot_coach as BCo
+    try:
+        rel = _bot_rel(project, file)
+    except ValueError as e:
+        return {"error": str(e)}
+    data = BCo.load(project, rel)
+    with COACH_LOCK:
+        since = COACH_BUSY.get(_coach_key(project, rel))
+    return {"messages": data.get("messages") or [], "busy": since is not None,
+            "busy_since": since, "inventory_at": (data.get("inventory") or {}).get("at")}
+
+
+def coach_action(project: str, payload: dict, lang: str) -> dict:
+    """Реплика разговора о промпте (`bot_coach.turn`) или «начать заново»."""
+    import bot_coach as BCo
+    try:
+        rel = _bot_rel(project, payload.get("file", ""))
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    key = _coach_key(project, rel)
+    with COACH_LOCK:
+        if key in COACH_BUSY:
+            return {"ok": False, "busy": True,
+                    "error": "разбор этого бота уже идёт — ответ придёт в окно разбора"}
+        COACH_BUSY[key] = time.time()
+    try:
+        if payload.get("reset"):
+            return BCo.reset(project, rel)
+        meta = BOTS.clean_meta(payload.get("meta") or {})
+        return BCo.turn(project, rel, meta, str(payload.get("body") or ""),
+                        str(payload.get("message") or ""), str(payload.get("pick") or ""),
+                        refresh=bool(payload.get("refresh")), lang=lang)
+    except BCo.CoachError as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        with COACH_LOCK:
+            COACH_BUSY.pop(key, None)
+
+
 def harness_state(versions: bool = False) -> dict:
     """Ассистенты из каталога кита (`scripts/harnesses.json`) и Аврора в каждом из них.
     Пояснения к ассистентам — в каталоге строк раздела, а не в ответе: так они на языке
@@ -4196,6 +4284,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._known(project):
                 return
             self.send_json(bot_file(project, (q.get("file") or [""])[0]))
+        elif u.path == "/api/bots/coach":
+            # Разговор о промпте бота — продолжается после перезапуска панели.
+            project = (q.get("project") or [""])[0]
+            if not self._known(project):
+                return
+            self.send_json(coach_state(project, (q.get("file") or [""])[0]))
         elif u.path == "/api/gitmods":
             self.send_json(gitmods_state(fresh=bool(q.get("fresh"))))
         elif u.path == "/api/harness":
@@ -4382,6 +4476,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(agent_state(q.get("project", [""])[0]))
         elif u.path == "/api/models":
             self.send_json(models_state(find_projects(self.server.roots)))
+        elif u.path == "/api/llm/calls":
+            # Где работают модели: каталог вызовов и живые цепочки ролей кита.
+            self.send_json(llm_calls_state(request_lang(q)))
         elif u.path == "/api/agent/pydantic":
             project = (q.get("project") or [""])[0]
             self.send_json(pydantic_state(project if project and self._known(project) else ""))
@@ -4774,6 +4871,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/gitsync/parse":
             # Строка из `git clone` → сервер, репозиторий, ветка, логин. Ничего не пишет.
             self.send_json(GS.parse_clone(str(payload.get("text") or "")))
+            return
+        if u.path == "/api/bots/coach":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(coach_action(project, payload, request_lang(q)))
             return
         if u.path in ("/api/harness/add", "/api/harness/restore"):
             self.send_json(harness_action(u.path.rsplit("/", 1)[1], payload))

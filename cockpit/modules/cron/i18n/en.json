@@ -115,5 +115,7 @@
   "cron.kind_bot": "bot",
   "cron.all_bots": "all enabled bots of the project",
   "cron.bot_off": "off",
-  "cron.err.bad_bot": "The project has no such bot"
+  "cron.err.bad_bot": "The project has no such bot",
+  "cron.other_panel": "Another panel on this machine runs the schedule (process {pid}): tasks are visible here, but they run only there. Close that panel — this one takes over the schedule by itself within five minutes.",
+  "cron.err.other_panel": "Another panel on this machine runs the schedule — start the chain there"
 }

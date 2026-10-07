@@ -96,6 +96,10 @@ function drawNow(ctx){
   const {t, el} = ctx;
   const box = ctx.$("#cronNow");
   box.innerHTML = "";
+  // Расписание ведёт другая панель машины: здесь задания видно, но запускать их — там.
+  if (DATA.other_panel)
+    box.append(el("div", {class: "warnbox", style: "margin-bottom:10px"},
+      t("cron.other_panel", {pid: DATA.other_panel})));
   const cur = DATA.current;
   if (!cur){
     if (DATA.queue && DATA.queue.length)

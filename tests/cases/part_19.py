@@ -201,7 +201,8 @@ def test_the_models_section_is_additive_and_native(_t):
     assert meta["group"] == "machine" and "needs" in meta and not meta["needs"], \
         "раздел моделей привязан к проекту — а настройка одна на кит"
     view = (mod / "view.js").read_text(encoding="utf-8")
-    for need, why in (('["providers", ...CAPS]', "нет вкладок «Провайдеры / LLM / OCR / Эмбеддинги»"),
+    for need, why in (('["providers", ...CAPS, "calls"]',
+                       "нет вкладок «Провайдеры / LLM / OCR / Эмбеддинги / Где работают»"),
                       ('t("models.add_fallback")', "нет «+» для запасного"),
                       ('draggable: "true"', "цепочку нельзя перетащить"),
                       ('"__new__"', "провайдера нельзя завести прямо из роли"),

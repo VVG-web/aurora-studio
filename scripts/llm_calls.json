@@ -1,0 +1,825 @@
+{
+  "about": "Каталог вызовов моделей Авроры: где, когда, какие роли, промпты и инструменты. Сверяется с кодом (scripts/llm_calls.py --check): место вызова модели, которого здесь нет, роль, которой код не зовёт, промпт, которого нет в файле, — замечания. Маршруты, в которых идёт вызов, вычисляются по командам из cockpit/scenarios.txt. Из каталога собираются docs/llm-calls.md, docs/en/llm-calls.md, вкладка «Модели → Где работают» и подсказки к кнопкам панели.",
+  "calls": [
+    {
+      "id": "build",
+      "title": {
+        "ru": "Разбор источников на карточки",
+        "en": "Breaking sources into cards"
+      },
+      "when": {
+        "ru": "Команда agent:build — партиями, пока план не разобран; расписание Cron.",
+        "en": "The agent:build command — in batches until the plan is done; Cron schedules."
+      },
+      "commands": [
+        "agent:build"
+      ],
+      "code": [
+        "agent_runner.py:solve_source",
+        "agent_runner.py:plan_source",
+        "agent_runner.py:judge_empty",
+        "agent_runner.py:solve_meeting"
+      ],
+      "steps": [
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_PLAN_SOURCE",
+          "what": {
+            "ru": "Большой источник без разметки: план разделов, по которым его резать.",
+            "en": "A large source without structure: a plan of sections to cut it by."
+          }
+        },
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_MEETING",
+          "what": {
+            "ru": "Стенограмма встречи из Raw/meetings: план по частям.",
+            "en": "A meeting transcript from Raw/meetings: a plan part by part."
+          }
+        },
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_BUILD",
+          "what": {
+            "ru": "Раскадровка источника: границы тем, имена карточек, вид знания. Текст в карточки переносит движок, а не модель.",
+            "en": "Storyboarding a source: topic boundaries, card names, kind of knowledge. The engine, not the model, moves the text into cards."
+          }
+        },
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_NO_SECTIONS",
+          "what": {
+            "ru": "Источник без структуры: разбирать, пропустить или считать служебным.",
+            "en": "A source without structure: break it down, skip it or treat it as service text."
+          }
+        },
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_BUILD_CRITIC",
+          "what": {
+            "ru": "Проверка раскадровки до записи в базу.",
+            "en": "Checking the storyboard before writing into the base."
+          }
+        },
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_NO_SECTIONS",
+          "what": {
+            "ru": "Проверка решения по источнику без структуры.",
+            "en": "Checking the decision on a source without structure."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: всё нужное движок кладёт в задание",
+        "en": "none: the engine puts everything needed into the task"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Движок переносит текст, ставит отметку о разборе, линтер проверяет карточки.",
+        "en": "The engine moves the text, marks the source as processed, the linter checks the cards."
+      }
+    },
+    {
+      "id": "distill",
+      "title": {
+        "ru": "Тезисы карточек",
+        "en": "Card theses"
+      },
+      "when": {
+        "ru": "Команда agent:distill; `--recheck` — повторная проверка тезисов без опоры.",
+        "en": "The agent:distill command; `--recheck` re-checks theses without support."
+      },
+      "commands": [
+        "agent:distill"
+      ],
+      "code": [
+        "agent_runner.py:distill_card",
+        "agent_runner.py:plan_split",
+        "agent_runner.py:service_template",
+        "agent_runner.py:run_momus"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_DISTILL",
+          "what": {
+            "ru": "Тезис карточки из перенесённого текста источника. Источник изменился — PROMPT_REDISTILL; длинный текст — по частям (PROMPT_DISTILL_PART) и сборка (PROMPT_DISTILL_JOIN).",
+            "en": "A card thesis from the moved source text. Changed source — PROMPT_REDISTILL; long text — by parts (PROMPT_DISTILL_PART) and joining (PROMPT_DISTILL_JOIN)."
+          }
+        },
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_PLAN_SPLIT",
+          "what": {
+            "ru": "Разросшаяся карточка: план разделения на несколько.",
+            "en": "An overgrown card: a plan to split it into several."
+          }
+        },
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_TEMPLATE_KINDS",
+          "what": {
+            "ru": "Абзацы, повторяющиеся на десятках страниц: шаблон это или знание.",
+            "en": "Paragraphs repeated on dozens of pages: a template or knowledge."
+          }
+        },
+        {
+          "role": "qa",
+          "prompt": "agent_runner.py:PROMPT_MOMUS",
+          "what": {
+            "ru": "Момус: каждое утверждение тезиса опирается на источник. Без опоры — пометка и повторная проверка.",
+            "en": "Momus: every claim of the thesis rests on the source. Without support — a mark and a re-check."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Тезис без опоры не становится знанием; доверие считает движок.",
+        "en": "A thesis without support does not become knowledge; trust is computed by the engine."
+      }
+    },
+    {
+      "id": "extract",
+      "title": {
+        "ru": "Вынос чужих определений",
+        "en": "Extracting foreign definitions"
+      },
+      "when": {
+        "ru": "Команда agent:extract.",
+        "en": "The agent:extract command."
+      },
+      "commands": [
+        "agent:extract"
+      ],
+      "code": [
+        "agent_runner.py:extract_card"
+      ],
+      "steps": [
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_EXTRACT",
+          "what": {
+            "ru": "Находит в карточке определения других сущностей и выносит их в их карточки: карточка — сущность, а не документ.",
+            "en": "Finds definitions of other entities in a card and moves them into their cards: a card is an entity, not a document."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "relink",
+      "title": {
+        "ru": "Связи в тезисах",
+        "en": "Links in theses"
+      },
+      "when": {
+        "ru": "Команда agent:relink.",
+        "en": "The agent:relink command."
+      },
+      "commands": [
+        "agent:relink"
+      ],
+      "code": [
+        "agent_runner.py:relink_card"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_RELINK",
+          "what": {
+            "ru": "Расставляет ссылки [[…]] в готовом тезисе; текст тезиса не меняется.",
+            "en": "Places [[…]] links in a finished thesis; the thesis text does not change."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "aliases",
+      "title": {
+        "ru": "Конфликты синонимов",
+        "en": "Synonym conflicts"
+      },
+      "when": {
+        "ru": "Команда agent:aliases.",
+        "en": "The agent:aliases command."
+      },
+      "commands": [
+        "agent:aliases"
+      ],
+      "code": [
+        "agent_runner.py:solve_conflict"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_WORKER",
+          "what": {
+            "ru": "Решение по конфликту синонимов: чей это синоним.",
+            "en": "A decision on a synonym conflict: whose synonym it is."
+          }
+        },
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_CRITIC",
+          "what": {
+            "ru": "Проверка решения до записи.",
+            "en": "Checking the decision before writing."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "twins",
+      "title": {
+        "ru": "Двойники",
+        "en": "Twins"
+      },
+      "when": {
+        "ru": "Команда agent:twins.",
+        "en": "The agent:twins command."
+      },
+      "commands": [
+        "agent:twins"
+      ],
+      "code": [
+        "agent_runner.py:solve_twins"
+      ],
+      "steps": [
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_TWINS",
+          "what": {
+            "ru": "Судьба карточек об одном и том же: слить, развести или оставить.",
+            "en": "The fate of cards about the same thing: merge, separate or keep."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "clashes",
+      "title": {
+        "ru": "Противоречия",
+        "en": "Contradictions"
+      },
+      "when": {
+        "ru": "Команда agent:clashes.",
+        "en": "The agent:clashes command."
+      },
+      "commands": [
+        "agent:clashes"
+      ],
+      "code": [
+        "agent_runner.py:solve_clash"
+      ],
+      "steps": [
+        {
+          "role": "qa",
+          "prompt": "agent_runner.py:PROMPT_CLASH",
+          "what": {
+            "ru": "Ищет противоречия между карточками об одном предмете.",
+            "en": "Looks for contradictions between cards about one subject."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "tasks",
+      "title": {
+        "ru": "Карточки из задач Jira",
+        "en": "Cards from Jira issues"
+      },
+      "when": {
+        "ru": "Команда agent:tasks.",
+        "en": "The agent:tasks command."
+      },
+      "commands": [
+        "agent:tasks"
+      ],
+      "code": [
+        "agent_runner.py:solve_task_card"
+      ],
+      "steps": [
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_TASKS",
+          "what": {
+            "ru": "Судьба карточки, сделанной из задачи: вернуть знание предмету, оставить или убрать.",
+            "en": "The fate of a card made from an issue: return the knowledge to its subject, keep it or remove it."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "translit",
+      "title": {
+        "ru": "Имена латиницей",
+        "en": "Latin names"
+      },
+      "when": {
+        "ru": "Команда agent:translit.",
+        "en": "The agent:translit command."
+      },
+      "commands": [
+        "agent:translit"
+      ],
+      "code": [
+        "agent_runner.py:solve_translit"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_TRANSLIT",
+          "what": {
+            "ru": "Русское имя для карточки, названной латиницей.",
+            "en": "A Russian name for a card named in Latin letters."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "golden",
+      "title": {
+        "ru": "Эталон: пропавшие цели",
+        "en": "Golden questions: lost targets"
+      },
+      "when": {
+        "ru": "Команда agent:golden.",
+        "en": "The agent:golden command."
+      },
+      "commands": [
+        "agent:golden"
+      ],
+      "code": [
+        "agent_runner.py:solve_golden"
+      ],
+      "steps": [
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_GOLDEN",
+          "what": {
+            "ru": "Сверяет контрольный вопрос с кандидатами в ответ и выбирает новую цель.",
+            "en": "Matches a golden question against answer candidates and picks the new target."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "ask",
+      "title": {
+        "ru": "Спросить базу",
+        "en": "Ask the base"
+      },
+      "when": {
+        "ru": "Раздел «Спросить», команда agent:ask. Модель выбирается в разделе: роль (по умолчанию «Писатель») или ровно модель провайдера.",
+        "en": "The \"Ask\" section, the agent:ask command. The model is chosen in the section: a role (\"Writer\" by default) or exactly a provider model."
+      },
+      "commands": [
+        "agent:ask"
+      ],
+      "ui": [
+        "ask"
+      ],
+      "code": [
+        "agent_runner.py:run_ask",
+        "agent_runner.py:run_momus"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "chosen": true,
+          "prompt": "agent_runner.py:PROMPT_ASK",
+          "what": {
+            "ru": "Ответ только по паку карточек, со ссылкой на каждое утверждение; уточняющий вопрос продолжает разговор.",
+            "en": "An answer only from the card pack, with a link for every claim; a follow-up question continues the conversation."
+          }
+        },
+        {
+          "role": "qa",
+          "prompt": "agent_runner.py:PROMPT_MOMUS",
+          "what": {
+            "ru": "Момус проверяет, что ответ опирается на карточки пака.",
+            "en": "Momus checks that the answer rests on the pack's cards."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: пак знаний собирает движок гибридным поиском (слова и смысл)",
+        "en": "none: the engine builds the knowledge pack with hybrid search (words and meaning)"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Движок разбирает ссылки ответа по базе; разговор пишется в meta/ask/.",
+        "en": "The engine resolves the answer's links against the base; the conversation is written to meta/ask/."
+      }
+    },
+    {
+      "id": "make",
+      "title": {
+        "ru": "Артефакт (Продуктивность)",
+        "en": "Artifact (Productivity)"
+      },
+      "when": {
+        "ru": "Раздел «Продуктивность», команда agent:make.",
+        "en": "The \"Productivity\" section, the agent:make command."
+      },
+      "commands": [
+        "agent:make"
+      ],
+      "ui": [
+        "work"
+      ],
+      "code": [
+        "agent_runner.py:run_make",
+        "agent_runner.py:run_momus"
+      ],
+      "steps": [
+        {
+          "role": "planner",
+          "prompt": "agent_runner.py:PROMPT_MAKE_PLAN",
+          "tools": true,
+          "what": {
+            "ru": "Расспрос и план документа. Единственный шаг с инструментами: может доискать в базе и в MCP, выбранных в запросе.",
+            "en": "Questions and the document plan. The only step with tools: it can search the base and the MCP chosen in the request."
+          }
+        },
+        {
+          "role": "worker",
+          "prompt": "agent_runner.py:PROMPT_MAKE_WRITE",
+          "what": {
+            "ru": "Документ по плану и форме вида.",
+            "en": "The document by the plan and the kind's form."
+          }
+        },
+        {
+          "role": "critic",
+          "prompt": "agent_runner.py:PROMPT_MAKE_CRITIC",
+          "what": {
+            "ru": "Проверка соответствия форме и плану.",
+            "en": "Checking against the form and the plan."
+          }
+        },
+        {
+          "role": "qa",
+          "prompt": "agent_runner.py:PROMPT_MOMUS",
+          "what": {
+            "ru": "Момус: утверждения документа опираются на пак.",
+            "en": "Momus: the document's claims rest on the pack."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "у планировщика: read_file, list_dir, kb_search, kb_context, artifact_spec и MCP запроса; сторож исходящего пропускает наружу только слова задания и пака",
+        "en": "the planner has read_file, list_dir, kb_search, kb_context, artifact_spec and the request's MCP; the outgoing guard lets out only words of the task and the pack"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "review",
+      "title": {
+        "ru": "Ревью истории или алгоритма",
+        "en": "Review of a story or an algorithm"
+      },
+      "when": {
+        "ru": "Команда make:review-auto, инструмент review_page сервера aurora (боты и ассистенты).",
+        "en": "The make:review-auto command, the aurora server's review_page tool (bots and assistants)."
+      },
+      "commands": [
+        "make:review-auto"
+      ],
+      "code": [
+        "review_run.py:one_run",
+        "review_run.py:free_recs"
+      ],
+      "steps": [
+        {
+          "role": "qa",
+          "prompt": "review_run.py:build_prompt",
+          "what": {
+            "ru": "Ответы на закрытый чек-лист из шаблона review_v2.0.md — несколько прогонов (по умолчанию 3) с голосованием по каждому вопросу.",
+            "en": "Answers to the closed checklist from the review_v2.0.md template — several runs (3 by default) with a vote on every question."
+          }
+        },
+        {
+          "role": "qa",
+          "prompt": "review_run.py:free_recs",
+          "what": {
+            "ru": "Свободные рекомендации, что исправить.",
+            "en": "Free recommendations on what to fix."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: страницу и связанные читает движок",
+        "en": "none: the engine reads the page and the linked ones"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Оценку и вердикт считает код (веса 5/3/1, порог 9,0).",
+        "en": "The score and the verdict are computed by code (weights 5/3/1, threshold 9.0)."
+      }
+    },
+    {
+      "id": "bot",
+      "title": {
+        "ru": "Бот проекта",
+        "en": "Project bot"
+      },
+      "when": {
+        "ru": "Раздел «Боты» → «Запустить», расписание бота, шаг «бот» цепочки Cron, команда bot:run.",
+        "en": "The \"Bots\" section → \"Run\", the bot's schedule, the \"bot\" step of a Cron chain, the bot:run command."
+      },
+      "commands": [
+        "bot:run"
+      ],
+      "ui": [
+        "bots"
+      ],
+      "code": [
+        "bots.py:_run",
+        "bot_context.py:concepts_by_model"
+      ],
+      "steps": [
+        {
+          "role": "planner",
+          "thinking": false,
+          "prompt": "bot_context.py:PROMPT",
+          "what": {
+            "ru": "До работы: понятия, термины и коды из задания и ссылок — для пака знаний (контекст проекта). Без рассуждений.",
+            "en": "Before work: concepts, terms and codes from the task and the links — for the knowledge pack (project context). Without reasoning."
+          }
+        },
+        {
+          "role": "worker",
+          "chosen": true,
+          "tools": true,
+          "prompt": "bots/*.md",
+          "what": {
+            "ru": "Промпт бота с паком знаний. Роль или ровно модель — в карточке «Модель» бота.",
+            "en": "The bot's prompt with the knowledge pack. A role or exactly a model — in the bot's \"Model\" card."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "read_file, list_dir, kb_search, kb_context, artifact_spec, save_output и MCP бота (сервер aurora — ревью, Jira, Confluence, память, замок, время); не больше 40 вызовов",
+        "en": "read_file, list_dir, kb_search, kb_context, artifact_spec, save_output and the bot's MCP (the aurora server — review, Jira, Confluence, memory, lock, time); at most 40 calls"
+      },
+      "engine": "pydantic_ai",
+      "after": {
+        "ru": "Прогон без вызова инструментов при своих MCP — неудача с причиной.",
+        "en": "A run without tool calls while it has its MCP is a failure with the reason."
+      }
+    },
+    {
+      "id": "coach",
+      "title": {
+        "ru": "Разбор промпта бота",
+        "en": "Bot prompt review"
+      },
+      "when": {
+        "ru": "Раздел «Боты» → «Улучшить с ИИ».",
+        "en": "The \"Bots\" section → \"Improve with AI\"."
+      },
+      "ui": [
+        "bots"
+      ],
+      "code": [
+        "bot_coach.py:turn"
+      ],
+      "steps": [
+        {
+          "role": "critic",
+          "chosen": true,
+          "prompt": "bot_coach.py:SYSTEM",
+          "what": {
+            "ru": "Критический разбор промпта по фактам движка и правки по просьбе человека.",
+            "en": "A critical review of the prompt by the engine's facts and edits on the person's request."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет: факты (инструменты бота с параметрами, признаки скриптов и окружения) собирает движок",
+        "en": "none: the engine gathers the facts (the bot's tools with parameters, signs of scripts and environment)"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "ping",
+      "title": {
+        "ru": "Проверка цепочки моделей",
+        "en": "Model chain check"
+      },
+      "when": {
+        "ru": "«Модели» → «Проверить», команда agent:ping.",
+        "en": "\"Models\" → \"Check\", the agent:ping command."
+      },
+      "commands": [
+        "agent:ping"
+      ],
+      "ui": [
+        "models"
+      ],
+      "code": [
+        "agent_core.py:cmd_ping"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "thinking": false,
+          "what": {
+            "ru": "Каждому шлюзу по очереди — «Повтори одно слово: готов», 60 токенов.",
+            "en": "Each gateway in turn — \"Repeat one word: ready\", 60 tokens."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "width",
+      "title": {
+        "ru": "Замер ширины шлюза",
+        "en": "Gateway width probe"
+      },
+      "when": {
+        "ru": "Команда agent:width.",
+        "en": "The agent:width command."
+      },
+      "commands": [
+        "agent:width"
+      ],
+      "code": [
+        "agent_core.py:probe_width"
+      ],
+      "steps": [
+        {
+          "role": "worker",
+          "thinking": false,
+          "what": {
+            "ru": "Короткие одинаковые запросы параллельно: сколько одновременных шлюз держит.",
+            "en": "Short identical requests in parallel: how many simultaneous ones the gateway holds."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "pydantic_ai"
+    },
+    {
+      "id": "probe",
+      "title": {
+        "ru": "Живая проверка связи",
+        "en": "Live connection check"
+      },
+      "when": {
+        "ru": "Команда agent:probe.",
+        "en": "The agent:probe command."
+      },
+      "commands": [
+        "agent:probe"
+      ],
+      "code": [
+        "agent_probe.py:why_failing",
+        "agent_probe.py:main"
+      ],
+      "steps": [
+        {
+          "role": "",
+          "what": {
+            "ru": "Опрос каждого шлюза напрямую: список моделей и короткий запрос, причина отказа.",
+            "en": "Polling each gateway directly: the model list and a short request, the reason of a refusal."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "http",
+      "why_http": {
+        "ru": "проверяет сам шлюз, минуя адаптер: так видно, кто отказал — шлюз или адаптер",
+        "en": "checks the gateway itself, bypassing the adapter: this shows who refused — the gateway or the adapter"
+      }
+    },
+    {
+      "id": "ocr",
+      "title": {
+        "ru": "Распознавание сканов",
+        "en": "Scan recognition"
+      },
+      "when": {
+        "ru": "Команда kb:ingest-office: PDF без текстового слоя из Raw/.",
+        "en": "The kb:ingest-office command: PDFs without a text layer from Raw/."
+      },
+      "commands": [
+        "kb:ingest-office"
+      ],
+      "code": [
+        "office_ingest.py:conv_pdf_ocr"
+      ],
+      "steps": [
+        {
+          "role": "document",
+          "capability": "ocr",
+          "what": {
+            "ru": "Картинка каждой страницы → текст (OCR_PROMPT), до потолка страниц из «Модели → OCR».",
+            "en": "An image of each page → text (OCR_PROMPT), up to the page cap from \"Models → OCR\"."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "http",
+      "why_http": {
+        "ru": "запрос несёт картинку страницы; путь адаптера для изображений пока не сделан",
+        "en": "the request carries a page image; the adapter path for images is not built yet"
+      }
+    },
+    {
+      "id": "embeddings",
+      "title": {
+        "ru": "Индекс смысла (эмбеддинги)",
+        "en": "Meaning index (embeddings)"
+      },
+      "when": {
+        "ru": "Команда kb:embed; запрос к индексу — при каждом гибридном поиске: «Спросить», «Продуктивность», контекст бота, kb_search, MCP Авроры.",
+        "en": "The kb:embed command; a query to the index — at every hybrid search: \"Ask\", \"Productivity\", the bot context, kb_search, the Aurora MCP."
+      },
+      "commands": [
+        "kb:embed"
+      ],
+      "code": [
+        "kb_embed.py:embed"
+      ],
+      "steps": [
+        {
+          "role": "index",
+          "capability": "embeddings",
+          "what": {
+            "ru": "Векторы кусков карточек и запроса; это не чат-модель.",
+            "en": "Vectors of card pieces and of the query; this is not a chat model."
+          }
+        }
+      ],
+      "tools": {
+        "ru": "нет",
+        "en": "none"
+      },
+      "engine": "http",
+      "why_http": {
+        "ru": "эмбеддинги — не разговор с моделью, Pydantic AI их не ведёт",
+        "en": "embeddings are not a conversation with a model; Pydantic AI does not handle them"
+      }
+    }
+  ]
+}

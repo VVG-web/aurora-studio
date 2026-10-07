@@ -456,6 +456,22 @@ A run without tools
 is not a success: if the call bypassed Pydantic AI or the model called no tool while it had its MCP, the run is
 recorded as failed with the reason, and the report names the role, the model and every tool call.
 
+**"Improve with AI"** — a button above the bot's prompt. It opens a conversation with a model about the prompt before
+a run. The model relies on facts the engine gathers:
+- the tools the bot will really get — with descriptions and parameters received from the MCP servers themselves;
+- signs of what the bot does not have: environment variables, scripts and the command line, direct REST requests,
+  file locks;
+- the bot's servers the prompt never mentions;
+- the time limit, the call limit, the model, the knowledge project, whether writing to Jira is allowed.
+
+The first answer is a review by sections: what will run, what will not and why, which tools are missing, what is
+extra, risks, what to improve. Then it is a conversation:
+- On the person's request the model returns the whole new prompt. It goes into the editor and is not saved by
+  itself; "Undo the change" brings the previous one back. The next messages are about the changed prompt.
+- The model suggests connecting or removing servers with buttons; the person decides.
+- The review is done by the "Critic" role or any provider model from the list. The conversation is kept in
+  `.aurora/state/bots/coach/` and survives a panel restart. "Start over" forgets it.
+
 ## 5. Check readiness
 
 ```bash

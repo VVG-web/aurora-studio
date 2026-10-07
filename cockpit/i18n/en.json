@@ -784,5 +784,15 @@
   "alarm.adapter_tail": "The bar goes away by itself once this path goes through the adapter again.",
   "alarm.adapter_open": "Install → Pydantic AI",
   "route.hung_restart": "⚠ The step hung: {why}. Starting it again ({n} of {of}).",
-  "route.hung_gave_up": "■ The step hung after {n} restarts as well — the route stops on it."
+  "route.hung_gave_up": "■ The step hung after {n} restarts as well — the route stops on it.",
+  "llm.k": "Models",
+  "llm.no_models": "no models — the “Models” section",
+  "llm.direct": "a direct request",
+  "llm.chosen": "chosen",
+  "llm.no_think": "without reasoning",
+  "llm.with_tools": "with tools",
+  "llm.tools": "Tools: {what}",
+  "llm.http": "bypassing Pydantic AI: {why}",
+  "llm.run_title": "Which models the command calls",
+  "llm.open": "More — “Models → Where they work”"
 }

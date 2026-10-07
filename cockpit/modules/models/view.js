@@ -17,13 +17,16 @@ const ENGINE_NAMES = {worker: "Писатель: разбор, тезисы, о�
 const DEFAULT_ROLE = {llm: "worker", ocr: "document", embeddings: "index"};
 const MASK = "••••••";
 let DATA = null, M = null, TAB = "providers", DIRTY = false, DRAG = null, PING = null;
+let CALLS = null, FOCUS = "", CALL_FILTER = "";   // «Где работают»: каталог вызовов движка
 const LISTS = {};                    // id провайдера → имена моделей, спрошенные у него
 
 export function mount(ctx){
   ctx.root.dataset.module = "models";
 }
 
-export async function refresh(ctx){
+export async function refresh(ctx, payload){
+  // Пришли из подсказки или окна запуска за конкретным вызовом — сразу на «Где работают».
+  if (payload && payload.call){ TAB = "calls"; FOCUS = payload.call; }
   const d = await ctx.api("/api/models", {quiet: true});
   if (!d || !d.models) return ctx.toast((d && d.error) || ctx.t("models.load_failed"), "err");
   DATA = d;
@@ -78,8 +81,9 @@ function drawTabs(ctx){
   const box = ctx.$("#modelsTabs");
   box.innerHTML = "";
   const count = c => c === "providers" ? M.providers.length
+    : c === "calls" ? (CALLS ? CALLS.calls.length : "")
     : M.capabilities[c].roles.filter(r => r.backends.length).length;
-  ["providers", ...CAPS].forEach(c => box.append(el("button", {
+  ["providers", ...CAPS, "calls"].forEach(c => box.append(el("button", {
       class: "btn sm" + (TAB === c ? " primary" : ""), role: "tab",
       "aria-selected": String(TAB === c),
       onclick: () => { TAB = c; drawTabs(ctx); drawBody(ctx); }},
@@ -100,7 +104,7 @@ function drawBar(ctx){
       t("models.revert")),
     DIRTY ? el("span", {class: "chip warn"}, t("models.unsaved")) : null,
     el("span", {style: "flex:1"}),
-    el("button", {class: "btn sm", onclick: () => ping(ctx)}, t("models.ping"))].filter(Boolean));
+    el("button", {class: "btn sm", "data-llm": "ping", onclick: () => ping(ctx)}, t("models.ping"))].filter(Boolean));
   if (PING) box.append(PING);
 }
 
@@ -142,6 +146,7 @@ function drawBody(ctx){
   const box = ctx.$("#modelsBody");
   box.innerHTML = "";
   if (TAB === "providers") return box.append(providersTab(ctx));
+  if (TAB === "calls") return box.append(callsTab(ctx));
   box.append(capabilityTab(ctx, TAB));
 }
 
@@ -488,6 +493,118 @@ function runSettings(ctx){
       t("models.run_slots", {n: DATA.slots || 0, split: (DATA.slot_split || [])
         .map(([n, k]) => ((DATA.models.providers[n - 1] || {}).name || "№" + n) + "×" + k)
         .join(", ") || "—"})));
+}
+
+/* ---------------------------------------------------------------- где работают */
+/* Какие роли и модели движок зовёт, где и когда, по какому промпту и с какими
+   инструментами — каталог вызовов движка (`scripts/llm_calls.json`, сверяется с кодом
+   тестами). Цепочки — из настройки на этой странице, с несохранёнными правками: видно,
+   что изменится, ещё до «Сохранить». */
+
+function liveChain(ctx, cap, id){
+  const roles = M.capabilities[cap] ? M.capabilities[cap].roles : [];
+  let r = roles.find(x => x.id === id), via = null;
+  const usable = x => x && x.backends.some(b => b.enabled !== false && String(b.model || "").trim());
+  if (r && !usable(r) && id !== DEFAULT_ROLE[cap]){
+    via = roles.find(x => x.id === DEFAULT_ROLE[cap]);       // пустая роль — на роли по умолчанию
+    if (usable(via)) r = via; else via = null;
+  }
+  const names = Object.fromEntries(M.providers.map(p => [p.id, p.name || p.id]));
+  const chain = r ? r.backends.filter(b => b.enabled !== false && String(b.model || "").trim())
+    .map(b => `${names[b.provider] || b.provider} / ${b.model}`) : [];
+  return {role: r, via, chain, thinking: r && cap === "llm" ? r.thinking !== false : null};
+}
+
+async function loadCalls(ctx){
+  const d = await ctx.api("/api/llm/calls", {quiet: true});
+  CALLS = d && d.calls ? d : {calls: [], prompts: {}};
+  drawTabs(ctx);
+  if (TAB === "calls") drawBody(ctx);
+}
+
+function callsTab(ctx){
+  const {t, el} = ctx;
+  if (!CALLS){
+    loadCalls(ctx);
+    return el("div", {class: "muted"}, el("span", {class: "spin"}));
+  }
+  const box = el("div", {});
+  const search = el("input", {class: "btn", style: "width:100%;max-width:420px;font-weight:400",
+    placeholder: t("models.calls.filter"), value: CALL_FILTER});
+  const list = el("div", {});
+  const draw = () => {
+    list.innerHTML = "";
+    const q = CALL_FILTER.toLowerCase();
+    const hit = c => !q || [c.title, c.when, ...c.commands, ...c.routes.map(r => r.title),
+      ...c.steps.map(s => s.role + " " + s.what)].join(" ").toLowerCase().includes(q);
+    CALLS.calls.filter(hit).forEach(c => list.append(callCard(ctx, c)));
+    if (FOCUS){
+      const card = list.querySelector(`[data-call="${FOCUS}"]`);
+      FOCUS = "";
+      if (card) requestAnimationFrame(() => {
+        card.scrollIntoView({behavior: "smooth", block: "start"});
+        card.style.outline = "2px solid var(--primary)";
+      });
+    }
+  };
+  search.oninput = () => { CALL_FILTER = search.value; draw(); };
+  box.append(
+    el("div", {class: "muted", style: "font-size:12.5px;margin-bottom:10px"}, t("models.calls.about")),
+    el("div", {class: "row", style: "gap:8px;margin-bottom:12px;align-items:center"}, search,
+      el("button", {class: "btn sm", onclick: () => ctx.openDoc("docs/llm-calls.md")},
+        t("models.calls.doc"))),
+    list);
+  draw();
+  return box;
+}
+
+function callCard(ctx, c){
+  const {t, el} = ctx;
+  const steps = c.steps.map(s => {
+    const cap = s.capability || "llm";
+    const live = s.role ? liveChain(ctx, cap, s.role) : null;
+    const own = s.role && M.capabilities[cap] ? M.capabilities[cap].roles.find(x => x.id === s.role) : null;
+    const thinks = s.thinking === false ? false : live ? live.thinking : null;
+    const prompt = el("pre", {class: "mono", style: "display:none;white-space:pre-wrap;font-size:11.5px;"
+      + "max-height:320px;overflow:auto;margin:6px 0 0;padding:8px;border:1px solid var(--border);"
+      + "border-radius:8px"}, s.prompt.includes(":") ? (CALLS.prompts[s.prompt] || "—")
+                                                       : t("models.calls.prompt_project", {path: s.prompt}));
+    const marks = [
+      s.chosen ? el("span", {class: "chip", title: t("models.calls.chosen_hint")}, t("models.calls.chosen")) : null,
+      thinks === true ? el("span", {class: "chip"}, t("models.calls.thinks")) : null,
+      thinks === false ? el("span", {class: "chip"}, t("models.calls.no_think")) : null,
+      s.tools ? el("span", {class: "chip ok"}, t("models.calls.tools_on")) : null];
+    return el("div", {style: "padding:8px 0;border-top:1px solid var(--border)"},
+      el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+        el("b", {}, s.role ? (own ? roleName(ctx, own) : s.role) : t("models.calls.direct")),
+        ...marks,
+        el("span", {style: "flex:1"}),
+        s.prompt ? el("button", {class: "btn sm", onclick: () => {
+          prompt.style.display = prompt.style.display === "none" ? "block" : "none";
+        }}, t("models.calls.prompt")) : null),
+      s.role ? el("div", {class: "mono", style: "font-size:12px;margin-top:3px"},
+        live && live.chain.length ? live.chain.join("  →  ") : t("models.calls.no_models"),
+        live && live.via ? el("span", {class: "muted"}, "  " + t("models.calls.via", {name: roleName(ctx, live.via)})) : null)
+        : null,
+      el("div", {class: "muted", style: "font-size:12.5px;margin-top:3px"}, s.what),
+      s.prompt ? el("div", {class: "muted mono", style: "font-size:11px;margin-top:2px"}, s.prompt) : null,
+      prompt);
+  });
+  return el("div", {class: "card", "data-call": c.id, style: "padding:14px 16px;margin-bottom:12px"},
+    el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+      el("b", {style: "font-size:15px"}, c.title),
+      c.engine === "http"
+        ? el("span", {class: "chip warn", title: c.why_http}, t("models.calls.http"))
+        : el("span", {class: "chip ok"}, "Pydantic AI"),
+      ...c.commands.map(x => el("span", {class: "chip mono"}, x))),
+    el("div", {class: "muted", style: "font-size:12.5px;margin:6px 0 4px"}, c.when),
+    c.routes.length ? el("div", {class: "muted", style: "font-size:12.5px;margin-bottom:6px"},
+      t("models.calls.routes", {list: c.routes.map(r => "«" + r.title + "»").join(", ")})) : null,
+    ...steps,
+    el("div", {style: "font-size:12.5px;margin-top:8px"}, el("b", {}, t("models.calls.tools") + " "), c.tools),
+    c.engine === "http" ? el("div", {style: "font-size:12.5px;margin-top:4px;color:var(--tier-inreview)"},
+      t("models.calls.why_http", {why: c.why_http})) : null,
+    c.after ? el("div", {class: "muted", style: "font-size:12.5px;margin-top:4px"}, c.after) : null);
 }
 
 export default {mount, refresh};

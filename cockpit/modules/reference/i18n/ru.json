@@ -22,5 +22,6 @@
   "reference.doc.migration": "Миграция проекта",
   "reference.doc.panel": "Требования к этой панели",
   "reference.doc.changelog": "История версий kit",
-  "reference.ru_only": "Этот документ есть только на русском."
+  "reference.ru_only": "Этот документ есть только на русском.",
+  "reference.doc.llm_calls": "Вызовы моделей: где, какие роли, промпты, инструменты"
 }

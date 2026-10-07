@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.163.0";
+const UI_VERSION = "1.164.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -30,28 +30,52 @@ function hideHelp(){
   clearTimeout(helpTimer); helpTimer = null;
   if (helpBox){ helpBox.remove(); helpBox = null; }
 }
+// Кнопка, за которой стоит модель, несёт ещё и `data-llm` (вызов, команда, раздел или
+// `route:<id>`): в подсказке появляется блок «Модели» — роли по шагам и живые цепочки кита
+// из каталога вызовов движка. Вопрос «какая модель здесь отвечает и с какими
+// инструментами» больше не задаётся разработчику.
 function showHelp(node){
-  const key = node.dataset.help;
-  if (!key || !document.body.contains(node) || t(key + ".what") === key + ".what") return;
+  const key = node.dataset.help, llm = node.dataset.llm;
+  const has = !!key && t(key + ".what") !== key + ".what";
+  if ((!has && !llm) || !document.body.contains(node)) return;
   hideHelp();
   helpBox = el("div", {class:"help-tip", role:"tooltip"},
-    el("b", {}, t(key + ".what")),
-    el("div", {class:"k"}, t("help.example")), el("div", {}, t(key + ".how")),
-    el("div", {class:"k"}, t("help.result")), el("div", {}, t(key + ".result")));
+    ...(has ? [el("b", {}, t(key + ".what")),
+      el("div", {class:"k"}, t("help.example")), el("div", {}, t(key + ".how")),
+      el("div", {class:"k"}, t("help.result")), el("div", {}, t(key + ".result"))] : []));
+  if (llm){
+    const mine = helpBox, part = el("div", {}, el("div", {class:"k"}, t("llm.k")), "…");
+    helpBox.append(part);
+    llmCalls().then(d => {
+      if (helpBox !== mine) return;
+      const calls = llmFor(d, llm);
+      if (!calls.length){ if (has) part.remove(); else hideHelp(); return; }
+      part.innerHTML = "";
+      part.append(el("div", {class:"k"}, t("llm.k")), llmView(d, calls));
+      placeHelp(node);
+    });
+  }
   document.body.append(helpBox);
+  placeHelp(node);
+}
+function placeHelp(node){
+  if (!helpBox) return;
+  // Мерить — с левого края: у правого края подсказка с position:fixed ужимается в узкую
+  // колонку, и перестановка после подгрузки блока «Модели» мерила уже ужатую.
+  helpBox.style.left = "0px"; helpBox.style.top = "0px";
   const r = node.getBoundingClientRect(), b = helpBox.getBoundingClientRect();
   const top = (r.bottom + 8 + b.height <= innerHeight) ? r.bottom + 8 : Math.max(8, r.top - 8 - b.height);
   const left = Math.min(Math.max(8, r.left), innerWidth - b.width - 8);
   helpBox.style.top = top + "px"; helpBox.style.left = left + "px";
 }
 document.addEventListener("mouseover", e => {
-  const node = e.target.closest && e.target.closest("[data-help]");
+  const node = e.target.closest && e.target.closest("[data-help],[data-llm]");
   if (!node || node.contains(e.relatedTarget)) return;
   hideHelp();
   helpTimer = setTimeout(() => showHelp(node), HELP_DELAY);
 });
 document.addEventListener("mouseout", e => {
-  const node = e.target.closest && e.target.closest("[data-help]");
+  const node = e.target.closest && e.target.closest("[data-help],[data-llm]");
   if (node && !node.contains(e.relatedTarget)) hideHelp();
 });
 ["mousedown", "keydown", "wheel", "scroll"].forEach(ev => document.addEventListener(ev, hideHelp, true));
@@ -1451,6 +1475,74 @@ $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
   toast(t("overview.recounted", {n: st.projects.length}), "ok");
 });
 
+/* ---------------- вызовы моделей ---------------- */
+// Какие модели зовёт кнопка, команда или маршрут — из каталога вызовов движка
+// (`scripts/llm_calls.json` → `/api/llm/calls`): роли по шагам и живые цепочки моделей
+// кита. Кэш на минуту: правку в «Моделях» подсказка увидит без перезагрузки страницы.
+let LLM = null, LLM_AT = 0;
+function llmCalls(){
+  if (!LLM || Date.now() - LLM_AT > 60000){
+    LLM_AT = Date.now();
+    LLM = api("/api/llm/calls", {quiet:true}).catch(() => null);
+  }
+  return LLM;
+}
+// Ключ — id вызова, команда (`agent:build`), раздел (`ask`) или маршрут (`route:update`).
+function llmFor(d, key){
+  const calls = (d && d.calls) || [];
+  key = String(key || "");
+  if (key.startsWith("route:")) return calls.filter(c => c.routes.some(r => r.id === key.slice(6)));
+  return calls.filter(c => c.id === key || c.commands.includes(key) || c.ui.includes(key));
+}
+// Имя роли: своё имя человека — как есть, имя движка — на языке интерфейса.
+function llmRole(d, id){
+  const r = d.roles[id];
+  return !r ? id : r.default_name ? t("models.role_default." + id) : r.name;
+}
+// В подсказке — короткое имя: у ролей движка оно до двоеточия («Планировщик: планы, …»),
+// пояснение роли и так стоит строкой под шагом.
+const llmShort = (d, id) => llmRole(d, id).split(":")[0];
+// Цепочка роли; пустая роль движка работает на роли по умолчанию своей возможности.
+function llmChain(d, id){
+  let r = d.roles[id];
+  if (r && !r.chain.length && d.default_role[r.cap] && d.roles[d.default_role[r.cap]])
+    r = d.roles[d.default_role[r.cap]];
+  return r && r.chain.length ? r.chain.map(b => b.model).join(" → ") : t("llm.no_models");
+}
+function llmView(d, calls){
+  const box = el("div", {});
+  const line = (...kids) => box.append(el("div", {style:"margin-top:3px"}, ...kids));
+  if (calls.length > 2){
+    // Маршрут: по вызову строка с ролями, цепочки ролей — один раз внизу.
+    const roles = [];
+    calls.forEach(c => {
+      const rs = [...new Set(c.steps.map(s => s.role).filter(Boolean))];
+      rs.forEach(r => { if (!roles.includes(r)) roles.push(r); });
+      line(el("span", {style:"font-weight:600"}, c.title),
+           " — " + (rs.map(r => llmShort(d, r)).join(", ") || t("llm.direct"))
+           + (c.engine === "http" ? " ⚠" : ""));
+    });
+    roles.forEach(r => line(el("span", {class:"muted"}, llmShort(d, r) + " — " + llmChain(d, r))));
+    return box;
+  }
+  calls.forEach(c => {
+    line(el("span", {style:"font-weight:600"}, c.title));
+    c.steps.forEach(s => {
+      const r = d.roles[s.role];
+      const thinks = s.thinking === false ? false : r ? r.thinking : null;
+      const marks = [s.chosen ? t("llm.chosen") : "", thinks === false ? t("llm.no_think") : "",
+                     s.tools ? t("llm.with_tools") : ""].filter(Boolean);
+      line((s.role ? llmShort(d, s.role) + " — " + llmChain(d, s.role) : t("llm.direct"))
+           + (marks.length ? " (" + marks.join(", ") + ")" : ""),
+           el("div", {class:"muted", style:"font-size:11.5px"}, s.what));
+    });
+    line(el("span", {class:"muted"}, t("llm.tools", {what: c.tools})));
+    if (c.engine === "http")
+      line(el("span", {style:"color:var(--tier-inreview)"}, "⚠ " + t("llm.http", {why: c.why_http})));
+  });
+  return box;
+}
+
 /* ---------------- здоровье ---------------- */
 // Карточка дашборда: число, подпись и куда идти. Цвет строгий — красный только там, где
 // работа СТОИТ; янтарь — есть работа, но всё функционирует; бирюза — в порядке; серый —
@@ -1459,7 +1551,7 @@ $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
 function metricCard(o){
   const tone = o.tone || "";
   const card = el("div",{class:"card metric" + (o.go ? " clickable" : ""),
-    style:"padding:14px;min-width:0", title:o.hint || ""},
+    style:"padding:14px;min-width:0", title:o.hint || "", "data-llm": o.go && o.go.llm || null},
     el("div",{class:"muted",style:"font-size:12px"}, o.title),
     el("div",{style:"font-size:26px;font-weight:700;margin:2px 0 4px;line-height:1.1"
               + (tone ? ";color:var(--" + tone + ")" : "")}, String(o.value)),
@@ -1471,13 +1563,13 @@ function metricCard(o){
 
 // Действие карточки: либо запуск маршрута с подтверждением, либо список, с которым надо
 // разбираться. Ведём туда, где решают проблему, а не туда, где о ней написано подробнее.
-const goRoute = (id, label) => ({label, act: async () => {
+const goRoute = (id, label) => ({label, llm: "route:" + id, act: async () => {
   const d = S.scenarios || (S.scenarios = await api("/api/scenarios"));
   const sc = (d.scenarios||[]).find(s=>s.id===id);
   if (!sc) return toast(t("run.not_found_route"), "warn");
   runRoute(sc, true);
 }});
-const goCmd = (cmd, args, label) => ({label, act: async () => {
+const goCmd = (cmd, args, label) => ({label, llm: cmd, act: async () => {
   const r = S.state.commands.find(x=>x.cmd===cmd);
   if (!r || !r.runnable) return toast(t("run.cmd_off", {cmd}), "warn");
   const line = (cmd + " " + (args||[]).join(" ")).trim();
@@ -1609,6 +1701,22 @@ function drawRun(){
     el("p",{class:"muted",style:"font-size:13.5px;margin:10px 0 4px",html:tick(r.what)}),
     el("div",{class:"mono",style:"font-size:12px;color:var(--text-muted)"},
       ".aurora/scripts/" + r.impl + (r.args? " " + r.args : "")));
+  // Команда зовёт модель — какую, по какому промпту и с какими инструментами: из каталога
+  // вызовов движка, с живыми цепочками ролей кита.
+  const llmBox = el("div", {});
+  d.append(llmBox);
+  llmCalls().then(dd => {
+    const calls = llmFor(dd, r.cmd);
+    if (!calls.length || !RUN || RUN.row !== r) return;
+    llmBox.append(el("div", {class:"card", style:"padding:10px 12px;margin-top:10px"},
+      el("div", {class:"row", style:"gap:8px;align-items:center"},
+        el("b", {style:"flex:1"}, t("llm.run_title")),
+        el("button", {class:"btn sm", onclick: () => {
+          $("#runOverlay").classList.remove("on");
+          show("models", {call: calls[0].id});
+        }}, t("llm.open"))),
+      llmView(dd, calls)));
+  });
   // Список флагов панель читает из kit'а, а запускает копию скрипта из движка проекта.
   // Пока движок не обновлён, новый флаг существует только на экране: скрипт ответит
   // «unrecognized argument» и кодом 2, и выглядит это как поломка панели.
@@ -3880,7 +3988,7 @@ function openPalette(){
     {nm: t("palette.update_kit"), ds: t("palette.section"), go: () => show("about")},
     ...S.state.projects.map(p=>({nm:p.name, ds: t("palette.project", {path: p.path}),
                                 go:()=>pick(p)})),
-    ...S.state.commands.map(c=>({nm:c.cmd, ds:c.what, go:()=>openRun(c.cmd)})),
+    ...S.state.commands.map(c=>({nm:c.cmd, ds:c.what, llm:c.cmd, go:()=>openRun(c.cmd)})),
   ];
   $("#paletteOverlay").classList.add("on");
   const inp = $("#paletteInput"); inp.value=""; inp.focus(); drawPalette("");
@@ -3890,7 +3998,7 @@ function drawPalette(q){
   const hits = PAL.items.filter(i=>(i.nm+" "+i.ds).toLowerCase().includes(q)).slice(0,40);
   PAL.hits = hits; PAL.sel = 0;
   const box = $("#paletteResults"); box.innerHTML="";
-  hits.forEach((h,idx)=>box.append(el("button",{class:"res"+(idx===0?" sel":""),
+  hits.forEach((h,idx)=>box.append(el("button",{class:"res"+(idx===0?" sel":""), "data-llm": h.llm || null,
     onclick:()=>{ $("#paletteOverlay").classList.remove("on"); h.go(); }},
     el("span",{class:"nm mono"}, h.nm), el("span",{class:"ds",html:tick(h.ds)}))));
 }

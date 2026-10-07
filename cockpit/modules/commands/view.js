@@ -60,7 +60,7 @@ function row(ctx, r){
       r.flags.length ? el("div", {class:"mono",
         style:"font-size:11.5px;color:var(--text-muted);margin-top:6px"}, r.flags.join(" ")) : null),
     r.runnable
-      ? el("button", {class:"btn sm primary", onclick: () => ctx.openRun(r.cmd)},
+      ? el("button", {class:"btn sm primary", "data-llm": r.cmd, onclick: () => ctx.openRun(r.cmd)},
           t("commands.run"))
       // Команда-процедура не запускается панелью: её выполняет ассистент, а панель
       // показывает описание — обещать кнопку «Запустить» здесь было бы враньём.

@@ -51,6 +51,7 @@ flowchart TD
 | [Панель управления](control-panel-ui-requirements.md) | [Control panel](en/control-panel.md) | разделы, безопасность, оформление · sections, safety, look |
 | [Модули источников](connectors.md) | [Source modules](en/connectors.md) | как подключить источник · how to plug in a source |
 | [Справочник команд](commands.md) | [Command reference](en/commands.md) | все команды · every command |
+| [Вызовы моделей](llm-calls.md) | [Model calls](en/llm-calls.md) | где какие роли и модели, промпты, инструменты · where which roles and models, prompts, tools |
 
 ## Устройство и разработка · Internals
 

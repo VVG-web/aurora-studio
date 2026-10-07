@@ -1278,7 +1278,8 @@ def mcp_config(project: str, kit=None, with_aurora: bool = False, aurora_root: s
     return {"mcpServers": merged} if merged else {}
 
 
-def mcp_probe(project: str, kit=None, timeout: float = 60) -> dict:
+def mcp_probe(project: str, kit=None, timeout: float = 60, servers: dict | None = None,
+              describe: bool = False) -> dict:
     """Работают ли MCP-серверы в проекте. → {"servers": {имя: {ok, tools|error, from}}}.
 
     Проверяется то, что получит прогон: серверы машины и проекта, слитые `mcp_config`, в
@@ -1288,7 +1289,9 @@ def mcp_probe(project: str, kit=None, timeout: float = 60) -> dict:
     isolated = os.environ.get("AURORA_TESTS_ISOLATED") and kit is None
     at_kit = {} if isolated else read_mcp_servers(kit_mcp_path(kit))
     at_project = read_mcp_servers(os.path.join(project, "mcp.json")) if project else {}
-    servers = mcp_config(project, kit).get("mcpServers") or {}
+    # `servers` — проверить только эти (разбор промпта бота спрашивает его серверы);
+    # `describe` — со списком инструментов и их описаниями.
+    servers = servers if servers is not None else (mcp_config(project, kit).get("mcpServers") or {})
     if not servers:
         return {"ok": True, "servers": {}}
     argv = _adapter_argv()
@@ -1297,7 +1300,7 @@ def mcp_probe(project: str, kit=None, timeout: float = 60) -> dict:
                          "подключает он"}
     try:
         p = subprocess.run(argv + ["--mcp-probe"], input=json.dumps(
-            {"mcpServers": servers, "timeout": timeout}, ensure_ascii=False),
+            {"mcpServers": servers, "timeout": timeout, "describe": describe}, ensure_ascii=False),
             capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=project or None, env=child_env(),
             timeout=timeout + 30)
     except subprocess.TimeoutExpired:

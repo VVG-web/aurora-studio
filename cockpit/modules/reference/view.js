@@ -15,6 +15,7 @@ const DOCS = [
   ["docs/readme/06-sdd.md", "reference.doc.sdd"],
   ["skills/aurora-vault/SKILL.md", "reference.doc.skill"],
   ["docs/commands.md", "reference.doc.commands"],
+  ["docs/llm-calls.md", "reference.doc.llm_calls"],
   ["docs/roadmap.md", "reference.doc.roadmap"],
   ["skills/aurora-vault/references/workflows.md", "reference.doc.workflows"],
   ["skills/aurora-vault/references/maintenance.md", "reference.doc.maintenance"],
@@ -30,6 +31,7 @@ const DOCS = [
 // справочники для агента (скиллы) и журнал изменений, и они читаются по-русски.
 const EN_DOCS = {
   "docs/commands.md": "docs/en/commands.md",
+  "docs/llm-calls.md": "docs/en/llm-calls.md",
   "docs/roadmap.md": "docs/en/roadmap.md",
   "docs/control-panel-ui-requirements.md": "docs/en/control-panel.md",
 };

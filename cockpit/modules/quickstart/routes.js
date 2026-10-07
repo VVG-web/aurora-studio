@@ -66,7 +66,7 @@ function routeCard(ctx, sc){
         auto ? el("button", {class: "btn sm", onclick: () => ctx.runRoute(sc, false)},
           t("routes.preview")) : null,
         auto ? el("button", {class: "btn sm " + (kind === "route-danger" ? "danger" : "primary"),
-          onclick: () => ctx.runRoute(sc, true)}, t("routes.go")) : null)));
+          "data-llm": "route:" + sc.id, onclick: () => ctx.runRoute(sc, true)}, t("routes.go")) : null)));
 
   const steps = el("div", {});
   steps.hidden = !open;

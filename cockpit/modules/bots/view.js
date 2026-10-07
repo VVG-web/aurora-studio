@@ -9,6 +9,7 @@ const LIST_KEYS = ["mcp", "skills", "attachments"];
 const MODES = ["sv", "ir", "wysiwyg"];                                     // виды Vditor
 let D = null, CUR = null, FORM = null, BODY = "", ORIG = "", ED = null, PROJECT = "";
 let CHECK = null, CHECK_TIMER = null, RUNNING = false, SKILL_FILTER = "", CARET = false;
+let COACH = null;        // разговор о промпте: {file, messages, busy, undo, pick, refresh, meta}
 
 export function mount(ctx){
   ctx.root.dataset.module = "bots";
@@ -182,11 +183,16 @@ function drawEditor(ctx){
     el("div", {class: "card", style: "padding:14px 16px;margin:12px 0"},
       el("div", {class: "row", style: "gap:8px;align-items:center;margin-bottom:8px"},
         el("b", {style: "flex:1"}, t("bots.prompt")),
+        el("button", {class: "btn sm", title: t("bots.coach.hint"), "data-llm": "coach", onclick: () => openCoach(ctx)},
+          t("bots.coach.open")),
         modeSelect(ctx)),
       el("div", {class: "muted", style: "font-size:12px;margin-bottom:8px"}, t("bots.prompt_hint")),
       el("div", {id: "botsVditor"})),
+    el("div", {id: "botsCoach"}),
     el("div", {id: "botsConfig"}),
     el("div", {id: "botsLast"}));
+  if (COACH && COACH.file !== CUR.file) COACH = null;
+  drawCoach(ctx);
   drawTop(ctx);
   drawConfig(ctx);
   drawLast(ctx);
@@ -232,7 +238,7 @@ function drawTop(ctx){
       el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px"},
         el("span", {class: "muted mono", style: "font-size:12px;flex:1"}, CUR.file),
         el("button", {class: "btn sm primary", id: "botsSave", onclick: () => save(ctx)}, t("bots.save")),
-        el("button", {class: "btn sm", id: "botsRun", onclick: () => runNow(ctx), title: t("bots.run_hint")},
+        el("button", {class: "btn sm", id: "botsRun", "data-llm": "bot", onclick: () => runNow(ctx), title: t("bots.run_hint")},
           t("bots.run")),
         el("button", {class: "btn sm", onclick: async () => {
           if (!(await leave(ctx))) return;
@@ -585,6 +591,180 @@ function drawLast(ctx){
       ...(last.outputs || []).filter(x => !x.endsWith("/report.md")).slice(0, 8).map(x =>
         el("button", {class: "btn sm mono", style: "font-size:11.5px", onclick: () => ctx.openPath(x)},
           x.split("/").pop())))));
+}
+
+/* ---------------------------------------------------------------- разговор о промпте */
+/* Кнопка «Улучшить с ИИ» (1.163.1): модель разбирает промпт критически — что выполнится,
+   что нет, каких инструментов не хватает, что лишнее, — опираясь на факты движка (настоящие
+   инструменты бота, признаки скриптов и переменных окружения). По просьбе человека она
+   возвращает промпт целиком — он встаёт в редактор (не сохраняется сам), и разговор идёт
+   дальше уже об изменённом. Разговор хранится у движка и переживает перезапуск. */
+
+const editorText = () => (ED ? ED.getValue() : BODY);
+
+async function openCoach(ctx){
+  if (!CUR) return;
+  if (COACH && COACH.file === CUR.file){ COACH = null; drawCoach(ctx); return; }   // повторный клик — свернуть
+  COACH = {file: CUR.file, messages: [], busy: false, undo: null, pick: "", refresh: false, meta: null};
+  drawCoach(ctx);
+  const box = ctx.$("#botsCoach");
+  if (box) box.scrollIntoView({behavior: "smooth", block: "start"});
+  const d = await coachLoad(ctx);
+  if (d && d.busy) return coachWait(ctx);                      // реплика уже идёт — ждём её
+  if (COACH && !COACH.messages.length) await coachSend(ctx, "");   // первый разбор — сразу
+}
+
+async function coachLoad(ctx){
+  const file = COACH && COACH.file;
+  const d = await ctx.api("/api/bots/coach?" + q(ctx) + "&file=" + encodeURIComponent(file),
+    {quiet: true});
+  if (!COACH || COACH.file !== file) return null;
+  COACH.messages = (d && d.messages) || [];
+  drawCoach(ctx);
+  return d;
+}
+
+// Поставить промпт из ответа модели в редактор; прежний — в «Отменить изменение».
+function coachApply(ctx, text){
+  COACH.undo = editorText();
+  BODY = text;
+  if (ED) ED.setValue(text);
+  touch(ctx);
+  ctx.toast(ctx.t("bots.coach.applied"), "ok");
+}
+
+// Реплика идёт на сервере (окно закрывали, или вторая вкладка): ответ ляжет в файл
+// разговора — спрашиваем, пока не ляжет.
+async function coachWait(ctx){
+  if (!COACH) return;
+  COACH.busy = true; COACH.pending = "";
+  drawCoach(ctx);
+  const file = COACH.file;
+  while (COACH && COACH.file === file){
+    await new Promise(r => setTimeout(r, 5000));
+    if (!COACH || COACH.file !== file) return;
+    const d = await coachLoad(ctx);
+    if (!d || !d.busy) break;
+  }
+  if (COACH && COACH.file === file){ COACH.busy = false; drawCoach(ctx); }
+}
+
+async function coachSend(ctx, text){
+  if (!COACH || COACH.busy) return;
+  COACH.busy = true;
+  COACH.pending = text;
+  drawCoach(ctx);
+  const r = await post(ctx, "/api/bots/coach", {file: CUR.file, meta: FORM, body: editorText(),
+    message: text, pick: COACH.pick, refresh: COACH.refresh});
+  COACH.busy = false; COACH.pending = ""; COACH.refresh = false;
+  if (!r || !r.ok){
+    ctx.toast((r && r.error) || ctx.t("bots.failed"), "err");
+    if (r && r.busy) return coachWait(ctx);
+    drawCoach(ctx);
+    return;
+  }
+  COACH.messages = r.messages || COACH.messages;
+  COACH.meta = r.meta || null;
+  if (r.prompt) coachApply(ctx, r.prompt);
+  drawCoach(ctx);
+}
+
+function coachPick(ctx){
+  const {t, el} = ctx;
+  const roles = D.roles || [], choices = D.choices || [];
+  const named = r => r.name || tr(ctx, "bots.role_name." + r.id, r.id);
+  const sel = el("select", {class: "btn sm", title: t("bots.coach.model_hint")},
+    el("option", {value: ""}, t("bots.coach.model_default")),
+    el("optgroup", {label: t("bots.group_roles")},
+      ...roles.map(r => el("option", {value: "role:" + r.id,
+        selected: COACH.pick === "role:" + r.id ? "" : null}, named(r)))),
+    ...choices.map(c => el("optgroup", {label: t("bots.group_provider", {name: c.name || c.provider})},
+      ...c.models.map(m => el("option", {value: `model:${c.provider}/${m}`,
+        selected: COACH.pick === `model:${c.provider}/${m}` ? "" : null}, m)))));
+  sel.onchange = () => { COACH.pick = sel.value; };
+  return sel;
+}
+
+function drawCoach(ctx){
+  const {t, el} = ctx;
+  const box = ctx.$("#botsCoach");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!COACH || !CUR || COACH.file !== CUR.file) return;
+  const list = el("div", {style: "max-height:520px;overflow:auto;margin:10px 0"});
+  COACH.messages.forEach(m => {
+    if (m.role === "user"){
+      list.append(el("div", {class: "card", style: "padding:8px 12px;margin:6px 0 6px 48px;"
+        + "background:var(--surface-2)"}, m.content));
+      return;
+    }
+    const body = el("div", {class: "doc", style: "font-size:13.5px"});
+    body.innerHTML = ctx.fmt.md(m.content || "");
+    list.append(el("div", {class: "card", style: "padding:10px 14px;margin:6px 48px 6px 0"},
+      body,
+      m.prompt_changed ? el("div", {class: "row", style: "gap:8px;align-items:center;margin-top:6px"},
+        el("span", {class: "chip ok"}, t("bots.coach.changed")),
+        m.prompt ? el("button", {class: "btn sm", title: t("bots.coach.reapply_hint"),
+          onclick: () => { coachApply(ctx, m.prompt); drawCoach(ctx); }}, t("bots.coach.reapply")) : null) : null,
+      el("div", {class: "muted", style: "font-size:11.5px;margin-top:4px"},
+        [m.model, m.seconds != null ? ctx.fmt.howLong(m.seconds) : "", m.at ? ctx.fmt.when(m.at) : ""]
+          .filter(Boolean).join(" · "))));
+  });
+  if (COACH.busy) list.append(el("div", {class: "muted", style: "margin:8px 0"},
+    el("span", {class: "spin"}), " ",
+    COACH.pending || COACH.messages.length ? t("bots.coach.thinking") : t("bots.coach.first")));
+  const input = el("textarea", {class: "btn", rows: 3, style: "width:100%;font-weight:400;resize:vertical",
+    placeholder: t("bots.coach.ph")});
+  const send = () => { const v = input.value.trim(); if (v){ input.value = ""; coachSend(ctx, v); } };
+  input.onkeydown = e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); };
+  const quick = ["rewrite", "trim", "missing", "risks"].map(k =>
+    el("button", {class: "btn sm", disabled: COACH.busy ? "" : null,
+      onclick: () => coachSend(ctx, t("bots.coach.q." + k))}, t("bots.coach.qt." + k)));
+  const metaRow = [];
+  const sug = COACH.meta || {};
+  (sug.mcp_add || []).forEach(name => {
+    if ((FORM.mcp || []).includes(name)) return;
+    metaRow.push(el("button", {class: "btn sm primary", onclick: () => {
+      FORM.mcp = [...(FORM.mcp || []), name]; drawConfig(ctx); touch(ctx); drawCoach(ctx);
+    }}, t("bots.coach.mcp_add", {name})));
+  });
+  (sug.mcp_remove || []).forEach(name => {
+    if (!(FORM.mcp || []).includes(name)) return;
+    metaRow.push(el("button", {class: "btn sm danger", onclick: () => {
+      FORM.mcp = (FORM.mcp || []).filter(x => x !== name); drawConfig(ctx); touch(ctx); drawCoach(ctx);
+    }}, t("bots.coach.mcp_remove", {name})));
+  });
+  box.append(el("div", {class: "card", style: "padding:14px 16px;margin:0 0 12px"},
+    el("div", {class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center"},
+      el("b", {style: "flex:1;white-space:nowrap"}, t("bots.coach.title")),
+      coachPick(ctx),
+      el("button", {class: "btn sm", title: t("bots.coach.refresh_hint"), onclick: () => {
+        COACH.refresh = true; ctx.toast(t("bots.coach.refresh_next"), "ok");
+      }}, t("bots.coach.refresh")),
+      el("button", {class: "btn sm", onclick: async () => {
+        if (!confirm(t("bots.coach.reset_ask"))) return;
+        await post(ctx, "/api/bots/coach", {file: CUR.file, reset: true});
+        COACH.messages = []; COACH.undo = null; COACH.meta = null;
+        await coachSend(ctx, "");
+      }}, t("bots.coach.reset")),
+      el("button", {class: "btn sm", onclick: () => { COACH = null; drawCoach(ctx); }}, "✕")),
+    el("div", {class: "muted", style: "font-size:12px;margin-top:4px"}, t("bots.coach.about")),
+    list,
+    metaRow.length ? el("div", {class: "row", style: "gap:6px;flex-wrap:wrap;margin-bottom:8px"},
+      el("span", {class: "muted", style: "font-size:12.5px"}, t("bots.coach.mcp_suggest")), ...metaRow) : null,
+    COACH.undo !== null ? el("div", {class: "row", style: "gap:6px;margin-bottom:8px"},
+      el("span", {class: "muted", style: "font-size:12.5px;flex:1"}, t("bots.coach.undo_hint")),
+      el("button", {class: "btn sm", onclick: () => {
+        BODY = COACH.undo; if (ED) ED.setValue(COACH.undo); COACH.undo = null;
+        touch(ctx); drawCoach(ctx);
+      }}, t("bots.coach.undo"))) : null,
+    el("div", {class: "row", style: "gap:6px;flex-wrap:wrap;margin-bottom:6px"}, ...quick),
+    input,
+    el("div", {class: "row", style: "gap:8px;margin-top:6px"},
+      el("span", {class: "muted", style: "font-size:12px;flex:1"}, t("bots.coach.send_hint")),
+      el("button", {class: "btn sm primary", disabled: COACH.busy ? "" : null, onclick: send},
+        t("bots.coach.send")))));
+  requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });   // последняя реплика — на виду
 }
 
 export default {mount, refresh};

@@ -63,6 +63,7 @@ RESUME_WINDOW = 30 * 60           # перерыв, после которого 
 BUSY_WAIT_S = 2 * 3600            # сколько шаг ждёт занятый проект
 BUSY_POLL_S = 30
 KEEP_RUNS = 60                    # столько прогонов цепочек храним в истории
+OWNER_STALE = 5 * 60              # владелец расписания без отметки дольше — считается ушедшим
 LOG_KEEP = 400                    # строк журнала на шаг цепочки
 MAX_STEPS = 50
 # Итоги шага, после которых проект откладывается: дальше его шаги смысла не имеют.
@@ -86,6 +87,22 @@ def state_file() -> str:
 
 def runs_dir() -> str:
     return os.path.join(home(), "cron-runs")
+
+
+def owner_file() -> str:
+    return os.path.join(home(), "cron-owner.json")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        from aurora_common import pid_alive
+    except ImportError:                       # панель без движка рядом — проверка попроще
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    return pid_alive(pid)
 
 
 def _read_json(path: str, default):
@@ -409,12 +426,41 @@ class Scheduler:
         self.current = None                  # прогон, который идёт
         self.stop_event = threading.Event()
         self.thread = None
+        # Расписание и цепочки ведёт одна панель на машину: история и задания лежат в
+        # `~/.aurora`, общие для всех панелей. Вторая панель (другой кит, другой порт,
+        # двойной запуск) считала идущую цепочку брошенной и продолжала её параллельно —
+        # 07.10.2026 так встал маршрут PRJ-C: чужой `agent:distill` занял замок базы перед
+        # шагом `agent:twins`. Такая панель только показывает расписание.
+        self.passive = False
+        self.owner = {}
+        self.claimed = False                 # отмечается в `cron-owner.json` только взявшая
 
     # ---------------------------------------------------------- жизнь
 
     def start(self) -> None:
-        self.recover()
+        if self.claim():
+            self.recover()
         threading.Thread(target=self._loop, daemon=True, name="aurora-cron").start()
+
+    def claim(self) -> bool:
+        """Стать панелью, которая ведёт расписание. Занято живой панелью, отмечавшейся
+        недавно, — эта остаётся наблюдателем. Отметка нужна, потому что номер процесса
+        после перезагрузки машины может достаться чужой программе."""
+        cur = _read_json(owner_file(), {})
+        pid = int(cur.get("pid") or 0)
+        fresh = time.time() - float(cur.get("beat") or 0) <= OWNER_STALE
+        if pid and pid != os.getpid() and fresh and _alive(pid):
+            self.passive, self.owner = True, cur
+            return False
+        self.passive, self.owner, self.claimed = False, {}, True
+        self._beat()
+        return True
+
+    def _beat(self) -> None:
+        cur = _read_json(owner_file(), {})
+        _write_json(owner_file(), {"pid": os.getpid(), "beat": time.time(),
+                                   "since": cur.get("since") if cur.get("pid") == os.getpid()
+                                   else now_iso()})
 
     def _loop(self) -> None:
         while True:
@@ -430,6 +476,9 @@ class Scheduler:
         for run in list_runs(KEEP_RUNS):
             if run.get("status") != "running":
                 continue
+            owner = int(run.get("panel") or 0)
+            if owner and owner != os.getpid() and _alive(owner):
+                continue                     # цепочку ведёт живая панель — не наша
             fresh = time.time() - float(run.get("beat") or 0) <= RESUME_WINDOW
             run["status"] = "interrupted"
             run["finished"] = now_iso()
@@ -441,6 +490,12 @@ class Scheduler:
                 self.queue.append((run["task"], "resume", run["id"]))
 
     def tick(self, now: datetime | None = None) -> None:
+        if self.passive:
+            if not self.claim():
+                return                       # расписание ведёт другая панель
+            self.recover()                   # прежний владелец ушёл — его цепочки наши
+        elif self.claimed:
+            self._beat()
         now = now or datetime.now()
         tasks = load_tasks()
         fired = _read_json(state_file(), {}).get("fired", {})
@@ -482,6 +537,8 @@ class Scheduler:
         trim_runs()
 
     def enqueue(self, task_id: str, trigger: str = "manual", resume: str = "") -> dict:
+        if self.passive:
+            return {"ok": False, "error": "other_panel"}
         with self.lock:
             busy = [q[0] for q in self.queue] + ([self.current["task"]] if self.current else [])
             if task_id in busy:
@@ -526,7 +583,7 @@ class Scheduler:
         run = {"id": datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2),
                "task": task["id"], "name": task["name"], "trigger": trigger,
                "status": "running", "started": now_iso(), "finished": "",
-               "on_fail": task.get("on_fail", "next"), "items": []}
+               "on_fail": task.get("on_fail", "next"), "items": [], "panel": os.getpid()}
         prev = _read_json(run_path(resume), {}) if resume else {}
         if prev.get("items"):
             # Продолжение: пройденное остаётся пройденным, прерванный маршрут пропустит
@@ -740,4 +797,5 @@ class Scheduler:
             t["last"] = last.get(t["id"])
             tasks.append(t)
         return {"tasks": tasks, "current": cur, "queue": queue,
-                "runs": [brief(r) for r in runs], "now": now_iso()}
+                "runs": [brief(r) for r in runs], "now": now_iso(),
+                "other_panel": self.owner.get("pid") if self.passive else None}

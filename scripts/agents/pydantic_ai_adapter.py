@@ -277,9 +277,18 @@ def mcp_probe(task: dict) -> dict:
     servers = task.get("mcpServers") or {}
     limit = float(task.get("timeout") or 60)
 
+    describe = bool(task.get("describe"))
+
     async def listed(conf: dict) -> list:
         async with Client(conf) as client:
-            return [t.name for t in await client.list_tools()]
+            tools = await client.list_tools()
+            # С описаниями и параметрами — для разбора промпта бота: модель судит, какой
+            # инструмент что делает и как его звать, а не гадает по имени.
+            if describe:
+                return [{"name": t.name, "description": (t.description or "")[:600],
+                         "schema": t.inputSchema if isinstance(t.inputSchema, dict) else {}}
+                        for t in tools]
+            return [t.name for t in tools]
 
     async def one(name: str, spec: dict) -> tuple:
         conf = {"mcpServers": {name: {k: v for k, v in (spec or {}).items()
@@ -291,6 +300,9 @@ def mcp_probe(task: dict) -> dict:
         except Exception as e:  # noqa: BLE001 — причина нужна человеку, а не трассировка
             return name, {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
         drop = set((spec or {}).get("drop_args") or [])
+        if describe:
+            return name, {"ok": True, "tools": len(names), "list": names,
+                          "drop_args": sorted(drop)}
         return name, {"ok": True, "tools": len(names), "names": names[:12],
                       "drop_args": sorted(drop)}
 

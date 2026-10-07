@@ -417,6 +417,7 @@
     "сервер {}:{} не отдал сертификат: {}": "server {}:{} did not give a certificate: {}",
     "в адаптере нет check() или clone_urls()": "the adapter has no check() or clone_urls()",
     "бота нет": "there is no such bot",
+    "разбор этого бота уже идёт — ответ придёт в окно разбора": "this bot is already being reviewed — the answer will come to the review window",
     "нет такого действия": "no such action",
     "файл бота — только .md в папке bots/ проекта": "a bot file is only a .md in the project's bots/ folder",
     "SECRET: {} → уберите значение из файла (секреты — только в .env.aurora.local) и смените ключ, если он уже попал в коммит": "SECRET: {} → remove the value from the file (secrets live only in .env.aurora.local) and rotate the key if it has already been committed",
