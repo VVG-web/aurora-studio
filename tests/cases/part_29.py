@@ -115,11 +115,14 @@ def test_buttons_that_call_models_carry_the_models_hint(_t):
     assert 'closest("[data-help],[data-llm]")' in panel
     assert '"data-llm": h.llm' in panel and 'llm: "route:" + id' in panel and "llm: cmd" in panel
     assert '"/api/llm/calls"' in panel and "llmFor(dd, r.cmd)" in panel, "окно запуска без моделей"
-    views = {p.parent.name: p.read_text(encoding="utf-8") for p in (COCKPIT / "modules").glob("*/view.*")}
-    views["quickstart"] += (COCKPIT / "modules/quickstart/routes.js").read_text(encoding="utf-8")
+    # Все файлы раздела вместе: словарь по имени папки оставлял последний прочитанный, а
+    # порядок обхода у файловых систем разный — на Linux `view.html` затирал `view.js`.
+    views = {}
+    for f in sorted((COCKPIT / "modules").glob("*/*.js")) + sorted((COCKPIT / "modules").glob("*/view.html")):
+        views[f.parent.name] = views.get(f.parent.name, "") + f.read_text(encoding="utf-8")
     for c in LC.load()["calls"]:
         for ui in c.get("ui") or []:
-            text = views.get(ui, "") + (COCKPIT / "modules" / ui / "view.html").read_text(encoding="utf-8")
+            text = views.get(ui, "")
             keys = set(re.findall(r'data-llm(?:"\s*:\s*|=)"([\w:-]+)"', text))
             assert keys & {c["id"], *c.get("commands", [])}, f"в разделе {ui} нет подсказки для «{c['id']}»"
     assert '"data-llm": "route:" + sc.id' in views["quickstart"]
