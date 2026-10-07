@@ -151,6 +151,16 @@ def test_a_failure_lands_in_the_run_journal_with_the_whole_call(tmp: Path):
             call = rec["call"]
             assert call["finish"] == "length" and call["prompt_chars"] == 12000
             assert call["answer_chars"] == len(answer["text"]) and "вырезано" in call["answer"]
+            # Windows: путь на другом диске — `relpath` бросает ValueError; журнал не роняет шаг.
+            real_rel = os.path.relpath
+
+            def other_drive(*a, **k):
+                raise ValueError("path is on mount 'C:', start on mount 'D:'")
+            os.path.relpath = other_drive
+            try:
+                R.fail_step({}, "сбой на другом диске", subject=str(tmp / "card.md"))
+            finally:
+                os.path.relpath = real_rel
 
             os.chdir(root)
             fake = lambda cfg, role, messages, **kw: {"ok": False, "timed_out": True,  # noqa: E731

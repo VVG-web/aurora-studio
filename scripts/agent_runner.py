@@ -1894,6 +1894,15 @@ def fails_line(cwd: str) -> list:
             f"запроса, срок, ответ модели"]
 
 
+def rel_or_abs(path: str) -> str:
+    """Путь от текущей папки, а если нельзя — как есть. На Windows `relpath` падает,
+    когда путь и текущая папка на разных дисках: журнал сбоев не должен ронять шаг."""
+    try:
+        return os.path.relpath(path).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
 def fail_step(step: dict, why: str, r: dict | None = None, subject: str = "",
               key: str = "note", stage: str = "", **extra) -> dict:
     """Шаг не удался: причина — в шаг (её печатает строка хода), подробности — в журнал.
@@ -1911,7 +1920,7 @@ def fail_step(step: dict, why: str, r: dict | None = None, subject: str = "",
         name = ", ".join(map(str, name))
     name = str(name)
     if os.path.isabs(name):
-        name = os.path.relpath(name).replace("\\", "/")
+        name = rel_or_abs(name)
     AG.record_failure(name, why, r, stage or ("ответ модели" if r and r.get("ok") else
                                               "вызов модели" if r is not None else "запись"),
                       **extra)
@@ -6107,7 +6116,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
             import traceback
             step = {"card": os.path.basename(path), "backends": []}
             # Трассировка — в журнал сбоев: по строке «KeyError: 'x'» место не найти.
-            AG.record_failure(os.path.relpath(path).replace("\\", "/"),
+            AG.record_failure(rel_or_abs(path),
                               f"{type(e).__name__}: {e}"[:300], stage="исключение",
                               traceback=traceback.format_exc()[-4000:])
             step.update(status="сбой", note=f"{type(e).__name__}: {e}"[:160])
