@@ -124,6 +124,17 @@ but the panel itself must be running. Rules:
   and its next steps run. A card the thesis step parked for a human (a dictionary longer than the window, with no
   boundaries found) is not counted as work left until it changes;
 - the task can say "on failure — stop the chain": then it stops at the first failure;
+- **a hang watchdog.** When a route or chain step is silent for longer than 5 minutes, the panel checks the connection
+  to the model and to the project's Jira/Confluence. The step is taken down together with its child processes (the
+  model adapter, git) and started again — at most twice; an abandoned `index.lock` is removed. This happens in two
+  cases:
+  - the connection was lost and came back, and within 5 minutes the step has not come alive — the answer to a
+    request sent before the outage will not come;
+  - the connection is fine, and the step has been silent for more than an hour — longer than any model request.
+
+  Long model thinking with a live connection is left alone;
+- **the "bot" step** — a project's bot or "all enabled bots of the project". With "all projects" the chain runs the
+  bots of all projects in turn, by the same project-as-unit rules as routes.
 - a time missed while the panel was down is caught up no later than 15 minutes, otherwise the run is recorded as
   missed; if the panel restarts in the middle of a chain, the new one continues it;
 - a writing command outside a route is committed to git right away.

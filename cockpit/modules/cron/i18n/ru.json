@@ -111,5 +111,9 @@
   "cron.note.offline": "шлюзы моделей не отвечали — вернёмся в конце",
   "cron.retry": "повтор",
   "cron.first_try": "в первый раз: {status}",
-  "cron.missed_running": "в {when} то же задание ещё шло — второй прогон не запускался"
+  "cron.missed_running": "в {when} то же задание ещё шло — второй прогон не запускался",
+  "cron.kind_bot": "бот",
+  "cron.all_bots": "все включённые боты проекта",
+  "cron.bot_off": "выключен",
+  "cron.err.bad_bot": "Такого бота в проекте нет"
 }

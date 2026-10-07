@@ -1254,7 +1254,7 @@ def aurora_mcp_spec(project: str) -> dict:
                      "Confluence проекта, время, память между прогонами, замок"}
 
 
-def mcp_config(project: str, kit=None, with_aurora: bool = False) -> dict:
+def mcp_config(project: str, kit=None, with_aurora: bool = False, aurora_root: str = "") -> dict:
     """MCP-серверы прогона: машины и проекта — в стандартной форме `{"mcpServers": {...}}`.
 
     Форма та же, что у Claude Code и Cursor: своя заставила бы человека держать две
@@ -1274,7 +1274,7 @@ def mcp_config(project: str, kit=None, with_aurora: bool = False) -> dict:
         # MCP самой Авроры — прогону с инструментами, ботам и спискам панели. Свой сервер с
         # тем же именем у машины или проекта сильнее: человек вправе его переопределить.
         if with_aurora and AURORA_MCP not in merged:
-            merged[AURORA_MCP] = aurora_mcp_spec(project)
+            merged[AURORA_MCP] = aurora_mcp_spec(aurora_root or project)
     return {"mcpServers": merged} if merged else {}
 
 
@@ -1416,7 +1416,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
               tools: bool = False, guard_text: list | None = None,
               trim: tuple | None = None, request_timeout: float | None = None,
               mcp_active: list | None = None, mcp_only: list | None = None,
-              outdir: str = "", tool_calls: int = 0) -> dict:
+              outdir: str = "", tool_calls: int = 0, kb_root: str = "") -> dict:
     """Один вызов модели — сначала из кэша ответов, если такой вызов уже был.
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
@@ -1438,7 +1438,7 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
                         tokens_out=0, tps=0.0, url="")
     r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
                    prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
-                   mcp_only, outdir, tool_calls)
+                   mcp_only, outdir, tool_calls, kb_root)
     if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
         _cache_put(key, r)
     return r
@@ -1451,7 +1451,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
               tools: bool = False, guard_text: list | None = None,
               trim: tuple | None = None, request_timeout: float | None = None,
               mcp_active: list | None = None, mcp_only: list | None = None,
-              outdir: str = "", tool_calls: int = 0) -> dict:
+              outdir: str = "", tool_calls: int = 0, kb_root: str = "") -> dict:
     """Один вызов модели через кольцо бэкендов.
 
     `mcp_active` — MCP-серверы, которые подключаются сразу (человек назвал их в запросе или
@@ -1567,8 +1567,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 # Адаптеру Pydantic AI — так же: он сам отделит историю от нового запроса.
                 payload["messages"] = list(history) + list(msgs)
             if tools:
-                payload["tools_root"] = os.getcwd()
-                payload["mcp"] = mcp_config(os.getcwd(), with_aurora=True)
+                # `kb_root` — проект знаний бота: от него читают файлы и ищут в базе
+                # инструменты модели и сервер `aurora`. Серверы MCP — проекта прогона.
+                payload["tools_root"] = kb_root or os.getcwd()
+                payload["mcp"] = mcp_config(os.getcwd(), with_aurora=True,
+                                            aurora_root=kb_root)
                 if mcp_only is not None:
                     # Бот видит только свои серверы: прогон по расписанию идёт без человека,
                     # и сервер, которого в боте нет, не должен подключаться «по требованию».

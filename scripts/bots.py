@@ -68,8 +68,9 @@ from aurora_common import is_folder_guide, kit_root  # noqa: E402 — кит; о
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
 OUT_DIR = ("Workspaces", "bots")
-FIELDS = ("name", "description", "role", "model", "mcp", "skills", "attachments", "cron",
-          "enabled")
+FIELDS = ("name", "description", "role", "model", "knowledge", "context", "mcp", "skills",
+          "attachments", "cron", "enabled")
+CONTEXT_MODES = ("generate", "evaluate", "off")   # пак до работы: доверенное, всё, без пака
 LISTS = ("mcp", "skills", "attachments")
 TOOL_CALLS = 40                  # бот ходит по задачам Jira: шагов больше, чем у разбора
 ROLE = "worker"                  # роль модели по умолчанию; бот выбирает свою (поле `role`)
@@ -128,6 +129,9 @@ PROBLEMS = {
     "role_unknown": ("Роли модели нет",
                      "Выберите роль из раздела «Модели» или заведите её там.",
                      ["open_models", "open_bots"]),
+    "knowledge_unknown": ("Проекта знаний нет",
+                          "Выберите проект в карточке «Контекст проекта» — из проектов панели — "
+                          "или оставьте свой.", ["open_bots"]),
     "model_unknown": ("Модели нет",
                       "Модель задаётся как «провайдер/модель», провайдер — из раздела «Модели». "
                       "Выберите её в карточке «Модель» или поставьте роль.",
@@ -143,7 +147,7 @@ PROBLEMS = {
                       ["open_bots", "retry"]),
 }
 BLOCKING = {"no_prompt", "mcp_unknown", "skill_unknown", "attachment_missing",
-            "attachment_secret", "role_unknown", "model_unknown"}
+            "attachment_secret", "role_unknown", "model_unknown", "knowledge_unknown"}
 
 
 # ---------------------------------------------------------------- мелочи
@@ -233,7 +237,8 @@ def parse(text: str) -> dict:
         elif cur is not None:
             cur[2].append(line)
             cur[3].append(line)
-    meta = {"name": "", "description": "", "role": "", "model": "", "mcp": [], "skills": [],
+    meta = {"name": "", "description": "", "role": "", "model": "", "knowledge": "",
+            "context": "", "mcp": [], "skills": [],
             "attachments": [], "cron": "", "enabled": False}
     extra = []
     for key, first, rest, raw in blocks:
@@ -263,6 +268,10 @@ def dump(meta: dict, body: str, extra: list | None = None) -> str:
         lines.append(f"role: {_q(meta['role'])}")
     if meta.get("model"):
         lines.append(f"model: {_q(meta['model'])}")
+    if meta.get("knowledge"):
+        lines.append(f"knowledge: {_q(meta['knowledge'])}")
+    if meta.get("context"):
+        lines.append(f"context: {_q(meta['context'])}")
     for key in LISTS:
         items = [str(x) for x in meta.get(key) or [] if str(x).strip()]
         lines.append(f"{key}:" + ("" if items else " []"))
@@ -386,6 +395,30 @@ def llm_roles() -> list:
     return [r for r in out if r["id"]]
 
 
+def knowledge_projects() -> list:
+    """Проекты панели, чья база может быть контекстом бота: [{slug, name, path}]."""
+    try:
+        import aurora_mcp as M
+        kit = kit_root()
+        return [{"slug": k, "name": os.path.basename(p), "path": p}
+                for k, p in M.project_map(str(kit) if kit else "").items()]
+    except Exception:  # noqa: BLE001 — без списка проектов бот работает со своим
+        return []
+
+
+def knowledge_root(project, value: str = "") -> str:
+    """Корень проекта знаний бота: свой — пусто в поле; чужой — по слагу или папке."""
+    if not value:
+        return str(project)
+    want = value.strip().lower()
+    for row in knowledge_projects():
+        if want in (row["slug"].lower(), row["name"].lower()):
+            return row["path"]
+    if os.path.basename(os.path.abspath(str(project))).lower() == want:
+        return str(project)
+    return ""
+
+
 def model_choices() -> list:
     """Модели провайдеров из раздела «Модели»: [{provider, name, n, models}] — бот может
     выбрать любую из них вместо роли."""
@@ -420,6 +453,9 @@ def validate(project, meta: dict, body: str | None = None, mcp: list | None = No
     if meta.get("model") and meta["model"].partition("/")[0] not in \
             {c["provider"] for c in model_choices()}:
         probs.append({"field": "model", "code": "model_unknown", "detail": meta["model"]})
+    if meta.get("knowledge") and not knowledge_root(project, meta["knowledge"]):
+        probs.append({"field": "knowledge", "code": "knowledge_unknown",
+                      "detail": meta["knowledge"]})
     known = set(mcp if mcp is not None else mcp_names(project))
     for name in meta.get("mcp") or []:
         if name not in known:
@@ -532,6 +568,9 @@ def clean_meta(meta: dict) -> dict:
            "role": re.sub(r"[^\w.\-]", "", str(m.get("role") or ""))[:60],
            # «провайдер/модель»: имя модели бывает с «/», «:» и точками (qwen/qwen3:32b)
            "model": re.sub(r"[^\w.\-/:@+]", "", str(m.get("model") or ""))[:160],
+           # проект знаний — слаг проекта панели; пусто — свой
+           "knowledge": re.sub(r"[^\w.\-]", "", str(m.get("knowledge") or ""))[:80],
+           "context": str(m.get("context") or "") if m.get("context") in CONTEXT_MODES else "",
            "enabled": bool(m.get("enabled"))}
     for key in LISTS:
         vals = m.get(key) if isinstance(m.get(key), list) else []
@@ -669,7 +708,10 @@ INSTRUCTIONS = """Ты — бот проекта «{project}»: «{name}». Ра
 Инструменты:
 - MCP-серверы бота: {mcp}. Они УЖЕ подключены — `mcp_connect` для них не нужен; их
   инструменты называются с именем сервера впереди (`mcp-atlassian_jira_search`).
-- `read_file`, `list_dir` — файлы проекта; `kb_search`, `kb_context` — база знаний проекта.
+- `read_file`, `list_dir` — файлы проекта «{kb}»; `kb_search`, `kb_context` — его база знаний
+  (гибридный поиск Авроры). В начале задания — уже собранный контекст этого проекта; не хватит
+  знания — ищи сам, сколько нужно, по ходу работы. Сервер `aurora` (если он у бота) — та же
+  база и ещё ревью, Jira и Confluence проекта, память между прогонами и замок.
 - `save_output(name, text)` — сохранить файл результата; вернёт полный путь, который можно
   передать инструменту, прикладывающему файл.
 - Прошлые прогоны этого бота — `{runs}/` (`list_dir`, `read_file`): так продолжают работу,
@@ -795,10 +837,18 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
     from git_sync import project_name
     system = INSTRUCTIONS.format(project=project_name(project), name=meta["name"],
                                  mcp=", ".join(meta.get("mcp") or []) or "нет",
-                                 runs="/".join((*OUT_DIR, Path(rel).stem)))
-    prompt = "".join(b for b in blocks if b) + "## Задание\n\n" + body.strip()
+                                 runs="/".join((*OUT_DIR, Path(rel).stem)),
+                                 kb=project_name(knowledge_root(project, meta.get("knowledge") or "")))
     budget = float(cfg.get("budget_min") or 20) * 60
     call = call or AG.call_role
+    # Контекст проекта — до работы, как в «Продуктивности»: ссылки задания → понятия →
+    # гибридный поиск Авроры по базе проекта знаний (своего или выбранного).
+    kb_root = knowledge_root(project, meta.get("knowledge") or "")
+    import bot_context as BC
+    from git_sync import project_name as _pname
+    ctx = BC.gather(kb_root, body, cfg, call, mode=meta.get("context") or "generate",
+                    name=_pname(kb_root), say=say)
+    prompt = (ctx["block"] + "".join(b for b in blocks if b) + "## Задание\n\n" + body.strip())
     cwd = os.getcwd()
     os.chdir(project)                    # инструменты и MCP работают от корня проекта
     try:
@@ -806,10 +856,11 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
                              {"role": "user", "content": prompt}],
                  deadline=time.time() + budget, tools=True,
                  mcp_active=list(meta.get("mcp") or []), mcp_only=list(meta.get("mcp") or []),
-                 outdir=str(outdir), tool_calls=TOOL_CALLS,
-                 guard_text=[body] + list(meta.get("attachments") or []))
+                 outdir=str(outdir), tool_calls=TOOL_CALLS, kb_root=kb_root,
+                 guard_text=[body, ctx["block"]] + list(meta.get("attachments") or []))
     finally:
         os.chdir(cwd)
+    meta = dict(meta, _context=ctx, _kb=_pname(kb_root))
     outputs = sorted(p.relative_to(project).as_posix() for p in outdir.iterdir() if p.is_file())
     if not r.get("ok"):
         # Вызов отказан, потому что прошёл бы мимо Pydantic AI, — это «нет инструментов»,
@@ -853,6 +904,13 @@ def _report(project, outdir: Path, meta: dict, trigger: str, text: str, prob: di
             f"- MCP: {', '.join(meta.get('mcp') or []) or '—'}",
             f"- Навыки: {', '.join(meta.get('skills') or []) or '—'}",
             f"- Вложения: {', '.join(meta.get('attachments') or []) or '—'}",
+            *([f"- Контекст: проект «{meta.get('_kb', '')}» · режим {meta['_context'].get('mode')}"
+               f" · ссылок {len(meta['_context'].get('links') or [])}"
+               f" · понятий {len(meta['_context'].get('concepts') or [])}"
+               f" · карточек {meta['_context'].get('cards', 0)}"
+               + (" — " + "; ".join(meta["_context"]["concepts"][:15])
+                  if meta["_context"].get("concepts") else "")]
+              if meta.get("_context") else []),
             "- Вызовы инструментов: " + (", ".join(f"{k} ×{v}" for k, v in calls.most_common())
                                           if calls else "ни одного"), ""]
     if prob:

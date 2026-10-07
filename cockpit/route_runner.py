@@ -25,6 +25,8 @@ import os
 import re
 import threading
 import time
+
+import watchdog as WD
 from datetime import datetime, timezone
 
 CYCLE_LIMIT = 12                 # дюжина оборотов — уже симптом, а не работа
@@ -193,6 +195,7 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
             new = job["out"][since:]
             since += len(new)
             done, rc, run_id = job["done"], job["rc"], job.get("run_id", "")
+            hung = job.get("hung", "")
         lines += new
         if new and on_lines:
             on_lines(new)
@@ -211,7 +214,7 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
     except OSError:
         pass
     return {"rc": rc if rc is not None else 2, "lines": lines, "stopped": asked,
-            "job": job_id, "run_id": run_id}
+            "job": job_id, "run_id": run_id, "hung": hung}
 
 
 class Journal:
@@ -476,6 +479,18 @@ class RouteRun:
                  + (self.t("route.prev_took", dur=self._dur(self.prev_took))
                     if self.prev_took is not None else self.t("route.first_step")))
         res = self.exec_step(st["cmd"], st["args"])
+        # Шаг снят сторожем: связь пропадала, и ответа на запрос, ушедший до обрыва, не будет.
+        # Перезапускаем тот же шаг — работа агента записывается по карточкам, синк идёт с
+        # места, так что второй заход продолжает, а не начинает заново.
+        tries = 0
+        while res.get("hung") and tries < WD.MAX_RESTARTS and not self.stopped:
+            tries += 1
+            self.say("warn", self.t("route.hung_restart", why=res["hung"], n=tries,
+                                    of=WD.MAX_RESTARTS))
+            res = self.exec_step(st["cmd"], st["args"])
+        if res.get("hung"):
+            self.say("err", self.t("route.hung_gave_up", n=WD.MAX_RESTARTS))
+            res = dict(res, rc=2)
         end = time.time()
         self.prev_took = end - start
         self._event(st, start, end, res)

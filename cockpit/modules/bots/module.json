@@ -9,5 +9,5 @@
   "order": 45,
   "needs": ["project"],
   "commands": ["bot:run", "bot:check", "bot:list"],
-  "for": "1.162.0"
+  "for": "1.163.0"
 }

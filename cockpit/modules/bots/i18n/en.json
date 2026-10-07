@@ -129,5 +129,13 @@
   "bots.group_roles": "Roles — by their chain, with spares",
   "bots.group_provider": "{name} — exactly this model, no spares",
   "bots.p.model_unknown": "There is no such model",
-  "bots.fix.model_unknown": "A model is set as «provider/model», the provider being from the «Models» section. Pick it in the «Model» card or set a role."
+  "bots.fix.model_unknown": "A model is set as «provider/model», the provider being from the «Models» section. Pick it in the «Model» card or set a role.",
+  "bots.knowledge": "Project context",
+  "bots.knowledge_about": "Before work the bot gets a knowledge pack, like “Productivity”: the task's links → concepts → Aurora's hybrid search in the chosen project's base. During work it searches the same base itself.",
+  "bots.knowledge_own": "Its own project",
+  "bots.p.knowledge_unknown": "There is no such knowledge project",
+  "bots.fix.knowledge_unknown": "Pick a project in the “Project context” card — from the panel's projects — or keep its own.",
+  "bots.context.generate": "Pack: trusted knowledge only",
+  "bots.context.evaluate": "Pack: all knowledge, with trust marks",
+  "bots.context.off": "No pack — the bot searches itself"
 }

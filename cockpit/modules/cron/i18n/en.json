@@ -111,5 +111,9 @@
   "cron.note.offline": "model gateways did not answer — coming back at the end",
   "cron.retry": "retry",
   "cron.first_try": "first time: {status}",
-  "cron.missed_running": "at {when} the same task was still running — a second run was not started"
+  "cron.missed_running": "at {when} the same task was still running — a second run was not started",
+  "cron.kind_bot": "bot",
+  "cron.all_bots": "all enabled bots of the project",
+  "cron.bot_off": "off",
+  "cron.err.bad_bot": "The project has no such bot"
 }

@@ -268,7 +268,7 @@ function drawTop(ctx){
 function drawChecks(ctx){
   const {t, el} = ctx;
   const probs = (CHECK && CHECK.problems) || [];
-  for (const field of ["role", "mcp", "skills", "attachments", "cron", "body"]){
+  for (const field of ["role", "knowledge", "mcp", "skills", "attachments", "cron", "body"]){
     const slot = ctx.$("#botsProb-" + field);
     if (!slot) continue;
     slot.innerHTML = "";
@@ -306,6 +306,7 @@ function drawConfig(ctx){
   box.innerHTML = "";
   box.append(el("div", {class: "row", style: "gap:12px;flex-wrap:wrap;align-items:stretch"},
     configCard(ctx, t("bots.role"), t("bots.role_about"), rolePanel(ctx), "role"),
+    configCard(ctx, t("bots.knowledge"), t("bots.knowledge_about"), knowledgePanel(ctx), "knowledge"),
     configCard(ctx, t("bots.mcp"), t("bots.mcp_about"), mcpPanel(ctx), "mcp"),
     configCard(ctx, t("bots.skills"), t("bots.skills_about"), skillsPanel(ctx), "skills"),
     configCard(ctx, t("bots.attachments"), t("bots.attachments_about"), attachmentsPanel(ctx), "attachments"),
@@ -375,6 +376,25 @@ function rolePanel(ctx){
   return el("div", {}, sel,
     el("button", {class: "btn sm", style: "margin-top:8px", onclick: () => ctx.show("models")},
       t("bots.a.open_models")));
+}
+
+// Контекст проекта (1.163.0): до работы бот получает пак знаний, как «Продуктивность», —
+// ссылки задания → понятия → гибридный поиск Авроры по базе выбранного проекта.
+function knowledgePanel(ctx){
+  const {t, el} = ctx;
+  const projects = D.projects || [];
+  const cur = FORM.knowledge || "";
+  const proj = el("select", {class: "btn", style: "width:100%"},
+    el("option", {value: "", selected: cur ? null : ""}, t("bots.knowledge_own")),
+    ...(cur && !projects.some(p => p.slug === cur) ? [el("option", {value: cur, selected: ""}, cur)] : []),
+    ...projects.map(p => el("option", {value: p.slug, selected: p.slug === cur ? "" : null},
+      `${p.name} · ${p.slug}`)));
+  proj.onchange = () => { FORM.knowledge = proj.value; touch(ctx); };
+  const mode = el("select", {class: "btn", style: "width:100%;margin-top:8px"},
+    ...["generate", "evaluate", "off"].map(m => el("option", {value: m,
+      selected: (FORM.context || "generate") === m ? "" : null}, t("bots.context." + m))));
+  mode.onchange = () => { FORM.context = mode.value === "generate" ? "" : mode.value; touch(ctx); };
+  return el("div", {}, proj, mode);
 }
 
 function mcpPanel(ctx){

@@ -50,6 +50,7 @@ import time
 from datetime import datetime, timedelta
 
 import route_runner as RR
+import watchdog as WD
 
 try:
     import bots as BOTS               # движок: боты проектов (scripts/bots.py)
@@ -160,6 +161,15 @@ def clean_task(ck, raw: dict, projects: list) -> tuple:
                 return None, "bad_flag"
             steps.append({"kind": "command", "project": project, "cmd": row["cmd"],
                           "args": args})
+        elif st.get("kind") == "bot":
+            # Бот проекта (1.163.0): «*» — все боты проекта; с «все проекты» — все боты всех
+            # проектов по очереди. Конкретный бот проверяется сейчас: ночью некому.
+            bot = str(st.get("bot") or "*").replace("\\", "/")
+            if bot != "*":
+                if project == ALL or not re.match(r"^bots/[^/]+\.md$", bot) \
+                        or not os.path.isfile(os.path.join(project, bot)):
+                    return None, "bad_bot"
+            steps.append({"kind": "bot", "project": project, "bot": bot})
         else:
             return None, "bad_step"
     if not steps:
@@ -294,6 +304,9 @@ def expand(task: dict, projects: list) -> list:
               "jobs": [], "done": [], "log": []}
         if st["kind"] == "route":
             it.update(route=st["route"], write=st.get("write", True))
+        elif st["kind"] == "bot":
+            it.update(cmd="bot:run", args=[f"--bot={st['bot']}", "--trigger=cron"],
+                      bot=st["bot"])
         else:
             it.update(cmd=st["cmd"], args=list(st.get("args") or []))
         if path not in names:
@@ -301,11 +314,31 @@ def expand(task: dict, projects: list) -> list:
         return it
 
     every = [p["path"] for p in projects]
+
+    def bots_of(path: str) -> list:
+        """Боты проекта для шага «все боты»: файлы `bots/*.md`, включённые."""
+        if BOTS is None:
+            return []
+        try:
+            return [b["file"] for b in BOTS.list_bots(path, with_checks=False)
+                    if b["meta"].get("enabled")]
+        except Exception:  # noqa: BLE001 — битый бот одного проекта не гасит цепочку
+            return []
+
+    def open_bots(steps: list, path: str) -> list:
+        out = []
+        for st in steps:
+            if st["kind"] == "bot" and st.get("bot") == "*":
+                out += [dict(st, bot=f) for f in bots_of(path)]
+            else:
+                out.append(st)
+        return out
+
     out = []
     if task.get("order") == "steps":
         for st in task["steps"]:
             for path in (every if st["project"] == ALL else [st["project"]]):
-                out.append(item(st, path))
+                out += [item(one, path) for one in open_bots([st], path)]
     else:
         # Порядок первого появления в шагах; шаг «все проекты» вставляет их в порядке панели
         # там, где стоит сам.
@@ -317,7 +350,7 @@ def expand(task: dict, projects: list) -> list:
         for path in order:
             for st in task["steps"]:
                 if st["project"] in (ALL, path):
-                    out.append(item(st, path))
+                    out += [item(one, path) for one in open_bots([st], path)]
     return out
 
 
@@ -656,6 +689,16 @@ class Scheduler:
         log("▸ " + (it["cmd"] + " " + " ".join(it["args"])).strip())
         res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
                          on_job=on_job, parent=run["id"])
+        tries = 0
+        while res.get("hung") and tries < WD.MAX_RESTARTS and not self.stop_event.is_set():
+            # Снят сторожем после обрыва связи — тот же шаг заново (`watchdog`).
+            tries += 1
+            log(f"⚠ шаг завис ({res['hung']}) — запускаю заново ({tries} из {WD.MAX_RESTARTS})")
+            res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
+                             on_job=on_job, parent=run["id"])
+        if res.get("hung"):
+            res = dict(res, rc=2, refused=f"шаг завис и после {WD.MAX_RESTARTS} перезапусков: "
+                                          f"{res['hung']}")
         it["run_id"] = res.get("run_id", "")
         for line in res["lines"][-LOG_KEEP:]:
             log(line)

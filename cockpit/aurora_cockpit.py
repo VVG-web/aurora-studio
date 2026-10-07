@@ -61,6 +61,7 @@ import run_summary as RS                         # noqa: E402 — итог пр�
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
+import watchdog as WD                             # noqa: E402 — сторож зависших после обрыва связи шагов
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
 import bots as BOTS                              # noqa: E402 — боты проектов: раздел «Боты»
@@ -1315,6 +1316,8 @@ def bots_state(project: str) -> dict:
         b["id"] = BOTS.bot_id(project, b["file"])
     return {"bots": rows, "mcp": BOTS.mcp_names(project), "skills": BOTS.skill_names(project),
             "roles": BOTS.llm_roles(), "choices": BOTS.model_choices(),
+            "projects": [{"slug": p["slug"], "name": p["name"]}
+                         for p in BOTS.knowledge_projects()],
             "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR}
 
 
@@ -3853,6 +3856,16 @@ def adapter_alarm() -> list:
     return rows
 
 
+def bots_brief(project: str) -> list:
+    """Боты проекта коротко — для выбора в шаге цепочки: [{file, name, enabled}]."""
+    try:
+        return [{"file": b["file"], "name": b["meta"].get("name") or b["file"],
+                 "enabled": bool(b["meta"].get("enabled"))}
+                for b in BOTS.list_bots(project, with_checks=False)]
+    except Exception:  # noqa: BLE001 — битый бот не гасит раздел
+        return []
+
+
 def harness_state(versions: bool = False) -> dict:
     """Ассистенты из каталога кита (`scripts/harnesses.json`) и Аврора в каждом из них.
     Пояснения к ассистентам — в каталоге строк раздела, а не в ответе: так они на языке
@@ -3897,7 +3910,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
     run_id = utc_slug() + "-" + job_id[:6]
     job = {"id": job_id, "cmd": cmd, "args": args, "project": project, "rc": None,
            "out": [], "started": time.time(), "done": False, "run_id": run_id,
-           "parent": parent}
+           "parent": parent, "last_out": time.time()}
     with JOBS_LOCK:
         # Та же команда с теми же аргументами в том же проекте уже идёт — второй процесс рядом не
         # заводим, а отдаём идущее задание: двойной щелчок, вторая вкладка или повтор после
@@ -3946,6 +3959,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
             for line in p.stdout:
                 with JOBS_LOCK:
                     job["out"].append(line.rstrip("\n"))
+                    job["last_out"] = time.time()      # пульс шага — для сторожа (`watchdog`)
                     if len(job["out"]) > 4000:
                         job["out"] = job["out"][-4000:]
                 if run_log is not None:
@@ -4398,6 +4412,8 @@ class Handler(BaseHTTPRequestHandler):
             st = scheduler().state()
             st["projects"] = [{"name": p["name"], "path": p["path"]}
                               for p in find_projects(self.server.roots)]
+            # Боты проектов — для шага «бот» цепочки: проект → его боты (1.163.0).
+            st["bots"] = {p["path"]: bots_brief(p["path"]) for p in st["projects"]}
             st["routes"] = [{"id": r["id"], "title": r["title"], "group": r["group"]}
                             for r in localized_scenarios(scenarios(), request_lang(q))]
             self.send_json(st)
@@ -5426,6 +5442,9 @@ def main() -> int:
     global GITAUTO
     GITAUTO = GITA.GitAuto(sys.modules[__name__], lambda: find_projects(srv.roots))
     GITAUTO.start()
+    # Сторож: шаг маршрута или цепочки, зависший после обрыва связи, снимается и
+    # перезапускается — ночью «Прервать» нажать некому.
+    WD.Watchdog(sys.modules[__name__]).start()
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

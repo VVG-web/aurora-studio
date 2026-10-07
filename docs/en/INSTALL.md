@@ -434,7 +434,25 @@ MCP servers are connected right away. The bot has no scripts, command line or en
 for its tools — MCP, project files, the knowledge base, `save_output`; it reads its past runs from
 `Workspaces/bots/<bot>/`. Everything scripts used to do — the Jira queue, the story page, the review, publishing,
 memory between runs, a lock, the time — comes from the `aurora` server (the Aurora MCP, see above): pick it in the
-bot's "MCP" card. A run without tools
+bot's "MCP" card.
+
+**Project context** — the "Project context" card. Before work the bot gets a knowledge pack, like "Productivity":
+1. The task's links — Confluence pages, Jira issues, `[[…]]` cards — are read by the engine.
+2. A "Planner" role model names up to 15 concepts, terms and codes to search for. If the model does not answer, the
+   concepts are taken by rule.
+3. Aurora's hybrid search (words and meaning) builds a pack from the base of the **knowledge project** — its own or
+   the chosen one (the `knowledge` field).
+
+The pack goes into the task before work; during work the bot searches the same base itself (`kb_search`,
+`kb_context`, the `aurora` server). Mode (`context`):
+- `generate` — trusted knowledge only;
+- `evaluate` — everything, with trust marks;
+- `off` — no pack.
+
+The report names the project, the concepts and the number of cards. So an artifact-checking bot in each project
+works with its project's knowledge, and one schedule chain (the "bot" step, "all projects") runs them all in turn.
+
+A run without tools
 is not a success: if the call bypassed Pydantic AI or the model called no tool while it had its MCP, the run is
 recorded as failed with the reason, and the report names the role, the model and every tool call.
 

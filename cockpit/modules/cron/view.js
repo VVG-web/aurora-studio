@@ -342,16 +342,25 @@ function drawEditor(ctx){
 
 function stepEditor(ctx, task, st, i, redraw, select){
   const {t, el} = ctx;
-  const kind = select(st.kind, [["route", t("cron.kind_route")], ["command", t("cron.kind_command")]],
+  const kind = select(st.kind, [["route", t("cron.kind_route")], ["command", t("cron.kind_command")],
+                                ["bot", t("cron.kind_bot")]],
     v => {
       task.steps[i] = v === "route" ? {kind: "route", project: st.project, route: "update", write: true}
-                                    : {kind: "command", project: st.project, cmd: "kb:lint", args: []};
+                    : v === "bot" ? {kind: "bot", project: st.project, bot: "*"}
+                    : {kind: "command", project: st.project, cmd: "kb:lint", args: []};
       redraw();
     });
+  // Бот конкретного проекта выбирается из его ботов; «все проекты» — только «все боты».
   const project = select(st.project, [["*", t("cron.all_projects")],
-    ...(DATA.projects || []).map(p => [p.path, p.name])], v => st.project = v);
+    ...(DATA.projects || []).map(p => [p.path, p.name])],
+    v => { st.project = v; if (st.kind === "bot") { st.bot = "*"; redraw(); } });
   let what;
-  if (st.kind === "route"){
+  if (st.kind === "bot"){
+    const bots = st.project === "*" ? [] : ((DATA.bots || {})[st.project] || []);
+    what = [select(st.bot || "*", [["*", t("cron.all_bots")],
+      ...bots.map(b => [b.file, b.name + (b.enabled ? "" : " · " + t("cron.bot_off"))])],
+      v => st.bot = v)];
+  } else if (st.kind === "route"){
     const route = select(st.route, (DATA.routes || []).map(r => [r.id, r.title]), v => st.route = v);
     const write = el("input", {type: "checkbox", checked: st.write !== false ? "" : null});
     write.onchange = () => st.write = write.checked;

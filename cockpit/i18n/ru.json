@@ -782,5 +782,7 @@
   "alarm.adapter": "⛔ Pydantic AI выбран, но вызовы моделей идут мимо него — прямым HTTP, без инструментов и MCP. ",
   "alarm.adapter_row": "{path} · {project} · {when} · вызовов {calls}: {why}",
   "alarm.adapter_tail": "Полоса уйдёт сама, когда этот путь снова пройдёт через адаптер.",
-  "alarm.adapter_open": "Установка → Pydantic AI"
+  "alarm.adapter_open": "Установка → Pydantic AI",
+  "route.hung_restart": "⚠ Шаг завис: {why}. Запускаю его заново ({n} из {of}).",
+  "route.hung_gave_up": "■ Шаг завис и после {n} перезапусков — маршрут встаёт на нём."
 }
