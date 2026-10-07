@@ -138,12 +138,15 @@ def reap_orphans(kit: str, own: int = 0, rows=None, kill=None, alive=None) -> li
     kill = kill or kill_tree
     if alive is None:
         from aurora_common import pid_alive as alive
-    hints = ("/.aurora/scripts/", "\\.aurora\\scripts\\", os.path.join(kit, "scripts") + os.sep)
+    # Пути сравниваем без разницы между «/» и «\\»: на Windows командная строка бывает и такой,
+    # и такой, а кит записан своим разделителем.
+    hints = ("/.aurora/scripts/", kit.replace("\\", "/").rstrip("/") + "/scripts/")
     gone, panels = [], {}
     for r in sorted(rows, key=lambda x: x["pid"]):      # родители раньше: их дерево снимет детей
-        if r["pid"] == own or r["panel"] == own or "aurora_cockpit.py" in r["command"]:
+        cmd = r["command"].replace("\\", "/")
+        if r["pid"] == own or r["panel"] == own or "aurora_cockpit.py" in cmd:
             continue
-        if not any(h in r["command"] for h in hints):
+        if not any(h in cmd for h in hints):
             continue
         if r["panel"] not in panels:
             panels[r["panel"]] = alive(r["panel"])
