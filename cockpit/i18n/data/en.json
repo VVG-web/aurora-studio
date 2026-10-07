@@ -433,7 +433,8 @@
     "по имени и slug проект узнают панель, поиск для агентов (MCP) и отчёты; без них проект безымянный": "the panel, the search for agents (MCP) and reports recognise the project by its name and slug; without them the project is nameless",
     "правило .gitignore не действует задним числом: файлы продолжают уезжать в общий репозиторий, хотя закрыты": "a .gitignore rule does not apply retroactively: the files keep going to the shared repository although they are closed",
     "проект не под git → заведите: `git init`, затем первый коммит всей базы (раздел «Git»)": "the project is not under git → set it up: `git init`, then the first commit of the whole base (the «Git» section)",
-    "содержимое нестандартной папки движок не видит: оно выпадает из базы, поиска и отчётов": "the engine does not see the content of a non-standard folder: it drops out of the base, search and reports"
+    "содержимое нестандартной папки движок не видит: оно выпадает из базы, поиска и отчётов": "the engine does not see the content of a non-standard folder: it drops out of the base, search and reports",
+    "каталог ассистентов не прочитан: {}": "the assistants catalogue was not read: {}"
   },
   "connectors": {
     "confluence-dc": {
@@ -453,8 +454,6 @@
     "всё: движок работает поверх git": "everything: the engine works on top of git",
     "sync:confluence — разбор storage-разметки": "sync:confluence — parsing storage markup",
     "sync:confluence — быстрый парсер": "sync:confluence — the fast parser",
-    "Atlassian MCP в Cursor": "Atlassian MCP in Cursor",
-    "работа ассистента с Confluence/Jira из редактора": "the assistant's work with Confluence/Jira from the editor",
     "каждый вызов модели идёт через него: ответ проверяется, инструменты и MCP-серверы в задачах": "every model call goes through it: the answer is validated, tools and MCP servers in tasks",
     "граф базы: темы Лейденом, MCP-сервер графа для Claude Code и Cursor, выгрузки HTML и Neo4j, разбор кода и SQL проекта": "the base's graph: Leiden themes, the graph MCP server for Claude Code and Cursor, HTML and Neo4j exports, parsing of the project's code and SQL",
     "GitHub не ответил: ": "GitHub did not answer: ",
@@ -785,7 +784,12 @@
     "проверить бота, не запуская": "check a bot without running it",
     "запустить бота": "run a bot",
     "файл бота: bots/<имя>.md": "the bot file: bots/<name>.md",
-    "кто запустил: человек или расписание": "who started it: a human or the schedule"
+    "кто запустил: человек или расписание": "who started it: a human or the schedule",
+    "напечатать чек-лист профиля (--profile us|alg) JSON-ом и выйти": "print the profile checklist (--profile us|alg) as JSON and exit",
+    "одна страница: итог JSON-ом (вердикт, оценка, сводка, отчёт) и отчёт в .aurora/state/reviews/ — для MCP Авроры и ботов": "one page: the outcome as JSON (verdict, score, summary, report) and the report in .aurora/state/reviews/ — for the Aurora MCP and bots",
+    "ответить ровно этой моделью провайдера, без запасных (для --task ask)": "answer with exactly this provider model, no spares (for --task ask)",
+    "ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)": "answer with a role from the «Models» section (for --task ask; worker by default)",
+    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
@@ -803,7 +807,9 @@
     "ВАРИАНТЫ": "VARIANTS",
     "N=КАРТОЧКА": "N=CARD",
     "ПУТЬ": "PATH",
-    "Ч": "H"
+    "Ч": "H",
+    "ПРОВАЙДЕР/МОДЕЛЬ": "PROVIDER/MODEL",
+    "РОЛЬ": "ROLE"
   },
   "connector_texts": {
     "персональный токен Confluence (CONFLUENCE_PAT) либо CONFLUENCE_USER + CONFLUENCE_PASSWORD": "a Confluence personal token (CONFLUENCE_PAT) or CONFLUENCE_USER + CONFLUENCE_PASSWORD",

@@ -96,7 +96,7 @@
   "bots.p.attachment_secret": "The attachment is secrets or a service folder",
   "bots.fix.attachment_secret": "Such files are not given to a bot: remove the attachment.",
   "bots.p.no_models": "Models are not set up",
-  "bots.fix.no_models": "The «Models» section: a provider and a backend for the «Parsing and theses» role.",
+  "bots.fix.no_models": "The «Models» section: a provider and a backend for the «Writer: parsing, theses, answers» role.",
   "bots.p.no_adapter": "No Pydantic AI — the bot will have no MCP servers and tools",
   "bots.fix.no_adapter": "Install Pydantic AI on the «Install» page.",
   "bots.p.timeout": "The bot ran out of time",
@@ -122,8 +122,12 @@
   "bots.fix.no_tools": "The call bypassed Pydantic AI — no MCP servers and files. The reason is in the report; check Pydantic AI on the «Install» page.",
   "bots.p.no_tool_calls": "The bot called no tools",
   "bots.fix.no_tool_calls": "The bot's MCP servers were connected, but the model answered with text. Say in the prompt which tool to call first (e.g. the Jira issue search), or pick a role with a stronger model.",
-  "bots.role_name.worker": "Parsing and theses",
-  "bots.role_name.planner": "Planner and extraction",
-  "bots.role_name.critic": "Critic (Momus)",
-  "bots.role_name.qa": "Answers to questions"
+  "bots.role_name.worker": "Writer: parsing, theses, answers",
+  "bots.role_name.planner": "Planner: plans, extraction, meetings",
+  "bots.role_name.critic": "Critic: checks decisions",
+  "bots.role_name.qa": "Momus: support check and review",
+  "bots.group_roles": "Roles — by their chain, with spares",
+  "bots.group_provider": "{name} — exactly this model, no spares",
+  "bots.p.model_unknown": "There is no such model",
+  "bots.fix.model_unknown": "A model is set as «provider/model», the provider being from the «Models» section. Pick it in the «Model» card or set a role."
 }

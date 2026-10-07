@@ -429,7 +429,10 @@ def vote(cl: dict, profile: str, runs: list, l0: dict) -> dict:
         fail = sum(1 for v in seq if v == "no")
         ok_n = sum(1 for v in seq if v in ("yes", "na"))
         tie = False
-        if fail + ok_n < 2:
+        # Двух определившихся требуем, когда годных прогонов больше одного. При одном
+        # (`--runs 1`, ревью из MCP по-быстрому) это правило делало «не определено» из
+        # каждого ответа: на US 4.1.6 (PRJ-B, 7.10.2026) — 22 из 23 при разобранном ответе.
+        if fail + ok_n < min(2, len(good)) or not (fail + ok_n):
             v = "unknown"
         elif fail > ok_n:
             v = "no"
@@ -713,6 +716,81 @@ def render(rec: dict, cl: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+def summary_lines(rec: dict) -> list:
+    """Сводка ревью — короткий канон «AI review result» для комментария в задаче.
+
+    Оценку и вердикт считает код по формуле шаблона (веса 5/3/1, порог 9,0), а не модель;
+    сводка повторяет их словами — то, что человек читает, не открывая отчёт.
+    """
+    f = rec.get("failed") or {"critical": 0, "major": 0, "minor": 0}
+    L = ["AI review result", f"Вердикт: {rec.get('verdict', '')}"]
+    if rec.get("status") == "ok":
+        L += [f"Итоговая оценка: {fmt(rec.get('score', 0))} из 10 (порог {fmt(GATE)})",
+              f"Блокеров (критичных): {f['critical']}",
+              f"Замечаний: важных {f['major']}, мелких {f['minor']}",
+              f"Не определено: {rec.get('unknown', 0)} · покрытие {rec.get('coverage', 0):.0%} · "
+              f"прогонов {rec.get('runs', 0)}"
+              + (" · прочитаны не все обязательные связанные страницы"
+                 if rec.get("incomplete") else "")]
+    if rec.get("reasons"):
+        L.append("Почему: " + "; ".join(rec["reasons"]))
+    return L
+
+
+SAVED = ".aurora/state/reviews"        # отчёты для публикации: вне git, путь отдаётся вызывающему
+
+
+def save_report(rec: dict, report: str) -> str:
+    """Отчёт — в служебную папку движка. Путь получает вызывающий (MCP, бот) и публикует
+    файл по пути: гонять десятки килобайт отчёта через модель незачем."""
+    out = Path(SAVED) / f"{utc_slug('%Y%m%d-%H%M%S')}_review_{rec.get('code') or rec.get('page_id')}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report, encoding="utf-8")
+    return out.as_posix()
+
+
+def as_json(rec: dict, report: str, path: str = "") -> dict:
+    """Итог одной страницы для машины: вердикт, оценка, причины, сводка и отчёт."""
+    keep = ("page_id", "code", "title", "url", "version", "profile", "status", "verdict",
+            "score", "coverage", "failed", "unknown", "unstable", "incomplete", "reasons",
+            "runs", "good_runs", "model")
+    out = {k: rec.get(k) for k in keep if k in rec}
+    out["failed_questions"] = [i for i, a in (rec.get("answers") or {}).items() if a.get("v") == "no"]
+    out["summary"] = "\n".join(summary_lines(rec))
+    out["report_path"] = path
+    out["report"] = report
+    return out
+
+
+def score_answers(cl: dict, req: dict) -> dict:
+    """Готовые ответы на чек-лист → оценка и вердикт по формуле шаблона.
+
+    Для ассистента, который отвечает на вопросы сам (через MCP Авроры): модель не считает
+    баллы и вердикт — это делает код, как и в обычном ревью.
+    """
+    profile = str(req.get("profile") or "us")
+    if profile not in cl["profiles"]:
+        raise SystemExit(f"профиль «{profile}» не знаком; есть: {', '.join(cl['profiles'])}")
+    ids = [c["id"] for c in cl["profiles"][profile]]
+    answers = {}
+    for cid in ids:
+        a = (req.get("answers") or {}).get(cid) or {}
+        v = ALIASES.get(str(a.get("v", "")).strip().lower(), str(a.get("v", "")).strip().lower())
+        answers[cid] = {"v": v if v in ANSWERS else "unknown",
+                        "evidence": str(a.get("evidence") or ""), "fix": str(a.get("fix") or ""),
+                        "stable": True, "votes": "1/1"}
+    incomplete = bool(req.get("incomplete"))
+    res = score(cl, profile, answers, incomplete, True, 1)
+    rec = {"status": "ok", "profile": profile, "answers": answers, "runs": 1, "good_runs": 1,
+           "incomplete": incomplete, "title": str(req.get("title") or ""),
+           "code": str(req.get("code") or ""), "reviewed": _now(), **res}
+    missing = [cid for cid in ids if cid not in (req.get("answers") or {})]
+    report = render(rec, cl)
+    out = as_json(rec, report)
+    out["missing_answers"] = missing
+    return out
+
+
 def _cell(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "")).replace("|", "/").strip()
 
@@ -895,6 +973,13 @@ def main() -> int:
     ap.add_argument("--template", default="", help="путь к шаблону ревью")
     ap.add_argument("--summary", default="", help="пересобрать сводку папки пакета и выйти")
     ap.add_argument("--apply", action="store_true", help="записать отчёты в Artifacts/reviews/")
+    ap.add_argument("--json", action="store_true",
+                    help="одна страница: итог JSON-ом (вердикт, оценка, сводка, отчёт) и отчёт в "
+                         ".aurora/state/reviews/ — для MCP Авроры и ботов")
+    ap.add_argument("--checklist", action="store_true",
+                    help="напечатать чек-лист профиля (--profile us|alg) JSON-ом и выйти")
+    ap.add_argument("--score-json", action="store_true",
+                    help="оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом")
     args = ap.parse_args()
 
     if args.summary:
@@ -904,6 +989,20 @@ def main() -> int:
     if not tpl:
         sys.exit(f"не найден шаблон {TEMPLATE} (TemplatesCommon/ проекта или кит)")
     cl = load_checklist(tpl)
+    if args.checklist:
+        prof = args.profile if args.profile in cl["profiles"] else "us"
+        print(json.dumps({"template": cl["file"], "version": cl["version"], "profile": prof,
+                          "answers": list(ANSWERS), "weights": WEIGHT, "gate": GATE,
+                          "questions": cl["profiles"][prof]}, ensure_ascii=False, indent=1))
+        return 0
+    if args.score_json:
+        try:
+            req = json.loads(sys.stdin.read() or "{}")
+        except ValueError as e:
+            sys.exit(f"вход — не JSON: {e}")
+        print(json.dumps(score_answers(cl, req if isinstance(req, dict) else {}),
+                         ensure_ascii=False, indent=1))
+        return 0
     runs = max(1, min(MAX_RUNS, args.runs))
     api, ccfg = _connect()
     reader = Reader(api, ccfg["base_url"], CACHE, args.as_of)
@@ -929,6 +1028,10 @@ def main() -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(report, encoding="utf-8")
             print(f"Отчёт: {out}", file=sys.stderr)
+        if args.json:
+            print(json.dumps(as_json(rec, report, save_report(rec, report)), ensure_ascii=False,
+                             indent=1))
+            return 0 if rec.get("status") == "ok" else 1
         print(report)
         return 0
 

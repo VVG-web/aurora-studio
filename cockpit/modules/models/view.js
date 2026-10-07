@@ -8,8 +8,10 @@
 const CAPS = ["llm", "ocr", "embeddings"];
 // Имена ролей движка по умолчанию — так их пишет model_config.py. Не переименованную роль
 // показываем на языке интерфейса; своё имя человека — как есть.
-const ENGINE_NAMES = {worker: "Разбор и тезисы", planner: "Планировщик и вынос",  // данные движка
-                      critic: "Критик (Момус)", qa: "Ответы на вопросы",          // данные движка
+const ENGINE_NAMES = {worker: "Писатель: разбор, тезисы, ответы",              // данные движка
+                      planner: "Планировщик: планы, вынос, встречи",           // данные движка
+                      critic: "Критик: проверка решений",                      // данные движка
+                      qa: "Момус: проверка опоры и ревью",                     // данные движка
                       document: "Сканы документов", index: "Индекс базы знаний"}; // данные движка
 // Роль, на которую уходят задачи пустых ролей движка (model_config.DEFAULT_ROLE).
 const DEFAULT_ROLE = {llm: "worker", ocr: "document", embeddings: "index"};
@@ -331,6 +333,10 @@ function roleCard(ctx, cap, r, ri){
         M.capabilities[cap].roles.splice(ri, 1);
         touch(ctx, true);
       }}, t("models.drop"))),
+    // Что роль делает — у ролей движка строкой под именем: имя короткое, а модель для
+    // роли выбирают по задачам, которые на ней идут.
+    r.builtin && cap === "llm" ? el("div", {class: "muted", style: "font-size:12.5px;margin:-2px 0 8px"},
+      t("models.role_about." + r.id)) : null,
     list,
     el("button", {class: "btn sm", style: "margin-top:8px", onclick: () => {
       // Запасной по умолчанию — следующий провайдер после последнего в цепочке: так «+» почти

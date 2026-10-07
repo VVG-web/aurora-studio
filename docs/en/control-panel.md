@@ -79,7 +79,7 @@ flowchart TB
 |---|---|
 | **The Bridge** | Tiles of every project on the machine: engine version, share of `knowledge`, `doctor` blockers, lint errors, branch and uncommitted changes; you can see where work is going and where it stopped. The aura colour is the severity: teal — in order, amber — worth a look, red — blockers |
 | **The kit's setup** | Where the panel looks for projects; connecting a new project (the form asks the same as `aurora_setup.py` and writes with the same script); the whole config as text |
-| **Install** | What is missing on the machine and in the project and which commands do not work without it; engine add-ons (Pydantic AI, graphify) — the current version against the latest in git |
+| **Install** | What is missing on the machine and in the project and which commands do not work without it; engine add-ons (Pydantic AI, graphify) — the current version against the latest in git; "Aurora MCP in assistants" — the machine's assistants and connecting the Aurora server to them, with a copy and a way back |
 | **Help** | Documentation with a table of contents: what to open on the left, the text on the right. It shows only files from `docs/`, `skills/aurora-vault`, `CHANGELOG.md`, `commands.txt`, `README.md` |
 | **About** | The version, repository, licence, the latest releases and **updating the kit itself from the repository with a button** (a fast-forward only; it refuses on uncommitted edits). Seven clicks on the "About" menu item open the "Development" mode |
 
@@ -92,7 +92,7 @@ flowchart TB
 | **Routines** | The base's maintenance routes: "Update the base", "Fix the base", "Rebuild the base from scratch". Steps go top to bottom; human steps are marked and not run; "Preview" passes the same route without writing. A stopped route resumes where it stood | — |
 | **Production** | "Write an artifact" and "Hand over documents". A task is written in your own words: it understands `@path` (a project file or folder), `/skill` (the skill's method goes into the task), `@server` (an MCP is connected at once), attachments (kept for two weeks) | `agent:make`, `ship:publish` |
 | **Files** | The project tree, a Markdown editor with tables, mermaid and formulas, "Show in folder", "Open with the system app", "Commit" and "Push" (git) | — |
-| **Ask** | A question in your own words: the engine assembles context from cards, the model answers from them only; conversations are kept in `meta/ask/` and visible to everyone | `agent:ask` |
+| **Ask** | A question in your own words: the engine assembles context from cards, the model answers from them only — a role by its chain or exactly the chosen provider model; conversations are kept in `meta/ask/` and visible to everyone | `agent:ask` |
 | **Commands** | The whole registry: executor, modifiers, version introduced, last run. Script commands are run; for procedure commands the description opens | the registry |
 | **Mirrors** | The state of Confluence, Jira and sites, token presence, the sync → audit → drift chain, connecting source modules | `sync:audit`, `sync:diff`, `sync:jira-status`, `kit:remap-sources` |
 | **Version** | The project's engine against the kit, an update preview, migration of a foreign project | `kit:update`, `kit:doctor` |

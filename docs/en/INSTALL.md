@@ -261,11 +261,49 @@ available to any agent as an MCP server: OpenCode, Claude Code, Cursor. One serv
 of the machine — `aurora_mcp.py --all` from the kit; every tool takes `project` — the project slug,
 bases are never mixed. `kb_projects` lists the projects, `kb_search` searches, `kb_card` reads a
 card, `kb_context` builds a context pack, `kb_index` gives the table of contents, `artifact_spec` —
-how to make the project's artifact, `kb_ask` asks the base. Read-only.
+how to make the project's artifact, `kb_ask` asks the base.
 
-Copy the setup in "Kit setup" → "Machine MCP servers" → "Aurora search for other agents": for
-OpenCode into `opencode.json` (the project folder or `~/.config/opencode/`), for Claude Code and
-Cursor into `mcpServers`. From a terminal: `python3 <kit>/scripts/aurora_mcp.py --all --selftest`.
+Since 1.162.0 the same server has everything a scheduled bot or any assistant needs to work with a project.
+The engine does the mechanics; the model spends tokens only on judgement:
+
+| Tool | What it does |
+|---|---|
+| `time_now` | the current time, UTC and local: the model has no clock of its own |
+| `state_get` / `state_put` / `state_list` / `state_delete` | memory between runs: key → value in a space of its own (`.aurora/state/mcp/`, outside git) |
+| `lock_acquire` / `lock_release` | a lock on a job: a second run of the same job will not start |
+| `review_checklist` | the review checklist for a story or an algorithm (`review_v2.0`) |
+| `review_page` | a whole review of a page by the engine: linked pages, the checklist over several runs, score and verdict by code; the report as a file in `.aurora/state/reviews/` |
+| `review_score` | scoring ready checklist answers by the template's formula |
+| `atlassian_check` | whether the project's Jira and Confluence are reachable, as whom, whether writing is allowed |
+| `jira_search` / `jira_issue` | issues in one request: parent, labels, attachment names |
+| `jira_publish` | attachment → comment → labels step by step; labels only if the attachment landed; a repeat does not upload the same attachment; `dry_run` — a trial run |
+| `confluence_find` / `confluence_page` | a page by number or words; its text and links |
+
+Writing into the knowledge base through MCP is impossible. Writing into Jira is allowed only if the project
+allows it (`aurora.config.yaml`):
+
+```yaml
+mcp:
+  jira_write: true
+```
+
+A trial publish always works. The tools use the project's keys — the same as the sync (`JIRA_PAT`,
+`CONFLUENCE_PAT` in `.env.aurora.local`).
+
+**Connecting to assistants** — "Install" → "Aurora MCP in assistants". The button finds the machine's
+assistants by the kit's catalogue (`scripts/harnesses.json`). The catalogue has:
+
+- Claude Code, Claude Desktop, Cursor, Windsurf, VS Code;
+- Cline, Roo Code, Kilo Code, Kilo CLI;
+- OpenCode, Codex, Gemini CLI, Qwen Code, Continue, Zed;
+- jcode, Hermes Agent, Goose, Crush, pi, DeepSeek TUI;
+- Kiro, Amp, LM Studio, Junie.
+
+Each assistant found shows its version, its settings file and whether Aurora is connected. "Connect" copies the
+assistant's file into `~/.aurora/harness-backups/` and inserts the entry by editing the text: the person's comments
+and field order stay. Then it checks the file; if the file does not parse, the copy is put back. "Restore from copy"
+is in the same row. The edit is made by code, not by a model: these files hold keys of other servers. The catalogue
+is updated with the kit. From a terminal: `python3 <kit>/scripts/harness_mcp.py --list | --add ID | --restore ID`.
 
 ## Project Git
 
@@ -390,10 +428,13 @@ example, to attach to a Jira issue). `report.md` with the bot's answer lies ther
 words with advice: a server or skill is not set up, an attachment is missing, no Pydantic AI, models are
 not set up, the bot ran out of time or tool calls. MCP servers and tools need Pydantic AI ("Install").
 
-**The bot's model** is a role from the "Models" section (a "provider → model" chain in order); "Parsing and theses" by
-default. A role of your own for bots, with a stronger model, is handy. The bot's MCP servers are connected right
-away. The bot has no scripts, command line or environment variables: write its prompt for its tools — MCP, project
-files, the knowledge base, `save_output`; it reads its past runs from `Workspaces/bots/<bot>/`. A run without tools
+**The bot's model** is a role from the "Models" section (a "provider → model" chain in order with spares; "Writer"
+by default) or a specific provider model — the `model: provider/model` field, exactly that one, no spares. The bot's
+MCP servers are connected right away. The bot has no scripts, command line or environment variables: write its prompt
+for its tools — MCP, project files, the knowledge base, `save_output`; it reads its past runs from
+`Workspaces/bots/<bot>/`. Everything scripts used to do — the Jira queue, the story page, the review, publishing,
+memory between runs, a lock, the time — comes from the `aurora` server (the Aurora MCP, see above): pick it in the
+bot's "MCP" card. A run without tools
 is not a success: if the call bypassed Pydantic AI or the model called no tool while it had its MCP, the run is
 recorded as failed with the reason, and the report names the role, the model and every tool call.
 

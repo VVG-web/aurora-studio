@@ -68,7 +68,8 @@ from aurora_common import is_folder_guide, kit_root  # noqa: E402 — кит; о
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
 OUT_DIR = ("Workspaces", "bots")
-FIELDS = ("name", "description", "role", "mcp", "skills", "attachments", "cron", "enabled")
+FIELDS = ("name", "description", "role", "model", "mcp", "skills", "attachments", "cron",
+          "enabled")
 LISTS = ("mcp", "skills", "attachments")
 TOOL_CALLS = 40                  # бот ходит по задачам Jira: шагов больше, чем у разбора
 ROLE = "worker"                  # роль модели по умолчанию; бот выбирает свою (поле `role`)
@@ -110,7 +111,7 @@ PROBLEMS = {
     "attachment_secret": ("Вложение — секреты или служебная папка",
                           "Такие файлы боту не отдаются: уберите вложение.", ["open_bots"]),
     "no_models": ("Модели не настроены",
-                  "Раздел «Модели»: провайдер и бэкенд для роли «Разбор и тезисы» (worker).",
+                  "Раздел «Модели»: провайдер и бэкенд для роли «Писатель: разбор, тезисы, ответы» (worker).",
                   ["open_models"]),
     "no_adapter": ("Нет Pydantic AI — у бота не будет MCP-серверов и инструментов",
                    "Поставьте Pydantic AI на странице «Установка».", ["open_install"]),
@@ -127,6 +128,10 @@ PROBLEMS = {
     "role_unknown": ("Роли модели нет",
                      "Выберите роль из раздела «Модели» или заведите её там.",
                      ["open_models", "open_bots"]),
+    "model_unknown": ("Модели нет",
+                      "Модель задаётся как «провайдер/модель», провайдер — из раздела «Модели». "
+                      "Выберите её в карточке «Модель» или поставьте роль.",
+                      ["open_models", "open_bots"]),
     "no_tools": ("Бот ответил без инструментов",
                  "Вызов прошёл мимо Pydantic AI — без MCP-серверов и файлов. Причина — в "
                  "отчёте; проверьте Pydantic AI на странице «Установка».",
@@ -138,7 +143,7 @@ PROBLEMS = {
                       ["open_bots", "retry"]),
 }
 BLOCKING = {"no_prompt", "mcp_unknown", "skill_unknown", "attachment_missing",
-            "attachment_secret", "role_unknown"}
+            "attachment_secret", "role_unknown", "model_unknown"}
 
 
 # ---------------------------------------------------------------- мелочи
@@ -228,7 +233,7 @@ def parse(text: str) -> dict:
         elif cur is not None:
             cur[2].append(line)
             cur[3].append(line)
-    meta = {"name": "", "description": "", "role": "", "mcp": [], "skills": [],
+    meta = {"name": "", "description": "", "role": "", "model": "", "mcp": [], "skills": [],
             "attachments": [], "cron": "", "enabled": False}
     extra = []
     for key, first, rest, raw in blocks:
@@ -256,6 +261,8 @@ def dump(meta: dict, body: str, extra: list | None = None) -> str:
     lines = ["---", f"name: {_q(meta.get('name'))}", f"description: {_q(meta.get('description'))}"]
     if meta.get("role"):
         lines.append(f"role: {_q(meta['role'])}")
+    if meta.get("model"):
+        lines.append(f"model: {_q(meta['model'])}")
     for key in LISTS:
         items = [str(x) for x in meta.get(key) or [] if str(x).strip()]
         lines.append(f"{key}:" + ("" if items else " []"))
@@ -355,7 +362,7 @@ def next_runs(spec: dict, after: datetime, n: int = 3) -> list:
 
 def mcp_names(project) -> list:
     import agent_core as AG
-    return sorted((AG.mcp_config(str(project)).get("mcpServers") or {}))
+    return sorted((AG.mcp_config(str(project), with_aurora=True).get("mcpServers") or {}))
 
 
 def llm_roles() -> list:
@@ -379,6 +386,18 @@ def llm_roles() -> list:
     return [r for r in out if r["id"]]
 
 
+def model_choices() -> list:
+    """Модели провайдеров из раздела «Модели»: [{provider, name, n, models}] — бот может
+    выбрать любую из них вместо роли."""
+    try:
+        import agent_core as AG
+        import model_config as MC
+        kit = kit_root()
+        return AG.model_choices(MC.to_config(MC.load(kit, AG.kit_env(kit)))) if kit else []
+    except Exception:  # noqa: BLE001 — без настройки моделей выбирать не из чего
+        return []
+
+
 def skill_names(project) -> list:
     import request_context as RC
     kit = kit_root()
@@ -398,6 +417,9 @@ def validate(project, meta: dict, body: str | None = None, mcp: list | None = No
             probs.append({"field": "cron", "code": "cron_invalid", "detail": err})
     if meta.get("role") and meta["role"] not in {r["id"] for r in llm_roles()}:
         probs.append({"field": "role", "code": "role_unknown", "detail": meta["role"]})
+    if meta.get("model") and meta["model"].partition("/")[0] not in \
+            {c["provider"] for c in model_choices()}:
+        probs.append({"field": "model", "code": "model_unknown", "detail": meta["model"]})
     known = set(mcp if mcp is not None else mcp_names(project))
     for name in meta.get("mcp") or []:
         if name not in known:
@@ -508,6 +530,8 @@ def clean_meta(meta: dict) -> dict:
            "description": " ".join(str(m.get("description") or "").split())[:300],
            "cron": " ".join(str(m.get("cron") or "").split()),
            "role": re.sub(r"[^\w.\-]", "", str(m.get("role") or ""))[:60],
+           # «провайдер/модель»: имя модели бывает с «/», «:» и точками (qwen/qwen3:32b)
+           "model": re.sub(r"[^\w.\-/:@+]", "", str(m.get("model") or ""))[:160],
            "enabled": bool(m.get("enabled"))}
     for key in LISTS:
         vals = m.get(key) if isinstance(m.get(key), list) else []
@@ -734,6 +758,12 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
     # Путь вызова — тревоге «мимо Pydantic AI» и журналу сбоев: какой бот обходил адаптер.
     AG.RUN_TASK["name"] = "bot:" + os.path.splitext(os.path.basename(str(rel)))[0]
     role = meta.get("role") or ROLE
+    if meta.get("model"):
+        # Бот с выбранной моделью идёт ровно ею: подменять её запасной молча нельзя.
+        try:
+            cfg = AG.pin_model(cfg, meta["model"], (role,))
+        except ValueError:
+            return {"ok": False, "problem": problem("model_unknown", meta["model"])}
     if not AG.role_chain(cfg, role):
         return {"ok": False, "problem": problem("no_models", role)}
     adapter_ok = cfg.get("adapter") == "pydantic_ai" and AG.venv_status()[0]
@@ -816,7 +846,8 @@ def _report(project, outdir: Path, meta: dict, trigger: str, text: str, prob: di
     calls = Counter(info.get("tools") or [])
     head = [f"# Бот «{meta['name']}» — {utc_label()}", "",
             f"- Запуск: {trigger}",
-            f"- Модель: роль «{info.get('role') or meta.get('role') or ROLE}»"
+            (f"- Модель: «{meta['model']}» (выбрана, без запасных)" if meta.get("model") else
+             f"- Модель: роль «{info.get('role') or meta.get('role') or ROLE}»")
             + (f" · {info['model']}" if info.get("model") else "")
             + (f" · через {info['via']}" if info.get("via") else ""),
             f"- MCP: {', '.join(meta.get('mcp') or []) or '—'}",

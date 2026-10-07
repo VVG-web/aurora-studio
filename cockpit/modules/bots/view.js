@@ -272,7 +272,9 @@ function drawChecks(ctx){
     const slot = ctx.$("#botsProb-" + field);
     if (!slot) continue;
     slot.innerHTML = "";
-    probs.filter(p => p.field === field).forEach(p => slot.append(el("div", {
+    // Замечание к модели — под карточкой «Модель», как и к роли: выбор у них один.
+    probs.filter(p => p.field === field || (field === "role" && p.field === "model"))
+      .forEach(p => slot.append(el("div", {
         style: "font-size:12px;color:var(--danger);margin-top:6px"},
       tr(ctx, "bots.p." + p.code, p.code) + detailOf(ctx, p)
         + " — " + tr(ctx, "bots.fix." + p.code, ""))));
@@ -339,7 +341,7 @@ function checklist(ctx, key, have, filter){
 }
 
 // Модель бота — роль из раздела «Модели»: цепочка «провайдер → модель» по порядку. Пусто —
-// роль движка по умолчанию («Разбор и тезисы»). Своя роль для ботов заводится там же.
+// роль движка по умолчанию («Писатель»). Своя роль для ботов заводится там же.
 function rolePanel(ctx){
   const {t, el} = ctx;
   const roles = D.roles || [];
@@ -347,12 +349,29 @@ function rolePanel(ctx){
   const named = r => r.name || tr(ctx, "bots.role_name." + r.id, r.id);
   const label = r => named(r) + (r.models.length ? " — " + r.models.join(" → ") : "");
   const worker = roles.find(r => r.id === "worker");
+  // Роль — цепочка «провайдер → модель» с запасными; модель — ровно она, без подмены
+  // (1.162.0). В файле бота это поля `role` и `model`; одно из двух.
+  const model = FORM.model || "";
+  const value = model ? "model:" + model : cur ? "role:" + cur : "";
+  const choices = D.choices || [];
+  const known = choices.some(c => c.models.some(m => `${c.provider}/${m}` === model));
   const sel = el("select", {class: "btn", style: "width:100%"},
-    el("option", {value: "", selected: cur ? null : ""},
+    el("option", {value: "", selected: value ? null : ""},
       t("bots.role_default", {name: worker ? named(worker) : "worker"})),
-    ...(cur && !roles.some(r => r.id === cur) ? [el("option", {value: cur, selected: ""}, cur)] : []),
-    ...roles.map(r => el("option", {value: r.id, selected: r.id === cur ? "" : null}, label(r))));
-  sel.onchange = () => { FORM.role = sel.value; touch(ctx); };
+    ...(cur && !roles.some(r => r.id === cur) ? [el("option", {value: "role:" + cur, selected: ""}, cur)] : []),
+    ...(model && !known ? [el("option", {value: "model:" + model, selected: ""}, model)] : []),
+    el("optgroup", {label: t("bots.group_roles")},
+      ...roles.map(r => el("option", {value: "role:" + r.id,
+        selected: "role:" + r.id === value ? "" : null}, label(r)))),
+    ...choices.map(c => el("optgroup", {label: t("bots.group_provider", {name: c.name || c.provider})},
+      ...c.models.map(m => el("option", {value: `model:${c.provider}/${m}`,
+        selected: `model:${c.provider}/${m}` === value ? "" : null}, m)))));
+  sel.onchange = () => {
+    const v = sel.value;
+    FORM.role = v.startsWith("role:") ? v.slice(5) : "";
+    FORM.model = v.startsWith("model:") ? v.slice(6) : "";
+    touch(ctx);
+  };
   return el("div", {}, sel,
     el("button", {class: "btn sm", style: "margin-top:8px", onclick: () => ctx.show("models")},
       t("bots.a.open_models")));

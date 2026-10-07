@@ -40,11 +40,17 @@ PROVIDER_TYPES = ("openai", "llama.cpp", "vllm", "sglang", "ollama", "tei")
 # Роли, которые зовёт сам движок. Их нельзя удалить (иначе задача останется без модели), но
 # можно переименовать на свой лад. Свои роли человек добавляет рядом — по мере нужды.
 ENGINE_ROLES = {
-    "llm": (("worker", "Разбор и тезисы"), ("planner", "Планировщик и вынос"),
-            ("critic", "Критик (Момус)"), ("qa", "Ответы на вопросы")),
+    "llm": (("worker", "Писатель: разбор, тезисы, ответы"),
+            ("planner", "Планировщик: планы, вынос, встречи"),
+            ("critic", "Критик: проверка решений"), ("qa", "Момус: проверка опоры и ревью")),
     "ocr": (("document", "Сканы документов"),),
     "embeddings": (("index", "Индекс базы знаний"),),
 }
+# Прежние имена ролей движка (до 1.162.0). Имена не говорили, что роль делает: Момус шёл
+# ролью «Ответы на вопросы», роль «Критик (Момус)» Момусом не пользовалась, а «Спросить»
+# отвечала ролью «Разбор и тезисы». Не переименованная человеком роль получает новое имя.
+RENAMED = {"worker": ("Разбор и тезисы",), "planner": ("Планировщик и вынос",),
+           "critic": ("Критик (Момус)",), "qa": ("Ответы на вопросы",)}
 # Роль, которой отвечает возможность, когда задача зовёт роль без бэкендов.
 DEFAULT_ROLE = {"llm": "worker", "ocr": "document", "embeddings": "index"}
 SETTINGS_DEFAULT = {"adapter": "pydantic_ai", "max_steps": 15, "budget_min": 20,
@@ -148,7 +154,10 @@ def normalize(data) -> tuple:
                                  "context": _int(b.get("context"), 0),
                                  # Свой адрес сервиса (TEI векторов, отдельный порт OCR).
                                  "url": str(b.get("url") or "").strip().rstrip("/")})
-            role = {"id": rid, "name": " ".join(str(r.get("name") or rid).split())[:80],
+            name = " ".join(str(r.get("name") or rid).split())[:80]
+            if cap == "llm" and name in RENAMED.get(rid, ()):
+                name = dict(ENGINE_ROLES[cap])[rid]
+            role = {"id": rid, "name": name,
                     "builtin": rid in dict(ENGINE_ROLES[cap]), "backends": backends}
             if cap == "llm":
                 role["thinking"] = r.get("thinking", True) is not False

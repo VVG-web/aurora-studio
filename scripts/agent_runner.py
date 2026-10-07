@@ -4821,7 +4821,7 @@ def request_asks(cwd: str, st: dict, spec: dict) -> dict:
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import request_context as RC
-    servers = list((AG.mcp_config(cwd).get("mcpServers") or {}))
+    servers = list((AG.mcp_config(cwd, with_aurora=True).get("mcpServers") or {}))
     text = "\n".join([st.get("idea", "")] + [rd.get("answers", "") for rd in st.get("rounds", [])])
     found = RC.mentions(text, cwd, servers)
     block, notes = RC.read_context(cwd, st.get("context", []) + found["files"])
@@ -5245,8 +5245,35 @@ def read_text_file(path: str, limit: int = 200_000) -> str:
         return ""
 
 
+def ask_cfg(cfg: dict, role: str, backend: int = 0, model: str = "",
+            explicit_role: bool = False) -> dict:
+    """Настройка вопроса «Спросить»: роль цепочкой или ровно выбранная модель.
+
+    `backend` — прежний выбор «бэкенд №N»: модель роли на этом провайдере. До 1.162.0 он
+    подменял список провайдеров, а цепочки ролей (настройка кита с 1.153.0) его не читали —
+    выбор в панели молча не действовал. `model` — «провайдер/модель», без запасных: человек
+    выбирал сознательно, и молчаливая подмена хуже отказа. Момус проверяет ответ своей ролью.
+    → новая настройка; непосильный выбор — ValueError с причиной.
+    """
+    if backend and not model:
+        picked = [b for b in cfg["backends"] if b["n"] == backend]
+        if not picked:
+            raise ValueError(f"бэкенда №{backend} нет в настройке "
+                             f"(есть: {', '.join(str(b['n']) for b in cfg['backends'])})")
+        mine = next((b for b in AG.role_chain(cfg, role) if b["n"] == backend), None)
+        name = (mine or {}).get("model") or AG.role_model(picked[0], role)
+        if not name:
+            raise ValueError(f"у бэкенда №{backend} нет модели для роли {role}")
+        model = f"{picked[0].get('provider') or backend}/{name}"
+    if model:
+        return AG.pin_model(cfg, model, (role,))
+    if explicit_role and not AG.role_chain(cfg, role):
+        raise ValueError(f"у роли «{role}» нет моделей — раздел «Модели»")
+    return cfg
+
+
 def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
-            call=None, history: list = (), momus: bool = True) -> dict:
+            call=None, history: list = (), momus: bool = True, role: str = "worker") -> dict:
     """Вопрос к базе: пак собирает движок, отвечает модель, ответ проверяется.
 
     В уточнении контекст собирается по всему разговору, а не по последней фразе: «а если
@@ -5279,7 +5306,7 @@ def run_ask(cfg: dict, cwd: str, question: str, mode: str, max_cards: int,
     # Два способа нести одно и то же расходятся всегда; остался один.
     if history:
         prompt += PROMPT_ASK_HINT
-    a = call(cfg, "worker", [{"role": "user", "content": prompt}],
+    a = call(cfg, role, [{"role": "user", "content": prompt}],
              deadline=time.time() + cfg["request_timeout"],
              history=turns_as_messages(history))
     if not a["ok"]:
@@ -6762,6 +6789,10 @@ def main() -> int:
     ap.add_argument("--backend", type=int, default=0, metavar="N",
                     help="спросить конкретный бэкенд из списка (для --task ask): "
                          "1 — основной, дальше по порядку настройки")
+    ap.add_argument("--role", default="", metavar="РОЛЬ",
+                    help="ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)")
+    ap.add_argument("--model", default="", metavar="ПРОВАЙДЕР/МОДЕЛЬ",
+                    help="ответить ровно этой моделью провайдера, без запасных (для --task ask)")
     ap.add_argument("--defer-refresh", action="store_true",
                     help="тезисы: дописанные карточки с прежним тезисом ждут конца цикла "
                          "маршрута — внутри цикла пишутся только новые")
@@ -6851,18 +6882,14 @@ def main() -> int:
             print(f"agent_runner: разговора «{a.thread}» нет — уточнять нечего. "
                   "Список: --task ask --threads", file=sys.stderr)
             return 1
-        if a.backend:
-            # Человек выбрал модель в панели: спрашиваем именно её и не уходим по кольцу.
-            # Молчаливая подмена здесь хуже отказа — он выбирал сознательно.
-            picked = [b for b in cfg["backends"] if b["n"] == a.backend]
-            if not picked:
-                print(f"agent_runner: бэкенда №{a.backend} нет в настройке "
-                      f"(есть: {', '.join(str(b['n']) for b in cfg['backends'])})",
-                      file=sys.stderr)
-                return 1
-            cfg = {**cfg, "backends": picked}
+        role = a.role or "worker"
+        try:
+            cfg = ask_cfg(cfg, role, a.backend, a.model, explicit_role=bool(a.role))
+        except ValueError as e:
+            print(f"agent_runner: {e}", file=sys.stderr)
+            return 1
         res = run_ask(cfg, cwd, a.question, a.mode, a.limit or 40, history=history,
-                      momus=not a.no_momus)
+                      momus=not a.no_momus, role=role)
         text = report_ask(res, a.question, cfg)
         print(text)
         if res["ok"] and not a.no_journal:

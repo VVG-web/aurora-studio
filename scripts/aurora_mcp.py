@@ -44,8 +44,28 @@ MCP убирает посредника — ассистент сам ищет �
     kb_index    оглавление базы: строка на карточку, по разделам
     kb_ask      спросить базу — отвечает модель проекта, по карточкам и со ссылками
 
-Писать в базу через MCP нельзя, и это не настройка: чужой ассистент не проходит
-git-guard, а доверие к знанию считает движок по задачам, а не ассистент. Он читает — правит движок.
+С 1.162.0 — то, что нужно боту по расписанию и любому ассистенту для работы с проектом:
+
+    time_now                 текущее время (UTC и местное) — у модели часов нет
+    state_get/put/list/delete  память между прогонами: ключ → значение в своём пространстве
+    lock_acquire/release     замок на время работы: второй прогон того же дела не начнётся
+    review_checklist         чек-лист ревью истории или алгоритма (вопросы, критичность)
+    review_page              ревью страницы движком целиком: страница и связанные, чек-лист
+                             несколькими прогонами, оценка и вердикт кодом; отчёт — файлом
+    review_score             оценка готовых ответов на чек-лист по формуле шаблона
+    atlassian_check          доступны ли Jira и Confluence проекта и под кем
+    jira_search / jira_issue  очередь задач одним запросом (родитель, метки, вложения)
+    jira_publish             вложение → комментарий → метки, по шагам и с пробным прогоном
+    confluence_find / confluence_page  страница по номеру или словам; текст и её ссылки
+
+Механику — страницы, связи, оценку, публикацию — делает движок, а не модель: она тратит
+токены только на то, что требует суждения. Прежнему боту ревью для этого нужен был
+отдельный скрипт с переменными окружения, локом и прямыми REST-запросами.
+
+Писать в базу знаний через MCP нельзя, и это не настройка: чужой ассистент не проходит
+git-guard, а доверие к знанию считает движок по задачам, а не ассистент. Он читает — правит
+движок. Писать в Jira можно, только если проект это разрешил (`mcp: jira_write: true` в
+aurora.config.yaml); пробный прогон публикации работает всегда.
 
 Протокол — JSON-RPC 2.0 по stdio, разбирается стандартной библиотекой: ни MCP SDK, ни
 Node в поставке не появляется.
@@ -114,6 +134,107 @@ TOOLS = [
                     "зато ответ уже сверен с базой.",
      "inputSchema": {"type": "object", "required": ["question"], "properties": {
          "question": {"type": "string"}}}},
+    {"name": "time_now",
+     "description": "Текущие дата и время: UTC и местное время машины. У модели своих часов "
+                    "нет — время начала и конца прогона берите отсюда.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "state_get",
+     "description": "Прочитать сохранённое между прогонами: значение по ключу в своём "
+                    "пространстве (например, имя бота). Нет ключа — пусто.",
+     "inputSchema": {"type": "object", "required": ["space", "key"], "properties": {
+         "space": {"type": "string", "description": "пространство: имя бота или дела"},
+         "key": {"type": "string"}}}},
+    {"name": "state_put",
+     "description": "Сохранить значение между прогонами (любой JSON): прогресс по карточке, "
+                    "отметку «сделано». Следующий прогон прочитает его state_get.",
+     "inputSchema": {"type": "object", "required": ["space", "key", "value"], "properties": {
+         "space": {"type": "string"}, "key": {"type": "string"},
+         "value": {"description": "любое значение JSON"}}}},
+    {"name": "state_list",
+     "description": "Все ключи пространства с кратким видом значений.",
+     "inputSchema": {"type": "object", "required": ["space"], "properties": {
+         "space": {"type": "string"}}}},
+    {"name": "state_delete",
+     "description": "Удалить ключ пространства (например, карточка закрыта — её прогресс не нужен).",
+     "inputSchema": {"type": "object", "required": ["space", "key"], "properties": {
+         "space": {"type": "string"}, "key": {"type": "string"}}}},
+    {"name": "lock_acquire",
+     "description": "Взять замок на дело на N минут. Занят и не истёк — отказ: значит, это "
+                    "дело уже делает другой прогон, начинать второй нельзя.",
+     "inputSchema": {"type": "object", "required": ["name"], "properties": {
+         "name": {"type": "string"},
+         "minutes": {"type": "integer", "description": "на сколько (по умолчанию 30)"}}}},
+    {"name": "lock_release",
+     "description": "Снять замок, взятый lock_acquire.",
+     "inputSchema": {"type": "object", "required": ["name"], "properties": {
+         "name": {"type": "string"}}}},
+    {"name": "review_checklist",
+     "description": "Чек-лист ревью проекта (шаблон review_v2.0): вопросы профиля us "
+                    "(история) или alg (алгоритм), их критичность и что исправить. Нужен, "
+                    "если отвечаете на вопросы сами; иначе зовите review_page.",
+     "inputSchema": {"type": "object", "properties": {
+         "profile": {"type": "string", "enum": ["us", "alg"]}}}},
+    {"name": "review_page",
+     "description": "Ревью страницы Confluence движком целиком: читает страницу и связанные, "
+                    "отвечает на закрытый чек-лист несколькими прогонами модели проекта, "
+                    "считает оценку и вердикт кодом (веса 5/3/1, порог 9,0). Возвращает "
+                    "вердикт, оценку, сводку для комментария и путь к отчёту — его "
+                    "публикуют jira_publish по пути, не передавая текст. Долго: минуты.",
+     "inputSchema": {"type": "object", "required": ["page"], "properties": {
+         "page": {"type": "string", "description": "номер страницы или её адрес"},
+         "profile": {"type": "string", "enum": ["auto", "us", "alg"]},
+         "runs": {"type": "integer", "description": "прогонов чек-листа, 1–5 (по умолчанию 3)"}}}},
+    {"name": "review_score",
+     "description": "Оценить готовые ответы на чек-лист по формуле шаблона: оценка, вердикт, "
+                    "сводка и отчёт. Ответы — {\"US-01\": {\"v\": \"yes|no|na|unknown\", "
+                    "\"evidence\": \"дословная цитата\", \"fix\": \"что исправить\"}}.",
+     "inputSchema": {"type": "object", "required": ["answers"], "properties": {
+         "profile": {"type": "string", "enum": ["us", "alg"]},
+         "answers": {"type": "object"},
+         "incomplete": {"type": "boolean",
+                        "description": "не прочитана обязательная связанная страница"},
+         "title": {"type": "string"}, "code": {"type": "string"}}}},
+    {"name": "atlassian_check",
+     "description": "Доступны ли Jira и Confluence проекта, под каким пользователем, "
+                    "разрешена ли запись в Jira. Звать в начале прогона.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "jira_search",
+     "description": "Задачи Jira по JQL одним запросом: ключ, summary, тип, статус, метки, "
+                    "родитель (ключ, summary, тип) и имена вложений — по ним видно, что уже "
+                    "сделано, без запроса на каждую задачу.",
+     "inputSchema": {"type": "object", "required": ["jql"], "properties": {
+         "jql": {"type": "string"},
+         "limit": {"type": "integer", "description": "до 200 (по умолчанию 50)"}}}},
+    {"name": "jira_issue",
+     "description": "Одна задача Jira: поля, как в jira_search, и описание.",
+     "inputSchema": {"type": "object", "required": ["issue"], "properties": {
+         "issue": {"type": "string", "description": "ключ, например ABC-123"}}}},
+    {"name": "jira_publish",
+     "description": "Опубликовать результат в задачу Jira по шагам: вложение (path — файл "
+                    "проекта, например report_path из review_page, или content), затем "
+                    "комментарий, затем метки. Следующий шаг — только если предыдущий прошёл; "
+                    "вложение с тем же именем повторно не грузится. dry_run: true — показать, "
+                    "что было бы сделано, ничего не записав. Статус задачи не меняется.",
+     "inputSchema": {"type": "object", "required": ["issue"], "properties": {
+         "issue": {"type": "string"},
+         "path": {"type": "string", "description": "файл проекта для вложения"},
+         "content": {"type": "string", "description": "текст вложения, если файла нет"},
+         "filename": {"type": "string", "description": "имя вложения"},
+         "comment": {"type": "string"},
+         "labels_add": {"type": "array", "items": {"type": "string"}},
+         "labels_remove": {"type": "array", "items": {"type": "string"}},
+         "dry_run": {"type": "boolean"}}}},
+    {"name": "confluence_find",
+     "description": "Найти страницы Confluence по номеру (US-3.6.21) или словам в заголовке. "
+                    "Страницы, чей заголовок начинается с запроса, — первыми.",
+     "inputSchema": {"type": "object", "required": ["query"], "properties": {
+         "query": {"type": "string"}, "space": {"type": "string"},
+         "limit": {"type": "integer"}}}},
+    {"name": "confluence_page",
+     "description": "Страница Confluence текстом (без html), её версия и номера страниц, на "
+                    "которые она ссылается.",
+     "inputSchema": {"type": "object", "required": ["page"], "properties": {
+         "page": {"type": "string", "description": "номер страницы или её адрес"}}}},
 ]
 
 
@@ -184,7 +305,8 @@ class ToolError(Exception):
     """
 
 
-def run(project: str, script: str, args: list, timeout: int = 120, fail_from: int = 2) -> str:
+def run(project: str, script: str, args: list, timeout: int = 120, fail_from: int = 2,
+        stdin: str | None = None) -> str:
     """Команда движка проекта. Ни один инструмент не пишет — только читает.
 
     Код движка: 0 — готово, 1 — «отработала и нашла, что сказать» (например, по теме ничего не
@@ -196,7 +318,7 @@ def run(project: str, script: str, args: list, timeout: int = 120, fail_from: in
     if not os.path.isfile(path):
         path = str(SCRIPTS / script)
     try:
-        p = subprocess.run([sys.executable, path, *args], cwd=project,
+        p = subprocess.run([sys.executable, path, *args], cwd=project, input=stdin,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         raise ToolError(f"Команда {script} не ответила за {timeout} с.") from None
@@ -262,7 +384,210 @@ def call_tool(project: str, name: str, args: dict) -> str:
         return run(project, "agent_runner.py",
                    ["--task", "ask", "--no-journal", f"--question={question}"],
                    timeout=ASK_TIMEOUT, fail_from=1)
+    if name in WORK_TOOLS:
+        return WORK_TOOLS[name](project, args)
     raise ToolError(f"Инструмента {name} нет. Доступны: " + ", ".join(t["name"] for t in TOOLS))
+
+
+# ------------------------------------------------------------------ работа ботов (1.162.0)
+
+REVIEW_TIMEOUT = 1800       # ревью страницы — минуты: связанные страницы и несколько прогонов
+STATE_MAX = 1_000_000       # знаков на пространство: память прогона, а не склад
+
+
+def _state_file(project: str, space: str) -> str:
+    """Пространство памяти — файл в состоянии движка проекта (вне git)."""
+    import re as _re
+    safe = _re.sub(r"[^\w.-]+", "_", space.strip())[:80].strip("._") or "shared"
+    base = os.path.join(project, ".aurora", "state", "mcp")
+    if not os.path.isdir(os.path.join(project, ".aurora")) and \
+            os.path.isdir(os.path.join(project, ".opencode")):
+        base = os.path.join(project, ".opencode", "state", "mcp")
+    return os.path.join(base, safe + ".json")
+
+
+STATE_LOCK = threading.Lock()
+
+
+def _state_load(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _state_save(path: str, data: dict) -> None:
+    text = json.dumps(data, ensure_ascii=False, indent=1)
+    if len(text) > STATE_MAX:
+        raise ToolError(f"Пространство больше {STATE_MAX} знаков: удалите ненужные ключи "
+                        "(state_delete) — это память прогона, а не склад.")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import replace_file
+    replace_file(tmp, path)
+
+
+def _short(value) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 160 else text[:157] + "…"
+
+
+def t_time(project: str, args: dict) -> str:
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    local = now.astimezone()
+    return json.dumps({"utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "local": local.strftime("%Y-%m-%d %H:%M:%S"),
+                       "timezone": str(local.tzinfo), "weekday": local.strftime("%A")},
+                      ensure_ascii=False)
+
+
+def t_state(project: str, args: dict, op: str) -> str:
+    space = need(args, "space", "пространство: имя бота или дела")
+    path = _state_file(project, space)
+    with STATE_LOCK:
+        data = _state_load(path)
+        if op == "list":
+            if not data:
+                return f"Пространство «{space}» пусто."
+            return "\n".join(f"- {k}: {_short(v)}" for k, v in sorted(data.items()))
+        key = need(args, "key", "ключ")
+        if op == "get":
+            return json.dumps(data[key], ensure_ascii=False) if key in data else "(нет такого ключа)"
+        if op == "put":
+            if "value" not in args:
+                raise ToolError("Не задан value: что сохранить.")
+            data[key] = args["value"]
+            _state_save(path, data)
+            return f"Сохранено: {space} / {key}."
+        if data.pop(key, None) is None:
+            return "(такого ключа и не было)"
+        _state_save(path, data)
+        return f"Удалено: {space} / {key}."
+
+
+def t_lock(project: str, args: dict, take: bool) -> str:
+    import time as _t
+    name = need(args, "name", "имя дела, например имя бота")
+    path = _state_file(project, "_locks")
+    with STATE_LOCK:
+        data = _state_load(path)
+        now = _t.time()
+        row = data.get(name) or {}
+        if take:
+            try:
+                minutes = max(1, min(int(args.get("minutes") or 30), 24 * 60))
+            except (TypeError, ValueError):
+                minutes = 30
+            if row and row.get("until", 0) > now:
+                left = int((row["until"] - now) // 60) + 1
+                raise ToolError(f"Замок «{name}» занят ещё {left} мин — это дело уже делает "
+                                "другой прогон. Второй не начинайте: завершитесь с пометкой "
+                                "«SKIP: previous run still active».")
+            data[name] = {"until": now + minutes * 60, "taken": now}
+            _state_save(path, data)
+            return f"Замок «{name}» взят на {minutes} мин."
+        if data.pop(name, None) is None:
+            return f"Замка «{name}» не было."
+        _state_save(path, data)
+        return f"Замок «{name}» снят."
+
+
+REVIEW_SINCE = "1.162.0"     # с этой версии движок проекта отдаёт ревью машине (`--json`)
+
+
+def need_engine(project: str, since: str, what: str) -> None:
+    """Инструмент зовёт команду движка проекта — та должна быть не старше нужной версии.
+    Иначе отказ словами, а не справка argparse о незнакомом флаге."""
+    def parts(v: str) -> tuple:
+        return tuple(int(x) for x in (v.split("-")[0].split(".") + ["0", "0"])[:3] if x.isdigit())
+    have = version(project)
+    try:
+        old = parts(have) < parts(since)
+    except ValueError:
+        old = False
+    if old:
+        raise ToolError(f"{what}: движок проекта {have} старше {since} — обновите движок "
+                        "проекта (панель, раздел «Версия») и повторите.")
+
+
+def t_review_checklist(project: str, args: dict) -> str:
+    need_engine(project, REVIEW_SINCE, "review_checklist")
+    profile = str(args.get("profile") or "us")
+    if profile not in ("us", "alg"):
+        raise ToolError("profile — us (история) или alg (алгоритм).")
+    return run(project, "review_run.py", ["--checklist", "--profile", profile])
+
+
+def t_review_page(project: str, args: dict) -> str:
+    need_engine(project, REVIEW_SINCE, "review_page")
+    page = need(args, "page", "номер страницы или её адрес")
+    profile = str(args.get("profile") or "auto")
+    if profile not in ("auto", "us", "alg"):
+        raise ToolError("profile — auto, us или alg.")
+    try:
+        runs = max(1, min(int(args.get("runs") or 3), 5))
+    except (TypeError, ValueError):
+        runs = 3
+    return run(project, "review_run.py", ["--page", page, "--profile", profile,
+                                          "--runs", str(runs), "--json"],
+               timeout=REVIEW_TIMEOUT, fail_from=2)
+
+
+def t_review_score(project: str, args: dict) -> str:
+    need_engine(project, REVIEW_SINCE, "review_score")
+    if not isinstance(args.get("answers"), dict) or not args["answers"]:
+        raise ToolError("Не заданы answers: {\"US-01\": {\"v\": \"yes\"}, …}.")
+    req = {k: args[k] for k in ("profile", "answers", "incomplete", "title", "code") if k in args}
+    return run(project, "review_run.py", ["--score-json"], stdin=json.dumps(req, ensure_ascii=False))
+
+
+def t_atlassian(op: str):
+    """Операция `atlassian_ops.py`: JSON на вход и на выход, отказ — ToolError с причиной."""
+    keys = {"atlassian_check": (), "jira_search": ("jql", "limit"), "jira_issue": ("issue",),
+            "jira_publish": ("issue", "path", "content", "filename", "comment", "labels_add",
+                             "labels_remove", "dry_run"),
+            "confluence_find": ("query", "space", "limit"), "confluence_page": ("page",)}[op]
+
+    def call(project: str, args: dict) -> str:
+        req = {"op": "check" if op == "atlassian_check" else op}
+        req.update({k: args[k] for k in keys if k in args})
+        out = run(project, "atlassian_ops.py", [], timeout=300,
+                  stdin=json.dumps(req, ensure_ascii=False))
+        try:
+            data = json.loads(out)
+        except ValueError:
+            return out
+        text = json.dumps(data, ensure_ascii=False, indent=1)[:LIMIT]
+        if isinstance(data, dict) and data.get("ok") is False:
+            # Отказ (нет ключа, запись выключена) или шаг публикации не прошёл — это не
+            # ответ, а сбой: ассистент обязан его отличить и не ставить «сделано».
+            raise ToolError(data.get("error") or text)
+        return text
+    return call
+
+
+WORK_TOOLS = {
+    "time_now": t_time,
+    "state_get": lambda p, a: t_state(p, a, "get"),
+    "state_put": lambda p, a: t_state(p, a, "put"),
+    "state_list": lambda p, a: t_state(p, a, "list"),
+    "state_delete": lambda p, a: t_state(p, a, "delete"),
+    "lock_acquire": lambda p, a: t_lock(p, a, True),
+    "lock_release": lambda p, a: t_lock(p, a, False),
+    "review_checklist": t_review_checklist,
+    "review_page": t_review_page,
+    "review_score": t_review_score,
+    **{name: t_atlassian(name) for name in ("atlassian_check", "jira_search", "jira_issue",
+                                            "jira_publish", "confluence_find",
+                                            "confluence_page")},
+}
 
 
 def search(project: str, query: str, limit: int) -> str:

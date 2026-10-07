@@ -29,6 +29,7 @@ import tempfile
 
 from aurora_common import yaml_scalar
 import unicodedata
+import urllib.parse
 import urllib.request
 
 CONFIG = "aurora.config.yaml"
@@ -126,6 +127,52 @@ class RestApi:
                                               "User-Agent": self.agent})
         with urllib.request.urlopen(req, timeout=120) as r:
             return r.read()
+
+    def send(self, method: str, path: str, body=None, files: dict | None = None,
+             timeout: float = 30, tries: int = 3):
+        """Запись в источник: POST/PUT с JSON или файлом (multipart). → ответ JSON или {}.
+
+        Повторяем только то, что лечится ожиданием: обрыв сети, 5xx и 429 — до трёх раз с
+        растущей паузой. Внятный отказ сервера (400, 403, 404) повтором не лечится и
+        уходит вызывающему как есть, с телом ответа: в нём причина.
+        """
+        import time
+        import urllib.error
+        url = path if path.startswith("http") else self.base + path
+        headers = {"Authorization": self.auth, "Accept": "application/json",
+                   "User-Agent": self.agent}
+        if files:
+            # Jira Server принимает вложение только с этим заголовком (защита от XSRF).
+            boundary = "aurora" + os.urandom(12).hex()
+            parts = []
+            for name, (filename, content) in files.items():
+                parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; "
+                             f"filename*=UTF-8''{urllib.parse.quote(filename)}\r\n"
+                             f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
+                             + content + b"\r\n")
+            data = b"".join(parts) + f"--{boundary}--\r\n".encode()
+            headers.update({"Content-Type": f"multipart/form-data; boundary={boundary}",
+                            "X-Atlassian-Token": "no-check"})
+        else:
+            data = json.dumps(body if body is not None else {}, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        last = None
+        for attempt in range(tries):
+            req = urllib.request.Request(url, data=data, method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    raw = r.read()
+                return json.loads(raw) if raw.strip() else {}
+            except urllib.error.HTTPError as e:
+                if e.code not in (429, 500, 502, 503, 504) or attempt == tries - 1:
+                    raise
+                last = e
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                if attempt == tries - 1:
+                    raise
+                last = e
+            time.sleep(2 ** attempt)
+        raise last  # pragma: no cover — цикл выше всегда возвращает или бросает
 
 
 # ------------------------------------------------------------------ зеркало

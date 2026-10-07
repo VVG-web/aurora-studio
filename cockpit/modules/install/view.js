@@ -60,6 +60,7 @@ export async function refresh(ctx){
   box.append(card);
   box.append(extrasCard(ctx));
   box.append(gitModsCard(ctx));
+  box.append(harnessCard(ctx));
 
   if (!ctx.project) return;
   const p = ctx.project;
@@ -337,6 +338,77 @@ function pydanticHint(ctx){
     el("summary", {style:"font-size:12.5px;cursor:pointer"}, t("install.ex_settings")),
     box);
   return det;
+}
+
+/* Aurora MCP в ассистентах машины (1.162.0). Каталог ассистентов — `scripts/harnesses.json`,
+   он едет с китом. «Найти» спрашивает версии у самих команд; «Подключить» делает копию файла
+   ассистента, вставляет запись и проверяет файл; «Вернуть» кладёт копию обратно. */
+let HARNESS = null;
+
+function harnessCard(ctx){
+  const {t, el} = ctx;
+  const wrap = el("div", {style:"margin-top:18px"});
+  const draw = async (versions) => {
+    wrap.innerHTML = "";
+    wrap.append(el("h2", {}, t("install.hs_title")),
+      el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("install.hs_about")));
+    const body = el("div", {class:"card"}, el("span", {class:"spin"}));
+    wrap.append(body);
+    HARNESS = await ctx.api("/api/harness" + (versions ? "?versions=1" : ""), {quiet:true});
+    body.innerHTML = "";
+    if (!HARNESS || HARNESS.error){
+      body.append(el("div", {class:"muted"}, (HARNESS && HARNESS.error) || t("install.hs_failed")));
+      return;
+    }
+    const found = HARNESS.harnesses.filter(h => h.found);
+    body.append(el("div", {class:"row", style:"gap:8px;align-items:center;margin-bottom:6px"},
+      el("span", {class:"muted", style:"flex:1;font-size:12.5px"},
+        t("install.hs_found", {n: found.length, all: HARNESS.harnesses.length})),
+      el("button", {class:"btn sm", onclick: () => draw(true)}, t("install.hs_find"))));
+    found.forEach(h => body.append(harnessRow(ctx, h, () => draw(versions))));
+    if (!found.length) body.append(el("div", {class:"muted"}, t("install.hs_none")));
+    body.append(el("div", {class:"muted mono", style:"font-size:12px;margin-top:10px;overflow-wrap:anywhere"},
+      t("install.hs_server", {cmd: [HARNESS.command, ...HARNESS.args].join(" ")})));
+  };
+  draw(false);
+  return wrap;
+}
+
+function harnessRow(ctx, h, redraw){
+  const {t, el} = ctx;
+  const chip = h.aurora === true ? el("span", {class:"chip ok", style:"flex:none"}, t("install.hs_on"))
+    : h.aurora === false ? el("span", {class:"chip warn", style:"flex:none"}, t("install.hs_off"))
+    : el("span", {class:"chip bad", style:"flex:none"}, t("install.hs_broken"));
+  const snip = el("pre", {class:"mono", hidden:"", style:"font-size:12px;white-space:pre-wrap;margin:6px 0 0"},
+    h.snippet);
+  const act = async (what, btn) => {
+    if (what === "restore" && !confirm(t("install.hs_restore_ask", {name: h.name}))) return;
+    btn.disabled = true;
+    const r = await ctx.api(what === "add" ? "/api/harness/add" : "/api/harness/restore",
+      {method:"POST", quiet:true,
+      body: JSON.stringify({id: h.id})});
+    btn.disabled = false;
+    ctx.toast(r && r.ok ? (what === "add" ? t("install.hs_added", {name: h.name})
+                                          : t("install.hs_restored", {name: h.name}))
+                        : (r && r.error) || t("install.hs_failed"), r && r.ok ? "ok" : "err");
+    redraw();
+  };
+  const note = t("install.hs_note." + h.id);
+  return el("div", {class:"list-item", style:"align-items:flex-start"},
+    chip,
+    el("div", {style:"flex:1;min-width:0"},
+      el("div", {style:"font-weight:600"}, h.name, h.version ? el("span", {class:"muted",
+        style:"font-weight:400;margin-left:8px;font-size:12.5px"}, h.version) : null),
+      el("div", {class:"muted mono", style:"font-size:12px;margin-top:2px;overflow-wrap:anywhere"},
+        h.config + (h.config_exists ? "" : " · " + t("install.hs_new_file"))),
+      note !== "install.hs_note." + h.id ? el("div", {class:"muted", style:"font-size:12.5px;margin-top:4px"}, note) : null,
+      snip),
+    el("div", {class:"row", style:"gap:6px;flex:none;flex-wrap:wrap;justify-content:flex-end"},
+      el("button", {class:"btn sm", onclick: () => { snip.hidden = !snip.hidden; }}, t("install.hs_show")),
+      h.aurora === false ? el("button", {class:"btn sm primary",
+        onclick: ev => act("add", ev.target)}, t("install.hs_add")) : null,
+      h.backups ? el("button", {class:"btn sm", onclick: ev => act("restore", ev.target)},
+        t("install.hs_restore", {n: h.backups})) : null));
 }
 
 export default {mount, refresh};

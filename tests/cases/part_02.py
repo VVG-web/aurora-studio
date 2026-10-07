@@ -303,15 +303,16 @@ def test_ask_tab_names_the_model_and_lets_you_pick_it(tmp: Path):
                       ('id="askPing"', "нельзя проверить основную модель"),
                       ('id="askPrimary"', "нет возврата на основную")):
         assert need in ui, why
-    assert 'args.push("--backend", pick)' in ui, "выбор модели не уходит в команду"
+    assert 'args.push("--model", pick.slice(6))' in ui and 'args.push("--role", pick.slice(5))' in ui, \
+        "выбор роли или модели не уходит в команду"
     assert "(запасная)" in ui, "ответ запасной модели не отмечен как запасной"
     assert "/api/agent/retry-primary" in ui and "/api/agent/ping" in ui, \
         "кнопки не привязаны к серверу"
 
     src = (KIT / "scripts/agent_runner.py").read_text(encoding="utf-8")
-    assert '"--backend"' in src and 'cfg = {**cfg, "backends": picked}' in src, \
+    assert '"--model"' in src and "AG.pin_model(cfg, model, (role,))" in src, \
         "команда не умеет спрашивать конкретную модель"
-    assert 'бэкенда №{a.backend} нет в настройке' in src, \
+    assert 'бэкенда №{backend} нет в настройке' in src, \
         "выбор несуществующей модели подменяется молча — человек выбирал сознательно"
 
 
@@ -344,12 +345,17 @@ def test_ask_tab_refills_the_model_list_and_names_a_failure(tmp: Path):
 
     harness = """
 import {fillBackends, renderHistory} from "MODULE";
-const el = (tag, attrs, ...kids) => ({tag, value: attrs && attrs.value,
+const el = (tag, attrs, ...kids) => ({tag, value: attrs && attrs.value, kids,
   textContent: kids.map(k => typeof k === "string" ? k : (k && k.textContent) || "").join("")});
-const select = () => ({options: [{value: "0", textContent: "по кольцу"}], value: "0", dataset: {},
-  append(o){ this.options.push(o); },
-  remove(i){ const [o] = this.options.splice(i, 1);
-             if (o && o.value === this.value) this.value = this.options[0].value; }});
+// Как у настоящего <select>: строки внутри групп — тоже `options`.
+const select = () => ({items: [{tag: "option", value: "0", textContent: "роль"}], value: "0", dataset: {},
+  get options(){ return this.items.flatMap(x => x.tag === "optgroup" ? x.kids : [x]); },
+  append(o){ o.remove = () => { this.items = this.items.filter(y => y !== o);
+                                if (!this.options.some(x => x.value === this.value)) this.value = "0"; };
+             this.items.push(o); },
+  remove(i){ const o = this.options[i]; this.items = this.items.filter(y => y !== o);
+             if (o && o.value === this.value) this.value = "0"; },
+  querySelectorAll(q){ return this.items.filter(x => x.tag === q); }});
 const box = () => ({kids: [], replaceChildren(...k){ this.kids = k; },
   append(...k){ this.kids.push(...k); },
   get text(){ return this.kids.map(k => k.textContent).join(" | "); }});
@@ -373,16 +379,19 @@ const ctx = {
   replies.push(new Error("Failed to fetch"));
   await fillBackends(ctx);
   res.failed = {opts: opts(), note: said()};
-  replies.push({backends: [{n: 1, models: {worker: "m1"}}, {n: 2, model: "m2"}]});
+  replies.push({roles: [{id: "worker", name: "", models: ["m1"]}, {id: "qa", name: "", models: ["m2"]}],
+                choices: [{provider: "gw1", name: "Ш1", n: 1, models: ["m1"]},
+                          {provider: "gw2", name: "Ш2", n: 2, models: ["m2"]}]});
   await fillBackends(ctx);
   res.retried = {opts: opts(), note: said()};
   const before = calls; await fillBackends(ctx); res.sameProjectCalls = calls - before;
-  sel.value = "2"; ctx.project = {path: "/p/B"};
-  replies.push({backends: [{n: 2, model: "m2b"}, {n: 3, model: "m3"}]});
+  sel.value = "model:gw2/m2"; ctx.project = {path: "/p/B"};
+  replies.push({roles: [], choices: [{provider: "gw2", name: "Ш2", n: 2, models: ["m2", "m2b"]},
+                                     {provider: "gw3", name: "Ш3", n: 3, models: ["m3"]}]});
   await fillBackends(ctx);
   res.switched = {opts: opts(), value: sel.value,
                   labels: sel.options.map(o => o.textContent).join(",")};
-  ctx.project = {path: "/p/C"}; replies.push({backends: []});
+  ctx.project = {path: "/p/C"}; replies.push({roles: [], choices: []});
   await fillBackends(ctx);
   res.empty = {opts: opts(), note: said()};
   replies.push({error: "проект не найден среди обнаруженных"});
@@ -406,13 +415,14 @@ const ctx = {
 
     assert r["failed"]["opts"] == "0", f"сбой запроса моделей оставил список: {r['failed']}"
     says(r["failed"]["note"], "ask.models_failed")
-    assert r["retried"]["opts"] == "0,1,2" and not r["retried"]["note"], \
+    assert r["retried"]["opts"] == "0,role:qa,model:gw1/m1,model:gw2/m2,more" and not r["retried"]["note"], \
         f"после сбоя список не собрался заново — выбор пуст до перезагрузки: {r['retried']}"
     assert r["sameProjectCalls"] == 0, \
         "модели того же проекта запрашиваются заново при каждом открытии вкладки"
-    assert r["switched"]["opts"] == "0,2,3" and "m2b" in r["switched"]["labels"], \
+    assert r["switched"]["opts"] == "0,model:gw2/m2,model:gw2/m2b,model:gw3/m3,more" \
+        and "m2b" in r["switched"]["labels"], \
         f"при смене проекта в выборе остались модели прошлого: {r['switched']}"
-    assert r["switched"]["value"] == "2", \
+    assert r["switched"]["value"] == "model:gw2/m2", \
         "смена проекта сбросила выбор модели, которая есть и в новом проекте"
     assert r["empty"]["opts"] == "0", f"пустая настройка агента оставила модели: {r['empty']}"
     says(r["empty"]["note"], "ask.models_empty")

@@ -1314,7 +1314,7 @@ def bots_state(project: str) -> dict:
     for b in rows:
         b["id"] = BOTS.bot_id(project, b["file"])
     return {"bots": rows, "mcp": BOTS.mcp_names(project), "skills": BOTS.skill_names(project),
-            "roles": BOTS.llm_roles(),
+            "roles": BOTS.llm_roles(), "choices": BOTS.model_choices(),
             "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR}
 
 
@@ -3533,15 +3533,6 @@ def environment(fresh: bool = False) -> dict:
                 continue
         return False
 
-    mcp = os.path.expanduser("~/.cursor/mcp.json")
-    mcp_ok = False
-    if os.path.isfile(mcp):
-        try:
-            d = json.loads(read_text(mcp))
-            srv = (d.get("mcpServers") or {})
-            mcp_ok = any("atlas" in k.lower() for k in srv)
-        except Exception:
-            mcp_ok = False
     plat = platform_key()
     items = [
         {"name": "git", "ok": bool(find_bin("git")), "kind": "bin",
@@ -3552,9 +3543,9 @@ def environment(fresh: bool = False) -> dict:
     for pkg, mods, what in ENV_PY:
         items.append({"name": pkg, "ok": has_module(mods), "kind": "py", "pip": pkg,
                       "enables": what, "install": pip_command(pkg)})
-    items.append({"name": "Atlassian MCP в Cursor", "ok": mcp_ok, "kind": "mcp",
-                  "enables": "работа ассистента с Confluence/Jira из редактора",
-                  "install": "Cursor → Settings → MCP → mcp-atlassian"})
+    # Строки «Atlassian MCP в Cursor» больше нет (1.162.0): это настройка одного редактора,
+    # а не движка. Вместо неё — «Aurora MCP в харнессах»: какие ассистенты есть на машине и
+    # подключён ли к ним сервер Авроры (`harness_mcp.py`).
     out = {"python": sys.version.split()[0], "python_path": sys.executable,
            "platform": plat, "items": items}
     CACHE["env"] = out
@@ -3597,7 +3588,7 @@ def agent_state(project: str = "") -> dict:
         "request_timeout": cfg["request_timeout"], "parallel": cfg.get("parallel", 1),
         "slots": len(pool),
         "slot_split": [[n, pool.count(n)] for n in sorted(set(pool))],
-        "mcp": sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {})),
+        "mcp": sorted((AG.mcp_config(project, kit=KIT, with_aurora=bool(project)).get("mcpServers") or {})),
         "backends": [{"n": b["n"], "name": b.get("name", ""), "url": b["url"],
                       "key_set": bool(b["key"]), "model": b["model"], "models": b["models"],
                       "context": b.get("context", 0), "width": b.get("width", 0),
@@ -3610,7 +3601,20 @@ def agent_state(project: str = "") -> dict:
         "ocr": {"model": (cfg.get("ocr") or {}).get("model", ""),
                 "ring": [{"n": r["n"], "why": r["why"]} for r in AG.ocr_ring(cfg)]},
         "venv": dict(zip(("ok", "version"), AG.venv_status()), path=str(AG.VENV)),
+        # Выбор «роль или модель» в «Спросить» и у бота: роли — цепочкой с запасными,
+        # модель — ровно она. Имя роли движка, которое не меняли, — пустое: панель пишет
+        # его на языке интерфейса.
+        "roles": llm_roles_for_ui(),
+        "choices": AG.model_choices(cfg),
     }
+
+
+def llm_roles_for_ui() -> list:
+    """Роли LLM для выбора в панели: [{id, name, models}] — то же, что у ботов."""
+    try:
+        return BOTS.llm_roles()
+    except Exception:  # noqa: BLE001 — без настройки моделей ролей просто нет
+        return []
 
 
 def pydantic_state(project: str = "") -> dict:
@@ -3847,6 +3851,33 @@ def adapter_alarm() -> list:
                          "project": os.path.basename(str(row.get("project") or "")),
                          "calls": int(row.get("calls") or 0)})
     return rows
+
+
+def harness_state(versions: bool = False) -> dict:
+    """Ассистенты из каталога кита (`scripts/harnesses.json`) и Аврора в каждом из них.
+    Пояснения к ассистентам — в каталоге строк раздела, а не в ответе: так они на языке
+    интерфейса."""
+    import harness_mcp as HM
+    try:
+        rows = HM.detect(versions=versions)
+    except Exception as e:  # noqa: BLE001 — битый каталог не роняет раздел
+        return {"error": f"каталог ассистентов не прочитан: {e}"}
+    for r in rows:
+        r.pop("note", None)
+    command, args = HM.server_command(KIT)
+    return {"harnesses": rows, "command": command, "args": args}
+
+
+def harness_action(action: str, payload: dict) -> dict:
+    """Подключить MCP Авроры к ассистенту или вернуть его файл из копии."""
+    import harness_mcp as HM
+    hid = str(payload.get("id") or "")
+    try:
+        if action == "add":
+            return HM.add(hid)
+        return HM.restore(hid, str(payload.get("stamp") or ""))
+    except HM.HarnessError as e:
+        return {"ok": False, "error": str(e)}
 
 
 def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
@@ -4153,6 +4184,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(bot_file(project, (q.get("file") or [""])[0]))
         elif u.path == "/api/gitmods":
             self.send_json(gitmods_state(fresh=bool(q.get("fresh"))))
+        elif u.path == "/api/harness":
+            # Ассистенты машины и MCP Авроры в них. Версии спрашиваются у самих команд
+            # (`--version`) — секунды, поэтому только по кнопке «Найти».
+            self.send_json(harness_state(versions=bool(q.get("versions"))))
         elif u.path == "/api/gitsync":
             project = (q.get("project") or [""])[0]
             if not self._known(project):
@@ -4306,7 +4341,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             import agent_core as AG
             import request_context as RC
-            names = sorted((AG.mcp_config(project, kit=KIT).get("mcpServers") or {}))
+            names = sorted((AG.mcp_config(project, kit=KIT, with_aurora=bool(project)).get("mcpServers") or {}))
             self.send_json({"items": RC.suggest(project, q.get("q", [""])[0], names, kit=KIT)})
         elif u.path == "/api/artifacts":
             # Что уже создано по типу: список файлов из его папки. Публиковать выбирают
@@ -4723,6 +4758,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/gitsync/parse":
             # Строка из `git clone` → сервер, репозиторий, ветка, логин. Ничего не пишет.
             self.send_json(GS.parse_clone(str(payload.get("text") or "")))
+            return
+        if u.path in ("/api/harness/add", "/api/harness/restore"):
+            self.send_json(harness_action(u.path.rsplit("/", 1)[1], payload))
             return
         if u.path == "/api/gitmods/install":
             self.send_json(GS.install_module(str(payload.get("id") or ""), Path(KIT)))
@@ -5210,13 +5248,40 @@ def mark_running(job_id: str, name: str, project: str, on: bool) -> None:
     except (OSError, ValueError):
         rows = {}
     if on:
+        # `panel` — процесс панели, что ведёт работу: новая панель снимает только записи
+        # мёртвых панелей (`drop_dead_running`), а не чужие живые.
         rows[job_id] = {"cmd": name, "project": os.path.basename(project or ""),
-                        "since": utc_stamp()}
+                        "since": utc_stamp(), "panel": os.getpid()}
     else:
         rows.pop(job_id, None)
     try:
         with open(RUNNING, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def drop_dead_running() -> None:
+    """Снять записи «идёт», чья панель умерла; записи живых панелей — оставить.
+
+    Записи без `panel` (до 1.162.0) и записи мёртвых процессов — следы падения: без
+    уборки они навсегда запретили бы перезапуск («идёт работа»). Запись живой панели —
+    не след: её работа действительно идёт, и стирать её значит ослепить ту панель.
+    """
+    from aurora_common import pid_alive
+    try:
+        with open(RUNNING, encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        rows = {}
+    live = {k: v for k, v in rows.items() if isinstance(v, dict) and v.get("panel")
+            and v["panel"] != os.getpid() and pid_alive(int(v["panel"]))}
+    try:
+        if live:
+            with open(RUNNING, "w", encoding="utf-8") as f:
+                json.dump(live, f, ensure_ascii=False)
+        else:
+            os.remove(RUNNING)
     except OSError:
         pass
 
@@ -5311,10 +5376,10 @@ def main() -> int:
             print(f"Не удалось остановить прежнюю панель: {e}", file=sys.stderr)
 
     # После падения в списке остаются мёртвые записи — новая панель начинает с чистого.
-    try:
-        os.remove(RUNNING)
-    except OSError:
-        pass
+    # Но только с записей мёртвых панелей: 7.10.2026 вторая панель (проверка разработчика
+    # с другим HOME) стёрла файл целиком посреди ночной цепочки — работающая панель
+    # потеряла отметки «что идёт», и цепочка выглядела законченной.
+    drop_dead_running()
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     except OSError as e:

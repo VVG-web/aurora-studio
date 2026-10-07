@@ -1024,6 +1024,59 @@ def looks_like_overflow(err: str, body) -> bool:
                                    "reduce the length", "превышен контекст"))
 
 
+def model_choices(cfg: dict) -> list:
+    """Модели чата, которые знает настройка: [{provider, name, n, models}] по провайдерам.
+
+    Модель провайдера попадает сюда, если стоит хоть в одной роли раздела «Модели». Полный
+    список провайдера панель спрашивает у него самого (`models_of`) — это сетевой запрос,
+    и делать его на каждом открытии страницы незачем.
+    """
+    out: dict = {}
+    for chain in ((cfg.get("chains") or {}).get("llm") or {}).values():
+        for b in chain:
+            row = out.setdefault(b["provider"], {"provider": b["provider"], "name": b.get("name", ""),
+                                                 "n": b["n"], "models": []})
+            if b["model"] not in row["models"]:
+                row["models"].append(b["model"])
+    return sorted(out.values(), key=lambda r: r["n"])
+
+
+def pin_model(cfg: dict, spec: str, roles=("worker",)) -> dict:
+    """«провайдер/модель» → копия настройки, где названные роли идут ровно этой моделью.
+
+    Там, где вызов один — ответ «Спросить», бот, — человек выбирает модель сознательно, и
+    подменять её запасной молча нельзя: отказ честнее. Конвейер базы живёт ролями — у них
+    запасная цепочка, ширина и рассуждения по роли. Неизвестный провайдер — ValueError.
+    """
+    prov, _sep, model = str(spec or "").partition("/")
+    prov, model = prov.strip(), model.strip()
+    if not prov or not model:
+        raise ValueError(f"модель задаётся как «провайдер/модель», а не «{spec}»")
+    base = next((b for b in cfg.get("backends") or [] if b.get("provider") == prov), None)
+    if base is None:
+        raise ValueError(f"провайдера «{prov}» нет в разделе «Модели»")
+    known = next((b for chain in ((cfg.get("chains") or {}).get("llm") or {}).values()
+                  for b in chain if b["provider"] == prov and b["model"] == model), None)
+    elem = dict(known) if known else {
+        "n": base["n"], "provider": prov, "name": base.get("name", ""), "url": base["url"],
+        "key": base["key"], "models": {}, "context": 0, "width": base.get("width", 0),
+        "parallel": base.get("parallel", True), "chat": True,
+        "template": base.get("template") or {}, "template_error": "",
+        "embed_model": "", "embed_url": base["url"], "ocr_model": "", "ocr_url": base["url"]}
+    elem.update(model=model, fallback=False)
+    out = dict(cfg)
+    if cfg.get("chains") is not None:
+        chains = {cap: dict(v) for cap, v in cfg["chains"].items()}
+        llm = chains.setdefault("llm", {})
+        for role in roles:
+            llm[role] = [elem]
+        out["chains"] = chains
+    else:
+        out["backends"] = [dict(elem, models={r: model for r in roles})]
+    out["pinned"] = f"{prov}/{model}"
+    return out
+
+
 def role_chain(cfg: dict, role: str) -> list:
     """Бэкенды роли по порядку (настройка кита). Пустая роль — роль `worker`."""
     llm = (cfg.get("chains") or {}).get("llm") or {}
@@ -1184,7 +1237,24 @@ def read_mcp_servers(path) -> dict:
         if isinstance(servers, dict) else {}
 
 
-def mcp_config(project: str, kit=None) -> dict:
+AURORA_MCP = "aurora"
+
+
+def aurora_mcp_spec(project: str) -> dict:
+    """MCP самой Авроры для прогона в проекте: база, ревью, Jira, память и замок бота.
+
+    Сервер — движка проекта (той же версии, что прогон), иначе — кита. Боту он нужен
+    так же, как чужие серверы: всё, чего модель не умеет сама, делает движок.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    mine = os.path.join(project, ".aurora", "scripts", "aurora_mcp.py")
+    path = mine if os.path.isfile(mine) else os.path.join(here, "aurora_mcp.py")
+    return {"command": sys.executable, "args": [path, "--project", project],
+            "about": "Аврора: база знаний проекта, ревью историй и алгоритмов, Jira и "
+                     "Confluence проекта, время, память между прогонами, замок"}
+
+
+def mcp_config(project: str, kit=None, with_aurora: bool = False) -> dict:
     """MCP-серверы прогона: машины и проекта — в стандартной форме `{"mcpServers": {...}}`.
 
     Форма та же, что у Claude Code и Cursor: своя заставила бы человека держать две
@@ -1201,6 +1271,10 @@ def mcp_config(project: str, kit=None) -> dict:
     if project:
         for name, spec in read_mcp_servers(os.path.join(project, "mcp.json")).items():
             merged[name] = {**merged.get(name, {}), **spec}
+        # MCP самой Авроры — прогону с инструментами, ботам и спискам панели. Свой сервер с
+        # тем же именем у машины или проекта сильнее: человек вправе его переопределить.
+        if with_aurora and AURORA_MCP not in merged:
+            merged[AURORA_MCP] = aurora_mcp_spec(project)
     return {"mcpServers": merged} if merged else {}
 
 
@@ -1494,7 +1568,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 payload["messages"] = list(history) + list(msgs)
             if tools:
                 payload["tools_root"] = os.getcwd()
-                payload["mcp"] = mcp_config(os.getcwd())
+                payload["mcp"] = mcp_config(os.getcwd(), with_aurora=True)
                 if mcp_only is not None:
                     # Бот видит только свои серверы: прогон по расписанию идёт без человека,
                     # и сервер, которого в боте нет, не должен подключаться «по требованию».

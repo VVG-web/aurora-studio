@@ -99,10 +99,10 @@
   "models.run_slots": "Actually at once: {n} ({split})",
   "models.measure": "Measure gateways",
   "models.measure_hint": "Growing batches of requests to each provider: how many it really takes at once. The result is in the console.",
-  "models.role_default.worker": "Parsing and theses",
-  "models.role_default.planner": "Planner and extraction",
-  "models.role_default.critic": "Critic (Momus)",
-  "models.role_default.qa": "Answers to questions",
+  "models.role_default.worker": "Writer: parsing, theses, answers",
+  "models.role_default.planner": "Planner: plans, extraction, meetings",
+  "models.role_default.critic": "Critic: checks decisions",
+  "models.role_default.qa": "Momus: support check and review",
   "models.role_default.document": "Document scans",
   "models.role_default.index": "Knowledge base index",
   "models.run_debug": "Debug",
@@ -110,5 +110,9 @@
   "models.ping_failed": "The check did not answer — the panel is unreachable or was interrupted.",
   "models.role_empty_default.llm": "No backends — the agent has nothing to run on: pick a provider and a model.",
   "models.role_empty_default.ocr": "No backends — scan recognition is off. Name the model explicitly: a guessed name gives not a refusal but a coherent fabrication.",
-  "models.role_empty_default.embeddings": "No backends — semantic search is off."
+  "models.role_empty_default.embeddings": "No backends — semantic search is off.",
+  "models.role_about.worker": "Writes: cards from sources, theses, the “Ask” answer, the “Productivity” document text, links in theses, aliases and transliteration.",
+  "models.role_about.planner": "Plans: parsing a source and meetings, extracting foreign definitions, splitting long cards, the “Productivity” document plan (with tools and MCP).",
+  "models.role_about.critic": "Checks decisions: parsed cards, the “empty” verdict, twins, Jira tasks, aliases, the golden set, the “Productivity” document.",
+  "models.role_about.qa": "Momus: looks for unsupported claims in theses, “Ask” answers and documents; card clashes; automatic story review."
 }

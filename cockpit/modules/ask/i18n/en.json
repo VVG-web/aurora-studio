@@ -12,7 +12,7 @@
   "ask.mode_evaluate": "everything: untrusted and meetings too",
   "ask.mode_ask": "trusted + decision history",
   "ask.model": "Model:",
-  "ask.ring": "by the ring (primary, the spare on refusal)",
+  "ask.ring": "the «Writer» role — by its chain (primary, the spare on refusal)",
   "ask.hint_enter": "Ctrl+Enter — ask",
   "ask.export": "To .md",
   "ask.export_hint": "Export the questions and answers of this conversation into an .md file",
@@ -58,5 +58,13 @@
   "ask.thread_failed": "the conversation was not read",
   "ask.mode_trusted_meetings": "trusted and meetings",
   "ask.mode_meetings": "meetings only",
-  "ask.who_none": "model: —"
+  "ask.who_none": "model: —",
+  "ask.group_roles": "Other roles — by their chain",
+  "ask.group_provider": "{name} — exactly this model, no spares",
+  "ask.more_models": "All provider models…",
+  "ask.more_loaded": "Models in the list: {n}",
+  "ask.role_name.planner": "Planner: plans, extraction, meetings",
+  "ask.role_name.critic": "Critic: checks decisions",
+  "ask.role_name.qa": "Momus: support check and review",
+  "ask.role_name.worker": "Writer: parsing, theses, answers"
 }

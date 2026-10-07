@@ -1214,8 +1214,15 @@ def test_mcp_speaks_protocol_and_never_writes(tmp: Path):
     assert len(got) == 4, [l[:80] for l in lines]
     assert got[0]["result"]["serverInfo"]["name"].startswith("aurora-"), got[0]
     names = {t["name"] for t in got[1]["result"]["tools"]}
+    # Чтение базы — прежние шесть; с 1.162.0 рядом — работа ботов (время, память, замок,
+    # ревью, Jira и Confluence проекта). Писать в базу знаний не умеет ни один.
     assert {"kb_search", "kb_card", "kb_context", "kb_index", "kb_ask",
-            "artifact_spec"} == names, names
+            "artifact_spec"} <= names, names
+    assert {"time_now", "state_put", "lock_acquire", "review_page", "jira_publish",
+            "confluence_page"} <= names, names
+    assert not any(n.startswith("kb_") and n not in ("kb_search", "kb_card", "kb_context",
+                                                     "kb_index", "kb_ask") for n in names), \
+        "у MCP появился инструмент записи в базу"
     assert "Обеспечение" in got[2]["result"]["content"][0]["text"]
     assert "Правила обеспечения" in got[3]["result"]["content"][0]["text"]
     assert sorted(p.name for p in (root / "AuroraKnowledgeDB").rglob("*.md")) == before, \

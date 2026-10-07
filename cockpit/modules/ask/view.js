@@ -59,8 +59,10 @@ async function askBase(ctx){
   const box = ctx.$("#askBody");
   ASKING = true;
   const args = ["--question", q, "--mode", mode];
+  // «Роль или модель»: роль — цепочкой с запасными, модель — ровно она (1.162.0).
   const pick = (ctx.$("#askBackend") || {}).value || "0";
-  if (pick !== "0") args.push("--backend", pick);
+  if (pick.startsWith("role:")) args.push("--role", pick.slice(5));
+  else if (pick.startsWith("model:")) args.push("--model", pick.slice(6));
   if (THREAD) args.push("--thread", THREAD.id);
   const item = el("div", {class: "card", style: "padding:18px;margin-top:14px"},
     el("div", {style: "font-weight:700"}, (THREAD ? t("ask.refine_prefix") : "") + q),
@@ -209,15 +211,44 @@ export async function fillBackends(ctx){
   } catch (e) { a = {error: String(e && e.message || e)}; }
   if (!a || a.error)
     return say(ctx.t("ask.models_failed", {why: (a && a.error) || ctx.t("ask.no_answer")}));
-  const rows = a.backends || [], was = sel.value;
-  while (sel.options.length > 1) sel.remove(1);
-  rows.forEach(b => {
-    const worker = (b.models && b.models.worker) || b.model || "—";
-    sel.append(ctx.el("option", {value: String(b.n)}, `№${b.n} · ${worker}`));
-  });
+  const was = sel.value;
+  const choices = a.choices || [], roles = a.roles || [];
+  drawChoices(ctx, sel, roles, choices);
   if ([...sel.options].some(o => o.value === was)) sel.value = was;
-  if (rows.length) sel.dataset.project = project; else delete sel.dataset.project;
-  say(rows.length ? "" : ctx.t("ask.models_empty"));
+  if (choices.length) sel.dataset.project = project; else delete sel.dataset.project;
+  say(choices.length ? "" : ctx.t("ask.models_empty"));
+  sel.onchange = () => { if (sel.value === "more") moreModels(ctx, sel, roles, choices); };
+}
+
+// Роли и модели провайдеров в одном списке. Первая строка — роль по умолчанию (worker).
+function drawChoices(ctx, sel, roles, choices){
+  const {t, el} = ctx;
+  // Сначала группы, потом одиночные строки: строка внутри группы — тоже `options`.
+  [...sel.querySelectorAll("optgroup")].forEach(g => g.remove());
+  while (sel.options.length > 1) sel.remove(1);
+  const roleName = r => r.name || t("ask.role_name." + r.id);
+  const other = roles.filter(r => r.id !== "worker");
+  if (other.length) sel.append(el("optgroup", {label: t("ask.group_roles")},
+    ...other.map(r => el("option", {value: "role:" + r.id},
+      roleName(r) + (r.models.length ? " · " + r.models.join(", ") : "")))));
+  choices.forEach(c => sel.append(el("optgroup", {label: t("ask.group_provider", {name: c.name || c.provider})},
+    ...c.models.map(m => el("option", {value: `model:${c.provider}/${m}`}, m)))));
+  if (choices.length) sel.append(el("option", {value: "more"}, t("ask.more_models")));
+}
+
+// Полный список моделей у самих провайдеров — по кнопке: это сетевые запросы.
+async function moreModels(ctx, sel, roles, choices){
+  sel.value = "0";
+  const full = [];
+  for (const c of choices){
+    let d = null;
+    try { d = await ctx.api("/api/agent/models?n=" + c.n, {quiet: true}); } catch (e) { d = null; }
+    const names = ((d && d.models) || []).map(m => typeof m === "string" ? m : (m.id || m.name))
+      .filter(Boolean);
+    full.push({...c, models: [...new Set([...c.models, ...names])]});
+  }
+  drawChoices(ctx, sel, roles, full);
+  ctx.toast(ctx.t("ask.more_loaded", {n: full.reduce((a, c) => a + c.models.length, 0)}), "ok");
 }
 
 async function pingPrimary(ctx, btn){

@@ -12,7 +12,7 @@
   "ask.mode_evaluate": "всё: недоверенное и встречи тоже",
   "ask.mode_ask": "доверенное + история решений",
   "ask.model": "Модель:",
-  "ask.ring": "по кольцу (основная, при отказе — запасная)",
+  "ask.ring": "роль «Писатель» — по цепочке (основная, при отказе — запасная)",
   "ask.hint_enter": "Ctrl+Enter — спросить",
   "ask.export": "В .md",
   "ask.export_hint": "Выгрузить вопросы и ответы этого разговора в .md-файл",
@@ -58,5 +58,13 @@
   "ask.thread_failed": "разговор не прочитан",
   "ask.mode_trusted_meetings": "доверенное и встречи",
   "ask.mode_meetings": "только встречи",
-  "ask.who_none": "модель: —"
+  "ask.who_none": "модель: —",
+  "ask.group_roles": "Другие роли — по их цепочке",
+  "ask.group_provider": "{name} — ровно эта модель, без запасных",
+  "ask.more_models": "Все модели провайдеров…",
+  "ask.more_loaded": "Моделей в списке: {n}",
+  "ask.role_name.planner": "Планировщик: планы, вынос, встречи",
+  "ask.role_name.critic": "Критик: проверка решений",
+  "ask.role_name.qa": "Момус: проверка опоры и ревью",
+  "ask.role_name.worker": "Писатель: разбор, тезисы, ответы"
 }

@@ -44,7 +44,7 @@ def test_restart_does_not_silently_kill_a_running_job(tmp: Path):
         "перезапуск убивает работу молча"
     assert "return 2" in guard, "отказ не останавливает перезапуск"
     assert "--force" in src, "нет способа перезапустить осознанно"
-    assert "os.remove(RUNNING)" in src, \
+    assert "os.remove(RUNNING)" in src and "drop_dead_running()" in src, \
         "после падения мёртвые записи навсегда запретят перезапуск"
 
     # Запрет без кнопки «прервать» — тупик: ни остановить, ни перезапустить.
