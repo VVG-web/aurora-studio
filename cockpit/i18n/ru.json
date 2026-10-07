@@ -778,5 +778,9 @@
   "mcpk.aurora_about": "Тот же поиск, что в «Спросить» и «Продуктивности» (слова и смысл по индексу kb:embed), — как MCP-сервер для OpenCode, Claude Code или Cursor. Один сервер на все проекты машины: каждый инструмент требует project — слаг проекта, базы не смешиваются. Инструменты: kb_projects, kb_search, kb_card, kb_context, kb_index, artifact_spec, kb_ask. Только чтение.",
   "mcpk.aurora_projects": "Слаги проектов:",
   "mcpk.aurora_opencode": "OpenCode — opencode.json в папке или ~/.config/opencode/",
-  "mcpk.aurora_claude": "Claude Code, Cursor — mcpServers (.mcp.json, ~/.cursor/mcp.json)"
+  "mcpk.aurora_claude": "Claude Code, Cursor — mcpServers (.mcp.json, ~/.cursor/mcp.json)",
+  "alarm.adapter": "⛔ Pydantic AI выбран, но вызовы моделей идут мимо него — прямым HTTP, без инструментов и MCP. ",
+  "alarm.adapter_row": "{path} · {project} · {when} · вызовов {calls}: {why}",
+  "alarm.adapter_tail": "Полоса уйдёт сама, когда этот путь снова пройдёт через адаптер.",
+  "alarm.adapter_open": "Установка → Pydantic AI"
 }

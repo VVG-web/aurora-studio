@@ -218,6 +218,12 @@ def message_skeletons() -> set:
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr == "append" and node.args):
                 add(node.args[0])
+            # «Почему это блокер» — строки `WHY:`, панель показывает их в отчёте «Блокеры».
+            elif (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                    and any(isinstance(t, ast.Name) and t.id == "BLOCKER_WHY"
+                            for t in node.targets)):
+                for v in node.value.values:
+                    add(v)
     # Реестр видов артефактов: причины, по которым вид не годится, рождает `make_kinds.py` —
     # `check` кладёт их вторым элементом пары, `out_problem` возвращает.
     kinds = os.path.join(KIT, "scripts", "make_kinds.py")

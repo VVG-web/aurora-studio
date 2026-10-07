@@ -917,7 +917,7 @@ def request_lang(q: dict) -> str:
 # подстановками ищется по образцу: что подставлено — берётся из русского текста и тоже
 # переводится, если это сообщение (причина отказа вложена в «Маршрут не начат: …»).
 MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait")
-MESSAGE_LISTS = ("errors", "warns")          # находки доктора: список сообщений под одним ключом
+MESSAGE_LISTS = ("errors", "warns", "blocker_why")          # находки доктора: список сообщений под одним ключом
 _MATCHERS: dict = {}
 
 
@@ -2731,9 +2731,20 @@ def health(project: str, lang: str = DEFAULT_LANG) -> dict:
     lint_info["baseline"] = int(baseline) if baseline.isdigit() else None
 
     rc_d, doc = run_capture(project, "aurora_doctor.py", [])
+    # Блокер — строка `ERROR:` («что → как исправить»), за ней — `WHY:` («почему мешает»).
+    # Список причин идёт параллельно находкам: отчёт «Блокеры» на «Здоровье» собирает
+    # все три части; у движка старше 1.161.0 причин нет — пустые строки.
+    d_errors, d_why = [], []
+    for line in doc.splitlines():
+        if line.startswith("ERROR:"):
+            d_errors.append(line[7:].strip())
+            d_why.append("")
+        elif line.startswith("WHY:") and d_errors:
+            d_why[-1] = line[5:].strip()
     doctor = {
         "rc": rc_d,
-        "errors": [l[7:].strip() for l in doc.splitlines() if l.startswith("ERROR:")],
+        "errors": d_errors,
+        "blocker_why": d_why,
         "warns": [l[6:].strip() for l in doc.splitlines() if l.startswith("WARN:")],
         "engine": (re.search(r"^движок:\s*(\S+)", doc, re.M) or [None, "—"])[1],
         "privacy": (re.search(r"privacy\.scrub = (\w+)", doc) or [None, "report"])[1],
@@ -3824,6 +3835,20 @@ def extras_install(extra_id: str) -> dict:
 
 # ----------------------------------------------------------------- выполнение
 
+def adapter_alarm() -> list:
+    """Где вызовы моделей шли мимо Pydantic AI, хотя он выбран: [{path, at, why, project,
+    calls}]. Пишет движок (`agent_core.note_bypass`), снимает первый же вызов того же пути,
+    прошедший через адаптер."""
+    import agent_core as AG
+    rows = []
+    for path, row in sorted(AG.read_alarm().items()):
+        if isinstance(row, dict):
+            rows.append({"path": path, "at": row.get("at", ""), "why": row.get("why", ""),
+                         "project": os.path.basename(str(row.get("project") or "")),
+                         "calls": int(row.get("calls") or 0)})
+    return rows
+
+
 def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
     row = command_by_name(cmd)
     if not row or not row["runnable"]:
@@ -3879,7 +3904,9 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
             # вываливала всё разом. Человек в это время не знает, работает она или висит.
             # Заодно вычищаем Malloc*-переменные отладчика: их предупреждения врезаются
             # в строку прогресса и читаются как ошибка движка.
-            env = child_env(project, PYTHONUNBUFFERED="1")
+            # Папка прогона — команде: рядом с её `console.log` движок пишет журнал сбоев
+            # (`failures.jsonl`) — что не вышло, на чём и весь ход вызова модели.
+            env = child_env(project, PYTHONUNBUFFERED="1", AURORA_RUN_DIR=run_cdir)
             mark_running(job["id"], cmd, project, True)
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -4085,6 +4112,9 @@ class Handler(BaseHTTPRequestHandler):
                        "behind": ui_version() != kit_version(),
                        "stale_process": os.path.getmtime(os.path.abspath(__file__)) > STARTED},
                 "projects": projects,
+                # Pydantic AI выбран, а вызовы где-то идут мимо него — красной полосой
+                # поверх любого раздела (1.161.0). Опрашивается и отдельно, раз в 20 с.
+                "adapter_alarm": adapter_alarm(),
                 "env": localized_environment(environment(), request_lang(q)),
                 "commands": localized_commands(registry(), request_lang(q)),
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
@@ -4398,6 +4428,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": f"нет файла {rel}"}, 404)
                 return
             self.send_json({"path": rel, "text": read_text(full)})
+        elif u.path == "/api/adapter/alarm":
+            self.send_json({"alarm": adapter_alarm()})
         elif u.path == "/api/activity":
             # Отметки на карточках Мостика: что идёт и что встало в каждом проекте.
             self.send_json({"projects": {path: project_activity(path) for path

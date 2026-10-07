@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.160.0";
+const UI_VERSION = "1.161.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1058,6 +1058,7 @@ async function boot(){
       el("button",{class:"btn", style:"margin-left:8px", onclick:restartPanel},
         t("boot.restart"))));
   }
+  drawAdapterAlarm(S.state.adapter_alarm);
   setBadge("commands", S.state.commands.length);
   const missing = S.state.env.items.filter(i=>!i.ok).length;
   setBadge("install", missing || "", missing > 0);
@@ -1149,6 +1150,29 @@ async function refreshActivity(){
   S.state.projects.forEach(p => { if (p.path in d.projects) p.activity = d.projects[p.path]; });
   drawActivity();
 }
+// Pydantic AI выбран, а вызовы идут мимо него: без инструментов и MCP бот «не видит» свои
+// серверы, план собирается без поиска. С 1.139 по 1.160 это случалось четырежды и каждый раз
+// всплывало через неделю. Полоса — поверх любого раздела, пока путь не пройдёт через адаптер.
+function drawAdapterAlarm(rows){
+  const old = $("#adapterbar");
+  if (old) old.remove();
+  if (!rows || !rows.length) return;
+  $("main").prepend(el("div",{id:"adapterbar", class:"stalebar alarm"},
+    el("b",{}, t("alarm.adapter")),
+    ...rows.map(r => el("div",{}, t("alarm.adapter_row",
+      {path: r.path, project: r.project || "—", when: r.at ? histWhen(r.at) : "—",
+       calls: r.calls, why: r.why}))),
+    el("div",{}, t("alarm.adapter_tail"),
+      el("button",{class:"btn", style:"margin-left:8px", onclick:()=>show("install")},
+        t("alarm.adapter_open")))));
+}
+async function refreshAdapterAlarm(){
+  let d = null;
+  try { d = await api("/api/adapter/alarm", {quiet:true}); } catch (e) { return; }
+  if (d) drawAdapterAlarm(d.alarm);
+}
+const ALARM_POLL_MS = 20000;
+setInterval(() => { if (!document.hidden) refreshAdapterAlarm(); }, ALARM_POLL_MS);
 const ACTIVITY_POLL_MS = 5000;
 setInterval(() => { if (S.view === "overview" && !document.hidden) refreshActivity(); },
             ACTIVITY_POLL_MS);
@@ -1189,8 +1213,8 @@ function auraWhy(p){
   const h = p.health, todo = [];
   const errs = h ? h.doctor.errors.length : 0;
   const lint = h ? h.lint.errors : 0, base = h ? (h.lint.baseline ?? null) : null;
-  if (errs) todo.push({bad:true, text: t("aura.blockers", {n: errs})});
-  else todo.push({bad:false, text: t("aura.no_blockers")});
+  if (errs) todo.push({bad:true, code:"blockers", text: t("aura.blockers", {n: errs})});
+  else todo.push({bad:false, code:"blockers", text: t("aura.no_blockers")});
   if (p.behind) todo.push({bad:true, text: t("aura.behind", {v: p.engine})});
   else todo.push({bad:false, text: t("aura.current")});
   if (base !== null && lint > base)

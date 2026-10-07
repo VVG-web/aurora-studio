@@ -225,6 +225,19 @@ Shared by all roles: the cap of simultaneous requests ("auto" — the sum of pro
 timeout, the agent's steps and budget, the call method (`pydantic_ai` or direct HTTP). A failure on one card
 does not stop the run; three failures in a row do — that is the provider, not the cards.
 
+**Bypassing Pydantic AI is visible at once.** `pydantic_ai` is selected, but a call came over direct HTTP (the
+venv is not installed, the adapter process crashed, a new version failed the compatibility check) — this shows
+in three places: a `⛔` line in the command output, a red bar in the panel over any section (what, where, when
+and why) and the first line of the run summary. A call with tools or MCP is not accepted without the adapter at
+all: an answer "without tools" to a question that needs them is not an answer. The bar goes away by itself once
+the same path (an agent task, a bot) goes through the adapter again.
+
+**Failure journal.** Every failed agent step is a record in `failures.jsonl` of the run folder
+(`.aurora/runs/<run>/`; from the terminal — `.aurora/state/failures.jsonl`): the reason, the call's course
+through the gateways, the request size, the timeout, the number of attempts, and if an answer came but could not
+be parsed — the answer itself and the tail of the reasoning. The run summary names the number of records and
+the path.
+
 The old `AURORA_AGENT_*`, `AURORA_EMBED_*`, `AURORA_OCR_*` variables of the kit's `.env.aurora.local` move into
 `models.json` by themselves, once (or `python3 scripts/model_config.py --migrate`); the file itself is not
 changed. In a project's `.env` they no longer apply — `doctor` names them.

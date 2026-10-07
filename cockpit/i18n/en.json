@@ -778,5 +778,9 @@
   "mcpk.aurora_about": "The same search as in «Ask» and «Productivity» (words and meaning by the kb:embed index) — as an MCP server for OpenCode, Claude Code or Cursor. One server for all projects of the machine: every tool takes project — the project slug, bases are never mixed. Tools: kb_projects, kb_search, kb_card, kb_context, kb_index, artifact_spec, kb_ask. Read-only.",
   "mcpk.aurora_projects": "Project slugs:",
   "mcpk.aurora_opencode": "OpenCode — opencode.json in the folder or ~/.config/opencode/",
-  "mcpk.aurora_claude": "Claude Code, Cursor — mcpServers (.mcp.json, ~/.cursor/mcp.json)"
+  "mcpk.aurora_claude": "Claude Code, Cursor — mcpServers (.mcp.json, ~/.cursor/mcp.json)",
+  "alarm.adapter": "⛔ Pydantic AI is selected, but model calls bypass it — plain HTTP, no tools and no MCP. ",
+  "alarm.adapter_row": "{path} · {project} · {when} · calls {calls}: {why}",
+  "alarm.adapter_tail": "The bar goes away by itself once this path goes through the adapter again.",
+  "alarm.adapter_open": "Install → Pydantic AI"
 }

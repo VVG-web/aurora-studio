@@ -46,6 +46,7 @@ from pathlib import Path
 from aurora_common import child_env, load_env
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import engine_dir, utc_stamp  # noqa: E402
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -54,7 +55,12 @@ VENV = Path.home() / ".aurora" / "venv"
 # Какой адаптер выбран и почему пришлось откатиться: заполняется при разборе конфига,
 # читается отчётом прогона. Глобальное состояние здесь честнее, чем протаскивать флаг
 # через каждый вызов транспорта.
-ADAPTER: dict = {"name": "openai_compat", "fallback_why": ""}
+#
+# По умолчанию — Pydantic AI, как и в настройке. Здесь стоял прямой HTTP, и любой путь,
+# не прошедший через разбор конфига, молча шёл мимо адаптера: так с 1.153.0 по 1.160.0
+# все вызовы остались без инструментов и MCP. Какой адаптер нужен вызову, `_call_role`
+# теперь берёт из самой настройки и проверяет, каким путём ответ пришёл на деле.
+ADAPTER: dict = {"name": "pydantic_ai", "fallback_why": ""}
 
 
 # ------------------------------------------------------------------ конфигурация
@@ -643,7 +649,7 @@ def pydantic_transport(backend: dict, payload: dict, timeout: float) -> tuple:
 
 # Поля payload, которые понимает только внутренний адаптер. В HTTP-запрос они не идут.
 ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "outdir",
-                          "tool_calls"})
+                          "tool_calls", "adapter"})
 
 
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
@@ -654,8 +660,10 @@ def default_transport(kind: str, backend: dict, payload: dict | None, timeout: f
     # Каждый вызов модели — через Pydantic AI, когда он выбран: одиночный пересказ так же,
     # как разговор с инструментами. Ответ сервера (и отказ тоже) возвращается как есть;
     # прямой HTTP — только если не смог сам адаптер (venv не стоит, процесс упал, ответ
-    # не разобран). Фолбэк не молчаливый: причина уходит в отчёт прогона.
-    if ADAPTER.get("name") == "pydantic_ai" and payload:
+    # не разобран). Фолбэк не молчаливый: `_call_role` видит путь ответа (`aurora.via`) и
+    # поднимает тревогу (`note_bypass`), а вызов с инструментами без адаптера не принимает.
+    want = (payload or {}).get("adapter") or ADAPTER.get("name")
+    if want == "pydantic_ai" and payload:
         st, body, err, dt = pydantic_transport(backend, payload, timeout)
         if not str(err or "").startswith(ADAPTER_FAIL):
             return st, body, err, dt
@@ -706,7 +714,7 @@ DOWN: dict = {}       # {номер бэкенда: когда пробоват�
 # какой скоростью шла генерация и сколько вызовов не удалось — по видам. Вызовы идут из
 # нескольких потоков, поэтому счётчик под замком.
 USAGE: dict = {"calls": 0, "failed": 0, "tokens_in": 0, "tokens_out": 0, "gen_seconds": 0.0,
-               "errors": {}, "cached": 0}
+               "errors": {}, "cached": 0, "bypass": 0, "bypass_why": ""}
 _USAGE_LOCK = threading.Lock()
 
 
@@ -715,6 +723,172 @@ def _note_failure(kind: str) -> None:
         USAGE["calls"] += 1
         USAGE["failed"] += 1
         USAGE["errors"][kind] = USAGE["errors"].get(kind, 0) + 1
+
+
+# ------------------------------------------------------------------ мимо Pydantic AI
+
+# Что за прогон идёт в этом процессе: задача агента, бот, вопрос. Ставит вызывающий; по
+# этому имени тревога и журнал сбоев говорят, ГДЕ вызов прошёл мимо адаптера.
+RUN_TASK: dict = {"name": ""}
+_BYPASS_SAID: set = set()      # о чём уже кричали в этом процессе: одна строка на причину
+
+
+def alarm_path() -> Path:
+    """Тревога «Pydantic AI выбран, но не используется» — общая на машину: её пишет любой
+    процесс движка, а показывает панель красной полосой поверх любого раздела."""
+    return Path.home() / ".aurora" / "adapter-alarm.json"
+
+
+def read_alarm() -> dict:
+    """{путь вызова: {at, why, project, calls}} — где адаптер сейчас обходят. Пусто — нигде."""
+    try:
+        with open(alarm_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_alarm(data: dict) -> None:
+    p = alarm_path()
+    try:
+        if not data:
+            p.unlink(missing_ok=True)
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        replace_file(tmp, p)
+    except OSError:
+        pass        # тревога — сигнал, а не работа: не записалась, вызов от этого не падает
+
+
+_ALARM_LOCK = threading.Lock()
+
+
+def note_bypass(why: str, needs_tools: bool = False) -> None:
+    """Вызов прошёл мимо Pydantic AI, хотя адаптер выбран, — громко и сразу.
+
+    С 1.139.0 по 1.160.0 адаптер уходил из строя четыре раза: поле шлюза, которого клиент
+    не понимает (`metadata`), смена HTTP-библиотеки клиента, проверка совместимости новой
+    версии и, наконец, наша же настройка, не включавшая переключатель. Каждый раз движок
+    тихо продолжал прямым HTTP, причина ложилась в одно поле одного отчёта, и человек
+    узнавал о беде через неделю — по боту, который «не видит MCP». Теперь обход виден
+    сразу в трёх местах: строкой в выводе команды, тревогой в панели и в итоге прогона.
+    """
+    path = RUN_TASK.get("name") or os.path.basename(sys.argv[0] or "") or "?"
+    with _USAGE_LOCK:
+        USAGE["bypass"] += 1
+        USAGE["bypass_why"] = why
+    key = (path, why)
+    if key not in _BYPASS_SAID:
+        _BYPASS_SAID.add(key)
+        print(f"⛔ Pydantic AI выбран, но вызов модели прошёл мимо него (прямой HTTP): {why}. "
+              + ("Вызов с инструментами и MCP без адаптера не принят. " if needs_tools else
+                 "Ответ получен, но без инструментов и MCP. ")
+              + "Проверьте «Установка» → Pydantic AI.", flush=True)
+        record_failure("адаптер", why, stage="мимо Pydantic AI", needs_tools=needs_tools)
+    with _ALARM_LOCK:
+        data = read_alarm()
+        row = data.get(path) or {}
+        data[path] = {"at": utc_stamp(), "why": why, "project": os.getcwd(),
+                      "calls": int(row.get("calls") or 0) + 1}
+        _write_alarm(data)
+
+
+def clear_bypass() -> None:
+    """Вызов этого пути прошёл через адаптер — его тревога снята. Чужие пути не трогаем:
+    бот может обходить адаптер, пока разбор базы идёт через него, и наоборот."""
+    path = RUN_TASK.get("name") or os.path.basename(sys.argv[0] or "") or "?"
+    if not alarm_path().is_file():
+        return
+    with _ALARM_LOCK:
+        data = read_alarm()
+        if data.pop(path, None) is not None:
+            _write_alarm(data)
+
+
+# ------------------------------------------------------------------ журнал сбоев
+
+FAIL_FILE = "failures.jsonl"
+FAIL_KEEP = 1000            # записей в общем журнале проекта (прогон без папки — терминал)
+TEXT_HEAD, TEXT_TAIL = 1500, 500      # сколько ответа модели кладём в запись
+FAILS: dict = {"n": 0, "path": ""}    # сколько сбоев записал этот процесс и куда
+_FAIL_LOCK = threading.Lock()
+
+
+def failures_path(cwd: str = "") -> str:
+    """Куда писать подробности сбоев.
+
+    Панель запускает каждую команду со своей папкой прогона (`AURORA_RUN_DIR`), и журнал
+    ложится рядом с её `console.log`: открыл прогон — видишь и вывод, и причины. Из
+    терминала папки нет — общий журнал в состоянии движка, последние FAIL_KEEP записей.
+    """
+    run = os.environ.get("AURORA_RUN_DIR", "")
+    if run and os.path.isdir(run):
+        return os.path.join(run, FAIL_FILE)
+    root = cwd or os.getcwd()
+    return os.path.join(root, engine_dir(root), "state", FAIL_FILE)
+
+
+def _clip(text, head: int = TEXT_HEAD, tail: int = TEXT_TAIL) -> str:
+    t = str(text or "")
+    if len(t) <= head + tail + 40:
+        return t
+    return t[:head] + f"\n…[вырезано {len(t) - head - tail} зн.]…\n" + t[-tail:]
+
+
+def call_diag(r: dict) -> dict:
+    """Всё, что известно о вызове модели, — без ключей и адресов шлюзов.
+
+    Строки консоли мало: «Момус не дал вердикта» не говорит, что он ответил, а «дедлайн
+    исчерпан» — сколько было попыток, какой величины запрос и сколько ему дали времени.
+    """
+    d = dict(r.get("req") or {})
+    for k in ("ok", "backend", "model", "seconds", "waited", "ring", "timed_out", "finish",
+              "tokens_in", "tokens_out", "tps", "seen", "cut", "via", "cached", "bypass"):
+        if k in r:
+            d[k] = r[k]
+    d["log"] = [str(x) for x in r.get("log") or []]
+    if r.get("text") is not None:
+        d["answer_chars"] = len(r.get("text") or "")
+        d["answer"] = _clip(r.get("text"))
+    if r.get("reasoning"):
+        d["reasoning_chars"] = len(r["reasoning"])
+        d["reasoning_tail"] = str(r["reasoning"])[-TEXT_TAIL:]
+    return d
+
+
+def record_failure(subject: str, why: str, r: dict | None = None, stage: str = "",
+                   cwd: str = "", **extra) -> None:
+    """Сбой — строкой JSON в журнал прогона: что, на чём, почему и весь ход вызова модели.
+
+    На PRJ-C 07.10.2026 перепроверка дала десять сбоев, и по журналам нельзя было сказать
+    ни одной причины: строка консоли печатала только «сбой». Запись не должна ронять
+    работу: не записалась — значит, не записалась.
+    """
+    rec = {"at": utc_stamp(), "task": RUN_TASK.get("name") or "", "subject": subject,
+           "stage": stage, "why": why}
+    rec.update(extra)
+    if r:
+        rec["call"] = call_diag(r)
+    path = failures_path(cwd)
+    try:
+        line = json.dumps(rec, ensure_ascii=False, default=str)
+        with _FAIL_LOCK:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            FAILS["n"] += 1
+            FAILS["path"] = path
+            if not os.environ.get("AURORA_RUN_DIR") and FAILS["n"] % 100 == 1:
+                with open(path, encoding="utf-8") as f:
+                    lines = f.readlines()
+                if len(lines) > FAIL_KEEP:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.writelines(lines[-FAIL_KEEP:])
+    except OSError:
+        pass
 LAST_OK: dict = {}    # {номер: когда он в последний раз ОТВЕТИЛ} — тоже в процессе
 RETRY_FLAG = Path.home() / ".aurora" / "retry-primary"
 
@@ -1241,6 +1415,18 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # никогда. Дедлайн этого не решает — запрос всё равно режется по `request_timeout`.
     req_timeout = float(request_timeout or request_timeout_for(cfg, think))
     deadline = deadline or (time.time() + req_timeout)
+    # Каким адаптером идти — из настройки этого вызова, а не из переключателя процесса.
+    # Проверять, дошёл ли вызов до адаптера, имеет смысл только на настоящем транспорте:
+    # подменённый (тесты, замеры) сам решает, чем отвечать.
+    want = cfg.get("adapter") or "pydantic_ai"
+    watch = transport is default_transport and want == "pydantic_ai"
+    needs_adapter = bool(tools or mcp_active or outdir)
+    # Что за вызов — для журнала сбоев: размер запроса, срок, режим. Ключей и адресов нет.
+    req = {"role": role, "thinking": bool(think), "max_tokens": max_tokens,
+           "request_timeout": int(req_timeout), "deadline_s": int(deadline - time.time()),
+           "prompt_chars": sum(len(str(m.get("content") or "")) for m in messages),
+           "prompt_tokens_est": rough_tokens(messages), "history": len(history or []),
+           "tools": bool(tools), "mcp_active": list(mcp_active or []), "adapter": want}
     log, waited, ring = [], 0.0, 0
     slow = 0                    # сколько попыток кончилось молчанием по сроку
     attempts = 0
@@ -1250,9 +1436,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
 
     if not cfg["backends"] or (cfg.get("chains") is not None and not role_chain(cfg, role)):
         _note_failure("бэкенды модели не настроены")
-        return {"ok": False, "log": [f"у роли {role} нет бэкендов: раздел «Модели» панели → LLM"
-                                     if cfg.get("chains") is not None else
-                                     "бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
+        return {"ok": False, "req": req,
+                "log": [f"у роли {role} нет бэкендов: раздел «Модели» панели → LLM"
+                        if cfg.get("chains") is not None else
+                        "бэкенды не настроены: нет AURORA_AGENT_BACKEND_1_URL"]}
 
     order = ring_order(cfg, prefer, role)
     while time.time() < deadline:
@@ -1300,7 +1487,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                 log.append(f"№{b['n']} {model}: {why_big}")
                 continue
             payload = {"model": model, "messages": msgs,
-                       "chat_template_kwargs": request_template(b, think)}
+                       "chat_template_kwargs": request_template(b, think), "adapter": want}
             if history:
                 # У OpenAI-совместимого шлюза история — это просто предыдущие сообщения.
                 # Адаптеру Pydantic AI — так же: он сам отделит историю от нового запроса.
@@ -1421,11 +1608,31 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                            f"модель исчерпала вызовы инструментов ({TOOL_CALLS}) и не ответила"
                            if finish == "tool_limit" else
                            "пустой ответ — вероятно, chat-шаблон на сервере")
-                    log.append(f"№{b['n']} {model}: {why}")
+                    log.append(f"№{b['n']} {model}: {why} (finish_reason={finish}, "
+                               f"рассуждений {len(reasoning or '')} зн., {dt:.0f} с)")
                     can_recover = True
                     continue
                 DOWN.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
+                via = (body.get("aurora") or {}).get("via", "http")
+                bypass = ""
+                if watch and via != "pydantic_ai":
+                    # Адаптер выбран, а ответ пришёл прямым HTTP: venv не стоит, процесс
+                    # адаптера упал, новая версия не прошла проверку — причина в
+                    # `fallback_why`. Пусто — переключатель не включён вовсе (так было
+                    # с 1.153.0 по 1.160.0).
+                    bypass = (ADAPTER.get("fallback_why")
+                              or "адаптер не включён в этом процессе — ошибка движка")
+                    note_bypass(bypass, needs_adapter)
+                    if needs_adapter:
+                        # Ответ без инструментов на вопрос, где они нужны, — не ответ:
+                        # бот «не видит MCP», план собран без поиска. Честнее отказать.
+                        log.append(f"№{b['n']} {model}: ⛔ Pydantic AI не сработал ({bypass}) — "
+                                   "вызов с инструментами и MCP прямым HTTP не принимаю")
+                        _note_failure("мимо Pydantic AI")
+                        return {"ok": False, "log": log, "req": req, "bypass": bypass}
+                elif watch:
+                    clear_bypass()
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
                 with _USAGE_LOCK:
@@ -1440,7 +1647,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         "tokens_in": int(usage.get("prompt_tokens") or 0),
                         "tokens_out": out_tokens,
                         "tps": round(out_tokens / dt, 1) if out_tokens and dt > 0 else 0.0,
-                        "via": (body.get("aurora") or {}).get("via", "http"),
+                        "via": via, "bypass": bypass, "finish": finish,
+                        "req": dict(req, attempts=attempts, rings=ring),
                         "tools_called": list((body.get("aurora") or {}).get("tools_called") or [])}
             finally:
                 with _SEM_LOCK:
@@ -1465,7 +1673,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
         log.append("дедлайн исчерпан: ни один бэкенд не ответил осмысленно")
     _note_failure("модель не уложилась в срок" if attempts and slow == attempts
                   else "модель не ответила осмысленно")
-    return {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts)}
+    return {"ok": False, "log": log, "timed_out": bool(attempts and slow == attempts),
+            "req": dict(req, attempts=attempts, rings=ring, waited=round(waited, 1))}
 
 
 # ------------------------------------------------------------------ команды

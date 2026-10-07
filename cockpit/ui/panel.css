@@ -154,6 +154,9 @@ header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 var(-
 .stalebar{border:1px solid color-mix(in oklab,var(--tier-inreview) 45%,var(--border));
   background:color-mix(in oklab,var(--tier-inreview) 10%,transparent);border-radius:var(--radius-sm);
   padding:var(--sp-3) var(--sp-4);font-size:var(--text-md);margin-bottom:var(--sp-5)}
+.stalebar.alarm{border-color:color-mix(in oklab,var(--danger) 60%,var(--border));
+  background:color-mix(in oklab,var(--danger) 12%,transparent)}
+.stalebar.alarm b{color:var(--danger)}
 /* Браузерное правило `[hidden]{display:none}` живёт в UA-стилях, а любой авторский
    `display` его перебивает — независимо от специфичности. Поэтому кнопка `nav button`
    (`display:flex`) с атрибутом hidden оставалась на экране: «Скрыть раздел» ставила

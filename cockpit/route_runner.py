@@ -314,7 +314,7 @@ class RouteRun:
         self.children: list = []               # папки шагов в архиве
         self.result: dict = {}
         self.done_flag = False
-        self.prev_end = 0.0                    # конец прошлого шага — длительность в журнале
+        self.prev_took = None                  # сколько шёл прошлый шаг — строка в журнале
         self.resumed = bool(resume.get("skipSigs") or resume.get("cycleAt")) if resume else False
         resume = resume or {}
         self.skip = set(resume.get("skipSigs") or [])
@@ -468,13 +468,17 @@ class RouteRun:
         self.say("head", self.t("route.step_head", where=where, lap=lap, cmd=sig, why=st["why"]))
         start = time.time()
         # Длительность прошлого шага — единственный симптом букса на длинном маршруте.
+        # Считается от начала до конца прошлого шага. До 1.161.0 здесь стояло «начало
+        # этого минус конец прошлого», то есть пауза между шагами, — и журнал у каждого
+        # шага писал «занял 0с», в том числе после пятиминутного связывания.
         self.say("note", self.t("route.step_started",
                                 time=datetime.fromtimestamp(start).strftime("%H:%M:%S"))
-                 + (self.t("route.prev_took", dur=self._dur(start - self.prev_end))
-                    if self.prev_end else self.t("route.first_step")))
+                 + (self.t("route.prev_took", dur=self._dur(self.prev_took))
+                    if self.prev_took is not None else self.t("route.first_step")))
         res = self.exec_step(st["cmd"], st["args"])
-        self.prev_end = time.time()
-        self._event(st, start, self.prev_end, res)
+        end = time.time()
+        self.prev_took = end - start
+        self._event(st, start, end, res)
         if res.get("refused"):
             self.refused = res["refused"]
         # Хвост вывода шага, «нашедшего, что чинить», — для кнопок «Починить» в итоге.

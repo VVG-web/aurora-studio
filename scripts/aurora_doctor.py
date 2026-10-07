@@ -461,6 +461,42 @@ def check_portable_names() -> list:
     return warns
 
 
+# Почему находка — блокер. Строка находки говорит «что» и «как исправить» (через «→»), но
+# не «почему это мешает»: человек видел «блокеры: 2», не понимал, что сломано и зачем
+# чинить, и не знал, куда нажать. Панель показывает все три части в отчёте «Блокеры»
+# раздела «Здоровье» (1.161.0); строку `WHY:` печатаем сразу за `ERROR:`.
+BLOCKER_WHY = {
+    "регистр папок схемы расходится": "на Linux и в CI папки, разные только регистром, — "
+        "две разные папки: карточки разъедутся по двум адресам, ссылки и оглавления сломаются",
+    "путь файла принят за папку": "документы этого вида ложатся мимо стандартной папки: их не "
+        "находят ни поиск, ни отчёты, а движок считает каталог чужим",
+    "папки верхнего уровня вне схемы движка": "движок не знает, что в этих папках: не "
+        "разбирает их и не следит за ними, а обновление кита и проверки считают их лишними",
+    "закрыты .gitignore, но лежат в индексе git": "правило .gitignore не действует задним "
+        "числом: файлы продолжают уезжать в общий репозиторий, хотя закрыты",
+    "структурные папки вне схемы движка": "содержимое нестандартной папки движок не видит: "
+        "оно выпадает из базы, поиска и отчётов",
+    "нет aurora.config.yaml": "без настройки движок не знает проекта — имени, источников, "
+        "папок, — и ни одна команда не работает правильно",
+    "aurora.config.yaml: project.name": "по имени и slug проект узнают панель, поиск для "
+        "агентов (MCP) и отчёты; без них проект безымянный",
+    "нет .aurora/skills/aurora-vault/SKILL.md": "движок проекта установлен не полностью: без "
+        "навыка ассистенты не знают правил базы и пишут в неё как попало",
+    "SECRET:": "ключ или токен в файле под git уедет в общий репозиторий и останется в "
+        "истории навсегда",
+    "проект не под git": "без git нет отката: агент перед записью ставит точку возврата и "
+        "без неё писать в базу отказывается",
+}
+
+
+def blocker_why(text: str) -> str:
+    """Почему находка мешает работе — по началу её текста; не знаем — пусто."""
+    for head, why in BLOCKER_WHY.items():
+        if text.startswith(head):
+            return why
+    return ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Готовность проекта Aurora к работе")
     ap.add_argument("--structure", action="store_true",
@@ -471,7 +507,7 @@ def main() -> int:
     warns: list[str] = []
 
     if not CONFIG.exists():
-        errors.append("нет aurora.config.yaml — скопируйте из Aurora kit templates/")
+        errors.append("нет aurora.config.yaml → скопируйте из Aurora kit templates/")
     else:
         data = load_yaml_lite(CONFIG)
         # Корень синка, записанный дважды: синк обходит его один раз (с 1.147.0), но
@@ -492,7 +528,8 @@ def main() -> int:
             proj = data.get("project") or {}
             atl = data.get("atlassian") or {}
             if not (isinstance(proj, dict) and proj.get("name") and proj.get("slug")):
-                errors.append("aurora.config.yaml: project.name / project.slug обязательны")
+                errors.append("aurora.config.yaml: project.name / project.slug обязательны → "
+                              "заполните их в «Настройки проекта»")
             conf = (atl.get("confluence") or {}) if isinstance(atl, dict) else {}
             jira = (atl.get("jira") or {}) if isinstance(atl, dict) else {}
             if not conf.get("space"):
@@ -504,7 +541,8 @@ def main() -> int:
                 warns.append(f"atlassian.auth.mode={auth.get('mode')!r} — токены не должны быть в yaml")
 
     if not SKILL.exists():
-        errors.append("нет .aurora/skills/aurora-vault/SKILL.md")
+        errors.append("нет .aurora/skills/aurora-vault/SKILL.md → обновите движок проекта: "
+                      "раздел «Версия»")
     if not AGENTS.exists():
         warns.append("нет AGENTS.md")
 
@@ -519,7 +557,8 @@ def main() -> int:
         warns.append("нет aurora.env.local.example (добавьте из kit)")
 
     for h in scan_secrets():
-        errors.append(f"SECRET: {h}")
+        errors.append(f"SECRET: {h} → уберите значение из файла (секреты — только в "
+                      ".env.aurora.local) и смените ключ, если он уже попал в коммит")
 
     # Проект без git — это проект без отката. Агент такого не переживает: перед прогоном
     # он делает чекпойнт, не может — отказывается писать вовсе. В живом проекте это
@@ -532,9 +571,8 @@ def main() -> int:
     except Exception:
         rc = 1
     if rc != 0:
-        errors.append("проект не под git — отката нет, и агент писать в базу откажется "
-                      "(чекпойнт делать не во что). Завести: `git init`, затем первый "
-                      "коммит всей базы")
+        errors.append("проект не под git → заведите: `git init`, затем первый коммит "
+                      "всей базы (раздел «Git»)")
 
     vfile = ROOT / "AuroraKnowledgeDB" / "meta" / "aurora_version.txt"
     engine_ver = vfile.read_text(encoding="utf-8").strip() if vfile.exists() else None
@@ -593,6 +631,9 @@ def main() -> int:
              "mask": " (маскирование ожидается перед публикацией)"}.get(privacy_mode(), ""))
     for e in errors:
         print("ERROR:", e)
+        why = blocker_why(e)
+        if why:
+            print("WHY:", why)
     for w in warns:
         print("WARN:", w)
     for line in s_lines:

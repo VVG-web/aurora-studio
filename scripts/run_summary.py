@@ -33,7 +33,8 @@ DOC_FAIL = {"сбой", "отклонено критиком", "отклонен
 
 NUMBERS = ("seconds", "model_calls", "model_failed", "tokens_in", "tokens_out", "gen_seconds",
            "docs_done", "docs_skipped", "docs_failed",
-           "cards_created", "cards_updated", "cards_marked", "cards_deleted", "cards_failed")
+           "cards_created", "cards_updated", "cards_marked", "cards_deleted", "cards_failed",
+           "adapter_bypass")
 
 
 def empty() -> dict:
@@ -66,6 +67,12 @@ def from_agent(steps, usage: dict | None, seconds: float, delta: dict | None) ->
     s["tokens_out"] = int(u.get("tokens_out") or 0)
     s["model_cached"] = int(u.get("cached") or 0)
     s["gen_seconds"] = round(float(u.get("gen_seconds") or 0.0), 2)
+    # Вызовы мимо Pydantic AI при выбранном адаптере — первой строкой итога и ошибкой с
+    # причиной: прогон без инструментов и MCP не должен выглядеть обычным (1.161.0).
+    if u.get("bypass"):
+        s["adapter_bypass"] = int(u["bypass"])
+        _err(s, "⛔ мимо Pydantic AI: " + _short(u.get("bypass_why") or "", 120),
+             int(u["bypass"]))
     # Ошибки прогона — это документы и карточки, которые не вышли. Неудачный вызов модели —
     # ещё не ошибка: его повторяют, и чаще всего следующая попытка проходит; такие вызовы
     # показаны в строке модели («неудачных N»). Складывать их с упавшими карточками значило
@@ -273,6 +280,13 @@ def render(s: dict, title: str = "Итог прогона", lang: str = "ru") ->
     def w(ru, eng):
         return eng if en else ru
     L = [f"■ {title}", f"  {w('Время', 'Time')}: {human_time(s.get('seconds'), lang)}"]
+    if s.get("adapter_bypass"):
+        L.append("  ⛔ " + w(f"Мимо Pydantic AI: вызовов {_n(s['adapter_bypass'])} — прямым HTTP, "
+                             "без инструментов и MCP. Причина — в ошибках ниже; "
+                             "«Установка» → Pydantic AI",
+                             f"Bypassed Pydantic AI: {_n(s['adapter_bypass'])} calls went over plain "
+                             "HTTP, without tools and MCP. The reason is in the errors below; "
+                             '"Install" → Pydantic AI'))
     calls = s.get("model_calls") or 0
     cached = (f" · {w('из кэша ответов', 'from the answer cache')} {_n(s.get('model_cached'))}"
               if s.get("model_cached") else "")

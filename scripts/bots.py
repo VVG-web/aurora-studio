@@ -731,6 +731,8 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
         return {"ok": False, "problem": problem(p["code"], p.get("detail", ""), field=p["field"],
                                                 more=[x["detail"] for x in blocking[1:]])}
     cfg = AG.config()
+    # Путь вызова — тревоге «мимо Pydantic AI» и журналу сбоев: какой бот обходил адаптер.
+    AG.RUN_TASK["name"] = "bot:" + os.path.splitext(os.path.basename(str(rel)))[0]
     role = meta.get("role") or ROLE
     if not AG.role_chain(cfg, role):
         return {"ok": False, "problem": problem("no_models", role)}
@@ -780,7 +782,9 @@ def _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug) -> dict
         os.chdir(cwd)
     outputs = sorted(p.relative_to(project).as_posix() for p in outdir.iterdir() if p.is_file())
     if not r.get("ok"):
-        prob = _model_problem(r)
+        # Вызов отказан, потому что прошёл бы мимо Pydantic AI, — это «нет инструментов»,
+        # а не «модель не ответила»: чинится установкой адаптера, а не шлюзом.
+        prob = problem("no_tools", r["bypass"]) if r.get("bypass") else _model_problem(r)
         report = _report(project, outdir, meta, trigger, "", prob)
         return {"ok": False, "problem": prob, "report": report, "outputs": outputs}
     text = (r.get("text") or "").strip()

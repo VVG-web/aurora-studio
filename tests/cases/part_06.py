@@ -326,13 +326,15 @@ def test_gateway_gets_only_what_it_understands(tmp: Path):
                             {"model": "m", "messages": [{"role": "user", "content": "?"}],
                              "max_tokens": 1, "chat_template_kwargs": {"enable_thinking": False},
                              "role": "worker", "tools_root": "/tmp", "mcp": {},
-                             "mcp_active": [], "guard": {"ready": False}},
+                             "mcp_active": [], "guard": {"ready": False},
+                             # прямой HTTP — выбор вызова (с 1.161.0 адаптер берётся из него)
+                             "adapter": "openai_compat"},
                             5.0)
     finally:
         A.http_json = real
 
     got = set(sent["payload"])
-    internal = {"role", "tools_root", "mcp", "mcp_active", "guard"}
+    internal = {"role", "tools_root", "mcp", "mcp_active", "guard", "adapter"}
     leaked = sorted(got & internal)
     assert not leaked, (
         f"в шлюз ушли внутренние поля движка: {leaked}. Строгий шлюз отвечает на них "

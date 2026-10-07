@@ -30,6 +30,7 @@ EXCUSES = {
     ("/api/kit/status", ".notes[]"): "журнал изменений пишется по-русски: это документ, граница описана в CHANGELOG 1.149.0",
     ("/api/about", ".releases[]"): "то же: записи CHANGELOG",
     ("/api/config", ".text"): "сам файл конфигурации проекта",
+    ("/api/cron", ".tasks[].bot_last.summary"): "начало ответа бота — текст модели на языке проекта",
     ("/api/i18n", ".strings.arg.ops_impact"): "пример имени карточки на языке проекта",
     ("/api/i18n", ".strings.proj.f_trust_statuses_ph"): "значения по умолчанию — названия статусов Jira как есть",
     ("/api/i18n", ".strings.proj.f_assumption_statuses_ph"): "то же",
@@ -64,7 +65,7 @@ CRAWLED = (
     "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",
     "/api/runlog", "/api/agent/pydantic", "/api/context/suggest", "/api/skin", "/api/cron",
-    "/api/history", "/api/routes", "/api/bots", "/api/env",
+    "/api/history", "/api/routes", "/api/bots", "/api/env", "/api/adapter/alarm",
 )
 NOT_CRAWLED = {
     "/api/ping": "ответ — слово «ok», не текст",
@@ -102,6 +103,10 @@ class _Panel:
         self.ck = importlib.import_module("aurora_cockpit")
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), self.ck.Handler)
         self.srv.roots = [str(r) for r in roots]
+        # Расписание без `main()` ищет проекты в папке рядом с китом, то есть на машине
+        # разработчика — в его настоящих проектах: обход видел ответ живого бота. Здесь
+        # планировщик смотрит только в корни проверки.
+        self.ck.SCHED = self.ck.CRON.Scheduler(self.ck, lambda: self.ck.find_projects(self.srv.roots))
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
     def get(self, path: str):
@@ -116,6 +121,7 @@ class _Panel:
 
     def close(self):
         self.srv.shutdown()
+        self.ck.SCHED = None
 
 
 def _leftovers(panel: _Panel, project: Path, tag: str) -> list:

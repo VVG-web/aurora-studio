@@ -114,5 +114,18 @@
   "health.go_ping": "Check the link",
   "health.go_retrieval": "Check the retrieval",
   "health.go_list": "See the list",
-  "health.go_corrections": "Sort them out"
+  "health.go_corrections": "Sort them out",
+  "health.blockers": "Blockers",
+  "health.blockers_sub": "keep the engine from working correctly — fix them first",
+  "health.blockers_none": "none — doctor is satisfied",
+  "health.blockers_hint": "Doctor findings that make the project red. Click to open the report: what is broken, why it matters and how to fix it.",
+  "health.go_blockers": "What and how to fix",
+  "health.blockers_report": "Doctor blockers: {n}",
+  "health.blockers_about": "A blocker is something that keeps the engine from working correctly; while it is there, the project is red. Fix it and press “Check again”.",
+  "health.blockers_gone": "No blockers — doctor no longer makes the project red.",
+  "health.warnings_report": "Warnings: {n}",
+  "health.why_label": "Why it matters:",
+  "health.fix_label": "How to fix:",
+  "health.open_config": "Open aurora.config.yaml",
+  "health.recheck": "Check again"
 }

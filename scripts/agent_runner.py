@@ -687,11 +687,11 @@ def extract_card(cfg: dict, path: str, call=None, apply: bool = False,
         prefer=prefer)
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="note")
         return step
     plan = (parse_json(r["text"]) or {}).get("extract")
     if plan is None:
-        step.update(status="сбой", note="модель ответила не JSON")
+        fail_step(step, "модель ответила не JSON", r, key="note")
         return step
     step.update(apply_extract_plan(root, path, text, thesis, plan, apply))
     return step
@@ -805,9 +805,9 @@ def apply_extract_plan(root: str, path: str, text: str, thesis: str, plan: list,
         with open(path, encoding="utf-8", errors="ignore") as f:
             fresh = f.read()
         if thesis not in fresh:
-            out["status"] = "сбой"
-            out["note"] = (out["note"] + "; карточка изменилась во время осмотра — "
-                           "тезис не тронут, определения лежат в своих карточках").strip("; ")
+            fail_step(out, (out["note"] + "; карточка изменилась во время осмотра — "
+                            "тезис не тронут, определения лежат в своих карточках").strip("; "),
+                      subject=path)
             return out
         with open(path, "w", encoding="utf-8") as f:
             f.write(fresh.replace(thesis, new_thesis, 1))
@@ -1207,7 +1207,7 @@ def relink_card(cfg: dict, path: str, call=None, apply: bool = False,
         step["backends"].append(r.get("backend"))
         if not r["ok"]:
             if not placed:
-                step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
+                fail_step(step, model_fail_note(r), r, key="note")
                 return step
             failed = "модель не ответила: " + model_fail_note(r)
         else:
@@ -1703,12 +1703,12 @@ def solve_clash(cfg: dict, cwd: str, group: list, call=None, deadline: float = 0
         deadline=deadline or (time.time() + AG.call_budget(cfg, "qa")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="why")
         return step
     parsed = parse_json(r["text"])
     found = parsed.get("clashes") if isinstance(parsed, dict) else None
     if not isinstance(found, list):
-        step.update(status="сбой", why="модель ответила не JSON")
+        fail_step(step, "модель ответила не JSON", r, key="why")
         return step
     known = set(group)
     for c in found:
@@ -1881,6 +1881,43 @@ def model_fail_note(r: dict) -> str:
     return "; ".join(parts)[:500]
 
 
+def fails_line(cwd: str) -> list:
+    """Строка итога: сколько сбоев записано и где лежат подробности. Сбоев нет — пусто."""
+    if not AG.FAILS["n"]:
+        return []
+    path = AG.FAILS["path"]
+    try:
+        path = os.path.relpath(path, cwd).replace("\\", "/")
+    except ValueError:
+        pass
+    return [f"  Подробности сбоев ({AG.FAILS['n']}): {path} — ход вызова по шлюзам, размер "
+            f"запроса, срок, ответ модели"]
+
+
+def fail_step(step: dict, why: str, r: dict | None = None, subject: str = "",
+              key: str = "note", stage: str = "", **extra) -> dict:
+    """Шаг не удался: причина — в шаг (её печатает строка хода), подробности — в журнал.
+
+    В журнал сбоев прогона (`failures.jsonl` в папке прогона) идёт то, чего строка
+    консоли вместить не может: весь ход вызова по бэкендам, размер запроса, срок, сколько
+    было попыток, а если ответ пришёл, но не разобран, — сам ответ и хвост рассуждений.
+    `stage` — где сломалось: вызов модели или разбор ответа.
+    """
+    step.update({"status": "сбой", key: why})
+    if r is not None:
+        step["slow"] = bool(r.get("timed_out"))
+    name = subject or step.get("card") or step.get("source") or step.get("alias") or ""
+    if isinstance(name, (list, tuple)):
+        name = ", ".join(map(str, name))
+    name = str(name)
+    if os.path.isabs(name):
+        name = os.path.relpath(name).replace("\\", "/")
+    AG.record_failure(name, why, r, stage or ("ответ модели" if r and r.get("ok") else
+                                              "вызов модели" if r is not None else "запись"),
+                      **extra)
+    return step
+
+
 def fail_why(res: dict) -> str:
     """Почему команда не прошла — словами команды, а не «команда не прошла».
 
@@ -1988,14 +2025,14 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
         deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="why")
         return step
     verdict = parse_json(r["text"])
     if not isinstance(verdict, dict) or not (verdict.get("into") or verdict.get("subject")
                                              or verdict.get("keep") is True):
         # Ни переноса, ни имени, ни явного «оставить»: это не вердикт. Молчаливое «оставлена»
         # без отметки отправляло карточку к модели на каждом прогоне.
-        step.update(status="сбой", why="ответ модели не разобран: нет решения")
+        fail_step(step, "ответ модели не разобран: нет решения", r, key="why")
         return step
     step["why"] = str(verdict.get("why") or "")[:200]
 
@@ -2007,7 +2044,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
         return step
     if into:
         if into not in {n for n, _s, _b in rows}:
-            step.update(status="сбой", why=f"названа карточка не из списка: «{into}»")
+            fail_step(step, f"названа карточка не из списка: «{into}»", r, key="why")
             return step
         step["into"] = into
         step["status"] = "перенесено" if apply else "перенёс бы"
@@ -2015,7 +2052,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
             res = run_command(cwd, "kb_fix.py", ["--dupes", "--merge", into, stem,
                                                  "--apply", "--allow-dirty"])
             if not res["ok"]:
-                step.update(status="сбой", why="перенос: " + fail_why(res))
+                fail_step(step, "перенос: " + fail_why(res), key="why")
         return step
     if subject:
         # Имя предмета сначала спрашиваем у базы. Модель видит только список близких
@@ -2052,7 +2089,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
                 res = run_command(cwd, "kb_fix.py", ["--dupes", "--merge", into, stem,
                                                      "--apply", "--allow-dirty"])
                 if not res["ok"]:
-                    step.update(status="сбой", why="перенос: " + fail_why(res))
+                    fail_step(step, "перенос: " + fail_why(res), key="why")
             return step
         step["into"] = subject
         step["status"] = "переименована" if apply else "переименовал бы"
@@ -2060,7 +2097,7 @@ def solve_task_card(cfg: dict, cwd: str, path: str, apply: bool, call=None,
             res = run_command(cwd, "kb_fix.py", ["--rename", stem, subject,
                                                  "--apply", "--allow-dirty"])
             if not res["ok"]:
-                step.update(status="сбой", why="переименование: " + fail_why(res))
+                fail_step(step, "переименование: " + fail_why(res), key="why")
         return step
     return step
 
@@ -2180,20 +2217,20 @@ def solve_translit(cfg: dict, path: str, call=None, deadline: float = 0.0) -> di
         deadline=deadline or (time.time() + AG.call_budget(cfg, "worker")))
     step["backends"].append((r.get("backend"), r.get("model")))
     if not r["ok"]:
-        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="why")
         return step
     data = parse_json(r["text"])
     if not isinstance(data, dict) or "cyrillic" not in data:
         # Без ключа это не «не транслит», а непонятный ответ: пустое имя навсегда вносило
         # карточку в словарь как не подлежащую переводу.
-        step.update(status="сбой", why="ответ модели не разобран: нет поля cyrillic")
+        fail_step(step, "ответ модели не разобран: нет поля cyrillic", r, key="why")
         return step
     said = str(data.get("cyrillic") or "").strip()
     if not said:
         step.update(status="не транслит", why="английские слова или идентификатор")
         return step
     if not re.search(r"[а-яА-ЯёЁ]", said):
-        step.update(status="сбой", why=f"в ответе нет кириллицы: «{said[:60]}»")
+        fail_step(step, f"в ответе нет кириллицы: «{said[:60]}»", r, key="why")
         return step
     step.update(status="переведено", cyrillic=said)
     return step
@@ -2381,13 +2418,13 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
         deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="why")
         return step
     verdict = parse_json(r["text"])
     if not isinstance(verdict, dict) or not isinstance(verdict.get("merge"), bool):
         # Не ответ, а мусор: «извините, не могу» нельзя принять за «это разные сущности» —
         # такой вердикт записывался в карточки раздела «Не путать» и закрывал группу навсегда.
-        step.update(status="сбой", why="ответ модели не разобран: нет решения «merge»")
+        fail_step(step, "ответ модели не разобран: нет решения «merge»", r, key="why")
         return step
     step["why"] = str(verdict.get("why") or "")[:200]
     if not verdict["merge"]:
@@ -2396,7 +2433,7 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
         return step
     keep = str(verdict.get("keep") or "").strip()
     if keep not in group:
-        step.update(status="сбой", why=f"названа карточка не из группы: «{keep}»")
+        fail_step(step, f"названа карточка не из группы: «{keep}»", r, key="why")
         return step
     step["keep"] = keep
     losers = [n for n in group if n != keep]
@@ -2407,7 +2444,7 @@ def solve_twins(cfg: dict, cwd: str, group: list, apply: bool, call=None,
         args = ["--dupes", "--merge", keep, drop, "--apply", "--allow-dirty"]
         res = run_command(cwd, "kb_fix.py", args)
         if not res["ok"]:
-            step.update(status="сбой",
+            fail_step(step, key="why",
                         why=f"слияние {drop}: " + (res.get("why") or res["out"][:200]))
             return step
     return step
@@ -2516,18 +2553,18 @@ def solve_golden(cfg: dict, cwd: str, row: dict, apply: bool, call=None,
         deadline=deadline or (time.time() + AG.call_budget(cfg, "critic")))
     step["backends"].append(r.get("backend"))
     if not r["ok"]:
-        step.update(status="сбой", why=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="why")
         return step
     verdict = parse_json(r["text"])
     if not isinstance(verdict, dict) or "card" not in verdict:
-        step.update(status="сбой", why="ответ модели не разобран: нет поля «card»")
+        fail_step(step, "ответ модели не разобран: нет поля «card»", r, key="why")
         return step
     card = str(verdict.get("card") or "").strip()
     step["why"] = str(verdict.get("why") or "")[:200]
     if not card:
         return step                      # ответа нет ни в одном — строка остаётся
     if card not in (row.get("candidates") or []):
-        step.update(status="сбой", why=f"названа карточка не из кандидатов: «{card}»")
+        fail_step(step, f"названа карточка не из кандидатов: «{card}»", r, key="why")
         return step
     step.update(card=card, status="переведено" if apply else "перевёл бы")
     if apply:
@@ -2536,7 +2573,7 @@ def solve_golden(cfg: dict, cwd: str, row: dict, apply: bool, call=None,
         if not res["ok"]:
             # Причина — первой строкой вывода команды, а не его хвостом: хвост трассировки
             # («~~~~^^^^») ничего не называет.
-            step.update(status="сбой", why=res.get("refused")
+            fail_step(step, key="why", why=res.get("refused")
                         or ((res["out"] or "").strip().splitlines() or ["?"])[0][:200])
     return step
 
@@ -2758,14 +2795,14 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
                               PROMPT_WORKER.format(alias=alias, cards=listing)}],
              deadline=deadline)
     if not r["ok"]:
-        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="note")
         return step
     step["backends"].append((r["backend"], r["model"]))
     step["tps"] = r.get("tps") or step.get("tps") or 0
     step["degraded"] = r["backend"] != 1
     proposal = parse_json(r["text"])
     if not proposal or "verdict" not in proposal:
-        step.update(status="сбой", note="ответ модели не разобран как JSON")
+        fail_step(step, "ответ модели не разобран как JSON", r, key="note")
         return step
 
     if use_critic:
@@ -2795,7 +2832,7 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
                 res = run_command(cwd, "kb_fix.py", ["--dupes", "--merge", keep, drop,
                                                      "--apply", "--allow-dirty"])
                 if not res["ok"]:
-                    step.update(status="сбой", note=f"слияние {drop} → {keep} не прошло: "
+                    fail_step(step, key="note", why=f"слияние {drop} → {keep} не прошло: "
                                 + (res.get("why") or res["out"][:200]))
                     return step
             merged.append(drop)
@@ -2807,7 +2844,7 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
     renames = [x for x in (proposal.get("renames") or [])
                if x.get("card") and x.get("new")]
     if not renames:
-        step.update(status="сбой", note="verdict=distinct, но уточнений не предложено")
+        fail_step(step, "verdict=distinct, но уточнений не предложено", r, key="note")
         return step
 
     done = []
@@ -2818,11 +2855,11 @@ def solve_conflict(cfg: dict, cwd: str, alias: str, cards: list, apply: bool,
             args.append("--allow-dirty")   # чекпойнт уже зафиксировал состояние
         res = run_command(cwd, "kb_fix.py", args)
         if res.get("refused"):
-            step.update(status="сбой", note="команда отклонена: " + res["refused"])
+            fail_step(step, "команда отклонена: " + res["refused"], key="note")
             return step
         if not res["ok"]:
-            step.update(status="сбой",
-                        note="команда не выполнила правку: "
+            fail_step(step, key="note",
+                        why="команда не выполнила правку: "
                              + (res.get("why") or res["out"][:200]))
             return step
         done.append(f"{item['card']} → «{item['new']}»")
@@ -3643,7 +3680,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         r = call(cfg, "worker", [{"role": "user", "content": prompt + note_back}],
                  deadline=deadline)
         if not r["ok"]:
-            step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
+            fail_step(step, model_fail_note(r), r, key="note")
             return step
         step["backends"].append((r["backend"], r["model"]))
         step["tps"] = r.get("tps") or step.get("tps") or 0
@@ -3658,7 +3695,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                              "по схеме выше — без рассуждений, пояснений и текста вокруг.")
                 continue
             sample = re.sub(r"\s+", " ", r["text"] or "").strip()[:160]
-            step.update(status="сбой", note="ответ модели не разобран как JSON"
+            fail_step(step, r=r, key="note", why="ответ модели не разобран как JSON"
                         + (f" · начало ответа: «{sample}»" if sample else " · ответ пуст"))
             step["content_fail"] = True
             return step
@@ -3672,7 +3709,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         cards = [c for c in plan["cards"]
                  if (c.get("title") or c.get("into")) and c.get("sections")]
         if not cards:
-            step.update(status="сбой", note="карточки предложены без имени или секций")
+            fail_step(step, "карточки предложены без имени или секций", r, key="note")
             step["content_fail"] = True
             return step
         why, from_check = check_cards(cards, sections), True
@@ -3724,7 +3761,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if apply:
             res = run_build_plan(cwd, ["--done", source, "--empty", note])
             if not res["ok"]:
-                step.update(status="сбой", note="отметка не поставлена: "
+                fail_step(step, key="note", why="отметка не поставлена: "
                             + (res.get("why") or res["out"][:200]))
                 return step
         step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
@@ -3749,7 +3786,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             args.append("--apply")
         res = run_build_plan(cwd, args)
         if res.get("refused"):
-            step.update(status="сбой", note="команда отклонена: " + res["refused"])
+            fail_step(step, "команда отклонена: " + res["refused"], key="note")
             return step
         # Имя занято карточкой из ДРУГОГО источника. По правилам базы имя карточки — это
         # имя сущности; совпало имя — совпала сущность, и знание о ней копится в одной
@@ -3767,7 +3804,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
             res = run_build_plan(cwd, args)
             into_name = str(card["title"])
         if not res["ok"]:
-            step.update(status="сбой", note="карточка не собрана: "
+            fail_step(step, key="note", why="карточка не собрана: "
                         + (res.get("why") or res["out"][:200]))
             return step
         made.append(f"«{into_name}» ← дописаны секции {card['sections']}" if into_name
@@ -3779,7 +3816,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         if not res["ok"]:
             # Отметка проверяется по базе: не поставилась — карточек в базе нет,
             # и считать источник разобранным нельзя.
-            step.update(status="сбой", note="отметка не поставлена: "
+            fail_step(step, key="note", why="отметка не поставлена: "
                         + (res.get("why") or res["out"][:200]))
             return step
     step.update(status="разобран" if apply else "разобрал бы", note="; ".join(made))
@@ -3889,7 +3926,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     try:
         raw = (Path(cwd) / source).read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        step.update(status="сбой", note="стенограмма не читается")
+        fail_step(step, "стенограмма не читается", key="note")
         return step
     turns = meeting_turns(raw)
     when = meeting_label(source)
@@ -3943,7 +3980,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     if failed:
         # Часть встречи не прочитана — отмечать её разобранной нельзя: недочитанное
         # выпало бы из плана навсегда. Источник вернётся в следующем обороте.
-        step.update(status="сбой", note=f"окон встречи не прочитано: {len(failed)} из "
+        fail_step(step, r=failed[0], key="note", why=f"окон встречи не прочитано: {len(failed)} из "
                     f"{len(windows)} — " + model_fail_note(failed[0]))
         return step
     cards = [dict(row, title=row["title"] if not row["into"] else "")
@@ -3971,7 +4008,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         # Карточка не записана — отмечать встречу разобранной нельзя: её куски выпали бы из
         # плана навсегда. Записанное остаётся (блок источника при повторе заменяется), а
         # встреча вернётся следующим оборотом целиком.
-        step.update(status="сбой", note=f"встреча {when}: не записано карточек {len(lost)} — "
+        fail_step(step, key="note", why=f"встреча {when}: не записано карточек {len(lost)} — "
                     + "; ".join(lost[:3]))
         return step
     if apply:
@@ -3979,7 +4016,7 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                run_build_plan(cwd, ["--done", source, "--empty",
                                     "стенограмма встречи без знания по предмету проекта"]))
         if not res["ok"]:
-            step.update(status="сбой", note="отметка не поставлена: "
+            fail_step(step, key="note", why="отметка не поставлена: "
                         + (res.get("why") or res["out"][:200]))
             return step
     step.update(status="разобран" if made else "пусто — отмечено",
@@ -4023,7 +4060,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     try:
         whole = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        step.update(status="сбой", note="источник не читается")
+        fail_step(step, "источник не читается", key="note")
         return step
     # О знании модель судит без шаблона страницы: незаполненная форма с одними
     # инструкциями авторам — «пусто», а не «знание есть».
@@ -4040,7 +4077,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
              trim=(whole, lambda part: [{"role": "user", "content": with_terms(
                  PROMPT_NO_SECTIONS.format(source=source, text=part), part, cwd)}]))
     if not r["ok"]:
-        step.update(status="сбой", note=model_fail_note(r), slow=bool(r.get("timed_out")))
+        fail_step(step, model_fail_note(r), r, key="note")
         return step
     step["backends"].append((r["backend"], r["model"]))
     step["tps"] = r.get("tps") or step.get("tps") or 0
@@ -4109,7 +4146,7 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
     if apply:
         res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
         if not res["ok"]:
-            step.update(status="сбой", note="отметка не поставлена: "
+            fail_step(step, key="note", why="отметка не поставлена: "
                         + (res.get("why") or res["out"][:200]))
             return step
     step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
@@ -5349,15 +5386,22 @@ def run_momus(cfg: dict, pack: str, question: str, answer: str, call=None,
         deadline=time.time() + rt, prefer=prefer, request_timeout=rt)
     if not v["ok"]:
         return {"ok": False, "why": model_fail_note(v), "seconds": 0.0,
-                "timed_out": bool(v.get("timed_out")), "given": rt}
+                "timed_out": bool(v.get("timed_out")), "given": rt,
+                "call": {k: x for k, x in v.items() if k != "url"}}
     text = (v["text"] or "").strip()
     m = re.search(r"ВЕРДИКТ:\s*(ЧИСТО|БЕЗ ОПОРЫ\s*(\d+))", text, re.I)
     unsupported = int(m.group(2)) if (m and m.group(2)) else 0
     # Вердикта нет — считаем проверку не состоявшейся: молча выдавать «чисто» нельзя.
-    return {"ok": bool(m), "clean": bool(m) and not unsupported, "unsupported": unsupported,
-            "text": text, "model": v["model"], "backend": v["backend"],
-            "seconds": round(time.time() - started, 1),
-            "why": "" if m else "Момус не дал вердикта — проверка не состоялась"}
+    # Сам ответ уходит вызывающему (`call`) — в журнал сбоев: «не дал вердикта» без
+    # ответа не разобрать — оборван ли он лимитом, отказ ли это или другой формат.
+    out = {"ok": bool(m), "clean": bool(m) and not unsupported, "unsupported": unsupported,
+           "text": text, "model": v["model"], "backend": v["backend"],
+           "seconds": round(time.time() - started, 1),
+           "why": "" if m else (f"Момус не дал вердикта — проверка не состоялась "
+                                f"(finish_reason={v.get('finish')}, ответ {len(text)} зн.)")}
+    if not m:
+        out["call"] = {k: x for k, x in v.items() if k != "url"}
+    return out
 
 
 UNSUPPORTED_JSON = os.path.join("AuroraKnowledgeDB", "meta", "unsupported.json")
@@ -5780,7 +5824,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         a = once(with_terms(PROMPT_REDISTILL.format(
             title=title, was=was_thesis[:4000], body=parts[0]), parts[0], root))
         if not a["ok"]:
-            step.update(status="сбой", note=model_fail_note(a), slow=bool(a.get("timed_out")))
+            fail_step(step, model_fail_note(a), a, key="note")
             return step
         raw = (a["text"] or "").strip()
         m = re.split(r"^\s*ИЗМЕНИЛОСЬ:\s*$", raw, maxsplit=1, flags=re.M)
@@ -5803,7 +5847,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         # ставит отдельный проход, где движок доказывает, что текст не изменился.
         a = once(with_terms(PROMPT_DISTILL.format(title=title, body=parts[0]), parts[0], root))
         if not a["ok"]:
-            step.update(status="сбой", note=model_fail_note(a), slow=bool(a.get("timed_out")))
+            fail_step(step, model_fail_note(a), a, key="note")
             return step
         thesis = (a["text"] or "").strip()
     else:
@@ -5815,7 +5859,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
             r = once(with_terms(PROMPT_DISTILL_PART.format(
                 n=i, total=len(parts), title=title, body=chunk), chunk, root))
             if not r["ok"]:
-                step.update(status="сбой", note=f"часть {i}: " + model_fail_note(r), slow=bool(r.get("timed_out")))
+                fail_step(step, f"часть {i}: " + model_fail_note(r), r, key="note")
                 return step
             piece = (r["text"] or "").strip()
             if piece and not piece.upper().startswith("ПУСТО"):
@@ -5832,7 +5876,7 @@ def distill_card(cfg: dict, path: str, call=None, momus: bool = True,
         j = once(PROMPT_DISTILL_JOIN.format(total=len(parts), title=title,
                                             parts="\n\n".join(notes)))
         if not j["ok"]:
-            step.update(status="сбой", note="свод частей: " + model_fail_note(j), slow=bool(j.get("timed_out")))
+            fail_step(step, "свод частей: " + model_fail_note(j), j, key="note")
             return step
         thesis = (j["text"] or "").strip()
 
@@ -6060,8 +6104,14 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
         except Exception as e:                              # noqa: BLE001
             # Одна нечитаемая карточка не должна ронять ночной прогон: сбой становится
             # шагом со статусом, а не исключением, всплывающим из пула и уносящим партию.
-            return path, {"card": os.path.basename(path), "status": "сбой",
-                          "note": f"{type(e).__name__}: {e}"[:160], "backends": []}
+            import traceback
+            step = {"card": os.path.basename(path), "backends": []}
+            # Трассировка — в журнал сбоев: по строке «KeyError: 'x'» место не найти.
+            AG.record_failure(os.path.relpath(path).replace("\\", "/"),
+                              f"{type(e).__name__}: {e}"[:300], stage="исключение",
+                              traceback=traceback.format_exc()[-4000:])
+            step.update(status="сбой", note=f"{type(e).__name__}: {e}"[:160])
+            return path, step
         finally:
             with busy_lock:
                 busy -= 1
@@ -6260,7 +6310,9 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         mo = run_momus(cfg, pack, f"Тезис карточки «{title}»",
                        plain_links(thesis.strip(), readable=True), call, MOMUS_PREFER)
         if not mo.get("ok"):
-            return path, {"status": "сбой", "note": mo.get("why", "")}
+            return path, fail_step({}, mo.get("why", "") or "проверка не состоялась",
+                                   mo.get("call"), subject=path,
+                                   extra_chars={"pack": len(pack), "thesis": len(thesis)})
         return path, {"status": "чисто" if mo.get("clean") else "без опоры",
                       "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
 
@@ -6275,7 +6327,8 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
             st["card"] = os.path.basename(path)
             steps.append(st)
             say(f"  [{i}/{len(todo)}] {st['card'][:-3]} → {st['status']}"
-                + (f" {st['count']}" if st.get("count") else ""))
+                + (f" {st['count']}" if st.get("count") else "")
+                + (f": {st['note'][:160]}" if st["status"] == "сбой" and st.get("note") else ""))
             if apply and st["status"] in ("чисто", "без опоры"):
                 text = open(path, encoding="utf-8", errors="ignore").read()
                 new = set_unsupported(text, st["count"])
@@ -6296,6 +6349,12 @@ def report_recheck(res: dict, apply: bool) -> str:
          f"без опоры: {res['flagged']} (утверждений: {res['claims']}) · сбоев: {res['failed']}",
          "", f"Список для человека: `{UNSUPPORTED_MD}`" if apply else
          "(предпросмотр) Ничего не записано. Повторите с --apply."]
+    bad = [s for s in res["steps"] if s["status"] == "сбой"]
+    if bad:
+        L += ["", "## Сбои проверки", ""] + [f"- {s['card']}: {s.get('note') or '—'}"
+                                            for s in bad[:20]]
+        if len(bad) > 20:
+            L.append(f"- … ещё {len(bad) - 20}")
     return "\n".join(L)
 
 
@@ -6721,6 +6780,8 @@ def main() -> int:
     ap.add_argument("--no-checkpoint", action="store_true",
                     help="не делать git-коммит перед прогоном (откат станет ручным)")
     a = ap.parse_args()
+    # Имя прогона — тревоге «мимо Pydantic AI» и журналу сбоев: где именно это случилось.
+    AG.RUN_TASK["name"] = f"agent:{a.task}" + (" --recheck" if getattr(a, "recheck", False) else "")
 
     cwd = os.getcwd()
     if not os.path.isdir(os.path.join(cwd, "AuroraKnowledgeDB")):
@@ -6892,6 +6953,12 @@ def main() -> int:
         res = recheck_unsupported(cfg, cwd, a.apply, a.limit)
         text = report_recheck(res, a.apply)
         print(text)
+        # Итог — тем же составителем, что у остальных задач: без него сбои перепроверки
+        # не доходили до итога маршрута, и «Починить» выглядела чистой.
+        summ = RS.from_agent(res["steps"], AG.USAGE, time.time() - t_start, None)
+        print("\n" + "\n".join(RS.render(summ, "Итог прогона agent:distill --recheck")
+                               + fails_line(cwd)))
+        print(RS.emit(summ))
         if a.apply:
             done = commit_result(cwd, "agent:distill",
                                  f"перепроверка без опоры: чисто {res['clean']}, "
@@ -7013,7 +7080,7 @@ def main() -> int:
     # маршрута в панели. Машинную строку панель читает и человеку не показывает.
     summ = RS.from_agent(steps_all or res.get("steps", []), AG.USAGE, time.time() - t_start,
                          RS.kb_delta(cwd, head0) if a.apply else None)
-    summary_lines = RS.render(summ, f"Итог прогона agent:{a.task}")
+    summary_lines = RS.render(summ, f"Итог прогона agent:{a.task}") + fails_line(cwd)
     print("\n" + "\n".join(summary_lines))
     print(RS.emit(summ))
     text += "\n\n" + "\n".join(summary_lines)

@@ -114,5 +114,18 @@
   "health.go_ping": "Проверить связь",
   "health.go_retrieval": "Проверить выдачу",
   "health.go_list": "Посмотреть список",
-  "health.go_corrections": "Разобрать"
+  "health.go_corrections": "Разобрать",
+  "health.blockers": "Блокеры",
+  "health.blockers_sub": "мешают движку работать правильно — их чинят первыми",
+  "health.blockers_none": "нет — doctor доволен",
+  "health.blockers_hint": "Находки doctor, из-за которых проект красный. Нажмите — откроется отчёт: что сломано, почему это мешает и как исправить.",
+  "health.go_blockers": "Что и как исправить",
+  "health.blockers_report": "Блокеры doctor: {n}",
+  "health.blockers_about": "Блокер — то, из-за чего движок не может работать правильно; пока он есть, проект красный. Исправьте и нажмите «Проверить снова».",
+  "health.blockers_gone": "Блокеров нет — проект больше не красный из-за doctor.",
+  "health.warnings_report": "Замечания: {n}",
+  "health.why_label": "Почему мешает:",
+  "health.fix_label": "Как исправить:",
+  "health.open_config": "Открыть aurora.config.yaml",
+  "health.recheck": "Проверить снова"
 }

@@ -61,9 +61,15 @@ export async function refresh(ctx){
       el("span", {class:"chip " + (why.color === "green" ? "ok" : why.color === "red" ? "bad" : "warn")},
         colorName),
       el("b", {}, why.color === "green" ? t("health.all_good") : t("health.to_green"))),
-    ...why.todo.map(x => el("div", {class:"list-item"},
-      el("span", {class:"chip " + (x.bad ? "bad" : "ok")}, x.bad ? "✗" : "✓"),
-      el("div", {}, x.text))),
+    ...why.todo.map(x => {
+      const open = x.code === "blockers" && x.bad;
+      const row = el("div", {class:"list-item" + (open ? " clickable" : "")},
+        el("span", {class:"chip " + (x.bad ? "bad" : "ok")}, x.bad ? "✗" : "✓"),
+        el("div", {style:"flex:1"}, x.text),
+        open ? el("span", {class:"chip"}, t("health.go_blockers")) : null);
+      if (open) row.onclick = () => showBlockers(ctx, h);
+      return row;
+    }),
     el("div", {class:"muted", style:"font-size:12.5px;margin-top:8px"}, t("health.ratchet_note"))));
 
   box.append(baseCards(ctx, h, st));
@@ -117,10 +123,9 @@ export async function refresh(ctx){
   box.append(el("h2", {}, t("health.readiness")));
   if (h.doctor.errors.length || h.doctor.warns.length){
     const card = el("div", {class:"card"});
-    h.doctor.errors.forEach(e => card.append(el("div", {class:"list-item"},
-      el("span", {class:"chip bad"}, t("health.blocker")), el("div", {}, e))));
-    h.doctor.warns.forEach(w => card.append(el("div", {class:"list-item"},
-      el("span", {class:"chip warn"}, t("health.warning")), el("div", {}, w))));
+    h.doctor.errors.forEach((e, i) => card.append(
+      findingRow(ctx, e, (h.doctor.blocker_why || [])[i] || "", "bad")));
+    h.doctor.warns.forEach(w => card.append(findingRow(ctx, w, "", "warn")));
     box.append(card);
   } else {
     box.append(el("div", {class:"card",
@@ -144,7 +149,16 @@ function baseCards(ctx, h, st){
   const trace = h.trace || {};
   const fixOrDecide = () => fresh ? ctx.ui.goRoute("fix", t("health.go_fix"))
                                   : ctx.ui.goCmd("ops:todo", [], t("health.go_decide"));
+  const blockers = (h.doctor && h.doctor.errors) || [];
   return el("div", {class:"grid metrics", style:"margin-bottom:14px"},
+    // Блокеры — первой плиткой: «блокеры doctor: 2» в строке цвета не говорили, что
+    // сломано, почему и что нажать. Плитка открывает отчёт с ответом на все три.
+    card({title: t("health.blockers"), value: blockers.length,
+      sub: blockers.length ? t("health.blockers_sub") : t("health.blockers_none"),
+      tone: blockers.length ? "danger" : "",
+      hint: t("health.blockers_hint"),
+      go: blockers.length ? {label: t("health.go_blockers"), act: () => showBlockers(ctx, h)}
+                          : null}),
     card({title: t("health.contents"), value: st.total ?? "—",
       sub: t("health.contents_sub", {knowledge: st.statuses?.knowledge ?? st.trusted ?? 0,
                                      drafts: st.statuses?.draft ?? 0}),
@@ -271,6 +285,62 @@ function baseCards(ctx, h, st){
     card({title: t("health.left_to_human"), value: h.todo != null ? h.todo : "—",
       sub: t("health.left_sub"),
       go: ctx.ui.goCmd("ops:todo", [], t("health.go_list"))}));
+}
+
+// Находка doctor: «что → как исправить» и «почему мешает» — тремя строками, с кнопками
+// там, где исправление делается из панели (файл настройки, команда для копирования).
+function findingRow(ctx, text, why, kind){
+  const {t, el} = ctx;
+  const at = text.indexOf(" → ");
+  const what = at < 0 ? text : text.slice(0, at);
+  const fix = at < 0 ? "" : text.slice(at + 3);
+  const cmds = [...fix.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+  const rm = fix.match(/git rm -r --cached [^;]+/);
+  if (rm) cmds.push(rm[0].trim());
+  // Команда видна целиком рядом с кнопкой: «Скопировать» без текста не говорит, что именно.
+  const acts = cmds.map(c => el("span", {class:"row", style:"gap:6px"},
+    el("code", {class:"mono", style:"font-size:12px"}, c), ctx.ui.copyButton(c)));
+  if (/aurora\.config\.yaml/.test(text))
+    acts.push(el("button", {class:"btn sm", onclick: () => ctx.openPath("aurora.config.yaml")},
+      t("health.open_config")));
+  return el("div", {class:"list-item"},
+    el("span", {class:"chip " + kind}, t(kind === "bad" ? "health.blocker" : "health.warning")),
+    el("div", {style:"flex:1;min-width:0"},
+      el("div", {style:"font-weight:600"}, what),
+      why ? el("div", {class:"muted", style:"font-size:12.5px;margin-top:3px"},
+                el("b", {}, t("health.why_label")), " ", why) : null,
+      fix ? el("div", {style:"font-size:12.5px;margin-top:3px"},
+                el("b", {}, t("health.fix_label")), " ", fix) : null,
+      acts.length ? el("div", {class:"row", style:"margin-top:6px;gap:6px"}, ...acts) : null));
+}
+
+// Отчёт «Блокеры»: что мешает, почему и как исправить; замечания — ниже, они не красят
+// проект в красный. «Проверить снова» пересчитывает здоровье, не уходя со страницы.
+function showBlockers(ctx, h){
+  const {t, el} = ctx;
+  const errs = h.doctor.errors || [], whys = h.doctor.blocker_why || [];
+  const warns = h.doctor.warns || [];
+  const old = ctx.$("#blockersReport");
+  if (old) old.remove();
+  const again = el("button", {class:"btn sm", onclick: async () => {
+    again.disabled = true;
+    try { await ctx.reloadHealth(); await refresh(ctx); showBlockers(ctx, ctx.health); }
+    finally { again.disabled = false; }
+  }}, t("health.recheck"));
+  const box = ctx.$("#healthBody");
+  const rep = el("div", {class:"card", id:"blockersReport", style:"padding:18px;margin-bottom:14px"},
+    el("div", {class:"row"},
+      el("h2", {style:"margin:0"}, t("health.blockers_report", {n: errs.length})),
+      el("div", {class:"row-right"}, again,
+        el("button", {class:"btn sm", onclick: () => rep.remove()}, "✕"))),
+    el("div", {class:"muted", style:"font-size:12.5px;margin:6px 0 10px"},
+      errs.length ? t("health.blockers_about") : t("health.blockers_gone")),
+    ...errs.map((e, i) => findingRow(ctx, e, whys[i] || "", "bad")),
+    warns.length ? el("h3", {style:"margin:16px 0 6px"},
+                      t("health.warnings_report", {n: warns.length})) : null,
+    ...warns.map(w => findingRow(ctx, w, "", "warn")));
+  box.prepend(rep);
+  rep.scrollIntoView({behavior:"smooth", block:"start"});
 }
 
 // Разворачиваемый список поверх плиток: находка, а не отдельный экран.
