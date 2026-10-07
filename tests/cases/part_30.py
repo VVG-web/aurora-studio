@@ -39,11 +39,12 @@ def test_health_comes_in_parts_and_whole_health_is_the_same(tmp: Path):
     for part in ck.HEALTH_PARTS:
         r = ck.health(root, part=part)
         assert r["project"] == root and r["parts"] == [part], r
-        got.update({k: v for k, v in r.items() if k not in ("project", "parts")})
+        assert set(r["at"]) == {part}, "часть без времени счёта"
+        got.update({k: v for k, v in r.items() if k not in ("project", "parts", "at")})
     assert set(got) | {"project"} == keys, "части вместе не дают всего здоровья"
     two = ck.health(root, part="doctor,build")
-    assert set(two) == {"project", "parts", "doctor", "build"}, sorted(two)
-    assert set(ck.health(root, part="nope")) == {"project", "parts"}
+    assert set(two) == {"project", "parts", "at", "doctor", "build"}, sorted(two)
+    assert set(ck.health(root, part="nope")) == {"project", "parts", "at"}
 
 
 @test

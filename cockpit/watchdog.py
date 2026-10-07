@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -65,6 +66,92 @@ def kill_tree(pid: int) -> None:
             except OSError:
                 pass
         time.sleep(1.0)
+
+
+# Метка панели в окружении процессов, которые она запускает (`aurora_cockpit.main`).
+# Задания и их потомки наследуют её; по ней следующая панель находит брошенные прежней.
+PANEL_MARK = "AURORA_PANEL_PID"
+_MARK_RE = re.compile(r"(?:^|\s)" + PANEL_MARK + r"=(\d+)(?=\s|$)")
+
+
+def marked_processes() -> list:
+    """Процессы с меткой панели → [{pid, ppid, panel, command}].
+
+    macOS — `ps -E` (окружение своих процессов), Linux — `/proc/<pid>/environ`. На Windows
+    окружение чужого процесса без сторонних модулей не прочесть — там пусто, а сироты
+    снимаются уходящей панелью (`stop_jobs_on_exit`)."""
+    rows = []
+    if sys.platform == "win32":
+        return rows
+    if sys.platform.startswith("linux") and os.path.isdir("/proc"):
+        for d in os.listdir("/proc"):
+            if not d.isdigit():
+                continue
+            try:
+                with open(f"/proc/{d}/environ", "rb") as f:
+                    env = f.read().split(b"\0")
+                with open(f"/proc/{d}/cmdline", "rb") as f:
+                    cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+                with open(f"/proc/{d}/stat", encoding="utf-8") as f:
+                    ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            mark = next((e.split(b"=", 1)[1] for e in env
+                         if e.startswith(PANEL_MARK.encode() + b"=")), b"")
+            if mark.isdigit():
+                rows.append({"pid": int(d), "ppid": ppid, "panel": int(mark), "command": cmd})
+        return rows
+    try:
+        out = subprocess.run(["ps", "-E", "-ww", "-A", "-o", "pid=,ppid=,command="],
+                             capture_output=True, text=True, errors="replace", timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return rows
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3 or not (parts[0].isdigit() and parts[1].isdigit()):
+            continue
+        m = _MARK_RE.search(parts[2])
+        if m:
+            rows.append({"pid": int(parts[0]), "ppid": int(parts[1]), "panel": int(m.group(1)),
+                         "command": parts[2]})
+    return rows
+
+
+def describe(command: str) -> str:
+    """Что за процесс — человеку: скрипт движка, задача, проект."""
+    script = re.search(r"[/\\]([\w.-]+\.py)\b", command)
+    task = re.search(r"--task\s+([\w-]+)", command)
+    proj = re.search(r"([^/\\\s]+)[/\\]\.aurora[/\\]scripts", command)
+    return ((script.group(1) if script else "процесс движка")
+            + (f" --task {task.group(1)}" if task else "")
+            + (f" · {proj.group(1)}" if proj else ""))
+
+
+def reap_orphans(kit: str, own: int = 0, rows=None, kill=None, alive=None) -> list:
+    """Снять брошенные процессы движка прежних панелей. → [{pid, panel, what}].
+
+    Брошенный — с меткой панели, которой больше нет, и с командой движка (`.aurora/scripts`
+    проекта или `scripts` кита). Не трогаем: процессы своей панели и живых панелей, саму
+    панель, всё без метки — прогоны из терминала, MCP-серверы чужих ассистентов, браузер."""
+    own = own or os.getpid()
+    rows = marked_processes() if rows is None else rows
+    kill = kill or kill_tree
+    if alive is None:
+        from aurora_common import pid_alive as alive
+    hints = ("/.aurora/scripts/", "\\.aurora\\scripts\\", os.path.join(kit, "scripts") + os.sep)
+    gone, panels = [], {}
+    for r in sorted(rows, key=lambda x: x["pid"]):      # родители раньше: их дерево снимет детей
+        if r["pid"] == own or r["panel"] == own or "aurora_cockpit.py" in r["command"]:
+            continue
+        if not any(h in r["command"] for h in hints):
+            continue
+        if r["panel"] not in panels:
+            panels[r["panel"]] = alive(r["panel"])
+        if panels[r["panel"]] or not alive(r["pid"]):
+            continue
+        kill(r["pid"])
+        gone.append({"pid": r["pid"], "panel": r["panel"], "what": describe(r["command"])})
+    return gone
 
 
 def stale_git_lock(project: str, older_than: float = 60) -> str:

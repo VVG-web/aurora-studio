@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.165.0";
+const UI_VERSION = "1.166.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1218,6 +1218,7 @@ async function boot(){
         t("boot.restart"))));
   }
   drawAdapterAlarm(S.state.adapter_alarm);
+  showReaped(S.state.reaped);
   renderOverview();
   renderHistory();
   loadSkins();
@@ -1309,6 +1310,16 @@ async function refreshActivity(){
 // Pydantic AI выбран, а вызовы идут мимо него: без инструментов и MCP бот «не видит» свои
 // серверы, план собирается без поиска. С 1.139 по 1.160 это случалось четырежды и каждый раз
 // всплывало через неделю. Полоса — поверх любого раздела, пока путь не пройдёт через адаптер.
+// Панель на старте сняла брошенные процессы прежней — сказать один раз за её запуск, а не
+// на каждой перезагрузке страницы.
+function showReaped(r){
+  if (!r || !(r.items || []).length) return;
+  let seen = "";
+  try { seen = localStorage.getItem("aurora-reaped-seen") || ""; } catch (e) {}
+  if (seen === String(r.at)) return;
+  try { localStorage.setItem("aurora-reaped-seen", String(r.at)); } catch (e) {}
+  toast(t("boot.reaped", {n: r.items.length, list: r.items.map(x => x.what).join("; ")}), "warn");
+}
 function drawAdapterAlarm(rows){
   const old = $("#adapterbar");
   if (old) old.remove();
@@ -1349,6 +1360,14 @@ const HEALTH_SLOW = ["lint", "todo"];
 const HEALTH_ALL = [...HEALTH_QUICK, ...HEALTH_SLOW];
 // Часть пришла. Здоровье без списка частей (ответ целиком) — всё на месте.
 const hasPart = (h, part) => !!h && (!h.loaded || h.loaded.includes(part));
+// Когда посчитано самое старое из пришедшего (мс) — ему и верить, а не часам страницы.
+const healthAt = h => { const v = Object.values((h && h.at) || {}); return v.length ? Math.min(...v) * 1000 : 0; };
+function stampText(ms){
+  const d = new Date(ms), now = new Date(), loc = S.lang === "en" ? "en-GB" : "ru-RU";
+  const time = d.toLocaleTimeString(loc, {hour: "2-digit", minute: "2-digit"});
+  return d.toDateString() === now.toDateString() ? time
+    : d.toLocaleDateString(loc, {day: "2-digit", month: "2-digit"}) + " " + time;
+}
 const waitMark = () => el("span", {class:"spin", title: t("overview.counting")});
 function healthFrame(p){
   return {project: p.path, loaded: [], pending: [], stats: {}, todo: null, mirrors: {}, build: {},
@@ -1357,7 +1376,9 @@ function healthFrame(p){
           agent: {}, sources: {installed: [], instances: []}, runs: {}, trace: {},
           source_health: {}, index: {}, ping: {}, unfinished: {}, corrections: {}, retrieval: {}};
 }
-// `force` — пересчитать уже пришедшие части; прежние числа стоят, пока не придут новые.
+// Части лежат в памяти панели (1.166.0): посчитаны на её старте и отдаются сразу.
+// `force` — пересчитать (кнопка «Обновить», команда в проекте); прежние числа стоят,
+// пока не придут новые.
 function loadHealth(p, parts = HEALTH_ALL, force = false){
   if (!p.health || p.health.project !== p.path || !p.health.loaded) p.health = healthFrame(p);
   const h = p.health;
@@ -1365,7 +1386,8 @@ function loadHealth(p, parts = HEALTH_ALL, force = false){
   const want = parts.filter(x => !h.pending.includes(x) && (force || !h.loaded.includes(x)));
   h.pending.push(...want);
   return Promise.all(want.map(part =>
-    api("/api/health?project=" + encodeURIComponent(p.path) + "&part=" + part, {quiet: true})
+    api("/api/health?project=" + encodeURIComponent(p.path) + "&part=" + part
+        + (force ? "&fresh=1" : ""), {quiet: true})
       .catch(() => null)
       .then(r => {
         h.pending = h.pending.filter(x => x !== part);
@@ -1373,8 +1395,11 @@ function loadHealth(p, parts = HEALTH_ALL, force = false){
         // Ответ — своему проекту и только своей частью. Не пришёл — часть всё равно
         // отмечается: вечный спиннер хуже прочерка.
         if (r && !r.error && r.project === p.path){
-          delete r.project; delete r.parts;
+          // Когда посчитана часть — по часам панели: дата «обновлено» — у самого старого числа.
+          const at = r.at || {};
+          delete r.project; delete r.parts; delete r.at;
           Object.assign(h, r);
+          h.at = Object.assign(h.at || {}, at);
         }
         if (!h.loaded.includes(part)) h.loaded.push(part);
         healthChanged();
@@ -1386,7 +1411,7 @@ function healthChanged(){
   if (HEALTH_FRAME) return;
   HEALTH_FRAME = requestAnimationFrame(() => {
     HEALTH_FRAME = 0;
-    renderOverview(); renderProjBadge();
+    renderOverview(); renderProjBadge(); drawBridgeStamp();
     if (S.project && S.health && S.project.health === S.health) navBadges(S.project, S.health);
     for (const id of ["health", "mirrors", "install"]){
       const rec = MODULES.get(id);
@@ -1395,12 +1420,21 @@ function healthChanged(){
     }
   });
 }
-async function prefetchHealth(){
+async function prefetchHealth(fresh = false){
   // Сначала быстрые части всех проектов — Мостик заполняется за секунды; потом долгие, по
-  // проекту за раз: линтеры всех баз разом только мешали бы друг другу.
-  for (const p of S.state.projects) await loadHealth(p, HEALTH_QUICK);
-  for (const p of S.state.projects) await loadHealth(p, HEALTH_SLOW);
-  stamp("#overviewStamp");
+  // проекту за раз: линтеры всех баз разом только мешали бы друг другу. Без `fresh` всё
+  // приходит из памяти панели сразу: считается оно на её старте и по кнопке «Обновить».
+  for (const p of S.state.projects) await loadHealth(p, HEALTH_QUICK, fresh);
+  for (const p of S.state.projects) await loadHealth(p, HEALTH_SLOW, fresh);
+  drawBridgeStamp();
+}
+// «Обновлено» на Мостике — время самого старого числа среди проектов, а не открытия страницы.
+function drawBridgeStamp(){
+  const s = $("#overviewStamp");
+  const ats = ((S.state && S.state.projects) || []).map(p => healthAt(p.health)).filter(Boolean);
+  if (!ats.length) return;
+  s.textContent = t("overview.stamp", {time: stampText(Math.min(...ats))});
+  s.hidden = false;
 }
 function aura(p){
   return {red:"var(--danger)", amber:"var(--tier-inreview)", green:"var(--primary)"}[auraWhy(p).color]
@@ -1573,9 +1607,9 @@ async function pick(p, go=true){
   api("/api/gitsync/event", {method:"POST", quiet:true,
     body: JSON.stringify({project: p.path, event: "open"})});
   if (go) show("health");
-  // Здоровье — частями: разделы рисуют плитки сразу, части ложатся по мере прихода, а
-  // уже посчитанные стоят, пока пересчитываются.
-  const counting = loadHealth(p, HEALTH_ALL, true);
+  // Здоровье — частями и из памяти панели: выбор проекта его не пересчитывает (1.166.0),
+  // пересчитывает кнопка «Обновить» в «Здоровье».
+  const counting = loadHealth(p, HEALTH_ALL);
   refreshModules();
   await counting;
   // Пока считалось, человек мог выбрать другой проект: его экран дорисует свой pick.
@@ -1648,13 +1682,6 @@ async function reloadHealth(){
 // не только панель: ассистент обогатил базу, человек принял карточки в редакторе — на
 // экране всё ещё вчерашние цифры, и понять «что изменилось» не по чему. Отсюда кнопка
 // и отметка времени: видно не только число, но и на какой момент оно посчитано.
-function stamp(id){
-  const s = $(id);
-  s.textContent = t("overview.stamp", {time: new Date()
-    .toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU",
-                        {hour:"2-digit", minute:"2-digit"})});
-  s.hidden = false;
-}
 async function busy(btn, fn){
   const was = btn.innerHTML;
   btn.disabled = true;
@@ -1672,10 +1699,10 @@ $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
   S.project = path ? (st.projects.find(x=>x.path===path) || null) : null;
   S.health = null;
   renderOverview(); renderProjBadge();
-  await prefetchHealth();
+  await prefetchHealth(true);
   if (S.project && S.project.health) navBadges(S.project, S.project.health);
   refreshModules();
-  stamp("#overviewStamp");
+  drawBridgeStamp();
   toast(t("overview.recounted", {n: st.projects.length}), "ok");
 });
 
@@ -4015,7 +4042,7 @@ function moduleCtx(id, root){
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
-         has: hasPart, wait: waitMark},
+         has: hasPart, wait: waitMark, healthAt, stampText},
     openPath, isEngineCmd, hideDev, openProject,
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.

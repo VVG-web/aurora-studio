@@ -1624,8 +1624,9 @@ def test_cockpit_can_recount_metrics(tmp: Path):
         # Раздел-модуль вешает обработчик на свой узел (`ctx.$("#…")`), ядро — на общий.
         assert (f'$("#{btn}").onclick' in ui or f'ctx.$("#{btn}")' in ui), \
             f"кнопка пересчёта на {page} ничего не делает"
-    assert ('stamp("#healthStamp")' in ui or 'ctx.$("#healthStamp")' in ui) \
-        and 'stamp("#overviewStamp")' in ui, \
+    # Время — у самого старого числа из памяти панели (1.166.0), а не открытия страницы.
+    assert 'ctx.$("#healthStamp")' in ui and 'ctx.ui.healthAt(h)' in ui \
+        and '$("#overviewStamp")' in ui and "function drawBridgeStamp(" in ui, \
         "нет отметки времени: по числам не понять, до работы они посчитаны или после"
 
 

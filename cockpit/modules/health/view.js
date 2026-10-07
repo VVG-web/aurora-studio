@@ -17,11 +17,6 @@ export function mount(ctx){
     try {
       await ctx.reloadHealth();
       await refresh(ctx);
-      const stamp = ctx.$("#healthStamp");
-      stamp.textContent = ctx.t("health.updated", {
-        time: new Date().toLocaleTimeString(ctx.lang === "en" ? "en-GB" : "ru-RU",
-          {hour: "2-digit", minute: "2-digit"})});
-      stamp.hidden = false;
       ctx.toast(ctx.t("health.recounted", {name: ctx.project.name}), "ok");
     } finally {
       btn.disabled = false;
@@ -50,6 +45,10 @@ export async function refresh(ctx){
   }
   const st = h.stats || {};
   box.innerHTML = "";
+  // Числа — из памяти панели: дата — у самого старого из них, а не время открытия страницы.
+  const at = ctx.ui.healthAt(h), stamp = ctx.$("#healthStamp");
+  stamp.hidden = !at;
+  if (at) stamp.textContent = ctx.t("health.updated", {time: ctx.ui.stampText(at)});
 
   // Что мешает зелёному — прямо здесь, а не только подсказкой на Мостике: человек
   // приходит сюда именно с вопросом «я всё сделал, почему не зелёное».

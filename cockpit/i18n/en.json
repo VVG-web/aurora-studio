@@ -815,5 +815,6 @@
   "view.log_only": "errors and warnings only",
   "view.log_tail": "last {n} lines of {total}",
   "view.lines": "lines: {n}",
-  "view.text_count": "lines: {lines} · words: {words}"
+  "view.text_count": "lines: {lines} · words: {words}",
+  "boot.reaped": "The panel took down abandoned processes of the previous one ({n}): {list}. Their output went to a closed panel — nobody would read the answer, while they held a model gateway slot and the base lock."
 }

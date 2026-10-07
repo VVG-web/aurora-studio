@@ -2838,8 +2838,57 @@ HEALTH_FN = {"files": _health_files, "stats": _health_stats, "doctor": _health_d
              "todo": lambda project, lang: {"todo": todo_count(project)}}
 
 
-def health(project: str, lang: str = DEFAULT_LANG, part: str = "") -> dict:
+HEALTH_QUICK = ("files", "stats", "doctor", "mirrors", "build")
+HEALTH_SLOW = ("lint", "todo")
+# Части здоровья живут в памяти панели (1.166.0). Считались они на каждую загрузку
+# страницы — минуты на шесть проектов, — и Мостик при каждом заходе «обновлялся»
+# спиннерами. Теперь они считаются при запуске панели, по кнопке «Обновить» и после
+# команды, запущенной в проекте (`fresh`); остальное время страница берёт готовое.
+HEALTH_CACHE: dict = {}           # (проект, часть, язык) → {"data": {...}, "at": время}
+HEALTH_RUNNING: dict = {}         # тот же ключ → threading.Event идущего счёта
+HEALTH_LOCK = threading.Lock()
+
+
+def _health_key(project: str, part: str, lang: str) -> tuple:
+    # Язык — только у «файлов»: там описания источников; остальное — числа и вывод движка.
+    return os.path.realpath(project), part, (lang if part == "files" else "")
+
+
+def health_part(project: str, part: str, lang: str = DEFAULT_LANG, fresh: bool = False) -> dict:
+    """Часть здоровья: из памяти панели или посчитанная сейчас. → {"data", "at"}.
+
+    Ту же часть, которую уже считают, второй раз не запускаем — ждём готовую: страница
+    могла открыться, пока панель прогревает здоровье на старте."""
+    key = _health_key(project, part, lang)
+    while True:
+        with HEALTH_LOCK:
+            hit = HEALTH_CACHE.get(key)
+            if hit and not fresh:
+                return hit
+            ev = HEALTH_RUNNING.get(key)
+            mine = ev is None
+            if mine:
+                ev = HEALTH_RUNNING[key] = threading.Event()
+        if not mine:
+            ev.wait(timeout=1800)
+            fresh = False            # досчитанное другим только что — и есть свежее
+            continue
+        try:
+            row = {"data": HEALTH_FN[part](project, lang), "at": time.time()}
+            with HEALTH_LOCK:
+                HEALTH_CACHE[key] = row
+            return row
+        finally:
+            with HEALTH_LOCK:
+                HEALTH_RUNNING.pop(key, None)
+            ev.set()
+
+
+def health(project: str, lang: str = DEFAULT_LANG, part: str = "", fresh: bool = False) -> dict:
     """Здоровье проекта. `part` — части через запятую (`HEALTH_PARTS`); без него — всё.
+
+    Части берутся из памяти панели (`health_part`), `fresh` — пересчитать. Без `part` —
+    всё и заново: так здоровье зовут скрипты и проверки, им нужно сейчас, а не утреннее.
 
     Чей это результат — называет сам ответ. Счёт идёт секундами, проект за это время
     меняют, и страница без этой метки показывала замечания одного проекта под именем другого.
@@ -2848,15 +2897,40 @@ def health(project: str, lang: str = DEFAULT_LANG, part: str = "") -> dict:
     out = {"project": project}
     if part:
         out["parts"] = parts
-    if len(parts) == 1:
-        out.update(HEALTH_FN[parts[0]](project, lang))
+        out["at"] = {}
+    if not parts:
         return out
+    if part:
+        def one(x):
+            return x, health_part(project, x, lang, fresh)
+    else:
+        def one(x):
+            return x, {"data": HEALTH_FN[x](project, lang)}
     # Части — отдельные процессы движка: вместе они идут столько, сколько самая долгая.
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=len(parts) or 1) as pool:
-        for got in pool.map(lambda x: HEALTH_FN[x](project, lang), parts):
-            out.update(got)
+    with ThreadPoolExecutor(max_workers=len(parts)) as pool:
+        for x, row in pool.map(one, parts):
+            out.update(row["data"])
+            if part:
+                out["at"][x] = row["at"]
     return out
+
+
+def warm_health(projects_fn) -> None:
+    """Прогрев на старте панели: быстрые части всех проектов, потом долгие — по проекту за
+    раз, чтобы линтеры всех баз не толкались разом. Страница, открытая раньше, ждёт
+    уже идущий счёт, а не запускает свой."""
+    try:
+        paths = [p["path"] for p in projects_fn()]
+    except Exception:  # noqa: BLE001 — прогрев не роняет панель
+        return
+    for parts in (HEALTH_QUICK, HEALTH_SLOW):
+        for path in paths:
+            try:
+                health(path, DEFAULT_LANG, ",".join(parts))
+            except Exception as e:  # noqa: BLE001
+                print(f"здоровье {path}: не посчиталось при старте — {type(e).__name__}: {e}",
+                      flush=True)
 
 
 def retrieval_state(project: str) -> dict:
@@ -4298,6 +4372,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Pydantic AI выбран, а вызовы где-то идут мимо него — красной полосой
                 # поверх любого раздела (1.161.0). Опрашивается и отдельно, раз в 20 с.
                 "adapter_alarm": adapter_alarm(),
+                # Что панель сняла на старте: брошенные процессы прежней — один раз тостом.
+                "reaped": {"at": STARTED, "items": REAPED},
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
                 "dev_available": kit_is_source(),
                 # `part=core` — без реестра и окружения: их панель спрашивает следом.
@@ -4309,7 +4385,8 @@ class Handler(BaseHTTPRequestHandler):
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
-            self.send_json(health(project, request_lang(q), (q.get("part") or [""])[0]))
+            self.send_json(health(project, request_lang(q), (q.get("part") or [""])[0],
+                                  fresh=bool((q.get("fresh") or [""])[0])))
         elif u.path == "/api/git/head":
             # Точка, от которой итог маршрута посчитает изменения базы.
             project = q.get("project", [""])[0]
@@ -5353,6 +5430,25 @@ def cron_action(action: str, payload: dict, projects: list) -> dict:
     return {"ok": False, "error": "bad_action"}
 
 
+REAPED: list = []                 # брошенные процессы прежних панелей, снятые на старте
+
+
+def reap_orphans_on_start() -> None:
+    """Снять брошенные процессы движка прежних панелей. Их вывод шёл в панель, которой
+    больше нет: ответа никто не прочтёт, а место на шлюзе модели и замок базы они держат
+    (07.10.2026 адаптер модели прожил так 3 ч 23 мин). Узнаются по метке панели в окружении
+    (`watchdog.PANEL_MARK`): чужие процессы, прогоны из терминала и сама панель — не тронуты."""
+    try:
+        got = WD.reap_orphans(KIT)
+    except Exception as e:  # noqa: BLE001 — уборка не роняет панель
+        print(f"уборка брошенных процессов не прошла: {type(e).__name__}: {e}", flush=True)
+        return
+    REAPED.extend(got)
+    for r in got:
+        print(f"снят брошенный процесс прежней панели {r['panel']}: {r['what']} (pid {r['pid']})",
+              flush=True)
+
+
 def stop_jobs_on_exit() -> int:
     """Панель уходит — её задания уходят с ней, вместе с потомками (адаптер модели, git).
 
@@ -5567,6 +5663,11 @@ def main() -> int:
         except OSError as e:
             print(f"Не удалось остановить прежнюю панель: {e}", file=sys.stderr)
 
+    # Метка панели — в окружении: её наследуют задания и их потомки (адаптер модели, git).
+    # По ней следующая панель узнаёт процессы, брошенные этой, если она упадёт.
+    os.environ[WD.PANEL_MARK] = str(os.getpid())
+    threading.Thread(target=reap_orphans_on_start, daemon=True, name="aurora-reap").start()
+
     # После падения в списке остаются мёртвые записи — новая панель начинает с чистого.
     # Но только с записей мёртвых панелей: 7.10.2026 вторая панель (проверка разработчика
     # с другим HOME) стёрла файл целиком посреди ночной цепочки — работающая панель
@@ -5621,6 +5722,9 @@ def main() -> int:
     # Сторож: шаг маршрута или цепочки, зависший после обрыва связи, снимается и
     # перезапускается — ночью «Прервать» нажать некому.
     WD.Watchdog(sys.modules[__name__]).start()
+    # Здоровье всех проектов — один раз на старте; дальше страница берёт его из памяти.
+    threading.Thread(target=warm_health, args=(lambda: find_projects(srv.roots),),
+                     daemon=True, name="aurora-health").start()
     if not a.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
