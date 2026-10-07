@@ -5,7 +5,7 @@
   "health.about": "Числа считает движок (stats --json, lint, doctor, audit), панель только показывает. Любая плитка кликабельна: ведёт к команде, которая с этим работает.",
   "health.refresh": "↻ Обновить",
   "health.refresh_hint": "Пересчитать показатели проекта",
-  "health.counting": "Считаю…",
+  "health.counting": "считается",
   "health.updated": "обновлено {time}",
   "health.recounted": "Показатели пересчитаны: {name}",
   "health.pick_project": "Выберите проект на Мостике.",
@@ -127,5 +127,8 @@
   "health.why_label": "Почему мешает:",
   "health.fix_label": "Как исправить:",
   "health.open_config": "Открыть aurora.config.yaml",
-  "health.recheck": "Проверить снова"
+  "health.recheck": "Проверить снова",
+  "health.counting_why": "Числа приходят по частям — линтер всей базы считается дольше всего",
+  "health.waiting": "считается…",
+  "health.doctor_counting": "Доктор проверяет готовность проекта…"
 }

@@ -239,7 +239,9 @@ I18N_DIR = os.path.join(KIT, "cockpit", "i18n")
 # показать .drawio или .png внутри редактора мы не можем, а притворяться, что можем,
 # хуже отказа — человек решит, что файл пустой.
 TEXT_EXT = {".md", ".txt", ".yaml", ".yml", ".json", ".csv", ".py", ".sh", ".js", ".css",
-            ".html", ".xml", ".ini", ".cfg", ".toml", ".sql", ".env", ".gitignore", ""}
+            ".html", ".xml", ".ini", ".cfg", ".toml", ".sql", ".env", ".gitignore", "",
+            # 1.165.0: схемы mermaid, журналы и JSON построчно — с видом справа в редакторе
+            ".mmd", ".mermaid", ".log", ".jsonl"}
 MAX_EDIT = 2_000_000          # потолок на файл: больше — это не документ, а выгрузка
 
 # Только для чтения. Список тот же, что в инвариантах скилла, и это не совпадение:
@@ -2735,13 +2737,23 @@ def forget_version(project: str, report_id: str, stamp: str) -> dict:
     return {"ok": True, "left": len(versions(project, report_id))}
 
 
-def health(project: str, lang: str = DEFAULT_LANG) -> dict:
+# Здоровье считается частями: линтер всей базы и список дел человеку — десятки секунд на
+# крупном проекте, остальное — секунды. Целиком подряд выходила минута, и всё это время
+# «Здоровье» и Мостик стояли пустыми. Теперь панель спрашивает части отдельно и рисует
+# каждую, как придёт; целиком (без `part`) части считаются одновременно.
+HEALTH_PARTS = ("files", "stats", "doctor", "mirrors", "build", "lint", "todo")
+
+
+def _health_stats(project: str, lang: str) -> dict:
     rc, out = run_capture(project, "aurora_stats.py", ["--json"])
     try:
         stats = json.loads(out[out.index("{"):out.rindex("}") + 1])
     except Exception:
         stats = {"error": out.strip()[:400]}
+    return {"stats": stats}
 
+
+def _health_lint(project: str, lang: str) -> dict:
     # Полный линт вместо --summary: он стоит те же полсекунды, но заодно отдаёт разбивку
     # по видам ошибок — из неё дашборд показывает то, что человек чинит отдельными
     # командами (конфликты синонимов, двойники), а не только общее число.
@@ -2757,7 +2769,10 @@ def health(project: str, lang: str = DEFAULT_LANG) -> dict:
         lint_info["fresh"] = int(mf.group(1)) if mf else lint_info["errors"]
     baseline = read_text(os.path.join(project, "AuroraKnowledgeDB", "meta", "lint_baseline.txt")).strip()
     lint_info["baseline"] = int(baseline) if baseline.isdigit() else None
+    return {"lint": lint_info}
 
+
+def _health_doctor(project: str, lang: str) -> dict:
     rc_d, doc = run_capture(project, "aurora_doctor.py", [])
     # Блокер — строка `ERROR:` («что → как исправить»), за ней — `WHY:` («почему мешает»).
     # Список причин идёт параллельно находкам: отчёт «Блокеры» на «Здоровье» собирает
@@ -2769,15 +2784,17 @@ def health(project: str, lang: str = DEFAULT_LANG) -> dict:
             d_why.append("")
         elif line.startswith("WHY:") and d_errors:
             d_why[-1] = line[5:].strip()
-    doctor = {
+    return {"doctor": {
         "rc": rc_d,
         "errors": d_errors,
         "blocker_why": d_why,
         "warns": [l[6:].strip() for l in doc.splitlines() if l.startswith("WARN:")],
         "engine": (re.search(r"^движок:\s*(\S+)", doc, re.M) or [None, "—"])[1],
         "privacy": (re.search(r"privacy\.scrub = (\w+)", doc) or [None, "report"])[1],
-    }
+    }}
 
+
+def _health_mirrors(project: str, lang: str) -> dict:
     # Аудит отдаёт итог по каждому зеркалу сам: разбирать его текст позиционно
     # («первое MISSING — Confluence, второе — Jira») нельзя, зеркал бывает сколько угодно.
     rc_a, aud = run_capture(project, "sync_audit.py", ["--json"])
@@ -2793,6 +2810,10 @@ def health(project: str, lang: str = DEFAULT_LANG) -> dict:
             nums = re.search(r"MISSING: \*\*(\d+)\*\*.*?ORPHAN: \*\*(\d+)\*\*", chunk, re.S)
             if name and nums:
                 mirrors[name] = {"missing": int(nums.group(1)), "orphan": int(nums.group(2))}
+    return {"mirrors": mirrors}
+
+
+def _health_files(project: str, lang: str) -> dict:
     # Трассировку и остаток человеку читаем с диска, а не запуском команд: обе уже
     # посчитаны, а дашборд открывают чаще, чем пересчитывают базу.
     trace = {}
@@ -2802,18 +2823,40 @@ def health(project: str, lang: str = DEFAULT_LANG) -> dict:
             trace = json.loads(read_text(tp, limit=20_000))
         except ValueError:
             trace = {}
-    # Чей это результат — называет сам ответ. Счёт идёт секундами, проект за это время
-    # меняют, и страница без этой метки показывала замечания одного проекта под именем другого.
-    return {"project": project,
-            "stats": stats, "lint": lint_info, "doctor": doctor, "mirrors": mirrors,
-            "build": build_progress(project), "agent": last_agent_run(project),
+    return {"agent": last_agent_run(project),
             "sources": localized_sources(sources(project), lang), "runs": read_runlog(project),
-            "trace": trace, "todo": todo_count(project),
-            "source_health": source_health(project),
+            "trace": trace, "source_health": source_health(project),
             "index": index_health(project), "ping": ping_state(project),
             "unfinished": unfinished(project),
             "corrections": corrections_state(project),
             "retrieval": retrieval_state(project)}
+
+
+HEALTH_FN = {"files": _health_files, "stats": _health_stats, "doctor": _health_doctor,
+             "mirrors": _health_mirrors, "lint": _health_lint,
+             "build": lambda project, lang: {"build": build_progress(project)},
+             "todo": lambda project, lang: {"todo": todo_count(project)}}
+
+
+def health(project: str, lang: str = DEFAULT_LANG, part: str = "") -> dict:
+    """Здоровье проекта. `part` — части через запятую (`HEALTH_PARTS`); без него — всё.
+
+    Чей это результат — называет сам ответ. Счёт идёт секундами, проект за это время
+    меняют, и страница без этой метки показывала замечания одного проекта под именем другого.
+    """
+    parts = [x for x in str(part or "").split(",") if x in HEALTH_FN] if part else list(HEALTH_PARTS)
+    out = {"project": project}
+    if part:
+        out["parts"] = parts
+    if len(parts) == 1:
+        out.update(HEALTH_FN[parts[0]](project, lang))
+        return out
+    # Части — отдельные процессы движка: вместе они идут столько, сколько самая долгая.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(parts) or 1) as pool:
+        for got in pool.map(lambda x: HEALTH_FN[x](project, lang), parts):
+            out.update(got)
+    return out
 
 
 def retrieval_state(project: str) -> dict:
@@ -4227,6 +4270,12 @@ class Handler(BaseHTTPRequestHandler):
             # этого не годится — он сам собирает реестр и висит, пока не соберёт.
             self.send_json({"app": "aurora-cockpit", "kit": kit_version(),
                             "pid": os.getpid(), "ready": registry_ready()})
+        elif u.path == "/api/state" and (q.get("part") or [""])[0] == "extra":
+            # Вторая половина состояния — реестр команд и окружение. Реестр после обновления
+            # кита собирается полминуты (`--help` полусотни скриптов), и пока он был внутри
+            # общего ответа, Мостик всё это время стоял пустым.
+            self.send_json({"env": localized_environment(environment(), request_lang(q)),
+                            "commands": localized_commands(registry(), request_lang(q))})
         elif u.path == "/api/state":
             projects = find_projects(self.server.roots)
             # Опрос отметок Мостика идёт по этому списку: обход папок стоит полсекунды,
@@ -4234,6 +4283,7 @@ class Handler(BaseHTTPRequestHandler):
             self.server.seen_projects = [p["path"] for p in projects]
             for p in projects:
                 p["activity"] = project_activity(p["path"])
+            core = (q.get("part") or [""])[0] == "core"
             self.send_json({
                 "kit": {"version": kit_version(), "path": KIT},
                 # `stale_process` живёт ВНУТРИ `ui`: панель читает его как `ui.stale_process`,
@@ -4248,16 +4298,18 @@ class Handler(BaseHTTPRequestHandler):
                 # Pydantic AI выбран, а вызовы где-то идут мимо него — красной полосой
                 # поверх любого раздела (1.161.0). Опрашивается и отдельно, раз в 20 с.
                 "adapter_alarm": adapter_alarm(),
-                "env": localized_environment(environment(), request_lang(q)),
-                "commands": localized_commands(registry(), request_lang(q)),
                 # пасхалка «Разработка» открывается только там, где есть что разрабатывать
                 "dev_available": kit_is_source(),
+                # `part=core` — без реестра и окружения: их панель спрашивает следом.
+                **({} if core else {
+                    "env": localized_environment(environment(), request_lang(q)),
+                    "commands": localized_commands(registry(), request_lang(q))}),
             })
         elif u.path == "/api/health":
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return
-            self.send_json(health(project, request_lang(q)))
+            self.send_json(health(project, request_lang(q), (q.get("part") or [""])[0]))
         elif u.path == "/api/git/head":
             # Точка, от которой итог маршрута посчитает изменения базы.
             project = q.get("project", [""])[0]
@@ -5301,6 +5353,27 @@ def cron_action(action: str, payload: dict, projects: list) -> dict:
     return {"ok": False, "error": "bad_action"}
 
 
+def stop_jobs_on_exit() -> int:
+    """Панель уходит — её задания уходят с ней, вместе с потомками (адаптер модели, git).
+
+    Вывод задания идёт в трубу панели: без неё оно замолкает навсегда и умирает на первой
+    же печати — но до этого, ожидая ответа модели, держит замок базы часами. 07.10.2026 так
+    сирота `agent:extract` из прежней панели держал проект PRJ-A, а продолженная цепочка
+    стояла «идёт» и ждала его. Снятый шаг продолженная цепочка повторяет с места остановки.
+    → сколько заданий снято."""
+    with JOBS_LOCK:
+        procs = [j.get("proc") for j in JOBS.values() if not j.get("done") and j.get("proc")]
+    n = 0
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                WD.kill_tree(proc.pid)
+                n += 1
+        except Exception:  # noqa: BLE001 — уходящая панель не падает на чужом процессе
+            pass
+    return n
+
+
 def stop_job(job_id: str) -> dict:
     """Прервать прогон. Мягко, потом жёстко.
 
@@ -5556,6 +5629,9 @@ def main() -> int:
     except (KeyboardInterrupt, SystemExit):
         print("\nОстановлено.")
     finally:
+        stopped = stop_jobs_on_exit()
+        if stopped:
+            print(f"Сняты задания панели: {stopped} — продолженная цепочка повторит их шаги.")
         if read_session().get("pid") == os.getpid():
             try:
                 os.remove(SESSION)

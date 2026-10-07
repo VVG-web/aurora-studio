@@ -295,7 +295,10 @@ mcp:
 - Cline, Roo Code, Kilo Code, Kilo CLI;
 - OpenCode, Codex, Gemini CLI, Qwen Code, Continue, Zed;
 - jcode, Hermes Agent, Goose, Crush, pi, DeepSeek TUI;
-- Kiro, Amp, LM Studio, Junie.
+- Kiro, Amp, LM Studio, Junie;
+- Chatbox — не агент, а чат-клиент с MCP. Запись ложится в его `config.json`
+  (`settings.mcp.servers`) и подключается только при закрытом Chatbox: при выходе он
+  переписывает файл настроек целиком, и запись, сделанная при открытом окне, пропала бы.
 
 У каждого найденного видны версия, файл настройки и подключена ли Аврора. Кнопка
 «Подключить» копирует файл ассистента в `~/.aurora/harness-backups/` и вставляет запись

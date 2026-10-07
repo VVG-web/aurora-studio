@@ -89,6 +89,25 @@ def runs_dir() -> str:
     return os.path.join(home(), "cron-runs")
 
 
+def busy_line(act: dict) -> str:
+    """Чем занят проект, — строкой журнала пункта цепочки."""
+    wait = f"жду, пока освободится: не дольше {BUSY_WAIT_S // 3600} ч, проверяю раз в {BUSY_POLL_S} с"
+    running = act.get("running") or []
+    if running:
+        first = running[0] if isinstance(running[0], dict) else {}
+        return f"⏳ проект занят: в панели идёт {first.get('cmd') or 'команда'} — {wait}"
+    ag = act.get("agent") or {}
+    since = str(ag.get("since") or "")
+    try:
+        since = datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except ValueError:
+        pass
+    return (f"⏳ проект занят: идёт прогон движка agent:{ag.get('task') or '?'} (процесс "
+            f"{ag.get('pid') or '?'}, с {since or '?'}), запущенный не этой цепочкой — например, "
+            f"шаг прежней цепочки, переживший перезапуск панели, или команда из терминала. "
+            f"{wait[0].upper() + wait[1:]}")
+
+
 def owner_file() -> str:
     return os.path.join(home(), "cron-owner.json")
 
@@ -606,12 +625,22 @@ class Scheduler:
         act = self.ck.project_activity(project)
         return bool(act.get("running")) or bool((act.get("agent") or {}).get("alive"))
 
-    def _wait_free(self, project: str) -> bool:
+    def _wait_free(self, project: str, log=None) -> bool:
+        """Дождаться, пока проект освободится. Ждать молча нельзя: после перезапуска панели
+        шаг прежней цепочки (07.10.2026 — `agent:extract` в PRJ-A) продолжал работать
+        сиротой, а пункт новой стоял «идёт» без единой строки, и человек не знал, кому
+        верить — Cron или Консоли."""
         end = time.time() + BUSY_WAIT_S
+        said = False
         while self._busy(project):
+            if not said and log:
+                said = True
+                log(busy_line(self.ck.project_activity(project)))
             if self.stop_event.is_set() or time.time() > end:
                 return False
             time.sleep(BUSY_POLL_S)
+        if said and log:
+            log("▸ проект свободен — продолжаю")
         return True
 
     def _run(self, task: dict, run: dict) -> None:
@@ -712,7 +741,7 @@ class Scheduler:
         it.update(status="running", started=now_iso(), note="")
         save_run(run)
         project = it["project"]
-        if not self._wait_free(project):
+        if not self._wait_free(project, log):
             it.update(status="stopped" if self.stop_event.is_set() else "skipped",
                       note="" if self.stop_event.is_set() else "busy", finished=now_iso())
             return

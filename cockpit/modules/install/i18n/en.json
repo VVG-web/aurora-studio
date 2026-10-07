@@ -103,5 +103,6 @@
   "install.hs_note.claude-desktop": "Restart Claude Desktop after connecting.",
   "install.hs_note.continue": "A file of its own in ~/.continue/mcpServers/ — the shared config.yaml is not touched.",
   "install.hs_note.jcode": "jcode waits 30 s for a tool by default — the entry sets 1800 s: a review takes minutes.",
-  "install.hs_note.pi": "pi connects MCP through the pi-mcp-extension extension — without it the entry has no effect."
+  "install.hs_note.pi": "pi connects MCP through the pi-mcp-extension extension — without it the entry has no effect.",
+  "install.hs_note.chatbox": "Not an agent but a chat client, yet it speaks MCP: the aurora server appears in “Settings → MCP”. Connect while Chatbox is closed — on exit it rewrites its settings file, and an entry made with the window open would be lost. A review takes minutes: if Chatbox cuts the call, raise the timeout in its settings."
 }

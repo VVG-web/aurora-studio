@@ -16,7 +16,8 @@ export async function refresh(ctx){
     return;
   }
   // Считается несколько секунд: сказать «нет данных» при выбранном проекте — соврать.
-  if (!ctx.health){
+  // Здоровье приходит частями: зеркалам нужны аудит и описания источников.
+  if (!ctx.health || !ctx.ui.has(ctx.health, "mirrors") || !ctx.ui.has(ctx.health, "files")){
     box.innerHTML = '<div class="grid metrics">' + '<div class="skel"></div>'.repeat(2) + '</div>';
     return;
   }

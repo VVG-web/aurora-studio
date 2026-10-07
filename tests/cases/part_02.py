@@ -199,7 +199,7 @@ def test_cockpit_runlog_lives_in_the_project(tmp: Path):
     assert "async function loadRuns()" in ui, "журнал не тянется отдельно от здоровья"
     pick = ui[ui.index("async function pick("):ui.index("async function pick(") + 3200]
     assert "loadRuns()" in pick, "выбор проекта не обновляет журнал"
-    assert pick.index("loadRuns()") < pick.index('api("/api/health'), \
+    assert pick.index("loadRuns()") < pick.index("loadHealth(p"), \
         "журнал тянется ПОСЛЕ здоровья — значит ждёт его, и отвязка бессмысленна"
     assert 'if (view==="console")' in ui and "loadRuns()" in ui[ui.index('if (view==="console")'):
                                                                ui.index('if (view==="console")') + 200], \
@@ -557,12 +557,17 @@ def test_health_lands_on_the_project_it_was_counted_for(tmp: Path):
     assert ck.health(str(root)).get("project") == str(root), \
         "ответ здоровья не называет свой проект — странице не по чему отличить чужой"
 
+    # Части здоровья (1.165.0) тоже называют свой проект.
+    part = ck.health(str(root), part="doctor")
+    assert part.get("project") == str(root) and part.get("parts") == ["doctor"], part
+
     ui = panel_sources()
-    helper = _js_function(ui, "function takeHealth(")
+    helper = _js_function(ui, "function loadHealth(")
     assert "S.project.path === p.path" in helper, "помощник не сверяет, выбран ли ещё проект"
+    assert "r.project === p.path" in helper, "часть здоровья ложится, не сверив свой проект"
     rest = ui.replace(helper, "")
     raw = _re.findall(r"S\.health\s*=\s*(?!null\b)[\w.]+", rest)
-    assert not raw, f"здоровье присваивается мимо takeHealth — вернётся подпись чужим именем: {raw}"
+    assert not raw, f"здоровье присваивается мимо loadHealth — вернётся подпись чужим именем: {raw}"
     # Экран здоровья переехал в раздел-модуль: сторож тот же, зовётся иначе.
     assert ("S.health.project !== S.project.path" in ui
             or "h.project !== ctx.project.path" in ui), \

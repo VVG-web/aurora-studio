@@ -438,6 +438,22 @@ tr:last-child td{border-bottom:0}
 #vditor, #vditor *{text-transform:none !important; letter-spacing:normal !important;
   font-variant:normal !important}
 #vditor .vditor-reset{font-family:var(--sans)}
+/* Вид справа у mermaid, JSON, журналов и текста: слева правка, справа то, что получается. */
+.file-body{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
+.file-body.split{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+@media (max-width:1100px){.file-body.split{grid-template-columns:minmax(0,1fr)}}
+.file-preview{padding:12px 14px;overflow:auto;font-size:var(--text-sm);min-height:200px}
+.file-preview .pv-head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.file-preview .pv-err{color:var(--danger);white-space:pre-wrap;font:12px var(--mono)}
+.file-preview .pv-text{white-space:pre-wrap;word-break:break-word;line-height:1.55}
+.file-preview .pv-log{font:12px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+.file-preview .pv-log .l-bad{color:var(--danger)} .file-preview .pv-log .l-warn{color:var(--tier-inreview)}
+.file-preview .pv-log .l-dim{color:var(--text-muted)}
+.file-preview .pv-json{font:12px/1.55 var(--mono)}
+.file-preview .pv-json details{margin-left:14px} .file-preview .pv-json summary{cursor:pointer;margin-left:-14px}
+.file-preview .pv-json .k{color:var(--primary)} .file-preview .pv-json .s{color:var(--tier-inreview)}
+.file-preview .pv-json .n{color:var(--accent,var(--primary))} .file-preview .pv-json .z{color:var(--text-muted)}
+.file-preview svg{max-width:100%;height:auto}
 #vditor .vditor-reset h1,#vditor .vditor-reset h2,#vditor .vditor-reset h3,
 #vditor .vditor-reset h4{color:inherit; font-weight:600}
 

@@ -408,7 +408,7 @@ def test_a_link_to_a_section_opens_it_without_waiting_for_health(tmp: Path):
     assert tail.index("if (v) show(v);") < tail.index("if (picking) await picking;"), \
         "раздел из адреса открывается только после здоровья"
     pick = ui[ui.index("async function pick("):]
-    assert pick.index("S.project = p;") < pick.index('await api("/api/health'), \
+    assert pick.index("S.project = p;") < pick.index("await counting;"), \
         "pick ставит проект только после здоровья — раздел откроется без проекта"
 
 

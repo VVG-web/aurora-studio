@@ -148,6 +148,10 @@ def entry(h: dict, command: str, args: list) -> dict:
         return {"type": "stdio", "command": command, "args": args, **extra}
     if kind == "zed":
         return {"command": command, "args": args, "env": {}, "enabled": True, **extra}
+    if kind == "chatbox":
+        import uuid
+        return {"id": str(uuid.uuid4()), "name": NAME, "enabled": True,
+                "transport": {"type": "stdio", "command": command, "args": args, **extra}}
     return {"command": command, "args": args, **extra}
 
 
@@ -160,6 +164,9 @@ def snippet(h: dict, command: str, args: list) -> str:
         return continue_file(command, args).strip()
     if fmt == "yaml":
         return f"{h['key']}:\n" + yaml_block(h, command, args, "  ").rstrip()
+    if fmt == "chatbox":
+        return json.dumps({"settings": {"mcp": {"servers": ["…", entry(h, command, args)]}}},
+                          ensure_ascii=False, indent=2)
     return json.dumps({h["key"]: {NAME: entry(h, command, args)}}, ensure_ascii=False, indent=2)
 
 
@@ -411,6 +418,12 @@ def has_aurora(h: dict, path: str):
         data = load_jsonc(text)
     except ValueError:
         return None
+    if fmt == "chatbox":
+        servers = chatbox_servers(data)
+        if servers is None:
+            return None
+        return any(isinstance(s, dict) and (s.get("name") == NAME or "aurora_mcp.py" in
+                                            json.dumps(s, ensure_ascii=False)) for s in servers)
     servers = data.get(h["key"]) if isinstance(data, dict) else None
     if not isinstance(servers, dict):
         return False
@@ -422,7 +435,7 @@ def valid(h: dict, path: str) -> str:
     """Пусто — файл после правки разбирается; иначе причина."""
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     fmt = h.get("format")
-    if fmt == "json":
+    if fmt in ("json", "chatbox"):
         try:
             load_jsonc(text)
         except ValueError as e:
@@ -542,6 +555,11 @@ def add(hid: str) -> dict:
         return {"ok": True, "path": path, "done": "Аврора уже подключена — файл не трогал"}
     if state is None and os.path.exists(path):
         raise HarnessError(f"файл настройки не разбирается — правка вручную: {path}")
+    if h.get("process") and app_running(h["process"]):
+        # Приложение держит настройки в памяти и при выходе переписывает файл целиком:
+        # запись, сделанная при открытом окне, пропала бы молча.
+        raise HarnessError(f"{h['name']} открыт — закройте его и нажмите ещё раз: при выходе "
+                           "он перепишет файл настроек, и запись пропадёт")
     row = backup(hid, path, "перед подключением Авроры")
     try:
         if h.get("cli_add") and find_bin(h.get("bins") or []):
@@ -585,7 +603,9 @@ def add_by_edit(h: dict, path: str, command: str, args: list) -> str:
         Path(path).write_text(continue_file(command, args), encoding="utf-8")
         return "создан свой файл настройки"
     text = Path(path).read_text(encoding="utf-8") if os.path.isfile(path) else ""
-    if fmt == "toml":
+    if fmt == "chatbox":
+        new = chatbox_insert(text, entry(h, command, args))
+    elif fmt == "toml":
         new = text + ("" if not text or text.endswith("\n") else "\n") + toml_block(h, command, args)
     elif fmt == "yaml":
         new = insert_yaml(text, h, command, args)
@@ -599,6 +619,48 @@ def add_by_edit(h: dict, path: str, command: str, args: list) -> str:
     Path(tmp).write_text(new, encoding="utf-8")
     os.replace(tmp, path)
     return "запись добавлена в файл настройки"
+
+
+# ------------------------------------------------------------------ Chatbox
+
+def chatbox_servers(data):
+    """Список серверов Chatbox (`settings.mcp.servers`); None — файл не того вида."""
+    if not isinstance(data, dict):
+        return None
+    mcp = (data.get("settings") or {}).get("mcp") if isinstance(data.get("settings"), dict) else None
+    if mcp is None:
+        return []
+    servers = mcp.get("servers") if isinstance(mcp, dict) else None
+    return servers if isinstance(servers, list) else ([] if servers is None else None)
+
+
+def chatbox_insert(text: str, server: dict) -> str:
+    """Chatbox хранит серверы списком внутри всех своих настроек — запись дописывается в
+    конец списка, остальное остаётся как было; отступ — табуляцией, как пишет сам Chatbox."""
+    data = json.loads(text) if text.strip() else {}
+    settings = data.setdefault("settings", {})
+    mcp = settings.setdefault("mcp", {})
+    servers = mcp.setdefault("servers", [])
+    mcp.setdefault("enabledBuiltinServers", [])
+    servers.append(server)
+    indent = "\t" if text.startswith("{\n\t") or not text.strip() else 2
+    return json.dumps(data, ensure_ascii=False, indent=indent)
+
+
+def app_running(names: list) -> bool:
+    """Запущено ли приложение (по имени процесса)."""
+    try:
+        if platform_key() == "windows":
+            for n in names:
+                p = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {n}.exe"], capture_output=True,
+                                   text=True, timeout=10)
+                if f"{n}.exe".lower() in (p.stdout or "").lower():
+                    return True
+            return False
+        return any(subprocess.run(["pgrep", "-x", n], capture_output=True, timeout=10).returncode == 0
+                   for n in names)
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def main() -> int:

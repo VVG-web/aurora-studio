@@ -78,13 +78,14 @@ export async function refresh(ctx){
   pc.append(line(!p.behind, t("install.engine_ok"),
     t("install.engine_what", {engine: p.engine, kit: p.kit}), "kit:update"));
   if (p.git_provider && p.git_provider !== "generic") pc.append(gitModLine(ctx, p.git_provider));
+  // Здоровье приходит частями: строка — когда пришла её часть.
   const h = ctx.health;
-  if (h){
+  if (ctx.ui.has(h, "lint"))
     pc.append(line(h.lint.baseline !== null, t("install.ratchet"),
       t("install.ratchet_what"), "kit:hooks"));
+  if (ctx.ui.has(h, "doctor"))
     pc.append(line(!h.doctor.errors.length, t("install.structure"),
       h.doctor.errors[0] || t("install.structure_ok"), "kit:doctor"));
-  }
   box.append(pc);
 }
 

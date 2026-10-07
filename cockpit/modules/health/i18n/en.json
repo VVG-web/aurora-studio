@@ -5,7 +5,7 @@
   "health.about": "The engine computes these numbers (stats --json, lint, doctor, audit); the panel only shows them. Every tile is clickable: it leads to the command that works on it.",
   "health.refresh": "↻ Refresh",
   "health.refresh_hint": "Recompute the project metrics",
-  "health.counting": "Counting…",
+  "health.counting": "counting",
   "health.updated": "updated {time}",
   "health.recounted": "Metrics recomputed: {name}",
   "health.pick_project": "Pick a project on the Bridge.",
@@ -127,5 +127,8 @@
   "health.why_label": "Why it matters:",
   "health.fix_label": "How to fix:",
   "health.open_config": "Open aurora.config.yaml",
-  "health.recheck": "Check again"
+  "health.recheck": "Check again",
+  "health.counting_why": "Numbers arrive in parts — the linter of the whole base takes the longest",
+  "health.waiting": "counting…",
+  "health.doctor_counting": "The doctor is checking the project's readiness…"
 }

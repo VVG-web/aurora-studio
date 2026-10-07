@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.164.0";
+const UI_VERSION = "1.165.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -280,10 +280,13 @@ function drawLangPicker(){
     relabelModules();      // подписи разделов в меню
     // Описания команд приходят от сервера уже на языке интерфейса: без нового запроса
     // они остались бы прежними до перезагрузки страницы.
-    const st = await api("/api/state", {quiet:true});
-    if (st && st.commands) S.state.commands = st.commands;
+    const st = await api("/api/state?part=extra", {quiet:true});
+    if (st && st.commands){ S.state.commands = st.commands; S.state.env = st.env; }
     S.scenarios = null;     // маршруты тоже приходят на языке интерфейса — спросим заново
-    S.health = null;        // и итог «Здоровья»: находки доктора и описания источников
+    // и итог «Здоровья»: находки доктора и описания источников — тоже на языке
+    S.state.projects.forEach(x => { x.health = null; });
+    S.health = null;
+    if (S.project) loadHealth(S.project);
     loadSkins();            // и названия скинов в списке
     await refreshModules();   // и содержимое тех, что уже подняты
     toast(t("lang.switched",
@@ -600,7 +603,116 @@ function markDirty(){
 function destroyEditor(){
   if (F.ed && F.ed.destroy) { try { F.ed.destroy(); } catch(e){} }
   F.ed = null; $("#vditor").innerHTML = "";
+  $("#filePreview").hidden = true; $("#filePreview").innerHTML = "";
+  $("#fileBody").classList.remove("split"); $("#fileFormat").hidden = true;
 }
+
+/* ---------------- вид справа: mermaid, JSON, журналы, текст ---------------- */
+// Markdown рисует сам редактор. Остальные текстовые файлы, у которых есть «вид», —
+// схема mermaid, JSON, журнал, простой текст — правятся слева и видны справа: схему иначе
+// приходилось копировать в чужой просмотрщик, а журнал в тысячи строк читать без
+// подсветки ошибок. Всё рисуется здесь же, без сети: mermaid лежит в поставке редактора.
+const VIEW_KINDS = [[/\.(mmd|mermaid)$/i, "mermaid"], [/\.json$/i, "json"],
+                    [/\.(log|jsonl)$/i, "log"], [/\.txt$/i, "text"]];
+const viewKind = path => (VIEW_KINDS.find(([re]) => re.test(path || "")) || [])[1] || "";
+const VIEW_LINES = 5000;      // журнал длиннее рисуется хвостом: последние строки и есть свежие
+let VIEW_TIMER = null;
+function viewSoon(){ clearTimeout(VIEW_TIMER); VIEW_TIMER = setTimeout(drawView, 400); }
+function drawView(){
+  const kind = viewKind(F.path), box = $("#filePreview");
+  if (!kind || !F.ed) return;
+  // Пустые строки в конце — не содержание: редактор дописывает перевод строки сам.
+  const text = F.ed.getValue().replace(/\s+$/, "");
+  box.innerHTML = "";
+  try {
+    if (kind === "mermaid") viewMermaid(box, text);
+    else if (kind === "json") viewJson(box, text);
+    else if (kind === "log") viewLog(box, text);
+    else viewText(box, text);
+  } catch (e) {
+    box.append(el("div",{class:"pv-err"}, String(e && e.message || e)));
+  }
+}
+function viewMermaid(box, text){
+  const code = el("div",{class:"language-mermaid"}, text);
+  box.append(code);
+  if (!text.trim()) { code.replaceWith(el("div",{class:"sub"}, t("view.empty"))); return; }
+  // Vditor рисует блоки `.language-mermaid` своей копией mermaid из `/vendor` — без сети.
+  try { Vditor.mermaidRender(box, "/vendor/vditor", document.documentElement.dataset.theme === "dark" ? "dark" : "classic"); }
+  catch (e) { box.append(el("div",{class:"pv-err"}, t("view.mermaid_failed", {why: e.message}))); }
+}
+// Строка и столбец ошибки разбора: браузеры называют позицию символа, человеку нужна строка.
+function jsonWhere(text, err){
+  const m = /position (\d+)/i.exec(err.message || "");
+  if (!m) return "";
+  const pos = +m[1], before = text.slice(0, pos);
+  return t("view.json_at", {line: before.split("\n").length, col: pos - before.lastIndexOf("\n")});
+}
+function jsonNode(v, key){
+  const head = key == null ? [] : [el("span",{class:"k"}, JSON.stringify(key)), ": "];
+  if (v === null || typeof v !== "object"){
+    const cls = typeof v === "string" ? "s" : v === null || typeof v === "boolean" ? "z" : "n";
+    return el("div",{}, ...head, el("span",{class:cls}, JSON.stringify(v)));
+  }
+  const arr = Array.isArray(v), keys = Object.keys(v);
+  const box = el("details",{open: keys.length <= 50 ? "" : null},
+    el("summary",{}, ...head, arr ? `[${keys.length}]` : `{${keys.length}}`));
+  keys.slice(0, 1000).forEach(k => box.append(jsonNode(v[k], arr ? null : k)));
+  if (keys.length > 1000) box.append(el("div",{class:"z"}, t("view.more", {n: keys.length - 1000})));
+  return box;
+}
+function viewJson(box, text){
+  if (!text.trim()) { box.append(el("div",{class:"sub"}, t("view.empty"))); return; }
+  let data;
+  try { data = JSON.parse(text); }
+  catch (e) {
+    box.append(el("div",{class:"pv-err"}, t("view.json_bad", {why: e.message, where: jsonWhere(text, e)})));
+    return;
+  }
+  box.append(el("div",{class:"pv-head"}, el("span",{class:"chip ok"}, t("view.json_ok"))),
+             el("div",{class:"pv-json"}, jsonNode(data, null)));
+}
+// Уровень строки журнала: ошибки и предупреждения — цветом, служебное — тусклым.
+const LOG_BAD = /\b(ERROR|FATAL|CRITICAL|EXCEPTION|Traceback|FAILED|ОШИБКА)\b|^\s*(■|✗|❌|⛔)/i;
+const LOG_WARN = /\b(WARN(ING)?|DEPRECATED|ПРЕДУПРЕЖДЕНИЕ)\b|^\s*(⚠|⏳)/i;
+const LOG_DIM = /\b(DEBUG|TRACE)\b/;
+function viewLog(box, text){
+  const all = text.split("\n");
+  const lines = all.length > VIEW_LINES ? all.slice(-VIEW_LINES) : all;
+  const cls = l => LOG_BAD.test(l) ? "l-bad" : LOG_WARN.test(l) ? "l-warn" : LOG_DIM.test(l) ? "l-dim" : "";
+  const kinds = lines.map(cls);
+  const bad = kinds.filter(k => k === "l-bad").length, warn = kinds.filter(k => k === "l-warn").length;
+  const out = el("div",{class:"pv-log"});
+  const draw = only => {
+    out.innerHTML = "";
+    lines.forEach((l, i) => { if (!only || kinds[i] === "l-bad" || kinds[i] === "l-warn")
+      out.append(el("div",{class:kinds[i]}, l || " ")); });
+  };
+  const toggle = el("label",{class:"row", style:"gap:6px;font-size:12.5px"},
+    el("input",{type:"checkbox", onchange: e => draw(e.target.checked)}), t("view.log_only"));
+  box.append(el("div",{class:"pv-head"},
+    el("span",{class:"chip" + (bad ? " bad" : " ok")}, t("view.log_errors", {n: bad})),
+    el("span",{class:"chip" + (warn ? " warn" : "")}, t("view.log_warns", {n: warn})),
+    el("span",{class:"sub"}, all.length > VIEW_LINES
+      ? t("view.log_tail", {n: VIEW_LINES, total: all.length}) : t("view.lines", {n: all.length})),
+    toggle), out);
+  draw(false);
+}
+function viewText(box, text){
+  const words = (text.match(/\S+/g) || []).length;
+  box.append(el("div",{class:"pv-head"},
+      el("span",{class:"sub"}, t("view.text_count", {lines: text.split("\n").length, words}))),
+    el("div",{class:"pv-text"}, text));
+}
+// «Форматировать» — у JSON: отступы в два пробела; битый файл не трогаем, а говорим где.
+function formatFile(){
+  if (!F.ed || F.ro) return;
+  const text = F.ed.getValue();
+  try { F.ed.setValue(JSON.stringify(JSON.parse(text), null, 2) + "\n"); }
+  catch (e) { return toast(t("view.json_bad", {why: e.message, where: jsonWhere(text, e)}), "warn"); }
+  markDirty(); drawView();
+}
+$("#fileFormat").onclick = formatFile;
 
 async function mountEditor(text){
   destroyEditor();
@@ -654,8 +766,16 @@ async function mountEditor(text){
         F.dirty = false; $("#fileSave").disabled = true;
       }, 60);
     },
-    input(){ markDirty(); }
+    input(){ markDirty(); if (viewKind(F.path)) viewSoon(); }
   });
+  // Вид справа — у тех, кому он есть; редактор слева остаётся тем же, со всеми проверками.
+  const kind = viewKind(F.path);
+  if (kind){
+    $("#fileBody").classList.add("split");
+    $("#filePreview").hidden = false;
+    $("#fileFormat").hidden = kind !== "json" || !!F.ro;
+    setTimeout(drawView, 80);
+  }
 }
 
 // Редактор markdown «как в Файлах» — для разделов-модулей: тот же Vditor, тот же вид
@@ -1056,7 +1176,22 @@ document.documentElement.dataset.theme = localStorage.getItem("aurora-theme")
 async function boot(){
   $("#towers").innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
   await loadI18n();      // строки до первой отрисовки: иначе экран моргнёт с русского на выбранный
-  S.state = await api("/api/state");
+  drawGlobalMetrics();   // плитки Мостика с подписями — сразу, числа придут следом
+  // Состояние — двумя половинами. Проекты и версия — за доли секунды; реестр команд после
+  // обновления кита собирается полминуты (`--help` полусотни скриптов), и пока он шёл в
+  // общем ответе, Мостик стоял пустым. Теперь он догружается в фоне.
+  S.state = await api("/api/state?part=core");
+  S.state.env = {items: []};
+  S.state.commands = [];
+  S.extraP = api("/api/state?part=extra", {quiet: true}).then(x => {
+    if (!x || x.error) return;
+    S.state.env = x.env; S.state.commands = x.commands; S.state.extra = true;
+    setBadge("commands", S.state.commands.length);
+    const miss = S.state.env.items.filter(i=>!i.ok).length;
+    setBadge("install", miss || "", miss > 0);
+    drawGlobalMetrics();
+    refreshModules();
+  });
   showDevNav();          // раздел разработки, если его уже открывали на этой машине
   const ui = S.state.ui || {};
   $("#kitver").textContent = "cockpit " + UI_VERSION + " · kit " + S.state.kit.version;
@@ -1083,9 +1218,6 @@ async function boot(){
         t("boot.restart"))));
   }
   drawAdapterAlarm(S.state.adapter_alarm);
-  setBadge("commands", S.state.commands.length);
-  const missing = S.state.env.items.filter(i=>!i.ok).length;
-  setBadge("install", missing || "", missing > 0);
   renderOverview();
   renderHistory();
   loadSkins();
@@ -1204,48 +1336,99 @@ setInterval(() => { if (S.view === "overview" && !document.hidden) refreshActivi
 // Здоровье считается секундами, а проект за это время успевают сменить. Ответ по одному
 // проекту, записанный прямо в S.health, показывался под именем другого: панель писала
 // «нет .env.aurora.local» у проекта, где файл на месте, — это было замечание соседнего,
-// чей ответ пришёл позже. Результат всегда ложится своему проекту, а текущим становится,
-// только если этот проект всё ещё выбран.
-function takeHealth(p, h){
-  p.health = h;
-  if (S.project && S.project.path === p.path){ S.health = h; return true; }
-  return false;
+// чей ответ пришёл позже.
+// Поэтому часть ложится только в здоровье своего проекта (`loadHealth`), а текущим
+// оно становится, только если этот проект всё ещё выбран.
+
+// Здоровье приходит частями (`/api/health?part=`): быстрые — статистика, доктор, зеркала,
+// план сборки, файлы — за секунды; линтер всей базы и дела человеку — десятки секунд.
+// Целиком подряд выходила минута, и всё это время «Здоровье» и Мостик стояли пустыми.
+// Теперь плитки стоят сразу, а каждая часть ложится в здоровье проекта, как придёт.
+const HEALTH_QUICK = ["files", "stats", "doctor", "mirrors", "build"];
+const HEALTH_SLOW = ["lint", "todo"];
+const HEALTH_ALL = [...HEALTH_QUICK, ...HEALTH_SLOW];
+// Часть пришла. Здоровье без списка частей (ответ целиком) — всё на месте.
+const hasPart = (h, part) => !!h && (!h.loaded || h.loaded.includes(part));
+const waitMark = () => el("span", {class:"spin", title: t("overview.counting")});
+function healthFrame(p){
+  return {project: p.path, loaded: [], pending: [], stats: {}, todo: null, mirrors: {}, build: {},
+          doctor: {rc: 0, errors: [], blocker_why: [], warns: [], engine: "—", privacy: "report"},
+          lint: {cards: null, errors: null, kinds: {}, baseline: null, fresh: null},
+          agent: {}, sources: {installed: [], instances: []}, runs: {}, trace: {},
+          source_health: {}, index: {}, ping: {}, unfinished: {}, corrections: {}, retrieval: {}};
+}
+// `force` — пересчитать уже пришедшие части; прежние числа стоят, пока не придут новые.
+function loadHealth(p, parts = HEALTH_ALL, force = false){
+  if (!p.health || p.health.project !== p.path || !p.health.loaded) p.health = healthFrame(p);
+  const h = p.health;
+  if (S.project && S.project.path === p.path) S.health = h;
+  const want = parts.filter(x => !h.pending.includes(x) && (force || !h.loaded.includes(x)));
+  h.pending.push(...want);
+  return Promise.all(want.map(part =>
+    api("/api/health?project=" + encodeURIComponent(p.path) + "&part=" + part, {quiet: true})
+      .catch(() => null)
+      .then(r => {
+        h.pending = h.pending.filter(x => x !== part);
+        if (p.health !== h) return;
+        // Ответ — своему проекту и только своей частью. Не пришёл — часть всё равно
+        // отмечается: вечный спиннер хуже прочерка.
+        if (r && !r.error && r.project === p.path){
+          delete r.project; delete r.parts;
+          Object.assign(h, r);
+        }
+        if (!h.loaded.includes(part)) h.loaded.push(part);
+        healthChanged();
+      })));
+}
+// Части приходят пачкой — перерисовка одна на кадр, а не на каждую.
+let HEALTH_FRAME = 0;
+function healthChanged(){
+  if (HEALTH_FRAME) return;
+  HEALTH_FRAME = requestAnimationFrame(() => {
+    HEALTH_FRAME = 0;
+    renderOverview(); renderProjBadge();
+    if (S.project && S.health && S.project.health === S.health) navBadges(S.project, S.health);
+    for (const id of ["health", "mirrors", "install"]){
+      const rec = MODULES.get(id);
+      if (rec && rec.mod) Promise.resolve(rec.mod.refresh?.(moduleCtx(id, rec.section)))
+        .catch(e => showFault(t("modules.refresh_failed", {id, why: e.message})));
+    }
+  });
 }
 async function prefetchHealth(){
-  // последовательно: stats на большой базе занимает секунды, параллель только мешает
-  for (const p of S.state.projects){
-    if (p.health) continue;
-    const h = await api("/api/health?project="+encodeURIComponent(p.path), {quiet:true});
-    if (h && h.stats){ takeHealth(p, h);
-      renderOverview(); renderProjBadge(); }
-  }
-  const total = S.state.projects.reduce((a,p)=>a + (p.health?.doctor.errors.length||0), 0);
-  const g = $("#globalMetrics");
-  if (g.firstChild) g.replaceChild(
-    metric(total, t("overview.blockers_all"),
-      total ? t("overview.blockers_all_go") : t("overview.blockers_all_ok"),
-      total?"bad":"ok"), g.children[0]);
+  // Сначала быстрые части всех проектов — Мостик заполняется за секунды; потом долгие, по
+  // проекту за раз: линтеры всех баз разом только мешали бы друг другу.
+  for (const p of S.state.projects) await loadHealth(p, HEALTH_QUICK);
+  for (const p of S.state.projects) await loadHealth(p, HEALTH_SLOW);
   stamp("#overviewStamp");
 }
 function aura(p){
-  return {red:"var(--danger)", amber:"var(--tier-inreview)", green:"var(--primary)"}[auraWhy(p).color];
+  return {red:"var(--danger)", amber:"var(--tier-inreview)", green:"var(--primary)"}[auraWhy(p).color]
+    || "var(--border)";
 }
 
 // Цвет карточки — обещание: «зелёный» должен быть достижимой целью, а не догадкой.
 // Поэтому правило считается в одном месте и объясняется человеку теми же словами.
 function auraWhy(p){
+  // Пока доктор или линтер считаются, цвета нет: «зелёный» до прихода чисел — догадка.
   const h = p.health, todo = [];
-  const errs = h ? h.doctor.errors.length : 0;
-  const lint = h ? h.lint.errors : 0, base = h ? (h.lint.baseline ?? null) : null;
-  if (errs) todo.push({bad:true, code:"blockers", text: t("aura.blockers", {n: errs})});
+  const docOk = hasPart(h, "doctor"), lintOk = hasPart(h, "lint");
+  const errs = docOk ? h.doctor.errors.length : 0;
+  // Линтер не дал числа (база не собрана, движок упал) — «не знаю», а не «undefined ошибок».
+  const lintNum = lintOk && Number.isFinite(h.lint.errors);
+  const lint = lintNum ? h.lint.errors : 0, base = lintNum ? (h.lint.baseline ?? null) : null;
+  if (!docOk) todo.push({bad:false, wait:true, code:"blockers", text: t("aura.counting_doctor")});
+  else if (errs) todo.push({bad:true, code:"blockers", text: t("aura.blockers", {n: errs})});
   else todo.push({bad:false, code:"blockers", text: t("aura.no_blockers")});
   if (p.behind) todo.push({bad:true, text: t("aura.behind", {v: p.engine})});
   else todo.push({bad:false, text: t("aura.current")});
-  if (base !== null && lint > base)
+  if (!lintOk) todo.push({bad:false, wait:true, text: t("aura.counting_lint")});
+  else if (!lintNum) todo.push({bad:false, text: t("aura.lint_unknown")});
+  else if (base !== null && lint > base)
     todo.push({bad:true, text: t("aura.lint_worse", {n: lint, base, grew: lint - base})});
   else todo.push({bad:false, text: base !== null
     ? t("aura.lint_ratchet", {n: lint, base}) : t("aura.lint", {n: lint})});
-  const color = errs ? "red" : (todo.some(x=>x.bad) ? "amber" : "green");
+  const color = errs ? "red" : (todo.some(x=>x.bad) ? "amber" : (docOk && lintOk ? "green" : ""));
   return {color, todo};
 }
 function renderOverview(){
@@ -1257,10 +1440,11 @@ function renderOverview(){
     return;
   }
   S.state.projects.forEach(p=>{
-    const h = p.health;
-    const pct = h ? (h.stats.pct_verified ?? 0) : null;
-    const errs = h ? h.doctor.errors.length : null;
-    const lintBad = h && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
+    const h = p.health, has = part => hasPart(h, part);
+    const pct = has("stats") ? (h.stats.pct_verified ?? 0) : null;
+    const errs = has("doctor") ? h.doctor.errors.length : null;
+    const lintNum = has("lint") && Number.isFinite(h.lint.errors);
+    const lintBad = lintNum && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
     const why = auraWhy(p);
     const act = el("span",{class:"act"}); act.dataset.path = p.path;
     const tile = el("button",{class:"card tower", style:`--aura:${aura(p)}`,
@@ -1272,30 +1456,31 @@ function renderOverview(){
         el("div",{style:"flex:1;min-width:0"},
           el("div",{class:"name"}, p.name),
           el("div",{class:"path"}, p.path)),
-        h ? el("div",{class:"ring",style:`--p:${Math.max(pct,1.5)}`}, el("span",{}, pct+"%"))
+        has("stats") ? el("div",{class:"ring",style:`--p:${Math.max(pct,1.5)}`}, el("span",{}, pct+"%"))
           : el("span",{class:"spin",style:"margin-top:6px"})),
       el("div",{class:"foot"},
         el("span",{class:"chip"+(p.behind?" warn":"")}, t("overview.engine", {v: p.engine})),
         // Пока здоровье считается, место под чипы держим пустыми заглушками: без них
         // карточки подрастают в момент прихода данных, плитки разъезжаются под курсором
         // и клик «выбрать проект» уходит в никуда или в соседний проект.
-        h ? el("span",{class:"chip "+(errs?"bad":"ok")},
+        has("doctor") ? el("span",{class:"chip "+(errs?"bad":"ok")},
               errs ? t("overview.blockers", {n: errs}) : t("overview.doctor_clean"))
           // Пока считается: спиннер вместо многоточия — «считаю…» рядом с числами
           // читается как обрезанное значение, а не как состояние.
           : el("span",{class:"chip"}, el("span",{class:"spin"}), " " + t("overview.counting")),
-        h ? el("span",{class:"chip "+(lintBad?"bad":"")},
-              t("overview.lint", {n: h.lint.errors}))
-          : null,
+        // Линтер всей базы — самая долгая часть: место под него держим сразу.
+        has("lint") ? el("span",{class:"chip "+(lintBad?"bad":"")},
+              lintNum ? t("overview.lint", {n: h.lint.errors}) : t("overview.lint_unknown"))
+          : el("span",{class:"chip"}, el("span",{class:"spin"}), " " + t("overview.lint_counting")),
         // Второе число рядом с долей доверия: сколько источников уже разобрано. Доверие
         // считается по знанию, разбор — по документам, и одно без другого читается криво:
         // высокая доля доверия при половине неразобранных источников — не «почти готово».
         // Карточки из одних встреч в долю доверия не входят — их число рядом, отдельно.
-        h && h.stats.meetings
+        has("stats") && h.stats.meetings
           ? el("span",{class:"chip", title: t("overview.meetings_hint")},
                t("overview.meetings", {n: h.stats.meetings}))
           : null,
-        h && h.build && h.build.total
+        has("build") && h.build && h.build.total
           ? el("span",{class:"chip "+((h.build.left||0) ? "warn" : "ok"),
                 title: t("overview.sources_hint",
                   {done: h.build.total - (h.build.left||0), total: h.build.total})},
@@ -1310,17 +1495,29 @@ function renderOverview(){
     box.append(tile);
   });
   drawActivity();
-  const g = $("#globalMetrics"); g.innerHTML="";
+  drawGlobalMetrics();
+}
+// Сводка по машине. Подписи стоят с первого кадра; число, которое ещё считается, —
+// спиннером: блокеры ждут доктора всех проектов, окружение и команды — реестра.
+function drawGlobalMetrics(){
+  const g = $("#globalMetrics"); g.innerHTML = "";
+  const st = S.state, projects = (st && st.projects) || [];
+  const behind = projects.filter(p => p.behind).length;
+  const doctors = st && projects.every(p => hasPart(p.health, "doctor"));
+  const total = doctors ? projects.reduce((a, p) => a + p.health.doctor.errors.length, 0) : 0;
+  const extra = !!(st && st.extra);
+  const miss = extra ? st.env.items.filter(i => !i.ok).length : 0;
   g.append(
-    metric(S.state.projects.length, t("overview.projects"), "", "ok"),
-    metric(S.state.projects.filter(p=>p.behind).length,
-      t("overview.behind", {v: S.state.kit.version}),
-      S.state.projects.some(p=>p.behind) ? t("overview.behind_click") : t("overview.all_current"),
-      S.state.projects.some(p=>p.behind)?"warn":"ok",
-      S.state.projects.some(p=>p.behind) ? updateAllProjects : null),
-    metric(S.state.env.items.filter(i=>!i.ok).length, t("overview.missing"),
-      t("overview.missing_hint"), S.state.env.items.some(i=>!i.ok)?"warn":"ok"),
-    metric(S.state.commands.length, t("overview.commands"), t("overview.commands_hint"), "ok"),
+    metric(doctors ? total : waitMark(), t("overview.blockers_all"),
+      !doctors ? "" : total ? t("overview.blockers_all_go") : t("overview.blockers_all_ok"),
+      !doctors ? "" : total ? "bad" : "ok"),
+    metric(st ? behind : waitMark(), t("overview.behind", {v: st ? st.kit.version : "…"}),
+      !st ? "" : behind ? t("overview.behind_click") : t("overview.all_current"),
+      !st ? "" : behind ? "warn" : "ok", behind ? updateAllProjects : null),
+    metric(extra ? miss : waitMark(), t("overview.missing"), t("overview.missing_hint"),
+      !extra ? "" : miss ? "warn" : "ok"),
+    metric(extra ? st.commands.length : waitMark(), t("overview.commands"),
+      t("overview.commands_hint"), extra ? "ok" : ""),
   );
 }
 // Обновить движок сразу во всех отставших проектах. Проектов на машине десятки, и по
@@ -1376,11 +1573,14 @@ async function pick(p, go=true){
   api("/api/gitsync/event", {method:"POST", quiet:true,
     body: JSON.stringify({project: p.path, event: "open"})});
   if (go) show("health");
-  S.health = null; refreshModules();
-  const h = await api("/api/health?project=" + encodeURIComponent(p.path));
-  // Пока считалось, человек мог выбрать другой проект: его экран дорисует свой pick,
-  // а этот ответ только ложится своему проекту.
-  if (!takeHealth(p, h)) return;
+  // Здоровье — частями: разделы рисуют плитки сразу, части ложатся по мере прихода, а
+  // уже посчитанные стоят, пока пересчитываются.
+  const counting = loadHealth(p, HEALTH_ALL, true);
+  refreshModules();
+  await counting;
+  // Пока считалось, человек мог выбрать другой проект: его экран дорисует свой pick.
+  if (S.project !== p) return;
+  const h = p.health;
   renderOverview(); renderProjBadge();
   // Зеркала, установка и версия рисуются из того же здоровья. Пока оно считалось, вкладка
   // показывала «выберите проект» — и оставалась такой навсегда: перерисовать её было
@@ -1419,11 +1619,15 @@ function setBadge(view, text, bad){
 }
 
 function navBadges(p, h){
-  const errs = h.doctor.errors.length;
-  setBadge("health", errs || "", errs > 0);
-  const mm = Object.values(h.mirrors||{}).reduce(
-    (n, x)=> n + (x.no_state ? 1 : (x.missing||0) + (x.orphan||0)), 0);
-  setBadge("mirrors", mm || "", mm > 0);
+  if (hasPart(h, "doctor")){
+    const errs = h.doctor.errors.length;
+    setBadge("health", errs || "", errs > 0);
+  }
+  if (hasPart(h, "mirrors")){
+    const mm = Object.values(h.mirrors||{}).reduce(
+      (n, x)=> n + (x.no_state ? 1 : (x.missing||0) + (x.orphan||0)), 0);
+    setBadge("mirrors", mm || "", mm > 0);
+  }
   setBadge("version", p.behind ? "!" : "", !!p.behind);
   // Упавшая автоматика Git — до следующего удачного запуска: ночной отказ отправки иначе
   // заметили бы, только открыв раздел.
@@ -1435,8 +1639,7 @@ function navBadges(p, h){
 async function reloadHealth(){
   const p = S.project;
   if (!p) return null;
-  const h = await api("/api/health?project=" + encodeURIComponent(p.path));
-  if (h && h.stats && takeHealth(p, h)) navBadges(p, h);
+  await loadHealth(p, HEALTH_ALL, true);
   return S.health;
 }
 
@@ -1465,6 +1668,7 @@ $("#refreshOverview").onclick = ()=> busy($("#refreshOverview"), async ()=>{
   const st = await api("/api/state");
   if (!st || !st.projects) return;
   S.state = st;
+  st.extra = true;          // ответ целиком: реестр и окружение уже в нём
   S.project = path ? (st.projects.find(x=>x.path===path) || null) : null;
   S.health = null;
   renderOverview(); renderProjBadge();
@@ -1554,7 +1758,8 @@ function metricCard(o){
     style:"padding:14px;min-width:0", title:o.hint || "", "data-llm": o.go && o.go.llm || null},
     el("div",{class:"muted",style:"font-size:12px"}, o.title),
     el("div",{style:"font-size:26px;font-weight:700;margin:2px 0 4px;line-height:1.1"
-              + (tone ? ";color:var(--" + tone + ")" : "")}, String(o.value)),
+              + (tone ? ";color:var(--" + tone + ")" : "")},
+      o.value && o.value.nodeType ? o.value : String(o.value)),
     el("div",{class:"muted",style:"font-size:12px;line-height:1.35"}, o.sub || ""),
     o.go ? el("div",{class:"chip",style:"margin-top:8px"}, o.go.label) : null);
   if (o.go) card.onclick = o.go.act;
@@ -1570,6 +1775,7 @@ const goRoute = (id, label) => ({label, llm: "route:" + id, act: async () => {
   runRoute(sc, true);
 }});
 const goCmd = (cmd, args, label) => ({label, llm: cmd, act: async () => {
+  if (!S.state.extra && S.extraP) await S.extraP;
   const r = S.state.commands.find(x=>x.cmd===cmd);
   if (!r || !r.runnable) return toast(t("run.cmd_off", {cmd}), "warn");
   const line = (cmd + " " + (args||[]).join(" ")).trim();
@@ -1635,7 +1841,9 @@ const ARG_HINTS = {
 const argHint = cmd => ARG_HINTS[cmd] ? t("arg." + ARG_HINTS[cmd]) : "";
 
 let RUN = null;
-function openRun(cmdName, preFlags=[]){
+async function openRun(cmdName, preFlags=[]){
+  // Реестр команд догружается после Мостика: открыли команду раньше — дождёмся его.
+  if (!S.state.extra && S.extraP) await S.extraP;
   // Команду разработки открывают объектом из раздела «Разработка»: ей проект не нужен,
   // она работает в дереве кита.
   const byObj = typeof cmdName === "object" ? cmdName : null;
@@ -2468,9 +2676,8 @@ function finishRoute(r, sc, write){
         t("route.resume_btn", {title: sc.title, slug: S.project.slug}))); });
   }
   if (S.project){ const p = S.project;
-    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
-      renderOverview();
-      if (mine){ loadRuns(); refreshModules(); }});
+    loadHealth(p, HEALTH_ALL, true).then(()=>{
+      if (S.project === p){ loadRuns(); refreshModules(); }});
     if (write) api("/api/state").then(st=>{
       const me = (st.projects||[]).find(x=>x.path===p.path);
       if (me && me.dirty) out.append(el("div",{class:"warn",style:"margin-top:8px"},
@@ -2552,6 +2759,16 @@ async function poll(id, since, label){
     $("#consoleRc").textContent = t("poll.job_lost_short");
     $("#consoleRc").className = "chip bad";
     drawLiveJobs();
+    // Панель потеряла задание, но процесс движка мог пережить перезапуск и идти дальше
+    // сиротой. Его выдаёт замок прогона в проекте — скажем прямо, что работа не встала.
+    const pr = S.project;
+    if (pr) api("/api/activity", {quiet:true}).then(a => {
+      const ag = a && a.projects && a.projects[pr.path] && a.projects[pr.path].agent;
+      if (ag && ag.alive) out.append(el("div",{class:"warn"},
+        t("poll.job_orphan", {task: ag.task || "?", pid: ag.pid,
+          since: ag.since ? new Date(ag.since).toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU",
+                                                                {hour: "2-digit", minute: "2-digit"}) : "?"})));
+    }).catch(() => {});
     return;
   }
   let outLines = d.lines||[];
@@ -2601,9 +2818,8 @@ async function poll(id, since, label){
   }
   // журнал пишет сервер — перечитываем его вместе со здоровьем, а не ведём копию в вкладке
   if (S.project) { const p = S.project;
-    api("/api/health?project="+encodeURIComponent(p.path)).then(h=>{ const mine = takeHealth(p, h);
-      renderOverview(); if (!mine) return;
-      refreshModules();
+    loadHealth(p, HEALTH_ALL, true).then(()=>{
+      if (S.project !== p) return;
       renderHistory(); refreshModules();}); }
 }
 /* Код возврата в Авроре означает три разных вещи, и красить их одинаково — врать.
@@ -3797,7 +4013,9 @@ function moduleCtx(id, root){
     // Общие детали панели: раздел не рисует свою плитку метрики и свою кнопку
     // перехода к маршруту — иначе в каждом разделе они разъедутся.
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
-         editor: markdownEditor},
+         editor: markdownEditor,
+         // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
+         has: hasPart, wait: waitMark},
     openPath, isEngineCmd, hideDev, openProject,
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.

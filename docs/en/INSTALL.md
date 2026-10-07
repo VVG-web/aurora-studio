@@ -297,7 +297,10 @@ assistants by the kit's catalogue (`scripts/harnesses.json`). The catalogue has:
 - Cline, Roo Code, Kilo Code, Kilo CLI;
 - OpenCode, Codex, Gemini CLI, Qwen Code, Continue, Zed;
 - jcode, Hermes Agent, Goose, Crush, pi, DeepSeek TUI;
-- Kiro, Amp, LM Studio, Junie.
+- Kiro, Amp, LM Studio, Junie;
+- Chatbox — not an agent but a chat client with MCP. The entry goes into its `config.json`
+  (`settings.mcp.servers`) and is connected only while Chatbox is closed: on exit it rewrites its whole settings
+  file, and an entry made with the window open would be lost.
 
 Each assistant found shows its version, its settings file and whether Aurora is connected. "Connect" copies the
 assistant's file into `~/.aurora/harness-backups/` and inserts the entry by editing the text: the person's comments

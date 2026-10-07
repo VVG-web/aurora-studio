@@ -54,17 +54,23 @@ export async function refresh(ctx){
   // Что мешает зелёному — прямо здесь, а не только подсказкой на Мостике: человек
   // приходит сюда именно с вопросом «я всё сделал, почему не зелёное».
   const why = ctx.aura(ctx.project);
+  // Плитки стоят сразу, а число каждой — когда придёт её часть здоровья (1.165.0): линтер
+  // всей базы и дела человеку считаются десятки секунд, и ждать их ради остального незачем.
+  const has = part => ctx.ui.has(h, part), wait = ctx.ui.wait;
   const colorName = why.color === "green" ? t("health.green")
-                  : why.color === "red" ? t("health.red") : t("health.amber");
+                  : why.color === "red" ? t("health.red")
+                  : why.color === "amber" ? t("health.amber") : t("health.counting");
   box.append(el("div", {class:"card", style:"padding:16px;margin-bottom:14px"},
     el("div", {class:"row"},
-      el("span", {class:"chip " + (why.color === "green" ? "ok" : why.color === "red" ? "bad" : "warn")},
-        colorName),
-      el("b", {}, why.color === "green" ? t("health.all_good") : t("health.to_green"))),
+      el("span", {class:"chip " + (why.color === "green" ? "ok" : why.color === "red" ? "bad"
+                                   : why.color === "amber" ? "warn" : "")}, colorName),
+      el("b", {}, why.color === "green" ? t("health.all_good")
+                  : why.color ? t("health.to_green") : t("health.counting_why"))),
     ...why.todo.map(x => {
       const open = x.code === "blockers" && x.bad;
       const row = el("div", {class:"list-item" + (open ? " clickable" : "")},
-        el("span", {class:"chip " + (x.bad ? "bad" : "ok")}, x.bad ? "✗" : "✓"),
+        x.wait ? el("span", {class:"chip"}, wait())
+               : el("span", {class:"chip " + (x.bad ? "bad" : "ok")}, x.bad ? "✗" : "✓"),
         el("div", {style:"flex:1"}, x.text),
         open ? el("span", {class:"chip"}, t("health.go_blockers")) : null);
       if (open) row.onclick = () => showBlockers(ctx, h);
@@ -75,7 +81,7 @@ export async function refresh(ctx){
   box.append(baseCards(ctx, h, st));
   box.append(el("div", {class:"card", style:"padding:16px;margin-bottom:14px"},
     el("div", {style:"font-weight:700;margin-bottom:10px"}, t("health.statuses")),
-    statusBar(ctx, st.statuses || {})));
+    has("stats") ? statusBar(ctx, st.statuses || {}) : wait()));
 
   const ag = h.agent || {};
   const b = h.build || {};
@@ -91,37 +97,43 @@ export async function refresh(ctx){
             + (ag.left ? " · " + t("health.agent_left", {n: ag.left}) : ""))))));
   }
 
-  const lintBad = h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
+  const lintBad = has("lint") && h.lint.baseline !== null && h.lint.errors > h.lint.baseline;
+  // Число или знак «считается»: метрика стоит на месте с подписью с первого кадра.
+  const val = (part, v) => has(part) ? v : wait();
   box.append(el("h2", {}, t("health.mechanics")));
   box.append(el("div", {class:"grid metrics"},
-    ctx.ui.metric(h.lint.errors ?? "—", t("health.lint_errors"),
+    ctx.ui.metric(val("lint", h.lint.errors ?? "—"), t("health.lint_errors"),
       h.lint.baseline !== null ? t("health.ratchet", {n: h.lint.baseline}) : t("health.no_baseline"),
       lintBad ? "bad" : (h.lint.errors ? "warn" : "ok"), () => ctx.openRun("kb:lint")),
-    ctx.ui.metric(st.missing_source_count ?? "—", t("health.broken_sources"),
+    ctx.ui.metric(val("stats", st.missing_source_count ?? "—"), t("health.broken_sources"),
       t("health.broken_sources_sub"),
       st.missing_source_count ? "bad" : "ok", () => ctx.openRun("kit:remap-sources")),
-    ctx.ui.metric(st.stubs ?? "—", t("health.stubs"), t("health.stubs_sub"),
+    ctx.ui.metric(val("stats", st.stubs ?? "—"), t("health.stubs"), t("health.stubs_sub"),
       st.stubs ? "warn" : "ok", () => ctx.openRun("kb:repair"))));
 
   box.append(el("h2", {}, t("health.requirements")));
   box.append(el("div", {class:"grid metrics"},
-    ctx.ui.metric(st.req_total ?? 0, t("health.req"), t("health.req_sub"), "ok",
+    ctx.ui.metric(val("stats", st.req_total ?? 0), t("health.req"), t("health.req_sub"), "ok",
       () => ctx.openRun("ops:trace")),
-    ctx.ui.metric(st.req_agreed_no_jira ?? 0, t("health.req_no_jira"), t("health.req_no_jira_sub"),
+    ctx.ui.metric(val("stats", st.req_agreed_no_jira ?? 0), t("health.req_no_jira"), t("health.req_no_jira_sub"),
       st.req_agreed_no_jira ? "warn" : "ok", () => ctx.openRun("sync:jira-status")),
-    ctx.ui.metric(st.questions_open ?? 0, t("health.questions"),
+    ctx.ui.metric(val("stats", st.questions_open ?? 0), t("health.questions"),
       st.questions_overdue_count ? t("health.questions_overdue", {n: st.questions_overdue_count})
                                  : t("health.questions_sub"),
       st.questions_overdue_count ? "bad" : "warn"),
-    ctx.ui.metric(st.specs?.total ?? 0, t("health.specs"), t("health.specs_sub"), "ok",
+    ctx.ui.metric(val("stats", st.specs?.total ?? 0), t("health.specs"), t("health.specs_sub"), "ok",
       () => ctx.openRun("make:spec-pack")),
-    ctx.ui.metric(st.artifacts_with_based_on ?? 0, t("health.artifacts_based"),
+    ctx.ui.metric(val("stats", st.artifacts_with_based_on ?? 0), t("health.artifacts_based"),
       t("health.artifacts_of", {n: st.artifacts_total ?? 0}), "ok"),
-    ctx.ui.metric((st.risky_deliverables || []).length, t("health.risky"),
+    ctx.ui.metric(val("stats", (st.risky_deliverables || []).length), t("health.risky"),
       t("health.risky_sub"), (st.risky_deliverables || []).length ? "bad" : "ok")));
 
   box.append(el("h2", {}, t("health.readiness")));
-  if (h.doctor.errors.length || h.doctor.warns.length){
+  if (!has("doctor")){
+    box.append(el("div", {class:"card",
+      style:"padding:22px;display:flex;gap:12px;align-items:center"},
+      wait(), el("div", {class:"muted"}, t("health.doctor_counting"))));
+  } else if (h.doctor.errors.length || h.doctor.warns.length){
     const card = el("div", {class:"card"});
     h.doctor.errors.forEach((e, i) => card.append(
       findingRow(ctx, e, (h.doctor.blocker_why || [])[i] || "", "bad")));
@@ -137,7 +149,10 @@ export async function refresh(ctx){
 
 function baseCards(ctx, h, st){
   const {t, el} = ctx;
-  const card = ctx.ui.metricCard;
+  // Плитка, чья часть здоровья ещё считается, стоит с подписью и знаком ожидания; число,
+  // пояснение и кнопка появляются, когда часть придёт.
+  const card = (part, o) => ctx.ui.has(h, part) ? ctx.ui.metricCard(o)
+    : ctx.ui.metricCard({title: o.title, value: ctx.ui.wait(), sub: t("health.waiting"), hint: o.hint});
   const lint = h.lint || {}, kinds = lint.kinds || {}, b = h.build || {};
   const k = st.kinds || {}, why = st.trust_why || {};
   const noKind = k["(нет kind)"] || 0;  // данные движка
@@ -153,20 +168,20 @@ function baseCards(ctx, h, st){
   return el("div", {class:"grid metrics", style:"margin-bottom:14px"},
     // Блокеры — первой плиткой: «блокеры doctor: 2» в строке цвета не говорили, что
     // сломано, почему и что нажать. Плитка открывает отчёт с ответом на все три.
-    card({title: t("health.blockers"), value: blockers.length,
+    card("doctor", {title: t("health.blockers"), value: blockers.length,
       sub: blockers.length ? t("health.blockers_sub") : t("health.blockers_none"),
       tone: blockers.length ? "danger" : "",
       hint: t("health.blockers_hint"),
       go: blockers.length ? {label: t("health.go_blockers"), act: () => showBlockers(ctx, h)}
                           : null}),
-    card({title: t("health.contents"), value: st.total ?? "—",
+    card("stats", {title: t("health.contents"), value: st.total ?? "—",
       sub: t("health.contents_sub", {knowledge: st.statuses?.knowledge ?? st.trusted ?? 0,
                                      drafts: st.statuses?.draft ?? 0}),
       hint: t("health.contents_hint")}),
     // Карточки из одних встреч — вне доли и отдельной строкой, а не одной из причин
     // недоверия (решение пользователя 25.09.2026): встреча — не документ, который не
     // дорос до доверия, а другой род знания.
-    card({title: t("health.trust"), value: (st.pct_verified ?? 0) + "%",
+    card("stats", {title: t("health.trust"), value: (st.pct_verified ?? 0) + "%",
       sub: el("span", {},
         Object.entries(why)
           .filter(([n]) => n !== "доверенные" && n !== "из встреч (вне доли)")  // данные движка
@@ -178,39 +193,39 @@ function baseCards(ctx, h, st){
     // Пустой `kinds` — это «движок проекта старый и типов не считает», а не «у всех
     // проставлен». Разница между «не измеряли» и «в порядке» — та самая догадка,
     // выданная за факт, за которую мы уже платили дважды.
-    card({title: t("health.kinds"),
+    card("stats", {title: t("health.kinds"),
       value: Object.keys(k).length ? (st.total ?? 0) - noKind : "—",
       sub: !Object.keys(k).length ? t("health.kinds_old")
            : noKind ? t("health.kinds_missing", {n: noKind}) : t("health.kinds_all"),
       tone: noKind ? "warn" : "",
       go: Object.keys(k).length && noKind
         ? ctx.ui.goCmd("kb:kind", ["--apply"], t("health.go_kinds")) : null}),
-    card({title: t("health.links"), value: orphans + broken,
+    card("lint", {title: t("health.links"), value: orphans + broken,
       sub: orphans ? t("health.links_both", {orphans, broken})
                    : broken ? t("health.links_broken", {n: broken}) : t("health.links_ok"),
       tone: (orphans + broken) ? "warn" : "",
       go: (orphans + broken) ? fixOrDecide() : null}),
-    card({title: t("health.trace"),
+    card("files", {title: t("health.trace"),
       value: trace.direct != null ? (trace.direct + (trace.indirect || 0)) : "—",
       sub: trace.direct != null
         ? t("health.trace_sub", {direct: trace.direct, indirect: trace.indirect || 0,
                                  orphan: trace.orphan || 0})
         : t("health.trace_none"),
       go: ctx.ui.goCmd("ops:trace-table", ["--apply"], t("health.go_trace"))}),
-    card({title: t("health.errors"), value: lint.errors ?? "—",
+    card("lint", {title: t("health.errors"), value: lint.errors ?? "—",
       sub: ((lint.errors || 0) && !fresh ? t("health.errors_stuck") + " · " : "")
            + (Object.entries(kinds).slice(0, 3).map(([n, v]) => `${v} ${ctx.ui.engineWord(n)}`).join(" · ")
               || t("health.errors_none")),
       tone: (lint.errors || 0) ? "warn" : "",
       go: (lint.errors || 0) ? fixOrDecide() : null}),
-    card({title: t("health.freshness"), value: b.left != null ? b.left : "—",
+    card("build", {title: t("health.freshness"), value: b.left != null ? b.left : "—",
       sub: b.left != null ? t("health.freshness_sub", {total: b.total, pct: b.pct})
                           : t("health.freshness_none"),
       tone: (b.left || 0) ? "warn" : "",
       go: (b.left || 0) ? ctx.ui.goRoute("update", t("health.go_update")) : null}),
     // Связь и индекс — здоровье не базы, а того, чем она обслуживается. Без них
     // «поиск по смыслу» тихо вырождается в поиск по словам, и заметить это нельзя.
-    card({title: t("health.models"),
+    card("files", {title: t("health.models"),
       value: (h.ping && h.ping.when) ? `${h.ping.alive}/${h.ping.alive + h.ping.dead}` : "—",
       sub: (h.ping && h.ping.when)
         ? t("health.models_when", {when: ctx.fmt.when(h.ping.when)})
@@ -226,7 +241,7 @@ function baseCards(ctx, h, st){
         ctx.toast(r.dead ? t("health.ping_dead", {n: r.dead}) : t("health.ping_ok"),
           r.dead ? "warn" : "ok");
       }}}),
-    card({title: t("health.index"),
+    card("files", {title: t("health.index"),
       value: (h.index && h.index.built) ? (h.index.missing + h.index.stale) : "—",
       sub: !(h.index && h.index.built) ? t("health.index_none")
         : t("health.index_sub", {missing: h.index.missing, stale: h.index.stale,
@@ -236,7 +251,7 @@ function baseCards(ctx, h, st){
       go: ctx.ui.goCmd("kb:embed", ["--apply"], t("health.go_index"))}),
     // Ранжирование — то, на чём стоит и ответ базы, и обогащение перед производством.
     // Менять его вслепую нельзя, а «стало лучше» — не проверка.
-    card({title: t("health.retrieval"),
+    card("files", {title: t("health.retrieval"),
       value: (h.retrieval && h.retrieval.when) ? h.retrieval.queries : "—",
       sub: (h.retrieval && h.retrieval.when)
         ? t("health.retrieval_sub", {when: ctx.fmt.when(h.retrieval.when)})
@@ -246,7 +261,7 @@ function baseCards(ctx, h, st){
     // Файл артефакта рождается сразу после обогащения — значит брошенная работа
     // остаётся видимой. Удалять её движок не должен: срок автоудаления никто не
     // подберёт правильно, а потеря необратима.
-    card({title: t("health.unfinished"),
+    card("files", {title: t("health.unfinished"),
       value: (h.unfinished && h.unfinished.count) || 0,
       sub: (h.unfinished && h.unfinished.count)
         ? t("health.unfinished_sub", {days: h.unfinished.oldest})
@@ -266,7 +281,7 @@ function baseCards(ctx, h, st){
               // пойдёт искать файл руками.
               el("button", {class:"btn", onclick: () => ctx.openPath(x.path)},
                 t("health.open")))))} : null}),
-    card({title: t("health.corrections"),
+    card("files", {title: t("health.corrections"),
       value: (h.corrections && h.corrections.count) || 0,
       sub: (h.corrections && h.corrections.ask)
         ? t("health.corrections_ask", {n: h.corrections.ask})
@@ -282,7 +297,7 @@ function baseCards(ctx, h, st){
                   t("health.corrections_card", {card: x.card}))),
               el("button", {class:"btn", onclick: () => ctx.openPath(
                 "Raw/corrections/" + x.name + ".md")}, t("health.open_correction")))))} : null}),
-    card({title: t("health.left_to_human"), value: h.todo != null ? h.todo : "—",
+    card("todo", {title: t("health.left_to_human"), value: h.todo != null ? h.todo : "—",
       sub: t("health.left_sub"),
       go: ctx.ui.goCmd("ops:todo", [], t("health.go_list"))}));
 }

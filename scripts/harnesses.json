@@ -1,6 +1,6 @@
 {
   "version": "1.162.0",
-  "about": "Ассистенты (харнессы), к которым Аврора умеет подключить свой MCP-сервер. Каталог едет с китом: новая версия харнесса с другим местом настройки — правка этого файла в выпуске Авроры. Ищутся только нынешние версии: устаревшие места настройки не поддерживаются. Пути: {home} — домашняя папка; {appdata} — ~/Library/Application Support на macOS, ~/.config на Linux, %APPDATA% на Windows; {vscode} — {appdata}/Code/User. Форматы записи: standard — {command, args}; vscode — {type: stdio, command, args}; opencode — {type: local, command: [..], enabled}; crush — {type: stdio, command, args}; zed — {command, args, env, enabled}; codex — таблица TOML [mcp_servers.<имя>]; continue — свой файл YAML в папке mcpServers; hermes — YAML mcp_servers; goose — YAML extensions.",
+  "about": "Ассистенты (харнессы), к которым Аврора умеет подключить свой MCP-сервер. Каталог едет с китом: новая версия харнесса с другим местом настройки — правка этого файла в выпуске Авроры. Ищутся только нынешние версии: устаревшие места настройки не поддерживаются. Пути: {home} — домашняя папка; {appdata} — ~/Library/Application Support на macOS, ~/.config на Linux, %APPDATA% на Windows; {vscode} — {appdata}/Code/User. Форматы записи: standard — {command, args}; vscode — {type: stdio, command, args}; opencode — {type: local, command: [..], enabled}; crush — {type: stdio, command, args}; zed — {command, args, env, enabled}; codex — таблица TOML [mcp_servers.<имя>]; continue — свой файл YAML в папке mcpServers; hermes — YAML mcp_servers; goose — YAML extensions; chatbox — элемент списка settings.mcp.servers {id, name, enabled, transport: {type: stdio, command, args}} в config.json Chatbox, подключается только при закрытом приложении (process).",
   "harnesses": [
     {"id": "claude-code", "name": "Claude Code", "bins": ["claude"], "version_args": ["--version"],
      "config": "{home}/.claude.json", "format": "json", "key": "mcpServers", "entry": "standard",
@@ -95,6 +95,11 @@
      "config": "{home}/.lmstudio/mcp.json", "format": "json", "key": "mcpServers", "entry": "standard"},
     {"id": "junie", "name": "Junie (JetBrains)", "bins": [],
      "detect": ["{home}/.junie"],
-     "config": "{home}/.junie/mcp/mcp.json", "format": "json", "key": "mcpServers", "entry": "standard"}
+     "config": "{home}/.junie/mcp/mcp.json", "format": "json", "key": "mcpServers", "entry": "standard"},
+    {"id": "chatbox", "name": "Chatbox", "bins": [],
+     "detect": ["{appdata}/xyz.chatboxapp.app", "/Applications/Chatbox.app"],
+     "config": "{appdata}/xyz.chatboxapp.app/config.json", "format": "chatbox",
+     "key": "settings.mcp.servers", "entry": "chatbox", "process": ["Chatbox"],
+     "note": "Не агент, а чат-клиент, но MCP умеет: сервер aurora появится в «Настройки → MCP». Подключать при закрытом Chatbox — при выходе он переписывает файл настроек. Инструменты ревью идут минуты: если Chatbox оборвёт вызов, поднимите срок ожидания в его настройках."}
   ]
 }
