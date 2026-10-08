@@ -1,0 +1,74 @@
+name: Предложение / Feature request
+description: Идея или улучшение для кита / An idea or improvement for the kit
+title: "[Идея] "
+type: Feature
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Расскажите, какую **задачу** вы решаете, — решение мы обсудим вместе.
+        Tell us the **problem** you are solving; we will discuss the solution together.
+
+        **Не публикуйте** имена клиентов, адреса контуров, токены и содержимое закрытых документов:
+        примеры делайте обезличенными. **Do not post** customer names, internal addresses or tokens.
+  - type: dropdown
+    id: area
+    attributes:
+      label: К чему относится / Area
+      options:
+        - Панель управления (cockpit)
+        - Движок и команды (aurora.py, scripts/)
+        - Установщик и обновление (aurora.py new, kit:update)
+        - Навыки ассистента (skills/)
+        - Коннекторы (Confluence, Jira, web)
+        - Git-провайдеры (GitHub, GitLab, Bitbucket, Gitea)
+        - Шаблоны и промпты (scaffold/, templates/)
+        - Документация и Wiki
+        - Не знаю / Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую задачу решаем / Problem to solve
+      description: Что вы делаете, что мешает и как часто это случается. Без «хочу кнопку» — сначала ситуация.
+      placeholder: "Например: при ежедневной сверке мне приходится вручную открывать каждую карточку, чтобы понять, что устарело."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Как это могло бы работать / Proposed solution
+      description: Опишите желаемое поведение глазами пользователя. Если есть идея по реализации — тоже можно.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Рассмотренные альтернативы / Alternatives considered
+      description: Как вы обходитесь сейчас и что пробовали.
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Насколько это важно / How much does it matter
+      options:
+        - Было бы удобнее / Nice to have
+        - Мешает в регулярной работе / Regular friction
+        - Без этого не могу работать / Blocks my work
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительно / Anything else
+      description: Скриншоты, ссылки на похожие решения, макеты.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Перед отправкой / Before submitting
+      options:
+        - label: Я поискал в открытых и закрытых issues — такого предложения ещё нет / I searched existing issues
+          required: true
+        - label: В тексте и приложениях нет имён клиентов, адресов контуров и токенов / No customer names, internal addresses or tokens
+          required: true
