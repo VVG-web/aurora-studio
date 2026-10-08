@@ -64,6 +64,7 @@ BUSY_WAIT_S = 2 * 3600            # сколько шаг ждёт заняты�
 BUSY_POLL_S = 30
 KEEP_RUNS = 60                    # столько прогонов цепочек храним в истории
 OWNER_STALE = 5 * 60              # владелец расписания без отметки дольше — считается ушедшим
+STREAM_KEEP = 5000                # строк потока идущей цепочки для Консоли (1.167.0)
 LOG_KEEP = 400                    # строк журнала на шаг цепочки
 MAX_STEPS = 50
 # Итоги шага, после которых проект откладывается: дальше его шаги смысла не имеют.
@@ -452,6 +453,13 @@ class Scheduler:
         # шагом `agent:twins`. Такая панель только показывает расписание.
         self.passive = False
         self.owner = {}
+        # Поток идущей цепочки для Консоли: заголовки пунктов, вывод шагов, «жду», итоги — по
+        # всем проектам подряд, с номером строки. Без него Консоль во время цепочки была
+        # пустой: она показывала задания выбранного проекта, а цепочка шла по другим, и
+        # между шагами заданий нет вовсе (1.167.0).
+        self.stream: list = []
+        self.stream_base = 0              # номер первой строки в `stream`
+        self.stream_run = ""
         self.claimed = False                 # отмечается в `cron-owner.json` только взявшая
 
     # ---------------------------------------------------------- жизнь
@@ -647,6 +655,10 @@ class Scheduler:
         ck = self.ck
         mark = "cron-" + run["id"]
         ck.mark_running(mark, "cron: " + task["name"], "", True)
+        with self.lock:
+            self.stream, self.stream_base, self.stream_run = [], 0, run["id"]
+        self.say(f"▶ цепочка «{task['name']}» · пунктов: {len(run['items'])}"
+                 + (" · продолжение после перезапуска панели" if run.get("resumes") else ""))
         lang = task.get("lang") or ck.DEFAULT_LANG
         halted = ""
         try:
@@ -700,6 +712,8 @@ class Scheduler:
                 continue
             self._item(task, run, it, lang)
             save_run(run)
+            self.say(f"■ {self.item_label(it)}: {it['status']}"
+                     + (f" ({it['note']})" if it.get("note") else ""))
             if it["status"] == "stopped":
                 halted = "stopped"
             elif it["status"] in BAD:
@@ -717,6 +731,7 @@ class Scheduler:
         ck = self.ck
 
         def log(text: str) -> None:
+            self.say(text)
             it["log"].append(text)
             if len(it["log"]) > LOG_KEEP:
                 del it["log"][:-LOG_KEEP]
@@ -740,6 +755,8 @@ class Scheduler:
 
         it.update(status="running", started=now_iso(), note="")
         save_run(run)
+        self.say("")
+        self.say(f"━━ {self.item_label(it)} ━━")
         project = it["project"]
         if not self._wait_free(project, log):
             it.update(status="stopped" if self.stop_event.is_set() else "skipped",
@@ -806,6 +823,40 @@ class Scheduler:
                 it["commit"] = saved["commit"]
 
     # ------------------------------------------------------- для экрана
+
+    def say(self, text: str) -> None:
+        with self.lock:
+            self.stream.append(str(text))
+            extra = len(self.stream) - STREAM_KEEP
+            if extra > 0:
+                del self.stream[:extra]
+                self.stream_base += extra
+
+    def live(self, since: int = 0) -> dict:
+        """Поток идущей (или последней) цепочки со строки `since`. `cut` — начало потока уже
+        ушло из памяти: страница пишет, что показывает хвост."""
+        with self.lock:
+            start = max(0, since - self.stream_base)
+            return {"run": brief(self.current) if self.current else None,
+                    "stream": self.stream_run, "lines": list(self.stream[start:]),
+                    "next": self.stream_base + len(self.stream),
+                    "cut": since < self.stream_base}
+
+    def item_label(self, it: dict) -> str:
+        """Пункт цепочки человеку: проект и что в нём идёт."""
+        kind = it.get("kind")
+        if kind == "route":
+            # Подпись для Консоли не вправе уронить цепочку: нет маршрута — его id.
+            try:
+                sc = RR.scenario(self.ck, it.get("route", ""))
+            except Exception:  # noqa: BLE001
+                sc = None
+            what = (sc or {}).get("title") or it.get("route", "")
+        elif kind == "bot":
+            what = "бот " + str(it.get("bot") or "*")
+        else:
+            what = (str(it.get("cmd") or "") + " " + " ".join(it.get("args") or [])).strip()
+        return f"{it.get('project_name') or os.path.basename(it.get('project', ''))} · {what}"
 
     def state(self) -> dict:
         with self.lock:

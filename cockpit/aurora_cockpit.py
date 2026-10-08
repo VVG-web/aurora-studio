@@ -4643,6 +4643,12 @@ class Handler(BaseHTTPRequestHandler):
             st["routes"] = [{"id": r["id"], "title": r["title"], "group": r["group"]}
                             for r in localized_scenarios(scenarios(), request_lang(q))]
             self.send_json(st)
+        elif u.path == "/api/cron/live":
+            # Поток идущей цепочки для Консоли — со строки `since` (1.167.0).
+            self.send_json(scheduler().live(int((q.get("since") or ["0"])[0] or 0)))
+        elif u.path == "/api/live":
+            # Всё, что идёт на машине: маршруты, команды, цепочка — по всем проектам.
+            self.send_json(live_now())
         elif u.path == "/api/cron/run":
             run_id = q.get("id", [""])[0]
             if not re.match(r"^[\w-]{1,64}$", run_id):
@@ -5328,6 +5334,40 @@ def route_register(run, project: str) -> None:
     with ROUTES_LOCK:
         ROUTES[run.run_id] = {"id": run.run_id, "project": project, "run": run,
                               "started": time.time()}
+
+
+def live_now() -> dict:
+    """Что идёт на машине прямо сейчас — для Консоли: маршруты и команды всех проектов и
+    цепочка расписания. Консоль показывала только задания выбранного проекта, и во время
+    цепочки, идущей по другим, была пустой (1.167.0). Шаги маршрута — внутри маршрута, а не
+    отдельными строками: их вывод и так в его журнале."""
+    def name(path: str) -> str:
+        return config_value(read_text(os.path.join(path, "aurora.config.yaml")), "name") \
+            or os.path.basename(path)
+    with ROUTES_LOCK:
+        routes = [r for r in ROUTES.values() if not r["run"].done_flag]
+    in_route = {r["id"] for r in routes}
+    out_routes = [{"id": r["id"], "project": r["project"], "name": name(r["project"]),
+                   "title": r["run"].sc.get("title", ""), "scId": r["run"].sc.get("id", ""),
+                   "write": r["run"].write, "trigger": r["run"].trigger,
+                   "started": r["started"], "bar": r["run"].bar}
+                  for r in sorted(routes, key=lambda r: r["started"])]
+    with JOBS_LOCK:
+        jobs = [{"id": j["id"], "project": j["project"], "cmd": j["cmd"], "args": j["args"],
+                 "started": j["started"], "lines": len(j["out"])}
+                for j in JOBS.values() if not j["done"] and j.get("parent") not in in_route]
+    for j in jobs:
+        j["name"] = name(j["project"])
+    sch = scheduler()
+    cron = None
+    if sch.current:
+        cur = CRON.brief(sch.current)
+        items = cur.get("items") or []
+        now = next((it for it in items if it.get("status") == "running"), None)
+        cron = {"id": cur.get("id"), "name": cur.get("name"), "started": cur.get("started"),
+                "done": sum(1 for it in items if it.get("status") not in ("pending", "running")),
+                "total": len(items), "now": sch.item_label(now) if now else ""}
+    return {"routes": out_routes, "jobs": sorted(jobs, key=lambda j: j["started"]), "cron": cron}
 
 
 def route_live(rid: str, since: int) -> dict:

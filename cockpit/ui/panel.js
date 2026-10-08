@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.166.0";
+const UI_VERSION = "1.167.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1088,7 +1088,7 @@ function show(view, payload){
   if (view==="project") renderProject();
   if (view==="files") renderFiles();
   if (view==="console"){
-    renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs();
+    renderHistory(); loadRuns(); drawTaskButton(); drawLiveJobs().then(() => autoFollow());
     // Маршрут мог остановиться в прошлой сессии: состояние читаем из проекта и, если сейчас
     // ничего не идёт, поднимаем «Продолжить маршрут» — её не было на перезапуске вкладки.
     if (S.project && ROUTE === null){
@@ -1341,6 +1341,8 @@ async function refreshAdapterAlarm(){
 const ALARM_POLL_MS = 20000;
 setInterval(() => { if (!document.hidden) refreshAdapterAlarm(); }, ALARM_POLL_MS);
 const ACTIVITY_POLL_MS = 5000;
+// Пока Консоль открыта, список того, что идёт, обновляется сам: пункты цепочки сменяются.
+setInterval(() => { if (S.view === "console" && !document.hidden) drawLiveJobs(); }, ACTIVITY_POLL_MS);
 setInterval(() => { if (S.view === "overview" && !document.hidden) refreshActivity(); },
             ACTIVITY_POLL_MS);
 
@@ -2275,40 +2277,121 @@ $("#retryPrimary").onclick = async ()=>{
   if (r && r.ok) toast(r.note || t("console.retry_primary"), "ok");
 };
 
+/* ---------------- что идёт на машине ---------------- */
+// Консоль показывала задания только выбранного проекта, и во время цепочки cron, идущей по
+// другим проектам, стояла пустой (1.167.0). Теперь над ней — всё, что идёт на машине:
+// цепочка расписания, маршруты и команды всех проектов; «Показать» переключает вывод, а
+// показываемое отмечено. Писать в Консоль может только один поток: переключились — прежний
+// замолкает (`FOLLOW`).
+let FOLLOW = 0, SHOWN = null;      // номер текущего потока Консоли и что он показывает
+const isShown = (kind, id) => !!SHOWN && SHOWN.kind === kind && (id == null || SHOWN.id === id);
+async function liveAll(){
+  try { return await api("/api/live", {quiet:true}) || {}; } catch (e) { return {}; }
+}
 async function drawLiveJobs(){
   const box = $("#consoleLive");
   if (!box) return;
-  const jobs = await liveJobs();
+  const d = await liveAll();
   box.replaceChildren();
-  jobs.forEach(j=>{
-    const mins = Math.round((Date.now()/1000 - j.started) / 60);
-    box.append(el("div",{class:"card row",
-        style:"padding:10px 12px;margin-bottom:10px;gap:12px;align-items:center"},
-      el("div",{style:"flex:1;min-width:0"},
-        el("div",{style:"font-weight:600"}, t("live.now", {cmd: j.cmd})
-          + (j.args||[]).join(" ")),
-        el("div",{class:"muted",style:"font-size:12px;margin-top:2px"},
-          t("live.details", {mins, lines: j.lines}))),
-      el("button",{class:"btn", onclick:()=>attachJob(j.id)}, t("live.show"))));
-  });
-  if (jobs.length) box.append(el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
-    t("live.route_warning")));
+  const mins = s => Math.max(0, Math.round((Date.now()/1000 - s) / 60));
+  const card = (title, sub, shown, go) => box.append(el("div",{class:"card row",
+      style:"padding:10px 12px;margin-bottom:10px;gap:12px;align-items:center"},
+    el("div",{style:"flex:1;min-width:0"},
+      el("div",{style:"font-weight:600"}, title),
+      el("div",{class:"muted",style:"font-size:12px;margin-top:2px"}, sub)),
+    shown ? el("span",{class:"chip ok"}, t("live.shown"))
+          : el("button",{class:"btn", onclick: go}, t("live.show"))));
+  if (d.cron) card(t("live.cron", {name: d.cron.name}),
+    t("live.cron_sub", {now: d.cron.now || "—", done: d.cron.done, total: d.cron.total}),
+    isShown("cron"), () => followCron());
+  (d.routes || []).forEach(r => card(
+    t("live.route", {name: r.name, title: r.title}) + (r.trigger === "cron" ? " · cron" : ""),
+    r.bar && r.bar.cmd ? t("live.route_sub", {cmd: r.bar.cmd, mins: mins(r.started)})
+                       : t("live.started", {mins: mins(r.started)}),
+    isShown("route", r.id), () => attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false)));
+  (d.jobs || []).forEach(j => card(
+    t("live.job", {name: j.name, cmd: (j.cmd + " " + (j.args||[]).join(" ")).trim()}),
+    t("live.details", {mins: mins(j.started), lines: j.lines}),
+    isShown("job", j.id), () => attachJob(j.id)));
+  if ((d.routes || []).length || (d.jobs || []).length)
+    box.append(el("div",{class:"muted",style:"font-size:12.5px;margin-bottom:10px"},
+      t("live.route_warning")));
+  return d;
+}
+// Консоль открыли, а своего вывода в ней нет — показываем то, что идёт: работу
+// выбранного проекта, иначе цепочку расписания, иначе любую.
+async function autoFollow(){
+  if (SHOWN) return;
+  const d = await liveAll();
+  if (SHOWN || S.view !== "console") return;
+  const mine = x => S.project && x.project === S.project.path;
+  const r = (d.routes || []).find(mine), j = (d.jobs || []).find(mine);
+  if (r) return attachRoute(r.id, {title: r.title, id: r.scId}, r.write, false);
+  if (j) return attachJob(j.id);
+  if (d.cron) return followCron();
+  if ((d.routes || [])[0]){ const x = d.routes[0];
+    return attachRoute(x.id, {title: x.title, id: x.scId}, x.write, false); }
+  if ((d.jobs || [])[0]) return attachJob(d.jobs[0].id);
+}
+// Поток цепочки расписания: заголовок каждого пункта, вывод его шагов, ожидания, итоги —
+// по всем проектам подряд, пока цепочка идёт.
+async function followCron(){
+  const me = ++FOLLOW;
+  SHOWN = {kind: "cron"};
+  if (S.view !== "console") show("console");
+  const out = $("#consoleOut"); out.innerHTML = "";
+  $("#consoleApply").innerHTML = ""; LAST_TASKS = []; drawTaskButton(); armStop(null);
+  drawLiveJobs();
+  let since = 0, stream = "", last = null;
+  for (;;){
+    const d = await api(`/api/cron/live?since=${since}`, {quiet:true});
+    if (me !== FOLLOW) return;
+    if (!d || d.error){ out.append(el("div",{class:"err"}, t("live.cron_lost"))); break; }
+    if (stream && d.stream && d.stream !== stream){ out.innerHTML = ""; since = 0; stream = d.stream; continue; }
+    stream = d.stream || stream;
+    if (d.cut) out.append(el("div",{class:"dim"}, t("live.cron_cut")));
+    (d.lines || []).forEach(l => consoleLine(out, l));
+    since = d.next;
+    watchScroll(out); stickToBottom(out);
+    const run = d.run;
+    if (!run){
+      // Цепочка кончилась: шапка — её имя и итог, а не последний «пройдено N из M» хода.
+      $("#consoleRc").textContent = stream ? t("live.cron_ended") : t("live.cron_none");
+      $("#consoleRc").className = "chip" + (stream ? " ok" : "");
+      $("#consoleCmd").textContent = last ? t("live.cron_head_end", {name: last}) : "cron";
+      break;
+    }
+    last = run.name;
+    const items = run.items || [];
+    const done = items.filter(i => !["pending", "running"].includes(i.status)).length;
+    $("#consoleCmd").textContent = t("live.cron_head", {name: run.name, done, total: items.length});
+    $("#consoleRc").textContent = t("route.running"); $("#consoleRc").className = "chip";
+    await new Promise(ok => setTimeout(ok, 1000));
+    if (me !== FOLLOW) return;
+  }
+  if (me === FOLLOW) SHOWN = null;
+  drawLiveJobs();
 }
 
 async function attachJob(id){
-  show("console");
+  const me = ++FOLLOW;
+  SHOWN = {kind: "job", id};
+  if (S.view !== "console") show("console");
   const out = $("#consoleOut"); out.innerHTML = "";
   $("#consoleCmd").textContent = t("job.attached", {id});
+  drawLiveJobs();
   let since = 0;
   for (;;){
     const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
-    if (!d || d.error) { $("#consoleRc").textContent = t("job.not_found"); return; }
+    if (me !== FOLLOW) return;
+    if (!d || d.error) { $("#consoleRc").textContent = t("job.not_found"); SHOWN = null; return; }
     (d.lines||[]).forEach(l=>consoleLine(out, l));
     watchScroll(out); stickToBottom(out); since = d.next;
     $("#consoleCmd").textContent = d.cmd + " " + (d.args||[]).join(" ");
     if (d.done){
       $("#consoleRc").textContent = t("run.rc", {rc: d.rc});
       $("#consoleRc").className = "chip " + (failed(d.rc) ? "bad" : d.rc === 1 ? "warn" : "ok");
+      SHOWN = null;
       drawLiveJobs();
       return;
     }
@@ -2608,7 +2691,9 @@ async function runRoute(sc, write, resume){
 }
 
 async function attachRoute(id, sc, write, resumed){
-  show("console");
+  const me = ++FOLLOW;
+  SHOWN = {kind: "route", id};
+  if (S.view !== "console") show("console");
   const out = $("#consoleOut");
   if (!resumed) out.innerHTML = "";
   $("#consoleApply").innerHTML = ""; PENDING_APPLY = null; LAST_TASKS = []; drawTaskButton();
@@ -2624,8 +2709,10 @@ async function attachRoute(id, sc, write, resumed){
   };
   const holder = el("div",{class:"warn", style:"margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap", hidden:""});
   let since = 0, waitShown = "";
+  drawLiveJobs();
   for (;;){
     const d = await api(`/api/route/live?id=${encodeURIComponent(id)}&since=${since}`, {quiet:true});
+    if (me !== FOLLOW) return leaveRoute(id);   // Консоль переключили на другое — поток молчит
     if (!d || d.error){
       out.append(el("div",{class:"err"}, t("step.job_lost")));
       break;
@@ -2662,10 +2749,19 @@ async function attachRoute(id, sc, write, resumed){
     } else if (!w.cmd && waitShown){ waitShown = ""; holder.hidden = true; }
     if (d.done){ finishRoute(d.result || {}, sc, write); break; }
     await new Promise(ok=>setTimeout(ok, 600));
+    if (me !== FOLLOW) return leaveRoute(id);
   }
   stop.hidden = true; stop.onclick = null;
   ROUTE = null;
+  SHOWN = null;
   drawRouteBar(null);
+}
+
+// Консоль ушла с маршрута на другой поток: маршрут идёт дальше на сервере, а «текущим» в
+// Консоли он больше не считается — иначе «Продолжить маршрут» и полоса хода думали бы, что
+// он на экране.
+function leaveRoute(id){
+  if (ROUTE && ROUTE.id === id){ ROUTE = null; drawRouteBar(null); }
 }
 
 /* Конец маршрута: шапка консоли, кнопки «Починить» по находкам, «Продолжить» и здоровье.
@@ -2771,8 +2867,11 @@ let CONSOLE_LINES = [];      // строки текущего прогона: и
 // Тишина одиночного задания: poll уходит в setTimeout и возвращается, а между вызовами состояние
 // надо держать снаружи. Сброс — на старте нового потока (since===0), см. SILENCE_MS.
 let POLL_LAST_OUT = 0, POLL_SILENT = false;
-async function poll(id, since, label){
+async function poll(id, since, label, me){
+  // Новый прогон забирает Консоль себе; прежний поток (другое задание, цепочка) замолкает.
+  if (me == null){ me = ++FOLLOW; SHOWN = {kind: "job", id}; }
   const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
+  if (me !== FOLLOW) return;
   const out = $("#consoleOut");
   // Кнопка «Прервать» живёт ровно столько, сколько идёт прогон. Без неё запрет на
   // перезапуск панели при работающем задании превращается в тупик: ни остановить,
@@ -2813,7 +2912,8 @@ async function poll(id, since, label){
     POLL_SILENT = true;
     out.append(el("div",{class:"warn"}, t("step.silent")));
   }
-  if (!d.done) return setTimeout(()=>poll(id, d.next, label), 450);
+  if (!d.done) return setTimeout(()=>poll(id, d.next, label, me), 450);
+  SHOWN = null;
   const rc = d.rc, mark = rcMark(rc);
   const badge = $("#consoleRc");
   badge.textContent = mark.what + t("poll.rc", {rc});

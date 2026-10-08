@@ -169,7 +169,6 @@
   "run.preview": "Preview",
   "run.go": "Run",
   "run.close": "Close",
-  "live.now": "Running right now: {cmd} ",
   "live.details": "running {mins} min · output lines {lines} · started by this panel",
   "live.show": "Show the output",
   "live.route_warning": "You can close the page: commands and routines run in the panel process and finish on their own, and the console reattaches to a running routine next time you open it.",
@@ -816,5 +815,18 @@
   "view.log_tail": "last {n} lines of {total}",
   "view.lines": "lines: {n}",
   "view.text_count": "lines: {lines} · words: {words}",
-  "boot.reaped": "The panel took down abandoned processes of the previous one ({n}): {list}. Their output went to a closed panel — nobody would read the answer, while they held a model gateway slot and the base lock."
+  "boot.reaped": "The panel took down abandoned processes of the previous one ({n}): {list}. Their output went to a closed panel — nobody would read the answer, while they held a model gateway slot and the base lock.",
+  "live.shown": "shown",
+  "live.cron": "Cron: {name}",
+  "live.cron_sub": "now: {now} · items done {done} of {total}",
+  "live.route": "{name}: route “{title}”",
+  "live.route_sub": "step: {cmd} · running {mins} min",
+  "live.started": "running {mins} min",
+  "live.job": "{name}: {cmd}",
+  "live.cron_head": "cron: {name} · items done {done} of {total}",
+  "live.cron_ended": "the chain has ended",
+  "live.cron_none": "no chain is running",
+  "live.cron_lost": "The chain stream was not read — was the panel restarted?",
+  "live.cron_cut": "… the start of the chain left memory — showing the tail",
+  "live.cron_head_end": "cron: {name} — item results are in the output"
 }

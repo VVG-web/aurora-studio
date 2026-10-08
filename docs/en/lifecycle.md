@@ -133,6 +133,10 @@ but the panel itself must be running. Rules:
   - the connection is fine, and the step has been silent for more than an hour — longer than any model request.
 
   Long model thinking with a live connection is left alone;
+- **what runs — in the Console.** Above it are the chain, the routes and the commands of all projects; "Show"
+  switches the output. The chain stream — a header for every item with its project, the output of its steps, waits and
+  results — runs through all projects in turn. The Console, opened without its own output, attaches by itself to what
+  is running;
 - **the "bot" step** — a project's bot or "all enabled bots of the project". With "all projects" the chain runs the
   bots of all projects in turn, by the same project-as-unit rules as routes.
 - a time missed while the panel was down is caught up no later than 15 minutes, otherwise the run is recorded as
