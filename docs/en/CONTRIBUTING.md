@@ -30,6 +30,25 @@ modules, panel sections and skins, and how to release versions. Русская �
 - do not create your own artifact types and top-level folders in a project — it is a change to the whole kit
   ([decisions](roadmap.md#why-the-folder-structure-is-fixed)).
 
+## Feedback and the board
+
+Bugs and ideas are accepted as issues: **New issue** → "Bug" or "Feature request" (the forms live in
+`.github/ISSUE_TEMPLATE/`; blank issues are off). The forms ask for the kit version, OS and steps to reproduce, and remind
+the reporter not to post customer data — the same rule as for commits.
+
+All issues are collected on the project's kanban board (GitHub Projects), field **Status**:
+
+| Column | Meaning |
+|---|---|
+| New | arrived, not triaged yet |
+| Needs details | the reporter was asked for a reproduction or context |
+| Accepted | confirmed and will be done; the order inside the column is the queue |
+| In progress | there is a branch or a pull request |
+| Done | fixed and released, or closed with a reason (`not planned`, `duplicate`) |
+
+A duplicate is closed with a link to the original issue, a rejected idea with the reason: the reporter needs to
+understand "why not" more than they need silence.
+
 ## The development loop
 
 ```mermaid
