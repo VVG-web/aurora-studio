@@ -1,0 +1,109 @@
+name: Баг / Bug report
+description: Что-то работает не так, как задумано / Something does not work as intended
+title: "[Баг] "
+type: Bug
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что написали! Чем точнее описание, тем быстрее мы воспроизведём ошибку.
+        Thank you for reporting! The more precise the description, the faster we can reproduce it.
+
+        **Не публикуйте** имена клиентов, адреса контуров Jira/Confluence, токены, выгрузки и закрытые страницы —
+        кит живёт в открытом git. Замените их на `<проект>`, `<контур>`, `***`.
+        **Do not post** customer names, Jira/Confluence addresses, tokens, exports or private pages.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Где проявилось / Area
+      options:
+        - Панель управления (cockpit)
+        - Движок и команды (aurora.py, scripts/)
+        - Установщик и обновление (aurora.py new, kit:update)
+        - Навыки ассистента (skills/)
+        - Коннекторы (Confluence, Jira, web)
+        - Git-провайдеры (GitHub, GitLab, Bitbucket, Gitea)
+        - Шаблоны и промпты (scaffold/, templates/)
+        - Документация и Wiki
+        - Не знаю / Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Что произошло / What happened
+      description: Что вы увидели и чем это отличается от ожидаемого.
+      placeholder: "Например: «Здоровье» показывает красный статус у карточки, хотя все задачи в доверенном статусе."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения / Steps to reproduce
+      description: Команда или раздел панели, по шагам — так, чтобы другой человек повторил ошибку.
+      placeholder: |
+        1. python3 aurora.py new ...
+        2. В панели открыть «Cron»
+        3. Нажать ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение / Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия кита / Kit version
+      description: В нижней строке панели («cockpit … · kit X.Y.Z») или в файле `VERSION`.
+      placeholder: "1.167.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Операционная система / OS
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Другая / Other
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Версия Python / Python version
+      description: Вывод `python3 --version` (на Windows — `python --version`). Поддерживается 3.9+.
+      placeholder: "3.12.4"
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Раньше работало? / Is it a regression?
+      options:
+        - Не знаю / Don't know
+        - Да, на более ранней версии (укажите в «Дополнительно»)
+        - Нет, так было всегда
+  - type: textarea
+    id: logs
+    attributes:
+      label: Вывод команды или лог / Output or log
+      description: Текст из консоли панели или терминала. Скриншоты — только если текст скопировать нельзя.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительно / Anything else
+      description: Скриншоты, обходной путь, версия, на которой ошибки не было.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Перед отправкой / Before submitting
+      options:
+        - label: Я поискал в открытых и закрытых issues — такого обращения ещё нет / I searched existing issues
+          required: true
+        - label: В тексте, логах и скриншотах нет имён клиентов, адресов контуров и токенов / No customer names, internal addresses or tokens
+          required: true
