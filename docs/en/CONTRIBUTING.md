@@ -11,7 +11,14 @@ modules, panel sections and skins, and how to release versions. Русская �
 - examples and numbers in documents are anonymised; live data and private names stay in `local/` and `Development/` (both are
   closed by `.gitignore`);
 - the `commit-msg` hook installed by `kit:hooks` in the kit itself compares a commit message with the list
-  `local/private_terms.txt` and does not let internal names into history. It is never bypassed — `--no-verify` does not suit it.
+  `local/private_terms.txt` and does not let internal names into history. It is never bypassed — `--no-verify` does not suit it;
+- a commit's author and committer are people: no model or model vendor name, no bot, no `Co-Authored-By` trailer or
+  "Generated with …" line naming them. The `authors` check in engine-tests (`.github/scripts/check_authors.py`) turns red on
+  such a commit in a PR and keeps the release from being built; its output has a ready command that rewrites the author.
+  Workflows that commit on their own sign the commit with the person who started the run. An assistant in a cloud session
+  signs commits with its own name: in the environment settings set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
+  `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` to your GitHub login and `<id>+<login>@users.noreply.github.com`.
+  The assistant adds no signature of its own to commits and PRs: the repository's `.claude/settings.json` turns it off.
 
 ## What is welcome
 

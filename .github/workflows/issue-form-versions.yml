@@ -7,8 +7,9 @@ name: issue-form-versions
 # Срабатывает после изменения CHANGELOG.md в master и вручную (Actions → issue-form-versions →
 # Run workflow). Список не изменился — коммита нет.
 #
-# Коммит от имени github-actions[bot] не запускает другие workflow (так устроен токен), поэтому
-# проверки и выпуск по нему не стартуют; правится только файл формы.
+# Автор коммита — человек, запустивший прогон (авторы в ките — только люди). Пуш идёт с токеном
+# workflow, а такой пуш не запускает другие workflow, поэтому проверки и выпуск по нему не
+# стартуют; правится только файл формы.
 #
 # Если master защищён и прямой пуш запрещён, шаг пуша покраснеет, а формы останутся со старым
 # списком — они продолжат работать, просто «old» будет охватывать больше версий.
@@ -44,16 +45,27 @@ jobs:
         env:
           BRANCH: ${{ github.event.repository.default_branch }}
           SHA: ${{ github.sha }}
+          # Автор коммита — человек, запустивший прогон (его push или Run workflow), а не бот:
+          # авторы в ките — только люди. Запустил бот — автором ставится владелец репозитория.
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          OWNER: ${{ github.repository_owner }}
+          OWNER_ID: ${{ github.repository_owner_id }}
         run: |
           set -euo pipefail
+          case "$ACTOR" in *"[bot]") ACTOR="$OWNER"; ACTOR_ID="$OWNER_ID" ;; esac
+          # Для всего шага, а не только для commit: rebase при повторной попытке тоже
+          # подписывает коммит, и без этого committer'ом встал бы пользователь машины CI.
+          export GIT_AUTHOR_NAME="$ACTOR" GIT_COMMITTER_NAME="$ACTOR"
+          export GIT_AUTHOR_EMAIL="${ACTOR_ID}+${ACTOR}@users.noreply.github.com"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
           git add .github/ISSUE_TEMPLATE
           if git diff --cached --quiet; then
             echo "Список версий актуален — коммитить нечего."
             echo "### Список версий в формах актуален" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit --quiet -m "issues: версии кита в формах из ${SHA:0:7}"
+          git commit --quiet -m "issues: версии кита в формах из ${SHA:0:7}"
           # Пока шёл прогон, в master мог лечь другой коммит: подтягиваем и пробуем снова.
           for attempt in 1 2 3; do
             git pull --rebase --quiet origin "$BRANCH"

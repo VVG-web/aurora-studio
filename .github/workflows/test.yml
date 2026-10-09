@@ -25,6 +25,27 @@ jobs:
         run: |
           python3 -m pip install --quiet ruff
           ruff check --select F401,F841,B023 --output-format github scripts cockpit reports aurora.py
+  authors:
+    # Автор коммита — только человек (docs/CONTRIBUTING.md): ни имени модели, ни бота, ни
+    # трейлера Co-Authored-By с ними. Ассистент в облачной сессии подписывает коммиты своим
+    # именем, и в октябре 2026 так в master попали три коммита. Красная проверка видна в PR до
+    # слияния, а на master не даёт собраться выпуску (release ждёт зелёный engine-tests).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Commit authors are people
+        env:
+          # У PR — его база и вершина, у push — прежняя и новая вершина ветки.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SUGGEST_LOGIN: ${{ github.event.pull_request.user.login || github.actor }}
+          SUGGEST_ID: ${{ github.event.pull_request.user.id || github.actor_id }}
+          OWNER: ${{ github.repository_owner }}
+          OWNER_ID: ${{ github.repository_owner_id }}
+        run: python3 .github/scripts/check_authors.py "$BASE" "$HEAD_SHA"
   oldest-python:
     # README обещает Python 3.9+, а системный Python macOS — 3.9. Строка, понятная только
     # 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на нём целиком с 1.112.0
