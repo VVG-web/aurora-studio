@@ -36,6 +36,12 @@ Bugs and ideas are accepted as issues: **New issue** → "Bug" or "Feature reque
 `.github/ISSUE_TEMPLATE/`; blank issues are off). The forms ask for the kit version, OS and steps to reproduce, and remind
 the reporter not to post customer data — the same rule as for commits.
 
+Both forms require the operating system (Windows, macOS, Linux) and the kit version: the five latest versions from
+`CHANGELOG.md` plus `old` for everything older. GitHub cannot pull dropdown options by itself, so after `CHANGELOG.md`
+changes in `master` the `issue-form-versions` workflow rewrites the list (the script is
+`.github/scripts/issue_form_versions.py`). The lines between `# versions:begin` and `# versions:end` in the forms are not
+edited by hand.
+
 All issues are collected on the project's kanban board (GitHub Projects), field **Status**:
 
 | Column | Meaning |

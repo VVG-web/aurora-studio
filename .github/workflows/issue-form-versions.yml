@@ -1,0 +1,68 @@
+name: issue-form-versions
+# Формы issue просят выбрать версию кита из списка: пять последних и «old». GitHub не умеет
+# подтягивать варианты сам, поэтому список лежит в самих формах (.github/ISSUE_TEMPLATE/*.yml)
+# между строками `# versions:begin` и `# versions:end`, а этот workflow переписывает его из
+# CHANGELOG.md после каждого выпуска. Руками этот список не правят — следующий запуск его заменит.
+#
+# Срабатывает после изменения CHANGELOG.md в master и вручную (Actions → issue-form-versions →
+# Run workflow). Список не изменился — коммита нет.
+#
+# Коммит от имени github-actions[bot] не запускает другие workflow (так устроен токен), поэтому
+# проверки и выпуск по нему не стартуют; правится только файл формы.
+#
+# Если master защищён и прямой пуш запрещён, шаг пуша покраснеет, а формы останутся со старым
+# списком — они продолжат работать, просто «old» будет охватывать больше версий.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "CHANGELOG.md"
+      - ".github/scripts/issue_form_versions.py"
+      - ".github/workflows/issue-form-versions.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-form-versions
+  cancel-in-progress: false
+
+jobs:
+  update:
+    # Только default-ветка: с чужой ветки пушить в master этот workflow не должен.
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Переписать списки версий в формах
+        run: python3 .github/scripts/issue_form_versions.py
+
+      - name: Закоммитить, если список изменился
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git add .github/ISSUE_TEMPLATE
+          if git diff --cached --quiet; then
+            echo "Список версий актуален — коммитить нечего."
+            echo "### Список версий в формах актуален" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "issues: версии кита в формах из ${SHA:0:7}"
+          # Пока шёл прогон, в master мог лечь другой коммит: подтягиваем и пробуем снова.
+          for attempt in 1 2 3; do
+            git pull --rebase --quiet origin "$BRANCH"
+            if git push --quiet origin "HEAD:${BRANCH}"; then
+              echo "### Список версий в формах обновлён из ${SHA:0:7}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Пуш не прошёл (попытка $attempt из 3)"
+            sleep $((attempt * 5))
+          done
+          echo "::error::Не удалось отправить обновлённый список версий в $BRANCH"
+          exit 1
