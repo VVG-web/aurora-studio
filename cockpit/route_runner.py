@@ -772,6 +772,23 @@ class RouteRun:
                          if x["rc"] == 1 and x.get("tail")]}
         return self._close(res)
 
+    def safe_run(self) -> dict:
+        """`run()`, которое всегда заканчивается записью, а не исключением. Кнопка и расписание
+        вызывают его, а не `run()`: непойманное исключение оставляло маршрут «идущим»
+        (`done_flag` ложный, `meta.json` в статусе running), и кнопка «Пройти» отвечала «в
+        проекте уже идёт маршрут» до перезапуска панели."""
+        try:
+            return self.run()
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "reason": "failed", "failed": "", "note": f"{type(e).__name__}: {e}",
+                   "steps": self.done, "lines": [], "run_id": self.run_id, "found": []}
+            try:
+                self.say("err", f"■ маршрут упал: {type(e).__name__}: {e}")
+                return self._close(res)
+            except Exception:  # noqa: BLE001 — не записалось: хотя бы снять признак «идёт»
+                self.result, self.done_flag = res, True
+                return res
+
     def _close(self, res: dict) -> dict:
         """Конец прогона: итог в `meta.json`, журнал закрыт, ожидающие увидят `done`."""
         self.bar, self.wait, self.job = {}, {}, ""

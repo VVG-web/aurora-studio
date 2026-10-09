@@ -47,6 +47,7 @@ import re
 import secrets
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta
 
 import route_runner as RR
@@ -64,6 +65,7 @@ BUSY_POLL_S = 30
 KEEP_RUNS = 60                    # столько прогонов цепочек храним в истории
 OWNER_STALE = 5 * 60              # владелец расписания без отметки дольше — считается ушедшим
 STREAM_KEEP = 5000                # строк потока идущей цепочки для Консоли (1.167.0)
+FINAL_SAVE_PAUSE = 1.0            # пауза перед второй попыткой записать итог прогона, с
 LOG_KEEP = 400                    # строк журнала на шаг цепочки
 MAX_STEPS = 50
 # Итоги шага, после которых проект откладывается: дальше его шаги смысла не имеют.
@@ -138,7 +140,11 @@ def _write_json(path: str, data) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    try:
+        from aurora_common import replace_file
+    except ImportError:                       # панель без движка рядом — подмена без повторов
+        replace_file = os.replace
+    replace_file(tmp, path)                   # на Windows занятый читателем файл — с повторами
 
 
 def now_iso(when: datetime | None = None) -> str:
@@ -443,6 +449,7 @@ class Scheduler:
         self.lock = threading.RLock()
         self.queue = []                      # [(task_id, trigger, resume)]
         self.current = None                  # прогон, который идёт
+        self.run_thread = None               # поток идущего прогона: сторож «заклинило» смотрит на него
         self.stop_event = threading.Event()
         self.thread = None
         # Расписание и цепочки ведёт одна панель на машину: история и задания лежат в
@@ -522,6 +529,7 @@ class Scheduler:
             self.recover()                   # прежний владелец ушёл — его цепочки наши
         elif self.claimed:
             self._beat()
+        self._unwedge()
         now = now or datetime.now()
         tasks = load_tasks()
         fired = _read_json(state_file(), {}).get("fired", {})
@@ -574,18 +582,56 @@ class Scheduler:
         return {"ok": True}
 
     def _next(self) -> None:
+        while True:
+            with self.lock:
+                if self.current or not self.queue:
+                    return
+                task_id, trigger, resume = self.queue.pop(0)
+                task = self.find(task_id)
+                if not task:
+                    return
+                try:
+                    run = self._new_run(task, trigger, resume)
+                except Exception as e:  # noqa: BLE001 — сбой записи не должен застрять в очереди
+                    # Прогон не создан (диск, права): это задание пропущено, остальные идут.
+                    print(f"cron: прогон «{task_id}» не создан — {type(e).__name__}: {e}",
+                          flush=True)
+                    continue
+                self.current = run
+                self.stop_event = threading.Event()
+                thread = threading.Thread(target=self._run, args=(task, run), daemon=True,
+                                          name="aurora-cron-run")
+                self.run_thread = thread
+                thread.start()          # под замком: сторож не примет ещё не начатый поток за мёртвый
+            return
+
+    def _save(self, run: dict) -> bool:
+        """Записать прогон на диск, не уронив цепочку: запись — отчёт о работе, а не сама
+        работа. Сбой (диск полон, файл занят читателем) уходит в Консоль и в поле
+        `save_error` прогона, а цепочка идёт дальше. → записалось ли."""
+        try:
+            save_run(run)
+            return True
+        except Exception as e:  # noqa: BLE001
+            run["save_error"] = f"{type(e).__name__}: {e}"
+            self.say(f"⚠ запись прогона не удалась ({run['save_error']}) — цепочка идёт дальше")
+            return False
+
+    def _unwedge(self) -> None:
+        """Сторож: прогон числится идущим, а его потока уже нет — освободить планировщик.
+        Штатно `_run` сам снимает `current` в `finally`; сторож — страховка на случай, когда
+        поток умер мимо него, иначе все следующие цепочки молча встали бы до перезапуска."""
         with self.lock:
-            if self.current or not self.queue:
+            thread, cur = self.run_thread, self.current
+            if not cur or thread is None or thread.is_alive():
                 return
-            task_id, trigger, resume = self.queue.pop(0)
-            task = self.find(task_id)
-            if not task:
-                return
-            run = self._new_run(task, trigger, resume)
-            self.current = run
-            self.stop_event = threading.Event()
-        threading.Thread(target=self._run, args=(task, run), daemon=True,
-                         name="aurora-cron-run").start()
+            self.current = None
+        print(f"cron: прогон {cur.get('id')} остался «идущим» без потока — снят", flush=True)
+        cur["status"] = "failed" if cur.get("status") == "running" else cur.get("status")
+        cur["error"] = cur.get("error") or "run_thread_lost"
+        cur["finished"] = cur.get("finished") or now_iso()
+        self._save(cur)
+        self._next()
 
     def find(self, task_id: str) -> dict | None:
         """Задание по номеру: из расписания или бот проекта."""
@@ -653,14 +699,14 @@ class Scheduler:
     def _run(self, task: dict, run: dict) -> None:
         ck = self.ck
         mark = "cron-" + run["id"]
-        ck.mark_running(mark, "cron: " + task["name"], "", True)
-        with self.lock:
-            self.stream, self.stream_base, self.stream_run = [], 0, run["id"]
-        self.say(f"▶ цепочка «{task['name']}» · пунктов: {len(run['items'])}"
-                 + (" · продолжение после перезапуска панели" if run.get("resumes") else ""))
-        lang = task.get("lang") or ck.DEFAULT_LANG
         halted = ""
         try:
+            ck.mark_running(mark, "cron: " + task["name"], "", True)
+            with self.lock:
+                self.stream, self.stream_base, self.stream_run = [], 0, run["id"]
+            self.say(f"▶ цепочка «{task['name']}» · пунктов: {len(run['items'])}"
+                     + (" · продолжение после перезапуска панели" if run.get("resumes") else ""))
+            lang = task.get("lang") or ck.DEFAULT_LANG
             halted = self._pass(task, run, lang, run["items"], halted)
             # Отложенные проекты — ещё раз, когда остальные готовы: провал бывает от
             # занятого шлюза или обрыва связи, а через час их уже нет. Один раз: второй
@@ -672,7 +718,7 @@ class Scheduler:
                     if it["project"] in retry and it["status"] in BAD + ("deferred",):
                         it["first"] = {"status": it["status"], "note": it.get("note", "")}
                         it.update(status="pending", note="", retry=True)
-                save_run(run)
+                self._save(run)
                 halted = self._pass(task, run, lang, run["items"], halted, retry=True)
             st = [it["status"] for it in run["items"]]
             run["status"] = ("stopped" if halted == "stopped"
@@ -681,12 +727,22 @@ class Scheduler:
         except Exception as e:  # noqa: BLE001 — прогон должен закончиться записью, а не тишиной
             run["status"], run["error"] = "failed", f"{type(e).__name__}: {e}"
         finally:
-            run["finished"] = now_iso()
-            save_run(run)
-            ck.mark_running(mark, "", "", False)
-            with self.lock:
-                self.current = None
-            self._next()
+            # Что бы ни случилось с записью итога, планировщик освобождается всегда: сбой
+            # `save_run` в этом месте раньше оставлял `current` занятым, и все следующие
+            # цепочки молча не стартовали до перезапуска панели. Лучше потерять запись итога,
+            # чем ночь работы.
+            try:
+                run["finished"] = now_iso()
+                if not self._save(run):
+                    time.sleep(FINAL_SAVE_PAUSE)          # занятость проходит за секунды
+                    self._save(run)
+            finally:
+                try:
+                    ck.mark_running(mark, "", "", False)
+                finally:
+                    with self.lock:
+                        self.current = None
+                    self._next()
 
     def _pass(self, task: dict, run: dict, lang: str, items: list, halted: str,
               retry: bool = False) -> str:
@@ -707,10 +763,19 @@ class Scheduler:
                 # Повтор не откладывает дальше: второй провал проекта — его итог.
                 it.update(status="skipped" if retry else "deferred",
                           note="after_retry_failure" if retry else "after_failure")
-                save_run(run)
+                self._save(run)
                 continue
-            self._item(task, run, it, lang)
-            save_run(run)
+            try:
+                self._item(task, run, it, lang)
+            except Exception as e:  # noqa: BLE001 — сбой шага — это сбой проекта, а не цепочки
+                # Непредвиденное исключение (конструктор маршрута, версия движка, запись) не
+                # вправе оборвать цепочку: шаг помечается упавшим с причиной и трассировкой,
+                # остальное решает правило «проект — единица цепочки» ниже.
+                tail = traceback.format_exc().strip().splitlines()[-6:]
+                it.setdefault("log", []).extend(tail)
+                self.say(f"✖ шаг упал с исключением: {type(e).__name__}: {e}")
+                it.update(status="failed", note=f"{type(e).__name__}: {e}", finished=now_iso())
+            self._save(run)
             self.say(f"■ {self.item_label(it)}: {it['status']}"
                      + (f" ({it['note']})" if it.get("note") else ""))
             if it["status"] == "stopped":
@@ -723,7 +788,7 @@ class Scheduler:
                     if not retry:              # к проекту вернёмся в конце цепочки
                         it.update(status="deferred", note=it.get("note") or it["status"],
                                   failed_as=it["status"])
-                        save_run(run)
+                        self._save(run)
         return halted
 
     def _item(self, task: dict, run: dict, it: dict, lang: str) -> None:
@@ -738,22 +803,22 @@ class Scheduler:
             # другого потока — значит ловить его посреди изменения. Чаще раза в две секунды
             # писать незачем.
             if time.time() - run.get("beat", 0) > 2:
-                save_run(run)
+                self._save(run)
 
         def on_job(job_id: str, cmd: str) -> None:
             it["job"] = job_id
             it["jobs"].append({"cmd": cmd, "job": job_id})
-            save_run(run)
+            self._save(run)
 
         def on_step(sig: str, rc: int) -> None:
             if it["jobs"]:
                 it["jobs"][-1]["rc"] = rc
             if rc == 0 and sig not in it["done"]:
                 it["done"].append(sig)
-            save_run(run)
+            self._save(run)
 
         it.update(status="running", started=now_iso(), note="")
-        save_run(run)
+        self._save(run)
         self.say("")
         self.say(f"━━ {self.item_label(it)} ━━")
         project = it["project"]
@@ -772,7 +837,7 @@ class Scheduler:
                                 resume=resume, trigger="cron", parent=run["id"])
             if hasattr(ck, "route_register"):
                 ck.route_register(route, project)
-            res = route.run()
+            res = route.safe_run()
             it["title"] = sc["title"]
             it["run_id"] = res.get("run_id", "")
             status = {"passed": "passed", "stall": "stall", "offline": "offline",

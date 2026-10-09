@@ -643,3 +643,196 @@ def test_decision_records_follow_the_madr_format(tmp: Path):
         low = path.read_text(encoding="utf-8").lower()
         assert "co-authored" not in low and "claude" not in low, path.name
     assert "decisions/README.md" in (KIT / "docs" / "README.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- Cron: сбой не заклинивает цепочку
+
+def _cron_ck():
+    """Минимальная «панель» для планировщика: проекты свободны, движок не отстаёт."""
+    class Ck:
+        DEFAULT_LANG = "ru"
+
+        def mark_running(self, *a):
+            pass
+
+        def project_activity(self, project):
+            return {}
+
+        def version_gap(self, project):
+            return ""
+    return Ck()
+
+
+def _wait_idle(sch, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        with sch.lock:
+            if not sch.current and not sch.queue:
+                break
+        time.sleep(0.02)
+    t = getattr(sch, "run_thread", None)
+    if t is not None:
+        t.join(5)
+
+
+@test
+def test_cron_step_exception_defers_the_project_not_the_chain(tmp: Path):
+    """Исключение в шаге одного проекта (не штатный отказ, а непойманное) помечает пункт
+    упавшим с причиной и не обрывает цепочку: шаг другого проекта идёт."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        import route_runner as RR
+        projects = [{"path": "/p/a", "name": "A"}, {"path": "/p/b", "name": "B"}]
+        CRON.save_tasks([{"id": "t1", "name": "цепочка", "order": "projects", "on_fail": "next",
+                          "steps": [{"kind": "cmd", "project": CRON.ALL, "cmd": "kb:x", "args": []}]}])
+        calls = []
+
+        def fake_job(ck, project, cmd, args, **kw):
+            calls.append(project)
+            if project == "/p/a":
+                raise RuntimeError("взрыв в шаге")
+            return {"rc": 0, "lines": [], "run_id": "r"}
+        saved = RR.run_job
+        RR.run_job = fake_job
+        try:
+            sch = CRON.Scheduler(_cron_ck(), lambda: projects)
+            assert sch.enqueue("t1") == {"ok": True}
+            _wait_idle(sch)
+        finally:
+            RR.run_job = saved
+        got = CRON.list_runs(1)[0]
+        by = {it["project"]: it for it in got["items"]}
+        assert by["/p/a"]["status"] == "failed" and "взрыв в шаге" in by["/p/a"]["note"], by["/p/a"]
+        assert any("RuntimeError" in line for line in by["/p/a"]["log"]), "трассировки нет в журнале шага"
+        assert by["/p/b"]["status"] == "passed", "исключение в шаге оборвало чужой проект"
+        assert got["status"] == "failed" and "/p/b" in calls and sch.current is None
+    finally:
+        restore()
+
+
+@test
+def test_cron_final_save_failure_does_not_wedge_the_scheduler(tmp: Path):
+    """Запись итога прогона в `finally` падает (диск, занятый файл): планировщик всё равно
+    освобождается и следующая цепочка стартует. Раньше `current` оставался занятым навсегда."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        import route_runner as RR
+        projects = [{"path": "/p/a", "name": "A"}]
+        step = [{"kind": "cmd", "project": "/p/a", "cmd": "kb:x", "args": []}]
+        CRON.save_tasks([{"id": "t1", "name": "первая", "order": "projects", "on_fail": "next", "steps": step},
+                         {"id": "t2", "name": "вторая", "order": "projects", "on_fail": "next", "steps": step}])
+        ran = []
+        orig_save, orig_job = CRON.save_run, RR.run_job
+        orig_pause = CRON.FINAL_SAVE_PAUSE
+
+        def broken_save(run):
+            if run.get("finished"):
+                raise OSError("диск полон")
+            orig_save(run)
+
+        def fake_job(ck, project, cmd, args, **kw):
+            ran.append(project)
+            return {"rc": 0, "lines": [], "run_id": "r"}
+        CRON.save_run, RR.run_job, CRON.FINAL_SAVE_PAUSE = broken_save, fake_job, 0
+        try:
+            sch = CRON.Scheduler(_cron_ck(), lambda: projects)
+            assert sch.enqueue("t1")["ok"] and sch.enqueue("t2")["ok"]
+            _wait_idle(sch)
+        finally:
+            CRON.save_run, RR.run_job, CRON.FINAL_SAVE_PAUSE = orig_save, orig_job, orig_pause
+        assert sch.current is None and not sch.queue, "планировщик заклинило"
+        assert len(ran) == 2, f"вторая цепочка не стартовала: {ran}"
+        assert any("запись прогона не удалась" in line for line in sch.stream), sch.stream[-5:]
+    finally:
+        restore()
+
+
+@test
+def test_cron_watchdog_frees_a_run_whose_thread_died(tmp: Path):
+    """Страховка: прогон числится идущим, а потока нет — сторож освобождает планировщик и
+    пишет в историю, что прогон потерян; живой поток он не трогает."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        sch = CRON.Scheduler(_cron_ck(), lambda: [])
+        run = {"id": "20261009-100000-aaaa", "task": "t1", "name": "x", "status": "running",
+               "started": CRON.now_iso(), "finished": "", "items": []}
+        CRON.save_run(run)
+        gate = threading.Event()
+        alive = threading.Thread(target=gate.wait, daemon=True)
+        alive.start()
+        sch.current, sch.run_thread = run, alive
+        sch._unwedge()
+        assert sch.current is run, "сторож снял прогон с живым потоком"
+        gate.set()
+        alive.join(5)
+        sch._unwedge()
+        assert sch.current is None
+        saved = CRON._read_json(CRON.run_path(run["id"]), {})
+        assert saved["status"] == "failed" and saved["error"] == "run_thread_lost", saved
+    finally:
+        restore()
+
+
+@test
+def test_route_safe_run_always_clears_the_running_flag(tmp: Path):
+    """Исключение в `run()` маршрута закрывает прогон записью (`failed`), а если не пишется и
+    закрытие — всё равно снимает признак «идёт», иначе кнопка «Пройти» отказывает до перезапуска."""
+    _path()
+    import route_runner as RR
+
+    class Fake:
+        done, run_id, result, done_flag = 3, "r1", None, False
+
+        def __init__(self, close_ok):
+            self.close_ok, self.said = close_ok, []
+
+        def run(self):
+            raise ValueError("сбой посреди маршрута")
+
+        def say(self, kind, text):
+            self.said.append(text)
+
+        def _close(self, res):
+            if not self.close_ok:
+                raise OSError("meta.json не пишется")
+            self.done_flag = True
+            return res
+    for ok in (True, False):
+        f = Fake(ok)
+        res = RR.RouteRun.safe_run(f)
+        assert res["reason"] == "failed" and "сбой посреди маршрута" in res["note"], res
+        assert f.done_flag is True, f"признак «идёт» остался (закрытие пишется: {ok})"
+
+
+@test
+def test_scheduled_routes_are_pruned_from_the_registry(tmp: Path):
+    """Маршруты, запущенные расписанием, не копятся в реестре панели: законченных остаётся не
+    больше десяти, идущие не трогаются."""
+    _path()
+    import aurora_cockpit as ck
+
+    class R:
+        def __init__(self, n, done):
+            self.run_id, self.done_flag = f"id{n}", done
+    saved = dict(ck.ROUTES)
+    try:
+        ck.ROUTES.clear()
+        for n in range(15):
+            ck.route_register(R(n, True), "/p")
+            time.sleep(0.001)
+        live = R(99, False)
+        ck.route_register(live, "/p")
+        done = [r for r in ck.ROUTES.values() if r["run"].done_flag]
+        assert len(done) <= 10 and "id99" in ck.ROUTES, (len(done), list(ck.ROUTES))
+    finally:
+        ck.ROUTES.clear()
+        ck.ROUTES.update(saved)

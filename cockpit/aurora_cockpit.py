@@ -5415,6 +5415,14 @@ ROUTES: dict = {}
 ROUTES_LOCK = threading.Lock()
 
 
+def _prune_routes() -> None:
+    """Законченные маршруты держим, пока страница может их дочитать; старые — прочь.
+    Вызывать под `ROUTES_LOCK`."""
+    done = sorted((r for r in ROUTES.values() if r["run"].done_flag), key=lambda r: r["started"])
+    for r in done[:-10]:
+        ROUTES.pop(r["id"], None)
+
+
 def route_start(project: str, sc_id: str, write: bool, resume: dict | None = None,
                 lang: str = DEFAULT_LANG) -> dict:
     """Начать маршрут в процессе панели. → {route: id} или {error}.
@@ -5438,20 +5446,12 @@ def route_start(project: str, sc_id: str, write: bool, resume: dict | None = Non
     def worker():
         mark_running(mark, sc["title"], project, True)
         try:
-            run.run()
-        except Exception as e:  # noqa: BLE001 — маршрут обязан кончиться записью, а не тишиной
-            run.say("err", f"■ маршрут упал: {type(e).__name__}: {e}")
-            run._close({"ok": False, "reason": "failed", "failed": "", "note": str(e),
-                        "steps": run.done, "lines": [], "run_id": rid, "found": []})
+            run.safe_run()          # исключение закрывает прогон записью, а не тишиной
         finally:
             mark_running(mark, "", project, False)
     with ROUTES_LOCK:
         ROUTES[rid] = {"id": rid, "project": project, "run": run, "started": time.time()}
-        # Законченные маршруты держим, пока страница может их дочитать; старые — прочь.
-        done = sorted((r for r in ROUTES.values() if r["run"].done_flag),
-                      key=lambda r: r["started"])
-        for r in done[:-10]:
-            ROUTES.pop(r["id"], None)
+        _prune_routes()
     threading.Thread(target=worker, daemon=True, name="aurora-route").start()
     return {"route": rid}
 
@@ -5462,6 +5462,7 @@ def route_register(run, project: str) -> None:
     with ROUTES_LOCK:
         ROUTES[run.run_id] = {"id": run.run_id, "project": project, "run": run,
                               "started": time.time()}
+        _prune_routes()         # маршруты расписания копились до перезапуска панели
 
 
 # Пульс шага для Консоли (1.170.0). Ответ модели приходит целиком, и между ответами шаг

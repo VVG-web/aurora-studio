@@ -126,6 +126,12 @@ but the panel itself must be running. Rules:
   not move the base by a single commit) — the remaining steps of that project are deferred: "Fix" after an update
   that did not happen is pointless. The chain goes on to the next project and at the end comes back to the deferred
   ones once, continuing where they stopped. A second failure is the project's outcome;
+- a failure does not wedge the scheduler. An unexpected exception in a step (not a regular failure) marks the item
+  failed, with the reason and traceback in the step log, and follows the same "a project is the unit of a chain"
+  rule; the route is closed with a record instead of staying "running". A failure to write the run to disk (disk
+  full, file held by a reader) goes to the Console and does not break the chain; the run's outcome is written twice,
+  and the scheduler is released in any case, so the next chain starts. On every tick a watchdog drops a run whose
+  thread has died and marks it in the history as `run_thread_lost`;
 - a stall at the tail while the base did change during the route is "partly", not a failure: the project is updated
   and its next steps run. A card the thesis step parked for a human (a dictionary longer than the window, with no
   boundaries found) is not counted as work left until it changes;
