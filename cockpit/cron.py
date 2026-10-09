@@ -50,7 +50,6 @@ import time
 from datetime import datetime, timedelta
 
 import route_runner as RR
-import watchdog as WD
 
 try:
     import bots as BOTS               # движок: боты проектов (scripts/bots.py)
@@ -793,15 +792,16 @@ class Scheduler:
         res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
                          on_job=on_job, parent=run["id"])
         tries = 0
-        while res.get("hung") and tries < WD.MAX_RESTARTS and not self.stop_event.is_set():
-            # Снят сторожем после обрыва связи — тот же шаг заново (`watchdog`).
+        while res.get("hung") and not self.stop_event.is_set():
+            # Снят сторожем после обрыва связи — тот же шаг заново (`watchdog`), без потолка:
+            # цепочка доводит дело до конца, пока человек её не остановит (1.170.0).
             tries += 1
-            log(f"⚠ шаг завис ({res['hung']}) — запускаю заново ({tries} из {WD.MAX_RESTARTS})")
+            log(f"⚠ шаг завис ({res['hung']}) — запускаю заново (попытка {tries})")
             res = RR.run_job(ck, project, it["cmd"], it["args"], stop=self.stop_event,
                              on_job=on_job, parent=run["id"])
         if res.get("hung"):
-            res = dict(res, rc=2, refused=f"шаг завис и после {WD.MAX_RESTARTS} перезапусков: "
-                                          f"{res['hung']}")
+            # Сюда доходим, только если цепочку остановили, пока шаг висел.
+            res = dict(res, rc=2, refused=f"шаг завис, цепочку остановили: {res['hung']}")
         it["run_id"] = res.get("run_id", "")
         for line in res["lines"][-LOG_KEEP:]:
             log(line)

@@ -38,6 +38,7 @@ import os
 import random
 import struct
 import sys
+import threading
 from itertools import repeat
 from operator import add, mul, sub
 from pathlib import Path
@@ -245,6 +246,7 @@ def endpoints(cfg: dict) -> list:
 # PRJ-B 25.09.2026 он два часа ждал таймаута на каждом запросе. Поиск без векторов идёт
 # словами — так же, как когда векторов нет вовсе.
 DEAD: set = set()
+DEAD_LOCK = threading.Lock()
 
 
 def embed(texts: list, cfg: dict, model: str, partial: bool = False) -> list:
@@ -270,9 +272,16 @@ def embed(texts: list, cfg: dict, model: str, partial: bool = False) -> list:
                                               {"model": model, "input": chunk},
                                               backend["key"], cfg["request_timeout"])
             if st is None:
-                DEAD.add(backend["url"])
-                print(f"  бэкенд {backend['url']}: {err} — до конца прогона без него",
-                      file=sys.stderr)
+                # Потоков много, и упавший шлюз они узнают разом: проверка «уже мёртв?» и
+                # запись — под одним замком, а строка — только у первого. Иначе шестнадцать
+                # потоков печатали шестнадцать одинаковых строк (PRJ-C 09.10.2026).
+                with DEAD_LOCK:
+                    first = backend["url"] not in DEAD
+                    DEAD.add(backend["url"])
+                if first:
+                    where = f"№{backend['n']}" if backend.get("n") else backend["url"]
+                    print(f"  бэкенд {where}: {err} — до конца прогона без него",
+                          file=sys.stderr)
                 continue
             if st == 200 and (data.get("data") or []):
                 vecs = [normalize(d["embedding"]) for d in

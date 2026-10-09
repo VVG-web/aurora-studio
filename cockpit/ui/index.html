@@ -126,6 +126,8 @@
                 data-i18n-title="console.tail_title"
                 title="Прокрутка остановлена, потому что вы отмотали вверх">↓ вывод продолжается</button>
       </div>
+      <!-- Пульс шага (1.170.0): жив ли процесс и чего он ждёт — пока что-то идёт. -->
+      <div class="pulse" id="consolePulse" hidden role="status" aria-live="off"></div>
       <h2 data-i18n="history.title">История запусков</h2>
       <p class="sub" style="margin-top:0" data-i18n-html="history.about">Одна строка — один
         запуск: команда, маршрут или цепочка расписания. Раскройте строку — там весь вывод, как

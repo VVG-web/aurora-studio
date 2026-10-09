@@ -192,7 +192,9 @@ def test_the_server_route_stops_where_the_button_stops(tmp: Path):
 
 @test
 def test_the_server_route_waits_for_the_network(tmp: Path):
-    """Шаг, упавший по сети, повторяется после паузы, а не валит ночной маршрут."""
+    """Шаг, упавший по сети, повторяется после паузы, а не валит ночной маршрут. Потолка
+    попыток нет (1.170.0): маршрут ждёт, пока сеть не вернётся, и встаёт только по слову
+    человека."""
     rr, _ = _modules()
     saved = rr.OFFLINE_RETRY_S, rr.FLAKY_RETRY_S
     rr.OFFLINE_RETRY_S = rr.FLAKY_RETRY_S = 0
@@ -202,11 +204,25 @@ def test_the_server_route_waits_for_the_network(tmp: Path):
         res = rr.run_route(ck, str(tmp), "fix", True)
         assert res["ok"], res
         assert [c[1] for c in ck.calls] == ["kb:repair", "kb:repair", "kb:lint"], ck.calls
+        ck = FakePanel(tmp, {"kb:repair": [(1, ["timed out"])] * 9 + [(0, ["ok"])],
+                             "kb:lint": [(0, [])]}, [_route()])
+        res = rr.run_route(ck, str(tmp), "fix", True)
+        assert res["ok"], res
+        assert [c[1] for c in ck.calls].count("kb:repair") == 10, \
+            "маршрут перестал ждать сеть раньше, чем она вернулась"
+        stop = threading.Event()
         ck = FakePanel(tmp, {"kb:repair": [(1, ["timed out"])], "kb:lint": [(0, [])]},
                        [_route()])
-        res = rr.run_route(ck, str(tmp), "fix", True)
-        assert res["reason"] == "offline", res
-        assert ck.route_state["reason"] == "offline", "панель не предложит продолжить после сети"
+        start = ck.start_job
+
+        def human_stops(project, cmd, args, parent=""):
+            if len(ck.calls) >= 3:
+                stop.set()                  # человек нажал «Остановить», пока маршрут ждал сеть
+            return start(project, cmd, args, parent)
+        ck.start_job = human_stops
+        res = rr.run_route(ck, str(tmp), "fix", True, stop=stop)
+        assert res["reason"] == "stopped", res
+        assert ck.route_state["reason"] == "stopped", "панель не предложит продолжить маршрут"
     finally:
         rr.OFFLINE_RETRY_S, rr.FLAKY_RETRY_S = saved
 

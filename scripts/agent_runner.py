@@ -991,7 +991,7 @@ def run_extract(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
     slots, width = parallel_width(cfg, len(todo))
     print(f"Карточек к осмотру: {len(todo)} · "
           + (f"окно {human_time(minutes * 60)}" if window_min
-             else f"бюджет {cfg['budget_min']} мин"), flush=True)
+             else AG.budget_text(cfg)), flush=True)
     if todo:
         print(threads_line(cfg, width), flush=True)
     steps, done = [], [0]
@@ -1392,7 +1392,7 @@ def run_relink(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None,
     # карточки он читает (список названных в тексте), но не трогает.
     from concurrent.futures import ThreadPoolExecutor
     slots, width = parallel_width(cfg, len(todo))
-    print(f"Карточек к связыванию: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
+    print(f"Карточек к связыванию: {len(todo)} · {AG.budget_text(cfg)}", flush=True)
     if todo:
         print(threads_line(cfg, width), flush=True)
     steps, done, rejected = [], [0], []
@@ -1749,7 +1749,7 @@ def run_clashes(cfg: dict, cwd: str, limit: int = 0, call=None) -> dict:
     if limit:
         groups = groups[:limit]
     print(f"Пар «сосед изменился»: {len(behind)} · групп по тексту: {len(fresh)} "
-          f"(уже разобрано: {len(text_groups) - len(fresh)}) · бюджет {cfg['budget_min']} мин",
+          f"(уже разобрано: {len(text_groups) - len(fresh)}) · {AG.budget_text(cfg)}",
           flush=True)
     # Отметка «соседей смотрели» ставится карточке один раз, когда разобраны ВСЕ её пары, и
     # по самой новой дате соседей: пара за парой она бы опускалась на более старую дату.
@@ -2118,7 +2118,7 @@ def run_tasks(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=None) -> di
     todo = [p for p in jira_task_cards(cwd) if not task_kept(p)]   # оставленные не переспрашиваем
     if limit:
         todo = todo[:limit]
-    print(f"Карточек из задач: {len(todo)} · бюджет {cfg['budget_min']} мин", flush=True)
+    print(f"Карточек из задач: {len(todo)} · {AG.budget_text(cfg)}", flush=True)
     steps, left = [], 0
     for i, path in enumerate(todo, 1):
         if time.time() > budget:
@@ -2976,9 +2976,11 @@ def until_done(cwd: str, a, task: str, run_batch, report, headline, passed,
             # Ни одной карточки за заход — это не «мало работы», а стоп. Обрыв связи
             # лечится ожиданием, как у первичной сборки: очередь держит отметки, поэтому
             # продолжаем ровно с той же карточки.
-            if looks_offline(res) and waits < OFFLINE_TRIES and time.time() < deadline:
+            if looks_offline(res) and (waits < OFFLINE_TRIES or AG.persist_mode()) \
+                    and time.time() < deadline:
                 waits += 1
-                say(f"\n=== связь потеряна (попытка {waits} из {OFFLINE_TRIES}): "
+                say(f"\n=== связь потеряна (попытка {waits}"
+                    + ("" if AG.persist_mode() else f" из {OFFLINE_TRIES}") + "): "
                     f"жду {OFFLINE_WAIT // 60} мин и продолжаю с той же карточки")
                 time.sleep(OFFLINE_WAIT)
                 continue
@@ -4179,7 +4181,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
 
     steps, fails, stopped = [], {}, ""
     say(f"Источников в работе: {len(sources)} · лимит шагов {cap} · "
-        f"бюджет {cfg['budget_min']} мин")
+        + AG.budget_text(cfg))
     jobs = list(enumerate(sources[:total]))
 
     # Общий признак остановки. Задача, снятая с очереди уже после решения остановиться,
@@ -4193,6 +4195,9 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
             return index, (group, source, _kb), {
                 "alias": "—", "status": "стоп", "backends": [], "degraded": False,
                 "note": "остановлено до начала работы"}
+        # Начало источника — видно сразу, а не только его конец (1.170.0).
+        AG.work_on(source)
+        say(f"  ▸ взят в работу: {source.rsplit('/', 1)[-1][:60]}")
         step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
                             deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
                             step_end=budget)
@@ -4220,6 +4225,7 @@ def run_build(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
                 break
             say(f"  {progress(len(steps), total, started)} · поток 1 · "
                 f"{source.rsplit('/', 1)[-1][:60]} …")
+            AG.work_on(source)
             step = solve_source(cfg, cwd, group, source, apply, use_critic, call=call,
                                 deadline=min(budget, time.time() + AG.call_budget(cfg, "worker")),
                                 step_end=budget)
@@ -6109,7 +6115,7 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
     total = min(len(todo), limit) if limit else (
         len(todo) if window_s else min(len(todo), cfg["max_steps"]))
     say(f"Карточек к переосмыслению: {len(todo)} · в этот прогон: {total} · "
-        + (f"окно {human_time(window_s)}" if window_s else f"бюджет {cfg['budget_min']} мин"))
+        + (f"окно {human_time(window_s)}" if window_s else AG.budget_text(cfg)))
     steps, unsupported = [], 0
     tried: list = []
     # Карточки независимы: тезис одной не зависит от тезиса другой, и каждая — это
@@ -6450,7 +6456,7 @@ def run_aliases(cfg: dict, cwd: str, apply: bool, use_critic: bool, limit: int,
 
     steps, fails, stopped = [], {}, ""
     say(f"Конфликтов в работе: {len(conflicts)} · лимит шагов {cfg['max_steps']} · "
-        f"бюджет {cfg['budget_min']} мин")
+        + AG.budget_text(cfg))
     slots, width = parallel_width(cfg, len(conflicts))
     
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -6966,9 +6972,11 @@ def main() -> int:
             if done_after <= done_before:
                 # Связь отвалилась — ждём и продолжаем с того же места, как докачка файла.
                 # Останавливать ночной прогон из-за VPN значит терять ночь целиком.
-                if looks_offline(res) and waits < OFFLINE_TRIES and time.time() < deadline:
+                if looks_offline(res) and (waits < OFFLINE_TRIES or AG.persist_mode()) \
+                    and time.time() < deadline:
                     waits += 1
-                    say(f"\n=== связь потеряна (попытка {waits} из {OFFLINE_TRIES}): "
+                    say(f"\n=== связь потеряна (попытка {waits}"
+                    + ("" if AG.persist_mode() else f" из {OFFLINE_TRIES}") + "): "
                         f"жду {OFFLINE_WAIT // 60} мин и продолжаю с того же источника. "
                         f"Разобрано к этому моменту: {done_after}")
                     time.sleep(OFFLINE_WAIT)

@@ -132,17 +132,50 @@ but the panel itself must be running. Rules:
 - the task can say "on failure — stop the chain": then it stops at the first failure;
 - **a hang watchdog.** When a route or chain step is silent for longer than 5 minutes, the panel checks the connection
   to the model and to the project's Jira/Confluence. The step is taken down together with its child processes (the
-  model adapter, git) and started again — at most twice; an abandoned `index.lock` is removed. This happens in two
-  cases:
+  model adapter, git) and started again — with no cap, until the step passes or a person stops it; an abandoned
+  `index.lock` is removed. This happens in two cases:
   - the connection was lost and came back, and within 5 minutes the step has not come alive — the answer to a
     request sent before the outage will not come;
   - the connection is fine, and the step has been silent for more than an hour — longer than any model request.
 
-  Long model thinking with a live connection is left alone;
+  Long model thinking with a live connection is left alone: from the step pulse the watchdog sees a model request
+  within its limit or a call waiting for a gateway slot — that is work, not a hang;
+- **a route sees the job through to the end.** Route and chain steps run with no time caps. A single command started
+  by its button lives as before: it has the step budget and the request time limit from the Models section.
+  - A step has no budget: it runs until its queue is done.
+  - A model call does not give up on a time limit, a busy slot, a dropped connection or a 5xx error; it goes around
+    the gateway ring until it gets an answer.
+  - The request time limit only guards against a hung connection. A gateway that did not make it in time gets twice
+    the time on the next attempt and moves to the end of the ring, not into quarantine.
+  - The route waits for the network until it is back and restarts a hung step with no limit.
+
+  A call gives up only where waiting will not help: the server refused clearly (400/401/404), the request is longer
+  than every gateway's window, the model answers empty three rounds in a row. Such a source goes to the failure log,
+  and the run goes on.
+
+  Progress is visible by stages: "▸ taken", "↗ request → gateway, model, time limit", "… waiting for a slot", "⟳ no
+  answer — retrying with twice the time", "✓ answer in N min, tokens, speed" — with the source name and the stage
+  (parsing, critic check, plan, Momus check);
 - **what runs — in the Console.** Above it are the chain, the routes and the commands of all projects; "Show"
   switches the output. The chain stream — a header for every item with its project, the output of its steps, waits and
   results — runs through all projects in turn. The Console, opened without its own output, attaches by itself to what
   is running;
+- **the step pulse — under the Console.** A model answer arrives whole, so a step can stay silent up to the request
+  time limit (usually 20 minutes). The pulse line with a spinning wheel shows:
+  - whether the process is alive;
+  - when the last line came;
+  - how many model requests are in progress, the longest of them and its limit, on which gateway and model;
+  - when the last answer came and how many answers and failures there were.
+
+  The check time changes on every poll. The tone of the line tells whether to wait or step in:
+  - "working" and "waiting for a model answer" — wait;
+  - "a request is over its time limit" — the engine drops it itself;
+  - "silent, no requests" — the watchdog stops the step (the time left is shown); for a command outside a route,
+    use "Stop";
+  - "the process is not found".
+
+  The engine writes the requests to the run folder (`.aurora/runs/<run>/pulse-<pid>.json`); the file disappears when
+  the process ends;
 - **the "bot" step** — a project's bot or "all enabled bots of the project". With "all projects" the chain runs the
   bots of all projects in turn, by the same project-as-unit rules as routes.
 - a time missed while the panel was down is caught up no later than 15 minutes, otherwise the run is recorded as

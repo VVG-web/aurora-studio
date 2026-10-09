@@ -94,7 +94,7 @@
   "models.run_parallel": "At once",
   "models.run_timeout": "Request timeout, s",
   "models.run_steps": "Agent steps",
-  "models.run_budget": "Step budget, min",
+  "models.run_budget": "Button step budget, min",
   "models.run_adapter": "Adapter",
   "models.run_slots": "Actually at once: {n} ({split})",
   "models.measure": "Measure gateways",

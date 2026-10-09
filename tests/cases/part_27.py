@@ -103,8 +103,9 @@ def test_kill_tree_takes_the_children_too(tmp: Path):
 
 @test
 def test_a_hung_step_runs_again_and_a_stale_git_lock_goes(tmp: Path):
-    """Маршрут запускает снятый сторожем шаг заново (не больше MAX_RESTARTS); брошенный
-    `index.lock` после снятия убирается, свежий — нет."""
+    """Маршрут запускает снятый сторожем шаг заново — без потолка (1.170.0), пока шаг не
+    пройдёт или человек не остановит маршрут; брошенный `index.lock` после снятия
+    убирается, свежий — нет."""
     _path()
     import route_runner as RR
     import watchdog as WD
@@ -124,9 +125,20 @@ def test_a_hung_step_runs_again_and_a_stale_git_lock_goes(tmp: Path):
     run.exec_step = lambda cmd, args: answers.pop(0)
     res = run.run_one({"cmd": "agent:distill", "args": [], "cycle": False, "why": ""})
     assert res["rc"] == 0 and ("warn", "route.hung_restart") in said, said
-    run.exec_step = lambda cmd, args: {"rc": -15, "lines": [], "hung": "снова"}
+    said.clear()
+    answers = [{"rc": -15, "lines": [], "hung": "снова"}] * 5 + [{"rc": 0, "lines": []}]
+    run.exec_step = lambda cmd, args: answers.pop(0)
     res = run.run_one({"cmd": "agent:distill", "args": [], "cycle": False, "why": ""})
-    assert res["rc"] == 2 and ("err", "route.hung_gave_up") in said
+    assert res["rc"] == 0 and said.count(("warn", "route.hung_restart")) == 5, \
+        "маршрут сдался на зависшем шаге раньше, чем тот прошёл"
+
+    def stopped(cmd, args):
+        run.stopped = True              # человек нажал «Прервать», пока шаг висел
+        return {"rc": -15, "lines": [], "hung": "снова"}
+    run.exec_step = stopped
+    res = run.run_one({"cmd": "agent:distill", "args": [], "cycle": False, "why": ""})
+    assert res["rc"] < 0, "остановленный человеком маршрут продолжил перезапускать шаг"
+    run.stopped = False
 
     git = tmp / ".git"
     git.mkdir()
@@ -137,7 +149,7 @@ def test_a_hung_step_runs_again_and_a_stale_git_lock_goes(tmp: Path):
     import os
     os.utime(lock, (old, old))
     assert WD.stale_git_lock(str(tmp)) and not lock.exists()
-    assert WD.MAX_RESTARTS >= 1
+    assert not hasattr(WD, "MAX_RESTARTS"), "у перезапуска зависшего шага снова потолок"
 
 
 def _kb(tmp: Path) -> Path:

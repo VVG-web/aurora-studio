@@ -413,6 +413,15 @@ tr:last-child td{border-bottom:0}
 .spin{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--primary);
   border-radius:50%;display:inline-block;animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* Пульс шага под консолью (1.170.0): колесо крутится, пока шаг жив; тон — его состояние. */
+.pulse{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:8px;padding:8px 12px;
+  border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;color:var(--text-muted)}
+.pulse b{color:var(--text);font-weight:600}
+.pulse .pulse-at{margin-left:auto;font-variant-numeric:tabular-nums}
+.pulse.warn{border-color:var(--tier-inreview)}
+.pulse.warn .spin{border-top-color:var(--tier-inreview);animation-duration:1.6s}
+.pulse.bad{border-color:var(--danger)}
+.pulse.bad .spin{animation:none;border-color:var(--danger)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 /* Имя файла — данные, а не интерфейс. Скин уводил их в капс с разрядкой, и
    длинное имя карточки занимало две строки и не читалось. Тот же

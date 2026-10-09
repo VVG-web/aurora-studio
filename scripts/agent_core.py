@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import subprocess
@@ -90,6 +91,51 @@ def kit_env(kit) -> dict:
     return dict(load_env(Path(kit) / ENV_FILE))
 
 
+# «Довести до конца» (1.170.0). Шаги маршрута и цепочки расписания идут без человека, и потолки
+# по времени там не страховали, а обрывали работу. PRJ-C 09.10.2026: шлюз отдавал 4 токена в
+# секунду вместо 45. Запрос не уложился в 1200 с и был выброшен, второй шлюз движок пропустил
+# («слот занят»), источник записан сбоем. Шаг встал по бюджету в 20 минут, а маршрут принял
+# медленный ответ за обрыв сети и ушёл ждать. Пользователь: «система должна сама ловить сбои,
+# перезапускаться и доводить прогон до конца, если только человек не прервёт сам».
+#
+# Панель ставит `AURORA_PERSIST=1` шагам с родителем (маршрут, цепочка). В этом режиме:
+# - у шага нет бюджета по времени: он идёт, пока не кончится его очередь;
+# - вызов модели не сдаётся по сроку, занятому слоту, обрыву связи или временной ошибке, а
+#   ходит по кольцу, пока не получит ответ;
+# - срок запроса остаётся только стражем зависшего соединения. Шлюзу, не уложившемуся в срок,
+#   следующая попытка в этом же вызове даёт вдвое больше времени: медленный ответ получает
+#   время, а не тот же обрыв;
+# - шлюз, не уложившийся в срок, уходит в конец кольца на `DOWN_FOR`: следующие вызовы сначала
+#   идут к тем, кто отвечает.
+#
+# Сдаётся вызов только там, где ожидание не поможет: сервер внятно отказал (400/401/404), запрос
+# длиннее окна у всех, у роли нет модели, модель раз за разом отвечает пусто. Это настройка, и
+# её покажет журнал сбоев; прогон при этом идёт к следующим источникам.
+PERSIST_BUDGET_MIN = 10 ** 7     # «без предела»: сравнения с бюджетом в шагах не меняются
+PERSIST_GROWTH = 2.0             # во столько раз растёт срок запроса на шлюзе после обрыва по сроку
+PERSIST_EMPTY_RINGS = 3          # кругов подряд с одними пустыми ответами — ожидание не поможет
+SLOW: dict = {}                  # № шлюза → до какого времени он в конце кольца
+
+
+def persist_mode() -> bool:
+    """Шаг маршрута или цепочки: доводить до конца, без потолков по времени."""
+    return os.environ.get("AURORA_PERSIST") == "1"
+
+
+def apply_persist(cfg: dict) -> dict:
+    if persist_mode():
+        cfg["persist"] = True
+        cfg["budget_min"] = PERSIST_BUDGET_MIN
+    return cfg
+
+
+def budget_text(cfg: dict) -> str:
+    """Срок шага для строки начала: бюджет кнопки или «без предела» маршрута."""
+    if cfg.get("persist"):
+        return "без предела по времени: шаг маршрута доводит очередь до конца"
+    return f"бюджет {cfg['budget_min']} мин"
+
+
 def config() -> dict:
     """Конфигурация моделей движка — одна на кит (`local/models.json`).
 
@@ -99,7 +145,7 @@ def config() -> dict:
     личная настройка машины в тесты не попадает.
     """
     if os.environ.get("AURORA_TESTS_ISOLATED"):
-        return parse_config(raw_config())
+        return apply_persist(parse_config(raw_config()))
     import model_config as MC
     kit, _project = _roots()
     data = MC.load(kit, kit_env(kit))
@@ -112,7 +158,7 @@ def config() -> dict:
     # инструментов и MCP, а модель честно отвечала «инструментов нет» (6.10.2026).
     ADAPTER["name"] = cfg.get("adapter") or "pydantic_ai"
     ADAPTER["fallback_why"] = ""
-    return cfg
+    return apply_persist(cfg)
 
 
 def raw_config() -> dict:
@@ -652,8 +698,159 @@ ADAPTER_ONLY = frozenset({"guard", "role", "tools_root", "mcp", "mcp_active", "o
                           "tool_calls", "adapter"})
 
 
+# Пульс прогона (1.170.0): какие запросы к моделям идут прямо сейчас. Ответ модели приходит
+# целиком, а не потоком, и между ответами шаг молчит десятки минут. Консоль не отличала
+# «ждёт модель» от «завис»: строка «выполняется» стояла без изменений, и человек гадал, ждать
+# или перезапускать (PRJ-C 09.10.2026: шлюз отдавал 4 токена в секунду вместо 45). Движок
+# кладёт список идущих запросов в папку прогона, которую даёт панель (`AURORA_RUN_DIR`), —
+# своим файлом на процесс: `pulse-<pid>.json`. Консоль показывает по нему строку пульса:
+# сколько запросов в работе, самый долгий из них и его срок, когда пришёл последний ответ.
+# Без панели (`AURORA_RUN_DIR` не задан) файл не пишется.
+PULSE_PREFIX = "pulse-"
+_PULSE = {"seq": 0, "calls": {}, "answered": 0, "failed": 0, "last_answer": 0.0,
+          "last_fail": 0.0, "why": "", "path": None, "rings": 0}
+_PULSE_LOCK = threading.Lock()
+
+
+def _pulse_path() -> str:
+    folder = os.environ.get("AURORA_RUN_DIR") or ""
+    if not folder or not os.path.isdir(folder):
+        return ""
+    return os.path.join(folder, f"{PULSE_PREFIX}{os.getpid()}.json")
+
+
+def _pulse_save() -> None:
+    """Записать пульс; зовётся под `_PULSE_LOCK`. Не вышло — прогон не страдает."""
+    path = _pulse_path()
+    if not path:
+        return
+    if _PULSE["path"] is None:
+        _PULSE["path"] = path
+        atexit.register(_pulse_drop)
+    data = {"pid": os.getpid(), "at": time.time(),
+            "inflight": sorted(_PULSE["calls"].values(), key=lambda c: c["since"]),
+            **{k: _PULSE[k] for k in ("answered", "failed", "last_answer", "last_fail", "why",
+                                      "rings")}}
+    tmp = f"{path}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        replace_file(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _pulse_drop() -> None:
+    """Процесс закончился — его пульса больше нет: панель не покажет запросы мёртвого."""
+    try:
+        if _PULSE["path"]:
+            os.remove(_PULSE["path"])
+    except OSError:
+        pass
+
+
+# Ход работы в Консоли (1.170.0): строка на каждый этап, а не одна на источник после его
+# конца. На шестнадцати потоках прежде печаталось только «источник разобран», и между этими
+# строками Консоль молчала по двадцать минут, хотя запросы шли, ждали слот и повторялись.
+# Теперь поток объявляет, над чем работает (`work_on`), а кольцо печатает каждый запрос:
+# куда ушёл, сколько ждёт слот, не уложился ли и с каким сроком повтор, когда пришёл ответ.
+# Печатается только в шаге из панели (`AURORA_RUN_DIR`); командная строка и тесты — как раньше.
+_WORK = threading.local()
+LIVE_STAGE = {"worker": "разбор", "critic": "проверка критика", "planner": "план",
+              "qa": "проверка Момуса"}
+
+
+def work_on(subject: str) -> None:
+    """Поток взял работу (источник, карточку): его запросы к моделям — про неё."""
+    _WORK.subject = str(subject or "").rsplit("/", 1)[-1][:60]
+
+
+def _subject() -> str:
+    return getattr(_WORK, "subject", "") or ""
+
+
+def live_on() -> bool:
+    return bool(os.environ.get("AURORA_RUN_DIR"))
+
+
+def human_secs(seconds: float) -> str:
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s} с"
+    if s < 3600:
+        return f"{s // 60} мин {s % 60:02d} с"
+    return f"{s // 3600} ч {s % 3600 // 60:02d} мин"
+
+
+def say_live(mark: str, role: str, text: str) -> None:
+    """Строка хода в Консоль: «↗ источник · этап: что произошло»."""
+    if not live_on():
+        return
+    who = " · ".join(x for x in (_subject(), LIVE_STAGE.get(role, role)) if x)
+    print(f"    {mark} {who}: {text}" if who else f"    {mark} {text}", flush=True)
+
+
+def pulse_begin(backend: dict, payload: dict | None, timeout: float) -> int:
+    """Запрос к модели ушёл — в пульс. → номер для `pulse_end`."""
+    with _PULSE_LOCK:
+        _PULSE["seq"] += 1
+        n = _PULSE["seq"]
+        _PULSE["calls"][n] = {"since": time.time(), "limit": float(timeout or 0),
+                              "n": backend.get("n"), "name": backend.get("name") or "",
+                              "model": (payload or {}).get("model") or backend.get("model") or "",
+                              "role": (payload or {}).get("role") or "",
+                              "subject": _subject()}
+        _pulse_save()
+    return n
+
+
+def pulse_ring(delta: int) -> None:
+    """Вызов модели вошёл в кольцо (+1) или вышел (−1). Между попытками — пауза, ожидание слота
+    или карантина — запроса в сети нет, но вызов жив: пульс должен это знать."""
+    with _PULSE_LOCK:
+        _PULSE["rings"] = max(0, _PULSE["rings"] + delta)
+        _pulse_save()
+
+
+def pulse_end(n: int, ok: bool, why: str = "") -> None:
+    """Ответ пришёл (или не пришёл) — запрос уходит из пульса, счётчики растут."""
+    with _PULSE_LOCK:
+        if _PULSE["calls"].pop(n, None) is None:
+            return
+        now = time.time()
+        if ok:
+            _PULSE["answered"] += 1
+            _PULSE["last_answer"] = now
+        else:
+            _PULSE["failed"] += 1
+            _PULSE["last_fail"] = now
+            _PULSE["why"] = str(why or "")[:200]
+        _pulse_save()
+
+
 def default_transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
-    """kind: 'slots' | 'chat'. Отделён от логики кольца, чтобы тесты подменяли его целиком."""
+    """kind: 'slots' | 'chat'. Отделён от логики кольца, чтобы тесты подменяли его целиком.
+
+    Запрос чата на время ожидания — в пульсе прогона (`pulse_begin`/`pulse_end`)."""
+    if kind == "slots":
+        return _transport(kind, backend, payload, timeout)
+    # Вызов с инструментами — несколько запросов подряд, и срок у каждого свой (`pydantic_transport`).
+    limit = timeout
+    if payload and payload.get("tools_root"):
+        limit = timeout * (1 + (payload.get("tool_calls") or TOOL_CALLS))
+    n = pulse_begin(backend, payload, limit)
+    st, body, err = None, None, "прервано"
+    try:
+        st, body, err, dt = _transport(kind, backend, payload, timeout)
+        return st, body, err, dt
+    finally:
+        pulse_end(n, st == 200 and not err, err)
+
+
+def _transport(kind: str, backend: dict, payload: dict | None, timeout: float) -> tuple:
     if kind == "slots":
         root = backend["url"].rsplit("/v1", 1)[0]
         return http_json(root + "/slots", None, backend["key"], CONNECT_TIMEOUT)
@@ -1439,9 +1636,15 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
             return dict(hit, ok=True, cached=True, seconds=0.0, waited=0.0, seen=0, cut=0,
                         ring=0, log=["ответ из кэша: тот же вызов уже был"], tokens_in=0,
                         tokens_out=0, tps=0.0, url="")
-    r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
-                   prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
-                   mcp_only, outdir, tool_calls, kb_root)
+    # Пока вызов ходит по кольцу — ждёт слот, паузу или карантин, — запроса в сети может не
+    # быть, но вызов жив: пульс прогона это знает (`pulse_ring`).
+    pulse_ring(+1)
+    try:
+        r = _call_role(cfg, role, messages, transport, deadline, sleep, thinking, max_tokens,
+                       prefer, history, tools, guard_text, trim, request_timeout, mcp_active,
+                       mcp_only, outdir, tool_calls, kb_root)
+    finally:
+        pulse_ring(-1)
     if key and r.get("ok") and (r.get("text") or "").strip() and not r.get("cut"):
         _cache_put(key, r)
     return r
@@ -1485,6 +1688,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     начать: параллельный прогон раздаёт задания по слотам, и каждое идёт на свой шлюз.
     """
     transport = transport or default_transport
+    persist = bool(cfg.get("persist")) or persist_mode()
     think = role_thinks(cfg, role) if thinking is None else thinking
     # Предел на ОДИН запрос. Обычно общий из настройки, но вызывающий вправе поднять его
     # там, где уже знает цену работы: Момус читает тот же пак плюс ответ, и на модели,
@@ -1492,6 +1696,12 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     # никогда. Дедлайн этого не решает — запрос всё равно режется по `request_timeout`.
     req_timeout = float(request_timeout or request_timeout_for(cfg, think))
     deadline = deadline or (time.time() + req_timeout)
+    if persist:
+        # Маршрут доводит до конца: срок вызова — бесконечность, срок запроса — страж
+        # зависшего соединения, растущий на медленном шлюзе (`grow`).
+        deadline = float("inf")
+    grow: dict = {}             # № шлюза → множитель срока запроса после его обрыва по сроку
+    empty_rings = 0
     # Каким адаптером идти — из настройки этого вызова, а не из переключателя процесса.
     # Проверять, дошёл ли вызов до адаптера, имеет смысл только на настоящем транспорте:
     # подменённый (тесты, замеры) сам решает, чем отвечать.
@@ -1500,7 +1710,8 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     needs_adapter = bool(tools or mcp_active or outdir)
     # Что за вызов — для журнала сбоев: размер запроса, срок, режим. Ключей и адресов нет.
     req = {"role": role, "thinking": bool(think), "max_tokens": max_tokens,
-           "request_timeout": int(req_timeout), "deadline_s": int(deadline - time.time()),
+           "request_timeout": int(req_timeout),
+           "deadline_s": None if persist else int(deadline - time.time()),
            "prompt_chars": sum(len(str(m.get("content") or "")) for m in messages),
            "prompt_tokens_est": rough_tokens(messages), "history": len(history or []),
            "tools": bool(tools), "mcp_active": list(mcp_active or []), "adapter": want}
@@ -1521,6 +1732,14 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
     order = ring_order(cfg, prefer, role)
     while time.time() < deadline:
         ring += 1
+        if persist:
+            # Медленный шлюз — в конец кольца, порядок остальных прежний. Журнал бесконечного
+            # вызова не растёт без конца: начало и свежий хвост.
+            now = time.time()
+            order = sorted(order, key=lambda b: SLOW.get(b["n"], 0) > now)
+            if len(log) > 200:
+                log[:] = log[:20] + ["…"] + log[-150:]
+        answered_empty, other = 0, 0
         # Может ли следующий круг дать другой ответ. Внятный отказ (400/401/404), запрос
         # длиннее окна, роль без модели ожиданием не лечатся — а движок круг за кругом
         # спрашивал живой сервер о том, на что тот уже ответил «нет», до конца срока и
@@ -1545,6 +1764,7 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             if busy(b, transport):
                 log.append(f"№{b['n']}: слот занят (/slots) — дальше по кольцу")
                 can_recover = True
+                other += 1
                 continue
             # Режем под ЭТОТ бэкенд. Накладные расходы шаблона меряем построением
             # пустого сообщения: так вызывающему не нужно считать их самому и ошибаться.
@@ -1621,16 +1841,25 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             tried.add(b["n"])
             sem = _slot_semaphore(b, cfg)
             grant = max(0.5, min(FAIR_SHARE * req_timeout, left))
-            if not sem.acquire(timeout=grant):
+            got = sem.acquire(blocking=False)
+            if not got:
+                say_live("…", role, f"№{b['n']} {model}: все слоты шлюза заняты — жду до "
+                                    f"{human_secs(grant)}")
+                got = sem.acquire(timeout=grant)
+            if not got:
                 log.append(f"№{b['n']} {model}: слот ширины занят — дальше по кольцу")
                 can_recover = True
+                other += 1
                 continue
             with _SEM_LOCK:
                 INFLIGHT[b["n"]] = INFLIGHT.get(b["n"], 0) + 1
             try:
                 attempts += 1
+                limit = req_timeout * grow.get(b["n"], 1.0)
+                say_live("↗", role, f"запрос → №{b['n']} {model} · ≈{rough_tokens(payload['messages'])} "
+                                    f"ток. · срок {human_secs(min(left, limit))}")
                 st, body, err, dt = transport("chat", b, payload,
-                                              max(5.0, min(left, req_timeout)))
+                                              max(5.0, min(left, limit)))
                 if st == 400 and rejects_template(err, body):
                     payload.pop("chat_template_kwargs", None)
                     log.append(f"№{b['n']} {model}: шлюз не принял chat_template_kwargs — "
@@ -1656,6 +1885,10 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                                    + (f": {str(err)[:120]}" if err else "")
                                    + ". Это настройка, а не связь: карантин не ставлю")
                     elif looks_like_timeout(err):
+                        other += 1
+                        if persist:
+                            grow[b["n"]] = grow.get(b["n"], 1.0) * PERSIST_GROWTH
+                            SLOW[b["n"]] = time.time() + DOWN_FOR
                         # Молчание по сроку — не смерть. Бэкенд, ответивший минуту назад,
                         # жив: он просто думает дольше отпущенного, и на живом контуре
                         # так и вышло — Момус не уложился на модели, которая только что
@@ -1669,9 +1902,16 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                         # ответить (83 потока на один слот), сажал его в карантин на 15 минут.
                         with _SEM_LOCK:
                             ours = INFLIGHT.get(b["n"], 1) - 1
-                        if not fresh and not ours:
+                        # Маршрут, доводящий дело до конца, медленного не выключает: он уходит
+                        # в конец кольца (`SLOW`) и получает вдвое больший срок, а не карантин.
+                        if not fresh and not ours and not persist:
                             DOWN[b["n"]] = time.time() + DOWN_FOR
-                        log.append(f"№{b['n']} {model}: не уложился в {int(req_timeout)} с"
+                        say_live("⟳", role, f"№{b['n']} {model} не ответил за {human_secs(limit)}"
+                                 + (f" — повторю, срок вдвое больше: {human_secs(limit * PERSIST_GROWTH)}"
+                                    if persist else " — дальше по кольцу"))
+                        log.append(f"№{b['n']} {model}: не уложился в {int(limit)} с"
+                                   + (f" — следующая попытка на нём получит "
+                                      f"{int(limit * PERSIST_GROWTH)} с" if persist else "")
                                    + (" (но отвечал только что — карантин не ставлю)"
                                       if fresh else
                                       f" (к нему ещё {ours} наших запросов — это очередь, "
@@ -1679,6 +1919,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     else:
                         DOWN[b["n"]] = time.time() + DOWN_FOR
                         log.append(f"№{b['n']} {model}: {err or f'HTTP {st}'}")
+                        say_live("⚠", role, f"№{b['n']} {model}: {str(err or f'HTTP {st}')[:120]}"
+                                            + (" — подожду и повторю" if persist else ""))
+                        # Обрыв связи, 5xx — временное: маршрут дождётся, когда шлюз вернётся.
+                        other += 1
+                        can_recover = can_recover or persist
                     continue
                 text, reasoning = answer_of(body)
                 finish = (body.get("choices") or [{}])[0].get("finish_reason")
@@ -1691,8 +1936,11 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     log.append(f"№{b['n']} {model}: {why} (finish_reason={finish}, "
                                f"рассуждений {len(reasoning or '')} зн., {dt:.0f} с)")
                     can_recover = True
+                    answered_empty += 1
+                    say_live("⚠", role, f"№{b['n']} {model}: {why}")
                     continue
                 DOWN.pop(b["n"], None)
+                SLOW.pop(b["n"], None)
                 LAST_OK[b["n"]] = time.time()
                 via = (body.get("aurora") or {}).get("via", "http")
                 bypass = ""
@@ -1715,6 +1963,9 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
                     clear_bypass()
                 usage = body.get("usage") or {}
                 out_tokens = int(usage.get("completion_tokens") or 0)
+                say_live("✓", role, f"ответ №{b['n']} {model} за {human_secs(dt)}"
+                                    + (f" · {out_tokens} ток. · {out_tokens / dt:.1f} ток/с"
+                                       if out_tokens and dt > 0 else ""))
                 with _USAGE_LOCK:
                     USAGE["calls"] += 1
                     USAGE["tokens_in"] += int(usage.get("prompt_tokens") or 0)
@@ -1739,9 +1990,19 @@ def _call_role(cfg: dict, role: str, messages: list, transport=None,
             log.append("круг не оставил надежды: отказы внятные или шлюзы в карантине "
                        "дольше этого вызова — повторять незачем")
             break
+        if persist:
+            # Одни пустые ответы круг за кругом — модель так отвечает на этот запрос, и
+            # ожидание этого не изменит. Источник уйдёт в журнал сбоев, прогон — дальше.
+            empty_rings = empty_rings + 1 if answered_empty and not other else 0
+            if empty_rings >= PERSIST_EMPTY_RINGS:
+                log.append(f"{PERSIST_EMPTY_RINGS} круга подряд модели отвечают пусто — "
+                           "повтор этого не изменит")
+                break
         if time.time() + RING_PAUSE >= deadline:
             break
         log.append(f"круг {ring} неудачен — пауза {RING_PAUSE} с, снова с первого")
+        if persist and ring % 6 == 0:
+            say_live("…", role, f"круг {ring}: ответа пока нет — иду по кольцу дальше, пока не будет")
         sleep(RING_PAUSE)
         waited += RING_PAUSE
     if attempts and slow == attempts:
@@ -1773,7 +2034,7 @@ def cmd_show() -> int:
     if roles_off:
         print("Рассуждения выключены у ролей: " + ", ".join(roles_off))
     print(f"Адаптер: {cfg['adapter']} · thinking: {'вкл' if cfg['thinking'] else 'выкл'} · "
-          f"шагов ≤ {cfg['max_steps']} · бюджет {cfg['budget_min']} мин · "
+          f"шагов ≤ {cfg['max_steps']} · {budget_text(cfg)} · "
           f"таймаут запроса {cfg['request_timeout']} с\n")
     if not cfg["backends"]:
         print("Провайдеры не настроены: раздел «Модели» панели.")

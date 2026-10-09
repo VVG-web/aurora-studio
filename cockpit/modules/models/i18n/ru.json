@@ -94,7 +94,7 @@
   "models.run_parallel": "Одновременно",
   "models.run_timeout": "Срок запроса, с",
   "models.run_steps": "Шагов агента",
-  "models.run_budget": "Бюджет шага, мин",
+  "models.run_budget": "Бюджет шага кнопки, мин",
   "models.run_adapter": "Адаптер",
   "models.run_slots": "Фактически одновременно: {n} ({split})",
   "models.measure": "Замерить шлюзы",

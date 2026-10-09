@@ -17,5 +17,5 @@
     "kit:update",
     "kit:doctor"
   ],
-  "for": "1.169.1"
+  "for": "1.170.0"
 }

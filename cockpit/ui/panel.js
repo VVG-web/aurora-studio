@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.169.1";
+const UI_VERSION = "1.170.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -2390,6 +2390,46 @@ async function autoFollow(){
 }
 // Поток цепочки расписания: заголовок каждого пункта, вывод его шагов, ожидания, итоги —
 // по всем проектам подряд, пока цепочка идёт.
+/* ---------------- пульс шага ---------------- */
+// Ответ модели приходит целиком, и шаг молчит минутами: «выполняется» без изменений не
+// отличало «ждёт модель» от «завис» (PRJ-C 09.10.2026: шлюз отдавал 4 токена в секунду, и
+// двадцать минут в Консоли не менялось ни слова). Пульс приходит с каждым опросом задания,
+// маршрута и цепочки (`job_pulse` на сервере): жив ли процесс, когда была последняя строка,
+// какие запросы к моделям идут и сколько им осталось до срока. Колесо крутится, пока шаг
+// жив, а время проверки меняется на каждом опросе — это видно и без анимации.
+const PULSE_TONE = {ok: "ok", wait: "ok", late: "warn", quiet: "warn", gone: "bad"};
+const PULSE_HEAD = {ok: q => t("pulse.ok", {quiet: q}), wait: q => t("pulse.wait", {quiet: q}),
+                    late: q => t("pulse.late", {quiet: q}), quiet: q => t("pulse.quiet", {quiet: q}),
+                    gone: () => t("pulse.gone")};
+function pulseParts(p){
+  const parts = [(PULSE_HEAD[p.state] || PULSE_HEAD.quiet)(howLong(p.quiet)),
+                 t("pulse.running", {t: howLong(p.running)})];
+  if (p.calls) parts.push(t("pulse.calls", {n: p.calls, oldest: howLong(p.oldest || 0),
+    limit: p.limit ? howLong(p.limit) : "—", where: p.where || "—"}));
+  if (p.rings) parts.push(t("pulse.rings", {n: p.rings}));
+  if (p.answer_ago != null) parts.push(t("pulse.answer_ago", {t: howLong(p.answer_ago)}));
+  else if (p.calls) parts.push(t("pulse.no_answer"));
+  if (p.answered || p.failed) parts.push(t("pulse.counts", {ok: p.answered, bad: p.failed}));
+  if (p.state === "late") parts.push(t("pulse.late_hint"));
+  if (p.state === "quiet") parts.push(p.watchdog ? t("pulse.watchdog", {t: howLong(p.watchdog_in || 0)})
+                                                 : t("pulse.stop_hint"));
+  return parts;
+}
+function drawPulse(p, me){
+  if (me != null && me !== FOLLOW) return;     // Консоль уже показывает другое
+  const box = $("#consolePulse");
+  if (!box) return;
+  if (!p){ box.hidden = true; box.replaceChildren(); return; }
+  const [head, ...rest] = pulseParts(p);
+  const time = new Date().toLocaleTimeString(S.lang === "en" ? "en-GB" : "ru-RU");
+  box.className = "pulse " + (PULSE_TONE[p.state] || "warn");
+  box.title = t("pulse.title");
+  box.hidden = false;
+  box.replaceChildren(el("span", {class: "spin", "aria-hidden": "true"}), el("b", {}, head),
+    ...rest.map(s => el("span", {}, s)),
+    el("span", {class: "pulse-at"}, t("pulse.checked", {time})));
+}
+
 async function followCron(){
   const me = ++FOLLOW;
   SHOWN = {kind: "cron"};
@@ -2408,6 +2448,7 @@ async function followCron(){
     (d.lines || []).forEach(l => consoleLine(out, l));
     since = d.next;
     watchScroll(out); stickToBottom(out);
+    drawPulse(d.run ? d.pulse : null, me);
     const run = d.run;
     if (!run){
       // Цепочка кончилась: шапка — её имя и итог, а не последний «пройдено N из M» хода.
@@ -2424,7 +2465,7 @@ async function followCron(){
     await new Promise(ok => setTimeout(ok, 1000));
     if (me !== FOLLOW) return;
   }
-  if (me === FOLLOW) SHOWN = null;
+  if (me === FOLLOW){ SHOWN = null; drawPulse(null); }
   drawLiveJobs();
 }
 
@@ -2439,9 +2480,11 @@ async function attachJob(id){
   for (;;){
     const d = await api(`/api/job?id=${id}&since=${since}`, {quiet:true});
     if (me !== FOLLOW) return;
-    if (!d || d.error) { $("#consoleRc").textContent = t("job.not_found"); SHOWN = null; return; }
+    if (!d || d.error) { $("#consoleRc").textContent = t("job.not_found"); SHOWN = null;
+                         drawPulse(null); return; }
     (d.lines||[]).forEach(l=>consoleLine(out, l));
     watchScroll(out); stickToBottom(out); since = d.next;
+    drawPulse(d.done ? null : d.pulse, me);
     $("#consoleCmd").textContent = d.cmd + " " + (d.args||[]).join(" ");
     if (d.done){
       $("#consoleRc").textContent = t("run.rc", {rc: d.rc});
@@ -2779,6 +2822,7 @@ async function attachRoute(id, sc, write, resumed){
     since = d.next;
     watchScroll(out); stickToBottom(out);
     drawRouteBar(d.bar);
+    drawPulse(d.done ? null : d.pulse, me);
     if (d.bar && d.bar.cmd){
       $("#consoleCmd").textContent = `${sc.title} · ` + (d.bar.lap
         ? t("route.where_lap", {step: d.bar.inLap, of: d.bar.cycleSize})
@@ -2795,7 +2839,7 @@ async function attachRoute(id, sc, write, resumed){
                                                      {hour:"2-digit", minute:"2-digit"});
       holder.append(el("span",{class:"chip warn"}, t("route.wait_chip")),
         el("div",{style:"flex:1;min-width:220px", html: t("route.wait_line",
-          {cmd: esc(w.cmd), n: w.attempt, of: w.of, time: when})}),
+          {cmd: esc(w.cmd), n: w.attempt, time: when})}),
         el("button",{class:"btn sm gold", onclick: () => api("/api/route/wake",
           {method:"POST", quiet:true, body: JSON.stringify({id})})}, t("route.wait_now")),
         el("button",{class:"btn sm", onclick: () => api("/api/route/stop",
@@ -2932,6 +2976,7 @@ async function poll(id, since, label, me){
   // перезапуск панели при работающем задании превращается в тупик: ни остановить,
   // ни перезапустить — только ждать часами.
   armStop((d && !d.done && !d.error) ? id : null);
+  drawPulse((d && !d.done && !d.error) ? d.pulse : null, me);
   // Задания нет: панель перезапускали, пока команда шла. Раньше цикл продолжал спрашивать
   // про исчезнувшее задание и «выполняется…» стояло вечно — команда при этом могла давно
   // отработать. Тишина здесь дороже ошибки: человек ждёт того, чего уже не случится.

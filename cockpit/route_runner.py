@@ -26,19 +26,21 @@ import re
 import threading
 import time
 
-import watchdog as WD
 from datetime import datetime, timezone
 
 CYCLE_LIMIT = 12                 # дюжина оборотов — уже симптом, а не работа
 OFFLINE_RETRY_S = 15 * 60        # между попытками достучаться до бэкендов
 FLAKY_RETRY_S = 30               # шлюз мигает, а не лежит: пробуем сразу
-OFFLINE_TRIES = 8                # 8 попыток ≈ 2 часа
+# Потолка попыток нет (1.170.0): маршрут ждёт сеть, пока она не вернётся или человек не
+# нажмёт «не ждать». Прежние 8 попыток (≈ 2 часа) заканчивали ночной прогон к утру ничем.
 POLL_S = 1.0
 
 # Шаг сделал работу — значит, бэкенды отвечают, просто через раз. Числа, которые печатают
 # сами шаги о сделанном; те же, что у кнопки (`DID_WORK` в panel.js), — сверяет автотест.
 DID_WORK = (r"переписано:\s*([1-9]\d*)", r"разобрано\s+([1-9]\d*)\s+из",   # данные движка
-            r"уточнено:\s*([1-9]\d*)", r"тезисов:\s*([1-9]\d*)")            # данные движка
+            r"уточнено:\s*([1-9]\d*)", r"тезисов:\s*([1-9]\d*)",            # данные движка
+            # итог шага агента: «Документы: обработано 2 · …», «Карт … записано: 76»
+            r"обработано\s+([1-9]\d*)", r"записано:\s*([1-9]\d*)")          # данные движка
 ENGINE_CMDS = ("kit:skills",)
 CYCLE_START, CYCLE_END = "цикл:", "конец цикла"                             # данные движка
 
@@ -49,8 +51,16 @@ def offline_signs() -> tuple:
     return OFFLINE_SIGNS
 
 
+# Строки хода агента (1.170.0, `agent_core.say_live`): «⚠ обрыв — подожду и повторю», «⟳ не
+# ответил — повторю». Это пережитые обрывы, а не обрыв: шаг их уже переждал. Считать по ним
+# сеть упавшей значило бы отправлять дошедший до конца шаг ждать сеть заново.
+LIVE_LINE = re.compile(r"^ {4}[↗⟳⚠…✓] ")
+
+
 def looks_offline(lines) -> bool:
-    text = "\n".join(lines or []).lower()
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    text = "\n".join(line for line in lines or [] if not LIVE_LINE.match(line)).lower()
     return any(s in text for s in offline_signs())
 
 
@@ -412,22 +422,17 @@ class RouteRun:
             pass
 
     def _wait_network(self, st: dict) -> str:
-        """Шаг упал по сети: ждём бэкенды и повторяем. → continue | failed | stopped | capped."""
+        """Шаг упал по сети: ждём бэкенды и повторяем, пока не вернутся. → continue | failed |
+        stopped."""
         attempt = self.offline_carry + 1
         self.offline_carry = 0
         wait = OFFLINE_RETRY_S
         cmd = (st["cmd"] + " " + " ".join(st["args"])).strip()
         while True:
-            if attempt >= OFFLINE_TRIES:
-                self.wait = {}
-                self.say("err", self.t("route.wait_capped", n=OFFLINE_TRIES))
-                self.offline_attempts = attempt
-                return "capped"
             when = datetime.fromtimestamp(time.time() + wait).strftime("%H:%M")
-            self.wait = {"cmd": cmd, "attempt": attempt, "of": OFFLINE_TRIES,
-                         "at": _iso(time.time() + wait)}
-            self.say("warn", self.t("route.wait_line", cmd=cmd, n=attempt, of=OFFLINE_TRIES,
-                                    time=when))
+            self.wait = {"cmd": cmd, "attempt": attempt, "at": _iso(time.time() + wait)}
+            self.offline_attempts = attempt
+            self.say("warn", self.t("route.wait_line", cmd=cmd, n=attempt, time=when))
             slept = self._sleep(wait)
             self.wait = {}
             if not slept:
@@ -482,15 +487,14 @@ class RouteRun:
         # Шаг снят сторожем: связь пропадала, и ответа на запрос, ушедший до обрыва, не будет.
         # Перезапускаем тот же шаг — работа агента записывается по карточкам, синк идёт с
         # места, так что второй заход продолжает, а не начинает заново.
+        # Без потолка перезапусков (1.170.0): маршрут доводит дело до конца, пока человек не
+        # прервёт. Сторож снимает шаг не чаще, чем раз в несколько минут тишины, так что
+        # повторы сами по себе редкие.
         tries = 0
-        while res.get("hung") and tries < WD.MAX_RESTARTS and not self.stopped:
+        while res.get("hung") and not self.stopped:
             tries += 1
-            self.say("warn", self.t("route.hung_restart", why=res["hung"], n=tries,
-                                    of=WD.MAX_RESTARTS))
+            self.say("warn", self.t("route.hung_restart", why=res["hung"], n=tries))
             res = self.exec_step(st["cmd"], st["args"])
-        if res.get("hung"):
-            self.say("err", self.t("route.hung_gave_up", n=WD.MAX_RESTARTS))
-            res = dict(res, rc=2)
         end = time.time()
         self.prev_took = end - start
         self._event(st, start, end, res)
@@ -505,9 +509,8 @@ class RouteRun:
             if how == "continue":
                 self.summary[-1]["rc"] = 0
                 return {"rc": 0, "lines": res["lines"]}
-            if how in ("stopped", "capped"):
-                self.stopped = how == "stopped"
-                self.offline = how == "capped"
+            if how == "stopped":
+                self.stopped = True
                 self.failed = st["cmd"]
                 return {"rc": 0, "lines": res["lines"], "ended": how}
             return {"rc": 2, "lines": res["lines"]}
@@ -710,7 +713,7 @@ class RouteRun:
         else:
             state = self._state(reason)
             if reason == "offline":
-                state["attempts"] = getattr(self, "offline_attempts", OFFLINE_TRIES)
+                state["attempts"] = getattr(self, "offline_attempts", 0)
             ck.write_route_state(self.project, state)
         head = _head(self.project)
         res = {"ok": reason == "passed", "reason": reason, "failed": self.failed,

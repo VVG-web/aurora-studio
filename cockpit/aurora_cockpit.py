@@ -4177,6 +4177,10 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
             # Папка прогона — команде: рядом с её `console.log` движок пишет журнал сбоев
             # (`failures.jsonl`) — что не вышло, на чём и весь ход вызова модели.
             env = child_env(project, PYTHONUNBUFFERED="1", AURORA_RUN_DIR=run_cdir)
+            if parent:
+                # Шаг маршрута или цепочки доводит работу до конца: без бюджета по времени,
+                # вызов модели не сдаётся по сроку и обрыву (`agent_core.persist_mode`).
+                env["AURORA_PERSIST"] = "1"
             mark_running(job["id"], cmd, project, True)
             p = subprocess.Popen([sys.executable, path, *args], cwd=project, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -4668,7 +4672,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(st)
         elif u.path == "/api/cron/live":
             # Поток идущей цепочки для Консоли — со строки `since` (1.167.0).
-            self.send_json(scheduler().live(int((q.get("since") or ["0"])[0] or 0)))
+            got = scheduler().live(int((q.get("since") or ["0"])[0] or 0))
+            got["pulse"] = cron_pulse()     # жив ли шаг, который идёт в цепочке (1.170.0)
+            self.send_json(got)
         elif u.path == "/api/live":
             # Всё, что идёт на машине: маршруты, команды, цепочка — по всем проектам.
             self.send_json(live_now())
@@ -4760,9 +4766,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": "задание не найдено"}, 404)
                     return
                 lines = job["out"][since:]
-                self.send_json({"id": job["id"], "lines": lines, "next": since + len(lines),
-                                "done": job["done"], "rc": job["rc"], "cmd": job["cmd"],
-                                "args": job["args"]})
+                reply = {"id": job["id"], "lines": lines, "next": since + len(lines),
+                         "done": job["done"], "rc": job["rc"], "cmd": job["cmd"],
+                         "args": job["args"]}
+            # Пульс — вне замка заданий: он читает файлы папки прогона.
+            reply["pulse"] = None if reply["done"] else job_pulse(job)
+            self.send_json(reply)
         else:
             self.send_json({"error": "неизвестный маршрут"}, 404)
 
@@ -5359,6 +5368,106 @@ def route_register(run, project: str) -> None:
                               "started": time.time()}
 
 
+# Пульс шага для Консоли (1.170.0). Ответ модели приходит целиком, и между ответами шаг
+# молчит десятки минут; «выполняется» без изменений не отличало «ждёт модель» от «завис».
+# Пульс собирает то, что известно наверняка: жив ли процесс, когда была последняя строка и
+# какие запросы к моделям идут прямо сейчас (движок пишет их в папку прогона,
+# `agent_core.pulse_begin`), — и выносит вердикт одним словом.
+PULSE_QUIET = 60       # строка или ответ модели свежее — шаг «работает»
+PULSE_LATE = 60        # запрос дольше своего срока на столько — «срок вышел»
+
+
+def _pulse_files(job: dict) -> list:
+    """Пульсы живых процессов шага из его папки прогона: `pulse-<pid>.json`."""
+    from aurora_common import pid_alive
+    folder = os.path.join(runs_dir(job["project"]), job.get("run_id") or "")
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        if not (name.startswith("pulse-") and name.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        pid = data.get("pid") if isinstance(data, dict) else None
+        if isinstance(pid, int) and pid_alive(pid):
+            out.append(data)
+    return out
+
+
+def job_pulse(job: dict, now: float = 0.0) -> dict:
+    """Жив ли шаг и чего он ждёт. → {state, alive, running, quiet, calls, oldest, limit,
+    where, answered, failed, answer_ago, watchdog, watchdog_in}.
+
+    state: ok — работает (свежая строка или ответ модели); wait — ждёт ответа модели, и
+    срок запроса не вышел; late — запрос идёт дольше своего срока; quiet — молчит, запросов
+    к моделям нет; gone — процесса шага нет.
+    """
+    now = now or time.time()
+    proc = job.get("proc")
+    alive = proc is not None and proc.poll() is None
+    started = job.get("started") or now
+    quiet = max(0.0, now - (job.get("last_out") or started))
+    calls, answered, failed, last_answer, rings = [], 0, 0, 0.0, 0
+    for data in _pulse_files(job):
+        calls += [c for c in data.get("inflight") or [] if isinstance(c, dict)]
+        rings += int(data.get("rings") or 0)
+        answered += int(data.get("answered") or 0)
+        failed += int(data.get("failed") or 0)
+        last_answer = max(last_answer, float(data.get("last_answer") or 0))
+    out = {"alive": alive, "running": int(now - started), "quiet": int(quiet),
+           "calls": len(calls), "answered": answered, "failed": failed,
+           "answer_ago": int(now - last_answer) if last_answer else None,
+           "rings": max(0, rings - len(calls)), "watchdog": bool(job.get("parent"))}
+    oldest = min(calls, key=lambda c: float(c.get("since") or now)) if calls else None
+    if oldest:
+        name = oldest.get("name") or (f"№{oldest['n']}" if oldest.get("n") else "")
+        out.update(oldest=int(now - float(oldest.get("since") or now)),
+                   limit=int(float(oldest.get("limit") or 0)),
+                   where=" · ".join(x for x in (str(oldest.get("subject") or ""), name,
+                                                str(oldest.get("model") or "")) if x))
+    if not alive:
+        state = "gone"
+    elif quiet < PULSE_QUIET or (last_answer and now - last_answer < PULSE_QUIET):
+        state = "ok"
+    elif oldest:
+        state = "wait" if not out["limit"] or out["oldest"] <= out["limit"] + PULSE_LATE \
+            else "late"
+    elif rings:
+        state = "wait"         # вызов ждёт слот шлюза, паузу круга или конец карантина
+    elif quiet < WD.QUIET:
+        state = "ok"           # считает без моделей и молчит недолго
+    else:
+        state = "quiet"
+        out["watchdog_in"] = int(max(0, WD.HARD - quiet))
+    out["state"] = state
+    return out
+
+
+def pulse_of(job_id: str) -> dict | None:
+    """Пульс идущего задания по id; нет задания или оно кончилось — None."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id or "")
+    if not job or job.get("done"):
+        return None
+    return job_pulse(job)
+
+
+def cron_pulse() -> dict | None:
+    """Пульс шага, который сейчас идёт в цепочке расписания: его задание — у пункта цепочки."""
+    sch = scheduler()
+    cur = sch.current
+    if not cur:
+        return None
+    now_item = next((it for it in cur.get("items") or [] if it.get("status") == "running"), None)
+    return pulse_of((now_item or {}).get("job", ""))
+
+
 def live_now() -> dict:
     """Что идёт на машине прямо сейчас — для Консоли: маршруты и команды всех проектов и
     цепочка расписания. Консоль показывала только задания выбранного проекта, и во время
@@ -5403,7 +5512,8 @@ def route_live(rid: str, since: int) -> dict:
     entries, nxt = run.journal.since(since)
     out = {"id": rid, "entries": entries, "next": nxt, "done": run.done_flag,
            "bar": run.bar, "wait": run.wait, "job": run.job,
-           "scId": run.sc.get("id"), "write": run.write}
+           "scId": run.sc.get("id"), "write": run.write,
+           "pulse": None if run.done_flag else pulse_of(run.job)}
     if run.done_flag:
         out["result"] = {k: run.result.get(k) for k in
                          ("ok", "reason", "failed", "note", "steps", "found", "run_id")}
