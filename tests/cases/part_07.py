@@ -1486,6 +1486,79 @@ def test_search_finds_card_by_dotted_identifier(tmp: Path):
 
 
 @test
+def test_dotted_identifier_exact_match_outweighs_citations(tmp: Path):
+    """Карточка про номер обгоняет карточку, которая его часто цитирует (ID_BONUS).
+
+    Без добавки за точный номер вес «карточка про AC-4.4.3» и «карточка, где AC-4.4.3 стоит
+    в сути и пять раз в теле» одинаков, и побеждает алфавит. Проверяем все пути, по которым
+    номер считается собственным: имя, заголовок при другом имени, поле spec_id, алиас, имя
+    с подчёркиванием; плюс два дефекта токенизатора — чужой префикс и квадратичный разбор.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    import time
+    C = importlib.import_module("ctx_pack")
+
+    # номер, за которым идёт «_» (имя вида safe_name), остаётся номером
+    assert C.words("AC-4.4.3_v2")[:2] == ["ac-4.4.3", "4.4.3"], \
+        f"номер с подчёркиванием не распознан: {C.words('AC-4.4.3_v2')}"
+    assert "ac-4.4.3" not in C.words("AC-4.4.3x") and "ac-4.4.30" not in C.words("AC-4.4.30x"), \
+        "номер, за которым сразу буква, принят за идентификатор"
+    # длинная цепочка «число.число…» с буквой в конце не должна давать квадратичный откат
+    t0 = time.time()
+    C.words("a-1" + ".1" * 20000 + "x")
+    C.words("1." * 20000 + "x1")
+    assert time.time() - t0 < 1.0, f"разбор цепочки номеров медленный: {time.time() - t0:.1f} с"
+
+    root = make_project(tmp)
+    cite = "Смотри {n}. " * 5
+
+    def citing(stem, n):
+        card(root, f"Concepts/{stem}.md", cite.format(n=n), status="verified", type="concept",
+             summary=f'"Трассировка: {n}"')
+
+    # (а) номер в имени против карточки, где он стоит в сути и пять раз в теле
+    card(root, "Concepts/AC-4.4.3-Фильтр.md", "Фильтр реестра.", status="verified", type="concept")
+    citing("Трассировка-раздела", "AC-4.4.3")
+    # (б) номер только в поле spec_id против карточки, которая его цитирует
+    card(root, "Concepts/Заявка-на-доработку.md", "Карточка про другое.",
+         status="verified", type="concept", spec_id="SPEC-9.1.2")
+    citing("Реестр-ссылок", "SPEC-9.1.2")
+    # (в) номер только в заголовке при другом имени файла
+    (root / "AuroraKnowledgeDB/Concepts/Центр-обработки.md").write_text(
+        '---\ntitle: "US-4.7.2 Центр"\ntype: concept\nstatus: verified\n---\n\nПро центр.\n',
+        encoding="utf-8")
+    citing("Журнал-историй", "US-4.7.2")
+    # (г) номер только в алиасах: карточку знают под этим номером
+    card(root, "Concepts/Фильтр-заявок.md", "Про фильтр.", status="verified", type="concept",
+         aliases='["AC-6.2.1"]')
+    citing("Сводка-критериев", "AC-6.2.1")
+    # (д) имя с подчёркиванием после номера
+    card(root, "Concepts/AC-5.1.1_Экспорт.md", "Про экспорт.", status="verified", type="concept")
+    citing("Перечень-критериев", "AC-5.1.1")
+
+    def top(query):
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            cards = C.load_cards()
+            C.measure_rarity(cards)
+            return [c.stem for _, c in C.fuse(cards, query, {})]
+        finally:
+            os.chdir(cwd)
+
+    assert top("AC-4.4.3")[0] == "AC-4.4.3-Фильтр", f"имя против цитат: {top('AC-4.4.3')}"
+    assert top("SPEC-9.1.2")[0] == "Заявка-на-доработку", f"spec_id против цитат: {top('SPEC-9.1.2')}"
+    assert top("US-4.7.2")[0] == "Центр-обработки", f"заголовок против цитат: {top('US-4.7.2')}"
+    assert top("AC-6.2.1")[0] == "Фильтр-заявок", f"алиас против цитат: {top('AC-6.2.1')}"
+    assert top("AC-5.1.1")[0] == "AC-5.1.1_Экспорт", f"имя с «_» против цитат: {top('AC-5.1.1')}"
+    # префикс чужого документа с тем же номером не засчитывается: AC-4.7.2 нет, есть US-4.7.2
+    assert "Центр-обработки" not in top("AC-4.7.2"), \
+        f"AC-4.7.2 нашёл карточку US-4.7.2: {top('AC-4.7.2')}"
+    assert top("пункт 4.7.2")[0] == "Центр-обработки", "номер без префикса перестал находить"
+
+
+@test
 def test_pack_answers_where_development_got_to(tmp: Path):
     """Статус задачи приходит в пак из зеркала Jira, а не из карточек.
 

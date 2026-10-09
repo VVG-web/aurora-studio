@@ -390,9 +390,12 @@ def norm(word: str) -> str:
 # токен — плюс вариант без префикса («4.4.3»), чтобы находить и «пункт 4.4.3»; голый
 # номер из трёх и более частей («4.4.3») тоже токен, из двух («1.5») — нет: это дробь. Число
 # без точки («AC-4») идентификатором не считается: оно и раньше было целым словом.
-# Справа — не продолжение номера: «AC-4.4.30» не должен давать «AC-4.4».
-ID_RE = re.compile(r"(?<![^\W_])([^\W\d_]{1,10}-\d+(?:\.\d+)+|\d+(?:\.\d+){2,})(?!\w)(?!\.\d)-?",
-                   re.U)
+# Справа — не продолжение номера: «AC-4.4.30» не должен давать «AC-4.4», а «AC-4.4.3_Фильтр»
+# (имя с подчёркиванием) остаётся номером: после него не буква и не цифра, «_» не мешает.
+# Слева — не середина числа («1.»): иначе длинная цепочка «1.1.1…x» перебирается с каждой
+# точки заново, и разбор растёт квадратично.
+ID_RE = re.compile(r"(?<![^\W_])(?<!\d\.)([^\W\d_]{1,10}-\d+(?:\.\d+)+|\d+(?:\.\d+){2,})"
+                   r"(?![^\W_])(?!\.\d)-?", re.U)
 
 
 # Поля карточки, в которых лежит собственный номер (как в spec_pack.resolve), и добавка
@@ -438,6 +441,19 @@ def words(text: str) -> list:
         out.extend(_id_tokens(m.group(1)))
         pos = m.end()
     return out
+
+
+def query_words(topic: str) -> list:
+    """Слова запроса для оценки: номер с префиксом не тянет за собой чужой префикс.
+
+    `words()` даёт у «AC-4.7.2» и «4.7.2», чтобы «пункт 4.7.2» находил «AC-4.7.2». Но когда
+    в запросе номер назван с префиксом, вариант без него совпал бы и с «US-4.7.2» — чужим
+    документом с тем же номером. Поэтому в запросе вариант без префикса оставляем, только
+    если префиксной формы того же номера рядом нет.
+    """
+    ask = words(topic)
+    full = {t.split("-", 1)[1] for t in ask if is_id(t) and "-" in t}
+    return [t for t in ask if not (is_id(t) and "-" not in t and t in full)]
 
 
 # Расширение запроса расшифровками из словаря проекта здесь ПРОБОВАЛОСЬ и отвергнуто по
@@ -507,7 +523,7 @@ def weight(word: str) -> float:
 
 
 def _word_profile(card: "Card") -> tuple:
-    """(заголовок, суть, алиасы, теги, {слово тела: число}) — разбор карточки по словам.
+    """(заголовок, суть, алиасы, теги, {слово тела: число}, номера алиасов) — разбор по словам.
 
     Токенизация тела — самая дорогая часть score(), а бенчмарк и агентские прогоны
     спрашивают выборку пачками по одному обзору базы. Кешируем разбор на объекте
@@ -533,11 +549,12 @@ def _word_profile(card: "Card") -> tuple:
         head.update(ids(str((card.fm or {}).get(key) or "")))
     brief = set(words(card.summary))
     alias = {w for a in card.aliases for w in words(a)}
+    alias_ids = {t for a in card.aliases for t in ids(a)}
     tag = set(words(card.tags))
     seen: dict = {}
     for w in words(card.text):
         seen[w] = seen.get(w, 0) + 1
-    prof = (stamp, (head, brief, alias, tag, seen))
+    prof = (stamp, (head, brief, alias, tag, seen, alias_ids))
     card._wp = prof
     return prof[1]
 
@@ -554,12 +571,12 @@ def score(card: Card, topic: str, close: dict | None = None,
     # `ask` — запрос, уже разобранный на слова. Выборка сверяет ОДИН запрос со всеми
     # карточками базы, и разбирать его заново на каждой — это 1808 одинаковых разборов
     # на поиск: половина процессорного времени подбора кандидатов на живой базе.
-    ask = words(topic) if ask is None else ask
+    ask = query_words(topic) if ask is None else ask
     if not ask:
         return 0
     # Одна фраза о сути весит почти как заголовок: она написана про смысл карточки,
     # а не про то, как её назвали в источнике.
-    head, brief, alias, tag, seen = _word_profile(card)
+    head, brief, alias, tag, seen, alias_ids = _word_profile(card)
 
     # Нормировка вклада тела на длину карточки (как в BM25) здесь ПРОБОВАЛАСЬ и
     # отвергнута по замеру: на эталонных вопросах R@1 и R@5 не сдвинулись вовсе, а MRR
@@ -576,6 +593,8 @@ def score(card: Card, topic: str, close: dict | None = None,
             part += 8; got = True
         if w in alias:
             part += 6; got = True
+            if is_id(w) and w in alias_ids:
+                part += ID_BONUS    # карточку знают под этим номером: он в её алиасах
         if w in tag:
             part += 3; got = True
         if w in seen:
@@ -628,7 +647,7 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
         close = semantic(topic, limit)
     lex = {}
     best = 0
-    ask = words(topic)
+    ask = query_words(topic)
     for c in cards.values():
         w = score(c, topic, ask=ask)
         if w > 0:
