@@ -384,13 +384,59 @@ def norm(word: str) -> str:
     return w
 
 
-def words(text: str) -> list:
-    """Слова длиннее двух букв, приведённые к ключу поиска, без стоп-слов."""
+# Идентификатор вида «AC-4.4.3», «US-4.7.2», «ALG-3.14», «CP-3.2.10»: буквы, дефис, число
+# с точками. Как слово он рвался на «ac-4» (точка не входила в слово, хвосты из одной
+# цифры отбрасывались), и «AC-4.4.3» не отличался от «AC-4.4.30». Теперь это единый
+# токен — плюс вариант без префикса («4.4.3»), чтобы находить и «пункт 4.4.3»; голый
+# номер из трёх и более частей («4.4.3») тоже токен, из двух («1.5») — нет: это дробь. Число
+# без точки («AC-4») идентификатором не считается: оно и раньше было целым словом.
+# Справа — не продолжение номера: «AC-4.4.30» не должен давать «AC-4.4».
+ID_RE = re.compile(r"(?<![^\W_])([^\W\d_]{1,10}-\d+(?:\.\d+)+|\d+(?:\.\d+){2,})(?!\w)(?!\.\d)-?",
+                   re.U)
+
+
+# Поля карточки, в которых лежит собственный номер (как в spec_pack.resolve), и добавка
+# к весу, когда номер из запроса совпал с номером в имени/заголовке/этих полях.
+ID_FIELDS = ("req_id", "spec_id", "q_id", "key")
+ID_BONUS = 20
+
+
+def is_id(token: str) -> bool:
+    """Токен — идентификатор с точкой или его вариант без префикса («ac-4.4.3», «4.4.3»)."""
+    return "." in token and bool(re.fullmatch(r"(?:[^\W\d_]{1,10}-)?\d+(?:\.\d+)+", token, re.U))
+
+
+def _id_tokens(found: str) -> tuple:
+    """Найденный номер → его токены: целиком и без префикса (у голого номера один)."""
+    bare = found.split("-", 1)[1] if "-" in found else found
+    return (found, bare) if bare != found else (found,)
+
+
+def ids(text: str) -> list:
+    """Идентификаторы из текста: целиком («ac-4.4.3») и без префикса («4.4.3»)."""
     out = []
-    for raw in re.findall(r"[\w\-]+", text.lower().replace("ё", "е"), re.U):
-        if len(raw) < 3 or raw in STOP:
-            continue
-        out.append(norm(raw))
+    for m in ID_RE.finditer(text.lower().replace("ё", "е")):
+        out.extend(_id_tokens(m.group(1)))
+    return out
+
+
+def words(text: str) -> list:
+    """Слова длиннее двух букв, приведённые к ключу поиска, без стоп-слов.
+
+    Идентификаторы с точкой («AC-4.4.3») идут целыми токенами на своём месте в тексте.
+    """
+    low = text.lower().replace("ё", "е")
+    out, pos = [], 0
+    for m in list(ID_RE.finditer(low)) + [None]:
+        gap = low[pos:m.start()] if m else low[pos:]
+        for raw in re.findall(r"[\w\-]+", gap, re.U):
+            if len(raw) < 3 or raw in STOP:
+                continue
+            out.append(norm(raw))
+        if m is None:
+            break
+        out.extend(_id_tokens(m.group(1)))
+        pos = m.end()
     return out
 
 
@@ -479,6 +525,12 @@ def _word_profile(card: "Card") -> tuple:
     # один термин, и рвать его значило бы находить его по слову «процесс».
     head = set(words(card.stem.replace("-", " ").replace("_", " "))
                + words(card.title.replace("-", " ").replace("_", " ")))
+    # Разжатие имени убило бы номер («AC-4.4.3» → «ac 4 4 3»), поэтому идентификаторы
+    # берём из имени, заголовка и полей-ключей отдельно, до разжатия.
+    head.update(ids(card.stem))
+    head.update(ids(card.title))
+    for key in ID_FIELDS:
+        head.update(ids(str((card.fm or {}).get(key) or "")))
     brief = set(words(card.summary))
     alias = {w for a in card.aliases for w in words(a)}
     tag = set(words(card.tags))
@@ -518,6 +570,8 @@ def score(card: Card, topic: str, close: dict | None = None,
         got, part = False, 0.0
         if w in head:
             part += 10; got = True
+            if is_id(w):
+                part += ID_BONUS    # точное совпадение номера: карточка про него и есть
         if w in brief:
             part += 8; got = True
         if w in alias:

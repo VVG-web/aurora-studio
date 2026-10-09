@@ -251,7 +251,7 @@ artifact, so the project is set at launch, and the project's slug stands in the 
 
 | Tool | What it does |
 |---|---|
-| `kb_search` | find cards by meaning and words: name, status, gist |
+| `kb_search` | find cards by meaning and words: name, status, gist; an ID like `AC-4.4.3` is matched exactly, as one whole token |
 | `kb_card` | read a card whole |
 | `kb_context` | assemble a context pack for a topic (trust headers) |
 | `kb_index` | the base's table of contents by section |

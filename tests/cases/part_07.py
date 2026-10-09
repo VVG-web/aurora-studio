@@ -1437,6 +1437,55 @@ def test_context_pack_finds_by_words_not_by_phrase(tmp: Path):
 
 
 @test
+def test_search_finds_card_by_dotted_identifier(tmp: Path):
+    """Идентификатор с точкой (AC-4.4.3, US-4.7.2) ищется точно, а не по случайному «ac-4».
+
+    Токенизатор резал «AC-4.4.3» на «ac-4»: запросы про AC-4.4.2, AC-4.4.3 и несуществующий
+    AC-4.4.7 давали одну и ту же тройку карточек с равным весом, по алфавиту. Теперь номер —
+    единый токен (и вариант без префикса), совпадение с именем, заголовком или полем-ключом
+    весит больше любого слова, а AC-4.4.3 не путается ни с AC-4.4.30, ни с AC-4.4.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    C = importlib.import_module("ctx_pack")
+
+    # токенизатор: целиком и без префикса, на своём месте, без обломка «ac-4»
+    assert C.words("что сказано в AC-4.4.3.") == [C.norm("сказано"), "ac-4.4.3", "4.4.3"], \
+        f"идентификатор разбит или потерян: {C.words('что сказано в AC-4.4.3.')}"
+    assert "ac-4.4.3" not in C.words("AC-4.4.30") and "ac-4.4" not in C.words("AC-4.4.30"), \
+        "хвост номера обрезан: AC-4.4.30 стал AC-4.4.3 или AC-4.4"
+    assert C.words("AC-4 и бизнес-процесс") == ["ac-4", "бизнес-процесс"], \
+        "обычные слова с дефисом и числа без точки изменили разбор"
+    assert C.ids("Критерии-US-4.7.2-Центр") == ["us-4.7.2", "4.7.2"], \
+        "номер в имени карточки, склеенном дефисами, не найден"
+
+    root = make_project(tmp)
+    for stem in ("AC-4.4.1-Просмотр", "AC-4.4.3-Фильтр", "AC-4.4.30-Экспорт", "AC-4.4-Реестр"):
+        card(root, f"Concepts/{stem}.md",
+             "Критерий приёмки раздела реестра заявок. Смотри также AC-4.4.1 и AC-4.4.",
+             status="verified", type="concept")
+    card(root, "Concepts/Заявка-на-доработку.md", "Карточка про другое.",
+         status="verified", type="concept", spec_id="SPEC-9.1.2")
+
+    def top(query):
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            cards = C.load_cards()
+            C.measure_rarity(cards)
+            return [c.stem for _, c in C.fuse(cards, query, {})]
+        finally:
+            os.chdir(cwd)
+
+    assert top("AC-4.4.3")[0] == "AC-4.4.3-Фильтр", f"AC-4.4.3 не первый: {top('AC-4.4.3')}"
+    assert top("что сказано в AC-4.4.30")[0] == "AC-4.4.30-Экспорт", \
+        "AC-4.4.30 перепутан с AC-4.4.3"
+    assert top("AC-4.4")[0] == "AC-4.4-Реестр", "AC-4.4 перепутан с AC-4.4.1 и AC-4.4.3"
+    assert top("пункт 4.4.1")[0] == "AC-4.4.1-Просмотр", "номер без префикса не находит карточку"
+    assert top("SPEC-9.1.2")[0] == "Заявка-на-доработку", "поле spec_id не участвует в поиске"
+
+
+@test
 def test_pack_answers_where_development_got_to(tmp: Path):
     """Статус задачи приходит в пак из зеркала Jira, а не из карточек.
 
