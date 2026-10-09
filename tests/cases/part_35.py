@@ -1,4 +1,4 @@
-"""Проверки движка Aurora, часть 35: авторы коммитов — только люди (1.169.1).
+"""Проверки движка Aurora, часть 35: правила кита — авторы коммитов и обезличивание (1.169.1).
 
 Каркас и помощники — tests/harness.py. Правило кита: автор и committer коммита — человек, без
 имени модели, бота и трейлера Co-Authored-By с ними. Ассистент облачной сессии подписывает
@@ -120,12 +120,20 @@ def test_workflows_sign_commits_with_the_person_who_ran_them(tmp: Path):
 
 @test
 def test_contributing_states_roles_and_anonymised_bug_notes_in_both_languages(tmp: Path):
-    """Правила кита (ru и en): ядро обращается к источнику по роли реестра, а не по названию
-    продукта; причины багов в коде, тестах, CHANGELOG и коммитах обезличены (PRJ-A/B/C)."""
+    """Правила кита (ru и en): ядро не узнаёт источник по названию продукта, целевой словарь ролей
+    помечен как не внедрённый и отделён от `role` манифеста, экспортёры коннекторов названы исключением;
+    причины багов в коде, тестах, CHANGELOG и коммитах обезличены (PRJ-A/B/C)."""
     for rel in ("docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md"):
         text = (KIT / rel).read_text(encoding="utf-8")
         for role in ("tasktracker", "projectwiki", "documents", "coderepo", "testmgmt", "webpages"):
             assert f"`{role}`" in text, f"{rel}: роль {role} не названа в правиле"
+        for name in ("jira_export.py", "confluence_export.py", "atlassian_ops.py", "jira_status.py"):
+            assert f"`{name}`" in text, f"{rel}: экспортёр {name} не назван исключением"
+        assert "sources_registry.py" in text and "`role`" in text and "`tasks`" in text, \
+            f"{rel}: не сказано, что сегодня источник берут по полю role манифеста"
         assert "PRJ-A" in text and "PRJ-C" in text and "CHANGELOG.md" in text, \
             f"{rel}: нет правила об обезличивании заметок о багах"
-        assert "connectors/<id>/" in text, f"{rel}: не сказано, что имена продуктов живут в коннекторах"
+    ru = (KIT / "docs/CONTRIBUTING.md").read_text(encoding="utf-8")
+    en = (KIT / "docs/en/CONTRIBUTING.md").read_text(encoding="utf-8")
+    assert "ещё не внедрён" in ru and "is not implemented yet" in en, \
+        "словарь ролей снова подан как действующий"

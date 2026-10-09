@@ -22,12 +22,17 @@ modules, panel sections and skins, and how to release versions. Русская �
 
 ### Roles instead of product names
 
-Kit core code (`scripts/`, `cockpit/`, `reports/`) addresses a source **by its role in the `sources:` registry** —
-`tasktracker`, `projectwiki`, `documents`, `coderepo`, `testmgmt`, `webpages` — not by a product name. The names
-Jira and Confluence live only inside connectors (`connectors/<id>/`) and their manifests. New core code that needs
-"the task tracker" or "the project wiki" takes the source with that role from the registry; a product-name literal
-in the core is a reason to rewrite it, not a pattern to follow. Existing literals move to roles as the roles and
-aliases layer lands (the old names stay as aliases for existing projects).
+Kit core code (`scripts/`, `cockpit/`, `reports/`) must not recognise a source by a product name. The names
+Jira and Confluence live only inside connectors (`connectors/<id>/`) and their manifests. The exception is the export
+scripts of the connectors themselves (`jira_export.py`, `confluence_export.py`, `atlassian_ops.py`, `jira_status.py`):
+they are connector code even though they sit in `scripts/`; the rule covers the rest of the core.
+
+Today a source is chosen by the `role` field of the connector manifest (`tasks`, `artifacts`, `raw`; it is also the
+source of trust) through `scripts/sources_registry.py`. New core code picks a source that way, and a product-name
+literal in the core is a reason to rewrite it, not a pattern to follow. The target vocabulary of the roles layer —
+`tasktracker`, `projectwiki`, `documents`, `coderepo`, `testmgmt`, `webpages` — is not implemented yet: it is a
+different vocabulary from the manifest `role`, and code cannot refer to it for now. Existing literals move to roles as
+the roles and aliases layer lands (the old names stay as aliases for existing projects).
 
 ### Notes on the cause of a bug are anonymised
 
