@@ -2,13 +2,15 @@ name: engine-tests
 on: [push, pull_request]
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    # Основная проверка — на актуальной версии Python, которую кит рекомендует аналитикам
+    # (docs/CONTRIBUTING.md): 3.14. Нижняя поддерживаемая (3.11) проверяется заданием floor.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       # Зеркало Confluence разбирает страницы через beautifulsoup4 и markdownify — их
       # аналитик ставит из «Установки» панели. Без них восемь проверок синка падали
       # здесь «No module named 'bs4'», и проверка кита не была зелёной ни разу с 28.08.
@@ -33,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - name: Commit authors are people
@@ -46,23 +48,42 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           OWNER_ID: ${{ github.repository_owner_id }}
         run: python3 .github/scripts/check_authors.py "$BASE" "$HEAD_SHA"
-  oldest-python:
-    # README обещает Python 3.9+, а системный Python macOS — 3.9. Строка, понятная только
-    # 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на нём целиком с 1.112.0
-    # по 1.143.0, и проверка на 3.12 этого не видела.
-    runs-on: ubuntu-22.04
+  floor:
+    # Нижняя поддерживаемая версия — Python 3.11 (политика версий, BL-DEC-01). Строка, понятная
+    # только 3.12+ (кавычки того же вида внутри f-строки), роняла kb_lint на старом Python целиком
+    # с 1.112.0 по 1.143.0, и проверка на новой версии этого не видела. Задание блокирующее:
+    # выпуск ждёт его вместе с основным.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
-      - name: Engine compiles on the oldest supported Python
+          python-version: "3.11"
+      - name: Engine compiles on the lowest supported Python
         run: python3 -m compileall -q scripts cockpit reports aurora.py tests
       - name: Engine dependencies
         run: python3 -m pip install --quiet -r requirements.txt
-      - name: Full suite on the oldest supported Python
+      - name: Full suite on the lowest supported Python
         run: python3 tests/run_tests.py
+  legacy-310:
+    # Python 3.10 снят с поддержки 2026-10-01: движок на нём работает, но с предупреждением.
+    # Задание не блокирует выпуск (continue-on-error); убрать после 2027-04, когда 3.10 перестанет
+    # быть «работает с предупреждением» (календарь пересмотра — в политике версий).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Engine compiles on Python 3.10
+        run: python3 -m compileall -q scripts cockpit reports aurora.py tests
+      - name: Engine dependencies
+        run: python3 -m pip install --quiet -r requirements.txt
+      - name: Smoke (source-scan invariants)
+        run: python3 tests/run_tests.py --smoke
   windows:
     # Кит ставят и на Windows (start-aurora.bat, install_aurora.py). Кодировка консоли и
     # файлов там cp125x, пути с «\\», открытые файлы нельзя переименовать, нет fcntl и
@@ -70,6 +91,10 @@ jobs:
     # включает.
     runs-on: windows-latest
     timeout-minutes: 30
+    # Python 3.14 (бинарная сборка с патчами; для 3.12 setup-python на Windows берёт старую 3.12.10).
+    # Пока матрица ОС × Python вводится по одному заданию (BL-DEC-02), красный Windows не блокирует
+    # выпуск; убрать continue-on-error после первых зелёных прогонов на 3.14.
+    continue-on-error: true
     # Полный прогон на Windows занимает ~12 минут, а выпуск ждёт все проверки: набор режется на
     # три доли, и каждая идёт на своей машине (`--shard=i/3` — каждая третья проверка).
     strategy:
@@ -77,10 +102,10 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Engine dependencies
         run: python -m pip install --quiet -r requirements.txt
       - name: Smoke (source-scan invariants)
@@ -90,3 +115,23 @@ jobs:
       - name: Full suite (shard ${{ matrix.shard }} of 3)
         if: success() || failure()
         run: python tests/run_tests.py --shard=${{ matrix.shard }}/3
+  macos:
+    # Кит ставят и на macOS (start-aurora.command, install_aurora.py): системный Python там старый,
+    # пути и оболочка другие, а CI до сих пор macOS не покрывал. Пока неблокирующее
+    # (continue-on-error): сделать блокирующим, когда задание станет стабильно зелёным.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Engine dependencies
+        run: python3 -m pip install --quiet -r requirements.txt
+      - name: Smoke (source-scan invariants)
+        run: python3 tests/run_tests.py --smoke
+      # Полный набор идёт и после красной проверки инвариантов: за один прогон нужен весь список падений.
+      - name: Full suite
+        if: success() || failure()
+        run: python3 tests/run_tests.py

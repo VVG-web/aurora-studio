@@ -293,8 +293,8 @@ as a list, no shell, an undeclared flag is rejected) and does not accept arbitra
 | The golden corpus | the same run, data in `tests/corpus/` | "the engine sees real shapes as it did yesterday": homoglyphs, duplicates, legacy headers |
 | The live base | `python3 tests/smoke_live.py <project>` | "nothing moved on this project": a snapshot of numbers and names inside the project itself |
 
-CI (`.github/workflows/test.yml`) runs smoke and the full suite on Python 3.12, and compilation plus smoke on
-the oldest Python version that is still checked (policy: 3.11+ is supported, 3.10 works with a warning, anything older stops). Releasing a version — the tag and the GitHub Release — is done by
+CI (`.github/workflows/test.yml`) runs smoke and the full suite on Python 3.14, the full suite on the lowest supported 3.11, compilation plus smoke
+on 3.10 (non-blocking), and Windows and macOS (non-blocking for now) (policy: 3.11+ is supported, 3.10 works with a warning, anything older stops). Releasing a version — the tag and the GitHub Release — is done by
 `.github/workflows/release.yml` after green checks on `master`, if `VERSION` has no Release yet (details in
 [CONTRIBUTING](CONTRIBUTING.md#versions-and-releases)).
 

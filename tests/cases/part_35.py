@@ -107,7 +107,7 @@ def test_workflows_sign_commits_with_the_person_who_ran_them(tmp: Path):
                 f"{wf.name}: коммитит, но автор — не запустивший человек"
             assert '*"[bot]") ACTOR="$OWNER"' in text, f"{wf.name}: бот остаётся автором"
     test_yml = (WORKFLOWS / "test.yml").read_text(encoding="utf-8")
-    job = test_yml[test_yml.index("  authors:"):test_yml.index("  oldest-python:")]
+    job = test_yml[test_yml.index("  authors:"):test_yml.index("  floor:")]
     assert "fetch-depth: 0" in job and ".github/scripts/check_authors.py" in job, job
     assert "github.event.pull_request.base.sha || github.event.before" in job, job
     contributing = (KIT / "docs" / "CONTRIBUTING.md").read_text(encoding="utf-8")
@@ -116,6 +116,47 @@ def test_workflows_sign_commits_with_the_person_who_ran_them(tmp: Path):
     settings = json.loads((KIT / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert settings.get("attribution") == {"commit": "", "pr": "", "sessionUrl": False}, \
         "ассистент в репозитории кита снова допишет в коммит и PR свою подпись"
+
+
+@test
+def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Path):
+    """CI-матрица ОС x Python (BL-DEC-02): блокирующие `tests` (3.14) и `floor` (3.11), неблокирующие
+    `legacy-310`, `windows` (3.14) и `macos` (3.14); имя workflow не менялось (от него зависит release.yml),
+    release-проверка и ruff на месте, действия не на снятом с раннеров Node 20 (checkout/setup-python v4/v5).
+    YAML локально не разобрать (нет pyyaml), поэтому структура проверяется по тексту."""
+    text = (WORKFLOWS / "test.yml").read_text(encoding="utf-8")
+    assert text.startswith("name: engine-tests\n"), "имя workflow изменено: release.yml перестанет ждать проверки"
+    assert "workflows: [engine-tests]" in (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert "\t" not in text, "табуляция в YAML"
+    lines = text.split("\n")
+    start = lines.index("jobs:")
+    jobs: dict = {}
+    cur = None
+    for ln in lines[start + 1:]:
+        m = re.match(r"^  ([a-z0-9-]+):\s*$", ln)
+        if m:
+            cur = m.group(1)
+            jobs[cur] = []
+        elif cur is not None:
+            jobs[cur].append(ln)
+    assert list(jobs) == ["tests", "authors", "floor", "legacy-310", "windows", "macos"], list(jobs)
+    body = {k: "\n".join(v) for k, v in jobs.items()}
+    for name, py in (("tests", "3.14"), ("floor", "3.11"), ("legacy-310", "3.10"),
+                     ("windows", "3.14"), ("macos", "3.14")):
+        assert re.search(rf'^\s+python-version: "{re.escape(py)}"$', body[name], re.M), (name, py)
+    assert "runs-on: windows-latest" in body["windows"] and "runs-on: macos-latest" in body["macos"]
+    for name in ("legacy-310", "windows", "macos"):
+        assert re.search(r"^    continue-on-error: true$", body[name], re.M), f"{name}: должен быть неблокирующим"
+    for name in ("tests", "authors", "floor"):
+        assert "continue-on-error" not in body[name], f"{name}: блокирует выпуск, его нельзя ослаблять"
+    assert "tests/check_release.py" in body["tests"] and "tests/run_tests.py --smoke" in body["tests"]
+    assert "ruff check --select F401,F841,B023" in body["tests"]
+    assert "tests/run_tests.py" in body["floor"] and "compileall" in body["floor"]
+    assert "--shard=${{ matrix.shard }}/3" in body["windows"]
+    for wf in sorted(WORKFLOWS.glob("*.yml")):
+        src = wf.read_text(encoding="utf-8")
+        assert not re.search(r"actions/(checkout@v[1-5]|setup-python@v[1-5])\b", src), \
+            f"{wf.name}: действие на снятом Node 20"
 
 
 @test
