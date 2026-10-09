@@ -121,9 +121,10 @@ def test_workflows_sign_commits_with_the_person_who_ran_them(tmp: Path):
 @test
 def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Path):
     """CI-матрица ОС x Python (BL-DEC-02): блокирующие `tests` (3.14) и `floor` (3.11), неблокирующие
-    `legacy-310`, `windows` (3.14) и `macos` (3.14); имя workflow не менялось (от него зависит release.yml),
+    `newer-python` (3.12 и 3.13), `legacy-310`, `windows` (3.14) и `macos` (3.14); имя workflow не менялось (от него зависит release.yml),
     release-проверка и ruff на месте, действия не на снятом с раннеров Node 20 (checkout/setup-python v4/v5).
-    YAML локально не разобрать (нет pyyaml), поэтому структура проверяется по тексту."""
+    Структура проверяется по тексту: pyyaml в тестовом окружении нет (штатный разбор — `ruby -ryaml`).
+    Документы называют те же задания и версии; в тексте нет сросшихся скобок политики версий."""
     text = (WORKFLOWS / "test.yml").read_text(encoding="utf-8")
     assert text.startswith("name: engine-tests\n"), "имя workflow изменено: release.yml перестанет ждать проверки"
     assert "workflows: [engine-tests]" in (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
@@ -139,13 +140,16 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
             jobs[cur] = []
         elif cur is not None:
             jobs[cur].append(ln)
-    assert list(jobs) == ["tests", "authors", "floor", "legacy-310", "windows", "macos"], list(jobs)
+    assert list(jobs) == ["tests", "authors", "floor", "newer-python", "legacy-310", "windows", "macos"], list(jobs)
     body = {k: "\n".join(v) for k, v in jobs.items()}
     for name, py in (("tests", "3.14"), ("floor", "3.11"), ("legacy-310", "3.10"),
                      ("windows", "3.14"), ("macos", "3.14")):
         assert re.search(rf'^\s+python-version: "{re.escape(py)}"$', body[name], re.M), (name, py)
     assert "runs-on: windows-latest" in body["windows"] and "runs-on: macos-latest" in body["macos"]
-    for name in ("legacy-310", "windows", "macos"):
+    assert re.search(r'^        python: \["3\.12", "3\.13"\]$', body["newer-python"], re.M), "матрица newer-python"
+    assert "runs-on: ubuntu-24.04" in body["newer-python"] and "fail-fast: false" in body["newer-python"]
+    assert "tests/run_tests.py" in body["newer-python"] and "compileall" in body["newer-python"]
+    for name in ("newer-python", "legacy-310", "windows", "macos"):
         assert re.search(r"^    continue-on-error: true$", body[name], re.M), f"{name}: должен быть неблокирующим"
     for name in ("tests", "authors", "floor"):
         assert "continue-on-error" not in body[name], f"{name}: блокирует выпуск, его нельзя ослаблять"
@@ -157,6 +161,17 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
         src = wf.read_text(encoding="utf-8")
         assert not re.search(r"actions/(checkout@v[1-5]|setup-python@v[1-5])\b", src), \
             f"{wf.name}: действие на снятом Node 20"
+    # Документация называет те же задания; ADR не обещает того, чего в CI нет.
+    for rel in ("docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md"):
+        doc = (KIT / rel).read_text(encoding="utf-8")
+        assert "`newer-python`" in doc and "3.12 " in doc and "3.13" in doc, f"{rel}: newer-python не описан"
+        assert "( 3." not in doc, f"{rel}: сросшиеся скобки политики версий"
+    for rel in ("docs/architecture.md", "docs/en/architecture.md"):
+        doc = (KIT / rel).read_text(encoding="utf-8")
+        assert ") (" not in doc[doc.index("test.yml"):doc.index("test.yml") + 700], f"{rel}: две скобочные вставки подряд"
+    adr = (KIT / "docs" / "decisions" / "ADR-059-deployment-profiles.md").read_text(encoding="utf-8")
+    assert "`oldest-python` заменено" in adr and "`newer-python`" in adr, "ADR-059 расходится с заданиями CI"
+    assert "блокирующее задание на 3.11 и 3.12" not in adr
 
 
 @test

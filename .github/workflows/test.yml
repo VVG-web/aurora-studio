@@ -66,6 +66,29 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt
       - name: Full suite on the lowest supported Python
         run: python3 tests/run_tests.py
+  newer-python:
+    # Промежуточные версии между нижней (3.11) и основной (3.14): системная на Ubuntu 24.04 — 3.12,
+    # у аналитиков с Homebrew чаще всего 3.13. Политика версий (BL-DEC-01) обещает «3.11+ тестируем»,
+    # регрессия, видная только на одной из них, иначе CI не заметит. Пока неблокирующее, как и
+    # остальные новые задания матрицы ОС × Python (BL-DEC-02); блокирующим — после зелёных прогонов.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Engine compiles on Python ${{ matrix.python }}
+        run: python3 -m compileall -q scripts cockpit reports aurora.py tests
+      - name: Engine dependencies
+        run: python3 -m pip install --quiet -r requirements.txt
+      - name: Full suite on Python ${{ matrix.python }}
+        run: python3 tests/run_tests.py
   legacy-310:
     # Python 3.10 снят с поддержки 2026-10-01: движок на нём работает, но с предупреждением.
     # Задание не блокирует выпуск (continue-on-error); убрать после 2027-04, когда 3.10 перестанет

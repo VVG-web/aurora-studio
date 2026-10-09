@@ -97,7 +97,7 @@ flowchart LR
   B --> C["A fresh project<br>aurora.py new in a temp folder"]
   C --> D["The full run<br>run_tests.py"]
   D --> E["VERSION · CHANGELOG<br>commit vX.Y.Z"]
-  E --> F["CI<br>Python 3.14, 3.11 and OSes"]
+  E --> F["CI<br>Python 3.11–3.14 and OSes"]
   F --> G["release.yml<br>tag and Release"]
 ```
 
@@ -130,10 +130,12 @@ established first, not guessed from the symptom.
 
 CI (`.github/workflows/test.yml`; do not rename the `engine-tests` workflow: `release.yml` depends on it):
 `tests` runs the release check, `--smoke`, the full suite and ruff on Python 3.14; `floor` compiles and runs the full suite
-on the lowest supported 3.11 (blocks the release); `legacy-310` compiles and runs `--smoke` on 3.10, does not block and goes
+on the lowest supported 3.11 (blocks the release); `newer-python` compiles and runs the full suite on 3.12 and 3.13 (non-blocking for now); `legacy-310` compiles and runs `--smoke` on 3.10, does not block and goes
 away after 2027-04; `windows` (3.14, three shards) and `macos` (3.14) are non-blocking for now (`continue-on-error`) and become
-blocking after stable green runs. Version policy ( 3.11+ is supported and tested, 3.10 works with a warning, anything older stops;
-the thresholds live in `scripts/aurora_common.py`, the version guard in `aurora.py` and at the top of `aurora_common.py`, so
+blocking after stable green runs.
+
+Version policy: 3.11+ is supported and tested, 3.10 works with a warning, anything older stops.
+The thresholds live in `scripts/aurora_common.py`, the version guard in `aurora.py` and at the top of `aurora_common.py`, so
 those two files must stay readable to an old Python). Do not write syntax only newer versions understand (for example quotes of the same kind inside an
 f-string).
 
