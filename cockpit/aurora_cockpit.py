@@ -26,6 +26,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -1500,6 +1501,21 @@ def _http_get(url: str, limit: int, timeout: int = 20) -> bytes:
     if len(data) > limit:
         raise ValueError("ответ больше ожидаемого")
     return data
+
+
+def issue_facts() -> dict:
+    """Что подставить в форму обращения: адрес репозитория кита (форк — свой), ОС, Python.
+    Имён проектов и путей здесь нет: обращение уходит в открытый репозиторий."""
+    if "issue_facts" not in CACHE:
+        try:
+            web = kit_repo()[2]
+        except Exception:  # noqa: BLE001 — без git и сети кнопка ведёт в кит по умолчанию
+            web = KIT_REPO
+        system = platform.system()
+        CACHE["issue_facts"] = {
+            "repo": web, "python": platform.python_version(),
+            "os": {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}.get(system, "")}
+    return CACHE["issue_facts"]
 
 
 def kit_repo() -> tuple:
@@ -4364,7 +4380,9 @@ class Handler(BaseHTTPRequestHandler):
                 p["activity"] = project_activity(p["path"])
             core = (q.get("part") or [""])[0] == "core"
             self.send_json({
-                "kit": {"version": kit_version(), "path": KIT},
+                # Репозиторий, ОС и Python — для формы обращения на GitHub (1.169.0): то, что
+                # панель знает наверняка и что можно отдать в открытый репозиторий.
+                "kit": {"version": kit_version(), "path": KIT, **issue_facts()},
                 # `stale_process` живёт ВНУТРИ `ui`: панель читает его как `ui.stale_process`,
                 # и пока он лежал рядом, предупреждение не срабатывало ни разу. Случай
                 # ровно тот, ради которого оно заведено: разметка отдаётся с диска

@@ -839,5 +839,8 @@
   "kb.pending_fix": "Since the last update, “Update the base” has run but “Fix the base” has not yet.",
   "route.kb_updated": "✓ The knowledge base is updated: the date is in AuroraKnowledgeDB/meta/kb_updated.json and goes to git with the route result.",
   "route.kb_update_needs_fix": "The base update date moves after “Fix the base”: an update is both routes.",
-  "route.kb_updated_failed": "Could not record the base update date: {why}"
+  "route.kb_updated_failed": "Could not record the base update date: {why}",
+  "issue.bug_btn": "Bug",
+  "issue.bug_title": "Report a bug on GitHub: the form opens with the version and the section filled in",
+  "issue.context": "Panel section: {section} ({view}) · panel {ui} · language {lang}\nBrowser: {browser}"
 }

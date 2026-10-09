@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.168.0";
+const UI_VERSION = "1.169.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1163,6 +1163,37 @@ function navClick(b){
   show(view);
 }
 $$("nav button").forEach(b => b.onclick = () => navClick(b));
+/* ---------------- обращение на GitHub ---------------- */
+// Шаблоны обращений кита — «Баг» и «Предложение» (`.github/ISSUE_TEMPLATE/`). Форма
+// открывается в браузере уже заполненной тем, что панель знает наверняка: версия кита и
+// панели, ОС, Python, раздел, откуда нажали. Имён проектов и путей нет: репозиторий
+// открытый, а в них — имена клиентов и адреса контуров. Версия и ОС в формах — списки:
+// GitHub выберет вариант только при точном совпадении, а версию старше пяти последних
+// оставит человеку — отметить «old».
+const ISSUE_AREA = "Панель управления (cockpit)";        // данные движка: вариант формы issue
+function viewLabel(view){
+  const b = $(`nav button[data-view="${view}"] .label`);
+  return (b && b.textContent.trim()) || view || "—";
+}
+function issueUrl(kind){
+  const k = (S.state && S.state.kit) || {};
+  const repo = k.repo || "https://github.com/VVG-web/aurora-studio";
+  const q = new URLSearchParams();
+  const where = t("issue.context", {section: viewLabel(S.view), view: S.view || "—", ui: UI_VERSION,
+                                    lang: S.lang || "ru", browser: navigator.userAgent});
+  const bug = kind !== "feature";
+  q.set("template", bug ? "bug_report.yml" : "feature_request.yml");
+  if (bug) q.set("area", ISSUE_AREA);
+  if (k.version) q.set("version", k.version);
+  if (k.os) q.set("os", k.os);
+  if (bug && k.python) q.set("python", k.python);
+  q.set("extra", where);
+  return repo.replace(/\/+$/, "") + "/issues/new?" + q.toString();
+}
+function openIssue(kind){
+  window.open(issueUrl(kind), "_blank", "noopener");
+}
+$("#bugBtn").onclick = () => openIssue("bug");
 $("#themeBtn").onclick = ()=>{
   const now = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = now;
@@ -4166,7 +4197,7 @@ function moduleCtx(id, root){
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
-         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo},
+         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo, openIssue, issueUrl},
     openPath, isEngineCmd, hideDev, openProject,
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.

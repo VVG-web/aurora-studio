@@ -42,6 +42,12 @@ changes in `master` the `issue-form-versions` workflow rewrites the list (the sc
 `.github/scripts/issue_form_versions.py`). The lines between `# versions:begin` and `# versions:end` in the forms are not
 edited by hand.
 
+From the panel the form opens already filled in: the **🐞 Bug** button in the header of every page and
+"Report a bug" / "Suggest an improvement" in the About section. The panel fills in the kit and panel
+versions, OS, Python and the section the button was pressed in; project names and paths are not sent. A
+fork of the kit leads to its own repository — by the `origin` address or `AURORA_KIT_REPO`. A version older than the five in the list is not
+preselected — pick `old`.
+
 All issues are collected on the project's kanban board (GitHub Projects), field **Status**:
 
 | Column | Meaning |

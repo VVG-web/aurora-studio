@@ -34,5 +34,11 @@
   "about.busy": "Running now: {what}. The update will wait until the run ends.",
   "about.in_git": "In git ({where})",
   "about.installed": "Installed here",
-  "about.unpublished": "Version {v} is not published: git has {git}, the new one exists only here"
+  "about.unpublished": "Version {v} is not published: git has {git}, the new one exists only here",
+  "about.feedback": "Feedback",
+  "about.feedback_about": "Found a bug or know how to make it better — write on GitHub. The form opens with the kit version, OS and Python filled in; describe what happened.",
+  "about.report_bug": "Report a bug",
+  "about.request_feature": "Suggest an improvement",
+  "about.open_issues": "Open issues",
+  "about.feedback_privacy": "The repository is public: do not paste customer names, Jira and Confluence addresses, tokens or exports — replace them with <project>, <instance>, ***."
 }

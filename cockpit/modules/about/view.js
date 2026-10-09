@@ -39,6 +39,19 @@ export async function refresh(ctx){
     row(t("about.on_disk"),
       el("span", {class:"mono", style:"flex:1;word-break:break-all"}, a.path))));
 
+  // Обратная связь (1.169.0): формы обращений кита на GitHub — баг и предложение, — уже
+  // заполненные версией, ОС и Python. Сюда же — список открытых, чтобы не дублировать.
+  box.append(el("h2", {}, t("about.feedback")));
+  box.append(el("div", {class:"card", style:"padding:18px"},
+    el("p", {class:"sub", style:"margin-top:0"}, t("about.feedback_about")),
+    el("div", {class:"row", style:"gap:10px;flex-wrap:wrap"},
+      el("button", {class:"btn primary", onclick: () => ctx.ui.openIssue("bug")}, t("about.report_bug")),
+      el("button", {class:"btn", onclick: () => ctx.ui.openIssue("feature")}, t("about.request_feature")),
+      a.repo || ctx.state.kit.repo
+        ? el("a", {class:"btn", href: (ctx.state.kit.repo || a.repo) + "/issues", target:"_blank",
+                   rel:"noreferrer"}, t("about.open_issues")) : null),
+    el("p", {class:"muted", style:"font-size:12.5px;margin:10px 0 0"}, t("about.feedback_privacy"))));
+
   box.append(el("h2", {}, t("about.update_kit")));
   box.append(updateCard(ctx));
 
