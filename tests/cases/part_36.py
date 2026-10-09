@@ -13,9 +13,11 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
+from datetime import datetime
 
 from harness import KIT, SCRIPTS, card, make_project, run, test, ui_source  # noqa: F401
 
@@ -651,16 +653,19 @@ def _cron_ck():
     """Минимальная «панель» для планировщика: проекты свободны, движок не отстаёт."""
     class Ck:
         DEFAULT_LANG = "ru"
+        marks: list = []
 
         def mark_running(self, *a):
-            pass
+            self.marks.append(a)
 
         def project_activity(self, project):
             return {}
 
         def version_gap(self, project):
             return ""
-    return Ck()
+    ck = Ck()
+    ck.marks = []                   # вызовы mark_running — для проверки «отметка снята»
+    return ck
 
 
 def _wait_idle(sch, seconds=10):
@@ -762,9 +767,11 @@ def test_cron_watchdog_frees_a_run_whose_thread_died(tmp: Path):
     restore = set_home(tmp)
     try:
         import cron as CRON
-        sch = CRON.Scheduler(_cron_ck(), lambda: [])
+        ck = _cron_ck()
+        sch = CRON.Scheduler(ck, lambda: [])
         run = {"id": "20261009-100000-aaaa", "task": "t1", "name": "x", "status": "running",
-               "started": CRON.now_iso(), "finished": "", "items": []}
+               "started": CRON.now_iso(), "finished": "",
+               "items": [{"project": "/p/a", "status": "running"}, {"project": "/p/b", "status": "passed"}]}
         CRON.save_run(run)
         gate = threading.Event()
         alive = threading.Thread(target=gate.wait, daemon=True)
@@ -778,6 +785,11 @@ def test_cron_watchdog_frees_a_run_whose_thread_died(tmp: Path):
         assert sch.current is None
         saved = CRON._read_json(CRON.run_path(run["id"]), {})
         assert saved["status"] == "failed" and saved["error"] == "run_thread_lost", saved
+        # отметка «идёт работа» снята, пункт не остался «идущим» (иначе обновление кита отказывает)
+        assert ("cron-" + run["id"], "", "", False) in ck.marks, ck.marks
+        by = {it["project"]: it for it in saved["items"]}
+        assert by["/p/a"]["status"] == "interrupted" and by["/p/a"]["note"] == "run_thread_lost", by
+        assert by["/p/b"]["status"] == "passed", by
     finally:
         restore()
 
@@ -836,3 +848,79 @@ def test_scheduled_routes_are_pruned_from_the_registry(tmp: Path):
     finally:
         ck.ROUTES.clear()
         ck.ROUTES.update(saved)
+
+
+@test
+def test_cron_side_writes_do_not_break_the_tick(tmp: Path):
+    """`recover` и `_missed` пишут прогон через защищённую запись: сбой диска не обрывает тик
+    и запуск панели, а задание, чей прогон не создался, видно в Консоли."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        sch = CRON.Scheduler(_cron_ck(), lambda: [])
+        stale = {"id": "20261001-100000-bbbb", "task": "t1", "name": "x", "status": "running",
+                 "started": CRON.now_iso(), "finished": "", "panel": 0,
+                 "items": [{"project": "/p/a", "status": "running"}]}
+        CRON.save_run(stale)
+        orig = CRON.save_run
+
+        def broken(run):
+            raise OSError("диск полон")
+        CRON.save_run = broken
+        try:
+            sch.recover()                                        # не бросает
+            sch.queue.clear()                                    # продолжение свежего — не предмет проверки
+            sch._missed({"id": "t1", "name": "x"}, datetime.now(), "already_running")
+            CRON.save_tasks([{"id": "t9", "name": "девятая", "order": "projects", "on_fail": "next",
+                              "steps": [{"kind": "cmd", "project": "/p/a", "cmd": "kb:x", "args": []}]}])
+            sch.queue.append(("t9", "manual", ""))
+            sch._next()                                          # _new_run падает на save_run
+        finally:
+            CRON.save_run = orig
+        assert sch.current is None and not sch.queue, (sch.current, sch.queue)
+        assert any("запись прогона не удалась" in line for line in sch.stream), sch.stream
+        assert any("прогон не создан" in line for line in sch.stream), sch.stream
+    finally:
+        restore()
+
+
+@test
+def test_route_run_ids_differ_within_one_second(tmp: Path):
+    """Ключ реестра ROUTES — `run_id`: два маршрута, стартовавшие в одну секунду (кнопка и
+    расписание в разных проектах), получают разные номера, суффикс «-route» остаётся."""
+    _path()
+    import route_runner as RR
+
+    class Ck:
+        def runs_dir(self, project):
+            return str(tmp / "runs")
+
+        def who(self, project):
+            return ""
+
+        def kit_version(self):
+            return ""
+    orig, orig_texts = RR._slug, RR.Texts
+    RR._slug, RR.Texts = (lambda: "20261009-100000Z"), (lambda ck, lang: None)
+    try:
+        ids = {RR.RouteRun(Ck(), str(tmp), {"id": "update", "title": "t"}).run_id for _ in range(8)}
+    finally:
+        RR._slug, RR.Texts = orig, orig_texts
+    assert len(ids) == 8, ids
+    assert all(re.fullmatch(r"20261009-100000Z-[0-9a-f]{4}-route", i) for i in ids), ids
+    src = (KIT / "cockpit" / "route_runner.py").read_text(encoding="utf-8")
+    assert ").safe_run()" in src.split("def run_route")[1].split("def main")[0], "CLI идёт мимо safe_run"
+
+
+@test
+def test_cron_run_detail_shows_run_level_error(tmp: Path):
+    """Деталь прогона: ответ-ошибка API (без id) — «не найден», а `error` самого прогона
+    показывается подписью из каталога; ключи есть в обоих языках."""
+    base = KIT / "cockpit" / "modules" / "cron"
+    js = (base / "view.js").read_text(encoding="utf-8")
+    assert "run.error && !run.id" in js and "note(ctx, run.error)" in js
+    for lang in ("ru", "en"):
+        cat = json.loads((base / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert "cron.note.run_thread_lost" in cat and "cron.save_error" in cat, lang

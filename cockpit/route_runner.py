@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import threading
 import time
 
@@ -373,7 +374,9 @@ class RouteRun:
         # и сдвиг HEAD — честный признак, что база менялась. По нему расписание отличает
         # «застрял на хвосте, проект обновлён» от «не обновилось ничего» (6.10.2026).
         self.head0 = _head(project)
-        self.run_id = _slug() + "-route"
+        # Хвост в две пары шестнадцатеричных знаков: маршруты двух проектов, стартовавшие в одну
+        # секунду, иначе делили ключ реестра ROUTES и затирали друг друга. Суффикс «-route» остаётся.
+        self.run_id = f"{_slug()}-{secrets.token_hex(2)}-route"
         self.base = os.path.join(ck.runs_dir(project), self.run_id)
         self.journal = Journal(self.base)
         self.started = time.time()
@@ -807,7 +810,7 @@ def run_route(ck, project: str, sc_id: str, write: bool = True, **kw) -> dict:
     if not sc:
         return {"ok": False, "reason": "failed", "failed": "", "steps": 0, "lines": [],
                 "note": f"маршрута «{sc_id}» нет в cockpit/scenarios.txt"}
-    return RouteRun(ck, project, sc, write, **kw).run()
+    return RouteRun(ck, project, sc, write, **kw).safe_run()
 
 
 def main(argv=None) -> int:

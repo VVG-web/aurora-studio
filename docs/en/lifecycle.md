@@ -129,7 +129,7 @@ but the panel itself must be running. Rules:
 - a failure does not wedge the scheduler. An unexpected exception in a step (not a regular failure) marks the item
   failed, with the reason and traceback in the step log, and follows the same "a project is the unit of a chain"
   rule; the route is closed with a record instead of staying "running". A failure to write the run to disk (disk
-  full, file held by a reader) goes to the Console and does not break the chain; the run's outcome is written twice,
+  full, file held by a reader) goes to the Console and does not break the chain; on a failure the run's outcome is written again a second later,
   and the scheduler is released in any case, so the next chain starts. On every tick a watchdog drops a run whose
   thread has died and marks it in the history as `run_thread_lost`;
 - a stall at the tail while the base did change during the route is "partly", not a failure: the project is updated

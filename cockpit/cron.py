@@ -518,7 +518,7 @@ class Scheduler:
             for it in run.get("items", []):
                 if it.get("status") == "running":
                     it["status"], it["note"] = "interrupted", "panel_restart"
-            save_run(run)
+            self._save(run)
             if fresh and run.get("task") and not run.get("resumed_by"):
                 self.queue.append((run["task"], "resume", run["id"]))
 
@@ -567,7 +567,7 @@ class Scheduler:
                "task": task["id"], "name": task["name"], "trigger": "schedule",
                "status": "missed", "slot": now_iso(s), "started": now_iso(),
                "finished": now_iso(), "items": [], "note": why}
-        save_run(run)
+        self._save(run)                      # сбой записи не должен оборвать тик до `fired` и `_next`
         trim_runs()
 
     def enqueue(self, task_id: str, trigger: str = "manual", resume: str = "") -> dict:
@@ -596,6 +596,8 @@ class Scheduler:
                     # Прогон не создан (диск, права): это задание пропущено, остальные идут.
                     print(f"cron: прогон «{task_id}» не создан — {type(e).__name__}: {e}",
                           flush=True)
+                    self.say(f"⚠ задание «{task_id}» пропущено: прогон не создан "
+                             f"({type(e).__name__}: {e})")
                     continue
                 self.current = run
                 self.stop_event = threading.Event()
@@ -630,7 +632,14 @@ class Scheduler:
         cur["status"] = "failed" if cur.get("status") == "running" else cur.get("status")
         cur["error"] = cur.get("error") or "run_thread_lost"
         cur["finished"] = cur.get("finished") or now_iso()
+        for it in cur.get("items", []):
+            if it.get("status") == "running":      # пункт не останется «идущим» в истории
+                it["status"], it["note"] = "interrupted", "run_thread_lost"
         self._save(cur)
+        try:                                       # отметка «идёт работа» снимается и здесь:
+            self.ck.mark_running("cron-" + str(cur.get("id")), "", "", False)   # иначе обновление
+        except Exception:  # noqa: BLE001                                      # кита отказывает
+            pass
         self._next()
 
     def find(self, task_id: str) -> dict | None:

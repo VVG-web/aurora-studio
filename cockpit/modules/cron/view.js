@@ -438,12 +438,15 @@ async function drawDetail(ctx, id, box){
   const {t, el} = ctx;
   const run = await ctx.api("/api/cron/run?id=" + encodeURIComponent(id), {quiet: true});
   box.innerHTML = "";
-  if (!run || run.error) return box.append(el("div", {class: "muted"}, t("cron.no_detail")));
+  // Ответ-ошибка API — {error} без id; у самого прогона `error` — причина сбоя (run_thread_lost…).
+  if (!run || (run.error && !run.id)) return box.append(el("div", {class: "muted"}, t("cron.no_detail")));
   if (run.status === "missed")
     box.append(el("div", {class: "muted", style: "padding:6px 12px"},
       t(run.note === "already_running" ? "cron.missed_running" : "cron.missed_line",
         {when: ctx.fmt.when(run.slot)})));
-  if (run.error) box.append(el("div", {class: "err"}, run.error));
+  if (run.error) box.append(el("div", {class: "err"}, note(ctx, run.error)));
+  if (run.save_error) box.append(el("div", {class: "muted", style: "padding:6px 12px"},
+    t("cron.save_error", {why: run.save_error})));
   (run.items || []).forEach(it => {
     box.append(el("div", {style: "padding:0 12px"}, itemRow(ctx, it)));
     if (it.log && it.log.length)
