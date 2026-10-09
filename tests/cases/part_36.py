@@ -604,3 +604,42 @@ def test_a_template_that_does_not_fit_the_window_is_refused_by_name(tmp: Path):
     assert not res.get("ok") and "«Templates/T.md»" in res["why"] \
         and "200 000" in res["why"], res
     assert not seen, "модель вызвана на обрезанном шаблоне"
+
+
+@test
+def test_decision_records_follow_the_madr_format(tmp: Path):
+    """Записи docs/decisions: файл, статус и все семь разделов MADR на месте (BL-ARC-01).
+
+    ADR порядка разблокировки лежат в открытой папке и до приёмки владельцем остаются
+    `proposed`; без обязательных разделов запись превращается в пожелание, а без статуса
+    непонятно, принята ли она. Таблица в README должна называть ровно существующие файлы."""
+    import re
+    base = KIT / "docs" / "decisions"
+    readme = (base / "README.md").read_text(encoding="utf-8")
+    sections = ["Контекст и проблема", "Факторы решения", "Рассмотренные варианты", "Решение",
+                "Последствия", "Проверка", "Дополнительно"]
+    expected = {"ADR-026": "ADR-026-owner-consent-for-executable-content.md",
+                "ADR-059": "ADR-059-deployment-profiles.md",
+                "ADR-060": "ADR-060-dependency-policy.md",
+                "ADR-066": "ADR-066-version-and-release-policy.md"}
+    for num, name in expected.items():
+        path = base / name
+        assert path.is_file(), f"нет записи {name}"
+        text = path.read_text(encoding="utf-8")
+        head = re.match(r"---\n(.*?)\n---\n", text, re.S)
+        assert head, f"{name}: нет шапки YAML"
+        status = re.search(r'^status:\s*"?(.+?)"?\s*$', head.group(1), re.M)
+        assert status and status.group(1).startswith("proposed"), (name, head.group(1))
+        assert re.search(r"^date: \d{4}-\d{2}-\d{2}$", head.group(1), re.M), name
+        assert re.search(rf"^# {num}\. ", text, re.M), f"{name}: заголовок не с номером {num}"
+        found = re.findall(r"^## (.+)$", text, re.M)
+        assert found == sections, (name, found)
+        assert f"({name})" in readme, f"README не ссылается на {name}"
+        # ссылки между записями ведут на существующие файлы
+        for link in re.findall(r"\]\((ADR-[^)#]+\.md)\)", text):
+            assert (base / link).is_file(), (name, link)
+    # публичная папка: ни имён моделей как авторов, ни клиентских проектов
+    for path in base.glob("*.md"):
+        low = path.read_text(encoding="utf-8").lower()
+        assert "co-authored" not in low and "claude" not in low, path.name
+    assert "decisions/README.md" in (KIT / "docs" / "README.md").read_text(encoding="utf-8")

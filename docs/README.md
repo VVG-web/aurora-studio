@@ -59,6 +59,7 @@ flowchart TD
 |---|---|---|
 | [Архитектура](architecture.md) | [Architecture](en/architecture.md) | кит и проект, агент, MCP, предохранители · kit and project, agent, MCP, safeguards |
 | [Решения и дорожная карта](roadmap.md) | [Design decisions and roadmap](en/roadmap.md) | почему так и что не сделано · why it is so, and what is not done |
+| [Архитектурные решения (ADR)](decisions/README.md) | — | инженерные записи в формате MADR, только по-русски · engineering decision records in MADR (Russian only) |
 | [CONTRIBUTING](CONTRIBUTING.md) | [CONTRIBUTING](en/CONTRIBUTING.md) | как вносить изменения · how to contribute |
 | [Скин «Зин»](skin-zine-requirements.md) | — | требования к оформлению по умолчанию (только по-русски) · default skin spec (Russian only) |
 
