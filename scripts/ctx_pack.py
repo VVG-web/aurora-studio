@@ -423,6 +423,19 @@ def ids(text: str) -> list:
     return out
 
 
+# Номер, записанный с пробелом, подчёркиванием или точкой вместо дефиса: «AC 4.4.3 Фильтр»,
+# «AC_4.5.1_Экспорт». Репозиторий разделитель не различает (kb_graph, jira_status), а запрос
+# «AC-4.4.3» вырезает голый номер, так что без этой формы такая карточка не находится.
+LOOSE_ID_RE = re.compile(r"(?<![^\W_])([^\W\d_]{2,10})[ _.](\d+(?:\.\d+)+)(?![^\W_])(?!\.\d)", re.U)
+
+
+def loose_ids(text: str) -> list:
+    """Номера «PREF n.n.n» / «PREF_n.n.n» в виде «pref-n.n.n». Префикс — только из заглавных
+    букв исходного текста, иначе «пункт 4.7.2» получил бы ложный префикс «пункт»."""
+    return [f"{m.group(1)}-{m.group(2)}".lower().replace("ё", "е")
+            for m in LOOSE_ID_RE.finditer(text) if m.group(1).isupper()]
+
+
 def words(text: str) -> list:
     """Слова длиннее двух букв, приведённые к ключу поиска, без стоп-слов.
 
@@ -545,11 +558,16 @@ def _word_profile(card: "Card") -> tuple:
     # берём из имени, заголовка и полей-ключей отдельно, до разжатия.
     head.update(ids(card.stem))
     head.update(ids(card.title))
+    head.update(loose_ids(card.stem))
+    head.update(loose_ids(card.title))
     for key in ID_FIELDS:
-        head.update(ids(str((card.fm or {}).get(key) or "")))
+        raw = str((card.fm or {}).get(key) or "")
+        head.update(ids(raw))
+        head.update(loose_ids(raw))
     brief = set(words(card.summary))
     alias = {w for a in card.aliases for w in words(a)}
-    alias_ids = {t for a in card.aliases for t in ids(a)}
+    alias_ids = {t for a in card.aliases for t in ids(a) + loose_ids(a)}
+    alias.update(alias_ids)
     tag = set(words(card.tags))
     seen: dict = {}
     for w in words(card.text):
@@ -557,6 +575,12 @@ def _word_profile(card: "Card") -> tuple:
     prof = (stamp, (head, brief, alias, tag, seen, alias_ids))
     card._wp = prof
     return prof[1]
+
+
+def _has_exact_id(card: "Card", ask: list) -> bool:
+    """Номер из запроса стоит в имени, заголовке, поле-ключе или алиасах карточки."""
+    head, _b, _a, _t, _s, alias_ids = _word_profile(card)
+    return any(is_id(w) and (w in head or w in alias_ids) for w in ask)
 
 
 def score(card: Card, topic: str, close: dict | None = None,
@@ -680,6 +704,16 @@ def fuse(cards: dict, topic: str, close: dict | None = None,
         w = RETRIEVAL["pagerank"]
         for name in list(got):
             got[name] *= 1.0 + w * rank.get(name, 0.0)
+    # Точный номер имеет высший приоритет и в слиянии: лексический лидер и лучший по смыслу
+    # оба нормированы в 1.0, и без этого сосед с близким смыслом делил бы место с карточкой
+    # про запрошенный номер (а то и обгонял её по имени или центральности). Порядок между
+    # самими «точными» сохраняется, у остальных веса не меняются.
+    exact = {n for n in got if _has_exact_id(at[n], ask)}
+    if exact and len(exact) < len(got):
+        other = max(w for n, w in got.items() if n not in exact)
+        for n in exact:
+            if got[n] <= other:
+                got[n] = other + 1e-6 * max(got[n], 1e-3)
     return sorted(((w, at[n]) for n, w in got.items()),
                   key=lambda x: (-x[0], x[1].stem))
 

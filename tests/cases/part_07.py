@@ -1559,6 +1559,62 @@ def test_dotted_identifier_exact_match_outweighs_citations(tmp: Path):
 
 
 @test
+def test_dotted_identifier_separator_and_fusion_priority(tmp: Path):
+    """Номер находится при любом разделителе в карточке и первым в слиянии с вектором.
+
+    Карточка могла писать номер как «AC 4.4.3 Фильтр» (заголовок), «AC_4.5.1_Экспорт» (имя) или
+    «AC 4.6.2» (алиас), а запрос «AC-4.4.3» вырезает голый вариант: карточка не находилась,
+    первой шла та, что цитирует номер с дефисом. Репозиторий разделитель не различает, и
+    префиксный токен теперь рождается на стороне карточки. Второй дефект: при непустой
+    близости по смыслу сосед, лучший по смыслу, делил с точным номером единицу шкалы.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    C = importlib.import_module("ctx_pack")
+
+    assert C.loose_ids("AC 4.4.3 Фильтр") == ["ac-4.4.3"] and C.loose_ids("AC_4.5.1_Экспорт") == ["ac-4.5.1"], \
+        "номер с пробелом или подчёркиванием не приведён к дефисной форме"
+    assert C.loose_ids("пункт 4.7.2 и Пункт 4.7.2") == [] and C.loose_ids("AC-4.4.3") == [], \
+        "ложный префикс из обычного слова или повтор дефисной формы"
+
+    root = make_project(tmp)
+    d = root / "AuroraKnowledgeDB/Concepts"
+    d.mkdir(parents=True, exist_ok=True)
+
+    def raw(stem, title, body="Про фильтр.", extra=""):
+        (d / f"{stem}.md").write_text(
+            f'---\ntitle: "{title}"\ntype: concept\nstatus: verified\n{extra}---\n\n{body}\n',
+            encoding="utf-8")
+
+    raw("Фильтр-реестра", "AC 4.4.3 Фильтр реестра")
+    raw("AC_4.5.1_Экспорт", "Экспорт")
+    raw("Выгрузка", "Выгрузка", extra='aliases: ["AC 4.6.2"]\n')
+    raw("Цитата", "Цитата", body="Смотри AC-4.4.3 и AC-4.5.1 и AC-4.6.2. " * 5)
+    raw("Сосед", "AC-4.4.1 Просмотр", body="Просмотр реестра заявок.")
+
+    def top(query, close=None):
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            cards = C.load_cards()
+            C.measure_rarity(cards)
+            return [c.stem for _, c in C.fuse(cards, query, {} if close is None else close)]
+        finally:
+            os.chdir(cwd)
+
+    assert top("AC-4.4.3")[0] == "Фильтр-реестра", f"заголовок «AC 4.4.3»: {top('AC-4.4.3')}"
+    assert top("AC-4.5.1")[0] == "AC_4.5.1_Экспорт", f"имя «AC_4.5.1»: {top('AC-4.5.1')}"
+    assert top("AC-4.6.2")[0] == "Выгрузка", f"алиас «AC 4.6.2»: {top('AC-4.6.2')}"
+    assert "Фильтр-реестра" not in top("US-4.4.3"), "чужой префикс нашёл карточку «AC 4.4.3»"
+    assert top("пункт 4.4.3")[0] == "Фильтр-реестра", "номер без префикса перестал находить"
+    # с вектором: лучший по смыслу — соседний номер, точный номер всё равно первый
+    sem = {"Сосед": 0.9, "Цитата": 0.5}
+    assert top("AC-4.4.3 фильтр реестра заявок", sem)[0] == "Фильтр-реестра", \
+        f"сосед по смыслу обогнал точный номер: {top('AC-4.4.3 фильтр реестра заявок', sem)}"
+    assert top("AC-4.4.3", sem)[0] == "Фильтр-реестра", f"ничья с соседом: {top('AC-4.4.3', sem)}"
+
+
+@test
 def test_pack_answers_where_development_got_to(tmp: Path):
     """Статус задачи приходит в пак из зеркала Jira, а не из карточек.
 
