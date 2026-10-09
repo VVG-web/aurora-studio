@@ -69,7 +69,7 @@ card are described in [docs/en/lifecycle.md](docs/en/lifecycle.md).
 
 ## Quick start
 
-Requirements: Python 3.11 or newer (3.14 recommended) and git. Python 3.10 reached end of life on 2026-10-01: the engine still runs on it, but it is not tested and `kit:doctor` warns about it. Python 3.9 — including the one that ships with macOS Command Line Tools — is **not supported**: the engine stops with a message saying how to install a suitable one. The engine has no runtime dependencies.
+Requirements: Python 3.11 or newer (3.14 recommended) and git. Python 3.10 reached end of life on 2026-10-01: the engine still runs on it, but it is not tested and `kit:doctor` warns about it. Python 3.9 — including the one that ships with macOS Command Line Tools — is **not supported**: the engine stops with a message saying how to install a suitable one. Runtime dependencies are listed in `requirements.txt`; the optional ones are installed from the "Install" page of the panel.
 
 ```bash
 git clone https://github.com/<org>/aurora-studio.git

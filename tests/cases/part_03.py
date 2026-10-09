@@ -482,13 +482,17 @@ def test_a_term_with_a_known_expansion_is_a_definition_not_a_stub(tmp: Path):
 
 @test
 def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
-    """Движок компилируется на старшем из обещанных Python — 3.9, системном у macOS.
+    """Движок компилируется на самом старом интерпретаторе, который найден на машине.
+
+    Политика версий (BL-DEC-01): 3.11+ поддерживаем, 3.10 работает с предупреждением, ниже —
+    остановка с текстом (его синтаксис держит соседний тест). Проверка ниже ловит синтаксис
+    новее 3.10 во ВСЕХ файлах движка, если такой интерпретатор есть.
 
     С 1.112.0 по 1.143.0 в `kb_lint.py` стояла f-строка с кавычками того же вида внутри
     выражения — это понимает только Python 3.12+. На системном Python линтер не запускался
     вовсе, а вместе с ним падали починка, «Что осталось человеку» и хук коммита; проверка
     кита шла на 3.12 и этого не видела. Здесь — если на машине есть Python старше 3.12;
-    в CI то же делает отдельная задача на 3.9.
+    в CI то же делает задание на нижней версии матрицы.
     """
     old = None
     for cand in ("/usr/bin/python3", "python3.9", "python3.10", "python3.11"):
@@ -1887,7 +1891,14 @@ def test_python_version_policy_levels_and_messages(tmp: Path):
     assert "winget install -e --id Python.Python.3.14" in AC.python_message((3, 9, 6), "win32")
     assert "Python.Python.3.12" not in AC.python_install_hint("win32"), \
         "winget отдаёт 3.12 без исправлений безопасности"
-    assert "apt install" in AC.python_message((3, 9, 6), "linux")
+    linux = AC.python_message((3, 9, 6), "linux")
+    assert "deadsnakes" in linux and "uv python install 3.14" in linux, linux
+    assert "apt install python3.12" not in linux, "на Ubuntu 22.04 этого пакета нет"
+    assert AC.UV_INSTALL_URL in old, "про macOS без прав администратора: не сказано, откуда взять uv"
+    # перевод подсказок для английской панели лежит в каталоге под точным текстом подсказки
+    en_install = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))["install"]
+    for plat in ("darwin", "win32", "linux"):
+        assert AC.python_install_hint(plat) in en_install, f"нет перевода подсказки установки: {plat}"
     warn = AC.python_message((3, 10, 4), "linux")
     assert "снят с поддержки" in warn and "3.11" in warn and "--no-verify" not in warn, warn
     assert AC.python_status((3, 13, 1))[0] == "ok" and AC.python_status((3, 10, 1))[0] == "warn"
@@ -1934,6 +1945,16 @@ def test_too_old_python_is_stopped_with_a_message_not_a_syntax_error(tmp: Path):
     # 3.10 не останавливает: только предупреждает doctor и панель
     cp = go((3, 10, 4), f"sys.path.insert(0, {str(SCRIPTS)!r}); import aurora_common; print('ok')")
     assert cp.returncode == 0 and "ok" in cp.stdout and not cp.stderr.strip(), cp.stdout + cp.stderr
+    # синтаксис этих двух файлов должен разбираться старым Python, иначе защита до него не
+    # дойдёт (SyntaxError вместо текста). Реальный старый интерпретатор есть не везде, поэтому
+    # проверяем статически: feature_version=(3, 7) отвергает match, except*, `:=`.
+    import ast
+    for guarded in (KIT / "aurora.py", SCRIPTS / "aurora_common.py"):
+        try:
+            ast.parse(guarded.read_text(encoding="utf-8"), filename=str(guarded), feature_version=(3, 7))
+        except SyntaxError as e:
+            raise AssertionError(f"{guarded.name}: синтаксис новее 3.7, защита версии не сработает "
+                                 f"на старом Python: {e}")
 
 
 @test
@@ -1959,8 +1980,31 @@ def test_doctor_and_panel_report_the_python_version(tmp: Path):
     ck = importlib.import_module("aurora_cockpit")
     env = ck.environment(fresh=True)
     first = env["items"][0]
-    assert first["name"] == "Python" and first["kind"] == "python" and first["ok"] is True \
-        and first["level"] == "ok", first
+    AC = importlib.import_module("aurora_common")
+    # сверяем с реальным уровнем: на 3.10 движок работает с предупреждением, и это верно
+    assert first["name"] == "Python" and first["kind"] == "python" \
+        and first["level"] == AC.python_level() and first["ok"] is (AC.python_level() == "ok"), first
+    # английский режим: ни пояснение, ни подсказка установки не остаются русскими
+    # (на уровне warn подсказка появляется; подменяем уровень, чтобы проверить её всегда)
+    cyr = re.compile("[А-Яа-яЁё]")
+    saved_status = AC.python_status
+    try:
+        for fake_vi in ((3, 13, 1), (3, 10, 2)):
+            AC.python_status = lambda vi=None, platform=None, _v=fake_vi: saved_status(_v, platform)
+            for plat in ("darwin", "win32", "linux"):
+                saved_hint = AC.python_install_hint
+                AC.python_install_hint = lambda platform=None, _p=plat: saved_hint(_p)
+                try:
+                    loc = ck.localized_environment(ck.environment(fresh=True), "en")["items"][0]
+                finally:
+                    AC.python_install_hint = saved_hint
+                assert loc["name"] == "Python" and not cyr.search(loc["enables"]), loc
+                assert not cyr.search(loc["install"]), (fake_vi, plat, loc["install"])
+                if fake_vi[1] == 10:
+                    assert loc["install"] and loc["level"] == "warn", loc
+    finally:
+        AC.python_status = saved_status
+        ck.environment(fresh=True)
     view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
     assert 't("install.py_warn")' in view and 't("install.py_error")' in view
     for lang in ("ru", "en"):

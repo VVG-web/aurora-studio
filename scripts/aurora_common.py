@@ -37,10 +37,13 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 # ВАЖНО: защита ниже срабатывает при импорте модуля, а Python разбирает файл целиком ДО
 # её запуска. Поэтому в этом файле нельзя писать синтаксис новее 3.7 (`match`, скобочный
 # `with`, `except*`, `:=`): на старом Python человек увидел бы SyntaxError вместо текста.
+# Защита работает на 3.7-3.9: `from __future__ import annotations` в начале файла на 3.6 и
+# ниже падает раньше неё (такой Python и не обещан).
 # Тексты — на `%`-форматировании по той же причине. Тот же запрет — для aurora.py.
 PYTHON_SUPPORTED_FROM = (3, 11)   # поддерживаем и тестируем
 PYTHON_MIN_HARD = (3, 10)         # ниже — остановка; aurora.py держит то же число (тест сверяет)
 PYTHON_RECOMMENDED = (3, 14)      # что советуем ставить
+UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
 PYTHON_STOP_RC = 2                # код выхода при остановке (3 — «упал», 1 — «есть находки»)
 
 
@@ -64,14 +67,14 @@ def python_install_hint(platform=None):
     if platform == "darwin":
         return ("macOS: `brew install python@%s` или установщик с https://www.python.org/downloads/ "
                 "(после него откройте «Install Certificates.command»); без прав администратора — "
-                "`uv python install %s`. Системный Python (из Command Line Tools) не обновляется "
-                "и не подходит — его трогать не нужно." % (rec, rec))
+                "`uv python install %s` (сам uv: %s). Системный Python (из Command Line Tools) "
+                "не обновляется и не подходит — его трогать не нужно." % (rec, rec, UV_INSTALL_URL))
     if platform.startswith("win"):
         return ("Windows: `winget install -e --id Python.Python.%s` или установщик с "
                 "https://www.python.org/downloads/. После установки запустите файл снова." % rec)
-    return ("Linux: поставьте пакет Python %s+ из дистрибутива (например, "
-            "`sudo apt install python3.12`) или `uv python install %s`."
-            % (_py_ver(PYTHON_SUPPORTED_FROM), rec))
+    return ("Linux: поставьте Python %s+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в "
+            "основном репозитории — нужен PPA deadsnakes) или `uv python install %s` (сам uv: %s)."
+            % (_py_ver(PYTHON_SUPPORTED_FROM), rec, UV_INSTALL_URL))
 
 
 def python_message(vi=None, platform=None):

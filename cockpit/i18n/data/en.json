@@ -455,6 +455,10 @@
     }
   },
   "install": {
+    "всё: движок работает на Python 3.11 и новее": "everything: the engine runs on Python 3.11 or newer",
+    "macOS: `brew install python@3.14` или установщик с https://www.python.org/downloads/ (после него откройте «Install Certificates.command»); без прав администратора — `uv python install 3.14` (сам uv: https://docs.astral.sh/uv/getting-started/installation/). Системный Python (из Command Line Tools) не обновляется и не подходит — его трогать не нужно.": "macOS: `brew install python@3.14` or the installer from https://www.python.org/downloads/ (then open \"Install Certificates.command\"); without administrator rights — `uv python install 3.14` (uv itself: https://docs.astral.sh/uv/getting-started/installation/). The system Python (from Command Line Tools) is not updated and is not suitable — leave it alone.",
+    "Windows: `winget install -e --id Python.Python.3.14` или установщик с https://www.python.org/downloads/. После установки запустите файл снова.": "Windows: `winget install -e --id Python.Python.3.14` or the installer from https://www.python.org/downloads/. After installing, run the file again.",
+    "Linux: поставьте Python 3.11+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в основном репозитории — нужен PPA deadsnakes) или `uv python install 3.14` (сам uv: https://docs.astral.sh/uv/getting-started/installation/).": "Linux: install Python 3.11+ from the distribution packages (on Ubuntu 22.04 it is not in the main repository — use the deadsnakes PPA) or `uv python install 3.14` (uv itself: https://docs.astral.sh/uv/getting-started/installation/).",
     "всё: движок работает поверх git": "everything: the engine works on top of git",
     "sync:confluence — разбор storage-разметки": "sync:confluence — parsing storage markup",
     "sync:confluence — быстрый парсер": "sync:confluence — the fast parser",

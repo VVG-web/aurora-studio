@@ -1116,7 +1116,8 @@ def localized_environment(env: dict, lang: str) -> dict:
     if not tr:
         return env
     return {**env, "items": [{**i, "name": _tr_text(i["name"], tr),
-                              "enables": _tr_text(i["enables"], tr)} for i in env["items"]]}
+                              "enables": _tr_text(i["enables"], tr),
+                              "install": _tr_text(i.get("install"), tr)} for i in env["items"]]}
 
 
 def localized_extras(state: dict, lang: str) -> dict:

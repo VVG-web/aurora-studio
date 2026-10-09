@@ -4,7 +4,7 @@
 
 ## What you need
 
-- **Python 3.11+** (3.14 recommended; 3.10 works with a warning, 3.9 is not supported) and **git**. The engine itself has no runtime dependencies (standard library only).
+- **Python 3.11+** (3.14 recommended; 3.10 works with a warning, 3.9 is not supported) and **git**. Runtime dependencies are listed in `requirements.txt`; the optional ones are installed from the "Install" page of the panel.
 - Optional: `pandoc` (export to docx/pdf), `beautifulsoup4` + `markdownify` (Confluence sync), `markitdown`, `openpyxl`,
   `pypdf` (office documents). The panel's **Install** section shows what is missing and which commands it affects.
 - Optional: an OpenAI-compatible LLM gateway for the built-in agent. Everything that does not need a model works without it.

@@ -56,7 +56,8 @@ if sys.version_info < (3, 10):
     # Защита версии (BL-DEC-01). Порог тот же, что scripts/aurora_common.PYTHON_MIN_HARD
     # (число повторено здесь на случай, если сам aurora_common на этом Python не разберётся;
     # тест их сверяет). Этот блок и весь файл — только синтаксис, понятный старому Python:
-    # иначе человек увидит SyntaxError вместо объяснения.
+    # иначе человек увидит SyntaxError вместо объяснения. Работает на 3.7-3.9: на 3.6 и ниже
+    # файл не разбирается уже из-за `from __future__ import annotations` выше.
     try:
         import os as _os
         sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "scripts"))
