@@ -424,6 +424,34 @@ def set_home(path):
     return restore
 
 
+def isolated_registry(ck, tmp: Path):
+    """Собрать реестр команд панели заранее, ничего не оставив. → функция возврата.
+
+    Реестр строится настоящими `--help` скриптов; под подменённым `Popen` он собрался бы
+    пустым. Поэтому проверка, подменяющая запуск, строит его до подмены — но не в настоящий
+    `cockpit/.registry-cache.json` (его читает живая панель) и не оставляет собранное в
+    памяти панели: сборка идёт при условиях ЭТОЙ проверки (рабочая папка, подмены), а
+    следующая проверка, получив готовый реестр под своим же ключом, не узнаёт, чьи они.
+    Так «из кита видно разработку» краснела на соседней проверке без единого общего вызова.
+    """
+    keys = ("registry", "registry_stamp")
+    saved_file = ck.REGISTRY_CACHE
+    saved_mem = {k: ck.CACHE[k] for k in keys if k in ck.CACHE}
+    ck.REGISTRY_CACHE = str(tmp / "registry-cache.json")
+
+    def restore():
+        ck.REGISTRY_CACHE = saved_file
+        for k in keys:
+            ck.CACHE.pop(k, None)
+        ck.CACHE.update(saved_mem)
+    try:
+        ck.registry()
+    except BaseException:
+        restore()
+        raise
+    return restore
+
+
 def _cockpit_on(kit: Path):
     """Модуль панели, направленный на пробный кит: KIT, список прогонов и дом — во временной папке."""
     sys.path.insert(0, str(KIT / "cockpit"))

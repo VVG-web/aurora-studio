@@ -86,6 +86,13 @@ try:
     for _n, _fn, _is_inv in selected:
         run_td = Path(td) / f"case-{len(RESULTS)}"
         run_td.mkdir(parents=True)
+        # Рабочая папка — свойство процесса, а не проверки: движок в потоках делает
+        # `os.chdir(проект)` и возвращается туда, где стоял, — а «где стоял» к тому часу уже
+        # чужая папка соседнего потока. Проверка «распределяем разбор по слотам» так оставляла
+        # процесс в своём временном проекте, и следующая сборка реестра команд панели
+        # (она ищет `engine_manifest.txt` относительно рабочей папки) не видела команд `dev:`.
+        # Падала при этом не виновница, а третья проверка спустя сотню. Возвращаем после каждой.
+        _cwd = os.getcwd()
         try:
             _fn(run_td)
             RESULTS.append((_n, None))
@@ -100,6 +107,8 @@ try:
                                for f in reversed(traceback.extract_tb(e.__traceback__)[-4:]))
             RESULTS.append((_n, f"{type(e).__name__}: {e}  [{frames}]"))
             print(f"  ❌ {_n} — {type(e).__name__}: {e}  [{frames}]")
+        finally:
+            os.chdir(_cwd)
 finally:
     shutil.rmtree(td, ignore_errors=True)
 
