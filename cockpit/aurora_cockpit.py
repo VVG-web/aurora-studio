@@ -3785,7 +3785,7 @@ def environment(fresh: bool = False) -> dict:
     """
     if "env" in CACHE and not fresh:
         return CACHE["env"]
-    from aurora_common import find_bin
+    from aurora_common import find_bin, python_status, python_install_hint
     refresh_import_paths()
 
     def has_module(names):
@@ -3798,7 +3798,13 @@ def environment(fresh: bool = False) -> dict:
         return False
 
     plat = platform_key()
+    # Python — первый элемент среды: на 3.10 (снят с поддержки) строка предупреждает, на
+    # слишком старом панель сама не запустилась бы (защита версии в aurora_common).
+    py_level, _py_text = python_status()
     items = [
+        {"name": "Python", "ok": py_level == "ok", "kind": "python", "level": py_level,
+         "enables": "всё: движок работает на Python 3.11 и новее",
+         "install": "" if py_level == "ok" else python_install_hint()},
         {"name": "git", "ok": bool(find_bin("git")), "kind": "bin",
          "enables": "всё: движок работает поверх git", "install": ENV_BIN["git"][plat]},
         {"name": "pandoc", "ok": bool(find_bin("pandoc")), "kind": "bin",

@@ -16,7 +16,7 @@ flowchart LR
 
 ## Requirements
 
-- Python 3.9+ and git; write access to the project folder; the kit cloned locally
+- Python 3.11+ (3.14 recommended; on 3.10 the engine runs with a warning, on 3.9 and older it stops with a hint on how to install a suitable one) and git; write access to the project folder; the kit cloned locally
   (`git clone https://github.com/<org>/aurora-studio.git`).
 - The engine runs on the standard library. The rest is needed only by individual commands:
 

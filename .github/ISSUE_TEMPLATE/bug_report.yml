@@ -84,7 +84,7 @@ body:
     id: python
     attributes:
       label: Версия Python / Python version
-      description: Вывод `python3 --version` (на Windows — `python --version`). Поддерживается 3.9+.
+      description: Вывод `python3 --version` (на Windows — `python --version`). Поддерживается 3.11+ (на 3.10 — с предупреждением).
       placeholder: "3.12.4"
   - type: dropdown
     id: regression

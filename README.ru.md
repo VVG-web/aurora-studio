@@ -68,7 +68,7 @@ flowchart LR
 
 ## Быстрый старт
 
-Нужны: Python 3.9+ и git. У движка нет зависимостей времени выполнения.
+Нужны: Python 3.11 или новее (рекомендуем 3.14) и git. Python 3.10 снят с поддержки 2026-10-01: движок на нём пока запускается, но не проверяется, а `kit:doctor` предупредит об этом. Python 3.9, в том числе системный Python macOS (из Command Line Tools), **не поддерживается**: движок остановится с сообщением, как поставить подходящий. У движка нет зависимостей времени выполнения.
 
 ```bash
 git clone https://github.com/<org>/aurora-studio.git
@@ -148,7 +148,7 @@ your-project/
 
 ## Требования
 
-- **Обязательно:** Python 3.9+, git.
+- **Обязательно:** Python 3.11+ (3.10 работает с предупреждением), git.
 - **По желанию:** `pandoc` (`ship:export` → docx/pdf); `beautifulsoup4`, `markdownify`, `lxml`
   (`sync:confluence`); `markitdown`, `openpyxl`, `pypdf` (`kb:ingest-office`); Obsidian
   (навигация по вики-ссылкам); Atlassian MCP в редакторе.

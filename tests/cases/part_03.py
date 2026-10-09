@@ -501,7 +501,9 @@ def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
             old = cand
             break
     wf = (KIT / ".github/workflows/test.yml").read_text(encoding="utf-8")
-    assert 'python-version: "3.9"' in wf and "compileall" in wf, "в CI нет проверки на Python 3.9"
+    # нижняя проверяемая версия CI: 3.9 до BL-DEC-02, затем 3.10/3.11 (матрица заданий)
+    assert re.search(r'python-version:.*"3\.(9|10|11)"', wf) and "compileall" in wf, \
+        "в CI нет проверки на нижней поддерживаемой версии Python"
     if not old:
         return
     out = tmp / "pyc"
@@ -1851,3 +1853,154 @@ def test_route_progress_is_visible_from_any_tab(tmp: Path):
         assert field in view, f"поле {field} не выведено в панель"
     assert 't("models.primary")' in view and 't("models.fallback_n"' in view, \
         "в цепочке не видно, кто основной, а кто запасной по порядку"
+
+
+_PY_DOCS = ("README.md", "README.ru.md", "docs/INSTALL.md", "docs/en/INSTALL.md",
+            "docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md", "docs/architecture.md",
+            "docs/en/architecture.md", "docs/readme/02-quickstart.md",
+            "docs/en/readme/02-quickstart.md", "wiki/Getting-Started.md",
+            "wiki/ru/Getting-Started.md", "wiki/Windows-and-macOS.md",
+            "wiki/ru/Windows-and-macOS.md", ".github/ISSUE_TEMPLATE/bug_report.yml",
+            "requirements.txt")
+
+
+@test
+def test_python_version_policy_levels_and_messages(tmp: Path):
+    """Политика версий Python (BL-DEC-01): 3.11+ поддерживаем, 3.10 — предупреждение,
+    ниже — остановка. Номер версии подменяется параметром: реальный 3.9 не нужен.
+
+    Числа живут в `aurora_common`; `aurora.py` повторяет порог остановки (его защита не
+    может зависеть от разбора чужого файла) — здесь они сверяются, а документы не должны
+    обещать «3.9+» (на 3.9 не ставится Pydantic AI, а новые зависимости требуют 3.10).
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    assert AC.PYTHON_SUPPORTED_FROM == (3, 11) and AC.PYTHON_MIN_HARD == (3, 10)
+    for vi, level in (((3, 9, 6), "error"), ((3, 8, 0), "error"), ((3, 10, 2), "warn"),
+                      ((3, 11, 0), "ok"), ((3, 13, 13), "ok"), ((3, 15, 0), "ok")):
+        assert AC.python_level(vi) == level, (vi, AC.python_level(vi))
+    assert AC.python_message((3, 12, 1)) == ""
+    old = AC.python_message((3, 9, 6), "darwin")
+    assert "3.9.6" in old and "brew install python@3.14" in old and "Command Line Tools" in old \
+        and "--no-verify" in old, old
+    assert "winget install -e --id Python.Python.3.14" in AC.python_message((3, 9, 6), "win32")
+    assert "Python.Python.3.12" not in AC.python_install_hint("win32"), \
+        "winget отдаёт 3.12 без исправлений безопасности"
+    assert "apt install" in AC.python_message((3, 9, 6), "linux")
+    warn = AC.python_message((3, 10, 4), "linux")
+    assert "снят с поддержки" in warn and "3.11" in warn and "--no-verify" not in warn, warn
+    assert AC.python_status((3, 13, 1))[0] == "ok" and AC.python_status((3, 10, 1))[0] == "warn"
+    # порог остановки в aurora.py совпадает с константой модуля
+    src = (KIT / "aurora.py").read_text(encoding="utf-8")
+    m = re.search(r"if sys\.version_info < \((\d+), (\d+)\):", src)
+    assert m and (int(m.group(1)), int(m.group(2))) == AC.PYTHON_MIN_HARD, \
+        "порог в aurora.py разошёлся с PYTHON_MIN_HARD"
+    for rel in _PY_DOCS:
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert not re.search(r"(Python |^|\s)3\.9\+", text), f"{rel}: всё ещё обещает 3.9+"
+    for rel in ("README.md", "README.ru.md", "docs/INSTALL.md", "docs/en/INSTALL.md",
+                "wiki/Getting-Started.md", "wiki/ru/Getting-Started.md"):
+        assert "3.11" in (KIT / rel).read_text(encoding="utf-8"), f"{rel}: нет Python 3.11"
+
+
+@test
+def test_too_old_python_is_stopped_with_a_message_not_a_syntax_error(tmp: Path):
+    """На Python ниже 3.10 `aurora.py` и любой скрипт движка (через `aurora_common`)
+    печатают объяснение и выходят с кодом 2, а не падают трассировкой. Версия подменяется
+    в дочернем процессе; проверенные модули стандартной библиотеки импортируются до подмены."""
+    pre = ("import sys, os, re, subprocess, hashlib, unicodedata, runpy\n"
+           "class V(tuple):\n"
+           "    major, minor, micro = {v}\n"
+           "sys.version_info = V(({v[0]}, {v[1]}, {v[2]}, 'final', 0))\n")
+
+    def go(vi, body, cwd=tmp):
+        code = pre.format(v=vi) + body
+        return subprocess.run([sys.executable, "-c", code], cwd=str(cwd), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=60)
+
+    aurora = repr(str(KIT / "aurora.py"))
+    cp = go((3, 9, 6), f"runpy.run_path({aurora}, run_name='__main__')")
+    assert cp.returncode == 2 and "слишком старый" in cp.stderr and "3.9.6" in cp.stderr, \
+        cp.stdout + cp.stderr
+    assert "Traceback" not in cp.stderr and "SyntaxError" not in cp.stderr, cp.stderr
+    cp = go((3, 9, 6), f"sys.path.insert(0, {str(SCRIPTS)!r}); import aurora_common")
+    assert cp.returncode == 2 and "слишком старый" in cp.stderr and "Traceback" not in cp.stderr, \
+        cp.stderr
+    # aurora_common не разобрался (ImportError) — aurora.py всё равно останавливает и объясняет
+    cp = go((3, 8, 1), f"sys.modules['aurora_common'] = None; runpy.run_path({aurora}, run_name='__main__')")
+    assert cp.returncode == 2 and "Python 3.8" in cp.stderr and "3.11" in cp.stderr \
+        and "Traceback" not in cp.stderr, cp.stderr
+    # 3.10 не останавливает: только предупреждает doctor и панель
+    cp = go((3, 10, 4), f"sys.path.insert(0, {str(SCRIPTS)!r}); import aurora_common; print('ok')")
+    assert cp.returncode == 0 and "ok" in cp.stdout and not cp.stderr.strip(), cp.stdout + cp.stderr
+
+
+@test
+def test_doctor_and_panel_report_the_python_version(tmp: Path):
+    """`kit:doctor`: 3.11+ — OK, 3.10 — предупреждение, ниже — ошибка с подсказкой; панель
+    показывает Python первым элементом среды с уровнем и командой установки."""
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import contextlib
+    import importlib
+    import io
+    DR = importlib.import_module("aurora_doctor")
+    for vi, want_err, want_warn, want_ok in (((3, 13, 1), 0, 0, True), ((3, 10, 2), 0, 1, False),
+                                             ((3, 9, 6), 1, 0, False)):
+        errors, warns, out = [], [], io.StringIO()
+        with contextlib.redirect_stdout(out):
+            DR.check_python(errors, warns, vi, "darwin")
+        assert (len(errors), len(warns), "OK: Python" in out.getvalue()) == \
+            (want_err, want_warn, want_ok), (vi, errors, warns, out.getvalue())
+    errors, warns = [], []
+    DR.check_python(errors, warns, (3, 9, 6), "darwin")
+    assert "brew install python@3.14" in errors[0], errors
+    ck = importlib.import_module("aurora_cockpit")
+    env = ck.environment(fresh=True)
+    first = env["items"][0]
+    assert first["name"] == "Python" and first["kind"] == "python" and first["ok"] is True \
+        and first["level"] == "ok", first
+    view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
+    assert 't("install.py_warn")' in view and 't("install.py_error")' in view
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/modules/install/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert cat["install.py_warn"] and cat["install.py_error"], lang
+
+
+@test
+def test_pydantic_ai_extra_needs_python_310_and_finds_interpreters_by_asking_them(tmp: Path):
+    """Надстройка Pydantic AI требует Python 3.10+ (на 3.9 pip молча берёт старую ветку 0.x).
+    `python_for` не доверяет имени `python3.N`: запускает кандидата и спрашивает версию."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    EX = importlib.import_module("aurora_extras")
+    assert EX.EXTRAS["pydantic-ai"]["min_python"] >= (3, 10), "Pydantic AI на 3.9 не ставится"
+    assert EX.EXTRAS["graphify"]["min_python"] >= (3, 10)
+    if os.name == "nt":
+        return
+    saved = (EX.EXTRAS["pydantic-ai"]["min_python"], os.environ.get("PATH"), os.environ.get("HOME"))
+    bindir = tmp / "bin"
+    bindir.mkdir()
+
+    def fake(name, says):
+        f = bindir / name
+        f.write_text(f"#!/bin/sh\necho '{says}'\n", encoding="utf-8")
+        f.chmod(0o755)
+        return f
+
+    try:
+        EX.EXTRAS["pydantic-ai"]["min_python"] = (3, 20)    # новее любого настоящего Python
+        os.environ["PATH"] = f"{bindir}:/usr/bin:/bin"
+        os.environ["HOME"] = str(tmp)                       # ни ~/.local, ни pyenv хозяина
+        fake("python3.20", f"3.9|{bindir}/python3.20")      # имя врёт: на деле это 3.9
+        assert EX.python_for("pydantic-ai") == "", "поверили имени, а не ответу интерпретатора"
+        real = fake("python3.20", f"3.20|{bindir}/python3.20")
+        assert EX.python_for("pydantic-ai") == str(real), "честный кандидат не найден"
+    finally:
+        EX.EXTRAS["pydantic-ai"]["min_python"] = saved[0]
+        os.environ["PATH"] = saved[1] or ""
+        if saved[2] is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved[2]

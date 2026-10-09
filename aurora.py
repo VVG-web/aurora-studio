@@ -52,6 +52,20 @@
 """
 from __future__ import annotations
 import subprocess, sys
+if sys.version_info < (3, 10):
+    # Защита версии (BL-DEC-01). Порог тот же, что scripts/aurora_common.PYTHON_MIN_HARD
+    # (число повторено здесь на случай, если сам aurora_common на этом Python не разберётся;
+    # тест их сверяет). Этот блок и весь файл — только синтаксис, понятный старому Python:
+    # иначе человек увидит SyntaxError вместо объяснения.
+    try:
+        import os as _os
+        sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "scripts"))
+        import aurora_common  # noqa: F401 — при импорте сам печатает текст и выходит с кодом 2
+    except Exception:  # noqa: BLE001 — SystemExit проходит мимо: это и есть остановка
+        pass
+    sys.stderr.write("aurora: Python %d.%d слишком старый для Авроры. Нужен Python 3.11 или новее "
+                     "(лучше 3.14): https://www.python.org/downloads/\n" % sys.version_info[:2])
+    raise SystemExit(2)
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.

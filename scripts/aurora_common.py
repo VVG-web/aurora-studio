@@ -25,6 +25,100 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
+# ---------------------------------------------------------------------------------
+# Версия Python: политика и защита (BL-DEC-01). ОДНО место, где записаны пороги; на них
+# ссылаются doctor, панель, надстройки и тесты, а README/INSTALL/wiki повторяют их словами
+# (расхождение документов с этими числами ловит тест политики версий).
+#
+#   3.11 и новее — поддерживаем и тестируем;
+#   3.10        — работает, но снят с поддержки (2026-10-01): doctor и панель предупреждают;
+#   ниже 3.10   — остановка с понятным текстом (там не ставятся Pydantic AI и зависимости).
+#
+# ВАЖНО: защита ниже срабатывает при импорте модуля, а Python разбирает файл целиком ДО
+# её запуска. Поэтому в этом файле нельзя писать синтаксис новее 3.7 (`match`, скобочный
+# `with`, `except*`, `:=`): на старом Python человек увидел бы SyntaxError вместо текста.
+# Тексты — на `%`-форматировании по той же причине. Тот же запрет — для aurora.py.
+PYTHON_SUPPORTED_FROM = (3, 11)   # поддерживаем и тестируем
+PYTHON_MIN_HARD = (3, 10)         # ниже — остановка; aurora.py держит то же число (тест сверяет)
+PYTHON_RECOMMENDED = (3, 14)      # что советуем ставить
+PYTHON_STOP_RC = 2                # код выхода при остановке (3 — «упал», 1 — «есть находки»)
+
+
+def python_level(vi=None):
+    """'ok' (3.11+), 'warn' (3.10 — без поддержки апстрима) или 'error' (ниже 3.10).
+    `vi` — номер версии для проверки (тесты подменяют его, реальный 3.9 не нужен)."""
+    vi = tuple(sys.version_info[:3] if vi is None else vi)[:2]
+    if vi >= PYTHON_SUPPORTED_FROM:
+        return "ok"
+    return "warn" if vi >= PYTHON_MIN_HARD else "error"
+
+
+def _py_ver(v):
+    return ".".join(str(x) for x in v)
+
+
+def python_install_hint(platform=None):
+    """Как поставить подходящий Python на этой системе (без прав на системный)."""
+    platform = sys.platform if platform is None else platform
+    rec = _py_ver(PYTHON_RECOMMENDED)
+    if platform == "darwin":
+        return ("macOS: `brew install python@%s` или установщик с https://www.python.org/downloads/ "
+                "(после него откройте «Install Certificates.command»); без прав администратора — "
+                "`uv python install %s`. Системный Python (из Command Line Tools) не обновляется "
+                "и не подходит — его трогать не нужно." % (rec, rec))
+    if platform.startswith("win"):
+        return ("Windows: `winget install -e --id Python.Python.%s` или установщик с "
+                "https://www.python.org/downloads/. После установки запустите файл снова." % rec)
+    return ("Linux: поставьте пакет Python %s+ из дистрибутива (например, "
+            "`sudo apt install python3.12`) или `uv python install %s`."
+            % (_py_ver(PYTHON_SUPPORTED_FROM), rec))
+
+
+def python_message(vi=None, platform=None):
+    """Текст о версии Python для человека; пусто, если всё в порядке."""
+    vi = tuple(sys.version_info[:3] if vi is None else vi)
+    level = python_level(vi)
+    if level == "ok":
+        return ""
+    have = _py_ver(vi[:3])
+    if level == "warn":
+        return ("Python %s снят с поддержки (2026-10-01): Аврора на нём пока запускается, но "
+                "не проверяется. Нужен Python %s+ (лучше %s). %s"
+                % (have, _py_ver(PYTHON_SUPPORTED_FROM), _py_ver(PYTHON_RECOMMENDED),
+                   python_install_hint(platform)))
+    return ("Python %s слишком старый для Авроры. Нужен Python %s+ (лучше %s; %s ещё запускается, "
+            "но снят с поддержки). %s Если это git-хук и коммит нужен срочно, "
+            "`git commit --no-verify` пропустит проверку — но поставьте Python, иначе проверки "
+            "не будет и дальше."
+            % (have, _py_ver(PYTHON_SUPPORTED_FROM), _py_ver(PYTHON_RECOMMENDED),
+               _py_ver(PYTHON_MIN_HARD), python_install_hint(platform)))
+
+
+def python_status(vi=None, platform=None):
+    """(уровень, строка для doctor и панели): что за Python и годится ли он."""
+    vi = tuple(sys.version_info[:3] if vi is None else vi)
+    level = python_level(vi)
+    if level == "ok":
+        return level, "Python %s (%s)" % (_py_ver(vi[:3]), sys.executable)
+    return level, python_message(vi, platform)
+
+
+def require_python(vi=None, platform=None, stream=None):
+    """Защита версии: на слишком старом Python — понятный текст и выход с кодом 2.
+    Вызывается при импорте этого модуля (его берут почти все скрипты движка) и из aurora.py."""
+    if python_level(vi) != "error":
+        return
+    stream = sys.stderr if stream is None else stream
+    text = "aurora: " + python_message(vi, platform) + "\n"
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        stream.write(text.encode("ascii", "replace").decode("ascii"))
+    raise SystemExit(PYTHON_STOP_RC)
+
+
+require_python()
+
 from datetime import datetime as _datetime, timezone as _timezone  # noqa: E402
 
 # Падение скрипта — код 3, а не 1. Python при необработанном исключении выходит с кодом 1, а

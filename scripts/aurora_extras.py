@@ -50,7 +50,7 @@ EXTRAS = {
         "pip": ["pydantic-ai"],
         "venv": HOME / "venv",
         "repo": "pydantic/pydantic-ai",
-        "min_python": (3, 9),
+        "min_python": (3, 10),      # Pydantic AI с 1.0 требует 3.10+ (на 3.9 pip берёт старую ветку 0.x)
         "enables": "каждый вызов модели идёт через него: ответ проверяется, "
                    "инструменты и MCP-серверы в задачах",
     },
@@ -193,19 +193,68 @@ def compat_of(version: str):
     return {"ok": bool(chk.get("ok")), "problems": chk.get("problems") or [], "at": chk.get("at", "")}
 
 
+def _probe_python(cmd: list) -> tuple:
+    """Запускает кандидата и спрашивает у него самого: (мажор, минор, путь к интерпретатору).
+    Имени `python3.12` или заглушке в PATH не верим — (0, 0, "") если не ответил."""
+    try:
+        p = _run(cmd + ["-c", "import sys; print('%d.%d|%s' % (sys.version_info[0], "
+                              "sys.version_info[1], sys.executable))"], timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return (0, 0, "")
+    head, _, exe = (p.stdout.strip().splitlines() or [""])[-1].partition("|")
+    try:
+        major, minor = (int(x) for x in head.split("."))
+    except ValueError:
+        return (0, 0, "")
+    return (major, minor, exe) if p.returncode == 0 and exe else (0, 0, "")
+
+
+def _python_candidates(minor: int) -> list:
+    """Команды-кандидаты на Python 3.<minor>, от явных к общим. Каждая — список для запуска."""
+    name = f"python3.{minor}"
+    home = Path.home()
+    dirs = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", str(home / ".local" / "bin"),
+            f"/Library/Frameworks/Python.framework/Versions/3.{minor}/bin",
+            str(home / "miniforge3" / "bin"), str(home / "mambaforge" / "bin"),
+            str(home / "miniconda3" / "bin"), str(home / "anaconda3" / "bin")]
+    dirs += sorted(str(d / "bin") for d in (home / ".pyenv" / "versions").glob(f"3.{minor}*"))
+    out = []
+    which = shutil.which(name)
+    if which:
+        out.append([which])
+    for d in dirs:
+        path = os.path.join(d, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            out.append([path])
+    # Windows: `py -V:3.N` знает установки, которых нет в PATH (python.org, Store, менеджер Python)
+    py = shutil.which("py") if os.name == "nt" else ""
+    if py:
+        out.append([py, f"-V:3.{minor}"])
+    return out
+
+
 def python_for(extra_id: str) -> str:
     """Питон, на котором можно поставить надстройку: этот, если подходит, иначе новейший
-    найденный. Пусто — подходящего нет (graphify требует 3.10+)."""
+    найденный. Пусто — подходящего нет (Pydantic AI и graphify требуют 3.10+).
+
+    Кандидатов (`python3.N` в PATH и в обычных местах macOS/Linux, `py -V:3.N` на Windows,
+    pyenv, Miniforge, uv) не берём на слово: каждого запускаем и спрашиваем его версию."""
     need = EXTRAS[extra_id]["min_python"]
     if sys.version_info[:2] >= need:
         return sys.executable
-    names = [f"python3.{m}" for m in range(20, need[1] - 1, -1)]
-    dirs = ["", "/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
-    for n in names:
-        for d in dirs:
-            path = shutil.which(n) if not d else os.path.join(d, n)
+    for minor in range(20, need[1] - 1, -1):
+        for cmd in _python_candidates(minor):
+            major, found, exe = _probe_python(cmd)
+            if (major, found) >= need and os.path.isfile(exe):
+                return exe
+    # Общие имена: Homebrew кладёт `python3` (последний минор) и `python`; версию проверяем
+    for name in ("python3", "python"):
+        for d in ("", "/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin")):
+            path = shutil.which(name) if not d else os.path.join(d, name)
             if path and os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
+                major, found, exe = _probe_python([path])
+                if (major, found) >= need and os.path.isfile(exe):
+                    return exe
     return ""
 
 
@@ -234,8 +283,9 @@ def install(extra_id: str) -> dict:
         base = python_for(extra_id)
         if not base:
             need = ".".join(map(str, ex["min_python"]))
+            from aurora_common import python_install_hint
             return {"ok": False, "version": "", "log": f"нет Python {need}+ — поставьте его "
-                    f"(например, brew install python) и нажмите снова"}
+                    f"({python_install_hint()}) и нажмите снова"}
         log.append(f"создаю venv {ex['venv']} на {base}")
         ex["venv"].parent.mkdir(parents=True, exist_ok=True)
         p = _run([base, "-m", "venv", str(ex["venv"])], timeout=300)

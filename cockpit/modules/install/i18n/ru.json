@@ -4,6 +4,8 @@
   "install.about": "Панель проверяет окружение машины и готовность проекта. У каждой строки сказано, какие команды без неё не работают.",
   "install.have": "✓ есть",
   "install.missing": "нет",
+  "install.py_warn": "устарел",
+  "install.py_error": "не подходит",
   "install.enables": "Включает: {what}",
   "install.project_ready": "Готовность проекта · {name}",
   "install.fix": "Починить",

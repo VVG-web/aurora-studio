@@ -4,6 +4,8 @@
   "install.about": "The panel checks the machine environment and the readiness of the project. Every line says which commands do not work without it.",
   "install.have": "✓ present",
   "install.missing": "missing",
+  "install.py_warn": "outdated",
+  "install.py_error": "unsupported",
   "install.enables": "Enables: {what}",
   "install.project_ready": "Project readiness · {name}",
   "install.fix": "Fix",

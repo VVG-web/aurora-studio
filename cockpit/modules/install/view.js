@@ -66,7 +66,7 @@ export async function refresh(ctx){
   e.items.forEach(i => {
     card.append(el("div", {class:"list-item"},
       el("span", {class:"chip " + (i.ok ? "ok" : "warn"), style:"flex:none"},
-        i.ok ? t("install.have") : t("install.missing")),
+        i.ok ? t("install.have") : i.level === "warn" ? t("install.py_warn") : i.level ? t("install.py_error") : t("install.missing")),
       el("div", {style:"flex:1;min-width:0"},
         el("div", {style:"font-weight:600"}, i.name),
         el("div", {class:"muted", style:"font-size:12.5px;margin-top:2px"},

@@ -27,7 +27,7 @@ flowchart LR
   E --> F["6 · Посмотреть и спросить<br>Здоровье · Граф · Спросить"]
 ```
 
-**1. Поставьте кит.** Нужны Python 3.9+ и git.
+**1. Поставьте кит.** Нужны Python 3.11+ (лучше 3.14) и git.
 
 ```bash
 git clone https://github.com/<org>/aurora-studio.git

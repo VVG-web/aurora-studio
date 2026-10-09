@@ -26,7 +26,7 @@ flowchart LR
   E --> F["6 · Look and ask<br>Health · Graph · Ask"]
 ```
 
-**1. Get the kit.** You need Python 3.9+ and git.
+**1. Get the kit.** You need Python 3.11+ (3.14 is better) and git.
 
 ```bash
 git clone https://github.com/<org>/aurora-studio.git

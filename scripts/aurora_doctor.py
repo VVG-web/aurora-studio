@@ -24,7 +24,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import RETIRED_FIELDS, config_list
+from aurora_common import RETIRED_FIELDS, config_list, python_status
 from pathlib import Path
 
 ROOT = Path.cwd()
@@ -497,6 +497,18 @@ def blocker_why(text: str) -> str:
     return ""
 
 
+def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
+    """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
+    поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
+    level, text = python_status(vi, platform)
+    if level == "ok":
+        print("OK:", text)
+    elif level == "warn":
+        warns.append(text)
+    else:
+        errors.append(text)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Готовность проекта Aurora к работе")
     ap.add_argument("--structure", action="store_true",
@@ -505,6 +517,8 @@ def main() -> int:
 
     errors: list[str] = []
     warns: list[str] = []
+
+    check_python(errors, warns)
 
     if not CONFIG.exists():
         errors.append("нет aurora.config.yaml → скопируйте из Aurora kit templates/")

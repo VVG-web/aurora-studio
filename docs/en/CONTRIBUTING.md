@@ -97,7 +97,7 @@ flowchart LR
   B --> C["A fresh project<br>aurora.py new in a temp folder"]
   C --> D["The full run<br>run_tests.py"]
   D --> E["VERSION · CHANGELOG<br>commit vX.Y.Z"]
-  E --> F["CI<br>Python 3.12 and 3.9"]
+  E --> F["CI<br>Python 3.12 and the lowest supported"]
   F --> G["release.yml<br>tag and Release"]
 ```
 
@@ -128,8 +128,10 @@ The corpus is rebuilt by `python3 tests/make_corpus.py` and lies in git. Found a
 corpus, otherwise it will come back. A bug found by hand is closed by a check that fails **without** your fix; the cause is
 established first, not guessed from the symptom.
 
-CI (`.github/workflows/test.yml`): `--smoke` and the full run on Python 3.12, and also compilation and `--smoke` on Python
-3.9 — the minimum supported. Do not write syntax only newer versions understand (for example quotes of the same kind inside an
+CI (`.github/workflows/test.yml`): `--smoke` and the full run on Python 3.12, and also compilation and `--smoke` on the oldest
+Python version that is still checked (policy: 3.11+ is supported and tested, 3.10 works with a warning, anything older stops;
+the thresholds live in `scripts/aurora_common.py`, the version guard in `aurora.py` and at the top of `aurora_common.py`, so
+those two files must stay readable to an old Python). Do not write syntax only newer versions understand (for example quotes of the same kind inside an
 f-string).
 
 ## Engine code rules
