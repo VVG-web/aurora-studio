@@ -224,6 +224,22 @@ def message_skeletons() -> set:
                             for t in node.targets)):
                 for v in node.value.values:
                     add(v)
+    # Текст о версии Python (предупреждение и ошибка доктора, подсказка установки) собирает
+    # `aurora_common` через `%s`, а не f-строкой: в доктор он попадает уже готовой строкой,
+    # и панель переводит её по тем же образцам, где каждая подстановка — `{}`.
+    common = os.path.join(KIT, "scripts", "aurora_common.py")
+    if os.path.isfile(common):
+        import ast as _ast
+        for node in _ast.walk(_ast.parse(open(common, encoding="utf-8").read())):
+            if isinstance(node, _ast.FunctionDef) and node.name in ("python_message", "python_install_hint"):
+                for sub in _ast.walk(node):
+                    if (isinstance(sub, _ast.Return) and isinstance(sub.value, _ast.BinOp)
+                            and isinstance(sub.value.op, _ast.Mod)
+                            and isinstance(sub.value.left, _ast.Constant)
+                            and isinstance(sub.value.left.value, str)):
+                        s = sub.value.left.value.replace("%s", "{}")
+                        if re.search("[а-яА-ЯёЁ]", s):
+                            out.add(s.strip())
     # Реестр видов артефактов: причины, по которым вид не годится, рождает `make_kinds.py` —
     # `check` кладёт их вторым элементом пары, `out_problem` возвращает.
     kinds = os.path.join(KIT, "scripts", "make_kinds.py")

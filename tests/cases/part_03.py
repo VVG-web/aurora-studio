@@ -1955,6 +1955,28 @@ def test_too_old_python_is_stopped_with_a_message_not_a_syntax_error(tmp: Path):
         except SyntaxError as e:
             raise AssertionError(f"{guarded.name}: синтаксис новее 3.7, защита версии не сработает "
                                  f"на старом Python: {e}")
+        # feature_version не ловит вложенные кавычки того же вида в f-строке (3.12), скобочный
+        # `with (...)` (3.9+) и `f"{x=}"` (3.8+): ловим их текстом, комментарии не считаем
+        for n, line in enumerate(guarded.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            assert not re.match(r"\s*(async\s+)?with\s*\(", code) and "=}" not in code, \
+                f"{guarded.name}:{n}: синтаксис новее 3.8, защита версии не сработает: {line.strip()}"
+    import shutil
+    # второй рубеж: настоящий старый интерпретатор (если он есть) компилирует оба файла
+    # (он ловит и вложенные кавычки в f-строке, которых текстовая проверка не видит)
+    for exe in ("python3.9", "python3.10", "python3.11", "/usr/bin/python3"):
+        path = shutil.which(exe)
+        if not path:
+            continue
+        ver = subprocess.run([path, "-c", "import sys; print(sys.version_info[1])"],
+                             capture_output=True, text=True).stdout.strip()
+        if ver.isdigit() and int(ver) < 12:
+            for guarded in (KIT / "aurora.py", SCRIPTS / "aurora_common.py"):
+                cp = subprocess.run([path, "-c", "import sys; compile(open(sys.argv[1], encoding='utf-8')"
+                                     ".read(), sys.argv[1], 'exec')", str(guarded)],
+                                    capture_output=True, text=True)
+                assert cp.returncode == 0, (path, guarded.name, cp.stderr)
+            break
 
 
 @test
@@ -2005,6 +2027,12 @@ def test_doctor_and_panel_report_the_python_version(tmp: Path):
     finally:
         AC.python_status = saved_status
         ck.environment(fresh=True)
+    # «Здоровье»: предупреждение и ошибка doctor приходят строкой в errors/warns и переводятся
+    # по таблице messages (шаблоны с «{}») — кириллицы в английском тексте нет ни на одной системе
+    for pvi in ((3, 10, 4), (3, 9, 6)):
+        for plat in ("darwin", "win32", "linux"):
+            en_text = ck.translate_message(AC.python_message(pvi, plat), "en")
+            assert not cyr.search(en_text) and "Python %d.%d" % pvi[:2] in en_text, (pvi, plat, en_text)
     view = (KIT / "cockpit/modules/install/view.js").read_text(encoding="utf-8")
     assert 't("install.py_warn")' in view and 't("install.py_error")' in view
     for lang in ("ru", "en"):
