@@ -2770,8 +2770,8 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
 ARCHIVE_SUFFIX = re.compile(r"-(?:\d{8}-\d{4}(?:\d{2})?Z|\d{1,2})$")
 
 
-def audit_merges(cards: dict) -> list:
-    """Разовая проверка баз после дефекта слияния нескольких доноров (BL-SEC-10). → находки.
+def audit_merges(cards: dict) -> tuple:
+    """Разовая проверка баз после дефекта слияния нескольких доноров. → (проверено, находки).
 
     До исправления выживший с двумя и более донорами читался из исходного текста, и каждый
     следующий донор затирал синонимы и источники предыдущего. Донор при этом уходил в
@@ -2783,42 +2783,48 @@ def audit_merges(cards: dict) -> list:
 
     Находка: (путь донора, победитель, [чего не хватает]). Победитель, сам ушедший в архив
     при последующем слиянии, ведёт к своему победителю: всё накапливается в итоговом.
+    «Проверено» — сколько слитых доноров просмотрено: ноль находок при нуле проверенных
+    значит «пометку не нашли», а не «всё цело».
+
+    Результат не зависит от порядка обхода файлов. Живых карточек под одним именем бывает
+    несколько (двойник в другом разделе, синоним чужой карточки, равный имени победителя):
+    сначала берутся совпавшие с ИМЕНЕМ, а синонимы — только если по имени никого нет;
+    донор цел, если цел хотя бы перед одним из кандидатов, иначе названа карточка с
+    наименьшими потерями (при равенстве — первая по пути).
     """
-    live: dict = {}
-    for path, c in cards.items():
+    by_stem: dict = {}
+    by_alias: dict = {}
+    for path in sorted(cards):
         if "/_archive/" in path:
             continue
-        for name in [c.stem] + list(c.aliases):
-            live.setdefault(fold_hard(name), path)
+        c = cards[path]
+        by_stem.setdefault(fold_hard(c.stem), []).append(path)
+        for name in c.aliases:
+            by_alias.setdefault(fold_hard(name), []).append(path)
     archived: dict = {}
-    for path, c in cards.items():
+    for path in sorted(cards):
         if "/_archive/" in path:
+            c = cards[path]
             archived.setdefault(fold_hard(ARCHIVE_SUFFIX.sub("", c.stem)), c)
 
-    def winner_of(c: "Card"):
-        """Итоговый победитель по цепочке `superseded_by`. → (Card | None, имя)."""
+    def winners_of(c: "Card"):
+        """Итоговый победитель по цепочке `superseded_by`. → ([Card], имя)."""
         seen: set = set()
         name = leaf_name((c.fm.get("superseded_by") or "").strip().strip('"').strip("[]").split("|")[0])
         shown = name
         while name and fold_hard(name) not in seen:
-            seen.add(fold_hard(name))
-            if fold_hard(name) in live:
-                return cards[live[fold_hard(name)]], shown
-            nxt = archived.get(fold_hard(name))
+            key = fold_hard(name)
+            seen.add(key)
+            paths = by_stem.get(key) or by_alias.get(key)
+            if paths:
+                return [cards[p] for p in paths], shown
+            nxt = archived.get(key)
             if nxt is None:
                 break
             name = leaf_name((nxt.fm.get("superseded_by") or "").strip().strip('"').strip("[]").split("|")[0])
-        return None, shown
+        return [], shown
 
-    found: list = []
-    for path in sorted(cards):
-        c = cards[path]
-        if "/_archive/" not in path or not re.search(r"слито в \[\[", c.text):
-            continue
-        win, shown = winner_of(c)
-        if win is None:
-            found.append((path, shown, ["победитель не найден среди живых карточек"]))
-            continue
+    def lost_for(c: "Card", win: "Card") -> list:
         have = {fold_hard(n) for n in [win.stem] + list(win.aliases)}
         base = ARCHIVE_SUFFIX.sub("", c.stem)
         lost: list = []
@@ -2829,9 +2835,24 @@ def audit_merges(cards: dict) -> list:
         got = {s_.replace("\\", "/") for s_ in card_sources(win.text)}
         lost += [f"источник {s_}" for s_ in card_sources(c.text)
                  if s_.replace("\\", "/") not in got]
-        if lost:
-            found.append((path, win.stem, lost))
-    return found
+        return lost
+
+    found: list = []
+    checked = 0
+    for path in sorted(cards):
+        c = cards[path]
+        if "/_archive/" not in path or not re.search(r"слито в \[\[", c.text):
+            continue
+        checked += 1
+        wins, shown = winners_of(c)
+        if not wins:
+            found.append((path, shown, ["победитель не найден среди живых карточек"]))
+            continue
+        # кандидаты уже идут по пути; min берёт первого из равных — порядок обхода не важен
+        best = min(((lost_for(c, w), w) for w in wins), key=lambda t: len(t[0]))
+        if best[0]:
+            found.append((path, best[1].stem, best[0]))
+    return checked, found
 
 
 # ---------------------------------------------------------------------- main
@@ -3002,7 +3023,8 @@ def main() -> int:
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
     ap.add_argument("--merge-audit", action="store_true",
                     help="только чтение: слитые карточки в _archive, чьи имя, синонимы или "
-                         "источники не дошли до победителя (разовая проверка после BL-SEC-10)")
+                         "источники не дошли до победителя (разовая проверка баз, слитых до "
+                         "исправления слияния нескольких доноров)")
     ap.add_argument("--word-forms", action="store_true",
                     help="JSON: группы живых карточек, названных формами одного слова — "
                          "их судит `agent:twins`")
@@ -3032,9 +3054,9 @@ def main() -> int:
         return 0
     if a.merge_audit:
         cards = load_cards(a.root)
-        found = audit_merges(cards)
+        checked, found = audit_merges(cards)
         print(f"# kb_fix --merge-audit — {TODAY}\n\nКарточек в базе: {len(cards)}; "
-              f"слитых доноров с потерями: {len(found)}")
+              f"проверено слитых доноров: {checked}; с потерями: {len(found)}")
         for dpath, win, lost in found[:200]:
             print(f"- {short(dpath)} → {win}: не дошло — " + "; ".join(lost[:6])
                   + (f"; … ещё {len(lost) - 6}" if len(lost) > 6 else ""))
@@ -3043,7 +3065,8 @@ def main() -> int:
         if found:
             print("\nЭто отчёт: ничего не записано. Потерянное восстанавливает git "
                   "(карточка победителя до слияния) либо повторное слияние: "
-                  "`kb:dedupe` с флагом --merge «оставить» «убрать».")
+                  "`kb:dedupe` с флагом --merge «оставить» «убрать»; доноры с одним "
+                  "именем указываются путями: --merge Processes/Имя _archive/Имя.")
         return 1 if found else 0
     if a.all:
         a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.titles = True

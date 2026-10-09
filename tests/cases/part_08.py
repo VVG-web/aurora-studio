@@ -1881,9 +1881,9 @@ def test_a_winner_keeps_what_every_donor_brought(tmp: Path):
 
 @test
 def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Path):
-    """Разовая проверка баз после дефекта слияния доноров (BL-DEC-08): `kb_fix --merge-audit`.
+    """Разовая проверка баз после дефекта слияния доноров: `kb_fix --merge-audit`.
 
-    До исправления BL-SEC-10 следующий донор затирал синонимы и источники предыдущего, а
+    До исправления слияния следующий донор затирал синонимы и источники предыдущего, а
     донор всё равно уходил в `_archive/` с `superseded_by`. Проверка читает базу и
     ничего не пишет: здоровая слитая пара молчит, испорченная названа с тем, что потеряно,
     а заменённая по `kb:supersede` не проверяется — ей переезжать в преемника не обязано.
@@ -1900,7 +1900,7 @@ def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Pat
     run("kb_fix.py", "--merge-all", "--apply", "--allow-dirty", cwd=root)
     assert len(list((kb / "_archive").glob("ALG-052-Проверка*.md"))) == 2, "доноры не в архиве"
     cp = run("kb_fix.py", "--merge-audit", cwd=root)
-    assert cp.returncode == 0 and "с потерями: 0" in cp.stdout, \
+    assert cp.returncode == 0 and "проверено слитых доноров: 2; с потерями: 0" in cp.stdout, \
         f"здоровое слияние названо испорченным:\n{cp.stdout}\n{cp.stderr}"
 
     # заменённая без слияния: у преемника нет ни её имени, ни источника — это не потеря
@@ -1923,7 +1923,7 @@ def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Pat
     before = {str(p): p.read_bytes() for p in kb.rglob("*.md")}
     cp = run("kb_fix.py", "--merge-audit", cwd=root)
     assert cp.returncode == 1, f"потеря не замечена:\n{cp.stdout}\n{cp.stderr}"
-    assert "слитых доноров с потерями: 1" in cp.stdout, cp.stdout
+    assert "проверено слитых доноров: 3; с потерями: 1" in cp.stdout, cp.stdout
     line = next(l for l in cp.stdout.splitlines() if "Возврат-денег" in l)
     assert "Возврат-средств" in line and "имя «Возврат-денег»" in line \
         and "синоним «Возврат-донора»" in line and "источник Sources/Jira/T-21.md" in line, line
@@ -1943,6 +1943,75 @@ def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Pat
     cp = run("kb_fix.py", "--merge-audit", cwd=root)
     assert cp.returncode == 0 and "с потерями: 0" in cp.stdout, \
         f"восстановленное слияние всё ещё названо испорченным:\n{cp.stdout}"
+
+
+@test
+def test_merge_audit_does_not_depend_on_file_walk_order(tmp: Path):
+    """Проверка слияний даёт один ответ при любом порядке обхода файлов.
+
+    Живых карточек под одним именем бывает несколько: двойник в другом разделе, который
+    не слился, или чужая карточка, у которой синоним равен имени победителя. Раньше
+    побеждала та, что попалась в обходе первой, и здоровая слитая пара получала
+    ложную потерю на одной файловой системе и не получала на другой. Теперь имена
+    предпочитаются синонимам, донор цел, если цел перед любым из кандидатов, а настоящая
+    потеря названа при любом порядке."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    K = importlib.import_module("kb_fix")
+
+    def _sub(base, name):
+        (base / name).mkdir()
+        return base / name
+
+    def donor_note(root, name, winner, alias, source):
+        card(root, f"_archive/{name}.md", "донор", status="deprecated",
+             superseded_by=f'"[[{winner}]]"', aliases=f'\n  - "{alias}"',
+             sources=f'\n  - "{source}"')
+        p = root / "AuroraKnowledgeDB" / "_archive" / f"{name}.md"
+        p.write_text(p.read_text(encoding="utf-8") + f"\n## История\n\n- слито в [[{winner}]]\n",
+                     encoding="utf-8")
+
+    def both_orders(root):
+        cards = K.load_cards(str(root / "AuroraKnowledgeDB"))
+        direct = K.audit_merges(cards)
+        back = K.audit_merges(dict(reversed(list(cards.items()))))
+        assert direct == back, f"ответ зависит от порядка обхода:\n{direct}\n{back}"
+        return direct
+
+    # 1. двойник того же имени в другом разделе остался живым и ничего не принёс
+    r1 = make_project(_sub(tmp, "a"), git=True)
+    card(r1, "Processes/Икс.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-А"', sources='\n  - "Sources/Jira/T-1.md"\n  - "Sources/Jira/T-2.md"')
+    card(r1, "Glossary/Икс.md", "спорный двойник", status="imported",
+         aliases='\n  - "Другое"', sources='\n  - "Sources/Jira/T-9.md"')
+    donor_note(r1, "Икс", "Икс", "Донор-А", "Sources/Jira/T-2.md")
+    checked, found = both_orders(r1)
+    assert checked == 1 and found == [], f"здоровая пара названа испорченной: {found}"
+
+    # 2. синоним другой живой карточки равен имени победителя: имя сильнее синонима
+    r2 = make_project(_sub(tmp, "b"), git=True)
+    card(r2, "Concepts/Игрек.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Б"', sources='\n  - "Sources/Jira/T-1.md"\n  - "Sources/Jira/T-2.md"')
+    card(r2, "Concepts/Апельсин.md", "чужая карточка", status="imported",
+         aliases='\n  - "Игрек"', sources='\n  - "Sources/Jira/T-9.md"')
+    donor_note(r2, "Игрек", "Игрек", "Донор-Б", "Sources/Jira/T-2.md")
+    checked, found = both_orders(r2)
+    assert checked == 1 and found == [], f"синоним чужой карточки затенил имя: {found}"
+
+    # 3. настоящая потеря при двух одноимённых живых названа при любом порядке
+    r3 = make_project(_sub(tmp, "c"), git=True)
+    card(r3, "Processes/Зет.md", "победитель " * 10, status="knowledge",
+         sources='\n  - "Sources/Jira/T-1.md"')
+    card(r3, "Glossary/Зет.md", "двойник", status="imported", sources='\n  - "Sources/Jira/T-9.md"')
+    donor_note(r3, "Зет", "Зет", "Донор-В", "Sources/Jira/T-2.md")
+    checked, found = both_orders(r3)
+    assert checked == 1 and len(found) == 1 and "синоним «Донор-В»" in found[0][2], found
+
+    # в отчёте видно, сколько слитых доноров просмотрено: ноль — не то же, что «цело»
+    cp = run("kb_fix.py", "--merge-audit", cwd=r1)
+    assert cp.returncode == 0 and "проверено слитых доноров: 1; с потерями: 0" in cp.stdout, cp.stdout
+    cp = run("kb_fix.py", "--merge-audit", cwd=r3)
+    assert cp.returncode == 1 and "--merge Processes/Имя _archive/Имя" in cp.stdout, cp.stdout
 
 
 def _make_with_template(tmp: Path, rel_src: Path, env: dict):

@@ -587,7 +587,7 @@
     "всё вышеперечисленное": "all of the above",
     "слить DROP в KEEP": "merge DROP into KEEP",
     "слить все группы двойников, где победитель выводится правилом; спорные останутся в отчёте": "merge all groups of twins where the winner follows from a rule; the disputed stay in the report",
-    "только чтение: слитые карточки в _archive, чьи имя, синонимы или источники не дошли до победителя (разовая проверка после BL-SEC-10)": "read-only: merged cards in _archive whose name, synonyms or sources did not reach the winner (a one-off check after BL-SEC-10)",
+    "только чтение: слитые карточки в _archive, чьи имя, синонимы или источники не дошли до победителя (разовая проверка баз, слитых до исправления слияния нескольких доноров)": "read-only: merged cards in _archive whose name, synonyms or sources did not reach the winner (a one-off check of bases merged before the multi-donor merge fix)",
     "разрешить запись, когда в базе есть незакоммиченные правки": "allow writing when the base has uncommitted edits",
     "машинный список конфликтов синонимов (полный, без обрезки)": "the machine list of synonym conflicts (full, uncut)",
     "корень базы (по умолчанию AuroraKnowledgeDB)": "the base root (default AuroraKnowledgeDB)",
