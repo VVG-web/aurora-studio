@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.170.0";
+const UI_VERSION = "1.170.1";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1457,17 +1457,24 @@ function loadHealth(p, parts = HEALTH_ALL, force = false){
           if (r.kb_updated) p.kb_updated = r.kb_updated;
         }
         if (!h.loaded.includes(part)) h.loaded.push(part);
-        healthChanged();
+        healthChanged(p);
       })));
 }
-// Части приходят пачкой — перерисовка одна на кадр, а не на каждую.
-let HEALTH_FRAME = 0;
-function healthChanged(){
+// Части приходят пачкой — перерисовка одна на кадр, а не на каждую. Разделы проекта
+// («Здоровье», «Зеркала», «Установка») показывают только выбранный проект, и часть чужого
+// проекта их не касается: на старте панель догружает здоровье всех проектов по семь
+// частей, и «Установка» перерисовывалась десятки раз подряд — её блоки мигали (1.170.1).
+let HEALTH_FRAME = 0, HEALTH_MINE = false;
+function healthChanged(p){
+  if (p && p === S.project) HEALTH_MINE = true;
   if (HEALTH_FRAME) return;
   HEALTH_FRAME = requestAnimationFrame(() => {
     HEALTH_FRAME = 0;
     renderOverview(); renderProjBadge(); drawBridgeStamp();
     if (S.project && S.health && S.project.health === S.health) navBadges(S.project, S.health);
+    const mine = HEALTH_MINE;
+    HEALTH_MINE = false;
+    if (!mine) return;
     for (const id of ["health", "mirrors", "install"]){
       const rec = MODULES.get(id);
       if (rec && rec.mod) Promise.resolve(rec.mod.refresh?.(moduleCtx(id, rec.section)))

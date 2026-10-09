@@ -26,9 +26,28 @@ async function pipInstall(ctx, item, btn){
   await recheck(ctx);
 }
 
+// Блоки, которые спрашивают сеть и машину: надстройки движка, модули Git-провайдеров, MCP
+// в ассистентах. Создаются один раз (и заново — при смене языка), а перерисовка раздела
+// переставляет их как есть. Прежде каждая перерисовка — а ядро зовёт её на каждую часть
+// здоровья и каждую смену состояния — стирала их и спрашивала сервер снова: блок мигал
+// «колесо → данные → колесо» десятки раз подряд (1.170.1). Свежие данные — по их кнопкам
+// «Проверить» и «Найти» и после установки.
+let CARDS = null;
+
+function cards(ctx){
+  if (!CARDS || CARDS.lang !== ctx.lang)
+    CARDS = {lang: ctx.lang, extras: extrasCard(ctx), gitmods: gitModsCard(ctx),
+             harness: harnessCard(ctx)};
+  return CARDS;
+}
+
 export async function refresh(ctx){
   const {t, el} = ctx;
   const box = ctx.$("#installBody");
+  // Постоянные блоки вынимаем до очистки: `innerHTML = ""` у родителя их не губит, но
+  // так явно видно, что они переезжают, а не строятся заново.
+  const keep = cards(ctx);
+  [keep.extras, keep.gitmods, keep.harness].forEach(n => n.remove());
   box.innerHTML = "";
   const e = ctx.state.env;
   box.append(el("div", {class:"row", style:"margin-bottom:6px;flex-wrap:wrap"},
@@ -58,9 +77,7 @@ export async function refresh(ctx){
         onclick: ev => pipInstall(ctx, i, ev.target)}, t("install.do_install")) : null));
   });
   box.append(card);
-  box.append(extrasCard(ctx));
-  box.append(gitModsCard(ctx));
-  box.append(harnessCard(ctx));
+  box.append(keep.extras, keep.gitmods, keep.harness);
 
   if (!ctx.project) return;
   const p = ctx.project;
@@ -201,7 +218,8 @@ function gitModLine(ctx, provider){
             ? t("install.gm_project_old", {have: m.installed, kit: m.kit}) : t("install.gm_project_ok", {v: m.installed}))),
       ok ? null : el("button", {class:"btn sm primary", onclick: async (e) => {
         e.target.disabled = true;
-        await installGitMod(ctx, m.id, () => ctx.show("install"));
+        // Модуль поставлен — блоки раздела спросят сервер заново (один раз), а не покажут прежнее.
+        await installGitMod(ctx, m.id, () => { GITMODS = null; CARDS = null; ctx.show("install"); });
       }}, m.installed ? t("install.gm_update", {v: m.kit}) : t("install.gm_install")));
   })();
   return row;

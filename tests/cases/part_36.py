@@ -340,3 +340,22 @@ def test_the_watchdog_leaves_a_step_that_waits_for_a_model(tmp: Path):
     assert not RR.looks_offline(["    ⚠ US-1.md · разбор: №1 m: URLError: timed out — подожду и "
                                  "повторю"]), "пережитый шагом обрыв принят за обрыв сети"
     assert RR.looks_offline(["  сбой: URLError: timed out"]), "настоящий обрыв больше не виден"
+
+
+@test
+def test_the_install_blocks_do_not_blink_on_every_redraw(tmp: Path):
+    """«Установка»: надстройки, модули Git и MCP в ассистентах строятся один раз, а перерисовка
+    раздела переставляет их как есть — без нового запроса и колеса. Ядро перерисовывает
+    разделы проекта только по частям здоровья выбранного проекта: на старте части всех
+    проектов шли десятками, и блоки мигали (1.170.1)."""
+    view = (COCKPIT / "modules" / "install" / "view.js").read_text(encoding="utf-8")
+    body = view[view.index("export async function refresh(ctx){"):view.index("/* Надстройки движка")]
+    for card in ("extrasCard(ctx)", "gitModsCard(ctx)", "harnessCard(ctx)"):
+        assert card not in body, f"перерисовка раздела строит заново {card} — блок снова мигает"
+    assert "const keep = cards(ctx);" in body and "box.append(keep.extras, keep.gitmods, keep.harness);" in body
+    assert "CARDS.lang !== ctx.lang" in view, "смена языка не перестроит блоки"
+    ui = ui_source()
+    frame = ui[ui.index("function healthChanged(p){"):ui.index("async function prefetchHealth(")]
+    assert "if (p && p === S.project) HEALTH_MINE = true;" in frame and "if (!mine) return;" in frame, \
+        "разделы проекта снова перерисовываются по здоровью чужих проектов"
+    assert "healthChanged(p);" in ui, "часть здоровья не сообщает, чей это проект"

@@ -16,5 +16,5 @@
     "kit:hooks",
     "kit:doctor"
   ],
-  "for": "1.170.0"
+  "for": "1.170.1"
 }
