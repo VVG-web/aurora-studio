@@ -282,7 +282,9 @@ def test_jira_publish_path_refuses_secrets_and_escapes_cql(tmp: Path):
             raise AssertionError(f"«{path}» прошёл в Jira")
         refused(secret.name, "секрет")
         refused("../outside.txt", "вне проекта")
-        refused(str(tmp / "outside.txt"), "папок для публикации")
+        refused(str(tmp / "outside.txt"), "вне проекта")
+        refused(str(secret), "секрет")
+        refused(str(root / "README.md"), "папок для публикации")
         refused("README.md", "папок для публикации")
         refused("Artifacts/.hidden.md", "скрыт")
         refused("Artifacts/big.md", "МБ")
@@ -294,6 +296,17 @@ def test_jira_publish_path_refuses_secrets_and_escapes_cql(tmp: Path):
         ok = A.run({"op": "jira_publish", "issue": "ABC-1", "dry_run": True,
                     "path": ".aurora/state/reviews/r.md"}, str(root))
         assert ok["ok"], "отчёт ревью из .aurora/state/reviews не публикуется"
+        bots = root / "Workspaces" / "bots" / "b" / "run"
+        bots.mkdir(parents=True, exist_ok=True)
+        (bots / "r.md").write_text("результат бота", encoding="utf-8")
+        work = root / "Deliverables" / "work"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "d.md").write_text("работа", encoding="utf-8")
+        for p in ("Workspaces/bots/b/run/r.md", "Deliverables/work/d.md",
+                  str(bots / "r.md"), str(work / "d.md"), str(art / "report.md")):
+            ok = A.run({"op": "jira_publish", "issue": "ABC-1", "dry_run": True, "path": p},
+                       str(root))
+            assert ok["ok"], f"«{p}» из разрешённой папки не публикуется"
         try:
             A.run({"op": "jira_publish", "issue": "ABC-1", "filename": "big.md", "dry_run": True,
                    "content": "x" * (A.ATTACH_MAX + 1)}, str(root))

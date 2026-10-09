@@ -205,7 +205,15 @@ def publish_file(path: str, root: str = "") -> tuple:
     предела: модель, получившая инъекцию со страницы, не должна выгрузить токены в задачу."""
     from request_context import SECRET_NAME, inside, is_secret
     base = os.path.realpath(root or os.getcwd())
-    full = inside(base, path)
+    raw = path.strip()
+    # Абсолютный путь (его отдаёт save_output) `inside` принял бы за относительный: обрезал бы
+    # ведущий «/». Поэтому абсолютный разбираем здесь и проверяем «внутри корня» сами.
+    if os.path.isabs(raw):
+        full = os.path.realpath(raw)
+        if not (full == base or full.startswith(base + os.sep)):
+            full = ""
+    else:
+        full = inside(base, raw)
     if not full:
         raise OpError(f"«{path}» вне проекта — публиковать можно только файлы проекта")
     rel = os.path.relpath(full, base).replace(os.sep, "/")
