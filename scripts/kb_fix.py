@@ -2765,6 +2765,75 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
     return 0
 
 
+# Метка архивной копии: к занятому имени в `_archive` дописывается дата-время или номер
+# (`free_archive_name`, метка UTC с «Z»), и имя донора надо искать и без неё.
+ARCHIVE_SUFFIX = re.compile(r"-(?:\d{8}-\d{4}(?:\d{2})?Z|\d{1,2})$")
+
+
+def audit_merges(cards: dict) -> list:
+    """Разовая проверка баз после дефекта слияния нескольких доноров (BL-SEC-10). → находки.
+
+    До исправления выживший с двумя и более донорами читался из исходного текста, и каждый
+    следующий донор затирал синонимы и источники предыдущего. Донор при этом уходил в
+    `_archive/` с `superseded_by`, а отчёт говорил «слито»: потеря не видна ни в линтере,
+    ни в доверии. Здесь для каждого донора, слитого ремонтом (в «## История» есть «слито в
+    [[…]]»), проверяется, что у победителя — его имя, его синонимы и его источники.
+    Читает базу и ничего не пишет. Заменённые по `kb:supersede` не проверяются: устаревшее
+    знание не обязано переезжать в преемника.
+
+    Находка: (путь донора, победитель, [чего не хватает]). Победитель, сам ушедший в архив
+    при последующем слиянии, ведёт к своему победителю: всё накапливается в итоговом.
+    """
+    live: dict = {}
+    for path, c in cards.items():
+        if "/_archive/" in path:
+            continue
+        for name in [c.stem] + list(c.aliases):
+            live.setdefault(fold_hard(name), path)
+    archived: dict = {}
+    for path, c in cards.items():
+        if "/_archive/" in path:
+            archived.setdefault(fold_hard(ARCHIVE_SUFFIX.sub("", c.stem)), c)
+
+    def winner_of(c: "Card"):
+        """Итоговый победитель по цепочке `superseded_by`. → (Card | None, имя)."""
+        seen: set = set()
+        name = leaf_name((c.fm.get("superseded_by") or "").strip().strip('"').strip("[]").split("|")[0])
+        shown = name
+        while name and fold_hard(name) not in seen:
+            seen.add(fold_hard(name))
+            if fold_hard(name) in live:
+                return cards[live[fold_hard(name)]], shown
+            nxt = archived.get(fold_hard(name))
+            if nxt is None:
+                break
+            name = leaf_name((nxt.fm.get("superseded_by") or "").strip().strip('"').strip("[]").split("|")[0])
+        return None, shown
+
+    found: list = []
+    for path in sorted(cards):
+        c = cards[path]
+        if "/_archive/" not in path or not re.search(r"слито в \[\[", c.text):
+            continue
+        win, shown = winner_of(c)
+        if win is None:
+            found.append((path, shown, ["победитель не найден среди живых карточек"]))
+            continue
+        have = {fold_hard(n) for n in [win.stem] + list(win.aliases)}
+        base = ARCHIVE_SUFFIX.sub("", c.stem)
+        lost: list = []
+        if not {fold_hard(c.stem), fold_hard(base)} & have:
+            lost.append(f"имя «{base}»")
+        lost += [f"синоним «{a}»" for a in c.aliases
+                 if fold_hard(a) not in have and fold_hard(a) != fold_hard(win.stem)]
+        got = {s_.replace("\\", "/") for s_ in card_sources(win.text)}
+        lost += [f"источник {s_}" for s_ in card_sources(c.text)
+                 if s_.replace("\\", "/") not in got]
+        if lost:
+            found.append((path, win.stem, lost))
+    return found
+
+
 # ---------------------------------------------------------------------- main
 
 # Предел длины имени — самый строгий из трёх систем: Linux (ext4) меряет его в БАЙТАХ
@@ -2931,6 +3000,9 @@ def main() -> int:
                     help="и снять их механически: alias останется у карточки, чьё имя "
                          "совпадает. Без ключа — только отчёт и задание ассистенту")
     ap.add_argument("--dupes", action="store_true", help="отчёт по двойникам")
+    ap.add_argument("--merge-audit", action="store_true",
+                    help="только чтение: слитые карточки в _archive, чьи имя, синонимы или "
+                         "источники не дошли до победителя (разовая проверка после BL-SEC-10)")
     ap.add_argument("--word-forms", action="store_true",
                     help="JSON: группы живых карточек, названных формами одного слова — "
                          "их судит `agent:twins`")
@@ -2958,6 +3030,21 @@ def main() -> int:
                   and sum(1 for p in paths if not is_placeholder(cards[p].fm, cards[p].text)) > 1]
         print(json.dumps(groups, ensure_ascii=False))
         return 0
+    if a.merge_audit:
+        cards = load_cards(a.root)
+        found = audit_merges(cards)
+        print(f"# kb_fix --merge-audit — {TODAY}\n\nКарточек в базе: {len(cards)}; "
+              f"слитых доноров с потерями: {len(found)}")
+        for dpath, win, lost in found[:200]:
+            print(f"- {short(dpath)} → {win}: не дошло — " + "; ".join(lost[:6])
+                  + (f"; … ещё {len(lost) - 6}" if len(lost) > 6 else ""))
+        if len(found) > 200:
+            print(f"- … ещё {len(found) - 200}")
+        if found:
+            print("\nЭто отчёт: ничего не записано. Потерянное восстанавливает git "
+                  "(карточка победителя до слияния) либо повторное слияние: "
+                  "`kb:dedupe` с флагом --merge «оставить» «убрать».")
+        return 1 if found else 0
     if a.all:
         a.links = a.homoglyphs = a.frontmatter = a.dupes = a.retire = a.titles = True
         a.aliases = a.sections = a.names = True

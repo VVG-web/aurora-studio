@@ -1879,6 +1879,72 @@ def test_a_winner_keeps_what_every_donor_brought(tmp: Path):
         assert f'"{alias}"' in text, f"синоним «{alias}» потерян при слиянии:\n{text}"
 
 
+@test
+def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Path):
+    """Разовая проверка баз после дефекта слияния доноров (BL-DEC-08): `kb_fix --merge-audit`.
+
+    До исправления BL-SEC-10 следующий донор затирал синонимы и источники предыдущего, а
+    донор всё равно уходил в `_archive/` с `superseded_by`. Проверка читает базу и
+    ничего не пишет: здоровая слитая пара молчит, испорченная названа с тем, что потеряно,
+    а заменённая по `kb:supersede` не проверяется — ей переезжать в преемника не обязано.
+    """
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    # здоровое слияние троих настоящим ремонтом (после исправления)
+    _donor(root, "Processes/ALG-052-Проверка.md", "основная версия алгоритма " * 8,
+           "Sources/Jira/T-1.md", "Проверка-П", status="knowledge")
+    _donor(root, "Concepts/ALG-052-Проверка.md", "версия из понятий", "Sources/Jira/T-2.md",
+           "Проверка-К", status="imported")
+    _donor(root, "Glossary/ALG-052-Проверка.md", "версия из словаря", "Sources/Jira/T-3.md",
+           "Проверка-С", status="imported")
+    run("kb_fix.py", "--merge-all", "--apply", "--allow-dirty", cwd=root)
+    assert len(list((kb / "_archive").glob("ALG-052-Проверка*.md"))) == 2, "доноры не в архиве"
+    cp = run("kb_fix.py", "--merge-audit", cwd=root)
+    assert cp.returncode == 0 and "с потерями: 0" in cp.stdout, \
+        f"здоровое слияние названо испорченным:\n{cp.stdout}\n{cp.stderr}"
+
+    # заменённая без слияния: у преемника нет ни её имени, ни источника — это не потеря
+    (kb / "_archive").mkdir(exist_ok=True)
+    _donor(root, "Concepts/Старое-правило.md", "устарело", "Sources/Jira/T-7.md",
+           "Правило-старое", status="deprecated", superseded_by='"[[Новое-правило]]"')
+    (kb / "Concepts/Старое-правило.md").rename(kb / "_archive/Старое-правило.md")
+    _donor(root, "Concepts/Новое-правило.md", "новое", "Sources/Jira/T-8.md", "Правило-новое",
+           status="knowledge")
+
+    # испорченное: донор слит по старой схеме — у победителя нет его синонима и источника
+    _donor(root, "Concepts/Возврат-средств.md", "победитель " * 10, "Sources/Jira/T-20.md",
+           "Возврат-основной", status="knowledge")
+    donor = _donor(root, "Concepts/Возврат-денег.md", "донор", "Sources/Jira/T-21.md",
+                   "Возврат-донора", status="deprecated", superseded_by='"[[Возврат-средств]]"')
+    donor.write_text(donor.read_text(encoding="utf-8").rstrip("\n")
+                     + "\n\n## История\n\n- 2026-09-01: слито в [[Возврат-средств]] (kb_fix --merge).\n",
+                     encoding="utf-8")
+    donor.rename(kb / "_archive/Возврат-денег.md")
+    before = {str(p): p.read_bytes() for p in kb.rglob("*.md")}
+    cp = run("kb_fix.py", "--merge-audit", cwd=root)
+    assert cp.returncode == 1, f"потеря не замечена:\n{cp.stdout}\n{cp.stderr}"
+    assert "слитых доноров с потерями: 1" in cp.stdout, cp.stdout
+    line = next(l for l in cp.stdout.splitlines() if "Возврат-денег" in l)
+    assert "Возврат-средств" in line and "имя «Возврат-денег»" in line \
+        and "синоним «Возврат-донора»" in line and "источник Sources/Jira/T-21.md" in line, line
+    assert "Старое-правило" not in cp.stdout, "заменённая без слияния названа потерей"
+    assert before == {str(p): p.read_bytes() for p in kb.rglob("*.md")}, \
+        "проверка записала в базу"
+
+    # потерянное возвращено победителю — проверка молчит
+    win = kb / "Concepts/Возврат-средств.md"
+    text = win.read_text(encoding="utf-8")
+    fixed = text.replace('  - "Возврат-основной"',
+                         '  - "Возврат-основной"\n  - "Возврат-денег"\n  - "Возврат-донора"') \
+                .replace('  - "Sources/Jira/T-20.md"',
+                         '  - "Sources/Jira/T-20.md"\n  - "Sources/Jira/T-21.md"')
+    assert fixed != text, text
+    win.write_text(fixed, encoding="utf-8")
+    cp = run("kb_fix.py", "--merge-audit", cwd=root)
+    assert cp.returncode == 0 and "с потерями: 0" in cp.stdout, \
+        f"восстановленное слияние всё ещё названо испорченным:\n{cp.stdout}"
+
+
 def _make_with_template(tmp: Path, rel_src: Path, env: dict):
     """Прогон agent:make на шаблоне из поставки заглушкой вместо модели.
 
