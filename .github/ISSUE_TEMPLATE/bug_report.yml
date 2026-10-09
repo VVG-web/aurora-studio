@@ -54,12 +54,20 @@ body:
       label: Ожидаемое поведение / Expected behavior
     validations:
       required: true
-  - type: input
+  - type: dropdown
     id: version
     attributes:
       label: Версия кита / Kit version
-      description: В нижней строке панели («cockpit … · kit X.Y.Z») или в файле `VERSION`.
-      placeholder: "1.167.0"
+      description: В нижней строке панели («cockpit … · kit X.Y.Z») или в файле `VERSION`. Нет в списке — выберите «old».
+      options:
+        # versions:begin — список обновляет workflow issue-form-versions, руками не правят
+        - "1.167.0"
+        - "1.166.0"
+        - "1.165.0"
+        - "1.164.0"
+        - "1.163.0"
+        - "old (старше перечисленных / older)"
+        # versions:end
     validations:
       required: true
   - type: dropdown
@@ -70,7 +78,6 @@ body:
         - Windows
         - macOS
         - Linux
-        - Другая / Other
     validations:
       required: true
   - type: input

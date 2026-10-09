@@ -58,6 +58,32 @@ body:
         - Без этого не могу работать / Blocks my work
     validations:
       required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Версия кита / Kit version
+      description: В нижней строке панели («cockpit … · kit X.Y.Z») или в файле `VERSION`. Нет в списке — выберите «old».
+      options:
+        # versions:begin — список обновляет workflow issue-form-versions, руками не правят
+        - "1.167.0"
+        - "1.166.0"
+        - "1.165.0"
+        - "1.164.0"
+        - "1.163.0"
+        - "old (старше перечисленных / older)"
+        # versions:end
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Операционная система / OS
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
   - type: textarea
     id: extra
     attributes:

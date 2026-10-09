@@ -319,3 +319,81 @@ def test_wiki_is_linked_from_the_places_people_start(tmp: Path):
         text = (KIT / rel).read_text(encoding="utf-8")
         assert "wiki_build.py --check" in text and "wiki-sync" in text, \
             f"{rel} не говорит, как проверяются и выкладываются страницы wiki"
+
+
+def _issue_form_versions():
+    import importlib.util
+    path = KIT / ".github" / "scripts" / "issue_form_versions.py"
+    spec = importlib.util.spec_from_file_location("issue_form_versions", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@test
+def test_issue_forms_ask_for_os_and_a_version_from_the_changelog(tmp: Path):
+    """Формы issue требуют ОС и версию кита; список версий переписывается из CHANGELOG.md.
+
+    GitHub не подтягивает варианты выпадающего списка сам, поэтому их пишет скрипт между
+    маркерами. Он должен считать версии как числа (1.10.0 новее 1.9.0), не плодить повторы,
+    не трогать остальное в форме и давать тот же результат со второго раза — иначе workflow
+    коммитил бы в master на каждый запуск.
+    """
+    mod = _issue_form_versions()
+    changelog = "\n".join([
+        "# Журнал", "## 1.9.0 — старая", "## 1.10.0 — новая", "## 1.10.0 — копия",
+        "## 1.9.1 — правка", "## Прочее", "## 1.8.0", "## 1.2.3 — давняя", "### 9.9.9 — не версия",
+        "## 0.1.0 — самая первая"])
+    assert mod.latest_versions(changelog) == ["1.10.0", "1.9.1", "1.9.0", "1.8.0", "1.2.3"]
+    assert mod.latest_versions(changelog, keep=2) == ["1.10.0", "1.9.1"]
+
+    form = ("a: 1\n    options:\n      # versions:begin — как есть\n      - \"0.0.1\"\n"
+            "      # versions:end\n    validations:\n      required: true\n")
+    once = mod.update(form, ["2.0.0", "1.9.0"])
+    assert once == ("a: 1\n    options:\n      # versions:begin — как есть\n"
+                    "      - \"2.0.0\"\n      - \"1.9.0\"\n      - \"" + mod.OLD + "\"\n"
+                    "      # versions:end\n    validations:\n      required: true\n"), once
+    assert mod.update(once, ["2.0.0", "1.9.0"]) == once, "второй прогон меняет форму"
+    assert mod.update("без маркеров\n", ["1.0.0"]) == "без маркеров\n"
+
+    real = (KIT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert len(mod.latest_versions(real)) == mod.KEEP, "в CHANGELOG.md меньше версий, чем в списке"
+
+    for name in ("bug_report.yml", "feature_request.yml"):
+        text = (KIT / ".github" / "ISSUE_TEMPLATE" / name).read_text(encoding="utf-8")
+        assert text.count("# versions:begin") == 1 and text.count("# versions:end") == 1, name
+        blocks = {}
+        for chunk in re.split(r"(?m)^  - type: ", text)[1:]:
+            m = re.search(r"(?m)^    id: (\S+)", chunk)
+            if m:
+                blocks[m.group(1)] = chunk
+        for field in ("version", "os"):
+            chunk = blocks.get(field, "")
+            assert chunk.startswith("dropdown"), f"{name}: «{field}» не выпадающий список"
+            assert re.search(r"(?m)^      required: true", chunk), f"{name}: «{field}» не обязателен"
+        os_opts = re.findall(r'(?m)^        - (.+)$', blocks["os"])
+        assert os_opts == ["Windows", "macOS", "Linux"], f"{name}: ОС {os_opts}"
+        ver_opts = re.findall(r'(?m)^        - "([^"]+)"$', blocks["version"])
+        assert len(ver_opts) == mod.KEEP + 1 and ver_opts[-1] == mod.OLD, f"{name}: версии {ver_opts}"
+        assert [tuple(map(int, v.split("."))) for v in ver_opts[:-1]] == sorted(
+            (tuple(map(int, v.split("."))) for v in ver_opts[:-1]), reverse=True), f"{name}: порядок"
+
+
+@test
+def test_issue_form_versions_workflow_is_narrow_and_safe(tmp: Path):
+    """Workflow списка версий пушит только форму и только из default-ветки, без подстановок в скрипт.
+
+    Он пишет в master, поэтому права — только contents: write, запуск привязан к CHANGELOG.md
+    и своему скрипту, а значения GitHub идут через env, не внутрь `run:`.
+    """
+    text = (KIT / ".github/workflows/issue-form-versions.yml").read_text(encoding="utf-8")
+    assert "contents: write" in text and "issues: write" not in text and "pull-requests" not in text
+    assert re.search(r"paths:\s*\n\s*- \"CHANGELOG\.md\"", text), "запуск не привязан к CHANGELOG.md"
+    assert "github.ref_name == github.event.repository.default_branch" in text, "пушит не только из master"
+    assert "git add .github/ISSUE_TEMPLATE" in text, "коммит может прихватить чужие файлы"
+    run_blocks = re.findall(r"run: \|?\n?((?:\s{10,}.*\n?)+)", text)
+    assert not any("${{" in b for b in run_blocks), \
+        "выражение GitHub подставлено прямо в скрипт — значения должны идти через env"
+    for rel in (".github/workflows/issue-form-versions.yml", ".github/scripts/issue_form_versions.py"):
+        assert "Claude" not in (KIT / rel).read_text(encoding="utf-8"), \
+            f"{rel}: назван инструмент, авторство — только человека"
