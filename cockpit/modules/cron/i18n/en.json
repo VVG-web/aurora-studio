@@ -80,7 +80,7 @@
   "cron.note.stopped": "the chain was stopped",
   "cron.note.chain_stopped": "the chain stopped: the previous step failed",
   "cron.note.run_thread_lost": "the run thread was lost — the scheduler was released by the watchdog",
-  "cron.save_error": "Writing the run to disk failed: {why}",
+  "cron.save_error": "Writing the run to disk failed along the way: {why}",
   "cron.note.panel_restart": "the panel was restarted in the middle of the step",
   "cron.note.no_route": "the routine is no longer in the scenarios",
   "cron.note.engine_behind": "the project engine is behind the kit — update the project",

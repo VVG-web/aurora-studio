@@ -26,6 +26,7 @@ import re
 import secrets
 import threading
 import time
+import traceback
 
 from datetime import datetime, timezone
 
@@ -312,7 +313,11 @@ def write_meta(base: str, meta: dict) -> None:
         tmp = os.path.join(base, "meta.json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, os.path.join(base, "meta.json"))
+        try:
+            from aurora_common import replace_file
+        except ImportError:                   # панель без движка рядом — подмена без повторов
+            replace_file = os.replace
+        replace_file(tmp, os.path.join(base, "meta.json"))   # Windows: занятый читателем — с повторами
     except OSError:
         pass
 
@@ -785,8 +790,15 @@ class RouteRun:
         except Exception as e:  # noqa: BLE001
             res = {"ok": False, "reason": "failed", "failed": "", "note": f"{type(e).__name__}: {e}",
                    "steps": self.done, "lines": [], "run_id": self.run_id, "found": []}
+            try:                    # причина и хвост стека — в журнал (и в пункт Cron через `log`)
+                t = getattr(self, "t", None)
+                head = (t("route.crashed") if t else "■ Маршрут упал: ")
+                self.say("err", f"{head}{type(e).__name__}: {e}")
+                for line in traceback.format_exc().strip().splitlines()[-6:]:
+                    self.say("err", line)
+            except Exception:  # noqa: BLE001 — журнал не пишется: закрыть прогон всё равно
+                pass
             try:
-                self.say("err", f"■ маршрут упал: {type(e).__name__}: {e}")
                 return self._close(res)
             except Exception:  # noqa: BLE001 — не записалось: хотя бы снять признак «идёт»
                 self.result, self.done_flag = res, True

@@ -279,6 +279,7 @@
   "route.head_stalled": "{title} — stopped (stall)",
   "route.rc_stalled": "stopped: a stall — the work does not go down",
   "route.stalled_why": "■ The route is stopped: nothing went down over the lap — the work does not move (the backends may not answer, or there are no new sources). Run the route again — the steps already passed will not repeat.",
+  "route.crashed": "■ The route crashed: ",
   "route.head_stopped": "{title} — stopped",
   "route.head_passed": "{title} — passed",
   "route.rc_stopped": "stopped at {cmd}",

@@ -759,6 +759,109 @@ def test_cron_final_save_failure_does_not_wedge_the_scheduler(tmp: Path):
 
 
 @test
+def test_cron_final_save_retry_writes_the_result(tmp: Path):
+    """Первая запись итога падает, вторая (после паузы) проходит: в файле есть status и
+    finished — итог не теряется из-за разового сбоя."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        import route_runner as RR
+        projects = [{"path": "/p/a", "name": "A"}]
+        CRON.save_tasks([{"id": "t1", "name": "цепочка", "order": "projects", "on_fail": "next",
+                          "steps": [{"kind": "cmd", "project": "/p/a", "cmd": "kb:x", "args": []}]}])
+        orig_save, orig_job, orig_pause = CRON.save_run, RR.run_job, CRON.FINAL_SAVE_PAUSE
+        fails = []
+
+        def flaky_save(run):
+            if run.get("finished") and not fails:
+                fails.append(1)
+                raise OSError("файл занят")
+            orig_save(run)
+        CRON.save_run, CRON.FINAL_SAVE_PAUSE = flaky_save, 0
+        RR.run_job = lambda ck, project, cmd, args, **kw: {"rc": 0, "lines": [], "run_id": "r"}
+        try:
+            sch = CRON.Scheduler(_cron_ck(), lambda: projects)
+            assert sch.enqueue("t1")["ok"]
+            _wait_idle(sch)
+        finally:
+            CRON.save_run, RR.run_job, CRON.FINAL_SAVE_PAUSE = orig_save, orig_job, orig_pause
+        got = CRON.list_runs(1)[0]
+        assert fails and got.get("finished") and got["status"] == "passed", got
+    finally:
+        restore()
+
+
+@test
+def test_cron_next_skips_a_task_removed_from_the_schedule(tmp: Path):
+    """Задание стоит в очереди первым, но уже убрано из расписания: оно пропускается, а
+    следующее запускается в том же разборе очереди, не через тик."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        import route_runner as RR
+        projects = [{"path": "/p/a", "name": "A"}]
+        CRON.save_tasks([{"id": "t2", "name": "вторая", "order": "projects", "on_fail": "next",
+                          "steps": [{"kind": "cmd", "project": "/p/a", "cmd": "kb:x", "args": []}]}])
+        ran = []
+        orig_job = RR.run_job
+
+        def fake_job(ck, project, cmd, args, **kw):
+            ran.append(project)
+            return {"rc": 0, "lines": [], "run_id": "r"}
+        RR.run_job = fake_job
+        try:
+            sch = CRON.Scheduler(_cron_ck(), lambda: projects)
+            sch.queue.extend([("ghost", "manual", ""), ("t2", "manual", "")])
+            sch._next()
+            _wait_idle(sch)
+        finally:
+            RR.run_job = orig_job
+        assert ran == ["/p/a"] and not sch.queue, (ran, sch.queue)
+    finally:
+        restore()
+
+
+@test
+def test_cron_write_json_retries_a_busy_replace(tmp: Path):
+    """Подмена файла истории идёт через `aurora_common.replace_file`: первые попытки с
+    `PermissionError` (файл читают) не теряют запись, а повторяются; так же — `meta.json`
+    маршрута."""
+    _path()
+    import aurora_common as AC
+    import cron as CRON
+    import route_runner as RR
+    orig = os.replace
+    orig_rf = AC.replace_file
+
+    def check(name, write):
+        d = tmp / name
+        d.mkdir()
+        calls = []
+
+        def busy(src, dst):
+            calls.append(1)
+            if len(calls) < 3:
+                raise PermissionError("занят читателем")
+            orig(src, dst)
+        real = AC.os.replace
+        AC.os.replace = busy
+        # `windows=None` на POSIX не повторяет: включаем повтор, как на Windows
+        AC.replace_file = lambda a, b, **k: orig_rf(a, b, windows=True, pause=0, **k)
+        try:
+            write(d)
+        finally:
+            AC.os.replace, AC.replace_file = real, orig_rf
+        assert len(calls) == 3, (name, calls)
+        assert any(f.suffix == ".json" for f in d.iterdir()), (name, list(d.iterdir()))
+    check("cron", lambda d: CRON._write_json(str(d / "x.json"), {"a": 1}))
+    check("meta", lambda d: RR.write_meta(str(d), {"a": 1}))
+
+
+@test
 def test_cron_watchdog_frees_a_run_whose_thread_died(tmp: Path):
     """Страховка: прогон числится идущим, а потока нет — сторож освобождает планировщик и
     пишет в историю, что прогон потерян; живой поток он не трогает."""
@@ -783,6 +886,7 @@ def test_cron_watchdog_frees_a_run_whose_thread_died(tmp: Path):
         alive.join(5)
         sch._unwedge()
         assert sch.current is None
+        assert any("без потока" in line for line in sch.stream), sch.stream   # видно в Консоли
         saved = CRON._read_json(CRON.run_path(run["id"]), {})
         assert saved["status"] == "failed" and saved["error"] == "run_thread_lost", saved
         # отметка «идёт работа» снята, пункт не остался «идущим» (иначе обновление кита отказывает)
@@ -807,10 +911,14 @@ def test_route_safe_run_always_clears_the_running_flag(tmp: Path):
         def __init__(self, close_ok):
             self.close_ok, self.said = close_ok, []
 
+        say_ok = True
+
         def run(self):
             raise ValueError("сбой посреди маршрута")
 
         def say(self, kind, text):
+            if not self.say_ok:
+                raise OSError("журнал не пишется")
             self.said.append(text)
 
         def _close(self, res):
@@ -823,6 +931,13 @@ def test_route_safe_run_always_clears_the_running_flag(tmp: Path):
         res = RR.RouteRun.safe_run(f)
         assert res["reason"] == "failed" and "сбой посреди маршрута" in res["note"], res
         assert f.done_flag is True, f"признак «идёт» остался (закрытие пишется: {ok})"
+        # причина и хвост стека — в журнале (оттуда они попадают в пункт Cron)
+        said = "\n".join(f.said)
+        assert "ValueError" in said and "in run" in said, f.said
+    f = Fake(True)
+    f.say_ok = False                   # журнал не пишется — прогон всё равно закрывается записью
+    res = RR.RouteRun.safe_run(f)
+    assert f.done_flag is True and res["reason"] == "failed", res
 
 
 @test

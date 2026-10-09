@@ -589,7 +589,7 @@ class Scheduler:
                 task_id, trigger, resume = self.queue.pop(0)
                 task = self.find(task_id)
                 if not task:
-                    return
+                    continue                   # задание убрали из расписания — разбираем остаток
                 try:
                     run = self._new_run(task, trigger, resume)
                 except Exception as e:  # noqa: BLE001 — сбой записи не должен застрять в очереди
@@ -629,6 +629,7 @@ class Scheduler:
                 return
             self.current = None
         print(f"cron: прогон {cur.get('id')} остался «идущим» без потока — снят", flush=True)
+        self.say(f"⚠ прогон {cur.get('id')} остался «идущим» без потока — планировщик освобождён сторожем")
         cur["status"] = "failed" if cur.get("status") == "running" else cur.get("status")
         cur["error"] = cur.get("error") or "run_thread_lost"
         cur["finished"] = cur.get("finished") or now_iso()
