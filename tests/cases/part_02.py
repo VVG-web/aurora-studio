@@ -936,6 +936,134 @@ def test_trust_leaves_placeholders_alone(tmp: Path):
 
 
 @test
+def test_trust_leaves_decision_record_lifecycle_alone(tmp: Path):
+    """Статус Decision Record — состояние решения, и `kb:trust` его не переписывает.
+
+    DR живёт по своему циклу proposed → accepted | rejected → superseded. Общий путь видел
+    «источников нет — unknown — draft» и затирал его; с источником в Raw/ отклонённое
+    решение становилось бы `knowledge` и шло в строгий контекст как факт. Линтер, в свою
+    очередь, звал статусы DR «вне шкалы» и советовал тот самый `kb:trust`.
+    """
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text((cfg.read_text(encoding="utf-8") if cfg.exists() else "")
+                   + "\ntrust_statuses: [Закрыто]\n", encoding="utf-8")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    drs = {"DR-0001-принято": "accepted", "DR-0002-отклонено": "rejected",
+           "DR-0003-черновик": "proposed", "DR-0004-заменено": "superseded"}
+    for stem, st in drs.items():
+        card(root, f"Decisions/{stem}.md", status=st, date="2026-07-01",
+             body="## Решение\nВариант 1.")
+    # отклонённое решение с источником из Raw/: по общему правилу это было бы `knowledge`
+    card(root, "Decisions/DR-0005-с-источником.md", status="rejected", date="2026-07-01",
+         sources='\n  - "Raw/contract/ГК.md"', body="## Решение\nВариант 2.")
+    drs["DR-0005-с-источником"] = "rejected"
+    card(root, "Concepts/Знание.md", status="draft", kind="knowledge",
+         sources='\n  - "Raw/contract/ГК.md"', body="Знание — положение договора.")
+    before = {s: (root / f"AuroraKnowledgeDB/Decisions/{s}.md").read_text(encoding="utf-8")
+              for s in drs}
+
+    lint = run("kb_lint.py", cwd=root)
+    assert "вне шкалы" not in lint.stdout, f"kb:lint не знает статусов DR:\n{lint.stdout[:600]}"
+    run("kb_trust.py", "--apply", cwd=root)
+    for stem, st in drs.items():
+        got = (root / f"AuroraKnowledgeDB/Decisions/{stem}.md").read_text(encoding="utf-8")
+        assert got == before[stem], f"kb:trust тронул DR {stem}:\n{got[:400]}"
+    real = (root / "AuroraKnowledgeDB/Concepts/Знание.md").read_text(encoding="utf-8")
+    assert "status: knowledge" in real, "обычная карточка перестала получать доверие"
+    # статус вне словаря типа по-прежнему ошибка
+    card(root, "Decisions/DR-0006-чужой.md", status="wip", date="2026-07-01", body="x")
+    bad = run("kb_lint.py", cwd=root)
+    assert "DR-0006-чужой" in bad.stdout and "вне шкалы" in bad.stdout, bad.stdout[:600]
+    # и совет для него не тупик: `kb:trust` такие карточки не трогает, статус правят руками
+    line = next(l for l in bad.stdout.splitlines()
+                if "DR-0006-чужой" in l and "вне шкалы" in l)
+    assert "пересчитайте" not in line and "правят руками" in line, line
+
+
+@test
+def test_decision_record_from_the_kit_template_survives_lint_and_trust(tmp: Path):
+    """DR, созданный из шаблона кита (и из старого шаблона с комментарием), не ломается.
+
+    Шаблон нёс комментарий на строке `status`, `frontmatter()` его не срезала, и статус
+    читался как «proposed   # proposed → accepted…»: линтер звал его «вне шкалы» и слал к
+    `kb:trust`, а тот DR пропускал — тупик. Теперь шаблон без комментария на строке статуса,
+    а чтение статуса срезает хвост ` # …` (DR из прежнего шаблона уже лежат в базах).
+    DR без `type:` (написан до схемы 2) узнаётся по папке Decisions и тоже не переписывается.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_common as C
+
+    tpl = (KIT / "scaffold/Templates/decision_record_template.md").read_text(encoding="utf-8")
+    head = tpl.split("\n---", 1)[0]
+    assert not any(l.startswith("status:") and "#" in l for l in head.splitlines()), \
+        "в шаблоне DR снова комментарий на строке status"
+    filled = (tpl.replace("{{NNNN}}", "0001").replace("{{YYYY-MM-DD}}", "2026-07-01")
+              .replace("{{@автор}}", "@vg").replace("{{Краткая формулировка решения}}", "Решение")
+              .replace("status: proposed", "status: accepted"))
+    assert C.frontmatter(filled)["status"] == "accepted", C.frontmatter(filled)
+    # старый шаблон: комментарий на строке статуса
+    old = filled.replace("status: accepted", "status: accepted          # proposed → accepted")
+    assert C.frontmatter(old)["status"] == "accepted", C.frontmatter(old)
+    # другие поля комментарий не режут: `#` в заголовке законен
+    assert C.frontmatter('---\ntitle: "Задача #12"\nstatus: draft\n---\n')["title"] == "Задача #12"
+
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text((cfg.read_text(encoding="utf-8") if cfg.exists() else "")
+                   + "\ntrust_statuses: [Закрыто]\n", encoding="utf-8")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    dec = root / "AuroraKnowledgeDB/Decisions"
+    dec.mkdir(parents=True, exist_ok=True)
+    (dec / "DR-0001-шаблон.md").write_text(filled, encoding="utf-8")
+    (dec / "DR-0002-старый-шаблон.md").write_text(old, encoding="utf-8")
+    # DR без type: — только папка говорит, что это решение
+    (dec / "DR-0003-без-типа.md").write_text(
+        '---\ntitle: "DR-0003"\nstatus: accepted\ndate: 2026-07-01\n---\n\n# DR-0003\n\n'
+        "## Решение\nВариант 1.\n", encoding="utf-8")
+    before = {f.name: f.read_text(encoding="utf-8") for f in dec.glob("*.md")}
+
+    lint = run("kb_lint.py", cwd=root)
+    assert "вне шкалы" not in lint.stdout, f"DR из шаблона «вне шкалы»:\n{lint.stdout[:600]}"
+    out = run("kb_trust.py", "--apply", cwd=root)
+    for f in dec.glob("*.md"):
+        assert f.read_text(encoding="utf-8") == before[f.name], \
+            f"kb:trust тронул {f.name}:\n{f.read_text(encoding='utf-8')[:400]}"
+    assert "следами прежнего прогона" not in out.stdout, out.stdout[-400:]
+
+    # DR, статус которого уже переписал прежний kb:trust, не молчит: след назван, файл цел
+    (dec / "DR-0004-затёрто.md").write_text(
+        '---\ntitle: "DR-0004"\ntype: decision\nstatus: draft\ntrust: unknown\n'
+        'trust_basis: "связей нет"\ntrust_checked: 2026-09-01\n---\n\n# DR-0004\n', encoding="utf-8")
+    again = run("kb_trust.py", "--apply", cwd=root)
+    assert "следами прежнего прогона" in again.stdout and "DR-0004-затёрто" in again.stdout, \
+        again.stdout[-600:]
+    assert "status: draft" in (dec / "DR-0004-затёрто.md").read_text(encoding="utf-8")
+
+
+@test
+def test_decision_records_stay_out_of_the_trust_share(tmp: Path):
+    """Доля доверенного считается по знанию: Decision Record в знаменатель не входит."""
+    root = make_project(tmp)
+    card(root, "Concepts/Знание.md", status="knowledge", kind="knowledge", body="Знание.")
+    card(root, "Concepts/Черновик.md", status="draft", kind="knowledge", body="Черновик.")
+
+    def total():
+        cp = run("aurora_stats.py", "--json", cwd=root)
+        s = json.loads(cp.stdout[cp.stdout.index("{"):cp.stdout.rindex("}") + 1])
+        return s["trust_total"], s["pct_verified"]
+
+    base = total()
+    for i, st in enumerate(("accepted", "proposed", "rejected")):
+        card(root, f"Decisions/DR-000{i}-x.md", status=st, date="2026-07-01", body="## Решение\nX.")
+    assert total() == base, f"DR попали в долю доверенного: {base} → {total()}"
+
+
+@test
 def test_filling_a_placeholder_by_extraction_clears_both_marks(tmp: Path):
     """Вынос, наполнивший пустышку, снимает оба признака и приносит источник донора.
 
@@ -1805,3 +1933,342 @@ def test_retrieval_is_watched_not_guessed(tmp: Path):
     runner = (KIT / "tests/harness.py").read_text(encoding="utf-8")
     assert "--only" in runner and "only.lower() in name.lower()" in runner, \
         "нельзя прогнать одну проверку"
+
+
+def _empty_verdict_project(tmp: Path, body: str):
+    """Проект с одним источником, у которого ЕСТЬ секции (`##`), и заглушка модели.
+
+    → (root, cfg, звонки, ответы). Ответы задаёт тест: `answers[роль]` — JSON строкой
+    либо `None` (вызов не удался). `звонки` — роли по порядку вызовов."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+
+    root = make_project(tmp)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/Страница.md").write_text(body, encoding="utf-8")
+    calls, answers = [], {"worker": '{"empty": "одно оглавление"}',
+                          "critic": '{"empty": "знания нет"}', "planner": '{"parts": []}'}
+
+    def fake(cfg, role, messages, **kw):
+        calls.append(role)
+        text = answers[role]
+        if text is None:
+            return {"ok": False, "text": "", "backend": 1, "model": "m", "tps": 0,
+                    "log": ["№1 нет ответа"]}
+        return {"ok": True, "text": text, "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    return root, cfg, calls, answers, fake
+
+
+def _manifest_rec(root: Path, source: str = "Raw/project/Страница.md") -> dict:
+    p = root / "AuroraKnowledgeDB/meta/manifest.json"
+    man = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    return (man.get("sources") or {}).get(source) or {}
+
+
+@test
+def test_empty_verdict_on_a_sectioned_source_goes_through_the_same_checks(tmp: Path):
+    """Вердикт «пусто» про источник С секциями проходит те же барьеры, что и без них.
+
+    Ответ `{"empty": ...}` на источник с заголовками обрывал разбор и ставил отметку
+    `--done --empty` сразу: без таблиц и без критика. Отметка необратима по смыслу —
+    источник возвращается в план только при правке файла, — а ошибка модели здесь
+    понятна: она видит превью секций по 900 знаков, а знание лежит ниже, в таблице
+    (глобальное ревью 08.10.2026, AR2-02). Барьеры: `has_facts` по ПОЛНОМУ тексту, второе
+    мнение критика (при `--critic` и всегда для крупного источника), расхождение — человеку."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as R
+
+    small = "## Оглавление\n\nСсылки на разделы.\n\n## Состав\n\nСм. подстраницы.\n"
+    rows = "".join(f"| Алгоритм {i} | ежедневно | {i}:00 |\n" for i in range(1, 6))
+    # таблица — НИЖЕ превью в 900 знаков: по превью её не видно, по полному тексту видно
+    deep = ("## Расписание\n\n" + "Служебное вступление к расписанию запусков. " * 40
+            + "\n\n| Алгоритм | Период | Время |\n| --- | --- | --- |\n" + rows
+            + "\n## Состав\n\nСм. подстраницы.\n")
+    big = ("## Оглавление\n\n" + "Ссылка на раздел без пояснений. " * 20 + "\n\n"
+           "## Хвост\n\n" + "Слова без фактов. " * (R.EMPTY_BIG // 18 + 20))
+
+    def run_case(sub, body, critic, answers=None):
+        root, cfg, calls, ans, fake = _empty_verdict_project(tmp / sub, body)
+        ans.update(answers or {})
+        step = R.solve_source(cfg, str(root), "Raw", "Raw/project/Страница.md", True,
+                              critic, fake, 0)
+        return root, step, calls, _manifest_rec(root)
+
+    for sub in ("a", "b", "c", "d", "e", "f", "g", "h", "i"):
+        (tmp / sub).mkdir()
+
+    # 1. таблица ниже превью: «пусто» отклонено движком, критик не нужен
+    root, step, calls, rec = run_case("a", deep, False, {"planner": json.dumps(
+        {"parts": [{"title": "Расписание запусков", "from": 1, "to": 3}]}, ensure_ascii=False)})
+    assert "пусто" not in step["status"] and not rec.get("empty_reason"), \
+        f"таблица с данными не помешала отметить источник пустым: {step} {rec}"
+    assert step["status"] == "разобран по абзацам" and "таблица с данными" in step["note"], step
+    assert calls == ["worker", "planner"], calls
+    # то же, но разобрать по абзацам не вышло: человеку, причина записана
+    root, step, calls, rec = run_case("b", deep, False)
+    assert step["status"] == "без секций — человеку" and "таблица с данными" in step["note"], step
+    assert rec.get("empty_reason", "").startswith("ОТЛОЖЕНО ЧЕЛОВЕКУ: вердикт «пусто» не "
+                                                  "подтверждён"), rec
+
+    # 2. малый источник без --critic: вердикт принят, второе мнение не спрашивали
+    root, step, calls, rec = run_case("c", small, False)
+    assert step["status"] == "пусто — отмечено" and rec.get("empty_reason") == "одно оглавление", \
+        (step, rec)
+    assert calls == ["worker"], f"критик вызван без нужды: {calls}"
+
+    # 3. --critic: второе мнение обязательно; согласен — отмечено, не согласен — человеку
+    root, step, calls, rec = run_case("d", small, True)
+    assert calls == ["worker", "critic"] and step["status"] == "пусто — отмечено", (calls, step)
+    root, step, calls, rec = run_case("e", small, True, {
+        "critic": '{"keep": "в подстраницах описан порядок запуска"}'})
+    assert step["status"] == "без секций — человеку" and "мнения разошлись" in step["note"], step
+    assert "порядок запуска" in step["note"], "причина расхождения не записана"
+    assert rec.get("empty_reason", "").startswith("ОТЛОЖЕНО ЧЕЛОВЕКУ"), rec
+    # причина критика доезжает до манифеста: `defer` режет заметку по 120 знаков, и раньше
+    # от неё оставалось «критик — нет (на ст» — записана причина того, кого опровергли
+    assert "порядок запуска" in rec["empty_reason"], rec
+    assert rec.get("empty_reason") != "одно оглавление", "расхождение мнений принято как «пусто»"
+
+    # 4. критик не ответил: молчание — не согласие, отметка не ставится, источник в плане
+    root, step, calls, rec = run_case("f", small, True, {"critic": None})
+    assert step["status"] == "сбой" and not rec, f"без второго мнения источник отмечен: {step} {rec}"
+
+    # 5. крупный источник — на второе мнение ВСЕГДА, даже без --critic
+    assert len(big) >= R.EMPTY_BIG
+    root, step, calls, rec = run_case("g", big, False, {"critic": '{"keep": "там суть"}'})
+    assert calls == ["worker", "critic"] and step["status"] == "без секций — человеку", (calls, step)
+    root, step, calls, rec = run_case("h", big, False)
+    assert calls == ["worker", "critic"] and step["status"] == "пусто — отмечено", (calls, step)
+
+    # 6. ответ с карточками И пустотой — это разбор: карточки не выбрасываются
+    both = json.dumps({"empty": "оглавление",
+                       "cards": [{"title": "Состав страницы", "sections": "2"}]}, ensure_ascii=False)
+    root, step, calls, rec = run_case("i", small, False, {"worker": both})
+    assert step["status"] != "пусто — отмечено" and not rec.get("empty_reason"), \
+        f"карточки отброшены ради слова «пусто»: {step} {rec}"
+
+
+@test
+def test_empty_verdict_is_not_refused_on_tables_of_contents_and_service_tables(tmp: Path):
+    """Оглавление из ссылок и таблица версий в служебной секции — это «пусто», а не данные.
+
+    `has_facts` считал любые пять пунктов длиннее 200 знаков перечнем фактов, а любые две
+    строки таблицы с буквами — данными. На оглавлении из пунктов-ссылок и на странице,
+    единственная таблица которой лежит в «Истории изменений», вердикт «пусто» отклонялся
+    ложно, и сотни страниц-оглавлений, составляющих живой план, шли человеку. Служебные
+    секции в счёт не идут (модель их и не видела), пункт из одних ссылок — не факт."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as R
+
+    links = "".join(f"- [Раздел {i}: подробное описание раздела номер {i}](https://wiki.example/p/{i})\n"
+                    for i in range(1, 8))
+    toc = "# Оглавление\n\n" + links
+    history = ("## Оглавление\n\nСм. подстраницы.\n\n## История изменений\n\n"
+               "| Версия | Дата | Автор |\n| --- | --- | --- |\n"
+               "| 1.0 | 2026-01-01 | Иванов |\n| 1.1 | 2026-02-01 | Петров |\n"
+               "\n## Состав\n\nСм. подстраницы.\n")
+    assert R.has_facts(toc) == "", R.has_facts(toc)
+    assert R.has_facts(history) == "", R.has_facts(history)
+    # и вложенный подзаголовок служебной секции остаётся служебным, а соседний раздел нет
+    nested = history.replace("## Состав\n\nСм. подстраницы.\n",
+                             "### Предыдущие версии\n\n| Версия | Дата |\n| --- | --- |\n"
+                             "| 0.9 | Январь |\n| 0.8 | Декабрь |\n"
+                             "## Расписание\n\n| Алгоритм | Период |\n| --- | --- |\n"
+                             "| Выгрузка | ежедневно |\n")
+    assert "заполненных строк 1" in R.has_facts(nested), \
+        f"служебная секция съела соседний раздел с данными: {R.has_facts(nested)!r}"
+    # настоящие данные по-прежнему опровергают «пусто»
+    facts = "".join(f"- Заявка в статусе «{st}» не подлежит правке автором\n"
+                    for st in ("Черновик", "Согласование", "Отклонена", "Принята", "Закрыта"))
+    assert "перечень фактов: пунктов 5" in R.has_facts("## Статусы\n\n" + facts)
+    assert "перечень фактов" not in R.has_facts("## Статусы\n\n" + facts.replace("не подлежит правке автором", "x"))
+    link_table = "| Раздел | Ссылка |\n| --- | --- |\n| [[А]] | [тут](https://e/1) |\n| [[Б]] | [тут](https://e/2) |\n"
+    assert R.has_facts(link_table) == "", "таблица из одних ссылок принята за данные"
+
+    # форма реального сценария: вердикт worker «пусто» → отметка, без критика и без планировщика
+    for sub, body in (("a", toc), ("b", history)):
+        (tmp / sub).mkdir()
+        root, cfg, calls, ans, fake = _empty_verdict_project(tmp / sub, body)
+        step = R.solve_source(cfg, str(root), "Raw", "Raw/project/Страница.md", True, False, fake, 0)
+        rec = _manifest_rec(root)
+        assert step["status"] == "пусто — отмечено" and rec.get("empty_reason") == "одно оглавление", \
+            f"{sub}: пустая страница ушла человеку: {step} {rec}"
+        assert calls == ["worker"], f"{sub}: лишние вызовы {calls}"
+
+
+@test
+def test_a_critic_who_saw_only_part_of_the_source_cannot_confirm_empty(tmp: Path):
+    """Второе мнение критика по обрезку — не согласие: «пусто» по части текста не вердикт.
+
+    Для источника с секциями критик — единственный, кто видит полный текст (worker видел
+    превью), и на крупных источниках он зовётся всегда. Окно узкого бэкенда может отрезать
+    хвост; «пусто» по оглавлению в начале не должно снять с плана страницу с таблицей ниже."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as R
+
+    body = "## Оглавление\n\nСсылки на разделы.\n\n## Состав\n\nСм. подстраницы.\n"
+    root, cfg, calls, ans, fake = _empty_verdict_project(tmp, body)
+
+    def cut_critic(cfg_, role, messages, **kw):
+        out = fake(cfg_, role, messages, **kw)
+        if role == "critic":
+            out.update(cut=500, seen=500)
+        return out
+
+    step = R.solve_source(cfg, str(root), "Raw", "Raw/project/Страница.md", True, True,
+                          cut_critic, 0)
+    rec = _manifest_rec(root)
+    assert calls == ["worker", "critic"], calls
+    assert step["status"] == "без секций — человеку", f"«пусто» по обрезку принято: {step}"
+    assert "500" in step["note"] and "по части не принимается" in step["note"], step
+    assert rec.get("empty_reason", "").startswith("ОТЛОЖЕНО ЧЕЛОВЕКУ"), rec
+    assert rec.get("empty_reason") != "одно оглавление", rec
+
+
+@test
+def test_a_deferred_sectioned_source_is_a_normal_outcome_for_oracle_and_report(tmp: Path):
+    """Отложенный человеку источник с секциями: оракул не лжёт, отчёт не зовёт его «пробелом».
+
+    `defer()` ставит `--done --empty`: источник уходит из плана, `moved` растёт. Оракул не
+    включал такие шаги в «объявленные» и на любой партии с одним отложенным источником писал
+    «движок засчитал разобранными 2, а агент объявил 1» с кодом возврата 1, а отчёт —
+    «Раскадровка пуста… он останется в плане» про источник, у которого секции есть и
+    который из плана ушёл."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "tests"))
+    import agent_core as A
+    import agent_runner as R
+    from harness import make_project
+
+    root = make_project(tmp, git=True)
+    (root / "Raw/project").mkdir(parents=True, exist_ok=True)
+    (root / "Raw/project/Страница.md").write_text(
+        "## Оглавление\n\nСсылки на разделы, подробнее ниже по тексту страницы и далее.\n\n"
+        "## Состав\n\nСм. подстраницы, там больше текста и пояснений для читателя.\n",
+        encoding="utf-8")
+    (root / "Raw/project/Вторая.md").write_text(
+        "## Тема\n\n" + "Содержательный текст про процесс согласования заявки. " * 10
+        + "\n\n## Ещё\n\n" + "Дальше правила и сроки. " * 10, encoding="utf-8")
+
+    def fake(cfg_, role, messages, **kw):
+        if role == "worker":
+            seen = str(kw.get("trim", [""])[0]) + json.dumps(messages, ensure_ascii=False)
+            text = (json.dumps({"cards": [{"title": "Согласование заявки", "sections": "1-2"}]},
+                               ensure_ascii=False)
+                    if "Вторая" in seen else '{"empty": "оглавление"}')
+        else:
+            text = '{"keep": "правила лежат в подстраницах"}'
+        return {"ok": True, "text": text, "backend": 1, "model": "m", "tps": 9, "log": []}
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+    res = R.run_build(cfg, str(root), True, True, 0, 0, call=fake)
+    status = {s["source"].rsplit("/", 1)[-1]: s["status"] for s in res["steps"]}
+    assert status == {"Страница.md": "без секций — человеку", "Вторая.md": "разобран"}, status
+    assert res["after"]["done"] - res["before"]["done"] == 2, (res["before"], res["after"])
+    ok, why = R.verdict_build(res, True)
+    assert ok and "движок засчитал" not in why, f"отложенный источник принят за ложь: {why}"
+    assert "отложено человеку: 1" in why, why
+    text = R.report_build(res, {"why": "x"}, True, True, cfg)
+    assert "Отложено человеку" in text and "правила лежат в подстраницах" in text, text[-1200:]
+    assert "Раскадровка пуста" not in text and "останется в плане" not in text, \
+        "отчёт зовёт отложенный источник пробелом раскадровки, который остаётся в плане"
+
+    # расхождение по-прежнему ловится: движок засчитал больше, чем объявлено
+    more = {**res, "after": {**res["after"], "done": res["before"]["done"] + 3}}
+    ok2, why2 = R.verdict_build(more, True)
+    assert not ok2 and "засчитал разобранными 3, а агент объявил 2" in why2, why2
+    # без записи отложенный шаг расхождения не создаёт
+    ok3, _ = R.verdict_build({**res, "after": res["before"]}, False)
+    assert ok3
+
+
+@test
+def test_a_deferred_source_returns_to_the_plan_only_when_its_file_changes(tmp: Path):
+    """Отложенный человеку источник вернётся в план при правке файла, а не по `--reopen`.
+
+    Отчёт и docstring `defer()` обещали вернуть его `kb:build --reopen`, но отметка
+    `--done --empty` с актуальным `empty_rule` этой командой не снимается: пользователь шёл
+    по подсказке и получал «Возвращено в план: 0» (повторное ревью 08.10.2026)."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_runner as R
+
+    body = "## Оглавление\n\nСсылки на разделы.\n\n## Состав\n\nСм. подстраницы.\n"
+    root, cfg, calls, ans, fake = _empty_verdict_project(tmp, body)
+    ans["critic"] = '{"keep": "в подстраницах описан порядок запуска"}'
+    step = R.solve_source(cfg, str(root), "Raw", "Raw/project/Страница.md", True, True, fake, 0)
+    assert step["status"] == "без секций — человеку" and step.get("deferred"), step
+    assert _manifest_rec(root).get("empty_reason", "").startswith("ОТЛОЖЕНО ЧЕЛОВЕКУ")
+
+    run("build_plan.py", "--reopen", "--apply", cwd=root, expect_rc=0)
+    assert _manifest_rec(root).get("empty_reason", "").startswith("ОТЛОЖЕНО ЧЕЛОВЕКУ"), \
+        "`--reopen` вернул отложенный источник: подсказку в отчёте нужно переписать"
+
+    src = root / "Raw/project/Страница.md"
+    src.write_text(body + "\n## Новое\n\nДобавили абзац.\n", encoding="utf-8")
+    run("build_plan.py", "--reopen", "--apply", cwd=root, expect_rc=0)
+    assert not _manifest_rec(root), "правка файла не вернула отложенный источник в план"
+
+    # отчёт говорит то же самое
+    res = {"steps": [{"alias": "А", "source": "Raw/project/А.md", "status": "без секций — человеку",
+                      "sectioned": True, "note": "причина", "backends": []},
+                     {"alias": "Б", "source": "Raw/project/Б.md", "status": "без секций — человеку",
+                      "deferred": True, "note": "нет раскадровки", "backends": []},
+                     {"alias": "В", "source": "Raw/project/В.md", "status": "без секций — человеку",
+                      "note": "", "backends": []}],
+           "partition": "", "total": 3, "seconds": 3, "stopped": "", "left": 0,
+           "before": {"left": 3, "errors": 0, "done": 0}, "after": {"left": 0, "errors": 0, "done": 0}}
+    text = R.report_build(res, {"why": "x"}, True, True, cfg)
+    assert "--reopen" not in text and "при правке файла" in text, text[-1200:]
+    shelved = text.split("отложено человеку", 1)[1].split("## ")[0]
+    assert "- Б:" in shelved and "- В" not in shelved, shelved
+    left = text.split("пробел движка", 1)[1]
+    assert "- В" in left and "- Б" not in left, left
+
+
+@test
+def test_paragraph_numbers_of_the_planner_match_the_raw_file_under_a_template(tmp: Path):
+    """Источник с секциями и шаблонным абзацем до таблицы: карточка берёт именно те абзацы.
+
+    Планировщик видел опись по тексту без шаблона страницы, а `build_plan --paras` режет
+    сырой файл: «абзац 4» планировщика оказывался третьим в файле, и карточка получала
+    чужой текст. Теперь опись нумерует абзацы сырого файла (шаблонные пропускает, номера
+    не сдвигает)."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "tests"))
+    import agent_runner as R
+    from harness import TEMPLATE_PAR, _template_mirror
+
+    rows = "".join(f"| Алгоритм {i} | ежедневно | {i}:00 |\n" for i in range(1, 6))
+    body = ("## Описание\n\n" + TEMPLATE_PAR + "\n\n"
+            "Страница описывает регламентные запуски расчётов налога по заявкам.\n\n"
+            "## Расписание\n\n| Алгоритм | Период | Время |\n| --- | --- | --- |\n" + rows
+            + "\n## Состав\n\nСм. подстраницы.\n")
+    root, cfg, calls, ans, fake = _empty_verdict_project(tmp, body)
+    _template_mirror(root)
+    seen = {}
+
+    def planner_aware(cfg_, role, messages, **kw):
+        if role != "planner":
+            return fake(cfg_, role, messages, **kw)
+        prompt = messages[-1]["content"]
+        seen["prompt"] = prompt
+        n = next(int(m.group(1)) for m in re.finditer(r"(?m)^\s+(\d+)\. \(\d+ симв\.\) \| Алгоритм \|",
+                                                      prompt))
+        part = {"parts": [{"title": "Расписание запусков", "from": n, "to": n}]}
+        return {"ok": True, "text": json.dumps(part, ensure_ascii=False), "backend": 1,
+                "model": "m", "tps": 9, "log": []}
+
+    step = R.solve_source(cfg, str(root), "Raw", "Raw/project/Страница.md", True, False,
+                          planner_aware, 0)
+    assert step["status"] == "разобран по абзацам", step
+    assert "ОБЯЗАТЕЛЬНО писать комментарий" not in seen["prompt"], "шаблон попал к планировщику"
+    # таблица — шестой блок сырого файла (заголовок, шаблон, текст, заголовок, таблица)
+    assert re.search(r"(?m)^\s+5\. \(\d+ симв\.\) \| Алгоритм \|", seen["prompt"]), seen["prompt"]
+    made = list((root / "AuroraKnowledgeDB").rglob("Расписание-запусков.md"))
+    assert made, "карточка не создана"
+    text = made[0].read_text(encoding="utf-8")
+    assert "Алгоритм 3 | ежедневно | 3:00" in text, text
+    assert "ОБЯЗАТЕЛЬНО писать комментарий" not in text and "регламентные запуски" not in text, \
+        f"в карточку попал чужой абзац:\n{text}"

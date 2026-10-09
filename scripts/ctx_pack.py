@@ -12,9 +12,12 @@
   python3 .aurora/scripts/ctx_pack.py "Заявка" --save          # + файл в Artifacts/drafts/
 
 Режимы (`--mode`) по таблице retrieval.md:
-  generate (по умолчанию), review — только knowledge (доверенный источник)
+  generate (по умолчанию), review — только knowledge (доверенный источник) и принятые DR
   ask                             — плюс deprecated и отклонённые/заменённые DR как история
-  evaluate                        — плюс draft: знание из недоказанных источников
+  evaluate                        — плюс draft: знание из недоказанных источников, и DR proposed
+
+Decision Record идёт по своему циклу (`DECISION_STATUSES`), а не по классу доверия: в пак
+он входит срезом «Решение + Следствия + отклонённые варианты», с шапкой по состоянию решения.
 
 Bootstrap: пока verified меньше порога из `aurora.config.yaml`, непроверенные
 карточки допускаются с громкой шапкой — и пак об этом честно предупреждает.
@@ -34,8 +37,8 @@ import os
 import re
 import sys
 
-from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, frontmatter, is_meeting,
-                           is_placeholder, link_targets, read_card_text, related_targets,
+from aurora_common import (TRUSTED, Card as BaseCard, body, card_sources, decision_slice, frontmatter,
+                           is_decision_card, is_meeting, is_placeholder, link_targets, read_card_text, related_targets,
                            status_rank, trust_header, walk_md)
 
 ROOT = "AuroraKnowledgeDB"
@@ -63,6 +66,22 @@ MODE_STATUSES = {
     "trusted_meetings": {"knowledge", "verified", "canonical"},
 }
 MEETING_RULE = {"meetings": "only", "trusted_meetings": "also"}
+# Decision Record: `status` у него — состояние решения (proposed → accepted | rejected →
+# superseded), а не класс доверия, и в `MODE_STATUSES` его статусов нет. Без своей таблицы
+# решение не доходило до пака ни в одном режиме, и «почему не X» отвечать было нечем.
+DECISION_STATUSES = {
+    "generate": {"accepted"},
+    "review": {"accepted"},
+    "ask": {"accepted", "rejected", "superseded"},
+    "evaluate": {"accepted", "proposed"},
+    "meetings": set(),
+    "trusted_meetings": {"accepted"},
+}
+
+
+def is_decision(c) -> bool:
+    """Decision Record с состоянием из его цикла (`aurora_common.is_decision_card`)."""
+    return is_decision_card(c.fm, c.section)
 
 
 def from_meeting(c) -> bool:
@@ -74,6 +93,8 @@ def mode_allows(c, mode: str, bootstrap: bool = False) -> bool:
     """Берёт ли режим эту карточку в контекст. Заготовка — никогда: в ней нечего читать."""
     if is_placeholder(c.fm, c.text):
         return False
+    if is_decision(c):
+        return c.status in DECISION_STATUSES[mode]
     rule = MEETING_RULE.get(mode)
     if rule and from_meeting(c) and c.status != "deprecated":
         return True
@@ -88,6 +109,9 @@ PREAMBLE = (
     "knowledge — знание из доверенного источника: постановка устоялась, на это можно\n"
     "опираться. draft — источник недоверенный или связей с задачами нет: материал для\n"
     "оценки, не факт. deprecated — история, не применять.\n"
+    "Decision Record — состояние решения, а не класс доверия: accepted — принято и действует;\n"
+    "proposed — не факт; rejected и superseded — история, ею объясняют «почему не X», но не\n"
+    "применяют.\n"
     "Пометка «🎙 Из встречи» — сказанное на встрече, а не записанное в документе: опираясь\n"
     "на такую карточку, так и называй это в ответе.\n"
     "Противоречие двух knowledge-карточек — это ошибка базы, о которой надо сообщить.\n"
@@ -283,8 +307,9 @@ class Card(BaseCard):
         return bool(rb and rb < TODAY and self.status in TRUSTED)
 
     def header(self) -> str:
-        """Шапка доверия — одна на все пакеты (`aurora_common.trust_header`)."""
-        return trust_header(self.fm, self.section)
+        """Шапка доверия — одна на все пакеты (`aurora_common.trust_header`); у Decision
+        Record она по состоянию решения, и тоже общая с `spec_pack`."""
+        return trust_header(self.fm, self.section, self.text)
 
 
 def first_sentence(text: str) -> str:
@@ -603,6 +628,8 @@ def collect(cards: dict, topic: str, statuses: set, bootstrap: bool,
             return mode_allows(c, mode, bootstrap)
         if is_placeholder(c.fm, c.text):
             return False
+        if mode in DECISION_STATUSES and is_decision(c):
+            return c.status in DECISION_STATUSES[mode]
         if c.status in statuses:
             return True
         return bootstrap and c.status in ("", "imported", "draft", "in-review")
@@ -743,14 +770,25 @@ def render_block(c: "Card", collapsed: bool = False) -> str:
     """
     name = f"{c.stem}" + (f" — {c.title}" if c.title and c.title != c.stem else "")
     if not collapsed:
-        return f"\n---\n\n## {name}\n\n{c.header()}\n\n{body(c.text).strip()}\n"
+        text = decision_slice(c.text) if is_decision(c) else body(c.text).strip()
+        return f"\n---\n\n## {name}\n\n{c.header()}\n\n{text}\n"
     gist = c.summary or first_sentence(c.text)
     return (f"\n---\n\n## {name}\n\n{c.header()}\n\n{gist}\n\n"
             f"_Сосед темы по ссылке; полный текст — в карточке [[{c.stem}]]._\n")
 
 
+def rank(c) -> int:
+    """Ранг карточки в паке. Принятое решение — истина, как knowledge; остальные состояния DR
+    не ниже draft: при бюджете цикл сборки обрывается на первом переполнении, и «почему не X»
+    не должно отбрасываться первым. Общий `STATUS_RANK` не тронут: им пользуются `kb_fix`
+    и `kb_twins`."""
+    if is_decision(c):
+        return 4 if c.status == "accepted" else 2
+    return status_rank(c.status)
+
+
 def order(cards: list) -> list:
-    return sorted(cards, key=lambda c: (c.expired, -status_rank(c.status), c.stem))
+    return sorted(cards, key=lambda c: (c.expired, -rank(c), c.stem))
 
 
 def log_usage(stems: list, command: str) -> None:
@@ -764,8 +802,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Детерминированная сборка context pack")
     ap.add_argument("topic", help="тема запроса")
     ap.add_argument("--mode", default="generate", choices=sorted(MODE_STATUSES),
-                    help="режим отбора: generate и review — только доверенное; "
-                         "ask — плюс история; evaluate — всё; meetings — только встречи; "
+                    help="режим отбора: generate и review — только доверенное и принятые DR; "
+                         "ask — плюс история (в т.ч. отклонённые и заменённые DR); "
+                         "evaluate — всё; meetings — только встречи; "
                          "trusted_meetings — доверенное и встречи")
     # Потолок в 15 карточек ставился под контекст в 8–32k токенов. Медианная карточка
     # базы — 1500 символов, сорок таких это 15k токенов: у модели со 128k остаётся место
@@ -897,7 +936,8 @@ def main() -> int:
         used.append(c)
         total += len(block)
 
-    unverified = [c.stem for c in used if c.status not in TRUSTED and c.status != "deprecated"]
+    unverified = [c.stem for c in used if c.status not in TRUSTED and c.status != "deprecated"
+                  and not is_decision(c)]
     if unverified:
         out += ["\n---\n", f"> Эти карточки ждут верификации — примите с дефолтами после беглой "
                 f"проверки: {', '.join(unverified)}"]

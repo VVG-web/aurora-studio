@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-from harness import KIT, SCRIPTS, test, ui_source  # noqa: F401
+from harness import KIT, SCRIPTS, card, make_project, run, test, ui_source  # noqa: F401
 
 COCKPIT = KIT / "cockpit"
 
@@ -359,3 +359,248 @@ def test_the_install_blocks_do_not_blink_on_every_redraw(tmp: Path):
     assert "if (p && p === S.project) HEALTH_MINE = true;" in frame and "if (!mine) return;" in frame, \
         "разделы проекта снова перерисовываются по здоровью чужих проектов"
     assert "healthChanged(p);" in ui, "часть здоровья не сообщает, чей это проект"
+
+
+def _make_with_template(tmp: Path, rel_src: Path, env: dict, fail: dict | None = None):
+    """Прогон agent:make на шаблоне из поставки заглушкой вместо модели.
+
+    → (промпты ролей, итог, аргументы ctx_pack). Модель не нужна: заглушка запоминает, что
+    ей передали, и отвечает минимально-правильно; `fail` — {роль: строки журнала}, чтобы
+    изобразить отказ по размеру."""
+    _path()
+    import agent_core as A, agent_runner as R
+    from harness import stub_messages
+
+    tmp.mkdir(parents=True, exist_ok=True)
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/T.md").write_text(rel_src.read_text(encoding="utf-8"), encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "Док"\n'
+                          '    template: "Templates/T.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    for i in range(6):
+        card(root, f"Concepts/Заявка-{i}.md",
+             f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
+             status="knowledge", kind="knowledge")
+    seen, packs = {}, []
+
+    def fake(cfg_, role, messages, **kw):
+        seen[role] = stub_messages(messages, kw)[0]["content"]
+        base = {"backend": 1, "model": "m", "tps": 9, "log": []}
+        if fail and role in fail:
+            return dict(base, ok=False, text="", log=fail[role])
+        if role == "planner":
+            return dict(base, ok=True, text=json.dumps({"questions": [], "plan": "1. Раздел"},
+                                                       ensure_ascii=False))
+        if role == "critic":
+            return dict(base, ok=True, text=json.dumps({"ok": True, "issues": []}))
+        return dict(base, ok=True, text="# Док\n\nЗаявка создана.")
+
+    real = R.run_command
+
+    def spy(cwd, script, args, *a, **kw):
+        if script == "ctx_pack.py":
+            packs.append(list(args))
+        return real(cwd, script, args, *a, **kw)
+
+    cfg = A.parse_config(dict({"AURORA_AGENT_BACKEND_1_URL": "u",
+                               "AURORA_AGENT_BACKEND_1_MODEL": "m"}, **env))
+    R.run_command = spy
+    try:
+        res = R.run_make(cfg, str(root), "ac", "статусы заявки", "", "", True, call=fake,
+                         momus=False)
+    finally:
+        R.run_command = real
+    return seen, res, packs
+
+
+@test
+def test_the_template_skeleton_is_only_real_sections(tmp: Path):
+    """Скелет шаблона — настоящие заголовки будущего документа, не всё, что начинается с `#`.
+
+    Шапка шаблона (YAML с `#`-комментариями), HTML-комментарии с примерами («удалите
+    блоки-примеры») и ограждённые блоки заголовками не являются; BOM не прячет первый."""
+    _path()
+    import agent_runner as R
+
+    assert R.template_headings("\ufeff# A\n## B") == ["# A", "## B"]
+    assert R.template_headings("---\n# комментарий\ntitle: x\n---\n# A\n") == ["# A"]
+    assert R.template_headings("# A\n<!--\n## в комментарии\n-->\n## B <!-- x -->\n") == \
+        ["# A", "## B"]
+    assert R.template_headings("# A\n```md\n## в коде\n```\n~~~\n## и тут\n~~~\n## B") == \
+        ["# A", "## B"]
+    assert R.template_headings("# A\n<!-- не закрыт\n## B") == ["# A"]
+    assert R.template_headings("# A\n<!--\nОПЦИОНАЛЬНО: не заголовок\n-->\n") == ["# A"]
+    assert R.template_headings("#не заголовок\n####### семь\n") == []
+
+    text = (KIT / "scaffold/TemplatesCommon/us_v1.0.md").read_text(encoding="utf-8")
+    heads = R.template_headings(text)
+    assert len(heads) >= 20, heads
+    for must in ("## Acceptance criteria", "## How to demo", "## Пользовательские сценарии",
+                 "### Что сознательно не демонстрируем", "#### ✅ Готово"):
+        assert must in heads, f"в скелете US нет раздела {must}"
+    ghosts = [h for h in heads if "Паспорт шаблона" in h or "TemplatesCommon/" in h
+              or "Критерии успешного приёма" in h or "Критерии неуспешного приёма" in h]
+    assert not ghosts, f"в скелет попали строки шапки или примера: {ghosts}"
+    block, got = R.template_block(text, 20000, True)
+    assert got == heads and "### Что сознательно не демонстрируем — ОПЦИОНАЛЬНО" in block
+    assert "## Acceptance criteria — ОПЦИОНАЛЬНО" not in block, \
+        "заголовок обязательного раздела помечен необязательным"
+    assert "название по смыслу" in block, "про `{{…}}` в заголовках скелет молчит"
+    for f in sorted((KIT / "scaffold").glob("Templates*/*.md")):
+        assert len(R.template_headings(f.read_text(encoding="utf-8"))) >= 3, f.name
+
+
+@test
+def test_agent_make_gives_every_template_section_to_every_role(tmp: Path):
+    """Планировщик, воркер и критик видят ВСЕ разделы шаблона, а не первые 8000 знаков.
+
+    Раньше в промпт шёл `template[:8000]`: общие шаблоны US и AC (25 КБ) обрезались на
+    четверти, разделы «Acceptance criteria» и «How to demo» до модели не доходили, а
+    воркер и критик сверялись с одним и тем же огрызком — форма не проверялась никем.
+    Узкое окно (объявленное) делает из шаблона скелет заголовков для планировщика и
+    критика, но не отрезает ни одного раздела; воркер получает шаблон целиком, а пак
+    собирается с вычетом шаблона из бюджета."""
+    _path()
+    import agent_core as A, agent_runner as R
+
+    templates = sorted(p for d in sorted((KIT / "scaffold").glob("Templates*"))
+                       for p in d.glob("*.md"))
+    assert len(templates) >= 10 and any(p.name == "us_v1.0.md" for p in templates), templates
+    big = 0
+    for n, src in enumerate(templates):
+        text = src.read_text(encoding="utf-8")
+        heads = R.template_headings(text)
+        assert len(heads) >= 3, f"{src.name}: заголовков {heads}"
+        big += len(text) > 8000
+        (tmp / f"w{n}").mkdir()
+        seen, res, packs = _make_with_template(tmp / f"w{n}", src, {})
+        assert res.get("ok"), f"{src.name}: {res.get('why')}"
+        assert all("--budget" not in a for a in packs), "окна не объявлены, а пак ограничен"
+        for role in ("planner", "worker", "critic"):
+            lost = [h for h in heads if h not in seen[role]]
+            assert not lost, f"{src.name}: в промпт «{role}» не попали разделы {lost[:3]}"
+        if len(text) > 8000:
+            assert text[8000:8400] in seen["worker"], \
+                f"{src.name}: воркер видит только начало шаблона"
+    assert big >= 3, "в поставке не осталось шаблонов длиннее прежнего среза — тест ничего не проверяет"
+
+    # узкое окно: планировщик и критик получают скелет, воркер — шаблон целиком
+    src = KIT / "scaffold/TemplatesCommon/us_v1.0.md"
+    text = src.read_text(encoding="utf-8")
+    heads = R.template_headings(text)
+    (tmp / "narrow").mkdir()
+    seen, res, packs = _make_with_template(tmp / "narrow", src,
+                                           {"AURORA_AGENT_BACKEND_1_CONTEXT": "20000"})
+    assert res.get("ok"), res.get("why")
+    for role in ("planner", "critic"):
+        assert "скелет" in seen[role] and text[8000:8400] not in seen[role], \
+            f"«{role}» при узком окне получил полный шаблон — окно не учтено"
+        assert all(h in seen[role] for h in heads), f"в скелете «{role}» нет заголовков"
+        assert "Паспорт шаблона" not in seen[role] and "Критерии неуспешного" not in seen[role], \
+            f"в скелете «{role}» строки шапки или примера"
+    assert text[8000:8400] in seen["worker"], "воркеру обрезали шаблон — инструкции разделов потеряны"
+    # Пак: бюджет уменьшен на шаблон (иначе воркер упирается в окно, а пак узнаёт об этом поздно)
+    assert len(packs) == 1 and packs[0].count("--budget") == 1, packs
+    budget = int(packs[0][packs[0].index("--budget") + 1])
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                          "AURORA_AGENT_BACKEND_1_CONTEXT": "20000"})
+    whole = A.prompt_budget(cfg)
+    assert whole == 54000 and R.MIN_PACK <= budget <= whole - len(text), (budget, whole, len(text))
+
+
+@test
+def test_the_form_fuse_checks_the_message_that_goes_to_the_model(tmp: Path):
+    """Предохранитель сверяет заголовки с ГОТОВЫМ сообщением роли, а не с блоком шаблона.
+
+    Блок и его заголовки берутся из одного текста, поэтому сверка «заголовки в блоке» не
+    ловила ничего. Настоящие дефекты — промпт без `{template}` и срез блока на пути к
+    модели — теперь останавливают производство до вызова модели и называют роль."""
+    _path()
+    import agent_runner as R
+
+    src = KIT / "scaffold/TemplatesCommon/us_v1.0.md"
+    text = src.read_text(encoding="utf-8")
+    heads = R.template_headings(text)
+    # узкая проверка самой сверки
+    assert R.form_lost("до\nX\nпосле", "X", ["# H"]) == ["# H"]
+    assert R.form_lost("до\n# H\nпосле", "X", ["# H"]) == ["# H"], \
+        "заголовок из плана или пака принят за заголовок шаблона"
+    assert R.form_lost("# H\nX", "# H\nX", ["# H"]) == []
+    assert R.form_lost("пусто", "X", []) == ["(шаблон целиком)"]
+
+    for role, name, bare in (
+            ("critic", "PROMPT_MAKE_CRITIC", "Проверь «{title}».\nПлан:\n{plan}\nДокумент:\n{draft}\n{agnostic_check}"),
+            ("worker", "PROMPT_MAKE_WRITE", "Напиши «{title}» по плану {plan}\n{extra}\n{pack}\n{agnostic}"),
+            ("planner", "PROMPT_MAKE_PLAN", "{method}\n{title}\n{idea}\n{extra}\n{pack}\n{answers}")):
+        d = tmp / name
+        d.mkdir()
+        real = getattr(R, name)
+        # Заголовки шаблона в самом сообщении есть (в плане) — прежняя сверка пропустила бы.
+        setattr(R, name, bare)
+        try:
+            seen, res, _ = _make_with_template(d, src, {})
+        finally:
+            setattr(R, name, real)
+        assert not res.get("ok") and f"«{role}»" in res["why"] and "не попали разделы" in res["why"], \
+            (role, res)
+        assert role not in seen, f"модель «{role}» вызвана, хотя шаблон в сообщение не попал"
+
+    # блок режут на пути к сообщению (срез шаблона), заголовки — полные
+    (tmp / "cut").mkdir()
+    real = R.template_block
+    R.template_block = lambda t, b, s: (t[:300], heads)
+    try:
+        seen, res, _ = _make_with_template(tmp / "cut", src, {})
+    finally:
+        R.template_block = real
+    # причина называет первые потерянные разделы (не больше пяти) и «и ещё N»
+    cut = src.read_text(encoding="utf-8")[:300]
+    lost = [h for h in heads if h not in cut]
+    assert len(lost) > 5, "срез не потерял достаточно разделов для проверки"
+    assert not res.get("ok") and "«planner»" in res["why"] and lost[0] in res["why"] \
+        and f"и ещё {len(lost) - 5}" in res["why"], (lost, res)
+    assert "planner" not in seen, "модель вызвана, хотя шаблон в промпт не попал"
+
+
+@test
+def test_a_template_that_does_not_fit_the_window_is_refused_by_name(tmp: Path):
+    """Узкое окно: отказ называет шаблон и нужное окно; молчаливых срезов нет.
+
+    Шаблон идёт воркеру целиком, поэтому, если он не помещается даже в самое широкое окно
+    кольца, `agent:make` говорит об этом до сбора пака. Отказ `fits` на воркере (окно
+    подошло по расчёту, но запрос вышел больше) тоже получает пометку про шаблон. Шаблон
+    длиннее предела чтения останавливает производство, а не режется."""
+    _path()
+    src = KIT / "scaffold/TemplatesCommon/us_v1.0.md"
+    seen, res, packs = _make_with_template(
+        tmp / "tiny", src, {"AURORA_AGENT_BACKEND_1_CONTEXT": "8000"})
+    assert not res.get("ok"), res
+    why = res["why"]
+    assert "«Templates/T.md»" in why and "не помещается в окно" in why and "8000" in why \
+        and "≥" in why, why
+    assert not seen and not packs, "пак собран или модель вызвана при заведомо тесном окне"
+
+    # окно подошло по расчёту, шлюз/расчёт `fits` отказал на воркере: причина называет шаблон
+    log = ["№1 m: запрос ≈25001 токенов при объявленном окне 20000 — не отправляю, чтобы "
+           "не гасить провайдера ошибкой"]
+    seen, res, _ = _make_with_template(tmp / "fits", src,
+                                       {"AURORA_AGENT_BACKEND_1_CONTEXT": "20000"},
+                                       fail={"worker": log})
+    assert not res.get("ok") and "запрос ≈25001" in res["why"], res
+    assert "шаблон «Templates/T.md»" in res["why"] and "идёт воркеру целиком" in res["why"] \
+        and "окном ≥" in res["why"], res["why"]
+    # Другая причина отказа пометки про шаблон не получает
+    seen, res, _ = _make_with_template(tmp / "other", src, {}, fail={"worker": ["№1 m: 500"]})
+    assert not res.get("ok") and "шаблон «" not in res["why"], res["why"]
+
+    # шаблон длиннее предела чтения
+    big = tmp / "big.md"
+    big.write_text("# Раздел\n" + "х" * 200_100 + "\n## Хвост\n", encoding="utf-8")
+    (tmp / "big_run").mkdir()
+    seen, res, _ = _make_with_template(tmp / "big_run", big, {})
+    assert not res.get("ok") and "«Templates/T.md»" in res["why"] \
+        and "200 000" in res["why"], res
+    assert not seen, "модель вызвана на обрезанном шаблоне"

@@ -12,6 +12,7 @@ from harness import (  # noqa: F401
     KITCHEN,
     SCRIPTS,
     card,
+    card_srcs,
     make_project,
     panel_sources,
     run,
@@ -1824,3 +1825,95 @@ def test_update_delivers_ignore_rules_added_after_the_project_was_set_up(tmp: Pa
     assert U.tracked_but_ignored(repo) == [".aurora/cache/reports/issues.json"], \
         U.tracked_but_ignored(repo)
     assert "git rm -r --cached" in upd and "tracked_but_ignored(target)" in upd
+
+
+def _donor(root, rel, body, source, alias, **fm):
+    """Карточка с собственным источником и собственным синонимом — чтобы по итогам слияния
+    было видно, чей след дошёл до победителя."""
+    return card(root, rel, body, sources=f'\n  - "{source}"', aliases=f'\n  - "{alias}"', **fm)
+
+
+@test
+def test_a_winner_keeps_what_every_donor_brought(tmp: Path):
+    """Победитель группы двойников получает источники и синонимы ВСЕХ доноров, а не только
+    последнего: `merge_paths` брал текст выжившей из исходных карточек, и каждый следующий
+    донор затирал запись предыдущего (три карточки одного имени в разных разделах;
+    коды документов, сводимые `--names` в карточку предмета). Отчёт говорил «слито»."""
+    # --merge-all: победитель и два донора
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    _donor(root, "Processes/ALG-052-Проверка.md", "основная версия алгоритма " * 8,
+           "Sources/Jira/T-1.md", "Проверка-П", status="knowledge")
+    _donor(root, "Concepts/ALG-052-Проверка.md", "версия из понятий", "Sources/Jira/T-2.md",
+           "Проверка-К", status="imported")
+    _donor(root, "Glossary/ALG-052-Проверка.md", "версия из словаря", "Sources/Jira/T-3.md",
+           "Проверка-С", status="imported")
+    run("kb_fix.py", "--merge-all", "--apply", "--allow-dirty", cwd=root)
+    text = (kb / "Processes/ALG-052-Проверка.md").read_text(encoding="utf-8")
+    assert sorted(card_srcs(text)) == ["Sources/Jira/T-1.md", "Sources/Jira/T-2.md",
+                                       "Sources/Jira/T-3.md"], \
+        f"у победителя источники не всех доноров:\n{text}"
+    for alias in ("Проверка-П", "Проверка-К", "Проверка-С"):
+        assert f'"{alias}"' in text, f"синоним «{alias}» потерян при слиянии:\n{text}"
+    assert "версия из понятий" in text and "версия из словаря" in text, \
+        f"тело одного из доноров не присоединено:\n{text}"
+    assert len(list((kb / "_archive").glob("ALG-052-Проверка*.md"))) == 2, "доноры не в архиве"
+
+    # --names: два кода документа сводятся в карточку предмета
+    (tmp / "names").mkdir()
+    root = make_project(tmp / "names", git=True)
+    kb = root / "AuroraKnowledgeDB"
+    _donor(root, "Concepts/Отправка-начислений.md", "предмет " * 10,
+           "Sources/Jira/T-10.md", "Предмет-П", status="knowledge")
+    for code, n in (("AC-1.1", 11), ("US-2.2", 12)):
+        p = _donor(root, f"Concepts/{code}-Отправка-начислений.md", f"про {code}",
+                   f"Sources/Jira/T-{n}.md", f"Алиас-{code}", status="imported")
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            'title: "%s"' % p.stem, 'title: "%s Отправка начислений"' % code), encoding="utf-8")
+    run("kb_fix.py", "--names", "--apply", "--allow-dirty", cwd=root)
+    text = (kb / "Concepts/Отправка-начислений.md").read_text(encoding="utf-8")
+    assert sorted(card_srcs(text)) == ["Sources/Jira/T-10.md", "Sources/Jira/T-11.md",
+                                       "Sources/Jira/T-12.md"], \
+        f"в карточке предмета источники не всех кодовых карточек:\n{text}"
+    for alias in ("Предмет-П", "Алиас-AC-1.1", "Алиас-US-2.2"):
+        assert f'"{alias}"' in text, f"синоним «{alias}» потерян при слиянии:\n{text}"
+
+
+def _make_with_template(tmp: Path, rel_src: Path, env: dict):
+    """Прогон agent:make на шаблоне из поставки заглушкой вместо модели.
+
+    → (промпты ролей, итог, корень проекта). Модель не нужна: заглушка запоминает, что
+    ей передали, и отвечает минимально-правильно."""
+    _path()
+    import agent_core as A, agent_runner as R
+    from harness import stub_messages
+
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    (root / "Templates/T.md").write_text(rel_src.read_text(encoding="utf-8"), encoding="utf-8")
+    cfg_path = root / "aurora.config.yaml"
+    cfg_path.write_text(cfg_path.read_text(encoding="utf-8").rstrip()
+                        + '\nartifacts:\n  ac:\n    title: "Док"\n'
+                          '    template: "Templates/T.md"\n    out: "Artifacts/ac"\n',
+                        encoding="utf-8")
+    for i in range(6):
+        card(root, f"Concepts/Заявка-{i}.md",
+             f"Заявка проходит статусы. Срок десять дней. см. [[Заявка-{(i + 1) % 6}]]",
+             status="knowledge", kind="knowledge")
+    seen = {}
+
+    def fake(cfg_, role, messages, **kw):
+        seen[role] = stub_messages(messages, kw)[0]["content"]
+        base = {"backend": 1, "model": "m", "tps": 9, "log": []}
+        if role == "planner":
+            return dict(base, ok=True, text=json.dumps({"questions": [], "plan": "1. Раздел"},
+                                                       ensure_ascii=False))
+        if role == "critic":
+            return dict(base, ok=True, text=json.dumps({"ok": True, "issues": []}))
+        return dict(base, ok=True, text="# Док\n\nЗаявка создана.")
+
+    cfg = A.parse_config(dict({"AURORA_AGENT_BACKEND_1_URL": "u",
+                               "AURORA_AGENT_BACKEND_1_MODEL": "m"}, **env))
+    res = R.run_make(cfg, str(root), "ac", "статусы заявки", "", "", True, call=fake,
+                     momus=False)
+    return seen, res, root

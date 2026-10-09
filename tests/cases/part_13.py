@@ -3373,7 +3373,7 @@ def test_a_parallel_alias_step_finished_after_the_stop_is_still_reported(tmp: Pa
     saved = (R.read_conflicts, R.lint_conflicts, R.lint_errors, R.solve_conflict, R.AG.pool)
     R.read_conflicts = lambda cwd: [(f"alias{i}", [f"Карточка-{i}"]) for i in range(4)]
     R.lint_conflicts, R.lint_errors = (lambda cwd: 4), (lambda cwd: 0)
-    R.solve_conflict, R.AG.pool = fake_solve, (lambda cfg_: [1, 2, 3, 4])
+    R.solve_conflict, R.AG.pool = fake_solve, (lambda cfg_, role="worker": [1, 2, 3, 4])
     try:
         res = R.run_aliases(cfg, str(tmp), True, False, 0, call=lambda *a, **k: None)
     finally:

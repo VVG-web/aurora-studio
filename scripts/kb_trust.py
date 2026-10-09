@@ -23,6 +23,10 @@
 `aurora.config.yaml`. Значения по умолчанию пишут туда настройка и обновление движка
 (`aurora_common.TRUST_DEFAULTS`); пустой список читается как те же значения.
 
+Исключение — Decision Record (`type: decision`, либо карточка из `Decisions/`): его `status`
+это состояние решения (proposed → accepted | rejected → superseded), а не класс доверия, и
+`kb:trust` его не пересчитывает.
+
 Понижение класса не стирает знание: тело остаётся, а в подвал пишется строка «класс
 понижен такого-то числа, задача вернулась в работу». Знание не перестало существовать —
 оно перестало быть подтверждённым, и это разные вещи.
@@ -38,7 +42,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (is_meeting, branch_kind, LEGACY_TRUSTED_BRANCHES, ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
+from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LEGACY_TRUSTED_BRANCHES, ASSUMPTION_STATUSES_DEFAULT, SERVICE_STATUS,  # noqa: E402
                            TRUST_STATUSES_DEFAULT, TRUSTED_BRANCHES_DEFAULT,
                            TRUSTED_SOURCES_DEFAULT, card_sources, config_list, frontmatter,
                            sync_roots,
@@ -472,12 +476,24 @@ def main() -> int:
         print(f"Подзадач, отставших от своей истории: {len(LAG)} — судим по истории\n")
 
     counts, changes, moved, refreshed = {}, [], 0, 0
+    dr_traces = []
     for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
         text = open(path, encoding="utf-8", errors="ignore").read()
         head, rest = split_frontmatter(text)
         fm = frontmatter(text)
         was = (fm.get("status") or "").strip()
         if head is None or was in (SERVICE_STATUS, "deprecated"):
+            continue
+        # Decision Record: `accepted`/`rejected`/`superseded` — состояние решения, а не
+        # доверие. Общий путь видел «источников нет → unknown → draft» и затирал его;
+        # принятое решение, переписанное в черновик, выпадало из выдачи.
+        # DR без `type:` (написан до схемы 2) узнаётся по папке Decisions, как в линтере.
+        if card_type(fm, os.path.relpath(path, os.path.join(root, KB)).split(os.sep)[0]) \
+                in OWN_LIFECYCLE:
+            # След прежнего прогона (`trust_checked`/`trust_basis`): общий путь когда-то
+            # переписал статус решения. Не правим — решение человек поднимет из git.
+            if fm.get("trust_checked") or fm.get("trust_basis"):
+                dr_traces.append(os.path.relpath(path, root))
             continue
         # Заготовка знания не содержит: доверять в ней нечему, и класс ей не положен.
         # Раньше она шла общим путём — источников нет, значит «unknown», значит `draft`, — и
@@ -562,6 +578,10 @@ def main() -> int:
         print(f"  - {rel}: {was} → {now} — {why[:90]}")
     if len(changes) > 12:
         print(f"  … ещё {len(changes) - 12}")
+    if dr_traces:
+        print(f"\nDecision Record со следами прежнего прогона (trust_checked): {len(dr_traces)} — "
+              "статус мог быть переписан, сверьте с git: " + ", ".join(dr_traces[:5])
+              + (" …" if len(dr_traces) > 5 else ""))
     if not a.apply:
         print("\n(dry-run) Ничего не записано. Повторите с --apply.")
     elif moved:

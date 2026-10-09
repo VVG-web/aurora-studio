@@ -34,6 +34,36 @@ FLAKY_RETRY_S = 30               # шлюз мигает, а не лежит: п
 # Потолка попыток нет (1.170.0): маршрут ждёт сеть, пока она не вернётся или человек не
 # нажмёт «не ждать». Прежние 8 попыток (≈ 2 часа) заканчивали ночной прогон к утру ничем.
 POLL_S = 1.0
+JOB_KEEP_LINES = 4000    # строк вывода задания в памяти; полный текст — в console.log прогона
+
+
+def job_push(job: dict, line: str) -> None:
+    """Добавить строку вывода задания; при переполнении срезать голову и считать срезанное.
+
+    Читатели ведут курсор сквозным номером строки (`job_slice`): без счётчика `base`
+    курсор, дошедший до предела, видел пустой хвост, и живой вывод замирал после 4000-й
+    строки. Вызывать под `JOBS_LOCK`.
+    """
+    job["out"].append(line)
+    over = len(job["out"]) - JOB_KEEP_LINES
+    if over > 0:
+        del job["out"][:over]
+        job["base"] = job.get("base", 0) + over
+
+
+def job_slice(job: dict, since: int) -> tuple:
+    """Строки вывода со сквозного номера `since`. → (строки, следующий номер).
+
+    Если читатель отстал и голова уже срезана, он получает самое старое из оставшегося:
+    пропущенное лежит в `console.log` прогона. Следующий номер считается от взятого среза,
+    а не от нового `len(out)`: сторож и «Прервать» дописывают в `out` мимо замка, и строка,
+    пришедшая между срезом и подсчётом, иначе была бы засчитана непрочитанной.
+    """
+    base = job.get("base", 0)
+    cut = max(0, since - base)
+    part = job["out"][cut:]
+    return part, base + cut + len(part)
+
 
 # Шаг сделал работу — значит, бэкенды отвечают, просто через раз. Числа, которые печатают
 # сами шаги о сделанном; те же, что у кнопки (`DID_WORK` в panel.js), — сверяет автотест.
@@ -163,7 +193,7 @@ def plan(ck, sc: dict, write: bool) -> list:
         if in_cycle:
             idx += 1
         out.append({"cmd": st["cmd"], "why": st.get("why", ""), "cycle": in_cycle,
-                    "cycleIdx": idx if in_cycle else 0,
+                    "cycleIdx": idx if in_cycle else 0, "pos": len(out),
                     "args": [f for f in (st.get("flags") or []) if write or f != "--apply"]})
     return out
 
@@ -202,8 +232,7 @@ def run_job(ck, project: str, cmd: str, args: list, stop=None, on_job=None,
             job = ck.JOBS.get(job_id)
             if not job:
                 return {"rc": 2, "lines": lines}
-            new = job["out"][since:]
-            since += len(new)
+            new, since = job_slice(job, since)
             done, rc, run_id = job["done"], job["rc"], job.get("run_id", "")
             hung = job.get("hung", "")
         lines += new
@@ -331,6 +360,8 @@ class RouteRun:
         self.resumed = bool(resume.get("skipSigs") or resume.get("cycleAt")) if resume else False
         resume = resume or {}
         self.skip = set(resume.get("skipSigs") or [])
+        self.sig_count: dict = {}              # сколько раз подпись встречается в плане
+        self.done_keys: set = set()            # ключи шагов, прошедших с кодом 0
         at = resume.get("cycleAt") or None
         self.cycle_at = at if at and (at.get("inLap") or 0) > 1 else None
         self.offline_carry = int(resume.get("attempts") or 0)
@@ -394,6 +425,18 @@ class RouteRun:
             self.stopped = True
         return res
 
+    def step_key(self, st: dict) -> str:
+        """Ключ шага в списке «сделано». Подпись «команда + флаги» в маршруте не уникальна:
+        цикл и хвост после него зовут одно и то же (`kb:links --cards --apply`), и по
+        голой подписи продолжение пропускало хвост как «уже сделанный» (1.170.1). Повторяющейся
+        подписи добавляется позиция шага в плане; уникальная остаётся как была — старые
+        записи продолжения читаются, а неоднозначные из них шаг просто повторит (шаги
+        идемпотентны)."""
+        sig = (st["cmd"] + " " + " ".join(st["args"])).strip()
+        if self.sig_count.get(sig, 1) > 1 and "pos" in st:
+            return f"{sig} @{st['pos']}"
+        return sig
+
     def _event(self, st: dict, start: float, end: float, res: dict) -> None:
         iso = lambda ts: datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         ev = {"cmd": st["cmd"], "args": st["args"], "start": iso(start), "end": iso(end),
@@ -401,7 +444,10 @@ class RouteRun:
         if res.get("refused"):
             ev["note"] = res["refused"]
         self.events.append(ev)
-        self.on_step((st["cmd"] + " " + " ".join(st["args"])).strip(), res["rc"])
+        key = self.step_key(st)
+        if res["rc"] == 0:
+            self.done_keys.add(key)
+        self.on_step(key, res["rc"])
         self._progress()
 
     def _state(self, reason: str) -> dict:
@@ -409,8 +455,7 @@ class RouteRun:
                 "write": self.write, "reason": reason, "step": self.done,
                 "cycleAt": ({"lap": self.lap, "inLap": self.in_lap}
                             if self.lap and not self.stalled else None),
-                "done": sorted(self.skip | {(e["cmd"] + " " + " ".join(e["args"])).strip()
-                                            for e in self.events if e["rc"] == 0}),
+                "done": sorted(self.skip | self.done_keys),
                 "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
 
     def _progress(self) -> None:
@@ -452,7 +497,7 @@ class RouteRun:
 
     def run_one(self, st: dict) -> dict:
         sig = (st["cmd"] + " " + " ".join(st["args"])).strip()
-        if self.skip and not st["cycle"] and sig in self.skip:
+        if self.skip and not st["cycle"] and self.step_key(st) in self.skip:
             self.done += 1
             self.say("note", self.t("route.skip_step", step=self.done, of=self.total,
                                     cmd=st["cmd"]))
@@ -562,6 +607,9 @@ class RouteRun:
         ck, t = self.ck, self.t
         steps = plan(ck, self.sc, self.write)
         self.total = len([s for s in steps if not s["cycle"]])
+        for s in steps:
+            sig = (s["cmd"] + " " + " ".join(s["args"])).strip()
+            self.sig_count[sig] = self.sig_count.get(sig, 0) + 1
         self.cycle_size = len([s for s in steps if s["cycle"]]) or 1
         self.offline = False
         started = time.time()

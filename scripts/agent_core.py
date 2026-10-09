@@ -1119,9 +1119,33 @@ def _slot_semaphore(backend: dict, cfg: dict) -> threading.Semaphore:
     with _SEM_LOCK:
         sem = _SEM.get(key)
         if sem is None:
-            sem = threading.Semaphore(max(1, pool(cfg).count(key)))
+            sem = threading.Semaphore(gateway_width(cfg, key))
             _SEM[key] = sem
         return sem
+
+
+def gateway_width(cfg: dict, key: int) -> int:
+    """Сколько запросов одновременно можно слать на бэкенд № `key`: не меньше единицы.
+
+    Слоты `pool` считаются по цепочке одной роли, а шлюз один на все роли. Провайдер,
+    стоящий только в цепочке `qa` или `critic` (сильная модель для проверки), в пуле
+    `worker` не встречается — и считался «0 слотов», то есть один запрос за раз, как бы
+    широко его ни объявили. Берём лучший счёт по всем ролям. Само правило ширины живёт
+    только в `pool` (в том числе «необъявленному один слот»): здесь его нет, поэтому
+    семафор и пул разойтись не могут."""
+    roles = ["worker"] + [r for r in ((cfg.get("chains") or {}).get("llm") or {})
+                          if r != "worker"]
+    return max(1, *(pool(cfg, r).count(key) for r in roles))
+
+
+def _width_declared(cfg: dict) -> bool:
+    """Объявил ли ширину хоть один бэкенд в любой цепочке (старая конфигурация — любой
+    chat-бэкенд). Шлюз один на все роли, поэтому смотрим не на цепочку одной роли."""
+    if cfg.get("chains") is None:
+        return any(b.get("width") for b in cfg["backends"] if b.get("chat", True))
+    roles = ["worker"] + [r for r in ((cfg.get("chains") or {}).get("llm") or {})
+                          if r != "worker"]
+    return any(b.get("width") for r in roles for b in role_chain(cfg, r))
 
 
 def retry_primary_asked() -> bool:
@@ -1320,6 +1344,22 @@ def parallel_cap(raw) -> int:
         return 1
 
 
+def parallel_on(cfg: dict) -> bool:
+    """Включена ли параллельность: число больше единицы или AUTO.
+
+    Раннер сравнивал `(cfg.get("parallel") or 1) <= 1`, а AUTO — это -1: настройка по
+    умолчанию («авто») читалась как «один поток», и разбор шёл последовательно, хотя
+    `pool` AUTO понимает."""
+    cap = cfg.get("parallel") or 1
+    return cap == AUTO or cap > 1
+
+
+def effective_width(cfg: dict, role: str = "worker") -> int:
+    """Сколько потоков реально даст настройка «Одновременно» для роли: AUTO — по
+    объявленным ширинам шлюзов цепочки (не объявил — один слот), число — не больше него."""
+    return len(pool(cfg, role)) if parallel_on(cfg) else 1
+
+
 def pool(cfg: dict, role: str = "worker") -> list:
     """Слоты параллельного прогона: номер бэкенда на каждый его свободный поток.
 
@@ -1359,8 +1399,9 @@ def pool(cfg: dict, role: str = "worker") -> list:
             slots += [b["n"]] * b["width"]
     slots = slots[:cap]
     free = [b for b in usable if not b.get("width")]
-    if len(free) < len(usable):
-        # Ширину объявили другим — необъявленному по слоту, в пределах потолка.
+    if _width_declared(cfg):
+        # Ширину объявил хоть один шлюз (в любой роли) — необъявленному по слоту, в
+        # пределах потолка. Правило одно на пул и на семафор (`gateway_width`).
         slots += [b["n"] for b in free][:max(0, cap - len(slots))]
         return slots or [1]
     i = 0
@@ -1571,10 +1612,27 @@ LLM_CACHE = Path.home() / ".aurora" / "cache" / "llm"
 LLM_CACHE_DAYS = 30
 
 
+def _cache_ring(cfg: dict, role: str, think) -> list:
+    """Кольцо роли для ключа кэша: кто и с какими параметрами ответит на вызов.
+
+    Берётся то, чем вызов идёт на самом деле (`ring_order`): в настройке кита это цепочка
+    роли, где модель лежит в самом элементе, а в `backends` её нет (`model` пуст) — ключ по
+    `backends` не замечал ни смены модели, ни перестановки цепочки, ни `pin_model`. Модель —
+    как её выберет вызов (`models[роль]`, иначе общая), плюс провайдер, окно и поля шаблона
+    чата с режимом рассуждений: от них зависит ответ той же модели.
+    """
+    return [(b.get("provider", ""), b.get("url", ""),
+             (b.get("models") or {}).get(role) or b.get("model", ""),
+             b.get("context") or 0, request_template(b, think))
+            for b in ring_order(cfg, 0, role)]
+
+
 def _cache_key(cfg: dict, role: str, messages: list, think, max_tokens) -> str:
     import hashlib
-    ring = [(b.get("url", ""), b.get("model", "")) for b in cfg.get("backends") or []]
-    blob = json.dumps({"v": 1, "role": role, "ring": ring, "think": bool(think),
+    # v:2 — ключ по кольцу роли; записи v:1 строились по `backends` и в ключ не
+    # попадают: после выпуска их ответы не подхватываются.
+    blob = json.dumps({"v": 2, "role": role, "ring": _cache_ring(cfg, role, think),
+                       "think": bool(think),
                        "max": max_tokens, "messages": messages},
                       ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -1621,8 +1679,8 @@ def call_role(cfg: dict, role: str, messages: list, transport=None,
 
     В кэш идут только одиночные вызовы настоящим транспортом: без истории разговора,
     инструментов, MCP и подрезки под окно — у них ответ зависит не только от задания.
-    Ключ — роль, кольцо бэкендов (модель поменяли — ответ спросят заново), режим
-    рассуждений и задание целиком. `AURORA_AGENT_CACHE=0` выключает кэш.
+    Ключ — роль, кольцо модели роли (модель, провайдер или цепочку поменяли — ответ спросят
+    заново), режим рассуждений и задание целиком. `AURORA_AGENT_CACHE=0` выключает кэш.
     """
     think = role_thinks(cfg, role) if thinking is None else thinking
     key = ""

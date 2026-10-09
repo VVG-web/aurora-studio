@@ -60,7 +60,7 @@ related: []
 
 Старые базы содержат `imported`, `in-review`, `verified`, `accepted`. Движок их **читает**
 (`verified` считается доверенным), но больше не назначает. `kb:trust` переводит базу на
-новую шкалу за один прогон.
+новую шкалу за один прогон (кроме Decision Record: у него свой цикл, `kb:trust` его не трогает).
 
 ## Версия схемы
 
@@ -166,12 +166,16 @@ based_on: []
 
 ```yaml
 type: decision
-status: accepted          # proposed → accepted | rejected → superseded
+# цикл решения: proposed → accepted | rejected → superseded (комментарий — не на строке status)
+status: accepted
 date: 2026-07-01
 supersedes: ["[[DR-0007-...]]"]
 ```
 
 DR rules (append-only):
+- `status` у DR — состояние решения, а не класс доверия: `kb:trust` такие карточки
+  пропускает (тип `decision`), `kb:lint` принимает `proposed | accepted | rejected |
+  superseded`. Доверие DR не считается.
 - Accepted/rejected DRs are **immutable**. The only allowed edits: set
   `status: superseded` + `superseded_by` when a newer DR replaces it.
 - Never delete a DR. Rejected options stay inside the DR body forever.

@@ -1765,6 +1765,129 @@ def test_editor_respects_what_must_not_be_edited(tmp: Path):
 
 
 @test
+def test_editor_save_keeps_file_encoding_and_line_endings(tmp: Path):
+    """Сохранение из редактора возвращает файлу его байты, а не нормализованный текст.
+
+    Раньше файл читали текстом с `errors="ignore"`: CRLF становился LF (после одной
+    правки весь файл в git diff), а байты не из UTF-8 — cp1251-таблица, лог Windows-
+    программы — выбрасывались без сообщения, и слепок считался уже от потерянной версии.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    importlib.reload(ck)
+
+    root = tmp / "proj"
+    (root / "Raw" / "project").mkdir(parents=True)
+    d = root / "Raw" / "project"
+
+    def put(name: str, raw: bytes) -> str:
+        (d / name).write_bytes(raw)
+        return "Raw/project/" + name
+
+    # CRLF: редактор видит LF, на диск уходит CRLF, нетронутые строки не меняются.
+    rel = put("a.txt", "один\r\nдва\r\n".encode("utf-8"))
+    o = ck.file_read(str(root), rel)
+    assert o["eol"] == "crlf" and o["encoding"] == "utf-8" and o["text"] == "один\nдва\n", o
+    assert ck.file_write(str(root), rel, "один\nдва\nтри\n", expect=o["digest"]).get("ok")
+    assert (d / "a.txt").read_bytes() == "один\r\nдва\r\nтри\r\n".encode("utf-8"), "CRLF файла превратился в LF"
+
+    # BOM не пропадает, а в тексте редактора его нет.
+    rel = put("b.csv", b"\xef\xbb\xbf" + "а;б\n".encode("utf-8"))
+    o = ck.file_read(str(root), rel)
+    assert o["encoding"] == "utf-8-sig" and o["text"] == "а;б\n", o
+    assert ck.file_write(str(root), rel, "а;б\nв;г\n", expect=o["digest"]).get("ok")
+    assert (d / "b.csv").read_bytes() == b"\xef\xbb\xbf" + "а;б\nв;г\n".encode("utf-8")
+
+    # cp1251: читается, пишется обратно в cp1251; знак вне кодировки — отказ, а не «?».
+    rel = put("c.csv", "имя;город\r\n".encode("cp1251"))
+    o = ck.file_read(str(root), rel)
+    assert o["encoding"] == "cp1251" and o["text"] == "имя;город\n" and not o["lossy"], o
+    assert ck.file_write(str(root), rel, "имя;город\nИван;Омск\n", expect=o["digest"]).get("ok")
+    assert (d / "c.csv").read_bytes() == "имя;город\r\nИван;Омск\r\n".encode("cp1251"), \
+        "cp1251-файл перекодирован в UTF-8"
+    before = (d / "c.csv").read_bytes()
+    res = ck.file_write(str(root), rel, "имя;😀\n")
+    assert res.get("error") and (d / "c.csv").read_bytes() == before, \
+        "знак вне кодировки файла записан молча или испортил файл"
+
+    # Не читается строго ни как UTF-8, ни как cp1251: только просмотр, байты целы.
+    junk = b"abc \x98 def\r\n"
+    rel = put("d.log", junk)
+    o = ck.file_read(str(root), rel)
+    assert o["lossy"] and o["readonly"], "файл с невалидными байтами открыт на запись"
+    res = ck.file_write(str(root), rel, "abc def\n")
+    assert res.get("error") and (d / "d.log").read_bytes() == junk, \
+        "сохранение выбросило невалидные байты"
+
+    # Файл в основном UTF-8, но с повреждёнными байтами, — не cp1251: cp1251 принимает
+    # почти любой набор байтов, и правка дописала бы cp1251 среди UTF-8 (смешанная
+    # кодировка). Значит, только просмотр, а на диске байты целы.
+    cases = {
+        "f1.txt": ("Привет\n" * 5).encode("utf-8") + b"caf\xe9\n",           # лишний байт
+        "f2.txt": "Привет, мир\n".encode("utf-8")[:-2] + "Ми".encode("utf-8")[:1],  # обрыв знака
+        "f3.txt": b"\xef\xbb\xbf" + "Привет\n".encode("utf-8") + b"\xff",        # BOM + мусор
+        "f4.txt": b"\xff\xfe" + "Привет".encode("utf-16-le"),                      # UTF-16
+    }
+    for name, junk in cases.items():
+        rel = put(name, junk)
+        o = ck.file_read(str(root), rel)
+        assert o["lossy"] and o["readonly_lossy"] and o["readonly"], (name, o["encoding"])
+        assert o["encoding"] != "cp1251", f"{name}: UTF-8 с повреждением принят за cp1251"
+        res = ck.file_write(str(root), rel, "правка\n")
+        assert res.get("error") and (d / name).read_bytes() == junk, \
+            f"{name}: сохранение тронуло нечитаемый файл"
+    # Настоящий cp1251 с одной буквой «й» (байт 0xE9) остаётся cp1251 и правится.
+    rel = put("g.txt", "строка\r\nйод\r\n".encode("cp1251"))
+    o = ck.file_read(str(root), rel)
+    assert o["encoding"] == "cp1251" and not o["lossy"] and not o["readonly_lossy"], o
+
+    # Защищённый файл, который к тому же нечитаем, называет настоящую причину запрета.
+    (root / "Sources").mkdir()
+    (root / "Sources" / "m.md").write_bytes(b"---\ntitle: x\n---\n" + cases["f1.txt"])
+    o = ck.file_read(str(root), "Sources/m.md")
+    assert o["lossy"] and "зеркало" in o["readonly"] and not o["readonly_lossy"], o
+
+    # Смешанные окончания строк в ответе помечены (интерфейс обещает «прежние» лишь
+    # там, где это правда); однородные — нет.
+    rel = put("h.txt", b"a\r\nb\r\nc\nd\n")
+    o = ck.file_read(str(root), rel)
+    assert o["eol_mixed"] is True and o["eol"] == "lf", o
+    rel = put("h2.log", b"progress 10%\rprogress 50%\rdone\n")
+    assert ck.file_read(str(root), rel)["eol_mixed"] is True
+    rel = put("h3.txt", b"a\r\nb\r\n")
+    assert ck.file_read(str(root), rel)["eol_mixed"] is False
+
+    # Потолок — по байтам, которые лягут на диск, а не по длине текста в UTF-8.
+    big = ("а" * 1_400_000).encode("cp1251")         # на диске 1,4 МБ, в UTF-8 было бы 2,8 МБ
+    rel = put("big.csv", big)
+    o = ck.file_read(str(root), rel)
+    assert o["encoding"] == "cp1251" and not o["lossy"], o["encoding"]
+    res = ck.file_write(str(root), rel, o["text"] + "б", expect=o["digest"])
+    assert res.get("ok"), res
+    assert (d / "big.csv").read_bytes() == big + "б".encode("cp1251")
+    # CRLF добавляет байт на строку: файл вплотную к потолку не должен вырасти выше него.
+    crlf = b"x\r\n" * 666_660                      # 1 999 980 байт
+    rel = put("edge.txt", crlf)
+    o = ck.file_read(str(root), rel)
+    assert o["eol"] == "crlf", o.get("error")
+    res = ck.file_write(str(root), rel, o["text"] + "y" * 20 + "\n" * 40, expect=o["digest"])
+    assert res.get("error") and (d / "edge.txt").read_bytes() == crlf, \
+        "файл вырос выше потолка редактора после перекодировки в CRLF"
+
+    # Слепок — от байтов: смена одних только окончаний строк снаружи тоже расхождение.
+    rel = put("e.txt", b"x\ny\n")
+    o = ck.file_read(str(root), rel)
+    (d / "e.txt").write_bytes(b"x\r\ny\r\n")
+    assert ck.file_write(str(root), rel, "x\ny\nz\n", expect=o["digest"]).get("conflict"), \
+        "слепок не заметил смену окончаний строк"
+
+    # Новый файл — UTF-8 и LF, как раньше.
+    assert ck.file_write(str(root), "Raw/project/new.txt", "привет\nмир\n").get("ok")
+    assert (d / "new.txt").read_bytes() == "привет\nмир\n".encode("utf-8")
+
+
+@test
 def test_saving_does_not_silently_overwrite(tmp: Path):
     """Файл под редактором меняется и снаружи: агент дописывает артефакт, синк приносит
     чужое, его правят в Obsidian. Молча затирать — тот же класс, что публикация поверх

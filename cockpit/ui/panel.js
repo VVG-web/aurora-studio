@@ -499,6 +499,7 @@ async function openFile(f){
   if (F.ed && F.dirty && !confirm(t("files.leave_dirty"))) return;
   $("#fileNone").hidden = true; $("#fileEditor").hidden = false;
   $("#fileName").textContent = f.path;
+  $("#fileEnc").hidden = true;
   if (!f.text){
     destroyEditor();
     $("#fileWarn").hidden = false; $("#fileWarn").textContent = t("files.binary");
@@ -522,6 +523,8 @@ async function openFile(f){
     return;
   }
   F.path = d.path; F.digest = d.digest; F.ro = d.readonly || ""; F.orig = d.text; F.dirty = false;
+  F.lossy = !!d.lossy;
+  if (d.readonly_lossy) F.ro = t("editor.lossy_ro");   // другая причина запрета важнее и остаётся
   $("#fileRO").hidden = !F.ro;
   $("#fileRO").textContent = F.ro ? "🔒 " + t("files.readonly") + ": " + F.ro : "";
   // Запрет обязан заканчиваться действием. «Править нельзя» без «а вот как можно» —
@@ -555,6 +558,16 @@ async function openFile(f){
       el("button",{class:"btn", onclick:()=>publishFromEditor()}, t("editor.publish")));
   }
   $("#fileWarn").hidden = true;
+  // Кодировка и окончания строк файла сервер сохранит как были; показываем отступление
+  // от привычных utf-8/LF, чтобы «почему весь файл в диффе» не искали в редакторе.
+  const enc = d.encoding || "utf-8", eol = (d.eol || "lf").toUpperCase();
+  $("#fileEnc").hidden = enc === "utf-8" && eol === "LF" && !d.eol_mixed;
+  $("#fileEnc").textContent = enc + " · " + eol + (d.eol_mixed ? " *" : "");
+  $("#fileEnc").title = d.eol_mixed ? t("editor.enc_title_mixed", {eol}) : t("editor.enc_title");
+  if (d.lossy){
+    $("#fileWarn").hidden = false;
+    $("#fileWarn").textContent = t("editor.lossy_warn");
+  }
   $("#fileLint").textContent = "";
   const [fm, body] = splitFrontmatter(d.text);
   F.fm = fm;
@@ -747,7 +760,7 @@ async function mountEditor(text){
       // файл расходится с исходным сразу после открытия, ничего не тронув. Признак
       // «трогали» загорелся бы сам, и защита от лишнего дифа исчезла бы молча.
       if (F.ro && F.ed.disabled) F.ed.disabled();   // «только для чтения» — значит не печатать
-      if (heavy){
+      if (heavy && !F.lossy){        // предупреждение «правка потеряет байты» важнее
         $("#fileWarn").hidden = false;
         $("#fileWarn").innerHTML = "";
         $("#fileWarn").append(
@@ -759,9 +772,11 @@ async function mountEditor(text){
       setTimeout(()=>{
         const now = F.ed.getValue();
         if (mode === "wysiwyg" && now !== text){
-          const n = diffLines(text, now);
-          $("#fileWarn").hidden = false;
-          $("#fileWarn").textContent = t("editor.wysiwyg_warn", {n});
+          if (!F.lossy){             // предупреждение «правка потеряет байты» важнее и остаётся
+            const n = diffLines(text, now);
+            $("#fileWarn").hidden = false;
+            $("#fileWarn").textContent = t("editor.wysiwyg_warn", {n});
+          }
         }
         F.dirty = false; $("#fileSave").disabled = true;
       }, 60);

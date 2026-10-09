@@ -22,7 +22,7 @@ import argparse
 import json, os, re, sys
 
 from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
-from aurora_common import (STATUSES, aliases, body_hash, card_body, card_stem,
+from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
 
@@ -294,10 +294,16 @@ def main():
                                   f"ожидается `{expected}`")
         # Статус вне шкалы — это карточка, которую не пересчитал `kb:trust`, а не мнение
         # автора: шкала закрытая, и всё, что вне её, движок в контекст не пустит.
-        if status and status not in STATUSES and status not in ("imported", "in-review",
-                                                                "verified", "canonical"):
+        # У типа со своим жизненным циклом (Decision Record) свой словарь статусов.
+        own = OWN_LIFECYCLE.get(card_type(fm, section), ())
+        if status and status not in STATUSES and status not in own \
+                and status not in ("imported", "in-review", "verified", "canonical"):
+            # У типа со своим циклом `kb:trust` статус не пересчитывает — совет «пересчитайте»
+            # для него тупик, правят руками.
+            hint = ("у Decision Record статус правят руками, `kb:trust` его не пересчитывает"
+                   if own else "пересчитайте `kb:trust`")
             errors.append(f"{rel}: статус «{status}» вне шкалы "
-                          f"({', '.join(STATUSES)}) — пересчитайте `kb:trust`")
+                          f"({', '.join(STATUSES + own)}) — {hint}")
         if status == "verified":
             if not fm.get("owner"):
                 errors.append(f"{rel}: verified без owner")
@@ -555,7 +561,9 @@ def main():
          "Это повреждение, а не оформление — верните карточки из git и повторите "
          "команду на свежем ките"),
         ("статус «", "статус вне шкалы",
-         "шкала закрытая: knowledge, draft, deprecated, index. Пересчитайте `kb:trust`"),
+         "шкала закрытая: knowledge, draft, deprecated, index. Пересчитайте `kb:trust`; "
+         "у Decision Record свой словарь — proposed | accepted | rejected | superseded, "
+         "его правят руками"),
         ("нет frontmatter", "карточки без шапки",
          "`kb:repair --frontmatter` проставит статус и дату"),
         ("артефакт в знаниях", "артефакты, попавшие в базу знаний",

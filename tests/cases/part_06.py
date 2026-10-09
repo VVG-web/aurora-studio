@@ -989,7 +989,7 @@ def test_a_stalled_route_stops_honestly_and_resume_skips_only_success(tmp: Path)
     assert "if (bad && S.lastRoute && S.project){" in fin, \
         "кнопка «Продолжить маршрут» не связана с остановкой"
     rr = (KIT / "cockpit/route_runner.py").read_text(encoding="utf-8")
-    assert 'for e in self.events if e["rc"] == 0' in rr, \
+    assert 'if res["rc"] == 0:\n            self.done_keys.add(key)' in rr, \
         "продолжение пропускает не только успешные шаги — код 1 повторять надо"
     assert '"stall" if self.stalled else "offline" if self.offline' in rr \
         and '"stopped" if self.stopped' in rr, "причина остановки смешивает застой и прерывание"

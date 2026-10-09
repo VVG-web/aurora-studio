@@ -262,7 +262,7 @@ stateDiagram-v2
 - **`deprecated`** — replaced, lies in `_archive/`, answers only "how it used to be".
 
 Old bases contain `imported`, `in-review`, `verified`, `accepted`: the engine reads them (`verified` counts as
-trusted) but does not assign them; `kb:trust` moves a base to the new scale in one run.
+trusted) but does not assign them; `kb:trust` moves a base to the new scale in one run (except Decision Records: they have their own cycle and `kb:trust` leaves them alone).
 
 ## 5. Three marks that stop work from being done twice
 

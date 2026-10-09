@@ -72,6 +72,113 @@ def test_providers_are_separate_from_roles_and_chains_are_ordered(_t):
 
 
 @test
+def test_parallel_auto_and_gateway_width_follow_the_roles(_t):
+    """«Одновременно = авто» — не один поток; шлюз только в цепочке qa держит свою ширину.
+
+    Раннер сравнивал потолок с единицей, а AUTO это -1: настройка по умолчанию гнала
+    разбор, связывание и тезисы по одному. Семафор шлюза считал слоты по цепочке worker,
+    и провайдер, стоящий лишь в `qa`, получал «ноль слотов», то есть один запрос за раз."""
+    MC, AG = _mods()
+    import importlib
+    R = importlib.import_module("agent_runner")
+    data, _ = MC.normalize({"providers": [
+        {"id": "work", "name": "Рабочий", "url": "http://work.example/v1", "key": "k1",
+         "width": 2},
+        {"id": "strong", "name": "Сильный", "url": "http://strong.example/v1", "key": "k2",
+         "width": 8}],
+        "capabilities": {"llm": {"roles": [
+            {"id": "worker", "backends": [{"provider": "work", "model": "flash"}]},
+            {"id": "qa", "backends": [{"provider": "strong", "model": "big"}]}]}}})
+    cfg = MC.to_config(data)
+    work = next(b["n"] for b in AG.role_chain(cfg, "worker"))
+    strong = next(b["n"] for b in AG.role_chain(cfg, "qa"))
+    assert work != strong
+    # авто: ширина берётся из объявленных ширин цепочки роли, а не схлопывается в 1
+    cfg["parallel"] = AG.AUTO
+    assert AG.parallel_on(cfg) and AG.effective_width(cfg) == 2
+    assert AG.effective_width(cfg, "qa") == 8
+    slots, width = R.parallel_width(cfg, 5)
+    assert width == 2 and slots == [work, work], (slots, width)
+    assert R.parallel_width(cfg, 1)[1] == 1, "работы на одного — слот один"
+    assert "потоков: 2" in R.threads_line(cfg, width)
+    # перепроверка «без опоры» ходит в qa — потоков по ширине шлюза qa, а не worker
+    qslots, qwidth = R.parallel_width(cfg, 20, "qa")
+    assert qwidth == 8 and qslots == [strong] * 8, (qslots, qwidth)
+    assert R.parallel_width(cfg, 20)[1] == 2
+    # оборот и дистилляция берут ширину пула, когда она больше max_steps: ширина 20 при
+    # max_steps 15 — равенства, а не «не меньше», иначе откат к `parallel > 1` незаметен
+    wide = {**data, "providers": [{**data["providers"][0], "width": 20}, data["providers"][1]]}
+    cw = MC.to_config(wide)
+    cw["parallel"] = AG.AUTO
+    assert cw["max_steps"] == 15
+    assert R.lap_steps(cw) == 20 and R.distill_every(cw) == 80, \
+        (R.lap_steps(cw), R.distill_every(cw))
+    cw["parallel"] = 1
+    assert R.lap_steps(cw) == cw["max_steps"] and R.distill_every(cw) == cw["max_steps"]
+    # число обрезает; 1 и пустое — последовательно
+    cfg["parallel"] = 1
+    assert not AG.parallel_on(cfg) and AG.effective_width(cfg) == 1
+    assert R.parallel_width(cfg, 5) == ([], 1)
+    assert "= 1 в настройке" in R.threads_line(cfg, 1)
+    cfg["parallel"] = 3
+    assert AG.parallel_on(cfg) and AG.effective_width(cfg) == 2
+    cfg["parallel"] = 1
+    # семафор: ширина шлюза не зависит от роли, по которой смотрим
+    assert AG.pool(cfg, "qa").count(strong) == 1, "потолок 1 режет и ширину шлюза qa"
+    cfg["parallel"] = AG.AUTO
+    assert AG.pool(cfg).count(strong) == 0, "в пуле worker шлюза qa нет — отсюда был «один»"
+    assert AG.gateway_width(cfg, strong) == 8, AG.gateway_width(cfg, strong)
+    assert AG.gateway_width(cfg, work) == 2
+    cfg["parallel"] = 4
+    assert AG.gateway_width(cfg, strong) == 4, "потолок прогона шлюз не поднимает, но режет"
+    # авто без объявленных ширин: по слоту на шлюз — безопасное умолчание
+    for p in data["providers"]:
+        p["width"] = 0
+    cfg2 = MC.to_config(data)
+    cfg2["parallel"] = AG.AUTO
+    assert AG.effective_width(cfg2) == 1 and "авто" in R.threads_line(cfg2, 1)
+    # ширину объявил один шлюз, а другой нет: необъявленному один слот в любой роли, даже
+    # если в своей цепочке он единственный и потолок 99 отдал бы ему всё (llama.cpp, 22.09)
+    mixed, _ = MC.normalize({"providers": [
+        {"id": "big", "name": "Большой", "url": "http://big.example/v1", "key": "k1",
+         "width": 16},
+        {"id": "home", "name": "Домашний", "url": "http://home.example/v1", "key": "k2"}],
+        "capabilities": {"llm": {"roles": [
+            {"id": "worker", "backends": [{"provider": "big", "model": "a"},
+                                          {"provider": "home", "model": "b"}]},
+            {"id": "qa", "backends": [{"provider": "home", "model": "b"}]}]}}})
+    cm = MC.to_config(mixed)
+    cm["parallel"] = 99
+    big = next(b["n"] for b in AG.role_chain(cm, "worker") if b.get("width"))
+    home = next(b["n"] for b in AG.role_chain(cm, "qa"))
+    assert AG.pool(cm, "qa").count(home) == 1, "необъявленному один слот и в пуле qa"
+    assert AG.gateway_width(cm, home) == 1, AG.gateway_width(cm, home)
+    assert AG.gateway_width(cm, big) == 16
+    assert R.parallel_width(cm, 50, "qa")[1] == 1, "потоков qa столько же, сколько слотов"
+    # правило одно: слоты пула и семафор шлюза совпадают в каждой роли и для каждого шлюза
+    for role in ("worker", "qa"):
+        for n in set(AG.pool(cm, role)):
+            assert AG.pool(cm, role).count(n) <= AG.gateway_width(cm, n), (role, n)
+    # необъявленный в worker, ширину объявил шлюз только в qa; число потоков worker не
+    # обгоняет семафор (иначе лишние потоки ждут слот до срока и карточки падают)
+    split, _ = MC.normalize({"providers": [
+        {"id": "a", "name": "А", "url": "http://a.example/v1", "key": "k1"},
+        {"id": "b", "name": "Б", "url": "http://b.example/v1", "key": "k2", "width": 8}],
+        "capabilities": {"llm": {"roles": [
+            {"id": "worker", "backends": [{"provider": "a", "model": "m"}]},
+            {"id": "qa", "backends": [{"provider": "b", "model": "m"}]}]}}})
+    cs = MC.to_config(split)
+    cs["parallel"] = 6
+    a_n = next(b["n"] for b in AG.role_chain(cs, "worker"))
+    assert AG.pool(cs).count(a_n) == AG.gateway_width(cs, a_n) == 1, \
+        (AG.pool(cs), AG.gateway_width(cs, a_n))
+    # старая конфигурация без цепочек: ширину не объявил никто — потолок делится как прежде
+    old = AG.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m",
+                           "AURORA_AGENT_PARALLEL": "4"})
+    assert old.get("chains") is None and AG.pool(old) == [1] * 4 and AG.gateway_width(old, 1) == 4
+
+
+@test
 def test_a_role_answers_through_its_own_fallback_chain(_t):
     """Не ответил основной — запрос уходит следующему бэкенду роли, со своей моделью."""
     MC, AG = _mods()

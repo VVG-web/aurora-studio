@@ -25,7 +25,7 @@ import re
 import sys
 from collections import Counter
 
-from aurora_common import (is_meeting, TRUSTED, card_sources, config_value, frontmatter,
+from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, TRUSTED, card_sources, config_value, frontmatter,
                            inbound_counts,
                            is_placeholder, is_service,
                            SERVICE_STATUS, link_targets, load_cards, walk_md)
@@ -76,7 +76,13 @@ def collect() -> dict:
         kinds[(fm.get("kind") or "").strip().strip('"') or "(нет kind)"] += 1
         stub = is_placeholder(fm, text)
         cards[path]["stub"] = stub
-        if stub:
+        # Decision Record: его статус — состояние решения, доверие ему не считается, и в
+        # долю доверенного он не входит ни числителем, ни знаменателем.
+        own = card_type(fm, section) in OWN_LIFECYCLE
+        cards[path]["own"] = own
+        if own:
+            pass
+        elif stub:
             # Заготовка знания не содержит — доверять в ней нечему, и в долю доверенного она
             # не входит ни числителем, ни знаменателем. Раньше входила знаменателем: на
             # живом проекте 632 пустышки из 1657 карточек держали долю ниже 40 % при любом
@@ -128,6 +134,7 @@ def collect() -> dict:
     # Архив и выведенное из обращения — не знание базы: до 1.132.0 они сидели в
     # знаменателе, и у PRJ-B 50 архивных карточек держали долю на 59,6 % вместо 69,6 %.
     checkable = [c for c in cards.values() if not c.get("stub") and not c["archived"]
+                 and not c.get("own")
                  and not c.get("meeting_only")
                  and (c["fm"].get("status") or "").strip() != "deprecated"]
     meetings = sum(1 for c in cards.values() if c.get("meeting_only"))

@@ -21,11 +21,14 @@ only from `AuroraKnowledgeDB/` cards filtered by status.
 
 | Task | Include statuses |
 |---|---|
-| generate artifact (US/AC/spec) | `knowledge` |
-| review / quality check | `knowledge` (+ flag conflicts with `draft` copies) |
+| generate artifact (US/AC/spec) | `knowledge` + `accepted` DRs |
+| review / quality check | `knowledge` + `accepted` DRs (+ flag conflicts with `draft` copies) |
 | answer «почему / почему не X» | + `deprecated` cards and `rejected`/`superseded` DRs, clearly labeled |
-| evaluate a draft | + the `draft` cards under evaluation, each labeled |
+| evaluate a draft | + the `draft` cards under evaluation, each labeled; + `proposed` DRs |
 | exploratory question | `knowledge`; mention that drafts exist if relevant |
+
+Decision Record идёт по своему циклу, а не по классу доверия: в пак — срез «Решение +
+Следствия + отклонённые варианты» с шапкой по состоянию решения (`ctx_pack.DECISION_STATUSES`).
 
 Служебные карточки (`status: index` — карты содержания, `_index.md`) в пак не идут
 никогда: это навигация, а не знание.

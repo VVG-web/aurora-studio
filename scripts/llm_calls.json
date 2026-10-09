@@ -18,6 +18,7 @@
         "agent_runner.py:solve_source",
         "agent_runner.py:plan_source",
         "agent_runner.py:judge_empty",
+        "agent_runner.py:accept_empty",
         "agent_runner.py:solve_meeting"
       ],
       "steps": [
@@ -49,8 +50,8 @@
           "role": "worker",
           "prompt": "agent_runner.py:PROMPT_NO_SECTIONS",
           "what": {
-            "ru": "Источник без структуры: разбирать, пропустить или считать служебным.",
-            "en": "A source without structure: break it down, skip it or treat it as service text."
+            "ru": "Источник без структуры: разбирать, пропустить или считать служебным. Он же — вердикт «пусто» по источнику с секциями.",
+            "en": "A source without structure: break it down, skip it or treat it as service text. Also the 'empty' verdict on a source that has sections."
           }
         },
         {
@@ -65,8 +66,8 @@
           "role": "critic",
           "prompt": "agent_runner.py:PROMPT_NO_SECTIONS",
           "what": {
-            "ru": "Проверка решения по источнику без структуры.",
-            "en": "Checking the decision on a source without structure."
+            "ru": "Второе мнение о вердикте «пусто» по источнику: всегда для источников от 8000 знаков, с критиком — для любых.",
+            "en": "A second opinion on the 'empty' verdict about a source: always for sources of 8000 characters and more, for any with the critic on."
           }
         }
       ],

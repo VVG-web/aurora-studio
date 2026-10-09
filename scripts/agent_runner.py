@@ -127,7 +127,7 @@ def human_time(seconds: float) -> str:
     return f"{s // 60}м {s % 60:02d}с" if s >= 60 else f"{s}с"
 
 
-def parallel_width(cfg: dict, count: int) -> tuple:
+def parallel_width(cfg: dict, count: int, role: str = "worker") -> tuple:
     """(слоты, ширина) для шага из `count` единиц работы.
 
     Одно правило на все длинные шаги: больше слотов, чем работы, заводить незачем, а
@@ -138,10 +138,13 @@ def parallel_width(cfg: dict, count: int) -> tuple:
     Сами циклы при этом остаются разными, и сводить их не надо: разбор источников гоняет
     независимые элементы, разбор синонимов — группы (внутри группы строго по одному),
     дистилляция — карточки с общим окном. Общая у них ширина, а не устройство.
+
+    `role` — цепочка, в которую шаг ходит за ответом: перепроверка «без опоры» идёт в
+    `qa`, и потоков ей столько, сколько держит шлюз `qa`, а не шлюз `worker`.
     """
-    if (cfg.get("parallel") or 1) <= 1:
+    if not AG.parallel_on(cfg):
         return [], 1
-    slots = AG.pool(cfg)
+    slots = AG.pool(cfg, role)
     return slots, (min(len(slots), count) or 1)
 
 
@@ -163,11 +166,19 @@ def threads_line(cfg: dict, width: int, why_one: str = "") -> str:
     if why_one:
         return "  в один поток: " + why_one
     cap = cfg.get("parallel", 1)
+    if cap == AG.AUTO:
+        # «авто» — не единица: если потоков один, то шлюзы цепочки не объявили ширину
+        # (каждому по слоту), а не «в настройке стоит 1».
+        if len(AG.pool(cfg)) > 1:
+            return ("  в один поток: этот шаг не распараллеливается — «одновременно» = "
+                    "авто на него не влияет")
+        return ("  в один поток: «одновременно» = авто, но ширина шлюзов не объявлена "
+                "или равна 1 (Настройка кита → Модели)")
     if cap > 1:
         return ("  в один поток: этот шаг не распараллеливается — «одновременно» = "
                 f"{cap} на него не влияет")
     return ("  в один поток: «одновременно» = 1 в настройке агента (Настройка кита → "
-            "Агент)")
+            "Модели)")
 
 
 def progress(done: int, total: int, started: float) -> str:
@@ -2905,7 +2916,8 @@ def read_sections(cwd: str, source: str) -> list:
             for n, title, size, prev in SECTION_RE.findall(head)]
 
 
-def defer(cwd: str, source: str, step: dict, apply: bool) -> dict:
+def defer(cwd: str, source: str, step: dict, apply: bool,
+          lead: str = "заголовков нет, карточку пишут чтением") -> dict:
     """Отложить источник человеку — и убрать его из очереди плана.
 
     Раньше такой источник просто оставался в плане, и следующая партия бралась за него
@@ -2914,13 +2926,15 @@ def defer(cwd: str, source: str, step: dict, apply: bool) -> dict:
     тысячи трёхсот и останавливался, объявляя тупик. Тупика нет — есть работа, которую
     агент делать не вправе, и её надо отложить, а не упереться в неё.
 
-    Отметка честная: причина написана словами и начинается с «ОТЛОЖЕНО ЧЕЛОВЕКУ», так что
-    источник находится поиском по плану и возвращается в работу `kb:build --reopen`.
+    Отметка честная: причина написана словами и начинается с «ОТЛОЖЕНО ЧЕЛОВЕКУ». Это та же
+    отметка `--done --empty`, что и у пустого источника: `kb:build --reopen` её не снимает,
+    источник вернётся в план при правке файла (изменился хеш).
     """
     if apply:
+        step["deferred"] = True
         run_command(cwd, "build_plan.py",
                     ["--done", source, "--empty",
-                     "ОТЛОЖЕНО ЧЕЛОВЕКУ: заголовков нет, карточку пишут чтением — "
+                     f"ОТЛОЖЕНО ЧЕЛОВЕКУ: {lead} — "
                      + str(step.get("note", ""))[:120]])
     return step
 
@@ -3006,7 +3020,7 @@ def lap_steps(cfg: dict) -> int:
     24.09.2026). Источники одной волны друг друга всё равно не видят: индекс для следующей
     партии обновляется между оборотами — так что волна целиком ничего не теряет.
     """
-    width = len(AG.pool(cfg)) if (cfg.get("parallel") or 1) > 1 else 1
+    width = AG.effective_width(cfg)
     return max(cfg["max_steps"], width)
 
 
@@ -3017,7 +3031,7 @@ def distill_every(cfg: dict) -> int:
     карточку засорил бы историю сотнями записей; раз в четыре ширины пула — это минуты
     работы и не больше нескольких десятков коммитов на всю очередь.
     """
-    width = len(AG.pool(cfg)) if (cfg.get("parallel") or 1) > 1 else 1
+    width = AG.effective_width(cfg)
     return max(cfg["max_steps"], 4 * width)
 
 
@@ -3710,7 +3724,7 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
                         + (f" · начало ответа: «{sample}»" if sample else " · ответ пуст"))
             step["content_fail"] = True
             return step
-        if plan.get("empty"):
+        if plan.get("empty") and not plan.get("cards"):
             break
         # Карточка названа либо именем новой (`title`), либо именем существующей, в
         # которую знание дописывается (`into`). Фильтр, требовавший `title`, молча
@@ -3767,16 +3781,19 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
         note_back = ("\n\nПРЕДЫДУЩАЯ ПОПЫТКА ОТКЛОНЕНА. Замечание: " + why +
                      "\nИсправь именно это и ответь заново тем же JSON.")
 
-    if plan.get("empty"):
-        note = str(plan["empty"])[:200]
-        if apply:
-            res = run_build_plan(cwd, ["--done", source, "--empty", note])
-            if not res["ok"]:
-                fail_step(step, key="note", why="отметка не поставлена: "
-                            + (res.get("why") or res["out"][:200]))
-                return step
-        step.update(status="пусто — отмечено" if apply else "отметил бы пустым", note=note)
-        return step
+    if plan.get("empty") and not plan.get("cards"):
+        # «Пусто» про источник с секциями — то же необратимое решение, что и про источник
+        # без структуры, и принимается той же дверью: таблицы, второе мнение, порог размера.
+        # Ответ с `cards` и `empty` сразу считается разбором: карточки не выбрасываем.
+        from aurora_common import hide_template
+        try:
+            whole = hide_template(
+                (Path(cwd) / source).read_text(encoding="utf-8", errors="ignore"), source, cwd)
+        except OSError:
+            fail_step(step, "источник не читается", key="note")
+            return step
+        return accept_empty(cfg, cwd, source, whole, str(plan["empty"])[:200], step, apply,
+                            use_critic, call, deadline, sectioned=True)
 
     made = []
     for card in merge_same_target(cards):
@@ -3837,8 +3854,27 @@ def solve_source(cfg: dict, cwd: str, group: str, source: str, apply: bool,
 def plan_source(cfg: dict, cwd: str, source: str, whole: str, step: dict, apply: bool,
                 call, deadline: float) -> int:
     """Источник без заголовков → карточки по границам планировщика. → сколько собрано."""
-    listing, paras = outline(whole)
-    if len(paras) < 4:
+    # Номера абзацев — по СЫРОМУ файлу: так режет их и `build_plan --paras`, а `whole` уже без
+    # шаблона страницы. Нумеруй по `whole` — и при шаблонном абзаце сверху планировщик назвал
+    # бы «2» тот, что в файле третий, а карточка получила бы чужой текст. Шаблонные абзацы в
+    # опись не попадают (модель их не видит), но номера под ними не сдвигаются.
+    paras = None
+    try:
+        from aurora_common import hide_template, template_blocks
+        raw = (Path(cwd) / source).read_text(encoding="utf-8", errors="ignore")
+        blocks = template_blocks(cwd)
+        paras = [p for p in re.split(r"\n\s*\n", raw) if p.strip()]
+        rows = []
+        for i, para in enumerate(paras, 1):
+            seen = hide_template(para, source, cwd, blocks=blocks)
+            if seen.strip():
+                rows.append(f"  {i}. ({len(seen)} симв.) {' '.join(seen.split())[:90]}")
+        listing = "\n".join(rows)
+        shown = len(rows)
+    except OSError:
+        listing, paras = outline(whole)
+        shown = len(paras)
+    if shown < 4:
         return 0
     r = call(cfg, "planner", [{"role": "user", "content": PROMPT_PLAN_SOURCE.format(
         source=source, size=len(whole), outline=listing)}], deadline=deadline)
@@ -4036,6 +4072,36 @@ def solve_meeting(cfg: dict, cwd: str, group: str, source: str, apply: bool,
     return step
 
 
+def without_service_sections(text: str) -> str:
+    """Текст без тел служебных секций (оглавление, история изменений, комментарии).
+
+    Тело секции идёт до следующего заголовка того же или более высокого уровня. Тех секций
+    модель и не видит (`is_service_section`), так что и данные в них — не повод отклонить её
+    вердикт «пусто»: таблица версий в «Истории изменений» знанием не является. Строки внутри
+    кодовых блоков заголовками не считаются."""
+    out, skip, fence = [], 0, False
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+        m = None if fence else re.match(r"(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if m:
+            level = len(m.group(1))
+            if skip and level <= skip:
+                skip = 0
+            if not skip and is_service_section(m.group(2)):
+                skip = level
+        if not skip:
+            out.append(line)
+    return "\n".join(out)
+
+
+def bare_text(line: str) -> str:
+    """Строка без ссылок: `[текст](url)`, `[[вики]]`, голый адрес. Пункт оглавления из одних
+    ссылок после этого пуст — знанием он не является."""
+    line = re.sub(r"\[\[[^\]]*\]\]|\[[^\]]*\]\([^)]*\)|https?://\S+", " ", line)
+    return line
+
+
 def has_facts(text: str) -> str:
     """Что в источнике опровергает вердикт «пусто». → причина или пусто.
 
@@ -4046,22 +4112,32 @@ def has_facts(text: str) -> str:
     ушёл из плана вместе с расписанием.
 
     Проверка механическая и грубая нарочно: она не решает, что знание есть, — она
-    запрещает СКАЗАТЬ, что его нет, когда в тексте лежат данные.
+    запрещает СКАЗАТЬ, что его нет, когда в тексте лежат данные. Но и ложных отказов она
+    давать не должна: оглавление из пунктов-ссылок и таблица версий в служебной секции —
+    это как раз «пусто», и такие страницы составляют основной класс пустых. Поэтому служебные
+    секции в счёт не идут, а пункт и строка таблицы, у которых после удаления ссылок остаётся
+    меньше `FACT_MIN_CHARS` знаков, данными не считаются.
     """
     body = re.sub(r"(?s)^---.*?\n---\n", "", text or "")
+    body = without_service_sections(body)
     rows = [l for l in body.splitlines()
             if l.strip().startswith("|") and l.count("|") >= 3
             and not re.fullmatch(r"[|\s:.-]+", l.strip())]
     # Шапка и разделитель таблицы — ещё не данные: строк должно быть больше двух.
-    data = [l for l in rows if re.search(r"[^\W\d_]{2,}", l)]
+    data = [l for l in rows if re.search(r"[^\W\d_]{2,}", bare_text(l))]
     # Первая строка таблицы — шапка, она есть и у пустой формы. Считаем то, что под ней:
     # хотя бы одна заполненная строка — уже данные, и «пусто» про них сказать нельзя.
     if len(data) >= 2:
         return f"в источнике таблица с данными: заполненных строк {len(data) - 1}"
-    items = [l for l in body.splitlines() if re.match(r"\s*[-*+]\s+\S", l)]
+    items = [re.sub(r"^\s*[-*+]\s+", "", bare_text(l)).strip()
+             for l in body.splitlines() if re.match(r"\s*[-*+]\s+\S", l)]
+    items = [x for x in items if len(x) >= FACT_MIN_CHARS]
     if len(items) >= 5 and sum(len(x) for x in items) > 200:
         return f"в источнике перечень фактов: пунктов {len(items)}"
     return ""
+
+
+FACT_MIN_CHARS = 15     # знаков в пункте после удаления ссылок, меньше — пункт не факт
 
 
 def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
@@ -4117,10 +4193,40 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
                     note=str(ans.get("keep") or "структуры нет, карточку писать чтением"))
         return defer(cwd, source, step, apply)
 
-    note = str(ans["empty"])[:200]
-    # Вердикт «пусто» необратим по смыслу: источник уходит из плана вместе со всем, что
-    # в нём было. Прежде чем принять его, движок сам смотрит в текст — и если там лежат
-    # данные, отказывается верить.
+    return accept_empty(cfg, cwd, source, whole, str(ans["empty"])[:200], step, apply,
+                        use_critic, call, deadline)
+
+
+EMPTY_BIG = 8000        # знаков: «пусто» про источник крупнее — всегда на второе мнение
+
+
+def accept_empty(cfg: dict, cwd: str, source: str, whole: str, note: str, step: dict,
+                 apply: bool, use_critic: bool, call, deadline, sectioned: bool = False) -> dict:
+    """Принять или отклонить вердикт worker «источник пуст». → шаг для отчёта.
+
+    Единственная дверь к отметке `--done --empty`: через неё идут и источник без
+    структуры, и источник с секциями. Раньше у второго двери не было — ответ
+    `{"empty": ...}` обрывал цикл разбора, и источник с секциями уходил из плана без
+    единой проверки: ни таблиц, ни критика (глобальное ревью 08.10.2026, AR2-02). А
+    отметка необратима по смыслу: источник возвращается в план только при правке файла.
+
+    Три барьера, по порядку:
+    1. `has_facts` по ПОЛНОМУ тексту источника (без служебных секций, которых модель и не
+       видела), а не по превью секций: данные в таблице опровергают «пусто», и тогда
+       границы предлагает планировщик.
+    2. Второе мнение критика — при `use_critic` и всегда для источника крупнее
+       `EMPTY_BIG`: крупная страница, объявленная пустой, почти всегда ошибка суждения по
+       началу. Недоступный критик — не согласие: отметка не ставится, источник остаётся
+       в плане. Расхождение мнений — человеку, с причиной в заметке. Критик, увидевший
+       лишь часть источника, не согласие: «пусто» по обрезку не вердикт.
+
+    Отложенный отсюда источник движок снимает с плана отметкой `ОТЛОЖЕНО ЧЕЛОВЕКУ` — для
+    оракула и отчёта это штатный исход, а не «пробел раскадровки» (шаг помечен `sectioned`).
+    """
+    step["sectioned"] = sectioned
+    where = "с секциями" if sectioned else "без структуры"
+    lead = "заголовков нет, карточку пишут чтением" if not sectioned else \
+        "вердикт «пусто» не подтверждён, разбор нужен человеку"
     facts = has_facts(whole)
     if facts:
         # Отклонить вердикт мало: отдать источник человеку значило бы заменить одну
@@ -4135,27 +4241,39 @@ def judge_empty(cfg: dict, cwd: str, source: str, step: dict, apply: bool,
         step.update(status="без секций — человеку",
                     note=f"модель сочла пустым, но {facts}; разобрать по абзацам "
                          "тоже не вышло")
-        return defer(cwd, source, step, apply)
-    if use_critic:
-        # Отметка «пусто» необратима по смыслу: источник уходит из плана. Второе мнение
-        # здесь дороже лишней минуты — потерянное знание не всплывёт само.
+        return defer(cwd, source, step, apply, lead)
+    if use_critic or len(whole) >= EMPTY_BIG:
         # Критику — та же порезка по его собственному окну: роль может быть настроена
         # на другой бэкенд, и мерить его чужой меркой значит спросить мнение о тексте,
         # которого он не видел.
         c = call(cfg, "critic", [], deadline=deadline,
                  trim=(whole, lambda part: [{"role": "user", "content": with_terms(
                      PROMPT_NO_SECTIONS.format(source=source, text=part), part, cwd)}]))
-        if c["ok"]:
-            step["backends"].append((c["backend"], c["model"]))
-            step["degraded"] = step["degraded"] or c["backend"] != 1
-            second = parse_json(c["text"]) or {}
-            if not second.get("empty"):
-                step.update(status="без секций — человеку",
-                            note="мнения разошлись: worker счёл пустым, критик — нет ("
-                                 + str(second.get("keep") or "знание есть")[:120] + ")")
-                return defer(cwd, source, step, apply)
+        if not c["ok"]:
+            fail_step(step, "второе мнение о пустом источнике не получено: "
+                      + model_fail_note(c), c, key="note")
+            return step
+        step["backends"].append((c["backend"], c["model"]))
+        step["degraded"] = step["degraded"] or c["backend"] != 1
+        second = parse_json(c["text"]) or {}
+        if not second.get("empty"):
+            # Причина критика — первой и короткой: `defer` режет заметку по 120 знаков, а
+            # строка консоли по 110, и записанной оказывалась причина того, кого опровергли.
+            step.update(status="без секций — человеку",
+                        note=f"мнения разошлись ({where}), критик: "
+                             + str(second.get("keep") or "знание есть")[:60]
+                             + f"; worker: {note[:30]}")
+            return defer(cwd, source, step, apply, lead)
+        if c.get("cut"):
+            # Критик видел часть источника: его «пусто» — такое же незнание, как у worker
+            # при обрезке (`judge_empty`). Для секционного пути это единственный взгляд на
+            # полный текст, а крупные источники сюда идут всегда.
+            step.update(status="без секций — человеку",
+                        note=f"критик видел {c.get('seen', 0)} из {len(whole)} знаков — "
+                             f"«пусто» по части не принимается; worker: {note[:40]}")
+            return defer(cwd, source, step, apply, lead)
     if apply:
-        res = run_command(cwd, "build_plan.py", ["--done", source, "--empty", note])
+        res = run_build_plan(cwd, ["--done", source, "--empty", note])
         if not res["ok"]:
             fail_step(step, key="note", why="отметка не поставлена: "
                         + (res.get("why") or res["out"][:200]))
@@ -4304,11 +4422,14 @@ def verdict_build(res: dict, apply: bool) -> tuple:
                                                       "отклонено проверкой", "стоп")]
     grew = apply and res["after"]["errors"] > res["before"]["errors"]
     moved = res["after"]["done"] - res["before"]["done"]
-    lied = apply and moved != len(done)
+    # Отложенный человеку источник (`defer`) уходит из плана той же отметкой `--done --empty`,
+    # что и пустой: движок считает его обработанным, и агент объявляет его так же.
+    declared = len(done) + len(human)
+    lied = apply and moved != declared
     ok = not bad and not grew and not lied
     why = []
     if lied:
-        why.append(f"движок засчитал разобранными {moved}, а агент объявил {len(done)}")
+        why.append(f"движок засчитал разобранными {moved}, а агент объявил {declared}")
     if grew:
         why.append(f"ошибок в базе стало больше: {res['before']['errors']} → "
                    f"{res['after']['errors']}")
@@ -4323,7 +4444,9 @@ def verdict_build(res: dict, apply: bool) -> tuple:
         if made and res["left"] > made:
             why.append(f"при таком темпе прогонов ещё ~{-(-res['left'] // made)} "
                        f"(шаги и бюджет — раздел «Модели», общие настройки)")
-    return ok, "; ".join(why) or f"источников разобрано: {len(done)}, ошибок не прибавилось"
+    return ok, "; ".join(why) or (
+        f"источников разобрано: {len(done)}"
+        + (f", отложено человеку: {len(human)}" if human else "") + ", ошибок не прибавилось")
 
 
 # ------------------------------------------------------------------ задача: вопрос к базе
@@ -4425,7 +4548,9 @@ PROMPT_ASK = """Ты отвечаешь на вопрос аналитика п�
    ссылки утверждение считается выдуманным.
 3. Смотри на шапку доверия карточки. `verified` — факт. `imported`, `draft` — материал
    для оценки, о них пиши «по непроверенной карточке …». `deprecated` — история, годится
-   только чтобы объяснить, как было раньше.
+   только чтобы объяснить, как было раньше. У Decision Record в шапке не доверие, а
+   состояние решения: `accepted` — действует; `rejected` и `superseded` — история, ею
+   объясняй «почему не так».
 4. Нашёл противоречие между двумя verified — не выбирай сам, назови обе карточки и
    скажи, что это расхождение в базе.
 5. Если в контексте есть раздел «Состояние разработки (зеркало Jira…)» — это снимок
@@ -4845,6 +4970,117 @@ def request_asks(cwd: str, st: dict, spec: dict) -> dict:
     return {"extra": block + RC.skills_block(skills), "mcp": mcp}
 
 
+_OPT_MARK = "\x00OPT"
+
+
+def _template_scan(template: str) -> list:
+    """[(заголовок, необязательный ли)] реальных разделов шаблона, по порядку.
+
+    Заголовком считается только то, что попало бы в готовый документ. Не считаются: BOM,
+    YAML-шапка шаблона (её `#` — комментарии), HTML-комментарии (в них инструкции и
+    блоки-примеры, которые шапка велит удалять) и ограждённые блоки кода. «Необязательный» —
+    если прямо перед заголовком стоит комментарий «ОПЦИОНАЛЬНО: …»."""
+    text = template.lstrip("\ufeff")
+    text = re.sub(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", "", text, count=1, flags=re.S)
+    text = re.sub(r"<!--(\s*ОПЦИОНАЛЬНО:)?.*?-->",
+                  lambda m: f"\n{_OPT_MARK}\n" if m.group(1) else "\n", text, flags=re.S)
+    text = re.sub(r"<!--.*\Z", "\n", text, flags=re.S)       # незакрытый комментарий
+    out, fence, opt = [], "", False
+    for line in text.splitlines():
+        m = re.match(r"[ \t]{0,3}(`{3,}|~{3,})", line)
+        if m:
+            mark = m.group(1)
+            if not fence:
+                fence = mark
+            elif mark[0] == fence[0] and len(mark) >= len(fence):
+                fence = ""
+            continue
+        if fence:
+            continue
+        if line.strip() == _OPT_MARK:
+            opt = True
+            continue
+        h = re.match(r"#{1,6}[ \t]+\S.*$", line)
+        if h:
+            out.append((h.group(0).strip(), opt))
+            opt = False
+        elif line.strip():
+            opt = False
+    return out
+
+
+def template_headings(template: str) -> list:
+    """Заголовки шаблона (`#`…`######`) по порядку — его скелет."""
+    return [h for h, _ in _template_scan(template)]
+
+
+def template_block(template: str, budget: int, skeleton_ok: bool) -> tuple:
+    """→ (текст шаблона для промпта, заголовки шаблона).
+
+    Раньше в промпт шёл `template[:8000]`: общие шаблоны US и AC (25 КБ) обрезались на
+    четверти, и ни воркер, ни критик не видели разделов «Acceptance criteria» и «How to
+    demo» — форма не проверялась никем. Теперь шаблон идёт целиком. Если он занимает
+    больше трети самого узкого окна кольца (`budget`, 0 — окна не объявлены), тем, кому
+    нужны разделы, а не их инструкции (планировщик, критик), отдаём скелет: все
+    заголовки по порядку. Воркеру нужны инструкции разделов, поэтому он получает
+    шаблон целиком, а если тот не влезает — `fits` откажет вслух, а не обрежет молча.
+    Что ушло в модель на самом деле, проверяет `form_lost` — по готовому сообщению.
+    """
+    scan = _template_scan(template)
+    heads = [h for h, _ in scan]
+    text = template
+    if skeleton_ok and budget and len(template) > budget // 3 and heads:
+        lines = [h + (" — ОПЦИОНАЛЬНО" if opt else "") for h, opt in scan]
+        note = ("(шаблон велик для окна модели — ниже его скелет: все разделы по порядку"
+                + ("; в заголовках «{{…}}» подставляется название по смыслу"
+                   if any("{{" in h for h in heads) else "") + ")\n")
+        text = note + "\n".join(lines)
+    return text, heads
+
+
+def form_lost(content: str, text: str, heads: list) -> list:
+    """Что из формы шаблона НЕ дошло до модели: сверка с ГОТОВЫМ сообщением роли.
+
+    Блок шаблона обязан войти в сообщение целиком (иначе подмена шаблона в промпте,
+    лишний срез, забытый `{template}` прошли бы незамеченными), а все заголовки —
+    лежать внутри блока, а не быть случайно найденными в плане или паке."""
+    lost = [h for h in heads if h not in text]
+    if text and text not in content:
+        return heads or ["(шаблон целиком)"]
+    return lost
+
+
+TEMPLATE_LIMIT = 200_000       # шаблон длиннее не читаем: молча резать форму нельзя
+
+
+def pack_budget_args(cfg: dict, template: str, extra: str, idea: str, name: str) -> tuple:
+    """→ (аргументы ctx_pack, отказ). Бюджет пака с учётом того, что уйдёт воркеру вместе с ним.
+
+    Окна не объявлены (ни у кого) — аргументов нет: движок чужих пределов не выдумывает.
+    Объявлены: из самого узкого окна вычитаем шаблон целиком, промпт воркера, дополнения и
+    запас (8000 знаков) на шапку пака и план. Если шаблон не умещается даже в САМОЕ
+    широкое окно кольца (а все окна объявлены) — отказ, называющий шаблон: иначе воркер упрёрся бы в `fits`
+    с общей фразой про запрос."""
+    wins = [b.get("context") or 0 for b in cfg.get("backends") or []]
+    if not any(w > 0 for w in wins):
+        return [], ""
+    base = len(template) + len(PROMPT_MAKE_WRITE) + len(extra) + len(idea)
+    if all(w > 0 for w in wins):
+        widest = max(wins)
+        have = int((widest - AG.ANSWER_ROOM) * AG.CHARS_PER_TOKEN)
+        if have < base + MIN_PACK:
+            need = int(-(-(base + MIN_PACK) // AG.CHARS_PER_TOKEN)) + AG.ANSWER_ROOM
+            return [], (f"шаблон «{name}» ({len(template)} знаков) не помещается в окно моделей: "
+                        f"самое широкое {widest} токенов, а воркеру с шаблоном целиком и "
+                        f"минимальным паком нужно ≈{need} — нужна модель с окном ≥ {need} "
+                        f"токенов или более короткий шаблон")
+    room = AG.prompt_budget(cfg, reserve_chars=base + 8000)    # 8000 — шапка пака и план
+    return ["--budget", str(max(room, MIN_PACK))], ""
+
+
+MIN_PACK = 3000                # меньше этого пак бесполезен: пусть лучше уступит шаблону
+
+
 def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
              force_plan: bool, call=None, momus: bool = True, context=None) -> dict:
     """Производство артефакта: обогащение → план с вопросами → воркер → критик → Момус.
@@ -4878,10 +5114,30 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     stages = st["stages"]
     say(f"Артефакт: {spec.get('title') or st['kind']} · сессия {sid}")
     req = request_asks(cwd, st, spec)
+    template = read_text_file(os.path.join(cwd, spec["template"]), TEMPLATE_LIMIT + 1)
+    if len(template) > TEMPLATE_LIMIT:
+        # Молчаливый срез — то самое, от чего ушли: форма без хвоста проверяется никем.
+        return {"ok": False, "sid": sid, "why": (
+            f"шаблон «{spec['template']}» длиннее {TEMPLATE_LIMIT:,} знаков".replace(",", " ")
+            + " — сократите его или разбейте на версии, документ по огрызку формы не пишу")}
+    prompt_extra = ""
+    if spec.get("prompt") and os.path.isfile(os.path.join(cwd, spec["prompt"])):
+        prompt_extra = ("Промпт проекта для этого вида документа:\n"
+                        + read_text_file(os.path.join(cwd, spec["prompt"])) + "\n\n")
+    prompt_extra += req["extra"]
+    budget = AG.prompt_budget(cfg)
+    # Пак собирается ДО воркера и сам окна шаблона не знает: он делит окно только с
+    # шапкой. Шаблон (25 КБ у общих US и AC) идёт воркеру целиком, поэтому его длину
+    # вычитаем из бюджета пака здесь, а не обнаруживаем на отказе `fits`.
+    pack_args, why_narrow = pack_budget_args(cfg, template, prompt_extra, st["idea"],
+                                             spec["template"])
+    if why_narrow:
+        return {"ok": False, "sid": sid, "why": why_narrow}
 
     # --- 1. обогащение: тот же механизм, что отвечает в «Спросить»
     if not stages.get("enriched"):
-        r = run_command(cwd, "ctx_pack.py", [st["idea"], "--mode", "generate", "--no-log"])
+        r = run_command(cwd, "ctx_pack.py",
+                        [st["idea"], "--mode", "generate", "--no-log"] + pack_args)
         if not r["ok"] or "## " not in r["out"]:
             return {"ok": False, "sid": sid,
                     "why": (r["out"] or "пак не собран")[-300:]}
@@ -4897,12 +5153,28 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
         say(f"  обогащение: карточек {m.group(1) if m else '?'} → {st['path']}")
         save_session(cwd, sid, st)
 
-    template = read_text_file(os.path.join(cwd, spec["template"]))
-    prompt_extra = ""
-    if spec.get("prompt") and os.path.isfile(os.path.join(cwd, spec["prompt"])):
-        prompt_extra = ("Промпт проекта для этого вида документа:\n"
-                        + read_text_file(os.path.join(cwd, spec["prompt"])) + "\n\n")
-    prompt_extra += req["extra"]
+    def form(role: str, skeleton_ok: bool):
+        """→ (блок шаблона для роли, проверка готового сообщения)."""
+        text, heads = template_block(template, budget, skeleton_ok)
+
+        def check(content: str):
+            """→ отказ производства, если форма не дошла до модели; иначе None."""
+            lost = form_lost(content, text, heads)
+            if not lost:
+                return None
+            return {"ok": False, "sid": sid, "why": (
+                f"в сообщение роли «{role}» не попали разделы шаблона: " + "; ".join(lost[:5])
+                + (f" и ещё {len(lost) - 5}" if len(lost) > 5 else "")
+                + " — документ по неполной форме не пишу")}
+        return text, check
+
+    def size_note(r: dict, content: str) -> str:
+        """К отказу модели по размеру — шаблон как причина: чья это длина и что нужно."""
+        if "не отправляю" not in " ".join(str(l) for l in r.get("log") or []):
+            return ""
+        need = AG.rough_tokens([{"content": content}]) + AG.ANSWER_ROOM
+        return (f" [шаблон «{spec['template']}» — {len(template)} знаков, идёт воркеру целиком; "
+                f"нужна модель с окном ≥ {need} токенов]")
 
     # --- 2. план: раунды вопросов, пока человек не скажет «хватит»
     if not stages.get("planned"):
@@ -4923,10 +5195,14 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
             f"Раунд {i + 1}. Вопросы: {json.dumps(rd.get('questions') or [], ensure_ascii=False)}\n"
             f"Ответы аналитика: {rd.get('answers') or '—'}"
             for i, rd in enumerate(st["rounds"]) if rd.get("questions") or rd.get("answers"))
+        form_plan, check = form("planner", True)
         prompt = PROMPT_MAKE_PLAN.format(
             method=grill_method(), title=spec.get("title") or st["kind"], idea=st["idea"],
-            template=template[:8000], extra=prompt_extra, pack=st["pack"],
+            template=form_plan, extra=prompt_extra, pack=st["pack"],
             answers=(f"Уже выяснено:\n{seen}\n\n" if seen else ""))
+        fail = check(prompt)
+        if fail:
+            return fail
         if force_plan:
             prompt += ("\n\nАналитик просит закончить расспрос: верни план по тому, что "
                        "уже известно, и назови в нём прямо, что осталось невыясненным.")
@@ -4940,7 +5216,7 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
                  tools=True, mcp_active=req["mcp"],
                  guard_text=[st["idea"], st["pack"]] + re.findall(r"^## (.+)$", st["pack"], re.M))
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": model_fail_note(r)}
+            return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, prompt)}
         ans = parse_json(r["text"]) or {}
         questions = ans.get("questions") or []
         plan = (ans.get("plan") or "").strip()
@@ -4989,12 +5265,17 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if not stages.get("drafted"):
         agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
                         in ("1", "true", "да", "yes"))
-        r = call(cfg, "worker", [{"role": "user", "content": PROMPT_MAKE_WRITE.format(
-            title=spec.get("title") or st["kind"], plan=st["plan"], template=template[:8000],
+        form_work, check = form("worker", False)
+        content = PROMPT_MAKE_WRITE.format(
+            title=spec.get("title") or st["kind"], plan=st["plan"], template=form_work,
             extra=prompt_extra, pack=st["pack"],
-            agnostic=AGNOSTIC_WRITE if agnostic else "")}], deadline=deadline)
+            agnostic=AGNOSTIC_WRITE if agnostic else "")
+        fail = check(content)
+        if fail:
+            return fail
+        r = call(cfg, "worker", [{"role": "user", "content": content}], deadline=deadline)
         if not r["ok"]:
-            return {"ok": False, "sid": sid, "why": model_fail_note(r)}
+            return {"ok": False, "sid": sid, "why": model_fail_note(r) + size_note(r, content)}
         st["draft"] = (r["text"] or "").strip()
         if not st["draft"]:
             return {"ok": False, "sid": sid, "why": "воркер вернул пустой документ"}
@@ -5007,13 +5288,18 @@ def run_make(cfg: dict, cwd: str, kind: str, idea: str, sid: str, answers: str,
     if not stages.get("reviewed"):
         agnostic = bool(str(spec.get("tech_agnostic") or "").strip().lower()
                         in ("1", "true", "да", "yes"))
-        r = call(cfg, "critic", [{"role": "user", "content": PROMPT_MAKE_CRITIC.format(
-            title=spec.get("title") or st["kind"], template=template[:8000],
+        form_crit, check = form("critic", True)
+        content = PROMPT_MAKE_CRITIC.format(
+            title=spec.get("title") or st["kind"], template=form_crit,
             plan=st["plan"], draft=st["draft"],
-            agnostic_check=AGNOSTIC_CHECK if agnostic else "")}], deadline=deadline)
+            agnostic_check=AGNOSTIC_CHECK if agnostic else "")
+        fail = check(content)
+        if fail:
+            return fail
+        r = call(cfg, "critic", [{"role": "user", "content": content}], deadline=deadline)
         if not r["ok"]:
             return {"ok": False, "sid": sid, "why": "критик не ответил, документ не проверен: "
-                    + model_fail_note(r)}
+                    + model_fail_note(r) + size_note(r, content)}
         verdict = parse_json(r["text"])
         if not isinstance(verdict, dict):
             # Мусор вместо вердикта — не «замечаний нет»: иначе документ уйдёт в `ready`.
@@ -5233,7 +5519,7 @@ def write_artifact(cwd: str, st: dict) -> str:
                  "Модель назвала то, чего в контексте не было. В чистовик это не "
                  "переносится, даже если выглядит разумно.", ""]
         if mo.get("ok") and not mo.get("clean"):
-            made += [(mo.get("report") or "").strip(), ""]
+            made += momus_section(mo)
         if invented:
             made += ["Ссылки на карточки, которых не было в контексте: "
                      + ", ".join(f"`[[{c}]]`" for c in invented[:10]), ""]
@@ -5463,6 +5749,32 @@ def momus_claims(text: str) -> list:
         m = re.match(r"(НЕТ ОПОРЫ|ПРОТИВОРЕЧИЕ)\b[\s:—\-]*(.+)", s, re.I)
         if m and m.group(2).strip():
             out.append(f"{m.group(1).upper()}: {m.group(2).strip()}"[:500])
+    return out
+
+
+def momus_section(mo: dict) -> list:
+    """Тело раздела «Под вопросом» из ответа Момуса: строки документа.
+
+    Раздел читал ключ `report`, которого `run_momus` не возвращает, — человек видел
+    заголовок и пустую строку, а САМИ утверждения без опоры оставались в служебной
+    сессии, куда аналитик не ходит (глобальное ревью 08.10.2026, KB3-01). Теперь: список
+    «НЕТ ОПОРЫ / ПРОТИВОРЕЧИЕ» и дословный разбор свёрнутым блоком — по нему видно, на что
+    Момус смотрел. Если модель отошла от формата и строк не нашлось, остаётся разбор.
+    """
+    text = (mo.get("text") or "").strip()
+    out = []
+    claims = momus_claims(text)
+    if claims:
+        # Правило 3 промпта Момуса велит называть отсутствующую карточку — `[[Выдуманная]]`
+        # живой ссылкой повисла бы в графе Obsidian; в списке скобки гасим, в блоке кода — нет.
+        out += [f"- {c.replace('[[', '[ [')}" for c in claims] + [""]
+    elif mo.get("unsupported"):
+        out += [f"Момус насчитал утверждений без опоры: {mo['unsupported']}, "
+                "но не перечислил их в ожидаемом виде — смотри разбор ниже.", ""]
+    if text:
+        # Внутри ограды не должно быть своей ограды: она закрыла бы блок раньше времени.
+        out += ["<details>", "<summary>Разбор Момуса</summary>", "", "~~~text",
+                text.replace("~~~", "~ ~ ~"), "~~~", "", "</details>", ""]
     return out
 
 
@@ -6358,7 +6670,7 @@ def recheck_unsupported(cfg: dict, cwd: str, apply: bool, limit: int = 0, call=N
         return path, {"status": "чисто" if mo.get("clean") else "без опоры",
                       "count": mo.get("unsupported", 0), "claims": momus_claims(mo.get("text"))}
 
-    width = max(1, parallel_width(cfg, len(todo))[1]) if todo else 1
+    width = max(1, parallel_width(cfg, len(todo), "qa")[1]) if todo else 1
     steps = []
     from concurrent.futures import as_completed
     with ThreadPoolExecutor(max_workers=width) as pool:
@@ -6648,6 +6960,26 @@ def report_build(res: dict, cp: dict, apply: bool, use_critic: bool, cfg: dict) 
         L += ["", "## Сбои", ""]
         L += [f"- {s['alias']}: {s['note']}" for s in fail]
     human = [s for s in res["steps"] if s["status"] == "без секций — человеку"]
+    # Источник с секциями, чьё «пусто» не подтвердилось, — штатный исход: он отложен
+    # человеку и снят с плана. «Пробел движка» — только раскадровка, которой нет вовсе.
+    parked = [s for s in human if s.get("sectioned")]
+    human = [s for s in human if not s.get("sectioned")]
+    # Без раскадровки, но уже отложенные (`defer`): с плана они сняты, «останется в плане»
+    # про них было бы неправдой.
+    shelved = [s for s in human if s.get("deferred")]
+    human = [s for s in human if not s.get("deferred")]
+    if parked:
+        L += ["", "## Отложено человеку — «пусто» не подтверждено", "",
+              "Модель сочла эти источники пустыми, но движок или второе мнение с этим не "
+              "согласны: данные в тексте, мнения разошлись или критик видел лишь часть. "
+              "Отметка «ОТЛОЖЕНО ЧЕЛОВЕКУ» с причиной снимает их с плана; вернутся они в план "
+              "при правке файла источника.", ""]
+        L += [f"- {s['alias']}: {str(s.get('note', ''))[:160]}" for s in parked]
+    if shelved:
+        L += ["", "## Без раскадровки — отложено человеку", "",
+              "Раскадровки нет, разобрать по абзацам не вышло. Отметка «ОТЛОЖЕНО ЧЕЛОВЕКУ» "
+              "снимает источники с плана; вернутся они при правке файла.", ""]
+        L += [f"- {s['alias']}: {str(s.get('note', ''))[:160]}" for s in shelved]
     if human:
         L += ["", "## Без раскадровки — пробел движка", "",
               "Раскадровка пуста: длинный текст движок режет по абзацам, короткий — одна "

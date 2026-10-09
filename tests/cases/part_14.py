@@ -259,6 +259,11 @@ def test_the_panel_does_not_start_the_same_command_twice_at_once(tmp: Path):
                       "if len(sys.argv) > 1 else 3)\n", encoding="utf-8")
     row = {"runnable": True, "flags": ["--apply"], "fixed_flags": ["3"], "script": "sleepy.py", "cmd": "kb:x"}
     saved = (ck.command_by_name, ck.script_path, ck.write_runlog, ck.mark_running)
+    # Нить последнего задания может дойти до `mark_running` уже после возврата настоящей
+    # функции: список заданий кита ей недоступен — запись «kb:x / proj» оставалась в нём
+    # навсегда и висела строкой «идёт» в панели.
+    real_running = ck.RUNNING
+    ck.RUNNING = str(tmp / "running.json")
     ck.command_by_name = lambda name: row if name == "kb:x" else None
     ck.script_path = lambda project, script: str(sleepy)
     ck.write_runlog = lambda *a, **k: None
@@ -266,6 +271,7 @@ def test_the_panel_does_not_start_the_same_command_twice_at_once(tmp: Path):
     project = str(tmp / "proj")
     os.makedirs(project)
     started = []
+    alive_before = set(threading.enumerate())      # чужие нити (панель, соседние проверки) не ждём
     try:
         first = ck.start_job(project, "kb:x", ["--apply"])
         threads = [threading.Thread(target=lambda: started.append(ck.start_job(project, "kb:x", ["--apply"])))
@@ -287,11 +293,23 @@ def test_the_panel_does_not_start_the_same_command_twice_at_once(tmp: Path):
         again = ck.start_job(project, "kb:x", ["--apply"])
         assert again != first, "после конца задания новый запуск получил старое задание"
     finally:
-        for j in list(ck.JOBS.values()):
-            if j.get("proc") and not j["done"]:
-                j["proc"].kill()
+        # Нить задания закрывает его уже ПОСЛЕ `done` (`mark_running`, `write_runlog`), а
+        # последняя могла ещё и не дойти до `Popen`. Подмены и временный список заданий
+        # возвращаем, когда нитей этого теста не осталось: поздняя нить иначе записала бы
+        # «kb:x / proj» в настоящий список кита, а снять запись пришлось бы в чужой файл —
+        # следующая проверка успевала подменить `RUNNING` раньше, чем она закончит.
+        mine = [t for t in threading.enumerate()
+                if t not in alive_before and t is not threading.current_thread()]
+        deadline = time.time() + 20
+        for t in mine:
+            while t.is_alive() and time.time() < deadline:
+                for j in list(ck.JOBS.values()):
+                    if j.get("proc") and not j["done"]:
+                        j["proc"].kill()
+                t.join(0.05)
         ck.JOBS.clear()
         ck.command_by_name, ck.script_path, ck.write_runlog, ck.mark_running = saved
+        ck.RUNNING = real_running
         restore()
 
 

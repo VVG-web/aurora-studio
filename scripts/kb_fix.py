@@ -2692,7 +2692,11 @@ def plan_merge(cards: dict, keep_stem: str, drop_stem: str, plan: Plan,
 
 def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
     """Слияние по путям: единственный способ развести двойников с одинаковым именем."""
-    keep, drop = cards[kpath], cards[dpath]
+    # Оба — в том виде, в каком их оставили прежние шаги прогона. Выживший с двумя и более
+    # донорами (двойники в трёх разделах; коды документов, сводимые в карточку предмета)
+    # читался из исходных `cards`: каждый следующий донор затирал синонимы, источники и
+    # заметку «Слияние» предыдущего, а отчёт говорил «слито».
+    keep, drop = current(kpath, cards[kpath], plan), current(dpath, cards[dpath], plan)
 
     text = keep.text
     for a in [drop.stem] + drop.aliases:
@@ -2722,7 +2726,9 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
     merged_body = drop.body().strip()
     # Повторное слияние того же донора ничего не прибавляет, а тело удваивает. Раньше
     # это и происходило: донор не уходил в архив, и каждый прогон вклеивал его снова.
-    if f"Присоединено из [[{drop.stem}]]" in text:
+    # Метка несёт имя донора, а у двойников из разных разделов имя одно: по метке одной
+    # лишь второй донор считался бы уже присоединённым, поэтому смотрим и на само тело.
+    if f"Присоединено из [[{drop.stem}]]" in text and merged_body in text:
         merged_body = ""
     if merged_body:
         text = text.rstrip("\n") + (

@@ -17,6 +17,7 @@ from harness import (  # noqa: F401
     SCRIPTS,
     _cockpit_on,
     card,
+    isolated_registry,
     make_project,
     panel_sources,
     run,
@@ -511,6 +512,164 @@ def test_ask_picks_meetings_apart_from_trust(tmp: Path):
     health = (KIT / "cockpit/modules/health/view.js").read_text(encoding="utf-8")
     assert 't("health.trust_meetings"' in health and '"из встреч (вне доли)"' in health, \
         "встречи снова показаны одной из причин недоверия, а не отдельной строкой"
+
+
+DR_BODY = """## Контекст
+Долгая предыстория про шлюз обмена, которой в паке быть не должно.
+
+## Рассмотренные варианты
+
+### 1. Очередь сообщений — выбран
+- Плюсы: гарантия доставки.
+
+### 2. Прямой вызов шлюза — отклонён
+- Плюсы: проще.
+- **Причина отказа:** при недоступности шлюза теряются платежи.
+
+## Решение
+Шлюз обмена платежами работает через очередь сообщений.
+
+## Следствия
+- Нужна очередь в контуре.
+
+## История
+- 2026-07-01 — создан
+"""
+
+# Отклонённое решение целиком: у вариантов в заголовках нет слова «отклонён» (автор заменил
+# плейсхолдер шаблона целиком), причина отказа от варианта лежит в теле, а причина отказа
+# от самого решения — в разделе «Решение».
+DR_REJECTED = """## Контекст
+Долгая предыстория про шлюз обмена, которой в паке быть не должно.
+
+## Рассмотренные варианты
+
+### 1. Репликация шлюза платежей
+- Плюсы: быстро.
+- **Причина отказа:** репликация удваивает нагрузку на шлюз.
+
+### 2. Прямой вызов шлюза
+- Плюсы: проще.
+- **Причина отказа:** при недоступности шлюза теряются платежи.
+
+### 3. Файловый обмен платежами — выбран
+- Плюсы: переживает обрыв связи.
+
+## Решение
+Шлюз обмена платежами переходит на файловый обмен.
+**Причина отказа:** решение снято, заказчик не принял файловый формат.
+
+## Следствия
+- Остаётся прежний обмен.
+
+## История
+- 2026-07-01 — создан
+"""
+
+
+@test
+def test_decision_records_reach_the_pack_by_mode(tmp: Path):
+    """DR идёт в пак по своему циклу, а не по классу доверия: generate/review — принятые,
+    ask — плюс отклонённые и заменённые («почему не X»), evaluate — плюс предложенные.
+
+    Статусов DR не было ни в одном наборе режима, и «почему не X» отвечать было нечем;
+    в пак DR попадал лишь когда `kb:trust` затирал ему статус на `knowledge` — тогда даже
+    отклонённое решение приходило фактом. Пак берёт срез «Решение + Следствия + отклонённые
+    варианты», а не всю предысторию; варианты отбираются по пометке «выбран», а не по слову
+    «отклонён» в заголовке. Шапку DR даёт общий `trust_header`: его читает и `spec_pack`.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_text((cfg.read_text(encoding="utf-8") if cfg.exists() else "")
+                   + "\ntrust_statuses: [Закрыто]\n", encoding="utf-8")
+    trace = root / "AuroraKnowledgeDB/meta/trace"
+    trace.mkdir(parents=True, exist_ok=True)
+    (trace / "trace.json").write_text('{"direct": {}, "indirect": {}}', encoding="utf-8")
+    card(root, "Decisions/DR-0001-принято.md", DR_BODY, status="accepted", date="2026-07-01")
+    # отклонённое решение с источником из Raw/: после kb:trust оно не должно стать фактом
+    card(root, "Decisions/DR-0002-отклонено.md", DR_REJECTED, status="rejected",
+         date="2026-07-01", sources='\n  - "Raw/contract/ГК.md"')
+    card(root, "Decisions/DR-0003-заменено.md", DR_BODY, status="superseded", date="2026-06-01",
+         superseded_by='"[[DR-0001-принято]]"')
+    card(root, "Decisions/DR-0004-предложено.md", DR_BODY, status="proposed", date="2026-07-02")
+    tr = run("kb_trust.py", "--apply", cwd=root)
+    assert tr.returncode == 0, f"kb:trust не отработал: {tr.stdout[-400:]}{tr.stderr[-400:]}"
+
+    def pack(mode, *extra):
+        return run("ctx_pack.py", "шлюз обмена платежами", "--mode", mode, "--no-log",
+                   "--no-semantic", *extra, cwd=root).stdout
+
+    for mode in ("generate", "review"):
+        out = pack(mode)
+        assert "DR-0001-принято" in out and "решение принято 2026-07-01" in out, \
+            f"{mode}: принятое решение не в паке:\n{out[:800]}"
+        for other in ("DR-0002", "DR-0003", "DR-0004"):
+            assert other not in out, f"{mode}: {other} вошёл в пак, хотя не принят"
+
+    out = pack("ask")
+    for stem in ("DR-0001", "DR-0002", "DR-0003"):
+        assert stem in out, f"ask: нет {stem}:\n{out[:800]}"
+    assert "DR-0004" not in out, "ask: предложенное решение вошло в историю"
+    assert "заменено: [[DR-0001-принято]]" in out, "у заменённого DR нет преемника"
+    # отклонённый DR после kb:trust — не факт: шапка состояния, не «доверенный источник»
+    rej = out.split("## DR-0002-отклонено")[1].split("\n---\n")[0]
+    assert "доверенный источник" not in rej and "[rejected" in rej, rej[:500]
+    # причина в шапке — отказ от РЕШЕНИЯ, а не от одного из его вариантов
+    head = next(ln for ln in rej.splitlines() if ln.startswith("[rejected"))
+    assert "заказчик не принял файловый формат" in head, head
+    assert "теряются платежи" not in head and "удваивает" not in head, head
+    # срез: решение, следствия и варианты; у вариантов без слова «отклонён» в заголовке
+    # причина отказа сохранена, выбранный вариант (он уже в «Решении») не дублируется
+    assert "переходит на файловый обмен" in rej and "Остаётся прежний обмен" in rej
+    assert "### 1. Репликация шлюза платежей" in rej and "удваивает нагрузку" in rej, \
+        f"вариант без пометки «отклонён» выпал из среза:\n{rej}"
+    assert "### 2. Прямой вызов шлюза" in rej and "теряются платежи" in rej, rej
+    assert "Файловый обмен платежами — выбран" not in rej, "выбранный вариант продублирован"
+    assert "Долгая предыстория" not in rej and "создан" not in rej, "в пак ушёл весь DR"
+    # у принятого DR (вариант помечен «отклонён» в заголовке) срез прежний
+    acc = out.split("## DR-0001-принято")[1].split("\n---\n")[0]
+    assert "работает через очередь сообщений" in acc and "Нужна очередь в контуре" in acc
+    assert "Прямой вызов шлюза — отклонён" in acc and "теряются платежи" in acc, acc
+    assert "Очередь сообщений — выбран" not in acc and "Долгая предыстория" not in acc, acc
+    # заголовки среза не плодят «карточки»: `## ` в паке — только имя карточки
+    assert not any(ln.startswith("## ") and not ln.startswith("## DR-") for ln in acc.splitlines()), acc
+
+    out = pack("evaluate")
+    assert "DR-0004" in out and "решение предложено, но не принято" in out, \
+        "evaluate: предложенного решения нет"
+    assert "DR-0002" not in out and "DR-0003" not in out, "evaluate: вошла история"
+    assert "ждут верификации" not in out or "DR-000" not in out.split("ждут верификации")[1], \
+        "DR попал в очередь верификации доверия"
+
+    # порядок: при бюджете история решения не отбрасывается первой — rejected не ниже draft,
+    # принятое решение наравне с knowledge
+    C = importlib.import_module("ctx_pack")
+    def mk(rel, status, typ):
+        return C.Card(f"AuroraKnowledgeDB/{rel}.md",
+                      f'---\ntitle: "x"\ntype: {typ}\nstatus: {status}\n---\n\n# x\n\nТекст.\n')
+    order = [c.stem for c in C.order([mk("Concepts/Черновик", "draft", "concept"),
+                                      mk("Decisions/Отклонено", "rejected", "decision"),
+                                      mk("Decisions/Принято", "accepted", "decision"),
+                                      mk("Concepts/Знание", "knowledge", "concept"),
+                                      mk("Concepts/Без", "imported", "concept")])]
+    assert order == ["Знание", "Принято", "Отклонено", "Черновик", "Без"], order
+
+    # общий trust_header: тот же DR читается в `spec_pack` как принятое решение, не «НЕ ФАКТ»
+    txt = (root / "AuroraKnowledgeDB/Decisions/DR-0001-принято.md").read_text(encoding="utf-8")
+    fm = AC.frontmatter(txt)
+    hdr = AC.trust_header(fm, "Decisions", txt)
+    assert hdr == "[accepted | решение принято 2026-07-01 | Decision Record]", hdr
+    card(root, "Specs/SPEC-099-Шлюз.md", "Шлюз.", type="spec", spec_id="SPEC-099",
+         status="draft", version='"1.0"',
+         decisions='["[[DR-0001-принято]]", "[[DR-0002-отклонено]]"]')
+    cp = run("spec_pack.py", "SPEC-099", "--apply", cwd=root)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    bundle = (root / "Deliverables/work/spec-packs/SPEC-099_v1.0.md").read_text(encoding="utf-8")
+    assert "[accepted | решение принято 2026-07-01 | Decision Record]" in bundle \
+        and "[rejected | отклонено:" in bundle and "НЕ ФАКТ" not in bundle, bundle[:1500]
 
 
 @test
@@ -1174,6 +1333,87 @@ def test_model_answers_are_cached_by_the_task(tmp: Path):
 
 
 @test
+def test_cached_answer_follows_the_model_of_the_role_chain(tmp: Path):
+    """Смена модели роли, порядка цепочки, провайдера или `pin_model` — ответ спросят заново.
+
+    Ключ кэша строился по `backends`, а в настройке кита (`to_config`) там `model` пуст:
+    модели лежат в цепочках ролей. «Спросить» после выбора другой модели отдавал ответ
+    прежней (глобальное ревью 08.10.2026). Тест собирает настройку тем же `to_config`, что и
+    движок, а не старой формой с `model` в `backends`.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AG = importlib.import_module("agent_core")
+    MC = importlib.import_module("model_config")
+    saved = (AG.LLM_CACHE, AG._call_role, os.environ.pop("AURORA_TESTS_ISOLATED", None))
+    AG.LLM_CACHE = tmp / "cache"          # настоящий ~/.aurora/cache/llm не трогаем
+    calls = []
+
+    def real(cfg, role, messages, *a):
+        calls.append(role)
+        return {"ok": True, "text": f"ответ {len(calls)}", "backend": 1, "model": "m",
+                "tokens_in": 10, "tokens_out": 20}
+
+    def setup(chain, template=None):
+        prov = [{"id": "a", "url": "http://a.example/v1"}, {"id": "b", "url": "http://b.example/v1"}]
+        if template:
+            prov[0]["template"] = template
+        data, _ = MC.normalize({"providers": prov, "capabilities": {"llm": {"roles": [
+            {"id": "worker", "backends": [{"provider": p, "model": m} for p, m in chain]}]}}})
+        return MC.to_config(data)
+
+    AG._call_role = real
+    try:
+        msgs = [{"role": "user", "content": "Напиши тезис"}]
+        cfg = setup([("a", "flash"), ("b", "27b")])
+        assert all(not b["model"] for b in cfg["backends"]), "to_config положил модель в backends"
+        first = AG.call_role(cfg, "worker", msgs)
+        assert AG.call_role(setup([("a", "flash"), ("b", "27b")]), "worker", msgs)["cached"]
+        assert len(calls) == 1, "та же настройка не взяла ответ из кэша"
+        variants = {
+            "другая модель на том же провайдере": setup([("a", "pro"), ("b", "27b")]),
+            "другая запасная модель": setup([("a", "flash"), ("b", "70b")]),
+            "перестановка цепочки": setup([("b", "27b"), ("a", "flash")]),
+            "другой провайдер": setup([("b", "flash"), ("b", "27b")]),
+            "поля шаблона провайдера": setup([("a", "flash"), ("b", "27b")],
+                                             {"reasoning_effort": "low"}),
+            "закреплённая модель": AG.pin_model(cfg, "b/other", ("worker",)),
+        }
+        for what, c in variants.items():
+            before = len(calls)
+            r = AG.call_role(c, "worker", msgs)
+            assert len(calls) == before + 1 and not r.get("cached"), \
+                f"{what}: отдан ответ прежней настройки"
+        # режим рассуждений роли тоже часть ключа
+        before = len(calls)
+        AG.call_role(dict(cfg, thinking_roles={"worker": "0"}), "worker", msgs)
+        assert len(calls) == before + 1, "ответ с рассуждениями отдан роли без них"
+        # закрепление на ту же модель, что стоит в цепочке, ответ не меняет — кэш общий
+        pinned_same = AG.pin_model(setup([("a", "flash")]), "a/flash", ("worker",))
+        n = len(calls)
+        AG.call_role(pinned_same, "worker", msgs)
+        AG.call_role(pinned_same, "worker", msgs)
+        assert len(calls) == n + 1, "закреплённая модель не кэшируется"
+        # запись прежней версии ключа (по `backends`) не подхватывается
+        import hashlib
+        msgs = [{"role": "user", "content": "Задание, которого ещё не было"}]
+        old = hashlib.sha256(json.dumps(
+            {"v": 1, "role": "worker", "ring": [(b["url"], b["model"]) for b in cfg["backends"]],
+             "think": False, "max": None, "messages": msgs},
+            ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        cfg2 = dict(cfg, thinking=False, thinking_roles={})
+        AG._cache_put(old, {"ok": True, "text": "чужой ответ", "backend": 1, "model": "x"})
+        got = AG.call_role(cfg2, "worker", msgs)
+        assert got["text"] != "чужой ответ" and not got.get("cached"), \
+            "запись прежней версии ключа подхвачена"
+        assert first["text"] == "ответ 1"
+    finally:
+        AG.LLM_CACHE, AG._call_role = saved[0], saved[1]
+        if saved[2] is not None:
+            os.environ["AURORA_TESTS_ISOLATED"] = saved[2]
+
+
+@test
 def test_engine_addons_show_versions_and_install_from_the_panel(tmp: Path):
     """Надстройки движка: Pydantic AI и graphify — версия, выпуск в git, установка из панели.
 
@@ -1460,6 +1700,10 @@ def test_a_step_that_fails_to_start_leaves_a_trace(tmp: Path):
     def broken(*a, **kw):
         raise OSError("интерпретатор не найден")
 
+    # Реестр команд собирается `--help` скриптов — настоящими процессами. Под подменой Popen
+    # он собрался бы пустым и лёг бы в настоящий кэш кита: панель потеряла бы флаги команд.
+    # Собираем до подмены, на временном кэше, и после возвращаем память панели как была.
+    restore_registry = isolated_registry(ck, tmp)
     ck.subprocess.Popen = broken
     ck.RUNNING = str(tmp / "running.json")     # настоящий список заданий кита не трогаем
     try:
@@ -1471,6 +1715,7 @@ def test_a_step_that_fails_to_start_leaves_a_trace(tmp: Path):
             time.sleep(0.05)
     finally:
         ck.subprocess.Popen, ck.RUNNING = real_popen, real_running
+        restore_registry()
     assert job["done"] and job["rc"] == 2, f"упавший запуск не завершил задание: {job}"
     assert any("команда не запустилась" in l and "интерпретатор не найден" in l
                for l in job["out"]), f"причина не показана: {job['out']}"
@@ -1479,6 +1724,127 @@ def test_a_step_that_fails_to_start_leaves_a_trace(tmp: Path):
     text = log.read_text(encoding="utf-8")
     assert "интерпретатор не найден" in text and "Traceback" in text, \
         f"в архиве нет причины и места падения: {text!r}"
+
+
+@test
+def test_live_output_of_a_long_job_does_not_freeze_after_4000_lines(tmp: Path):
+    """Живой вывод длинного задания идёт и после 4000-й строки: курсор сквозной.
+
+    Задание хранит в памяти только последние 4000 строк, а читатель (кнопка, журнал
+    маршрута) вёл курсор как индекс в этом списке: дойдя до 4000, он видел пустой хвост
+    навсегда, хотя процесс шёл. Длинные прогоны агента — как раз тысячи строк.
+    """
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    ck = importlib.import_module("aurora_cockpit")
+    rr = importlib.import_module("route_runner")
+    total = 9000
+
+    # Курсор читателя против самого задания: каждая строка читается по разу и по порядку.
+    job = {"out": []}
+    seen, since = [], 0
+    for n in range(total):
+        ck.job_push(job, f"л{n}")
+        if n % 700 == 0 or n == total - 1:
+            got, since = ck.job_slice(job, since)
+            seen += got
+    assert seen == [f"л{n}" for n in range(total)], \
+        f"читатель потерял строки: {len(seen)} из {total}"
+    assert since == total and len(job["out"]) == rr.JOB_KEEP_LINES, (since, len(job["out"]))
+    # отставший читатель получает то, что осталось, и курсор встаёт на конец
+    late, nxt = ck.job_slice(job, 10)
+    assert late == job["out"] and nxt == total, "отставший читатель не догнал конец"
+    # одна реализация на панель и исполнитель маршрута: двойнику панели метод не нужен
+    assert ck.job_slice is rr.job_slice and ck.job_push is rr.job_push, "панель и маршрут расходятся"
+    assert rr.job_slice({"out": ["а", "б"]}, 1) == (["б"], 2)
+    # читатель, ушедший вперёд, не откатывается назад
+    assert ck.job_slice(job, total + 50) == ([], total + 50), "курсор впереди конца откатился"
+
+    # Сторож и «Прервать» дописывают в out мимо замка: строка, пришедшая между срезом и
+    # подсчётом курсора, не должна считаться прочитанной.
+    class Racy(list):
+        def __getitem__(self, i):
+            part = list.__getitem__(self, i)
+            if isinstance(i, slice) and not getattr(self, "hit", False):
+                self.hit = True
+                self.append("поздняя")
+            return part
+
+    racy = {"out": Racy(["а", "б", "в"])}
+    first, cur = rr.job_slice(racy, 1)
+    assert first == ["б", "в"] and cur == 3, (first, cur)
+    rest, cur = rr.job_slice(racy, cur)
+    assert rest == ["поздняя"] and cur == 4, "строка, дописанная мимо замка, потеряна читателем"
+
+    # Журнал маршрута: шаг на 9000 строк с паузами, читает run_job на настоящем задании.
+    class Pipe:
+        returncode = 0
+
+        def __init__(self):
+            self.stdout = self.lines()
+
+        def lines(self):
+            for n in range(total):
+                yield f"строка {n}\n"
+                if n % 500 == 0:
+                    time.sleep(0.05)
+
+        def wait(self):
+            return 0
+
+    root = make_project(tmp, git=False)
+    real_popen, real_running, real_poll = ck.subprocess.Popen, ck.RUNNING, rr.POLL_S
+    # Реестр команд строится настоящими `--help` и до подмены Popen, на временном кэше:
+    # пустой реестр от поддельного процесса лёг бы в кэш кита и отнял бы у панели флаги.
+    restore_registry = isolated_registry(ck, tmp)
+    ck.subprocess.Popen = lambda *a, **kw: Pipe()
+    ck.RUNNING = str(tmp / "running.json")     # настоящий список заданий кита не трогаем
+    rr.POLL_S = 0.01
+    live: list = []
+    try:
+        res = rr.run_job(ck, str(root), "kb:lint", [], on_lines=live.extend)
+    finally:
+        ck.subprocess.Popen, ck.RUNNING, rr.POLL_S = real_popen, real_running, real_poll
+        restore_registry()
+    assert live == [f"строка {n}" for n in range(total)], \
+        f"в журнал маршрута дошло {len(live)} строк из {total}"
+    assert res["rc"] == 0 and len(res["lines"]) == total, "итог шага неполон"
+
+    # Настоящий обработчик: `/api/job` и `/api/jobs` отдают сквозные номера, а не длину
+    # списка в памяти — иначе кнопка в браузере замирает после 4000-й строки.
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(root)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def get(path: str):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=30)
+        c.request("GET", path + "&t=" + ck.TOKEN)
+        return json.loads(c.getresponse().read().decode("utf-8"))
+
+    big = {"id": "long-job-test", "cmd": "kb:lint", "args": [], "project": str(root),
+           "started": time.time(), "done": False, "rc": None, "out": []}
+    for n in range(total):
+        ck.job_push(big, f"л{n}")
+    with ck.JOBS_LOCK:
+        ck.JOBS[big["id"]] = big
+    try:
+        first = get(f"/api/job?id={big['id']}&since=0")
+        assert first["next"] == total and first["lines"] == big["out"], \
+            "первое чтение отстающего читателя: курсор не сквозной"
+        ck.job_push(big, "хвост")
+        more = get(f"/api/job?id={big['id']}&since={first['next']}")
+        assert more["lines"] == ["хвост"] and more["next"] == total + 1, \
+            f"читатель на конце не увидел новую строку: {more['lines']!r} {more['next']}"
+        listed = get(f"/api/jobs?project={root}")["jobs"]
+        assert [j["lines"] for j in listed if j["id"] == big["id"]] == [total + 1], \
+            "список заданий считает строки по длине списка в памяти"
+    finally:
+        srv.shutdown()
+        with ck.JOBS_LOCK:
+            ck.JOBS.pop(big["id"], None)
 
 
 @test

@@ -1201,7 +1201,9 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
                                        ensure_ascii=False)}
         if role == "qa":
             return {"ok": True, "backend": 1, "model": "q", "tps": 9, "log": [],
-                    "text": "УТВЕРЖДЕНИЕ: срок\nНЕТ ОПОРЫ\n\nВЕРДИКТ: без опоры 1"}
+                    "text": "1. ОПОРА «статусы заявки»\n"
+                            "2. **НЕТ ОПОРЫ** срок возврата — пять дней\n\n"
+                            "ВЕРДИКТ: БЕЗ ОПОРЫ 1"}
         return {"ok": True, "backend": 1, "model": "w", "tps": 9, "log": [],
                 "text": "# AC\n\n## Предусловия\n\nЗаявка создана."}
 
@@ -1226,6 +1228,13 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
     assert "status: draft" in doc, \
         "документ с замечаниями критика назван готовым — такой уедет заказчику"
     assert "## Под вопросом" in doc, "утверждения без опоры не выделены"
+    # Ответ Момуса — настоящий, через run_momus: раздел обязан нести само утверждение, а
+    # не пустую строку (раньше читался несуществующий ключ report — KB3-01).
+    under = doc.split("## Под вопросом", 1)[1].split("\n## ", 1)[0]
+    assert "- НЕТ ОПОРЫ: срок возврата — пять дней" in under, \
+        f"утверждение без опоры не попало в документ: {under!r}"
+    assert "<summary>Разбор Момуса</summary>" in under and "ВЕРДИКТ: БЕЗ ОПОРЫ 1" in under, \
+        "дословного разбора Момуса в документе нет"
     assert "## План, по которому собран" in doc, \
         "план исчез: через полгода «почему здесь так» спросят у документа"
 
@@ -1249,7 +1258,7 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
            "draft": '---\ntitle: "Критерии приёмки для передачи квитанций"\n'
                     'aliases: []\n---\n\n# Документ\n\nТекст.',
            "issues": [], "momus": {"ok": True, "clean": False, "unsupported": 6,
-                                   "report": "нет опоры"}}
+                                   "text": "НЕТ ОПОРЫ срок\nВЕРДИКТ: БЕЗ ОПОРЫ 6"}}
     live = root / R.write_artifact(str(root), st2)
     text2 = live.read_text(encoding="utf-8")
     sys.path.insert(0, str(KIT / "scripts"))
@@ -1289,6 +1298,50 @@ def test_making_an_artifact_survives_an_interruption(tmp: Path):
     bad = R.run_make(cfg, str(root), "ac", "квантовая криптография", "", "", False, call=fake)
     assert not bad["ok"] and "не найдено" in bad["why"], \
         "артефакт собран на пустом контексте — это домысел с шапкой доверия"
+
+
+@test
+def test_questionable_section_carries_the_momus_claims(tmp: Path):
+    """Раздел «Под вопросом» несёт утверждения Момуса из НАСТОЯЩЕГО ответа run_momus.
+
+    Раздел читал ключ `report`, которого run_momus не возвращает: человек видел заголовок
+    и пустую строку, а что именно додумано, оставалось в служебной сессии (KB3-01).
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A, agent_runner as R
+
+    cfg = A.parse_config({"AURORA_AGENT_BACKEND_1_URL": "u", "AURORA_AGENT_BACKEND_1_MODEL": "m"})
+
+    def momus(text):
+        return R.run_momus(cfg, "pack", "q", "a", call=lambda *a, **kw: {
+            "ok": True, "text": text, "model": "q", "backend": 1})
+
+    # формат по промпту: два замечания и вердикт
+    mo = momus("ОПОРА «срок десять дней»\nНЕТ ОПОРЫ возврат за пять дней\n"
+               "ПРОТИВОРЕЧИЕ статус «закрыта» ↔ «статус: открыта»\n\nВЕРДИКТ: БЕЗ ОПОРЫ 2")
+    body = "\n".join(R.momus_section(mo))
+    assert "- НЕТ ОПОРЫ: возврат за пять дней" in body
+    assert "- ПРОТИВОРЕЧИЕ: статус «закрыта» ↔ «статус: открыта»" in body
+    assert "ОПОРА «срок десять дней»" in body.split("<details>", 1)[1], \
+        "в сворачиваемом блоке нет дословного разбора"
+    assert "- ОПОРА" not in body, "подтверждённое утверждение попало в список замечаний"
+
+    # модель отошла от формата: строк «НЕТ ОПОРЫ» нет, но вердикт есть — разбор не теряем
+    mo = momus("Срок возврата выдуман.\n\nВЕРДИКТ: БЕЗ ОПОРЫ 1")
+    body = "\n".join(R.momus_section(mo))
+    assert "Срок возврата выдуман." in body and "насчитал утверждений без опоры: 1" in body
+
+    # ссылка на отсутствующую карточку (правило 3 промпта Момуса) не становится живой
+    mo = momus("НЕТ ОПОРЫ ссылка [[Выдуманная]] на карточку\n\nВЕРДИКТ: БЕЗ ОПОРЫ 1")
+    body = "\n".join(R.momus_section(mo))
+    listed, _, block = body.partition("<details>")
+    assert "[[" not in listed and "- НЕТ ОПОРЫ: ссылка [ [Выдуманная]] на карточку" in listed, listed
+    assert "[[Выдуманная]]" in block, "дословный разбор должен остаться как есть"
+
+    # ограда в тексте разбора не должна закрыть блок раньше времени
+    mo = momus("НЕТ ОПОРЫ ~~~ x\n\nВЕРДИКТ: БЕЗ ОПОРЫ 1")
+    body = "\n".join(R.momus_section(mo))
+    assert sum(1 for l in body.splitlines() if l.startswith("~~~")) == 2, body
 
 
 @test

@@ -169,9 +169,15 @@ def test_the_english_panel_server_sends_no_russian_outside_the_documented_except
     (messy / "stray-folder").mkdir()
 
     panel = _Panel([tmp])
+    # Список идущих заданий кита лежит в `cockpit/.running.json` рабочей панели разработчика:
+    # идущее у него расписание («cron: Все проекты: …») попадало в `/api/kit/status .busy[]`
+    # и валило обход чужим русским названием. Обход смотрит на свой пустой список.
+    real_running = panel.ck.RUNNING
+    panel.ck.RUNNING = str(tmp / "running.json")
     try:
         left = _leftovers(panel, clean, "чистый") + _leftovers(panel, messy, "сломанный")
     finally:
+        panel.ck.RUNNING = real_running
         panel.close()
     assert not left, "в английском режиме остался русский текст (нет перевода?):\n" + "\n".join(left)
 

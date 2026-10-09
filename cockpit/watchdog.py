@@ -236,6 +236,17 @@ class Watchdog:
             self.probes[project] = (now, got)
         return got
 
+    def _say(self, job: dict, line: str) -> None:
+        """Строка сторожа в вывод задания — как строка процесса: под замком и со счётчиком
+        срезанной головы (`job_push`), иначе читатель с курсором теряет счёт."""
+        from route_runner import job_push
+        lock = getattr(self.ck, "JOBS_LOCK", None)
+        if lock is None:
+            job_push(job, line)
+            return
+        with lock:
+            job_push(job, line)
+
     def verdict(self, job: dict) -> str:
         """Пусто — шаг жив или может ожить; иначе — почему ответа уже не будет."""
         now = self.clock()
@@ -246,15 +257,15 @@ class Watchdog:
         net = self._probe(job.get("project", ""))
         if not net["ok"]:
             if not st["down_seen"]:
-                job["out"].append("⚠ сторож: шаг молчит, связь не отвечает — "
-                                  + ", ".join(net["down"]) + ". Жду, когда вернётся.")
+                self._say(job, "⚠ сторож: шаг молчит, связь не отвечает — "
+                          + ", ".join(net["down"]) + ". Жду, когда вернётся.")
             st.update(down_seen=True, up_since=0.0, down=net["down"])
             return ""
         if st["down_seen"]:
             if not st["up_since"]:
                 st["up_since"] = now
-                job["out"].append("⚠ сторож: связь вернулась — шаг должен ожить за "
-                                  f"{GRACE // 60} мин.")
+                self._say(job, "⚠ сторож: связь вернулась — шаг должен ожить за "
+                          f"{GRACE // 60} мин.")
             if now - st["up_since"] >= GRACE and (job.get("last_out") or 0) < st["up_since"]:
                 return ("связь (" + ", ".join(st["down"]) + ") пропадала и вернулась, а шаг за "
                         f"{GRACE // 60} мин так и не ожил — ответа на запрос, отправленный до "
@@ -279,14 +290,14 @@ class Watchdog:
 
     def kill(self, job: dict, why: str) -> None:
         job["hung"] = why
-        job["out"].append(f"■ сторож: шаг завис — {why}. Снимаю процесс; маршрут запустит "
-                          "шаг заново.")
+        self._say(job, f"■ сторож: шаг завис — {why}. Снимаю процесс; маршрут запустит "
+                       "шаг заново.")
         proc = job.get("proc")
         if proc is not None and proc.poll() is None:
             kill_tree(proc.pid)
         lock = stale_git_lock(job.get("project", ""))
         if lock:
-            job["out"].append(f"■ сторож: снят брошенный {lock}")
+            self._say(job, f"■ сторож: снят брошенный {lock}")
 
     def tick(self) -> None:
         with self.ck.JOBS_LOCK:

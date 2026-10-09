@@ -3,7 +3,8 @@ title: "DR-{{NNNN}}: {{Краткая формулировка решения}}"
 aliases: ["DR-{{NNNN}}"]
 tags: [decision]
 type: decision
-status: proposed          # proposed → accepted | rejected → superseded
+# цикл решения: proposed → accepted | rejected → superseded; комментарий — не на строке status
+status: proposed
 date: {{YYYY-MM-DD}}
 owner: "{{@автор}}"
 supersedes: []            # ["[[DR-XXXX-...]]"] если заменяет прежнее решение

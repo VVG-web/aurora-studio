@@ -596,3 +596,87 @@ def test_the_history_shows_one_row_per_launch_and_the_whole_output(tmp: Path):
         assert "20261003-090000Z-dddddd" in left, left
     finally:
         restore()
+
+
+def _dup_route():
+    """Маршрут, как `update`: связать в обороте и связать всю базу после цикла — одна подпись."""
+    st = lambda cmd, flags: {"manual": False, "cmd": cmd, "why": "", "flags": flags}
+    return {"id": "update", "title": "Обновить базу", "when": "", "group": "база", "steps": [
+        {"manual": False, "cycle": "цикл:", "why": ""},
+        st("agent:build", ["--apply"]), st("kb:links", ["--apply"]),
+        {"manual": False, "cycle": "конец цикла", "why": ""},
+        st("kb:links", ["--apply"]), st("kb:lint", [])]}
+
+
+@test
+def test_resume_does_not_skip_a_tail_step_that_shares_a_signature_with_the_cycle(tmp: Path):
+    """Подпись «команда + флаги» в маршруте не уникальна: `kb:links --apply` стоит и в
+    цикле, и после него. Продолжение после рестарта панели пропускало хвостовой шаг как
+    «уже сделанный» по подписи цикла, и маршрут рапортовал passed без связывания всей базы.
+    """
+    rr, _ = _modules()
+    script = {"agent:build": [(0, ["Источников в плане: 0"])],
+              "kb:links": [(0, []), (2, ["упало"])], "kb:lint": [(0, [])]}
+    ck = FakePanel(tmp, script, [_dup_route()])
+    run = rr.RouteRun(ck, str(tmp), _dup_route(), True)
+    run.run()                                       # цикл прошёл, хвостовой kb:links упал
+    assert [c[1] for c in ck.calls] == ["agent:build", "kb:links", "kb:links"], ck.calls
+    done = ck.route_state["done"]
+    assert len(done) == len(set(done)), done
+    assert "kb:links --apply" not in done, \
+        "подпись цикла в «сделано» совпадает с подписью хвоста — хвост пропустится: " + str(done)
+
+    ck = FakePanel(tmp, {"agent:build": [(0, ["Источников в плане: 0"])],
+                         "kb:links": [(0, [])], "kb:lint": [(0, [])]}, [_dup_route()])
+    rr.RouteRun(ck, str(tmp), _dup_route(), True, resume={"skipSigs": done}).run()
+    assert [c[1] for c in ck.calls].count("kb:links") == 2, \
+        "продолжение пропустило хвостовой kb:links по подписи цикла: " + str(ck.calls)
+
+    # Обратный случай: хвост прошёл — на продолжении он пропускается по своему ключу с
+    # позицией (иначе дорогие хвостовые шаги шли бы заново), а шаг цикла идёт как обычно.
+    ok = {"agent:build": [(0, ["Источников в плане: 0"])],
+          "kb:links": [(0, []), (0, [])], "kb:lint": [(0, [])]}
+    ck = FakePanel(tmp, ok, [_dup_route()])
+    done_ok: list = []
+    rr.RouteRun(ck, str(tmp), _dup_route(), True,
+                on_step=lambda key, rc: rc == 0 and done_ok.append(key)).run()
+    assert sum(1 for d in done_ok if d.startswith("kb:links")) == 2, done_ok
+    ck = FakePanel(tmp, {"agent:build": [(0, ["Источников в плане: 0"])],
+                         "kb:links": [(0, [])], "kb:lint": [(0, [])]}, [_dup_route()])
+    rr.RouteRun(ck, str(tmp), _dup_route(), True, resume={"skipSigs": done_ok}).run()
+    assert [c[1] for c in ck.calls] == ["agent:build", "kb:links"], \
+        "прошедший хвост должен пропускаться на продолжении: " + str(ck.calls)
+
+    # Запись старого формата (голая подпись) для неоднозначного шага ничего не доказывает:
+    # шаг повторяется, а однозначные шаги по-прежнему пропускаются.
+    ck = FakePanel(tmp, {"agent:build": [(0, ["Источников в плане: 0"])],
+                         "kb:links": [(0, [])], "kb:lint": [(0, [])]}, [_dup_route()])
+    rr.RouteRun(ck, str(tmp), _dup_route(), True,
+                resume={"skipSigs": ["kb:links --apply", "kb:lint"]}).run()
+    assert [c[1] for c in ck.calls] == ["agent:build", "kb:links", "kb:links"], ck.calls
+
+
+@test
+def test_route_step_keys_are_unique_in_every_shipped_route(tmp: Path):
+    """Ключи «сделано» шагов каждого маршрута из scenarios.txt уникальны: добавили в
+    маршрут второй такой же шаг — ключ получит позицию, а не склеится с первым."""
+    import importlib
+    from types import SimpleNamespace
+    rr, _ = _modules()
+    ck_mod = importlib.import_module("aurora_cockpit")
+    routes = ck_mod.scenarios()
+    assert routes, "scenarios.txt не прочитан"
+    ck = FakePanel(tmp, {}, routes)
+    ck.command_by_name = lambda name: {"cmd": name, "runnable": True}
+    for sc in routes:
+        steps = rr.plan(ck, sc, True)
+        me = SimpleNamespace(sig_count={})
+        for s in steps:
+            sig = (s["cmd"] + " " + " ".join(s["args"])).strip()
+            me.sig_count[sig] = me.sig_count.get(sig, 0) + 1
+        keys = [rr.RouteRun.step_key(me, s) for s in steps]
+        assert len(keys) == len(set(keys)), (sc["id"], sorted(k for k in keys if keys.count(k) > 1))
+    # Ради этого и нужна позиция: в update и rebuild подпись цикла повторяется после него.
+    upd = next(s for s in routes if s["id"] == "update")
+    sigs = [(s["cmd"] + " " + " ".join(s["args"])).strip() for s in rr.plan(ck, upd, True)]
+    assert len(sigs) != len(set(sigs)), "в update больше нет повторяющихся подписей — тест не о том"

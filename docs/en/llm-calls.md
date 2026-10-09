@@ -38,9 +38,9 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Planner (planner) | A large source without structure: a plan of sections to cut it by. | `PROMPT_PLAN_SOURCE` (agent_runner.py) |
 | Planner (planner) | A meeting transcript from Raw/meetings: a plan part by part. | `PROMPT_MEETING` (agent_runner.py) |
 | Writer (worker) | Storyboarding a source: topic boundaries, card names, kind of knowledge. The engine, not the model, moves the text into cards. | `PROMPT_BUILD` (agent_runner.py) |
-| Writer (worker) | A source without structure: break it down, skip it or treat it as service text. | `PROMPT_NO_SECTIONS` (agent_runner.py) |
+| Writer (worker) | A source without structure: break it down, skip it or treat it as service text. Also the 'empty' verdict on a source that has sections. | `PROMPT_NO_SECTIONS` (agent_runner.py) |
 | Critic (critic) | Checking the storyboard before writing into the base. | `PROMPT_BUILD_CRITIC` (agent_runner.py) |
-| Critic (critic) | Checking the decision on a source without structure. | `PROMPT_NO_SECTIONS` (agent_runner.py) |
+| Critic (critic) | A second opinion on the 'empty' verdict about a source: always for sources of 8000 characters and more, for any with the critic on. | `PROMPT_NO_SECTIONS` (agent_runner.py) |
 
 - **Tools:** none: the engine puts everything needed into the task.
 - **Path:** Pydantic AI.

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import getpass
 import hashlib
 import importlib.util
@@ -98,6 +99,15 @@ def trim_jobs(keep: int = KEEP_DONE_JOBS) -> int:
     for j in done[:max(0, len(done) - keep)]:
         JOBS.pop(j["id"], None)
     return max(0, len(done) - keep)
+
+
+# Вывод задания в памяти: функции чистые и живут в route_runner — их зовут и панель, и
+# исполнитель маршрута, и тестовый двойник панели, а новый атрибут `ck` двойнику не нужен.
+JOB_KEEP_LINES = RR.JOB_KEEP_LINES
+job_push = RR.job_push
+job_slice = RR.job_slice
+
+
 CACHE: dict = {}
 REGISTRY_CACHE = os.path.join(KIT, "cockpit", ".registry-cache.json")
 
@@ -487,6 +497,64 @@ def recent(project: str, add: str = "") -> list:
     return [x for x in rows if os.path.isfile(os.path.join(project, x))]
 
 
+LOSSY_WHY = ("файл не читается как UTF-8 или cp1251: открыт только на просмотр, "
+             "сохранение потеряло бы байты")
+EOL_BYTES = {"lf": "\n", "crlf": "\r\n", "cr": "\r"}
+
+
+def sniff_text(raw: bytes) -> dict:
+    """Что за текст лежит в файле: кодировка, окончания строк, текст для редактора.
+
+    Редактор правит текст, а не байты, и сохранение обязано вернуть файлу всё, что у
+    него было: окончания строк (иначе одна правка меняет каждую строку в git diff) и
+    кодировку (cp1251-таблицы и выгрузки Windows-программ). Кодировку берём по BOM и
+    строгой пробной расшифровке: utf-8, затем cp1251. Не расшифровалось строго — файл
+    открывается только на просмотр (`strict` ложь): любое сохранение потеряло бы байты.
+    Файл, который в основном UTF-8, но с повреждёнными байтами, на cp1251 не переводим:
+    cp1251 примет почти что угодно, и правка дописала бы кириллицу в cp1251 среди
+    байтов UTF-8 — файл в смешанной кодировке. Смешанные окончания строк (`mixed`)
+    при сохранении приводятся к преобладающим: сохранить их по строкам нельзя.
+    Текст отдаём с переводом строк в `\\n` — редактор всё равно нормализует их сам.
+    """
+    crlf = raw.count(b"\r\n")
+    n = {"lf": raw.count(b"\n") - crlf, "crlf": crlf, "cr": raw.count(b"\r") - crlf}
+    eol = max(("lf", "crlf", "cr"), key=lambda k: n[k])      # при равенстве — lf
+    mixed = sum(1 for v in n.values() if v) > 1
+    bom = raw.startswith(codecs.BOM_UTF8)
+    enc, strict = ("utf-8-sig" if bom else "utf-8"), True
+    try:
+        text = raw.decode(enc)
+    except UnicodeDecodeError:
+        text = None
+        approx = raw.decode("utf-8", errors="replace")
+        good = sum(1 for c in approx if c > "\x7f" and c != "\ufffd")
+        bad = approx.count("\ufffd")
+        mostly_utf8 = bom or good >= max(bad, 1)
+        utf16 = raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE))
+        if b"\x00" not in raw and not mostly_utf8 and not utf16:   # нули, UTF-16 — не cp1251
+            try:
+                text, enc = raw.decode("cp1251"), "cp1251"
+            except UnicodeDecodeError:
+                pass
+        if text is None:
+            text, strict = approx, False
+    if "\r" in text:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return {"text": text, "encoding": enc, "eol": eol, "mixed": mixed, "strict": strict,
+            "digest": hashlib.sha256(raw).hexdigest()}
+
+
+def encode_text(text: str, enc: str, eol: str) -> tuple:
+    """Обратно в байты файла: его кодировка и его окончания строк → (байты, "").
+    Текст не помещается в кодировку файла (в cp1251 нет эмодзи) — (None, знак): это отказ,
+    а не молчаливая замена знаков на «?»."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", EOL_BYTES.get(eol, "\n"))
+    try:
+        return text.encode(enc), ""
+    except UnicodeEncodeError as e:
+        return None, text[e.start:e.start + 1]
+
+
 def file_read(project: str, rel: str) -> dict:
     """Файл плюс всё, что нужно знать до правки: можно ли править, что с ним в git,
     опубликован ли он и не отстала ли страница."""
@@ -498,12 +566,25 @@ def file_read(project: str, rel: str) -> dict:
     if ext not in TEXT_EXT or size > MAX_EDIT:
         return {"error": "не текстовый файл или слишком большой — откройте системным "
                          "приложением", "binary": True, "size": size}
-    text = read_text(full, limit=MAX_EDIT)
+    try:
+        with open(full, "rb") as f:
+            sn = sniff_text(f.read(MAX_EDIT + 1))
+    except OSError:
+        return {"error": "файл не найден в этом проекте"}
+    text = sn["text"]
     fm = frontmatter(text) if ext == ".md" else {}
     recent(project, rel)
+    ro = why_readonly(rel, text)
+    lossy = not sn["strict"]
+    # Причина запрета у защищённого файла важнее: «зеркало внешней системы» человеку
+    # нужнее, чем «не читается», и интерфейс подменяет её только для чисто нечитаемого.
+    only_lossy = lossy and not ro
+    if only_lossy:
+        ro = LOSSY_WHY
     return {"path": rel, "text": text, "size": size,
-            "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "readonly": why_readonly(rel, text),
+            "digest": sn["digest"], "encoding": sn["encoding"], "eol": sn["eol"],
+            "eol_mixed": sn["mixed"], "lossy": lossy, "readonly_lossy": only_lossy,
+            "readonly": ro,
             "git": git_file_state(project, rel),
             "published": fm.get("published", ""),
             "published_url": fm.get("published_url", "") or fm.get("confluence_page_id", ""),
@@ -563,21 +644,38 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
         return {"error": f"файл только для чтения: {ro}"}
     if os.path.splitext(full)[1].lower() not in TEXT_EXT:
         return {"error": "не текстовый файл"}
-    if len(text.encode("utf-8")) > MAX_EDIT:
+    if len(text) > MAX_EDIT:        # дешёвый предохранитель; потолок по байтам — после кодирования
         return {"error": "файл больше потолка редактора"}
-    if os.path.isfile(full) and expect:
-        now = hashlib.sha256(read_text(full, limit=MAX_EDIT).encode("utf-8")).hexdigest()
-        if now != expect:
-            return {"conflict": True, "disk": read_text(full, limit=MAX_EDIT),
+    # Пишем файлу его же кодировку и окончания строк: редактор отдаёт текст с `\n`, а
+    # после одной правки CRLF-файла в git diff иначе оказывается каждая строка.
+    enc, eol = "utf-8", "lf"
+    if os.path.isfile(full):
+        if os.path.getsize(full) > MAX_EDIT:
+            return {"error": "файл больше потолка редактора"}
+        try:
+            with open(full, "rb") as f:
+                sn = sniff_text(f.read())
+        except OSError as e:
+            return {"error": f"не удалось прочитать файл: {e.strerror or e}"}
+        if not sn["strict"]:
+            return {"error": "файл не читается как UTF-8 или cp1251: сохранение потеряло бы байты"}
+        if expect and sn["digest"] != expect:
+            return {"conflict": True, "disk": sn["text"],
                     "error": "файл изменился на диске с момента открытия"}
+        enc, eol = sn["encoding"], sn["eol"]
+    data, bad = encode_text(text, enc, eol)
+    if data is None:
+        return {"error": f"знака «{bad}» нет в кодировке файла ({enc}): файл не сохранён"}
+    if len(data) > MAX_EDIT:        # потолок — по байтам, которые лягут на диск (cp1251, CRLF)
+        return {"error": "файл больше потолка редактора"}
     # Отказ файловой системы — обычный исход, а не исключительный: длинное имя, полный
     # диск, папка без прав. Трассировка вместо ответа означает для человека «панель
     # сломалась», хотя сломался его путь; и временный файл остался бы лежать рядом.
     tmp = full + ".aurora-tmp"
     try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
+        with open(tmp, "wb") as f:
+            f.write(data)
         replace_file(tmp, full)
     except OSError as e:
         try:
@@ -585,8 +683,8 @@ def file_write(project: str, rel: str, text: str, expect: str = "") -> dict:
         except OSError:
             pass
         return {"error": f"не удалось записать файл: {e.strerror or e}"}
-    out = {"ok": True, "digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-           "git": git_file_state(project, rel)}
+    out = {"ok": True, "digest": hashlib.sha256(data).hexdigest(),
+           "encoding": enc, "eol": eol, "git": git_file_state(project, rel)}
     if os.path.splitext(full)[1].lower() == ".md":
         out["lint"] = lint_one(project, rel)
     return out
@@ -4188,10 +4286,8 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
             job["proc"] = p     # чтобы человек мог прервать прогон, а не ждать часами
             for line in p.stdout:
                 with JOBS_LOCK:
-                    job["out"].append(line.rstrip("\n"))
+                    job_push(job, line.rstrip("\n"))
                     job["last_out"] = time.time()      # пульс шага — для сторожа (`watchdog`)
-                    if len(job["out"]) > 4000:
-                        job["out"] = job["out"][-4000:]
                 if run_log is not None:
                     try:
                         run_log.write(line)
@@ -4204,7 +4300,7 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
             # Причина — и на экран, и в архив: код 2 без единой строки не разобрать.
             note = f"cockpit: команда не запустилась — {type(e).__name__}: {e}"
             with JOBS_LOCK:
-                job["out"].append(note)
+                job_push(job, note)
             if run_log is not None:
                 try:
                     run_log.write(note + "\n" + traceback.format_exc())
@@ -4754,7 +4850,7 @@ class Handler(BaseHTTPRequestHandler):
             project = (q.get("project") or [""])[0]
             with JOBS_LOCK:
                 live = [{"id": j["id"], "cmd": j["cmd"], "args": j["args"],
-                         "started": j["started"], "lines": len(j["out"])}
+                         "started": j["started"], "lines": j.get("base", 0) + len(j["out"])}
                         for j in JOBS.values()
                         if not j["done"] and (not project or j["project"] == project)]
             self.send_json({"jobs": sorted(live, key=lambda j: j["started"])})
@@ -4765,8 +4861,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not job:
                     self.send_json({"error": "задание не найдено"}, 404)
                     return
-                lines = job["out"][since:]
-                reply = {"id": job["id"], "lines": lines, "next": since + len(lines),
+                lines, nxt = job_slice(job, since)
+                reply = {"id": job["id"], "lines": lines, "next": nxt,
                          "done": job["done"], "rc": job["rc"], "cmd": job["cmd"],
                          "args": job["args"]}
             # Пульс — вне замка заданий: он читает файлы папки прогона.
@@ -5486,7 +5582,7 @@ def live_now() -> dict:
                   for r in sorted(routes, key=lambda r: r["started"])]
     with JOBS_LOCK:
         jobs = [{"id": j["id"], "project": j["project"], "cmd": j["cmd"], "args": j["args"],
-                 "started": j["started"], "lines": len(j["out"])}
+                 "started": j["started"], "lines": j.get("base", 0) + len(j["out"])}
                 for j in JOBS.values() if not j["done"] and j.get("parent") not in in_route]
     for j in jobs:
         j["name"] = name(j["project"])
@@ -5668,7 +5764,8 @@ def stop_job(job_id: str) -> dict:
             proc.kill()
     except OSError as e:
         return {"error": f"не удалось остановить: {e}"}
-    job["out"].append("■ Прогон прерван человеком. Сделанное записано и зафиксировано "
+    with JOBS_LOCK:
+        job_push(job, "■ Прогон прерван человеком. Сделанное записано и зафиксировано "
                       "до этого места.")
     return {"ok": True}
 

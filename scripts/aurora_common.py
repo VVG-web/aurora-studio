@@ -202,6 +202,16 @@ PLACEHOLDER = "placeholder"
 STATUSES = ("knowledge", "draft", PLACEHOLDER, "deprecated", SERVICE_STATUS)
 # Что попадает в строгий контекст: только знание из доверенного источника.
 KNOWLEDGE = ("knowledge",)
+# Тип со своим жизненным циклом: его `status` — не класс доверия, а состояние самого
+# решения (proposed → accepted | rejected → superseded, frontmatter.md). Доверие такой
+# карточке не считается, и `kb:trust` её статус не пишет; линтер принимает этот словарь.
+OWN_LIFECYCLE = {"decision": ("proposed", "accepted", "rejected", "superseded")}
+
+
+def card_type(fm: dict, section: str = "") -> str:
+    """Тип карточки; у DR, написанного до схемы 2 (без `type:`), его даёт папка Decisions."""
+    ty = (fm.get("type") or "").strip().strip('"')
+    return ty or ("decision" if section == "Decisions" else "")
 
 # Что код считает знанием. `knowledge` — новая шкала; `verified` и `canonical` читаются
 # как знание, пока проект не прошёл пересборку: база, обновившая движок, не должна
@@ -221,13 +231,87 @@ def status_rank(status: str) -> int:
     return STATUS_RANK.get((status or "").strip().strip('"'), 1)
 
 
-def trust_header(fm: dict, section: str = "") -> str:
+def is_decision_card(fm: dict, section: str = "") -> bool:
+    """Карточка — Decision Record с состоянием из его цикла (`OWN_LIFECYCLE`).
+
+    Решение со статусом доверия (`knowledge`/`draft`, затёртым прежним `kb:trust`) читается
+    как обычная карточка: база, не прошедшая ремонт, не должна ослепнуть на свои решения.
+    """
+    status = (fm.get("status") or "").strip().strip('"')
+    return card_type(fm, section) == "decision" and status in OWN_LIFECYCLE["decision"]
+
+
+def decision_header(fm: dict, text: str = "") -> str:
+    """Шапка DR по состоянию решения — одна для `ctx_pack` и `spec_pack`. Решение не «знание
+    из источника», а решение в определённом состоянии. У отклонённого — причина отказа, у
+    заменённого — преемник: «почему не X» отвечает именно этой строкой, а не телом карточки."""
+    st = (fm.get("status") or "").strip().strip('"')
+    succ = (fm.get("superseded_by") or "").strip().strip('"')
+    if st == "accepted":
+        return f"[accepted | решение принято {fm.get('date') or 'без даты'} | Decision Record]"
+    if st == "proposed":
+        return "[proposed | НЕ ФАКТ | решение предложено, но не принято]"
+    if st == "rejected":
+        b = body(text)
+        # причина отказа от РЕШЕНИЯ: «Причина отказа» внутри разбора вариантов относится к
+        # одному варианту, а не к решению, и в шапку не идёт
+        outside = "".join(p for p in re.split(r"(?m)^(?=## )", b)
+                          if not re.match(r"(?i)##\s*(рассмотренн|вариант|option|alternative)", p))
+        m = re.search(r"(?im)^[^\n]*причин[аы] отказа:?\**:?\s*(.+)$", outside)
+        if m:
+            why = "отклонено: " + " ".join(m.group(1).split())[:160]
+        else:
+            m = re.search(r"(?ims)^## (?:Решение|Decision)\s*\n+(.+?)$", b)
+            why = ("отклонено решение: " + " ".join(m.group(1).split())[:160] if m
+                   else "отклонено, причина в тексте решения")
+        tail = f" | заменено: {succ}" if succ else ""
+        return f"[rejected | {why}{tail} | только исторический контекст]"
+    return f"[superseded | заменено: {succ or '—'} | только исторический контекст]"
+
+
+def decision_slice(text: str) -> str:
+    """Срез DR для пака: «Решение», «Следствия» и варианты, кроме выбранного. Контекст и
+    остальное — история создания; к вопросу «что решили и почему не иначе» она не нужна.
+    Нет ни «Решения», ни «Следствий» (DR не по шаблону) — тело целиком: резать вслепую нельзя.
+
+    Вариант отбрасывается только когда помечен «выбран» (он уже в «Решении») и не помечен
+    отказом: слово «отклонён» автор мог не оставить в заголовке, а «Причина отказа» в теле
+    у такого варианта есть. Заголовки секций понижены до `###`: `## ` в паке — это границы
+    карточек, и срез не должен выглядеть как несколько карточек."""
+    b = body(text)
+    decision, effects, options = [], [], []
+
+    def down(s: str) -> str:
+        return re.sub(r"\A## ", "### ", s.strip())
+    for p in re.split(r"(?m)^(?=## )", b):
+        head = p.splitlines()[0].lstrip("# ").strip().lower() if p.strip() else ""
+        if re.match(r"(решени|decision)", head):
+            decision.append(down(p))
+        elif re.match(r"(следстви|последстви|consequence)", head):
+            effects.append(down(p))
+        elif re.match(r"(рассмотренн|вариант|option|alternative)", head):
+            subs = re.split(r"(?m)^(?=### )", p)
+            keep = [x.strip() for x in subs[1:]
+                    if re.search(r"(?i)отклон|reject|причин[аы] отказа|не выбран|not chosen", x)
+                    or not re.search(r"(?i)выбран|chosen|selected", x.splitlines()[0])]
+            if keep or len(subs[0].strip().splitlines()) > 1:
+                options.append("\n\n".join([down(subs[0])] + keep))
+    if not (decision or effects):
+        return b.strip()
+    return "\n\n".join(decision + effects + options)
+
+
+def trust_header(fm: dict, section: str = "", text: str = "") -> str:
     """Шапка доверия — инвариант 4: карточка не входит в промпт без неё.
 
     Одна на все пакеты (`ctx_pack`, `spec_pack`). Основание словами вместо имени владельца:
     доверие больше не чьё-то решение, и спрашивать «кто принял» стало не у кого. Спрашивать
     надо «почему», а ответ на это пишет `kb:trust` — статус задачи и то, чем доказана связь.
+    Исключение — Decision Record: его статус — состояние решения, и шапка по состоянию
+    (`decision_header`); `text` нужен ей для причины отказа у отклонённого.
     """
+    if is_decision_card(fm, section):
+        return decision_header(fm, text)
     status = (fm.get("status") or "").strip().strip('"')
     st = status or "без статуса"
     if status == "deprecated":
@@ -331,7 +415,13 @@ def frontmatter(text: str) -> dict:
     for line in head.splitlines():
         m = re.match(r"^([\w_]+)\s*:(.*)$", line)
         if m:
-            fm[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+            val = m.group(2)
+            # Статус — одно слово из закрытого словаря, и хвост ` # …` в нём — комментарий
+            # YAML (шаблон DR когда-то нёс его на этой строке). Остальные поля комментарий
+            # не режут: в заголовке `#` законен.
+            if m.group(1) == "status":
+                val = re.sub(r"\s+#.*$", "", val)
+            fm[m.group(1)] = val.strip().strip('"').strip("'")
     return fm
 
 

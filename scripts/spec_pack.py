@@ -181,7 +181,7 @@ def main() -> int:
         for s in stems:
             c = cards[s]
             L.append(f"### {s}\n")
-            L.append(trust_header(c["fm"], c["section"]) + "\n")
+            L.append(trust_header(c["fm"], c["section"], c["text"]) + "\n")
             L.append(body(c["text"]).strip() + "\n")
 
     section([s for s in included if s not in drs], "Основания")

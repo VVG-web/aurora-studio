@@ -30,7 +30,7 @@ conversation that exposed a gap in the base is a reason to write a card.
 
 `ctx:context <topic>` selects cards and prints them with a **trust header and a basis** each — not "draft" but "PRJ-123
 in progress". Useful flags: `--mode generate|review|ask|evaluate|meetings|trusted_meetings`, `--max-cards`, `--budget`,
-`--save` (to `Artifacts/drafts/`). In `generate` mode only trusted knowledge goes in — build requirements on that.
+`--save` (to `Artifacts/drafts/`). In `generate` mode only trusted knowledge and accepted Decision Records go in — build requirements on that; `ask` adds rejected and replaced ones.
 
 The rule for any manual path: **assemble the context first**, do not feed an assistant Confluence pages as truth. The
 difference between "a card with status `knowledge` and a basis" and "a page from the wiki" is the difference between a
