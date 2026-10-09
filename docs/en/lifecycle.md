@@ -102,6 +102,12 @@ flowchart TD
 "Fix the base" and "Rebuild" are assembled of the same steps; the full lists are in `cockpit/scenarios.txt`. Steps
 done by a human are marked in routes and are not run.
 
+**The base update date** is when "Update the base" and then "Fix the base" passed in full. "Update" alone without
+"Fix" does not move the date: the new is taken, but the base is not put in order. The route itself writes the date to
+`AuroraKnowledgeDB/meta/kb_updated.json`, in the same commit as its result — so it is shared by the whole team. It is
+shown on the project tile on the Bridge, in "Health", "Ask" and "Productivity": which base an answer or a document
+rests on. The run journal (`run_log.md`) belongs to one machine and does not go to git.
+
 ### Routes on a schedule and from the terminal
 
 The **Cron** section (the "Machine" group) puts routes and single commands on a timetable and chains them: "at 20:00

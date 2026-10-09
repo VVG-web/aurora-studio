@@ -138,7 +138,7 @@ def retired_paths() -> list:
 # Теперь он в своей `.aurora/` и вне git: харнессы у каждого свои, движок — копия кита.
 # Переезд раскладывает прежнюю папку по смыслу, ничего чужого не удаляя:
 #   данные движка (состояние, прогоны, вложения, кэш) → `.aurora/`;
-#   журнал запусков → `AuroraKnowledgeDB/meta/run_log.md` (в git: он нужен команде);
+#   журнал запусков → `AuroraKnowledgeDB/meta/run_log.md` (с 1.168.0 вне git, см. ниже);
 #   update_ignore → `aurora.update_ignore.txt` в корне проекта;
 #   навыки проекта → `.claude/skills/` (общие, в git); скрипты проекта → `Scripts/`;
 #   копии кита убираются — их заново ставит обновление в `.aurora/`;
@@ -587,6 +587,38 @@ def refresh_gitignore(target: Path) -> list:
         return []
 
 
+RUNLOG_REL = "AuroraKnowledgeDB/meta/run_log.md"
+
+
+def untrack_runlog(target: Path) -> bool:
+    """Снять журнал запусков с учёта git, оставив файл на диске (1.168.0).
+
+    Правило .gitignore не снимает с учёта то, что уже в истории: журнал продолжал бы
+    меняться в каждом коммите. Здесь кит сам решил вывести его из git — и снимает сам,
+    только этот файл. Удаление из индекса уйдёт со следующим коммитом проекта."""
+    try:
+        tracked = subprocess.run(["git", "-C", str(target), "ls-files", "--error-unmatch", "--",
+                                  RUNLOG_REL], capture_output=True, timeout=30).returncode == 0
+        if not tracked:
+            return False
+        return subprocess.run(["git", "-C", str(target), "rm", "--cached", "-q", "--", RUNLOG_REL],
+                              capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def backfill_kb_updated(target: Path) -> str:
+    """Дата обновления базы для проекта, где её ещё нет: из истории прогонов этой машины
+    (`.aurora/runs`). → дата полного обновления или пусто."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    try:
+        import kb_updated as KU
+        rec = KU.backfill(target, str(target / ".aurora" / "runs"))
+    except Exception:  # noqa: BLE001 — дата не повод ронять обновление движка
+        return ""
+    return (rec or {}).get("updated", "")
+
+
 def refresh_gitattributes(target: Path) -> list:
     """Дописать в .gitattributes правила кита — сейчас одно: пусковой .bat без перевода строк.
 
@@ -749,12 +781,16 @@ def run(target: Path, apply: bool, structure_only: bool = False):
     FG.apply(target, guides)
     refreshed = refresh_hooks(target)
     ignored = refresh_gitignore(target)
+    untracked = untrack_runlog(target)
+    kb_date = backfill_kb_updated(target)
     attrs = refresh_gitattributes(target)
     stamp_version(target, kv)
     print(f"\n✅ Применено: {len(new_dirs)} папок, {len(writes)} перезаписей, "
           f"{len(seeds)} .new-файлов, {len(retired)} удалено"
           + (f", хук обновлён ({refreshed})" if refreshed else "")
           + (f", в .gitignore дописано правил: {len(ignored)}" if ignored else "")
+          + (", журнал запусков снят с учёта git (файл на месте)" if untracked else "")
+          + (f", дата обновления базы из истории прогонов: {kb_date}" if kb_date else "")
           + (f", в .gitattributes дописано правил: {len(attrs)}" if attrs else "")
           + (f", конфиг: {', '.join(cfg_done)}" if cfg_done else "")
           + (f", описаний папок: {len(guides)}" if guides else "")

@@ -520,6 +520,23 @@ class RouteRun:
         return (self.t("dur.sec", n=sec) if sec < 60
                 else self.t("dur.min_sec", m=sec // 60, s=sec % 60))
 
+    def _kb_updated(self) -> None:
+        """Отметить пройденный маршрут в `AuroraKnowledgeDB/meta/kb_updated.json`. Отметка —
+        не шаг маршрута: не вышла — маршрут всё равно пройден, только сказано вслух."""
+        try:
+            import kb_updated as KU
+            who = getattr(self.ck, "who", lambda p: "")(self.project)
+            kit = getattr(self.ck, "kit_version", lambda: "")()
+            rec = KU.mark(self.project, self.sc["id"], who=who, kit=kit, run=self.run_id)
+        except Exception as e:  # noqa: BLE001
+            self.say("warn", self.t("route.kb_updated_failed", why=f"{type(e).__name__}: {e}"))
+            return
+        mine = rec and rec.get(self.sc["id"], {}).get("at")
+        if rec and rec.get("updated") and rec["updated"] == mine:
+            self.say("ok", self.t("route.kb_updated"))
+        elif self.sc["id"] == "update":
+            self.say("note", self.t("route.kb_update_needs_fix"))
+
     def _commit(self, message: str) -> dict:
         return self.ck.git_commit(self.project, message, None, True)
 
@@ -652,6 +669,10 @@ class RouteRun:
         else:
             self.say("ok", t("route.passed", title=self.sc["title"],
                              steps=t("route.steps_n", n=self.done)))
+        # Дата обновления базы — общая для команды (1.168.0): «Обновить базу» и следом
+        # «Починить базу», пройденные целиком. Пишется до итогового коммита и уходит в него.
+        if self.write and reason == "passed" and self.sc.get("id") in ("update", "fix"):
+            self._kb_updated()
         if self.write:
             how = (t("route.how_stalled") if self.stalled
                    else t("route.how_stopped", cmd=bad) if bad else t("route.how_passed"))

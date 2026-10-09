@@ -62,6 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
 import route_runner as RR                        # noqa: E402 — маршрут: кнопка, расписание, терминал
 import watchdog as WD                             # noqa: E402 — сторож зависших после обрыва связи шагов
+import kb_updated as KBU                          # noqa: E402 — дата обновления базы (1.168.0)
 import git_sync as GS                            # noqa: E402 — Git проекта: настройка, состояние
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
 import bots as BOTS                              # noqa: E402 — боты проектов: раздел «Боты»
@@ -2462,6 +2463,8 @@ def project_card(path: str) -> dict:
         # Упавшая автоматика Git — отметка на пункте меню, пока следующая не пройдёт.
         "git_alert": bool(GS.alert(path)),
         "git_provider": GS.provider_quick(path),
+        # Дата обновления базы — из git проекта, общая для команды (1.168.0).
+        "kb_updated": KBU.read(path),
     }
 
 
@@ -2823,7 +2826,7 @@ def _health_files(project: str, lang: str) -> dict:
             trace = json.loads(read_text(tp, limit=20_000))
         except ValueError:
             trace = {}
-    return {"agent": last_agent_run(project),
+    return {"agent": last_agent_run(project), "kb_updated": KBU.read(project),
             "sources": localized_sources(sources(project), lang), "runs": read_runlog(project),
             "trace": trace, "source_health": source_health(project),
             "index": index_health(project), "ping": ping_state(project),
@@ -3144,7 +3147,9 @@ def last_agent_run(project: str) -> dict:
 
 # ------------------------------------------------------- журнал запусков проекта
 
-# С 1.158.0 журнал — в `AuroraKnowledgeDB/meta/`: движок ушёл из git, а журнал команде нужен.
+# С 1.158.0 журнал — в `AuroraKnowledgeDB/meta/`; с 1.168.0 он вне git (правило кита в
+# .gitignore): менялся каждым запуском и давал каждый восьмой коммит проекта. Общее для
+# команды — дата обновления базы (`kb_updated.json`), она в git.
 RUNLOG = os.path.join("AuroraKnowledgeDB", "meta", "run_log.md")
 RUNLOG_LEGACY = os.path.join(".opencode", "run_log.md")
 def runlog_path(project: str) -> str:
@@ -3156,9 +3161,9 @@ def runlog_path(project: str) -> str:
 
 RUNLOG_HEAD = """# Журнал запусков
 
-Кто и когда последний раз запускал команду Авроры в этом проекте. Файл лежит в git
-(`AuroraKnowledgeDB/meta/`), поэтому ответ на «когда обновляли зеркала» есть у всей
-команды, а не только у того, у кого открыта вкладка панели.
+Кто и когда последний раз запускал команду Авроры в этом проекте — на этой машине. Файл
+вне git: меняется каждым запуском. Когда база обновлялась в последний раз, для всей команды
+говорит `AuroraKnowledgeDB/meta/kb_updated.json` — он в git.
 
 Пишет панель (Cockpit) после каждого запуска — по строке на команду, последний прогон.
 Запуски из терминала сюда не попадают: у них нет общей точки, через которую проходят все
@@ -3199,8 +3204,8 @@ def who(project: str) -> str:
 def write_runlog(project: str, cmd: str, rc: int, line: str, secs: int = 0) -> None:
     """Обновить строку команды. Порядок — по имени команды: так дифф остаётся коротким.
 
-    Пишем последний запуск, а не всю хронологию: файл в git, и журнал, растущий на строку
-    от каждого прогона, превратится в источник конфликтов при слиянии веток.
+    Пишем последний запуск, а не всю хронологию: файл должен оставаться коротким, чтобы
+    панель читала его мгновенно. С 1.168.0 он вне git.
     """
     runs = read_runlog(project)
     runs[cmd] = {"at": utc_stamp(), "rc": rc,

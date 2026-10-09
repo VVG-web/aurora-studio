@@ -118,7 +118,8 @@ Sources/                      зеркала подключённых модул
 Raw/{laws,contract,customer,project,meetings,examples,corrections}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
-                              _inbox, meta (там же run_log.md — журнал запусков)
+                              _inbox, meta (kb_updated.json — дата обновления базы, в git;
+                              run_log.md — журнал запусков этой машины, вне git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
 Deliverables/{work,work/spec-packs,released,_archive}/

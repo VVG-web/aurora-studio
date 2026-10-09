@@ -123,6 +123,15 @@ function wireSuggest(ctx){
 }
 
 export async function refresh(ctx){
+  // На какой базе соберётся документ: дата её полного обновления, общая для команды (1.168.0).
+  const kbLine = ctx.$("#workKb");
+  if (kbLine){
+    const kb = ctx.ui.kbInfo(ctx.project);
+    kbLine.hidden = !ctx.project;
+    kbLine.textContent = kb.at ? ctx.t("work.kb", {when: ctx.ui.stampText(kb.at)}) : ctx.t("work.kb_never");
+    kbLine.title = kb.title;
+    kbLine.style.color = kb.stale || !kb.at ? "var(--tier-inreview)" : "";
+  }
   await fillKinds(ctx);
   await renderRoutes(ctx, "продуктивность", ctx.$("#workBody"));   // данные движка
 }

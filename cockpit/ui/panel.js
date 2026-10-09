@@ -3,7 +3,7 @@ const TOKEN = "__AURORA_TOKEN__";
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
 // честно сообщает, что новых команд и метрик в ней может не быть. Проверяется тестом.
-const UI_VERSION = "1.167.0";
+const UI_VERSION = "1.168.0";
 const S = { state:null, project:null, health:null, view:"overview", job:null, docs:[] };
 
 const $ = (s,r=document)=>r.querySelector(s);
@@ -1362,6 +1362,27 @@ const HEALTH_SLOW = ["lint", "todo"];
 const HEALTH_ALL = [...HEALTH_QUICK, ...HEALTH_SLOW];
 // Часть пришла. Здоровье без списка частей (ответ целиком) — всё на месте.
 const hasPart = (h, part) => !!h && (!h.loaded || h.loaded.includes(part));
+// Дата обновления базы (1.168.0) — общая для команды, из `kb_updated.json` в git проекта:
+// полное «Обновить базу» и следом «Починить базу». → {at, text, chip, title, stale}.
+// Источник — свежее из двух: здоровье проекта (после маршрута пересчитывается) или карточка.
+const KB_STALE_DAYS = 7;
+function kbInfo(p){
+  const rec = (p && ((p.health && p.health.kb_updated) || p.kb_updated)) || {};
+  const at = rec.updated ? Date.parse(rec.updated) : 0;
+  const lines = [];
+  if (rec.update) lines.push(t("kb.last_update", {when: stampText(Date.parse(rec.update.at)),
+                                                  who: rec.update.who || "—"}));
+  if (rec.fix) lines.push(t("kb.last_fix", {when: stampText(Date.parse(rec.fix.at)),
+                                            who: rec.fix.who || "—"}));
+  // «Обновить» прошло после последнего полного обновления, а «Починить» — ещё нет.
+  const pending = rec.update && (!rec.updated || rec.update.at > rec.updated);
+  if (pending) lines.push(t("kb.pending_fix"));
+  const stale = at && (Date.now() - at) / 86400000 > KB_STALE_DAYS;
+  return {at, stale, pending: !!pending,
+          text: at ? t("kb.updated", {when: stampText(at)}) : t("kb.never"),
+          chip: at ? t("kb.chip", {when: stampText(at)}) : t("kb.chip_never"),
+          title: [t("kb.rule"), ...lines].join("\n")};
+}
 // Когда посчитано самое старое из пришедшего (мс) — ему и верить, а не часам страницы.
 const healthAt = h => { const v = Object.values((h && h.at) || {}); return v.length ? Math.min(...v) * 1000 : 0; };
 function stampText(ms){
@@ -1402,6 +1423,7 @@ function loadHealth(p, parts = HEALTH_ALL, force = false){
           delete r.project; delete r.parts; delete r.at;
           Object.assign(h, r);
           h.at = Object.assign(h.at || {}, at);
+          if (r.kb_updated) p.kb_updated = r.kb_updated;
         }
         if (!h.loaded.includes(part)) h.loaded.push(part);
         healthChanged();
@@ -1496,6 +1518,8 @@ function renderOverview(){
           : el("span",{class:"spin",style:"margin-top:6px"})),
       el("div",{class:"foot"},
         el("span",{class:"chip"+(p.behind?" warn":"")}, t("overview.engine", {v: p.engine})),
+        // Свежесть базы — то, на чём стоят ответы и документы проекта (1.168.0).
+        (k => el("span",{class:"chip" + (k.stale || !k.at ? " warn" : ""), title: k.title}, k.chip))(kbInfo(p)),
         // Пока здоровье считается, место под чипы держим пустыми заглушками: без них
         // карточки подрастают в момент прихода данных, плитки разъезжаются под курсором
         // и клик «выбрать проект» уходит в никуда или в соседний проект.
@@ -4142,7 +4166,7 @@ function moduleCtx(id, root){
     ui: {metricCard, metric, goRoute, goCmd, kindChip, skillLine, copyButton, engineWord,
          editor: markdownEditor,
          // Здоровье приходит частями: пришла ли часть и чем занять место под её число.
-         has: hasPart, wait: waitMark, healthAt, stampText},
+         has: hasPart, wait: waitMark, healthAt, stampText, kbInfo},
     openPath, isEngineCmd, hideDev, openProject,
     // Журнал запусков ведёт ядро: отметка «последний запуск» стоит в
     // нескольких разделах сразу, и считать её каждому по-своему нельзя.

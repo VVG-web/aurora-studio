@@ -105,6 +105,7 @@ scripts/aurora_hooks.py  => .aurora/scripts/aurora_hooks.py
 scripts/aurora_setup.py  => .aurora/scripts/aurora_setup.py
 scripts/aurora_doctor.py => .aurora/scripts/aurora_doctor.py
 scripts/aurora_update.py => .aurora/scripts/aurora_update.py
+scripts/kb_updated.py => .aurora/scripts/kb_updated.py
 scripts/folder_guides.py => .aurora/scripts/folder_guides.py
 scripts/report_analyst.py => .aurora/scripts/report_analyst.py
 

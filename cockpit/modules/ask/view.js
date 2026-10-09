@@ -36,6 +36,15 @@ export async function refresh(ctx){
   // Разговор принадлежит проекту: открытым его нести в другой нельзя. Раньше это
   // делало ядро прямо в выборе проекта — знание о разговоре жило вне раздела.
   const project = ctx.project ? ctx.project.path : "";
+  // На какой базе стоит ответ: дата её полного обновления, общая для команды (1.168.0).
+  const kbLine = ctx.$("#askKb");
+  if (kbLine){
+    const kb = ctx.ui.kbInfo(ctx.project);
+    kbLine.hidden = !ctx.project;
+    kbLine.textContent = kb.at ? ctx.t("ask.kb", {when: ctx.ui.stampText(kb.at)}) : ctx.t("ask.kb_never");
+    kbLine.title = kb.title;
+    kbLine.style.color = kb.stale || !kb.at ? "var(--tier-inreview)" : "";
+  }
   if (project !== SHOWN){
     SHOWN = project;
     THREAD = null;

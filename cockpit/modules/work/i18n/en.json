@@ -86,5 +86,7 @@
   "work.help.publish_go.result": "ship:publish runs in the console; the page is created or updated. A draft — only after you confirm.",
   "work.help.copy_task.what": "Copy the publishing task for an assistant.",
   "work.help.copy_task.how": "You publish through your assistant, not from the panel.",
-  "work.help.copy_task.result": "The clipboard holds “Publish … to Confluence as a child page”; paste it to the assistant."
+  "work.help.copy_task.result": "The clipboard holds “Publish … to Confluence as a child page”; paste it to the assistant.",
+  "work.kb": "The document is built on the knowledge base updated {when}.",
+  "work.kb_never": "The knowledge base has not been fully updated yet: the document is built on what it holds now."
 }

@@ -33,7 +33,7 @@ def test_health_comes_in_parts_and_whole_health_is_the_same(tmp: Path):
     full = ck.health(root)
     keys = {"project", "stats", "lint", "doctor", "mirrors", "build", "agent", "sources", "runs",
             "trace", "todo", "source_health", "index", "ping", "unfinished", "corrections",
-            "retrieval"}
+            "retrieval", "kb_updated"}
     assert set(full) == keys, sorted(set(full) ^ keys)
     got = {}
     for part in ck.HEALTH_PARTS:

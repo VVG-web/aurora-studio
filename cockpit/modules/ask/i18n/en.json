@@ -66,5 +66,7 @@
   "ask.role_name.planner": "Planner: plans, extraction, meetings",
   "ask.role_name.critic": "Critic: checks decisions",
   "ask.role_name.qa": "Momus: support check and review",
-  "ask.role_name.worker": "Writer: parsing, theses, answers"
+  "ask.role_name.worker": "Writer: parsing, theses, answers",
+  "ask.kb": "Answered by the knowledge base updated {when}.",
+  "ask.kb_never": "The knowledge base has not been fully updated yet: the answer is from what it holds now."
 }

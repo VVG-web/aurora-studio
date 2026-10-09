@@ -118,7 +118,8 @@ Sources/                      mirrors of connected modules: Confluence, JIRA, We
 Raw/{laws,contract,customer,project,meetings,examples,corrections}/
 AuroraKnowledgeDB/            Concepts, Processes, Glossary, Systems, Roles, Statuses, Reference,
                               Requirements, Specs, Questions, Decisions, MOC, _archive, _assets,
-                              _inbox, meta (run_log.md — the run journal — is there too)
+                              _inbox, meta (kb_updated.json — the base update date, in git;
+                              run_log.md — this machine's run journal, outside git)
 Artifacts/{us,ac,algorithms,dictionaries,screens,contracts,mappings,role-model,diagrams,
            acceptance,tests,reviews,reports,drafts,meetings}/
 Deliverables/{work,work/spec-packs,released,_archive}/

@@ -118,6 +118,10 @@ AuroraKnowledgeDB/meta/embeddings.json
 # MCP-сервера графа, страница и скрипт Neo4j от graphify на мегабайты, пересобираются
 # каждым прогоном. Заметки тем в `MOC/Сообщества/` — навигация базы, они в git.
 AuroraKnowledgeDB/meta/graphify/
+# Журнал запусков панели — по строке на команду, меняется каждым запуском: в git он давал
+# каждый восьмой коммит и вечно грязное дерево. Дата обновления базы для команды — в
+# AuroraKnowledgeDB/meta/kb_updated.json, она в git (1.168.0).
+AuroraKnowledgeDB/meta/run_log.md
 """
 
 

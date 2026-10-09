@@ -45,6 +45,12 @@ export async function refresh(ctx){
   }
   const st = h.stats || {};
   box.innerHTML = "";
+  // Дата обновления базы — общая для команды (1.168.0); «обновлено» рядом — свежесть чисел.
+  const kb = ctx.ui.kbInfo(ctx.project), kbChip = ctx.$("#healthKb");
+  kbChip.hidden = false;
+  kbChip.textContent = kb.text;
+  kbChip.title = kb.title;
+  kbChip.className = "chip" + (kb.stale || !kb.at ? " warn" : "");
   // Числа — из памяти панели: дата — у самого старого из них, а не время открытия страницы.
   const at = ctx.ui.healthAt(h), stamp = ctx.$("#healthStamp");
   stamp.hidden = !at;

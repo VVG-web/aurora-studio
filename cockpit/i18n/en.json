@@ -828,5 +828,16 @@
   "live.cron_none": "no chain is running",
   "live.cron_lost": "The chain stream was not read — was the panel restarted?",
   "live.cron_cut": "… the start of the chain left memory — showing the tail",
-  "live.cron_head_end": "cron: {name} — item results are in the output"
+  "live.cron_head_end": "cron: {name} — item results are in the output",
+  "kb.updated": "knowledge base updated {when}",
+  "kb.never": "the base has not been fully updated yet",
+  "kb.chip": "base: {when}",
+  "kb.chip_never": "base: not updated",
+  "kb.rule": "A base update is “Update the base” and then “Fix the base”, both passed in full. The date is shared by the team: it is in the project's git (AuroraKnowledgeDB/meta/kb_updated.json).",
+  "kb.last_update": "“Update the base”: {when}, {who}",
+  "kb.last_fix": "“Fix the base”: {when}, {who}",
+  "kb.pending_fix": "Since the last update, “Update the base” has run but “Fix the base” has not yet.",
+  "route.kb_updated": "✓ The knowledge base is updated: the date is in AuroraKnowledgeDB/meta/kb_updated.json and goes to git with the route result.",
+  "route.kb_update_needs_fix": "The base update date moves after “Fix the base”: an update is both routes.",
+  "route.kb_updated_failed": "Could not record the base update date: {why}"
 }
