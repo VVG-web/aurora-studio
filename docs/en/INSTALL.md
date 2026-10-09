@@ -288,6 +288,11 @@ mcp:
   jira_write: true
 ```
 
+An attachment by `path` is taken only from `.aurora/state/reviews/`, `Workspaces/bots/`,
+`Artifacts/` and `Deliverables/work/`; secrets (`.env*`, keys, `mcp.json`), hidden files, paths
+outside the project (including via links) and files over 5 MB are refused with a reason. Values in
+Confluence queries (title words, space key) are escaped.
+
 A trial publish always works. The tools use the project's keys — the same as the sync (`JIRA_PAT`,
 `CONFLUENCE_PAT` in `.env.aurora.local`).
 

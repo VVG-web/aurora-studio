@@ -235,6 +235,98 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
 
 
 @test
+def test_jira_publish_path_refuses_secrets_and_escapes_cql(tmp: Path):
+    """Вложение по path: секреты, файлы вне проекта, ссылки наружу, скрытые файлы, папки не из
+    списка и слишком большие файлы отклоняются понятной ошибкой, обычный отчёт проходит; значения
+    в CQL экранируются, а ключ раздела проверяется (BL-SEC-11)."""
+    root = make_project(tmp)
+    _path()
+    import atlassian_ops as A
+    secret = root / (".env." + "aurora.local")
+    secret.write_text("JIRA_PAT=secret", encoding="utf-8")
+    (tmp / "outside.txt").write_text("вне проекта", encoding="utf-8")
+    (root / "README.md").write_text("корень", encoding="utf-8")
+    art = root / "Artifacts"
+    art.mkdir(exist_ok=True)
+    (art / "report.md").write_text("отчёт", encoding="utf-8")
+    (art / ".hidden.md").write_text("скрытый", encoding="utf-8")
+    (art / "big.md").write_bytes(b"x" * (A.ATTACH_MAX + 1))
+    saved_dir = root / ".aurora" / "state" / "reviews"
+    saved_dir.mkdir(parents=True, exist_ok=True)
+    (saved_dir / "r.md").write_text("отчёт ревью", encoding="utf-8")
+    links = {"out.md": tmp / "outside.txt", "env.md": secret}
+    try:
+        for name, target in links.items():
+            os.symlink(target, art / name)
+    except OSError:
+        links = {}                      # ссылки недоступны (Windows без прав) — остальное проверим
+    calls = []
+
+    class Fake:
+        def get(self, path):
+            return {"fields": {"attachment": []}}
+
+        def send(self, method, path, body=None, files=None, timeout=30):
+            calls.append(files)
+            return {}
+    saved = A.jira
+    A.jira = lambda root="": Fake()
+    try:
+        def refused(path, *words):
+            try:
+                A.run({"op": "jira_publish", "issue": "ABC-1", "path": path, "dry_run": True},
+                      str(root))
+            except A.OpError as e:
+                assert all(w in str(e) for w in words), (path, str(e))
+                return
+            raise AssertionError(f"«{path}» прошёл в Jira")
+        refused(secret.name, "секрет")
+        refused("../outside.txt", "вне проекта")
+        refused(str(tmp / "outside.txt"), "папок для публикации")
+        refused("README.md", "папок для публикации")
+        refused("Artifacts/.hidden.md", "скрыт")
+        refused("Artifacts/big.md", "МБ")
+        for name in links:
+            refused(f"Artifacts/{name}")
+        ok = A.run({"op": "jira_publish", "issue": "ABC-1", "path": "Artifacts/report.md",
+                    "dry_run": True}, str(root))
+        assert ok["ok"] and "report.md" in ok["steps"][0]["note"], ok
+        ok = A.run({"op": "jira_publish", "issue": "ABC-1", "dry_run": True,
+                    "path": ".aurora/state/reviews/r.md"}, str(root))
+        assert ok["ok"], "отчёт ревью из .aurora/state/reviews не публикуется"
+        try:
+            A.run({"op": "jira_publish", "issue": "ABC-1", "filename": "big.md", "dry_run": True,
+                   "content": "x" * (A.ATTACH_MAX + 1)}, str(root))
+            raise AssertionError("большой content прошёл")
+        except A.OpError as e:
+            assert "МБ" in str(e)
+    finally:
+        A.jira = saved
+    assert not calls, "в Jira что-то ушло"
+    urls = []
+
+    class Conf:
+        def get(self, path):
+            urls.append(path)
+            return {"results": []}
+    saved = A.confluence
+    A.confluence = lambda root="": Conf()
+    try:
+        import urllib.parse
+        A.run({"op": "confluence_find", "query": 'a"b\\" OR space = "X', "space": "T"}, str(root))
+        cql = urllib.parse.parse_qs(urllib.parse.urlparse(urls[-1]).query)["cql"][0]
+        assert cql == 'type = page AND title ~ "a\\"b\\\\\\" OR space = \\"X" AND space = "T"', cql
+        try:
+            A.run({"op": "confluence_find", "query": "x", "space": 'T" OR space != "'}, str(root))
+            raise AssertionError("ключ раздела с кавычкой прошёл")
+        except A.OpError as e:
+            assert "раздела" in str(e)
+        assert len(urls) == 1
+    finally:
+        A.confluence = saved
+
+
+@test
 def test_aurora_joins_assistants_with_a_backup_and_a_way_back(tmp: Path):
     """Ассистенты машины: Аврора вставляется правкой текста (комментарии человека живы),
     перед правкой — копия, после — проверка; возврат из копии кладёт файл как был."""

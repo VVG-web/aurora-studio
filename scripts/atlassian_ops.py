@@ -50,6 +50,11 @@ OPS = ("check", "jira_search", "jira_issue", "jira_publish", "confluence_find",
 SEARCH_FIELDS = "summary,issuetype,status,parent,labels,attachment,created,project"
 LIMIT_MAX = 200
 TEXT_MAX = 120_000          # страница Confluence текстом: дальше — не контекст, а свалка
+ATTACH_MAX = 5_000_000      # вложение в Jira: отчёт, а не выгрузка; серверный предел обычно 10 МБ
+# Откуда `path` может брать вложение: отчёты ревью, папки прогонов ботов, артефакты и рабочие
+# поставки. Всё остальное в проекте — не для публикации в задачу, которую читают многие.
+PUBLISH_ROOTS = (".aurora/state/reviews", "Workspaces/bots", "Artifacts", "Deliverables/work")
+SPACE_KEY = re.compile(r"^[~\w.@-]+$")
 
 
 class OpError(Exception):
@@ -186,6 +191,43 @@ def op_jira_issue(req: dict, root: str = "") -> dict:
     return out
 
 
+def cql_quote(value: str) -> str:
+    """Значение для строкового литерала CQL/JQL: обратная косая и кавычка экранируются (по
+    правилам языка), переводы строк — пробелом. Иначе значение выходит из кавычек и меняет
+    запрос."""
+    v = re.sub(r"[\r\n\t]+", " ", str(value))
+    return v.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def publish_file(path: str, root: str = "") -> tuple:
+    """(байты, имя) файла для вложения. Файл — только внутри проекта (ссылки наружу не
+    считаются), не секрет (`request_context.is_secret`), из разрешённых папок и не больше
+    предела: модель, получившая инъекцию со страницы, не должна выгрузить токены в задачу."""
+    from request_context import SECRET_NAME, inside, is_secret
+    base = os.path.realpath(root or os.getcwd())
+    full = inside(base, path)
+    if not full:
+        raise OpError(f"«{path}» вне проекта — публиковать можно только файлы проекта")
+    rel = os.path.relpath(full, base).replace(os.sep, "/")
+    top = next((r for r in PUBLISH_ROOTS if rel.startswith(r + "/")), "")
+    # Имя по ссылке тоже проверяем: ссылка с обычным именем на секрет не должна пройти.
+    link_name = os.path.basename(path.replace("\\", "/").rstrip("/"))
+    if SECRET_NAME.match(link_name) or SECRET_NAME.match(os.path.basename(rel)) \
+            or (not top and is_secret(rel)):
+        raise OpError(f"«{path}» — секреты и служебные файлы в Jira не публикуются")
+    if not top:
+        raise OpError(f"«{path}» не из папок для публикации: {', '.join(PUBLISH_ROOTS)}")
+    inner = rel[len(top) + 1:].split("/")
+    if any(part.startswith(".") for part in inner) or is_secret("/".join(inner)):
+        raise OpError(f"«{path}» — скрытые и служебные файлы в Jira не публикуются")
+    if not os.path.isfile(full):
+        raise OpError(f"файла «{path}» в проекте нет")
+    if os.path.getsize(full) > ATTACH_MAX:
+        raise OpError(f"файл «{path}» больше {ATTACH_MAX // 1_000_000} МБ — в Jira не грузится")
+    with open(full, "rb") as f:
+        return f.read(ATTACH_MAX + 1), os.path.basename(full)
+
+
 def op_jira_publish(req: dict, root: str = "") -> dict:
     """Вложение → комментарий → метки. Следующий шаг — только если предыдущий прошёл."""
     key = str(req.get("issue") or "").strip()
@@ -200,13 +242,8 @@ def op_jira_publish(req: dict, root: str = "") -> dict:
     content = req.get("content")
     path = str(req.get("path") or "").strip()
     if path and content is None:
-        full = os.path.realpath(os.path.join(root or os.getcwd(), path))
-        base = os.path.realpath(root or os.getcwd())
-        if not full.startswith(base + os.sep) or not os.path.isfile(full):
-            raise OpError(f"файла «{path}» в проекте нет")
-        with open(full, "rb") as f:
-            content = f.read()
-        filename = filename or os.path.basename(full)
+        content, name = publish_file(path, root)
+        filename = filename or name
     if content is not None and not filename:
         raise OpError("у вложения нет имени: filename")
     comment = str(req.get("comment") or "")
@@ -220,6 +257,8 @@ def op_jira_publish(req: dict, root: str = "") -> dict:
 
     if content is not None:
         data = content.encode("utf-8") if isinstance(content, str) else content
+        if len(data) > ATTACH_MAX:
+            raise OpError(f"вложение больше {ATTACH_MAX // 1_000_000} МБ — в Jira не грузится")
         if dry:
             # Пробный прогон тоже смотрит, что уже лежит: «положил бы» поверх готового
             # отчёта — неправда о том, что случится в боевом.
@@ -292,8 +331,10 @@ def op_confluence_find(req: dict, root: str = "") -> dict:
     s = settings(root)
     space = str(req.get("space") or s["space"] or "").strip()
     limit = max(1, min(int(req.get("limit") or 10), 50))
-    q = query.replace('"', '\\"')
-    cql = f'type = page AND title ~ "{q}"' + (f' AND space = "{space}"' if space else "")
+    if space and not SPACE_KEY.match(space):
+        raise OpError(f"не похоже на ключ раздела Confluence: «{space[:40]}»")
+    cql = (f'type = page AND title ~ "{cql_quote(query)}"'
+           + (f' AND space = "{cql_quote(space)}"' if space else ""))
     api = confluence(root)
     try:
         data = api.get("/rest/api/content/search?cql=" + urllib.parse.quote(cql)

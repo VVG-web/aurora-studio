@@ -217,7 +217,10 @@ TOOLS = [
                     "что было бы сделано, ничего не записав. Статус задачи не меняется.",
      "inputSchema": {"type": "object", "required": ["issue"], "properties": {
          "issue": {"type": "string"},
-         "path": {"type": "string", "description": "файл проекта для вложения"},
+         "path": {"type": "string",
+                  "description": "файл проекта для вложения: только из .aurora/state/reviews, "
+                                 "Workspaces/bots, Artifacts, Deliverables/work; секреты, "
+                                 "скрытые файлы и больше 5 МБ отклоняются"},
          "content": {"type": "string", "description": "текст вложения, если файла нет"},
          "filename": {"type": "string", "description": "имя вложения"},
          "comment": {"type": "string"},
