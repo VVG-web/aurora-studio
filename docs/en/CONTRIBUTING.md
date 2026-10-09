@@ -20,6 +20,22 @@ modules, panel sections and skins, and how to release versions. Русская �
   `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` to your GitHub login and `<id>+<login>@users.noreply.github.com`.
   The assistant adds no signature of its own to commits and PRs: the repository's `.claude/settings.json` turns it off.
 
+### Roles instead of product names
+
+Kit core code (`scripts/`, `cockpit/`, `reports/`) addresses a source **by its role in the `sources:` registry** —
+`tasktracker`, `projectwiki`, `documents`, `coderepo`, `testmgmt`, `webpages` — not by a product name. The names
+Jira and Confluence live only inside connectors (`connectors/<id>/`) and their manifests. New core code that needs
+"the task tracker" or "the project wiki" takes the source with that role from the registry; a product-name literal
+in the core is a reason to rewrite it, not a pattern to follow. Existing literals move to roles as the roles and
+aliases layer lands (the old names stay as aliases for existing projects).
+
+### Notes on the cause of a bug are anonymised
+
+A kit bug is often found through an error in a project. Record its cause so that the project cannot be recognised:
+in code, comments, tests, `CHANGELOG.md` and commit messages write "project PRJ-A / PRJ-B / PRJ-C" or "a customer
+project", with no project or client names, internal addresses or surnames. Build the reproduction on invented data.
+An assistant fixing a bug from a project's error follows the same rule: anonymise first, then write.
+
 ## What is welcome
 
 - improvements to the `skills/aurora-vault/` procedures and to the clarity of the card schema;
