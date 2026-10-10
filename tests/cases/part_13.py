@@ -2748,10 +2748,13 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
     LF (установка с macOS или из WSL) cmd.exe промахивается мимо меток `goto`.
     """
     tpl = (KIT / "templates/launchers/start-aurora.bat").read_text(encoding="utf-8")
-    assert ":find_py" in tpl and "sys.version_info >= (3, 10)" in tpl and "where py" not in tpl, \
-        "шаблон .bat проекта снова доверяет поиску по PATH"
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
+    # порог берём из константы движка: подъём PYTHON_MIN_HARD без правки хуков и лаунчеров краснит тест
+    lo = importlib.import_module("aurora_common").PYTHON_MIN_HARD
+    need = "sys.version_info >= (%d, %d)" % lo
+    assert ":find_py" in tpl and need in tpl and "where py" not in tpl, \
+        "шаблон .bat проекта снова доверяет поиску по PATH или порог разошёлся с PYTHON_MIN_HARD"
     inst = importlib.import_module("install_aurora")
     target = tmp / "proj"
     target.mkdir()
@@ -2766,8 +2769,8 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
         assert "python3 \"$LINT\"" not in body and "| python3 " not in body, \
             f"хук {name} зовёт python3 напрямую"
         assert "'py -3'" in body, f"хук {name} не пробует py -3"
-        assert "(3, 10)" in body and "(3, 9)" not in body and "Python 3.9" not in body, \
-            f"хук {name} допускает Python 3.9, а движок на нём останавливается"
+        assert need in body and "Python 3.9" not in body, \
+            f"хук {name}: порог разошёлся с PYTHON_MIN_HARD {lo}, движок на меньшем останавливается"
     sh = shutil.which("sh")
     if not sh or os.name == "nt":
         return

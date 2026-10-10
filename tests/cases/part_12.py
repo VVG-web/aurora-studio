@@ -945,8 +945,14 @@ def test_kit_launchers_try_python_before_trusting_it(tmp: Path):
     assert "/start-aurora.bat -text" in (KIT / ".gitattributes").read_text(encoding="utf-8"), \
         "git поменяет концы строк .bat при клоне или в архиве"
     text = bat.decode("utf-8")
-    assert "sys.version_info >= (3, 10)" in text and "where python" not in text, \
-        ".bat снова доверяет поиску по PATH"
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    # порог берём из константы движка: подъём PYTHON_MIN_HARD без правки лаунчеров краснит тест
+    need = "sys.version_info >= (%d, %d)" % importlib.import_module("aurora_common").PYTHON_MIN_HARD
+    assert need in text and "where python" not in text, \
+        ".bat снова доверяет поиску по PATH или порог разошёлся с PYTHON_MIN_HARD"
+    cmd_text = (KIT / "start-aurora.command").read_text(encoding="utf-8")
+    assert need in cmd_text, "start-aurora.command: порог разошёлся с PYTHON_MIN_HARD"
     bash = shutil.which("bash")
     if not bash or os.name == "nt":
         return
