@@ -1920,6 +1920,9 @@ def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Pat
                      + "\n\n## История\n\n- 2026-09-01: слито в [[Возврат-средств]] (kb_fix --merge).\n",
                      encoding="utf-8")
     donor.rename(kb / "_archive/Возврат-денег.md")
+    # источник донора жив на диске — только тогда его отсутствие у победителя есть потеря
+    (root / "Sources/Jira").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Jira/T-21.md").write_text("# T-21\n", encoding="utf-8")
     before = {str(p): p.read_bytes() for p in kb.rglob("*.md")}
     cp = run("kb_fix.py", "--merge-audit", cwd=root)
     assert cp.returncode == 1, f"потеря не замечена:\n{cp.stdout}\n{cp.stderr}"
@@ -1943,6 +1946,48 @@ def test_merge_audit_finds_donors_whose_traces_did_not_reach_the_winner(tmp: Pat
     cp = run("kb_fix.py", "--merge-audit", cwd=root)
     assert cp.returncode == 0 and "с потерями: 0" in cp.stdout, \
         f"восстановленное слияние всё ещё названо испорченным:\n{cp.stdout}"
+
+
+@test
+def test_merge_audit_ignores_sources_the_winner_legitimately_changed_later(tmp: Path):
+    """После слияния победитель законно меняет источники: `--gone-sources` переводит запись
+    на переехавшую страницу или снимает исчезнувшую, а архивного донора не правит. Проверка
+    слияний не принимает это за потерю: источник донора, которого уже нет на диске, не
+    считается, а живой и не дошедший до победителя назван по-прежнему."""
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    # страница донора переехала: у победителя уже новый путь, старого файла нет
+    (root / "Sources/Confluence").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Confluence/Новая-SPR-012.md").write_text("# SPR-012\n", encoding="utf-8")
+    # страница донора исчезла, и ремонт снял её у победителя
+    # страница донора жива, но до победителя не дошла
+    (root / "Sources/Confluence/Живая.md").write_text("# живая\n", encoding="utf-8")
+
+    def merged(name, winner, sources):
+        card(root, f"_archive/{name}.md", "донор", status="deprecated",
+             superseded_by=f'"[[{winner}]]"',
+             sources="".join(f'\n  - "{s}"' for s in sources))
+        p = kb / "_archive" / f"{name}.md"
+        p.write_text(p.read_text(encoding="utf-8") + f"\n## История\n\n- слито в [[{winner}]]\n",
+                     encoding="utf-8")
+
+    card(root, "Concepts/Переехало.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Переехал"', sources='\n  - "Sources/Confluence/Новая-SPR-012.md"')
+    merged("Донор-Переехал", "Переехало", ["Sources/Confluence/Старая-SPR-012.md"])
+    card(root, "Concepts/Исчезло.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Исчез"', sources='\n  - "Sources/Jira/T-1.md"')
+    merged("Донор-Исчез", "Исчезло", ["Sources/Confluence/Удалённая.md"])
+    cp = run("kb_fix.py", "--merge-audit", cwd=root)
+    assert cp.returncode == 0 and "проверено слитых доноров: 2; с потерями: 0" in cp.stdout, \
+        f"позднее изменение источников победителя названо потерей слияния:\n{cp.stdout}\n{cp.stderr}"
+
+    card(root, "Concepts/Потеряно.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Потерян"', sources='\n  - "Sources/Jira/T-1.md"')
+    merged("Донор-Потерян", "Потеряно", ["Sources/Confluence/Живая.md"])
+    cp = run("kb_fix.py", "--merge-audit", cwd=root)
+    assert cp.returncode == 1 and "источник Sources/Confluence/Живая.md" in cp.stdout \
+        and "Старая-SPR-012" not in cp.stdout and "Удалённая" not in cp.stdout, \
+        f"живой потерянный источник не назван или названы ушедшие:\n{cp.stdout}"
 
 
 @test
