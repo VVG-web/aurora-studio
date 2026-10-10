@@ -470,35 +470,6 @@ prompt), the schedule as an expression or a preset ("weekdays at 9:00") with the
 checked as you type; "Add to cron" switches the schedule on in one click. "Example: Jira issue analyzer"
 creates the bot from the task together with the evaluation template.
 
-**The machine owner's approval** (ADR-026). A bot arrives through git and runs on every machine that has
-a clone — with that person's tokens and model quota — so a new or changed bot first waits for approval:
-until you approve it, it does not run on a schedule, by a button or from the command line, and "Bots"
-and "Cron" mark it "awaiting approval". The approval is a record "project + file + SHA-256 of the text"
-in `~/.aurora/consent.json` on your machine (not in the repository; approval and refusal events go to
-`consent-log.jsonl` next to it): change one byte and the bot waits again. You approve with the
-"Approve" button in the bot's card (it shows the changes since your last version, or the whole text of
-a new bot) or with `python3 scripts/bots.py --approve --bot bots/<name>.md` (`--all` — every waiting
-bot; project scripts are a separate decision, `--scripts`). The batch button in "Bots" approves only the
-list the dialog showed: a bot that appeared afterwards waits for its own approval. A bot you created or saved in the panel stays approved if its previous
-text was approved; a bot that came with `git pull` is not approved by editing it in the panel. The
-night chain, the assistant and routes never grant approval.
-
-**Engine scripts that live in the project** (`.aurora/scripts/`, with `agents/`) follow the same rule,
-and the folder is checked as a whole because Python imports neighbouring modules. If every file in it is
-a copy of the kit (same hash) or approved, the project scripts run as they are; as soon as one foreign or
-changed file appears (or byte code or a folder link, which cannot be approved), the kit's scripts run
-instead, and "Bots" shows a "Project scripts awaiting approval" card with the same preview and button.
-Usually it is simpler to update the project engine: kit copies need no approval. Every launch of a script
-from `.aurora/scripts` goes through this check, including the linter, corrections and graph at panel start
-and the terminal commands `aurora.py <command> <project>` and `aurora.py setup`; byte code in the project's
-`__pycache__` is not read (launches use the machine's byte-code prefix), and the report steps and graph
-library come from the kit (the project's own are used only when the kit cannot be found). The project's
-settings file cannot set the consent folder (`AURORA_CONSENT_HOME`): the panel's commands and bots see
-the same registry as the panel itself. `doctor` warns about bots and engine files awaiting
-approval. The project's `Scripts/` folder is not run by the engine. MCP servers are not defined in a project at
-all (see "MCP servers: set up once per kit"), so they need no approval. Caveats: git hooks, bot attachments and the
-external assistant config (its config entry comes from `aurora_mcp.py --selftest`) are not covered by approval.
-
 At run time (`bot:run` — by a button or on schedule) the bot gets the prompt, the skills' method, the
 attachments' text, its MCP servers and the project's reading tools; it writes result files with the
 `save_output` tool into `Workspaces/bots/<bot>/<run>/` and can pass their path to an MCP server (for

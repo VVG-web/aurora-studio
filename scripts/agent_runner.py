@@ -64,7 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES, fold, replace_file, trusted_engine_script  # noqa: E402
+from aurora_common import QUOTES, fold, replace_file  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -288,7 +288,9 @@ def run_command(cwd: str, script: str, args: list, timeout: int = 300) -> dict:
     allowed, why = AG.write_allowed(script, args)
     if not allowed:
         return {"ok": False, "refused": why, "rc": None, "out": ""}
-    path = trusted_engine_script(cwd, script, os.path.join(os.path.dirname(os.path.abspath(__file__)), script))
+    path = os.path.join(cwd, ".aurora", "scripts", script)
+    if not os.path.isfile(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script)
     p = subprocess.run([sys.executable, path, *args], cwd=cwd,
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     return {"ok": p.returncode == 0, "rc": p.returncode,
@@ -312,8 +314,10 @@ _DEFAULT_CARD_SECTION = "Concepts"
 
 def _bp_path(cwd: str) -> str:
     """Тот же файл, что выбрал бы run_command: движок проекта, затем кит."""
-    return trusted_engine_script(cwd, "build_plan.py",
-                                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_plan.py"))
+    path = os.path.join(cwd, ".aurora", "scripts", "build_plan.py")
+    if not os.path.isfile(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_plan.py")
+    return path
 
 
 def _bp_import(cwd: str):

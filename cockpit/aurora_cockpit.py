@@ -57,7 +57,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, engine_dir, is_folder_guide, kit_mcp_permission,  # noqa: E402
-                           local_view, mcp_block, mcp_set_servers, mtime_stamp, personal_kit_file, pycache_args, replace_file, trusted_engine_script,
+                           local_view, mcp_block, mcp_set_servers, mtime_stamp, personal_kit_file, replace_file,
                            utc_slug, utc_stamp, yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_masked)
@@ -699,7 +699,7 @@ def lint_one(project: str, rel: str) -> dict:
     файл мимо панели. Молчать — значит копить находки к общему прогону, когда уже не
     помнишь, что менял.
     """
-    script = script_path(project, "kb_lint.py")      # скрипт проекта — только с согласия владельца (ADR-026)
+    script = os.path.join(project, engine_dir(project), "scripts", "kb_lint.py")
     if not os.path.isfile(script):
         return {}
     # Сохранение не зависит от линтера. Он читает базу целиком, и на большой базе или
@@ -876,7 +876,7 @@ def corrections_state(project: str) -> dict:
     решения, а не решает сам. Пока не ответили, исправление продолжает действовать —
     снимать проверенное по подозрению значит менять его на неподтверждённое.
     """
-    script = script_path(project, "kb_corrections.py")
+    script = os.path.join(project, engine_dir(project), "scripts", "kb_corrections.py")
     folder = os.path.join(project, "Raw", "corrections")
     if not os.path.isfile(script) or not os.path.isdir(folder):
         return {"count": 0, "ask": 0, "items": []}
@@ -904,7 +904,7 @@ def graph_state(project: str, rebuild: bool = False) -> dict:
     честнее, чем свежесть любой ценой: видно, насколько картинка отстала.
     """
     path = os.path.join(project, "AuroraKnowledgeDB", "meta", "graph.json")
-    script = script_path(project, "kb_graph.py")
+    script = os.path.join(project, engine_dir(project), "scripts", "kb_graph.py")
 
     def build() -> str:
         """Пересчитать. Пустая строка — получилось; иначе причина словами."""
@@ -1448,8 +1448,7 @@ def bots_state(project: str) -> dict:
             "roles": BOTS.llm_roles(), "choices": BOTS.model_choices(),
             "projects": [{"slug": p["slug"], "name": p["name"]}
                          for p in BOTS.knowledge_projects()],
-            "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR,
-            "scripts": BOTS.pending_scripts(project)}      # скрипты проекта, ждущие согласия
+            "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR}
 
 
 def bot_file(project: str, rel: str) -> dict:
@@ -1459,8 +1458,7 @@ def bot_file(project: str, rel: str) -> dict:
     return {"file": bot["file"], "meta": bot["meta"], "body": bot["body"],
             "problems": BOTS.validate(project, bot["meta"], bot["body"]),
             "schedule": BOTS.schedule(bot["meta"]), "last": BOTS.last_run(project, bot["file"]),
-            "id": BOTS.bot_id(project, bot["file"]), "mtime": bot["mtime"],
-            "consent": BOTS.consent_state(project, bot)}
+            "id": BOTS.bot_id(project, bot["file"]), "mtime": bot["mtime"]}
 
 
 def _bot_cron_mark(project: str, rel: str) -> None:
@@ -1478,51 +1476,22 @@ def bots_action(action: str, project: str, payload: dict) -> dict:
         meta = BOTS.clean_meta(payload.get("meta") or {})
         return {"problems": BOTS.validate(project, meta, str(payload.get("body") or "")),
                 "schedule": BOTS.schedule(meta)}
-    # Эти действия — явные щелчки владельца в панели: согласие на бота (ADR-026) переходит на
-    # новый текст, если прежний был согласован (`owner=True`); чужой файл из git так не одобряется.
     if action == "save":
-        res = BOTS.write(project, rel, payload.get("meta") or {}, str(payload.get("body") or ""),
-                         owner=True)
+        res = BOTS.write(project, rel, payload.get("meta") or {}, str(payload.get("body") or ""))
         if res.get("ok"):
             _bot_cron_mark(project, res["file"])
         return res
     if action == "create":
-        return BOTS.create(project, name, owner=True)
+        return BOTS.create(project, name)
     if action == "example":
-        res = BOTS.create_example(project, owner=True)
+        res = BOTS.create_example(project)
         if res.get("ok"):
             _bot_cron_mark(project, res["file"])
         return res
     if action == "duplicate":
-        return BOTS.duplicate(project, rel, name, owner=True)
+        return BOTS.duplicate(project, rel, name)
     if action == "rename":
-        return BOTS.rename(project, rel, name, owner=True)
-    if action == "consent":
-        # Что именно одобряется: изменения с согласованной версии или весь текст нового бота.
-        if payload.get("script"):
-            return BOTS.script_view(project, str(payload["script"]))
-        return BOTS.consent_view(project, _bot_rel(project, rel))
-    if action == "approve":
-        # Согласие даёт только человек — щелчком в карточке «ждёт согласия» (ADR-026) и только
-        # на показанный ему текст: запрос без хеша не одобряет «то, что лежит сейчас».
-        if not payload.get("all") and not str(payload.get("sha256") or ""):
-            return {"ok": False, "error": "changed"}
-        if payload.get("script"):
-            return BOTS.approve_script(project, str(payload["script"]), str(payload.get("sha256") or ""))
-        if payload.get("all"):
-            # Только список, который человек видел в диалоге: без него «всех» одобрять нечем.
-            expect = payload.get("expect")
-            if not isinstance(expect, dict) or not expect:
-                return {"ok": False, "error": "changed"}
-            files = BOTS.approve_all(project, expect)
-        else:
-            res = BOTS.approve(project, _bot_rel(project, rel), str(payload.get("sha256") or ""))
-            if not res.get("ok"):
-                return res
-            files = [res["file"]]
-        for f in files:
-            _bot_cron_mark(project, f)       # слот, пропущенный в ожидании, не догоняем
-        return {"ok": True, "files": files}
+        return BOTS.rename(project, rel, name)
     if action == "delete":
         return BOTS.delete(project, rel)
     return {"ok": False, "error": "нет такого действия"}
@@ -2793,12 +2762,11 @@ def kit_is_source() -> bool:
 
 
 def script_path(project: str, script: str) -> str:
-    """Где взять скрипт: kit-сторонние — всегда из kit'а, остальные — из движка проекта, если
-    это копия кита или на скрипт есть согласие владельца машины (ADR-026); иначе — из кита."""
-    kit_copy = os.path.join(KIT, "scripts", script)
+    """Где взять скрипт: kit-сторонние — всегда из kit'а, остальные — из движка проекта."""
     if script in KIT_SIDE:
-        return kit_copy
-    return trusted_engine_script(project, script, kit_copy)
+        return os.path.join(KIT, "scripts", script)
+    path = os.path.join(project, engine_dir(project), "scripts", script)
+    return path if os.path.isfile(path) else os.path.join(KIT, "scripts", script)
 
 
 def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tuple:
@@ -2822,9 +2790,9 @@ def report_state(project: str) -> dict:
     Читаем через тот же `paths.py`, что и сам отчёт: иначе панель и генератор
     расходятся в том, где лежит ростер, и человек правит не тот файл.
     """
-    # Пакет — всегда китовый: копия в проекте (`.aurora/reports/analyst/`) согласием владельца
-    # машины не сверяется, а зонд её исполняет (ADR-026). `paths.py` считает пути от cwd — кит подходит.
-    pkg = os.path.join(KIT, "reports", "analyst")
+    pkg = os.path.join(project, engine_dir(project), "reports", "analyst")
+    if not os.path.isdir(pkg):
+        pkg = os.path.join(KIT, "reports", "analyst")
     if not os.path.isdir(pkg):
         return {"reports": [], "error": "пакет отчётов не установлен — обновите движок"}
 
@@ -2836,8 +2804,7 @@ def report_state(project: str) -> dict:
              "'events': paths.EVENTS_PATH, 'data_dir': paths.DATA_DIR}))")
     p = None
     try:
-        # `-I`: папка проекта (cwd) не попадает в `sys.path` — подложенный там `json.py` не подхватится
-        p = subprocess.run([sys.executable, "-I", *pycache_args(), "-c", probe, pkg], cwd=project,
+        p = subprocess.run([sys.executable, "-c", probe, pkg], cwd=project,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         cfg = json.loads(p.stdout[p.stdout.index("{"):p.stdout.rindex("}") + 1])
     except Exception as e:
@@ -5272,7 +5239,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path in ("/api/bots/save", "/api/bots/validate", "/api/bots/create",
                       "/api/bots/duplicate", "/api/bots/rename", "/api/bots/delete",
-                      "/api/bots/example", "/api/bots/consent", "/api/bots/approve"):
+                      "/api/bots/example"):
             project = payload.get("project", "")
             if not self._known(project):
                 return
@@ -5824,14 +5791,11 @@ def cron_action(action: str, payload: dict, projects: list) -> dict:
         if not bt:
             return {"ok": False, "error": "no_task"}
         if action == "start":
-            if bt.get("consent") != "granted":
-                return {"ok": False, "error": "not_approved"}      # ADR-026: ждёт согласия владельца
             return scheduler().enqueue(tid, "manual")
         if action == "toggle":
             bot = BOTS.read(bt["project"], bt["bot"])
             on = bool(payload.get("enabled"))
-            BOTS.write(bt["project"], bt["bot"], {**bot["meta"], "enabled": on}, bot["body"],
-                       owner=True)           # согласие переходит на правку, если прежний текст был согласован
+            BOTS.write(bt["project"], bt["bot"], {**bot["meta"], "enabled": on}, bot["body"])
             if on:
                 CRON.mark_bot_past({**bt, "enabled": True})
             return {"ok": True}

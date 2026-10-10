@@ -162,7 +162,7 @@
   "boot.restart": "Restart the panel",
   "run.writes_files": "writes files",
   "run.changes_outside": "changes an external system",
-  "run.engine_gap": "The project engine is {engine}, the kit is {kit}. The flags below come from the kit; the project's .aurora/scripts run only if they are copies of the kit or you approved them, otherwise the kit script runs. Better update the project engine in «Version and migration».",
+  "run.engine_gap": "The project engine is {engine}, the kit is {kit}. The flags below come from the kit, but the project's .aurora/scripts run: it may not accept the new ones and return code 2. Update it in «Version and migration».",
   "run.arg_optional": "Argument (optional): ",
   "run.arg_required": "Argument (required): ",
   "run.flags_off": "Modifiers are off by default, the command works in its basic mode",

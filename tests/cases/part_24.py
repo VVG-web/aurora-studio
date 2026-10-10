@@ -66,7 +66,6 @@ def test_a_bot_that_used_no_tools_is_not_a_success(tmp: Path):
     AG, B = _mods()
     p = _bot_project(tmp)
     r = B.create(p, "Ревью", {"mcp": ["mcp-atlassian"], "role": "bots"}, "Найди задачи Jira")
-    B.approve_all(p)
     meta = B.read(p, r["file"])["meta"]
     assert meta["role"] == "bots", "роль бота не сохранилась в файле"
     answer = {}

@@ -48,7 +48,7 @@ from aurora_common import child_env, load_env
 from aurora_common import MCP_MASK, MCP_SECRET_MAPS, mcp_masked, mcp_migrate_problem  # noqa: F401, E402
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import engine_dir, pycache_args, trusted_engine_script, utc_stamp  # noqa: E402
+from aurora_common import engine_dir, utc_stamp  # noqa: E402
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -411,10 +411,6 @@ def write_allowed(script: str, args: list) -> tuple:
     name = os.path.basename(script)
     if name in FORBIDDEN or name.startswith("git"):
         return False, f"{name} запрещён агенту всегда: это решение человека"
-    # argparse принимает сокращения (`--appr`, `--ap`): ловим любую приставку, а не только полное имя
-    if name == "bots.py" and any(str(a).startswith("--ap") and "--approve".startswith(str(a).split("=")[0])
-                                 for a in args):
-        return False, "согласие на бота даёт владелец машины (ADR-026), а не агент"
     if name == "agent_core.py" and any(
             str(a).startswith("--mcp-m") and "--mcp-migrate".startswith(str(a).split("=")[0])
             for a in args):
@@ -1517,9 +1513,9 @@ def aurora_mcp_spec(project: str) -> dict:
     так же, как чужие серверы: всё, чего модель не умеет сама, делает движок.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    path = trusted_engine_script(project, "aurora_mcp.py", os.path.join(here, "aurora_mcp.py"))
-    # окружение серверу не передаётся: префикс байт-кода машины — аргументом интерпретатора
-    return {"command": sys.executable, "args": [*pycache_args(), path, "--project", project],
+    mine = os.path.join(project, ".aurora", "scripts", "aurora_mcp.py")
+    path = mine if os.path.isfile(mine) else os.path.join(here, "aurora_mcp.py")
+    return {"command": sys.executable, "args": [path, "--project", project],
             "about": "Аврора: база знаний проекта, ревью историй и алгоритмов, Jira и "
                      "Confluence проекта, время, память между прогонами, замок"}
 

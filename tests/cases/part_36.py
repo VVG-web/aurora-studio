@@ -620,7 +620,7 @@ def test_decision_records_follow_the_madr_format(tmp: Path):
     readme = (base / "README.md").read_text(encoding="utf-8")
     sections = ["Контекст и проблема", "Факторы решения", "Рассмотренные варианты", "Решение",
                 "Последствия", "Проверка", "Дополнительно"]
-    expected = {"ADR-026": "ADR-026-owner-consent-for-executable-content.md",
+    expected = {"ADR-026": "ADR-026-executable-content-trust.md",
                 "ADR-059": "ADR-059-deployment-profiles.md",
                 "ADR-060": "ADR-060-dependency-policy.md",
                 "ADR-066": "ADR-066-version-and-release-policy.md"}

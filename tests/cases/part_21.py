@@ -106,7 +106,6 @@ def test_a_bot_runs_with_its_mcp_skills_and_attachments(tmp: Path):
     (p / "templates" / "t.md").write_text("Раздел «Полнота»", encoding="utf-8")
     r = B.create(p, "Бот", {"mcp": ["jira-mcp"], "skills": ["evaluation-skill"],
                             "attachments": ["templates/t.md"]}, "Сделай оценку задач")
-    B.approve_all(p)                       # бот из git ждал бы согласия владельца (ADR-026)
     seen = {}
 
     def fake(cfg, role, messages, **kw):
@@ -137,16 +136,15 @@ def test_a_bot_runs_with_its_mcp_skills_and_attachments(tmp: Path):
                            ({"attachments": ["нет/файла.md"]}, "attachment_missing"),
                            ({"attachments": [".env.aurora.local"]}, "attachment_missing")):
             B.write(p, r["file"], {**B.read(p, r["file"])["meta"], "mcp": [], "skills": [],
-                                   "attachments": [], **meta}, "x", owner=True)
+                                   "attachments": [], **meta}, "x")
             got = B.run(p, r["file"], call=lambda *a, **k: calls.append(1), say=lambda s: None)
             assert got["problem"]["code"] == code and got["problem"]["actions"], (meta, got)
         (p / ".env.aurora.local").write_text("TOKEN=1\n", encoding="utf-8")
-        B.write(p, r["file"], {"name": "Бот", "attachments": [".env.aurora.local"]}, "x",
-                owner=True)
+        B.write(p, r["file"], {"name": "Бот", "attachments": [".env.aurora.local"]}, "x")
         assert B.run(p, r["file"], call=lambda *a, **k: calls.append(1),
                      say=lambda s: None)["problem"]["code"] == "attachment_secret"
         assert not calls, "бот с блокирующим замечанием дошёл до модели"
-        B.write(p, r["file"], {"name": "Бот"}, "x", owner=True)
+        B.write(p, r["file"], {"name": "Бот"}, "x")
         for fail, code in (({"log": ["№1: timeout"], "timed_out": True}, "timeout"),
                            ({"log": ["модель исчерпала вызовы инструментов (40) и не ответила"]}, "tool_limit"),
                            ({"log": ["у роли worker нет бэкендов: раздел «Модели»"]}, "no_models"),
@@ -233,7 +231,6 @@ def test_bots_with_a_schedule_are_cron_tasks(tmp: Path):
         p = _project(tmp)
         r = B.create(p, "Бот", {"cron": "0 9 * * 1-5", "enabled": True}, "x")
         B.create(p, "Без расписания", {}, "x")
-        B.approve_all(p)                   # без согласия владельца бот в расписание не встаёт (ADR-026)
         tasks = CRON.bot_tasks([{"path": str(p), "name": "Demo"}])
         assert len(tasks) == 1, tasks
         t = tasks[0]

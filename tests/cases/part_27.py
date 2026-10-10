@@ -207,7 +207,6 @@ def test_a_bot_works_in_its_knowledge_project(tmp: Path):
     (own / "aurora.config.yaml").write_text("project:\n  name: Own\n", encoding="utf-8")
     r = B.create(own, "Проверка", {"knowledge": "kb", "context": "evaluate"},
                  "Проверь понятие [[НАКЛ]]")
-    B.approve_all(own)
     meta = B.read(own, r["file"])["meta"]
     assert meta["knowledge"] == "kb" and meta["context"] == "evaluate", meta
     seen = {}
@@ -257,8 +256,6 @@ def test_a_chain_runs_bots_of_several_projects_in_turn(tmp: Path):
         fa = B.create(a, "Ревью A", {"enabled": True}, "x")["file"]
         fb = B.create(b, "Ревью B", {"enabled": True}, "y")["file"]
         off = B.create(b, "Спящий", {"enabled": False}, "z")["file"]
-        B.approve_all(a)
-        B.approve_all(b)
         projects = [{"path": str(a), "name": "A"}, {"path": str(b), "name": "B"}]
 
         class Ck:

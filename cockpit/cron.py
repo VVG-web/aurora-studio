@@ -244,8 +244,6 @@ def bot_tasks(projects: list, lang: str = "ru") -> list:
             _spec, err = BOTS.parse_cron(meta["cron"])
             out.append({
                 "id": BOTS.bot_id(p["path"], b["file"]), "source": "bot", "name": meta["name"],
-                # Согласие владельца машины (ADR-026): без него бот в очередь не встаёт.
-                "consent": b.get("consent", "new"),
                 "bot": b["file"], "project": p["path"], "project_name": p.get("name", ""),
                 "cron": meta["cron"], "cron_error": err,
                 "enabled": bool(meta.get("enabled")) and not err,
@@ -261,7 +259,7 @@ def bot_slot(task: dict, now: datetime) -> datetime | None:
 
     Тик раз в 20 секунд, но тик может и запоздать (панель была занята), а выражение cron
     срабатывает на одной минуте: смотрим назад на опоздание, которое ещё догоняем."""
-    if BOTS is None or not task.get("enabled") or task.get("consent") != "granted":
+    if BOTS is None or not task.get("enabled"):
         return None
     spec, err = BOTS.parse_cron(task.get("cron") or "")
     if err:
@@ -276,7 +274,7 @@ def bot_slot(task: dict, now: datetime) -> datetime | None:
 
 
 def bot_next(task: dict, now: datetime | None = None) -> str:
-    if BOTS is None or not task.get("enabled") or task.get("consent") != "granted":
+    if BOTS is None or not task.get("enabled"):
         return ""
     spec, err = BOTS.parse_cron(task.get("cron") or "")
     runs = BOTS.next_runs(spec, now or datetime.now(), 1) if not err else []
@@ -355,21 +353,17 @@ def expand(task: dict, projects: list) -> list:
             it.update(cmd=st["cmd"], args=list(st.get("args") or []))
         if path not in names:
             it.update(status="skipped", note="no_project")
-        elif st.get("_unapproved"):
-            it.update(status="skipped", note="not_approved")
         return it
 
     every = [p["path"] for p in projects]
 
     def bots_of(path: str) -> list:
-        """Боты проекта для шага «все боты»: файлы `bots/*.md`, включённые. → [(файл, согласован)].
-        Бот без согласия владельца не молчит: он идёт в цепочку пропущенным, и Консоль с историей
-        показывают, что его ждёт одобрения (ADR-026)."""
+        """Боты проекта для шага «все боты»: файлы `bots/*.md`, включённые."""
         if BOTS is None:
             return []
         try:
-            return [(b["file"], b["consent"] == "granted")
-                    for b in BOTS.list_bots(path, with_checks=False) if b["meta"].get("enabled")]
+            return [b["file"] for b in BOTS.list_bots(path, with_checks=False)
+                    if b["meta"].get("enabled")]
         except Exception:  # noqa: BLE001 — битый бот одного проекта не гасит цепочку
             return []
 
@@ -377,7 +371,7 @@ def expand(task: dict, projects: list) -> list:
         out = []
         for st in steps:
             if st["kind"] == "bot" and st.get("bot") == "*":
-                out += [dict(st, bot=f, _unapproved=not ok) for f, ok in bots_of(path)]
+                out += [dict(st, bot=f) for f in bots_of(path)]
             else:
                 out.append(st)
         return out

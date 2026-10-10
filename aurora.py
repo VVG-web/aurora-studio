@@ -84,16 +84,6 @@ def sh(args: list[str]) -> int:
     return subprocess.call([sys.executable, *args])
 
 
-def engine_script(tgt: Path, file: str) -> str:
-    """Какой файл запускать для проекта `tgt`: копия движка из проекта — только если вся её папка
-    копия кита или согласована владельцем машины, иначе скрипт кита (ADR-026). Клон чужого
-    репозитория с подложенным `.aurora/scripts` не исполняется молча и из терминала."""
-    if str(SCRIPTS) not in sys.path:
-        sys.path.insert(0, str(SCRIPTS))
-    from aurora_common import trusted_engine_script
-    return trusted_engine_script(str(tgt), file, str(SCRIPTS / file))
-
-
 def cmd_new(target: str, extra: list[str]) -> int:
     tgt = Path(target).expanduser().resolve()
     # Диалог настройки требует терминала. Когда его нет — запуск из скрипта, из панели,
@@ -113,7 +103,7 @@ def cmd_new(target: str, extra: list[str]) -> int:
     # 2. настройка проекта
     print("\n→ Настройка проекта" + (" (без вопросов: нет терминала)" if quiet else "")
           + "\n", flush=True)
-    rc = sh([engine_script(tgt, "aurora_setup.py"), "--target", str(tgt)]
+    rc = sh([str(tgt / ".aurora/scripts/aurora_setup.py"), "--target", str(tgt)]
             + (["--non-interactive"] if quiet else []))
     if rc != 0:
         return rc
@@ -133,7 +123,10 @@ def cmd_new(target: str, extra: list[str]) -> int:
 
 def cmd_setup(target: str, extra: list[str]) -> int:
     tgt = Path(target).expanduser().resolve()
-    return sh([engine_script(tgt, "aurora_setup.py"), "--target", str(tgt), *extra])
+    setup = tgt / ".aurora/scripts/aurora_setup.py"
+    if not setup.is_file():
+        setup = SCRIPTS / "aurora_setup.py"
+    return sh([str(setup), "--target", str(tgt), *extra])
 
 
 # Команды обслуживания: имя → скрипт. Запускаются в корне проекта (скрипты
@@ -175,7 +168,10 @@ def cmd_tool(name: str, target: str, extra: list[str]) -> int:
     # В реестре у команды может стоять фиксированный флаг («queue» — это
     # `aurora_stats.py --queue`): один скрипт, несколько именованных входов.
     file, *fixed = TOOLS[name].split()
-    return subprocess.call([sys.executable, engine_script(tgt, file), *fixed, *extra], cwd=str(tgt))
+    script = tgt / ".aurora/scripts" / file
+    if not script.is_file():
+        script = SCRIPTS / file
+    return subprocess.call([sys.executable, str(script), *fixed, *extra], cwd=str(tgt))
 
 
 def cmd_update(target: str, extra: list[str]) -> int:

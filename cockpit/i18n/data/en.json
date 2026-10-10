@@ -99,7 +99,7 @@
     "git:commit": "Commit the project's changes with a message from the setup template or your own (`--message`); Aurora's hooks run, the ratchet is lifted only by an explicit `--skip-ratchet`.",
     "git:fix": "One-click fixes: abort or finish an update, take your or the server's version of a file, link the branch to the server, create the repository, switch to the project branch, remove a password from the server URL.",
     "git:check": "Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server.",
-    "bot:run": "Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself; a new or changed bot first waits for the machine owner's approval («Approve» in «Bots» or `bots.py --approve`).",
+    "bot:run": "Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself.",
     "bot:check": "Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs.",
     "bot:list": "The project's bots: schedule and next run, the last run's outcome, problems."
   },
@@ -470,11 +470,7 @@
     "macOS: `brew install python@{}` или установщик с https://www.python.org/downloads/ (после него откройте «Install Certificates.command»); без прав администратора — `uv python install {}`, если uv у вас уже есть. Системный Python (из Command Line Tools) не обновляется и не подходит — его трогать не нужно.": "macOS: `brew install python@{}` or the installer from https://www.python.org/downloads/ (then open \"Install Certificates.command\"); without administrator rights — `uv python install {}` if you already have uv. The system Python (from Command Line Tools) is not updated and is not suitable — leave it alone.",
     "Windows: `winget install -e --id Python.Python.{}` или установщик с https://www.python.org/downloads/. После установки запустите файл снова.": "Windows: `winget install -e --id Python.Python.{}` or the installer from https://www.python.org/downloads/. After installing, run the file again.",
     "Linux: поставьте Python {}+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в основном репозитории — нужен PPA deadsnakes) или `uv python install {}`, если uv у вас уже есть.": "Linux: install Python {}+ from the distribution packages (on Ubuntu 22.04 it is not in the main repository — use the deadsnakes PPA) or `uv python install {}` if you already have uv.",
-    "скрипт — файл .py из папки scripts/ движка проекта; байт-код, расширение и ссылку на папку уберите из неё или обновите движок проекта": "a script is a .py file from the scripts/ folder of the project's engine; remove byte code, extensions and folder links from it or update the project engine",
-    "git-хук pre-push кита старее скрипта проверки — защита публикации неполная (ветки кухни по HEAD, названия в содержимом); переставьте: `kit:hooks` с флагом --install (кнопка «Обновить кит» в панели переставляет его сама, но только когда вышла новая версия)": "the kit's git pre-push hook is older than the check script — publication protection is incomplete (kitchen branches via HEAD, names in content); reinstall it: `kit:hooks` with the --install flag (the \"Update the kit\" button in the panel does it itself, but only when a new version is out)",
-    "ботов ждёт согласия владельца машины: {} ({}{}) — без него они не запускаются; одобрить: панель, «Боты» → «Одобрить»": "bots awaiting the machine owner's approval: {} ({}{}) — they do not run without it; approve: panel, «Bots» → «Approve»",
-    "файлов движка проекта без согласия или не совпадающих с китом: {} ({}{}) — вместо проектных работают скрипты кита; проще всего обновить движок проекта: «Версия» → «Обновить движок проекта»": "engine files of the project without approval or differing from the kit: {} ({}{}) — the kit scripts run instead of the project ones; simplest is to update the project engine: «Version» → «Update the project engine»",
-    "скрипта нет": "no such script"
+    "git-хук pre-push кита старее скрипта проверки — защита публикации неполная (ветки кухни по HEAD, названия в содержимом); переставьте: `kit:hooks` с флагом --install (кнопка «Обновить кит» в панели переставляет его сама, но только когда вышла новая версия)": "the kit's git pre-push hook is older than the check script — publication protection is incomplete (kitchen branches via HEAD, names in content); reinstall it: `kit:hooks` with the --install flag (the \"Update the kit\" button in the panel does it itself, but only when a new version is out)"
   },
   "connectors": {
     "confluence-dc": {
@@ -840,11 +836,7 @@
     "одна страница: итог JSON-ом (вердикт, оценка, сводка, отчёт) и отчёт в .aurora/state/reviews/ — для MCP Авроры и ботов": "one page: the outcome as JSON (verdict, score, summary, report) and the report in .aurora/state/reviews/ — for the Aurora MCP and bots",
     "ответить ровно этой моделью провайдера, без запасных (для --task ask)": "answer with exactly this provider model, no spares (for --task ask)",
     "ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)": "answer with a role from the «Models» section (for --task ask; worker by default)",
-    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON",
-    "согласие владельца машины на бота (--bot), на все ждущие боты (--all) или на скрипт проекта (--script, --scripts)": "the machine owner's approval of a bot (--bot), of all waiting bots (--all) or of a project script (--script, --scripts)",
-    "с --approve: скрипт движка проекта (.aurora/scripts/<имя>.py)": "with --approve: an engine script of the project (.aurora/scripts/<name>.py)",
-    "с --approve: все боты проекта, ждущие согласия (скрипты — только --scripts)": "with --approve: all bots of the project that are awaiting approval (scripts — only with --scripts)",
-    "с --approve: все скрипты движка проекта, ждущие согласия (редко нужно: проще обновить движок проекта)": "with --approve: all engine scripts of the project that are awaiting approval (rarely needed: simpler to update the project engine)"
+    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",
