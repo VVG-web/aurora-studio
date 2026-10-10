@@ -2836,6 +2836,58 @@ def test_pre_commit_hook_says_aloud_when_the_linter_stops_on_old_python(tmp: Pat
 
 
 @test
+def test_pre_commit_hook_falls_back_to_full_pass_and_never_passes_silently(tmp: Path):
+    """Код линтера не 0/1 — «не запущен»: staged-проход уступает полному, а падение слышно.
+
+    (а) Старый линтер без --only-from (код 2 на аргумент) и полный проход с ошибками: режим
+    block останавливает коммит, как до правок (раньше staged-ветка делала exit 0 и полный
+    проход не запускался). (б) Линтер упал (код 3 или исключение Python): вывод напечатан, нейтральная
+    строка есть, коммит не блокируется (раньше — молчаливый exit 0 на пустом «ошибок N»). (в) Обычный линтер: 0 — чисто, 1 с ошибками — остановка в block.
+    """
+    sh = shutil.which("sh")
+    if not sh or os.name == "nt":
+        return
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    H = importlib.import_module("aurora_hooks")
+    fake = tmp / "bin"
+    fake.mkdir()
+    (fake / "python3").symlink_to(sys.executable)
+    env = {"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp)}
+    git = shutil.which("git")
+    repo = tmp / "repo"
+    (repo / ".aurora/scripts").mkdir(parents=True)
+    (repo / "AuroraKnowledgeDB").mkdir()
+    subprocess.run([git, "init", "-q"], cwd=str(repo), check=True, env=env)
+    (repo / "AuroraKnowledgeDB/a.md").write_text("# a\n", encoding="utf-8")
+    subprocess.run([git, "add", "AuroraKnowledgeDB/a.md"], cwd=str(repo), check=True, env=env)
+    hook = repo / "pre-commit"
+    hook.write_text(H.HOOK.format(marker=H.MARKER, mode="block"), encoding="utf-8")
+    summary = "print('карточек 5, ошибок %d')\nsys.exit(%d)\n"
+    old_lint = ("import sys\nif '--only-from' in sys.argv:\n"
+                "    sys.stderr.write('kb_lint.py: error: unrecognized arguments: --only-from\\n')\n"
+                "    sys.exit(2)\n" + summary % (3, 1))
+    cases = [
+        ("а: старый линтер, полный проход с ошибками", old_lint, 1, "ошибок 3", "проверяю всю базу"),
+        ("б: код 3 с выводом", "import sys\nprint('Traceback boom')\nsys.exit(3)\n",
+         0, "Traceback boom", "линтер завершился кодом 3"),
+        ("б2: исключение Python (код 1, без «ошибок N»)", "raise RuntimeError('lint boom')\n",
+         0, "lint boom", "нет итоговой строки"),
+        ("в1: чисто", "import sys\n" + summary % (0, 0), 0, "ошибок 0", None),
+        ("в2: ошибки", "import sys\n" + summary % (2, 1), 1, "ошибок 2", None),
+    ]
+    for name, code, want_rc, want_text, want_note in cases:
+        (repo / ".aurora/scripts/kb_lint.py").write_text(code, encoding="utf-8")
+        cp = subprocess.run([sh, str(hook)], cwd=str(repo), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=30, env=env)
+        out = cp.stdout + cp.stderr
+        assert cp.returncode == want_rc, f"{name}: rc={cp.returncode}, ждали {want_rc}\n{out}"
+        assert want_text in out, f"{name}: нет «{want_text}»\n{out}"
+        if want_note:
+            assert want_note in out, f"{name}: нет «{want_note}»\n{out}"
+
+
+@test
 def test_a_later_repair_step_keeps_what_an_earlier_one_wrote(tmp: Path):
     """Шаг ремонта берёт карточку из плана, а не с диска: правка прежнего шага не теряется.
 
