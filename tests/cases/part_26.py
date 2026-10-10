@@ -85,6 +85,7 @@ def test_a_bot_can_pick_a_model_instead_of_a_role(tmp: Path):
     p.mkdir()
     (p / "aurora.config.yaml").write_text("project:\n  name: Demo\n", encoding="utf-8")
     r = B.create(p, "Обзор", {"model": "gw1/qwen/qwen3:32b"}, "Сделай обзор")
+    B.approve_all(p)
     meta = B.read(p, r["file"])["meta"]
     assert meta["model"] == "gw1/qwen/qwen3:32b", meta
     saved = (B.model_choices, B.llm_roles, AG.config, AG.call_role, AG.venv_status)

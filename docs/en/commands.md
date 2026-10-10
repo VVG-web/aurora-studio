@@ -154,7 +154,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 
 | Command | What it does | Executor | Since |
 |---|---|---|---|
-| `bot:run` | Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself. | script + model | 1.156.0 |
+| `bot:run` | Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself; a new or changed bot first waits for the machine owner's approval («Approve» in «Bots» or `bots.py --approve`). | script + model | 1.156.0 |
 | `bot:check` | Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs. | script | 1.156.0 |
 | `bot:list` (`bots`) | The project's bots: schedule and next run, the last run's outcome, problems. | script | 1.156.0 |
 

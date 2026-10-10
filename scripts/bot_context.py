@@ -151,9 +151,8 @@ def concepts_by_model(cfg: dict, call, body: str, links: list) -> list:
 
 def search(kb_root: str, concepts: list, mode: str, budget: int = PACK_BUDGET) -> tuple:
     """Гибридный поиск Авроры по базе проекта знаний → (пак, число карточек)."""
-    script = os.path.join(kb_root, ".aurora", "scripts", "ctx_pack.py")
-    if not os.path.isfile(script):
-        script = os.path.join(HERE, "ctx_pack.py")
+    from aurora_common import trusted_engine_script
+    script = trusted_engine_script(kb_root, "ctx_pack.py", os.path.join(HERE, "ctx_pack.py"))
     topic = "; ".join(concepts)
     try:
         p = subprocess.run([sys.executable, script, "--mode", mode, "--no-log",

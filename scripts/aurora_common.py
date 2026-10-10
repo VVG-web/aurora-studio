@@ -1221,6 +1221,166 @@ def kit_root():
     return root
 
 
+# ------------------------------------------------------------------- согласие владельца машины
+# ADR-026: содержимое проекта, которое исполняется на машине (боты и скрипты движка из
+# проекта), приезжает через git и не запускается без согласия владельца машины. Согласие —
+# запись «проект + файл + SHA-256 текста» в `~/.aurora/consent.json`: вне репозитория, у
+# каждого владельца своё. Изменился байт — запись не совпадает, и файл снова ждёт согласия.
+
+CONSENT_KINDS = ("bot", "script")
+CONSENT_SNAPSHOT_MAX = 100000            # текст одобренной версии — для показа изменений
+
+
+def consent_home() -> str:
+    """Папка согласий: `~/.aurora` машины; `AURORA_CONSENT_HOME` — для тестов и своих раскладок."""
+    return os.environ.get("AURORA_CONSENT_HOME") or os.path.join(os.path.expanduser("~"), ".aurora")
+
+
+def consent_file() -> str:
+    return os.path.join(consent_home(), "consent.json")
+
+
+def content_digest(text) -> str:
+    """SHA-256 текста. Концы строк приводятся к `\\n`: `git` на Windows меняет их при
+    выгрузке, и это не правка содержимого."""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
+    return hashlib.sha256(str(text).replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
+def consent_key(kind: str, project, rel: str) -> str:
+    root = os.path.normcase(os.path.realpath(os.fspath(project)))
+    return f"{kind}|{root}|{str(rel).replace(chr(92), '/')}"
+
+
+def consent_load() -> dict:
+    import json
+    try:
+        with open(consent_file(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    items = data.get("items") if isinstance(data, dict) else None
+    return items if isinstance(items, dict) else {}
+
+
+def consent_store(items: dict) -> None:
+    import json
+    path = consent_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "items": items}, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def consent_log(event: str, kind: str, project, rel: str, digest: str = "", **extra) -> None:
+    """Событие согласия или отказа запуска — строкой в `consent-log.jsonl` рядом с реестром."""
+    import json
+    row = {"at": utc_stamp(), "event": event, "kind": kind,
+           "project": os.path.realpath(os.fspath(project)), "file": rel, "sha256": digest, **extra}
+    try:
+        os.makedirs(consent_home(), exist_ok=True)
+        with open(os.path.join(consent_home(), "consent-log.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass                              # журнал — след, а не условие: запрет от этого не слабеет
+
+
+def consent_check(kind: str, project, rel: str, text) -> dict:
+    """→ {state: granted|new|changed, sha256, approved}. `new` — согласия на файл не было,
+    `changed` — было, но на другое содержимое."""
+    digest = content_digest(text)
+    rec = consent_load().get(consent_key(kind, project, rel))
+    if not isinstance(rec, dict) or not rec.get("sha256"):
+        return {"state": "new", "sha256": digest, "approved": ""}
+    return {"state": "granted" if rec["sha256"] == digest else "changed",
+            "sha256": digest, "approved": rec["sha256"]}
+
+
+def consent_diff(kind: str, project, rel: str, text) -> str:
+    """Что изменилось с одобренной версии (унифицированный diff). Одобренного текста нет — пусто."""
+    import difflib
+    rec = consent_load().get(consent_key(kind, project, rel))
+    old = rec.get("text") if isinstance(rec, dict) else None
+    if not isinstance(old, str):
+        return ""
+    new = str(text).replace("\r\n", "\n")
+    return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
+                                        "approved", "current", n=2))
+
+
+def consent_grant(kind: str, project, rel: str, text, by: str = "owner") -> dict:
+    """Записать согласие владельца на этот текст. Зовут только явные действия человека:
+    кнопка панели и команда `--approve`; ассистент, цепочка Cron и бот сюда не ходят."""
+    digest = content_digest(text)
+    body = str(text).replace("\r\n", "\n")
+    items = consent_load()
+    items[consent_key(kind, project, rel)] = {
+        "kind": kind, "project": os.path.realpath(os.fspath(project)),
+        "file": str(rel).replace("\\", "/"), "sha256": digest, "at": utc_stamp(), "by": by,
+        "text": body if len(body) <= CONSENT_SNAPSHOT_MAX else None}
+    consent_store(items)
+    consent_log("grant", kind, project, rel, digest, by=by)
+    return {"ok": True, "sha256": digest}
+
+
+def consent_revoke(kind: str, project, rel: str) -> None:
+    items = consent_load()
+    if items.pop(consent_key(kind, project, rel), None) is not None:
+        consent_store(items)
+        consent_log("revoke", kind, project, rel)
+
+
+_SCRIPT_REFUSED: set = set()
+_SCRIPT_DIGESTS: dict = {}                # (путь, mtime, размер) → хеш: скрипты не читаются на каждый вызов
+
+
+def _file_digest(path: str) -> str:
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+        if key not in _SCRIPT_DIGESTS:
+            with open(path, "rb") as f:
+                _SCRIPT_DIGESTS[key] = content_digest(f.read())
+        return _SCRIPT_DIGESTS[key]
+    except OSError:
+        return ""
+
+
+def script_consent(project, script: str, fallback: str) -> dict:
+    """Состояние скрипта движка, лежащего в самом проекте (`<проект>/.aurora/scripts/<имя>`).
+
+    `fallback` — тот же скрипт в ките (то, что запустится, если проектному нельзя).
+    → {state: none|same|granted|new|changed, path, file}. Копия кита (хеш тот же) и согласованный
+    скрипт запускаются; свой или изменённый ждёт согласия владельца.
+    """
+    rel = f"{engine_dir(project)}/scripts/{script}"
+    path = os.path.join(os.fspath(project), *rel.split("/"))
+    if not os.path.isfile(path):
+        return {"state": "none", "path": path, "file": rel}
+    digest = _file_digest(path)
+    if digest and os.path.isfile(fallback) and digest == _file_digest(fallback):
+        return {"state": "same", "path": path, "file": rel}
+    with open(path, encoding="utf-8", errors="replace") as f:
+        state = consent_check("script", project, rel, f.read())["state"]
+    return {"state": state, "path": path, "file": rel}
+
+
+def trusted_engine_script(project, script: str, fallback: str) -> str:
+    """Какой файл запускать: скрипт движка проекта — только если он копия кита или владелец
+    машины на него согласился; иначе — `fallback` (скрипт кита). Чужой код из клона не
+    исполняется молча (ADR-026)."""
+    info = script_consent(project, script, fallback)
+    if info["state"] in ("same", "granted"):
+        return info["path"]
+    seen = (os.path.realpath(os.fspath(project)), info["file"], info["state"])
+    if info["state"] != "none" and seen not in _SCRIPT_REFUSED:
+        _SCRIPT_REFUSED.add(seen)          # в журнал — один раз за процесс, не на каждый вызов
+        consent_log("refuse", "script", project, info["file"], reason=info["state"])
+    return fallback
+
+
 def personal_kit_file(path) -> bool:
     """Личный файл настоящего кита (`ENV_FILE`, `local/mcp.json`) в прогоне тестов?
 

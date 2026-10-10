@@ -430,6 +430,24 @@ prompt), the schedule as an expression or a preset ("weekdays at 9:00") with the
 checked as you type; "Add to cron" switches the schedule on in one click. "Example: Jira issue analyzer"
 creates the bot from the task together with the evaluation template.
 
+**The machine owner's approval** (ADR-026). A bot arrives through git and runs on every machine that has
+a clone — with that person's tokens and model quota — so a new or changed bot first waits for approval:
+until you approve it, it does not run on a schedule, by a button or from the command line, and "Bots"
+and "Cron" mark it "awaiting approval". The approval is a record "project + file + SHA-256 of the text"
+in `~/.aurora/consent.json` on your machine (not in the repository; approval and refusal events go to
+`consent-log.jsonl` next to it): change one byte and the bot waits again. You approve with the
+"Approve" button in the bot's card (it shows the changes since your last version, or the whole text of
+a new bot) or with `python3 scripts/bots.py --approve --bot bots/<name>.md` (`--all` — every waiting
+bot and script of the project). A bot you created or saved in the panel stays approved if its previous
+text was approved; a bot that came with `git pull` is not approved by editing it in the panel. The
+night chain, the assistant and routes never grant approval.
+
+**Engine scripts that live in the project** (`.aurora/scripts/`) follow the same rule: a copy of the kit
+(same hash) runs as is, while a custom or changed script waits for approval — until then the kit's script
+runs instead, and "Bots" shows a "Project scripts awaiting approval" card with the same preview and
+button. The project's `Scripts/` folder is not run by the engine. MCP server definitions in a project are
+not executable content: servers are configured once, at the kit level.
+
 At run time (`bot:run` — by a button or on schedule) the bot gets the prompt, the skills' method, the
 attachments' text, its MCP servers and the project's reading tools; it writes result files with the
 `save_output` tool into `Workspaces/bots/<bot>/<run>/` and can pass their path to an MCP server (for

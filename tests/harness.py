@@ -59,6 +59,13 @@ REGISTRY: list = []
 # Тесты, которым нужно кольцо из нескольких бэкендов, объявляют его сами через окружение:
 # слой окружения изоляция не трогает.
 os.environ["AURORA_TESTS_ISOLATED"] = "1"
+# Согласия владельца машины на ботов и скрипты проекта (ADR-026) — во временной папке: прогон не
+# читает и не пишет `~/.aurora/consent.json` разработчика. Тесты, которым нужна своя, ставят
+# `AURORA_CONSENT_HOME` сами.
+if not os.environ.get("AURORA_CONSENT_HOME"):
+    import atexit
+    os.environ["AURORA_CONSENT_HOME"] = tempfile.mkdtemp(prefix="aurora-tests-consent-")
+    atexit.register(shutil.rmtree, os.environ["AURORA_CONSENT_HOME"], True)
 for _k in [k for k in os.environ if k.startswith("AURORA_AGENT_BACKEND_")]:
     del os.environ[_k]
 

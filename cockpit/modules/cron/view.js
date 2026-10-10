@@ -219,6 +219,8 @@ function botRow(ctx, task, post){
           task.enabled ? t("cron.on") : t("cron.off")),
         el("span", {class: "chip mono", title: t("cron.bot_cron_hint")}, task.cron),
         task.cron_error ? el("span", {class: "chip warn"}, t("cron.bot_cron_bad")) : null,
+        task.consent !== "granted" ? el("span", {class: "chip warn", title: t("cron.bot_consent_hint")},
+          t("cron.bot_consent")) : null,
         task.next ? el("span", {class: "muted"}, t("cron.next", {when: ctx.fmt.when(task.next)}))
           : null,
         last ? el("span", {class: "chip " + (STATUS_TONE[last.status] || ""),
@@ -227,14 +229,15 @@ function botRow(ctx, task, post){
       el("div", {class: "muted", style: "font-size:13px;margin-top:6px"},
         t("cron.bot_where", {file: task.bot, project: task.project_name || task.project}))),
     el("div", {class: "row", style: "gap:6px"},
-      el("button", {class: "btn sm primary", onclick: async () => {
+      el("button", {class: "btn sm primary", disabled: task.consent !== "granted" ? "" : null,
+        title: task.consent !== "granted" ? t("cron.bot_consent_hint") : null, onclick: async () => {
         const r = await post("/api/cron/start");
         if (r && r.ok) ctx.toast(t("cron.started", {name: task.name}), "ok");
         else ctx.toast(t("cron.err." + ((r && r.error) || "bad_task")), "warn");
         refresh(ctx);
       }}, t("cron.run_now")),
       el("button", {class: "btn sm", onclick: () => ctx.openProject(task.project, "bots", {file: task.bot})},
-        t("cron.bot_edit")),
+        t(task.consent !== "granted" ? "cron.bot_review" : "cron.bot_edit")),
       task.cron_error ? null : el("button", {class: "btn sm", onclick: async () => {
         await post("/api/cron/toggle", {enabled: !task.enabled});
         refresh(ctx);

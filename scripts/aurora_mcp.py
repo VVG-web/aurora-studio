@@ -318,9 +318,7 @@ def run(project: str, script: str, args: list, timeout: int = 120, fail_from: in
     считается код от `fail_from`; `kb_ask` отвечает кодом 1, когда ни одна модель не ответила,
     и для него это сбой.
     """
-    path = os.path.join(project, ".aurora", "scripts", script)
-    if not os.path.isfile(path):
-        path = str(SCRIPTS / script)
+    path = aurora_common.trusted_engine_script(project, script, str(SCRIPTS / script))
     try:
         p = subprocess.run([sys.executable, path, *args], cwd=project, input=stdin,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)

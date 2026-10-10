@@ -47,7 +47,7 @@ from pathlib import Path
 from aurora_common import child_env, load_env
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import engine_dir, utc_stamp  # noqa: E402
+from aurora_common import engine_dir, trusted_engine_script, utc_stamp  # noqa: E402
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -410,6 +410,8 @@ def write_allowed(script: str, args: list) -> tuple:
     name = os.path.basename(script)
     if name in FORBIDDEN or name.startswith("git"):
         return False, f"{name} запрещён агенту всегда: это решение человека"
+    if name == "bots.py" and "--approve" in args:
+        return False, "согласие на бота даёт владелец машины (ADR-026), а не агент"
     if "--apply" not in args and not (name == "build_plan.py"
                                       and any(a in ("--done", "--card", "--append",
                                                     "--empty") for a in args)):
@@ -1485,8 +1487,7 @@ def aurora_mcp_spec(project: str) -> dict:
     так же, как чужие серверы: всё, чего модель не умеет сама, делает движок.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    mine = os.path.join(project, ".aurora", "scripts", "aurora_mcp.py")
-    path = mine if os.path.isfile(mine) else os.path.join(here, "aurora_mcp.py")
+    path = trusted_engine_script(project, "aurora_mcp.py", os.path.join(here, "aurora_mcp.py"))
     return {"command": sys.executable, "args": [path, "--project", project],
             "about": "Аврора: база знаний проекта, ревью историй и алгоритмов, Jira и "
                      "Confluence проекта, время, память между прогонами, замок"}

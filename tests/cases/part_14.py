@@ -130,6 +130,10 @@ def test_mcp_reports_a_failed_tool_as_an_error_not_as_knowledge(tmp: Path):
     sys.path.insert(0, str(SCRIPTS))
     import importlib
     M = importlib.import_module("aurora_mcp")
+    # Свои скрипты проекта исполняются после согласия владельца машины (ADR-026).
+    for name in ("exit1.py", "exit2.py"):
+        M.aurora_common.consent_grant("script", str(fake), f".aurora/scripts/{name}",
+                                      (fake / ".aurora/scripts" / name).read_text(encoding="utf-8"))
     assert M.run(str(fake), "exit1.py", []) == "nothing found", "код 1 принят за сбой"
     for script, kw in (("exit2.py", {}), ("exit1.py", {"fail_from": 1})):
         try:

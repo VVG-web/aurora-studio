@@ -189,6 +189,8 @@ but the panel itself must be running. Rules:
 - a writing command outside a route is committed to git right away.
 
 The schedule lives in `~/.aurora/cron-tasks.json`, the history in `~/.aurora/cron-runs/`.
+A scheduled bot is queued only with the machine owner's approval (`~/.aurora/consent.json`, ADR-026): a new
+or changed bot from git is marked "awaiting approval" and does not run.
 
 The same runner is available from the terminal: `python3 aurora.py route <project> <route> --apply` (without
 `--apply` it behaves like "Preview").

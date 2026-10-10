@@ -91,6 +91,18 @@ function drawList(ctx){
         await loadList(ctx);
         await open(ctx, r.file, false);
       }}, t("bots.example"))));
+  if ((D.scripts || []).length) box.append(scriptsCard(ctx));
+  const waiting = D.bots.filter(b => b.consent !== "granted");
+  if (waiting.length > 1)            // разовое «доверять текущим»: список виден до согласия
+    box.append(el("button", {class: "btn sm", style: "width:100%;margin-bottom:10px", onclick: async () => {
+      if (!confirm(t("bots.consent.all_ask", {list: waiting.map(b => b.file).join("\n")}))) return;
+      const r = await post(ctx, "/api/bots/approve", {all: true,
+        expect: Object.fromEntries(waiting.map(b => [b.file, b.sha256]))});
+      if (!r || !r.ok) return ctx.toast((r && r.error) || t("bots.failed"), "err");
+      ctx.toast(t("bots.consent.done"), "ok");
+      await loadList(ctx);
+      if (CUR) await open(ctx, CUR.file, true);
+    }}, t("bots.consent.all", {n: waiting.length})));
   if (!D.bots.length){
     box.append(el("div", {class: "card", style: "padding:14px"},
       el("div", {class: "muted", style: "font-size:13px"}, t("bots.empty"))));
@@ -102,6 +114,8 @@ function drawList(ctx){
       onclick: async () => { if (!CUR || CUR.file !== b.file){ if (await leave(ctx)) open(ctx, b.file, false); } }},
     el("div", {class: "row", style: "gap:6px;align-items:center"},
       el("b", {style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis"}, b.meta.name),
+      b.consent !== "granted" ? el("span", {class: "chip warn", title: t("bots.consent.hint")},
+        t("bots.consent.chip")) : null,
       (b.problems || []).length ? el("span", {class: "chip warn", title: b.problems.map(p =>
         tr(ctx, "bots.p." + p.code, p.code) + detailOf(ctx, p)).join("\n")},
         "⚠ " + b.problems.length) : null),
@@ -141,7 +155,7 @@ async function save(ctx){
   await loadList(ctx);
   CUR = {...CUR, ...(D.bots.find(b => b.file === CUR.file) || {})};
   CHECK = {problems: r.problems || [], schedule: (D.bots.find(b => b.file === CUR.file) || {}).schedule};
-  drawTop(ctx); drawConfig(ctx);
+  drawConsent(ctx); drawTop(ctx); drawConfig(ctx);
   return true;
 }
 
@@ -179,7 +193,7 @@ function drawEditor(ctx){
       el("div", {class: "muted"}, t("bots.pick"))));
     return;
   }
-  box.append(el("div", {id: "botsTop"}),
+  box.append(el("div", {id: "botsConsent"}), el("div", {id: "botsTop"}),
     el("div", {class: "card", style: "padding:14px 16px;margin:12px 0"},
       el("div", {class: "row", style: "gap:8px;align-items:center;margin-bottom:8px"},
         el("b", {style: "flex:1"}, t("bots.prompt")),
@@ -193,6 +207,7 @@ function drawEditor(ctx){
     el("div", {id: "botsLast"}));
   if (COACH && COACH.file !== CUR.file) COACH = null;
   drawCoach(ctx);
+  drawConsent(ctx);
   drawTop(ctx);
   drawConfig(ctx);
   drawLast(ctx);
@@ -266,7 +281,7 @@ function drawTop(ctx){
   mark.innerHTML = "";
   if (dirty()) mark.append(el("span", {class: "chip warn"}, t("bots.unsaved")));
   ctx.$("#botsSave").disabled = !dirty();
-  ctx.$("#botsRun").disabled = RUNNING;
+  ctx.$("#botsRun").disabled = RUNNING || CUR.consent !== "granted";
 }
 
 // Замечания движка к полю бота — под его карточкой; ближайшие запуски и «в расписании» —
@@ -558,7 +573,79 @@ async function runNow(ctx){
 function doAction(ctx, id){
   ({open_setup: () => ctx.show("setup"), open_models: () => ctx.show("models"),
     open_install: () => ctx.show("install"), retry: () => runNow(ctx),
+    approve: () => ctx.$("#botsConsent")?.scrollIntoView({behavior: "smooth"}),
     open_bots: () => ctx.$("#botsVditor")?.scrollIntoView({behavior: "smooth"})}[id] || (() => {}))();
+}
+
+/* ---------------------------------------------------------------- согласие владельца машины */
+/* ADR-026: бот и скрипт проекта приезжают через git и исполняются на этой машине — новый или
+   изменённый ждёт согласия, привязанного к хешу текста. Показываем, что именно одобряется
+   (изменения с согласованной версии или весь текст), и одобряет только щелчок человека. */
+
+function consentBox(ctx, view, onApprove){
+  const {t, el} = ctx;
+  const text = view.state === "changed" && view.diff ? view.diff : view.text;
+  return el("div", {},
+    el("div", {class: "muted", style: "font-size:12.5px;margin:8px 0 4px"},
+      t(view.state === "changed" && view.diff ? "bots.consent.diff" : "bots.consent.text")),
+    el("pre", {class: "mono", style: "max-height:320px;overflow:auto;font-size:12px;white-space:pre-wrap;"
+      + "background:var(--surface-2);padding:10px;border-radius:6px;margin:0"}, text || ""),
+    el("div", {class: "row", style: "gap:8px;margin-top:10px"},
+      el("button", {class: "btn sm primary", onclick: onApprove}, t("bots.consent.approve"))));
+}
+
+function drawConsent(ctx){
+  const {t, el} = ctx;
+  const box = ctx.$("#botsConsent");
+  if (!box || !CUR) return;
+  box.innerHTML = "";
+  if (CUR.consent === "granted") return;
+  const body = el("div", {});
+  const file = CUR.file;
+  const show = async () => {
+    const v = await post(ctx, "/api/bots/consent", {file});
+    if (!v || !v.ok) return ctx.toast((v && v.error) || t("bots.failed"), "err");
+    body.innerHTML = "";
+    body.append(consentBox(ctx, v, async () => {
+      const r = await post(ctx, "/api/bots/approve", {file, sha256: v.sha256});
+      if (!r || !r.ok)
+        return ctx.toast(r && r.error === "changed" ? t("bots.consent.changed") : ((r && r.error) || t("bots.failed")), "err");
+      ctx.toast(t("bots.consent.done"), "ok");
+      await loadList(ctx);
+      await open(ctx, file, true);
+    }));
+  };
+  box.append(el("div", {class: "warnbox", style: "margin-bottom:12px"},
+    el("b", {}, t("bots.consent.title")),
+    el("div", {style: "font-size:13px;margin-top:4px"},
+      t(CUR.consent === "changed" ? "bots.consent.changed_about" : "bots.consent.new_about")),
+    el("button", {class: "btn sm", style: "margin-top:8px", onclick: show}, t("bots.consent.show")),
+    body));
+}
+
+// Скрипты движка из самого проекта (не копии кита): ждут согласия, пока работает скрипт кита.
+function scriptsCard(ctx){
+  const {t, el} = ctx;
+  const body = el("div", {});
+  const show = async name => {
+    const v = await post(ctx, "/api/bots/consent", {script: name});
+    if (!v || !v.ok) return ctx.toast((v && v.error) || t("bots.failed"), "err");
+    body.innerHTML = "";
+    body.append(el("b", {class: "mono", style: "font-size:12px"}, v.file), consentBox(ctx, v, async () => {
+      const r = await post(ctx, "/api/bots/approve", {script: name, sha256: v.sha256});
+      if (!r || !r.ok)
+        return ctx.toast(r && r.error === "changed" ? t("bots.consent.changed") : ((r && r.error) || t("bots.failed")), "err");
+      ctx.toast(t("bots.consent.done"), "ok");
+      await loadList(ctx);
+    }));
+  };
+  return el("div", {class: "warnbox", style: "margin-bottom:10px"},
+    el("b", {}, t("bots.consent.scripts_title", {n: D.scripts.length})),
+    el("div", {style: "font-size:13px;margin-top:4px"}, t("bots.consent.scripts_about")),
+    el("div", {class: "row", style: "gap:6px;flex-wrap:wrap;margin-top:8px"},
+      ...D.scripts.map(s => el("button", {class: "btn sm mono", style: "font-size:11.5px",
+        onclick: () => show(s.script)}, s.script))),
+    body);
 }
 
 function drawLast(ctx){

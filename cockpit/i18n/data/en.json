@@ -99,7 +99,7 @@
     "git:commit": "Commit the project's changes with a message from the setup template or your own (`--message`); Aurora's hooks run, the ratchet is lifted only by an explicit `--skip-ratchet`.",
     "git:fix": "One-click fixes: abort or finish an update, take your or the server's version of a file, link the branch to the server, create the repository, switch to the project branch, remove a password from the server URL.",
     "git:check": "Check the connection: the URL, sign-in and rights through the provider API (if its module is installed), git access to the repository and the branch on the server.",
-    "bot:run": "Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself.",
+    "bot:run": "Run a project bot (`--bot bots/<name>.md`): its prompt, MCP servers, skills and attachments go to the model with tools; the report and result files — in `Workspaces/bots/<bot>/<run>/`, the outcome — in the bot list and the «Cron» section. A bot with a schedule runs by itself; a new or changed bot first waits for the machine owner's approval («Approve» in «Bots» or `bots.py --approve`).",
     "bot:check": "Check a bot without running it: the schedule (cron), MCP servers, skills and attachment paths — with the next runs.",
     "bot:list": "The project's bots: schedule and next run, the last run's outcome, problems."
   },
@@ -448,7 +448,9 @@
     "Python {} слишком старый для Авроры. Нужен Python {}+ (лучше {}; {} ещё запускается, но его поддержка заканчивается). {}": "Python {} is too old for Aurora. Python {}+ is needed (preferably {}; {} still starts but its support is ending). {}",
     "macOS: `brew install python@{}` или установщик с https://www.python.org/downloads/ (после него откройте «Install Certificates.command»); без прав администратора — `uv python install {}`, если uv у вас уже есть. Системный Python (из Command Line Tools) не обновляется и не подходит — его трогать не нужно.": "macOS: `brew install python@{}` or the installer from https://www.python.org/downloads/ (then open \"Install Certificates.command\"); without administrator rights — `uv python install {}` if you already have uv. The system Python (from Command Line Tools) is not updated and is not suitable — leave it alone.",
     "Windows: `winget install -e --id Python.Python.{}` или установщик с https://www.python.org/downloads/. После установки запустите файл снова.": "Windows: `winget install -e --id Python.Python.{}` or the installer from https://www.python.org/downloads/. After installing, run the file again.",
-    "Linux: поставьте Python {}+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в основном репозитории — нужен PPA deadsnakes) или `uv python install {}`, если uv у вас уже есть.": "Linux: install Python {}+ from the distribution packages (on Ubuntu 22.04 it is not in the main repository — use the deadsnakes PPA) or `uv python install {}` if you already have uv."
+    "Linux: поставьте Python {}+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в основном репозитории — нужен PPA deadsnakes) или `uv python install {}`, если uv у вас уже есть.": "Linux: install Python {}+ from the distribution packages (on Ubuntu 22.04 it is not in the main repository — use the deadsnakes PPA) or `uv python install {}` if you already have uv.",
+    "скрипт — файл .py из папки scripts/ движка проекта": "a script is a .py file from the scripts/ folder of the project's engine",
+    "скрипта нет": "no such script"
   },
   "connectors": {
     "confluence-dc": {
@@ -810,7 +812,10 @@
     "одна страница: итог JSON-ом (вердикт, оценка, сводка, отчёт) и отчёт в .aurora/state/reviews/ — для MCP Авроры и ботов": "one page: the outcome as JSON (verdict, score, summary, report) and the report in .aurora/state/reviews/ — for the Aurora MCP and bots",
     "ответить ровно этой моделью провайдера, без запасных (для --task ask)": "answer with exactly this provider model, no spares (for --task ask)",
     "ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)": "answer with a role from the «Models» section (for --task ask; worker by default)",
-    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON"
+    "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON",
+    "согласие владельца машины на бота (--bot) или на все ждущие (--all)": "the machine owner's approval of a bot (--bot) or of all waiting ones (--all)",
+    "с --approve: скрипт движка проекта (.aurora/scripts/<имя>.py)": "with --approve: an engine script of the project (.aurora/scripts/<name>.py)",
+    "с --approve: все боты и скрипты проекта, ждущие согласия": "with --approve: all bots and scripts of the project that are awaiting approval"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

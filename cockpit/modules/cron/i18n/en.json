@@ -119,5 +119,9 @@
   "cron.bot_off": "off",
   "cron.err.bad_bot": "The project has no such bot",
   "cron.other_panel": "Another panel on this machine runs the schedule (process {pid}): tasks are visible here, but they run only there. Close that panel — this one takes over the schedule by itself within five minutes.",
-  "cron.err.other_panel": "Another panel on this machine runs the schedule — start the chain there"
+  "cron.err.other_panel": "Another panel on this machine runs the schedule — start the chain there",
+  "cron.bot_consent": "awaiting approval",
+  "cron.bot_consent_hint": "The bot is new or has changed since the machine owner's last approval: it does not run on a schedule or by a button. Approve it in the «Bots» section.",
+  "cron.bot_review": "Review and approve",
+  "cron.err.not_approved": "The bot is waiting for the machine owner's approval: approve it in the «Bots» section"
 }

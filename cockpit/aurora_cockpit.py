@@ -57,8 +57,8 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, engine_dir, is_folder_guide, local_view,  # noqa: E402
-                           mtime_stamp, personal_kit_file, replace_file, utc_slug, utc_stamp,
-                           yaml_scalar)
+                           mtime_stamp, personal_kit_file, replace_file, trusted_engine_script,
+                           utc_slug, utc_stamp, yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
@@ -1446,7 +1446,8 @@ def bots_state(project: str) -> dict:
             "roles": BOTS.llm_roles(), "choices": BOTS.model_choices(),
             "projects": [{"slug": p["slug"], "name": p["name"]}
                          for p in BOTS.knowledge_projects()],
-            "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR}
+            "presets": [{"id": i, "cron": c} for i, c in BOTS.PRESETS], "dir": BOTS.BOTS_DIR,
+            "scripts": BOTS.pending_scripts(project)}      # скрипты проекта, ждущие согласия
 
 
 def bot_file(project: str, rel: str) -> dict:
@@ -1456,7 +1457,8 @@ def bot_file(project: str, rel: str) -> dict:
     return {"file": bot["file"], "meta": bot["meta"], "body": bot["body"],
             "problems": BOTS.validate(project, bot["meta"], bot["body"]),
             "schedule": BOTS.schedule(bot["meta"]), "last": BOTS.last_run(project, bot["file"]),
-            "id": BOTS.bot_id(project, bot["file"]), "mtime": bot["mtime"]}
+            "id": BOTS.bot_id(project, bot["file"]), "mtime": bot["mtime"],
+            "consent": BOTS.consent_state(project, bot)}
 
 
 def _bot_cron_mark(project: str, rel: str) -> None:
@@ -1474,22 +1476,44 @@ def bots_action(action: str, project: str, payload: dict) -> dict:
         meta = BOTS.clean_meta(payload.get("meta") or {})
         return {"problems": BOTS.validate(project, meta, str(payload.get("body") or "")),
                 "schedule": BOTS.schedule(meta)}
+    # Эти действия — явные щелчки владельца в панели: согласие на бота (ADR-026) переходит на
+    # новый текст, если прежний был согласован (`owner=True`); чужой файл из git так не одобряется.
     if action == "save":
-        res = BOTS.write(project, rel, payload.get("meta") or {}, str(payload.get("body") or ""))
+        res = BOTS.write(project, rel, payload.get("meta") or {}, str(payload.get("body") or ""),
+                         owner=True)
         if res.get("ok"):
             _bot_cron_mark(project, res["file"])
         return res
     if action == "create":
-        return BOTS.create(project, name)
+        return BOTS.create(project, name, owner=True)
     if action == "example":
-        res = BOTS.create_example(project)
+        res = BOTS.create_example(project, owner=True)
         if res.get("ok"):
             _bot_cron_mark(project, res["file"])
         return res
     if action == "duplicate":
-        return BOTS.duplicate(project, rel, name)
+        return BOTS.duplicate(project, rel, name, owner=True)
     if action == "rename":
-        return BOTS.rename(project, rel, name)
+        return BOTS.rename(project, rel, name, owner=True)
+    if action == "consent":
+        # Что именно одобряется: изменения с согласованной версии или весь текст нового бота.
+        if payload.get("script"):
+            return BOTS.script_view(project, str(payload["script"]))
+        return BOTS.consent_view(project, _bot_rel(project, rel))
+    if action == "approve":
+        # Согласие даёт только человек — щелчком в карточке «ждёт согласия» (ADR-026).
+        if payload.get("script"):
+            return BOTS.approve_script(project, str(payload["script"]), str(payload.get("sha256") or ""))
+        if payload.get("all"):
+            files = BOTS.approve_all(project, payload.get("expect") or {})
+        else:
+            res = BOTS.approve(project, _bot_rel(project, rel), str(payload.get("sha256") or ""))
+            if not res.get("ok"):
+                return res
+            files = [res["file"]]
+        for f in files:
+            _bot_cron_mark(project, f)       # слот, пропущенный в ожидании, не догоняем
+        return {"ok": True, "files": files}
     if action == "delete":
         return BOTS.delete(project, rel)
     return {"ok": False, "error": "нет такого действия"}
@@ -2744,11 +2768,12 @@ def kit_is_source() -> bool:
 
 
 def script_path(project: str, script: str) -> str:
-    """Где взять скрипт: kit-сторонние — всегда из kit'а, остальные — из движка проекта."""
+    """Где взять скрипт: kit-сторонние — всегда из kit'а, остальные — из движка проекта, если
+    это копия кита или на скрипт есть согласие владельца машины (ADR-026); иначе — из кита."""
+    kit_copy = os.path.join(KIT, "scripts", script)
     if script in KIT_SIDE:
-        return os.path.join(KIT, "scripts", script)
-    path = os.path.join(project, engine_dir(project), "scripts", script)
-    return path if os.path.isfile(path) else os.path.join(KIT, "scripts", script)
+        return kit_copy
+    return trusted_engine_script(project, script, kit_copy)
 
 
 def run_capture(project: str, script: str, args: list, timeout: int = 300) -> tuple:
@@ -5205,7 +5230,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path in ("/api/bots/save", "/api/bots/validate", "/api/bots/create",
                       "/api/bots/duplicate", "/api/bots/rename", "/api/bots/delete",
-                      "/api/bots/example"):
+                      "/api/bots/example", "/api/bots/consent", "/api/bots/approve"):
             project = payload.get("project", "")
             if not self._known(project):
                 return
@@ -5757,11 +5782,14 @@ def cron_action(action: str, payload: dict, projects: list) -> dict:
         if not bt:
             return {"ok": False, "error": "no_task"}
         if action == "start":
+            if bt.get("consent") != "granted":
+                return {"ok": False, "error": "not_approved"}      # ADR-026: ждёт согласия владельца
             return scheduler().enqueue(tid, "manual")
         if action == "toggle":
             bot = BOTS.read(bt["project"], bt["bot"])
             on = bool(payload.get("enabled"))
-            BOTS.write(bt["project"], bt["bot"], {**bot["meta"], "enabled": on}, bot["body"])
+            BOTS.write(bt["project"], bt["bot"], {**bot["meta"], "enabled": on}, bot["body"],
+                       owner=True)           # согласие переходит на правку, если прежний текст был согласован
             if on:
                 CRON.mark_bot_past({**bt, "enabled": True})
             return {"ok": True}

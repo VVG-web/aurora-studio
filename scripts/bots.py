@@ -33,6 +33,13 @@ YAML — что ему дано, в теле — сам промпт.
 `.aurora/state/bots/<бот>.json`: её показывают список ботов и раздел «Cron». Неудача —
 причина словами, совет и действие (`problem.code`, `problem.actions`).
 
+Согласие владельца машины (ADR-026). Бот приезжает через git и исполняется на машине каждого
+участника — с его токенами и квотой модели, — поэтому новый или изменённый бот сначала ждёт
+согласия: запись «проект + файл + SHA-256» в `~/.aurora/consent.json` (вне проекта). Без неё бот
+не запускается ни по расписанию, ни по кнопке, ни из командной строки. Согласие даёт человек:
+кнопка раздела «Боты» или `bots.py --approve`; бот, созданный или сохранённый в панели, уже
+согласован, если согласован был его прежний текст.
+
 Расписание — поле `cron`: пять полей cron (минута час день месяц день-недели) или
 `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`. Бот с расписанием и `enabled: true`
 сам появляется в разделе «Cron»: расписание живёт в файле бота и больше нигде.
@@ -40,6 +47,7 @@ YAML — что ему дано, в теле — сам промпт.
   python3 bots.py --list [--json]
   python3 bots.py --check --bot bots/jira-label-analyzer.md
   python3 bots.py --run --bot bots/jira-label-analyzer.md [--trigger cron]
+  python3 bots.py --approve (--bot bots/<имя>.md | --all)   # согласие владельца: показать и записать
 
 Панель: раздел «Боты» — `bot:run`, `bot:check`, `bot:list`
 """
@@ -64,6 +72,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import is_folder_guide, kit_root  # noqa: E402 — кит; описание папки — не бот
+import aurora_common as AC  # noqa: E402 — согласие владельца машины на бота (ADR-026)
 
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
@@ -126,6 +135,11 @@ PROBLEMS = {
                      "Проверьте связь в разделе «Модели»; если сервер перегружен — повторите "
                      "позже.", ["open_models", "retry"]),
     "busy": ("Бот уже работает", "Дождитесь конца прогона.", ["retry"]),
+    "not_approved": ("Бот ждёт согласия владельца машины",
+                     "Файл бота новый или изменился с последнего согласия. Просмотрите его и "
+                     "одобрите: кнопка «Одобрить» в разделе «Боты» или "
+                     "`python3 scripts/bots.py --approve --bot bots/<имя>.md`.",
+                     ["approve"]),
     "role_unknown": ("Роли модели нет",
                      "Выберите роль из раздела «Модели» или заведите её там.",
                      ["open_models", "open_bots"]),
@@ -538,24 +552,128 @@ def list_bots(project, with_checks: bool = True) -> list:
         if not bot:
             continue
         meta = bot["meta"]
-        out.append({"file": bot["file"], "meta": meta,
+        out.append({"file": bot["file"], "meta": meta, "consent": consent_state(project, bot),
+                    "sha256": AC.content_digest(bot["text"]),
                     "schedule": schedule(meta), "last": last_run(project, bot["file"]),
                     "problems": validate(project, meta, bot["body"], mcp, skills)
                     if with_checks else []})
     return out
 
 
-def write(project, rel: str, meta: dict, body: str) -> dict:
-    """Записать бота, сохранив чужие поля шапки. → {ok, file, problems}."""
+# ---------------------------------------------------------------- согласие владельца машины
+
+def consent_state(project, bot: dict) -> str:
+    """granted — на этот текст согласие есть; new — на файл согласия не было; changed — было, но
+    файл изменился. Бот не из `read()` (нет текста) согласия не имеет."""
+    return AC.consent_check("bot", project, bot["file"], bot.get("text") or "")["state"]
+
+
+def consent_view(project, rel: str) -> dict:
+    """Для карточки «ждёт согласия»: состояние, изменения с одобренной версии и сам текст."""
+    bot = read(project, rel)
+    if not bot:
+        return {"ok": False, "error": "бота нет"}
+    chk = AC.consent_check("bot", project, bot["file"], bot["text"])
+    return {"ok": True, "file": bot["file"], "state": chk["state"], "sha256": chk["sha256"],
+            "diff": AC.consent_diff("bot", project, bot["file"], bot["text"])
+            if chk["state"] == "changed" else "", "text": bot["text"]}
+
+
+def approve(project, rel: str, expect: str = "") -> dict:
+    """Согласие владельца на текущий файл бота. Зовут только кнопка панели и `--approve`.
+
+    `expect` — хеш текста, который человек видел в карточке: файл успел измениться (например,
+    `git pull` между просмотром и щелчком) — согласия нет, показать заново."""
+    bot = read(project, rel)
+    if not bot:
+        return {"ok": False, "error": "бота нет"}
+    digest = AC.content_digest(bot["text"])
+    if expect and expect != digest:
+        return {"ok": False, "error": "changed", "file": bot["file"]}
+    AC.consent_grant("bot", project, bot["file"], bot["text"])
+    return {"ok": True, "file": bot["file"], "sha256": digest}
+
+
+def approve_all(project, expect: dict | None = None) -> list:
+    """Согласие на все боты проекта, которые его ещё ждут (и не изменились с показа: `expect` —
+    {файл: хеш}). → список файлов."""
+    done = []
+    for b in list_bots(project, with_checks=False):
+        if b["consent"] != "granted" and approve(
+                project, b["file"], (expect or {}).get(b["file"], "")).get("ok"):
+            done.append(b["file"])
+    return done
+
+
+# Скрипты движка, лежащие в самом проекте (`.aurora/scripts/`): копия кита исполняется как есть,
+# свой или изменённый — после согласия, иначе вместо него работает скрипт кита (ADR-026).
+SCRIPT_RX = re.compile(r"^[A-Za-z0-9_][\w.-]*\.py$")
+
+
+def _kit_script(name: str) -> str:
+    kit = kit_root()
+    return str(Path(kit) / "scripts" / name) if kit else ""
+
+
+def pending_scripts(project) -> list:
+    """Скрипты проекта, ждущие согласия: [{script, file, state: new|changed}]."""
+    folder = Path(project) / AC.engine_dir(project) / "scripts"
+    if not folder.is_dir():
+        return []
+    out = []
+    for path in sorted(folder.glob("*.py")):
+        info = AC.script_consent(project, path.name, _kit_script(path.name))
+        if info["state"] in ("new", "changed"):
+            out.append({"script": path.name, "file": info["file"], "state": info["state"]})
+    return out
+
+
+def script_view(project, name: str) -> dict:
+    """Для карточки согласия на скрипт: состояние, изменения с одобренной версии, текст."""
+    if not SCRIPT_RX.match(str(name or "")):
+        return {"ok": False, "error": "скрипт — файл .py из папки scripts/ движка проекта"}
+    info = AC.script_consent(project, name, _kit_script(name))
+    if info["state"] == "none":
+        return {"ok": False, "error": "скрипта нет"}
+    text = Path(info["path"]).read_text(encoding="utf-8", errors="replace")
+    return {"ok": True, "script": name, "file": info["file"], "state": info["state"],
+            "sha256": AC.content_digest(text),
+            "diff": AC.consent_diff("script", project, info["file"], text) if info["state"] == "changed" else "",
+            "text": text}
+
+
+def approve_script(project, name: str, expect: str = "") -> dict:
+    """Согласие владельца на скрипт проекта (кнопка панели и `--approve --script`)."""
+    view = script_view(project, name)
+    if not view["ok"]:
+        return view
+    if expect and expect != view["sha256"]:
+        return {"ok": False, "error": "changed", "file": view["file"]}
+    AC.consent_grant("script", project, view["file"], view["text"])
+    return {"ok": True, "file": view["file"], "sha256": view["sha256"]}
+
+
+def write(project, rel: str, meta: dict, body: str, owner: bool = False) -> dict:
+    """Записать бота, сохранив чужие поля шапки. → {ok, file, problems}.
+
+    `owner` — правку делает владелец машины в панели: согласие переходит на новый текст, если
+    файла ещё не было или прежний его текст был согласован. Файл из git, который владелец не
+    одобрял, правкой в панели согласия не получает: его одобряют отдельно, увидев текст."""
     path = bot_path(project, rel)
     if not path:
         return {"ok": False, "error": "файл бота — только .md в папке bots/ проекта"}
-    old = parse(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else {"extra": []}
+    old_text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
+    old = parse(old_text) if old_text is not None else {"extra": []}
+    keep = owner and (old_text is None or AC.consent_check(
+        "bot", project, rel_of(project, path), old_text)["state"] == "granted")
     clean = clean_meta(meta)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".md.tmp")
-    tmp.write_text(dump(clean, body, old.get("extra")), encoding="utf-8")
+    text = dump(clean, body, old.get("extra"))
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+    if keep:
+        AC.consent_grant("bot", project, rel_of(project, path), text)
     return {"ok": True, "file": rel_of(project, path),
             "problems": validate(project, clean, body)}
 
@@ -595,24 +713,26 @@ NEW_PROMPT = ("Опишите здесь, что бот делает: что н�
               "[шаблон](../Templates/шаблон.md).\n")
 
 
-def create(project, name: str, meta: dict | None = None, body: str = "") -> dict:
+def create(project, name: str, meta: dict | None = None, body: str = "", owner: bool = False) -> dict:
     name = " ".join(str(name or "").split()) or "Новый бот"
     path = free_name(project, name)
     m = {**(meta or {}), "name": name}
-    return write(project, f"{BOTS_DIR}/{path.name}", m, body or NEW_PROMPT)
+    return write(project, f"{BOTS_DIR}/{path.name}", m, body or NEW_PROMPT, owner=owner)
 
 
-def duplicate(project, rel: str, name: str = "") -> dict:
+def duplicate(project, rel: str, name: str = "", owner: bool = False) -> dict:
     bot = read(project, rel)
     if not bot:
         return {"ok": False, "error": "бота нет"}
     new = name or (bot["meta"]["name"] + " (копия)")
     meta = {**bot["meta"], "name": new, "enabled": False}
     path = free_name(project, new)
-    return write(project, f"{BOTS_DIR}/{path.name}", meta, bot["body"])
+    # Копия несогласованного бота согласия не получает: текст владелец не одобрял.
+    return write(project, f"{BOTS_DIR}/{path.name}", meta, bot["body"],
+                 owner=owner and consent_state(project, bot) == "granted")
 
 
-def rename(project, rel: str, name: str) -> dict:
+def rename(project, rel: str, name: str, owner: bool = False) -> dict:
     """Новое имя бота — и новое имя файла по нему; состояние прогонов переезжает следом."""
     bot = read(project, rel)
     name = " ".join(str(name or "").split())
@@ -621,14 +741,20 @@ def rename(project, rel: str, name: str) -> dict:
     old = bot_path(project, rel)
     want = bots_dir(project) / f"{slug(name)}.md"
     target = old if want == old else (free_name(project, name) if want.exists() else want)
-    res = write(project, rel_of(project, old), {**bot["meta"], "name": name}, bot["body"])
+    res = write(project, rel_of(project, old), {**bot["meta"], "name": name}, bot["body"], owner=owner)
     if not res["ok"]:
         return res
     if target != old:
+        trusted = AC.consent_check("bot", project, rel_of(project, old),
+                                   old.read_text(encoding="utf-8", errors="replace"))["state"] == "granted"
         os.replace(old, target)
         st = state_file(project, rel)
         if st.is_file():
             os.replace(st, state_file(project, target.name))
+        AC.consent_revoke("bot", project, rel_of(project, old))
+        if trusted:                          # согласие переезжает вместе с файлом
+            AC.consent_grant("bot", project, rel_of(project, target),
+                             target.read_text(encoding="utf-8", errors="replace"))
     return {"ok": True, "file": rel_of(project, target)}
 
 
@@ -637,6 +763,7 @@ def delete(project, rel: str) -> dict:
     if not path or not path.is_file():
         return {"ok": False, "error": "бота нет"}
     path.unlink()
+    AC.consent_revoke("bot", project, rel_of(project, path))
     try:
         state_file(project, rel).unlink()
     except OSError:
@@ -682,7 +809,7 @@ EXAMPLE_PROMPT = """Найди все задачи Jira с меткой `X`.
 """
 
 
-def create_example(project) -> dict:
+def create_example(project, owner: bool = False) -> dict:
     """Пример из задания: бот, оценивающий задачи Jira с меткой по шаблону. Шаблон оценки
     кладётся рядом, если его в проекте нет, — вложение бота должно существовать."""
     tpl = Path(project) / EXAMPLE_TEMPLATE
@@ -695,7 +822,7 @@ def create_example(project) -> dict:
                  {"description": "Задачи Jira с меткой: оценка по шаблону, файл и комментарий в задаче",
                   "mcp": ["jira-mcp", "confluence-mcp"], "skills": ["evaluation-skill"],
                   "attachments": [EXAMPLE_TEMPLATE], "cron": "0 9 * * 1-5", "enabled": False},
-                 EXAMPLE_PROMPT)
+                 EXAMPLE_PROMPT, owner=owner)
     res["template"] = EXAMPLE_TEMPLATE if made_tpl else ""
     return res
 
@@ -761,6 +888,12 @@ def run(project, rel: str, trigger: str = "manual", call=None, say=print) -> dic
         return {"ok": False, "problem": problem("no_bot", rel)}
     meta, body = bot["meta"], bot["body"]
     rel = bot["file"]
+    # Согласие владельца машины (ADR-026) — на тот самый текст, что сейчас исполнится: расписание,
+    # кнопка и командная строка проходят здесь одним местом.
+    chk = AC.consent_check("bot", project, rel, bot["text"])
+    if chk["state"] != "granted":
+        AC.consent_log("refuse", "bot", project, rel, chk["sha256"], reason=chk["state"], trigger=trigger)
+        return {"ok": False, "problem": problem("not_approved", "", state=chk["state"])}
     lock = state_file(project, rel).with_suffix(".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -938,19 +1071,73 @@ def _print_problem(p: dict) -> None:
     print(f"  Что сделать: {p['fix']}")
 
 
+def _approve_cli(project: str, a) -> int:
+    """`--approve`: показать, что одобряется (изменения или весь текст), и записать согласие.
+    Явная команда человека в его терминале: команды панели, маршруты и ассистенты её не имеют."""
+    scripts = []
+    if a.all:
+        files = [b["file"] for b in list_bots(project, with_checks=False) if b["consent"] != "granted"]
+        scripts = [s["script"] for s in pending_scripts(project)]
+    elif a.script:
+        files, scripts = [], [a.script]
+    elif a.bot:
+        files = [a.bot]
+    else:
+        print("Укажите бота: --bot bots/<имя>.md, скрипт: --script <имя>.py — или --all.")
+        return 2
+    done = []
+    for name in scripts:
+        view = script_view(project, name)
+        if not view["ok"]:
+            print(f"✗ {view['error']}: {name}")
+            return 1
+        if not a.json:
+            print(f"== {view['file']} ({'изменён с последнего согласия' if view['state'] == 'changed' else 'новый или отличается от скрипта кита' if view['state'] == 'new' else 'уже согласован'})")
+            if view["state"] in ("new", "changed"):
+                print(view["diff"] or view["text"])
+        if view["state"] in ("new", "changed"):
+            approve_script(project, name, view["sha256"])
+            done.append(view["file"])
+    for rel in files:
+        view = consent_view(project, rel)
+        if not view["ok"]:
+            _print_problem(problem("no_bot", rel))
+            return 1
+        if not a.json:
+            print(f"== {view['file']} ({'изменён с последнего согласия' if view['state'] == 'changed' else 'новый' if view['state'] == 'new' else 'уже согласован'})")
+            if view["state"] != "granted":
+                print(view["diff"] or view["text"])
+        if view["state"] != "granted":
+            approve(project, view["file"], view["sha256"])
+            done.append(view["file"])
+    if a.json:
+        print(json.dumps({"approved": done}, ensure_ascii=False))
+    else:
+        print(f"Согласовано: {len(done)}." if done else "Согласовывать нечего.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Боты проекта: список, проверка, запуск")
     act = ap.add_mutually_exclusive_group(required=True)
     act.add_argument("--list", action="store_true", help="боты проекта с расписанием и итогом")
     act.add_argument("--check", action="store_true", help="проверить бота, не запуская")
     act.add_argument("--run", action="store_true", help="запустить бота")
+    act.add_argument("--approve", action="store_true",
+                     help="согласие владельца машины на бота (--bot) или на все ждущие (--all)")
     ap.add_argument("--bot", default="", help="файл бота: bots/<имя>.md")
     ap.add_argument("--trigger", default="manual", choices=("manual", "cron"),
                     help="кто запустил: человек или расписание")
     ap.add_argument("--project", default=".", help="папка проекта (по умолчанию — текущая)")
     ap.add_argument("--json", action="store_true", help="итог одной строкой JSON")
+    ap.add_argument("--script", default="",
+                    help="с --approve: скрипт движка проекта (.aurora/scripts/<имя>.py)")
+    ap.add_argument("--all", action="store_true",
+                    help="с --approve: все боты и скрипты проекта, ждущие согласия")
     a = ap.parse_args(argv)
     project = str(Path(a.project).resolve())
+    if a.approve:
+        return _approve_cli(project, a)
     if a.list:
         rows = list_bots(project)
         if a.json:
@@ -966,6 +1153,9 @@ def main(argv=None) -> int:
             print(f"{b['meta']['name']} ({b['file']}) — {when}"
                   + (f"; последний прогон {'удачен' if last.get('ok') else 'не удался'} {last.get('at')}"
                      if last else ""))
+            if b["consent"] != "granted":
+                print(f"  ! {PROBLEMS['not_approved'][0]} ({'изменён' if b['consent'] == 'changed' else 'новый'}): "
+                      f"python3 scripts/bots.py --approve --bot {b['file']}")
             for p in b["problems"]:
                 print(f"  ! {PROBLEMS[p['code']][0]}: {detail_text(p)}")
         return 0
@@ -983,6 +1173,8 @@ def main(argv=None) -> int:
         else:
             for p in probs:
                 _print_problem(problem(p["code"], p.get("detail", "")))
+            if consent_state(project, bot) != "granted":
+                _print_problem(problem("not_approved"))
             if sch.get("next"):
                 print("Ближайшие запуски: " + ", ".join(sch["next"]))
             if not probs:
