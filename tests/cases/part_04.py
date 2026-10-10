@@ -1933,7 +1933,21 @@ def test_saving_does_not_silently_overwrite(tmp: Path):
     (root / ".aurora" / "scripts").mkdir(parents=True)
     (root / ".aurora" / "scripts" / "kb_lint.py").write_text(
         "import time; time.sleep(300)", encoding="utf-8")
-    slow = ck.file_write(str(root), "Artifacts/ac/AC-1.md", "# AC\n\nещё\n")
+    # Скрипт проекта, которого нет в ките, исполняется только с согласием владельца машины
+    # (ADR-026): без него вместо него работал бы скрипт кита, и зависание не воспроизвелось бы.
+    # Реестр согласий — во временной папке, не в ~/.aurora владельца.
+    import bots as _bots
+    saved_home = os.environ.get("AURORA_CONSENT_HOME")
+    os.environ["AURORA_CONSENT_HOME"] = str(tmp / "owner-home")
+    try:
+        shown = _bots.script_view(root, "kb_lint.py")
+        assert _bots.approve_script(root, "kb_lint.py", expect=shown["sha256"])["ok"]
+        slow = ck.file_write(str(root), "Artifacts/ac/AC-1.md", "# AC\n\nещё\n")
+    finally:
+        if saved_home is None:
+            os.environ.pop("AURORA_CONSENT_HOME", None)
+        else:
+            os.environ["AURORA_CONSENT_HOME"] = saved_home
     assert slow.get("ok"), "зависший линтер отменил сохранение"
     assert slow["lint"]["lines"] and "не ответил" in slow["lint"]["lines"][0], \
         "молчание линтера выглядит как «находок нет»"
