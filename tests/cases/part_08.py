@@ -1991,6 +1991,58 @@ def test_merge_audit_ignores_sources_the_winner_legitimately_changed_later(tmp: 
 
 
 @test
+def test_merge_audit_names_live_sources_in_every_spelling_and_from_any_folder(tmp: Path):
+    """Источник донора, чей файл жив, называется потерей при любой записи пути и откуда
+    бы ни запустили проверку; а что пропущено, видно в отчёте.
+
+    Запись Windows с обратными косыми (`Sources\\Jira\\T-5.md`) движок читает как путь через
+    `/`, поэтому и файл ищется по нормализованному пути. Путь считается от папки, где стоит
+    база, а не от текущей: с `--root` из другой папки проверка не должна молча пропустить
+    всё. Машинная расшифровка с копией человека — не потеря (`--copies` снимает её у
+    победителя законно); ушедший с диска источник считается в строке «не проверено»."""
+    root = make_project(tmp, git=True)
+    kb = root / "AuroraKnowledgeDB"
+    (root / "Sources/Jira").mkdir(parents=True, exist_ok=True)
+    (root / "Sources/Jira/T-5.md").write_text("# T-5\n", encoding="utf-8")
+    (root / "Raw").mkdir(exist_ok=True)
+    (root / "Raw/Док.converted.md").write_text(
+        "---\nconverted_from: Док.docx\n---\n" + "машинная расшифровка\n" * 20, encoding="utf-8")
+    (root / "Raw/Док.md").write_text("копия человека\n" * 30, encoding="utf-8")
+
+    def merged(name, winner, sources):
+        card(root, f"_archive/{name}.md", "донор", status="deprecated",
+             superseded_by=f'"[[{winner}]]"',
+             sources="".join(f'\n  - "{s}"' for s in sources))
+        p = kb / "_archive" / f"{name}.md"
+        p.write_text(p.read_text(encoding="utf-8") + f"\n## История\n\n- слито в [[{winner}]]\n",
+                     encoding="utf-8")
+
+    card(root, "Concepts/Обратные.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Косые"', sources='\n  - "Sources/Jira/T-1.md"')
+    merged("Донор-Косые", "Обратные", ["Sources\\Jira\\T-5.md"])
+    card(root, "Concepts/Копия.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Копия"', sources='\n  - "Raw/Док.md"')
+    merged("Донор-Копия", "Копия", ["Raw/Док.converted.md"])
+    card(root, "Concepts/Ушло.md", "победитель " * 10, status="knowledge",
+         aliases='\n  - "Донор-Ушёл"', sources='\n  - "Sources/Jira/T-1.md"')
+    merged("Донор-Ушёл", "Ушло", ["Sources/Confluence/Нет.md"])
+
+    cp = run("kb_fix.py", "--merge-audit", cwd=root)
+    assert cp.returncode == 1 and "проверено слитых доноров: 3; с потерями: 1" in cp.stdout \
+        and "T-5.md" in cp.stdout \
+        and "Док.converted" not in cp.stdout and "Нет.md" not in cp.stdout \
+        and "Источников донора не проверено (файла нет на диске): 1" in cp.stdout, \
+        f"запись с обратными косыми не названа, копия или ушедший источник названы:\n{cp.stdout}"
+
+    # то же из чужой папки с абсолютным --root: ответ не меняется
+    other = tmp / "elsewhere"
+    other.mkdir()
+    cp = run("kb_fix.py", "--merge-audit", "--root", str(kb), cwd=other)
+    assert cp.returncode == 1 and "с потерями: 1" in cp.stdout and "T-5.md" in cp.stdout, \
+        f"из другой папки источники доноров пропущены молча:\n{cp.stdout}\n{cp.stderr}"
+
+
+@test
 def test_merge_audit_does_not_depend_on_file_walk_order(tmp: Path):
     """Проверка слияний даёт один ответ при любом порядке обхода файлов.
 

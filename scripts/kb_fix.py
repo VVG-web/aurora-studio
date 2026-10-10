@@ -2770,7 +2770,7 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
 ARCHIVE_SUFFIX = re.compile(r"-(?:\d{8}-\d{4}(?:\d{2})?Z|\d{1,2})$")
 
 
-def audit_merges(cards: dict) -> tuple:
+def audit_merges(cards: dict, base: str = ".", unchecked: "list | None" = None) -> tuple:
     """Разовая проверка баз после дефекта слияния нескольких доноров. → (проверено, находки).
 
     До исправления выживший с двумя и более донорами читался из исходного текста, и каждый
@@ -2780,8 +2780,13 @@ def audit_merges(cards: dict) -> tuple:
     [[…]]»), проверяется, что у победителя — его имя, его синонимы и его источники.
     Читает базу и ничего не пишет. Заменённые по `kb:supersede` не проверяются: устаревшее
     знание не обязано переезжать в преемника. Источники донора проверяются только пока
-    их файл есть на диске (путь считается от текущей папки — корня проекта): позже
-    победитель получает ремап или снятие источника от `--gone-sources`, и это не потеря.
+    их файл есть на диске (путь считается от `base` — папки, где стоит база, по умолчанию
+    текущая): позже победитель получает ремап или снятие источника от `--gone-sources`, и
+    это не потеря. Не проверенное так (файла нет) складывается в `unchecked` — пары
+    (путь донора, источник), чтобы «с потерями: 0» не читалось как полная гарантия.
+    Машинная расшифровка `Raw/*.converted.md`, у которой есть копия человека, тоже не
+    считается: `--copies` законно снимает её у победителя. Источник-магнит шаблона, снятый
+    у победителя `--template`, по следу не отличить от потери: он остаётся находкой.
 
     Находка: (путь донора, победитель, [чего не хватает]). Победитель, сам ушедший в архив
     при последующем слиянии, ведёт к своему победителю: всё накапливается в итоговом.
@@ -2794,6 +2799,8 @@ def audit_merges(cards: dict) -> tuple:
     донор цел, если цел хотя бы перед одним из кандидатов, иначе названа карточка с
     наименьшими потерями (при равенстве — первая по пути).
     """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_plan as BP
     by_stem: dict = {}
     by_alias: dict = {}
     for path in sorted(cards):
@@ -2828,10 +2835,10 @@ def audit_merges(cards: dict) -> tuple:
 
     def lost_for(c: "Card", win: "Card") -> list:
         have = {fold_hard(n) for n in [win.stem] + list(win.aliases)}
-        base = ARCHIVE_SUFFIX.sub("", c.stem)
+        bare = ARCHIVE_SUFFIX.sub("", c.stem)
         lost: list = []
-        if not {fold_hard(c.stem), fold_hard(base)} & have:
-            lost.append(f"имя «{base}»")
+        if not {fold_hard(c.stem), fold_hard(bare)} & have:
+            lost.append(f"имя «{bare}»")
         lost += [f"синоним «{a}»" for a in c.aliases
                  if fold_hard(a) not in have and fold_hard(a) != fold_hard(win.stem)]
         got = {s_.replace("\\", "/") for s_ in card_sources(win.text)}
@@ -2839,8 +2846,14 @@ def audit_merges(cards: dict) -> tuple:
         # победитель законно меняется — `--gone-sources` переводит запись на переехавшую
         # страницу (по коду документа, как и ремонт) или снимает исчезнувшую, а архивные
         # доноры этим ремонтом не правятся. Значит, у победителя такого пути может не быть.
-        lost += [f"источник {s_}" for s_ in card_sources(c.text)
-                 if s_.replace("\\", "/") not in got and os.path.exists(s_)]
+        for s_ in card_sources(c.text):
+            n = s_.replace("\\", "/")
+            if n in got or not os.path.exists(os.path.join(base, n)):
+                continue
+            # расшифровку с копией человека `--copies` снимает у победителя законно
+            if n.startswith("Raw/") and BP.human_twin(os.path.join(base, n)):
+                continue
+            lost.append(f"источник {s_}")
         return lost
 
     found: list = []
@@ -2856,6 +2869,11 @@ def audit_merges(cards: dict) -> tuple:
             continue
         # кандидаты уже идут по пути; min берёт первого из равных — порядок обхода не важен
         best = min(((lost_for(c, w), w) for w in wins), key=lambda t: len(t[0]))
+        if unchecked is not None:
+            have = {s_.replace("\\", "/") for s_ in card_sources(best[1].text)}
+            unchecked += [(path, s_) for s_ in card_sources(c.text)
+                          if s_.replace("\\", "/") not in have
+                          and not os.path.exists(os.path.join(base, s_.replace("\\", "/")))]
         if best[0]:
             found.append((path, best[1].stem, best[0]))
     return checked, found
@@ -3060,9 +3078,14 @@ def main() -> int:
         return 0
     if a.merge_audit:
         cards = load_cards(a.root)
-        checked, found = audit_merges(cards)
+        unchecked: list = []
+        # источники записаны от папки, где стоит база, а не от текущей: `--root` может
+        # быть абсолютным, и запуск из другой папки не должен молча пропускать всё
+        checked, found = audit_merges(cards, os.path.dirname(os.path.abspath(a.root)), unchecked)
         print(f"# kb_fix --merge-audit — {TODAY}\n\nКарточек в базе: {len(cards)}; "
               f"проверено слитых доноров: {checked}; с потерями: {len(found)}")
+        if unchecked:
+            print(f"Источников донора не проверено (файла нет на диске): {len(unchecked)}")
         for dpath, win, lost in found[:200]:
             print(f"- {short(dpath)} → {win}: не дошло — " + "; ".join(lost[:6])
                   + (f"; … ещё {len(lost) - 6}" if len(lost) > 6 else ""))
