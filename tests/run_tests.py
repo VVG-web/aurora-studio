@@ -109,6 +109,7 @@ try:
             print(f"  ❌ {_n} — {type(e).__name__}: {e}  [{frames}]")
         finally:
             os.chdir(_cwd)
+            harness.run_cleanups()
 finally:
     shutil.rmtree(td, ignore_errors=True)
 

@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from harness import KIT, SCRIPTS, make_project, set_home, test  # noqa: F401
+from harness import KIT, SCRIPTS, kit_with_mcp, make_project, set_home, test  # noqa: F401
 
 COCKPIT = KIT / "cockpit"
 
@@ -149,8 +149,12 @@ def test_the_aurora_mcp_gives_bots_time_memory_and_a_lock(tmp: Path):
     servers = AG.mcp_config(str(root), with_aurora=True)["mcpServers"]
     assert "aurora" in servers and "--project" in servers["aurora"]["args"]
     assert AG.mcp_config(str(root)) == {}, "встроенный сервер появился без просьбы"
-    (root / "mcp.json").write_text(json.dumps({"mcpServers": {"aurora": {"command": "mine"}}}),
+    # своё определение сервера с тем же именем сильнее встроенного — но только из кита
+    (root / "mcp.json").write_text(json.dumps({"mcpServers": {"aurora": {"command": "theirs"}}}),
                                    encoding="utf-8")
+    assert AG.mcp_config(str(root), with_aurora=True)["mcpServers"]["aurora"]["command"] != "theirs", \
+        "mcp.json проекта подменил встроенный сервер Авроры"
+    kit_with_mcp(tmp, {"aurora": {"command": "mine"}})
     assert AG.mcp_config(str(root), with_aurora=True)["mcpServers"]["aurora"]["command"] == "mine"
 
 
@@ -197,6 +201,17 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
         raise AssertionError("записал без разрешения проекта")
     except A.OpError as e:
         assert "jira_write" in str(e)
+    # Запись выдаёт кит: строка проекта без права кита ничего не включает (BL-SEC-12, SEC-02).
+    cfg.write_text(base + "\nmcp:\n  jira_write: true\n", encoding="utf-8")
+    assert A.settings(str(root))["jira_write"] is False, "проект из git включил запись в Jira"
+    try:
+        A.run(dict(req), str(root))
+        raise AssertionError("записал по строке проекта без права кита")
+    except A.OpError as e:
+        assert "кит" in str(e), e
+    cfg.write_text(base, encoding="utf-8")
+    kit_with_mcp(tmp, permissions={"jira_write": True})
+    assert A.settings(str(root))["jira_write"] is False, "право кита без просьбы проекта включило запись"
     calls = []
 
     class Fake:
@@ -220,6 +235,9 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
         assert dry["ok"] and not calls and len(dry["steps"]) == 3, dry
         cfg.write_text(base + "\nmcp:\n  jira_write: true\n", encoding="utf-8")
         assert A.settings(str(root))["jira_write"] is True
+        cfg.write_text(base + "\nmcp:\n  jira_write: false\n", encoding="utf-8")
+        assert A.settings(str(root))["jira_write"] is False, "проект не смог сузить право кита"
+        cfg.write_text(base + "\nmcp:\n  jira_write: true\n", encoding="utf-8")
         out = A.run(dict(req), str(root))
         assert out["ok"] and calls == ["attach", "comment", "labels"], (out, calls)
         calls.clear()

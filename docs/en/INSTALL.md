@@ -255,6 +255,37 @@ changed. In a project's `.env` they no longer apply — `doctor` names them.
 All texts go to the providers of the model setup: if your perimeter forbids sending materials out, do not switch
 on semantics and scans — everything else works without them.
 
+## MCP servers: set up once per kit
+
+External tools of the agent and bots (Jira, Confluence, GitHub, the knowledge graph) are configured **once at
+the kit level** — "Kit setup" → "Machine MCP servers" — and live in `<kit>/local/mcp.json` (the folder is
+in `.gitignore`, a kit update does not touch it; mode 600). Like the models: a server definition — command,
+arguments, environment, tokens — exists only there. The panel accepts tokens but only returns a mask.
+
+A project **neither defines nor overrides** servers: the `mcp.json` from a project repository is not read (it
+arrived with `git pull` and could replace the command of a machine server and receive its tokens). A project
+only **picks** the kit's servers by name — "Project settings" → MCP, or by hand:
+
+```yaml
+mcp:
+  servers: [jira, aurora-graph]   # no line — the project gets all of the kit's servers; [] — none
+```
+
+A name the kit does not have is an error: a run with tools does not start, and `doctor` and the panel name it.
+If the project still holds an old `mcp.json`, `doctor` and "Project settings" warn "the file is not used" and
+offer to **move the servers into the kit**: the "Move servers to the kit" button (or
+`python3 scripts/agent_core.py --mcp-migrate` in the project folder) shows the differences — what will be added,
+what is already there, what will not move because the name is taken — and writes to the kit only after you
+explicitly confirm what was shown (on the command line: `--mcp-migrate --yes --digest <fingerprint from the
+preview>`; the assistant and bots do not get this command). Tokens from the old file go to `local/mcp.json`, not
+into the project; the moved file is renamed to `mcp.json.migrated` (if it was in git, delete it there
+yourself: the secrets stay in the history).
+
+**Writing to Jira** is a right of the machine, not of the project: the checkbox "Let agents and bots write to
+Jira" in "Kit setup" (key `permissions.jira_write` in `local/mcp.json`). A `jira_write: true` line in the
+project's `aurora.config.yaml` enables nothing by itself — writing happens only when both the kit and the
+project allow it; a project can only narrow the right (remove the line or set `false`).
+
 ## Aurora search for other agents (MCP)
 
 The same search as in "Ask" and "Productivity" (words and meaning by the `kb:embed` index) is
@@ -280,8 +311,9 @@ The engine does the mechanics; the model spends tokens only on judgement:
 | `jira_publish` | attachment → comment → labels step by step; labels only if the attachment landed; a repeat does not upload the same attachment; `dry_run` — a trial run |
 | `confluence_find` / `confluence_page` | a page by number or words; its text and links |
 
-Writing into the knowledge base through MCP is impossible. Writing into Jira is allowed only if the project
-allows it (`aurora.config.yaml`):
+Writing into the knowledge base through MCP is impossible. Writing into Jira is allowed only if both the kit
+(a machine right, "Kit setup" → MCP servers) and the project (`aurora.config.yaml`) allow it; a project can
+only narrow the kit's right, it cannot grant it to itself:
 
 ```yaml
 mcp:
@@ -417,7 +449,7 @@ Find all Jira issues with label `X`… Evaluate by the [template](../templates/e
 
 | Field | Meaning |
 |---|---|
-| `mcp` | the bot's MCP servers — from "Kit setup" → machine MCP servers and the project's `mcp.json`. Connected right away; the bot sees no others |
+| `mcp` | the bot's MCP servers — from "Kit setup" → machine MCP servers (and only the ones the project picked, `mcp: servers:`). Connected right away; the bot sees no others |
 | `skills` | skills (SKILL.md) of the project, the kit or `~/.claude/skills` — their method goes into the task |
 | `attachments` | project files and folders, paths from the root. References, not copies: at run time their text goes to the bot, and it can read them in full. Secrets and service folders are not given |
 | `cron` | five cron fields (minute hour day month weekday) or `@hourly`, `@daily`, `@weekly`, `@monthly` |
@@ -455,8 +487,8 @@ and the terminal commands `aurora.py <command> <project>` and `aurora.py setup`;
 library come from the kit (the project's own are used only when the kit cannot be found). The project's
 settings file cannot set the consent folder (`AURORA_CONSENT_HOME`): the panel's commands and bots see
 the same registry as the panel itself. `doctor` warns about bots and engine files awaiting
-approval. The project's `Scripts/` folder is not run by the engine. Caveats: until BL-SEC-12 the project's
-`mcp.json` is still read (it overrides kit servers by name), and git hooks, bot attachments and the
+approval. The project's `Scripts/` folder is not run by the engine. MCP servers are not defined in a project at
+all (see "MCP servers: set up once per kit"), so they need no approval. Caveats: git hooks, bot attachments and the
 external assistant config (its config entry comes from `aurora_mcp.py --selftest`) are not covered by approval.
 
 At run time (`bot:run` — by a button or on schedule) the bot gets the prompt, the skills' method, the

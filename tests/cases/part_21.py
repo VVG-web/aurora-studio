@@ -12,7 +12,7 @@ import os
 import re
 import sys
 
-from harness import KIT, SCRIPTS, set_home, test  # noqa: F401
+from harness import KIT, SCRIPTS, kit_with_mcp, set_home, test  # noqa: F401
 
 
 def _b():
@@ -26,8 +26,7 @@ def _project(tmp: Path) -> Path:
     p = tmp / "proj"
     p.mkdir(parents=True)
     (p / "aurora.config.yaml").write_text("project:\n  name: Demo\n", encoding="utf-8")
-    (p / "mcp.json").write_text(json.dumps({"mcpServers": {
-        "jira-mcp": {"command": "echo"}, "confluence-mcp": {"command": "echo"}}}), encoding="utf-8")
+    kit_with_mcp(tmp, {"jira-mcp": {"command": "echo"}, "confluence-mcp": {"command": "echo"}})
     sk = p / ".aurora" / "skills" / "evaluation-skill"
     sk.mkdir(parents=True)
     (sk / "SKILL.md").write_text("---\nname: evaluation-skill\n---\nОценивай по разделам шаблона.\n",

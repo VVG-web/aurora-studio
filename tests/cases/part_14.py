@@ -206,7 +206,7 @@ def test_installing_a_skill_never_leaves_the_agent_without_it(tmp: Path):
 def test_saving_the_same_settings_twice_keeps_the_rollback_copy(tmp: Path):
     """Повторное сохранение тех же настроек не затирает копию «до» — откат остаётся откатом.
 
-    `mcp.json` и `aurora.config.yaml` перед записью копировались в `.bak`, даже когда
+    `local/mcp.json` кита и `aurora.config.yaml` перед записью копировались в `.bak`, даже когда
     сохранялось то же самое. Две подряд нажатые «Сохранить» (или «Сохранить» без правок)
     делали `.bak` копией текущего файла, и прежняя версия — единственное, к чему можно
     вернуться, — пропадала. Запись без изменений ничего не пишет и копию не трогает.
@@ -219,13 +219,13 @@ def test_saving_the_same_settings_twice_keeps_the_rollback_copy(tmp: Path):
         os.makedirs(project)
         a = {"alpha": {"command": "a"}}
         b = {"alpha": {"command": "a"}, "beta": {"command": "b"}}
-        assert ck.mcp_write(a, project).get("ok")
-        path = ck.mcp_file(project)
+        assert ck.mcp_write(a).get("ok")
+        path = ck.mcp_file()
         assert not os.path.exists(path + ".bak"), "первая запись создала копию из ничего"
-        assert ck.mcp_write(b, project).get("ok")
+        assert ck.mcp_write(b).get("ok")
         was = Path(path + ".bak").read_text(encoding="utf-8")
         assert '"beta"' not in was and '"alpha"' in was, "копия после первой правки — не прежняя версия"
-        again = ck.mcp_write(b, project)
+        again = ck.mcp_write(b)
         assert again.get("ok") and again.get("unchanged"), f"то же самое записано заново: {again}"
         assert Path(path + ".bak").read_text(encoding="utf-8") == was, \
             "повторное сохранение затёрло копию «до» самим собой"

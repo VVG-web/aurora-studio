@@ -14,7 +14,7 @@ import json
 import os
 import sys
 
-from harness import KIT, SCRIPTS, make_project, set_home, test  # noqa: F401
+from harness import KIT, SCRIPTS, kit_with_mcp, make_project, set_home, test  # noqa: F401
 
 COCKPIT = KIT / "cockpit"
 
@@ -54,8 +54,7 @@ def _bot_project(tmp: Path) -> Path:
     p = tmp / "proj"
     p.mkdir(parents=True)
     (p / "aurora.config.yaml").write_text("project:\n  name: Demo\n", encoding="utf-8")
-    (p / "mcp.json").write_text(json.dumps({"mcpServers": {"mcp-atlassian": {"command": "echo"}}}),
-                                encoding="utf-8")
+    kit_with_mcp(tmp, {"mcp-atlassian": {"command": "echo"}})
     return p
 
 

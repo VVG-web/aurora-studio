@@ -155,7 +155,7 @@ def keys_of(data: dict) -> set:
 # (`MESSAGE_KEYS`) — их совпадение сверяет проверка.
 MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
 REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask", "mcp_check",
-                "mcp_new_secrets", "writable_target", "version_gap", "build",
+                "writable_target", "version_gap", "build",
                 "_python_refusal", "doctor_start_failure", "restart_probe_failure")
 
 

@@ -224,9 +224,10 @@ def facts_text(inv: dict, fl: dict, st: dict) -> str:
     L.append(f"- Расписание: {st['cron'] or 'нет (только вручную)'}")
     L.append(f"- Проект знаний: {st['knowledge'] or 'свой'}; пак до работы: {st['context']}")
     L.append("- Запись в Jira через сервер `aurora`: " + {
-        True: "разрешена проектом",
-        False: "запрещена проектом — `jira_publish` работает только с `dry_run: true`, без него "
-               "откажет; разрешает её человек строкой `jira_write: true` в разделе `mcp:` "
+        True: "разрешена китом и проектом",
+        False: "запрещена — `jira_publish` работает только с `dry_run: true`, без него "
+               "откажет; право записи выдаёт владелец машины в «Настройка кита» (jira_write), "
+               "а проект подтверждает его строкой `jira_write: true` в разделе `mcp:` "
                "aurora.config.yaml",
         None: "не узнать"}[st.get("jira_write")])
     L.append(f"- Навыки: {', '.join(st['skills']) or 'нет'}; вложения: {', '.join(st['attachments']) or 'нет'}")

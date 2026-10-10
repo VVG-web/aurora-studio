@@ -40,8 +40,11 @@ machine. The format is the same for all clients:
                    "args": ["<project>/.aurora/scripts/aurora_mcp.py", "--project", "<project>"]}}}
 ```
 
-Servers of the machine (shared by all projects) live in the kit's `local/mcp.json`; a project's own in the project's
-`mcp.json`. The panel's **Project settings** edits both; secrets never go into a project's `mcp.json` (it goes to git).
+MCP servers are configured once per kit and live in the kit's `local/mcp.json` (the panel's **Kit setup**); tokens
+stay there, the panel only shows a mask. A project defines no servers — its own `mcp.json` is not read — and only
+picks the kit's servers by name (`mcp: servers: [...]` in `aurora.config.yaml`, panel **Project settings**).
+Writing to Jira is a right of the kit that a project can only narrow. An old project `mcp.json` can be moved into
+the kit with the "Move servers to the kit" button.
 Selftest without an assistant: `python3 .aurora/scripts/aurora_mcp.py --selftest`.
 
 ## Skills

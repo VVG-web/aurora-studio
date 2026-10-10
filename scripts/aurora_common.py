@@ -1837,6 +1837,97 @@ def config_list(key: str) -> list:
     return [x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()] if m else []
 
 
+MCP_NAME_RE = re.compile(r"^[\w.\-]{1,64}$")
+
+
+def _mcp_names(raw: str) -> list:
+    return [x.strip().strip("\"'") for x in raw.split(",") if x.strip().strip("\"'")]
+
+
+def mcp_block(text: str) -> dict:
+    """Раздел `mcp:` из текста `aurora.config.yaml` проекта → {servers, jira_write}.
+
+    `servers` — имена серверов КИТА, которые проект выбрал (`servers: [a, b]` или пунктами
+    списка); None — выбора нет, проект берёт все серверы кита; `[]` — не берёт ни одного.
+    Команд, адресов и токенов в проекте нет: определения живут только в ките
+    (`<кит>/local/mcp.json`, BL-SEC-12). `jira_write` — запрос проекта на запись в Jira:
+    True/False/None («не сказано»). Разрешение выдаёт кит (`kit_mcp_permission`), проект может
+    его только сузить.
+    """
+    out = {"servers": None, "jira_write": None}
+    m = re.search(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text or "")
+    if not m:
+        return out
+    lines = m.group(1).splitlines()
+    for i, line in enumerate(lines):
+        w = re.match(r"^\s+jira_write:\s*(\S+)", line)
+        if w:
+            out["jira_write"] = w.group(1).strip("'\"").lower() in ("true", "yes", "1", "on", "да")
+        s = re.match(r"^(\s+)servers:\s*(.*?)\s*$", line)
+        if not s:
+            continue
+        rest = re.sub(r"\s+#.*$", "", s.group(2))
+        if rest.startswith("["):
+            out["servers"] = _mcp_names(rest.strip("[]"))
+        elif rest in ("", "~", "null"):
+            names = []
+            for nxt in lines[i + 1:]:
+                if not nxt.strip() or nxt.strip().startswith("#"):
+                    continue
+                item = re.match(r"^\s*-\s*(.+?)\s*(?:#.*)?$", nxt)
+                if not item:
+                    break
+                names.append(item.group(1).strip("\"'"))
+            out["servers"] = names
+    return out
+
+
+def mcp_set_servers(text: str, names) -> str:
+    """Текст конфига с выбором серверов кита (`mcp: servers: [...]`); `names` None — выбор
+    снимается (проект берёт все). Прочие строки раздела `mcp:` не трогаются."""
+    text = text or ""
+    m = re.search(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text)
+    new = None if names is None else f"  servers: [{yaml_list(names)}]\n"
+    if not m:
+        if new is None:
+            return text
+        return text + ("" if text.endswith("\n") or not text else "\n") + "mcp:\n" + new
+    keep, skipping = [], False
+    for line in m.group(1).splitlines(keepends=True):
+        if re.match(r"^\s+servers:", line):
+            skipping = not re.sub(r"\s+#.*$", "", line.split(":", 1)[1]).strip()
+            continue
+        if skipping and (re.match(r"^\s*-\s", line) or not line.strip()):
+            continue
+        skipping = False
+        keep.append(line)
+    body = "".join(keep)
+    if body and not body.endswith("\n"):
+        body += "\n"
+    return text[:m.start(1)] + (new or "") + body + text[m.end(1):]
+
+
+def kit_mcp_permission(name: str, kit=None) -> bool:
+    """Выдано ли ЭТОЙ МАШИНЕ право `name` (например `jira_write`): ключ `permissions` в
+    `<кит>/local/mcp.json`. Папка `local/` закрыта .gitignore, так что содержимое проекта из
+    git право выдать не может — только сузить (BL-SEC-12, ADR-026)."""
+    import json
+    from pathlib import Path
+    root = Path(kit) if kit else kit_root()
+    if root is None:
+        return False
+    path = root / "local" / "mcp.json"
+    if personal_kit_file(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    perms = data.get("permissions") if isinstance(data, dict) else None
+    return isinstance(perms, dict) and perms.get(name) is True
+
+
 def sync_roots(text: str) -> list:
     """Корни синка Confluence из текста конфига: [{page_id, title, url, trusted}].
 

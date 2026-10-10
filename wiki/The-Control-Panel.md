@@ -24,7 +24,7 @@ are switched in the header.
 | | Install | what is missing on the machine and which commands depend on it; engine add-ons |
 | | Help | the documentation with a table of contents |
 | | About | version, repository, releases and **updating the kit with a button** |
-| **The project** | The project's settings | access (tokens: "filled / empty"), config, artifact kinds, the agent's gateways and roles, MCP servers |
+| **The project** | The project's settings | access (tokens: "filled / empty"), config, artifact kinds, the agent's gateways and roles, the choice of the kit's MCP servers |
 | | Health | composition of the base, trust, links, errors, mirror freshness, what is left for a human; every tile leads to the command that fixes it |
 | | Routines | the base's routes: **Update**, **Fix**, **Rebuild** — with a "Preview" that writes nothing |
 | | Production | **Write an artifact** and **Hand over documents** |

@@ -410,6 +410,37 @@ def _quoted_card(root: Path, rel: str, sources: list, blocks: list, extra: str =
     return p
 
 
+# Возврат подмен, сделанных помощниками для целой проверки (`kit_with_mcp`): раннер вызывает его
+# после каждой проверки, чтобы подмена не пережила её и не поменяла соседние.
+CLEANUPS: list = []
+
+
+def run_cleanups() -> None:
+    while CLEANUPS:
+        CLEANUPS.pop()()
+
+
+def kit_with_mcp(tmp: Path, servers: dict | None = None, permissions: dict | None = None) -> Path:
+    """Пробный кит с серверами MCP машины: `agent_core` и `aurora_common` смотрят в него, а не
+    в настоящий кит. Серверы объявляются только в ките (BL-SEC-12): проверке, которой нужен
+    сервер, достаточно позвать это. Подмена снимается после проверки сама. → папка кита."""
+    kit = tmp / "kit-mcp"
+    (kit / "local").mkdir(parents=True, exist_ok=True)
+    data = {"mcpServers": servers or {}}
+    if permissions:
+        data["permissions"] = permissions
+    (kit / "local" / "mcp.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    ag, common = importlib.import_module("agent_core"), importlib.import_module("aurora_common")
+    saved = (ag.kit_mcp_path, common.kit_root)
+    ag.kit_mcp_path = lambda k=None: Path(k or kit).joinpath("local", "mcp.json")
+    common.kit_root = lambda: kit
+    CLEANUPS.append(lambda: (setattr(ag, "kit_mcp_path", saved[0]),
+                             setattr(common, "kit_root", saved[1])))
+    return kit
+
+
 def set_home(path):
     """Подменить домашнюю папку на время проверки. → функция, возвращающая прежнюю.
 

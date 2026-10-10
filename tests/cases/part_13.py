@@ -11,6 +11,7 @@ import sys
 import textwrap
 
 from harness import (  # noqa: F401
+    kit_with_mcp,
     ui_source,
     KIT,
     SCRIPTS,
@@ -264,8 +265,7 @@ def test_make_takes_attachments_skills_and_named_mcp_into_the_task(tmp: Path):
     root = make_project(tmp, git=False)
     (root / "Requirements").mkdir(exist_ok=True)
     (root / "Requirements" / "Истории.md").write_text("US-7: выгрузка в Excel\n", encoding="utf-8")
-    (root / "mcp.json").write_text(json.dumps({"mcpServers": {"tavily": {"command": "npx"}}}),
-                                   encoding="utf-8")
+    kit_with_mcp(tmp, {"tavily": {"command": "npx"}})        # серверы объявляет только кит
     att = importlib.import_module("request_context").save_attachment(
         str(root), "Постановка.txt", "Кнопка «Выгрузить» справа".encode())["path"]
     st = {"idea": "Сделай AC по @Requirements/Истории.md /aurora-grill, поищи через @tavily",

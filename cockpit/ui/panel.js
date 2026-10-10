@@ -3511,13 +3511,12 @@ async function renderMcp(scope){
   const d = await mcpGet(scope);
   M.state = d;
   box.innerHTML = "";
-  const probe = scope === "project" ? M.probe : null;
+  if (scope === "project") return renderMcpProject(box, d, M);
   const names = Object.keys(d.servers || {});
   const cards = el("div", {class:"grid tiles"});
-  names.forEach(n => cards.append(mcpCard(scope, n, d.servers[n], d.mask,
-                                          probe && probe[n])));
+  names.forEach(n => cards.append(mcpCard(scope, n, d.servers[n], d.mask)));
   box.append(el("div", {class:"card", style:"padding:20px"},
-    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t(scope === "project" ? "mcp.about" : "mcpk.about")),
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcpk.about")),
     d.error ? el("div", {class:"warnbox"}, d.error) : null,
     el("div", {class:"row", style:"gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px"},
       el("button", {class:"btn sm primary", onclick:()=>openMcpCard(scope, "")}, t("mcpk.add")),
@@ -3525,16 +3524,68 @@ async function renderMcp(scope){
       el("button", {class:"btn sm", onclick:()=>openMcpRaw(scope)}, t("mcpk.raw")),
       el("span", {class:"muted mono", style:"font-size:11.5px;overflow-wrap:anywhere"},
         d.path || "")),
+    // Право машины: проект из git его выдать не может, только сузить.
+    el("label", {class:"row", style:"gap:8px;font-size:13px;margin-bottom:4px;align-items:center"},
+      el("input", {type:"checkbox", checked: (d.permissions || {}).jira_write ? "" : null,
+        onchange: async e => {
+          const r = await mcpPost("kit", {action:"set_permission", name:"jira_write",
+                                          value: e.target.checked});
+          if (r.error){ e.target.checked = !e.target.checked; return toast(r.error, "warn"); }
+          toast(t("mcpk.perm_saved"), "ok");
+        }}), t("mcpk.perm_jira")),
+    el("div", {class:"muted", style:"font-size:12px;margin:0 0 14px"}, t("mcpk.perm_jira_about")),
     names.length ? cards
-                 : el("div", {class:"muted", style:"font-size:13px"}, t(scope === "project" ? "mcp.empty" : "mcpk.empty"))));
-  if (scope !== "project"){ if (d.aurora && d.aurora.opencode) box.append(auroraSearchCard(d.aurora)); return; }
+                 : el("div", {class:"muted", style:"font-size:13px"}, t("mcpk.empty"))));
+  if (d.aurora && d.aurora.opencode) box.append(auroraSearchCard(d.aurora));
+}
 
-  // Серверы машины работают и в этом проекте, а правятся только в «Настройке кита».
+// Проект серверов не определяет: он выбирает серверы кита по имени, видит неиспользуемый
+// mcp.json (его можно перенести в кит) и итог по записи в Jira. Токенов и команд здесь нет.
+function renderMcpProject(box, d, M){
+  const probe = M.probe;
   const kit = d.kit || {};
   const kitNames = Object.keys(kit);
+  const chosen = new Set(d.selection || kitNames);
+  let all = d.selection === null || d.selection === undefined;
+  const picks = el("div", {class:"row", style:"gap:12px;flex-wrap:wrap;margin:8px 0"});
+  const drawPicks = () => {
+    picks.innerHTML = "";
+    kitNames.forEach(n => picks.append(el("label", {class:"row", style:"gap:6px;font-size:13px"},
+      el("input", {type:"checkbox", disabled: all ? "" : null, checked: chosen.has(n) ? "" : null,
+        onchange: e => { e.target.checked ? chosen.add(n) : chosen.delete(n); }}),
+      el("span", {class:"mono"}, n))));
+  };
+  const modeSel = el("select", {class:"btn", style:"font-weight:400", onchange: e => {
+      all = e.target.value === "all"; drawPicks(); }},
+    el("option", {value:"all", selected: all ? "" : null}, t("mcp.sel_all")),
+    el("option", {value:"chosen", selected: all ? null : ""}, t("mcp.sel_chosen")));
+  drawPicks();
+  const jw = d.jira_write || {};
+  box.append(el("div", {class:"card", style:"padding:20px"},
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcp.about")),
+    d.kit_error ? el("div", {class:"warnbox"}, d.kit_error) : null,
+    d.ignored ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
+      el("div", {}, t("mcp.ignored", {n: d.ignored.names.length, list: d.ignored.names.join(", ")})),
+      el("button", {class:"btn sm", style:"margin-top:8px", onclick: openMcpMigrate},
+        t("mcp.migrate"))) : null,
+    (d.unknown || []).length ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
+      t("mcp.unknown", {list: d.unknown.join(", ")})) : null,
+    el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
+      el("b", {}, t("mcp.sel_title")), modeSel,
+      el("button", {class:"btn sm primary", onclick: async () => {
+        const r = await mcpPost("project", {action:"select_servers",
+          names: all ? null : kitNames.filter(n => chosen.has(n))});
+        if (r.error) return toast(r.error, "warn");
+        toast(r.unchanged ? t("mcp.unchanged") : t("mcp.sel_saved"), "ok");
+        M.probe = null;
+        renderMcp("project");
+      }}, t("mcp.sel_save"))),
+    picks,
+    el("div", {class:"muted", style:"font-size:12.5px;margin-top:6px"},
+      jw.effective ? t("mcp.jira_on") : jw.kit ? t("mcp.jira_off_project") : t("mcp.jira_off_kit"))));
+
   const kitCards = el("div", {class:"grid tiles"});
-  kitNames.forEach(n => kitCards.append(mcpCard("kit-ro", n, kit[n], d.mask,
-                                                probe && probe[n], names.includes(n))));
+  kitNames.forEach(n => kitCards.append(mcpCard("kit-ro", n, kit[n], d.mask, probe && probe[n])));
   box.append(el("div", {class:"card", style:"padding:20px;margin-top:14px"},
     el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"},
       el("b", {}, t("mcp.kit_title")),
@@ -3542,15 +3593,13 @@ async function renderMcp(scope){
       el("div", {class:"spacer"}),
       el("button", {class:"btn sm", onclick: mcpToKit}, t("mcp.to_kit"))),
     el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcp.kit_about")),
-    d.kit_error ? el("div", {class:"warnbox"}, d.kit_error) : null,
     kitNames.length ? kitCards
                     : el("div", {class:"muted", style:"font-size:13px"}, t("mcp.kit_empty"))));
 
-  // Проверка — то, что получит прогон: оба вида серверов, в папке проекта.
-  const all = [...new Set([...names, ...kitNames])];
-  const good = probe ? all.filter(n => probe[n] && probe[n].ok).length : 0;
+  // Проверка — то, что получит прогон: серверы кита, выбранные проектом, в папке проекта.
+  const good = probe ? kitNames.filter(n => probe[n] && probe[n].ok).length : 0;
   box.append(el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px"},
-    all.length ? el("button", {class:"btn sm", onclick: async e => {
+    kitNames.length ? el("button", {class:"btn sm", onclick: async e => {
       e.target.disabled = true;
       e.target.textContent = t("mcp.probing");
       const r = await api("/api/mcp/probe?project=" + encodeURIComponent(S.project.path),
@@ -3564,8 +3613,42 @@ async function renderMcp(scope){
       renderMcp("project");
     }}, t("mcp.probe")) : null,
     el("span", {class:"muted", style:"font-size:12px"},
-      !all.length ? "" : probe ? t("mcp.probe_done", {ok: good, n: all.length})
-                               : t("mcp.probe_hint"))));
+      !kitNames.length ? "" : probe ? t("mcp.probe_done", {ok: good, n: kitNames.length})
+                                    : t("mcp.probe_hint"))));
+}
+
+// Перенос серверов из mcp.json проекта в кит: сначала различия (секреты — маской), перенос —
+// только по явному подтверждению показанного (отпечаток файла уходит обратно на сервер).
+async function openMcpMigrate(){
+  const r = await mcpPost("project", {action:"migrate", project: S.project.path});
+  if (r.error) return toast(r.error, "warn");
+  const drawer = mcpOpen(true);
+  const rows = (r.rows || []).map(x => {
+    const spec = x.project || {};
+    const line = [spec.command || spec.url || "", ...(spec.args || [])].join(" ");
+    return el("div", {class:"list-item", style:"gap:8px;flex-wrap:wrap;align-items:center"},
+      el("b", {class:"mono"}, x.name),
+      el("span", {class:"chip " + (x.action === "add" ? "ok" : x.action === "same" ? "" : "warn")},
+        t("mcp.migrate_" + x.action)),
+      x.secrets ? el("span", {class:"chip warn"}, t("mcp.migrate_secrets", {n: x.secrets})) : null,
+      el("span", {class:"mono muted", style:"font-size:12px;overflow-wrap:anywhere"}, line));
+  });
+  const errBox = el("div", {});
+  drawer.append(el("h2", {style:"margin-top:0"}, t("mcp.migrate_title")),
+    el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("mcp.migrate_about")),
+    ...rows, errBox,
+    el("div", {class:"row", style:"gap:8px;margin-top:12px"},
+      el("button", {class:"btn primary", onclick: async () => {
+        const w = await mcpPost("project", {action:"migrate", project: S.project.path,
+                                            digest: r.digest});
+        if (w.error) return errBox.append(el("div", {class:"warnbox"}, w.error));
+        toast(t("mcp.migrate_done", {n: (w.moved || []).length}), "ok");
+        closeMcp(true);
+        MCPK.project.probe = null;
+        renderMcp("project");
+      }}, t("mcp.migrate_go")),
+      el("div", {class:"spacer"}),
+      el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close"))));
 }
 
 // Итог проверки на карточке: работает и сколько инструментов — или почему не поднялся.
@@ -3577,7 +3660,7 @@ function mcpProbeChip(p){
     : el("span", {class:"chip warn", title: p.error || ""}, t("mcp.fails"));
 }
 
-function mcpCard(scope, name, spec, mask, probe, overridden){
+function mcpCard(scope, name, spec, mask, probe){
   const how = mcpHow(spec);
   const ro = scope === "kit-ro";
   const line = how === "stdio" ? [spec.command, ...(spec.args || [])].join(" ") : spec.url;
@@ -3591,8 +3674,6 @@ function mcpCard(scope, name, spec, mask, probe, overridden){
     el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
       el("b", {class:"mono"}, name), el("span", {class:"chip"}, t("mcpk.how." + how)),
       ro ? el("span", {class:"chip"}, t("mcp.from_kit")) : null,
-      overridden ? el("span", {class:"chip gold", title: t("mcp.overridden_hint")},
-                      t("mcp.overridden")) : null,
       mcpProbeChip(probe)),
     el("div", {class:"mono muted mcp-line", title: line || ""}, line || "—"),
     (secrets || (spec.roles || []).length || spec.outbound)
@@ -3672,20 +3753,15 @@ function mcpPairs(entries, mask, addLabel){
   }};
 }
 
-// Окно сервера. `scope`: "kit" — сервер машины в «Настройке кита»; "project" — сервер
-// проекта; "kit-ro" — сервер машины, открытый из проекта: только посмотреть. `seed` —
-// настройка для нового сервера проекта, перекрывающего машинный (без секретов).
-function openMcpCard(scope, name, seed){
+// Окно сервера. `scope`: "kit" — сервер машины в «Настройке кита»; "kit-ro" — сервер
+// машины, открытый из проекта: только посмотреть (проект серверов не определяет).
+function openMcpCard(scope, name){
   const ro = scope === "kit-ro";
   const home = ro ? "project" : scope;
   const d = MCPK[home].state || {}, mask = d.mask;
-  const orig = seed ? JSON.parse(JSON.stringify(seed))
-             : name ? JSON.parse(JSON.stringify(mcpSource(scope)[name] || {})) : {};
+  const orig = name ? JSON.parse(JSON.stringify(mcpSource(scope)[name] || {})) : {};
   const drawer = mcpOpen(false);
   let how = mcpHow(orig);
-  // Токены живут у машины: `mcp.json` проекта уезжает в git проекта. В окне проекта полей
-  // для секретов нет, а то, что уже лежит в файле (положили руками), переживает запись.
-  const secretsHere = scope === "kit" || ro;
   const nameIn = mcpInput(name, {placeholder:"github"});
   const cmdIn = mcpInput(orig.command, {placeholder:"npx"});
   const argsIn = el("textarea", {class:"btn mono", spellcheck:"false", rows:"4",
@@ -3697,13 +3773,11 @@ function openMcpCard(scope, name, seed){
   const outIn = el("input", {type:"checkbox", checked: orig.outbound ? "" : null});
   const aboutIn = mcpInput(orig.about || orig.description, {class:"btn",
     style:"width:100%;font-weight:400"});
-  const noSecrets = el("div", {class:"muted", style:"font-size:12px;margin-bottom:12px"},
-    t("mcp.secrets_in_kit"));
   const stdioBox = el("div", {},
     mcpField(t("mcpk.f_command"), cmdIn), mcpField(t("mcpk.f_args"), argsIn),
-    secretsHere ? mcpField(t("mcpk.f_env"), env.box) : null);
+    mcpField(t("mcpk.f_env"), env.box));
   const urlBox = el("div", {}, mcpField(t("mcpk.f_url"), urlIn),
-    secretsHere ? mcpField(t("mcpk.f_headers"), headers.box) : null);
+    mcpField(t("mcpk.f_headers"), headers.box));
   const showHow = () => { stdioBox.hidden = how !== "stdio"; urlBox.hidden = how === "stdio"; };
   const howSel = el("select", {class:"btn", style:"font-weight:400",
       onchange: e => { how = e.target.value; showHow(); }},
@@ -3713,8 +3787,7 @@ function openMcpCard(scope, name, seed){
   // только своё. Называем их, чтобы человек не удивлялся, откуда они в файле.
   const MANAGED = ["command", "args", "env", "url", "headers", "transport", "type", "roles",
                    "outbound", "about", "description"];
-  const managed = secretsHere ? MANAGED : MANAGED.filter(k => !["env", "headers"].includes(k));
-  const extra = Object.keys(orig).filter(k => !managed.includes(k));
+  const extra = Object.keys(orig).filter(k => !MANAGED.includes(k));
   const errBox = el("div", {});
   const done = () => { closeMcp(true); MCPK[home].probe = null; renderMcp(home); };
   const save = async () => {
@@ -3724,18 +3797,18 @@ function openMcpCard(scope, name, seed){
     const spec = JSON.parse(JSON.stringify(orig));
     try {
       for (const k of ["command", "args", "url", "transport", "type"]) delete spec[k];
-      if (secretsHere){ delete spec.env; delete spec.headers; }
+      delete spec.env; delete spec.headers;
       if (how === "stdio"){
         spec.command = cmdIn.value.trim();
         const args = argsIn.value.split("\n").map(a => a.trim()).filter(Boolean);
         if (args.length) spec.args = args;
-        if (secretsHere){ const e = env.value(); if (Object.keys(e).length) spec.env = e; }
+        const e = env.value(); if (Object.keys(e).length) spec.env = e;
         delete spec.headers;
         delete spec.auth;
       } else {
         spec.url = urlIn.value.trim();
         spec.transport = how;
-        if (secretsHere){ const h = headers.value(); if (Object.keys(h).length) spec.headers = h; }
+        const h = headers.value(); if (Object.keys(h).length) spec.headers = h;
         delete spec.env;
         delete spec.cwd;
       }
@@ -3744,23 +3817,19 @@ function openMcpCard(scope, name, seed){
     if (outIn.checked) spec.outbound = true; else delete spec.outbound;
     delete spec.description;
     if (aboutIn.value.trim()) spec.about = aboutIn.value.trim(); else delete spec.about;
-    const r = await mcpPost(scope, {action:"save_server", name: newName,
-                                    rename_from: seed ? "" : name, spec});
+    const r = await mcpPost(scope, {action:"save_server", name: newName, rename_from: name, spec});
     if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
-    toast(r.unchanged ? t("mcp.unchanged")
-          : t(scope === "project" ? "mcp.saved" : "mcpk.saved", {n: r.count}), "ok");
+    toast(r.unchanged ? t("mcp.unchanged") : t("mcpk.saved", {n: r.count}), "ok");
     done();
   };
   const title = ro ? t("mcp.ro_title", {name})
-              : name && !seed ? t("mcpk.edit_title", {name})
-              : seed ? t("mcp.override_title", {name}) : t("mcpk.new_title");
+              : name ? t("mcpk.edit_title", {name}) : t("mcpk.new_title");
   // Родной `append` печатает пустое место словом «null» — пустые части отбрасываем.
   drawer.append(...[
     el("h2", {style:"margin-top:0"}, title),
     ro ? el("div", {class:"warnbox", style:"margin-bottom:12px"}, t("mcp.ro_about")) : null,
     mcpField(t("mcpk.f_name"), nameIn, t("mcpk.f_name_hint")),
     mcpField(t("mcpk.f_how"), howSel), stdioBox, urlBox,
-    secretsHere ? null : noSecrets,
     el("div", {style:"margin-bottom:12px"},
       el("div", {class:"muted", style:"font-size:12px;margin-bottom:4px"},
         t("mcpk.f_roles") + " · " + t("mcpk.f_roles_hint")),
@@ -3776,18 +3845,11 @@ function openMcpCard(scope, name, seed){
     errBox,
     ro ? el("div", {class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"},
       el("button", {class:"btn primary", onclick: mcpToKit}, t("mcp.to_kit")),
-      // Перекрыть поля машинного сервера для одного проекта: имя то же, токены — машины.
-      el("button", {class:"btn sm", onclick: () => {
-        const base = JSON.parse(JSON.stringify(orig));
-        delete base.env; delete base.headers; delete base.auth;
-        closeMcp(true);
-        openMcpCard("project", name, base);
-      }}, t("mcp.override")),
       el("div", {class:"spacer"}),
       el("button", {class:"btn sm", onclick:()=>closeMcp(true)}, t("mcpk.close")))
     : el("div", {class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"},
       el("button", {class:"btn primary", onclick: save}, t("mcpk.save")),
-      name && !seed ? el("button", {class:"btn sm danger", onclick: async () => {
+      name ? el("button", {class:"btn sm danger", onclick: async () => {
         if (!confirm(t("mcpk.delete_ask", {name}))) return;
         const r = await mcpPost(scope, {action:"delete_server", name});
         if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
@@ -3841,7 +3903,7 @@ function openMcpPaste(scope){
   };
   drawer.append(el("h2", {style:"margin-top:0"}, t("mcpk.paste_title")),
     el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"},
-      t(scope === "project" ? "mcp.paste_about" : "mcpk.paste_about")),
+      t("mcpk.paste_about")),
     text, out,
     el("div", {class:"row", style:"gap:8px;margin-top:12px"},
       el("button", {class:"btn", onclick: parse}, t("mcpk.parse")),
@@ -3858,7 +3920,7 @@ function openMcpRaw(scope){
   const errBox = el("div", {});
   drawer.append(el("h2", {style:"margin-top:0"}, t("mcpk.raw_title")),
     el("p", {class:"muted", style:"font-size:13px;margin:0 0 6px"},
-      t(scope === "project" ? "mcp.raw_about" : "mcpk.raw_about")),
+      t("mcpk.raw_about")),
     el("div", {class:"muted mono", style:"font-size:11.5px;margin-bottom:10px;overflow-wrap:anywhere"},
       d.path || ""),
     text, errBox,
@@ -3867,7 +3929,7 @@ function openMcpRaw(scope){
         errBox.innerHTML = "";
         const r = await mcpPost(scope, {action:"save_raw", text: text.value});
         if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
-        toast(t(scope === "project" ? "mcp.raw_saved" : "mcpk.raw_saved", {n: r.count}), "ok");
+        toast(t("mcpk.raw_saved", {n: r.count}), "ok");
         closeMcp(true);
         MCPK[scope].probe = null;
         renderMcp(scope);

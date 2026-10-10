@@ -508,7 +508,8 @@ def test_project_settings_page_draws_every_block(tmp: Path):
     where = [body.index(b) for b in blocks]
     assert where == sorted(where), "блоки страницы настроек проекта переставлены"
     mcp = _js_function(ui, "async function renderMcp(")
-    assert "Object.keys(d.servers || {})" in mcp and "Object.keys(kit)" in mcp, \
+    mcp_project = _js_function(ui, "function renderMcpProject(")
+    assert "Object.keys(d.servers || {})" in mcp and "Object.keys(kit)" in mcp_project, \
         "серверы MCP обходятся не как объект — страница оборвётся на первом же проекте"
     # Тот же класс ошибки в любом месте панели: метод массива у заглушки-объекта. Законно,
     # когда скобку открыл Object.keys/values/entries, — тогда метод вызывается у массива.
