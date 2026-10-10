@@ -202,6 +202,9 @@ def test_a_stall_after_progress_is_partial_not_a_failure(tmp: Path):
             def run(self):
                 return {"reason": "stall", "progressed": self.progressed, "failed": "",
                         "note": "", "run_id": "r1"}
+
+            def safe_run(self):         # контракт RouteRun: расписание зовёт safe_run, не run
+                return self.run()
         cron.RR.scenario = lambda ck, rid: {"id": rid, "title": "Обновить базу"}
         cron.RR.RouteRun = Route
         sched = cron.Scheduler(_Ck(), lambda: [])

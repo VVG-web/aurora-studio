@@ -1039,3 +1039,137 @@ def test_cron_run_detail_shows_run_level_error(tmp: Path):
     for lang in ("ru", "en"):
         cat = json.loads((base / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
         assert "cron.note.run_thread_lost" in cat and "cron.save_error" in cat, lang
+
+
+def _route_ck(tmp: Path):
+    """«Панель» для планировщика с настоящим `RouteRun`: папка прогонов, подпись, каталог строк
+    и реестр маршрутов (в него расписание кладёт маршрут перед запуском)."""
+    ck = _cron_ck()
+    ck.registered = []
+    ck.runs_dir = lambda project: str(tmp / "runs")
+    ck.who = lambda project: ""
+    ck.kit_version = lambda: ""
+    ck.i18n_catalogue = lambda lang: {"strings": {}}
+    ck.route_register = lambda route, project: ck.registered.append(route)
+    return ck
+
+
+@test
+def test_cron_route_step_exception_closes_the_route_run(tmp: Path):
+    """Маршрут в цепочке Cron идёт через `safe_run`: исключение в `RouteRun.run` закрывает прогон
+    маршрута записью (`done_flag`, `meta.json` в статусе failed), пункт цепочки — failed с
+    причиной, планировщик свободен. С прямым `run()` маршрут остался бы «идущим»."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        import route_runner as RR
+        CRON.save_tasks([{"id": "t1", "name": "ночь", "order": "projects", "on_fail": "next",
+                          "steps": [{"kind": "route", "project": str(tmp / "proj"), "route": "update"}]}])
+
+        def boom(self):
+            raise RuntimeError("взрыв в маршруте")
+        saved = RR.scenario, RR.RouteRun.run
+        RR.scenario, RR.RouteRun.run = (lambda ck, rid: {"id": rid, "title": "Обновить"}), boom
+        try:
+            ck = _route_ck(tmp)
+            sch = CRON.Scheduler(ck, lambda: [{"path": str(tmp / "proj"), "name": "P"}])
+            assert sch.enqueue("t1") == {"ok": True}
+            _wait_idle(sch)
+        finally:
+            RR.scenario, RR.RouteRun.run = saved
+        assert ck.registered, "маршрут не дошёл до реестра панели"
+        for route in ck.registered:          # проект с провалом пробуется ещё раз в конце цепочки
+            assert route.done_flag is True, "маршрут остался «идущим» — кнопка «Пройти» отказала бы"
+            assert RR.read_meta(route.base).get("status") == "failed", RR.read_meta(route.base)
+        got = CRON.list_runs(1)[0]
+        it = got["items"][0]
+        assert it["status"] == "failed" and "взрыв в маршруте" in it["note"], it
+        assert any("RuntimeError" in line for line in it["log"]), "причины нет в журнале пункта"
+        assert sch.current is None
+    finally:
+        restore()
+
+
+@test
+def test_the_button_route_goes_through_safe_run(tmp: Path):
+    """Кнопка «Пройти» тоже зовёт `safe_run`: исключение в маршруте закрывает его (`done_flag`),
+    а не оставляет в реестре «идущим» до перезапуска панели."""
+    _path()
+    import aurora_cockpit as ck
+    import route_runner as RR
+
+    class Stub:
+        done_flag, run_id, write, sc = False, "stub-route", True, {"id": "update"}
+        made: list = []
+
+        def __init__(self, *a, **kw):
+            self.made.append(self)
+
+        def run(self):
+            raise RuntimeError("взрыв в маршруте")
+
+        def safe_run(self):
+            try:
+                return self.run()
+            except Exception:  # noqa: BLE001
+                self.done_flag = True
+                return {}
+    saved = RR.scenario, RR.RouteRun, ck.RUNNING
+    RR.scenario, RR.RouteRun = (lambda c, rid: {"id": rid, "title": "Обновить"}), Stub
+    ck.RUNNING = str(tmp / "running.json")      # настоящий cockpit/.running.json не трогаем
+    try:
+        got = ck.route_start(str(tmp), "update", False)
+        assert got == {"route": "stub-route"}, got
+        end = time.time() + 5
+        while time.time() < end and not (Stub.made and Stub.made[0].done_flag):
+            time.sleep(0.02)
+        for t in threading.enumerate():       # поток снимает отметку в подменённый файл — дождаться
+            if t.name == "aurora-route":
+                t.join(5)
+        assert Stub.made and Stub.made[0].done_flag is True, "кнопка вызвала run() мимо safe_run"
+    finally:
+        RR.scenario, RR.RouteRun, ck.RUNNING = saved
+        with ck.ROUTES_LOCK:
+            ck.ROUTES.pop("stub-route", None)
+
+
+@test
+def test_cron_tick_runs_the_watchdog_and_starts_the_next_chain(tmp: Path):
+    """Сторож вызывается из `tick`: прогон без живого потока снимается на ближайшем тике, и
+    следующая цепочка из очереди стартует (без вызова в `tick` сторож был бы мёртвым кодом)."""
+    _path()
+    from harness import set_home
+    restore = set_home(tmp)
+    try:
+        import cron as CRON
+        import route_runner as RR
+        CRON.save_tasks([{"id": "t9", "name": "девятая", "order": "projects", "on_fail": "next",
+                          "steps": [{"kind": "cmd", "project": "/p/a", "cmd": "kb:x", "args": []}]}])
+        calls = []
+
+        def fake_job(ck, project, cmd, args, **kw):
+            calls.append(project)
+            return {"rc": 0, "lines": [], "run_id": "r"}
+        saved = RR.run_job
+        RR.run_job = fake_job
+        try:
+            sch = CRON.Scheduler(_cron_ck(), lambda: [{"path": "/p/a", "name": "A"}])
+            run = {"id": "20261009-110000-cccc", "task": "t1", "name": "x", "status": "running",
+                   "started": CRON.now_iso(), "finished": "", "items": []}
+            CRON.save_run(run)
+            dead = threading.Thread(target=lambda: None)
+            dead.start()
+            dead.join(5)
+            sch.current, sch.run_thread = run, dead
+            sch.queue.append(("t9", "manual", ""))
+            sch.tick(datetime.now())
+            _wait_idle(sch)
+        finally:
+            RR.run_job = saved
+        assert calls == ["/p/a"], f"следующая цепочка не стартовала после сторожа: {calls}"
+        saved_run = CRON._read_json(CRON.run_path(run["id"]), {})
+        assert saved_run["error"] == "run_thread_lost", saved_run
+    finally:
+        restore()
