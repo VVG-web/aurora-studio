@@ -1849,7 +1849,7 @@ def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
                     "moved": moved}
         try:
             os.makedirs(os.path.dirname(keep), exist_ok=True)
-            os.replace(st["path"], keep)
+            replace_file(st["path"], keep)
             os.chmod(keep, 0o600)
             renamed = True
         except OSError as e:
@@ -2789,7 +2789,7 @@ def venv_status() -> tuple:
     if not vpy.is_file():
         return False, ""
     try:
-        p = subprocess.run([str(vpy), "-c",
+        p = subprocess.run([str(vpy), "-I", "-c",
                             "from importlib.metadata import version; print(version('pydantic-ai'))"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, env=child_env())
         return (p.returncode == 0, p.stdout.strip())

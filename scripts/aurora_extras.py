@@ -87,7 +87,7 @@ def installed_version(extra_id: str) -> str:
         return ""
     dist = EXTRAS[extra_id]["dist"]
     try:
-        p = _run([str(vpy), "-c", "from importlib.metadata import version; "
+        p = _run([str(vpy), "-I", "-c", "from importlib.metadata import version; "
                   f"print(version({dist!r}))"], timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -217,7 +217,7 @@ def install(extra_id: str) -> dict:
     log = []
     vpy = venv_python(extra_id)
     if vpy.is_file():
-        p = _run([str(vpy), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
+        p = _run([str(vpy), "-I", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
         have = tuple(int(x) for x in (p.stdout.strip() or "0.0").split("."))
         if have < ex["min_python"]:
             log.append(f"venv на Python {p.stdout.strip()} — пересоздаю: нужен "
