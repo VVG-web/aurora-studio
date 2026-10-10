@@ -1755,10 +1755,13 @@ def test_the_development_kitchen_stays_private(tmp: Path):
                                        branches=" ".join(H.PRIVATE_BRANCHES)),
                     encoding="utf-8")
     hook.chmod(0o755)
+    # скрипт проверки содержимого — заглушка: тест про ветки, а нет скрипта — пуш закрыт (BL-SEC-14)
+    (repo / "scripts").mkdir()
+    (repo / "scripts/aurora_hooks.py").write_text("import sys\nsys.stdin.read()\n", encoding="utf-8")
     for branch, public, expect in (("development", "https://github.com/x/y.git", 1),
                                    ("master", "https://github.com/x/y.git", 0),
                                    ("development", "/tmp/private.git", 0)):
-        cp = subprocess.run(["sh", str(hook), "origin", public],
+        cp = subprocess.run(["sh", str(hook), "origin", public], cwd=repo,
                             input=f"refs/heads/{branch} abc123 refs/heads/{branch} def456\n",
                             capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert cp.returncode == expect, \

@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1430,6 +1431,199 @@ def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
     (root / "local" / "private_terms.txt").unlink()
     assert scan(clean, bad).returncode == 0, \
         "без списка названий хук обязан молчать: иначе он ломает любой чужой клон"
+
+
+@test
+def test_push_guard_checks_names_messages_binaries_and_never_opens_silently(tmp: Path):
+    """BL-SEC-14: пуш проверяет не только строки диффа и не открывается при сбое проверки.
+
+    До правки хук читал лишь добавленные строки текстовых диффов: название в имени файла
+    при безобидном содержимом, в сообщении коммита (хук commit-msg видит только коммиты,
+    созданные на этой машине), в двоичном файле или в сжатом внутри docx проходило; а если
+    `git log` падал (неизвестный remote_sha), stdout пуст — и хук возвращал 0, то есть
+    открывался именно там, где проверить не вышло. Утечка в историю необратима, поэтому любой
+    сбой проверки — отказ (код 2), снимаемый только явным AURORA_PUSH_UNVERIFIED=1.
+    Термины синтетические: настоящий список в тесте не читается.
+    """
+    import zipfile
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text("ТайныйПроект\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+
+    def commit(msg: str, email: str = "t@t") -> str:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(["git", "-c", f"user.email={email}", "-c", "user.name=t",
+                        "commit", "-qm", msg, "--no-verify", "--allow-empty"], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace").stdout.strip()
+
+    def scan(old: str, new_: str, **env) -> subprocess.CompletedProcess:
+        e = {k: v for k, v in os.environ.items() if k != "AURORA_PUSH_UNVERIFIED"}
+        e.update(env)
+        return subprocess.run(
+            [sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"],
+            cwd=root, input=f"refs/heads/main {new_} refs/heads/main {old}\n", env=e,
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    (root / "чисто.md").write_text("ничего лишнего\n", encoding="utf-8")
+    base = commit("основа")
+    prev = base
+
+    def leaks(label: str, why: str) -> None:
+        nonlocal prev
+        head = commit(label)
+        cp = scan(prev, head)
+        assert cp.returncode == 1 and "ТайныйПроект" in cp.stderr, f"{why}:\n{cp.stderr}"
+        prev = head
+
+    # 1. Название только в имени файла, содержимое пустое.
+    (root / "ТайныйПроект_план.txt").write_text("", encoding="utf-8")
+    leaks("файл", "название в имени файла пропущено")
+    # 2. Название только в сообщении коммита.
+    (root / "b.md").write_text("чисто\n", encoding="utf-8")
+    leaks("правка для ТайныйПроект", "название в сообщении коммита пропущено")
+    # 3. Название в почте автора.
+    (root / "c.md").write_text("чисто\n", encoding="utf-8")
+    head = commit("обычная правка", email="dev@ТайныйПроект.example")
+    cp = scan(prev, head)
+    assert cp.returncode == 1 and "ТайныйПроект" in cp.stderr, f"название в почте автора пропущено:\n{cp.stderr}"
+    prev = head
+    # 4. Название только в двоичных данных.
+    (root / "данные.bin").write_bytes(b"\x00\x01\x02 " + "ТайныйПроект".encode("utf-8") + b" \x00\xff\xfe")
+    leaks("двоичный", "название в двоичном файле пропущено")
+    # 5. Название внутри сжатого docx: сырые байты его не показывают.
+    with zipfile.ZipFile(root / "документ.docx", "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", "<w:t>отчёт по ТайныйПроект</w:t>" * 50)
+    raw = (root / "документ.docx").read_bytes()
+    assert "ТайныйПроект".encode("utf-8") not in raw, "тест не проверяет сжатие"
+    leaks("docx", "название внутри сжатого docx пропущено")
+    # 6. Переименование прячет название из нового имени, но не из старого.
+    (root / "ТайныйПроект_второй.md").write_text("текст\n", encoding="utf-8")
+    prev2 = commit("заведён", email="t@t")
+    (root / "ТайныйПроект_второй.md").rename(root / "новое.md")
+    head = commit("переименован")
+    cp = scan(prev2, head)
+    assert cp.returncode == 1 and "ТайныйПроект" in cp.stderr, f"старое имя при переименовании пропущено:\n{cp.stderr}"
+    prev = head
+
+    # 7. Каталог vendor: минифицированное содержимое не сканируем, документы и имена — да.
+    (root / "cockpit/vendor").mkdir(parents=True)
+    (root / "cockpit/vendor/lib.min.js").write_text("var a='ТайныйПроект';\n", encoding="utf-8")
+    head = commit("вендор")
+    assert scan(prev, head).returncode == 0, "минифицированный чужой код под vendor больше не пропускается"
+    prev = head
+    (root / "cockpit/vendor/README.md").write_text("для ТайныйПроект\n", encoding="utf-8")
+    leaks("вендор-документ", "документ под vendor ушёл из проверки целиком")
+
+    # 8. Диапазон прочитать не удалось: отказ, а не разрешение.
+    clean_root = tmp / "clean"
+    clean_root.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=clean_root, check=True)
+    (clean_root / "a.md").write_text("чисто\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=clean_root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "a", "--no-verify"],
+                   cwd=clean_root, check=True)
+    good = subprocess.run(["git", "rev-parse", "HEAD"], cwd=clean_root, capture_output=True,
+                          text=True).stdout.strip()
+    (clean_root / "local").mkdir()      # список названий не в истории: он лишь для проверки
+    (clean_root / "local" / "private_terms.txt").write_text("ТайныйПроект\n", encoding="utf-8")
+    cmd = [sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"]
+
+    def run_in_clean(line: str, **env):
+        e = {k: v for k, v in os.environ.items() if k != "AURORA_PUSH_UNVERIFIED"}
+        e.update(env)
+        return subprocess.run(cmd, cwd=clean_root, input=line, env=e, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+
+    broken = run_in_clean(f"refs/heads/main {'2' * 40} refs/heads/main {good}\n")
+    assert broken.returncode == 2 and "не удалось проверить" in broken.stderr, \
+        f"ошибка git log открыла пуш (fail-open): rc={broken.returncode}\n{broken.stderr}"
+    allowed = run_in_clean(f"refs/heads/main {'2' * 40} refs/heads/main {good}\n", AURORA_PUSH_UNVERIFIED="1")
+    assert allowed.returncode == 0, f"явный AURORA_PUSH_UNVERIFIED=1 не снимает отказ:\n{allowed.stderr}"
+
+    # 9. remote_sha неизвестен локально: проверяются все коммиты, которых нет в remote-ветках.
+    unknown = run_in_clean(f"refs/heads/main {good} refs/heads/main {'3' * 40}\n")
+    assert unknown.returncode == 0 and "неизвестен локально" in unknown.stderr, \
+        f"чистая история при неизвестном remote_sha: rc={unknown.returncode}\n{unknown.stderr}"
+    cp = scan("4" * 40, prev)
+    assert cp.returncode == 1 and "ТайныйПроект" in cp.stderr, \
+        f"неизвестный remote_sha открыл проверку (fail-open):\n{cp.stderr}"
+
+
+@test
+def test_push_hook_blocks_backup_branches_and_stops_when_the_scan_does_not_run(tmp: Path):
+    """BL-SEC-14: оболочка pre-push закрывает backup/*, history-*, чужие публичные хосты и сбои скана.
+
+    Раньше защищались две ветки по последнему сегменту имени и два домена; `backup/pre-scrub-*`
+    (история до зачистки внутренних названий) ехала наружу, `bitbucket.org` и `codeberg.org`
+    хук считал приватными, а нет скрипта проверки или он падает — пуш открывался.
+    """
+    sh = shutil.which("sh")
+    if not sh or os.name == "nt":
+        return
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    H = importlib.import_module("aurora_hooks")
+    fake = tmp / "bin"
+    fake.mkdir()
+    (fake / "python3").symlink_to(sys.executable)
+    repo = tmp / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    git = shutil.which("git")
+    env = {"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp)}
+    subprocess.run([git, "init", "-q"], cwd=str(repo), check=True, env=env)
+    hook = repo / "pre-push"
+    hook.write_text(H.PUSH_HOOK.format(marker=H.PUSH_MARKER, branches=" ".join(H.PRIVATE_BRANCHES)),
+                    encoding="utf-8")
+    stub = repo / "scripts/aurora_hooks.py"
+    sha = "a" * 40
+
+    def push(url: str, local: str, remote: str, name: str = "origin", **extra):
+        e = dict(env)
+        e.update(extra)
+        return subprocess.run([sh, str(hook), name, url],
+                              cwd=str(repo), input=f"{local} {sha} {remote} {'0' * 40}\n",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=30, env=e)
+
+    stub.write_text("import sys\nsys.stdin.read()\nprint('scanned')\n", encoding="utf-8")
+    gh = "https://github.com/x/y.git"
+    for ref in ("refs/heads/backup/pre-scrub-1", "refs/heads/history-master-1.16.2",
+                "refs/heads/aurora-backup/1.2.3-0900", "refs/heads/development"):
+        cp = push(gh, ref, ref)
+        assert cp.returncode == 1 and "наружу не уходит" in cp.stderr, f"{ref}: rc={cp.returncode}\n{cp.stderr}"
+    # другое имя на сервере или другая локальная ветка не обходят список
+    assert push(gh, "refs/heads/backup/x", "refs/heads/foo").returncode == 1, "локальная backup/* уехала под другим именем"
+    assert push(gh, "refs/heads/foo", "refs/heads/backup/x").returncode == 1, "ветка уехала в backup/* на сервере"
+    # обычная ветка проходит и сканируется
+    cp = push(gh, "refs/heads/main", "refs/heads/main")
+    assert cp.returncode == 0 and "scanned" in cp.stdout, cp.stderr
+    # публичные хосты помимо двух старых; приватный сервер кухню принимает
+    for url in ("https://bitbucket.org/x/y.git", "git@codeberg.org:x/y.git"):
+        assert push(url, "refs/heads/backup/x", "refs/heads/backup/x").returncode == 1, f"{url} не считается публичным"
+    private = "https://git.internal.test/x/y.git"
+    assert push(private, "refs/heads/backup/x", "refs/heads/backup/x", name="kitchen").returncode == 0, \
+        "приватный сервер перестал принимать ветки кухни"
+    subprocess.run([git, "config", "--add", "aurora.publicRemotes", "mirror"], cwd=str(repo), check=True, env=env)
+    assert push(private, "refs/heads/backup/x", "refs/heads/backup/x", name="mirror").returncode == 1, \
+        "remote из aurora.publicRemotes не считается публичным"
+    # скан не отработал: любой код, кроме 0, — пуш остановлен, и об этом сказано
+    stub.write_text("import sys\nsys.stdin.read()\nsys.exit(2)\n", encoding="utf-8")
+    cp = push(gh, "refs/heads/main", "refs/heads/main")
+    assert cp.returncode == 1 and "кодом 2" in cp.stderr, f"сбой скана открыл пуш: rc={cp.returncode}\n{cp.stderr}"
+    stub.write_text("import sys\nsys.stdin.read()\nsys.exit(1)\n", encoding="utf-8")
+    assert push(gh, "refs/heads/main", "refs/heads/main").returncode == 1
+    # скрипта проверки нет: закрыто, снимается явно
+    stub.unlink()
+    cp = push(gh, "refs/heads/main", "refs/heads/main")
+    assert cp.returncode == 1 and "проверить нечем" in cp.stderr, f"нет скрипта — пуш открыт: {cp.stderr}"
+    assert push(gh, "refs/heads/main", "refs/heads/main", AURORA_PUSH_UNVERIFIED="1").returncode == 0
+    # хук старой версии на машине: статус говорит «устарел», а не «не установлен»
+    (repo / ".git/hooks/pre-push").write_text("#!/bin/sh\n# aurora-hook push v2\n", encoding="utf-8")
+    st = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--status"], cwd=str(repo),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    assert "УСТАРЕЛ" in st.stdout, st.stdout + st.stderr
 
 
 @test

@@ -38,21 +38,40 @@ from pathlib import Path
 
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
-PUSH_MARKER = "# aurora-hook push v2"
+PUSH_MARKER_PREFIX = "# aurora-hook push"      # любая версия: свой хук, а не чужой
+PUSH_MARKER = PUSH_MARKER_PREFIX + " v3"
 
 # Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
 # кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
 # опечатки, а не главная защита: главная — понимать, что в эти ветки пишут.
-PRIVATE_BRANCHES = ("development", "history-private")
+# Элементы — шаблоны оболочки по полному имени ветки без `refs/heads/`: `backup/*` и
+# `history-*` хранят состояние до зачистки внутренних названий, `aurora-backup/*` создаёт
+# сама панель при обновлении через переписанную историю.
+PRIVATE_BRANCHES = ("development", "history-private", "history-*", "backup/*", "aurora-backup/*")
+# Публичные хосты: пуш туда считается публикацией. Остальные адреса — по списку из
+# `git config aurora.publicRemotes` (имена или адреса через пробел, повторяемый ключ).
+PUBLIC_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "codeberg.org", "sr.ht",
+                "gitea.com", "sourceforge.net", "dev.azure.com", "ssh.dev.azure.com")
 
 PUSH_HOOK = """#!/bin/sh
 {marker}
 # Наружу не уходят ни ветки кухни, ни внутренние названия в содержимом коммитов.
+# Обойти: git push --no-verify  (или AURORA_PUSH_UNVERIFIED=1, если проверить пуш нечем)
+remote_name="$1"
 remote_url="$2"
-case "$remote_url" in
-  *github.com*|*gitlab.com*) public=1 ;;
-  *) public=0 ;;
-esac
+set -f
+# Публичный ли адрес: известный публичный хост или адрес из `aurora.publicRemotes`
+# (git config --add aurora.publicRemotes <имя или адрес>). Хост не из списка — не публичный:
+# это приватный сервер, и ветки кухни на него ехать должны.
+public=0
+for h in @HOSTS@; do
+  case "$remote_url" in
+    *"$h"*) public=1 ;;
+  esac
+done
+for p in $(git config --get-all aurora.publicRemotes 2>/dev/null); do
+  if [ "$p" = "$remote_name" ] || [ "$p" = "$remote_url" ]; then public=1; fi
+done
 [ "$public" = "1" ] || exit 0
 
 # stdin читается один раз, а нужен дважды — и `exit` из тела `while` в конвейере
@@ -64,12 +83,17 @@ input=$(cat)
 refs=$(mktemp)
 printf '%s\n' "$input" > "$refs"
 blocked=""
-while read -r _l local_sha remote_ref _r; do
-  branch="${{remote_ref##*/}}"
-  case " {branches} " in
-    *" $branch "*) blocked="$blocked $branch" ;;
-  esac
-  [ -n "$local_sha" ] || true
+# Смотрим и локальную ветку, и ту, под именем которой она уедет: `git push origin
+# backup/x:foo` иначе обходил бы список.
+while read -r local_ref local_sha remote_ref _r; do
+  for ref in "$local_ref" "$remote_ref"; do
+    short="${{ref#refs/heads/}}"
+    for pat in {branches}; do
+      case "$short" in
+        $pat) blocked="$blocked $short" ;;
+      esac
+    done
+  done
 done < "$refs"
 rm -f "$refs"
 
@@ -88,22 +112,38 @@ fi
 # коммита, линтер — только базу знаний: содержимое файлов до 1.100.1 не смотрел никто,
 # и через эту дыру в публичный репозиторий уехали рабочая папка чужого инструмента
 # и файл состояния прогона с именем живого проекта.
-if [ -f scripts/aurora_hooks.py ]; then
+# Скрипта проверки нет (старая ветка без него, чужой каталог) — проверить нечем, и открывать
+# пуш молча нельзя: утечка в историю необратима.
+if [ ! -f scripts/aurora_hooks.py ]; then
+  if [ "$AURORA_PUSH_UNVERIFIED" = "1" ]; then
+    echo "aurora: scripts/aurora_hooks.py нет — содержимое пуша НЕ проверено (AURORA_PUSH_UNVERIFIED=1)" >&2
+    exit 0
+  fi
+  echo "aurora: scripts/aurora_hooks.py нет — содержимое пуша проверить нечем, пуш остановлен." >&2
+  echo "        Осознанно: AURORA_PUSH_UNVERIFIED=1 git push  (или git push --no-verify)" >&2
+  exit 1
+fi
 # Интерпретатор проверяем запуском: на Windows нет `python3` (есть `python` и `py`),
 # а `python3` из WindowsApps — заглушка магазина, которая не запускается.
 PY=
 for c in python3 python 'py -3'; do
   if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
 done
-  if [ -z "$PY" ]; then
-    echo "aurora: нет Python 3.10+ — содержимое пуша проверить нечем, пуш остановлен." >&2
-    echo "        Осознанно: git push --no-verify" >&2
-    exit 1
-  fi
-  printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push || exit 1
+if [ -z "$PY" ]; then
+  echo "aurora: нет Python 3.10+ — содержимое пуша проверить нечем, пуш остановлен." >&2
+  echo "        Осознанно: git push --no-verify" >&2
+  exit 1
+fi
+# Любой код, кроме 0, — пуш остановлен: 1 — найдены названия, остальное — проверка не
+# отработала (сбой git, ошибка вызова), и это тоже не «можно».
+printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  [ "$rc" -eq 1 ] || echo "aurora: проверка пуша завершилась кодом $rc — см. вывод выше; пуш остановлен" >&2
+  exit 1
 fi
 exit 0
-"""
+""".replace("@HOSTS@", " ".join(PUBLIC_HOSTS))
 TERMS = "local/private_terms.txt"
 BASELINE = Path("AuroraKnowledgeDB/meta/lint_baseline.txt")
 
@@ -274,7 +314,12 @@ exec $PY "$SCAN" --scan-msg "$1"
 
 
 ZERO = "0" * 40
-SKIP_PREFIXES = ("cockpit/vendor/",)   # минифицированный чужой код: случайные подстроки
+# Содержимое чужого минифицированного кода и шрифтов в каталоге vendor не сканируем:
+# случайные подстроки. Только по содержимому: имена файлов и сообщения коммитов — всегда.
+SKIP_PREFIXES = ("cockpit/vendor/",)
+SKIP_SUFFIXES = (".min.js", ".min.css", ".woff", ".woff2", ".ttf", ".map")
+ZIP_SUFFIXES = (".docx", ".xlsx", ".pptx", ".odt", ".ods", ".zip", ".jar")  # внутри — сжатый текст
+ZIP_CAP = 50 * 1024 * 1024
 
 
 def private_terms() -> list[str]:
@@ -318,12 +363,71 @@ def scan_msg(path: str) -> int:
     return 1
 
 
+def _skipped(path: str) -> bool:
+    return path.startswith(SKIP_PREFIXES) and path.endswith(SKIP_SUFFIXES)
+
+
+def _git_run(args: list, binary: bool = False):
+    """(код, stdout, stderr) команды git; не запустилась — код -1."""
+    try:
+        cp = subprocess.run(["git", "-c", "core.quotepath=false", *args], capture_output=True,
+                            **({} if binary else {"text": True, "encoding": "utf-8", "errors": "replace"}))
+    except OSError as e:
+        return -1, "", str(e)
+    err = cp.stderr if not binary else cp.stderr.decode("utf-8", "replace")
+    return cp.returncode, cp.stdout, err.strip()
+
+
+def _scan_text(pats: list, text: str, where: str, hits: dict) -> None:
+    """Каждую строку текста — по всем названиям; запоминает первое совпадение на (где, название)."""
+    for row in text.splitlines():
+        for term, pat in pats:
+            if (where, term) not in hits and pat.search(row):
+                hits[(where, term)] = row.strip()[:100]
+
+
+def _scan_zip_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
+    """Офисные файлы и архивы внутри уезжающих коммитов: текст в них сжат, и сырой скан его не видит."""
+    rc, out, err = _git_run(["log", "--raw", "--no-abbrev", "--no-renames", "--format=", *rng])
+    if rc != 0:
+        errors.append(f"git log --raw: {err or rc}")
+        return
+    import zipfile
+    seen = set()
+    for row in out.splitlines():
+        meta, _, path = row.partition("\t")
+        f = meta.split()
+        if len(f) < 5 or not path.lower().endswith(ZIP_SUFFIXES) or f[4][0] == "D" or f[3] in seen:
+            continue
+        seen.add(f[3])
+        rc, blob, _e = _git_run(["cat-file", "blob", f[3]], binary=True)
+        if rc != 0 or len(blob) > ZIP_CAP or not zipfile.is_zipfile(io.BytesIO(blob)):
+            continue
+        try:
+            with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                for info in z.infolist():
+                    where = f"{path}!{info.filename}"
+                    _scan_text(pats, info.filename, where, hits)
+                    if info.file_size <= ZIP_CAP:
+                        _scan_text(pats, z.read(info).decode("utf-8", "replace"), where, hits)
+        except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
+            continue          # битый или зашифрованный архив: сырой скан уже был
+
+
 def scan_push() -> int:
     """Содержимое уезжающих коммитов: нет ли в нём внутренних названий.
 
     Смотрим **добавленные строки** всего диапазона, а не итоговое дерево: файл, заведённый
     и убранный внутри одной серии коммитов, из дерева исчезает, но в истории остаётся
     навсегда — ровно так `.sisyphus/` пережил собственное удаление.
+
+    Кроме строк диффа проверяются имена файлов (и старые, и новые — переименование не прячет
+    название), сообщения коммитов с именами и почтой автора и коммитера (хук commit-msg видит
+    только коммиты, созданные на этой машине), двоичные файлы (сырые байты как текст и
+    содержимое офисных файлов и архивов). Диапазон, который не удалось прочитать, — отказ, а не
+    разрешение: пуш необратим. Осознанно проверить нечем — `AURORA_PUSH_UNVERIFIED=1`.
+    Неизвестный локально `remote_sha` (force-push, неподтянутый remote) — не повод пропускать:
+    проверяются все коммиты ветки, которых нет ни в одной remote-ветке.
 
     Совпадение ищем по границам слова: короткое название сплошь и рядом оказывается куском
     обычного слова — и хук, ловящий подстроку, блокировал бы честную работу вместо утечки.
@@ -336,6 +440,7 @@ def scan_push() -> int:
         return 0
 
     hits: dict[tuple[str, str], str] = {}
+    errors: list[str] = []
     for line in sys.stdin.read().splitlines():
         parts = line.split()
         if len(parts) < 4:
@@ -343,24 +448,59 @@ def scan_push() -> int:
         local_sha, remote_sha = parts[1], parts[3]
         if local_sha == ZERO:            # удаление ветки — содержимого не прибавляет
             continue
-        rng = [local_sha] if remote_sha == ZERO else [f"{remote_sha}..{local_sha}"]
+        if remote_sha == ZERO:
+            rng = [local_sha]
+        elif _git_run(["cat-file", "-e", remote_sha + "^{commit}"])[0] == 0:
+            rng = [f"{remote_sha}..{local_sha}"]
+        else:
+            # Сервер знает коммит, которого нет у нас: границу диапазона не построить.
+            # Берём всё, чего нет в remote-ветках, — шире, но не уже.
+            print(f"aurora: remote_sha {remote_sha[:8]} неизвестен локально — проверяю все коммиты "
+                  "ветки, которых нет в remote-ветках (git fetch сузит проверку)", file=sys.stderr)
+            rng = [local_sha, "--not", "--remotes"]
+
         # `core.quotepath=false` обязателен: иначе git отдаёт русское имя файла
         # экранированным («"\\321\\203..."»), и хук называет термин, но не файл —
         # человек читает предупреждение и не понимает, что именно убирать.
-        cp = subprocess.run(["git", "-c", "core.quotepath=false",
-                             "log", "-p", "--no-color", "--unified=0", *rng],
-                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # `--text`: двоичный файл иначе даёт «Binary files differ» и ни одной строки.
+        rc, out, err = _git_run(["log", "-p", "--text", "--no-color", "--unified=0", *rng])
+        if rc != 0:
+            errors.append(f"git log -p {' '.join(rng)}: {err or rc}")
+            continue
         path = "?"
-        for row in cp.stdout.splitlines():
-            if row.startswith("+++ b/"):
-                path = row[6:].strip('"')
+        for row in out.splitlines():
+            if row.startswith("diff --git "):
+                # заголовок несёт и старое, и новое имя: переименование и удаление тоже видны
+                _scan_text(pats, row[11:], "имя файла " + row[11:].replace('"', ""), hits)
+            elif row.startswith("+++ b/"):
+                path = row[6:].strip('"').rstrip("\t")
             elif row.startswith("+") and not row.startswith("+++"):
-                if path.startswith(SKIP_PREFIXES):
+                if _skipped(path):
                     continue
                 for term, pat in pats:
                     if pat.search(row) and (path, term) not in hits:
                         hits[(path, term)] = row.strip()[:100]
 
+        rc, out, err = _git_run(["log", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", *rng])
+        if rc != 0:
+            errors.append(f"git log {' '.join(rng)}: {err or rc}")
+        else:
+            for rec in out.split("\x1e"):
+                f = rec.strip("\n").split("\x1f", 1)
+                if len(f) == 2:
+                    _scan_text(pats, f[1].replace("\x1f", "\n"), f"сообщение или автор коммита {f[0][:8]}", hits)
+        _scan_zip_blobs(pats, rng, hits, errors)
+
+    if errors:
+        for e in errors:
+            print(f"aurora: не удалось проверить пуш: {e}", file=sys.stderr)
+        if os.environ.get("AURORA_PUSH_UNVERIFIED") == "1":
+            print("aurora: AURORA_PUSH_UNVERIFIED=1 — непроверенное пропускаю", file=sys.stderr)
+        else:
+            print("  Проверить нечем — пуш остановлен: утечка в историю необратима.", file=sys.stderr)
+            print("  Подтяните remote: git fetch. Осознанно: AURORA_PUSH_UNVERIFIED=1 git push",
+                  file=sys.stderr)
+            return 2
     if not hits:
         return 0
     print("", file=sys.stderr)
@@ -459,6 +599,9 @@ def main() -> int:
         push_hook = gd / "hooks" / "pre-push"
         if push_hook.is_file() and PUSH_MARKER in push_hook.read_text(encoding="utf-8", errors="ignore"):
             print(f"pre-push: хук Авроры · наружу не уходят {', '.join(PRIVATE_BRANCHES)}")
+        elif push_hook.is_file() and PUSH_MARKER_PREFIX in push_hook.read_text(encoding="utf-8", errors="ignore"):
+            print("pre-push: хук Авроры УСТАРЕЛ — не проверяет имена файлов, сообщения и backup/*; "
+                  "переустановите: kit:hooks --install")
         elif is_kit():
             print("pre-push: не установлен — ветки кухни можно случайно опубликовать")
         if BASELINE.is_file():
@@ -521,7 +664,7 @@ def main() -> int:
     if is_kit():
         push_hook = gd / "hooks" / "pre-push"
         foreign = (push_hook.is_file()
-                   and PUSH_MARKER not in push_hook.read_text(encoding="utf-8", errors="ignore"))
+                   and PUSH_MARKER_PREFIX not in push_hook.read_text(encoding="utf-8", errors="ignore"))
         if foreign and not a.force:
             print("В репозитории есть свой pre-push — защита веток кухни не поставлена "
                   "(перезаписать: --force)", file=sys.stderr)

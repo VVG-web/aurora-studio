@@ -12,6 +12,11 @@ modules, panel sections and skins, and how to release versions. Русская �
   closed by `.gitignore`);
 - the `commit-msg` hook installed by `kit:hooks` in the kit itself compares a commit message with the list
   `local/private_terms.txt` and does not let internal names into history. It is never bypassed — `--no-verify` does not suit it;
+- the `pre-push` hook (also `kit:hooks`) keeps the kitchen branches (`development`, `history-*`, `backup/*`,
+  `aurora-backup/*`) from leaving and checks everything that goes to a public address: diff lines, file names (old ones too on
+  a rename), commit messages and author names and e-mails, binary files and the contents of docx/xlsx/pptx/zip.
+  Public are GitHub, GitLab, Bitbucket, Codeberg and the like and whatever is added with `git config --add aurora.publicRemotes <name or address>`.
+  When it cannot be checked (git failed, the script is missing) the push stops instead of opening; knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`;
 - a commit's author and committer are people: no model or model vendor name, no bot, no `Co-Authored-By` trailer or
   "Generated with …" line naming them. The `authors` check in engine-tests (`.github/scripts/check_authors.py`) turns red on
   such a commit in a PR and keeps the release from being built; its output has a ready command that rewrites the author.

@@ -2,7 +2,7 @@
   "_about": "English data for the panel: texts that the server hands over (not strings of the interface itself). Key absent — the Russian original is shown.",
   "commands": {
     "kit:doctor": "Project readiness: config, skills, secrets in git, engine version, folder structure, file-name portability. `--structure` — details per folder outside the schema.",
-    "kit:hooks": "Git hooks: pre-commit with the linter and the ratchet (errors may not grow); in the kit also commit-msg, so internal names do not reach history.",
+    "kit:hooks": "Git hooks: pre-commit with the linter and the ratchet (errors may not grow); in the kit also commit-msg and pre-push, so internal names and kitchen branches do not reach history.",
     "kit:remap-sources": "Retarget cards' `source:` after a mirror moved (Confluence — by page_id, Jira — by issue key).",
     "kit:update": "Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders.",
     "kit:i18n": "Panel interface languages: completeness of every catalogue against the markup; `--new <code> <name>` creates a language.",

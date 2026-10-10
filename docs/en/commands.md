@@ -19,7 +19,7 @@ The descriptions live in `cockpit/i18n/data/en.json` — the same ones the panel
 | Command | What it does | Executor | Since |
 |---|---|---|---|
 | `kit:doctor` (`doctor`) | Project readiness: config, skills, secrets in git, engine version, folder structure, file-name portability. `--structure` — details per folder outside the schema. | script | 1.0.0 |
-| `kit:hooks` | Git hooks: pre-commit with the linter and the ratchet (errors may not grow); in the kit also commit-msg, so internal names do not reach history. | script | 1.3.0 |
+| `kit:hooks` | Git hooks: pre-commit with the linter and the ratchet (errors may not grow); in the kit also commit-msg and pre-push, so internal names and kitchen branches do not reach history. | script | 1.3.0 |
 | `kit:remap-sources` (`remap`) | Retarget cards' `source:` after a mirror moved (Confluence — by page_id, Jira — by issue key). | script | 1.7.0 |
 | `kit:update` | Update the engine in a project to the kit's version (preview, then `--apply`); `--structure-only` — only the schema folders. | script | 1.3.0 |
 | `kit:i18n` | Panel interface languages: completeness of every catalogue against the markup; `--new <code> <name>` creates a language. | script | 1.98.0 |
