@@ -93,7 +93,7 @@ needed for the requested command (progressive disclosure, keep context small).
 |---|---|---|
 | `kit:list` | справочник всех команд: модификаторы, чем исполняется, с какой версии (`kit_commands.py`) | `docs/commands.md` |
 | `kit:doctor` (`doctor`) | онбординг: config, skills, секреты в git, версия движка, структура папок (`--structure` — подробно) | `.aurora/scripts/aurora_doctor.py` |
-| `kit:hooks` | git-хуки: pre-commit с `kb_lint` (ошибки не копятся) и commit-msg (внутренние названия не уходят в историю) | `.aurora/scripts/aurora_hooks.py` |
+| `kit:hooks` | git-хуки: pre-commit с `kb_lint` (ошибки не копятся), commit-msg и pre-push (внутренние названия и ветки кухни не уходят в историю и в публичный origin; два последних — только в ките) | `.aurora/scripts/aurora_hooks.py` |
 | `kit:remap-sources` | перенацелить `source:` карточек после переезда зеркала (по page_id) | `references/migration.md` |
 | `kit:update` | обновить движок проекта до версии kit'а; `--structure-only` — только папки схемы | `references/migration.md` |
 | `kit:i18n` | языки интерфейса панели: полнота каталога и сверка с разметкой. Строка без перевода показывается по-русски — неполный перевод выглядит рабочим, поэтому полнота проверяется числом | `references/maintenance.md` |

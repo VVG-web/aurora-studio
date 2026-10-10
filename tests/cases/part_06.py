@@ -1579,15 +1579,15 @@ def test_push_hook_blocks_backup_branches_and_stops_when_the_scan_does_not_run(t
     stub = repo / "scripts/aurora_hooks.py"
     sha = "a" * 40
 
-    def push(url: str, local: str, remote: str, name: str = "origin", **extra):
+    def push(url: str, local: str, remote: str, name: str = "origin", lsha: str = sha, **extra):
         e = dict(env)
         e.update(extra)
         return subprocess.run([sh, str(hook), name, url],
-                              cwd=str(repo), input=f"{local} {sha} {remote} {'0' * 40}\n",
+                              cwd=str(repo), input=f"{local} {lsha} {remote} {'0' * 40}\n",
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=30, env=e)
 
-    stub.write_text("import sys\nsys.stdin.read()\nprint('scanned')\n", encoding="utf-8")
+    stub.write_text("import sys\nsys.stdin.read()\nprint('scanned', *sys.argv[1:])\n", encoding="utf-8")
     gh = "https://github.com/x/y.git"
     for ref in ("refs/heads/backup/pre-scrub-1", "refs/heads/history-master-1.16.2",
                 "refs/heads/aurora-backup/1.2.3-0900", "refs/heads/development"):
@@ -1598,13 +1598,33 @@ def test_push_hook_blocks_backup_branches_and_stops_when_the_scan_does_not_run(t
     assert push(gh, "refs/heads/foo", "refs/heads/backup/x").returncode == 1, "ветка уехала в backup/* на сервере"
     # обычная ветка проходит и сканируется
     cp = push(gh, "refs/heads/main", "refs/heads/main")
-    assert cp.returncode == 0 and "scanned" in cp.stdout, cp.stderr
+    assert cp.returncode == 0 and "--remote origin" in cp.stdout, \
+        f"оболочка не назвала скану remote, куда идёт пуш: {cp.stdout}{cp.stderr}"
+    # удаление ветки кухни на сервере ничего не публикует: очистка не требует --no-verify
+    cp = push(gh, "(delete)", "refs/heads/backup/x", lsha="0" * 40)
+    assert cp.returncode == 0, f"удаление ветки кухни заблокировано как публикация: {cp.stderr}"
     # публичные хосты помимо двух старых; приватный сервер кухню принимает
     for url in ("https://bitbucket.org/x/y.git", "git@codeberg.org:x/y.git"):
         assert push(url, "refs/heads/backup/x", "refs/heads/backup/x").returncode == 1, f"{url} не считается публичным"
     private = "https://git.internal.test/x/y.git"
     assert push(private, "refs/heads/backup/x", "refs/heads/backup/x", name="kitchen").returncode == 0, \
         "приватный сервер перестал принимать ветки кухни"
+    # хост разбирается из адреса: схема, пользователь, порт, регистр, поддомен — а не подстрока
+    for url in ("ssh://git@github.com:22/x/y.git", "https://user:tok@GitLab.com/x/y.git",
+                "git@sr.ht:~x/y", "https://api.github.com/x/y.git"):
+        assert push(url, "refs/heads/backup/x", "refs/heads/backup/x").returncode == 1, f"{url} не считается публичным"
+    for url in ("https://gitea.company.example/x/y.git", "https://gitlab.company.example/x/y.git",
+                "https://git.internal.test/usr.html", "https://evilgithub.com/x/y.git",
+                "/srv/git/github.com/y.git"):
+        assert push(url, "refs/heads/backup/x", "refs/heads/backup/x", name="kitchen").returncode == 0, \
+            f"{url} принят за публичный по подстроке: приватный сервер не принимает ветки кухни"
+    # приватный сервер на известном хосте объявляется явно; публичный по списку сильнее приватного
+    subprocess.run([git, "config", "--add", "aurora.privateRemotes", "ghe"], cwd=str(repo), check=True, env=env)
+    assert push(gh, "refs/heads/backup/x", "refs/heads/backup/x", name="ghe").returncode == 0, \
+        "remote из aurora.privateRemotes всё равно считается публичным"
+    subprocess.run([git, "config", "--add", "aurora.publicRemotes", "ghe"], cwd=str(repo), check=True, env=env)
+    assert push(gh, "refs/heads/backup/x", "refs/heads/backup/x", name="ghe").returncode == 1, \
+        "в сомнении пуш должен проверяться: публичный по списку обязан побеждать приватный"
     subprocess.run([git, "config", "--add", "aurora.publicRemotes", "mirror"], cwd=str(repo), check=True, env=env)
     assert push(private, "refs/heads/backup/x", "refs/heads/backup/x", name="mirror").returncode == 1, \
         "remote из aurora.publicRemotes не считается публичным"
@@ -1624,6 +1644,219 @@ def test_push_hook_blocks_backup_branches_and_stops_when_the_scan_does_not_run(t
     st = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--status"], cwd=str(repo),
                         capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     assert "УСТАРЕЛ" in st.stdout, st.stdout + st.stderr
+
+
+@test
+def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path):
+    """BL-SEC-14: архивы, gzip и UTF-16 узнаются по содержимому, а не по расширению; NFD не прячет название.
+
+    Расширение — не свойство файла: `.xlsm`, `.epub`, zip под именем `.dat`, архив в docx и `.gz`
+    несут сжатый текст так же, как docx; UTF-16 с BOM не виден построчному скану (между
+    символами нули). Название в декомпозированной форме («й» как «и» и U+0306 — так отдаёт имена
+    файловая система macOS) не находилось ни в строках, ни в именах внутри архива. Что проверить
+    нельзя (больше предела, зашифровано, вложено слишком глубоко), — не «чисто», а отказ.
+    """
+    import gzip
+    import importlib
+    import io
+    import unicodedata
+    import zipfile
+    sys.path.insert(0, str(KIT / "scripts"))
+    H = importlib.import_module("aurora_hooks")
+    term = "ТайныйПроект"
+    nfd = unicodedata.normalize("NFD", term)
+    assert nfd != term, "тест не проверяет декомпозицию"
+
+    def pack(name: str, text: str, deflate: bool = True) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED if deflate else zipfile.ZIP_STORED) as z:
+            z.writestr(name, text)
+        return buf.getvalue()
+
+    secret = f"отчёт по {term} " * 40
+    files = {
+        "u16.txt": b"\xff\xfe" + f"для {term}\n".encode("utf-16-le"),
+        "m.xlsm": pack("xl/s.xml", secret),
+        "b.epub": pack("OEBPS/c.xhtml", secret),
+        "z.dat": pack("a.txt", secret),
+        "log.gz": gzip.compress(secret.encode("utf-8")),
+        "nfc_in_nfd.docx": pack("word/document.xml", f"для {nfd}"),
+        "nfd_name.docx": pack(f"word/{nfd}.xml", "пусто"),
+    }
+
+    def wrap(inner: bytes) -> bytes:
+        """Архив, внутри которого лежит другой архив."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("inner.zip", inner)
+        return buf.getvalue()
+    files["nest.docx"] = wrap(pack("a.txt", secret))
+    files["ok.docx"] = pack("word/document.xml", "ничего лишнего" * 40)
+    files["ok.gz"] = gzip.compress("ничего лишнего".encode("utf-8"))
+    files["broken.gz"] = b"\x1f\x8b\x08\x00" + "не поток".encode("utf-8")
+    files["ok16.txt"] = b"\xff\xfe" + "чисто\n".encode("utf-16-le")
+    for name, data in files.items():
+        assert term.encode("utf-8") not in data or name == "ok.docx", f"{name}: тест не проверяет сжатие"
+
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text(term + "\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    (root / "чисто.md").write_text("ничего\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(git + ["commit", "-qm", "основа", "--no-verify"], cwd=root, check=True)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    for name, data in files.items():
+        (root / name).write_bytes(data)
+    # Название в декомпозированной форме в тексте: строка диффа
+    (root / "nfd.md").write_text(f"для {nfd}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(git + ["commit", "-qm", "файлы", "--no-verify"], cwd=root, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    cp = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"], cwd=root,
+                        input=f"refs/heads/main {head} refs/heads/main {base}\n",
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert cp.returncode == 1, f"rc={cp.returncode}\n{cp.stderr}"
+    for name in ("u16.txt", "m.xlsm", "b.epub", "z.dat", "nest.docx", "log.gz",
+                 "nfc_in_nfd.docx", "nfd_name.docx", "nfd.md"):
+        assert f"  {name}" in cp.stderr, f"{name}: название не найдено:\n{cp.stderr}"
+    for name in ("ok.docx", "ok.gz", "broken.gz", "ok16.txt"):
+        assert f"  {name}" not in cp.stderr, f"{name}: ложное срабатывание:\n{cp.stderr}"
+    assert "Traceback" not in cp.stderr, cp.stderr
+    assert "Файл: уберите" in cp.stderr and "Сообщение, автор или тег" not in cp.stderr, \
+        f"подсказка не по виду находки:\n{cp.stderr}"
+
+    # Удаление ветки содержимого не прибавляет, даже когда история грязная.
+    gone = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"], cwd=root,
+                          input=f"(delete) {'0' * 40} refs/heads/main {head}\n",
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert gone.returncode == 0, f"удаление ветки остановлено проверкой содержимого:\n{gone.stderr}"
+
+    # Что проверить нельзя — отказ в errors, а не молчаливое «чисто»; битое — не падение.
+    real_private, real_cap = H.private_terms, H.ZIP_CAP
+    H.private_terms = lambda: [term]
+    try:
+        pats = H.term_patterns()
+
+        def run(data: bytes, **kw):
+            hits, errors = {}, []
+            H._scan_payload(pats, data, "f", hits, errors, **kw)
+            return hits, errors
+        locked = bytearray(pack("a.txt", secret))
+        locked[6] |= 1
+        locked[locked.find(b"PK\x01\x02") + 8] |= 1
+        hits, errors = run(bytes(locked))
+        assert not hits and any("зашифрован" in e for e in errors), f"зашифрованный архив прошёл молча: {errors}"
+        deep = pack("a.txt", secret)
+        for _ in range(H.ARCHIVE_DEPTH + 1):
+            deep = wrap(deep)
+        hits, errors = run(deep)
+        assert any("глубже" in e for e in errors), f"слишком глубокая вложенность прошла молча: {errors}"
+        H.ZIP_CAP = 100
+        hits, errors = run(pack("a.txt", "x" * 500, deflate=True))
+        assert any("больше" in e for e in errors), f"крупный член архива прошёл молча: {errors}"
+        hits, errors = run(gzip.compress(b"x" * 5000))
+        assert any("после распаковки" in e for e in errors), f"крупный gzip прошёл молча: {errors}"
+        H.ZIP_CAP = real_cap
+        damaged = bytearray(pack("a.txt", secret))
+        damaged[damaged.find(b"a.txt") + 10] ^= 0xFF           # внутри сжатых данных
+        run(bytes(damaged))                                    # не должен падать трассировкой
+    finally:
+        H.private_terms, H.ZIP_CAP = real_private, real_cap
+
+
+@test
+def test_push_guard_scopes_unknown_remote_sha_to_the_target_remote_and_reads_tags(tmp: Path):
+    """BL-SEC-14: неизвестный remote_sha не исключает коммиты чужих remote; аннотированный тег проверяется.
+
+    Раньше при неизвестном локально remote_sha брались коммиты, которых нет в ЛЮБОЙ remote-ветке:
+    коммит с названием, уехавший в приватный remote и слитый в master, проходил в публичный.
+    Исключаться должно только то, что уже есть в ветках remote, КУДА идёт пуш. Тег с названием в
+    сообщении раньше уезжал без проверки: сканировались коммиты и дифф.
+    """
+    term = "ТайныйПроект"
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text(term + "\n", encoding="utf-8")
+    (root / ".gitignore").write_text("local/\n", encoding="utf-8")     # список названий в историю не идёт
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+
+    def run(*args, **kw):
+        return subprocess.run(list(args), cwd=root, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", **kw)
+
+    def commit(name: str, text: str, msg: str) -> str:
+        (root / name).write_text(text, encoding="utf-8")
+        run("git", "add", "-A")
+        assert run(*git, "commit", "-qm", msg, "--no-verify").returncode == 0
+        return run("git", "rev-parse", "HEAD").stdout.strip()
+
+    a = commit("a.md", "чисто\n", "основа")
+    b = commit("b.md", f"для {term}\n", "правка")
+    run("git", "update-ref", "refs/remotes/origin/main", a)      # публичный: знает только основу
+    run("git", "update-ref", "refs/remotes/kitchen/dev", b)      # приватный: уже получил коммит b
+
+    def scan(*extra: str, line: str = ""):
+        return run(sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", *extra,
+                   input=line or f"refs/heads/main {b} refs/heads/main {'3' * 40}\n")
+
+    cp = scan("--remote", "origin")
+    assert cp.returncode == 1 and term in cp.stderr, \
+        f"коммит, уехавший в приватный remote, прошёл в публичный: rc={cp.returncode}\n{cp.stderr}"
+    assert "неизвестен локально" in cp.stderr and "origin" in cp.stderr, cp.stderr
+    cp = scan()
+    assert cp.returncode == 1 and "remote не назван" in cp.stderr, \
+        f"remote неизвестен — проверка должна быть шире, а не уже:\n{cp.stderr}"
+    assert scan("--remote", "kitchen").returncode == 0, \
+        "то, что уже лежит в ветках целевого remote, проверять повторно не нужно"
+
+    # Аннотированный тег: название в сообщении тега и в имени тэггера.
+    assert run("git", "tag", "-a", "v1", a, "-m", f"выпуск для {term}", env={**os.environ, "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}).returncode == 0
+    tag = run("git", "rev-parse", "v1").stdout.strip()
+    cp = scan("--remote", "origin", line=f"refs/tags/v1 {tag} refs/tags/v1 {'0' * 40}\n")
+    assert cp.returncode == 1 and "тег refs/tags/v1" in cp.stderr, \
+        f"название в сообщении тега уехало без проверки: rc={cp.returncode}\n{cp.stderr}"
+    assert "Сообщение, автор или тег" in cp.stderr and "Файл: уберите" not in cp.stderr, cp.stderr
+    run("git", "tag", "-d", "v1")
+    run("git", "tag", "-a", "v2", a, "-m", "выпуск", env={**os.environ, "GIT_COMMITTER_NAME": "t",
+                                                       "GIT_COMMITTER_EMAIL": "t@t"})
+    tag = run("git", "rev-parse", "v2").stdout.strip()
+    cp = scan("--remote", "origin", line=f"refs/tags/v2 {tag} refs/tags/v2 {'0' * 40}\n")
+    assert cp.returncode == 0, f"чистый тег остановлен:\n{cp.stderr}"
+
+
+@test
+def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
+    """BL-SEC-14: `--uninstall` снимает и pre-push, `--status` называет старый хук устаревшим.
+
+    Раньше снимались два хука из трёх: pre-push оставался на машине, хотя инструкция говорила
+    «снять оба». Хук версии 3 не передаёт скану имя remote и разбирает адрес подстрокой — он тоже
+    устарел и должен быть назван так.
+    """
+    root = tmp / "kit"
+    root.mkdir()
+    (root / "engine_manifest.txt").write_text("scripts/x.py\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    cmd = [sys.executable, str(KIT / "scripts/aurora_hooks.py")]
+
+    def hooks(*args):
+        return subprocess.run(cmd + list(args), cwd=root, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+    cp = hooks("--install", "--mode", "warn")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    pre_push = root / ".git/hooks/pre-push"
+    text = pre_push.read_text(encoding="utf-8")
+    assert "# aurora-hook push v4" in text and '--scan-push --remote "$remote_name"' in text, text
+    assert "pre-push: хук Авроры ·" in hooks("--status").stdout, hooks("--status").stdout
+    pre_push.write_text(text.replace("push v4", "push v3"), encoding="utf-8")
+    assert "УСТАРЕЛ" in hooks("--status").stdout, "хук прежней версии назван актуальным"
+    cp = hooks("--uninstall")
+    assert "pre-push" in cp.stdout and not pre_push.exists(), \
+        f"--uninstall не снял pre-push:\n{cp.stdout}{cp.stderr}"
+    assert not (root / ".git/hooks/pre-commit").exists() and not (root / ".git/hooks/commit-msg").exists()
 
 
 @test

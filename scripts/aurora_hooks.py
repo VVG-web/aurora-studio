@@ -23,10 +23,16 @@
 from __future__ import annotations
 
 import argparse
+import io
+import os
 import re
 import stat
 import subprocess
 import sys
+import threading
+import unicodedata
+import zipfile
+import zlib
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
@@ -39,7 +45,7 @@ from pathlib import Path
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
 PUSH_MARKER_PREFIX = "# aurora-hook push"      # любая версия: свой хук, а не чужой
-PUSH_MARKER = PUSH_MARKER_PREFIX + " v3"
+PUSH_MARKER = PUSH_MARKER_PREFIX + " v4"
 
 # Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
 # кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
@@ -60,14 +66,27 @@ PUSH_HOOK = """#!/bin/sh
 remote_name="$1"
 remote_url="$2"
 set -f
-# Публичный ли адрес: известный публичный хост или адрес из `aurora.publicRemotes`
+# Публичный ли адрес: хост из списка (сам хост или его поддомен, а не подстрока адреса:
+# `gitea.company.example` — не `gitea.com`) либо remote из `aurora.publicRemotes`
 # (git config --add aurora.publicRemotes <имя или адрес>). Хост не из списка — не публичный:
-# это приватный сервер, и ветки кухни на него ехать должны.
+# это приватный сервер, и ветки кухни на него ехать должны. Сервер, которого хук принимает за
+# публичный по ошибке, объявляют приватным: git config --add aurora.privateRemotes <имя или адрес>.
+# Публичный по явному списку сильнее приватного: в сомнении пуш проверяется.
 public=0
+u="$remote_url"
+case "$u" in
+  *://*) u="${{u#*://}}"; u="${{u%%/*}}" ;;   # схема: хост — до первой косой черты
+  *) u="${{u%%:*}}" ;;                        # scp-форма `git@host:путь`: до двоеточия
+esac
+u="${{u##*@}}"                                # userinfo
+host=$(printf '%s' "${{u%%:*}}" | tr 'A-Z' 'a-z')   # порт и регистр
 for h in @HOSTS@; do
-  case "$remote_url" in
-    *"$h"*) public=1 ;;
+  case "$host" in
+    "$h"|*."$h") public=1 ;;
   esac
+done
+for p in $(git config --get-all aurora.privateRemotes 2>/dev/null); do
+  if [ "$p" = "$remote_name" ] || [ "$p" = "$remote_url" ]; then public=0; fi
 done
 for p in $(git config --get-all aurora.publicRemotes 2>/dev/null); do
   if [ "$p" = "$remote_name" ] || [ "$p" = "$remote_url" ]; then public=1; fi
@@ -86,6 +105,9 @@ blocked=""
 # Смотрим и локальную ветку, и ту, под именем которой она уедет: `git push origin
 # backup/x:foo` иначе обходил бы список.
 while read -r local_ref local_sha remote_ref _r; do
+  # Удаление ветки (локальный sha из нулей) ничего не публикует; без этого очистка случайно
+  # опубликованной ветки кухни требовала бы --no-verify.
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   for ref in "$local_ref" "$remote_ref"; do
     short="${{ref#refs/heads/}}"
     for pat in {branches}; do
@@ -136,7 +158,7 @@ if [ -z "$PY" ]; then
 fi
 # Любой код, кроме 0, — пуш остановлен: 1 — найдены названия, остальное — проверка не
 # отработала (сбой git, ошибка вызова), и это тоже не «можно».
-printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push
+printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push --remote "$remote_name"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   [ "$rc" -eq 1 ] || echo "aurora: проверка пуша завершилась кодом $rc — см. вывод выше; пуш остановлен" >&2
@@ -313,13 +335,13 @@ exec $PY "$SCAN" --scan-msg "$1"
 """
 
 
-ZERO = "0" * 40
 # Содержимое чужого минифицированного кода и шрифтов в каталоге vendor не сканируем:
 # случайные подстроки. Только по содержимому: имена файлов и сообщения коммитов — всегда.
 SKIP_PREFIXES = ("cockpit/vendor/",)
 SKIP_SUFFIXES = (".min.js", ".min.css", ".woff", ".woff2", ".ttf", ".map")
-ZIP_SUFFIXES = (".docx", ".xlsx", ".pptx", ".odt", ".ods", ".zip", ".jar")  # внутри — сжатый текст
-ZIP_CAP = 50 * 1024 * 1024
+ZIP_CAP = 50 * 1024 * 1024        # больше — содержимое архива не читаем и пуш не открываем молча
+ARCHIVE_DEPTH = 3                 # архив в архиве: глубже не заходим и об этом говорим
+UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
 
 def private_terms() -> list[str]:
@@ -327,8 +349,13 @@ def private_terms() -> list[str]:
     f = Path(TERMS)
     if not f.is_file():
         return []
-    return [x.strip() for x in f.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return [_nfc(x.strip()) for x in f.read_text(encoding="utf-8", errors="ignore").splitlines()
             if x.strip() and not x.strip().startswith("#")]
+
+
+def _nfc(text: str) -> str:
+    """Каноническая форма: «й» из «и» и U+0306 (так её отдаёт файловая система macOS) — тот же символ."""
+    return unicodedata.normalize("NFC", text)
 
 
 def term_patterns() -> list:
@@ -352,7 +379,7 @@ def scan_msg(path: str) -> int:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    body = "\n".join(l for l in text.splitlines() if not l.startswith("#"))
+    body = _nfc("\n".join(l for l in text.splitlines() if not l.startswith("#")))
     hits = [t for t, pat in pats if pat.search(body)]
     if not hits:
         return 0
@@ -380,41 +407,157 @@ def _git_run(args: list, binary: bool = False):
 
 def _scan_text(pats: list, text: str, where: str, hits: dict) -> None:
     """Каждую строку текста — по всем названиям; запоминает первое совпадение на (где, название)."""
-    for row in text.splitlines():
+    for row in _nfc(text).splitlines():
         for term, pat in pats:
             if (where, term) not in hits and pat.search(row):
                 hits[(where, term)] = row.strip()[:100]
 
 
-def _scan_zip_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
-    """Офисные файлы и архивы внутри уезжающих коммитов: текст в них сжат, и сырой скан его не видит."""
+def _is_archive_head(head: bytes) -> bool:
+    return head[:4] == b"PK\x03\x04" or head[:2] == b"\x1f\x8b"
+
+
+def _scan_payload(pats: list, data: bytes, where: str, hits: dict, errors: list,
+                  depth: int = 0, member: bool = False) -> None:
+    """Содержимое одного файла: UTF-16 по BOM, gzip и zip — по сигнатуре, а не по расширению.
+
+    Строки обычных файлов уже прочитаны `git log -p`; здесь то, что он не видит: текст в
+    UTF-16 (между символами нули), сжатое и вложенное. `member` — содержимое внутри архива:
+    там сырого скана не было, и текст читается целиком.
+    """
+    if member:
+        _scan_text(pats, data.decode("utf-8", "replace"), where, hits)
+    if data[:2] in UTF16_BOMS:
+        _scan_text(pats, data.decode("utf-16", "replace"), where, hits)
+    gz = data[:2] == b"\x1f\x8b"
+    if not gz and not zipfile.is_zipfile(io.BytesIO(data)):
+        return
+    if depth >= ARCHIVE_DEPTH:
+        errors.append(f"{where}: архивы вложены глубже {ARCHIVE_DEPTH} уровней — не проверено")
+        return
+    if gz:
+        try:
+            d = zlib.decompressobj(31)
+            inner = d.decompress(data, ZIP_CAP)
+        except (zlib.error, EOFError):
+            return                  # битый поток: сырой скан уже был
+        if d.unconsumed_tail:
+            errors.append(f"{where}: после распаковки больше {ZIP_CAP >> 20} МБ — не проверено")
+            return
+        _scan_payload(pats, inner, where + "!gz", hits, errors, depth + 1, member=True)
+        return
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+        infos = z.infolist()
+    except (zipfile.BadZipFile, OSError, zlib.error, EOFError, ValueError):
+        return                      # битый архив: сырой скан уже был
+    with z:
+        for info in infos:
+            w = f"{where}!{info.filename}"
+            _scan_text(pats, info.filename, w, hits)
+            if info.is_dir():
+                continue
+            if info.flag_bits & 0x1:
+                errors.append(f"{w}: зашифрованный файл в архиве — не проверено")
+            elif info.file_size > ZIP_CAP:
+                errors.append(f"{w}: в архиве больше {ZIP_CAP >> 20} МБ — не проверено")
+            else:
+                try:
+                    inner = z.read(info)
+                except (zipfile.BadZipFile, zlib.error, EOFError, ValueError):
+                    continue        # битый член: сырой скан уже был
+                except (RuntimeError, NotImplementedError) as e:
+                    errors.append(f"{w}: не читается ({e}) — не проверено")
+                    continue
+                _scan_payload(pats, inner, w, hits, errors, depth + 1, member=True)
+
+
+def _scan_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
+    """Файлы уезжающих коммитов, как они лежат: сжатый и перекодированный текст сырой скан не видит.
+
+    Смотрим содержимое, а не расширение: `.xlsm`, `.epub`, zip под именем `.dat`, `.gz` и
+    архив в архиве несут то же, что и `.docx`. Читаем одним потоком `git cat-file --batch`,
+    в памяти — один файл.
+    """
     rc, out, err = _git_run(["log", "--raw", "--no-abbrev", "--no-renames", "--format=", *rng])
     if rc != 0:
         errors.append(f"git log --raw: {err or rc}")
         return
-    import zipfile
-    seen = set()
+    paths: dict[str, str] = {}
     for row in out.splitlines():
         meta, _, path = row.partition("\t")
         f = meta.split()
-        if len(f) < 5 or not path.lower().endswith(ZIP_SUFFIXES) or f[4][0] == "D" or f[3] in seen:
+        if len(f) < 5 or f[4][0] == "D" or f[1] == "160000":      # удалён или подмодуль
             continue
-        seen.add(f[3])
-        rc, blob, _e = _git_run(["cat-file", "blob", f[3]], binary=True)
-        if rc != 0 or len(blob) > ZIP_CAP or not zipfile.is_zipfile(io.BytesIO(blob)):
-            continue
+        paths.setdefault(f[3], path)
+    if not paths:
+        return
+    try:
+        p = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        errors.append(f"git cat-file: {e}")
+        return
+
+    def feed() -> None:
         try:
-            with zipfile.ZipFile(io.BytesIO(blob)) as z:
-                for info in z.infolist():
-                    where = f"{path}!{info.filename}"
-                    _scan_text(pats, info.filename, where, hits)
-                    if info.file_size <= ZIP_CAP:
-                        _scan_text(pats, z.read(info).decode("utf-8", "replace"), where, hits)
-        except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
-            continue          # битый или зашифрованный архив: сырой скан уже был
+            p.stdin.write(("\n".join(paths) + "\n").encode("ascii"))
+            p.stdin.close()
+        except OSError:
+            pass
+    threading.Thread(target=feed, daemon=True).start()
+    done = 0
+    while True:
+        head = p.stdout.readline().split()
+        if len(head) < 2:
+            break
+        done += 1
+        sha = head[0].decode("ascii", "replace")
+        where = paths.get(sha, sha)
+        if head[1] == b"missing" or len(head) < 3:
+            errors.append(f"{where}: объекта нет локально — не проверено")
+            continue
+        size = int(head[2])
+        if size > ZIP_CAP:
+            first = p.stdout.read(4)
+            rest = size - len(first)
+            while rest > 0:
+                chunk = p.stdout.read(min(rest, 1 << 20))
+                if not chunk:
+                    break
+                rest -= len(chunk)
+            if _is_archive_head(first):
+                errors.append(f"{where}: архив больше {ZIP_CAP >> 20} МБ — не проверено")
+        else:
+            _scan_payload(pats, p.stdout.read(size), where, hits, errors)
+        p.stdout.read(1)            # перевод строки после содержимого
+    p.stdout.close()
+    p.wait()
+    if done < len(paths):
+        errors.append(f"git cat-file: прочитано {done} из {len(paths)} файлов")
 
 
-def scan_push() -> int:
+def _scan_tags(pats: list, ref: str, sha: str, hits: dict, errors: list) -> None:
+    """Аннотированный тег (и тег на теге): сообщение и имя тэггера уезжают так же, как коммит."""
+    for _ in range(5):
+        rc, kind, err = _git_run(["cat-file", "-t", sha])
+        if rc != 0:
+            errors.append(f"git cat-file -t {sha[:8]}: {err or rc}")
+            return
+        if kind.strip() != "tag":
+            return
+        rc, body, err = _git_run(["cat-file", "-p", sha])
+        if rc != 0:
+            errors.append(f"git cat-file -p {sha[:8]}: {err or rc}")
+            return
+        _scan_text(pats, body, f"тег {ref}", hits)
+        m = re.match(r"object ([0-9a-f]{40,64})", body)
+        if not m:
+            return
+        sha = m.group(1)
+
+
+def scan_push(remote: str = "") -> int:
     """Содержимое уезжающих коммитов: нет ли в нём внутренних названий.
 
     Смотрим **добавленные строки** всего диапазона, а не итоговое дерево: файл, заведённый
@@ -427,7 +570,10 @@ def scan_push() -> int:
     содержимое офисных файлов и архивов). Диапазон, который не удалось прочитать, — отказ, а не
     разрешение: пуш необратим. Осознанно проверить нечем — `AURORA_PUSH_UNVERIFIED=1`.
     Неизвестный локально `remote_sha` (force-push, неподтянутый remote) — не повод пропускать:
-    проверяются все коммиты ветки, которых нет ни в одной remote-ветке.
+    проверяются все коммиты ветки, которых нет в ветках **того remote, куда идёт пуш** (`remote`).
+    Не во всех: коммит, уехавший в приватный remote, на публичный не попал, и пропустить его
+    нельзя. Имя remote неизвестно (пуш по адресу) — берётся вся история ветки: дольше, но не уже.
+    Аннотированные теги: сообщение и тэггер проверяются, как сообщение коммита.
 
     Совпадение ищем по границам слова: короткое название сплошь и рядом оказывается куском
     обычного слова — и хук, ловящий подстроку, блокировал бы честную работу вместо утечки.
@@ -446,18 +592,24 @@ def scan_push() -> int:
         if len(parts) < 4:
             continue
         local_sha, remote_sha = parts[1], parts[3]
-        if local_sha == ZERO:            # удаление ветки — содержимого не прибавляет
+        if not local_sha.strip("0"):     # удаление ветки — содержимого не прибавляет
             continue
-        if remote_sha == ZERO:
+        _scan_tags(pats, parts[0], local_sha, hits, errors)
+        if not remote_sha.strip("0"):
             rng = [local_sha]
         elif _git_run(["cat-file", "-e", remote_sha + "^{commit}"])[0] == 0:
             rng = [f"{remote_sha}..{local_sha}"]
         else:
             # Сервер знает коммит, которого нет у нас: границу диапазона не построить.
             # Берём всё, чего нет в remote-ветках, — шире, но не уже.
-            print(f"aurora: remote_sha {remote_sha[:8]} неизвестен локально — проверяю все коммиты "
-                  "ветки, которых нет в remote-ветках (git fetch сузит проверку)", file=sys.stderr)
-            rng = [local_sha, "--not", "--remotes"]
+            if remote and not any(c in remote for c in "*?[\\"):
+                print(f"aurora: remote_sha {remote_sha[:8]} неизвестен локально — проверяю все коммиты "
+                      f"ветки, которых нет в ветках {remote} (git fetch сузит проверку)", file=sys.stderr)
+                rng = [local_sha, "--not", f"--remotes={remote}"]
+            else:
+                print(f"aurora: remote_sha {remote_sha[:8]} неизвестен локально, remote не назван — "
+                      "проверяю всю историю ветки", file=sys.stderr)
+                rng = [local_sha]
 
         # `core.quotepath=false` обязателен: иначе git отдаёт русское имя файла
         # экранированным («"\\321\\203..."»), и хук называет термин, но не файл —
@@ -468,7 +620,7 @@ def scan_push() -> int:
             errors.append(f"git log -p {' '.join(rng)}: {err or rc}")
             continue
         path = "?"
-        for row in out.splitlines():
+        for row in _nfc(out).splitlines():
             if row.startswith("diff --git "):
                 # заголовок несёт и старое, и новое имя: переименование и удаление тоже видны
                 _scan_text(pats, row[11:], "имя файла " + row[11:].replace('"', ""), hits)
@@ -489,7 +641,7 @@ def scan_push() -> int:
                 f = rec.strip("\n").split("\x1f", 1)
                 if len(f) == 2:
                     _scan_text(pats, f[1].replace("\x1f", "\n"), f"сообщение или автор коммита {f[0][:8]}", hits)
-        _scan_zip_blobs(pats, rng, hits, errors)
+        _scan_blobs(pats, rng, hits, errors)
 
     if errors:
         for e in errors:
@@ -510,8 +662,12 @@ def scan_push() -> int:
         print(f"      {sample}", file=sys.stderr)
     print("", file=sys.stderr)
     print("  Опубликованное не чинится удалением: коммит остаётся в истории.", file=sys.stderr)
-    print("  Уберите файл из индекса и закройте .gitignore, затем перепишите", file=sys.stderr)
-    print("  историю — или, осознанно: git push --no-verify", file=sys.stderr)
+    if any(not w.startswith(("сообщение", "тег ")) for w, _t in hits):
+        print("  Файл: уберите из индекса и закройте .gitignore, затем перепишите историю.", file=sys.stderr)
+    if any(w.startswith(("сообщение", "тег ")) for w, _t in hits):
+        print("  Сообщение, автор или тег: перепишите (git commit --amend, git rebase -i,"
+              " git tag -d и заново) — иначе название уйдёт в историю.", file=sys.stderr)
+    print("  Осознанно: git push --no-verify", file=sys.stderr)
     print("", file=sys.stderr)
     return 1
 
@@ -561,6 +717,8 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="перезаписать чужой pre-commit (с бэкапом)")
     ap.add_argument("--scan-msg", metavar="FILE",
                     help="служебный режим commit-msg: проверить сообщение коммита по " + TERMS)
+    ap.add_argument("--remote", default="", metavar="NAME",
+                    help="с --scan-push: имя remote, куда идёт пуш (сужает проверку неизвестного remote_sha)")
     ap.add_argument("--scan-push", action="store_true",
                     help="служебный режим pre-push: прочитать refs со stdin и проверить "
                          "содержимое уезжающих коммитов по " + TERMS)
@@ -569,7 +727,7 @@ def main() -> int:
     # Служебный режим зовётся хуком, а не человеком: решение принимается до всего
     # остального, git_dir() тут не нужен — хук уже запущен из корня репозитория.
     if a.scan_push:
-        return scan_push()
+        return scan_push(a.remote)
     if a.scan_msg:
         return scan_msg(a.scan_msg)
 
@@ -600,8 +758,8 @@ def main() -> int:
         if push_hook.is_file() and PUSH_MARKER in push_hook.read_text(encoding="utf-8", errors="ignore"):
             print(f"pre-push: хук Авроры · наружу не уходят {', '.join(PRIVATE_BRANCHES)}")
         elif push_hook.is_file() and PUSH_MARKER_PREFIX in push_hook.read_text(encoding="utf-8", errors="ignore"):
-            print("pre-push: хук Авроры УСТАРЕЛ — не проверяет имена файлов, сообщения и backup/*; "
-                  "переустановите: kit:hooks --install")
+            print("pre-push: хук Авроры УСТАРЕЛ — защита неполная (имена файлов, сообщения, backup/*, "
+                  "разбор адреса); переустановите: kit:hooks --install")
         elif is_kit():
             print("pre-push: не установлен — ветки кухни можно случайно опубликовать")
         if BASELINE.is_file():
@@ -615,7 +773,8 @@ def main() -> int:
 
     if a.uninstall:
         gone = []
-        for h, mark in ((hook, MARKER), (gd / "hooks" / "commit-msg", MSG_MARKER)):
+        for h, mark in ((hook, MARKER), (gd / "hooks" / "commit-msg", MSG_MARKER),
+                        (gd / "hooks" / "pre-push", PUSH_MARKER_PREFIX)):
             if h.is_file() and mark in h.read_text(encoding="utf-8", errors="ignore"):
                 h.unlink()
                 gone.append(h.name)

@@ -10,7 +10,7 @@ python3 tests/run_tests.py                 # весь набор (несколь
 python3 tests/run_tests.py --smoke         # только быстрые инварианты по исходникам
 python3 tests/run_tests.py --only <текст>  # проверки, в названии которых есть <текст>
 python3 tests/run_tests.py --shard=1/3     # треть набора (так CI гоняет Windows)
-ruff check --select F401,F841,B023 scripts cockpit reports aurora.py
+ruff check --select F401,F841,B023,F821 scripts cockpit reports aurora.py
 ```
 
 На каждый найденный дефект — **тест, который красный без исправления**, исправление и свой выпуск. Набор тестов — исполняемое

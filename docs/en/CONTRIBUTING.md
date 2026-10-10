@@ -15,8 +15,15 @@ modules, panel sections and skins, and how to release versions. Русская �
 - the `pre-push` hook (also `kit:hooks`) keeps the kitchen branches (`development`, `history-*`, `backup/*`,
   `aurora-backup/*`) from leaving and checks everything that goes to a public address: diff lines, file names (old ones too on
   a rename), commit messages and author names and e-mails, binary files and the contents of docx/xlsx/pptx/zip.
-  Public are GitHub, GitLab, Bitbucket, Codeberg and the like and whatever is added with `git config --add aurora.publicRemotes <name or address>`.
-  When it cannot be checked (git failed, the script is missing) the push stops instead of opening; knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`;
+  Annotated tags are checked like commit messages; archives and UTF-16 are recognised by content, not by extension.
+  Public are GitHub, GitLab, Bitbucket, Codeberg and the like (the address's host or its subdomain, not a substring) and whatever is added with
+  `git config --add aurora.publicRemotes <name or address>`; a private server on such a host is declared with
+  `git config --add aurora.privateRemotes <name or address>`. **Known limitation:** a host not in the list (an `~/.ssh/config` alias for
+  GitHub included) counts as private and the hook does not check it at all — add such a remote to `aurora.publicRemotes`;
+  the "public until declared private" rule is deferred (it would stop pushes to the kitchen's private remotes until configured).
+  When it cannot be checked (git failed, the script is missing, an archive is encrypted or too large) the push stops instead of opening;
+  knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`. Reinstall the hook after updating the kit: `kit:hooks --install`
+  (the status calls an older hook outdated);
 - a commit's author and committer are people: no model or model vendor name, no bot, no `Co-Authored-By` trailer or
   "Generated with …" line naming them. The `authors` check in engine-tests (`.github/scripts/check_authors.py`) turns red on
   such a commit in a PR and keeps the release from being built; its output has a ready command that rewrites the author.

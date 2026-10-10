@@ -155,6 +155,7 @@ Scripts write into hundreds of files at once, so protection is built into the en
 | **The oracle** | Reaching the goal is checked not by the model but by an engine command (e.g. `kb:lint` recounts the conflicts) |
 | **The pre-commit ratchet** | `kit:hooks` installs a hook with the linter: a commit fails only if errors became more than the baseline; the baseline lowers itself and never rises. The hook judges what is committed, not the whole base |
 | **Message check** (kit only) | The `commit-msg` hook compares a commit's text with a list of internal names so that they do not reach public history |
+| **Push check** (kit only) | The `pre-push` hook keeps the kitchen branches from leaving and compares everything that goes to a public address (lines, file names, messages, authors, tags, archives) with the list of internal names; when it cannot check, the push stops |
 | **File names** | One rule for Windows, macOS and Linux ([knowledge rules, section 11](knowledge-rules.md)); checked by `kit:doctor`, fixed by `kb:names` |
 | **Mirror determinism** | `sync:* --verify` makes two exports and compares them byte for byte: one page — one file, the git diff does not lie |
 | **Distrust of its own memory** | The engine does not rewrite what it did not write: the body of a dictionary and a document, the history footer and the previous thesis are not overwritten |

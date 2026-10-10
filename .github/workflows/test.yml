@@ -22,11 +22,12 @@ jobs:
         run: python3 tests/run_tests.py --smoke
       - name: Full suite
         run: python3 tests/run_tests.py
-      # Неиспользуемые импорты и переменные и замыкания в цикле: мёртвый код не копится.
+      # Неиспользуемые импорты и переменные и замыкания в цикле: мёртвый код не копится. F821 —
+      # имя без определения: пропавший `import` иначе виден только тесту, который дойдёт до этой строки.
       - name: Lint (ruff)
         run: |
           python3 -m pip install --quiet ruff
-          ruff check --select F401,F841,B023 --output-format github scripts cockpit reports aurora.py
+          ruff check --select F401,F841,B023,F821 --output-format github scripts cockpit reports aurora.py
   authors:
     # Автор коммита — только человек (docs/CONTRIBUTING.md): ни имени модели, ни бота, ни
     # трейлера Co-Authored-By с ними. Ассистент в облачной сессии подписывает коммиты своим

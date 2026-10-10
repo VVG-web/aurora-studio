@@ -10,7 +10,7 @@ python3 tests/run_tests.py                 # the whole suite (a few minutes)
 python3 tests/run_tests.py --smoke         # only the fast source-scan invariants
 python3 tests/run_tests.py --only <text>   # tests whose name contains <text>
 python3 tests/run_tests.py --shard=1/3     # a third of the suite (CI runs Windows this way)
-ruff check --select F401,F841,B023 scripts cockpit reports aurora.py
+ruff check --select F401,F841,B023,F821 scripts cockpit reports aurora.py
 ```
 
 Every defect found gets **a test that is red without the fix**, the fix, and its own release. The suite is the executable
