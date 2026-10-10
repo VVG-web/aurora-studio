@@ -141,7 +141,13 @@ function updateCard(ctx){
           JSON.stringify({from: r.from, to: r.to, notes: r.notes || []}));
       } catch (e) { /* не сохранилось — обновление от этого не хуже */ }
       go.textContent = t("about.restarting");
-      await ctx.restartPanel({patient: true, progress: text => { go.textContent = text; }});
+      const restarted = await ctx.restartPanel({patient: true, progress: text => { go.textContent = text; }});
+      if (restarted === false){
+        // файлы уже заменены, а панель не перезапустилась: не оставляем «Перезапускается…» навсегда
+        go.disabled = false; go.textContent = t("about.update_to", {v: st.latest});
+        result.innerHTML = "";
+        result.append(el("div", {class:"warnbox"}, t("about.restart_failed")));
+      }
     };
     card.append(el("div", {class:"row"}, go, el("div", {class:"spacer"}), again), result);
   };

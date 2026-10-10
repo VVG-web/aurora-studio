@@ -31,6 +31,7 @@
   "about.update_ask": "Update Aurora to {v}?\n\nThe panel will restart on its own — a couple of seconds.",
   "about.updating": "Downloading and updating…",
   "about.restarting": "Restarting the panel…",
+  "about.restart_failed": "The kit is updated, but the panel did not restart (the reason is in the message above or in the terminal). The old panel is still running; restart it with the \"Restart the panel\" button.",
   "about.busy": "Running now: {what}. The update will wait until the run ends.",
   "about.in_git": "In git ({where})",
   "about.installed": "Installed here",

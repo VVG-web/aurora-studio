@@ -1044,7 +1044,7 @@ def request_lang(q: dict) -> str:
 # подстановка записана как `{}` (так её видит `kit_i18n.message_skeletons`). Строка с
 # подстановками ищется по образцу: что подставлено — берётся из русского текста и тоже
 # переводится, если это сообщение (причина отказа вложена в «Маршрут не начат: …»).
-MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait")
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
 MESSAGE_LISTS = ("errors", "warns", "blocker_why")          # находки доктора: список сообщений под одним ключом
 _MATCHERS: dict = {}
 
@@ -2926,6 +2926,20 @@ def _health_lint(project: str, lang: str) -> dict:
     return {"lint": lint_info}
 
 
+def doctor_start_failure(rc: int, tail: str) -> str:
+    """Причина, по которой doctor не запустился: код выхода и хвост его вывода (если он есть)."""
+    if tail:
+        return f"doctor не запустился (код {rc}): {tail}"
+    return f"doctor не запустился (код {rc})"
+
+
+def restart_probe_failure(tail: str) -> str:
+    """Отказ перезапуска: новая версия не стартует на этом Python; хвост stderr пробы (если он есть)."""
+    if tail:
+        return f"новая версия не запустится на этом Python — панель не перезапущена: {tail}"
+    return "новая версия не запустится на этом Python — панель не перезапущена (код 2)"
+
+
 def _health_doctor(project: str, lang: str) -> dict:
     rc_d, doc = run_capture(project, "aurora_doctor.py", [])
     # Блокер — строка `ERROR:` («что → как исправить»), за ней — `WHY:` («почему мешает»).
@@ -2942,9 +2956,7 @@ def _health_doctor(project: str, lang: str) -> dict:
     if rc_d not in (0, 1) and not d_errors:
         # doctor не запустился (старый Python, нет скрипта, таймаут): пустой список «блокеров»
         # выглядел бы как «всё хорошо» — показываем причину явно
-        tail = " ".join(doc.split())[-400:]
-        launch_error = f"doctor не запустился (код {rc_d}): {tail}" if tail else \
-            f"doctor не запустился (код {rc_d})"
+        launch_error = doctor_start_failure(rc_d, " ".join(doc.split())[-400:])
         d_errors.append(launch_error)
         d_why.append("")
     return {"doctor": {
@@ -5846,8 +5858,7 @@ def restart_self(port: int) -> dict:
         probe = None                     # проба не вышла — не мешаем перезапуску
     if probe is not None and probe.returncode == 2:
         tail = ((probe.stderr or probe.stdout or "").strip())[-500:]
-        return {"error": "новая версия не запустится на этом Python — панель не перезапущена: "
-                         f"{tail or 'код 2'}"}
+        return {"error": restart_probe_failure(tail)}
     env = dict(os.environ, AURORA_COCKPIT_TOKEN=TOKEN)
     try:
         subprocess.Popen([sys.executable, entry, "cockpit", "--port", str(port),

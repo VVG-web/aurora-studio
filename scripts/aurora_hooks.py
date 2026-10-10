@@ -24,9 +24,7 @@ from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
-import bz2
 import io
-import lzma
 import os
 import re
 import stat
@@ -36,6 +34,14 @@ import threading
 import unicodedata
 import zipfile
 import zlib
+try:                                      # bz2 и lzma в сборке CPython бывают необязательными (pyenv без xz)
+    import bz2
+except ImportError:
+    bz2 = None
+try:
+    import lzma
+except ImportError:
+    lzma = None
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
     # и портят протокол MCP; движок говорит по-русски и пишет UTF-8 везде.
@@ -434,18 +440,26 @@ def _looks_utf16(head: bytes) -> bool:
 
 
 def _unpack_stream(data: bytes):
-    """gzip, bzip2 и xz по сигнатуре → (метка, распаковано, упёрлись_в_предел); не поток — None."""
+    """gzip, bzip2 и xz по сигнатуре → (метка, распаковано, упёрлись_в_предел); не поток — None.
+
+    Нет модуля сборки Python для этого формата — (метка, None, False): распаковать нечем, и
+    вызывающий не выдаёт молчаливое «чисто», а сообщает «не проверено».
+    """
     if data[:2] == b"\x1f\x8b":
         tag, d = "gz", zlib.decompressobj(31)
     elif data[:3] == b"BZh":
+        if bz2 is None:
+            return "bz2", None, False
         tag, d = "bz2", bz2.BZ2Decompressor()
     elif data[:6] == XZ_MAGIC:
+        if lzma is None:
+            return "xz", None, False
         tag, d = "xz", lzma.LZMADecompressor()
     else:
         return None
     try:
         inner = d.decompress(data, ZIP_CAP)
-    except (zlib.error, EOFError, OSError, lzma.LZMAError, ValueError):
+    except (zlib.error, EOFError, OSError, ValueError) + ((lzma.LZMAError,) if lzma else ()):
         return tag, b"", False          # битый поток: сырой скан уже был
     over = bool(d.unconsumed_tail) if tag == "gz" else (not d.eof and not d.needs_input)
     return tag, inner, over
@@ -482,6 +496,9 @@ def _scan_payload(pats: list, data: bytes, where: str, hits: dict, errors: list,
         return
     if packed:
         tag, inner, over = packed
+        if inner is None:
+            errors.append(f"{where}: в этом Python нет модуля {tag} — распаковать нечем, не проверено")
+            return
         if over:
             errors.append(f"{where}: после распаковки больше {ZIP_CAP >> 20} МБ — не проверено")
             return

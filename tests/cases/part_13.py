@@ -3497,6 +3497,18 @@ def test_kit_update_refuses_when_the_new_version_needs_a_newer_python(tmp: Path)
     import zipfile
     too_new = "PYTHON_MIN_HARD = (99, 0)\n"       # заведомо выше любого sys.version_info
 
+    # --- регулярка порога читает НАСТОЯЩИЙ aurora_common: сменится формат константы — тест
+    # покраснеет, а не отключит защиту (не нашла порог — «не мешаем», то есть молча пропускает)
+    sys.path.insert(0, str(SCRIPTS))
+    import aurora_common as AC
+    ck0, restore0 = _cockpit_on(tmp / "probe")
+    try:
+        m = ck0._PY_HARD_RE.search((SCRIPTS / "aurora_common.py").read_text(encoding="utf-8"))
+        assert m and (int(m.group(1)), int(m.group(2))) == tuple(AC.PYTHON_MIN_HARD[:2]), \
+            "_PY_HARD_RE не находит PYTHON_MIN_HARD в aurora_common.py: отказ обновления молча выключен"
+    finally:
+        restore0()
+
     # --- архив: порог виден заранее (статус) и проверяется перед записью (скачанный архив)
     kit = tmp / "aurora-studio"
     for rel, body in {"VERSION": "1.0.0\n", "scripts/a.py": "old\n"}.items():
@@ -3644,7 +3656,7 @@ def test_health_doctor_says_when_the_doctor_did_not_start(tmp: Path):
 
 
 @test
-def test_every_script_entry_point_loads_the_python_guard_first(tmp: Path):
+def test_every_script_entry_point_loads_the_python_guard(tmp: Path):
     """Каждый скрипт движка, который запускают из консоли, подключает `aurora_common`.
 
     BL-DEC-01: защита версии Python (остановка ниже порога с понятным текстом) живёт в
@@ -3701,3 +3713,145 @@ def test_engine_sources_parse_with_python_39_grammar(tmp: Path):
             except SyntaxError as e:
                 broken.append(f"{path.relative_to(KIT)}:{e.lineno}: {e.msg}")
     assert not broken, broken
+
+
+@test
+def test_python_gate_messages_are_translated_and_registered(tmp: Path):
+    """Новые отказы про версию Python идут через каталог сообщений и видны проверке каталогов.
+
+    BL-DEC-01: отказ обновления (`python_error`, `error`), «doctor не запустился» и отказ
+    перезапуска показывались по-русски в английской панели, а образцы для них не собирались из
+    кода, и перевод в каталоге считался «лишним».
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    KI = importlib.import_module("kit_i18n")
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    try:
+        assert "python_error" in ck.MESSAGE_KEYS and tuple(ck.MESSAGE_KEYS) == tuple(KI.MESSAGE_KEYS)
+        ru = ck._python_refusal("PYTHON_MIN_HARD = (99, 0)\n")
+        assert "Python 99.0+" in ru, ru
+        got = ck.translate_payload({"python_error": ru, "error": ru}, "en")
+        for key in ("python_error", "error"):
+            assert got[key].startswith("The new kit version needs Python 99.0+"), got[key]
+            assert not re.search("[а-яА-ЯёЁ]", got[key]), f"остался русский текст: {got[key]}"
+        for ru_text, en_start in ((ck.doctor_start_failure(2, "хвост"), "doctor did not start (code 2): "),
+                                  (ck.doctor_start_failure(2, ""), "doctor did not start (code 2)"),
+                                  (ck.restart_probe_failure(""), "the new version will not start"),
+                                  (ck.restart_probe_failure("хвост"), "the new version will not start")):
+            en = ck.translate_message(ru_text, "en")
+            assert en.startswith(en_start), (ru_text, en)
+        assert ck.translate_message(ck.doctor_start_failure(2, "x"), "en") == "doctor did not start (code 2): x"
+        assert "(code 2)" in ck.translate_message(ck.restart_probe_failure(""), "en")
+    finally:
+        restore()
+    # образцы собираются из кода: ключ каталога не «лишний», а проверка каталогов зелёная
+    skeletons = KI.message_skeletons()
+    for text in ("doctor не запустился (код {}): {}", "doctor не запустился (код {})",
+                 "новая версия не запустится на этом Python — панель не перезапущена (код 2)",
+                 "Новая версия кита требует Python {}.{}+, а панель работает на Python {}.{}.{}. "
+                 "Кит не тронут: обновление ничего не изменило. {}"):
+        assert text in skeletons, f"образец не собирается из кода: {text}"
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "kit_i18n.py"), "--check"], cwd=str(KIT),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    assert cp.returncode == 0, (cp.stdout + cp.stderr)[-1500:]
+
+
+@test
+def test_hooks_survive_a_python_without_bz2_and_lzma(tmp: Path):
+    """Сборка Python без `_bz2`/`_lzma` не ломает хуки: сжатое, что распаковать нечем, — «не проверено».
+
+    BL-DEC-01: верхнеуровневые `import bz2`/`import lzma` в `aurora_hooks` на такой сборке (pyenv без
+    xz) роняли импорт, а вместе с ним хуки commit-msg и pre-push. Теперь импорт не падает, gzip
+    читается как раньше, а bzip2 и xz дают отказ в errors, а не молчаливое «чисто».
+    """
+    import bz2
+    import gzip
+    import importlib
+    import lzma
+    sys.path.insert(0, str(SCRIPTS))
+    H = importlib.import_module("aurora_hooks")
+    real = (H.bz2, H.lzma)
+    try:
+        H.bz2 = H.lzma = None
+        for name, data in (("bz2", bz2.compress(b"text " * 30)), ("xz", lzma.compress(b"text " * 30))):
+            hits, errors = {}, []
+            H._scan_payload([], data, "f", hits, errors)
+            assert not hits and any(name in e and "не проверено" in e for e in errors), (name, errors)
+        hits, errors = {}, []
+        H._scan_payload([], gzip.compress(b"text " * 30), "f", hits, errors)
+        assert not errors, errors
+        assert H._unpack_stream(b"BZh9") == ("bz2", None, False)
+    finally:
+        H.bz2, H.lzma = real
+    # сам модуль импортируется, когда bz2 и lzma отсутствуют
+    code = ("import sys; sys.modules['bz2'] = None; sys.modules['lzma'] = None; "
+            "sys.path.insert(0, sys.argv[1]); import aurora_hooks as H; "
+            "assert H.bz2 is None and H.lzma is None; print('ok')")
+    cp = subprocess.run([sys.executable, "-c", code, str(SCRIPTS)], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=60)
+    assert cp.returncode == 0 and "ok" in cp.stdout, cp.stderr[-800:]
+
+
+@test
+def test_failed_restart_gives_the_update_button_back(tmp: Path):
+    """Отказавший перезапуск не оставляет кнопку «Перезапускается…» навсегда.
+
+    BL-DEC-01: проба в `restart_self` может отказать уже после замены файлов. `restartPanel`
+    возвращает false во всех случаях, когда панель не перезапущена, а карточка «О программе»
+    возвращает кнопке вид и пишет, что делать, в блоке результата (toast исчезает).
+    """
+    ui = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    restart = ui[ui.index("async function restartPanel("):ui.index("async function checkKitUpdate(")]
+    assert restart.count("return false") >= 3 and 'toast(d.error, "err"); return false' in restart, \
+        "restartPanel не сообщает вызывающему, что перезапуск не состоялся"
+    about = (KIT / "cockpit/modules/about/view.js").read_text(encoding="utf-8")
+    after = about[about.index("await ctx.restartPanel(") - 20:]
+    assert "=== false" in after[:200] and "about.restart_failed" in after[:700] and "go.disabled = false" in after[:700], \
+        "карточка «О программе» не возвращает кнопку после отказавшего перезапуска"
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/modules/about/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert cat.get("about.restart_failed"), lang
+
+
+@test
+def test_script_entry_points_stop_with_text_on_an_old_python(tmp: Path):
+    """Каждая точка входа на интерпретаторе ниже 3.10 выходит с кодом 2 и текстом, а не traceback.
+
+    Поведенческая проверка к AST-тесту: нет интерпретатора ниже порога — пропускаем (в CI
+    синтаксис держит задание на нижней версии). Запуск из пустой папки: защита срабатывает при
+    импорте, до разбора аргументов, и ничего не пишет.
+    """
+    import ast
+    old = None
+    for cand in ("/usr/bin/python3", "python3.9"):
+        try:
+            v = subprocess.run([cand, "-c", "import sys; print(sys.version_info[:2] < (3, 10))"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if v.returncode == 0 and v.stdout.strip() == "True":
+            old = cand
+            break
+    if not old:
+        return
+    empty = tmp / "empty"
+    empty.mkdir()
+    bad = []
+    for path in sorted(SCRIPTS.glob("*.py")):
+        if path.name == "aurora_common.py":
+            continue
+        if "__name__" not in path.read_text(encoding="utf-8"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if not any(isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                   and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__" for n in tree.body):
+            continue
+        cp = subprocess.run([old, str(path)], cwd=str(empty), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=60, stdin=subprocess.DEVNULL)
+        if cp.returncode != 2 or "слишком старый" not in cp.stderr or "Traceback" in cp.stderr:
+            bad.append((path.name, cp.returncode, cp.stderr[-120:]))
+    assert not bad, bad
+

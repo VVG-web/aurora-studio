@@ -153,9 +153,10 @@ def keys_of(data: dict) -> set:
 # подстановка в нём — `{}`. Что считать сообщением, решает этот перечень: ключи ответа, текст
 # `raise` и возврат функций, которые отдают причину отказа. Сервер знает те же ключи
 # (`MESSAGE_KEYS`) — их совпадение сверяет проверка.
-MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait")
+MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
 REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask", "mcp_check",
-                "mcp_new_secrets", "writable_target", "version_gap", "build")
+                "mcp_new_secrets", "writable_target", "version_gap", "build",
+                "_python_refusal", "doctor_start_failure", "restart_probe_failure")
 
 
 def _skeleton(node):
@@ -170,6 +171,10 @@ def _skeleton(node):
         if left is None and right is None:
             return None
         return (left if left is not None else "{}") + (right if right is not None else "{}")
+    if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod)
+            and isinstance(node.left, ast.Constant) and isinstance(node.left.value, str)):
+        # `"текст %d.%s" % (...)` — подстановки в стиле printf тоже `{}`
+        return re.sub(r"%[sdr]", "{}", node.left.value.replace("%%", "%"))
     return None
 
 

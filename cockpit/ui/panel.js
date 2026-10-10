@@ -149,13 +149,15 @@ async function restartPanel(opts = {}){
   // работать: адрес тот же, и после подъёма достаточно перечитать страницу.
   // `patient` — после обновления кита: первый старт новой версии собирает реестр команд
   // (на нагруженной машине — больше минуты), и ждать надо дольше, говоря, чего ждём.
+  // Возвращает false, если перезапуск не состоялся (отказ сервера, человек передумал, не
+  // поднялась): старая панель жива, и вызывающий раздел вернёт кнопке рабочий вид.
   const say = opts.progress || (text => toast(text));
   const busy = await api("/api/jobs", {quiet:true});
   const live = (busy && busy.jobs || []).filter(j => !j.done);
   if (live.length && !confirm(
-      t("restart.busy_ask", {what: live.map(j => j.cmd).join(", ")}))) return;
+      t("restart.busy_ask", {what: live.map(j => j.cmd).join(", ")}))) return false;
   const d = await api("/api/restart", {method:"POST", quiet:true, body:"{}"});
-  if (d && d.error) return toast(d.error, "err");
+  if (d && d.error){ toast(d.error, "err"); return false; }
   say(t("restart.rising"));
   const started = Date.now(), limit = (opts.patient ? 300 : 60) * 1000;
   let told = "";
@@ -174,6 +176,7 @@ async function restartPanel(opts = {}){
     await new Promise(ok => setTimeout(ok, 1000));
   }
   toast(t("restart.timeout", {mins: limit / 60000}), "err");
+  return false;
 }
 
 /* Новая версия Aurora. Проверку делает сервер (раз в шесть часов, без git у человека), а
