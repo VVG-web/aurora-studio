@@ -130,7 +130,16 @@ while read -r local_ref local_sha remote_ref _r; do
     refs/*) ;;
     *)
       cur=""
-      case "$local_ref" in HEAD|HEAD[~^]*|@|@[~^]*) cur=$(git symbolic-ref -q HEAD 2>/dev/null) ;; esac
+      case "$local_ref" in HEAD|HEAD[~^@]*|@|@[~^]*) cur=$(git symbolic-ref -q HEAD 2>/dev/null) ;; esac
+      # `development~1:foo`, `development^:foo`: имя ветки с суффиксом git отдаёт как набрано — берём часть
+      # до первого `~`, `^` или `@` со скобкой и спрашиваем, какая это полная ссылка (у sha и предка ответ пуст).
+      if [ -z "$cur" ]; then
+        base="${{local_ref%%[~^]*}}"
+        base="${{base%%@[{{]*}}"
+        if [ -n "$base" ] && [ "$base" != "$local_ref" ]; then
+          cur=$(git rev-parse --symbolic-full-name "$base" 2>/dev/null | head -n 1)
+        fi
+      fi
       if [ -n "$cur" ]; then
         names="$names $cur"
       else
@@ -407,7 +416,9 @@ def _load_terms() -> tuple:
             continue
         # управляющие знаки (кроме табуляции) — признак чужой кодировки: у кириллицы в UTF-16 без BOM
         # нулей нет, старший байт 0x04, и список из одной строки без перевода строки читался «чисто»
-        if "\ufeff" in t or any(ord(c) < 32 and c != "\t" for c in t):
+        # и невидимые знаки категории Cf (U+200B, U+200C/D, U+2060, U+00AD, U+FEFF): имя, скопированное из
+        # Confluence или веб-страницы, с ними не совпадёт никогда, и список молча не работал бы
+        if any((ord(c) < 32 and c != "\t") or unicodedata.category(c) == "Cf" for c in t):
             problem = problem or "в названиях нули, управляющие или невидимые знаки — сохраните как UTF-8"
             continue
         terms.append(t)
@@ -503,8 +514,12 @@ def _forms(row: str) -> list:
                                       + int(m.group(2), 16) - 0xDC00), row)
         out.append(_U_ONE.sub(lambda m: m.group(0) if 0xD800 <= int(m.group(1), 16) <= 0xDFFF
                               else chr(int(m.group(1), 16)), d))
-    if "&#" in row:
-        out.append(html.unescape(row))
+    if "&" in row:
+        # и `&amp;`/`&quot;` (имя с «&» в тексте офисного файла лежит так), и `&#NNNN;`
+        try:
+            out.append(html.unescape(row))
+        except ValueError:      # `&#` и 4300+ цифр: предел перевода строки в число (Python 3.11+)
+            pass
     if "%" in row:
         out.append(urllib.parse.unquote(row, errors="replace"))
     return [row] + [f for f in map(_nfc, out) if f != row]
@@ -771,11 +786,13 @@ def _scan_tags(pats: list, ref: str, sha: str, hits: dict, errors: list) -> None
             return
         if kind.strip() != "tag":
             return
-        rc, body, err = _git_run(["cat-file", "-p", sha])
+        # сырые байты, как у коммитов: `git tag -a -F` в cp1251 читался бы с заменой знаков, и название уезжало
+        rc, raw, err = _git_run(["cat-file", "tag", sha], binary=True)
         if rc != 0:
-            errors.append(f"git cat-file -p {sha[:8]}: {err or rc}")
+            errors.append(f"git cat-file tag {sha[:8]}: {err or rc}")
             return
-        _scan_text(pats, body, f"тег {ref}", hits)
+        _scan_payload(pats, raw, f"тег {ref}", hits, errors, member=True)
+        body = raw.decode("utf-8", "replace")
         m = re.match(r"object ([0-9a-f]{40,64})", body)
         if not m:
             return

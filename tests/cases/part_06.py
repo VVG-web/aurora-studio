@@ -2182,6 +2182,79 @@ def test_push_guard_survives_split_runs_escapes_and_user_git_config(tmp: Path):
 
 
 @test
+def test_push_scan_decodes_xml_entities_survives_huge_numeric_reference_and_reads_cp1251_tag(tmp: Path):
+    """BL-SEC-14: `&amp;` в тексте офисного файла, `&#` с тысячами цифр и аннотированный тег в cp1251.
+
+    Имя с «&» лежит в XML как `&amp;`, и после вырезания тегов оставалось невидимым; `html.unescape`
+    на `&#` и 4300+ цифр падает с ValueError (предел перевода в число), и пуш останавливался
+    без названия файла; сообщение тега в cp1251 (`git tag -a -F`) читалось с заменой знаков.
+    """
+    import io
+    import zipfile
+    term, amp = "ТайныйПроект", "Zorblax & Ko"
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text(f"{term}\n{amp}\n", encoding="utf-8")
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "core.autocrlf=false"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+
+    def commit(msg: str) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(git + ["commit", "-qm", msg, "--no-verify", "--allow-empty"], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+
+    def scan(ref: str, new_: str, old: str = "0" * 40) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v6"],
+                              cwd=root, input=f"{ref} {new_} {ref} {old}\n",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    (root / "чисто.md").write_text("ничего\n", encoding="utf-8")
+    base = commit("основа")
+    main = "refs/heads/main"
+
+    # 1. «&amp;» в docx
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Zorblax &amp; Ko</w:t></w:r></w:p>"
+                   "</w:body></w:document>")
+    (root / "amp.docx").write_bytes(buf.getvalue())
+    cp = scan(main, commit("docx"), base)
+    assert cp.returncode == 1 and "amp.docx" in cp.stderr, \
+        f"имя с «&» (`&amp;` в XML) ушло без остановки:\n{cp.returncode} {cp.stderr}"
+    subprocess.run(["git", "rm", "-q", "-f", "amp.docx"], cwd=root, check=True)
+    base = commit("убрал docx")
+
+    # 2. `&#` и 5000 цифр: не падение, а обычная проверка (и остальные строки файла проверяются)
+    (root / "big.txt").write_text("x &#" + "1" * 5000 + " y\n", encoding="utf-8")
+    cp = scan(main, commit("большая ссылка"), base)
+    assert cp.returncode == 0 and "Traceback" not in cp.stderr, \
+        f"честный файл с `&#`+5000 цифр остановил пуш:\n{cp.returncode} {cp.stderr}"
+    base = commit("пауза")
+    (root / "big.txt").write_text("x &#" + "1" * 5000 + f" y\nдля {term}\n", encoding="utf-8")
+    cp = scan(main, commit("большая ссылка и название"), base)
+    assert cp.returncode == 1 and "big.txt" in cp.stderr and "Traceback" not in cp.stderr, \
+        f"после строки с огромной ссылкой название не найдено:\n{cp.returncode} {cp.stderr}"
+    subprocess.run(["git", "rm", "-q", "-f", "big.txt"], cwd=root, check=True)
+    base = commit("убрал big")
+
+    # 3. Аннотированный тег с сообщением в cp1251; тот же текст в UTF-8 и чистый тег
+    clean = commit("тут чисто")
+    msg = root.parent / "tag1251.txt"
+
+    def tag(name: str, raw: bytes) -> str:
+        msg.write_bytes(raw)
+        subprocess.run(git + ["tag", "-a", "-F", str(msg), name, clean], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", name], cwd=root, capture_output=True, text=True).stdout.strip()
+
+    for name, raw, want in (("v1", f"выпуск {term}\n".encode("cp1251"), 1),
+                            ("v2", f"выпуск {term}\n".encode("utf-8"), 1),
+                            ("v3", "выпуск\n".encode("cp1251"), 0)):
+        cp = scan(f"refs/tags/{name}", tag(name, raw), base)
+        assert cp.returncode == want and (want == 0 or f"тег refs/tags/{name}" in cp.stderr), \
+            f"тег {name} ({raw[:12]!r}): ожидали код {want}, а {cp.returncode}\n{cp.stderr}"
+
+
+@test
 def test_private_terms_list_is_read_by_bytes_and_unreadable_list_stops_the_push(tmp: Path):
     """BL-SEC-14: BOM и UTF-16 списка названий читаются; нечитаемый список — отказ, а не «чисто».
 
@@ -2229,6 +2302,9 @@ def test_private_terms_list_is_read_by_bytes_and_unreadable_list_stops_the_push(
         "utf-16-le без BOM и без перевода строки": term.encode("utf-16-le"),     # у кириллицы нулей нет
         "utf-16-be без BOM и без перевода строки": term.encode("utf-16-be"),
         "utf-32": (term + "\n").encode("utf-32"),
+        # нулевой ширины пробел (имя скопировано из Confluence): с ним название не совпадёт никогда
+        "U+200B внутри названия": (term[:5] + "\u200b" + term[5:] + "\n").encode("utf-8"),
+        "U+00AD (мягкий перенос) в названии": (term[:3] + "\u00ad" + term[3:] + "\n").encode("utf-8"),
     }
     for kind, raw in unreadable.items():
         terms.write_bytes(raw)
@@ -2298,6 +2374,15 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = push(alias, lsha=sha)
         assert cp.returncode == 1 and "development" in cp.stderr, \
             f"{alias}:foo со стоянием на development уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    # имя ветки с суффиксом и reflog: git отдаёт хуку то, что набрано; у предка `--points-at` пуст
+    g("branch", "feature")
+    for alias in ("development~1", "development^", "HEAD@{1}"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo со стоянием на development уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    cp = push("feature~1", lsha=sha)
+    assert cp.returncode == 0, f"feature~1 (обычная ветка) остановлен: rc={cp.returncode}\n{cp.stderr}"
+    g("branch", "-q", "-D", "feature")
     g("update-ref", "refs/heads/development", sha)
     # голый sha указывает на ветку кухни; отсоединённый HEAD — то же
     cp = push(sha)
