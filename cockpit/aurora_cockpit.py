@@ -1885,6 +1885,23 @@ def _update_archive(st: dict) -> dict:
             "notes": ([f"заменённые файлы сохранены в {backup}"] if saved else [])}
 
 
+def _refresh_kit_hooks() -> str:
+    """Переставить устаревший pre-push кита после обновления. → строка для заметок (пусто — не трогали).
+
+    Хук — копия текста в `.git/hooks/`, а не файл движка: обновление тянуло новый скрипт проверки
+    и оставляло прежнюю защиту на машине. Сам скрипт знает, какой хук его, а какой чужой.
+    """
+    script = os.path.join(KIT, "scripts", "aurora_hooks.py")
+    if not os.path.exists(os.path.join(KIT, ".git")) or not os.path.isfile(script):
+        return ""
+    try:
+        cp = subprocess.run([sys.executable, script, "--refresh"], cwd=KIT, capture_output=True,
+                            text=True, encoding="utf-8", errors="replace", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return cp.stdout.strip() if cp.returncode == 0 else ""
+
+
 def kit_update() -> dict:
     """Обновить кит до последней версии с GitHub — одной кнопкой, без git и архивов вручную.
 
@@ -1909,6 +1926,9 @@ def kit_update() -> dict:
         CACHE.pop("registry", None)
         CACHE.pop("kit_status", None)
         r.update({"from": st["installed"], "to": kit_version(), "restart": True})
+        hooks = _refresh_kit_hooks()
+        if hooks:
+            r["notes"] = list(r.get("notes") or []) + [hooks]
     return r
 
 

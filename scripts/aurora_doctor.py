@@ -521,6 +521,29 @@ def check_consent() -> list:
     return out
 
 
+def check_kit_hooks() -> list:
+    """Предупреждения о git-хуках самого кита на этой машине: свой pre-push старее скрипта проверки.
+
+    Хук ставится копией текста, обновление кита её не меняло, и защита от публикации веток кухни
+    и внутренних названий, исправленная в ките, действовала только после ручной переустановки.
+    Нет хука или он чужой — не наше дело (кит из архива, клон без права пуша)."""
+    kit = Path(__file__).resolve().parent.parent
+    if not ((kit / "engine_manifest.txt").is_file() and (kit / ".git").exists()):
+        return []
+    try:
+        import subprocess
+        import aurora_hooks as _h
+        out = subprocess.run(["git", "-C", str(kit), "rev-parse", "--git-dir"], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=20).stdout.strip()
+        if _h.push_hook_state((kit / out).resolve()) != "outdated":
+            return []
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return []
+    return ["git-хук pre-push кита старее скрипта проверки — защита публикации неполная "
+            "(ветки кухни по HEAD, названия в содержимом); переставьте: `kit:hooks` с флагом --install "
+            "(«Обновить кит» в панели делает это сам)"]
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -625,6 +648,7 @@ def main() -> int:
 
     warns += check_portable_names()
     warns += check_consent()
+    warns += check_kit_hooks()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

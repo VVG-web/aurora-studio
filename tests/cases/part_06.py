@@ -2008,8 +2008,8 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     assert cp.returncode == 0, cp.stdout + cp.stderr
     pre_push = root / ".git/hooks/pre-push"
     text = pre_push.read_text(encoding="utf-8")
-    assert "# aurora-hook push v5" in text and '--scan-push --remote "$remote_name"' in text, text
-    assert "--hook v5" in text, "хук не называет скану свою версию — устаревший не заметить"
+    assert "# aurora-hook push v6" in text and '--scan-push --remote "$remote_name"' in text, text
+    assert "--hook v6" in text, "хук не называет скану свою версию — устаревший не заметить"
     status = hooks("--status").stdout
     assert "pre-push: хук Авроры ·" in status, status
     assert "НЕ проверяется" in status, f"--status молчит, что списка названий нет:\n{status}"
@@ -2017,13 +2017,13 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     (root / "local").mkdir()
     (root / "local" / "private_terms.txt").write_text("ТайныйПроект\n", encoding="utf-8")
     assert "НЕ проверяется" not in hooks("--status").stdout
-    pre_push.write_text(text.replace("push v5", "push v4"), encoding="utf-8")
+    pre_push.write_text(text.replace("push v6", "push v4"), encoding="utf-8")
     assert "УСТАРЕЛ" in hooks("--status").stdout, "хук прежней версии назван актуальным"
     # Скрипт новее хука: сам скан говорит об этом, а не молчит
     cp = subprocess.run(cmd + ["--scan-push", "--hook", "v4"], cwd=root, input="", capture_output=True,
                         text=True, encoding="utf-8", errors="replace")
     assert "старее скрипта" in cp.stderr, f"устаревший хук живёт молча:\n{cp.stderr}"
-    cp = subprocess.run(cmd + ["--scan-push", "--hook", "v5"], cwd=root, input="", capture_output=True,
+    cp = subprocess.run(cmd + ["--scan-push", "--hook", "v6"], cwd=root, input="", capture_output=True,
                         text=True, encoding="utf-8", errors="replace")
     assert "старее" not in cp.stderr, cp.stderr
     # Чужой pre-push: без --force не трогаем, с --force — резервная копия, как у остальных хуков
@@ -2035,12 +2035,268 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     assert bak.is_file() and "мой собственный" in bak.read_text(encoding="utf-8"), \
         f"--force перезаписал чужой pre-push без резервной копии:\n{cp.stdout}{cp.stderr}"
     assert "pre-push.bak" in cp.stdout
-    pre_push.write_text(pre_push.read_text(encoding="utf-8").replace("push v5", "push v4"), encoding="utf-8")
+    pre_push.write_text(pre_push.read_text(encoding="utf-8").replace("push v6", "push v4"), encoding="utf-8")
     assert "УСТАРЕЛ" in hooks("--status").stdout
     cp = hooks("--uninstall")
     assert "pre-push" in cp.stdout and not pre_push.exists(), \
         f"--uninstall не снял pre-push:\n{cp.stdout}{cp.stderr}"
     assert not (root / ".git/hooks/pre-commit").exists() and not (root / ".git/hooks/commit-msg").exists()
+
+
+@test
+def test_push_guard_survives_split_runs_escapes_and_user_git_config(tmp: Path):
+    """BL-SEC-14: название не прячется в разбитых run-ах, `\\uXXXX` и настройках git пользователя.
+
+    Word режет слово на `run`-ы (проверка орфографии, смена языка), и в XML название стоит как
+    `Тайный</w:t></w:r><w:r><w:t>Проект`; `json.dump` без `ensure_ascii=False` пишет кириллицу как
+    `\\u0422…`. `diff.noprefix` убирал `b/` из заголовка (путь «?», исключение vendor не действовало),
+    а `i18n.logOutputEncoding=cp1251` (наследие Windows) отдавал сообщения и авторов не в UTF-8.
+    """
+    import importlib
+    import io
+    import json as _json
+    import zipfile
+    sys.path.insert(0, str(KIT / "scripts"))
+    H = importlib.import_module("aurora_hooks")
+    term = "ТайныйПроект"
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text(term + "\n", encoding="utf-8")
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "core.autocrlf=false"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+
+    def commit(msg: str) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(git + ["commit", "-qm", msg, "--no-verify", "--allow-empty"], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+
+    def scan(old: str, new_: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v6"],
+                              cwd=root, input=f"refs/heads/main {new_} refs/heads/main {old}\n",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    (root / "чисто.md").write_text("ничего\n", encoding="utf-8")
+    base = commit("основа")
+
+    def docx(body: str) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml", '<?xml version="1.0"?><w:document><w:body>' + body + "</w:body></w:document>")
+        return buf.getvalue()
+
+    def run_(text: str) -> str:
+        return f"<w:r><w:t>{text}</w:t></w:r>"
+
+    # 1. Название, разбитое на run-ы; в конце абзаца и перед словом следующего абзаца
+    split = {
+        "split.docx": f"<w:p>{run_('для Тайный')}{run_('Проект')}</w:p>",
+        "tail.docx": f"<w:p>{run_('Тайный')}{run_('Проект')}</w:p><w:p>{run_('Следующий')}</w:p>",
+    }
+    for name, body in split.items():
+        (root / name).write_bytes(docx(body))
+        prev = commit("добавил " + name.split(".")[0])
+        cp = scan(base, prev)
+        assert cp.returncode == 1 and name in cp.stderr and "ТайныйПроект" in cp.stderr, \
+            f"{name}: название, разбитое на run-ы, ушло без остановки:\n{cp.returncode} {cp.stderr}"
+        subprocess.run(["git", "rm", "-q", "-f", name], cwd=root, check=True)
+        base = commit("убрал " + name)
+    # граница абзаца остаётся границей: слова из соседних абзацев — не название
+    (root / "two.docx").write_bytes(docx(f"<w:p>{run_('Тайный')}</w:p><w:p>{run_('Проект')}</w:p>"))
+    two = commit("два абзаца")
+    cp = scan(base, two)
+    assert cp.returncode == 0, f"слова из соседних абзацев приняты за название:\n{cp.stderr}"
+    base = two
+
+    # 2. JSON с кириллицей в виде \uXXXX и числовые сущности
+    (root / "state.json").write_text(_json.dumps({"project": term}) + "\n", encoding="utf-8")
+    assert "\\u" in (root / "state.json").read_text(encoding="utf-8")
+    st = commit("состояние")
+    cp = scan(base, st)
+    assert cp.returncode == 1 and "state.json" in cp.stderr, \
+        f"название в \\uXXXX ушло без остановки:\n{cp.returncode} {cp.stderr}"
+    subprocess.run(["git", "rm", "-q", "-f", "state.json"], cwd=root, check=True)
+    base = commit("убрал состояние")
+    (root / "page.html").write_text("<p>" + "".join(f"&#{ord(c)};" for c in term) + "</p>\n", encoding="utf-8")
+    pg = commit("страница")
+    assert scan(base, pg).returncode == 1, "название в &#NNNN; ушло без остановки"
+    subprocess.run(["git", "rm", "-q", "-f", "page.html"], cwd=root, check=True)
+    base = commit("убрал страницу")
+    # пара суррогатов и обычный текст с процентом не ломают раскодирование
+    assert H._forms("a \\ud83d\\ude00 b")[1] == "a \U0001F600 b"
+    assert H._forms("скидка 100% сегодня") == ["скидка 100% сегодня"]
+
+    # 3. Настройки git пользователя: noprefix и кодировка вывода
+    subprocess.run(["git", "config", "diff.noprefix", "true"], cwd=root, check=True)
+    subprocess.run(["git", "config", "diff.mnemonicPrefix", "true"], cwd=root, check=True)
+    subprocess.run(["git", "config", "i18n.logOutputEncoding", "cp1251"], cwd=root, check=True)
+    (root / "cockpit/vendor").mkdir(parents=True)
+    (root / "cockpit/vendor/lib.min.js").write_text(f"var x='{term}';\n", encoding="utf-8")
+    vend = commit("библиотека")
+    cp = scan(base, vend)
+    assert cp.returncode == 0, f"при diff.noprefix путь потерян, исключение vendor не сработало:\n{cp.stderr}"
+    (root / "заметка.txt").write_text(f"для {term}\n", encoding="utf-8")
+    note = commit("заметка")
+    cp = scan(vend, note)
+    assert cp.returncode == 1 and "заметка.txt" in cp.stderr and "? →" not in cp.stderr, \
+        f"при diff.noprefix отчёт без имени файла:\n{cp.returncode} {cp.stderr}"
+    (root / "ok.txt").write_text("ничего\n", encoding="utf-8")
+    msg = commit(f"правка для {term}")
+    cp = scan(note, msg)
+    assert cp.returncode == 1 and "сообщение или автор" in cp.stderr, \
+        f"при i18n.logOutputEncoding=cp1251 название в сообщении ушло без остановки:\n{cp.returncode} {cp.stderr}"
+
+
+@test
+def test_private_terms_list_is_read_by_bytes_and_unreadable_list_stops_the_push(tmp: Path):
+    """BL-SEC-14: BOM и UTF-16 списка названий читаются; нечитаемый список — отказ, а не «чисто».
+
+    Файл из «Блокнота» старых Windows несёт BOM (первое название с U+FEFF не совпадало никогда),
+    из PowerShell 5.1 — UTF-16 (нули между буквами), «ANSI» русской Windows — cp1251 (кириллическая
+    строка молча терялась). Хук считал список непустым и пропускал всё без единого слова.
+    """
+    term = "ТайныйПроект"
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    terms = root / "local" / "private_terms.txt"
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+
+    def commit(msg: str) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(git + ["commit", "-qm", msg, "--no-verify", "--allow-empty"], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+
+    (root / "чисто.md").write_text("ничего\n", encoding="utf-8")
+    base = commit("основа")
+    (root / "заметка.txt").write_text(f"для {term}\n", encoding="utf-8")
+    head = commit("заметка")
+
+    def scan(**env):
+        e = {k: v for k, v in os.environ.items() if k != "AURORA_PUSH_UNVERIFIED"}
+        e.update(env)
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v6"],
+                              cwd=root, env=e, input=f"refs/heads/main {head} refs/heads/main {base}\n",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    readable = {
+        "utf-8-sig": ("# список\r\n" + term + "\r\n").encode("utf-8-sig"),
+        "utf-16": ("# список\r\n" + term + "\r\n").encode("utf-16"),            # с BOM, как у PowerShell 5.1
+        "utf-8": (term + "\n").encode("utf-8"),
+    }
+    for kind, raw in readable.items():
+        terms.write_bytes(raw)
+        cp = scan()
+        assert cp.returncode == 1 and "заметка.txt" in cp.stderr, \
+            f"список в {kind} не читается, название не найдено:\n{cp.returncode} {cp.stderr}"
+    unreadable = {
+        "cp1251": ("SecondTerm\n" + term + "\n").encode("cp1251"),
+        "utf-16-le без BOM": (term + "\n").encode("utf-16-le"),
+        "utf-32": (term + "\n").encode("utf-32"),
+    }
+    for kind, raw in unreadable.items():
+        terms.write_bytes(raw)
+        cp = scan()
+        assert cp.returncode == 2 and "не проверена" in cp.stderr, \
+            f"список в {kind} нечитаем, а пуш не остановлен:\n{cp.returncode} {cp.stderr}"
+        assert scan(AURORA_PUSH_UNVERIFIED="1").returncode == 0, f"{kind}: явный обход не работает"
+        # сообщение коммита: предупреждение, а не молчание; коммит не останавливается
+        m = root / "msg.txt"
+        m.write_text("чистое сообщение\n", encoding="utf-8")
+        cp = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-msg", str(m)],
+                            cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        assert cp.returncode == 0 and "часть названий не проверяется" in cp.stderr, \
+            f"{kind}: commit-msg молчит о нечитаемом списке:\n{cp.returncode} {cp.stderr}"
+    st = subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--status"], cwd=root,
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert "прочитан не целиком" in st.stdout, f"--status не называет проблему со списком:\n{st.stdout}{st.stderr}"
+
+
+@test
+def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path):
+    """BL-SEC-14: `HEAD:foo`, `@:foo` и `<sha>:foo` с ветки кухни не обходят список; старый хук назван и переставляется.
+
+    Git отдаёт хуку то, что набрал человек. Стоя на `development`, `git push origin HEAD:foo`
+    давал `local_ref=HEAD`, и список по именам молчал. Хуки v2–v4 зовут скан без `--hook`
+    и потому не получали предупреждения о старой версии никогда; `--refresh` (его зовёт «Обновить
+    кит») переставляет только свой устаревший хук.
+    """
+    sh = shutil.which("sh")
+    if not sh or os.name == "nt":
+        return
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    H = importlib.import_module("aurora_hooks")
+    fake = tmp / "bin"
+    fake.mkdir()
+    (fake / "python3").symlink_to(sys.executable)
+    repo = tmp / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    git = shutil.which("git")
+    env = {"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp), "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def g(*a):
+        return subprocess.run([git, *a], cwd=str(repo), env=env, check=True, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace").stdout.strip()
+    g("init", "-q")
+    g("symbolic-ref", "HEAD", "refs/heads/development")
+    g("commit", "-q", "--allow-empty", "-m", "x")
+    sha = g("rev-parse", "HEAD")
+    hook = repo / "pre-push"
+    hook.write_text(H.PUSH_HOOK.format(marker=H.PUSH_MARKER, branches=" ".join(H.PRIVATE_BRANCHES)), encoding="utf-8")
+    (repo / "scripts/aurora_hooks.py").write_text("import sys\nsys.stdin.read()\n", encoding="utf-8")
+    gh = "https://github.com/x/y.git"
+
+    def push(local: str, remote: str = "refs/heads/foo", lsha: str = sha):
+        return subprocess.run([sh, str(hook), "origin", gh], cwd=str(repo), env=env,
+                              input=f"{local} {lsha} {remote} {'0' * 40}\n", capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=30)
+    for alias in ("HEAD", "@"):
+        cp = push(alias)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo со стоянием на development уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    # голый sha указывает на ветку кухни; отсоединённый HEAD — то же
+    cp = push(sha)
+    assert cp.returncode == 1 and "development" in cp.stderr, f"sha:foo обошёл список: {cp.stderr}"
+    g("update-ref", "--no-deref", "HEAD", sha)
+    assert push("HEAD").returncode == 1, "отсоединённый HEAD на ветке кухни обошёл список"
+    # обычная ветка на том же коммите: HEAD разворачивается в неё, а не во все ветки на коммите
+    g("update-ref", "refs/heads/main", sha)
+    g("symbolic-ref", "HEAD", "refs/heads/main")
+    cp = push("HEAD")
+    assert cp.returncode == 0, f"HEAD с main остановлен из-за development на том же коммите:\n{cp.stderr}"
+    # явное имя ссылки не сверяется с другими ветками на коммите
+    assert push("refs/heads/main").returncode == 0, "явная refs/heads/main остановлена соседней веткой кухни"
+
+    # скан без --hook (хуки v2–v4) сам называет хук старым
+    cmd = [sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"]
+    cp = subprocess.run(cmd, cwd=str(repo), input="", capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert "старее скрипта" in cp.stderr, f"хук v2–v4 (скан без --hook) живёт молча:\n{cp.stderr}"
+
+    # --refresh: свой устаревший хук переставляется, чужой и актуальный — нет
+    kit = tmp / "kit"
+    kit.mkdir()
+    (kit / "engine_manifest.txt").write_text("scripts/x.py\n", encoding="utf-8")
+    subprocess.run([git, "init", "-q"], cwd=str(kit), check=True)
+    hooks = kit / ".git/hooks"
+    hooks.mkdir(exist_ok=True)
+    ours = hooks / "pre-push"
+
+    def refresh() -> str:
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--refresh"], cwd=str(kit),
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    ours.write_text("#!/bin/sh\n# aurora-hook push v2\n", encoding="utf-8")
+    assert H.push_hook_state(kit / ".git") == "outdated"
+    assert "переставлен" in refresh() and H.push_hook_state(kit / ".git") == "current", \
+        "--refresh не переставил устаревший хук"
+    assert not (hooks / "pre-commit").exists() and not (hooks / "commit-msg").exists(), \
+        "--refresh тронул не только pre-push"
+    assert refresh() == "", "актуальный хук переставлен повторно"
+    ours.write_text("#!/bin/sh\n# мой хук\n", encoding="utf-8")
+    assert H.push_hook_state(kit / ".git") == "foreign" and refresh() == "" \
+        and "мой хук" in ours.read_text(encoding="utf-8"), "--refresh затёр чужой pre-push"
+    ours.unlink()
+    assert H.push_hook_state(kit / ".git") == "none" and refresh() == "" and not ours.exists()
 
 
 @test

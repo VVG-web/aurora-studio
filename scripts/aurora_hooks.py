@@ -24,6 +24,7 @@ from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
+import html
 import io
 import os
 import re
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import threading
 import unicodedata
+import urllib.parse
 import zipfile
 import zlib
 try:                                      # bz2 и lzma в сборке CPython бывают необязательными (pyenv без xz)
@@ -54,7 +56,7 @@ from pathlib import Path
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
 PUSH_MARKER_PREFIX = "# aurora-hook push"      # любая версия: свой хук, а не чужой
-PUSH_MARKER = PUSH_MARKER_PREFIX + " v5"
+PUSH_MARKER = PUSH_MARKER_PREFIX + " v6"
 
 # Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
 # кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
@@ -118,7 +120,25 @@ while read -r local_ref local_sha remote_ref _r; do
   # Удаление ветки (локальный sha из нулей) ничего не публикует; без этого очистка случайно
   # опубликованной ветки кухни требовала бы --no-verify.
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
-  for ref in "$local_ref" "$remote_ref"; do
+  names="$local_ref $remote_ref"
+  # `git push origin HEAD:foo`, `@:foo`, `<sha>:foo`: git отдаёт хуку не имя ветки, а то, что
+  # набрал человек, — и список по именам молчал бы, стоя на ветке кухни. HEAD и `@` разворачиваем
+  # в текущую ветку; голый sha и отсоединённый HEAD — в ветки, которые на этот коммит указывают.
+  # Для явного `refs/...` так не делаем: имя названо, а другая ветка на том же коммите
+  # (`development` сразу после слияния равна `master`) — не повод останавливать публикацию.
+  case "$local_ref" in
+    refs/*) ;;
+    *)
+      cur=""
+      case "$local_ref" in HEAD|@) cur=$(git symbolic-ref -q HEAD 2>/dev/null) ;; esac
+      if [ -n "$cur" ]; then
+        names="$names $cur"
+      else
+        names="$names $(git for-each-ref --points-at "$local_sha" --format='%(refname)' refs/heads 2>/dev/null)"
+      fi
+      ;;
+  esac
+  for ref in $names; do
     short="${{ref#refs/heads/}}"
     for pat in {branches}; do
       case "$short" in
@@ -354,13 +374,52 @@ ARCHIVE_DEPTH = 3                 # архив в архиве: глубже н�
 UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
 
-def private_terms() -> list[str]:
-    """Список внутренних названий. Нет файла — проверка спит, а не падает."""
+def _load_terms() -> tuple:
+    """(названия, проблема) из `local/private_terms.txt`. Нет файла — ([], "").
+
+    Читаем байты и узнаём кодировку сами: файл из «Блокнота» старых Windows несёт BOM UTF-8
+    (первое название с невидимым U+FEFF не совпало бы никогда), а из PowerShell 5.1 (`>` и
+    `Out-File`) — UTF-16 (между буквами нули). Список, который не удалось прочитать целиком
+    (не UTF-8, нули или BOM внутри названия), — проблема, а не «чисто»: молча терять названия
+    значит открывать пуш там, где его хотели закрыть. Годные названия при этом возвращаются —
+    сообщение коммита проверяется по тому, что прочиталось.
+    """
     f = Path(TERMS)
     if not f.is_file():
-        return []
-    return [_nfc(x.strip()) for x in f.read_text(encoding="utf-8", errors="ignore").splitlines()
-            if x.strip() and not x.strip().startswith("#")]
+        return [], ""
+    try:
+        raw = f.read_bytes()
+    except OSError as e:
+        return [], f"файл не читается ({e})"
+    enc = "utf-16" if raw[:2] in UTF16_BOMS else "utf-8-sig"
+    problem = ""
+    try:
+        text = raw.decode(enc)
+    except UnicodeDecodeError:
+        # не UTF-8 (чаще всего cp1251 — «ANSI» русской Windows): названия, прочитанные
+        # с пропуском непонятных байтов, годятся для сообщений, но список неполон
+        text = raw.decode("utf-8", "ignore")
+        problem = "файл не в UTF-8 (cp1251?) — сохраните как UTF-8"
+    terms = []
+    for line in text.splitlines():
+        t = _nfc(line.strip().lstrip("\ufeff").strip())
+        if not t or t.startswith("#"):
+            continue
+        if "\x00" in t or "\ufeff" in t:
+            problem = problem or "в названиях нули или невидимые знаки — сохраните как UTF-8"
+            continue
+        terms.append(t)
+    return terms, problem
+
+
+def private_terms() -> list[str]:
+    """Список внутренних названий. Нет файла — проверка спит, а не падает."""
+    return _load_terms()[0]
+
+
+def terms_problem() -> str:
+    """Почему список названий прочитан не целиком; пусто — файла нет или с ним всё хорошо."""
+    return _load_terms()[1]
 
 
 def _nfc(text: str) -> str:
@@ -383,6 +442,11 @@ def term_patterns() -> list:
 def scan_msg(path: str) -> int:
     """Сообщение коммита: нет ли в нём внутренних названий. → код для хука commit-msg."""
     pats = term_patterns()
+    problem = terms_problem()
+    if problem:
+        # Коммит не останавливаем: сообщение — лишь первый рубеж, последний держит pre-push,
+        # и он при нечитаемом списке отказывает. Но молчать о дыре нельзя.
+        print(f"aurora: {TERMS}: {problem} — часть названий не проверяется", file=sys.stderr)
     if not pats:
         return 0
     try:
@@ -404,6 +468,10 @@ def _skipped(path: str) -> bool:
     return path.startswith(SKIP_PREFIXES) and path.endswith(SKIP_SUFFIXES)
 
 
+# Параметры `git log`, не зависящие от настроек пользователя (см. scan_push).
+LOG_PIN = ("--encoding=UTF-8", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff")
+
+
 def _git_run(args: list, binary: bool = False):
     """(код, stdout, stderr) команды git; не запустилась — код -1."""
     try:
@@ -415,12 +483,38 @@ def _git_run(args: list, binary: bool = False):
     return cp.returncode, cp.stdout, err.strip()
 
 
+_U_PAIR = re.compile(r"\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})", re.I)
+_U_ONE = re.compile(r"\\u([0-9a-f]{4})", re.I)
+
+
+def _forms(row: str) -> list:
+    """Строка и её раскодированные виды: `\\uXXXX`, `&#NNNN;`/`&#xHHHH;` и `%XX`.
+
+    `json.dump` без `ensure_ascii=False` (стандартный вывод и у большинства внешних утилит)
+    пишет кириллицу как `\\u0422…`, HTML — как `&#1058;`, адрес — как `%D0%A2`: построчный скан
+    видел бы только escape-последовательность, и название в файле состояния уезжало бы при
+    зелёной проверке. Совпадение ищется и по исходной строке, и по раскодированной.
+    """
+    out = []
+    if "\\u" in row:
+        d = _U_PAIR.sub(lambda m: chr(0x10000 + ((int(m.group(1), 16) - 0xD800) << 10)
+                                      + int(m.group(2), 16) - 0xDC00), row)
+        out.append(_U_ONE.sub(lambda m: m.group(0) if 0xD800 <= int(m.group(1), 16) <= 0xDFFF
+                              else chr(int(m.group(1), 16)), d))
+    if "&#" in row:
+        out.append(html.unescape(row))
+    if "%" in row:
+        out.append(urllib.parse.unquote(row, errors="replace"))
+    return [row] + [f for f in map(_nfc, out) if f != row]
+
+
 def _scan_text(pats: list, text: str, where: str, hits: dict) -> None:
     """Каждую строку текста — по всем названиям; запоминает первое совпадение на (где, название)."""
     for row in _nfc(text).splitlines():
-        for term, pat in pats:
-            if (where, term) not in hits and pat.search(row):
-                hits[(where, term)] = row.strip()[:100]
+        for form in _forms(row):
+            for term, pat in pats:
+                if (where, term) not in hits and pat.search(form):
+                    hits[(where, term)] = row.strip()[:100]
 
 
 XZ_MAGIC = b"\xfd7zXZ\x00"
@@ -465,6 +559,19 @@ def _unpack_stream(data: bytes):
     return tag, inner, over
 
 
+_XML_BREAK = re.compile(r"</(?:[\w.-]+:)?(?:p|tr|row|si|h|list-item)>|<(?:[\w.-]+:)?br\b[^>]*>", re.I)
+_XML_TAG = re.compile(r"<[^>]*>")
+
+
+def _xml_text(text: str) -> str:
+    """Текст XML без тегов: абзацы и строки таблиц — переводом строки, остальное склеивается.
+
+    Склейка нужна, чтобы название, разбитое на `run`-ы, нашлось; конец абзаца остаётся границей,
+    иначе слово из следующего абзаца прирастало бы к названию и граница слова не срабатывала.
+    """
+    return _XML_TAG.sub("", _XML_BREAK.sub("\n", text))
+
+
 def _scan_payload(pats: list, data: bytes, where: str, hits: dict, errors: list,
                   depth: int = 0, member: bool = False) -> None:
     """Содержимое одного файла: кодировки, gzip/bzip2/xz и zip — по сигнатуре, а не по расширению.
@@ -477,6 +584,11 @@ def _scan_payload(pats: list, data: bytes, where: str, hits: dict, errors: list,
     if member:
         _scan_text(pats, data.decode("utf-8", "replace"), where, hits)
     head = data[:4096]
+    if data.lstrip(b"\xef\xbb\xbf \t\r\n")[:1] == b"<":
+        # XML офисных файлов (docx, xlsx, pptx, odt): Word и PowerPoint режут слово на `run`-ы
+        # (проверка орфографии, смена языка, правка), и название стоит как `Тайный</w:t>…<w:t>Проект`.
+        # Сырой скан такое не находит — читаем ещё и текст без тегов.
+        _scan_text(pats, _xml_text(data.decode("utf-8", "replace")), where, hits)
     if data[:2] in UTF16_BOMS:
         _scan_text(pats, data.decode("utf-16", "replace"), where, hits)
     elif _looks_utf16(head):
@@ -539,7 +651,7 @@ def _scan_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
     из родителей, то есть то, что человек написал при разрешении конфликта; остальное уже
     лежит в родителях (в диапазоне или на сервере).
     """
-    rc, out, err = _git_run(["log", "--raw", "--cc", "--no-abbrev", "--no-renames", "--format=", *rng])
+    rc, out, err = _git_run(["log", *LOG_PIN, "--raw", "--cc", "--no-abbrev", "--no-renames", "--format=", *rng])
     if rc != 0:
         errors.append(f"git log --raw: {err or rc}")
         return
@@ -646,9 +758,23 @@ def scan_push(remote: str = "", hook: str = "") -> int:
     отдельной строкой.
     """
     pats = term_patterns()
-    if hook and hook != PUSH_MARKER.rsplit(" ", 1)[1]:
-        print(f"aurora: установленный pre-push ({hook}) старее скрипта проверки "
-              f"({PUSH_MARKER.rsplit(' ', 1)[1]}) — переустановите: kit:hooks --install", file=sys.stderr)
+    cur = PUSH_MARKER.rsplit(" ", 1)[1]
+    if hook != cur:
+        # Хуки v2–v4 звали скан без `--hook`: пустая версия — это и есть признак старого хука.
+        # Список веток, разбор хоста и проверка отсутствия скрипта живут в установленной копии,
+        # и до переустановки новая защита на этой машине не действует.
+        print(f"aurora: установленный pre-push ({hook or 'v2–v4, версию не называет'}) старее скрипта "
+              f"проверки ({cur}) — переустановите: kit:hooks --install", file=sys.stderr)
+    problem = terms_problem()
+    if problem:
+        # Список прочитан не целиком — часть названий не проверится. Это та же дыра, что «списка
+        # нет», только тише: пуш остановлен, как при сбое проверки (код 2), и снимается так же.
+        print(f"aurora: {TERMS}: {problem} — часть названий не проверена", file=sys.stderr)
+        if os.environ.get("AURORA_PUSH_UNVERIFIED") == "1":
+            print("aurora: AURORA_PUSH_UNVERIFIED=1 — непроверенное пропускаю", file=sys.stderr)
+        else:
+            print("  Исправьте список (UTF-8) или осознанно: AURORA_PUSH_UNVERIFIED=1 git push", file=sys.stderr)
+            return 2
     if not pats:
         # Участников без списка не блокируем, но и молчать нельзя: хук стоит, а содержимое
         # пуша не проверяется ни словом — свежий клон, `git worktree add`, второй клон.
@@ -692,7 +818,11 @@ def scan_push(remote: str = "", hook: str = "") -> int:
         # конфликта); остальное лежит в родителях. Читаем сырые байты и режем по `\n`: текстовый
         # режим превращает голый `\r` в перевод строки, а `splitlines()` режет ещё и по `\x0c`,
         # `\x1c`-`\x1e`, `\x85` — продолжение строки теряло `+` и не сканировалось.
-        rc, raw, err = _git_run(["log", "-p", "--cc", "--text", "--no-color", "--unified=0", *rng],
+        # Вывод закреплён от пользовательской настройки git: `diff.noprefix` убирал `b/` из `+++ `
+        # (путь оставался «?», и исключение для vendor не действовало), `diff.mnemonicPrefix`
+        # менял префиксы, внешний `diff` — сам формат. Кодировка сообщений — UTF-8, а не
+        # `i18n.logOutputEncoding` (унаследованный cp1251 на Windows прятал кириллицу).
+        rc, raw, err = _git_run(["log", *LOG_PIN, "-p", "--cc", "--text", "--no-color", "--unified=0", *rng],
                                 binary=True)
         if rc != 0:
             errors.append(f"git log -p {' '.join(rng)}: {err or rc}")
@@ -714,11 +844,12 @@ def scan_push(remote: str = "", hook: str = "") -> int:
             elif in_hunk and row[:cols] == "+" * cols:
                 if _skipped(path):
                     continue
+                forms = _forms(row)
                 for term, pat in pats:
-                    if pat.search(row) and (path, term) not in hits:
+                    if (path, term) not in hits and any(pat.search(f) for f in forms):
                         hits[(path, term)] = row.strip()[:100]
 
-        rc, out, err = _git_run(["log", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", *rng])
+        rc, out, err = _git_run(["log", *LOG_PIN, "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e", *rng])
         if rc != 0:
             errors.append(f"git log {' '.join(rng)}: {err or rc}")
         else:
@@ -758,6 +889,26 @@ def scan_push(remote: str = "", hook: str = "") -> int:
     print("  Осознанно: git push --no-verify", file=sys.stderr)
     print("", file=sys.stderr)
     return 1
+
+
+def _install_push_hook(push_hook: Path) -> None:
+    """Записать текст pre-push и сделать его исполняемым."""
+    push_hook.parent.mkdir(parents=True, exist_ok=True)
+    push_hook.write_text(PUSH_HOOK.format(marker=PUSH_MARKER, branches=" ".join(PRIVATE_BRANCHES)),
+                         encoding="utf-8")
+    push_hook.chmod(push_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def push_hook_state(gd: Path) -> str:
+    """Состояние pre-push в git-каталоге `gd`: `current` — наш, актуальный; `outdated` — наш, но
+    старее скрипта; `foreign` — чужой; `none` — не стоит. Читает только файл хука."""
+    h = gd / "hooks" / "pre-push"
+    if not h.is_file():
+        return "none"
+    text = h.read_text(encoding="utf-8", errors="ignore")
+    if PUSH_MARKER in text:
+        return "current"
+    return "outdated" if PUSH_MARKER_PREFIX in text else "foreign"
 
 
 def is_kit() -> bool:
@@ -809,6 +960,9 @@ def main() -> int:
                     help="с --scan-push: имя remote, куда идёт пуш (сужает проверку неизвестного remote_sha)")
     ap.add_argument("--hook", default="", metavar="VER",
                     help="с --scan-push: версия установленного хука (vN); старее скрипта — предупреждение")
+    ap.add_argument("--refresh", action="store_true",
+                    help="переставить свой устаревший pre-push (чужой и актуальный не трогается); "
+                         "зовётся обновлением кита")
     ap.add_argument("--scan-push", action="store_true",
                     help="служебный режим pre-push: прочитать refs со stdin и проверить "
                          "содержимое уезжающих коммитов по " + TERMS)
@@ -826,6 +980,16 @@ def main() -> int:
         print("aurora_hooks: это не git-репозиторий — запускайте из корня проекта", file=sys.stderr)
         return 1
     hook = gd / "hooks" / "pre-commit"
+
+    if a.refresh:
+        # Хук — установленная копия, а не файл движка: обновление кита её не меняло, и защита,
+        # исправленная в ките, на машине мейнтейнера не действовала до ручной переустановки.
+        # Чужой хук и хук актуальной версии не трогаем; режим pre-commit и базовая линия — тоже.
+        if not is_kit() or push_hook_state(gd) != "outdated":
+            return 0
+        _install_push_hook(gd / "hooks" / "pre-push")
+        print("pre-push переставлен до актуальной версии " + PUSH_MARKER.rsplit(" ", 1)[1])
+        return 0
 
     if a.status or not (a.install or a.uninstall):
         if hook.is_file():
@@ -845,6 +1009,10 @@ def main() -> int:
             print("commit-msg: не нужен — это проект, а не кит "
                   "(проверка приватности защищает публикацию движка)")
         push_hook = gd / "hooks" / "pre-push"
+        problem = terms_problem()
+        if problem:
+            print(f"список названий: {TERMS} прочитан не целиком — {problem}; "
+                  "pre-push отказывает, пока список не исправлен")
         if push_hook.is_file() and PUSH_MARKER in push_hook.read_text(encoding="utf-8", errors="ignore"):
             print(f"pre-push: хук Авроры · наружу не уходят {', '.join(PRIVATE_BRANCHES)}"
                   f"{'' if private_terms() else f' · {TERMS} нет или пуст — содержимое пуша НЕ проверяется'}")
@@ -923,11 +1091,10 @@ def main() -> int:
                 push_hook.with_suffix(".bak").write_text(
                     push_hook.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
                 print("Старый pre-push сохранён как pre-push.bak")
-            push_hook.write_text(
-                PUSH_HOOK.format(marker=PUSH_MARKER, branches=" ".join(PRIVATE_BRANCHES)),
-                encoding="utf-8")
-            push_hook.chmod(push_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            _install_push_hook(push_hook)
             note = "" if private_terms() else f" — но {TERMS} нет или пуст, содержимое пуша НЕ проверяется"
+            if terms_problem():
+                note += f" — {TERMS} прочитан не целиком: {terms_problem()}"
             print(f"Установлен pre-push: наружу не уходят {', '.join(PRIVATE_BRANCHES)}{note}")
 
     if a.mode == "ratchet":
