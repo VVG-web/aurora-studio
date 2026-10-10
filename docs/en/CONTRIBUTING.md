@@ -18,7 +18,8 @@ modules, panel sections and skins, and how to release versions. Русская �
   Annotated tags are checked like commit messages, a branch or tag name on the server like a term; for a merge the hook checks
   what a person wrote while resolving the conflict; archives (zip, gzip, bzip2, xz), UTF-16 and cp1251 are recognised by content,
   not by extension. **Not checked** (nothing to check them with, and the hook does not say so): 7z, rar, zstd, PDF, legacy
-  office files (`.doc`, `.xls`) and anything encrypted. No `local/private_terms.txt` — the hook says the content was NOT checked.
+  office files (`.doc`, `.xls`) and anything encrypted. bzip2 or xz data on a Python build without the `_bz2`/`_lzma`
+  module is not unpacked and the hook says plainly that it is "not checked". No `local/private_terms.txt` — the hook says the content was NOT checked.
   Public are GitHub, GitLab, Bitbucket, Codeberg and the like (the address's host, its subdomain or an `~/.ssh/config`
   `Host github.com-<name>` alias, not a substring) and whatever is added with
   `git config --add aurora.publicRemotes <name or address>`; a private server on such a host is declared with

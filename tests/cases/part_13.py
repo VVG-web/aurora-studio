@@ -3620,11 +3620,89 @@ def test_restart_self_does_not_promise_a_panel_that_cannot_start(tmp: Path):
         r = ck.restart_self(8765)
         assert "error" in r and "слишком старый" in r["error"] and "wait" not in r, r
         assert not started, "новая панель запущена вопреки провалившейся пробе"
+        # любой ненулевой код пробы — тоже отказ: 1 (синтаксис) и 3 (падение при импорте)
+        for body, code in (("raise SystemExit(1)\n", 1), ("import sys\nsys.stderr.write('Traceback: ошибка импорта')\nraise SystemExit(3)\n", 3)):
+            common.write_text(body, encoding="utf-8")
+            r = ck.restart_self(8765)
+            assert "error" in r and "wait" not in r and not started, (code, r)
+            assert (f"(код {code})" in r["error"]) or "ошибка импорта" in r["error"], r
         common.write_text("X = 1\n", encoding="utf-8")                  # проба проходит — запуск идёт
         r = ck.restart_self(8765)
         assert r.get("ok") and started, (r, started)
     finally:
         subprocess.Popen = real_popen
+        restore()
+
+
+@test
+def test_restart_endpoint_keeps_the_old_panel_alive_on_refusal(tmp: Path):
+    """Обработчик /api/restart не убивает панель, если перезапуск отказан.
+
+    BL-DEC-01: `restart_self` вернул error (проба не прошла, нет aurora.py, не запустилось), а
+    обработчик всё равно вызывал `os._exit` через 0,4 с — человек оставался без панели рядом с
+    сообщением «старая панель жива». Проверяем настоящий Handler, а не одну функцию.
+    """
+    import http.client
+    import threading
+    import time
+    from http.server import ThreadingHTTPServer
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    exits = []
+    real_exit, real_restart = os._exit, ck.restart_self
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), ck.Handler)
+    srv.roots = [str(tmp)]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def post():
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=20)
+        c.request("POST", "/api/restart?t=" + ck.TOKEN, body="{}", headers={"Content-Type": "application/json"})
+        r = c.getresponse()
+        return r.status, json.loads(r.read().decode("utf-8"))
+    os._exit = lambda code=0: exits.append(code)         # сами не умираем, только записываем
+    try:
+        ck.restart_self = lambda port: {"error": "новая версия не запустится на этом Python — не перезапущена"}
+        code, body = post()
+        assert code == 200 and body.get("error"), (code, body)
+        time.sleep(1.0)
+        assert not exits, "панель убита, хотя перезапуск отказан"
+        ck.restart_self = lambda port: {"ok": True, "wait": "панель поднимется через пару секунд"}
+        code, body = post()
+        assert code == 200 and body.get("ok"), (code, body)
+        time.sleep(1.0)
+        assert exits == [0], f"панель не завершилась после удачного перезапуска: {exits}"
+    finally:
+        os._exit, ck.restart_self = real_exit, real_restart
+        srv.shutdown()
+        restore()
+
+
+@test
+def test_failure_tail_is_translatable_and_cut_at_a_sentence(tmp: Path):
+    """Хвост отказа без «aurora: » и обрезки посреди слова переводится целиком.
+
+    BL-DEC-01: хвост stderr пробы и doctor режется по символам и несёт префикс защиты версии,
+    поэтому английская панель показывала его по-русски.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    cyr = re.compile("[а-яА-ЯёЁ]")
+    try:
+        raw = "aurora: " + AC.python_message((3, 9, 6), "darwin") + "\n"
+        for ru in (ck.restart_probe_failure(ck.failure_tail(raw)),
+                   ck.doctor_start_failure(2, ck.failure_tail(raw))):
+            en = ck.translate_message(ru, "en")
+            assert not cyr.search(en) and "aurora: " not in en, en
+        long = "Начало, обрезаемое. " * 5 + "Хвост предложения целиком. " * 80
+        cut = ck.failure_tail(long, 300)
+        assert len(cut) <= 300 and cut.startswith("Хвост предложения"), cut
+        assert ck.failure_tail("aurora: коротко\n  второй") == "коротко второй"
+    finally:
         restore()
 
 
@@ -3745,12 +3823,13 @@ def test_python_gate_messages_are_translated_and_registered(tmp: Path):
             assert en.startswith(en_start), (ru_text, en)
         assert ck.translate_message(ck.doctor_start_failure(2, "x"), "en") == "doctor did not start (code 2): x"
         assert "(code 2)" in ck.translate_message(ck.restart_probe_failure(""), "en")
+        assert "(code 1)" in ck.translate_message(ck.restart_probe_failure("", 1), "en")
     finally:
         restore()
     # образцы собираются из кода: ключ каталога не «лишний», а проверка каталогов зелёная
     skeletons = KI.message_skeletons()
     for text in ("doctor не запустился (код {}): {}", "doctor не запустился (код {})",
-                 "новая версия не запустится на этом Python — панель не перезапущена (код 2)",
+                 "новая версия не запустится на этом Python — панель не перезапущена (код {})",
                  "Новая версия кита требует Python {}.{}+, а панель работает на Python {}.{}.{}. "
                  "Кит не тронут: обновление ничего не изменило. {}"):
         assert text in skeletons, f"образец не собирается из кода: {text}"
@@ -3805,15 +3884,20 @@ def test_failed_restart_gives_the_update_button_back(tmp: Path):
     """
     ui = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
     restart = ui[ui.index("async function restartPanel("):ui.index("async function checkKitUpdate(")]
-    assert restart.count("return false") >= 3 and 'toast(d.error, "err"); return false' in restart, \
+    assert restart.count("return false") >= 2 and 'toast(d.error, "err"); return false' in restart, \
         "restartPanel не сообщает вызывающему, что перезапуск не состоялся"
     about = (KIT / "cockpit/modules/about/view.js").read_text(encoding="utf-8")
     after = about[about.index("await ctx.restartPanel(") - 20:]
     assert "=== false" in after[:200] and "about.restart_failed" in after[:700] and "go.disabled = false" in after[:700], \
         "карточка «О программе» не возвращает кнопку после отказавшего перезапуска"
+    # таймаут подъёма — не «старая панель работает»: её уже нет, и текст другой
+    assert 'return "timeout"' in restart and '=== "timeout"' in about and "about.restart_timeout" in about, \
+        "таймаут подъёма не отделён от отказа перезапуска"
     for lang in ("ru", "en"):
         cat = json.loads((KIT / f"cockpit/modules/about/i18n/{lang}.json").read_text(encoding="utf-8"))
         assert cat.get("about.restart_failed"), lang
+        assert cat.get("about.restart_timeout") and cat["about.restart_timeout"] != cat["about.restart_failed"], lang
+        assert "alive" not in cat["about.restart_timeout"].lower() and "still running" not in cat["about.restart_timeout"], lang
 
 
 @test

@@ -32,6 +32,7 @@
   "about.updating": "Downloading and updating…",
   "about.restarting": "Restarting the panel…",
   "about.restart_failed": "The kit is updated, but the panel did not restart (the reason is in the message above or in the terminal). The old panel is still running; restart it with the \"Restart the panel\" button.",
+  "about.restart_timeout": "The kit is updated, but the new panel did not answer in time and the old one has already stopped. Check the terminal the panel was started from and start it again: python3 aurora.py cockpit.",
   "about.busy": "Running now: {what}. The update will wait until the run ends.",
   "about.in_git": "In git ({where})",
   "about.installed": "Installed here",

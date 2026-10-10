@@ -147,6 +147,11 @@ function updateCard(ctx){
         go.disabled = false; go.textContent = t("about.update_to", {v: st.latest});
         result.innerHTML = "";
         result.append(el("div", {class:"warnbox"}, t("about.restart_failed")));
+      } else if (restarted === "timeout"){
+        // старая панель уже остановлена, а новая не ответила: «старая работает» тут было бы неправдой
+        go.textContent = t("about.update_to", {v: st.latest});
+        result.innerHTML = "";
+        result.append(el("div", {class:"warnbox"}, t("about.restart_timeout")));
       }
     };
     card.append(el("div", {class:"row"}, go, el("div", {class:"spacer"}), again), result);

@@ -2933,11 +2933,26 @@ def doctor_start_failure(rc: int, tail: str) -> str:
     return f"doctor не запустился (код {rc})"
 
 
-def restart_probe_failure(tail: str) -> str:
+def failure_tail(text: str, limit: int = 1500) -> str:
+    """Хвост вывода упавшего процесса для сообщения человеку: одной строкой, без префикса
+    «aurora: » (его ставит защита версии Python) и без обрезки посреди предложения — иначе
+    английская панель не узнаёт текст защиты и показывает его по-русски."""
+    text = " ".join((text or "").split())
+    if text.startswith("aurora: "):
+        text = text[len("aurora: "):]
+    if len(text) > limit:
+        text = text[-limit:]
+        cut = text.find(". ")
+        if 0 <= cut < limit // 2:
+            text = text[cut + 2:]
+    return text
+
+
+def restart_probe_failure(tail: str, rc: int = 2) -> str:
     """Отказ перезапуска: новая версия не стартует на этом Python; хвост stderr пробы (если он есть)."""
     if tail:
         return f"новая версия не запустится на этом Python — панель не перезапущена: {tail}"
-    return "новая версия не запустится на этом Python — панель не перезапущена (код 2)"
+    return f"новая версия не запустится на этом Python — панель не перезапущена (код {rc})"
 
 
 def _health_doctor(project: str, lang: str) -> dict:
@@ -2956,7 +2971,7 @@ def _health_doctor(project: str, lang: str) -> dict:
     if rc_d not in (0, 1) and not d_errors:
         # doctor не запустился (старый Python, нет скрипта, таймаут): пустой список «блокеров»
         # выглядел бы как «всё хорошо» — показываем причину явно
-        launch_error = doctor_start_failure(rc_d, " ".join(doc.split())[-400:])
+        launch_error = doctor_start_failure(rc_d, failure_tail(doc))
         d_errors.append(launch_error)
         d_why.append("")
     return {"doctor": {
@@ -5050,8 +5065,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(write_route_state(project, payload["state"]))
             return
         if u.path == "/api/restart":
-            self.send_json(restart_self(self.server.server_address[1]))
-            threading.Timer(0.4, lambda: os._exit(0)).start()
+            res = restart_self(self.server.server_address[1])
+            self.send_json(res)
+            # Отказ (проба не прошла, нет aurora.py, не запустилось) — старая панель остаётся
+            # жить: убить её значило бы оставить человека вовсе без панели.
+            if not res.get("error"):
+                threading.Timer(0.4, lambda: os._exit(0)).start()
             return
         if u.path == "/api/files/create":
             project = payload.get("project", "")
@@ -5856,9 +5875,11 @@ def restart_self(port: int) -> dict:
             cwd=KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.SubprocessError):
         probe = None                     # проба не вышла — не мешаем перезапуску
-    if probe is not None and probe.returncode == 2:
-        tail = ((probe.stderr or probe.stdout or "").strip())[-500:]
-        return {"error": restart_probe_failure(tail)}
+    # Любой ненулевой код значит, что новая aurora_common не импортируется: 2 — защита версии
+    # Python, 1 — синтаксис, 3 — падение при импорте.
+    if probe is not None and probe.returncode != 0:
+        tail = failure_tail(probe.stderr or probe.stdout)
+        return {"error": restart_probe_failure(tail, probe.returncode)}
     env = dict(os.environ, AURORA_COCKPIT_TOKEN=TOKEN)
     try:
         subprocess.Popen([sys.executable, entry, "cockpit", "--port", str(port),
