@@ -3,7 +3,7 @@
 [Wiki home](README.md) · related: [Troubleshooting](Troubleshooting.md) · [The card](The-Card.md#rules-worth-remembering)
 
 The kit is built on Linux and tested on every push on **Linux (Python 3.11–3.14), Windows
-(`windows-latest`) and macOS (`macos-latest`; the last two do not block a release yet)**. A project is opened by people on Windows, macOS and Linux at once, so the rule for names is the
+(`windows-latest`; Python 3.12 blocks a release, 3.14 does not yet) and macOS (`macos-latest`; does not block a release yet)**. A project is opened by people on Windows, macOS and Linux at once, so the rule for names is the
 strictest of the three.
 
 ## File names must pass everywhere

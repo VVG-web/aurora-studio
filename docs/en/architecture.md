@@ -294,7 +294,7 @@ as a list, no shell, an undeclared flag is rejected) and does not accept arbitra
 | The live base | `python3 tests/smoke_live.py <project>` | "nothing moved on this project": a snapshot of numbers and names inside the project itself |
 
 CI (`.github/workflows/test.yml`) runs smoke and the full suite on Python 3.14, the full suite on the lowest supported 3.11, the full suite on 3.12 and 3.13, and compilation plus smoke
-on 3.10 (those and Windows and macOS are non-blocking for now). Version policy: 3.11+ is supported, 3.10 works with a warning, anything older stops. Releasing a version — the tag and the GitHub Release — is done by
+on 3.10 (those, Windows on 3.14 and macOS are non-blocking for now; Windows on 3.12 blocks the release). Version policy: 3.11+ is supported, 3.10 works with a warning, anything older stops. Releasing a version — the tag and the GitHub Release — is done by
 `.github/workflows/release.yml` after green checks on `master`, if `VERSION` has no Release yet (details in
 [CONTRIBUTING](CONTRIBUTING.md#versions-and-releases)).
 

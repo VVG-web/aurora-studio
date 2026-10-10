@@ -120,8 +120,10 @@ def test_workflows_sign_commits_with_the_person_who_ran_them(tmp: Path):
 
 @test
 def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Path):
-    """CI-матрица ОС x Python (BL-DEC-02): блокирующие `tests` (3.14) и `floor` (3.11), неблокирующие
-    `newer-python` (3.12 и 3.13), `legacy-310`, `windows` (3.14) и `macos` (3.14); имя workflow не менялось (от него зависит release.yml),
+    """CI-матрица ОС x Python (BL-DEC-02): блокирующие `tests` (3.14), `floor` (3.11) и `windows` (3.12, три доли),
+    неблокирующие `newer-python` (3.12 и 3.13), `legacy-310`, `windows-314` (3.14, три доли) и `macos` (3.14);
+    блокирующий Windows нельзя ослабить: release.yml берёт только итог success, а continue-on-error на него не влияет;
+    имя workflow не менялось (от него зависит release.yml),
     release-проверка и ruff на месте, действия не на снятом с раннеров Node 20 (checkout/setup-python v4/v5).
     Структура проверяется по тексту: pyyaml в тестовом окружении нет (штатный разбор — `ruby -ryaml`).
     Документы называют те же задания и версии; в тексте нет сросшихся скобок политики версий."""
@@ -140,23 +142,26 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
             jobs[cur] = []
         elif cur is not None:
             jobs[cur].append(ln)
-    assert list(jobs) == ["tests", "authors", "floor", "newer-python", "legacy-310", "windows", "macos"], list(jobs)
+    assert list(jobs) == ["tests", "authors", "floor", "newer-python", "legacy-310", "windows", "windows-314", "macos"], list(jobs)
     body = {k: "\n".join(v) for k, v in jobs.items()}
     for name, py in (("tests", "3.14"), ("floor", "3.11"), ("legacy-310", "3.10"),
-                     ("windows", "3.14"), ("macos", "3.14")):
+                     ("windows", "3.12"), ("windows-314", "3.14"), ("macos", "3.14")):
         assert re.search(rf'^\s+python-version: "{re.escape(py)}"$', body[name], re.M), (name, py)
-    assert "runs-on: windows-latest" in body["windows"] and "runs-on: macos-latest" in body["macos"]
+    assert "runs-on: windows-latest" in body["windows"] and "runs-on: windows-latest" in body["windows-314"]
+    assert "runs-on: macos-latest" in body["macos"]
     assert re.search(r'^        python: \["3\.12", "3\.13"\]$', body["newer-python"], re.M), "матрица newer-python"
     assert "runs-on: ubuntu-24.04" in body["newer-python"] and "fail-fast: false" in body["newer-python"]
     assert "tests/run_tests.py" in body["newer-python"] and "compileall" in body["newer-python"]
-    for name in ("newer-python", "legacy-310", "windows", "macos"):
+    for name in ("newer-python", "legacy-310", "windows-314", "macos"):
         assert re.search(r"^    continue-on-error: true$", body[name], re.M), f"{name}: должен быть неблокирующим"
-    for name in ("tests", "authors", "floor"):
-        assert "continue-on-error" not in body[name], f"{name}: блокирует выпуск, его нельзя ослаблять"
+    for name in ("tests", "authors", "floor", "windows"):
+        assert not re.search(r"^\s*continue-on-error:", body[name], re.M), f"{name}: блокирует выпуск, его нельзя ослаблять"
     assert "tests/check_release.py" in body["tests"] and "tests/run_tests.py --smoke" in body["tests"]
     assert "ruff check --select F401,F841,B023" in body["tests"]
     assert "tests/run_tests.py" in body["floor"] and "compileall" in body["floor"]
-    assert "--shard=${{ matrix.shard }}/3" in body["windows"]
+    for name in ("windows", "windows-314"):
+        assert "--shard=${{ matrix.shard }}/3" in body[name], name
+        assert re.search(r"^        shard: \[1, 2, 3\]$", body[name], re.M), f"{name}: три доли"
     for wf in sorted(WORKFLOWS.glob("*.yml")):
         src = wf.read_text(encoding="utf-8")
         assert not re.search(r"actions/(checkout@v[1-5]|setup-python@v[1-5])\b", src), \
@@ -166,12 +171,14 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
         doc = (KIT / rel).read_text(encoding="utf-8")
         assert "`newer-python`" in doc and "3.12 " in doc and "3.13" in doc, f"{rel}: newer-python не описан"
         assert "( 3." not in doc, f"{rel}: сросшиеся скобки политики версий"
+        assert "`windows-314`" in doc, f"{rel}: windows-314 не описан"
     for rel in ("docs/architecture.md", "docs/en/architecture.md"):
         doc = (KIT / rel).read_text(encoding="utf-8")
         assert ") (" not in doc[doc.index("test.yml"):doc.index("test.yml") + 700], f"{rel}: две скобочные вставки подряд"
     adr = (KIT / "docs" / "decisions" / "ADR-059-deployment-profiles.md").read_text(encoding="utf-8")
     assert "`oldest-python` заменено" in adr and "`newer-python`" in adr, "ADR-059 расходится с заданиями CI"
     assert "блокирующее задание на 3.11 и 3.12" not in adr
+    assert "`windows-314`" in adr and "`windows` (3.12" in adr, "ADR-059: Windows 3.12 блокирует, 3.14 отдельно"
 
 
 @test

@@ -131,8 +131,9 @@ established first, not guessed from the symptom.
 CI (`.github/workflows/test.yml`; do not rename the `engine-tests` workflow: `release.yml` depends on it):
 `tests` runs the release check, `--smoke`, the full suite and ruff on Python 3.14; `floor` compiles and runs the full suite
 on the lowest supported 3.11 (blocks the release); `newer-python` compiles and runs the full suite on 3.12 and 3.13 (non-blocking for now); `legacy-310` compiles and runs `--smoke` on 3.10, does not block and goes
-away after 2027-04; `windows` (3.14, three shards) and `macos` (3.14) are non-blocking for now (`continue-on-error`) and become
-blocking after stable green runs.
+away after 2027-04; `windows` (3.12, three shards) blocks the release as before: `release.yml` takes only the `success`
+result, and a job with `continue-on-error` does not affect it; `windows-314` (3.14, three shards) and `macos` (3.14) are
+non-blocking for now (`continue-on-error`) and become blocking after stable green runs.
 
 Version policy: 3.11+ is supported and tested, 3.10 works with a warning, anything older stops.
 The thresholds live in `scripts/aurora_common.py`, the version guard in `aurora.py` and at the top of `aurora_common.py`, so
