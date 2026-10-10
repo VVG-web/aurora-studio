@@ -1486,6 +1486,49 @@ def test_search_finds_card_by_dotted_identifier(tmp: Path):
 
 
 @test
+def test_search_finds_numbers_inside_compound_numbers(tmp: Path):
+    """Год даты и число версии находятся по запросу: «2026» → «до 01.09.2026».
+
+    Безбуквенный номер из трёх частей стал одним токеном и перестал раскладываться на числа:
+    даты, версии, IP терялись для лексического поиска (на базе без kb:embed — совсем).
+    Теперь у такого номера есть и составные части длиной от трёх знаков.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    C = importlib.import_module("ctx_pack")
+
+    assert C.words("до 01.09.2026") == ["01.09.2026", "2026"], C.words("до 01.09.2026")
+    assert C.words("версия 1.100.32")[-2:] == ["1.100.32", "100"], C.words("версия 1.100.32")
+    assert C.ids("до 01.09.2026") == ["01.09.2026", "2026"], "ids() потерял год даты"
+    # короткие части и номера с префиксом не меняются
+    assert C.words("пункт 4.4.3") == [C.norm("пункт"), "4.4.3"], "части 4.4.3 попали в разбор"
+    assert C.words("AC-4.4.30") == ["ac-4.4.30", "4.4.30"], "части AC-4.4.30 попали в разбор"
+
+    root = make_project(tmp)
+    card(root, "Concepts/Срок-действия.md", "Договор действует до 01.09.2026 включительно.",
+         status="verified", type="concept")
+    card(root, "Concepts/Версия-клиента.md", "Клиент обновлён до версии 1.100.32 на стенде.",
+         status="verified", type="concept")
+    card(root, "Concepts/Погода-в-городе.md", "Про погоду и ничего больше.",
+         status="verified", type="concept")
+
+    def top(query):
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            cards = C.load_cards()
+            C.measure_rarity(cards)
+            return [c.stem for _, c in C.fuse(cards, query, {})]
+        finally:
+            os.chdir(cwd)
+
+    for q in ("2026", "срок 2026", "01.09.2026"):
+        assert top(q)[:1] == ["Срок-действия"], f"запрос «{q}» не нашёл карточку с датой: {top(q)}"
+    for q in ("1.100.32", "100"):
+        assert top(q)[:1] == ["Версия-клиента"], f"запрос «{q}» не нашёл карточку с версией: {top(q)}"
+
+
+@test
 def test_dotted_identifier_exact_match_outweighs_citations(tmp: Path):
     """Карточка про номер обгоняет карточку, которая его часто цитирует (ID_BONUS).
 
