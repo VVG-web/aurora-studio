@@ -1429,8 +1429,10 @@ def test_push_guard_reads_the_content_not_just_the_branch(tmp: Path):
 
     # 4. Нет списка названий — проверка спит, а не роняет push.
     (root / "local" / "private_terms.txt").unlink()
-    assert scan(clean, bad).returncode == 0, \
-        "без списка названий хук обязан молчать: иначе он ломает любой чужой клон"
+    cp = scan(clean, bad)
+    assert cp.returncode == 0, "без списка названий хук не должен ломать пуши участников"
+    assert "НЕ проверено" in cp.stderr and "private_terms.txt" in cp.stderr, \
+        f"хук стоит, а содержимое не проверяется — и молчит об этом:\n{cp.stderr}"
 
 
 @test
@@ -1611,7 +1613,9 @@ def test_push_hook_blocks_backup_branches_and_stops_when_the_scan_does_not_run(t
         "приватный сервер перестал принимать ветки кухни"
     # хост разбирается из адреса: схема, пользователь, порт, регистр, поддомен — а не подстрока
     for url in ("ssh://git@github.com:22/x/y.git", "https://user:tok@GitLab.com/x/y.git",
-                "git@sr.ht:~x/y", "https://api.github.com/x/y.git"):
+                "git@sr.ht:~x/y", "https://api.github.com/x/y.git",
+                # алиас `Host github.com-<имя>` из ~/.ssh/config и FQDN с точкой: раньше их ловила подстрока
+                "git@github.com-work:x/y.git", "https://github.com./x/y.git", "git@gitlab.com_work:x/y.git"):
         assert push(url, "refs/heads/backup/x", "refs/heads/backup/x").returncode == 1, f"{url} не считается публичным"
     for url in ("https://gitea.company.example/x/y.git", "https://gitlab.company.example/x/y.git",
                 "https://git.internal.test/usr.html", "https://evilgithub.com/x/y.git",
@@ -1656,9 +1660,11 @@ def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path)
     файловая система macOS) не находилось ни в строках, ни в именах внутри архива. Что проверить
     нельзя (больше предела, зашифровано, вложено слишком глубоко), — не «чисто», а отказ.
     """
+    import bz2
     import gzip
     import importlib
     import io
+    import lzma
     import unicodedata
     import zipfile
     sys.path.insert(0, str(KIT / "scripts"))
@@ -1682,6 +1688,13 @@ def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path)
         "log.gz": gzip.compress(secret.encode("utf-8")),
         "nfc_in_nfd.docx": pack("word/document.xml", f"для {nfd}"),
         "nfd_name.docx": pack(f"word/{nfd}.xml", "пусто"),
+        # кодировки и упаковка, которых построчный скан не видит
+        "cp.csv": f"a;b\r\nдля {term};1\r\n".encode("cp1251"),
+        "u16le.txt": f"для {term}\n".encode("utf-16-le"),
+        "u16be.txt": f"для {term}\n".encode("utf-16-be"),
+        "log.bz2": bz2.compress(secret.encode("utf-8")),
+        "log.xz": lzma.compress(secret.encode("utf-8")),
+        "data.bin": bz2.compress((secret + "!").encode("utf-8")),        # расширение ничего не значит
     }
 
     def wrap(inner: bytes) -> bytes:
@@ -1695,6 +1708,12 @@ def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path)
     files["ok.gz"] = gzip.compress("ничего лишнего".encode("utf-8"))
     files["broken.gz"] = b"\x1f\x8b\x08\x00" + "не поток".encode("utf-8")
     files["ok16.txt"] = b"\xff\xfe" + "чисто\n".encode("utf-16-le")
+    files["ok.bz2"] = bz2.compress("ничего лишнего".encode("utf-8"))
+    files["ok.xz"] = lzma.compress("ничего лишнего".encode("utf-8"))
+    files["ok.csv"] = "a;b\r\nничего;1\r\n".encode("cp1251")
+    files["ok16le.txt"] = "чисто\n".encode("utf-16-le")
+    files["broken.bz2"] = b"BZh9" + "не поток".encode("utf-8")
+    files["broken.xz"] = b"\xfd7zXZ\x00" + "не поток".encode("utf-8")
     for name, data in files.items():
         assert term.encode("utf-8") not in data or name == "ok.docx", f"{name}: тест не проверяет сжатие"
 
@@ -1719,9 +1738,11 @@ def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path)
                         capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert cp.returncode == 1, f"rc={cp.returncode}\n{cp.stderr}"
     for name in ("u16.txt", "m.xlsm", "b.epub", "z.dat", "nest.docx", "log.gz",
-                 "nfc_in_nfd.docx", "nfd_name.docx", "nfd.md"):
+                 "nfc_in_nfd.docx", "nfd_name.docx", "nfd.md", "cp.csv", "u16le.txt", "u16be.txt",
+                 "log.bz2", "log.xz", "data.bin"):
         assert f"  {name}" in cp.stderr, f"{name}: название не найдено:\n{cp.stderr}"
-    for name in ("ok.docx", "ok.gz", "broken.gz", "ok16.txt"):
+    for name in ("ok.docx", "ok.gz", "broken.gz", "ok16.txt", "ok.bz2", "ok.xz", "ok.csv", "ok16le.txt",
+                 "broken.bz2", "broken.xz"):
         assert f"  {name}" not in cp.stderr, f"{name}: ложное срабатывание:\n{cp.stderr}"
     assert "Traceback" not in cp.stderr, cp.stderr
     assert "Файл: уберите" in cp.stderr and "Сообщение, автор или тег" not in cp.stderr, \
@@ -1758,12 +1779,147 @@ def test_push_guard_reads_content_by_signature_and_normalizes_unicode(tmp: Path)
         assert any("больше" in e for e in errors), f"крупный член архива прошёл молча: {errors}"
         hits, errors = run(gzip.compress(b"x" * 5000))
         assert any("после распаковки" in e for e in errors), f"крупный gzip прошёл молча: {errors}"
+        for pack_ in (bz2.compress, lzma.compress):
+            hits, errors = run(pack_(b"x" * 5000))
+            assert any("после распаковки" in e for e in errors), f"крупный {pack_.__module__} прошёл молча: {errors}"
         H.ZIP_CAP = real_cap
         damaged = bytearray(pack("a.txt", secret))
         damaged[damaged.find(b"a.txt") + 10] ^= 0xFF           # внутри сжатых данных
         run(bytes(damaged))                                    # не должен падать трассировкой
     finally:
         H.private_terms, H.ZIP_CAP = real_private, real_cap
+
+
+@test
+def test_push_guard_reads_added_text_whatever_the_line_breaks_and_prefixes(tmp: Path):
+    """BL-SEC-14: добавленный текст сканируется и тогда, когда в строке голый CR, FF, FS-RS, NEL или `++`.
+
+    Вывод `git log -p` читался в текстовом режиме (голый `\\r` становился переводом строки) и резался
+    `splitlines()` (он режет ещё по `\\x0c`, `\\x1c`-`\\x1e`, `\\x85`, `\\u2028`): продолжение строки теряло
+    префикс `+` и не сканировалось. Добавленная строка, начинающаяся с `++` (в диффе `+++ …`), принималась
+    за заголовок файла и отбрасывалась. Файл «CSV (Macintosh)» целиком — одна такая строка.
+    """
+    term = "ТайныйПроект"
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text(term + "\n", encoding="utf-8")
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "core.autocrlf=false"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    t = term.encode("utf-8")
+
+    def commit(msg: str) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(git + ["commit", "-qm", msg, "--no-verify", "--allow-empty"], cwd=root, check=True)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+
+    def scan(old: str, new_: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"], cwd=root,
+                              input=f"refs/heads/main {new_} refs/heads/main {old}\n",
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+    (root / "чисто.md").write_text("ничего\n", encoding="utf-8")
+    base = commit("основа")
+    leaking = {
+        "cr_only.csv": b"head\r" + "для ".encode() + t + b"\r",
+        "ff.txt": b"page\x0c \xd0\xb4\xd0\xbb\xd1\x8f " + t + b"\n",
+        "fs_rs.bin": b"\x00\x01\x1c\x1d\x1e " + t + b" \x00",
+        "nel.txt": b"a\xc2\x85 " + t + b"\n",
+        "ls.txt": b"a\xe2\x80\xa8 " + t + b"\n",
+        "plus2.md": b"++ " + t + b"\n",
+        "plus3.md": b"+++ " + t + b"\n",
+        "plus_both.md": b"++" + t + b"++\n",
+    }
+    clean = {
+        "ok_cr.csv": "head\rничего\r".encode(),
+        "ok_plus.md": "++ ничего\n+++ b/ничего\n".encode(),
+    }
+    for name, data in {**leaking, **clean}.items():
+        (root / name).write_bytes(data)
+    head = commit("файлы")
+    cp = scan(base, head)
+    assert cp.returncode == 1, f"rc={cp.returncode}\n{cp.stderr}"
+    for name in leaking:
+        assert f"  {name} " in cp.stderr, f"{name}: название после необычного разделителя не найдено:\n{cp.stderr}"
+    for name in clean:
+        assert f"  {name} " not in cp.stderr, f"{name}: ложное срабатывание:\n{cp.stderr}"
+    assert "Traceback" not in cp.stderr, cp.stderr
+
+    # Строка `+++ b/…` внутри ханка — добавленный текст и не подменяет имя файла в находке.
+    (root / "tricky.md").write_bytes(b"+++ b/other.md\n+++ " + t + b"\n")
+    head2 = commit("заголовок внутри ханка")
+    cp = scan(head, head2)
+    assert cp.returncode == 1 and "  tricky.md " in cp.stderr and "  other.md " not in cp.stderr, \
+        f"содержимое, похожее на заголовок файла, подменило путь или скрылось:\n{cp.stderr}"
+
+
+@test
+def test_push_guard_reads_merge_resolutions_and_ref_names(tmp: Path):
+    """BL-SEC-14: слияние с названием в разрешении конфликта и имя ветки или тега на сервере не проходят.
+
+    `git log -p` без `--cc` не показывает диффов слияний: строка, которую человек написал при
+    разрешении конфликта, нигде больше не лежит и уезжала без проверки. Имя ветки (`fix-<название>`)
+    и лёгкого тега не сканировалось — только sha, сообщения и тела аннотированных тегов.
+    Содержимое родителей слияния проверяется сам по себе (оно в диапазоне), поэтому у слияния
+    смотрим только то, что не совпало ни с одним из родителей.
+    """
+    term = "ТайныйПроект"
+    root = tmp / "repo"
+    (root / "local").mkdir(parents=True)
+    (root / "local" / "private_terms.txt").write_text(term + "\n", encoding="utf-8")
+    (root / ".gitignore").write_text("local/\n", encoding="utf-8")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def run(*args, **kw):
+        return subprocess.run(list(args), cwd=root, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, **kw)
+
+    def commit(msg: str) -> str:
+        run("git", "add", "-A")
+        assert run("git", "commit", "-qm", msg, "--no-verify").returncode == 0, msg
+        return run("git", "rev-parse", "HEAD").stdout.strip()
+
+    def scan(old: str, new_: str, local="refs/heads/main", remote="refs/heads/main"):
+        return run(sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push",
+                   input=f"{local} {new_} {remote} {old}\n")
+
+    run("git", "init", "-q", "-b", "main")
+    (root / "f.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    commit("основа")
+    run("git", "checkout", "-qb", "side")
+    (root / "f.txt").write_text("a\nсторона\nc\n", encoding="utf-8")
+    (root / "g.txt").write_text("только сторона\n", encoding="utf-8")
+    commit("сторона")
+    run("git", "checkout", "-q", "main")
+    (root / "f.txt").write_text("a\nглавная\nc\n", encoding="utf-8")
+    pushed = commit("главная")
+
+    run("git", "merge", "side", "-q", "--no-commit")
+    (root / "f.txt").write_text(f"a\nрешено для {term}\nc\n", encoding="utf-8")
+    merged = commit("слияние")
+    assert len(run("git", "rev-list", "--parents", "-1", merged).stdout.split()) == 3, "тест не про слияние"
+    cp = scan(pushed, merged)
+    assert cp.returncode == 1 and term in cp.stderr and "f.txt" in cp.stderr, \
+        f"название в разрешении конфликта слияния уехало без проверки: rc={cp.returncode}\n{cp.stderr}"
+
+    # То же слияние, разрешённое честно (берём сторону целиком): ничего нового, ложных срабатываний нет.
+    run("git", "reset", "-q", "--hard", pushed)
+    run("git", "merge", "side", "-q", "--no-commit")
+    (root / "f.txt").write_text("a\nсторона\nc\n", encoding="utf-8")
+    honest = commit("слияние без правок")
+    cp = scan(pushed, honest)
+    assert cp.returncode == 0, f"честное слияние остановлено:\n{cp.stderr}"
+
+    # Имя ветки и лёгкого тега на сервере — публикация.
+    cp = scan(pushed, honest, remote=f"refs/heads/fix-{term}")
+    assert cp.returncode == 1 and "имя ссылки" in cp.stderr and "переименуйте" in cp.stderr \
+        and "Файл: уберите" not in cp.stderr, f"название в имени ветки пропущено:\n{cp.stderr}"
+    cp = run(sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push",
+             input=f"refs/tags/v1 {honest} refs/tags/v1-{term} {'0' * 40}\n")
+    assert cp.returncode == 1 and "имя ссылки" in cp.stderr, f"название в имени тега пропущено:\n{cp.stderr}"
+    # Локальное имя наружу не идёт: `git push origin fix-<название>:main` его не публикует.
+    cp = scan(pushed, honest, local=f"refs/heads/fix-{term}")
+    assert cp.returncode == 0, f"локальное имя ветки принято за публикацию:\n{cp.stderr}"
 
 
 @test
@@ -1849,10 +2005,35 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     assert cp.returncode == 0, cp.stdout + cp.stderr
     pre_push = root / ".git/hooks/pre-push"
     text = pre_push.read_text(encoding="utf-8")
-    assert "# aurora-hook push v4" in text and '--scan-push --remote "$remote_name"' in text, text
-    assert "pre-push: хук Авроры ·" in hooks("--status").stdout, hooks("--status").stdout
-    pre_push.write_text(text.replace("push v4", "push v3"), encoding="utf-8")
+    assert "# aurora-hook push v5" in text and '--scan-push --remote "$remote_name"' in text, text
+    assert "--hook v5" in text, "хук не называет скану свою версию — устаревший не заметить"
+    status = hooks("--status").stdout
+    assert "pre-push: хук Авроры ·" in status, status
+    assert "НЕ проверяется" in status, f"--status молчит, что списка названий нет:\n{status}"
+    assert "НЕ проверяется" in hooks("--install", "--mode", "warn").stdout, "--install молчит, что списка нет"
+    (root / "local").mkdir()
+    (root / "local" / "private_terms.txt").write_text("ТайныйПроект\n", encoding="utf-8")
+    assert "НЕ проверяется" not in hooks("--status").stdout
+    pre_push.write_text(text.replace("push v5", "push v4"), encoding="utf-8")
     assert "УСТАРЕЛ" in hooks("--status").stdout, "хук прежней версии назван актуальным"
+    # Скрипт новее хука: сам скан говорит об этом, а не молчит
+    cp = subprocess.run(cmd + ["--scan-push", "--hook", "v4"], cwd=root, input="", capture_output=True,
+                        text=True, encoding="utf-8", errors="replace")
+    assert "старее скрипта" in cp.stderr, f"устаревший хук живёт молча:\n{cp.stderr}"
+    cp = subprocess.run(cmd + ["--scan-push", "--hook", "v5"], cwd=root, input="", capture_output=True,
+                        text=True, encoding="utf-8", errors="replace")
+    assert "старее" not in cp.stderr, cp.stderr
+    # Чужой pre-push: без --force не трогаем, с --force — резервная копия, как у остальных хуков
+    pre_push.write_text("#!/bin/sh\n# мой собственный хук\n", encoding="utf-8")
+    assert "pre-push.bak" in hooks("--install", "--mode", "warn").stderr, "без --force не сказано про --force"
+    assert "мой собственный" in pre_push.read_text(encoding="utf-8"), "без --force чужой pre-push перезаписан"
+    cp = hooks("--install", "--force", "--mode", "warn")
+    bak = root / ".git/hooks/pre-push.bak"
+    assert bak.is_file() and "мой собственный" in bak.read_text(encoding="utf-8"), \
+        f"--force перезаписал чужой pre-push без резервной копии:\n{cp.stdout}{cp.stderr}"
+    assert "pre-push.bak" in cp.stdout
+    pre_push.write_text(pre_push.read_text(encoding="utf-8").replace("push v5", "push v4"), encoding="utf-8")
+    assert "УСТАРЕЛ" in hooks("--status").stdout
     cp = hooks("--uninstall")
     assert "pre-push" in cp.stdout and not pre_push.exists(), \
         f"--uninstall не снял pre-push:\n{cp.stdout}{cp.stderr}"

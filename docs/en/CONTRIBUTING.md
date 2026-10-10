@@ -15,15 +15,20 @@ modules, panel sections and skins, and how to release versions. Русская �
 - the `pre-push` hook (also `kit:hooks`) keeps the kitchen branches (`development`, `history-*`, `backup/*`,
   `aurora-backup/*`) from leaving and checks everything that goes to a public address: diff lines, file names (old ones too on
   a rename), commit messages and author names and e-mails, binary files and the contents of docx/xlsx/pptx/zip.
-  Annotated tags are checked like commit messages; archives and UTF-16 are recognised by content, not by extension.
-  Public are GitHub, GitLab, Bitbucket, Codeberg and the like (the address's host or its subdomain, not a substring) and whatever is added with
+  Annotated tags are checked like commit messages, a branch or tag name on the server like a term; for a merge the hook checks
+  what a person wrote while resolving the conflict; archives (zip, gzip, bzip2, xz), UTF-16 and cp1251 are recognised by content,
+  not by extension. **Not checked** (nothing to check them with, and the hook does not say so): 7z, rar, zstd, PDF, legacy
+  office files (`.doc`, `.xls`) and anything encrypted. No `local/private_terms.txt` — the hook says the content was NOT checked.
+  Public are GitHub, GitLab, Bitbucket, Codeberg and the like (the address's host, its subdomain or an `~/.ssh/config`
+  `Host github.com-<name>` alias, not a substring) and whatever is added with
   `git config --add aurora.publicRemotes <name or address>`; a private server on such a host is declared with
   `git config --add aurora.privateRemotes <name or address>`. **Known limitation:** a host not in the list (an `~/.ssh/config` alias for
   GitHub included) counts as private and the hook does not check it at all — add such a remote to `aurora.publicRemotes`;
   the "public until declared private" rule is deferred (it would stop pushes to the kitchen's private remotes until configured).
   When it cannot be checked (git failed, the script is missing, an archive is encrypted or too large) the push stops instead of opening;
   knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`. Reinstall the hook after updating the kit: `kit:hooks --install`
-  (the status calls an older hook outdated);
+  (the status calls an older hook outdated and the scan itself warns when the hook is older than the script; there is no
+  "hook not installed" signal in `kit:doctor` or "Health" yet);
 - a commit's author and committer are people: no model or model vendor name, no bot, no `Co-Authored-By` trailer or
   "Generated with …" line naming them. The `authors` check in engine-tests (`.github/scripts/check_authors.py`) turns red on
   such a commit in a PR and keeps the release from being built; its output has a ready command that rewrites the author.

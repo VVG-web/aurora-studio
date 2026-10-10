@@ -486,6 +486,7 @@
     "служебный режим commit-msg: проверить сообщение коммита по local/private_terms.txt": "service mode commit-msg: check the commit message against local/private_terms.txt",
     "служебный режим pre-push: прочитать refs со stdin и проверить содержимое уезжающих коммитов по local/private_terms.txt": "service mode pre-push: read refs from stdin and check the contents of outgoing commits against local/private_terms.txt",
     "с --scan-push: имя remote, куда идёт пуш (сужает проверку неизвестного remote_sha)": "with --scan-push: the name of the remote the push goes to (narrows the check of an unknown remote_sha)",
+    "с --scan-push: версия установленного хука (vN); старее скрипта — предупреждение": "with --scan-push: the version of the installed hook (vN); older than the script — a warning",
     "корень зеркала (Sources/Confluence)": "the mirror root (Sources/Confluence)",
     "снять карту page_id → путь ДО переэкспорта и сохранить в meta/": "take the page_id → path map BEFORE re-export and save it in meta/",
     "взять старое зеркало из ревизии git (если снимок не снимали)": "take the old mirror from a git revision (if no snapshot was taken)",

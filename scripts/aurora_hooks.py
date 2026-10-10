@@ -45,7 +45,7 @@ from pathlib import Path
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
 PUSH_MARKER_PREFIX = "# aurora-hook push"      # любая версия: свой хук, а не чужой
-PUSH_MARKER = PUSH_MARKER_PREFIX + " v4"
+PUSH_MARKER = PUSH_MARKER_PREFIX + " v5"
 
 # Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
 # кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
@@ -66,7 +66,8 @@ PUSH_HOOK = """#!/bin/sh
 remote_name="$1"
 remote_url="$2"
 set -f
-# Публичный ли адрес: хост из списка (сам хост или его поддомен, а не подстрока адреса:
+# Публичный ли адрес: хост из списка (сам хост, его поддомен или алиас «хост-имя» из
+# `~/.ssh/config` — `github.com-work`, и FQDN с точкой; а не подстрока адреса:
 # `gitea.company.example` — не `gitea.com`) либо remote из `aurora.publicRemotes`
 # (git config --add aurora.publicRemotes <имя или адрес>). Хост не из списка — не публичный:
 # это приватный сервер, и ветки кухни на него ехать должны. Сервер, которого хук принимает за
@@ -82,7 +83,7 @@ u="${{u##*@}}"                                # userinfo
 host=$(printf '%s' "${{u%%:*}}" | tr 'A-Z' 'a-z')   # порт и регистр
 for h in @HOSTS@; do
   case "$host" in
-    "$h"|*."$h") public=1 ;;
+    "$h"|"$h"[!A-Za-z0-9]*|*."$h"|*."$h"[!A-Za-z0-9]*) public=1 ;;
   esac
 done
 for p in $(git config --get-all aurora.privateRemotes 2>/dev/null); do
@@ -158,14 +159,14 @@ if [ -z "$PY" ]; then
 fi
 # Любой код, кроме 0, — пуш остановлен: 1 — найдены названия, остальное — проверка не
 # отработала (сбой git, ошибка вызова), и это тоже не «можно».
-printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push --remote "$remote_name"
+printf '%s\n' "$input" | $PY scripts/aurora_hooks.py --scan-push --remote "$remote_name" --hook @VER@
 rc=$?
 if [ "$rc" -ne 0 ]; then
   [ "$rc" -eq 1 ] || echo "aurora: проверка пуша завершилась кодом $rc — см. вывод выше; пуш остановлен" >&2
   exit 1
 fi
 exit 0
-""".replace("@HOSTS@", " ".join(PUBLIC_HOSTS))
+""".replace("@HOSTS@", " ".join(PUBLIC_HOSTS)).replace("@VER@", PUSH_MARKER.rsplit(" ", 1)[1])
 TERMS = "local/private_terms.txt"
 BASELINE = Path("AuroraKnowledgeDB/meta/lint_baseline.txt")
 
@@ -413,38 +414,75 @@ def _scan_text(pats: list, text: str, where: str, hits: dict) -> None:
                 hits[(where, term)] = row.strip()[:100]
 
 
+XZ_MAGIC = b"\xfd7zXZ\x00"
+
+
 def _is_archive_head(head: bytes) -> bool:
-    return head[:4] == b"PK\x03\x04" or head[:2] == b"\x1f\x8b"
+    return (head[:4] == b"PK\x03\x04" or head[:2] == b"\x1f\x8b" or head[:3] == b"BZh"
+            or head[:6] == XZ_MAGIC)
+
+
+def _looks_utf16(head: bytes) -> bool:
+    """UTF-16 без BOM: у латиницы старший байт нулевой, у кириллицы (U+04xx) равен 4 — на одной чётности."""
+    for half in (head[0::2], head[1::2]):
+        if len(half) >= 2 and (half.count(0) + half.count(4)) * 2 >= len(half):
+            return True
+    return False
+
+
+def _unpack_stream(data: bytes):
+    """gzip, bzip2 и xz по сигнатуре → (метка, распаковано, упёрлись_в_предел); не поток — None."""
+    if data[:2] == b"\x1f\x8b":
+        tag, d = "gz", zlib.decompressobj(31)
+    elif data[:3] == b"BZh":
+        tag, d = "bz2", bz2.BZ2Decompressor()
+    elif data[:6] == XZ_MAGIC:
+        tag, d = "xz", lzma.LZMADecompressor()
+    else:
+        return None
+    try:
+        inner = d.decompress(data, ZIP_CAP)
+    except (zlib.error, EOFError, OSError, lzma.LZMAError, ValueError):
+        return tag, b"", False          # битый поток: сырой скан уже был
+    over = bool(d.unconsumed_tail) if tag == "gz" else (not d.eof and not d.needs_input)
+    return tag, inner, over
 
 
 def _scan_payload(pats: list, data: bytes, where: str, hits: dict, errors: list,
                   depth: int = 0, member: bool = False) -> None:
-    """Содержимое одного файла: UTF-16 по BOM, gzip и zip — по сигнатуре, а не по расширению.
+    """Содержимое одного файла: кодировки, gzip/bzip2/xz и zip — по сигнатуре, а не по расширению.
 
-    Строки обычных файлов уже прочитаны `git log -p`; здесь то, что он не видит: текст в
-    UTF-16 (между символами нули), сжатое и вложенное. `member` — содержимое внутри архива:
-    там сырого скана не было, и текст читается целиком.
+    Строки обычных файлов в UTF-8 уже прочитаны `git log -p`; здесь то, что он не видит: текст в
+    UTF-16 (между символами нули; с BOM и без него), в cp1251 («CSV» из русского Excel, «Блокнот»
+    в ANSI), сжатое и вложенное. `member` — содержимое внутри архива: там сырого скана не
+    было, и текст читается целиком.
     """
     if member:
         _scan_text(pats, data.decode("utf-8", "replace"), where, hits)
+    head = data[:4096]
     if data[:2] in UTF16_BOMS:
         _scan_text(pats, data.decode("utf-16", "replace"), where, hits)
-    gz = data[:2] == b"\x1f\x8b"
-    if not gz and not zipfile.is_zipfile(io.BytesIO(data)):
+    elif _looks_utf16(head):
+        # UTF-16 без BOM: порядок байтов не знаем — читаем оба
+        for enc in ("utf-16-le", "utf-16-be"):
+            _scan_text(pats, data.decode(enc, "replace"), where, hits)
+    elif head and not head.count(0):
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            _scan_text(pats, data.decode("cp1251", "replace"), where, hits)
+    packed = _unpack_stream(data)
+    if packed is None and not zipfile.is_zipfile(io.BytesIO(data)):
         return
     if depth >= ARCHIVE_DEPTH:
         errors.append(f"{where}: архивы вложены глубже {ARCHIVE_DEPTH} уровней — не проверено")
         return
-    if gz:
-        try:
-            d = zlib.decompressobj(31)
-            inner = d.decompress(data, ZIP_CAP)
-        except (zlib.error, EOFError):
-            return                  # битый поток: сырой скан уже был
-        if d.unconsumed_tail:
+    if packed:
+        tag, inner, over = packed
+        if over:
             errors.append(f"{where}: после распаковки больше {ZIP_CAP >> 20} МБ — не проверено")
             return
-        _scan_payload(pats, inner, where + "!gz", hits, errors, depth + 1, member=True)
+        _scan_payload(pats, inner, f"{where}!{tag}", hits, errors, depth + 1, member=True)
         return
     try:
         z = zipfile.ZipFile(io.BytesIO(data))
@@ -475,21 +513,27 @@ def _scan_payload(pats: list, data: bytes, where: str, hits: dict, errors: list,
 def _scan_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
     """Файлы уезжающих коммитов, как они лежат: сжатый и перекодированный текст сырой скан не видит.
 
-    Смотрим содержимое, а не расширение: `.xlsm`, `.epub`, zip под именем `.dat`, `.gz` и
-    архив в архиве несут то же, что и `.docx`. Читаем одним потоком `git cat-file --batch`,
-    в памяти — один файл.
+    Смотрим содержимое, а не расширение: `.xlsm`, `.epub`, zip под именем `.dat`, `.gz`, `.bz2`,
+    `.xz` и архив в архиве несут то же, что и `.docx`. Читаем одним потоком `git cat-file --batch`,
+    в памяти — один файл. `--cc`: у слияния показываются файлы, чьё содержимое не совпало ни с одним
+    из родителей, то есть то, что человек написал при разрешении конфликта; остальное уже
+    лежит в родителях (в диапазоне или на сервере).
     """
-    rc, out, err = _git_run(["log", "--raw", "--no-abbrev", "--no-renames", "--format=", *rng])
+    rc, out, err = _git_run(["log", "--raw", "--cc", "--no-abbrev", "--no-renames", "--format=", *rng])
     if rc != 0:
         errors.append(f"git log --raw: {err or rc}")
         return
     paths: dict[str, str] = {}
-    for row in out.splitlines():
+    for row in out.split("\n"):
         meta, _, path = row.partition("\t")
         f = meta.split()
-        if len(f) < 5 or f[4][0] == "D" or f[1] == "160000":      # удалён или подмодуль
+        if not f or not f[0].startswith(":"):
             continue
-        paths.setdefault(f[3], path)
+        # у слияния перед полями стоит по двоеточию на родителя: `::100644 100644 100644 sha sha sha MM`
+        n = len(f[0]) - len(f[0].lstrip(":"))
+        if len(f) < 2 * n + 3 or "D" in f[2 * n + 2] or f[n] == "160000":   # удалён или подмодуль
+            continue
+        paths.setdefault(f[2 * n + 1], path)
     if not paths:
         return
     try:
@@ -519,7 +563,7 @@ def _scan_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
             continue
         size = int(head[2])
         if size > ZIP_CAP:
-            first = p.stdout.read(4)
+            first = p.stdout.read(6)
             rest = size - len(first)
             while rest > 0:
                 chunk = p.stdout.read(min(rest, 1 << 20))
@@ -557,7 +601,7 @@ def _scan_tags(pats: list, ref: str, sha: str, hits: dict, errors: list) -> None
         sha = m.group(1)
 
 
-def scan_push(remote: str = "") -> int:
+def scan_push(remote: str = "", hook: str = "") -> int:
     """Содержимое уезжающих коммитов: нет ли в нём внутренних названий.
 
     Смотрим **добавленные строки** всего диапазона, а не итоговое дерево: файл, заведённый
@@ -582,7 +626,13 @@ def scan_push(remote: str = "") -> int:
     отдельной строкой.
     """
     pats = term_patterns()
+    if hook and hook != PUSH_MARKER.rsplit(" ", 1)[1]:
+        print(f"aurora: установленный pre-push ({hook}) старее скрипта проверки "
+              f"({PUSH_MARKER.rsplit(' ', 1)[1]}) — переустановите: kit:hooks --install", file=sys.stderr)
     if not pats:
+        # Участников без списка не блокируем, но и молчать нельзя: хук стоит, а содержимое
+        # пуша не проверяется ни словом — свежий клон, `git worktree add`, второй клон.
+        print(f"aurora: {TERMS} нет или пуст — содержимое пуша НЕ проверено", file=sys.stderr)
         return 0
 
     hits: dict[tuple[str, str], str] = {}
@@ -594,6 +644,9 @@ def scan_push(remote: str = "") -> int:
         local_sha, remote_sha = parts[1], parts[3]
         if not local_sha.strip("0"):     # удаление ветки — содержимого не прибавляет
             continue
+        # Имя ветки или тега на сервере — тоже публикация: `fix-<название>` уедет, даже когда
+        # содержимое чистое. Локальное имя наружу не идёт (`local:remote`), его не смотрим.
+        _scan_text(pats, parts[2], f"имя ссылки {parts[2]}", hits)
         _scan_tags(pats, parts[0], local_sha, hits, errors)
         if not remote_sha.strip("0"):
             rng = [local_sha]
@@ -615,18 +668,30 @@ def scan_push(remote: str = "") -> int:
         # экранированным («"\\321\\203..."»), и хук называет термин, но не файл —
         # человек читает предупреждение и не понимает, что именно убирать.
         # `--text`: двоичный файл иначе даёт «Binary files differ» и ни одной строки.
-        rc, out, err = _git_run(["log", "-p", "--text", "--no-color", "--unified=0", *rng])
+        # `--cc`: у слияния — только то, что не совпало ни с одним из родителей (разрешение
+        # конфликта); остальное лежит в родителях. Читаем сырые байты и режем по `\n`: текстовый
+        # режим превращает голый `\r` в перевод строки, а `splitlines()` режет ещё и по `\x0c`,
+        # `\x1c`-`\x1e`, `\x85` — продолжение строки теряло `+` и не сканировалось.
+        rc, raw, err = _git_run(["log", "-p", "--cc", "--text", "--no-color", "--unified=0", *rng],
+                                binary=True)
         if rc != 0:
             errors.append(f"git log -p {' '.join(rng)}: {err or rc}")
             continue
         path = "?"
-        for row in _nfc(out).splitlines():
-            if row.startswith("diff --git "):
+        in_hunk = False         # внутри ханка `+++ ...` — добавленная строка `++ ...`, а не заголовок
+        cols = 1                # столбцов-родителей в префиксе строки: 1, у слияния — по числу родителей
+        for row in _nfc(raw.decode("utf-8", "replace")).split("\n"):
+            if row.startswith(("diff --git ", "diff --cc ", "diff --combined ")):
+                in_hunk, path = False, "?"
                 # заголовок несёт и старое, и новое имя: переименование и удаление тоже видны
-                _scan_text(pats, row[11:], "имя файла " + row[11:].replace('"', ""), hits)
-            elif row.startswith("+++ b/"):
+                name = row.split(" ", 2)[2]
+                _scan_text(pats, name, "имя файла " + name.replace('"', ""), hits)
+            elif in_hunk is False and row.startswith("+++ b/"):
                 path = row[6:].strip('"').rstrip("\t")
-            elif row.startswith("+") and not row.startswith("+++"):
+            elif row.startswith("@@"):
+                in_hunk = True
+                cols = len(row) - len(row.lstrip("@")) - 1
+            elif in_hunk and row[:cols] == "+" * cols:
                 if _skipped(path):
                     continue
                 for term, pat in pats:
@@ -662,8 +727,11 @@ def scan_push(remote: str = "") -> int:
         print(f"      {sample}", file=sys.stderr)
     print("", file=sys.stderr)
     print("  Опубликованное не чинится удалением: коммит остаётся в истории.", file=sys.stderr)
-    if any(not w.startswith(("сообщение", "тег ")) for w, _t in hits):
+    if any(not w.startswith(("сообщение", "тег ", "имя ссылки")) for w, _t in hits):
         print("  Файл: уберите из индекса и закройте .gitignore, затем перепишите историю.", file=sys.stderr)
+    if any(w.startswith("имя ссылки") for w, _t in hits):
+        print("  Имя ветки или тега: переименуйте (git branch -m, git tag -d и заново) и пушьте под новым именем.",
+              file=sys.stderr)
     if any(w.startswith(("сообщение", "тег ")) for w, _t in hits):
         print("  Сообщение, автор или тег: перепишите (git commit --amend, git rebase -i,"
               " git tag -d и заново) — иначе название уйдёт в историю.", file=sys.stderr)
@@ -719,6 +787,8 @@ def main() -> int:
                     help="служебный режим commit-msg: проверить сообщение коммита по " + TERMS)
     ap.add_argument("--remote", default="", metavar="NAME",
                     help="с --scan-push: имя remote, куда идёт пуш (сужает проверку неизвестного remote_sha)")
+    ap.add_argument("--hook", default="", metavar="VER",
+                    help="с --scan-push: версия установленного хука (vN); старее скрипта — предупреждение")
     ap.add_argument("--scan-push", action="store_true",
                     help="служебный режим pre-push: прочитать refs со stdin и проверить "
                          "содержимое уезжающих коммитов по " + TERMS)
@@ -727,7 +797,7 @@ def main() -> int:
     # Служебный режим зовётся хуком, а не человеком: решение принимается до всего
     # остального, git_dir() тут не нужен — хук уже запущен из корня репозитория.
     if a.scan_push:
-        return scan_push(a.remote)
+        return scan_push(a.remote, a.hook)
     if a.scan_msg:
         return scan_msg(a.scan_msg)
 
@@ -756,7 +826,8 @@ def main() -> int:
                   "(проверка приватности защищает публикацию движка)")
         push_hook = gd / "hooks" / "pre-push"
         if push_hook.is_file() and PUSH_MARKER in push_hook.read_text(encoding="utf-8", errors="ignore"):
-            print(f"pre-push: хук Авроры · наружу не уходят {', '.join(PRIVATE_BRANCHES)}")
+            print(f"pre-push: хук Авроры · наружу не уходят {', '.join(PRIVATE_BRANCHES)}"
+                  f"{'' if private_terms() else f' · {TERMS} нет или пуст — содержимое пуша НЕ проверяется'}")
         elif push_hook.is_file() and PUSH_MARKER_PREFIX in push_hook.read_text(encoding="utf-8", errors="ignore"):
             print("pre-push: хук Авроры УСТАРЕЛ — защита неполная (имена файлов, сообщения, backup/*, "
                   "разбор адреса); переустановите: kit:hooks --install")
@@ -826,13 +897,18 @@ def main() -> int:
                    and PUSH_MARKER_PREFIX not in push_hook.read_text(encoding="utf-8", errors="ignore"))
         if foreign and not a.force:
             print("В репозитории есть свой pre-push — защита веток кухни не поставлена "
-                  "(перезаписать: --force)", file=sys.stderr)
+                  "(перезаписать: --force, старый будет сохранён как pre-push.bak)", file=sys.stderr)
         else:
+            if foreign:
+                push_hook.with_suffix(".bak").write_text(
+                    push_hook.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+                print("Старый pre-push сохранён как pre-push.bak")
             push_hook.write_text(
                 PUSH_HOOK.format(marker=PUSH_MARKER, branches=" ".join(PRIVATE_BRANCHES)),
                 encoding="utf-8")
             push_hook.chmod(push_hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            print(f"Установлен pre-push: наружу не уходят {', '.join(PRIVATE_BRANCHES)}")
+            note = "" if private_terms() else f" — но {TERMS} нет или пуст, содержимое пуша НЕ проверяется"
+            print(f"Установлен pre-push: наружу не уходят {', '.join(PRIVATE_BRANCHES)}{note}")
 
     if a.mode == "ratchet":
         errs = current_errors()
