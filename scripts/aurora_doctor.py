@@ -117,7 +117,8 @@ def artifact_dirs() -> dict:
     зеркала. Иначе выходит ловушка: человек объявил папку в панели, движок её создал,
     а doctor тут же назвал её нарушением схемы.
     """
-    sys.path.insert(0, str(ROOT / ".aurora" / "scripts"))
+    # Модули берутся из папки самого doctor (она первая в sys.path), а не из проекта: код
+    # из чужого клона на старте панели не исполняется (ADR-026).
     try:
         import make_kinds as MK
     except ImportError:
@@ -160,7 +161,6 @@ def mirror_owners() -> dict:
     того, чем команда пользуется. Поэтому легитимность папки в `Sources/` определяет
     реестр модулей, а не список в файле схемы.
     """
-    sys.path.insert(0, str(ROOT / ".aurora" / "scripts"))
     try:
         import sources_registry as R
     except ImportError:
@@ -497,6 +497,30 @@ def blocker_why(text: str) -> str:
     return ""
 
 
+def check_consent() -> list:
+    """Что ждёт согласия владельца машины (ADR-026): включённые боты проекта и файлы папки
+    движка проекта. Без согласия бот не запускается ни по расписанию, ни по кнопке, а
+    проектные скрипты заменяются скриптами кита — молча это терять нельзя."""
+    out = []
+    try:
+        import bots as _bots
+        waiting = [b["file"] for b in _bots.list_bots(str(ROOT), with_checks=False)
+                   if b["meta"].get("enabled") and b["consent"] != "granted"]
+        if waiting:
+            out.append(f"ботов ждёт согласия владельца машины: {len(waiting)} ("
+                       + ", ".join(waiting[:4]) + (" …" if len(waiting) > 4 else "")
+                       + ") — без него они не запускаются; одобрить: панель, «Боты» → «Одобрить»")
+        pend = _bots.pending_scripts(str(ROOT))
+        if pend:
+            out.append(f"файлов движка проекта без согласия или не совпадающих с китом: {len(pend)} ("
+                       + ", ".join(p["script"] for p in pend[:4]) + (" …" if len(pend) > 4 else "")
+                       + ") — вместо проектных работают скрипты кита; проще всего обновить движок "
+                       "проекта: «Версия» → «Обновить движок проекта»")
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        pass
+    return out
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -600,6 +624,7 @@ def main() -> int:
                      + " → уберите: kb_fix.py --retire --apply")
 
     warns += check_portable_names()
+    warns += check_consent()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

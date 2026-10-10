@@ -595,19 +595,31 @@ def approve(project, rel: str, expect: str = "") -> dict:
 
 
 def approve_all(project, expect: dict | None = None) -> list:
-    """Согласие на все боты проекта, которые его ещё ждут (и не изменились с показа: `expect` —
-    {файл: хеш}). → список файлов."""
+    """Согласие на боты проекта, которые его ещё ждут. → список файлов.
+
+    `expect` — {файл: хеш} из диалога панели: одобряются только перечисленные файлы и только
+    с тем же хешем (бот, появившийся или изменившийся после показа списка, ждёт нового
+    просмотра). Без `expect` (команда в терминале владельца) — все ждущие."""
     done = []
     for b in list_bots(project, with_checks=False):
-        if b["consent"] != "granted" and approve(
-                project, b["file"], (expect or {}).get(b["file"], "")).get("ok"):
+        if b["consent"] == "granted":
+            continue
+        if expect is None:
+            res = approve(project, b["file"])
+        else:
+            want = str((expect or {}).get(b["file"]) or "")
+            if not want:
+                continue                   # его не было в показанном списке
+            res = approve(project, b["file"], want)
+        if res.get("ok"):
             done.append(b["file"])
     return done
 
 
 # Скрипты движка, лежащие в самом проекте (`.aurora/scripts/`): копия кита исполняется как есть,
 # свой или изменённый — после согласия, иначе вместо него работает скрипт кита (ADR-026).
-SCRIPT_RX = re.compile(r"^[A-Za-z0-9_][\w.-]*\.py$")
+# Папка проверяется целиком: чужой соседний модуль подхватился бы `import`ом.
+SCRIPT_RX = re.compile(r"^[A-Za-z0-9_][\w.-]*(/[A-Za-z0-9_][\w.-]*)*\.py$")
 
 
 def _kit_script(name: str) -> str:
@@ -615,30 +627,35 @@ def _kit_script(name: str) -> str:
     return str(Path(kit) / "scripts" / name) if kit else ""
 
 
+def _reference(project) -> str:
+    """`scripts/` кита, с которым сверяется папка движка проекта (пусто — сравнивать не с чем)."""
+    return AC.engine_reference(project, _kit_script("x"))
+
+
 def pending_scripts(project) -> list:
-    """Скрипты проекта, ждущие согласия: [{script, file, state: new|changed}]."""
-    folder = Path(project) / AC.engine_dir(project) / "scripts"
-    if not folder.is_dir():
-        return []
-    out = []
-    for path in sorted(folder.glob("*.py")):
-        info = AC.script_consent(project, path.name, _kit_script(path.name))
-        if info["state"] in ("new", "changed"):
-            out.append({"script": path.name, "file": info["file"], "state": info["state"]})
-    return out
+    """Файлы папки движка проекта, из-за которых она не исполняется:
+    [{script, file, state: new|changed|extra}] (`extra` — не `.py`, согласию не подлежит)."""
+    return [{"script": r["script"], "file": r["file"], "state": r["state"]}
+            for r in AC.engine_scripts_report(project, _reference(project))
+            if r["state"] in ("new", "changed", "extra")]
 
 
 def script_view(project, name: str) -> dict:
     """Для карточки согласия на скрипт: состояние, изменения с одобренной версии, текст."""
-    if not SCRIPT_RX.match(str(name or "")):
-        return {"ok": False, "error": "скрипт — файл .py из папки scripts/ движка проекта"}
-    info = AC.script_consent(project, name, _kit_script(name))
-    if info["state"] == "none":
+    name = str(name or "")
+    if ".." in name.split("/") or not SCRIPT_RX.match(name):
+        return {"ok": False, "error": "скрипт — файл .py из папки scripts/ движка проекта; "
+                                      "байт-код, расширение и ссылку на папку уберите из неё или "
+                                      "обновите движок проекта"}
+    rows = {r["script"]: r for r in AC.engine_scripts_report(project, _reference(project))}
+    info = rows.get(name)
+    if not info:
         return {"ok": False, "error": "скрипта нет"}
-    text = Path(info["path"]).read_text(encoding="utf-8", errors="replace")
+    raw = Path(info["path"]).read_bytes()
+    text = raw.decode("utf-8", errors="replace")
     return {"ok": True, "script": name, "file": info["file"], "state": info["state"],
-            "sha256": AC.content_digest(text),
-            "diff": AC.consent_diff("script", project, info["file"], text) if info["state"] == "changed" else "",
+            "sha256": AC.content_digest(raw),
+            "diff": AC.consent_diff("script", project, info["file"], raw) if info["state"] == "changed" else "",
             "text": text}
 
 
@@ -649,7 +666,10 @@ def approve_script(project, name: str, expect: str = "") -> dict:
         return view
     if expect and expect != view["sha256"]:
         return {"ok": False, "error": "changed", "file": view["file"]}
-    AC.consent_grant("script", project, view["file"], view["text"])
+    raw = (Path(project) / view["file"]).read_bytes()
+    if AC.content_digest(raw) != view["sha256"]:
+        return {"ok": False, "error": "changed", "file": view["file"]}
+    AC.consent_grant("script", project, view["file"], raw)
     return {"ok": True, "file": view["file"], "sha256": view["sha256"]}
 
 
@@ -1074,17 +1094,23 @@ def _print_problem(p: dict) -> None:
 def _approve_cli(project: str, a) -> int:
     """`--approve`: показать, что одобряется (изменения или весь текст), и записать согласие.
     Явная команда человека в его терминале: команды панели, маршруты и ассистенты её не имеют."""
-    scripts = []
-    if a.all:
-        files = [b["file"] for b in list_bots(project, with_checks=False) if b["consent"] != "granted"]
-        scripts = [s["script"] for s in pending_scripts(project)]
-    elif a.script:
-        files, scripts = [], [a.script]
-    elif a.bot:
-        files = [a.bot]
-    else:
-        print("Укажите бота: --bot bots/<имя>.md, скрипт: --script <имя>.py — или --all.")
+    files, scripts = [], []
+    if not (a.all or a.scripts or a.script or a.bot):
+        print("Укажите бота: --bot bots/<имя>.md, скрипт: --script <имя>.py — или --all (все боты) "
+              "и --scripts (все скрипты проекта: отдельное решение, см. ниже).")
         return 2
+    if a.all:                              # только боты: скрипты движка — другое решение доверия
+        files += [b["file"] for b in list_bots(project, with_checks=False) if b["consent"] != "granted"]
+    if a.scripts:
+        scripts += [s["script"] for s in pending_scripts(project) if s["state"] in ("new", "changed")]
+        if scripts and not a.json:
+            print("Внимание: скрипты проекта будут исполняться вместо скриптов кита. Если движок "
+                  "проекта просто устарел, лучше обновить его («Версия» → «Обновить движок "
+                  "проекта»): копии кита согласия не требуют.")
+    if a.script:
+        scripts.append(a.script)
+    if a.bot:
+        files.append(a.bot)
     done = []
     for name in scripts:
         view = script_view(project, name)
@@ -1124,7 +1150,8 @@ def main(argv=None) -> int:
     act.add_argument("--check", action="store_true", help="проверить бота, не запуская")
     act.add_argument("--run", action="store_true", help="запустить бота")
     act.add_argument("--approve", action="store_true",
-                     help="согласие владельца машины на бота (--bot) или на все ждущие (--all)")
+                     help="согласие владельца машины на бота (--bot), на все ждущие боты (--all) "
+                          "или на скрипт проекта (--script, --scripts)")
     ap.add_argument("--bot", default="", help="файл бота: bots/<имя>.md")
     ap.add_argument("--trigger", default="manual", choices=("manual", "cron"),
                     help="кто запустил: человек или расписание")
@@ -1133,7 +1160,10 @@ def main(argv=None) -> int:
     ap.add_argument("--script", default="",
                     help="с --approve: скрипт движка проекта (.aurora/scripts/<имя>.py)")
     ap.add_argument("--all", action="store_true",
-                    help="с --approve: все боты и скрипты проекта, ждущие согласия")
+                    help="с --approve: все боты проекта, ждущие согласия (скрипты — только --scripts)")
+    ap.add_argument("--scripts", action="store_true",
+                    help="с --approve: все скрипты движка проекта, ждущие согласия (редко нужно: "
+                         "проще обновить движок проекта)")
     a = ap.parse_args(argv)
     project = str(Path(a.project).resolve())
     if a.approve:

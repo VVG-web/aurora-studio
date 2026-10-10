@@ -697,7 +697,7 @@ def lint_one(project: str, rel: str) -> dict:
     файл мимо панели. Молчать — значит копить находки к общему прогону, когда уже не
     помнишь, что менял.
     """
-    script = os.path.join(project, engine_dir(project), "scripts", "kb_lint.py")
+    script = script_path(project, "kb_lint.py")      # скрипт проекта — только с согласия владельца (ADR-026)
     if not os.path.isfile(script):
         return {}
     # Сохранение не зависит от линтера. Он читает базу целиком, и на большой базе или
@@ -874,7 +874,7 @@ def corrections_state(project: str) -> dict:
     решения, а не решает сам. Пока не ответили, исправление продолжает действовать —
     снимать проверенное по подозрению значит менять его на неподтверждённое.
     """
-    script = os.path.join(project, engine_dir(project), "scripts", "kb_corrections.py")
+    script = script_path(project, "kb_corrections.py")
     folder = os.path.join(project, "Raw", "corrections")
     if not os.path.isfile(script) or not os.path.isdir(folder):
         return {"count": 0, "ask": 0, "items": []}
@@ -902,7 +902,7 @@ def graph_state(project: str, rebuild: bool = False) -> dict:
     честнее, чем свежесть любой ценой: видно, насколько картинка отстала.
     """
     path = os.path.join(project, "AuroraKnowledgeDB", "meta", "graph.json")
-    script = os.path.join(project, engine_dir(project), "scripts", "kb_graph.py")
+    script = script_path(project, "kb_graph.py")
 
     def build() -> str:
         """Пересчитать. Пустая строка — получилось; иначе причина словами."""
@@ -1505,7 +1505,11 @@ def bots_action(action: str, project: str, payload: dict) -> dict:
         if payload.get("script"):
             return BOTS.approve_script(project, str(payload["script"]), str(payload.get("sha256") or ""))
         if payload.get("all"):
-            files = BOTS.approve_all(project, payload.get("expect") or {})
+            # Только список, который человек видел в диалоге: без него «всех» одобрять нечем.
+            expect = payload.get("expect")
+            if not isinstance(expect, dict) or not expect:
+                return {"ok": False, "error": "changed"}
+            files = BOTS.approve_all(project, expect)
         else:
             res = BOTS.approve(project, _bot_rel(project, rel), str(payload.get("sha256") or ""))
             if not res.get("ok"):

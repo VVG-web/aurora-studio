@@ -177,9 +177,10 @@ def test_cron_does_not_queue_a_bot_that_waits_for_approval(tmp: Path):
         sched._next = lambda: None
         sched.tick(datetime(2026, 10, 6, 9, 0, 20))
         assert not fired, "планировщик поставил в очередь бота без согласия"
-        got = [i["bot"] for i in CRON.expand(
+        got = [(i["bot"], i["status"], i["note"]) for i in CRON.expand(
             {"order": "projects", "steps": [{"kind": "bot", "project": str(p), "bot": "*"}]}, projects)]
-        assert got == [], f"«все боты» раскрылись в бота без согласия: {got}"
+        assert got == [(rel, "skipped", "not_approved")], \
+            f"«все боты»: бот без согласия не пропущен с пометкой (молчаливый пропуск): {got}"
         assert ck.cron_action("start", {"id": task["id"]}, projects) == {"ok": False, "error": "not_approved"}
         # согласие через панель; прошедшую минуту расписания не догоняем
         res = ck.bots_action("approve", str(p), {"file": rel})
@@ -236,6 +237,11 @@ def test_a_project_engine_script_runs_only_as_a_kit_copy_or_after_approval(tmp: 
                       ("agent_runner.py", "agent_core.py", "aurora_mcp.py", "bot_context.py"))
         assert src.count("trusted_engine_script(") >= 5, "путь запуска берёт скрипт проекта мимо согласия"
         assert '".aurora", "scripts", script' not in src
+        # панель: ни одного места, которое собирает путь к скрипту проекта в обход script_path
+        import re as _re
+        for f in sorted(COCKPIT.glob("*.py")):
+            bad = _re.findall(r"engine_dir\([^)]*\),\s*[\"']scripts[\"']", f.read_text(encoding="utf-8"))
+            assert not bad, f"{f.name}: скрипт проекта берётся мимо script_path: {bad}"
     finally:
         restore()
 
@@ -293,3 +299,281 @@ def test_the_consent_texts_exist_in_both_languages(_t):
     assert '"/api/bots/approve"' in view and '"/api/bots/consent"' in view
     src = (COCKPIT / "aurora_cockpit.py").read_text(encoding="utf-8")
     assert '"/api/bots/approve"' in src and '"/api/bots/consent"' in src
+
+
+# ----------------------------------------------------------------- доработка: папка движка целиком
+
+def _evil(path: Path, marker_env: str = "AURORA_PWN_MARKER") -> None:
+    """Подложенный модуль: при импорте или запуске оставляет след в файле из переменной среды."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"import os\nopen(os.environ[{marker_env!r}], 'a').write({path.name!r})\n", encoding="utf-8")
+
+
+class _Marker:
+    """След подложенного кода: файл, в который он пишет; `hit()` — исполнился ли он."""
+    def __init__(self, tmp: Path):
+        self.path = tmp / "pwned.txt"
+        self.saved = os.environ.get("AURORA_PWN_MARKER")
+        os.environ["AURORA_PWN_MARKER"] = str(self.path)
+
+    def hit(self) -> bool:
+        return self.path.exists()
+
+    def reset(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        if self.saved is None:
+            os.environ.pop("AURORA_PWN_MARKER", None)
+        else:
+            os.environ["AURORA_PWN_MARKER"] = self.saved
+
+
+def _run_script(path, cwd: Path) -> None:
+    import subprocess
+    subprocess.run([sys.executable, str(path), "--help"], cwd=cwd, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", timeout=120)
+
+
+@test
+def test_a_foreign_neighbour_module_blocks_the_whole_project_engine_folder(tmp: Path):
+    """Копия кита рядом с чужим `aurora_common.py` не исполняется: Python кладёт папку скрипта
+    первой в `sys.path`, и сосед подхватился бы `import`ом. Работает скрипт кита; согласие на
+    соседа возвращает копию; байт-код и ссылка на папку согласию не подлежат."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    B = importlib.import_module("bots")
+    ck = importlib.import_module("aurora_cockpit")
+    restore = _own_consent(tmp)
+    mk = _Marker(tmp)
+    try:
+        p = _project(tmp)
+        eng = p / ".aurora" / "scripts"
+        eng.mkdir(parents=True)
+        shutil.copy(SCRIPTS / "aurora_stats.py", eng / "aurora_stats.py")
+        _evil(eng / "aurora_common.py")
+        got = Path(ck.script_path(str(p), "aurora_stats.py"))
+        assert got == SCRIPTS / "aurora_stats.py", f"копия кита рядом с чужим модулем исполняется: {got}"
+        assert AC.script_consent(p, "aurora_stats.py", str(SCRIPTS / "aurora_stats.py"))["state"] == "blocked"
+        assert [s["script"] for s in B.pending_scripts(p)] == ["aurora_common.py"]
+        _run_script(got, p)
+        assert not mk.hit(), "чужой aurora_common.py исполнился рядом с китовым скриптом"
+        # контроль: сам подложенный модуль действительно бьёт, если запустить копию из проекта
+        _run_script(eng / "aurora_stats.py", p)
+        assert mk.hit(), "проверка не ловит подмену: подложенный модуль не сработал даже напрямую"
+        # согласие на соседа — копия снова из проекта; правка соседа снимает согласие со всей папки
+        view = B.script_view(p, "aurora_common.py")
+        assert B.approve_script(p, "aurora_common.py", expect=view["sha256"])["ok"]
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == eng / "aurora_stats.py"
+        (eng / "aurora_common.py").write_text("x = 1\n", encoding="utf-8")
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == SCRIPTS / "aurora_stats.py"
+        shutil.copy(SCRIPTS / "aurora_common.py", eng / "aurora_common.py")
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == eng / "aurora_stats.py", \
+            "папка из копий кита не исполняется"
+        # байт-код вне __pycache__ подхватывается импортом — папка заперта, согласием не снять
+        (eng / "extra_mod.pyc").write_bytes(b"\0\0")
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == SCRIPTS / "aurora_stats.py"
+        assert [s["state"] for s in B.pending_scripts(p)] == ["extra"]
+        assert not B.script_view(p, "extra_mod.pyc")["ok"]
+        (eng / "extra_mod.pyc").unlink()
+        (eng / "__pycache__").mkdir()
+        (eng / "__pycache__" / "x.cpython-39.pyc").write_bytes(b"\0")
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == eng / "aurora_stats.py", \
+            "__pycache__ не должен запирать папку"
+        # подпапка agents/ — тоже часть папки движка
+        _evil(eng / "agents" / "pydantic_ai_adapter.py")
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == SCRIPTS / "aurora_stats.py"
+        assert [s["script"] for s in B.pending_scripts(p)] == ["agents/pydantic_ai_adapter.py"]
+        assert B.script_view(p, "agents/pydantic_ai_adapter.py")["ok"]
+        assert not B.script_view(p, "agents/../../x.py")["ok"]
+    finally:
+        mk.close()
+        restore()
+
+
+@test
+def test_a_runner_inside_the_project_does_not_trust_its_own_folder(tmp: Path):
+    """Раннер лежит в проекте: его «запасной» скрипт — тот же файл проекта, и сравнение с самим
+    собой всегда сходилось. Теперь кит берётся по указателю; чужой `kb_fix.py` не согласуется,
+    а вместо него возвращается скрипт кита. Кита нет — «совпадение» не засчитывается."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        eng = p / ".aurora" / "scripts"
+        eng.mkdir(parents=True)
+        (eng / "kb_fix.py").write_text("print('foreign')\n", encoding="utf-8")
+        own = str(eng / "kb_fix.py")                       # fallback раннера из проекта = сам файл
+        info = AC.script_consent(p, "kb_fix.py", own)
+        assert info["state"] == "new", f"чужой файл сошёлся сам с собой: {info['state']}"
+        assert AC.trusted_engine_script(p, "kb_fix.py", own) == str(SCRIPTS / "kb_fix.py")
+        shutil.copy(SCRIPTS / "kb_fix.py", eng / "kb_fix.py")
+        assert AC.script_consent(p, "kb_fix.py", own)["state"] == "same"
+        # кита не найти: сравнивать не с чем, остаётся только согласие
+        (eng / "kb_fix.py").write_text("print('foreign')\n", encoding="utf-8")
+        saved = AC.kit_root
+        AC.kit_root = lambda: None
+        try:
+            assert AC.script_consent(p, "kb_fix.py", own)["state"] == "new"
+            shutil.copy(SCRIPTS / "kb_fix.py", eng / "kb_fix.py")
+            assert AC.script_consent(p, "kb_fix.py", own)["state"] == "new", "без кита копия не может быть «той же»"
+        finally:
+            AC.kit_root = saved
+    finally:
+        restore()
+
+
+@test
+def test_the_doctor_does_not_import_modules_from_the_project(tmp: Path):
+    """Doctor запускается панелью на старте для каждого найденного проекта: `make_kinds.py` и
+    `sources_registry.py` из `<проект>/.aurora/scripts` он не импортирует."""
+    _path()
+    import subprocess
+    restore = _own_consent(tmp)
+    mk = _Marker(tmp)
+    try:
+        p = _project(tmp)
+        (p / ".aurora").mkdir()
+        (p / ".aurora" / "structure_dirs.txt").write_text("Raw\n", encoding="utf-8")
+        for name in ("make_kinds.py", "sources_registry.py"):
+            _evil(p / ".aurora" / "scripts" / name)
+        subprocess.run([sys.executable, str(SCRIPTS / "aurora_doctor.py")], cwd=p, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=120)
+        assert not mk.hit(), "doctor исполнил модуль из чужого проекта"
+        src = (SCRIPTS / "aurora_doctor.py").read_text(encoding="utf-8")
+        assert 'ROOT / ".aurora" / "scripts"' not in src
+    finally:
+        mk.close()
+        restore()
+
+
+@test
+def test_the_panel_health_scripts_of_a_project_need_the_owners_approval(tmp: Path):
+    """`kb_lint.py`, `kb_corrections.py` и `kb_graph.py` из проекта панель запускала напрямую
+    (исправления человека греются на старте панели). Теперь — через `script_path`: подложенный
+    файл не исполняется, работает скрипт кита."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    restore = _own_consent(tmp)
+    mk = _Marker(tmp)
+    try:
+        p = _project(tmp)
+        for name in ("kb_lint.py", "kb_corrections.py", "kb_graph.py"):
+            _evil(p / ".aurora" / "scripts" / name)
+        (p / "Raw" / "corrections").mkdir(parents=True)
+        (p / "AuroraKnowledgeDB").mkdir()
+        ck.corrections_state(str(p))
+        assert not mk.hit(), "kb_corrections.py из проекта исполнился без согласия"
+        ck.lint_one(str(p), "AuroraKnowledgeDB/x.md")
+        assert not mk.hit(), "kb_lint.py из проекта исполнился без согласия"
+        ck.graph_state(str(p), rebuild=True)
+        assert not mk.hit(), "kb_graph.py из проекта исполнился без согласия"
+    finally:
+        mk.close()
+        restore()
+
+
+@test
+def test_approve_all_takes_only_the_list_the_owner_saw(tmp: Path):
+    """«Одобрить все» привязано к показанному списку: бот, появившийся или изменившийся после
+    показа, не одобряется; запрос без списка отклоняется; команда терминала (`--all`) одобряет
+    только ботов, а скрипты проекта — отдельным флагом."""
+    _path()
+    B = importlib.import_module("bots")
+    ck = importlib.import_module("aurora_cockpit")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        a = _git_bot(B, p, "a")
+        shown = {b["file"]: b["sha256"] for b in B.list_bots(p, with_checks=False)}
+        evil = _git_bot(B, p, "evil")                       # появился после показа списка
+        res = ck.bots_action("approve", str(p), {"all": True, "expect": shown})
+        assert res["ok"] and res["files"] == [a], res
+        states = {b["file"]: b["consent"] for b in B.list_bots(p, with_checks=False)}
+        assert states[a] == "granted" and states[evil] == "new", states
+        # файл изменился после показа — хеш не сходится
+        (p / a).write_text((p / a).read_text(encoding="utf-8") + "\nещё\n", encoding="utf-8")
+        assert B.approve_all(p, {a: shown[a]}) == []
+        # без списка «всех» одобрять нечем
+        assert ck.bots_action("approve", str(p), {"all": True})["ok"] is False
+        assert ck.bots_action("approve", str(p), {"all": True, "expect": {}})["ok"] is False
+        assert B.list_bots(p, with_checks=False)[1]["consent"] != "granted"
+        # терминал: --all — только боты
+        import subprocess
+        eng = p / ".aurora" / "scripts"
+        eng.mkdir(parents=True)
+        (eng / "own_job.py").write_text("print(1)\n", encoding="utf-8")
+        env = {**os.environ}
+        cp = subprocess.run([sys.executable, str(SCRIPTS / "bots.py"), "--approve", "--all", "--json",
+                             "--project", str(p)], capture_output=True, text=True, encoding="utf-8", env=env)
+        done = json.loads(cp.stdout.strip().splitlines()[-1])["approved"]
+        assert sorted(done) == sorted([a, evil]), done
+        assert [s["script"] for s in B.pending_scripts(p)] == ["own_job.py"], "--all одобрил и скрипты"
+        cp = subprocess.run([sys.executable, str(SCRIPTS / "bots.py"), "--approve", "--scripts", "--json",
+                             "--project", str(p)], capture_output=True, text=True, encoding="utf-8", env=env)
+        assert ".aurora/scripts/own_job.py" in json.loads(cp.stdout.strip().splitlines()[-1])["approved"], cp.stdout
+        assert not B.pending_scripts(p)
+    finally:
+        restore()
+
+
+@test
+def test_consent_store_survives_parallel_grants_and_exact_bytes(tmp: Path):
+    """Параллельные согласия не теряются (замок и своё имя временного файла); хеш скрипта
+    считается по байтам: разные неверные байты UTF-8 — разные хеши; CRLF и LF — один."""
+    _path()
+    import threading
+    AC = importlib.import_module("aurora_common")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        errs = []
+
+        def grant(i):
+            try:
+                AC.consent_grant("bot", p, f"bots/b{i}.md", f"текст {i}")
+            except Exception as e:  # noqa: BLE001
+                errs.append(e)
+        ts = [threading.Thread(target=grant, args=(i,)) for i in range(24)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert not errs, errs
+        assert len(AC.consent_load()) == 24, "параллельные согласия затёрли друг друга"
+        assert not list((tmp / "owner-home").glob("*.tmp")), "остался временный файл"
+        assert AC.content_digest(b"a\xff") != AC.content_digest(b"a\xfe")
+        assert AC.content_digest(b"a\r\nb") == AC.content_digest("a\nb")
+    finally:
+        restore()
+
+
+@test
+def test_the_agent_cannot_approve_even_with_an_abbreviated_flag(_t):
+    """argparse принимает сокращения: `--appr` для агента — то же согласие, что `--approve`."""
+    _path()
+    AG = importlib.import_module("agent_core")
+    for flag in ("--approve", "--appr", "--ap", "--approve=1"):
+        ok, why = AG.write_allowed("bots.py", [flag, "--all"])
+        assert not ok and "владелец" in why, (flag, why)
+    assert AG.write_allowed("bots.py", ["--list"])[0]
+
+
+@test
+def test_the_doctor_reports_bots_and_engine_files_waiting_for_consent(tmp: Path):
+    """Бот и файл движка без согласия не молчат: doctor называет их, а не оставляет
+    человеку гадать, почему ночью ничего не запустилось."""
+    _path()
+    import subprocess
+    B = importlib.import_module("bots")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        _git_bot(B, p)
+        (p / ".aurora" / "scripts").mkdir(parents=True)
+        (p / ".aurora" / "scripts" / "own_job.py").write_text("print(1)\n", encoding="utf-8")
+        cp = subprocess.run([sys.executable, str(SCRIPTS / "aurora_doctor.py")], cwd=p, capture_output=True,
+                            text=True, encoding="utf-8", errors="replace", timeout=120,
+                            env={**os.environ, "AURORA_CONSENT_HOME": str(tmp / "owner-home")})
+        assert "ботов ждёт согласия" in cp.stdout and "файлов движка проекта" in cp.stdout, cp.stdout
+    finally:
+        restore()

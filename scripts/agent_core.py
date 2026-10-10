@@ -410,7 +410,9 @@ def write_allowed(script: str, args: list) -> tuple:
     name = os.path.basename(script)
     if name in FORBIDDEN or name.startswith("git"):
         return False, f"{name} запрещён агенту всегда: это решение человека"
-    if name == "bots.py" and "--approve" in args:
+    # argparse принимает сокращения (`--appr`, `--ap`): ловим любую приставку, а не только полное имя
+    if name == "bots.py" and any(str(a).startswith("--ap") and "--approve".startswith(str(a).split("=")[0])
+                                 for a in args):
         return False, "согласие на бота даёт владелец машины (ADR-026), а не агент"
     if "--apply" not in args and not (name == "build_plan.py"
                                       and any(a in ("--done", "--card", "--append",

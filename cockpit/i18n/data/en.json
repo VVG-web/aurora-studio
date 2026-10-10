@@ -449,7 +449,9 @@
     "macOS: `brew install python@{}` или установщик с https://www.python.org/downloads/ (после него откройте «Install Certificates.command»); без прав администратора — `uv python install {}`, если uv у вас уже есть. Системный Python (из Command Line Tools) не обновляется и не подходит — его трогать не нужно.": "macOS: `brew install python@{}` or the installer from https://www.python.org/downloads/ (then open \"Install Certificates.command\"); without administrator rights — `uv python install {}` if you already have uv. The system Python (from Command Line Tools) is not updated and is not suitable — leave it alone.",
     "Windows: `winget install -e --id Python.Python.{}` или установщик с https://www.python.org/downloads/. После установки запустите файл снова.": "Windows: `winget install -e --id Python.Python.{}` or the installer from https://www.python.org/downloads/. After installing, run the file again.",
     "Linux: поставьте Python {}+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в основном репозитории — нужен PPA deadsnakes) или `uv python install {}`, если uv у вас уже есть.": "Linux: install Python {}+ from the distribution packages (on Ubuntu 22.04 it is not in the main repository — use the deadsnakes PPA) or `uv python install {}` if you already have uv.",
-    "скрипт — файл .py из папки scripts/ движка проекта": "a script is a .py file from the scripts/ folder of the project's engine",
+    "скрипт — файл .py из папки scripts/ движка проекта; байт-код, расширение и ссылку на папку уберите из неё или обновите движок проекта": "a script is a .py file from the scripts/ folder of the project's engine; remove byte code, extensions and folder links from it or update the project engine",
+    "ботов ждёт согласия владельца машины: {} ({}{}) — без него они не запускаются; одобрить: панель, «Боты» → «Одобрить»": "bots awaiting the machine owner's approval: {} ({}{}) — they do not run without it; approve: panel, «Bots» → «Approve»",
+    "файлов движка проекта без согласия или не совпадающих с китом: {} ({}{}) — вместо проектных работают скрипты кита; проще всего обновить движок проекта: «Версия» → «Обновить движок проекта»": "engine files of the project without approval or differing from the kit: {} ({}{}) — the kit scripts run instead of the project ones; simplest is to update the project engine: «Version» → «Update the project engine»",
     "скрипта нет": "no such script"
   },
   "connectors": {
@@ -813,9 +815,10 @@
     "ответить ровно этой моделью провайдера, без запасных (для --task ask)": "answer with exactly this provider model, no spares (for --task ask)",
     "ответить ролью из раздела «Модели» (для --task ask; по умолчанию worker)": "answer with a role from the «Models» section (for --task ask; worker by default)",
     "оценить готовые ответы на чек-лист: JSON на входе, итог JSON-ом": "score ready checklist answers: JSON in, the outcome as JSON",
-    "согласие владельца машины на бота (--bot) или на все ждущие (--all)": "the machine owner's approval of a bot (--bot) or of all waiting ones (--all)",
+    "согласие владельца машины на бота (--bot), на все ждущие боты (--all) или на скрипт проекта (--script, --scripts)": "the machine owner's approval of a bot (--bot), of all waiting bots (--all) or of a project script (--script, --scripts)",
     "с --approve: скрипт движка проекта (.aurora/scripts/<имя>.py)": "with --approve: an engine script of the project (.aurora/scripts/<name>.py)",
-    "с --approve: все боты и скрипты проекта, ждущие согласия": "with --approve: all bots and scripts of the project that are awaiting approval"
+    "с --approve: все боты проекта, ждущие согласия (скрипты — только --scripts)": "with --approve: all bots of the project that are awaiting approval (scripts — only with --scripts)",
+    "с --approve: все скрипты движка проекта, ждущие согласия (редко нужно: проще обновить движок проекта)": "with --approve: all engine scripts of the project that are awaiting approval (rarely needed: simpler to update the project engine)"
   },
   "flag_args": {
     "КОД НАЗВАНИЕ": "CODE TITLE",

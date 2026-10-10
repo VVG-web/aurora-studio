@@ -76,6 +76,7 @@
   "cron.trigger.manual": "manual",
   "cron.trigger.resume": "resumed",
   "cron.note.no_project": "the project is not among those the panel found",
+  "cron.note.not_approved": "the bot awaits the machine owner's approval: approve it in the Bots tab",
   "cron.note.busy": "the project was busy with other work for two hours",
   "cron.note.stopped": "the chain was stopped",
   "cron.note.chain_stopped": "the chain stopped: the previous step failed",

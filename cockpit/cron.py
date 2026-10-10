@@ -355,17 +355,21 @@ def expand(task: dict, projects: list) -> list:
             it.update(cmd=st["cmd"], args=list(st.get("args") or []))
         if path not in names:
             it.update(status="skipped", note="no_project")
+        elif st.get("_unapproved"):
+            it.update(status="skipped", note="not_approved")
         return it
 
     every = [p["path"] for p in projects]
 
     def bots_of(path: str) -> list:
-        """Боты проекта для шага «все боты»: файлы `bots/*.md`, включённые."""
+        """Боты проекта для шага «все боты»: файлы `bots/*.md`, включённые. → [(файл, согласован)].
+        Бот без согласия владельца не молчит: он идёт в цепочку пропущенным, и Консоль с историей
+        показывают, что его ждёт одобрения (ADR-026)."""
         if BOTS is None:
             return []
         try:
-            return [b["file"] for b in BOTS.list_bots(path, with_checks=False)
-                    if b["meta"].get("enabled") and b["consent"] == "granted"]
+            return [(b["file"], b["consent"] == "granted")
+                    for b in BOTS.list_bots(path, with_checks=False) if b["meta"].get("enabled")]
         except Exception:  # noqa: BLE001 — битый бот одного проекта не гасит цепочку
             return []
 
@@ -373,7 +377,7 @@ def expand(task: dict, projects: list) -> list:
         out = []
         for st in steps:
             if st["kind"] == "bot" and st.get("bot") == "*":
-                out += [dict(st, bot=f) for f in bots_of(path)]
+                out += [dict(st, bot=f, _unapproved=not ok) for f, ok in bots_of(path)]
             else:
                 out.append(st)
         return out

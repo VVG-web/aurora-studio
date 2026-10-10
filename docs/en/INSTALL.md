@@ -438,14 +438,19 @@ in `~/.aurora/consent.json` on your machine (not in the repository; approval and
 `consent-log.jsonl` next to it): change one byte and the bot waits again. You approve with the
 "Approve" button in the bot's card (it shows the changes since your last version, or the whole text of
 a new bot) or with `python3 scripts/bots.py --approve --bot bots/<name>.md` (`--all` — every waiting
-bot and script of the project). A bot you created or saved in the panel stays approved if its previous
+bot; project scripts are a separate decision, `--scripts`). The batch button in "Bots" approves only the
+list the dialog showed: a bot that appeared afterwards waits for its own approval. A bot you created or saved in the panel stays approved if its previous
 text was approved; a bot that came with `git pull` is not approved by editing it in the panel. The
 night chain, the assistant and routes never grant approval.
 
-**Engine scripts that live in the project** (`.aurora/scripts/`) follow the same rule: a copy of the kit
-(same hash) runs as is, while a custom or changed script waits for approval — until then the kit's script
-runs instead, and "Bots" shows a "Project scripts awaiting approval" card with the same preview and
-button. The project's `Scripts/` folder is not run by the engine. MCP server definitions in a project are
+**Engine scripts that live in the project** (`.aurora/scripts/`, with `agents/`) follow the same rule,
+and the folder is checked as a whole because Python imports neighbouring modules. If every file in it is
+a copy of the kit (same hash) or approved, the project scripts run as they are; as soon as one foreign or
+changed file appears (or byte code or a folder link, which cannot be approved), the kit's scripts run
+instead, and "Bots" shows a "Project scripts awaiting approval" card with the same preview and button.
+Usually it is simpler to update the project engine: kit copies need no approval. Every launch path goes
+through this check, including the linter, corrections and graph at panel start; `doctor` warns about bots
+and engine files awaiting approval. The project's `Scripts/` folder is not run by the engine. MCP server definitions in a project are
 not executable content: servers are configured once, at the kit level.
 
 At run time (`bot:run` — by a button or on schedule) the bot gets the prompt, the skills' method, the

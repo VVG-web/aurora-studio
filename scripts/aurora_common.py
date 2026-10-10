@@ -15,7 +15,9 @@ import hashlib
 import os
 import re
 import subprocess
+import threading
 import unicodedata
+import uuid
 import sys
 for _s in (sys.stdin, sys.stdout, sys.stderr):
     # Windows: консоль и труба в cp1251/cp866 падают на эмодзи и «—» (UnicodeEncodeError)
@@ -1241,11 +1243,12 @@ def consent_file() -> str:
 
 
 def content_digest(text) -> str:
-    """SHA-256 текста. Концы строк приводятся к `\\n`: `git` на Windows меняет их при
-    выгрузке, и это не правка содержимого."""
-    if isinstance(text, bytes):
-        text = text.decode("utf-8", errors="replace")
-    return hashlib.sha256(str(text).replace("\r\n", "\n").encode("utf-8")).hexdigest()
+    """SHA-256 содержимого. Концы строк приводятся к `\\n`: `git` на Windows меняет их при
+    выгрузке, и это не правка содержимого. Байты (скрипты) хешируются как есть, без
+    декодирования: иначе разные неверные байты UTF-8 давали бы один хеш."""
+    if isinstance(text, str):
+        text = text.encode("utf-8")
+    return hashlib.sha256(bytes(text).replace(b"\r\n", b"\n")).hexdigest()
 
 
 def consent_key(kind: str, project, rel: str) -> str:
@@ -1264,11 +1267,15 @@ def consent_load() -> dict:
     return items if isinstance(items, dict) else {}
 
 
+_CONSENT_LOCK = threading.RLock()        # чтение-изменение-запись реестра: один писатель в процессе
+
+
 def consent_store(items: dict) -> None:
     import json
     path = consent_file()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
+    # имя временного файла уникально и у потока: два щелчка подряд не пишут в один файл
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"version": 1, "items": items}, f, ensure_ascii=False, indent=1)
     os.replace(tmp, path)
@@ -1305,35 +1312,45 @@ def consent_diff(kind: str, project, rel: str, text) -> str:
     old = rec.get("text") if isinstance(rec, dict) else None
     if not isinstance(old, str):
         return ""
-    new = str(text).replace("\r\n", "\n")
+    new = (text.decode("utf-8", errors="replace") if isinstance(text, bytes) else str(text)
+           ).replace("\r\n", "\n")
     return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True),
                                         "approved", "current", n=2))
 
 
 def consent_grant(kind: str, project, rel: str, text, by: str = "owner") -> dict:
-    """Записать согласие владельца на этот текст. Зовут только явные действия человека:
-    кнопка панели и команда `--approve`; ассистент, цепочка Cron и бот сюда не ходят."""
+    """Записать согласие владельца на этот текст (или байты скрипта). Зовут только явные
+    действия человека: кнопка панели и команда `--approve`; ассистент, цепочка Cron и бот сюда не ходят."""
     digest = content_digest(text)
-    body = str(text).replace("\r\n", "\n")
-    items = consent_load()
-    items[consent_key(kind, project, rel)] = {
-        "kind": kind, "project": os.path.realpath(os.fspath(project)),
-        "file": str(rel).replace("\\", "/"), "sha256": digest, "at": utc_stamp(), "by": by,
-        "text": body if len(body) <= CONSENT_SNAPSHOT_MAX else None}
-    consent_store(items)
+    body = (text.decode("utf-8", errors="replace") if isinstance(text, bytes) else str(text)
+            ).replace("\r\n", "\n")
+    with _CONSENT_LOCK:
+        items = consent_load()
+        items[consent_key(kind, project, rel)] = {
+            "kind": kind, "project": os.path.realpath(os.fspath(project)),
+            "file": str(rel).replace("\\", "/"), "sha256": digest, "at": utc_stamp(), "by": by,
+            "text": body if len(body) <= CONSENT_SNAPSHOT_MAX else None}
+        consent_store(items)
     consent_log("grant", kind, project, rel, digest, by=by)
     return {"ok": True, "sha256": digest}
 
 
 def consent_revoke(kind: str, project, rel: str) -> None:
-    items = consent_load()
-    if items.pop(consent_key(kind, project, rel), None) is not None:
+    with _CONSENT_LOCK:
+        items = consent_load()
+        if items.pop(consent_key(kind, project, rel), None) is None:
+            return
         consent_store(items)
-        consent_log("revoke", kind, project, rel)
+    consent_log("revoke", kind, project, rel)
 
 
 _SCRIPT_REFUSED: set = set()
 _SCRIPT_DIGESTS: dict = {}                # (путь, mtime, размер) → хеш: скрипты не читаются на каждый вызов
+# Что Python подхватит `import`ом из папки скрипта (она первая в sys.path). `__pycache__`
+# не в счёт: байт-код оттуда берётся только при живом исходнике рядом.
+_ENGINE_CODE_SUFFIXES = (".py", ".pyc", ".pyd", ".so")
+# Состояния, при которых папка движка проекта не исполняется целиком.
+_ENGINE_BLOCKING = ("new", "changed", "extra")
 
 
 def _file_digest(path: str) -> str:
@@ -1348,36 +1365,125 @@ def _file_digest(path: str) -> str:
         return ""
 
 
+def engine_scripts_dir(project) -> str:
+    return os.path.join(os.fspath(project), *engine_dir(project).split("/"), "scripts")
+
+
+def _engine_code_files(folder: str) -> dict:
+    """{путь от папки scripts/ (через «/»): "file"|"link"} — всё, что можно импортировать из
+    папки движка проекта: исходники, байт-код вне `__pycache__`, расширения и подпапки-ссылки."""
+    out: dict = {}
+    for root, dirs, files in os.walk(folder):
+        rel_root = os.path.relpath(root, folder).replace(os.sep, "/")
+        rel_root = "" if rel_root == "." else rel_root + "/"
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for d in list(dirs):
+            if os.path.islink(os.path.join(root, d)):
+                out[rel_root + d] = "link"         # ссылка на папку подключается как пакет
+                dirs.remove(d)
+        for f in files:
+            if f.lower().endswith(_ENGINE_CODE_SUFFIXES):
+                out[rel_root + f] = "file"
+    return out
+
+
+def engine_scripts_report(project, kit_scripts: str) -> list:
+    """Состояние КАЖДОГО исполняемого файла папки движка проекта (`<проект>/.aurora/scripts`).
+
+    → [{script, file, path, state}], state: same (копия файла кита) | granted (согласие на этот
+    хеш) | new | changed | extra (не `.py`: байт-код, расширение, ссылка на папку — согласию
+    не подлежит, такое убирают). `kit_scripts` — `scripts/` кита для сравнения, пусто — сравнивать
+    не с чем, тогда решает только согласие.
+
+    Папка проверяется целиком, а не по одному файлу: Python кладёт папку запускаемого скрипта
+    первой в `sys.path`, и соседний чужой модуль (`aurora_common.py` и любой другой)
+    подхватывается `import`ом, хотя сам скрипт — копия кита (ADR-026).
+    """
+    folder = engine_scripts_dir(project)
+    if not os.path.isdir(folder):
+        return []
+    recs = consent_load()
+    ed = engine_dir(project)
+    out = []
+    for rel, kind in sorted(_engine_code_files(folder).items()):
+        path = os.path.join(folder, *rel.split("/"))
+        crel = f"{ed}/scripts/{rel}"
+        if kind != "file" or not rel.endswith(".py"):
+            state = "extra"
+        else:
+            digest = _file_digest(path)
+            kit = os.path.join(kit_scripts, *rel.split("/")) if kit_scripts else ""
+            if digest and kit and os.path.isfile(kit) and digest == _file_digest(kit):
+                state = "same"
+            else:
+                rec = recs.get(consent_key("script", project, crel))
+                if not isinstance(rec, dict) or not rec.get("sha256"):
+                    state = "new"
+                else:
+                    state = "granted" if rec["sha256"] == digest else "changed"
+        out.append({"script": rel, "file": crel, "path": path, "state": state})
+    return out
+
+
+def engine_reference(project, fallback: str) -> str:
+    """`scripts/` кита, с которым сверяется папка движка проекта. `fallback` — скрипт кита,
+    который запустится вместо проектного; если он сам лежит в проекте (раннер запущен из
+    копии движка), кит берётся по `kit_path.txt`. Не нашёлся — пусто."""
+    mine = os.path.realpath(engine_scripts_dir(project))
+    if fallback:
+        fb = os.path.realpath(os.path.dirname(os.fspath(fallback)))
+        if fb != mine and os.path.isdir(fb):
+            return fb
+    kit = kit_root()
+    if kit:
+        ref = os.path.join(str(kit), "scripts")
+        if os.path.isdir(ref) and os.path.realpath(ref) != mine:
+            return ref
+    return ""
+
+
 def script_consent(project, script: str, fallback: str) -> dict:
     """Состояние скрипта движка, лежащего в самом проекте (`<проект>/.aurora/scripts/<имя>`).
 
     `fallback` — тот же скрипт в ките (то, что запустится, если проектному нельзя).
-    → {state: none|same|granted|new|changed, path, file}. Копия кита (хеш тот же) и согласованный
-    скрипт запускаются; свой или изменённый ждёт согласия владельца.
+    → {state: none|same|granted|new|changed|extra|blocked, path, file, blocked_by, reference}.
+    Проектный скрипт исполняется, только если вся папка движка проекта чиста: каждый её файл —
+    копия кита или согласован. Скрипт чист, но рядом лежит чужой файл — `blocked`.
     """
+    folder = engine_scripts_dir(project)
     rel = f"{engine_dir(project)}/scripts/{script}"
-    path = os.path.join(os.fspath(project), *rel.split("/"))
+    path = os.path.join(folder, *str(script).split("/"))
     if not os.path.isfile(path):
-        return {"state": "none", "path": path, "file": rel}
-    digest = _file_digest(path)
-    if digest and os.path.isfile(fallback) and digest == _file_digest(fallback):
-        return {"state": "same", "path": path, "file": rel}
-    with open(path, encoding="utf-8", errors="replace") as f:
-        state = consent_check("script", project, rel, f.read())["state"]
-    return {"state": state, "path": path, "file": rel}
+        return {"state": "none", "path": path, "file": rel, "blocked_by": [], "reference": ""}
+    ref = engine_reference(project, fallback)
+    report = engine_scripts_report(project, ref)
+    mine = next((r for r in report if r["script"] == script), None)
+    bad = [r["script"] for r in report if r["state"] in _ENGINE_BLOCKING]
+    state = mine["state"] if mine else "new"
+    if state in ("same", "granted") and bad:
+        state = "blocked"
+    return {"state": state, "path": path, "file": rel, "blocked_by": bad[:5], "reference": ref}
 
 
 def trusted_engine_script(project, script: str, fallback: str) -> str:
-    """Какой файл запускать: скрипт движка проекта — только если он копия кита или владелец
-    машины на него согласился; иначе — `fallback` (скрипт кита). Чужой код из клона не
-    исполняется молча (ADR-026)."""
+    """Какой файл запускать: скрипт движка проекта — только если вся папка движка проекта
+    копия кита или согласована владельцем машины; иначе — скрипт кита (`fallback`; если он сам
+    лежит в проекте — кит по `kit_path.txt`). Чужой код из клона не исполняется молча (ADR-026)."""
     info = script_consent(project, script, fallback)
     if info["state"] in ("same", "granted"):
         return info["path"]
-    seen = (os.path.realpath(os.fspath(project)), info["file"], info["state"])
+    seen = (os.path.realpath(os.fspath(project)), info["file"], info["state"],
+            tuple(info["blocked_by"]))
     if info["state"] != "none" and seen not in _SCRIPT_REFUSED:
         _SCRIPT_REFUSED.add(seen)          # в журнал — один раз за процесс, не на каждый вызов
-        consent_log("refuse", "script", project, info["file"], reason=info["state"])
+        consent_log("refuse", "script", project, info["file"], reason=info["state"],
+                    blocked_by=info["blocked_by"])
+    ref = info.get("reference") or ""
+    if ref and os.path.realpath(os.path.dirname(os.fspath(fallback))) == os.path.realpath(
+            engine_scripts_dir(project)):
+        alt = os.path.join(ref, *str(script).split("/"))
+        if os.path.isfile(alt):
+            return alt
     return fallback
 
 

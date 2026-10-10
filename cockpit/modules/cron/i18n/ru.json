@@ -76,6 +76,7 @@
   "cron.trigger.manual": "вручную",
   "cron.trigger.resume": "продолжение",
   "cron.note.no_project": "проекта нет среди найденных панелью",
+  "cron.note.not_approved": "бот ждёт согласия владельца машины: одобрите его во вкладке «Боты»",
   "cron.note.busy": "проект два часа был занят другой работой",
   "cron.note.stopped": "цепочку остановили",
   "cron.note.chain_stopped": "цепочка встала: предыдущий шаг не прошёл",
