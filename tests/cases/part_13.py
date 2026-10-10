@@ -3481,3 +3481,223 @@ def test_a_parallel_alias_step_finished_after_the_stop_is_still_reported(tmp: Pa
     assert len(done) == 4, done
     assert len(res["steps"]) == len(done), \
         f"сделано {len(done)} шагов, в отчёте {len(res['steps'])}: правка есть, следа нет"
+
+
+@test
+def test_kit_update_refuses_when_the_new_version_needs_a_newer_python(tmp: Path):
+    """Кнопка «обновить кит» не трогает файлы, если новой версии нужен Python новее нашего.
+
+    BL-DEC-01: жёсткая остановка на старом Python сохранена, и обновление без проверки порога
+    её же и подставляло: файлы заменялись, новый процесс панели умирал на защите версии, а
+    старая панель оставалась жить и говорила «обновлено». Порог (PYTHON_MIN_HARD) читаем у НОВОЙ
+    версии до записи: у клона — из `origin/<ветка>`, у архива — из самого архива (и заранее, по
+    raw-адресу, чтобы кнопка в панели не вела в тупик).
+    """
+    import io
+    import zipfile
+    too_new = "PYTHON_MIN_HARD = (99, 0)\n"       # заведомо выше любого sys.version_info
+
+    # --- архив: порог виден заранее (статус) и проверяется перед записью (скачанный архив)
+    kit = tmp / "aurora-studio"
+    for rel, body in {"VERSION": "1.0.0\n", "scripts/a.py": "old\n"}.items():
+        (kit / rel).parent.mkdir(parents=True, exist_ok=True)
+        (kit / rel).write_text(body, encoding="utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("aurora-studio-master/VERSION", "1.1.0\n")
+        z.writestr("aurora-studio-master/scripts/a.py", "new\n")
+        z.writestr("aurora-studio-master/scripts/aurora_common.py", too_new)
+    ck, restore = _cockpit_on(kit)
+    ahead = {"on": True}
+
+    def fake_get(url, limit, timeout=20):
+        if url.endswith("/VERSION"):
+            return b"1.1.0\n"
+        if url.endswith("/CHANGELOG.md"):
+            return b"## 1.1.0 - x\n\n## 1.0.0 - y\n"
+        if url.endswith("/scripts/aurora_common.py"):
+            if ahead["on"]:
+                return too_new.encode("utf-8")
+            raise OSError("нет сети")
+        return buf.getvalue()
+
+    ck._http_get = fake_get
+    try:
+        st = ck.kit_update_status(fresh=True)
+        assert st["newer"] and "Python 99.0+" in st.get("python_error", ""), st
+        r = ck.kit_update()
+        assert "Python 99.0+" in r.get("error", ""), r
+        assert (kit / "VERSION").read_text(encoding="utf-8") == "1.0.0\n"
+        assert (kit / "scripts/a.py").read_text(encoding="utf-8") == "old\n", "файл заменён вопреки отказу"
+        # порог по raw-адресу узнать не удалось — второй рубеж: сам архив, до первой записи
+        ahead["on"] = False
+        st = ck.kit_update_status(fresh=True)
+        assert not st.get("python_error"), st
+        r = ck.kit_update()
+        assert "Python 99.0+" in r.get("error", ""), r
+        assert (kit / "VERSION").read_text(encoding="utf-8") == "1.0.0\n"
+        assert (kit / "scripts/a.py").read_text(encoding="utf-8") == "old\n", "файл заменён вопреки отказу"
+    finally:
+        restore()
+
+    # --- клон: порог читается из origin/<ветка> до merge
+    def git(cwd, *a):
+        p = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                           cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        assert p.returncode == 0, (a, p.stderr)
+        return p.stdout.strip()
+
+    up = tmp / "upstream"
+    (up / "scripts").mkdir(parents=True)
+    git(up, "init", "-q", "-b", "master")
+    (up / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    (up / "CHANGELOG.md").write_text("## 1.0.0 - y\n", encoding="utf-8")
+    git(up, "add", "-A")
+    git(up, "commit", "-q", "-m", "1.0.0")
+    clone = tmp / "clone"
+    git(tmp, "clone", "-q", str(up), str(clone))
+    (up / "VERSION").write_text("1.1.0\n", encoding="utf-8")
+    (up / "CHANGELOG.md").write_text("## 1.1.0 - x\n\n## 1.0.0 - y\n", encoding="utf-8")
+    (up / "scripts" / "aurora_common.py").write_text(too_new, encoding="utf-8")
+    git(up, "add", "-A")
+    git(up, "commit", "-q", "-m", "1.1.0")
+    head = git(clone, "rev-parse", "HEAD")
+    ck, restore = _cockpit_on(clone)
+    try:
+        st = ck.kit_update_status(fresh=True)
+        assert st["mode"] == "git" and "Python 99.0+" in st.get("python_error", ""), st
+        r = ck.kit_update()
+        assert "Python 99.0+" in r.get("error", ""), r
+        assert git(clone, "rev-parse", "HEAD") == head, "клон сдвинут вопреки отказу"
+        assert (clone / "VERSION").read_text(encoding="utf-8") == "1.0.0\n"
+        # порог ниже нашего Python — обновление идёт как раньше
+        (up / "scripts" / "aurora_common.py").write_text("PYTHON_MIN_HARD = (3, 0)\n", encoding="utf-8")
+        git(up, "commit", "-q", "-am", "1.1.0 порог")
+        r = ck.kit_update()
+        assert r.get("ok") and r["to"] == "1.1.0", r
+    finally:
+        restore()
+
+
+@test
+def test_restart_self_does_not_promise_a_panel_that_cannot_start(tmp: Path):
+    """Перезапуск панели сначала пробует, стартует ли новая версия на этом интерпретаторе.
+
+    Не стартует (защита версии вышла с кодом 2) — ничего не запускаем, а хвост stderr отдаём
+    человеку: старая панель остаётся жить, а не заменяется мёртвой с обещанием «поднимется».
+    """
+    kit = tmp / "kit"
+    (kit / "scripts").mkdir(parents=True)
+    (kit / "aurora.py").write_text("print('панель')\n", encoding="utf-8")
+    common = kit / "scripts" / "aurora_common.py"
+    common.write_text("import sys\nsys.stderr.write('aurora: Python слишком старый\\n')\nraise SystemExit(2)\n",
+                      encoding="utf-8")
+    ck, restore = _cockpit_on(kit)
+    started = []
+    real_popen = subprocess.Popen
+
+    def fake_popen(*a, **k):
+        # subprocess.run (проба) тоже идёт через Popen: подменяем только запуск панели
+        if "--restart" in a[0]:
+            started.append(a)
+            return None
+        return real_popen(*a, **k)
+
+    subprocess.Popen = fake_popen
+    try:
+        r = ck.restart_self(8765)
+        assert "error" in r and "слишком старый" in r["error"] and "wait" not in r, r
+        assert not started, "новая панель запущена вопреки провалившейся пробе"
+        common.write_text("X = 1\n", encoding="utf-8")                  # проба проходит — запуск идёт
+        r = ck.restart_self(8765)
+        assert r.get("ok") and started, (r, started)
+    finally:
+        subprocess.Popen = real_popen
+        restore()
+
+
+@test
+def test_health_doctor_says_when_the_doctor_did_not_start(tmp: Path):
+    """Doctor не запустился (код не 0 и не 1, строк ERROR нет) — «Здоровье» показывает причину.
+
+    Раньше список блокеров оставался пустым, и сбой запуска (например, защита версии Python)
+    выглядел как «всё хорошо».
+    """
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    saved = ck.run_capture
+    try:
+        ck.run_capture = lambda *a, **k: (2, "aurora: Python 3.9.6 слишком старый для Авроры.\n")
+        d = ck._health_doctor(str(tmp), "ru")["doctor"]
+        assert d["errors"] and "слишком старый" in d["errors"][0] and d["launch_error"], d
+        assert len(d["blocker_why"]) == len(d["errors"]), d
+        ck.run_capture = lambda *a, **k: (1, "WARN: что-то\n")           # код 1 — «есть находки», не сбой
+        d = ck._health_doctor(str(tmp), "ru")["doctor"]
+        assert not d["errors"] and not d["launch_error"], d
+        ck.run_capture = lambda *a, **k: (0, "ERROR: блокер -> починить\n")
+        d = ck._health_doctor(str(tmp), "ru")["doctor"]
+        assert d["errors"] == ["блокер -> починить"] and not d["launch_error"], d
+    finally:
+        ck.run_capture = saved
+        restore()
+
+
+@test
+def test_every_script_entry_point_loads_the_python_guard_first(tmp: Path):
+    """Каждый скрипт движка, который запускают из консоли, подключает `aurora_common`.
+
+    BL-DEC-01: защита версии Python (остановка ниже порога с понятным текстом) живёт в
+    `aurora_common`. Скрипт, который её не подключает, на старом Python падает трейсбеком, и
+    человек не видит ни версии, ни подсказки установки. Точка входа — файл с
+    `if __name__ == "__main__"`; импорт должен стоять на верхнем уровне (допустим внутри
+    `try`, как у `dev_qa.py`: он нужен только в ките, и SystemExit защиты через `except
+    ImportError` не проходит).
+    """
+    import ast
+    missing = []
+    for path in sorted(SCRIPTS.glob("*.py")):
+        if path.name == "aurora_common.py":              # сама защита
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        def is_main(n):
+            t = getattr(n, "test", None)
+            return (isinstance(n, ast.If) and isinstance(t, ast.Compare)
+                    and isinstance(t.left, ast.Name) and t.left.id == "__name__")
+
+        def loads_guard(nodes):
+            for n in nodes:
+                if isinstance(n, ast.Import) and any(a.name == "aurora_common" for a in n.names):
+                    return True
+                if isinstance(n, ast.ImportFrom) and n.module == "aurora_common":
+                    return True
+                if isinstance(n, ast.Try) and loads_guard(n.body):
+                    return True
+            return False
+
+        if any(is_main(n) for n in tree.body) and not loads_guard(tree.body):
+            missing.append(path.name)
+    assert not missing, ("точка входа без `import aurora_common` — на старом Python вместо текста "
+                         f"будет traceback: {missing}")
+
+
+@test
+def test_engine_sources_parse_with_python_39_grammar(tmp: Path):
+    """Все исходники движка разбираются грамматикой Python 3.9: синтаксис не новее, чем держит защита.
+
+    BL-DEC-01: остановку на старом Python выполняет код, а не интерпретатор; чтобы дойти до него,
+    файл должен хотя бы разобраться. `match`, `except*` и прочий синтаксис новее 3.9 в движок не
+    попадает: на 3.9–3.10 вместо понятного отказа был бы SyntaxError. Исключений нет.
+    """
+    import ast
+    broken = []
+    for folder in ("scripts", "cockpit", "reports"):
+        for path in sorted((KIT / folder).rglob("*.py")):
+            if "vendor" in path.relative_to(KIT).parts:          # чужой код, не наш синтаксис
+                continue
+            try:
+                ast.parse(path.read_text(encoding="utf-8"), filename=str(path), feature_version=(3, 9))
+            except SyntaxError as e:
+                broken.append(f"{path.relative_to(KIT)}:{e.lineno}: {e.msg}")
+    assert not broken, broken

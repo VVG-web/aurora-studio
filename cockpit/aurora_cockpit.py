@@ -1642,6 +1642,29 @@ def _notes_since(changelog: str, installed: str) -> list:
     return out[:15]
 
 
+_PY_HARD_RE = re.compile(r"^PYTHON_MIN_HARD\s*=\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", re.M)
+
+
+def _python_refusal(common_src: str) -> str:
+    """Отказ обновляться, если новой версии кита нужен Python новее того, на котором идёт панель.
+
+    Порог читаем из `scripts/aurora_common.py` НОВОЙ версии (PYTHON_MIN_HARD) до записи
+    файлов: иначе обновление молча ломало бы панель — новый процесс умирал бы на защите
+    версии, а старый оставался жить и говорил «обновлено». Порог не разобран — не мешаем:
+    проверка — страховка, а не замок. Пусто — обновляться можно.
+    """
+    m = _PY_HARD_RE.search(common_src or "")
+    if not m:
+        return ""
+    need = (int(m.group(1)), int(m.group(2)))
+    if tuple(sys.version_info[:2]) >= need:
+        return ""
+    import aurora_common as AC
+    return ("Новая версия кита требует Python %d.%d+, а панель работает на Python %d.%d.%d. "
+            "Кит не тронут: обновление ничего не изменило. %s"
+            % (need + tuple(sys.version_info[:3]) + (AC.python_message() or AC.python_install_hint(),)))
+
+
 def kit_update_status(fresh: bool = False) -> dict:
     """Есть ли новая версия кита: установленная, последняя, что нового.
 
@@ -1666,10 +1689,15 @@ def kit_update_status(fresh: bool = False) -> dict:
                 raise OSError((f.stderr or "").strip()[-200:] or "нет сети")
             latest = _kit_git("show", f"origin/{branch}:VERSION").stdout.strip()
             changelog = _kit_git("show", f"origin/{branch}:CHANGELOG.md").stdout
+            common = _kit_git("show", f"origin/{branch}:scripts/aurora_common.py").stdout
         else:
             raw = f"https://raw.githubusercontent.com/{slug}/{branch}"
             latest = _http_get(raw + "/VERSION", 100).decode("utf-8", "replace").strip()
             changelog = _http_get(raw + "/CHANGELOG.md", 5_000_000).decode("utf-8", "replace")
+            try:
+                common = _http_get(raw + "/scripts/aurora_common.py", 5_000_000).decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001 — порог не узнали: проверит сам архив перед записью
+                common = ""
     except Exception as e:
         st["error"] = f"не удалось узнать версию на GitHub: {str(e)[:200] or type(e).__name__}"
         return st
@@ -1683,6 +1711,8 @@ def kit_update_status(fresh: bool = False) -> dict:
     st.update(latest=latest, newer=newer, unpublished=_vt(installed) > _vt(latest),
               notes=_notes_since(changelog, installed) if newer else [],
               busy=sorted({r.get("cmd", "") for r in running_now().values()}))
+    if newer:
+        st["python_error"] = _python_refusal(common)     # кнопка не должна вести в тупик
     CACHE["kit_status"] = st
     return st
 
@@ -1772,6 +1802,10 @@ def _update_archive(st: dict) -> dict:
     new_ver = z.read(files["VERSION"]).decode("utf-8", "replace").strip()
     if _vt(new_ver) <= _vt(st["installed"]):
         return {"ok": True, "already": True}
+    if "scripts/aurora_common.py" in files:       # до первой записи: порог Python новой версии
+        refusal = _python_refusal(z.read(files["scripts/aurora_common.py"]).decode("utf-8", "replace"))
+        if refusal:
+            return {"error": refusal}
     backup = os.path.join(os.path.expanduser("~"), ".aurora", "kit-backup",
                           f"{st['installed']}-{utc_slug()}")
     saved = []
@@ -1837,6 +1871,8 @@ def kit_update() -> dict:
         return st
     if not st["newer"]:
         return {"ok": True, "already": True, "version": st["installed"]}
+    if st.get("python_error"):
+        return {"error": st["python_error"]}
     r = _update_git(st) if st["mode"] == "git" else _update_archive(st)
     if r.get("ok") and not r.get("already"):
         CACHE.pop("registry", None)
@@ -2902,7 +2938,17 @@ def _health_doctor(project: str, lang: str) -> dict:
             d_why.append("")
         elif line.startswith("WHY:") and d_errors:
             d_why[-1] = line[5:].strip()
+    launch_error = ""
+    if rc_d not in (0, 1) and not d_errors:
+        # doctor не запустился (старый Python, нет скрипта, таймаут): пустой список «блокеров»
+        # выглядел бы как «всё хорошо» — показываем причину явно
+        tail = " ".join(doc.split())[-400:]
+        launch_error = f"doctor не запустился (код {rc_d}): {tail}" if tail else \
+            f"doctor не запустился (код {rc_d})"
+        d_errors.append(launch_error)
+        d_why.append("")
     return {"doctor": {
+        "launch_error": launch_error,
         "rc": rc_d,
         "errors": d_errors,
         "blocker_why": d_why,
@@ -5788,6 +5834,20 @@ def restart_self(port: int) -> dict:
     entry = os.path.join(KIT, "aurora.py")
     if not os.path.isfile(entry):
         return {"error": "не найден aurora.py — перезапустите панель вручную"}
+    # Новая версия должна стартовать на ЭТОМ интерпретаторе: иначе она умрёт на защите версии
+    # Python, а старая панель умрёт следом, и человек останется без панели. Не стартует — ничего
+    # не перезапускаем и не обещаем.
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import aurora_common",
+             os.path.join(KIT, "scripts")],
+            cwd=KIT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        probe = None                     # проба не вышла — не мешаем перезапуску
+    if probe is not None and probe.returncode == 2:
+        tail = ((probe.stderr or probe.stdout or "").strip())[-500:]
+        return {"error": "новая версия не запустится на этом Python — панель не перезапущена: "
+                         f"{tail or 'код 2'}"}
     env = dict(os.environ, AURORA_COCKPIT_TOKEN=TOKEN)
     try:
         subprocess.Popen([sys.executable, entry, "cockpit", "--port", str(port),

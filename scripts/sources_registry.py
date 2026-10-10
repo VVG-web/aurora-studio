@@ -32,6 +32,7 @@
 и в реестре, — а не путём к скрипту: человек нажимает кнопку, а не набирает python3.
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
 import json

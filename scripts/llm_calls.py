@@ -30,6 +30,7 @@
   python3 scripts/llm_calls.py --json      # каталог с маршрутами (для отладки панели)
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
 import ast

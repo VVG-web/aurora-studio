@@ -506,7 +506,7 @@ def test_engine_compiles_on_the_oldest_promised_python(tmp: Path):
             break
     wf = (KIT / ".github/workflows/test.yml").read_text(encoding="utf-8")
     # нижняя поддерживаемая версия CI — 3.11 (задание floor, BL-DEC-02); 3.9 больше не проверяется
-    floor = wf[wf.index("\n  floor:"):wf.index("\n  legacy-310:")]
+    floor = wf[wf.index("\n  floor:"):wf.index("\n  newer-python:")]
     assert re.search(r'python-version:\s*"3\.11"', floor) and "compileall" in floor, \
         "в CI нет проверки на нижней поддерживаемой версии Python"
     assert not re.search(r'python-version:\s*"3\.9"', wf), "CI снова проверяет Python 3.9"

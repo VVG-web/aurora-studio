@@ -304,6 +304,7 @@
     "такого задания нет — возможно, оно уже закончилось": "there is no such job — it may have already finished",
     "задание уже закончилось": "the job has already finished",
     "не найден aurora.py — перезапустите панель вручную": "aurora.py was not found — restart the panel by hand",
+    "новая версия не запустится на этом Python — панель не перезапущена: {}": "the new version will not start on this Python — the panel was not restarted: {}",
     "не удалось создать: {}": "could not create: {}",
     "не удалось переименовать: {}": "could not rename: {}",
     "не удалось удалить: {}": "could not delete: {}",

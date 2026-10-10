@@ -26,6 +26,7 @@
 Скрипт движком не распространяется: он нужен ките и его CI, а не проекту аналитика.
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
 import os

@@ -118,6 +118,11 @@ function updateCard(ctx){
       go.disabled = true;
       result.append(el("div", {class:"warnbox"}, t("about.busy", {what: st.busy.join(", ")})));
     }
+    if (st.python_error){
+      // новой версии нужен Python новее этого: кнопка отказала бы, ничего не меняя
+      go.disabled = true;
+      result.append(el("div", {class:"warnbox"}, st.python_error));
+    }
     go.onclick = async () => {
       if (!confirm(t("about.update_ask", {v: st.latest}))) return;
       go.disabled = true; go.textContent = t("about.updating");

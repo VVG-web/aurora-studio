@@ -20,6 +20,7 @@ Code, ни в Cursor, ни в opencode.
 Панель: `kit:skills`
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
 import filecmp

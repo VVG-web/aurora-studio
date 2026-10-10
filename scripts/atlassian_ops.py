@@ -34,6 +34,7 @@
 Панель: команды нет — это служебный исполнитель MCP Авроры (`aurora_mcp.py`).
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import json
 import os

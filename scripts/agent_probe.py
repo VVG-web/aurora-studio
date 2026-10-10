@@ -27,6 +27,7 @@
 Зависимостей нет: urllib из стандартной библиотеки.
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import argparse
 import json

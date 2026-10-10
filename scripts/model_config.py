@@ -24,6 +24,7 @@
   python3 scripts/model_config.py --migrate    # собрать из .env кита, если файла ещё нет
 """
 from __future__ import annotations
+import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
 
 import json
 import os
