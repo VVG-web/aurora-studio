@@ -20,11 +20,11 @@ modules, panel sections and skins, and how to release versions. Русская �
   not by extension. **Not checked** (nothing to check them with, and the hook does not say so): 7z, rar, zstd, PDF, legacy
   office files (`.doc`, `.xls`) and anything encrypted. bzip2 or xz data on a Python build without the `_bz2`/`_lzma`
   module is not unpacked and the hook says plainly that it is "not checked". No `local/private_terms.txt` — the hook says the content was NOT checked.
-  The list is read as bytes (UTF-8, UTF-8 with BOM and UTF-16 with BOM, as written by Notepad and PowerShell 5.1); a cp1251 or BOM-less UTF-16 file
-  is not taken for "clean": the push stops (code 2, bypass with `AURORA_PUSH_UNVERIFIED=1`), `commit-msg` warns and `--status` names the problem.
+  The list is read as bytes (UTF-8, UTF-8 with BOM and UTF-16 with BOM, as written by Notepad and PowerShell 5.1); a cp1251 file, BOM-less UTF-16 or control characters inside names
+  are not taken for "clean": the push stops (code 2, bypass with `AURORA_PUSH_UNVERIFIED=1`), `commit-msg` warns and `--status` names the problem.
   Names written as `\uXXXX` (JSON without `ensure_ascii=False`), `&#NNNN;` and `%XX` are also compared in decoded form.
-  The `git log` output is pinned against user settings (`diff.noprefix`, `i18n.logOutputEncoding`, an external diff).
-  The aliases `HEAD`, `@` and a bare sha in `git push origin HEAD:foo` are resolved to a branch name (or to the branches pointing at the commit), so the kitchen-branch list applies to them too.
+  The `git log` output is pinned against user settings (`diff.noprefix`, `i18n.logOutputEncoding`, an external diff); messages and author names are also read from the raw commit bytes (UTF-8, then cp1251), so `i18n.commitEncoding=cp1251` with a UTF-8 message does not hide a name.
+  The aliases `HEAD`, `@` (including `HEAD~1`, `HEAD^`) and a bare sha in `git push origin HEAD:foo` are resolved to a branch name (or to the branches pointing at the commit), so the kitchen-branch list applies to them too.
   Public are GitHub, GitLab, Bitbucket, Codeberg and the like (the address's host, its subdomain or an `~/.ssh/config`
   `Host github.com-<name>` alias, not a substring) and whatever is added with
   `git config --add aurora.publicRemotes <name or address>`; a private server on such a host is declared with
@@ -32,7 +32,7 @@ modules, panel sections and skins, and how to release versions. Русская �
   GitHub included) counts as private and the hook does not check it at all — add such a remote to `aurora.publicRemotes`;
   the "public until declared private" rule is deferred (it would stop pushes to the kitchen's private remotes until configured).
   When it cannot be checked (git failed, the script is missing, an archive is encrypted or too large) the push stops instead of opening;
-  knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`. "Update the kit" in the panel reinstalls an outdated **own** pre-push by itself (`kit:hooks --refresh`: a foreign or current hook is left alone);
+  knowingly: `AURORA_PUSH_UNVERIFIED=1 git push`. "Update the kit" in the panel, when a new version is out, reinstalls an outdated **own** pre-push by itself (`kit:hooks --refresh`: a foreign or current hook is left alone);
   otherwise reinstall by hand: `kit:hooks --install`. The status calls an older hook outdated, the scan warns when the hook is older than
   the script (hooks v2–v4 do not name a version — that is the sign), and `kit:doctor` and "Health" show a warning about an outdated kit hook;
 - a commit's author and committer are people: no model or model vendor name, no bot, no `Co-Authored-By` trailer or

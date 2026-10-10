@@ -122,15 +122,15 @@ while read -r local_ref local_sha remote_ref _r; do
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   names="$local_ref $remote_ref"
   # `git push origin HEAD:foo`, `@:foo`, `<sha>:foo`: git отдаёт хуку не имя ветки, а то, что
-  # набрал человек, — и список по именам молчал бы, стоя на ветке кухни. HEAD и `@` разворачиваем
-  # в текущую ветку; голый sha и отсоединённый HEAD — в ветки, которые на этот коммит указывают.
+  # набрал человек, — и список по именам молчал бы, стоя на ветке кухни. HEAD и `@` (и `HEAD~1`,
+  # `HEAD^`, `@~2`: предок текущей ветки — её же история) разворачиваем в текущую ветку; голый sha и отсоединённый HEAD — в ветки, которые на этот коммит указывают.
   # Для явного `refs/...` так не делаем: имя названо, а другая ветка на том же коммите
   # (`development` сразу после слияния равна `master`) — не повод останавливать публикацию.
   case "$local_ref" in
     refs/*) ;;
     *)
       cur=""
-      case "$local_ref" in HEAD|@) cur=$(git symbolic-ref -q HEAD 2>/dev/null) ;; esac
+      case "$local_ref" in HEAD|HEAD[~^]*|@|@[~^]*) cur=$(git symbolic-ref -q HEAD 2>/dev/null) ;; esac
       if [ -n "$cur" ]; then
         names="$names $cur"
       else
@@ -405,8 +405,10 @@ def _load_terms() -> tuple:
         t = _nfc(line.strip().lstrip("\ufeff").strip())
         if not t or t.startswith("#"):
             continue
-        if "\x00" in t or "\ufeff" in t:
-            problem = problem or "в названиях нули или невидимые знаки — сохраните как UTF-8"
+        # управляющие знаки (кроме табуляции) — признак чужой кодировки: у кириллицы в UTF-16 без BOM
+        # нулей нет, старший байт 0x04, и список из одной строки без перевода строки читался «чисто»
+        if "\ufeff" in t or any(ord(c) < 32 and c != "\t" for c in t):
+            problem = problem or "в названиях нули, управляющие или невидимые знаки — сохраните как UTF-8"
             continue
         terms.append(t)
     return terms, problem
@@ -559,8 +561,10 @@ def _unpack_stream(data: bytes):
     return tag, inner, over
 
 
-_XML_BREAK = re.compile(r"</(?:[\w.-]+:)?(?:p|tr|row|si|h|list-item)>|<(?:[\w.-]+:)?br\b[^>]*>", re.I)
-_XML_TAG = re.compile(r"<[^>]*>")
+_XML_BREAK = re.compile(r"</(?:[\w.-]+:)?(?:p|tr|row|si|h|list-item)>|<(?:[\w.-]+:)?br\b[^<>]*>", re.I)
+# `[^<>]`, а не `[^>]`: у «<» без закрывающей «>» поиск иначе шёл бы до конца данных, и файл из тысяч
+# «<a <a <a …» вешал пуш (квадрат от размера); теперь совпадение обрывается на следующем «<».
+_XML_TAG = re.compile(r"<[^<>]*>")
 
 
 def _xml_text(text: str) -> str:
@@ -713,6 +717,51 @@ def _scan_blobs(pats: list, rng: list, hits: dict, errors: list) -> None:
         errors.append(f"git cat-file: прочитано {done} из {len(paths)} файлов")
 
 
+def _scan_commits(pats: list, rng: list, hits: dict, errors: list) -> None:
+    """Объекты коммитов как они лежат: сообщение и имена авторов в той кодировке, что записана в байтах.
+
+    `git log --encoding=UTF-8` перекодирует из `encoding` коммита, а метка не всегда правдива:
+    при `i18n.commitEncoding=cp1251` и сообщении, набранном в UTF-8 (`git commit -m` на Git for Windows,
+    терминал в UTF-8), коммит несёт `encoding cp1251` поверх UTF-8-байтов, и перекодировка даёт
+    мусор — название не находилось. Читаем сырые байты: сначала UTF-8, при неудаче cp1251.
+    """
+    rc, out, err = _git_run(["rev-list", *rng])
+    if rc != 0:
+        errors.append(f"git rev-list {' '.join(rng)}: {err or rc}")
+        return
+    shas = out.split()
+    if not shas:
+        return
+    try:
+        p = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        errors.append(f"git cat-file: {e}")
+        return
+
+    def feed() -> None:
+        try:
+            p.stdin.write(("\n".join(shas) + "\n").encode("ascii"))
+            p.stdin.close()
+        except OSError:
+            pass
+    threading.Thread(target=feed, daemon=True).start()
+    done = 0
+    while True:
+        head = p.stdout.readline().split()
+        if len(head) < 3:
+            break
+        done += 1
+        raw = p.stdout.read(int(head[2]))
+        p.stdout.read(1)            # перевод строки после содержимого
+        _scan_payload(pats, raw, f"сообщение или автор коммита {head[0].decode('ascii', 'replace')[:8]}",
+                      hits, errors, member=True)
+    p.stdout.close()
+    p.wait()
+    if done < len(shas):
+        errors.append(f"git cat-file: прочитано {done} из {len(shas)} коммитов")
+
+
 def _scan_tags(pats: list, ref: str, sha: str, hits: dict, errors: list) -> None:
     """Аннотированный тег (и тег на теге): сообщение и имя тэггера уезжают так же, как коммит."""
     for _ in range(5):
@@ -857,6 +906,7 @@ def scan_push(remote: str = "", hook: str = "") -> int:
                 f = rec.strip("\n").split("\x1f", 1)
                 if len(f) == 2:
                     _scan_text(pats, f[1].replace("\x1f", "\n"), f"сообщение или автор коммита {f[0][:8]}", hits)
+        _scan_commits(pats, rng, hits, errors)
         _scan_blobs(pats, rng, hits, errors)
 
     if errors:

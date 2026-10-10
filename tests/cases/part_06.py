@@ -2144,6 +2144,41 @@ def test_push_guard_survives_split_runs_escapes_and_user_git_config(tmp: Path):
     cp = scan(note, msg)
     assert cp.returncode == 1 and "сообщение или автор" in cp.stderr, \
         f"при i18n.logOutputEncoding=cp1251 название в сообщении ушло без остановки:\n{cp.returncode} {cp.stderr}"
+    # i18n.commitEncoding=cp1251 при сообщении, набранном в UTF-8: коммит несёт `encoding cp1251` поверх
+    # UTF-8-байтов, и `git log --encoding=UTF-8` отдаёт мусор — читаются сырые байты объекта
+    subprocess.run(["git", "config", "i18n.commitEncoding", "cp1251"], cwd=root, check=True)
+    (root / "ok2.txt").write_text("ничего\n", encoding="utf-8")
+    mis = commit(f"правка: {term} тут")
+    obj = subprocess.run(["git", "cat-file", "commit", mis], cwd=root, capture_output=True).stdout
+    assert b"encoding cp1251" in obj and term.encode("utf-8") in obj, "сценарий не воспроизвёл метку не той кодировки"
+    cp = scan(msg, mis)
+    assert cp.returncode == 1 and "сообщение или автор" in cp.stderr, \
+        f"при i18n.commitEncoding=cp1251 и UTF-8-сообщении название ушло без остановки:\n{cp.returncode} {cp.stderr}"
+    # то же для имени автора
+    (root / "ok3.txt").write_text("ничего\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", f"user.name=Иванов {term}", "commit", "-qm", "чисто",
+                    "--no-verify"], cwd=root, check=True)
+    auth = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    cp = scan(mis, auth)
+    assert cp.returncode == 1 and "сообщение или автор" in cp.stderr, \
+        f"при commitEncoding=cp1251 название в имени автора ушло без остановки:\n{cp.returncode} {cp.stderr}"
+    # настоящий cp1251 под своей меткой по-прежнему находится
+    (root / "ok4.txt").write_text("ничего\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    real = root / "msg1251.txt"
+    real.write_bytes(f"правка: {term} тут\n".encode("cp1251"))
+    subprocess.run(git + ["commit", "-q", "-F", str(real), "--no-verify", "--no-edit"], cwd=root, check=True)
+    cp = scan(auth, subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip())
+    assert cp.returncode == 1, f"сообщение в настоящем cp1251 ушло без остановки:\n{cp.stderr}"
+    subprocess.run(["git", "config", "--unset", "i18n.commitEncoding"], cwd=root, check=True)
+
+    # 4. Теги без закрывающей «>»: разбор линейный (раньше — квадрат от размера, пуш висел)
+    t0 = time.monotonic()
+    H._xml_text("<a " * 200_000)
+    H._xml_text("<br " * 100_000 + "</p" * 100_000)
+    assert time.monotonic() - t0 < 5, "разбор тегов без «>» не линеен: большой файл с «<» повесит пуш"
+    assert H._xml_text("<w:p><w:r><w:t>Тайный</w:t></w:r><w:r><w:t>Проект</w:t></w:r></w:p>") == "ТайныйПроект\n"
 
 
 @test
@@ -2191,6 +2226,8 @@ def test_private_terms_list_is_read_by_bytes_and_unreadable_list_stops_the_push(
     unreadable = {
         "cp1251": ("SecondTerm\n" + term + "\n").encode("cp1251"),
         "utf-16-le без BOM": (term + "\n").encode("utf-16-le"),
+        "utf-16-le без BOM и без перевода строки": term.encode("utf-16-le"),     # у кириллицы нулей нет
+        "utf-16-be без BOM и без перевода строки": term.encode("utf-16-be"),
         "utf-32": (term + "\n").encode("utf-32"),
     }
     for kind, raw in unreadable.items():
@@ -2255,6 +2292,13 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = push(alias)
         assert cp.returncode == 1 and "development" in cp.stderr, \
             f"{alias}:foo со стоянием на development уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    # предок текущей ветки: sha уже не кончик ни одной ветки, и по `--points-at` его не найти
+    g("commit", "-q", "--allow-empty", "-m", "y")
+    for alias in ("HEAD~1", "HEAD^", "@~1", "@^"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo со стоянием на development уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    g("update-ref", "refs/heads/development", sha)
     # голый sha указывает на ветку кухни; отсоединённый HEAD — то же
     cp = push(sha)
     assert cp.returncode == 1 and "development" in cp.stderr, f"sha:foo обошёл список: {cp.stderr}"
@@ -2297,6 +2341,56 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         and "мой хук" in ours.read_text(encoding="utf-8"), "--refresh затёр чужой pre-push"
     ours.unlink()
     assert H.push_hook_state(kit / ".git") == "none" and refresh() == "" and not ours.exists()
+
+
+@test
+def test_kit_doctor_and_panel_update_see_the_outdated_own_pre_push(tmp: Path):
+    """BL-SEC-14: `check_kit_hooks` (kit:doctor, «Здоровье») и `_refresh_kit_hooks` («Обновить кит»).
+
+    Предупреждение выдаётся только про свой устаревший pre-push; текущий, чужой и отсутствующий — тишина.
+    Переустановка трогает тот же единственный случай.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    H = importlib.import_module("aurora_hooks")
+    ck = importlib.import_module("aurora_cockpit")
+    kit = tmp / "kit"
+    shutil.copytree(KIT / "scripts", kit / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    (kit / "engine_manifest.txt").write_text("scripts/x.py\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=kit, check=True)
+    hook = kit / ".git/hooks/pre-push"
+    hook.parent.mkdir(exist_ok=True)
+
+    def doctor() -> list:
+        code = "import sys, json; sys.path.insert(0, 'scripts'); import aurora_doctor as d; print(json.dumps(d.check_kit_hooks()))"
+        cp = subprocess.run([sys.executable, "-c", code], cwd=kit, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+        assert cp.returncode == 0, cp.stderr
+        return json.loads(cp.stdout.strip().splitlines()[-1])
+
+    assert doctor() == [], "хука нет, а доктор предупреждает"
+    hook.write_text("#!/bin/sh\n# мой хук\n", encoding="utf-8")
+    assert doctor() == [], "чужой хук назван устаревшим"
+    hook.write_text("#!/bin/sh\n" + H.PUSH_MARKER + "\n", encoding="utf-8")
+    assert doctor() == [], "актуальный хук назван устаревшим"
+    hook.write_text("#!/bin/sh\n# aurora-hook push v2\n", encoding="utf-8")
+    warn = doctor()
+    assert len(warn) == 1 and "pre-push" in warn[0] and "--install" in warn[0], f"устаревший хук не замечен: {warn}"
+
+    keep = ck.KIT
+    ck.KIT = str(kit)
+    try:
+        note = ck._refresh_kit_hooks()
+        assert "переставлен" in note and H.push_hook_state(kit / ".git") == "current", \
+            f"панель не переставила устаревший хук: {note!r}"
+        assert ck._refresh_kit_hooks() == "", "актуальный хук переставлен повторно"
+        assert doctor() == [], "после переустановки предупреждение осталось"
+        hook.write_text("#!/bin/sh\n# мой хук\n", encoding="utf-8")
+        assert ck._refresh_kit_hooks() == "" and "мой хук" in hook.read_text(encoding="utf-8"), \
+            "панель затёрла чужой pre-push"
+    finally:
+        ck.KIT = keep
 
 
 @test

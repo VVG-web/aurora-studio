@@ -1538,6 +1538,21 @@ def test_a_private_name_is_caught_in_every_form_it_is_written(tmp: Path):
         "push-хук не понимает основу — проверка и последняя сетка разойдутся"
 
 
+def _kit_private_terms(terms_file: Path) -> list:
+    """Список названий читает тот же код, что и хук: BOM и UTF-16 из «Блокнота» и PowerShell не теряют первое
+    название, нечитаемый список (cp1251) — падение теста, а не молчаливое «чисто»."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_hooks as H
+    keep = H.TERMS
+    H.TERMS = str(terms_file)
+    try:
+        problem = H.terms_problem()
+        assert not problem, f"{terms_file.name}: {problem}"
+        return H.private_terms()
+    finally:
+        H.TERMS = keep
+
+
 @test
 def test_no_private_terms_in_tracked_files(tmp: Path):
     """Наружу уходит только обезличенное.
@@ -1549,8 +1564,7 @@ def test_no_private_terms_in_tracked_files(tmp: Path):
     terms_file = KIT / "local/private_terms.txt"
     if not terms_file.is_file():
         return
-    terms = [l.strip() for l in terms_file.read_text(encoding="utf-8").splitlines()
-             if l.strip() and not l.startswith("#")]
+    terms = _kit_private_terms(terms_file)
     if not terms:
         return
     # Отслеживаемые ПЛЮС ещё не добавленные, но и не игнорируемые. Новый файл до первого
@@ -1592,8 +1606,7 @@ def test_no_private_terms_in_commit_messages(tmp: Path):
     terms_file = KIT / "local/private_terms.txt"
     if not terms_file.is_file():
         return
-    terms = [l.strip() for l in terms_file.read_text(encoding="utf-8").splitlines()
-             if l.strip() and not l.startswith("#")]
+    terms = _kit_private_terms(terms_file)
     if not terms:
         return
     log = subprocess.run(["git", "log", "--format=%H%x00%B%x01"], cwd=str(KIT),
