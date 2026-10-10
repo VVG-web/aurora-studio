@@ -140,7 +140,7 @@ function t(key, vars){
     const idx = {one: 0, few: 1, many: 2, other: forms.length - 1}[rule];
     s = forms[Math.min(idx === undefined ? forms.length - 1 : idx, forms.length - 1)];
   }
-  if (vars) for (const [k,v] of Object.entries(vars)) s = s.replaceAll("{"+k+"}", v);
+  if (vars) for (const [k,v] of Object.entries(vars)) s = s.replaceAll("{"+k+"}", () => String(v));   // функцией: «$'» в тексте не шаблон
   return s;
 }
 
@@ -179,6 +179,17 @@ async function restartPanel(opts = {}){
   }
   toast(t("restart.timeout", {mins: limit / 60000}), "err");
   return "timeout";
+}
+
+// Кнопка полосы «панель обновилась на диске»: отказ сервера остаётся в полосе, а не только
+// в тосте на несколько секунд — старая панель жива, и повторять попытку человек будет здесь.
+async function restartFromBar(ev){
+  const bar = ev.currentTarget.closest(".stalebar");
+  const r = await restartPanel();
+  if (bar && r && r.error){
+    bar.querySelectorAll(".warnbox").forEach(n => n.remove());
+    bar.append(el("div", {class:"warnbox"}, r.error));
+  }
 }
 
 /* Новая версия Aurora. Проверку делает сервер (раз в шесть часов, без git у человека), а
@@ -1265,7 +1276,7 @@ async function boot(){
     $("main").prepend(el("div",{class:"stalebar"},
       el("b",{}, t("boot.stale_process")),
       t("boot.stale_process_why"),
-      el("button",{class:"btn", style:"margin-left:8px", onclick:restartPanel},
+      el("button",{class:"btn", style:"margin-left:8px", onclick:restartFromBar},
         t("boot.restart"))));
   }
   drawAdapterAlarm(S.state.adapter_alarm);

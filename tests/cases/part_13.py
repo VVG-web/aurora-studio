@@ -3837,7 +3837,7 @@ def test_python_gate_messages_are_translated_and_registered(tmp: Path):
     skeletons = KI.message_skeletons()
     for text in ("doctor не запустился (код {}): {}", "doctor не запустился (код {})",
                  "новая версия не запустится на этом Python — панель не перезапущена; "
-                 "запустите её заново из терминала под более новым Python (код {})",
+                 "запустите её заново из терминала под более новым Python командой aurora.py cockpit --restart (код {})",
                  "Новая версия кита требует Python {}.{}+, а панель работает на Python {}.{}.{}. "
                  "Кит не тронут: обновление ничего не изменило. {}"):
         assert text in skeletons, f"образец не собирается из кода: {text}"
@@ -4036,6 +4036,86 @@ console.log(JSON.stringify(out));
             and "кнопк" not in refused, (lang, refused)
         assert cat.get("about.restart_timeout") and cat["about.restart_timeout"] != cat["about.restart_failed"], lang
         assert "alive" not in cat["about.restart_timeout"].lower() and "still running" not in cat["about.restart_timeout"], lang
+
+
+@test
+def test_restart_advice_names_command_and_refusal_stays_in_stale_bar(tmp: Path):
+    """Совет отказа перезапуска исполним, а причина не теряется ни в полосе, ни в подстановке.
+
+    BL-DEC-01 (доработка): при старом Python живая прежняя панель держит порт, и простой запуск
+    `aurora.py cockpit` лишь откроет её, — заменяет `--restart`, его и называет причина (в обоих
+    видах, и переведённая). Карточка «О программе» ставит причину после двоеточия: причины
+    начинаются со строчной буквы. Полоса «панель обновилась на диске» держит отказ у себя, а не
+    только в тосте. `t()` подставляет значение буквально: «$'» в хвосте traceback не шаблон
+    замены. Страничные проверки — под node, как и у соседних; нет node — пропускаются.
+    """
+    cyr = re.compile("[а-яА-ЯёЁ]")
+    kit = tmp / "kit"
+    kit.mkdir()
+    ck, restore = _cockpit_on(kit)
+    try:
+        for ru in (ck.restart_probe_failure("tail"), ck.restart_probe_failure("")):
+            assert "aurora.py cockpit --restart" in ru, ru
+            en = ck.translate_message(ru, "en")
+            assert "aurora.py cockpit --restart" in en and not cyr.search(en), en
+        # ошибка кода — не про Python: команды старого Python там нет
+        assert "cockpit --restart" not in ck.restart_probe_failure("tail", 1)
+    finally:
+        restore()
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / f"cockpit/modules/about/i18n/{lang}.json").read_text(encoding="utf-8"))
+        assert cat["about.restart_refused"].endswith(": {why}"), (lang, cat["about.restart_refused"])
+    node = shutil.which("node")
+    if not node:
+        return
+    ui = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+
+    def top_level(head: str) -> str:
+        start = ui.index(head)
+        return ui[start:ui.index("\n}\n", start) + 2]       # функция верхнего уровня кончается строкой «}»
+
+    harness = """
+const S = {lang: "ru"};
+const RU = {why: "Кит. {why}", two: "{a} и {a}"};
+let I18N = RU;
+FUNCTION_T
+FUNCTION_BAR
+class N {
+  constructor(tag, attrs){ this.tag = tag; this.attrs = attrs || {}; this.kids = []; }
+  append(...c){ for (const x of c) if (x != null){ if (x instanceof N) x.parent = this; this.kids.push(x); } }
+  querySelectorAll(sel){ return this.kids.filter(k => k.attrs && k.attrs.class === sel.slice(1)); }
+  remove(){ this.parent.kids = this.parent.kids.filter(k => k !== this); }
+  closest(){ return this; }
+}
+const el = (tag, attrs, ...c) => { const n = new N(tag, attrs); n.append(...c); return n; };
+let answer = null;
+const restartPanel = async () => answer;
+const out = {};
+out.dollar = t("why", {why: "re.compile(r'^a$') и $` и $&"});
+out.twice = t("two", {a: "x$'y"});
+const bar = el("div", {class: "stalebar"}, "текст");
+const click = () => restartFromBar({currentTarget: bar});
+const shown = () => bar.kids.filter(k => k instanceof N).map(k => k.kids[0]);
+answer = {error: "первая причина"}; await click();
+answer = {error: "вторая причина"}; await click();
+out.shown = shown();
+answer = "timeout"; await click(); answer = false; await click(); answer = undefined; await click();
+out.after = shown();
+console.log(JSON.stringify(out));
+""".replace("FUNCTION_T", top_level("function t(key, vars)")).replace(
+        "FUNCTION_BAR", top_level("async function restartFromBar("))
+    src = tmp / "stalebar.mjs"
+    src.write_text(harness, encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:800]
+    r = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert r["dollar"] == "Кит. re.compile(r'^a$') и $` и $&", r
+    assert r["twice"] == "x$'y и x$'y", r
+    # отказ остаётся в полосе одним блоком (повторная попытка заменяет прежнюю причину)
+    assert r["shown"] == ["вторая причина"] and r["after"] == ["вторая причина"], r
+    # кнопка полосы не висит на голом restartPanel: причина отказа иначе теряется в тосте
+    assert "onclick:restartFromBar" in ui and "onclick:restartPanel" not in ui
 
 
 @test
