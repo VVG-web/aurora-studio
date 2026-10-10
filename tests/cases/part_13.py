@@ -3836,7 +3836,8 @@ def test_python_gate_messages_are_translated_and_registered(tmp: Path):
     # образцы собираются из кода: ключ каталога не «лишний», а проверка каталогов зелёная
     skeletons = KI.message_skeletons()
     for text in ("doctor не запустился (код {}): {}", "doctor не запустился (код {})",
-                 "новая версия не запустится на этом Python — панель не перезапущена (код {})",
+                 "новая версия не запустится на этом Python — панель не перезапущена; "
+                 "запустите её заново из терминала под более новым Python (код {})",
                  "Новая версия кита требует Python {}.{}+, а панель работает на Python {}.{}.{}. "
                  "Кит не тронут: обновление ничего не изменило. {}"):
         assert text in skeletons, f"образец не собирается из кода: {text}"
@@ -3903,7 +3904,7 @@ let reloaded = 0, restartCalls = 0;
 const toasts = [];
 const TOKEN = "tok";
 const toast = (m, k) => toasts.push([m, k]);
-const t = (k, v) => k;
+const t = (k, v) => k + (v && v.mins ? "|" + v.mins : "");
 const location = {reload(){ reloaded++; }};
 globalThis.confirm = () => cfg.confirm;
 globalThis.fetch = async () => ({ok: true, json: async () => ({ready: true})});
@@ -3920,6 +3921,19 @@ cfg.jobs = [{cmd: "kb:x", done: false}]; cfg.confirm = false; restartCalls = 0;
 out.cancelled = {ret: await restartPanel(), calls: restartCalls};
 cfg.jobs = []; cfg.restart = {}; cfg.confirm = true;
 out.ok = {ret: String(await restartPanel()), reloaded};
+// Подъём не удался: часы скачут на 50 с за вызов, ожидание не настоящее, новая панель молчит.
+// Старой панели к этому моменту уже нет, поэтому вернуться должно именно "timeout" и тост с минутами.
+let clock = 0;
+Date.now = () => (clock += 50000);
+globalThis.setTimeout = f => { f(); return 0; };
+globalThis.fetch = async () => { throw new Error("нет ответа"); };
+toasts.length = 0;
+const quick = await restartPanel();
+const quickToasts = toasts.splice(0).filter(x => x[1] === "err");
+clock = 0;
+const slow = await restartPanel({patient: true});
+const slowToasts = toasts.splice(0).filter(x => x[1] === "err");
+out.timeout = {quick, quickToasts, slow, slowToasts};
 console.log(JSON.stringify(out));
 """.replace("FUNCTION", fn)
         src = tmp / "restart.mjs"
@@ -3929,11 +3943,15 @@ console.log(JSON.stringify(out));
         assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:800]
         r = json.loads(cp.stdout.strip().splitlines()[-1])
         # отказ сервера: причина возвращается вызывающему, а не только уходит в тост
-        assert r["refused"]["ret"] == {"error": "причина-X"} and r["refused"]["toasts"] == [["причина-X", "err"]], r
+        assert r["refused"].get("ret") == {"error": "причина-X"} and r["refused"]["toasts"] == [["причина-X", "err"]], r
         # человек передумал: перезапуск не просили, причины нет
         assert r["cancelled"] == {"ret": False, "calls": 0}, r
         # успех: страница перечитана, раздел ничего не рисует
         assert r["ok"] == {"ret": "undefined", "reloaded": 1}, r
+        # таймаут подъёма: возвращается "timeout" (не false: старой панели уже нет) и тост с минутами;
+        # после обновления ждём пять минут вместо одной
+        assert r["timeout"] == {"quick": "timeout", "quickToasts": [["restart.timeout|1", "err"]],
+                                "slow": "timeout", "slowToasts": [["restart.timeout|5", "err"]]}, r
 
         view = Path(KIT / "cockpit/modules/about/view.js").resolve().as_uri()
         harness = """
@@ -4012,6 +4030,10 @@ console.log(JSON.stringify(out));
         cat = json.loads((KIT / f"cockpit/modules/about/i18n/{lang}.json").read_text(encoding="utf-8"))
         assert cat.get("about.restart_failed"), lang
         assert "{why}" in cat.get("about.restart_refused", ""), lang
+        # статус и совет живут в причине (restart_probe_failure): карточка их не повторяет
+        refused = cat["about.restart_refused"]
+        assert "not restarted" not in refused and "не перезапущена" not in refused and "button" not in refused \
+            and "кнопк" not in refused, (lang, refused)
         assert cat.get("about.restart_timeout") and cat["about.restart_timeout"] != cat["about.restart_failed"], lang
         assert "alive" not in cat["about.restart_timeout"].lower() and "still running" not in cat["about.restart_timeout"], lang
 
