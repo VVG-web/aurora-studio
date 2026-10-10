@@ -275,11 +275,16 @@ A name the kit does not have is an error: a run with tools does not start, and `
 If the project still holds an old `mcp.json`, `doctor` and "Project settings" warn "the file is not used" and
 offer to **move the servers into the kit**: the "Move servers to the kit" button (or
 `python3 scripts/agent_core.py --mcp-migrate` in the project folder) shows the differences — what will be added,
-what is already there, what will not move because the name is taken — and writes to the kit only after you
-explicitly confirm what was shown (on the command line: `--mcp-migrate --yes --digest <fingerprint from the
+what is already there, what will not move because the name is taken or the check failed — and writes to the kit only after you
+explicitly confirm what was shown; every server is shown whole (variable and header names, `cwd`, roles, secret
+values masked) (on the command line: `--mcp-migrate --yes --digest <fingerprint from the
 preview>`; the assistant and bots do not get this command). Tokens from the old file go to `local/mcp.json`, not
-into the project; the moved file is renamed to `mcp.json.migrated` (if it was in git, delete it there
-yourself: the secrets stay in the history).
+into the project; the moved file goes to `.aurora/mcp.json.migrated` — a folder outside git, owner-only
+(if it was in git, delete it there yourself: the secrets stay in the history). Not moved: a server that fails the
+check (malformed fields, the name `aurora` — it is taken by the built-in server) and a server whose environment
+changes how the program starts (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHON*`, `PATH` and alike): it is shown in
+plain text, and such a server has to be entered by hand in "Kit setup". An unreadable kit `local/mcp.json` is not
+overwritten — the move refuses.
 
 **Writing to Jira** is a right of the machine, not of the project: the checkbox "Let agents and bots write to
 Jira" in "Kit setup" (key `permissions.jira_write` in `local/mcp.json`). A `jira_write: true` line in the

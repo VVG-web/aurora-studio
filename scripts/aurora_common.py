@@ -12,6 +12,7 @@ aurora_common` работает: Python кладёт папку запускае
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -1838,35 +1839,166 @@ def config_list(key: str) -> list:
 
 
 MCP_NAME_RE = re.compile(r"^[\w.\-]{1,64}$")
+MCP_MASK = "••••••"
+MCP_SECRET_MAPS = ("env", "headers")
+MCP_ROLES = ("worker", "planner", "critic", "qa")
+# Имя встроенного сервера Авроры: его определение — движка, а не проекта.
+MCP_BUILTIN = "aurora"
+# Окружение, которое меняет, ЧТО на деле запустится: загрузка своих библиотек и модулей
+# (`LD_PRELOAD`, `NODE_OPTIONS=--require …`, `PYTHONPATH`), подмена поиска программ (`PATH`),
+# источников пакетов (`UV_`, `PIP_`, `NPM_CONFIG_`) и скриптов оболочки (`BASH_ENV`). Секретом
+# оно не является, а исполняемый код пронести может, поэтому при переносе из проекта его
+# показывают открытым текстом и не переносят.
+MCP_LAUNCH_ENV_RE = re.compile(
+    r"^(?:LD_|DYLD_|PYTHON|NODE_|PERL|RUBY|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|JDK_JAVA_OPTIONS$"
+    r"|GIT_|NPM_CONFIG_|UV_|PIP_)|^(?:PATH|BASH_ENV|ENV|IFS|SHELLOPTS|PS4|PROMPT_COMMAND"
+    r"|CLASSPATH|GOFLAGS)$", re.I)
+
+
+def mcp_risky_env(spec) -> list:
+    """Имена переменных окружения сервера, способных изменить запуск процесса."""
+    env = spec.get("env") if isinstance(spec, dict) else None
+    return sorted(k for k in env if isinstance(k, str) and MCP_LAUNCH_ENV_RE.match(k)) \
+        if isinstance(env, dict) else []
+
+
+def mcp_masked(spec: dict, show_launch_env: bool = False) -> dict:
+    """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`) стоит маска.
+
+    `show_launch_env` — значения окружения, меняющего запуск (`mcp_risky_env`), оставить
+    открытым текстом: это не секрет, а то, что владелец обязан увидеть перед переносом.
+    """
+    one = json.loads(json.dumps(spec, default=str))
+    for key in MCP_SECRET_MAPS:
+        if isinstance(one.get(key), dict):
+            one[key] = {k: (v if v in ("", None) or (
+                show_launch_env and key == "env" and MCP_LAUNCH_ENV_RE.match(str(k)))
+                else MCP_MASK) for k, v in one[key].items()}
+    if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
+        one["auth"] = MCP_MASK
+    return one
+
+
+def mcp_check(servers, reserved=()) -> str:
+    """Пустая строка — серверы годятся к записи; иначе — что не так, словами.
+
+    Одна проверка на панель, кит и перенос из проекта. `reserved` — имена, которые занять
+    нельзя (при переносе из проекта — встроенный сервер Авроры).
+    """
+    if not isinstance(servers, dict):
+        return "mcpServers должен быть объектом «имя → настройка»"
+    for name, spec in servers.items():
+        if not isinstance(name, str) or not MCP_NAME_RE.match(name):
+            return (f"имя «{str(name)[:40]}» не годится: буквы, цифры, точка, дефис и "
+                    "подчёркивание, до 64 знаков")
+        if name in reserved:
+            return f"имя «{name}» занято встроенным сервером Авроры"
+        if not isinstance(spec, dict):
+            return f"сервер «{name}»: ожидался объект"
+        cmd, url = spec.get("command"), spec.get("url")
+        if not (isinstance(cmd, str) and cmd.strip()) and not (isinstance(url, str) and url.strip()):
+            return f"сервер «{name}»: нужен command (запуск программы) или url (адрес)"
+        if "args" in spec and not (isinstance(spec["args"], list)
+                                   and all(isinstance(a, str) for a in spec["args"])):
+            return f"сервер «{name}»: args — список строк"
+        for key in MCP_SECRET_MAPS:
+            if key in spec and not (isinstance(spec[key], dict) and all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in spec[key].items())):
+                return f"сервер «{name}»: {key} — объект «имя → строка»"
+        roles = spec.get("roles")
+        if roles is not None and not (isinstance(roles, list)
+                                      and all(r in MCP_ROLES for r in roles)):
+            return f"сервер «{name}»: roles — список из {', '.join(MCP_ROLES)}"
+        if "outbound" in spec and not isinstance(spec["outbound"], bool):
+            return f"сервер «{name}»: outbound — true или false"
+    return ""
+
+
+def mcp_migrate_problem(name, spec) -> str:
+    """Почему сервер из `mcp.json` ПРОЕКТА нельзя переносить в кит; пусто — можно.
+
+    Файл приехал из git: помимо общей проверки (`mcp_check`) в кит не идут имя встроенного
+    сервера и окружение, меняющее запуск процесса.
+    """
+    why = mcp_check({name: spec}, reserved=(MCP_BUILTIN,))
+    if why:
+        return why
+    risky = mcp_risky_env(spec)
+    if risky:
+        return (f"сервер «{name}»: окружение {', '.join(risky)} меняет запуск программы — "
+                "такое из проекта не переносится, впишите его сами в «Настройка кита»")
+    return ""
 
 
 def _mcp_names(raw: str) -> list:
     return [x.strip().strip("\"'") for x in raw.split(",") if x.strip().strip("\"'")]
 
 
-def mcp_block(text: str) -> dict:
-    """Раздел `mcp:` из текста `aurora.config.yaml` проекта → {servers, jira_write}.
+# Раздел `mcp:` в обеих записях YAML: блоком (`mcp:` и вложенные строки) или в одну строку
+# фигурными скобками (`mcp: {servers: [a]}`, `mcp: {}`).
+_MCP_BLOCK_RE = re.compile(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)")
+_MCP_FLOW_RE = re.compile(r"(?m)^mcp:[ \t]*\{(.*)\}[ \t]*(?:#.*)?$\n?")
 
-    `servers` — имена серверов КИТА, которые проект выбрал (`servers: [a, b]` или пунктами
-    списка); None — выбора нет, проект берёт все серверы кита; `[]` — не берёт ни одного.
-    Команд, адресов и токенов в проекте нет: определения живут только в ките
-    (`<кит>/local/mcp.json`, BL-SEC-12). `jira_write` — запрос проекта на запись в Jira:
-    True/False/None («не сказано»). Разрешение выдаёт кит (`kit_mcp_permission`), проект может
-    его только сузить.
+
+def _flow_pairs(inner: str) -> list:
+    """`a: 1, servers: [x, y]` → [("a", "1"), ("servers", "[x, y]")]: запятые внутри скобок не делят."""
+    parts, depth, cur = [], 0, ""
+    for ch in inner:
+        depth += ch in "[{"
+        depth -= ch in "]}"
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    out = []
+    for p in parts:
+        k, sep, v = p.partition(":")
+        if sep and k.strip():
+            out.append((k.strip(), v.strip()))
+    return out
+
+
+def _mcp_top_indent(lines) -> str:
+    """Отступ первой значащей строки раздела: ключи первого уровня стоят с ним."""
+    for line in lines:
+        if line.strip() and not line.strip().startswith("#"):
+            return re.match(r"^[ \t]*", line).group(0)
+    return ""
+
+
+def mcp_block(text: str) -> dict:
+    """Раздел `mcp:` из текста `aurora.config.yaml` проекта → {servers, jira_write, bad}.
+
+    `servers` — имена серверов КИТА, которые проект выбрал (`servers: [a, b]`, пунктами
+    списка или одним именем `servers: a`); None — выбора нет, проект берёт все серверы кита;
+    `[]` — не берёт ни одного. Ключи читаются только на первом уровне раздела: вложенный
+    `servers:` — чужой. `bad` — запись выбора, которую не удалось прочесть (не молчим про
+    «все серверы», когда человек хотел сузить). Команд, адресов и токенов в проекте нет:
+    определения живут только в ките (`<кит>/local/mcp.json`, BL-SEC-12). `jira_write` —
+    запрос проекта на запись в Jira: True/False/None («не сказано»). Разрешение выдаёт кит
+    (`kit_mcp_permission`), проект может его только сузить.
     """
-    out = {"servers": None, "jira_write": None}
-    m = re.search(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text or "")
-    if not m:
-        return out
-    lines = m.group(1).splitlines()
+    out = {"servers": None, "jira_write": None, "bad": ""}
+    flow = _MCP_FLOW_RE.search(text or "")
+    if flow:
+        lines = [f"  {k}: {v}" for k, v in _flow_pairs(flow.group(1))]
+        m = None
+    else:
+        m = _MCP_BLOCK_RE.search(text or "")
+        if not m:
+            return out
+        lines = m.group(1).splitlines()
+    top = _mcp_top_indent(lines)
     for i, line in enumerate(lines):
-        w = re.match(r"^\s+jira_write:\s*(\S+)", line)
+        w = re.match(r"^" + top + r"jira_write:\s*(\S+)", line)
         if w:
             out["jira_write"] = w.group(1).strip("'\"").lower() in ("true", "yes", "1", "on", "да")
-        s = re.match(r"^(\s+)servers:\s*(.*?)\s*$", line)
+        s = re.match(r"^" + top + r"servers:\s*(.*?)\s*$", line)
         if not s:
             continue
-        rest = re.sub(r"\s+#.*$", "", s.group(2))
+        rest = re.sub(r"\s+#.*$", "", s.group(1))
         if rest.startswith("["):
             out["servers"] = _mcp_names(rest.strip("[]"))
         elif rest in ("", "~", "null"):
@@ -1879,22 +2011,33 @@ def mcp_block(text: str) -> dict:
                     break
                 names.append(item.group(1).strip("\"'"))
             out["servers"] = names
+        elif re.match(r"^[\w.\-\"']+$", rest):
+            out["servers"] = [rest.strip("\"'")]       # `servers: jira` — одно имя
+        else:
+            out["bad"] = rest[:60]
     return out
 
 
 def mcp_set_servers(text: str, names) -> str:
     """Текст конфига с выбором серверов кита (`mcp: servers: [...]`); `names` None — выбор
-    снимается (проект берёт все). Прочие строки раздела `mcp:` не трогаются."""
+    снимается (проект берёт все). Прочие строки раздела `mcp:` не трогаются; раздел в одну
+    строку (`mcp: {}`) превращается в блок, а не дублируется вторым ключом `mcp:`."""
     text = text or ""
-    m = re.search(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text)
     new = None if names is None else f"  servers: [{yaml_list(names)}]\n"
+    flow = _MCP_FLOW_RE.search(text)
+    if flow:
+        rest = [(k, v) for k, v in _flow_pairs(flow.group(1)) if k != "servers"]
+        block = "mcp:\n" + (new or "") + "".join(f"  {k}: {v}\n" for k, v in rest)
+        return text[:flow.start()] + (block if (new or rest) else "") + text[flow.end():]
+    m = _MCP_BLOCK_RE.search(text)
     if not m:
         if new is None:
             return text
         return text + ("" if text.endswith("\n") or not text else "\n") + "mcp:\n" + new
+    top = _mcp_top_indent(m.group(1).splitlines())
     keep, skipping = [], False
     for line in m.group(1).splitlines(keepends=True):
-        if re.match(r"^\s+servers:", line):
+        if re.match(r"^" + top + r"servers:", line):
             skipping = not re.sub(r"\s+#.*$", "", line.split(":", 1)[1]).strip()
             continue
         if skipping and (re.match(r"^\s*-\s", line) or not line.strip()):

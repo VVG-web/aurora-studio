@@ -3570,6 +3570,8 @@ function renderMcpProject(box, d, M){
         t("mcp.migrate"))) : null,
     (d.unknown || []).length ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
       t("mcp.unknown", {list: d.unknown.join(", ")})) : null,
+    d.selection_bad ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
+      t("mcp.sel_bad", {text: d.selection_bad})) : null,
     el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
       el("b", {}, t("mcp.sel_title")), modeSel,
       el("button", {class:"btn sm primary", onclick: async () => {
@@ -3623,15 +3625,21 @@ async function openMcpMigrate(){
   const r = await mcpPost("project", {action:"migrate", project: S.project.path});
   if (r.error) return toast(r.error, "warn");
   const drawer = mcpOpen(true);
+  // Сервер показывается целиком: имена окружения и заголовков, cwd, роли — значения секретов
+  // маской, окружение, меняющее запуск, открытым текстом; для конфликта — запуск в ките рядом.
+  const dump = o => JSON.stringify(o, null, 2);
   const rows = (r.rows || []).map(x => {
-    const spec = x.project || {};
-    const line = [spec.command || spec.url || "", ...(spec.args || [])].join(" ");
-    return el("div", {class:"list-item", style:"gap:8px;flex-wrap:wrap;align-items:center"},
+    return el("div", {class:"list-item", style:"gap:8px;flex-wrap:wrap;align-items:flex-start"},
       el("b", {class:"mono"}, x.name),
       el("span", {class:"chip " + (x.action === "add" ? "ok" : x.action === "same" ? "" : "warn")},
         t("mcp.migrate_" + x.action)),
       x.secrets ? el("span", {class:"chip warn"}, t("mcp.migrate_secrets", {n: x.secrets})) : null,
-      el("span", {class:"mono muted", style:"font-size:12px;overflow-wrap:anywhere"}, line));
+      x.why ? el("div", {class:"warnbox", style:"flex-basis:100%"}, x.why) : null,
+      el("pre", {class:"mono muted", style:"font-size:12px;margin:0;flex-basis:100%;white-space:pre-wrap;overflow-wrap:anywhere"},
+        t("mcp.migrate_project") + "\n" + dump(x.project)),
+      x.action === "conflict" && x.kit
+        ? el("pre", {class:"mono muted", style:"font-size:12px;margin:0;flex-basis:100%;white-space:pre-wrap;overflow-wrap:anywhere"},
+            t("mcp.migrate_kit") + "\n" + dump(x.kit)) : null);
   });
   const errBox = el("div", {});
   drawer.append(el("h2", {style:"margin-top:0"}, t("mcp.migrate_title")),

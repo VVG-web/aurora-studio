@@ -2130,6 +2130,228 @@ def test_project_mcp_json_cannot_override_kit_servers_or_take_their_tokens(tmp: 
 
 
 @test
+def test_mcp_migration_shows_servers_whole_and_refuses_unsafe_ones(tmp: Path):
+    """Перенос из проекта показывает сервер целиком и не переносит то, что не прошло проверку:
+    окружение, меняющее запуск (NODE_OPTIONS, LD_PRELOAD), имя встроенного сервера, кривые поля."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import contextlib
+    import importlib
+    import io
+    A = importlib.import_module("agent_core")
+    C = importlib.import_module("aurora_common")
+    ck = importlib.import_module("aurora_cockpit")
+    assert ck.mcp_check is C.mcp_check, "проверка серверов продублирована: у панели своя"
+    kit = kit_with_mcp(tmp, {"busy": {"command": "uvx", "args": ["kit-version"]}})
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+    servers = {
+        "risky": {"command": "npx", "args": ["-y", "@x/innocent"], "cwd": "/tmp/work",
+                  "env": {"NODE_OPTIONS": "--require /tmp/evil.js", "LD_PRELOAD": "/tmp/e.so",
+                          "API_KEY": "канарейка-ключ"}},
+        "aurora": {"command": "python3", "args": ["свой.py"]},
+        "bad name!": {"command": "npx"},
+        "strargs": {"command": "npx", "args": "notalist"},
+        "badenv": {"command": "npx", "env": 5},
+        "busy": {"command": "uvx", "args": ["project-version"], "headers": {"X-Key": "канарейка-заголовок"}},
+        "good": {"command": "uvx", "args": ["good-mcp"], "roles": ["worker"],
+                 "env": {"TOKEN": "канарейка-токен"}}}
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    plan = A.mcp_migrate_plan(str(proj), str(kit))
+    rows = {r["name"]: r for r in plan["rows"]}
+    assert {n: r["action"] for n, r in rows.items()} == {
+        "risky": "invalid", "aurora": "invalid", "bad name!": "invalid", "strargs": "invalid",
+        "badenv": "invalid", "busy": "conflict", "good": "add"}, plan
+    shown = json.dumps(plan, ensure_ascii=False)
+    for secret in ("канарейка-ключ", "канарейка-токен", "канарейка-заголовок"):
+        assert secret not in shown, f"показ отдал секрет {secret}"
+    # сервер видно целиком: имена окружения и cwd; то, что меняет запуск, — открытым текстом
+    risky = rows["risky"]["project"]
+    assert risky["cwd"] == "/tmp/work" and set(risky["env"]) == {"NODE_OPTIONS", "LD_PRELOAD", "API_KEY"}
+    assert risky["env"]["NODE_OPTIONS"] == "--require /tmp/evil.js", "запускающее окружение скрыто маской"
+    assert risky["env"]["API_KEY"] == C.MCP_MASK and rows["risky"]["why"]
+    assert rows["good"]["project"]["roles"] == ["worker"]
+    assert rows["busy"]["kit"]["args"] == ["kit-version"], "для конфликта не показан запуск кита"
+    assert "aurora" in rows["aurora"]["why"] and rows["badenv"]["secrets"] == 0
+    # CLI называет те же вещи и не падает на нестроковых типах
+    saved, buf = A._roots, io.StringIO()
+    A._roots = lambda: (kit, proj)
+    try:
+        with contextlib.redirect_stdout(buf):
+            assert A.cmd_mcp_migrate(False, "", False) == 0
+    finally:
+        A._roots = saved
+    out = buf.getvalue()
+    assert "NODE_OPTIONS" in out and "LD_PRELOAD" in out and "/tmp/work" in out, out
+    assert "n o t a l i s t" not in out and "канарейка" not in out and "kit-version" in out
+    # панель отдаёт то же
+    old_kit = ck.KIT
+    ck.KIT = str(kit)
+    try:
+        panel = ck.mcp_action({"action": "migrate"}, str(proj))
+    finally:
+        ck.KIT = old_kit
+    assert "NODE_OPTIONS" in json.dumps(panel, ensure_ascii=False)
+    # перенос: только годное; файл с негодными остаётся на месте
+    done = A.mcp_migrate_apply(str(proj), plan["digest"], str(kit))
+    assert done["moved"] == ["good"] and not done["renamed"], done
+    got = json.loads((kit / "local" / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert set(got) == {"busy", "good"}, f"в кит попало лишнее: {sorted(got)}"
+    assert (proj / "mcp.json").exists()
+
+
+@test
+def test_mcp_migration_leaves_no_secret_in_project_and_reads_file_once(tmp: Path):
+    """После переноса секрета нет ни в одном файле проекта вне `.aurora/` (там он под правами
+    владельца и вне git); перенос берёт серверы из тех же байтов, что показал и подтвердил."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+    kit = kit_with_mcp(tmp, {})
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+    shown = {"mcpServers": {"one": {"command": "uvx", "args": ["one"],
+                                    "env": {"TOKEN": "канарейка-секрет"}}}}
+    (proj / "mcp.json").write_text(json.dumps(shown), encoding="utf-8")
+    plan = A.mcp_migrate_plan(str(proj), str(kit))
+    # файл подменили между показом и разбором: серверы берутся из подтверждённых байтов
+    real = A.parse_mcp_servers
+
+    def swap(raw):
+        out = real(raw)
+        (proj / "mcp.json").write_text(json.dumps({"mcpServers": {
+            "evil": {"command": "sh", "args": ["-c", "id"]}}}), encoding="utf-8")
+        return out
+    A.parse_mcp_servers = swap
+    try:
+        done = A.mcp_migrate_apply(str(proj), plan["digest"], str(kit))
+    finally:
+        A.parse_mcp_servers = real
+    assert done["moved"] == ["one"], done
+    moved = json.loads((kit / "local" / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert set(moved) == {"one"}, f"в кит попал сервер, которого не показывали: {sorted(moved)}"
+    # новый файл проекта с тем же именем — перенести нечего, но секретов он не несёт
+    (proj / "mcp.json").write_text(json.dumps(shown), encoding="utf-8")
+    again = A.mcp_migrate_plan(str(proj), str(kit))
+    assert A.mcp_migrate_apply(str(proj), again["digest"], str(kit))["renamed"]
+    found = []
+    for base, dirs, files in os.walk(proj):
+        if ".aurora" in Path(base).relative_to(proj).parts:
+            continue
+        found += [f for f in files if "канарейка-секрет" in (Path(base) / f).read_text(encoding="utf-8", errors="ignore")]
+    assert not found, f"секрет остался в файлах проекта: {found}"
+    keep = proj / ".aurora" / "mcp.json.migrated"
+    assert keep.is_file() and ".aurora" in (proj / ".gitignore").read_text(encoding="utf-8")
+
+
+@test
+def test_mcp_migration_refuses_unreadable_kit_file_and_project_as_kit(tmp: Path):
+    """Файл кита, который не разбирается, перенос не затирает; копия движка без указателя на
+    кит (кит = сам проект) не пишет `local/mcp.json` в папку проекта."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    ck = importlib.import_module("aurora_cockpit")
+    kit = kit_with_mcp(tmp, {"keep": {"command": "x"}})
+    kit_file = kit / "local" / "mcp.json"
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": {"n": {"command": "uvx"}}}),
+                                   encoding="utf-8")
+    good = A.mcp_migrate_plan(str(proj), str(kit))
+    kit_file.write_text('{"mcpServers": {"keep": ', encoding="utf-8")
+    plan = A.mcp_migrate_plan(str(proj), str(kit))
+    assert plan.get("error") and not plan["rows"], plan
+    out = A.mcp_migrate_apply(str(proj), good["digest"], str(kit))
+    assert out.get("error") and kit_file.read_text(encoding="utf-8") == '{"mcpServers": {"keep": ', out
+    assert not (kit_file.parent / "mcp.json.bak").exists(), "битый файл кита перенесён в .bak и затёрт"
+    old_kit = ck.KIT
+    ck.KIT = str(kit)
+    try:
+        assert ck.mcp_action({"action": "migrate"}, str(proj)).get("error")
+    finally:
+        ck.KIT = old_kit
+    # кит совпал с проектом
+    saved = A._roots
+    A._roots = lambda: (proj, proj)
+    try:
+        out = A.mcp_migrate_apply(str(proj), good["digest"])
+    finally:
+        A._roots = saved
+    assert out.get("error") and not (proj / "local" / "mcp.json").exists(), out
+    try:
+        A.write_mcp_file(proj / "local" / "mcp.json", {"n": {"command": "uvx"}})
+    except OSError:
+        pass
+    else:
+        raise AssertionError("серверы записаны в папку проекта")
+    assert not (proj / "local" / "mcp.json").exists()
+
+
+@test
+def test_mcp_selection_reads_every_yaml_form_or_says_it_cannot(tmp: Path):
+    """`mcp: servers` читается в любой нормальной записи; непонятную запись не принимают за
+    «все серверы», а называют ошибкой; запись выбора не дублирует ключ и не трогает вложенное."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    C = importlib.import_module("aurora_common")
+    ck = importlib.import_module("aurora_cockpit")
+    block = lambda body: C.mcp_block("project:\n" + body)
+    assert block("mcp:\n  servers: jira\n")["servers"] == ["jira"]
+    assert block("mcp: {servers: [a, b]}\n")["servers"] == ["a", "b"]
+    assert block("mcp: {jira_write: false, servers: [a]}\n")["jira_write"] is False
+    assert block("mcp: {}\n")["servers"] is None
+    assert block("mcp:\n  other:\n    servers: [z]\n")["servers"] is None, "вложенный servers прочтён как выбор"
+    assert block("mcp:\n  other:\n    servers: [z]\n  servers: [q]\n")["servers"] == ["q"]
+    assert block("mcp:\n  servers: {x: 1}\n")["bad"], "непонятная запись принята за «выбора нет»"
+    # одна запись выбора, без дубля ключа mcp:
+    got = C.mcp_set_servers("project:\nmcp: {}\nz: 1\n", ["q"])
+    assert got == "project:\nmcp:\n  servers: [q]\nz: 1\n", got
+    got = C.mcp_set_servers("project:\nmcp: {jira_write: false, servers: [a]}\n", ["q"])
+    assert got.count("mcp:") == 1 and "servers: [q]" in got and "jira_write: false" in got, got
+    nested = "project:\nmcp:\n  other:\n    servers: [z]\n"
+    assert "    servers: [z]" in C.mcp_set_servers(nested, ["q"]), "вложенный servers удалён при записи"
+    # непонятная запись — ошибка с понятным текстом, на английском тоже
+    kit = kit_with_mcp(tmp, {"a": {"command": "x"}})
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\nmcp:\n  servers: {x: 1}\n",
+                                             encoding="utf-8")
+    why = A.mcp_selection_error(str(proj), str(kit))
+    assert "{x: 1}" in why
+    assert not re.search("[а-яё]", ck.translate_message(why, "en"), re.I), \
+        f"сообщение осталось по-русски: {ck.translate_message(why, 'en')!r}"
+    # сообщения переноса и выбора переводятся
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\nmcp:\n  servers: [nothing]\n",
+                                             encoding="utf-8")
+    for text in (A.mcp_selection_error(str(proj), str(kit)),
+                 A.mcp_migrate_apply(str(proj), "", str(kit)).get("error") or
+                 A.mcp_migrate_plan(str(proj), str(kit)).get("error") or "в mcp.json проекта нет серверов — переносить нечего"):
+        tr = ck.translate_message(text, "en")
+        assert not re.search("[а-яё]", tr, re.I), f"не переведено: {tr!r}"
+
+
+@test
+def test_kit_aurora_server_survives_a_project_choice_that_omits_it(tmp: Path):
+    """Если в ките есть свой сервер `aurora`, выбор проекта без него не заменяет его встроенным."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+    kit = kit_with_mcp(tmp, {"a": {"command": "x"}, "b": {"command": "y"},
+                             "aurora": {"command": "свой-aurora"}})
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\nmcp:\n  servers: [a]\n",
+                                             encoding="utf-8")
+    cfg = A.mcp_config(str(proj), kit=str(kit), with_aurora=True)["mcpServers"]
+    assert set(cfg) == {"a", "aurora"} and cfg["aurora"]["command"] == "свой-aurora", cfg
+
+
+@test
 def test_project_selects_kit_servers_by_name_and_unknown_name_is_an_error(tmp: Path):
     """Проект выбирает серверы кита по имени; неизвестное имя — понятная ошибка до запуска."""
     sys.path.insert(0, str(KIT / "scripts"))
@@ -2268,7 +2490,7 @@ def test_mcp_migration_shows_differences_and_needs_confirmation(tmp: Path):
     (proj / "mcp.json").write_text(json.dumps(spec), encoding="utf-8")
     plan = A.mcp_migrate_plan(str(proj), str(kit))
     assert {r["name"]: r["action"] for r in plan["rows"]} == {
-        "new": "add", "same": "same", "busy": "conflict", "part": "conflict"}, plan
+        "new": "add", "same": "same", "busy": "conflict", "part": "invalid"}, plan
     assert "канарейка-ключ" not in json.dumps(plan, ensure_ascii=False), "план показал секрет"
     assert [r for r in plan["rows"] if r["name"] == "new"][0]["secrets"] == 1
     kit_file = kit / "local" / "mcp.json"
@@ -2315,6 +2537,7 @@ def test_mcp_migration_shows_differences_and_needs_confirmation(tmp: Path):
     assert again["rows"][0]["action"] == "same"
     done = A.mcp_migrate_apply(str(proj), again["digest"], str(kit))
     assert done["ok"] and done["renamed"] and not (proj / "mcp.json").exists(), done
+    assert (proj / ".aurora" / "mcp.json.migrated").is_file(), "перенесённый файл не убран в .aurora"
     assert A.project_mcp_servers(str(proj)) == {}
     # агент подтвердить перенос не может
     for flag in ("--mcp-migrate", "--mcp-m", "--mcp-migr"):

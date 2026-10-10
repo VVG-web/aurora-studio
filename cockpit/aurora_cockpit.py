@@ -59,6 +59,8 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 from aurora_common import (child_env, engine_dir, is_folder_guide, kit_mcp_permission,  # noqa: E402
                            local_view, mcp_block, mcp_set_servers, mtime_stamp, personal_kit_file, pycache_args, replace_file, trusted_engine_script,
                            utc_slug, utc_stamp, yaml_scalar)
+from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
+                           mcp_check, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cron as CRON                              # noqa: E402 — расписание: раздел «Cron»
@@ -1942,10 +1944,8 @@ def kit_update() -> dict:
 # уходит маска, а маска, пришедшая обратно, значит «оставить как было». Файл лежит в
 # `local/` — папка закрыта .gitignore и обновлением кита не трогается. Там же, ключом
 # `permissions`, лежат права машины (запись в Jira): проект из git их выдать не может.
-MCP_MASK = "••••••"
-MCP_SECRET_MAPS = ("env", "headers")
-MCP_NAME = re.compile(r"^[\w.\-]{1,64}$")
-MCP_ROLES = ("worker", "planner", "critic", "qa")
+# Маска, имена, роли и проверка серверов — общие с движком (`aurora_common`): перенос из
+# проекта и панель проверяют серверы одним и тем же кодом.
 MCP_PERMISSIONS = ("jira_write",)
 
 
@@ -1982,17 +1982,7 @@ def mcp_permissions() -> dict:
 
 def mcp_mask(servers: dict) -> dict:
     """Копия серверов, где вместо каждого секрета стоит маска. Её и видит браузер."""
-    out = {}
-    for name, spec in servers.items():
-        one = json.loads(json.dumps(spec))
-        for key in MCP_SECRET_MAPS:
-            if isinstance(one.get(key), dict):
-                one[key] = {k: (MCP_MASK if v not in ("", None) else v)
-                            for k, v in one[key].items()}
-        if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
-            one["auth"] = MCP_MASK
-        out[name] = one
-    return out
+    return {name: mcp_masked(spec) for name, spec in servers.items()}
 
 
 def mcp_unmask(servers: dict, old: dict, renamed: dict = None) -> str:
@@ -2021,35 +2011,6 @@ def mcp_unmask(servers: dict, old: dict, renamed: dict = None) -> str:
             if not isinstance(src.get("auth"), str):
                 return f"у сервера «{name}» значение auth скрыто маской, а сохранённого нет"
             spec["auth"] = src["auth"]
-    return ""
-
-
-def mcp_check(servers) -> str:
-    """Пустая строка — серверы годятся к записи; иначе — что не так, словами."""
-    if not isinstance(servers, dict):
-        return "mcpServers должен быть объектом «имя → настройка»"
-    for name, spec in servers.items():
-        if not isinstance(name, str) or not MCP_NAME.match(name):
-            return (f"имя «{str(name)[:40]}» не годится: буквы, цифры, точка, дефис и "
-                    "подчёркивание, до 64 знаков")
-        if not isinstance(spec, dict):
-            return f"сервер «{name}»: ожидался объект"
-        cmd, url = spec.get("command"), spec.get("url")
-        if not (isinstance(cmd, str) and cmd.strip()) and not (isinstance(url, str) and url.strip()):
-            return f"сервер «{name}»: нужен command (запуск программы) или url (адрес)"
-        if "args" in spec and not (isinstance(spec["args"], list)
-                                   and all(isinstance(a, str) for a in spec["args"])):
-            return f"сервер «{name}»: args — список строк"
-        for key in MCP_SECRET_MAPS:
-            if key in spec and not (isinstance(spec[key], dict) and all(
-                    isinstance(k, str) and isinstance(v, str) for k, v in spec[key].items())):
-                return f"сервер «{name}»: {key} — объект «имя → строка»"
-        roles = spec.get("roles")
-        if roles is not None and not (isinstance(roles, list)
-                                      and all(r in MCP_ROLES for r in roles)):
-            return f"сервер «{name}»: roles — список из {', '.join(MCP_ROLES)}"
-        if "outbound" in spec and not isinstance(spec["outbound"], bool):
-            return f"сервер «{name}»: outbound — true или false"
     return ""
 
 
@@ -2282,6 +2243,7 @@ def mcp_state(project: str = "") -> dict:
         pass
     out = {"mask": MCP_MASK, "scope": "project", "kit": masked, "kit_path": kit_mcp_file(),
            "roles": list(MCP_ROLES), "selection": chosen, "unknown": unknown,
+           "selection_bad": AG.mcp_selection_bad(project),
            "ignored": {"path": os.path.join(project, "mcp.json"), "names": ignored} if ignored else None,
            "jira_write": {"kit": perms["jira_write"], "project": asked,
                           "effective": bool(perms["jira_write"] and asked is True)}}
@@ -2341,6 +2303,8 @@ def mcp_project_action(payload: dict, project: str) -> dict:
         return Handler._write_config(None, project, mcp_set_servers(read_text(path), names))
     if action == "migrate":
         plan = AG.mcp_migrate_plan(project, KIT)
+        if plan.get("error"):
+            return {"error": plan["error"]}
         if not plan["rows"]:
             return {"error": "в mcp.json проекта нет серверов — переносить нечего"}
         if not payload.get("digest"):
@@ -4747,7 +4711,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(mcp_state(project))
         elif u.path == "/api/mcp/probe":
             # Работают ли серверы в проекте: каждый запускается там, где его запустит прогон,
-            # и называет свои инструменты. Серверы машины и проекта — вместе, как в прогоне.
+            # и называет свои инструменты. Серверы кита, выбранные проектом, — как в прогоне.
             project = q.get("project", [""])[0]
             if not self._known(project):
                 return

@@ -45,6 +45,7 @@ import urllib.request
 from pathlib import Path
 
 from aurora_common import child_env, load_env
+from aurora_common import MCP_MASK, MCP_SECRET_MAPS, mcp_masked, mcp_migrate_problem  # noqa: F401, E402
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, pycache_args, trusted_engine_script, utc_stamp  # noqa: E402
@@ -1468,19 +1469,42 @@ def kit_mcp_path(kit=None) -> Path:
     return Path(kit or _roots()[0]).joinpath(*KIT_MCP)
 
 
-def read_mcp_servers(path) -> dict:
-    """`mcpServers` из файла в стандартной форме; нет файла или он битый — пусто."""
+def parse_mcp_servers(raw) -> tuple:
+    """(серверы, ошибка) из байтов или текста файла в стандартной форме `mcpServers`.
+
+    Ошибка — файл не разобран или `mcpServers` не объект: молча считать такой файл пустым
+    нельзя, запись поверх него стёрла бы остальные серверы и права машины.
+    """
+    try:
+        data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except ValueError:
+        return {}, "не разобран как JSON"
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if servers is None:
+        return {}, ""
+    if not isinstance(servers, dict):
+        return {}, "поле mcpServers — не объект"
+    return {k: v for k, v in servers.items() if isinstance(v, dict)}, ""
+
+
+def read_mcp_file(path) -> tuple:
+    """(серверы, ошибка) из файла: нет файла — пусто без ошибки; не разобран — ошибка."""
     from aurora_common import personal_kit_file
     if personal_kit_file(path):
-        return {}
+        return {}, ""
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    servers = data.get("mcpServers") if isinstance(data, dict) else None
-    return {k: v for k, v in servers.items() if isinstance(v, dict)} \
-        if isinstance(servers, dict) else {}
+        with open(path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return {}, ""
+    except OSError as e:
+        return {}, f"не прочитан: {e.strerror or e}"
+    return parse_mcp_servers(raw)
+
+
+def read_mcp_servers(path) -> dict:
+    """`mcpServers` из файла в стандартной форме; нет файла или он битый — пусто."""
+    return read_mcp_file(path)[0]
 
 
 AURORA_MCP = "aurora"
@@ -1526,10 +1550,25 @@ def project_mcp_servers(project: str) -> dict:
     return read_mcp_servers(os.path.join(project, "mcp.json")) if project else {}
 
 
+def mcp_selection_bad(project: str) -> str:
+    """Запись `mcp: servers:` в конфиге проекта, которую не удалось прочесть; иначе пусто."""
+    from aurora_common import mcp_block
+    try:
+        with open(os.path.join(project, "aurora.config.yaml"), encoding="utf-8",
+                  errors="ignore") as f:
+            return mcp_block(f.read())["bad"]
+    except OSError:
+        return ""
+
+
 def mcp_selection_error(project: str, kit=None) -> str:
     """Понятная причина, если проект выбрал серверы, которых нет в ките; иначе пусто."""
     if not project:
         return ""
+    bad = mcp_selection_bad(project)
+    if bad:
+        return ("в aurora.config.yaml (mcp: servers) выбор серверов записан непонятно: " + bad
+                + ". Напишите servers: [имя, имя] — иначе проект взял бы все серверы кита")
     known = read_mcp_servers(kit_mcp_path(kit))
     _names, unknown = mcp_selection(project, known)
     if not unknown:
@@ -1556,7 +1595,8 @@ def mcp_config(project: str, kit=None, with_aurora: bool = False, aurora_root: s
     if project:
         chosen, _unknown = mcp_selection(project, merged)
         if chosen is not None:
-            merged = {k: v for k, v in merged.items() if k in chosen}
+            # сервер `aurora` в ките — определение Авроры, а не выбор проекта: его выбор не сужает
+            merged = {k: v for k, v in merged.items() if k in chosen or k == AURORA_MCP}
         # MCP самой Авроры — прогону с инструментами, ботам и спискам панели. Свой сервер с
         # тем же именем в ките сильнее: человек вправе его переопределить.
         if with_aurora and AURORA_MCP not in merged:
@@ -1603,21 +1643,6 @@ def mcp_probe(project: str, kit=None, timeout: float = 60, servers: dict | None 
     return out
 
 
-MCP_MASK = "••••••"
-MCP_SECRET_MAPS = ("env", "headers")
-
-
-def mcp_masked(spec: dict) -> dict:
-    """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`) стоит маска."""
-    one = json.loads(json.dumps(spec))
-    for key in MCP_SECRET_MAPS:
-        if isinstance(one.get(key), dict):
-            one[key] = {k: (MCP_MASK if v not in ("", None) else v) for k, v in one[key].items()}
-    if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
-        one["auth"] = MCP_MASK
-    return one
-
-
 def write_mcp_file(path, servers: dict, permissions: dict | None = None) -> dict:
     """Запись файла серверов КИТА: прежняя версия — рядом `.bak`, оба только владельцу.
 
@@ -1626,6 +1651,13 @@ def write_mcp_file(path, servers: dict, permissions: dict | None = None) -> dict
     копией текущего файла. Сбой записи — `OSError` вызывающему.
     """
     path = os.fspath(path)
+    root = os.path.dirname(os.path.dirname(path))
+    # Копия движка без kit_path.txt считает китом сам проект, а `local/` проекта не закрыт
+    # .gitignore: секреты серверов ушли бы в его git (как в `model_config.save`).
+    if os.path.isfile(os.path.join(root, "aurora.config.yaml")) \
+            and not os.path.isfile(os.path.join(root, "scripts", "model_config.py")):
+        raise OSError(f"{root} — папка проекта, а не кита: серверы MCP пишутся только в кит "
+                      "(нет .aurora/kit_path.txt?)")
     data = {}
     if os.path.isfile(path):
         try:
@@ -1659,71 +1691,130 @@ def _mcp_identity(spec: dict) -> tuple:
     return (spec.get("command") or "", tuple(spec.get("args") or ()), spec.get("url") or "")
 
 
-def mcp_migrate_plan(project: str, kit=None) -> dict:
-    """Что перенесётся из `mcp.json` проекта в кит — для показа владельцу, секреты маской.
+def _mcp_secret_count(spec: dict) -> int:
+    """Сколько секретов в сервере; кривые формы (`env: 5`) не роняют показ."""
+    n = sum(len(spec[k]) for k in MCP_SECRET_MAPS if isinstance(spec.get(k), dict))
+    return n + (1 if isinstance(spec.get("auth"), str) and spec["auth"] not in ("", "oauth") else 0)
 
-    Строка: `add` — в ките такого имени нет, сервер переносится; `same` — в ките уже стоит
-    тот же запуск, переносить нечего; `conflict` — в ките под этим именем другой запуск (или
-    в проекте только часть полей: прежнее перекрытие «по полям» больше не работает), сервер
-    не переносится. `digest` — отпечаток файла: согласие дают на показанное, а не на любое.
-    """
+
+def _mcp_migrate_state(project: str, kit=None) -> dict:
+    """Разбор переноса за один проход: файл читается ОДИН раз, и отпечаток, и серверы — из
+    тех же байтов (между двумя чтениями файл мог бы смениться). `servers` — с секретами, для
+    записи в кит; наружу отдаёт `mcp_migrate_plan` без них."""
     import hashlib
     path = os.path.join(project, "mcp.json")
-    mine = read_mcp_servers(path)
+    kit_root = Path(kit or _roots()[0])
+    state = {"path": path, "rows": [], "digest": "", "servers": {}}
+    try:
+        if kit_root.resolve() == Path(project).resolve():
+            state["error"] = ("кит не определён: у копии движка нет .aurora/kit_path.txt — "
+                              "запустите перенос из панели или из папки кита")
+            return state
+    except OSError:
+        pass
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        return state
+    mine, err = parse_mcp_servers(raw)
     if not mine:
-        return {"path": path, "rows": [], "digest": ""}
-    with open(path, "rb") as f:
-        digest = hashlib.sha256(f.read()).hexdigest()
-    at_kit = read_mcp_servers(kit_mcp_path(kit))
-    rows = []
+        return state
+    at_kit, kit_bad = read_mcp_file(kit_mcp_path(kit))
+    if kit_bad:
+        state["error"] = ("local/mcp.json кита не читается или не разобран — поправьте файл целиком "
+                          "(«Настройка кита» → «Весь конфиг»), перенос ничего не записал")
+        return state
+    state["digest"] = hashlib.sha256(raw).hexdigest()
+    state["servers"] = mine
     for name, spec in mine.items():
         have = at_kit.get(name)
-        whole = bool(spec.get("command") or spec.get("url"))
-        if have is None and whole:
+        problem = mcp_migrate_problem(name, spec)
+        if problem:
+            action = "invalid"
+        elif have is None:
             action = "add"
-        elif have is not None and whole and _mcp_identity(have) == _mcp_identity(spec):
+        elif _mcp_identity(have) == _mcp_identity(spec):
             action = "same"
         else:
             action = "conflict"
-        rows.append({"name": name, "action": action, "project": mcp_masked(spec),
-                     "kit": mcp_masked(have) if have else None,
-                     "secrets": sum(len(spec.get(k) or {}) for k in MCP_SECRET_MAPS)
-                     + (1 if spec.get("auth") not in (None, "", "oauth") else 0)})
-    return {"path": path, "rows": rows, "digest": digest}
+        state["rows"].append({
+            "name": name, "action": action, "why": problem,
+            "project": mcp_masked(spec, show_launch_env=True),
+            "kit": mcp_masked(have) if have else None,
+            "secrets": _mcp_secret_count(spec)})
+    return state
+
+
+def mcp_migrate_plan(project: str, kit=None) -> dict:
+    """Что перенесётся из `mcp.json` проекта в кит — для показа владельцу, секреты маской.
+
+    Строка показывает сервер целиком (`project`: замаскированные значения, имена переменных
+    и заголовков видны; окружение, меняющее запуск, — открытым текстом). Действия: `add` — в
+    ките такого имени нет, сервер переносится; `same` — в ките уже стоит тот же запуск;
+    `conflict` — в ките под этим именем другой запуск (он в `kit` рядом), сервер не
+    переносится; `invalid` — сервер не прошёл проверку (`why`: что не так), не переносится.
+    `digest` — отпечаток файла: согласие дают на показанное, а не на любое.
+    """
+    st = _mcp_migrate_state(project, kit)
+    out = {k: st[k] for k in ("path", "rows", "digest")}
+    if st.get("error"):
+        out["error"] = st["error"]
+    return out
+
+
+def _mcp_ignore_engine_dir(project: str) -> None:
+    """`.aurora/` проекта — в .gitignore: туда уходит перенесённый файл с секретами."""
+    gi = os.path.join(project, ".gitignore")
+    try:
+        text = Path(gi).read_text(encoding="utf-8") if os.path.isfile(gi) else ""
+        if not any(l.strip() in (".aurora", ".aurora/", "/.aurora", "/.aurora/")
+                   for l in text.splitlines()):
+            with open(gi, "a", encoding="utf-8") as f:
+                f.write(("" if not text or text.endswith("\n") else "\n") + ".aurora/\n")
+    except OSError:
+        pass
 
 
 def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
     """Перенести показанные серверы в кит. Без отпечатка показанного плана — отказ.
 
-    Файл проекта после переноса переименовывается в `mcp.json.migrated` (если в нём не
-    осталось конфликтов): движок его не читает, а предупреждение гаснет. Секреты, которые
-    были в файле проекта, уходят в `local/mcp.json` кита; в ответ и в журнал не попадают.
+    Файл проекта после переноса (если в нём не осталось конфликтов и негодных серверов)
+    уходит в `<проект>/.aurora/mcp.json.migrated`: движок его не читает, предупреждение
+    гаснет, а секреты не остаются ни в рабочих файлах проекта, ни в его git (`.aurora/`
+    закрыта .gitignore). Секреты, которые были в файле проекта, уходят в `local/mcp.json`
+    кита; в ответ и в журнал не попадают.
     """
-    plan = mcp_migrate_plan(project, kit)
-    if not plan["rows"]:
+    st = _mcp_migrate_state(project, kit)
+    if st.get("error"):
+        return {"error": st["error"]}
+    if not st["rows"]:
         return {"error": "в mcp.json проекта нет серверов — переносить нечего"}
-    if not digest or digest != plan["digest"]:
+    if not digest or digest != st["digest"]:
         return {"error": "файл изменился или перенос не подтверждён: посмотрите различия "
                          "заново и подтвердите показанное"}
-    mine = read_mcp_servers(plan["path"])
     path = kit_mcp_path(kit)
     servers = read_mcp_servers(path)
-    moved = [r["name"] for r in plan["rows"] if r["action"] == "add"]
+    moved = [r["name"] for r in st["rows"] if r["action"] == "add"]
     for name in moved:
-        servers[name] = mine[name]
+        servers[name] = st["servers"][name]
     if moved:
         try:
             write_mcp_file(path, servers)
         except OSError as e:
             return {"error": f"не удалось записать local/mcp.json: {e}"}
-    left = [r["name"] for r in plan["rows"] if r["action"] == "conflict"]
+    left = [r["name"] for r in st["rows"] if r["action"] in ("conflict", "invalid")]
     renamed = False
     if not left:
+        keep = os.path.join(project, ".aurora", "mcp.json.migrated")
         try:
-            os.replace(plan["path"], plan["path"] + ".migrated")
+            os.makedirs(os.path.dirname(keep), exist_ok=True)
+            _mcp_ignore_engine_dir(project)
+            os.replace(st["path"], keep)
+            os.chmod(keep, 0o600)
             renamed = True
         except OSError as e:
-            return {"error": f"серверы перенесены, но mcp.json проекта не переименован: {e}",
+            return {"error": f"серверы перенесены, но mcp.json проекта не убран: {e}",
                     "moved": moved}
     return {"ok": True, "moved": moved, "conflicts": left, "renamed": renamed}
 
@@ -2777,7 +2868,7 @@ def main() -> int:
     ap.add_argument("--venv-install", action="store_true",
                     help="поставить/обновить Pydantic AI в ~/.aurora/venv")
     ap.add_argument("--mcp-probe", action="store_true",
-                    help="запустить MCP-серверы машины и проекта и назвать их инструменты")
+                    help="запустить MCP-серверы кита, выбранные проектом, и назвать их инструменты")
     ap.add_argument("--mcp-migrate", action="store_true",
                     help="перенести серверы из mcp.json проекта в кит: без --yes только "
                          "показывает различия (секреты маской)")
@@ -2821,23 +2912,30 @@ def cmd_mcp_migrate(confirm: bool, digest: str, as_json: bool) -> int:
         print(json.dumps(out, ensure_ascii=False) if as_json else
               ("✗ " + out["error"] if out.get("error") else
                f"✓ перенесено в кит: {', '.join(out['moved']) or 'ничего нового'}"
-               + (f"; не перенесено (конфликт имён): {', '.join(out['conflicts'])}"
+               + (f"; не перенесено (конфликт имён или не прошли проверку): {', '.join(out['conflicts'])}"
                   if out["conflicts"] else "")
-               + ("; mcp.json проекта переименован в mcp.json.migrated" if out["renamed"] else "")))
+               + ("; mcp.json проекта убран в .aurora/mcp.json.migrated" if out["renamed"] else "")))
         return 1 if out.get("error") else 0
     if as_json:
         print(json.dumps(plan, ensure_ascii=False))
-        return 0
+        return 1 if plan.get("error") else 0
+    if plan.get("error"):
+        print("✗ " + plan["error"])
+        return 1
     if not plan["rows"]:
         print("В mcp.json проекта серверов нет — переносить нечего.")
         return 0
     say = {"add": "перенести в кит", "same": "в ките уже есть такой же",
-           "conflict": "НЕ переносится: в ките под этим именем другой запуск"}
+           "conflict": "НЕ переносится: в ките под этим именем другой запуск",
+           "invalid": "НЕ переносится: сервер не прошёл проверку"}
     for r in plan["rows"]:
-        spec = r["project"]
-        line = " ".join([spec.get("command") or spec.get("url") or "", *spec.get("args", [])])
-        print(f"- {r['name']}: {say[r['action']]} · {line}"
-              + (f" · секретов: {r['secrets']} (маска)" if r["secrets"] else ""))
+        print(f"- {r['name']}: {say[r['action']]}")
+        if r.get("why"):
+            print(f"    причина: {r['why']}")
+        # сервер показывается целиком: имена окружения и заголовков видны, значения — маской
+        print("    проект: " + json.dumps(r["project"], ensure_ascii=False))
+        if r["action"] == "conflict" and r.get("kit"):
+            print("    кит:    " + json.dumps(r["kit"], ensure_ascii=False))
     print("\nПодтвердить показанное: --mcp-migrate --yes --digest " + plan["digest"])
     return 0
 

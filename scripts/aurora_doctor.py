@@ -534,8 +534,12 @@ def check_mcp() -> list:
             out.append(f"mcp.json проекта не используется: определения серверов MCP живут в ките "
                        f"(<кит>/local/mcp.json), а проект лишь выбирает их по имени; в файле "
                        f"серверов: {len(mine)} ({', '.join(list(mine)[:4])}) — перенесите: панель, "
-                       "«Настройки проекта» → MCP → «Перенести в кит»")
+                       "«Настройки проекта» → MCP → «Перенести серверы в кит»")
         _chosen, unknown = _ag.mcp_selection(str(ROOT), _ag.read_mcp_servers(_ag.kit_mcp_path()))
+        bad = _ag.mcp_selection_bad(str(ROOT))
+        if bad:
+            out.append(f"mcp: servers в aurora.config.yaml записан непонятно ({bad}) — напишите "
+                       "servers: [имя, имя]; пока она не исправлена, прогон с инструментами не начнётся")
         if unknown:
             out.append(f"mcp: servers в aurora.config.yaml называет серверы, которых нет в ките: "
                        f"{', '.join(unknown)} — настройте их в «Настройка кита» → MCP-серверы "

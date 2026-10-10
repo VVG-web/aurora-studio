@@ -154,9 +154,17 @@ def keys_of(data: dict) -> set:
 # `raise` и возврат функций, которые отдают причину отказа. Сервер знает те же ключи
 # (`MESSAGE_KEYS`) — их совпадение сверяет проверка.
 MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
-REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask", "mcp_check",
+REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask",
                 "writable_target", "version_gap", "build",
                 "_python_refusal", "doctor_start_failure", "restart_probe_failure")
+
+
+# Причины отказа, которые панель берёт у движка как есть: проверка серверов MCP и перенос из
+# проекта живут в `aurora_common` и `agent_core`, а не в сервере панели. Читаются только эти
+# функции — остальной `agent_core` в каталог сообщений не входит.
+ENGINE_REASONS = {"aurora_common.py": ("mcp_check", "mcp_migrate_problem"),
+                  "agent_core.py": ("mcp_selection_error", "mcp_migrate_apply",
+                                    "_mcp_migrate_state")}
 
 
 def _skeleton(node):
@@ -216,6 +224,25 @@ def message_skeletons() -> set:
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         add(sub.value)
+    for fname, funcs in ENGINE_REASONS.items():
+        path = os.path.join(KIT, "scripts", fname)
+        if not os.path.isfile(path):
+            continue
+        for node in ast.walk(ast.parse(open(path, encoding="utf-8").read())):
+            if not (isinstance(node, ast.FunctionDef) and node.name in funcs):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Return) and sub.value is not None:
+                    add(sub.value)
+                elif isinstance(sub, ast.Dict):
+                    for k, v in zip(sub.keys, sub.values):
+                        if isinstance(k, ast.Constant) and k.value in MESSAGE_KEYS:
+                            add(v)
+                elif isinstance(sub, ast.Assign):
+                    for tgt in sub.targets:
+                        if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
+                                and tgt.slice.value in MESSAGE_KEYS):
+                            add(sub.value)
     # Находки доктора — строки `ERROR:` и `WARN:`, которые панель показывает на «Здоровье»:
     # их рождает `.append(...)` в самом скрипте.
     doctor = os.path.join(KIT, "scripts", "aurora_doctor.py")
