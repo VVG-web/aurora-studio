@@ -561,7 +561,8 @@ def _word_profile(card: "Card") -> tuple:
     head.update(loose_ids(card.stem))
     head.update(loose_ids(card.title))
     for key in ID_FIELDS:
-        raw = str((card.fm or {}).get(key) or "")
+        # getattr: разбор принимает и «утиные» карточки без fm (тесты, внешние вызовы)
+        raw = str((getattr(card, "fm", None) or {}).get(key) or "")
         head.update(ids(raw))
         head.update(loose_ids(raw))
     brief = set(words(card.summary))

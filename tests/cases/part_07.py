@@ -1524,6 +1524,13 @@ def test_dotted_identifier_exact_match_outweighs_citations(tmp: Path):
     card(root, "Concepts/Заявка-на-доработку.md", "Карточка про другое.",
          status="verified", type="concept", spec_id="SPEC-9.1.2")
     citing("Реестр-ссылок", "SPEC-9.1.2")
+    # (б2) остальные поля-ключи: req_id, q_id, key — каждое со своим цитирующим конкурентом
+    for stem, field, num in (("Требование-входа", "req_id", "REQ-2.1.1"),
+                             ("Вопрос-по-входу", "q_id", "Q-3.2.1"),
+                             ("Задача-входа", "key", "TASK-7.7.7")):
+        card(root, f"Concepts/{stem}.md", "Карточка про другое.", status="verified",
+             type="concept", **{field: num})
+        citing(f"Цитаты-{field}", num)
     # (в) номер только в заголовке при другом имени файла
     (root / "AuroraKnowledgeDB/Concepts/Центр-обработки.md").write_text(
         '---\ntitle: "US-4.7.2 Центр"\ntype: concept\nstatus: verified\n---\n\nПро центр.\n',
@@ -1536,6 +1543,11 @@ def test_dotted_identifier_exact_match_outweighs_citations(tmp: Path):
     # (д) имя с подчёркиванием после номера
     card(root, "Concepts/AC-5.1.1_Экспорт.md", "Про экспорт.", status="verified", type="concept")
     citing("Перечень-критериев", "AC-5.1.1")
+    # (е) номер только в имени файла, заголовок нейтральный
+    (root / "AuroraKnowledgeDB/Concepts/AC-8.1.1-Отчёт.md").write_text(
+        '---\ntitle: "Отчёт"\ntype: concept\nstatus: verified\n---\n\nПро отчёт.\n',
+        encoding="utf-8")
+    citing("Реестр-отчётов", "AC-8.1.1")
 
     def top(query):
         cwd = os.getcwd()
@@ -1547,9 +1559,36 @@ def test_dotted_identifier_exact_match_outweighs_citations(tmp: Path):
         finally:
             os.chdir(cwd)
 
+    def scores(query):
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            cards = C.load_cards()
+            C.measure_rarity(cards)
+            return {st: C.score(c, query) for st, c in cards.items()}
+        finally:
+            os.chdir(cwd)
+
+    # Слияние само ставит карточку с точным номером первой (fuse), поэтому бонус ID_BONUS
+    # проверяем на счёте: без него «про номер» и «цитирует номер» набирают поровну.
+    for num, own, quoter in (("AC-4.4.3", "AC-4.4.3-Фильтр", "Трассировка-раздела"),
+                             ("SPEC-9.1.2", "Заявка-на-доработку", "Реестр-ссылок"),
+                             ("US-4.7.2", "Центр-обработки", "Журнал-историй"),
+                             ("AC-6.2.1", "Фильтр-заявок", "Сводка-критериев"),
+                             ("AC-5.1.1", "AC-5.1.1_Экспорт", "Перечень-критериев"),
+                             ("AC-8.1.1", "AC-8.1.1-Отчёт", "Реестр-отчётов"),
+                             ("REQ-2.1.1", "Требование-входа", "Цитаты-req_id")):
+        sc = scores(num)
+        assert sc[own] >= sc[quoter] + C.ID_BONUS // 2, \
+            f"{num}: карточка про номер ({sc[own]}) не опережает цитирующую ({sc[quoter]}) на бонус"
+    assert C.ID_BONUS >= 10, "бонус за точный номер слишком мал, чтобы перевесить цитаты"
+
     assert top("AC-4.4.3")[0] == "AC-4.4.3-Фильтр", f"имя против цитат: {top('AC-4.4.3')}"
     assert top("SPEC-9.1.2")[0] == "Заявка-на-доработку", f"spec_id против цитат: {top('SPEC-9.1.2')}"
     assert top("US-4.7.2")[0] == "Центр-обработки", f"заголовок против цитат: {top('US-4.7.2')}"
+    for stem, num in (("Требование-входа", "REQ-2.1.1"), ("Вопрос-по-входу", "Q-3.2.1"),
+                      ("Задача-входа", "TASK-7.7.7")):
+        assert top(num)[0] == stem, f"поле-ключ {num} против цитат: {top(num)}"
     assert top("AC-6.2.1")[0] == "Фильтр-заявок", f"алиас против цитат: {top('AC-6.2.1')}"
     assert top("AC-5.1.1")[0] == "AC-5.1.1_Экспорт", f"имя с «_» против цитат: {top('AC-5.1.1')}"
     # префикс чужого документа с тем же номером не засчитывается: AC-4.7.2 нет, есть US-4.7.2
@@ -1589,6 +1628,8 @@ def test_dotted_identifier_separator_and_fusion_priority(tmp: Path):
     raw("Фильтр-реестра", "AC 4.4.3 Фильтр реестра")
     raw("AC_4.5.1_Экспорт", "Экспорт")
     raw("Выгрузка", "Выгрузка", extra='aliases: ["AC 4.6.2"]\n')
+    raw("Реквизиты", "Реквизиты", extra='spec_id: "SPEC 9.2.2"\n')
+    raw("Ссылки", "Ссылки", body="Смотри SPEC-9.2.2 и SPEC-9.2.2. " * 5)
     raw("Цитата", "Цитата", body="Смотри AC-4.4.3 и AC-4.5.1 и AC-4.6.2. " * 5)
     raw("Сосед", "AC-4.4.1 Просмотр", body="Просмотр реестра заявок.")
 
@@ -1605,6 +1646,7 @@ def test_dotted_identifier_separator_and_fusion_priority(tmp: Path):
     assert top("AC-4.4.3")[0] == "Фильтр-реестра", f"заголовок «AC 4.4.3»: {top('AC-4.4.3')}"
     assert top("AC-4.5.1")[0] == "AC_4.5.1_Экспорт", f"имя «AC_4.5.1»: {top('AC-4.5.1')}"
     assert top("AC-4.6.2")[0] == "Выгрузка", f"алиас «AC 4.6.2»: {top('AC-4.6.2')}"
+    assert top("SPEC-9.2.2")[0] == "Реквизиты", f"поле «SPEC 9.2.2»: {top('SPEC-9.2.2')}"
     assert "Фильтр-реестра" not in top("US-4.4.3"), "чужой префикс нашёл карточку «AC 4.4.3»"
     assert top("пункт 4.4.3")[0] == "Фильтр-реестра", "номер без префикса перестал находить"
     # с вектором: лучший по смыслу — соседний номер, точный номер всё равно первый
