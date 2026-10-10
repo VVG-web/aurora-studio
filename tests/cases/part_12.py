@@ -945,7 +945,7 @@ def test_kit_launchers_try_python_before_trusting_it(tmp: Path):
     assert "/start-aurora.bat -text" in (KIT / ".gitattributes").read_text(encoding="utf-8"), \
         "git поменяет концы строк .bat при клоне или в архиве"
     text = bat.decode("utf-8")
-    assert "sys.version_info >= (3, 9)" in text and "where python" not in text, \
+    assert "sys.version_info >= (3, 10)" in text and "where python" not in text, \
         ".bat снова доверяет поиску по PATH"
     bash = shutil.which("bash")
     if not bash or os.name == "nt":
@@ -966,7 +966,7 @@ def test_kit_launchers_try_python_before_trusting_it(tmp: Path):
     shutil.copy2(KIT / "start-aurora.command", kit / "start-aurora.command")
     cp = subprocess.run([bash, str(kit / "start-aurora.command")], input="", capture_output=True,
                         text=True, encoding="utf-8", errors="replace", timeout=30, env={"PATH": f"{fake}:/bin", "HOME": str(tmp)})
-    assert cp.returncode == 1 and "Не найден Python 3.9" in cp.stdout, \
+    assert cp.returncode == 1 and "Не найден Python 3.10" in cp.stdout, \
         f"заглушка python3 принята за Python:\n{cp.stdout}{cp.stderr}"
     (fake / "python3").unlink()
     (fake / "python3").symlink_to(sys.executable)

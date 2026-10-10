@@ -6,7 +6,7 @@ set KIT_HINT={{KIT_PATH}}
 
 call :find_py
 if not defined PY (
-  echo Не найден Python 3.9 или новее. Установите: https://www.python.org/downloads/
+  echo Не найден Python 3.10 или новее. Установите: https://www.python.org/downloads/
   pause
   exit /b 1
 )
@@ -46,6 +46,6 @@ REM Интерпретатор проверяется запуском, а не 
 REM WindowsApps - ярлык Microsoft Store, он открывает магазин вместо Python.
 :find_py
 set "PY="
-py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=py -3" && exit /b 0
-python -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=python" && exit /b 0
+py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1 && set "PY=py -3" && exit /b 0
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1 && set "PY=python" && exit /b 0
 exit /b 0

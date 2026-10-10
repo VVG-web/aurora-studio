@@ -1,6 +1,6 @@
 @echo off
 REM Aurora Studio — первый запуск двойным щелчком (Windows).
-REM Проверяет Python 3.9+ и git, предлагает доустановить недостающее, поднимает панель.
+REM Проверяет Python 3.10+ и git, предлагает доустановить недостающее, поднимает панель.
 REM Файл хранится с концами строк CRLF (.gitattributes): с одними LF cmd.exe
 REM промахивается мимо меток goto.
 chcp 65001 >nul
@@ -10,7 +10,7 @@ setlocal EnableDelayedExpansion
 call :find_py
 if defined PY goto have_py
 
-echo Не найден Python 3.9 или новее — без него Aurora не работает.
+echo Не найден Python 3.10 или новее — без него Aurora не работает.
 where winget >nul 2>&1 || goto no_py
 set "a="
 set /p a=Поставить Python 3 через winget? [y/N]
@@ -54,6 +54,6 @@ REM Интерпретатор проверяется запуском, а не 
 REM WindowsApps — ярлык Microsoft Store, он открывает магазин вместо Python.
 :find_py
 set "PY="
-py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=py -3" && exit /b 0
-python -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >nul 2>&1 && set "PY=python" && exit /b 0
+py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1 && set "PY=py -3" && exit /b 0
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1 && set "PY=python" && exit /b 0
 exit /b 0

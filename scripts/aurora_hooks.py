@@ -93,10 +93,10 @@ if [ -f scripts/aurora_hooks.py ]; then
 # а `python3` из WindowsApps — заглушка магазина, которая не запускается.
 PY=
 for c in python3 python 'py -3'; do
-  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
 done
   if [ -z "$PY" ]; then
-    echo "aurora: нет Python 3.9+ — содержимое пуша проверить нечем, пуш остановлен." >&2
+    echo "aurora: нет Python 3.10+ — содержимое пуша проверить нечем, пуш остановлен." >&2
     echo "        Осознанно: git push --no-verify" >&2
     exit 1
   fi
@@ -120,10 +120,10 @@ MODE_EARLY="{mode}"
 # а `python3` из WindowsApps — заглушка магазина, которая не запускается.
 PY=
 for c in python3 python 'py -3'; do
-  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
 done
 if [ -z "$PY" ]; then
-  echo "aurora: нет Python 3.9+ — проверка базы пропущена" >&2
+  echo "aurora: нет Python 3.10+ — проверка базы пропущена" >&2
   exit 0
 fi
 
@@ -147,6 +147,14 @@ git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM \\
     -- AuroraKnowledgeDB > "$STAGED_LIST" 2>/dev/null
 if [ -s "$STAGED_LIST" ]; then
   MINE=$($PY "$LINT" --only-from "$STAGED_LIST" --summary 2>&1)
+  MINE_RC=$?
+  # Код 2 — защита версии Python в самом линтере: он не запускался. Молча пройти нельзя.
+  if [ "$MINE_RC" -eq 2 ]; then
+    echo "$MINE" >&2
+    echo "aurora: линтер не запущен: нужен Python 3.10+, рекомендуем 3.11+ — проверка базы пропущена, коммит не блокируется" >&2
+    rm -f "$STAGED_LIST"
+    exit 0
+  fi
   MINE_ERR=$(printf '%s' "$MINE" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
   if [ -n "$MINE_ERR" ] && [ "$MINE_ERR" -gt 0 ] && [ "$MODE_EARLY" != "warn" ]; then
     echo "$MINE"
@@ -163,6 +171,14 @@ fi
 rm -f "$STAGED_LIST"
 
 OUT=$($PY "$LINT" --summary 2>&1)
+OUT_RC=$?
+# Код 2 — защита версии Python в самом линтере: он не запускался, и без этой ветки
+# вывод пропал бы вместе с проверкой (в нём нет «ошибок N»). Громко, но коммит не блокируем.
+if [ "$OUT_RC" -eq 2 ]; then
+  echo "$OUT" >&2
+  echo "aurora: линтер не запущен: нужен Python 3.10+, рекомендуем 3.11+ — проверка базы пропущена, коммит не блокируется" >&2
+  exit 0
+fi
 ERRORS=$(printf '%s' "$OUT" | sed -n 's/.*ошибок \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
 CARDS=$(printf '%s' "$OUT" | sed -n 's/.*карточек \\([0-9][0-9]*\\).*/\\1/p' | tail -1)
 [ -z "$ERRORS" ] && exit 0
@@ -231,10 +247,10 @@ TERMS="{terms}"
 # а `python3` из WindowsApps — заглушка магазина, которая не запускается.
 PY=
 for c in python3 python 'py -3'; do
-  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
+  if $c -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then PY=$c; break; fi
 done
 if [ -z "$PY" ]; then
-  echo "aurora: нет Python 3.9+ — сообщение коммита проверить нечем, коммит остановлен." >&2
+  echo "aurora: нет Python 3.10+ — сообщение коммита проверить нечем, коммит остановлен." >&2
   echo "        Осознанно: git commit --no-verify" >&2
   exit 1
 fi

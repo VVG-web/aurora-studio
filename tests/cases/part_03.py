@@ -1889,14 +1889,16 @@ def test_python_version_policy_levels_and_messages(tmp: Path):
     assert AC.python_message((3, 12, 1)) == ""
     old = AC.python_message((3, 9, 6), "darwin")
     assert "3.9.6" in old and "brew install python@3.14" in old and "Command Line Tools" in old \
-        and "--no-verify" in old, old
+        and "--no-verify" not in old, old   # подсказка обходила бы и commit-msg с внутренними названиями
     assert "winget install -e --id Python.Python.3.14" in AC.python_message((3, 9, 6), "win32")
     assert "Python.Python.3.12" not in AC.python_install_hint("win32"), \
         "winget отдаёт 3.12 без исправлений безопасности"
     linux = AC.python_message((3, 9, 6), "linux")
     assert "deadsnakes" in linux and "uv python install 3.14" in linux, linux
     assert "apt install python3.12" not in linux, "на Ubuntu 22.04 этого пакета нет"
-    assert AC.UV_INSTALL_URL in old, "про macOS без прав администратора: не сказано, откуда взять uv"
+    assert "uv python install 3.14" in old, "про macOS без прав администратора: нет uv"
+    for plat in ("darwin", "win32", "linux"):
+        assert "astral.sh" not in AC.python_install_hint(plat), "ссылка на чужой хост в подсказке"
     # перевод подсказок для английской панели лежит в каталоге под точным текстом подсказки
     en_install = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))["install"]
     for plat in ("darwin", "win32", "linux"):
@@ -2043,38 +2045,21 @@ def test_doctor_and_panel_report_the_python_version(tmp: Path):
 
 
 @test
-def test_pydantic_ai_extra_needs_python_310_and_finds_interpreters_by_asking_them(tmp: Path):
-    """Надстройка Pydantic AI требует Python 3.10+ (на 3.9 pip молча берёт старую ветку 0.x).
-    `python_for` не доверяет имени `python3.N`: запускает кандидата и спрашивает версию."""
+def test_pydantic_ai_extra_needs_python_310_and_python_for_uses_this_interpreter(tmp: Path):
+    """Надстройки требуют Python 3.10+ (на 3.9 pip молча берёт старую ветку 0.x).
+    Ниже 3.10 движок не запускается (защита версии), поэтому `python_for` не ищет другой
+    интерпретатор: этот, если подходит, иначе пусто."""
     sys.path.insert(0, str(SCRIPTS))
     import importlib
     EX = importlib.import_module("aurora_extras")
     assert EX.EXTRAS["pydantic-ai"]["min_python"] >= (3, 10), "Pydantic AI на 3.9 не ставится"
     assert EX.EXTRAS["graphify"]["min_python"] >= (3, 10)
-    if os.name == "nt":
-        return
-    saved = (EX.EXTRAS["pydantic-ai"]["min_python"], os.environ.get("PATH"), os.environ.get("HOME"))
-    bindir = tmp / "bin"
-    bindir.mkdir()
-
-    def fake(name, says):
-        f = bindir / name
-        f.write_text(f"#!/bin/sh\necho '{says}'\n", encoding="utf-8")
-        f.chmod(0o755)
-        return f
-
+    assert not hasattr(EX, "_probe_python") and not hasattr(EX, "_python_candidates"), \
+        "недостижимый поиск интерпретаторов вернулся"
+    saved = EX.EXTRAS["pydantic-ai"]["min_python"]
     try:
-        EX.EXTRAS["pydantic-ai"]["min_python"] = (3, 20)    # новее любого настоящего Python
-        os.environ["PATH"] = f"{bindir}:/usr/bin:/bin"
-        os.environ["HOME"] = str(tmp)                       # ни ~/.local, ни pyenv хозяина
-        fake("python3.20", f"3.9|{bindir}/python3.20")      # имя врёт: на деле это 3.9
-        assert EX.python_for("pydantic-ai") == "", "поверили имени, а не ответу интерпретатора"
-        real = fake("python3.20", f"3.20|{bindir}/python3.20")
-        assert EX.python_for("pydantic-ai") == str(real), "честный кандидат не найден"
+        assert EX.python_for("pydantic-ai") == sys.executable
+        EX.EXTRAS["pydantic-ai"]["min_python"] = (3, 99)    # новее любого настоящего Python
+        assert EX.python_for("pydantic-ai") == ""
     finally:
-        EX.EXTRAS["pydantic-ai"]["min_python"] = saved[0]
-        os.environ["PATH"] = saved[1] or ""
-        if saved[2] is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = saved[2]
+        EX.EXTRAS["pydantic-ai"]["min_python"] = saved

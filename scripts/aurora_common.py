@@ -43,7 +43,6 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 PYTHON_SUPPORTED_FROM = (3, 11)   # поддерживаем и тестируем
 PYTHON_MIN_HARD = (3, 10)         # ниже — остановка; aurora.py держит то же число (тест сверяет)
 PYTHON_RECOMMENDED = (3, 14)      # что советуем ставить
-UV_INSTALL_URL = "https://docs.astral.sh/uv/getting-started/installation/"
 PYTHON_STOP_RC = 2                # код выхода при остановке (3 — «упал», 1 — «есть находки»)
 
 
@@ -67,14 +66,14 @@ def python_install_hint(platform=None):
     if platform == "darwin":
         return ("macOS: `brew install python@%s` или установщик с https://www.python.org/downloads/ "
                 "(после него откройте «Install Certificates.command»); без прав администратора — "
-                "`uv python install %s` (сам uv: %s). Системный Python (из Command Line Tools) "
-                "не обновляется и не подходит — его трогать не нужно." % (rec, rec, UV_INSTALL_URL))
+                "`uv python install %s`, если uv у вас уже есть. Системный Python (из Command "
+                "Line Tools) не обновляется и не подходит — его трогать не нужно." % (rec, rec))
     if platform.startswith("win"):
         return ("Windows: `winget install -e --id Python.Python.%s` или установщик с "
                 "https://www.python.org/downloads/. После установки запустите файл снова." % rec)
     return ("Linux: поставьте Python %s+ из пакетов дистрибутива (на Ubuntu 22.04 его нет в "
-            "основном репозитории — нужен PPA deadsnakes) или `uv python install %s` (сам uv: %s)."
-            % (_py_ver(PYTHON_SUPPORTED_FROM), rec, UV_INSTALL_URL))
+            "основном репозитории — нужен PPA deadsnakes) или `uv python install %s`, если uv у вас "
+            "уже есть." % (_py_ver(PYTHON_SUPPORTED_FROM), rec))
 
 
 def python_message(vi=None, platform=None):
@@ -90,9 +89,7 @@ def python_message(vi=None, platform=None):
                 % (have, _py_ver(PYTHON_SUPPORTED_FROM), _py_ver(PYTHON_RECOMMENDED),
                    python_install_hint(platform)))
     return ("Python %s слишком старый для Авроры. Нужен Python %s+ (лучше %s; %s ещё запускается, "
-            "но снят с поддержки). %s Если это git-хук и коммит нужен срочно, "
-            "`git commit --no-verify` пропустит проверку — но поставьте Python, иначе проверки "
-            "не будет и дальше."
+            "но снят с поддержки). %s"
             % (have, _py_ver(PYTHON_SUPPORTED_FROM), _py_ver(PYTHON_RECOMMENDED),
                _py_ver(PYTHON_MIN_HARD), python_install_hint(platform)))
 

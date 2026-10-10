@@ -2748,7 +2748,7 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
     LF (установка с macOS или из WSL) cmd.exe промахивается мимо меток `goto`.
     """
     tpl = (KIT / "templates/launchers/start-aurora.bat").read_text(encoding="utf-8")
-    assert ":find_py" in tpl and "sys.version_info >= (3, 9)" in tpl and "where py" not in tpl, \
+    assert ":find_py" in tpl and "sys.version_info >= (3, 10)" in tpl and "where py" not in tpl, \
         "шаблон .bat проекта снова доверяет поиску по PATH"
     sys.path.insert(0, str(KIT / "scripts"))
     import importlib
@@ -2766,6 +2766,8 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
         assert "python3 \"$LINT\"" not in body and "| python3 " not in body, \
             f"хук {name} зовёт python3 напрямую"
         assert "'py -3'" in body, f"хук {name} не пробует py -3"
+        assert "(3, 10)" in body and "(3, 9)" not in body and "Python 3.9" not in body, \
+            f"хук {name} допускает Python 3.9, а движок на нём останавливается"
     sh = shutil.which("sh")
     if not sh or os.name == "nt":
         return
@@ -2786,6 +2788,46 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
                         timeout=30, env={"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp)})
     assert cp.returncode == 0 and "scanned" in cp.stdout, \
         f"пуш-хук не нашёл python за заглушкой python3: rc={cp.returncode}\n{cp.stdout}{cp.stderr}"
+
+
+@test
+def test_pre_commit_hook_says_aloud_when_the_linter_stops_on_old_python(tmp: Path):
+    """Линтер вышел с кодом 2 (защита версии Python) — хук печатает его вывод и понятную строку.
+
+    Раньше вывод попадал в переменную, «ошибок N» в нём не было, и хук молча делал exit 0:
+    проверка базы выключалась без единого слова. Коммит при этом не блокируется.
+    """
+    sh = shutil.which("sh")
+    if not sh or os.name == "nt":
+        return
+    sys.path.insert(0, str(KIT / "scripts"))
+    import importlib
+    H = importlib.import_module("aurora_hooks")
+    fake = tmp / "bin"
+    fake.mkdir()
+    (fake / "python3").symlink_to(sys.executable)
+    repo = tmp / "repo"
+    (repo / ".aurora/scripts").mkdir(parents=True)
+    (repo / "AuroraKnowledgeDB").mkdir()
+    (repo / ".aurora/scripts/kb_lint.py").write_text(
+        "import sys\nsys.stderr.write('aurora: Python 3.9.6 слишком старый для Авроры.\\n')\nsys.exit(2)\n",
+        encoding="utf-8")
+    hook = repo / "pre-commit"
+    hook.write_text(H.HOOK.format(marker=H.MARKER, mode="block"), encoding="utf-8")
+    env = {"PATH": f"{fake}:/usr/bin:/bin", "HOME": str(tmp)}
+    git = shutil.which("git")
+    subprocess.run([git, "init", "-q"], cwd=str(repo), check=True, env=env)
+    for staged in (False, True):     # полный проход и проход «только то, что коммитят»
+        if staged:
+            (repo / "AuroraKnowledgeDB/a.md").write_text("# a\n", encoding="utf-8")
+            subprocess.run([git, "add", "AuroraKnowledgeDB/a.md"], cwd=str(repo), check=True, env=env)
+        cp = subprocess.run([sh, str(hook)], cwd=str(repo), capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=30, env=env)
+        out = cp.stdout + cp.stderr
+        assert cp.returncode == 0, f"коммит не должен блокироваться: rc={cp.returncode}\n{out}"
+        assert "слишком старый" in out, f"вывод линтера пропал (staged={staged}):\n{out}"
+        assert "линтер не запущен: нужен Python 3.10+, рекомендуем 3.11+" in out, \
+            f"нет внятной строки (staged={staged}):\n{out}"
 
 
 @test
