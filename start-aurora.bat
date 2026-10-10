@@ -15,7 +15,7 @@ where winget >nul 2>&1 || goto no_py
 set "a="
 set /p a=Поставить Python 3 через winget? [y/N]
 if /i not "!a!"=="y" goto no_py
-winget install -e --id Python.Python.3.12
+winget install -e --id Python.Python.3.14
 call :find_py
 if defined PY goto have_py
 REM winget дописывает PATH для новых окон, а это окно видит старый.

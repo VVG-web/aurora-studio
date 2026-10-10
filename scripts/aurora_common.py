@@ -31,7 +31,8 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 # (расхождение документов с этими числами ловит тест политики версий).
 #
 #   3.11 и новее — поддерживаем и тестируем;
-#   3.10        — работает, но снят с поддержки (2026-10-01): doctor и панель предупреждают;
+#   3.10        — работает, но поддержка апстрима заканчивается (PEP 619: октябрь 2026, день
+#                 не подтверждён): doctor и панель предупреждают;
 #   ниже 3.10   — остановка с понятным текстом (там не ставятся Pydantic AI и зависимости).
 #
 # ВАЖНО: защита ниже срабатывает при импорте модуля, а Python разбирает файл целиком ДО
@@ -43,6 +44,7 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
 PYTHON_SUPPORTED_FROM = (3, 11)   # поддерживаем и тестируем
 PYTHON_MIN_HARD = (3, 10)         # ниже — остановка; aurora.py держит то же число (тест сверяет)
 PYTHON_RECOMMENDED = (3, 14)      # что советуем ставить
+PYTHON_MIN_HARD_EOL = "2026-10"   # месяц конца поддержки PYTHON_MIN_HARD по PEP 619 (день не подтверждён)
 PYTHON_STOP_RC = 2                # код выхода при остановке (3 — «упал», 1 — «есть находки»)
 
 
@@ -84,12 +86,12 @@ def python_message(vi=None, platform=None):
         return ""
     have = _py_ver(vi[:3])
     if level == "warn":
-        return ("Python %s снят с поддержки (2026-10-01): Аврора на нём пока запускается, но "
-                "не проверяется. Нужен Python %s+ (лучше %s). %s"
-                % (have, _py_ver(PYTHON_SUPPORTED_FROM), _py_ver(PYTHON_RECOMMENDED),
-                   python_install_hint(platform)))
+        return ("Python %s: поддержка этой версии заканчивается (PEP 619: %s). Аврора на нём пока "
+                "запускается, но не проверяется. Нужен Python %s+ (лучше %s). %s"
+                % (have, PYTHON_MIN_HARD_EOL, _py_ver(PYTHON_SUPPORTED_FROM),
+                   _py_ver(PYTHON_RECOMMENDED), python_install_hint(platform)))
     return ("Python %s слишком старый для Авроры. Нужен Python %s+ (лучше %s; %s ещё запускается, "
-            "но снят с поддержки). %s"
+            "но его поддержка заканчивается). %s"
             % (have, _py_ver(PYTHON_SUPPORTED_FROM), _py_ver(PYTHON_RECOMMENDED),
                _py_ver(PYTHON_MIN_HARD), python_install_hint(platform)))
 

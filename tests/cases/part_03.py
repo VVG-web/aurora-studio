@@ -1904,7 +1904,24 @@ def test_python_version_policy_levels_and_messages(tmp: Path):
     for plat in ("darwin", "win32", "linux"):
         assert AC.python_install_hint(plat) in en_install, f"нет перевода подсказки установки: {plat}"
     warn = AC.python_message((3, 10, 4), "linux")
-    assert "снят с поддержки" in warn and "3.11" in warn and "--no-verify" not in warn, warn
+    assert "поддержка этой версии заканчивается" in warn and "3.11" in warn \
+        and "--no-verify" not in warn, warn
+    # срок подан месяцем (PEP 619), без выдуманного дня; живёт в одной константе и подставляется
+    # аргументом, а не зашит в текст (ключ каталога перевода от даты не зависит)
+    assert AC.PYTHON_MIN_HARD_EOL == "2026-10" and AC.PYTHON_MIN_HARD_EOL in warn, warn
+    assert "2026-10-01" not in warn and "снят с поддержки" not in warn, warn
+    en_msgs = json.loads((KIT / "cockpit/i18n/data/en.json").read_text(encoding="utf-8"))["messages"]
+    assert not any("2026-10-01" in k or "2026-10-01" in str(v) for k, v in en_msgs.items()
+                   if isinstance(v, str)), "в каталоге перевода снова зашита дата конца поддержки"
+    for doc in ("README.md", "README.ru.md", ".github/workflows/test.yml"):
+        assert "2026-10-01" not in (KIT / doc).read_text(encoding="utf-8"), f"{doc}: дата конца поддержки 3.10 не подтверждена"
+    # лаунчер Windows предлагает тот же winget-идентификатор, что и подсказка движка
+    hint_id = re.search(r"--id (Python\.Python\.[\d.]+)", AC.python_install_hint("win32")).group(1)
+    bat = (KIT / "start-aurora.bat").read_text(encoding="utf-8")
+    assert re.findall(r"winget install -e --id (Python\.Python\.[\d.]+)", bat) == [hint_id], \
+        "start-aurora.bat предлагает не тот Python, что python_install_hint('win32')"
+    for wiki in ("wiki/Windows-and-macOS.md", "wiki/ru/Windows-and-macOS.md"):
+        assert re.findall(r"--id (Python\.Python\.[\d.]+)", (KIT / wiki).read_text(encoding="utf-8")) == [hint_id], wiki
     assert AC.python_status((3, 13, 1))[0] == "ok" and AC.python_status((3, 10, 1))[0] == "warn"
     # порог остановки в aurora.py совпадает с константой модуля
     src = (KIT / "aurora.py").read_text(encoding="utf-8")

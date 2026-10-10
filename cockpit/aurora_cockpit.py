@@ -3799,7 +3799,7 @@ def environment(fresh: bool = False) -> dict:
         return False
 
     plat = platform_key()
-    # Python — первый элемент среды: на 3.10 (снят с поддержки) строка предупреждает, на
+    # Python — первый элемент среды: на 3.10 (поддержка заканчивается) строка предупреждает, на
     # слишком старом панель сама не запустилась бы (защита версии в aurora_common).
     py_level, _py_text = python_status()
     items = [

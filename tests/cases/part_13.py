@@ -2795,7 +2795,7 @@ def test_project_launcher_and_git_hooks_do_not_trust_python3(tmp: Path):
 
 @test
 def test_pre_commit_hook_says_aloud_when_the_linter_stops_on_old_python(tmp: Path):
-    """Линтер вышел с кодом 2 (защита версии Python) — хук печатает его вывод и понятную строку.
+    """Линтер вышел с кодом 2 (защита версии, ошибка вызова) — хук печатает его вывод и нейтральную строку.
 
     Раньше вывод попадал в переменную, «ошибок N» в нём не было, и хук молча делал exit 0:
     проверка базы выключалась без единого слова. Коммит при этом не блокируется.
@@ -2813,7 +2813,7 @@ def test_pre_commit_hook_says_aloud_when_the_linter_stops_on_old_python(tmp: Pat
     (repo / ".aurora/scripts").mkdir(parents=True)
     (repo / "AuroraKnowledgeDB").mkdir()
     (repo / ".aurora/scripts/kb_lint.py").write_text(
-        "import sys\nsys.stderr.write('aurora: Python 3.9.6 слишком старый для Авроры.\\n')\nsys.exit(2)\n",
+        "import sys\nsys.stderr.write('kb_lint.py: error: unrecognized arguments: --only-from\\n')\nsys.exit(2)\n",
         encoding="utf-8")
     hook = repo / "pre-commit"
     hook.write_text(H.HOOK.format(marker=H.MARKER, mode="block"), encoding="utf-8")
@@ -2828,9 +2828,11 @@ def test_pre_commit_hook_says_aloud_when_the_linter_stops_on_old_python(tmp: Pat
                             encoding="utf-8", errors="replace", timeout=30, env=env)
         out = cp.stdout + cp.stderr
         assert cp.returncode == 0, f"коммит не должен блокироваться: rc={cp.returncode}\n{out}"
-        assert "слишком старый" in out, f"вывод линтера пропал (staged={staged}):\n{out}"
-        assert "линтер не запущен: нужен Python 3.10+, рекомендуем 3.11+" in out, \
+        assert "unrecognized arguments" in out, f"вывод линтера пропал (staged={staged}):\n{out}"
+        assert "линтер завершился кодом 2 — см. вывод выше; проверка базы пропущена" in out, \
             f"нет внятной строки (staged={staged}):\n{out}"
+        # хук не угадывает причину: хук сам отбирает 3.10+, ложный диагноз про версию вводил в заблуждение
+        assert "нужен Python" not in out, f"ложный диагноз про версию (staged={staged}):\n{out}"
 
 
 @test
