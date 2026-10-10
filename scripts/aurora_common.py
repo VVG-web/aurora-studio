@@ -1777,8 +1777,11 @@ def child_env(project: str = "", **extra) -> dict:
     kit = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for base in (kit, project or os.getcwd()):
         for k, v in load_env(os.path.join(base, ENV_FILE)).items():
-            if k.startswith("AURORA_") and k not in os.environ:
+            # Папку согласий файл настроек не задаёт: файл настроек проекта приезжает через git, и
+            # подложенная в нём папка с готовым реестром «согласила» бы чужие боты и скрипты (ADR-026)
+            if k.startswith("AURORA_") and k not in os.environ and k != "AURORA_CONSENT_HOME":
                 env[k] = v
+    env["AURORA_CONSENT_HOME"] = consent_home()   # родитель и потомки видят один реестр
     env.update(extra)
     return env
 

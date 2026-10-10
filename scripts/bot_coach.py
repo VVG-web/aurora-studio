@@ -125,8 +125,9 @@ def inventory(project, meta: dict, probe=None, cached: dict | None = None) -> di
     chosen = [n for n in meta.get("mcp") or [] if n in all_servers]
     selected, to_probe = {}, {}
     for name in chosen:
+        # скрипт ищем среди всех аргументов: впереди стоят флаги интерпретатора (`-X pycache_prefix=…`)
         if name == AG.AURORA_MCP and "command" in all_servers[name] and \
-                str(all_servers[name].get("args", [""])[0]).endswith("aurora_mcp.py"):
+                any(str(a).endswith("aurora_mcp.py") for a in all_servers[name].get("args") or []):
             selected[name] = {"ok": True, "tools": [_tool(t["name"], t["description"],
                                                           t.get("inputSchema")) for t in M.TOOLS]}
         else:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import importlib
+import importlib.util
 import json
 import os
 import shutil
@@ -743,4 +744,101 @@ def test_approval_without_a_shown_hash_is_refused_and_extras_are_reported(tmp: P
             tx = json.loads((COCKPIT / f"modules/bots/i18n/{lang}.json").read_text(encoding="utf-8"))
             assert tx.get("bots.consent.partial"), lang
     finally:
+        restore()
+
+
+# ------------------------------------------------- доработка 3: сервер Авроры, реестр потомков, aurora.py
+
+@test
+def test_the_coach_knows_the_aurora_server_behind_interpreter_flags(tmp: Path):
+    """Настоящая конфигурация MCP ставит перед скриптом флаги интерпретатора (`-X pycache_prefix=…`):
+    «Улучшить с ИИ» узнаёт сервер Авроры по скрипту среди всех аргументов и берёт его список
+    инструментов без запуска процесса, а не отправляет сервер на опрос."""
+    _path()
+    import agent_core as AG
+    import aurora_mcp as M
+    import bot_coach as BCo
+    p = _project(tmp)
+    args = AG.mcp_config(str(p), with_aurora=True)["mcpServers"][AG.AURORA_MCP]["args"]
+    assert args[0] == "-X" and any(str(a).endswith("aurora_mcp.py") for a in args), args
+    calls = []
+
+    def probe(project, servers=None, describe=False, timeout=0):
+        calls.append(sorted(servers or {}))
+        return {"ok": True, "servers": {}}
+    inv = BCo.inventory(p, {"mcp": [AG.AURORA_MCP]}, probe=probe)
+    assert calls == [], f"сервер Авроры ушёл на опрос: {calls}"
+    assert [t["name"] for t in inv["selected"][AG.AURORA_MCP]["tools"]] == [t["name"] for t in M.TOOLS]
+
+
+@test
+def test_children_of_the_panel_see_the_owners_consent_registry_not_the_project_s(tmp: Path):
+    """Файл настроек проекта приезжает через git: `AURORA_CONSENT_HOME` из него не доезжает до
+    потомков, а реестр потомков всегда тот же, что у родителя. Иначе подложенная папка с готовым
+    реестром «согласила» бы чужого бота."""
+    _path()
+    import subprocess
+    AC = importlib.import_module("aurora_common")
+    B = importlib.import_module("bots")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        rel = _git_bot(B, p)
+        owner_home = os.environ["AURORA_CONSENT_HOME"]
+        # реестр злоумышленника, в котором бот уже одобрен
+        attacker = tmp / "attacker-home"
+        os.environ["AURORA_CONSENT_HOME"] = str(attacker)
+        assert B.approve(p, rel, expect=B.consent_view(p, rel)["sha256"])["ok"]
+        os.environ["AURORA_CONSENT_HOME"] = owner_home
+        assert (attacker / "consent.json").is_file() and B.list_bots(p)[0]["consent"] == "new"
+        (p / AC.ENV_FILE).write_text(f"AURORA_CONSENT_HOME={attacker}\nAURORA_OTHER=1\n", encoding="utf-8")
+        env = AC.child_env(str(p))
+        assert env["AURORA_CONSENT_HOME"] == owner_home, env["AURORA_CONSENT_HOME"]
+        assert env.get("AURORA_OTHER") == "1", "остальные настройки проекта доезжать обязаны"
+        cp = subprocess.run([sys.executable, str(SCRIPTS / "bots.py"), "--check", "--bot", rel,
+                             "--project", str(p)], capture_output=True, text=True, encoding="utf-8",
+                            env=env, timeout=120)
+        assert "ждёт согласия" in cp.stdout, cp.stdout + cp.stderr
+        # без заданной переменной потомок всё равно получает путь реестра родителя
+        del os.environ["AURORA_CONSENT_HOME"]
+        try:
+            assert AC.child_env(str(p))["AURORA_CONSENT_HOME"] == AC.consent_home()
+        finally:
+            os.environ["AURORA_CONSENT_HOME"] = owner_home
+    finally:
+        restore()
+
+
+@test
+def test_the_terminal_launcher_does_not_run_a_foreign_project_engine(tmp: Path):
+    """`aurora.py <команда> <клон>` и `aurora.py setup <клон>` идут через ту же проверку согласия,
+    что и панель: подложенный `.aurora/scripts/aurora_doctor.py` не исполняется, работает скрипт
+    кита; копия кита проходит."""
+    _path()
+    import subprocess
+    spec = importlib.util.spec_from_file_location("aurora_launcher", KIT / "aurora.py")
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)
+    restore = _own_consent(tmp)
+    mk = _Marker(tmp)
+    try:
+        p = _project(tmp)
+        eng = p / ".aurora" / "scripts"
+        for name in ("aurora_doctor.py", "aurora_setup.py"):
+            _evil(eng / name)
+        subprocess.run([sys.executable, str(KIT / "aurora.py"), "doctor", str(p)], cwd=tmp,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        assert not mk.hit(), "aurora.py исполнил подложенный скрипт клона"
+        assert launcher.engine_script(p, "aurora_setup.py") == str(SCRIPTS / "aurora_setup.py")
+        assert launcher.engine_script(p, "aurora_doctor.py") == str(SCRIPTS / "aurora_doctor.py")
+        _run_script(eng / "aurora_doctor.py", p)
+        assert mk.hit(), "проверка не ловит подмену: подложенный скрипт не сработал даже напрямую"
+        # чистая копия кита исполняется из проекта, как и прежде
+        shutil.rmtree(eng)
+        shutil.copytree(SCRIPTS, eng, ignore=shutil.ignore_patterns("__pycache__"))
+        assert launcher.engine_script(p, "aurora_setup.py") == str(eng / "aurora_setup.py")
+        src = (KIT / "aurora.py").read_text(encoding="utf-8")
+        assert src.count("engine_script(") >= 4 and '".aurora/scripts" /' not in src
+    finally:
+        mk.close()
         restore()

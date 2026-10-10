@@ -449,9 +449,12 @@ a copy of the kit (same hash) or approved, the project scripts run as they are; 
 changed file appears (or byte code or a folder link, which cannot be approved), the kit's scripts run
 instead, and "Bots" shows a "Project scripts awaiting approval" card with the same preview and button.
 Usually it is simpler to update the project engine: kit copies need no approval. Every launch of a script
-from `.aurora/scripts` goes through this check, including the linter, corrections and graph at panel start;
-byte code in the project's `__pycache__` is not read (launches use the machine's byte-code prefix), and the
-report steps and graph library come from the kit. `doctor` warns about bots and engine files awaiting
+from `.aurora/scripts` goes through this check, including the linter, corrections and graph at panel start
+and the terminal commands `aurora.py <command> <project>` and `aurora.py setup`; byte code in the project's
+`__pycache__` is not read (launches use the machine's byte-code prefix), and the report steps and graph
+library come from the kit (the project's own are used only when the kit cannot be found). The project's
+settings file cannot set the consent folder (`AURORA_CONSENT_HOME`): the panel's commands and bots see
+the same registry as the panel itself. `doctor` warns about bots and engine files awaiting
 approval. The project's `Scripts/` folder is not run by the engine. Caveats: until BL-SEC-12 the project's
 `mcp.json` is still read (it overrides kit servers by name), and git hooks, bot attachments and the
 external assistant config (its config entry comes from `aurora_mcp.py --selftest`) are not covered by approval.
