@@ -142,11 +142,13 @@ function updateCard(ctx){
       } catch (e) { /* не сохранилось — обновление от этого не хуже */ }
       go.textContent = t("about.restarting");
       const restarted = await ctx.restartPanel({patient: true, progress: text => { go.textContent = text; }});
-      if (restarted === false){
-        // файлы уже заменены, а панель не перезапустилась: не оставляем «Перезапускается…» навсегда
+      if (restarted === false || (restarted && restarted.error)){
+        // файлы уже заменены, а панель не перезапустилась: не оставляем «Перезапускается…»
+        // навсегда и пишем причину отказа здесь же — тост о ней через несколько секунд исчезнет
         go.disabled = false; go.textContent = t("about.update_to", {v: st.latest});
         result.innerHTML = "";
-        result.append(el("div", {class:"warnbox"}, t("about.restart_failed")));
+        result.append(el("div", {class:"warnbox"}, restarted && restarted.error
+          ? t("about.restart_refused", {why: restarted.error}) : t("about.restart_failed")));
       } else if (restarted === "timeout"){
         // старая панель уже остановлена, а новая не ответила: «старая работает» тут было бы неправдой
         go.textContent = t("about.update_to", {v: st.latest});

@@ -149,16 +149,17 @@ async function restartPanel(opts = {}){
   // работать: адрес тот же, и после подъёма достаточно перечитать страницу.
   // `patient` — после обновления кита: первый старт новой версии собирает реестр команд
   // (на нагруженной машине — больше минуты), и ждать надо дольше, говоря, чего ждём.
-  // Возвращает false, если перезапуск не состоялся (отказ сервера, человек передумал):
-  // старая панель жива, и вызывающий раздел вернёт кнопке рабочий вид. Возвращает "timeout",
-  // если старая панель уже ушла, а новая не ответила за отведённое время: прежней нет.
+  // Возвращает false, если человек передумал, и {error}, если сервер отказал (причина — в
+  // error: тост через несколько секунд пропадёт, а раздел покажет её постоянно): в обоих
+  // случаях старая панель жива, и вызывающий раздел вернёт кнопке рабочий вид. Возвращает
+  // "timeout", если старая панель уже ушла, а новая не ответила за отведённое время.
   const say = opts.progress || (text => toast(text));
   const busy = await api("/api/jobs", {quiet:true});
   const live = (busy && busy.jobs || []).filter(j => !j.done);
   if (live.length && !confirm(
       t("restart.busy_ask", {what: live.map(j => j.cmd).join(", ")}))) return false;
   const d = await api("/api/restart", {method:"POST", quiet:true, body:"{}"});
-  if (d && d.error){ toast(d.error, "err"); return false; }
+  if (d && d.error){ toast(d.error, "err"); return {error: d.error}; }
   say(t("restart.rising"));
   const started = Date.now(), limit = (opts.patient ? 300 : 60) * 1000;
   let told = "";

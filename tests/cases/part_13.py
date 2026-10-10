@@ -3823,7 +3823,14 @@ def test_python_gate_messages_are_translated_and_registered(tmp: Path):
             assert en.startswith(en_start), (ru_text, en)
         assert ck.translate_message(ck.doctor_start_failure(2, "x"), "en") == "doctor did not start (code 2): x"
         assert "(code 2)" in ck.translate_message(ck.restart_probe_failure(""), "en")
-        assert "(code 1)" in ck.translate_message(ck.restart_probe_failure("", 1), "en")
+        # код не 2 — дефект самой новой версии, а не старый Python: текст другой, перевод есть
+        for rc in (1, 3):
+            ru_code = ck.restart_probe_failure("", rc)
+            assert "Python" not in ru_code and f"(код {rc})" in ru_code, ru_code
+            en_code = ck.translate_message(ru_code, "en")
+            assert en_code.startswith("the new version fails to load") and f"(code {rc})" in en_code, en_code
+        en_tail = ck.translate_message(ck.restart_probe_failure("хвост", 1), "en")
+        assert en_tail.startswith("the new version fails to load") and en_tail.endswith(": хвост"), en_tail
     finally:
         restore()
     # образцы собираются из кода: ключ каталога не «лишний», а проверка каталогов зелёная
@@ -3876,26 +3883,135 @@ def test_hooks_survive_a_python_without_bz2_and_lzma(tmp: Path):
 
 @test
 def test_failed_restart_gives_the_update_button_back(tmp: Path):
-    """Отказавший перезапуск не оставляет кнопку «Перезапускается…» навсегда.
+    """Отказавший перезапуск не оставляет кнопку «Перезапускается…» навсегда и не прячет причину.
 
-    BL-DEC-01: проба в `restart_self` может отказать уже после замены файлов. `restartPanel`
-    возвращает false во всех случаях, когда панель не перезапущена, а карточка «О программе»
-    возвращает кнопке вид и пишет, что делать, в блоке результата (toast исчезает).
+    BL-DEC-01: проба в `restart_self` может отказать уже после замены файлов. Проверяется
+    поведение, а не текст исходников: `restartPanel` исполняется под node со стабами (отказ
+    сервера, отмена человеком, успех), а карточка «О программе» — со стабом `restartPanel`,
+    который отвечает `false`, `{error}`, `"timeout"` и ничем (успех: страница перечитывается).
+    Причина отказа остаётся в карточке постоянно: тост через несколько секунд исчезает.
+    Нет node — проверка пропускается, как и у других проверок страницы.
     """
-    ui = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
-    restart = ui[ui.index("async function restartPanel("):ui.index("async function checkKitUpdate(")]
-    assert restart.count("return false") >= 2 and 'toast(d.error, "err"); return false' in restart, \
-        "restartPanel не сообщает вызывающему, что перезапуск не состоялся"
-    about = (KIT / "cockpit/modules/about/view.js").read_text(encoding="utf-8")
-    after = about[about.index("await ctx.restartPanel(") - 20:]
-    assert "=== false" in after[:200] and "about.restart_failed" in after[:700] and "go.disabled = false" in after[:700], \
-        "карточка «О программе» не возвращает кнопку после отказавшего перезапуска"
-    # таймаут подъёма — не «старая панель работает»: её уже нет, и текст другой
-    assert 'return "timeout"' in restart and '=== "timeout"' in about and "about.restart_timeout" in about, \
-        "таймаут подъёма не отделён от отказа перезапуска"
+    node = shutil.which("node")
+    if node:
+        ui = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+        start = ui.index("async function restartPanel(")
+        fn = ui[start:ui.index("\n}\n", start) + 2]        # функция верхнего уровня кончается строкой «}»
+        harness = """
+const cfg = {};
+let reloaded = 0, restartCalls = 0;
+const toasts = [];
+const TOKEN = "tok";
+const toast = (m, k) => toasts.push([m, k]);
+const t = (k, v) => k;
+const location = {reload(){ reloaded++; }};
+globalThis.confirm = () => cfg.confirm;
+globalThis.fetch = async () => ({ok: true, json: async () => ({ready: true})});
+async function api(url){
+  if (url === "/api/jobs") return {jobs: cfg.jobs || []};
+  restartCalls++;
+  return cfg.restart;
+}
+FUNCTION
+const out = {};
+cfg.restart = {error: "причина-X"}; cfg.confirm = true;
+out.refused = {ret: await restartPanel({patient: true}), toasts: toasts.splice(0), calls: restartCalls};
+cfg.jobs = [{cmd: "kb:x", done: false}]; cfg.confirm = false; restartCalls = 0;
+out.cancelled = {ret: await restartPanel(), calls: restartCalls};
+cfg.jobs = []; cfg.restart = {}; cfg.confirm = true;
+out.ok = {ret: String(await restartPanel()), reloaded};
+console.log(JSON.stringify(out));
+""".replace("FUNCTION", fn)
+        src = tmp / "restart.mjs"
+        src.write_text(harness, encoding="utf-8")
+        cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=60)
+        assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:800]
+        r = json.loads(cp.stdout.strip().splitlines()[-1])
+        # отказ сервера: причина возвращается вызывающему, а не только уходит в тост
+        assert r["refused"]["ret"] == {"error": "причина-X"} and r["refused"]["toasts"] == [["причина-X", "err"]], r
+        # человек передумал: перезапуск не просили, причины нет
+        assert r["cancelled"] == {"ret": False, "calls": 0}, r
+        # успех: страница перечитана, раздел ничего не рисует
+        assert r["ok"] == {"ret": "undefined", "reloaded": 1}, r
+
+        view = Path(KIT / "cockpit/modules/about/view.js").resolve().as_uri()
+        harness = """
+import {refresh} from "MODULE";
+class N {
+  constructor(tag, attrs){ this.tag = tag; this.attrs = attrs || {}; this.kids = []; this.disabled = false; }
+  append(...c){ for (const x of c) if (x != null) this.kids.push(x); }
+  set innerHTML(v){ this.kids = []; }
+  get innerHTML(){ return ""; }
+  set textContent(v){ this.kids = [v]; }
+  get textContent(){ return this.kids.map(k => typeof k === "string" ? k : k.textContent).join(""); }
+}
+const el = (tag, attrs, ...kids) => {
+  const n = new N(tag, attrs); n.append(...kids);
+  if (attrs && attrs.onclick) n.onclick = attrs.onclick;
+  return n;
+};
+const walk = (n, f) => { if (typeof n === "string") return; f(n); n.kids.forEach(k => walk(k, f)); };
+const tick = () => new Promise(r => setTimeout(r, 0));
+globalThis.confirm = () => true;
+Object.defineProperty(globalThis, "localStorage", {configurable: true,
+  value: {setItem(){}, getItem(){ return null; }, removeItem(){}}});
+async function scenario(answer){
+  const box = new N("div");
+  let opts = null;
+  const ctx = {
+    t: (k, v) => k + (v && v.why ? "|" + v.why : ""), el, root: {dataset: {}},
+    $: () => box, state: {kit: {}}, toast(){}, openDoc(){},
+    ui: {metric: () => el("div"), openIssue(){}},
+    api: async url => {
+      if (url === "/api/about") return {kit: "1", ui: "1", commands: 1, commit: "c", license: "l", releases: []};
+      if (url.startsWith("/api/kit/status")) return {latest: "9.9.9", installed: "1.0.0", newer: true, notes: []};
+      return {from: "1.0.0", to: "9.9.9", notes: []};          // /api/kit/update
+    },
+    restartPanel: async o => { opts = o; return answer; },
+  };
+  await refresh(ctx);
+  let go = null;
+  for (let i = 0; i < 50 && !go; i++){
+    await tick();
+    walk(box, n => { if (n.attrs.class === "btn gold") go = n; });
+  }
+  await go.onclick();
+  await tick();
+  const warn = [];
+  walk(box, n => { if (n.attrs.class === "warnbox") warn.push(n.textContent); });
+  return {disabled: go.disabled, label: go.textContent, warn, patient: !!(opts && opts.patient)};
+}
+const out = {};
+out.cancel = await scenario(false);
+out.refused = await scenario({error: "причина-X"});
+out.timeout = await scenario("timeout");
+out.success = await scenario(undefined);
+console.log(JSON.stringify(out));
+""".replace("MODULE", view)
+        src = tmp / "about_restart.mjs"
+        src.write_text(harness, encoding="utf-8")
+        cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=60)
+        assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:800]
+        r = json.loads(cp.stdout.strip().splitlines()[-1])
+        for name in ("cancel", "refused", "timeout", "success"):
+            assert r[name]["patient"], (name, r)                 # после обновления ждём первый старт терпеливо
+        # отмена: кнопка возвращена, текст без причины
+        assert not r["cancel"]["disabled"] and r["cancel"]["label"].startswith("about.update_to"), r
+        assert r["cancel"]["warn"] == ["about.restart_failed"], r
+        # отказ сервера: кнопка возвращена, причина — в карточке постоянно
+        assert not r["refused"]["disabled"] and r["refused"]["label"].startswith("about.update_to"), r
+        assert r["refused"]["warn"] == ["about.restart_refused|причина-X"], r
+        # таймаут подъёма: старой панели уже нет, текст другой
+        assert r["timeout"]["warn"] == ["about.restart_timeout"], r
+        # успех: страница перечитывается, кнопка остаётся занятой и ничего не сообщается
+        assert r["success"]["warn"] == [] and r["success"]["disabled"], r
+        assert r["success"]["label"] == "about.restarting", r
     for lang in ("ru", "en"):
         cat = json.loads((KIT / f"cockpit/modules/about/i18n/{lang}.json").read_text(encoding="utf-8"))
         assert cat.get("about.restart_failed"), lang
+        assert "{why}" in cat.get("about.restart_refused", ""), lang
         assert cat.get("about.restart_timeout") and cat["about.restart_timeout"] != cat["about.restart_failed"], lang
         assert "alive" not in cat["about.restart_timeout"].lower() and "still running" not in cat["about.restart_timeout"], lang
 

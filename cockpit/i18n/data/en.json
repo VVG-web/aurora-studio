@@ -306,6 +306,8 @@
     "не найден aurora.py — перезапустите панель вручную": "aurora.py was not found — restart the panel by hand",
     "новая версия не запустится на этом Python — панель не перезапущена: {}": "the new version will not start on this Python — the panel was not restarted: {}",
     "новая версия не запустится на этом Python — панель не перезапущена (код {})": "the new version will not start on this Python — the panel was not restarted (code {})",
+    "новая версия не загружается из-за ошибки в её коде — панель не перезапущена: {}": "the new version fails to load because of an error in its code — the panel was not restarted: {}",
+    "новая версия не загружается из-за ошибки в её коде — панель не перезапущена (код {})": "the new version fails to load because of an error in its code — the panel was not restarted (code {})",
     "Новая версия кита требует Python {}.{}+, а панель работает на Python {}.{}.{}. Кит не тронут: обновление ничего не изменило. {}": "The new kit version needs Python {}.{}+, but the panel runs on Python {}.{}.{}. The kit was not touched: the update changed nothing. {}",
     "doctor не запустился (код {}): {}": "doctor did not start (code {}): {}",
     "doctor не запустился (код {})": "doctor did not start (code {})",
