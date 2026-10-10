@@ -57,7 +57,7 @@ UI = os.path.join(KIT, "cockpit", "ui", "index.html")
 sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, engine_dir, is_folder_guide, local_view,  # noqa: E402
-                           mtime_stamp, personal_kit_file, replace_file, trusted_engine_script,
+                           mtime_stamp, personal_kit_file, pycache_args, replace_file, trusted_engine_script,
                            utc_slug, utc_stamp, yaml_scalar)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1501,7 +1501,10 @@ def bots_action(action: str, project: str, payload: dict) -> dict:
             return BOTS.script_view(project, str(payload["script"]))
         return BOTS.consent_view(project, _bot_rel(project, rel))
     if action == "approve":
-        # Согласие даёт только человек — щелчком в карточке «ждёт согласия» (ADR-026).
+        # Согласие даёт только человек — щелчком в карточке «ждёт согласия» (ADR-026) и только
+        # на показанный ему текст: запрос без хеша не одобряет «то, что лежит сейчас».
+        if not payload.get("all") and not str(payload.get("sha256") or ""):
+            return {"ok": False, "error": "changed"}
         if payload.get("script"):
             return BOTS.approve_script(project, str(payload["script"]), str(payload.get("sha256") or ""))
         if payload.get("all"):
@@ -2801,9 +2804,9 @@ def report_state(project: str) -> dict:
     Читаем через тот же `paths.py`, что и сам отчёт: иначе панель и генератор
     расходятся в том, где лежит ростер, и человек правит не тот файл.
     """
-    pkg = os.path.join(project, engine_dir(project), "reports", "analyst")
-    if not os.path.isdir(pkg):
-        pkg = os.path.join(KIT, "reports", "analyst")
+    # Пакет — всегда китовый: копия в проекте (`.aurora/reports/analyst/`) согласием владельца
+    # машины не сверяется, а зонд её исполняет (ADR-026). `paths.py` считает пути от cwd — кит подходит.
+    pkg = os.path.join(KIT, "reports", "analyst")
     if not os.path.isdir(pkg):
         return {"reports": [], "error": "пакет отчётов не установлен — обновите движок"}
 
@@ -2815,7 +2818,8 @@ def report_state(project: str) -> dict:
              "'events': paths.EVENTS_PATH, 'data_dir': paths.DATA_DIR}))")
     p = None
     try:
-        p = subprocess.run([sys.executable, "-c", probe, pkg], cwd=project,
+        # `-I`: папка проекта (cwd) не попадает в `sys.path` — подложенный там `json.py` не подхватится
+        p = subprocess.run([sys.executable, "-I", *pycache_args(), "-c", probe, pkg], cwd=project,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         cfg = json.loads(p.stdout[p.stdout.index("{"):p.stdout.rindex("}") + 1])
     except Exception as e:

@@ -98,8 +98,11 @@ function drawList(ctx){
       if (!confirm(t("bots.consent.all_ask", {list: waiting.map(b => b.file).join("\n")}))) return;
       const r = await post(ctx, "/api/bots/approve", {all: true,
         expect: Object.fromEntries(waiting.map(b => [b.file, b.sha256]))});
-      if (!r || !r.ok) return ctx.toast((r && r.error) || t("bots.failed"), "err");
-      ctx.toast(t("bots.consent.done"), "ok");
+      if (!r || !r.ok) return ctx.toast(r && r.error === "changed" ? t("bots.consent.changed") : ((r && r.error) || t("bots.failed")), "err");
+      // файл, изменившийся после показа списка, сервер пропускает: о неполном итоге говорим прямо
+      const n = (r.files || []).length;
+      if (n < waiting.length) ctx.toast(t("bots.consent.partial", {n: n, total: waiting.length}), "err");
+      else ctx.toast(t("bots.consent.done"), "ok");
       await loadList(ctx);
       if (CUR) await open(ctx, CUR.file, true);
     }}, t("bots.consent.all", {n: waiting.length})));

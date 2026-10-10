@@ -1136,11 +1136,17 @@ def _approve_cli(project: str, a) -> int:
         if view["state"] != "granted":
             approve(project, view["file"], view["sha256"])
             done.append(view["file"])
+    # байт-код, расширения и ссылки на папки согласию не подлежат и продолжают запирать папку
+    # движка: «Согласовано» без этого напоминания обещало бы исполнение скриптов проекта
+    left = [s for s in pending_scripts(project) if s["state"] == "extra"] if (a.scripts or a.script) else []
     if a.json:
-        print(json.dumps({"approved": done}, ensure_ascii=False))
+        print(json.dumps({"approved": done, "locked_by": [s["file"] for s in left]}, ensure_ascii=False))
     else:
         print(f"Согласовано: {len(done)}." if done else "Согласовывать нечего.")
-    return 0
+        for s in left:
+            print(f"✗ {s['file']} согласию не подлежит и запирает папку: удалите его или "
+                  f"обновите движок проекта — пока он есть, работают скрипты кита.")
+    return 1 if left else 0
 
 
 def main(argv=None) -> int:

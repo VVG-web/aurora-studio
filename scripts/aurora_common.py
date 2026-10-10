@@ -1256,15 +1256,31 @@ def consent_key(kind: str, project, rel: str) -> str:
     return f"{kind}|{root}|{str(rel).replace(chr(92), '/')}"
 
 
-def consent_load() -> dict:
+def _consent_read(strict: bool = False) -> dict:
+    """Записи реестра согласий. `strict` — для чтения перед записью: занятый файл (Windows:
+    его в этот миг читает другой поток) не должен выглядеть пустым реестром, иначе запись
+    затёрла бы чужие согласия. Занятость перечитываем с паузой, прочий отказ — наружу."""
     import json
-    try:
-        with open(consent_file(), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
+    import time
+    for n in range(40 if strict else 1):
+        try:
+            with open(consent_file(), encoding="utf-8") as f:
+                data = json.load(f)
+            break
+        except (FileNotFoundError, ValueError):
+            return {}
+        except OSError:
+            if not strict:
+                return {}
+            if n == 39:
+                raise
+            time.sleep(0.025 * min(n + 1, 8))
     items = data.get("items") if isinstance(data, dict) else None
     return items if isinstance(items, dict) else {}
+
+
+def consent_load() -> dict:
+    return _consent_read()
 
 
 _CONSENT_LOCK = threading.RLock()        # чтение-изменение-запись реестра: один писатель в процессе
@@ -1278,7 +1294,7 @@ def consent_store(items: dict) -> None:
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"version": 1, "items": items}, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    replace_file(tmp, path)               # на Windows подмена читаемого файла повторяется
 
 
 def consent_log(event: str, kind: str, project, rel: str, digest: str = "", **extra) -> None:
@@ -1325,7 +1341,7 @@ def consent_grant(kind: str, project, rel: str, text, by: str = "owner") -> dict
     body = (text.decode("utf-8", errors="replace") if isinstance(text, bytes) else str(text)
             ).replace("\r\n", "\n")
     with _CONSENT_LOCK:
-        items = consent_load()
+        items = _consent_read(strict=True)
         items[consent_key(kind, project, rel)] = {
             "kind": kind, "project": os.path.realpath(os.fspath(project)),
             "file": str(rel).replace("\\", "/"), "sha256": digest, "at": utc_stamp(), "by": by,
@@ -1337,7 +1353,7 @@ def consent_grant(kind: str, project, rel: str, text, by: str = "owner") -> dict
 
 def consent_revoke(kind: str, project, rel: str) -> None:
     with _CONSENT_LOCK:
-        items = consent_load()
+        items = _consent_read(strict=True)
         if items.pop(consent_key(kind, project, rel), None) is None:
             return
         consent_store(items)
@@ -1346,11 +1362,38 @@ def consent_revoke(kind: str, project, rel: str) -> None:
 
 _SCRIPT_REFUSED: set = set()
 _SCRIPT_DIGESTS: dict = {}                # (путь, mtime, размер) → хеш: скрипты не читаются на каждый вызов
-# Что Python подхватит `import`ом из папки скрипта (она первая в sys.path). `__pycache__`
-# не в счёт: байт-код оттуда берётся только при живом исходнике рядом.
+# Что Python подхватит `import`ом из папки скрипта (она первая в `sys.path`).
 _ENGINE_CODE_SUFFIXES = (".py", ".pyc", ".pyd", ".so")
 # Состояния, при которых папка движка проекта не исполняется целиком.
 _ENGINE_BLOCKING = ("new", "changed", "extra")
+
+
+def pycache_prefix() -> str:
+    """Где машина хранит байт-код: `~/.aurora/pycache`, а не `__pycache__` рядом с исходниками.
+
+    Байт-код из папки проекта Python загружает без сверки с исходником (`.pyc` с хешем
+    «не проверять» — всегда; с отметкой времени — когда она подогнана под файл, например
+    архивом). Проверка согласия сверяет исходники, поэтому подложенный `.pyc` её обходил бы.
+    С префиксом `__pycache__` проекта не читается вовсе (ADR-026)."""
+    return os.path.join(consent_home(), "pycache")
+
+
+def pycache_args() -> list:
+    """Аргументы интерпретатора для запуска, которому окружение не передаётся (MCP-сервер)."""
+    return ["-X", f"pycache_prefix={pycache_prefix()}"]
+
+
+def pin_pycache() -> None:
+    """Закрепить префикс байт-кода за процессом и его потомками: `PYTHONPYCACHEPREFIX` уходит
+    в окружение дочерних запусков скриптов, `sys.pycache_prefix` — на импорты самого процесса.
+    Префикс, заданный человеком, не трогаем."""
+    if not os.environ.get("PYTHONPYCACHEPREFIX"):
+        os.environ["PYTHONPYCACHEPREFIX"] = pycache_prefix()
+    if sys.pycache_prefix is None:
+        sys.pycache_prefix = os.environ["PYTHONPYCACHEPREFIX"]
+
+
+pin_pycache()
 
 
 def _file_digest(path: str) -> str:
@@ -1369,21 +1412,40 @@ def engine_scripts_dir(project) -> str:
     return os.path.join(os.fspath(project), *engine_dir(project).split("/"), "scripts")
 
 
+def _hash_pyc(path: str) -> bool:
+    """`.pyc` с хешем вместо отметки времени (бит 0 флагов заголовка). Python грузит такой, не
+    сверяя с исходником (`unchecked`), поэтому подложенный байт-код обошёл бы проверку исходников.
+    Байт-код самого движка всегда с отметкой времени. Обрывок короче заголовка Python не
+    загрузит — он не в счёт."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return True                           # не прочитать — не доверяем
+    return len(head) == 8 and bool(int.from_bytes(head[4:8], "little") & 1)
+
+
 def _engine_code_files(folder: str) -> dict:
     """{путь от папки scripts/ (через «/»): "file"|"link"} — всё, что можно импортировать из
-    папки движка проекта: исходники, байт-код вне `__pycache__`, расширения и подпапки-ссылки."""
+    папки движка проекта: исходники, байт-код, расширения и подпапки-ссылки. В `__pycache__`
+    — только байт-код с хешем: он исполняется без сверки с исходником, обычный (по времени)
+    Python при расхождении пересоберёт, а запуски движка и так идут с префиксом байт-кода
+    машины (`pin_pycache`)."""
     out: dict = {}
     for root, dirs, files in os.walk(folder):
         rel_root = os.path.relpath(root, folder).replace(os.sep, "/")
         rel_root = "" if rel_root == "." else rel_root + "/"
-        dirs[:] = [d for d in dirs if d != "__pycache__"]
         for d in list(dirs):
             if os.path.islink(os.path.join(root, d)):
                 out[rel_root + d] = "link"         # ссылка на папку подключается как пакет
                 dirs.remove(d)
+        in_cache = os.path.basename(root) == "__pycache__"
         for f in files:
-            if f.lower().endswith(_ENGINE_CODE_SUFFIXES):
-                out[rel_root + f] = "file"
+            if not f.lower().endswith(_ENGINE_CODE_SUFFIXES):
+                continue
+            if in_cache and not (f.lower().endswith(".pyc") and _hash_pyc(os.path.join(root, f))):
+                continue
+            out[rel_root + f] = "file"
     return out
 
 
@@ -1425,13 +1487,23 @@ def engine_scripts_report(project, kit_scripts: str) -> list:
     return out
 
 
-def engine_reference(project, fallback: str) -> str:
+def _fallback_root(fallback: str, script: str = "") -> str:
+    """Папка `scripts/` того скрипта кита, что идёт запасным: у вложенного имени
+    (`agents/x.py`) отрезается вложенная часть пути."""
+    root = os.path.dirname(os.fspath(fallback))
+    for _ in range(max(len(str(script).replace("\\", "/").split("/")) - 1, 0)):
+        root = os.path.dirname(root)
+    return root
+
+
+def engine_reference(project, fallback: str, script: str = "") -> str:
     """`scripts/` кита, с которым сверяется папка движка проекта. `fallback` — скрипт кита,
-    который запустится вместо проектного; если он сам лежит в проекте (раннер запущен из
-    копии движка), кит берётся по `kit_path.txt`. Не нашёлся — пусто."""
+    который запустится вместо проектного (`script` — его имя от `scripts/`, у вложенного
+    имени корень эталона выше); если он сам лежит в проекте (раннер запущен из копии
+    движка), кит берётся по `kit_path.txt`. Не нашёлся — пусто."""
     mine = os.path.realpath(engine_scripts_dir(project))
     if fallback:
-        fb = os.path.realpath(os.path.dirname(os.fspath(fallback)))
+        fb = os.path.realpath(_fallback_root(fallback, script))
         if fb != mine and os.path.isdir(fb):
             return fb
     kit = kit_root()
@@ -1455,7 +1527,7 @@ def script_consent(project, script: str, fallback: str) -> dict:
     path = os.path.join(folder, *str(script).split("/"))
     if not os.path.isfile(path):
         return {"state": "none", "path": path, "file": rel, "blocked_by": [], "reference": ""}
-    ref = engine_reference(project, fallback)
+    ref = engine_reference(project, fallback, script)
     report = engine_scripts_report(project, ref)
     mine = next((r for r in report if r["script"] == script), None)
     bad = [r["script"] for r in report if r["state"] in _ENGINE_BLOCKING]
@@ -1479,7 +1551,7 @@ def trusted_engine_script(project, script: str, fallback: str) -> str:
         consent_log("refuse", "script", project, info["file"], reason=info["state"],
                     blocked_by=info["blocked_by"])
     ref = info.get("reference") or ""
-    if ref and os.path.realpath(os.path.dirname(os.fspath(fallback))) == os.path.realpath(
+    if ref and os.path.realpath(_fallback_root(fallback, script)) == os.path.realpath(
             engine_scripts_dir(project)):
         alt = os.path.join(ref, *str(script).split("/"))
         if os.path.isfile(alt):

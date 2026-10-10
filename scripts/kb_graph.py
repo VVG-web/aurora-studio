@@ -50,7 +50,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_body, card_sources, card_stem,  # noqa: E402
                            walk_md,
-                           frontmatter, git_guard)
+                           frontmatter, git_guard, kit_root)
 
 CONF_DIR = "Sources/Confluence"
 JIRA_DIR = "Sources/JIRA"
@@ -1034,9 +1034,14 @@ def write_insights(path: str, done: dict) -> None:
 
 
 def _cytoscape_js() -> str:
-    """Библиотека рисования графа: в проекте — `.aurora/vendor/`, в ките — рядом с панелью."""
+    """Библиотека рисования графа: китовая (рядом с панелью); `.aurora/vendor/` проекта — только
+    когда кита не найти. Страница открывается в браузере, и чужой скрипт из клона вшит в неё
+    не должен быть (ADR-026)."""
     here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(here, "..", "vendor", "cytoscape.min.js"),
+    kit = kit_root()
+    kit_js = (os.path.join(str(kit), "cockpit", "vendor", "cytoscape", "dist", "cytoscape.min.js")
+              if kit else "")
+    for cand in (kit_js, os.path.join(here, "..", "vendor", "cytoscape.min.js"),
                  os.path.join(here, "..", "cockpit", "vendor", "cytoscape", "dist",
                               "cytoscape.min.js")):
         if os.path.isfile(cand):

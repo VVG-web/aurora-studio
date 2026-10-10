@@ -448,10 +448,13 @@ and the folder is checked as a whole because Python imports neighbouring modules
 a copy of the kit (same hash) or approved, the project scripts run as they are; as soon as one foreign or
 changed file appears (or byte code or a folder link, which cannot be approved), the kit's scripts run
 instead, and "Bots" shows a "Project scripts awaiting approval" card with the same preview and button.
-Usually it is simpler to update the project engine: kit copies need no approval. Every launch path goes
-through this check, including the linter, corrections and graph at panel start; `doctor` warns about bots
-and engine files awaiting approval. The project's `Scripts/` folder is not run by the engine. MCP server definitions in a project are
-not executable content: servers are configured once, at the kit level.
+Usually it is simpler to update the project engine: kit copies need no approval. Every launch of a script
+from `.aurora/scripts` goes through this check, including the linter, corrections and graph at panel start;
+byte code in the project's `__pycache__` is not read (launches use the machine's byte-code prefix), and the
+report steps and graph library come from the kit. `doctor` warns about bots and engine files awaiting
+approval. The project's `Scripts/` folder is not run by the engine. Caveats: until BL-SEC-12 the project's
+`mcp.json` is still read (it overrides kit servers by name), and git hooks, bot attachments and the
+external assistant config (its config entry comes from `aurora_mcp.py --selftest`) are not covered by approval.
 
 At run time (`bot:run` — by a button or on schedule) the bot gets the prompt, the skills' method, the
 attachments' text, its MCP servers and the project's reading tools; it writes result files with the

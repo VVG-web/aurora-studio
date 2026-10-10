@@ -185,6 +185,7 @@
   "bots.consent.approve": "Approve",
   "bots.consent.done": "Approval recorded on this machine",
   "bots.consent.changed": "The file changed while you were looking — open it again",
+  "bots.consent.partial": "Approved {n} of {total} files; the rest changed while you were looking — open them again",
   "bots.consent.scripts_title": "Project scripts awaiting approval: {n}",
   "bots.consent.scripts_about": "The project's engine folder holds scripts that are not in the kit or differ from it (most often the project's engine is outdated: update it — kit copies need no approval). The folder is checked as a whole: until every such file is approved, the kit's scripts run instead of ALL project scripts.",
   "bots.consent.all": "Approve all waiting: {n}",

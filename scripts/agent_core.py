@@ -47,7 +47,7 @@ from pathlib import Path
 from aurora_common import child_env, load_env
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import engine_dir, trusted_engine_script, utc_stamp  # noqa: E402
+from aurora_common import engine_dir, pycache_args, trusted_engine_script, utc_stamp  # noqa: E402
 ROLES = ("worker", "planner", "critic", "qa")
 CONNECT_TIMEOUT = 3          # секунд на установку соединения: мёртвый бэкенд не держит кольцо
 
@@ -1490,7 +1490,8 @@ def aurora_mcp_spec(project: str) -> dict:
     """
     here = os.path.dirname(os.path.abspath(__file__))
     path = trusted_engine_script(project, "aurora_mcp.py", os.path.join(here, "aurora_mcp.py"))
-    return {"command": sys.executable, "args": [path, "--project", project],
+    # окружение серверу не передаётся: префикс байт-кода машины — аргументом интерпретатора
+    return {"command": sys.executable, "args": [*pycache_args(), path, "--project", project],
             "about": "Аврора: база знаний проекта, ревью историй и алгоритмов, Jira и "
                      "Confluence проекта, время, память между прогонами, замок"}
 

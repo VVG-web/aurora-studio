@@ -31,9 +31,14 @@ for _s in (sys.stdin, sys.stdout, sys.stderr):
     except (AttributeError, ValueError, OSError):
         pass
 
-# Шаги цепочки лежат рядом: в ките — reports/analyst/, в проекте — .aurora/reports/analyst/
+# Шаги цепочки — в `reports/analyst/` кита. Копия в проекте (`.aurora/reports/analyst/`) берётся,
+# только когда кита не найти: согласие владельца машины сверяет лишь `.aurora/scripts/`, а шаги
+# запускаются отдельными процессами, и чужой шаг из клона исполнился бы мимо него (ADR-026).
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "reports", "analyst")
+_KIT = aurora_common.kit_root()
+if _KIT and os.path.isdir(os.path.join(str(_KIT), "reports", "analyst")):
+    HERE = os.path.join(str(_KIT), "reports", "analyst")
 sys.path.insert(0, HERE)
 import paths
 

@@ -183,7 +183,8 @@ def test_cron_does_not_queue_a_bot_that_waits_for_approval(tmp: Path):
             f"«все боты»: бот без согласия не пропущен с пометкой (молчаливый пропуск): {got}"
         assert ck.cron_action("start", {"id": task["id"]}, projects) == {"ok": False, "error": "not_approved"}
         # согласие через панель; прошедшую минуту расписания не догоняем
-        res = ck.bots_action("approve", str(p), {"file": rel})
+        shown = ck.BOTS.consent_view(p, rel)["sha256"]       # хеш того, что человек видел в карточке
+        res = ck.bots_action("approve", str(p), {"file": rel, "sha256": shown})
         assert res["ok"] and res["files"] == [rel], res
         task = CRON.bot_tasks(projects)[0]
         assert task["consent"] == "granted"
@@ -376,10 +377,14 @@ def test_a_foreign_neighbour_module_blocks_the_whole_project_engine_folder(tmp: 
         assert [s["state"] for s in B.pending_scripts(p)] == ["extra"]
         assert not B.script_view(p, "extra_mod.pyc")["ok"]
         (eng / "extra_mod.pyc").unlink()
+        # обычный байт-код (по времени) Python сверит с исходником и при расхождении пересоберёт:
+        # папку он не запирает; обрывок короче заголовка Python не загрузит вовсе
         (eng / "__pycache__").mkdir()
         (eng / "__pycache__" / "x.cpython-39.pyc").write_bytes(b"\0")
+        import py_compile
+        py_compile.compile(str(eng / "aurora_stats.py"), doraise=True)
         assert Path(ck.script_path(str(p), "aurora_stats.py")) == eng / "aurora_stats.py", \
-            "__pycache__ не должен запирать папку"
+            "обычный __pycache__ не должен запирать папку"
         # подпапка agents/ — тоже часть папки движка
         _evil(eng / "agents" / "pydantic_ai_adapter.py")
         assert Path(ck.script_path(str(p), "aurora_stats.py")) == SCRIPTS / "aurora_stats.py"
@@ -575,5 +580,167 @@ def test_the_doctor_reports_bots_and_engine_files_waiting_for_consent(tmp: Path)
                             text=True, encoding="utf-8", errors="replace", timeout=120,
                             env={**os.environ, "AURORA_CONSENT_HOME": str(tmp / "owner-home")})
         assert "ботов ждёт согласия" in cp.stdout and "файлов движка проекта" in cp.stdout, cp.stdout
+    finally:
+        restore()
+
+
+# ----------------------------------------------------------------- доработка 3: байт-код, отчёты, вложенные имена
+
+def _plant_pyc(eng: Path, name: str, hashed: bool) -> Path:
+    """Подложить в `__pycache__` байт-код, исполняющий `_evil`, под настоящий исходник `name`.
+    `hashed` — с хешем «не проверять»; иначе — с отметкой времени и размером исходника, как
+    подгоняет их архив с сохранением mtime."""
+    import py_compile
+    src = eng / name
+    evil = eng.parent / "evil_src.py"
+    code = "import os\nopen(os.environ['AURORA_PWN_MARKER'], 'a').write('pyc')\n"
+    pad = max(src.stat().st_size - len(code.encode("utf-8")), 0)
+    evil.write_text(code + "#" * (pad - 1) + "\n" if pad else code, encoding="utf-8")
+    st = src.stat()
+    os.utime(evil, ns=(st.st_atime_ns, st.st_mtime_ns))
+    # префикс процесса сбил бы `cache_from_source` в чужую папку: имя собираем сами
+    cfile = eng / "__pycache__" / f"{src.stem}.{sys.implementation.cache_tag}.pyc"
+    cfile.parent.mkdir(parents=True, exist_ok=True)
+    py_compile.compile(str(evil), cfile=str(cfile), doraise=True,
+                       invalidation_mode=(py_compile.PycInvalidationMode.UNCHECKED_HASH if hashed
+                                          else py_compile.PycInvalidationMode.TIMESTAMP))
+    evil.unlink()
+    return cfile
+
+
+@test
+def test_a_planted_pyc_neither_runs_nor_passes_for_a_clean_folder(tmp: Path):
+    """Подложенный `.pyc` под настоящий исходник: с хешем «не проверять» он запирает папку
+    (согласию не подлежит), с подогнанными временем и размером — не исполняется, потому что
+    запуски движка идут с префиксом байт-кода машины. Контроль: без префикса он бьёт."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    B = importlib.import_module("bots")
+    ck = importlib.import_module("aurora_cockpit")
+    restore = _own_consent(tmp)
+    mk = _Marker(tmp)
+    try:
+        p = _project(tmp)
+        eng = p / ".aurora" / "scripts"
+        eng.mkdir(parents=True)
+        for f in ("aurora_stats.py", "aurora_common.py"):
+            shutil.copy2(SCRIPTS / f, eng / f)
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == eng / "aurora_stats.py"
+        # 1. байт-код с хешем: папка заперта, в списке ожидающих он «extra»
+        cfile = _plant_pyc(eng, "aurora_common.py", hashed=True)
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == SCRIPTS / "aurora_stats.py", \
+            "подложенный hash-pyc не запер папку движка проекта"
+        pend = B.pending_scripts(p)
+        assert [s["state"] for s in pend] == ["extra"] and pend[0]["script"].endswith(cfile.name), pend
+        cfile.unlink()
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == eng / "aurora_stats.py"
+        # 2. байт-код по времени, подогнанный под исходник: проверка его не отличит,
+        # но запуск с префиксом машины его не читает
+        _plant_pyc(eng, "aurora_common.py", hashed=False)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPYCACHEPREFIX"}
+        import subprocess
+        run1 = lambda e: subprocess.run([sys.executable, str(eng / "aurora_stats.py"), "--help"],  # noqa: E731
+                                        cwd=p, env=e, capture_output=True, text=True, timeout=120)
+        run1(env)
+        assert mk.hit(), "контроль: подогнанный pyc не сработал без префикса — проверка ничего не доказывает"
+        mk.reset()
+        run1({**env, "PYTHONPYCACHEPREFIX": AC.pycache_prefix()})
+        assert not mk.hit(), "подложенный pyc исполнился при запуске с префиксом байт-кода машины"
+        # процесс движка закрепляет префикс сам: потомки наследуют его из окружения
+        assert os.environ.get("PYTHONPYCACHEPREFIX") and sys.pycache_prefix
+        assert "pycache_prefix=" in " ".join(AC.pycache_args())
+    finally:
+        mk.close()
+        restore()
+
+
+@test
+def test_report_steps_and_graph_library_come_from_the_kit_not_the_project(tmp: Path):
+    """Шаги отчёта (`.aurora/reports/analyst`) и библиотека графа (`.aurora/vendor`) лежат вне
+    `.aurora/scripts`, и согласие их не сверяет — берутся китовые; зонд панели не пускает папку
+    проекта в `sys.path`."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    G = importlib.import_module("kb_graph")
+    restore = _own_consent(tmp)
+    mk = _Marker(tmp)
+    try:
+        p = _project(tmp)
+        pkg = p / ".aurora" / "reports" / "analyst"
+        shutil.copytree(KIT / "reports" / "analyst", pkg, ignore=shutil.ignore_patterns("__pycache__"))
+        with open(pkg / "paths.py", "a", encoding="utf-8") as f:
+            f.write("\nopen(os.environ['AURORA_PWN_MARKER'], 'a').write('paths')\n")
+        _evil(p / "json.py")                       # подмена stdlib в корне проекта (cwd зонда)
+        ck.report_state(str(p))
+        assert not mk.hit(), "зонд панели исполнил код из папки проекта"
+        # report_analyst из проекта берёт шаги кита
+        src = (SCRIPTS / "report_analyst.py").read_text(encoding="utf-8")
+        assert "kit_root()" in src and "reports\", \"analyst" in src
+        vend = p / ".aurora" / "vendor"
+        vend.mkdir(parents=True)
+        (vend / "cytoscape.min.js").write_text("/* FOREIGN */", encoding="utf-8")
+        assert "FOREIGN" not in G._cytoscape_js()
+    finally:
+        mk.close()
+        restore()
+
+
+@test
+def test_a_nested_script_name_is_compared_with_the_right_kit_folder(tmp: Path):
+    """Вложенное имя (`agents/x.py`): эталон — `scripts/` кита, а не `scripts/agents/`; иначе
+    каждый файл папки считался новым, и чистая копия кита запиралась."""
+    _path()
+    AC = importlib.import_module("aurora_common")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        eng = p / ".aurora" / "scripts"
+        shutil.copytree(SCRIPTS, eng, ignore=shutil.ignore_patterns("__pycache__"))
+        nested = next(SCRIPTS.glob("agents/*.py")).relative_to(SCRIPTS).as_posix()
+        info = AC.script_consent(p, nested, str(SCRIPTS / nested))
+        assert info["state"] == "same" and not info["blocked_by"], info
+        assert Path(info["reference"]) == SCRIPTS
+        assert AC.trusted_engine_script(p, nested, str(SCRIPTS / nested)) == str(eng / nested)
+        # запасной скрипт из самого проекта: возвращается китовый вложенный файл
+        (eng / nested).write_text("x = 1\n", encoding="utf-8")
+        assert AC.trusted_engine_script(p, nested, str(eng / nested)) == str(SCRIPTS / nested)
+    finally:
+        restore()
+
+
+@test
+def test_approval_without_a_shown_hash_is_refused_and_extras_are_reported(tmp: Path):
+    """Панельный запрос согласия без хеша не одобряет «то, что лежит сейчас»; команда
+    `--approve --scripts` не говорит «согласовано» молча, пока папку держит файл, которому
+    согласие не выдать. Окно «Одобрить все» знает про неполный итог."""
+    _path()
+    import io
+    from contextlib import redirect_stdout
+    B = importlib.import_module("bots")
+    ck = importlib.import_module("aurora_cockpit")
+    restore = _own_consent(tmp)
+    try:
+        p = _project(tmp)
+        rel = _git_bot(B, p)
+        assert ck.bots_action("approve", str(p), {"file": rel}) == {"ok": False, "error": "changed"}
+        assert B.list_bots(p)[0]["consent"] == "new"
+        digest = B.consent_view(p, rel)["sha256"]
+        assert ck.bots_action("approve", str(p), {"file": rel, "sha256": digest})["ok"]
+        eng = p / ".aurora" / "scripts"
+        eng.mkdir(parents=True)
+        shutil.copy(SCRIPTS / "aurora_stats.py", eng / "aurora_stats.py")
+        _evil(eng / "aurora_common.py")
+        assert ck.bots_action("approve", str(p), {"script": "aurora_common.py"})["error"] == "changed"
+        (eng / "extra_mod.pyc").write_bytes(b"\0\0")
+        ns = type("A", (), {"all": False, "scripts": True, "script": "", "bot": "", "json": False})()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = B._approve_cli(str(p), ns)
+        assert rc == 1 and "extra_mod.pyc" in buf.getvalue(), buf.getvalue()
+        view = (COCKPIT / "modules/bots/view.js").read_text(encoding="utf-8")
+        assert "bots.consent.partial" in view
+        for lang in ("ru", "en"):
+            tx = json.loads((COCKPIT / f"modules/bots/i18n/{lang}.json").read_text(encoding="utf-8"))
+            assert tx.get("bots.consent.partial"), lang
     finally:
         restore()
