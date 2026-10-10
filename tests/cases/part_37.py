@@ -890,3 +890,22 @@ def test_the_venv_interpreter_probes_run_isolated(tmp: Path):
     assert len(probes) >= 3, f"не все зонды venv замечены: {probes}"
     for c in probes:
         assert "-I" in c and c.index("-I") < c.index("-c"), f"зонд venv без изоляции: {c}"
+
+
+@test
+def test_the_test_run_never_sees_the_real_home(tmp: Path):
+    """Прогон живёт в своей домашней папке (tests/harness.py): `~/.aurora` владельца — venv
+    надстройки, согласия, расписание Cron — ему не виден. Без этого проверка, дошедшая до
+    `install()` или `rmtree`, стирала настоящее (10.10.2026: `~/.aurora/venv`)."""
+    _path()
+    real = os.environ.get("AURORA_TESTS_REAL_HOME")
+    own = os.environ.get("AURORA_TESTS_HOME")
+    assert real and own and real != own, "прогон не запомнил настоящий HOME и не подменил его"
+    # Пути надстроек считаются при импорте движка: проверка смотрит на них, а не на текущую
+    # `HOME` (соседняя проверка вправе подменить её на время своей работы).
+    EX = importlib.import_module("aurora_extras")
+    AG = importlib.import_module("agent_core")
+    for what, path in (("venv надстройки", EX.EXTRAS["pydantic-ai"]["venv"]), ("venv адаптера", AG.VENV),
+                       ("кэш самопроверки", AG.SELFCHECK)):
+        assert str(path).startswith(own), f"{what} указывает не во временный HOME: {path}"
+        assert not str(path).startswith(real), f"{what} указывает в настоящий HOME: {path}"

@@ -47,6 +47,43 @@ def _git_author_for_fixtures() -> None:
 
 
 _git_author_for_fixtures()
+
+
+def _own_home_for_the_run() -> None:
+    """Весь прогон живёт в своей домашней папке: настоящий `~` владельца ему не виден.
+
+    Движок пишет и стирает под `~/.aurora` (venv надстройки, согласия, кэш, расписание
+    Cron, резервные копии). 10.10.2026 проверка, которая вызвала `install()` с подставным
+    зондом, стёрла настоящий `~/.aurora/venv` с Pydantic AI, и живая цепочка Cron ушла
+    мимо адаптера. Подмена одного `subprocess.run` от такого не защищает; защищает только
+    то, что `Path.home()` во всём прогоне указывает во временную папку.
+
+    Личный git-конфиг переезжает копией (имя и почта автора для заготовок), так что
+    `git config --global` из проверки пишет в копию, а не в файл владельца. Вложенные
+    запуски раннера (проверки `--smoke`) наследуют папку через `AURORA_TESTS_HOME`.
+    """
+    if os.environ.get("AURORA_TESTS_HOME"):
+        return
+    real = os.path.expanduser("~")
+    own = tempfile.mkdtemp(prefix="aurora-tests-home-")
+    cfg = os.environ.get("GIT_CONFIG_GLOBAL") or os.path.join(real, ".gitconfig")
+    if os.path.isfile(cfg):
+        keep = os.path.join(own, ".gitconfig-copy")
+        shutil.copyfile(cfg, keep)
+        os.environ["GIT_CONFIG_GLOBAL"] = keep
+    # Пакеты, поставленные владельцем `pip install --user`, лежат под настоящим `~`: дочерним
+    # процессам прогона (они ищут пользовательский site по `HOME`) он остаётся виден только для чтения.
+    if not os.environ.get("PYTHONUSERBASE"):
+        import site
+        os.environ["PYTHONUSERBASE"] = site.getuserbase()
+    os.environ["AURORA_TESTS_REAL_HOME"] = real
+    os.environ["AURORA_TESTS_HOME"] = own
+    os.environ["HOME"] = os.environ["USERPROFILE"] = own
+    import atexit
+    atexit.register(shutil.rmtree, own, True)
+
+
+_own_home_for_the_run()
 SCRIPTS = KIT / "scripts"
 VERBOSE = "-v" in sys.argv
 RESULTS: list = []
