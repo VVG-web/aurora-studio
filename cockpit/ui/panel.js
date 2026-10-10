@@ -3599,9 +3599,13 @@ function renderMcpProject(box, d, M){
                     : el("div", {class:"muted", style:"font-size:13px"}, t("mcp.kit_empty"))));
 
   // Проверка — то, что получит прогон: серверы кита, выбранные проектом, в папке проекта.
-  const good = probe ? kitNames.filter(n => probe[n] && probe[n].ok).length : 0;
+  // Считаем по тем серверам, которые проба и правда запускает: выбранные проектом (сохранённый
+  // выбор, а не галочки на экране) и собственный `aurora` кита, если он там есть.
+  const saved = Array.isArray(d.selection) ? d.selection : null;
+  const shown = saved === null ? kitNames : kitNames.filter(n => saved.includes(n) || n === "aurora");
+  const good = probe ? shown.filter(n => probe[n] && probe[n].ok).length : 0;
   box.append(el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px"},
-    kitNames.length ? el("button", {class:"btn sm", onclick: async e => {
+    shown.length ? el("button", {class:"btn sm", onclick: async e => {
       e.target.disabled = true;
       e.target.textContent = t("mcp.probing");
       const r = await api("/api/mcp/probe?project=" + encodeURIComponent(S.project.path),
@@ -3615,7 +3619,7 @@ function renderMcpProject(box, d, M){
       renderMcp("project");
     }}, t("mcp.probe")) : null,
     el("span", {class:"muted", style:"font-size:12px"},
-      !kitNames.length ? "" : probe ? t("mcp.probe_done", {ok: good, n: kitNames.length})
+      !shown.length ? "" : probe ? t("mcp.probe_done", {ok: good, n: shown.length})
                                     : t("mcp.probe_hint"))));
 }
 

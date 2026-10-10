@@ -2292,6 +2292,135 @@ def test_mcp_migration_refuses_unreadable_kit_file_and_project_as_kit(tmp: Path)
 
 
 @test
+def test_mcp_migration_survives_gitignore_not_in_utf8(tmp: Path):
+    """`.gitignore` проекта в cp1251 или UTF-16 не роняет перенос исключением: файл с секретами
+    не уходит в `.aurora/` без подтверждённого игнорирования, `mcp.json` остаётся, ответ — ошибка
+    с `moved`; BOM и CRLF у нормального файла перенос не мешают."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    ck = importlib.import_module("aurora_cockpit")
+    for label, raw in (("cp1251", "# сборка\nout/\n".encode("cp1251")),
+                       ("utf16", "out/\n".encode("utf-16"))):
+        kit = kit_with_mcp(tmp / label, {})
+        proj = tmp / ("проект-" + label)
+        proj.mkdir()
+        (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+        (proj / "mcp.json").write_text(json.dumps({"mcpServers": {"one": {"command": "uvx"}}}),
+                                       encoding="utf-8")
+        (proj / ".gitignore").write_bytes(raw)
+        plan = A.mcp_migrate_plan(str(proj), str(kit))
+        out = A.mcp_migrate_apply(str(proj), plan["digest"], str(kit))     # не бросает
+        assert out.get("error") and out.get("moved") == ["one"], (label, out)
+        assert ".gitignore" in out["error"] and not re.search("[а-яё]", ck.translate_message(out["error"], "en"), re.I)
+        assert (proj / "mcp.json").exists() and not (proj / ".aurora" / "mcp.json.migrated").exists(), label
+        assert (proj / ".gitignore").read_bytes() == raw, f"нечитаемый .gitignore изменён ({label})"
+        again = A.mcp_migrate_apply(str(proj), A.mcp_migrate_plan(str(proj), str(kit))["digest"], str(kit))
+        assert again.get("error") and not again.get("renamed"), (label, again)    # и во второй раз без исключения
+    # BOM и CRLF: строка `.aurora/` найдена, файл не дописан
+    kit = kit_with_mcp(tmp / "bom", {})
+    proj = tmp / "проект-bom"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": {"one": {"command": "uvx"}}}), encoding="utf-8")
+    raw = "\ufeff.aurora/\r\nout/\r\n".encode("utf-8")
+    (proj / ".gitignore").write_bytes(raw)
+    plan = A.mcp_migrate_plan(str(proj), str(kit))
+    out = A.mcp_migrate_apply(str(proj), plan["digest"], str(kit))
+    assert out.get("renamed") and (proj / ".gitignore").read_bytes() == raw, out
+
+
+@test
+def test_project_that_is_its_own_kit_defines_no_mcp_servers(tmp: Path):
+    """Копия движка без `.aurora/kit_path.txt` считает китом сам проект: его `local/mcp.json`
+    приехал через git и не определяет серверы ни для прогона, ни для проверки, ни для выбора."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import agent_core as A
+    proj = tmp / "проект"
+    (proj / "local").mkdir(parents=True)
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+    (proj / "local" / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "evil": {"command": "sh", "args": ["-c", "id"]}}}), encoding="utf-8")
+    saved = A.kit_mcp_path
+    A.kit_mcp_path = lambda k=None: Path(k or proj).joinpath("local", "mcp.json")
+    try:
+        assert A.mcp_config(str(proj), kit=str(proj)) == {}, "сервер из local/ проекта определил запуск"
+        assert A.mcp_selection_error(str(proj), str(proj)) == A.mcp_no_kit()
+        assert A.mcp_probe(str(proj), kit=str(proj)).get("error") == A.mcp_no_kit()
+        # настоящий кит, который работает и как свой проект (есть scripts/model_config.py), не задет
+        (proj / "scripts").mkdir()
+        (proj / "scripts" / "model_config.py").write_text("", encoding="utf-8")
+        assert set(A.mcp_config(str(proj), kit=str(proj))["mcpServers"]) == {"evil"}
+    finally:
+        A.kit_mcp_path = saved
+
+
+@test
+def test_mcp_selection_does_not_silently_take_all_on_odd_yaml(tmp: Path):
+    """Допустимые, но не разбираемые записи `mcp:` (скобки на несколько строк, якорь, ключ в
+    кавычках, список не закрыт на строке) — ошибка, а не «выбора нет»; `mcp: null` — выбора нет."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    import aurora_common as C
+    block = lambda body: C.mcp_block("project:\n" + body)
+    for odd in ("mcp: {\n  servers: [a]\n}\n", "mcp: &m\n  servers: [a]\n",
+                '"mcp":\n  servers: [a]\n', "'mcp':\n  servers: [a]\n"):
+        got = block(odd)
+        assert got["bad"] and got["servers"] is None and got["unparsed"], (odd, got)
+    got = block("mcp:\n  servers: [a,\n    b]\n")
+    assert got["bad"] and got["servers"] is None, f"хвост списка потерян молча: {got}"
+    for fine in ("mcp: ~\n", "mcp: null  # нет\n", "z: 1\n", "mcp:\n  servers: [a, b]\n", "mcp: {}\n"):
+        assert not block(fine)["bad"], fine
+    assert block("mcp:\n  servers: [a, b]\n")["servers"] == ["a", "b"]
+
+
+@test
+def test_mcp_plan_shows_launch_env_and_ui_texts_match_the_model(tmp: Path):
+    """План переноса показывает открытым текстом всё окружение, не похожее на секрет (HOME,
+    JAVA_HOME, прокси), а секретное — маской; такие переменные из проекта не переносятся; подписи
+    панели не говорят, что проект перекрывает серверы; проверка считает по выбранным; серверы
+    графа кита стартуют с `python -I`."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    A = importlib.import_module("agent_core")
+    C = importlib.import_module("aurora_common")
+    EX = importlib.import_module("aurora_extras")
+    one = C.mcp_masked({"command": "npx", "env": {
+        "HOME": "/tmp/чужой", "JAVA_HOME": "/tmp/jdk", "HTTPS_PROXY": "http://p:3128",
+        "API_TOKEN": "канарейка-токен", "DB_PASSWORD": "канарейка-пароль", "LANG": "C"},
+        "headers": {"X-Key": "канарейка-заголовок"}}, show_launch_env=True)
+    assert one["env"]["HOME"] == "/tmp/чужой" and one["env"]["JAVA_HOME"] == "/tmp/jdk", one
+    assert one["env"]["HTTPS_PROXY"] == "http://p:3128" and one["env"]["LANG"] == "C", one
+    assert one["env"]["API_TOKEN"] == C.MCP_MASK and one["env"]["DB_PASSWORD"] == C.MCP_MASK, one
+    assert one["headers"]["X-Key"] == C.MCP_MASK
+    assert C.mcp_masked({"command": "x", "env": {"HOME": "/h"}})["env"]["HOME"] == C.MCP_MASK, \
+        "вне плана переноса значения остаются под маской"
+    assert C.mcp_migrate_problem("n", {"command": "npx", "env": {"HOME": "/h"}}), "HOME переносится из проекта"
+    assert not C.mcp_migrate_problem("n", {"command": "npx", "env": {"LANG": "C"}})
+    # подпись поля «имя» и счётчик проверки
+    for lang in ("ru", "en"):
+        cat = json.loads((KIT / "cockpit" / "i18n" / f"{lang}.json").read_text(encoding="utf-8"))
+        assert not re.search("перекрыва|overrides", cat["mcpk.f_name_hint"]), cat["mcpk.f_name_hint"]
+    js = (KIT / "cockpit" / "ui" / "panel.js").read_text(encoding="utf-8")
+    assert "n: shown.length" in js and "n: kitNames.length" not in js, "счётчик проверки делит на все серверы кита"
+    # граф кита запускается изолированно
+    assert EX.graph_entry(Path("/py"))["args"][:2] == ["-I", "-m"]
+    # консольная проверка не говорит о серверах «проекта»
+    import contextlib
+    import io
+    saved = (A.mcp_probe, A._roots)
+    A.mcp_probe, A._roots = (lambda *a, **k: {"ok": True, "servers": {}}), (lambda: (tmp, tmp / "p"))
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            assert A.cmd_mcp_probe(False) == 0
+    finally:
+        A.mcp_probe, A._roots = saved
+    assert "ни в ките, ни в проекте" not in buf.getvalue() and "кит" in buf.getvalue(), buf.getvalue()
+
+
+@test
 def test_mcp_selection_reads_every_yaml_form_or_says_it_cannot(tmp: Path):
     """`mcp: servers` читается в любой нормальной записи; непонятную запись не принимают за
     «все серверы», а называют ошибкой; запись выбора не дублирует ключ и не трогает вложенное."""

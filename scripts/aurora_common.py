@@ -1846,13 +1846,20 @@ MCP_ROLES = ("worker", "planner", "critic", "qa")
 MCP_BUILTIN = "aurora"
 # Окружение, которое меняет, ЧТО на деле запустится: загрузка своих библиотек и модулей
 # (`LD_PRELOAD`, `NODE_OPTIONS=--require …`, `PYTHONPATH`), подмена поиска программ (`PATH`),
-# источников пакетов (`UV_`, `PIP_`, `NPM_CONFIG_`) и скриптов оболочки (`BASH_ENV`). Секретом
-# оно не является, а исполняемый код пронести может, поэтому при переносе из проекта его
-# показывают открытым текстом и не переносят.
+# источников пакетов (`UV_`, `PIP_`, `NPM_CONFIG_`), скриптов оболочки (`BASH_ENV`), домашней
+# и временной папки (`HOME`, `TMPDIR`, `XDG_*`), прокси и сертификатов, настроек сборщиков
+# (`MAVEN_OPTS`, `GRADLE_*`, `DOTNET_*`, `CARGO_*`). Секретом оно не является, а исполняемый
+# код пронести может, поэтому при переносе из проекта его не переносят. Список неполон по
+# природе, поэтому показ от него не зависит: открытым текстом идёт всё, что не похоже на
+# секрет (`MCP_SECRET_NAME_RE`).
 MCP_LAUNCH_ENV_RE = re.compile(
     r"^(?:LD_|DYLD_|PYTHON|NODE_|PERL|RUBY|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|JDK_JAVA_OPTIONS$"
-    r"|GIT_|NPM_CONFIG_|UV_|PIP_)|^(?:PATH|BASH_ENV|ENV|IFS|SHELLOPTS|PS4|PROMPT_COMMAND"
-    r"|CLASSPATH|GOFLAGS)$", re.I)
+    r"|GIT_|NPM_CONFIG_|UV_|PIP_|XDG_|DOTNET_|CARGO_|RUSTUP_|GRADLE_|MAVEN_)"
+    r"|^(?:PATH|PATHEXT|COMSPEC|BASH_ENV|ENV|IFS|SHELLOPTS|PS4|PROMPT_COMMAND|CLASSPATH|GOFLAGS"
+    r"|HOME|JAVA_HOME|TMPDIR|TMP|TEMP|(?:HTTPS?|ALL|NO)_PROXY|SSL_CERT_FILE|SSL_CERT_DIR"
+    r"|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)$", re.I)
+# Имя переменной, похожее на секрет: значение остаётся под маской даже в плане переноса.
+MCP_SECRET_NAME_RE = re.compile(r"TOKEN|KEY|SECRET|PASS|AUTH|CRED|COOKIE", re.I)
 
 
 def mcp_risky_env(spec) -> list:
@@ -1865,14 +1872,17 @@ def mcp_risky_env(spec) -> list:
 def mcp_masked(spec: dict, show_launch_env: bool = False) -> dict:
     """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`) стоит маска.
 
-    `show_launch_env` — значения окружения, меняющего запуск (`mcp_risky_env`), оставить
-    открытым текстом: это не секрет, а то, что владелец обязан увидеть перед переносом.
+    `show_launch_env` — значения `env`, которые не похожи на секрет (имя без TOKEN, KEY,
+    SECRET, PASS, AUTH, CRED, COOKIE) и любое окружение, меняющее запуск (`mcp_risky_env`),
+    оставить открытым текстом: владелец обязан увидеть перед переносом, что запустится на самом
+    деле (HOME, JAVA_HOME, прокси…), а перечню «опасных» имён полностью верить нельзя.
     """
     one = json.loads(json.dumps(spec, default=str))
     for key in MCP_SECRET_MAPS:
         if isinstance(one.get(key), dict):
             one[key] = {k: (v if v in ("", None) or (
-                show_launch_env and key == "env" and MCP_LAUNCH_ENV_RE.match(str(k)))
+                show_launch_env and key == "env" and (
+                    MCP_LAUNCH_ENV_RE.match(str(k)) or not MCP_SECRET_NAME_RE.search(str(k))))
                 else MCP_MASK) for k, v in one[key].items()}
     if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
         one["auth"] = MCP_MASK
@@ -1938,6 +1948,8 @@ def _mcp_names(raw: str) -> list:
 # фигурными скобками (`mcp: {servers: [a]}`, `mcp: {}`).
 _MCP_BLOCK_RE = re.compile(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)")
 _MCP_FLOW_RE = re.compile(r"(?m)^mcp:[ \t]*\{(.*)\}[ \t]*(?:#.*)?$\n?")
+# Любая другая запись ключа `mcp` на верхнем уровне (в том числе в кавычках).
+_MCP_ODD_RE = re.compile(r"(?m)^[\"']?mcp[\"']?[ \t]*:[ \t]*(.*)$")
 
 
 def _flow_pairs(inner: str) -> list:
@@ -1980,7 +1992,7 @@ def mcp_block(text: str) -> dict:
     запрос проекта на запись в Jira: True/False/None («не сказано»). Разрешение выдаёт кит
     (`kit_mcp_permission`), проект может его только сузить.
     """
-    out = {"servers": None, "jira_write": None, "bad": ""}
+    out = {"servers": None, "jira_write": None, "bad": "", "unparsed": False}
     flow = _MCP_FLOW_RE.search(text or "")
     if flow:
         lines = [f"  {k}: {v}" for k, v in _flow_pairs(flow.group(1))]
@@ -1988,6 +2000,13 @@ def mcp_block(text: str) -> dict:
     else:
         m = _MCP_BLOCK_RE.search(text or "")
         if not m:
+            # Ключ `mcp` есть, а ни блок, ни одну строку со скобками разобрать нельзя
+            # (`mcp: {` на нескольких строках, якорь `&m`, ключ в кавычках): проект мог
+            # хотеть сузить набор серверов, молча «взять все» нельзя.
+            odd = _MCP_ODD_RE.search(text or "")
+            val = re.sub(r"\s+#.*$", "", odd.group(1)).strip() if odd else ""
+            if odd and (odd.group(0)[0] in "\"'" or val not in ("", "~", "null")):
+                out["bad"], out["unparsed"] = odd.group(0).strip()[:60], True
             return out
         lines = m.group(1).splitlines()
     top = _mcp_top_indent(lines)
@@ -2000,7 +2019,10 @@ def mcp_block(text: str) -> dict:
             continue
         rest = re.sub(r"\s+#.*$", "", s.group(1))
         if rest.startswith("["):
-            out["servers"] = _mcp_names(rest.strip("[]"))
+            if rest.endswith("]"):
+                out["servers"] = _mcp_names(rest.strip("[]"))
+            else:
+                out["bad"] = rest[:60]          # список не закрыт на этой строке: хвост потерялся бы
         elif rest in ("", "~", "null"):
             names = []
             for nxt in lines[i + 1:]:

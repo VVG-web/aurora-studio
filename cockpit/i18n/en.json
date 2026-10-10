@@ -619,7 +619,7 @@
   "mcpk.new_title": "A new MCP server",
   "mcpk.edit_title": "The server «{name}»",
   "mcpk.f_name": "Name",
-  "mcpk.f_name_hint": "latin letters, digits, dot, hyphen; a project overrides the server by it",
+  "mcpk.f_name_hint": "latin letters, digits, dot, hyphen; a project picks the server by it",
   "mcpk.f_how": "How to connect",
   "mcpk.f_command": "The program (command)",
   "mcpk.f_args": "Arguments (args) — one per line",

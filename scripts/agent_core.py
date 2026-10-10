@@ -1561,10 +1561,37 @@ def mcp_selection_bad(project: str) -> str:
         return ""
 
 
+def mcp_no_kit() -> str:
+    """Причина, когда китом оказался сам проект (читает сканер сообщений kit_i18n)."""
+    return ("кит не определён: у копии движка нет .aurora/kit_path.txt — "
+            "запустите перенос из панели или из папки кита")
+
+
+def _mcp_kit_is_project(project, kit=None) -> bool:
+    """Кит совпал с проектом: копия движка без `.aurora/kit_path.txt` считает китом сам проект.
+
+    Тогда `local/mcp.json` в нём — файл проекта, который не закрыт .gitignore и приезжает
+    через git: определять серверы он не вправе (так же, как `write_mcp_file` в него не пишет).
+    Сам кит, который одновременно служит своим проектом, под это не подпадает: у него есть
+    `scripts/model_config.py`.
+    """
+    if not project:
+        return False
+    try:
+        root = Path(kit or _roots()[0])
+        return root.resolve() == Path(project).resolve() \
+            and (root / "aurora.config.yaml").is_file() \
+            and not (root / "scripts" / "model_config.py").is_file()
+    except OSError:
+        return False
+
+
 def mcp_selection_error(project: str, kit=None) -> str:
     """Понятная причина, если проект выбрал серверы, которых нет в ките; иначе пусто."""
     if not project:
         return ""
+    if _mcp_kit_is_project(project, kit):
+        return mcp_no_kit()
     bad = mcp_selection_bad(project)
     if bad:
         return ("в aurora.config.yaml (mcp: servers) выбор серверов записан непонятно: " + bad
@@ -1591,7 +1618,8 @@ def mcp_config(project: str, kit=None, with_aurora: bool = False, aurora_root: s
     # Прогон тестов не видит личные серверы машины: `read_mcp_servers` не читает настоящий
     # `local/mcp.json` кита при `AURORA_TESTS_ISOLATED` (см. `personal_kit_file`) — иначе
     # результат зависел бы от чужой машины.
-    merged = {name: dict(spec) for name, spec in read_mcp_servers(kit_mcp_path(kit)).items()}
+    merged = {} if _mcp_kit_is_project(project, kit) else {
+        name: dict(spec) for name, spec in read_mcp_servers(kit_mcp_path(kit)).items()}
     if project:
         chosen, _unknown = mcp_selection(project, merged)
         if chosen is not None:
@@ -1707,8 +1735,7 @@ def _mcp_migrate_state(project: str, kit=None) -> dict:
     state = {"path": path, "rows": [], "digest": "", "servers": {}}
     try:
         if kit_root.resolve() == Path(project).resolve():
-            state["error"] = ("кит не определён: у копии движка нет .aurora/kit_path.txt — "
-                              "запустите перенос из панели или из папки кита")
+            state["error"] = mcp_no_kit()
             return state
     except OSError:
         pass
@@ -1763,17 +1790,27 @@ def mcp_migrate_plan(project: str, kit=None) -> dict:
     return out
 
 
-def _mcp_ignore_engine_dir(project: str) -> None:
-    """`.aurora/` проекта — в .gitignore: туда уходит перенесённый файл с секретами."""
+def _mcp_ignore_engine_dir(project: str) -> bool:
+    """`.aurora/` проекта — в .gitignore: туда уходит перенесённый файл с секретами.
+
+    True — папка закрыта (строка уже была или дописана). False — убедиться нельзя: файл не
+    читается или не в UTF-8 (cp1251, UTF-16 после `echo > .gitignore` в PowerShell); тогда в
+    него ничего не дописывается, а файл с секретами в `.aurora/` не уходит.
+    """
     gi = os.path.join(project, ".gitignore")
     try:
-        text = Path(gi).read_text(encoding="utf-8") if os.path.isfile(gi) else ""
+        raw = b""
+        if os.path.isfile(gi):
+            with open(gi, "rb") as f:
+                raw = f.read()
+        text = raw.decode("utf-8-sig")       # BOM не мешает; \r снимает strip()
         if not any(l.strip() in (".aurora", ".aurora/", "/.aurora", "/.aurora/")
                    for l in text.splitlines()):
             with open(gi, "a", encoding="utf-8") as f:
                 f.write(("" if not text or text.endswith("\n") else "\n") + ".aurora/\n")
-    except OSError:
-        pass
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
@@ -1807,9 +1844,11 @@ def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
     renamed = False
     if not left:
         keep = os.path.join(project, ".aurora", "mcp.json.migrated")
+        if not _mcp_ignore_engine_dir(project):
+            return {"error": "серверы перенесены, но .gitignore не прочитан: уберите mcp.json сами",
+                    "moved": moved}
         try:
             os.makedirs(os.path.dirname(keep), exist_ok=True)
-            _mcp_ignore_engine_dir(project)
             os.replace(st["path"], keep)
             os.chmod(keep, 0o600)
             renamed = True
@@ -2952,10 +2991,10 @@ def cmd_mcp_probe(as_json: bool) -> int:
         return 1
     rows = out.get("servers") or {}
     if not rows:
-        print("MCP-серверы не объявлены ни в ките, ни в проекте — это норма: движок работает "
-              "и без них.")
+        print("MCP-серверы кита (или выбранные проектом) не объявлены — это норма: движок "
+              "работает и без них.")
         return 0
-    where = {"kit": "из кита", "project": "проекта", "both": "проекта поверх кита"}
+    where = {"kit": "из кита"}       # определения серверов — только в ките
     for name, r in rows.items():
         if r.get("ok"):
             print(f"✓ {name} ({where.get(r.get('from'), '')}): инструментов {r.get('tools', 0)}"

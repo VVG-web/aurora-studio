@@ -2300,7 +2300,12 @@ def mcp_project_action(payload: dict, project: str) -> dict:
         path = os.path.join(project, "aurora.config.yaml")
         if not os.path.isfile(path):
             return {"error": "в проекте нет aurora.config.yaml"}
-        return Handler._write_config(None, project, mcp_set_servers(read_text(path), names))
+        text = read_text(path)
+        if mcp_block(text)["unparsed"]:
+            # запись раздела в такой форме не разобрать: вторая `mcp:` рядом сделала бы конфиг двусмысленным
+            return {"error": "раздел mcp: в aurora.config.yaml записан непонятно — поправьте его "
+                             "вручную: mcp:, ниже servers: [имя, имя]"}
+        return Handler._write_config(None, project, mcp_set_servers(text, names))
     if action == "migrate":
         plan = AG.mcp_migrate_plan(project, KIT)
         if plan.get("error"):
