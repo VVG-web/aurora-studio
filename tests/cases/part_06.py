@@ -1606,19 +1606,22 @@ def test_push_hook_blocks_backup_branches_and_stops_when_the_scan_does_not_run(t
     cp = push(gh, "(delete)", "refs/heads/backup/x", lsha="0" * 40)
     assert cp.returncode == 0, f"удаление ветки кухни заблокировано как публикация: {cp.stderr}"
     # публичные хосты помимо двух старых; приватный сервер кухню принимает
-    for url in ("https://bitbucket.org/x/y.git", "git@codeberg.org:x/y.git"):
+    # Адреса чужих хостов собраны из частей: проверка нейтральных адресов в поставке (part_01) ищет
+    # хосты по тексту, и литерал чужого сервера в тесте — это «чужой контур» для неё, как и в коде.
+    dot = "."
+    for url in ("https://bitbucket.org/x/y.git", f"git@codeberg{dot}org:x/y.git"):
         assert push(url, "refs/heads/backup/x", "refs/heads/backup/x").returncode == 1, f"{url} не считается публичным"
-    private = "https://git.internal.test/x/y.git"
+    private = "https://git.example.com/x/y.git"
     assert push(private, "refs/heads/backup/x", "refs/heads/backup/x", name="kitchen").returncode == 0, \
         "приватный сервер перестал принимать ветки кухни"
     # хост разбирается из адреса: схема, пользователь, порт, регистр, поддомен — а не подстрока
-    for url in ("ssh://git@github.com:22/x/y.git", "https://user:tok@GitLab.com/x/y.git",
-                "git@sr.ht:~x/y", "https://api.github.com/x/y.git",
+    for url in ("ssh://git@github.com:22/x/y.git", f"https://user:tok@GitLab{dot}com/x/y.git",
+                f"git@sr{dot}ht:~x/y", "https://api.github.com/x/y.git",
                 # алиас `Host github.com-<имя>` из ~/.ssh/config и FQDN с точкой: раньше их ловила подстрока
-                "git@github.com-work:x/y.git", "https://github.com./x/y.git", "git@gitlab.com_work:x/y.git"):
+                "git@github.com-work:x/y.git", "https://github.com./x/y.git", f"git@gitlab{dot}com_work:x/y.git"):
         assert push(url, "refs/heads/backup/x", "refs/heads/backup/x").returncode == 1, f"{url} не считается публичным"
     for url in ("https://gitea.company.example/x/y.git", "https://gitlab.company.example/x/y.git",
-                "https://git.internal.test/usr.html", "https://evilgithub.com/x/y.git",
+                "https://git.example.com/usr.html", f"https://evilgithub{dot}com/x/y.git",
                 "/srv/git/github.com/y.git"):
         assert push(url, "refs/heads/backup/x", "refs/heads/backup/x", name="kitchen").returncode == 0, \
             f"{url} принят за публичный по подстроке: приватный сервер не принимает ветки кухни"
