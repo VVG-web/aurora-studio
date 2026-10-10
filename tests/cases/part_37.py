@@ -378,6 +378,12 @@ def test_a_foreign_neighbour_module_blocks_the_whole_project_engine_folder(tmp: 
         assert [s["state"] for s in B.pending_scripts(p)] == ["extra"]
         assert not B.script_view(p, "extra_mod.pyc")["ok"]
         (eng / "extra_mod.pyc").unlink()
+        # на Windows `.pyw` — тоже исходник для import: `json.pyw` в папке скрипта подменил бы stdlib
+        (eng / "json.pyw").write_text("x = 1\n", encoding="utf-8")
+        assert Path(ck.script_path(str(p), "aurora_stats.py")) == SCRIPTS / "aurora_stats.py", \
+            "файл .pyw в папке движка не запер папку"
+        assert [s["state"] for s in B.pending_scripts(p)] == ["extra"]
+        (eng / "json.pyw").unlink()
         # обычный байт-код (по времени) Python сверит с исходником и при расхождении пересоберёт:
         # папку он не запирает; обрывок короче заголовка Python не загрузит вовсе
         (eng / "__pycache__").mkdir()

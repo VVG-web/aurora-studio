@@ -1364,7 +1364,7 @@ def consent_revoke(kind: str, project, rel: str) -> None:
 _SCRIPT_REFUSED: set = set()
 _SCRIPT_DIGESTS: dict = {}                # (путь, mtime, размер) → хеш: скрипты не читаются на каждый вызов
 # Что Python подхватит `import`ом из папки скрипта (она первая в `sys.path`).
-_ENGINE_CODE_SUFFIXES = (".py", ".pyc", ".pyd", ".so")
+_ENGINE_CODE_SUFFIXES = (".py", ".pyw", ".pyc", ".pyd", ".so")   # .pyw — исходник на Windows
 # Состояния, при которых папка движка проекта не исполняется целиком.
 _ENGINE_BLOCKING = ("new", "changed", "extra")
 
