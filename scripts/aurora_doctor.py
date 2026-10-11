@@ -571,6 +571,28 @@ def check_linked_roots() -> list:
     return out
 
 
+def check_web_token_binding(root: Path | None = None, environ: dict | None = None) -> str:
+    """Токен обхода сайтов есть, а привязки к хостам нет — предупреждение (пусто — всё в
+    порядке). Привязка — строка `AURORA_WEB_TOKEN_HOSTS` в файле машины или запомненные хосты
+    первого прогона (`.aurora/state/trusted-hosts.json`); без неё токен уходит на каждый хост
+    общего списка страниц, и страница, добавленная туда чужим PR, его получила бы."""
+    root = root or ROOT
+    try:
+        from aurora_common import ENV_FILE, load_env
+        from sources_core import trusted_hosts
+        env = dict(os.environ if environ is None else environ)
+        env.update(load_env(root / ENV_FILE))
+        if not (env.get("WEB_PERSONAL_TOKEN") or env.get("WEB_PAT")) \
+                or str(env.get("AURORA_WEB_TOKEN_HOSTS", "")).strip() \
+                or trusted_hosts("WEB", str(root)):
+            return ""
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return ""
+    return ("токен обхода сайтов есть, привязки к хостам нет: он уходит на каждый хост общего "
+            "списка страниц → впишите в файл машины AURORA_WEB_TOKEN_HOSTS=wiki.example.com,… "
+            "или запустите выгрузку сайтов: движок запомнит хосты, которые ответили")
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -677,6 +699,9 @@ def main() -> int:
     warns += check_kit_hooks()
     warns += check_mirror_heads()
     warns += check_linked_roots()
+    _bind = check_web_token_binding()
+    if _bind:
+        warns.append(_bind)
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

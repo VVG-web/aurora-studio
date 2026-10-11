@@ -1393,7 +1393,7 @@ def test_web_token_is_pinned_to_the_hosts_the_machine_lists(tmp: Path):
     _path()
     WE = importlib.import_module("web_export")
     hosts = WE.token_hosts({"AURORA_WEB_TOKEN_HOSTS": "Wiki.example.com, https://docs.example.com:8443/x;"})
-    assert hosts == ["wiki.example.com", "docs.example.com"], hosts
+    assert hosts == ["wiki.example.com", "https://docs.example.com:8443"], hosts
     assert WE.token_hosts({}) == []
     assert WE.token_for("https://wiki.example.com/a", "https://wiki.example.com/", "T", hosts) == "T"
     assert WE.token_for("https://new.example.org/a", "https://new.example.org/", "T", hosts) == ""
@@ -1480,14 +1480,15 @@ def test_web_token_follows_the_hosts_where_it_first_worked(tmp: Path):
     try:
         go(["https://wiki.example.com/a", "https://docs.example.com/b"])
         assert all(t == "SECRET" for _u, t in sent) and sent, sent        # первый прогон: оба хоста
-        assert SC.trusted_hosts("WEB") == ["docs.example.com", "wiki.example.com"]
+        assert SC.trusted_hosts("WEB") == ["https://docs.example.com", "https://wiki.example.com"]
         # страницу добавили в общий список позже: токен ей не уходит, причина видна
         out = go(["https://wiki.example.com/a", "https://new.example.org/c"])
         got = dict(sent)
         assert got["https://wiki.example.com/a"] == "SECRET" and got["https://new.example.org/c"] == "", sent
         assert "чтобы разрешить новый адрес" in out and "AURORA_WEB_TOKEN_HOSTS" in out, out
         # подсказка готовая: все прежние хосты и новый (строка заменяет запомненный список)
-        assert ("AURORA_WEB_TOKEN_HOSTS=docs.example.com,wiki.example.com,new.example.org" in out), out
+        assert ("AURORA_WEB_TOKEN_HOSTS=https://docs.example.com,https://wiki.example.com,"
+                "https://new.example.org" in out), out
         # строка машины главнее запомненного: хост, которого нет в ней, токена не получает
         go(["https://wiki.example.com/a", "https://docs.example.com/b"],
            "AURORA_WEB_TOKEN_HOSTS=docs.example.com\n")
@@ -1495,7 +1496,7 @@ def test_web_token_follows_the_hosts_where_it_first_worked(tmp: Path):
         # проект без `.aurora/` ничего не запоминает (прежнее правило: хост своей страницы)
         bare = tmp / "bare"
         bare.mkdir()
-        SC.remember_hosts("WEB", ["x.example.com"], str(bare))
+        assert SC.remember_hosts("WEB", ["https://x.example.com"], str(bare)) is False
         assert not (bare / ".aurora").exists() and SC.trusted_hosts("WEB", str(bare)) == []
     finally:
         os.chdir(cwd)
@@ -1503,9 +1504,10 @@ def test_web_token_follows_the_hosts_where_it_first_worked(tmp: Path):
 
 
 @test
-def test_web_token_hosts_are_remembered_only_when_every_host_answered(tmp: Path):
-    """Запоминание хостов токена не закрепляет случайный набор: сбой сети у одного из хостов
-    первого прогона оставляет запоминание на следующий, а свой компьютер в список не попадает."""
+def test_web_token_binding_is_made_of_the_origins_that_answered(tmp: Path):
+    """Привязка токена обхода сайтов — из источников (схема+хост+порт), которые ответили: один
+    вечно мёртвый адрес в списке не лишает защиты, а в выводе одна строка говорит, что привязано
+    и что нет. HTTP-отказ — это ответ; свой компьютер в привязку не входит."""
     _path()
     WE = importlib.import_module("web_export")
     SC = importlib.import_module("sources_core")
@@ -1525,7 +1527,7 @@ def test_web_token_hosts_are_remembered_only_when_every_host_answered(tmp: Path)
     real_get, real_argv, cwd = WE._get, sys.argv, os.getcwd()
     WE._get = fake
 
-    def go(pages: list) -> None:
+    def go(pages: list) -> str:
         (proj / "aurora.config.yaml").write_text(
             "web:\n  pages:\n" + "".join(f"    - url: {p}\n      trusted: false\n" for p in pages),
             encoding="utf-8")
@@ -1535,30 +1537,96 @@ def test_web_token_hosts_are_remembered_only_when_every_host_answered(tmp: Path)
         sys.argv = ["web_export.py", "--out", str(proj / "out")]
         import contextlib
         import io
-        with contextlib.redirect_stdout(io.StringIO()):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
             WE.main()
+        return buf.getvalue()
 
+    state = proj / ".aurora" / "state" / "trusted-hosts.json"
     os.chdir(proj)
     try:
-        pages = ["https://wiki.example.com/a", "https://docs.example.org/b"]
-        down.add("wiki.example.com")
-        go(pages)                                   # VPN выключен: ответил только один хост
-        assert SC.trusted_hosts("WEB") == [], SC.trusted_hosts("WEB")
-        down.clear()
-        go(pages)                                   # сеть вернулась: запомнены оба
-        assert SC.trusted_hosts("WEB") == ["docs.example.org", "wiki.example.com"], SC.trusted_hosts("WEB")
-        # свой компьютер не запоминается (как и в remember_origin), а HTTP-отказ — это ответ
-        (proj / ".aurora" / "state" / "trusted-hosts.json").unlink()
+        pages = ["https://wiki.example.com/a", "https://dead.example.org/b"]
+        down.add("dead.example.org")
+        out = go(pages)               # (1) мёртвый адрес в списке: привязка всё равно есть
+        assert SC.trusted_hosts("WEB") == ["https://wiki.example.com"], SC.trusted_hosts("WEB")
+        lines = [ln for ln in out.splitlines() if "токен привязан" in ln]
+        assert len(lines) == 1 and "https://dead.example.org" in lines[0] \
+            and "AURORA_WEB_TOKEN_HOSTS=https://dead.example.org,https://wiki.example.com" in lines[0], out
+        out = go(pages + ["https://new.example.net/c"])      # привязка держится и дальше
+        assert dict(sent)["https://new.example.net/c"] == "" and "токен привязан" not in out
+        # (3) HTTP-отказ — ответ; свой компьютер не запоминается и токен получает всегда
+        state.unlink()
+        out = go(["http://127.0.0.1:9/a", "https://denied.example.com/x"])
+        assert SC.trusted_hosts("WEB") == ["https://denied.example.com"], SC.trusted_hosts("WEB")
         go(["http://127.0.0.1:9/a", "https://denied.example.com/x"])
-        assert SC.trusted_hosts("WEB") == ["denied.example.com"], SC.trusted_hosts("WEB")
-        (proj / ".aurora" / "state" / "trusted-hosts.json").unlink()
-        go(["http://127.0.0.1:9/a"])
-        assert SC.trusted_hosts("WEB") == [], SC.trusted_hosts("WEB")
-        go(["https://wiki.example.com/a"])          # токен не привязан к петле
-        assert SC.trusted_hosts("WEB") == ["wiki.example.com"] and dict(sent)["https://wiki.example.com/a"] == "SECRET"
+        assert dict(sent)["http://127.0.0.1:9/a"] == "SECRET", sent
+        # (4) ни один хост не ответил: привязки нет, и об этом сказано одной строкой
+        state.unlink()
+        down.add("wiki.example.com")
+        out = go(pages)
+        assert SC.trusted_hosts("WEB") == []
+        lines = [ln for ln in out.splitlines() if "токен не привязан" in ln]
+        assert len(lines) == 1 and "AURORA_WEB_TOKEN_HOSTS=" in lines[0] and "не ответили" in lines[0], out
+        # только свой компьютер: привязывать нечего, строки нет
+        out = go(["http://127.0.0.1:9/a"])
+        assert SC.trusted_hosts("WEB") == [] and "токен" not in out.replace("токен не отправляется", ""), out
+        # привязка не записалась (папки `.aurora` нет) — строка тоже есть
+        down.clear()
+        shutil.rmtree(proj / ".aurora")
+        out = go(["https://wiki.example.com/a"])
+        assert "токен не привязан" in out and "не записалась" in out, out
     finally:
         os.chdir(cwd)
         WE._get, sys.argv = real_get, real_argv
+
+
+@test
+def test_web_token_binding_checks_scheme_and_port(tmp: Path):
+    """Запомненная привязка сверяет источник целиком: страница на другом порту доверенного хоста
+    токена не получает. В строке машины `хост` подходит любому порту, `хост:порт` и
+    `https://хост` — только своему. Свой компьютер привязкой не отсекается."""
+    _path()
+    WE = importlib.import_module("web_export")
+
+    def refused(url: str, hosts: list) -> bool:
+        return bool(WE.token_refusal(url, url, "T", hosts))
+
+    bound = ["https://wiki.example.com"]                 # так хранит запомненное remember_hosts
+    assert not refused("https://wiki.example.com/a", bound)
+    assert refused("https://wiki.example.com:9443/a", bound)
+    assert "https://wiki.example.com:9443" in WE.token_refusal(
+        "https://wiki.example.com:9443/a", "https://wiki.example.com:9443/a", "T", bound)
+    assert refused("http://wiki.example.com/a", bound)    # схема другая
+    assert not refused("https://wiki.example.com:9443/a", ["https://wiki.example.com:9443"])
+    assert not refused("https://wiki.example.com:9443/a", ["wiki.example.com"])      # хост без порта
+    assert not refused("https://wiki.example.com:9443/a", ["wiki.example.com:9443"])
+    assert refused("https://wiki.example.com/a", ["wiki.example.com:9443"])
+    assert WE.token_hosts({"AURORA_WEB_TOKEN_HOSTS": "Wiki.example.com:9443, https://a.example.org"}) \
+        == ["wiki.example.com:9443", "https://a.example.org"]
+    # свой компьютер: ответ не зависит от привязки (в запомненный список он не попадает)
+    for u in ("http://127.0.0.1:9/a", "http://localhost/a"):
+        assert WE.token_refusal(u, u, "T", bound, {"AURORA_ALLOW_HTTP": ""}) == "", u
+
+
+@test
+def test_doctor_names_a_web_token_without_host_binding(tmp: Path):
+    """`kit:doctor`: токен обхода сайтов есть, а привязки к хостам нет (ни строки машины, ни
+    запомненных хостов) — предупреждение; с привязкой или без токена — тишина."""
+    _path()
+    D = importlib.import_module("aurora_doctor")
+    root = tmp / "p"
+    (root / ".aurora" / "state").mkdir(parents=True)
+    env_file = root / ENV_LOCAL
+    assert D.check_web_token_binding(root, {}) == ""                       # токена нет
+    env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\n", encoding="utf-8")
+    assert "привязки к хостам нет" in D.check_web_token_binding(root, {})
+    env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\nAURORA_WEB_TOKEN_HOSTS=wiki.example.com\n",
+                        encoding="utf-8")
+    assert D.check_web_token_binding(root, {}) == ""                       # строка машины
+    env_file.write_text("WEB_PERSONAL_TOKEN=SECRET\n", encoding="utf-8")
+    (root / ".aurora" / "state" / "trusted-hosts.json").write_text(
+        '{"WEB": ["https://wiki.example.com"]}', encoding="utf-8")
+    assert D.check_web_token_binding(root, {}) == ""                       # запомненные хосты
 
 
 @test

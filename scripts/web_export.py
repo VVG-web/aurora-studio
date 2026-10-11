@@ -41,8 +41,8 @@ from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head,
                            head_trust, head_value, is_loopback_host, safe_urlopen, same_origin,
                            url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
-                          is_promoted_document, remember_hosts, report_stale, trusted_hosts,
-                          verify)
+                          is_promoted_document, origin_text, remember_hosts, report_stale,
+                          trusted_hosts, verify)
 
 DEFAULT_OUT = "Sources/Web"
 # Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
@@ -208,27 +208,70 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
 def token_hosts(env=None) -> list:
     """Хосты, которым машина разрешает токен: `AURORA_WEB_TOKEN_HOSTS=wiki.example.com,…` в
     файле машины. Список адресов страниц лежит в общем конфиге, и страница, добавленная туда
-    чужим PR, без этой привязки получила бы токен. Пусто — привязки нет."""
+    чужим PR, без этой привязки получила бы токен. Пусто — привязки нет. Запись с портом
+    (`хост:порт`) или схемой (`https://хост[:порт]`, порт схемы по умолчанию) сверяется
+    целиком; запись просто `хост` подходит любому порту этого хоста."""
     raw = str((os.environ if env is None else env).get("AURORA_WEB_TOKEN_HOSTS", "") or "")
     out = []
     for h in raw.replace(";", ",").split(","):
         h = h.strip().lower()
-        o = url_origin(h) if "://" in h else ()
-        out.append(o[1] if o else h.split("/")[0].split(":")[0])
+        if "://" in h:
+            o = url_origin(h)
+            out.append(origin_text(o) if o else h.split("/")[0])
+            continue
+        h = h.split("/")[0]
+        host, _, port = h.rpartition(":")
+        out.append(h if host and port.isdigit() else h.split(":")[0])
     return [h for h in out if h]
+
+
+def host_allowed(o: tuple, hosts: list) -> bool:
+    """Источник `o` (`url_origin`) назван в списке хостов токена (запомненном или из строки
+    машины): запись целиком — схема, хост и порт; `хост:порт` — хост и порт; `хост` — хост."""
+    for h in hosts:
+        if "://" in h:
+            if url_origin(h) == o:
+                return True
+            continue
+        host, _, port = h.rpartition(":")
+        if host and port.isdigit():
+            if host == o[1] and int(port) == o[2]:
+                return True
+        elif h == o[1]:
+            return True
+    return False
+
+
+def bind_report(tried: set, answered: set, stored) -> str:
+    """Одна строка итога привязки токена; `stored`: записано ли (None — привязывать нечего,
+    никто не ответил)."""
+    miss = ", ".join(sorted(tried - answered))
+    line = ",".join(sorted(tried))
+    if stored:
+        out = f"🔐 токен привязан к: {', '.join(sorted(answered))}"
+        if miss:
+            out += (f"; не ответили: {miss} — токена они не получат; когда вернутся, впишите "
+                    f"в файл машины AURORA_WEB_TOKEN_HOSTS={line}")
+        return out
+    why = (f"не ответили: {miss}" if stored is None
+           else "привязка не записалась: нет папки .aurora или она не пишется")
+    return (f"⚠️  токен не привязан к хостам ({why}); пока он уходит на каждый хост списка — "
+            f"впишите в файл машины AURORA_WEB_TOKEN_HOSTS={line}")
 
 
 def token_refusal(url: str, seed: str, token: str, hosts: list | None = None,
                   env: dict | None = None) -> str:
     """Почему токен не уходит на этот адрес (пусто — уходит). `env` — окружение вместе со
-    строками файла машины (оттуда же берётся `AURORA_ALLOW_HTTP`)."""
+    строками файла машины (оттуда же берётся `AURORA_ALLOW_HTTP`). Свой компьютер (localhost,
+    127.x) привязкой не отсекается: он не попадает и в запоминаемый список, и ответ не должен
+    зависеть от номера прогона."""
     if not token:
         return ""
     if not same_origin(url, seed):
         return f"адрес {url.split('?', 1)[0]} вне стартовой страницы {seed}"
     o = url_origin(url)
-    if hosts and (not o or o[1] not in hosts):
-        new = o[1] if o else url
+    if hosts and (not o or (not is_loopback_host(o[1]) and not host_allowed(o, hosts))):
+        new = origin_text(o) if o else url
         return (f"хост {new} не среди хостов токена ({', '.join(hosts)}); чтобы разрешить новый "
                 "адрес, впишите в файл машины (.env.aurora.local) строку со ВСЕМИ хостами, "
                 "прежними тоже (она заменяет запомненный список): "
@@ -726,9 +769,9 @@ def run(a) -> int:
             html, err = fetch(url, sent, known, meta)
             o = url_origin(url) if learn and sent else ()
             if o and not is_loopback_host(o[1]):
-                tried.add(o[1])
+                tried.add(origin_text(o))
                 if not err or err == NOT_MODIFIED or err.startswith("HTTP "):
-                    answered.add(o[1])
+                    answered.add(origin_text(o))
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
                 unchanged += 1
@@ -821,10 +864,12 @@ def run(a) -> int:
         if queue:
             print(f"  … потолок {opt['max_pages']} страниц исчерпан, "
                   f"в очереди осталось {len(queue)}")
-    # Запоминаем, только когда ответил каждый хост, куда ушёл токен: сбой сети (VPN выключен)
-    # закрепил бы случайный набор, и недоступный законный хост остался бы без токена навсегда.
-    if learn and tried and tried == answered:
-        remember_hosts("WEB", tried)
+    # Привязка — из источников (схема+хост+порт), которые ответили: вечно мёртвый адрес в списке
+    # не лишает защиты. Не ответившие в привязку не входят и токена больше не получат, пока
+    # человек не впишет их строкой; итог — одна строка в выводе, молчания нет.
+    if learn and tried:
+        print(bind_report(tried, answered,
+                          remember_hosts("WEB", answered) if answered else None))
     # Расшифровки скачанных документов поднимаем в корень зеркала: их текст — источник
     # знания наравне со страницей, а из `_files/` разбор его не увидит.
     converted = convert_documents(mirror.out, a.apply)

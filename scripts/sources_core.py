@@ -126,8 +126,9 @@ def trusted_origin(prefix: str, root: str = "") -> str:
     return got if isinstance(got, str) else ""
 
 
-def _store_trusted(prefix: str, value, root: str = "") -> None:
-    """Записать `value` под ключом `prefix` в файл доверенных серверов машины (вне git)."""
+def _store_trusted(prefix: str, value, root: str = "") -> bool:
+    """Записать `value` под ключом `prefix` в файл доверенных серверов машины (вне git).
+    True — записалось."""
     path = _trusted_path(root)
     try:
         try:
@@ -143,8 +144,14 @@ def _store_trusted(prefix: str, value, root: str = "") -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
         os.replace(tmp, path)
+        return True
     except OSError:
-        pass            # не записалось — защиты чуть меньше, синк от этого не страдает
+        return False    # не записалось — защиты чуть меньше, синк от этого не страдает
+
+
+def origin_text(o: tuple) -> str:
+    """`схема://хост[:порт]` по `url_origin(...)`: стандартный порт схемы не пишется."""
+    return f"{o[0]}://{o[1]}" + ("" if o[2] in (80, 443) else f":{o[2]}")
 
 
 def remember_origin(prefix: str, base: str, root: str = "") -> None:
@@ -157,7 +164,7 @@ def remember_origin(prefix: str, base: str, root: str = "") -> None:
             or not os.path.isdir(os.path.join(root or ".", ".aurora")) \
             or trusted_origin(prefix, root):
         return
-    _store_trusted(prefix, f"{o[0]}://{o[1]}" + ("" if o[2] in (80, 443) else f":{o[2]}"), root)
+    _store_trusted(prefix, origin_text(o), root)
 
 
 def trusted_hosts(prefix: str, root: str = "") -> list:
@@ -170,16 +177,17 @@ def trusted_hosts(prefix: str, root: str = "") -> list:
     return [h for h in got if isinstance(h, str)] if isinstance(got, list) else []
 
 
-def remember_hosts(prefix: str, hosts, root: str = "") -> None:
-    """Хосты, на которых ключ впервые сработал, — для токена обхода сайтов: хостов может быть
-    несколько, и они запоминаются один раз, целиком. Страница, добавленная в общий список
-    позже, на другом хосте токен не получит, пока человек не добавит хост строкой
-    `AURORA_WEB_TOKEN_HOSTS`. Проект без `.aurora/` не запоминается."""
+def remember_hosts(prefix: str, hosts, root: str = "") -> bool:
+    """Источники (`схема://хост[:порт]`), на которых ключ впервые сработал, — для токена обхода
+    сайтов: их может быть несколько, и они запоминаются один раз, целиком. Страница, добавленная
+    в общий список позже, на другом хосте или порту токен не получит, пока человек не впишет её
+    строкой `AURORA_WEB_TOKEN_HOSTS`. Проект без `.aurora/` не запоминается. True — привязка
+    записана этим вызовом."""
     hosts = sorted({str(h).lower() for h in hosts if h})
     if not prefix or not hosts or trusted_hosts(prefix, root) \
             or not os.path.isdir(os.path.join(root or ".", ".aurora")):
-        return
-    _store_trusted(prefix, hosts, root)
+        return False
+    return _store_trusted(prefix, hosts, root)
 
 
 def run_main(main) -> int:
