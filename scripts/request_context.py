@@ -48,6 +48,7 @@ TEXT_NAMES = {"dockerfile", "makefile", "readme", "license", "changelog", "procf
 ANY_DEPTH_DIRS = {".git", ".ssh", ".aws", "node_modules", ".venv", "venv", "__pycache__",
                   ".sisyphus"}
 ROOT_DIRS = {"local", "runs", "state"}
+ENGINE_DIRS = (".aurora", ".opencode")      # папка движка проекта и прежняя (`aurora_common.LEGACY_ENGINE_DIR`)
 NEVER_DIRS = ANY_DEPTH_DIRS | ROOT_DIRS
 SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|ed25519|ecdsa)\w*|"
                          r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.\w+)?)$", re.I)
@@ -88,7 +89,7 @@ def secret_kind(rel: str, strict: bool = True) -> str:
         return "secret"
     if any(p in ANY_DEPTH_DIRS for p in low):
         return "service"
-    head = low[1:] if low[0] == ".aurora" else low
+    head = low[1:] if low[0] in ENGINE_DIRS else low
     return "service" if head and head[0] in ROOT_DIRS else ""
 
 

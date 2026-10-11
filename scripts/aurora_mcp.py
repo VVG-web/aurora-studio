@@ -336,6 +336,10 @@ def card_path(project: str, name: str) -> str:
     """Путь карточки по имени. Имя приходит от модели — путь она задать не может."""
     safe = os.path.basename(name.strip()).removesuffix(".md")
     root = os.path.join(project, "AuroraKnowledgeDB")
+    # сама база — ссылка на чужую папку: границей стала бы эта папка, и карточка читалась бы
+    # как своя, тогда как остальные читатели такой каталог не обходят (`root_link_escapes`)
+    if aurora_common.root_link_escapes(root):
+        return ""
     real_root = os.path.realpath(root)
     for dirpath, dirs, files in os.walk(root):
         # архив — снятое из базы (слитые двойники, заглушки): знанием оно уже не служит

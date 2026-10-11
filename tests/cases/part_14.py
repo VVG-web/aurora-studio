@@ -992,6 +992,7 @@ def test_agent_file_tools_read_ordinary_cards_and_code_named_like_service_folder
     closed = {
         "local/models.json": "service", "runs/a.md": "service", "state/s.json": "service",
         ".aurora/state/p.json": "service", ".aurora/Runs/a.md": "service",
+        ".opencode/state/p.json": "service", ".opencode/runs/a.md": "service",
         ".git/config": "service", "sub/.git/config": "service", "sub/.ssh/id": "service",
         "node_modules/x/a.js": "service", ".env.aurora.local": "secret", "sub/.env": "secret",
         "docs/credentials.json": "secret", "docs/.env.md": "secret", "mcp.json": "secret",
@@ -1067,3 +1068,60 @@ def test_one_read_boundary_function_serves_every_reader(tmp: Path):
     f.write_text("x", encoding="utf-8")
     assert AC.read_verdict(str(f), str(root)) == "" and AC.read_verdict(str(f), str(root), every_file=True) == ""
     assert AC.link_escapes(str(f)) is False
+
+
+@test
+def test_mcp_kb_card_does_not_read_a_linked_root_base(tmp: Path):
+    """`kb_card` отказывает и когда сам каталог базы — ссылка на чужую папку (BL-NEW-01).
+
+    `card_path` брал границу от `realpath(AuroraKnowledgeDB)`, то есть от чужой папки, и отдавал
+    её карточку, тогда как `read_card_text` на том же файле отказывал.
+    """
+    fx = _linked_kb_fixture(tmp)
+    if not fx:
+        return
+    root, secret, other = fx
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    M = importlib.import_module("aurora_mcp")
+    assert M.card_path(str(root), "чужая") == "", "card_path нашёл карточку чужой базы"
+    try:
+        M.call_tool(str(root), "kb_card", {"name": "чужая"})
+    except M.ToolError as e:
+        assert "в базе нет" in str(e), str(e)
+    else:
+        raise AssertionError("kb_card отдал карточку чужой базы по корню-ссылке")
+
+
+@test
+def test_a_linked_root_with_marker_folders_is_not_walked_from_any_cwd(tmp: Path):
+    """Корень-ссылка на чужую папку с `Sources/` внутри не обходится и вне проекта (BL-NEW-01).
+
+    Папка-ссылка сама попадала в «корни проекта», потому что маркеры считались по её цели, и
+    `root_link_escapes` возвращал False, когда рабочая папка не внутри проекта (MCP «все
+    проекты», абсолютный путь).
+    """
+    root = make_project(tmp)
+    other = tmp / "проект-B"
+    (other / "vault" / "Concepts").mkdir(parents=True)
+    (other / "vault" / "Sources").mkdir()
+    (other / "vault" / "Concepts" / "чужая.md").write_text("# Чужая\n\nЧУЖОЕ\n", encoding="utf-8")
+    shutil.rmtree(root / "AuroraKnowledgeDB")
+    if not _link(other / "vault", root / "AuroraKnowledgeDB"):
+        return
+    elsewhere = tmp / "где-то"
+    elsewhere.mkdir()
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    base = str(root / "AuroraKnowledgeDB")
+    for cwd in (root, elsewhere):
+        def go():
+            assert AC.root_link_escapes(base), f"cwd={cwd.name}: корень-ссылка принят за свой"
+            assert list(AC.walk_md(base)) == [], f"cwd={cwd.name}: обход отдал файлы чужой папки"
+            assert AC.read_card_text(base + "/Concepts/чужая.md") is None
+        _in_project(cwd, go)
+    # контроль: обычная папка с маркерами проходит из любой рабочей папки
+    own = root / "Sources"
+    (own / "Web").mkdir(parents=True, exist_ok=True)
+    assert not _in_project(elsewhere, lambda: AC.root_link_escapes(str(own / "Web")))

@@ -1253,14 +1253,17 @@ def project_root_of(path: str, boundary: str = "", lexical: bool = False) -> str
     if (start == cwd or start.startswith(cwd + os.sep)) and _has_markers(cwd):
         return cwd
     chain = _dir_chain(start)
-    marked = [i for i, d in enumerate(chain) if _has_markers(d)]
     if lexical:
         is_link = [os.path.islink(d) for d in chain]
+        # сама ссылка корнем проекта не бывает: маркеры видны у её цели, то есть чужие
+        marked = [i for i, d in enumerate(chain) if not is_link[i] and _has_markers(d)]
         for i in marked:
             # папка с маркерами внутри каталога-ссылки, лежащего в другом проекте, — не корень
             if not any(is_link[j] and any(m > j for m in marked) for j in range(i + 1, len(chain))):
                 return chain[i]
-        return start
+        # проекта выше нет, а сама папка — ссылка: граница — её родитель, цель за ним «наружу»
+        return chain[1] if is_link[0] and len(chain) > 1 else start
+    marked = [i for i, d in enumerate(chain) if _has_markers(d)]
     return chain[marked[0]] if marked else start
 
 

@@ -255,8 +255,11 @@ links): the model's read tools (`read_file`, `list_dir` through `resolve_project
 a task (`request_context.read_context`) use it too. They differ in two parameters only: whether to check every
 file rather than just links, and the strictness of names (`request_context.secret_kind`). The soft measure is
 for reading the project: a card `Credentials.md` and code in `src/state/` are readable, while `local/`, `runs/`,
-`state/` and `.aurora/state` at the project root and `.git`, `.ssh`, `.aws` at any depth are service. The strict
-one is for tasks: a secret name and any service folder are closed at any depth.
+`state/` at the project root and under `.aurora/` (and the former `.opencode/`) are service, as are `.git`, `.ssh`,
+`.aws`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.sisyphus` at any depth (`ANY_DEPTH_DIRS`). Secret names
+(`.env*`, `mcp.json`, `*.pem`, `*.key`, `credentials.*` and the like) are closed in both measures, but the soft one
+does not apply them to `.md` cards (except `.env*.md`). The strict one is for tasks: a secret name and any service
+folder are closed at any depth.
 
 A linked store. If the folder of the base or sources itself (`AuroraKnowledgeDB`, `Sources/<mirror>`,
 `Raw/<folder>`) is committed as a link to a folder outside the project (an Obsidian vault, someone else's
