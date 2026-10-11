@@ -4630,7 +4630,8 @@ def read_thread(path: Path) -> list:
     Формат файла — обычный markdown с заголовками третьего уровня, потому что этот файл
     читают трое: панель, модель и человек в Obsidian. JSON прочитали бы двое.
     """
-    if not path.is_file():
+    # разговор-ссылка на файл вне проекта модели не отдаём: история уходит в её запрос
+    if not path.is_file() or link_escapes(str(path)):
         return []
     turns, cur, where = [], {}, None
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():

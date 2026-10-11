@@ -22,6 +22,7 @@ import argparse
 import json, os, re, sys
 
 from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
+from aurora_common import link_escapes
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
@@ -219,6 +220,12 @@ def main():
                 continue
             stem = os.path.splitext(f)[0]
             names.add(stem)
+            # Карточка-ссылка за пределы проекта движком не читается (поиск, паки, правки её
+            # пропускают): без этой строки человек не поймёт, почему карточки «нет».
+            if link_escapes(path):
+                errors.append(f"{rel}: карточка-ссылка ведёт за пределы проекта — движок её "
+                              "не читает; положите файл в базу или уберите ссылку")
+                continue
             try:
                 text = open(path, encoding="utf-8").read()
             except Exception as e:

@@ -39,6 +39,7 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 from aurora_common import TODAY, file_hash  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".csv", ".txt", ".rtf", ".odt"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".aurora", ".cursor", ".claude"}
 MAX_DOCX_XML = 200_000_000     # байт после распаковки: больше — не документ, а бомба
@@ -340,6 +341,10 @@ CONVERTERS = [
 
 
 def convert(src: str, prefer: str, use_ocr: bool = True) -> tuple:
+    # Ссылка на файл вне проекта (или на секрет) вложением не считается: иначе её цель
+    # (`.txt`/`.csv` читаются как есть) легла бы в Raw/ обычным файлом и прошла бы все проверки.
+    if link_escapes(src):
+        return None, None
     order = [c for c in CONVERTERS if use_ocr or c[0] != "ocr"]
     if prefer != "auto":
         order = [c for c in order if c[0].startswith(prefer)] + \
@@ -359,10 +364,10 @@ def targets(paths: list, root: str) -> list:
     found = []
     for p in paths or [root]:
         if os.path.isfile(p):
-            if os.path.splitext(p)[1].lower() in SUPPORTED:
+            if os.path.splitext(p)[1].lower() in SUPPORTED and not link_escapes(p):
                 found.append(p)
             continue
-        for dirpath, dirnames, files in os.walk(p):
+        for dirpath, dirnames, files in safe_walk(p):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
             for f in files:
                 if os.path.splitext(f)[1].lower() in SUPPORTED and not f.startswith("~$"):

@@ -246,9 +246,11 @@ from the task or cards do not leave; the guard is closed by default, the journal
 **The read boundary is the project root.** git stores symbolic links, and `open()` reads the target, not the
 link. So a link file that leads outside the project, into a service folder (`local`, `.git`) or to secrets is
 not read by any reader of cards and sources: the shared walk of the base and sources (`aurora_common.walk_md`,
-`safe_walk`), search, context packs and "Ask", source parsing, base fixes, templates and prompts. Such a file
-is skipped silently, as if it were not there; a link inside the project works as usual. There is one check —
-`aurora_common.link_escapes`.
+`safe_walk`), search, context packs and "Ask", source parsing, base fixes, human corrections (`Raw/corrections`), attachments (`kb:ingest-office`), "Ask"
+conversations, publishing, templates and prompts. A file inside a linked directory that points outside the
+project is checked like the link itself. Readers skip such a file as if it were not there; the base linter
+(`kb:lint`) names a card that is a link, so it is clear why the engine does not see it. A link inside the
+project works as usual. There is one check — `aurora_common.link_escapes`.
 
 ## 5. The knowledge-base MCP server
 

@@ -36,7 +36,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (card_sources, frontmatter, split_frontmatter,  # noqa: E402
+from aurora_common import (card_sources, frontmatter, link_escapes, split_frontmatter,  # noqa: E402
                            walk_md, with_fields)
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
@@ -97,7 +97,7 @@ def human_kinds(root: str = ".") -> dict:
     if not os.path.isdir(folder):
         return out
     for f in sorted(os.listdir(folder)):
-        if not f.endswith(".md") or f.startswith("_"):
+        if not f.endswith(".md") or f.startswith("_") or link_escapes(os.path.join(folder, f)):
             continue
         try:
             fm = frontmatter(open(os.path.join(folder, f), encoding="utf-8",

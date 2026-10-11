@@ -494,3 +494,356 @@ def test_setup_wizard_without_a_terminal_ends_cleanly(tmp: Path):
         builtins.input, sys.argv = real_input, real_argv
     assert rc == 130, f"Ctrl+C: ждали код 130, получили {rc}"
     assert (root / "aurora.config.yaml").read_text(encoding="utf-8") == before, "прерванный мастер что-то записал"
+
+
+def _outside_project(tmp: Path, root: Path) -> Path:
+    """Папка вне проекта для проверок границы чтения ссылок (BL-NEW-01)."""
+    out = tmp / "снаружи"
+    out.mkdir(exist_ok=True)
+    return out
+
+
+def _link(target, name) -> bool:
+    """Ссылка `name` → `target`; False, если система ссылок не даёт (Windows без прав)."""
+    try:
+        os.symlink(target, name)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+@test
+def test_office_ingest_does_not_launder_a_link_out_of_the_project_into_raw(tmp: Path):
+    """Вложение-ссылка на файл вне проекта не превращается в обычный файл Raw/ (BL-NEW-01).
+
+    `.txt` и `.csv` конвертер `plain` читает как есть, а обход вложений шёл `os.walk`: ссылка
+    `Raw/project/x.txt` на чужой файл ложилась в `Raw/project/x.md` обычным текстом, и уже он
+    проходил все проверки границы — дальше в разбор моделью, в карточку и в git.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    OI = importlib.import_module("office_ingest")
+    root = make_project(tmp)
+    outside = _outside_project(tmp, root)
+    secret = "ТАЙНАВЛОЖЕНИЯ"
+    (outside / "чужой.txt").write_text(secret + "\n", encoding="utf-8")
+    (outside / "чужая.csv").write_text(f"a,b\n{secret},2\n", encoding="utf-8")
+    raw = root / "Raw" / "project"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "свой.txt").write_text("свой текст вложения\n", encoding="utf-8")
+    if not (_link(outside / "чужой.txt", raw / "утечка.txt")
+            and _link(outside / "чужая.csv", raw / "таблица.csv")):
+        return
+    assert OI.convert(str(raw / "утечка.txt"), "plain") == (None, None), "convert прочитал цель ссылки"
+    found = {os.path.basename(p) for p in OI.targets([str(raw)], str(root))}
+    assert found == {"свой.txt"}, f"обход вложений отдал ссылку наружу: {found}"
+    assert OI.targets([str(raw / "утечка.txt")], str(root)) == [], "явный путь-ссылка принят"
+    run("office_ingest.py", "--converter", "plain", cwd=root, expect_rc=0)
+    made = sorted(p.name for p in raw.glob("*.md"))
+    assert made == ["свой.md"], f"из ссылок наружу появились транскрипты: {made}"
+    assert secret not in "".join(p.read_text(encoding="utf-8") for p in raw.glob("*.md"))
+
+
+@test
+def test_human_corrections_are_not_read_through_a_link_out_of_the_project(tmp: Path):
+    """Исправление-ссылка на файл вне проекта не применяется, не показывается и не правится (BL-NEW-01).
+
+    `corrections()` шло `os.listdir` и `open()`: тело чужого файла по ссылке в
+    `Raw/corrections/` `--apply` дословно писал в карточку (слово человека — высший приоритет
+    доверия), а `--retire` ещё и дописывал шапку в файл-цель. Те же шапки читают `kb_kind` и
+    `kb_trace`.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    root = make_project(tmp)
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified")
+    outside = _outside_project(tmp, root)
+    secret = "ТАЙНАИСПРАВЛЕНИЯ"
+    foreign = outside / "чужое.md"
+    foreign.write_text(f'---\ntitle: "Чужое"\ncorrects: "[[Обеспечение]]"\nkind: dictionary\n'
+                       f'---\n\n{secret}\n', encoding="utf-8")
+    cdir = root / "Raw" / "corrections"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "своё.md").write_text('---\ntitle: "Своё"\ncorrects: "[[Обеспечение]]"\n---\n\n'
+                                  "Поставка идёт по графику.\n", encoding="utf-8")
+    if not _link(foreign, cdir / "утечка.md"):
+        return
+    before = foreign.read_text(encoding="utf-8")
+    cp = run("kb_corrections.py", "--list", cwd=root)
+    assert "утечка" not in cp.stdout and secret not in cp.stdout + cp.stderr, cp.stdout
+    assert "своё" in cp.stdout.lower() or "Своё" in cp.stdout, f"контроль: своё исправление пропало\n{cp.stdout}"
+    run("kb_corrections.py", "--apply", cwd=root)
+    text = (root / "AuroraKnowledgeDB" / "Concepts" / "Обеспечение.md").read_text(encoding="utf-8")
+    assert secret not in text, "тело файла по ссылке наружу записано в карточку"
+    assert "Поставка идёт по графику" in text, f"контроль: своё исправление не применено\n{text}"
+    cp = run("kb_corrections.py", "--retire", "утечка", "--reason", "проверка", cwd=root)
+    assert cp.returncode != 0, "снятие нашло ссылку наружу как исправление"
+    assert foreign.read_text(encoding="utf-8") == before, "--retire записал в файл вне проекта"
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        KK = importlib.import_module("kb_kind")
+        KT = importlib.import_module("kb_trace")
+        assert KK.human_kinds(".") == {}, "kb_kind взял тип из шапки файла вне проекта"
+        tdir = root / "AuroraKnowledgeDB" / "Questions"
+        tdir.mkdir(parents=True, exist_ok=True)
+        (outside / "вопрос.md").write_text('---\nq_id: Q-9\nq_status: open\nblocks: "[[Обеспечение]]"\n'
+                                           "---\n", encoding="utf-8")
+        assert _link(outside / "вопрос.md", tdir / "Q-9.md")
+        assert KT.load(str(tdir)) == [], "kb_trace.load прочитал шапку по ссылке наружу"
+        saved = KT.QUESTION_DIR
+        KT.QUESTION_DIR = str(tdir)
+        try:
+            assert KT.load_questions() == {}, "kb_trace.load_questions прочитал ссылку наружу"
+        finally:
+            KT.QUESTION_DIR = saved
+        adir = root / "Artifacts" / "acceptance"
+        adir.mkdir(parents=True, exist_ok=True)
+        (outside / "акт.md").write_text('---\nverdict: ok\ncovers: "[[R-1]]"\n---\n', encoding="utf-8")
+        assert _link(outside / "акт.md", adir / "акт.md")
+        assert KT.load_acceptance() == {}, "kb_trace.load_acceptance прочитал ссылку наружу"
+    finally:
+        os.chdir(cwd)
+
+
+def _walker_fixture(tmp: Path):
+    """Проект с обычной карточкой и ссылками наружу (карточка, SQL) для проверки обходов базы.
+
+    → (корень, секрет) или None, если система не даёт ссылок. Файл вне проекта лежит во
+    временном каталоге.
+    """
+    root = make_project(tmp)
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified")
+    outside = _outside_project(tmp, root)
+    secret = "ТАЙНАОБХОДА"
+    (outside / "чужое.md").write_text(
+        f'---\ntitle: "Утечка"\ntype: concept\nstatus: verified\n---\n\n# Утечка\n\n{secret}\n',
+        encoding="utf-8")
+    (outside / "запрос.sql").write_text(f"select {secret} from t_secret;\n", encoding="utf-8")
+    if not (_link(outside / "чужое.md", root / "AuroraKnowledgeDB" / "Concepts" / "утечка.md")
+            and _link(outside / "запрос.sql", root / "Sources" / "q.sql")):
+        return None
+    return root, secret
+
+
+def _in_project(root: Path, fn):
+    """Выполнить `fn` с рабочей папкой в корне проекта (читатели берут пути от неё)."""
+    sys.path.insert(0, str(SCRIPTS))
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        return fn()
+    finally:
+        os.chdir(cwd)
+
+
+@test
+def test_moc_reader_skips_a_card_link_out_of_the_project(tmp: Path):
+    """Оглавления (`kb_moc.read_cards`) не берут карточку-ссылку наружу (BL-NEW-01)."""
+    fx = _walker_fixture(tmp)
+    if not fx:
+        return
+    import importlib
+
+    def go():
+        MOC = importlib.import_module("kb_moc")
+        cards = MOC.read_cards()
+        assert "утечка" not in cards, "kb_moc.read_cards прочитал ссылку наружу"
+        assert "Обеспечение" in cards, "контроль: обычная карточка пропала из kb_moc"
+    _in_project(fx[0], go)
+
+
+@test
+def test_card_graph_skips_a_card_link_out_of_the_project(tmp: Path):
+    """Граф карточек (`kb_graph.write_cards_graph`) не включает карточку-ссылку наружу (BL-NEW-01)."""
+    fx = _walker_fixture(tmp)
+    if not fx:
+        return
+    import importlib
+    root, secret = fx
+
+    def go():
+        KG = importlib.import_module("kb_graph")
+        graph = KG.write_cards_graph(str(tmp / "graph.json"))
+        dumped = (tmp / "graph.json").read_text(encoding="utf-8") + json.dumps(graph, ensure_ascii=False)
+        assert "утечка" not in dumped and secret not in dumped, "граф карточек включил ссылку наружу"
+        assert "Обеспечение" in dumped, "контроль: обычная карточка пропала из графа"
+    _in_project(root, go)
+
+
+@test
+def test_supersede_does_not_find_a_card_link_out_of_the_project(tmp: Path):
+    """Замена карточки (`kb_supersede.find_card`) не находит карточку-ссылку наружу (BL-NEW-01)."""
+    fx = _walker_fixture(tmp)
+    if not fx:
+        return
+    import importlib
+
+    def go():
+        KS = importlib.import_module("kb_supersede")
+        assert KS.find_card("утечка") is None, "kb_supersede нашёл карточку по ссылке наружу"
+        assert KS.find_card("Обеспечение"), "контроль: kb_supersede не находит обычную карточку"
+    _in_project(fx[0], go)
+
+
+@test
+def test_trace_scan_skips_a_card_link_out_of_the_project(tmp: Path):
+    """Трассировка (`kb_trace.scan`) не читает карточку-ссылку наружу (BL-NEW-01)."""
+    fx = _walker_fixture(tmp)
+    if not fx:
+        return
+    import importlib
+
+    def go():
+        KT = importlib.import_module("kb_trace")
+        found = list(KT.scan(["AuroraKnowledgeDB"]))
+        assert not [p for p in found if "утечка" in p], f"kb_trace.scan прочитал ссылку наружу: {found}"
+        assert [p for p in found if "Обеспечение" in p], "контроль: обычная карточка пропала из трассы"
+    _in_project(fx[0], go)
+
+
+@test
+def test_code_graph_sql_sources_skip_a_link_out_of_the_project(tmp: Path):
+    """Граф кода (`kb_code_graph.sql_sources`) не читает `.sql`-ссылку наружу (BL-NEW-01)."""
+    fx = _walker_fixture(tmp)
+    if not fx:
+        return
+    import importlib
+    root, secret = fx
+    (root / "Sources" / "свой.sql").write_text("select 1 from t_own;\n", encoding="utf-8")
+
+    def go():
+        CG = importlib.import_module("kb_code_graph")
+        found = CG.sql_sources(".")
+        assert not [s for s in found if secret in s[1]], "kb_code_graph.sql_sources прочитал ссылку наружу"
+        assert [s for s in found if "t_own" in s[1]], "контроль: обычный .sql пропал"
+    _in_project(root, go)
+
+
+@test
+def test_page_moves_follow_does_not_read_a_card_link_out_of_the_project(tmp: Path):
+    """Перенос переехавших страниц (`kb_remap.follow_moves`) не читает карточку-ссылку наружу (BL-NEW-01)."""
+    fx = _walker_fixture(tmp)
+    if not fx:
+        return
+    import importlib
+    root, secret = fx
+
+    def go():
+        KR = importlib.import_module("kb_remap")
+        BP = importlib.import_module("build_plan")
+        seen = []
+        real = BP.retarget_card
+        BP.retarget_card = lambda text, full: (seen.append(text), real(text, full))[1]
+        try:
+            KR.follow_moves("Sources/Confluence", False, everywhere=True)
+        finally:
+            BP.retarget_card = real
+        assert seen, "контроль: follow_moves не прочитал ни одной карточки"
+        assert not any(secret in t for t in seen), "kb_remap.follow_moves прочитал ссылку наружу"
+    _in_project(root, go)
+
+
+@test
+def test_single_file_readers_refuse_a_file_inside_a_linked_directory(tmp: Path):
+    """Файл внутри каталога-ссылки на папку вне проекта читается так же запретно, как сама ссылка (BL-NEW-01).
+
+    `islink` смотрит только последнюю компоненту: `Sources/Web/папка/страница.md` при ссылке
+    `папка` на каталог вне проекта считалась обычным файлом, и разовые читатели (`--source`,
+    `--slice`, `read_card_text`, `read_text_file`) отдавали цель. Папка-ссылка внутри проекта
+    по-прежнему читается; обход (`safe_walk`) в такие каталоги не заходит.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    AR = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    outside = _outside_project(tmp, root)
+    secret = "ТАЙНАКАТАЛОГА"
+    folder = outside / "папка"
+    (folder / "вложенная").mkdir(parents=True, exist_ok=True)
+    (folder / "страница.md").write_text("# Чужая\n\n" + ("слово " * 60) + secret + "\n", encoding="utf-8")
+    (folder / "вложенная" / "глубже.md").write_text("# Глубже\n\n" + secret + "\n", encoding="utf-8")
+    web = root / "Sources" / "Web"
+    web.mkdir(parents=True, exist_ok=True)
+    real_dir = web / "настоящая"
+    real_dir.mkdir()
+    (real_dir / "страница.md").write_text("# Своя\n\n" + ("слово " * 60) + "\n", encoding="utf-8")
+    if not (_link(folder, web / "ссылка") and _link(real_dir, web / "внутренняя")
+            and _link(folder / "страница.md", web / "прямая.md")):
+        return
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        for rel in ("Sources/Web/ссылка/страница.md", "Sources/Web/ссылка/вложенная/глубже.md"):
+            assert AC.link_escapes(rel), f"{rel}: файл в каталоге-ссылке наружу принят за обычный"
+            assert AC.read_card_text(rel) is None, f"{rel}: read_card_text прочитал цель"
+            assert AR.read_text_file(rel) == "", f"{rel}: read_text_file отдал цель агенту"
+        assert not AC.link_escapes("Sources/Web/внутренняя/страница.md"), "папка-ссылка внутри проекта закрыта"
+        assert not AC.link_escapes("Sources/Web/настоящая/страница.md"), "обычный файл закрыт"
+        assert AC.read_card_text("Sources/Web/внутренняя/страница.md"), "папка-ссылка внутри не читается"
+        walked = {os.path.relpath(p, ".").replace("\\", "/") for p in AC.walk_md("Sources")}
+        assert not any("ссылка" in p for p in walked), f"обход зашёл в каталог-ссылку наружу: {walked}"
+        cp = run("build_plan.py", "--slice", "Sources/Web/ссылка/страница.md", cwd=root)
+        assert cp.returncode != 0 and secret not in cp.stdout + cp.stderr, (cp.stdout, cp.stderr)
+        cp = run("build_plan.py", "--card", "Демо", "--source", "Sources/Web/ссылка/страница.md",
+                 "--paras", "1", "--to", "Concepts", cwd=root)
+        assert cp.returncode != 0 and secret not in cp.stdout + cp.stderr, (cp.stdout, cp.stderr)
+        cp = run("build_plan.py", "--slice", "Sources/Web/прямая.md", cwd=root)
+        assert cp.returncode != 0 and secret not in cp.stdout + cp.stderr, \
+            f"раскадровка прочитала ссылку наружу: {cp.stdout}"
+        cp = run("build_plan.py", "--slice", "Sources/Web/внутренняя/страница.md", cwd=root)
+        assert cp.returncode == 0, f"папка-ссылка внутри проекта не читается:\n{cp.stdout}\n{cp.stderr}"
+    finally:
+        os.chdir(cwd)
+
+
+@test
+def test_publish_thread_template_and_lint_handle_a_link_out_of_the_project(tmp: Path):
+    """Публикация, разговор «Спросить», зеркала шаблонов и линтер знают о ссылке наружу (BL-NEW-01).
+
+    `publish_doc` проверял слой по строке пути и читал цель ссылки, `read_thread` отдавал
+    модели историю из файла вне проекта, `project_file` и зеркала шаблонов шли `os.walk`, а
+    `kb_lint` молча считал карточку-ссылку карточкой — человек не понимал, почему движок её не видит.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    AR = importlib.import_module("agent_runner")
+    root = make_project(tmp)
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified")
+    outside = _outside_project(tmp, root)
+    secret = "ТАЙНАПУБЛИКАЦИИ"
+    (outside / "док.md").write_text(f"# Чужой\n\n{secret}\n", encoding="utf-8")
+    (outside / "разговор.md").write_text(
+        f"### Вопрос · 2026-01-01\n\n{secret}\n\n### Ответ · x\n\nответ\n", encoding="utf-8")
+    (outside / "шаблон.md").write_text(f"# Шаблон\n\n{secret}\n", encoding="utf-8")
+    (outside / "карточка.md").write_text(
+        f'---\ntitle: "Внешняя"\ntype: concept\nstatus: draft\n---\n\n# Внешняя\n\n{secret}\n', encoding="utf-8")
+    (root / "Artifacts").mkdir(exist_ok=True)
+    ask = root / "AuroraKnowledgeDB" / "meta" / "ask"
+    ask.mkdir(parents=True, exist_ok=True)
+    (root / "Templates").mkdir(exist_ok=True)
+    if not (_link(outside / "док.md", root / "Artifacts" / "утечка.md")
+            and _link(outside / "разговор.md", ask / "утечка.md")
+            and _link(outside / "шаблон.md", root / "Templates" / "утечка.md")
+            and _link(outside / "карточка.md", root / "AuroraKnowledgeDB" / "Concepts" / "Внешняя.md")
+            and _link(root / "Raw", root / "Artifacts" / "слой")):
+        return
+    # публикация: цель вне проекта и закрытый слой по ссылке не уходят наружу
+    cp = run("publish_doc.py", "Artifacts/утечка.md", cwd=root)
+    assert cp.returncode == 1 and "не публикуется" in cp.stderr, (cp.returncode, cp.stdout, cp.stderr)
+    (root / "Raw" / "x.md").write_text("# Внутренний слой\n", encoding="utf-8")
+    cp = run("publish_doc.py", "Artifacts/слой/x.md", cwd=root)
+    assert cp.returncode == 1 and "не публикуется" in cp.stderr, (cp.returncode, cp.stdout, cp.stderr)
+    # разговор «Спросить»
+    assert AR.read_thread(ask / "утечка.md") == [], "история разговора прочитана по ссылке наружу"
+    assert AR.threads(str(root)) == [], "список разговоров включил ссылку наружу"
+    # шаблоны и зеркала
+    assert AC.project_file("утечка", str(root)) == "", "project_file нашёл шаблон-ссылку наружу"
+    assert not [p for p in AC._mirror_files(str(root)) if "утечка" in p]
+    # линтер называет такую карточку, а не молчит
+    cp = run("kb_lint.py", cwd=root)
+    assert "Внешняя.md" in cp.stdout + cp.stderr and "за пределы проекта" in cp.stdout + cp.stderr, \
+        f"линтер промолчал о карточке-ссылке:\n{cp.stdout}\n{cp.stderr}"
+    assert secret not in cp.stdout + cp.stderr

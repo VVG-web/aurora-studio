@@ -32,7 +32,7 @@ from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targ
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
+from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 
 REQ_DIR = "AuroraKnowledgeDB/Requirements"
 SPEC_DIR = "AuroraKnowledgeDB/Specs"
@@ -177,7 +177,7 @@ def load(d):
     if not os.path.isdir(d):
         return out
     for fn in sorted(os.listdir(d)):
-        if fn.endswith(".md") and not fn.startswith("_"):
+        if fn.endswith(".md") and not fn.startswith("_") and not link_escapes(os.path.join(d, fn)):
             fm = frontmatter(open(os.path.join(d, fn), encoding="utf-8").read())
             if fm:
                 fm["_file"] = fn[:-3]
@@ -210,7 +210,8 @@ def load_acceptance():
     if not os.path.isdir(ACCEPTANCE_DIR):
         return out
     for fn in sorted(os.listdir(ACCEPTANCE_DIR)):
-        if not fn.endswith(".md") or fn.startswith("_"):
+        if not fn.endswith(".md") or fn.startswith("_") \
+                or link_escapes(os.path.join(ACCEPTANCE_DIR, fn)):
             continue
         fm = frontmatter(open(os.path.join(ACCEPTANCE_DIR, fn), encoding="utf-8").read())
         verdict = (fm.get("verdict") or "—").strip()
@@ -225,7 +226,8 @@ def load_questions():
     if not os.path.isdir(QUESTION_DIR):
         return out
     for fn in sorted(os.listdir(QUESTION_DIR)):
-        if not fn.endswith(".md") or fn.startswith("_"):
+        if not fn.endswith(".md") or fn.startswith("_") \
+                or link_escapes(os.path.join(QUESTION_DIR, fn)):
             continue
         fm = frontmatter(open(os.path.join(QUESTION_DIR, fn), encoding="utf-8").read())
         qs = (fm.get("q_status") or "").strip()

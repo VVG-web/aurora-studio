@@ -39,7 +39,7 @@ from aurora_common import (CORRECTIONS, FOOTER, aliases as card_aliases,  # noqa
 KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
+from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 MARK = CORRECTIONS
 
 
@@ -82,6 +82,10 @@ def corrections() -> list:
         if not f.endswith(".md") or f.startswith("_"):
             continue
         path = os.path.join(DIR, f)
+        # Исправление-ссылка на файл вне проекта не читается: его тело ушло бы в карточку
+        # (`--apply`) с высшим приоритетом доверия, а `--retire` писал бы в чужой файл.
+        if link_escapes(path):
+            continue
         text = open(path, encoding="utf-8", errors="ignore").read()
         fm = frontmatter(text) or {}
         body = body_of(text)

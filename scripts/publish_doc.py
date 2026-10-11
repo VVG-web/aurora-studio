@@ -36,7 +36,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, git_commit,
-                           frontmatter,
+                           frontmatter, link_escapes,
                            set_field, split_frontmatter)
 
 from confluence_export import Api, read_config, read_secret
@@ -282,6 +282,13 @@ def main() -> int:
               "наружу идут Artifacts/ и Deliverables/", file=sys.stderr)
         return 1
 
+    # Ссылка на файл вне проекта (и на закрытый слой по ссылке) наружу не уходит: проверка
+    # слоя выше смотрит на строку пути, а читать пришлось бы цель.
+    real_top = os.path.relpath(os.path.realpath(path), os.path.realpath(".")).split(os.sep)[0]
+    if link_escapes(path) or real_top in (KB_ROOT, "Sources", "Raw"):
+        print(f"publish: {path} — ссылка за пределы проекта или на внутренний слой доверия, "
+              "не публикуется", file=sys.stderr)
+        return 1
     text = open(path, encoding="utf-8").read()
     fm = frontmatter(text)
     # В чистовик уходит только документ: уточнения, допущения, замечания критика и

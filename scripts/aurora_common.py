@@ -1235,7 +1235,49 @@ def project_root_of(path: str) -> str:
         cur = up
 
 
-def link_escapes(path: str, boundary: str = "") -> bool:
+def _project_base(path: str, boundary: str = "", linked: bool = False) -> tuple:
+    """(корень проекта по пути без разрешения ссылок, лежит ли файл в каталоге-ссылке).
+
+    `os.path.islink` смотрит только последнюю компоненту: файл внутри каталога-ссылки на папку
+    вне проекта выглядит обычным. Поэтому смотрим каталоги между файлом и корнем проекта.
+    Корень — `boundary`, текущая папка процесса (если путь под ней и она похожа на проект)
+    или ближайший предок с базой, источниками или `.aurora/`, который сам не лежит в каталоге-
+    ссылке внутри проекта (папка с маркерами за такой ссылкой — чужой проект, не граница).
+    Системные ссылки выше корня (`/tmp`, `/var` на macOS) не в счёт. Нет маркеров — папка самого
+    файла (самая узкая граница). Без ссылок на пути и без `linked` корень не нужен.
+    """
+    chain = []
+    cur = os.path.dirname(os.path.abspath(path))
+    while True:
+        chain.append(cur)
+        up = os.path.dirname(cur)
+        if up == cur:
+            break
+        cur = up
+    is_link = [os.path.islink(d) for d in chain]
+    if not linked and not any(is_link):
+        return chain[0], False
+    cwd = os.getcwd()
+    if boundary:
+        base = os.path.abspath(boundary)
+    elif (chain[0] == cwd or chain[0].startswith(cwd + os.sep)) \
+            and any(os.path.isdir(os.path.join(cwd, m)) for m in _PROJECT_MARKERS):
+        base = cwd
+    else:
+        marked = [i for i, d in enumerate(chain)
+                  if any(os.path.isdir(os.path.join(d, m)) for m in _PROJECT_MARKERS)]
+        base = chain[0]
+        for i in marked:
+            # папка с маркерами внутри каталога-ссылки, лежащего в другом проекте, — не корень
+            if not any(is_link[j] and any(m > j for m in marked) for j in range(i + 1, len(chain))):
+                base = chain[i]
+                break
+    if base not in chain:
+        return base, False
+    return base, any(is_link[:chain.index(base)])
+
+
+def link_escapes(path: str, boundary: str = "", deep: bool = True) -> bool:
     """Файл-ссылка, которая ведёт за пределы проекта или к секретам.
 
     Единственная проверка границы чтения для всех читателей карточек и вложений. Git хранит
@@ -1247,9 +1289,15 @@ def link_escapes(path: str, boundary: str = "") -> bool:
     по `realpath`; служебные папки (`local`, `.git`, …) закрыты; ссылка с именем `.md` обязана
     вести на `.md` (карточка — всегда `.md`, а секретные имена на `.md` не кончаются, и
     законная карточка `Credentials.md` не отсекается); остальные имена — по общему списку
-    секретов `request_context`.
+    секретов `request_context`. Файл внутри каталога-ссылки на папку вне проекта проверяется
+    так же, как сама ссылка (`deep`): `islink` видит только последнюю компоненту пути. Обход
+    `safe_walk` в каталоги-ссылки не заходит и просит дешёвую проверку (`deep=False`).
     """
-    if not os.path.islink(path):
+    linked = os.path.islink(path)
+    if not linked and not deep:
+        return False
+    base_abs, in_link = _project_base(path, boundary, linked)
+    if not linked and not in_link:
         return False
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
@@ -1257,7 +1305,7 @@ def link_escapes(path: str, boundary: str = "") -> bool:
     from request_context import NEVER_DIRS, is_secret
     real = os.path.realpath(path)
     # корень ищем от папки самой ссылки: realpath(ссылки) уже указывает за пределы проекта
-    base = os.path.realpath(boundary) if boundary else project_root_of(os.path.dirname(os.path.abspath(path)))
+    base = os.path.realpath(base_abs)
     if not (real == base or real.startswith(base + os.sep)):
         return True
     rel = os.path.relpath(real, base)
@@ -1276,7 +1324,8 @@ def safe_walk(root: str, **kw):
     """
     boundary = project_root_of(root)
     for dirpath, dirs, files in os.walk(root, **kw):
-        files[:] = [f for f in files if not link_escapes(os.path.join(dirpath, f), boundary)]
+        files[:] = [f for f in files
+                    if not link_escapes(os.path.join(dirpath, f), boundary, deep=False)]
         yield dirpath, dirs, files
 
 
@@ -1390,7 +1439,7 @@ def project_file(name: str, root: str = ".") -> str:
         full = os.path.join(root, base)
         if not os.path.isdir(full):
             continue
-        for dp, dirs, files in os.walk(full):
+        for dp, dirs, files in safe_walk(full):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             hit = want & set(files)
             if hit:
@@ -2592,7 +2641,7 @@ def _mirror_files(root: str) -> list:
         top = os.path.join(root, base)
         if not os.path.isdir(top):
             continue
-        for dp, dirs, files in os.walk(top):
+        for dp, dirs, files in safe_walk(top):
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             for f in sorted(files):
                 if f.endswith(".md"):
