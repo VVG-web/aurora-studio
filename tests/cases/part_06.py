@@ -2008,8 +2008,8 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     assert cp.returncode == 0, cp.stdout + cp.stderr
     pre_push = root / ".git/hooks/pre-push"
     text = pre_push.read_text(encoding="utf-8")
-    assert "# aurora-hook push v6" in text and '--scan-push --remote "$remote_name"' in text, text
-    assert "--hook v6" in text, "хук не называет скану свою версию — устаревший не заметить"
+    assert "# aurora-hook push v7" in text and '--scan-push --remote "$remote_name"' in text, text
+    assert "--hook v7" in text, "хук не называет скану свою версию — устаревший не заметить"
     status = hooks("--status").stdout
     assert "pre-push: хук Авроры ·" in status, status
     assert "НЕ проверяется" in status, f"--status молчит, что списка названий нет:\n{status}"
@@ -2017,13 +2017,13 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     (root / "local").mkdir()
     (root / "local" / "private_terms.txt").write_text("ТайныйПроект\n", encoding="utf-8")
     assert "НЕ проверяется" not in hooks("--status").stdout
-    pre_push.write_text(text.replace("push v6", "push v4"), encoding="utf-8")
+    pre_push.write_text(text.replace("push v7", "push v4"), encoding="utf-8")
     assert "УСТАРЕЛ" in hooks("--status").stdout, "хук прежней версии назван актуальным"
     # Скрипт новее хука: сам скан говорит об этом, а не молчит
     cp = subprocess.run(cmd + ["--scan-push", "--hook", "v4"], cwd=root, input="", capture_output=True,
                         text=True, encoding="utf-8", errors="replace")
     assert "старее скрипта" in cp.stderr, f"устаревший хук живёт молча:\n{cp.stderr}"
-    cp = subprocess.run(cmd + ["--scan-push", "--hook", "v6"], cwd=root, input="", capture_output=True,
+    cp = subprocess.run(cmd + ["--scan-push", "--hook", "v7"], cwd=root, input="", capture_output=True,
                         text=True, encoding="utf-8", errors="replace")
     assert "старее" not in cp.stderr, cp.stderr
     # Чужой pre-push: без --force не трогаем, с --force — резервная копия, как у остальных хуков
@@ -2035,7 +2035,7 @@ def test_hooks_install_status_and_uninstall_cover_the_push_hook(tmp: Path):
     assert bak.is_file() and "мой собственный" in bak.read_text(encoding="utf-8"), \
         f"--force перезаписал чужой pre-push без резервной копии:\n{cp.stdout}{cp.stderr}"
     assert "pre-push.bak" in cp.stdout
-    pre_push.write_text(pre_push.read_text(encoding="utf-8").replace("push v6", "push v4"), encoding="utf-8")
+    pre_push.write_text(pre_push.read_text(encoding="utf-8").replace("push v7", "push v4"), encoding="utf-8")
     assert "УСТАРЕЛ" in hooks("--status").stdout
     cp = hooks("--uninstall")
     assert "pre-push" in cp.stdout and not pre_push.exists(), \
@@ -2071,7 +2071,7 @@ def test_push_guard_survives_split_runs_escapes_and_user_git_config(tmp: Path):
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
 
     def scan(old: str, new_: str) -> subprocess.CompletedProcess:
-        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v6"],
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v7"],
                               cwd=root, input=f"refs/heads/main {new_} refs/heads/main {old}\n",
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -2204,7 +2204,7 @@ def test_push_scan_decodes_xml_entities_survives_huge_numeric_reference_and_read
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
 
     def scan(ref: str, new_: str, old: str = "0" * 40) -> subprocess.CompletedProcess:
-        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v6"],
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v7"],
                               cwd=root, input=f"{ref} {new_} {ref} {old}\n",
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -2282,7 +2282,7 @@ def test_private_terms_list_is_read_by_bytes_and_unreadable_list_stops_the_push(
     def scan(**env):
         e = {k: v for k, v in os.environ.items() if k != "AURORA_PUSH_UNVERIFIED"}
         e.update(env)
-        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v6"],
+        return subprocess.run([sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push", "--hook", "v7"],
                               cwd=root, env=e, input=f"refs/heads/main {head} refs/heads/main {base}\n",
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -2444,6 +2444,16 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = push("refs/tags/v1", remote=dst, lsha=sha)
         assert cp.returncode == 1 and "development" in cp.stderr, \
             f"тег v1 на кончике development уехал в {dst}: rc={cp.returncode}\n{cp.stderr}"
+    # Аннотированный тег: git отдаёт хуку sha объекта-тега, а не коммита, и ветки на кончике нашлись бы только
+    # по развёрнутому до коммита sha (раньше `v2:refs/custom/x` уходил наружу, и кончик development с ним).
+    tagsha = g("rev-parse", "refs/tags/v2")
+    assert tagsha != sha, "v2 должен быть аннотированным: у него свой sha объекта"
+    for dst in ("refs/custom/x", "refs/remotes/leak/x", "refs/notes/foo"):
+        cp = push("refs/tags/v2", remote=dst, lsha=tagsha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"аннотированный тег v2 на кончике development уехал в {dst}: rc={cp.returncode}\n{cp.stderr}"
+    cp = push("refs/tags/v2", remote="refs/tags/v2", lsha=tagsha)
+    assert cp.returncode == 0, f"выпуск аннотированного тега v2 как тега остановлен:\n{cp.stderr}"
     g("tag", "v3", other)
     cp = push("v3^0", lsha=other)
     assert cp.returncode == 0, f"v3^0 (тег на коммите обычной ветки) остановлен:\n{cp.stderr}"
@@ -2513,6 +2523,12 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = rg("push", "origin", "v1:" + dst, check=False)
         assert cp.returncode != 0 and "development" in cp.stderr, \
             f"git push v1:{dst} (кончик development) ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
+    for dst in ("refs/custom/x", "refs/remotes/leak/x", "refs/notes/foo"):
+        cp = rg("push", "origin", "v2:" + dst, check=False)
+        assert cp.returncode != 0 and "development" in cp.stderr, \
+            f"git push v2:{dst} (аннотированный тег на кончике development) ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
+    cp = rg("push", "origin", "v2:foo2", check=False)
+    assert cp.returncode == 0, f"git push v2:foo2 (аннотированный тег становится тегом) остановлен:\n{cp.stderr}"
     cp = rg("push", "origin", "v1:foo", check=False)
     assert cp.returncode == 0, f"git push v1:foo (становится тегом foo) остановлен:\n{cp.stderr}"
     assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "v1:foo создал ветку на публичном remote"

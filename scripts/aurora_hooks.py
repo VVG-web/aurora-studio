@@ -56,7 +56,7 @@ from pathlib import Path
 MARKER = "# aurora-hook v1"
 MSG_MARKER = "# aurora-hook msg v1"
 PUSH_MARKER_PREFIX = "# aurora-hook push"      # любая версия: свой хук, а не чужой
-PUSH_MARKER = PUSH_MARKER_PREFIX + " v6"
+PUSH_MARKER = PUSH_MARKER_PREFIX + " v7"
 
 # Ветки кухни разработки: кейсы, разборы дефектов и числа с живых проектов. Репозиторий
 # кита публичный, и один `git push --all` опубликовал бы это разом. Хук — страховка от
@@ -165,7 +165,10 @@ while read -r local_ref local_sha remote_ref _r; do
         names="$names $cur"
       fi
       if [ -z "$cur" ] || [ -n "$pts" ]; then
-        names="$names $(git for-each-ref --points-at "$local_sha" --format='%(refname)' refs/heads 2>/dev/null)"
+        # У аннотированного тега local_sha — sha объекта-тега, а `--points-at` по нему нашёл бы только сам тег:
+        # разворачиваем до коммита (у не-тега ответ тот же; не коммит — оставляем как есть).
+        psha=$(git rev-parse -q --verify "${{local_sha}}^{{commit}}" 2>/dev/null) || psha="$local_sha"
+        names="$names $(git for-each-ref --points-at "$psha" --format='%(refname)' refs/heads 2>/dev/null)"
       fi
       ;;
   esac
