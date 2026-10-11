@@ -12,6 +12,7 @@ import textwrap
 
 from harness import (  # noqa: F401
     kit_with_mcp,
+    live_adapter_python,
     ui_source,
     KIT,
     SCRIPTS,
@@ -332,9 +333,9 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
                                 "mcp": {"mcpServers": {"s": {}}}, "role": "planner"}) is None, \
         "агент с MCP-серверами общий для разных ролей и вызовов"
 
-    vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
-    if not vpy.exists():
-        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
+    vpy = live_adapter_python()
+    if vpy is None:
+        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем (в CI AURORA_REQUIRE_VENV=1 — падаем)
     server = tmp / "demo_server.py"
     server.write_text(textwrap.dedent("""
         import json, pathlib, sys

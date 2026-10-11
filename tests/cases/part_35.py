@@ -121,7 +121,8 @@ def test_workflows_sign_commits_with_the_person_who_ran_them(tmp: Path):
 @test
 def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Path):
     """CI-матрица ОС x Python (BL-DEC-02): блокирующие `tests` (3.14), `floor` (3.11) и `windows` (3.12, три доли),
-    неблокирующие `newer-python` (3.12 и 3.13), `legacy-310`, `windows-314` (3.14, три доли) и `macos` (3.14);
+    неблокирующие `newer-python` (3.12 и 3.13), `legacy-310`, `adapter-live` (venv Pydantic AI, Linux и Windows),
+    `windows-314` (3.14, три доли) и `macos` (3.14);
     блокирующий Windows нельзя ослабить: release.yml берёт только итог success, а continue-on-error на него не влияет;
     имя workflow не менялось (от него зависит release.yml),
     release-проверка и ruff на месте, действия не на снятом с раннеров Node 20 (checkout/setup-python v4/v5).
@@ -142,7 +143,7 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
             jobs[cur] = []
         elif cur is not None:
             jobs[cur].append(ln)
-    assert list(jobs) == ["tests", "authors", "floor", "newer-python", "legacy-310", "windows", "windows-314", "macos"], list(jobs)
+    assert list(jobs) == ["tests", "authors", "floor", "newer-python", "legacy-310", "adapter-live", "windows", "windows-314", "macos"], list(jobs)
     body = {k: "\n".join(v) for k, v in jobs.items()}
     for name, py in (("tests", "3.14"), ("floor", "3.11"), ("legacy-310", "3.10"),
                      ("windows", "3.12"), ("windows-314", "3.14"), ("macos", "3.14")):
@@ -152,7 +153,7 @@ def test_ci_matrix_covers_oses_and_python_floor_without_breaking_release(tmp: Pa
     assert re.search(r'^        python: \["3\.12", "3\.13"\]$', body["newer-python"], re.M), "матрица newer-python"
     assert "runs-on: ubuntu-24.04" in body["newer-python"] and "fail-fast: false" in body["newer-python"]
     assert "tests/run_tests.py" in body["newer-python"] and "compileall" in body["newer-python"]
-    for name in ("newer-python", "legacy-310", "windows-314", "macos"):
+    for name in ("newer-python", "legacy-310", "adapter-live", "windows-314", "macos"):
         assert re.search(r"^    continue-on-error: true$", body[name], re.M), f"{name}: должен быть неблокирующим"
     for name in ("tests", "authors", "floor", "windows"):
         assert not re.search(r"^\s*continue-on-error:", body[name], re.M), f"{name}: блокирует выпуск, его нельзя ослаблять"

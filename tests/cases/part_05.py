@@ -16,6 +16,7 @@ from harness import (  # noqa: F401
     SCRIPTS,
     card,
     card_srcs,
+    live_adapter_python,
     make_project,
     panel_sources,
     run,
@@ -705,9 +706,9 @@ def test_pydantic_ai_reads_a_gateway_with_nonstandard_metadata(tmp: Path):
         "агент с инструментами общий — параллельные вызовы перепутают подключённые серверы"
     assert AD.shared_agent_key({"url": "u", "model": "m"}) == ("u", "", "m")
 
-    vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
-    if not vpy.exists():
-        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
+    vpy = live_adapter_python()
+    if vpy is None:
+        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем (в CI AURORA_REQUIRE_VENV=1 — падаем)
 
     # Живая проверка: настоящий адаптер против местного «шлюза SGLang».
     import threading
@@ -734,6 +735,8 @@ def test_pydantic_ai_reads_a_gateway_with_nonstandard_metadata(tmp: Path):
     ag = importlib.import_module("agent_core")
     importlib.reload(ag)
     ag._HUB.update(proc=None, pending={}, broken="", deaths=0)
+    own_venv = ag.VENV
+    ag.VENV = vpy.parent.parent         # движок ходит в venv, найденный помощником (только чтение)
     try:
         st, body, err, _ = ag.pydantic_transport(
             {"n": 1, "url": f"http://127.0.0.1:{srv.server_port}/v1", "key": ""},
@@ -767,6 +770,7 @@ def test_pydantic_ai_reads_a_gateway_with_nonstandard_metadata(tmp: Path):
         assert "ты критик" in first and "mcp_connect" in first, \
             "при слиянии пропала инструкция движка или каталог серверов"
     finally:
+        ag.VENV = own_venv              # другим проверкам — прежний (временный) путь
         srv.shutdown()
         p = ag._HUB.get("proc")
         if p is not None:
@@ -1281,9 +1285,9 @@ def test_a_pydantic_update_is_checked_before_it_works(tmp: Path):
     assert any("pydantic-ai==2.51.0" in c for c in ran), "прежняя версия не возвращена"
     assert "не совместим" in res.get("error", ""), res
 
-    vpy = Path.home() / ".aurora" / "venv" / "bin" / "python"
-    if not vpy.exists():
-        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем
+    vpy = live_adapter_python()
+    if vpy is None:
+        return          # venv с pydantic-ai не поставлен — живую проверку пропускаем (в CI AURORA_REQUIRE_VENV=1 — падаем)
     cp = subprocess.run([str(vpy), str(KIT / "scripts/agents/pydantic_ai_adapter.py"), "--selfcheck"],
                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, stdin=subprocess.DEVNULL)
     out = json.loads(cp.stdout.strip().splitlines()[-1])

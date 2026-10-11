@@ -158,6 +158,15 @@ away after 2027-04; `windows` (3.12, three shards) blocks the release as before:
 result, and a job with `continue-on-error` does not affect it; `windows-314` (3.14, three shards) and `macos` (3.14) are
 non-blocking for now (`continue-on-error`) and become blocking after stable green runs.
 
+Pinning and drift: actions are referenced by version (`@v6`), not by branch; the `beautifulsoup4`, `markdownify` and `ruff`
+versions for CI live in `.github/requirements-ci.txt` (installed with `-c`; `requirements.txt` for users stays unpinned), updates to
+the actions and to that file come from Dependabot (`.github/dependabot.yml`); node is installed with a version (LTS 24), otherwise
+the JS checks are silently skipped. The `adapter-live` job (Linux and Windows, non-blocking) installs the Pydantic AI venv the way
+the panel does, runs `--selfcheck` and three live checks; `AURORA_REQUIRE_VENV=1` turns a skip without a venv into a failure, and
+`AURORA_ADAPTER_VENV` sets the venv directory (locally the checks use the real `~/.aurora/venv`, read-only). The weekly
+`canary.yml` (a separate workflow, it does not affect the release) runs everything on the latest versions with no constraints and
+opens an issue when red.
+
 Version policy: 3.11+ is supported and tested, 3.10 works with a warning, anything older stops.
 The thresholds live in `scripts/aurora_common.py`, the version guard in `aurora.py` and at the top of `aurora_common.py`, so
 those two files must stay readable to an old Python). Do not write syntax only newer versions understand (for example quotes of the same kind inside an

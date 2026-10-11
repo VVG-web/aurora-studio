@@ -1,0 +1,12 @@
+# Обновления закреплённого в CI: действия GitHub и версии из requirements-ci.txt приходят
+# отдельными PR раз в неделю, а не ломают прогон сами. Тесты PR видны до слияния.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: "/.github"
+    schedule:
+      interval: weekly

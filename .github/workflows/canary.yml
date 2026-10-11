@@ -1,0 +1,62 @@
+name: canary
+# Раз в неделю прогон на СВЕЖИХ версиях зависимостей: без ограничений .github/requirements-ci.txt и
+# с последней Pydantic AI в venv надстройки. Основной CI закреплён, поэтому выход новой версии чужой
+# библиотеки он не видит; адаптер за четыре недели ломался четырежды, и каждый раз пользователь
+# замечал позже (BL-LCY-06). Красный canary — сигнал, а не поломка кита: при падении workflow
+# открывает issue (одну, пока она не закрыта). Выпуск от него не зависит: release.yml ждёт
+# только engine-tests, а этот workflow по расписанию и вручную (Actions → canary → Run workflow).
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-deps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      # Открыть issue о дрейфе. Больше этот workflow не получает ничего.
+      issues: write
+    env:
+      AURORA_REQUIRE_VENV: "1"
+      AURORA_ADAPTER_VENV: ${{ runner.temp }}/adapter-venv
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Engine dependencies (latest, no constraints)
+        run: python3 -m pip install --quiet -r requirements.txt
+      - name: Pydantic AI venv (latest)
+        run: |
+          python3 -m venv "$AURORA_ADAPTER_VENV"
+          SPEC="$(python3 -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(' '.join(E.EXTRAS['pydantic-ai']['pip']))")"
+          "$AURORA_ADAPTER_VENV/bin/python" -m pip install --quiet --upgrade $SPEC
+          "$AURORA_ADAPTER_VENV/bin/python" -c "from importlib.metadata import version; print('pydantic-ai', version('pydantic-ai'))"
+      - name: Adapter self-check on the latest framework
+        id: selfcheck
+        run: '"$AURORA_ADAPTER_VENV/bin/python" scripts/agents/pydantic_ai_adapter.py --selfcheck'
+      - name: Full suite on the latest dependencies
+        id: suite
+        if: success() || failure()
+        run: python3 tests/run_tests.py
+      - name: Open an issue if the canary is red
+        if: failure()
+        run: |
+          set -euo pipefail
+          TITLE="canary: свежие версии зависимостей ломают проверки"
+          if [ -n "$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number')" ]; then
+            echo "Issue уже открыта — новую не заводим."
+            exit 0
+          fi
+          RUN="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          gh issue create --title "$TITLE" --body "Еженедельный прогон на свежих версиях (bs4, markdownify, Pydantic AI) покраснел: ${RUN}. Основной CI закреплён и зелёный; разобрать, что изменилось у зависимости, и поправить адаптер или обновить .github/requirements-ci.txt."

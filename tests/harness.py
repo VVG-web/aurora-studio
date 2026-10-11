@@ -166,6 +166,28 @@ def stub_messages(messages, kw):
     return messages
 
 
+def live_adapter_python(environ=None, windows=None):
+    """Python venv с настоящим Pydantic AI для «живых» проверок адаптера; `None` — проверку пропускаем.
+
+    Каталог venv — `AURORA_ADAPTER_VENV` (так его задаёт CI), иначе настоящий `~/.aurora/venv`
+    владельца: прогон живёт во временном HOME (`_own_home_for_the_run`), поэтому `Path.home()`
+    его уже не видит, и живые проверки молча не выполнялись бы нигде. Venv только читается: писать
+    в него проверки не должны. Путь зависит от ОС (`Scripts/python.exe` на Windows), а не зашит
+    как `bin/python`. Если задан `AURORA_REQUIRE_VENV=1` (CI, задание adapter-live), отсутствие
+    venv — падение: иначе «пропускаем» считалось бы зелёным, и дрейф адаптера никто не видел.
+    """
+    env = os.environ if environ is None else environ
+    win = (os.name == "nt") if windows is None else windows
+    venv = env.get("AURORA_ADAPTER_VENV") or os.path.join(
+        env.get("AURORA_TESTS_REAL_HOME") or os.path.expanduser("~"), ".aurora", "venv")
+    vpy = Path(venv) / ("Scripts/python.exe" if win else "bin/python")
+    if vpy.is_file():
+        return vpy
+    assert env.get("AURORA_REQUIRE_VENV") != "1", \
+        f"нужен venv с Pydantic AI (AURORA_REQUIRE_VENV=1), но {vpy} нет: живая проверка не выполнена"
+    return None
+
+
 def make_project(tmp: Path, git: bool = False) -> Path:
     """Пустой проект со стандартной структурой (из structure_dirs.txt) и движком."""
     root = tmp / "project"

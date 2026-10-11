@@ -28,6 +28,11 @@ def main():
         problems.append("в cockpit/ui/panel.js не найден UI_VERSION")
     elif ui.group(1) != version:
         problems.append(f"UI_VERSION {ui.group(1)} ≠ VERSION {version}")
+    # release.yml ждёт workflow по имени: переименовали engine-tests в test.yml — выпуск молча замолчит
+    wf = re.search(r"(?m)^name:\s*(\S+)\s*$", read(".github/workflows/test.yml"))
+    waits = re.search(r"workflows:\s*\[([^\]]*)\]", read(".github/workflows/release.yml"))
+    if not wf or not waits or wf.group(1) not in [w.strip() for w in waits.group(1).split(",")]:
+        problems.append("release.yml ждёт не тот workflow, что назван в test.yml (engine-tests)")
     for p in problems:
         print("✗", p)
     if not problems:
