@@ -2360,9 +2360,9 @@ def test_a_released_file_lock_is_not_broken_under_a_new_owner(tmp: Path):
     path.parent.mkdir(parents=True)
 
     # 1. Файла нет: «живость» для снимающего — True, для берущего — None, для читателя — False.
-    assert C._lock_live(path, {}) is False
-    assert C._lock_live(path, {}, missing=True) is True
-    assert C._lock_live(path, {}, missing=None) is None
+    assert C._lock_live(path, {}) is False, "читателю исчезнувший замок — без держателя"
+    assert C._lock_live(path, {}, missing=True) is True, "снимающему исчезнувший замок — не мёртвый"
+    assert C._lock_live(path, {}, missing=None) is None, "берущему исчезнувший замок — «заново»"
 
     # 2. Z создаёт замок между проверкой и удалением: он должен уцелеть.
     real = C._lock_live
@@ -2380,25 +2380,29 @@ def test_a_released_file_lock_is_not_broken_under_a_new_owner(tmp: Path):
     path.unlink()
     assert not Path(str(path) + ".break").exists()
 
-    # 3. lock_take при исчезнувшем замке берёт заново, а не идёт в снятие.
+    # 3. lock_take при исчезнувшем замке берёт заново, а не идёт в снятие. Ход гонки
+    # настоящий: первая попытка `O_EXCL` получает «файл уже есть» (замок ещё лежал), а к
+    # чтению его уже отпустили — файла нет. Подмена `os.open` даёт ровно этот отказ один раз.
     calls = []
     real_break = C._lock_break
-    seen = {"n": 0}
+    real_open = os.open
+    refused = {"n": 0}
 
-    def vanishing(p, held, stale_s=None, missing=False):
-        seen["n"] += 1
-        if seen["n"] == 1:
-            return None                 # замок исчез, пока на него смотрели
-        return real(p, held, stale_s, missing)
-    path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
-    C._lock_live = vanishing
+    def open_busy_once(p, flags, *a, **k):
+        if str(p) == str(path) and refused["n"] == 0:
+            refused["n"] += 1
+            raise FileExistsError(17, "замок был, пока не отпустили")
+        return real_open(p, flags, *a, **k)
+    assert not path.exists()
+    os.open = open_busy_once
     C._lock_break = lambda *a, **k: calls.append(a) or real_break(*a, **k)
     try:
-        path.unlink()                   # владелец отпустил
         ok, held = C.lock_take(path, {"task": "X"})
     finally:
-        C._lock_live, C._lock_break = real, real_break
-    assert ok and not calls, "исчезнувший замок пошёл в снятие"
+        os.open, C._lock_break = real_open, real_break
+    assert refused["n"] == 1, "ветка «файл уже есть» не выполнялась — раздел ничего не проверял"
+    assert ok and not calls, f"исчезнувший замок пошёл в снятие: ok={ok} calls={len(calls)}"
+    assert C.lock_read(path).get("task") == "X", "замок после повторного взятия не наш"
     C.lock_release(path)
 
     # 4. Снять не вышло (файл открыт читателем) — _lock_break говорит «не удалось».
@@ -2413,10 +2417,11 @@ def test_a_released_file_lock_is_not_broken_under_a_new_owner(tmp: Path):
         return real_remove(p, *a, **k)
     os.remove = denied
     try:
-        assert C._lock_break(str(path), C.lock_read(path)) is False
+        assert C._lock_break(str(path), C.lock_read(path)) is False, "неудачное снятие выдано за удачное"
     finally:
         os.remove = real_remove
-    assert C._lock_break(str(path), C.lock_read(path)) is True and not path.exists()
+    assert C._lock_break(str(path), C.lock_read(path)) is True and not path.exists(), \
+        "мёртвый замок не снят после отпускания файла"
 
     # 5. Процессы: взять — прочитать — записать счётчик — снять; шаги не теряются.
     counter = tmp / "state" / "counter.txt"
