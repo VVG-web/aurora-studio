@@ -1169,13 +1169,13 @@ def test_models_list_does_not_send_a_saved_key_to_another_address(tmp: Path):
         ok = ck.models_list({"id": "p1", "url": "https://GW.example.com/v1/", "key": MC.MASK})
         assert ok.get("models") == ["m1"] and calls[-1]["key"] == "SAVED-KEY", (ok, calls)
         n = len(calls)
-        for evil in ("https://evil.example.net/v1", "http://gw.example.com/v1",
+        for evil in ("https://evil.example.com/v1", "http://gw.example.com/v1",
                      "https://gw.example.com:8443/v1"):
             for key in (MC.MASK, ""):
                 r = ck.models_list({"id": "p1", "url": evil, "key": key})
                 assert r.get("error") and "models" not in r, (evil, r)
         assert len(calls) == n, "запрос на чужой адрес ушёл"
-        typed = ck.models_list({"id": "p1", "url": "https://evil.example.net/v1", "key": "TYPED"})
+        typed = ck.models_list({"id": "p1", "url": "https://evil.example.com/v1", "key": "TYPED"})
         assert typed.get("models") and calls[-1]["key"] == "TYPED", "введённый ключ — выбор человека"
         # провайдер без сохранённого ключа (локальный шлюз): проверять любой адрес можно
         ck.models_data = lambda: {"providers": [{"id": "p2", "url": "http://127.0.0.1:8080/v1",
@@ -1206,20 +1206,20 @@ def test_atlassian_server_is_remembered_and_a_changed_address_is_refused(tmp: Pa
     assert state == {"JIRA": "https://jira.example.com"}, state
     # подмена адреса — отказ с причиной и подсказкой, как принять
     try:
-        JE.Api("https://jira-evil.example.net", "Bearer S", root)._url("/rest/api/2/myself")
+        JE.Api("https://jira-evil.example.com", "Bearer S", root)._url("/rest/api/2/myself")
         raise AssertionError("ключ ушёл на подменённый адрес")
     except SC.UnsafeTarget as e:
-        assert "AURORA_JIRA_SERVER=https://jira-evil.example.net" in str(e), str(e)
+        assert "AURORA_JIRA_SERVER=https://jira-evil.example.com" in str(e), str(e)
     # тот же сервер и обновление http → https проходят; другой префикс (Confluence) не затронут
     assert JE.Api("https://jira.example.com/", "Bearer S", root)._url("/a") == "https://jira.example.com/a"
-    assert SC.RestApi("https://x.example.net", "Bearer S", root)._url("/a") == "https://x.example.net/a"
+    assert SC.RestApi("https://x.example.com", "Bearer S", root)._url("/a") == "https://x.example.com/a"
     # без ключа уходить нечему
-    assert JE.Api("https://jira-evil.example.net", "", root)._url("/a") == "https://jira-evil.example.net/a"
+    assert JE.Api("https://jira-evil.example.com", "", root)._url("/a") == "https://jira-evil.example.com/a"
     # человек принял переезд строкой в файле машины
-    (tmp / ".env.aurora.local").write_text("AURORA_JIRA_SERVER=https://jira-evil.example.net\n",
+    (tmp / ".env.aurora.local").write_text("AURORA_JIRA_SERVER=https://jira-evil.example.com\n",
                                            encoding="utf-8")
-    assert JE.Api("https://jira-evil.example.net", "Bearer S", root)._url("/a") \
-        == "https://jira-evil.example.net/a"
+    assert JE.Api("https://jira-evil.example.com", "Bearer S", root)._url("/a") \
+        == "https://jira-evil.example.com/a"
     # свой компьютер и проект без .aurora/ не запоминаются
     other = tmp / "other"
     other.mkdir()
@@ -1284,9 +1284,9 @@ def test_watchdog_probe_sends_no_key_to_a_foreign_host_or_cleartext(tmp: Path):
         assert h.seen["b"] and all("authorization" not in hd for _p, hd in h.seen["b"]), h.seen["b"]
         # открытый http на чужой машине: запроса нет, это не «связь упала»
         (tmp / "aurora.config.yaml").write_text(
-            'atlassian:\n  jira:\n    base_url: "http://jira.invalid"\n    project_key: "P"\n',
+            'atlassian:\n  jira:\n    base_url: "http://jira.example.com"\n    project_key: "P"\n',
             encoding="utf-8")
-        assert AO.settings(str(tmp))["jira_url"] == "http://jira.invalid"
+        assert AO.settings(str(tmp))["jira_url"] == "http://jira.example.com"
         assert WD.probe(str(tmp)) == {"ok": True, "down": []}
     finally:
         AG.models_of, AG.kit_env, MC.load = real
@@ -1330,8 +1330,8 @@ def test_report_scripts_send_the_key_only_to_their_own_server(tmp: Path):
         (tmp / ".env.aurora.local").write_text("AURORA_JIRA_SERVER=https://jira.example.com\n",
                                                encoding="utf-8")
         try:
-            paths.open_secure(urllib.request.Request("https://jira-evil.example.net/x"),
-                              "https://jira-evil.example.net", "JIRA")
+            paths.open_secure(urllib.request.Request("https://jira-evil.example.com/x"),
+                              "https://jira-evil.example.com", "JIRA")
             raise AssertionError("ключ ушёл на подменённый адрес")
         except SC.UnsafeTarget as e:
             assert "AURORA_JIRA_SERVER" in str(e)
@@ -1345,8 +1345,8 @@ def test_a_refused_target_is_one_line_not_a_traceback(tmp: Path):
     proj = tmp / "p"
     proj.mkdir()
     (proj / "aurora.config.yaml").write_text(
-        'atlassian:\n  jira:\n    base_url: "http://jira.invalid"\n    project_key: "P"\n'
-        '  confluence:\n    base_url: "http://wiki.invalid"\n    space: "S"\n    sync_roots:\n'
+        'atlassian:\n  jira:\n    base_url: "http://jira.example.com"\n    project_key: "P"\n'
+        '  confluence:\n    base_url: "http://wiki.example.com"\n    space: "S"\n    sync_roots:\n'
         '      - page_id: "1"\n      - page_id: "2"\n', encoding="utf-8")
     (proj / ".env.aurora.local").write_text("JIRA_PAT=FAKE\nCONFLUENCE_PAT=FAKE\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "AURORA_ALLOW_HTTP"}
@@ -1391,7 +1391,7 @@ def test_saved_secrets_do_not_follow_a_changed_server_on_save(tmp: Path):
                          {"id": "p2", "url": "gateway.local:8080", "key": MC.MASK}]}
     got = MC.unmask(new, old)["providers"]
     assert [p["key"] for p in got] == ["SAVED", "K2"], got
-    new["providers"][0]["url"] = "https://evil.example.net/v1"
+    new["providers"][0]["url"] = "https://evil.example.com/v1"
     assert MC.unmask(new, old)["providers"][0]["key"] == "", "ключ ушёл вслед за подменой адреса"
     # Git: учётные данные хранятся в домашней папке — подменяем на временную
     real = GS.cred_file
@@ -1406,7 +1406,7 @@ def test_saved_secrets_do_not_follow_a_changed_server_on_save(tmp: Path):
         assert GS.save(str(proj), s1, {"auth": "token", "user": "u", "secret": GS.MASK}).get("ok"), \
             "тот же сервер: ключ остаётся"
         assert GS.cred_load(str(proj))["secret"] == "SAVED-TOKEN"
-        s2 = {**s1, "instance": "https://git-evil.example.net"}
+        s2 = {**s1, "instance": "https://git-evil.example.com"}
         r = GS.save(str(proj), s2, {"auth": "token", "user": "u", "secret": GS.MASK})
         assert not r.get("ok") and {"field": "secret", "code": "required"} in r["problems"], r
         assert GS.cred_load(str(proj))["secret"] == "SAVED-TOKEN", "прежнее сохранённое не тронуто"
@@ -1474,7 +1474,7 @@ def test_models_save_tells_which_key_was_dropped_on_an_address_change(tmp: Path)
     MC.unmask({"providers": [{"id": "p1", "url": "https://gw.example.com/v1/", "key": MC.MASK}]},
               old, dropped)
     assert dropped == [], "тот же сервер — ключ остаётся, замечания нет"
-    MC.unmask({"providers": [{"id": "p1", "url": "https://evil.example.net/v1", "key": MC.MASK}]},
+    MC.unmask({"providers": [{"id": "p1", "url": "https://evil.example.com/v1", "key": MC.MASK}]},
               old, dropped)
     assert dropped == ["p1"], dropped
     real_data, real_save = ck.models_data, MC.save
@@ -1482,7 +1482,7 @@ def test_models_save_tells_which_key_was_dropped_on_an_address_change(tmp: Path)
     MC.save = lambda kit, data: {"ok": True, "notes": [], "path": ""}
     try:
         r = ck.models_save({"models": {"providers": [
-            {"id": "p1", "url": "https://evil.example.net/v1", "key": MC.MASK}]}})
+            {"id": "p1", "url": "https://evil.example.com/v1", "key": MC.MASK}]}})
         assert r["ok"] and r["notes"] == [ck.models_key_note("p1")], r
         en = ck.translate_payload(r, "en")
         assert "p1" in en["notes"][0] and "enter its key again" in en["notes"][0], en
@@ -1497,7 +1497,7 @@ def test_review_run_says_why_the_server_is_refused(tmp: Path):
     proj = tmp / "p"
     proj.mkdir()
     (proj / "aurora.config.yaml").write_text(
-        'atlassian:\n  confluence:\n    base_url: "http://wiki.invalid"\n    space: "S"\n',
+        'atlassian:\n  confluence:\n    base_url: "http://wiki.example.com"\n    space: "S"\n',
         encoding="utf-8")
     (proj / ENV_LOCAL).write_text("CONFLUENCE_PAT=FAKE\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "AURORA_ALLOW_HTTP"}

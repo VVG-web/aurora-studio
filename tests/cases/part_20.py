@@ -746,7 +746,7 @@ def test_git_credential_helper_answers_only_its_own_host(tmp: Path):
         got = ask("git.example.com:3100")
         assert "password=tok-abcdef-123" in got and "username=me" in got, got
         assert "password=tok-abcdef-123" in ask("GIT.example.com:3100"), "регистр хоста не важен"
-        for other in ("evil.example.net", "git.example.com", "git.example.com:3101"):
+        for other in ("evil.example.com", "git.example.com", "git.example.com:3101"):
             assert "tok-abcdef-123" not in ask(other), f"пароль ушёл на {other}"
         assert "tok-abcdef-123" not in ask("git.example.com:3100", host_env=""), \
             "без привязки хоста помощник молчит"
@@ -768,7 +768,7 @@ def test_git_check_does_not_reuse_the_saved_secret_for_another_server(tmp: Path)
         base = {"provider": "gitea", "instance": "https://git.example.com:3100", "repo": "team/a",
                 "branch": "main"}
         assert GS.save(a, base, {"auth": "token", "user": "me", "secret": "tok-abcdef-123"})["ok"]
-        other = {**base, "instance": "https://evil.example.net"}
+        other = {**base, "instance": "https://evil.example.com"}
         mask = {"auth": "token", "user": "me", "secret": GS.MASK}
         GS.check(a, base, mask)                                    # тот же сервер — ключ есть
         GS.check(a, other, mask)                                   # другой — ключа нет
@@ -776,9 +776,9 @@ def test_git_check_does_not_reuse_the_saved_secret_for_another_server(tmp: Path)
         GS.check(a, other, {"auth": "token", "user": "me"})        # поля secret нет — «не трогали»
         GS.check(a, other, {"auth": "token", "user": "me", "secret": "typed-by-human"})
         assert seen == [("https://git.example.com:3100", "tok-abcdef-123"),
-                        ("https://evil.example.net", ""), ("https://evil.example.net", ""),
-                        ("https://evil.example.net", ""),
-                        ("https://evil.example.net", "typed-by-human")], seen
+                        ("https://evil.example.com", ""), ("https://evil.example.com", ""),
+                        ("https://evil.example.com", ""),
+                        ("https://evil.example.com", "typed-by-human")], seen
         assert GS.cred_load(a)["secret"] == "tok-abcdef-123", "проверка стёрла сохранённый ключ"
     finally:
         GS._check = real
