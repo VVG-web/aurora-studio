@@ -245,8 +245,9 @@ def masked(data: dict) -> dict:
     return out
 
 
-def unmask(new: dict, old: dict) -> dict:
-    """Маска в пришедшей настройке — «ключ не трогали»: подставить прежний."""
+def unmask(new: dict, old: dict, dropped: list | None = None) -> dict:
+    """Маска в пришедшей настройке — «ключ не трогали»: подставить прежний. Провайдеры, у
+    которых сменился адрес и ключ из-за этого обнулён, дописываются в `dropped`."""
     from aurora_common import same_origin
     was = {p.get("id"): p for p in (old.get("providers") or [])}
     out = json.loads(json.dumps(new if isinstance(new, dict) else {}))
@@ -258,6 +259,8 @@ def unmask(new: dict, old: dict) -> dict:
             url, was_url = str(p.get("url") or "").strip(), str(prev.get("url") or "").strip()
             same = url == was_url or same_origin(url, was_url)
             p["key"] = prev.get("key", "") if same else ""
+            if not same and prev.get("key") and dropped is not None:
+                dropped.append(str(p.get("id") or url))
     return out
 
 

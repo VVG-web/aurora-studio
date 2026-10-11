@@ -39,7 +39,7 @@ import urllib.request
 
 from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
                            head_trust, head_value, safe_urlopen, same_origin, url_origin, utc_today)
-from sources_core import (BoardMirror, block, cited_by_cards, config_text,
+from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
                           is_promoted_document, report_stale, verify)
 
 DEFAULT_OUT = "Sources/Web"
@@ -216,8 +216,10 @@ def token_hosts(env=None) -> list:
     return [h for h in out if h]
 
 
-def token_refusal(url: str, seed: str, token: str, hosts: list | None = None) -> str:
-    """Почему токен не уходит на этот адрес (пусто — уходит)."""
+def token_refusal(url: str, seed: str, token: str, hosts: list | None = None,
+                  env: dict | None = None) -> str:
+    """Почему токен не уходит на этот адрес (пусто — уходит). `env` — окружение вместе со
+    строками файла машины (оттуда же берётся `AURORA_ALLOW_HTTP`)."""
     if not token:
         return ""
     if not same_origin(url, seed):
@@ -226,14 +228,15 @@ def token_refusal(url: str, seed: str, token: str, hosts: list | None = None) ->
     if hosts and (not o or o[1] not in hosts):
         return (f"хост {o[1] if o else url} не в AURORA_WEB_TOKEN_HOSTS "
                 f"({', '.join(hosts)}) файла машины")
-    return cleartext_secret_problem(url, allow_cleartext())
+    return cleartext_secret_problem(url, allow_cleartext(env))
 
 
-def token_for(url: str, seed: str, token: str, hosts: list | None = None) -> str:
+def token_for(url: str, seed: str, token: str, hosts: list | None = None,
+              env: dict | None = None) -> str:
     """Личный токен принадлежит хосту своей стартовой страницы: на чужие хосты обхода, на
     открытый http (кроме своего компьютера и `AURORA_ALLOW_HTTP=1`) и на хосты вне
     `AURORA_WEB_TOKEN_HOSTS` (если машина их перечислила) он не уходит."""
-    return "" if token_refusal(url, seed, token, hosts) else token
+    return "" if token_refusal(url, seed, token, hosts, env) else token
 
 
 def fetch(url: str, token: str = "", known: dict | None = None,
@@ -673,8 +676,11 @@ def run(a) -> int:
               "(добавить: «Настройки проекта» → «Веб-страницы»; образец блока — --help)")
         return 0
     opt = settings_from_config(cfg)
-    token = os.environ.get("WEB_PERSONAL_TOKEN", "") or os.environ.get("WEB_PAT", "")
-    hosts = token_hosts()
+    # Окружение вместе с файлом машины: при прямом запуске из консоли привязка хостов и
+    # разрешение http из файла иначе молча не действовали бы (в панели их кладёт child_env).
+    env = read_env()
+    token = env.get("WEB_PERSONAL_TOKEN", "") or env.get("WEB_PAT", "")
+    hosts = token_hosts(env)
     mirror = WebMirror(a.out)
     os.makedirs(mirror.out, exist_ok=True)
     print(f"# Веб-страницы — выгрузка\n\nАдресов в списке: **{len(pages)}** · "
@@ -691,7 +697,7 @@ def run(a) -> int:
         taken = 0
         print(f"## {seed} · {'доверенная' if trusted else 'недоверенная'}"
               + (" · лента: карточка только на предмет, не на событие" if feed else ""))
-        why = token_refusal(seed, seed, token, hosts)
+        why = token_refusal(seed, seed, token, hosts, env)
         if why:
             print(f"  ⚠️  токен не отправляется: {why}")
         while queue and taken < opt["max_pages"]:
@@ -703,7 +709,7 @@ def run(a) -> int:
             if known and not cache_usable(known, mirror.out, trusted, seed, feed, today):
                 known = None
             meta: dict = {}
-            html, err = fetch(url, token_for(url, seed, token, hosts), known, meta)
+            html, err = fetch(url, token_for(url, seed, token, hosts, env), known, meta)
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
                 unchanged += 1

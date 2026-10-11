@@ -56,8 +56,9 @@ The engine also remembers the server after the first successful reply (`.aurora/
 a different `base_url` afterwards is refused, with one line saying so, until you accept it. Accepting is one line in
 `.env.aurora.local`: `AURORA_CONFLUENCE_SERVER=https://wiki.example.com` or `AURORA_JIRA_SERVER=https://jira.example.com`
 (the same lines pin the server in advance — and for a project that has never synced, nothing is remembered yet, so set
-them there). `AURORA_ALLOW_HTTP=1` allows plain `http://` for a server on a closed network. The same rule holds for
-model gateway keys and the Git password (the credential helper answers only the repository's server). The website crawl
+them there). `AURORA_ALLOW_HTTP=1` allows plain `http://` for a server on a closed network. Model gateway keys and the Git password are protected differently: a redirect never carries
+them to another host, a saved key is not carried over to a changed address, and the credential helper answers only the
+repository's server; plain `http://` stays allowed there (a local Gitea or gateway on a closed network). The website crawl
 token (`WEB_PERSONAL_TOKEN`) goes only to the host of the start page it is used with; a page added to the shared list
 would get it, so list the hosts in `AURORA_WEB_TOKEN_HOSTS=wiki.example.com,…` and no other host receives it.
 

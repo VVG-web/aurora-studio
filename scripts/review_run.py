@@ -949,7 +949,13 @@ def _connect():
         sys.exit("нет confluence.base_url в aurora.config.yaml")
     if not auth:
         sys.exit("нет доступа к Confluence: CONFLUENCE_PAT в .env.aurora.local")
-    return Api(cfg["base_url"], auth), cfg
+    from sources_core import UnsafeTarget
+    api = Api(cfg["base_url"], auth)
+    try:
+        api._url("/")       # ключ на этот сервер нельзя: причина строкой, а не «не прочитана»
+    except UnsafeTarget as e:
+        sys.exit(f"! {e}")
+    return api, cfg
 
 
 def main() -> int:

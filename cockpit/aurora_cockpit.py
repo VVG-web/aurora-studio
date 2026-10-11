@@ -853,7 +853,16 @@ def models_save(payload: dict) -> dict:
     if not isinstance(new, dict):
         return {"ok": False, "error": "настройка не разобрана"}
     old = models_data()
-    return MC.save(KIT, MC.unmask(new, old))
+    dropped: list = []
+    r = MC.save(KIT, MC.unmask(new, old, dropped))
+    if r.get("ok") and dropped:      # провайдер иначе дал бы 401 без объяснения
+        r["notes"] = list(r.get("notes") or []) + [models_key_note(pid) for pid in dropped]
+    return r
+
+
+def models_key_note(pid: str) -> str:
+    """Замечание после сохранения: у провайдера сменился адрес, прежний ключ не перенесён."""
+    return f"у провайдера {pid} сменился адрес: ключ введите заново"
 
 
 def models_list(payload: dict) -> dict:
@@ -1060,7 +1069,7 @@ def request_lang(q: dict) -> str:
 # подстановками ищется по образцу: что подставлено — берётся из русского текста и тоже
 # переводится, если это сообщение (причина отказа вложена в «Маршрут не начат: …»).
 MESSAGE_KEYS = ("error", "why", "note", "warning", "hint", "wait", "python_error")
-MESSAGE_LISTS = ("errors", "warns", "blocker_why")          # находки доктора: список сообщений под одним ключом
+MESSAGE_LISTS = ("errors", "warns", "blocker_why", "notes")          # находки доктора: список сообщений под одним ключом
 _MATCHERS: dict = {}
 
 

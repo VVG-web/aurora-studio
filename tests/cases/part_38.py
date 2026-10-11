@@ -20,6 +20,7 @@ import time
 from harness import KIT, SCRIPTS, test  # noqa: F401
 
 COCKPIT = KIT / "cockpit"
+ENV_LOCAL = ".env.aurora" + ".local"
 
 
 def _path():
@@ -1413,3 +1414,95 @@ def test_saved_secrets_do_not_follow_a_changed_server_on_save(tmp: Path):
         assert r.get("ok") and GS.cred_load(str(proj))["secret"] == "NEW-TOKEN", r
     finally:
         GS.cred_file = real
+
+
+@test
+def test_web_export_reads_the_machine_file_when_run_directly(tmp: Path):
+    """Прямой запуск `web_export.py` (не из панели): `AURORA_WEB_TOKEN_HOSTS` и `AURORA_ALLOW_HTTP`
+    берутся из файла машины, а не только из окружения процесса. Раньше строка из файла молча
+    не действовала: страница вне привязки получала токен, а http из файла не разрешался."""
+    _path()
+    WE = importlib.import_module("web_export")
+    proj = tmp / "p"
+    proj.mkdir()
+    sent = []
+    real_get, real_argv, cwd = WE._get, sys.argv, os.getcwd()
+    WE._get = lambda url, token="", timeout=0, headers=None, meta=None: (
+        sent.append((url, token)) or (b"", "", "HTTP 404"))
+
+    def go(page: str, env_lines: str) -> str:
+        (proj / "aurora.config.yaml").write_text(
+            f"web:\n  pages:\n    - url: {page}\n      trusted: false\n", encoding="utf-8")
+        (proj / ENV_LOCAL).write_text("WEB_PERSONAL_TOKEN=SECRET\n" + env_lines, encoding="utf-8")
+        sent.clear()
+        sys.argv = ["web_export.py", "--out", str(proj / "out")]
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            WE.main()
+        return buf.getvalue()
+
+    os.chdir(proj)
+    try:
+        # привязка из файла: страница на другом хосте токен не получает, причина видна
+        out = go("https://new.example.org/page", "AURORA_WEB_TOKEN_HOSTS=wiki.example.com\n")
+        assert sent and all(t == "" for _u, t in sent), sent
+        assert "AURORA_WEB_TOKEN_HOSTS" in out, out
+        # контроль: без привязки токен уходит хосту своей страницы (значит, он читался из файла)
+        go("https://new.example.org/page", "")
+        assert sent and sent[0][1] == "SECRET", sent
+        # открытый http чужой машины: без разрешения токен не уходит, с разрешением из файла — уходит
+        out = go("http://wiki.example.org/page", "")
+        assert sent[0][1] == "" and "AURORA_ALLOW_HTTP" in out, (sent, out)
+        out = go("http://wiki.example.org/page", "AURORA_ALLOW_HTTP=1\n")
+        assert sent[0][1] == "SECRET" and "токен не отправляется" not in out, (sent, out)
+    finally:
+        os.chdir(cwd)
+        WE._get, sys.argv = real_get, real_argv
+
+
+@test
+def test_models_save_tells_which_key_was_dropped_on_an_address_change(tmp: Path):
+    """Смена адреса провайдера при ключе-маске: ключ не переносится, и ответ сохранения
+    называет провайдера (на языке интерфейса), а не молча даёт потом 401."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    MC = importlib.import_module("model_config")
+    old = {"providers": [{"id": "p1", "url": "https://gw.example.com/v1", "key": "SAVED"}]}
+    dropped: list = []
+    MC.unmask({"providers": [{"id": "p1", "url": "https://gw.example.com/v1/", "key": MC.MASK}]},
+              old, dropped)
+    assert dropped == [], "тот же сервер — ключ остаётся, замечания нет"
+    MC.unmask({"providers": [{"id": "p1", "url": "https://evil.example.net/v1", "key": MC.MASK}]},
+              old, dropped)
+    assert dropped == ["p1"], dropped
+    real_data, real_save = ck.models_data, MC.save
+    ck.models_data = lambda: old
+    MC.save = lambda kit, data: {"ok": True, "notes": [], "path": ""}
+    try:
+        r = ck.models_save({"models": {"providers": [
+            {"id": "p1", "url": "https://evil.example.net/v1", "key": MC.MASK}]}})
+        assert r["ok"] and r["notes"] == [ck.models_key_note("p1")], r
+        en = ck.translate_payload(r, "en")
+        assert "p1" in en["notes"][0] and "enter its key again" in en["notes"][0], en
+    finally:
+        ck.models_data, MC.save = real_data, real_save
+
+
+@test
+def test_review_run_says_why_the_server_is_refused(tmp: Path):
+    """`review_run.py`: сервер, на который ключ отправлять нельзя (открытый http чужой машины),
+    даёт одну строку причины и код 1, а не «страница не прочитана» без объяснения."""
+    proj = tmp / "p"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text(
+        'atlassian:\n  confluence:\n    base_url: "http://wiki.invalid"\n    space: "S"\n',
+        encoding="utf-8")
+    (proj / ENV_LOCAL).write_text("CONFLUENCE_PAT=FAKE\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "AURORA_ALLOW_HTTP"}
+    cp = subprocess.run([sys.executable, str(SCRIPTS / "review_run.py"), "--page", "1"],
+                        cwd=str(proj), capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", env=env)
+    assert cp.returncode == 1, (cp.returncode, cp.stdout[-300:], cp.stderr[-400:])
+    assert "Traceback" not in cp.stderr and "AURORA_ALLOW_HTTP" in cp.stderr, cp.stderr[-400:]
