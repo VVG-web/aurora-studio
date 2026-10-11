@@ -36,7 +36,7 @@ from sources_core import SERVICE_RE  # noqa: E402
 from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
                            head_text,
                            card_sources, fold_hard, sources_block,
-                           split_frontmatter, split_tail, translit_names, walk_md,
+                           quote_safe, split_frontmatter, split_tail, translit_names, walk_md,
                            is_meeting, meeting_turns, title_from_stem, with_meeting_mark)
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
@@ -1376,6 +1376,9 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # приходят каждая со своим названием, и без него текст теряет структуру источника.
     body = ("\n\n".join(b for _t, b in picked) if paras
             else "\n\n".join(f"## {t}\n\n{b}" if len(picked) > 1 else b for t, b in picked))
+    # Дословный текст чужой: его служебные заголовки хвоста («Исправления человеком»,
+    # «История изменений») не должны читаться как хвост самой карточки.
+    body = quote_safe(body)
     # Дополнение существующей карточки: знание о сущности копится в ней, а не расходится
     # по новым именам. Карточку ищем по имени — раздел у неё уже свой.
     if append_to:

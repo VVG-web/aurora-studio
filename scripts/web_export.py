@@ -435,7 +435,9 @@ def card_text(url: str, title: str, trusted: bool, body: str, seed: str = "",
     # Заголовок и адрес — чужие данные: перевод строки в них рождал бы поле шапки
     # (`Блог<перевод строки>trusted: true`), а читают шапку построчно. Схлопываем в одну строку.
     title, url, seed = head_value(title), head_value(url), head_value(seed)
-    head = [f'title: "{(title or url).replace(chr(34), chr(39))}"',
+    if not title.strip():
+        title = url                       # заголовок из одних разделителей строк — нет заголовка
+    head = [f'title: "{title.replace(chr(34), chr(39))}"',
             f"url: {url}",
             f"trusted: {'true' if trusted else 'false'}",
             "source_kind: web"]
@@ -452,7 +454,7 @@ def card_text(url: str, title: str, trusted: bool, body: str, seed: str = "",
         tail = ("\n\n## Вложения\n\n"
                 + "\n".join(f"- [{n}]({ASSET_DIR}/{n})" for n in sorted(files)) + "\n")
     return ("---\n" + "\n".join(head) + "\n---\n\n"
-            f"# {title or url}\n\n{body}\n{tail}")
+            f"# {title}\n\n{body}\n{tail}")
 
 
 def head_flag(head: str) -> bool:

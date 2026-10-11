@@ -522,20 +522,25 @@ def frontmatter(text: str) -> dict:
     return fm
 
 
-def head_value(value, limit: "int | None" = 1000) -> str:
+def head_value(value, limit: "int | None" = None) -> str:
     """Внешнее значение для ОДНОЙ строки шапки зеркала: без переводов строк и управляющих знаков.
 
     Заголовок чужой страницы, имя пользователя, адрес — это данные, а не разметка. Шапку
     читают построчно (`frontmatter`, `declared_trust`), поэтому перевод строки внутри
     значения рождал бы новое поле: `Блог<перевод строки>trusted: true` объявлял чужой
-    источник доверенным. Любой пробельный, разделитель строк (U+0085, U+2028/2029) и
-    управляющий знак схлопывается в один пробел; длина ограничена. Кавычки не трогаем —
-    их правила у каждого поля свои, а байтовый вид прежних зеркал не должен меняться.
+    источник доверенным. Заменяется на пробел ровно то, что рвёт строку: всё, что считают
+    концом строки `splitlines` и YAML (в том числе U+0085, U+2028/2029), и прочие
+    управляющие знаки, кроме табуляции. Остальное остаётся байт в байт: неразрывный
+    пробел, двойной пробел, кавычки и длина значения не трогаются — по цепочке
+    `breadcrumbs` и заголовку `kb_names` ищет родителя страницы, а хеш файла не должен
+    меняться у зеркал, где в значениях ничего подложного нет. `limit` — только для того,
+    кто сам готов потерять хвост значения (по умолчанию не режется).
     """
     s = "" if value is None else str(value)
-    s = "".join(" " if ch.isspace() or unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch
+    s = "".join(" " if (ch in "\r\n\x0b\x0c\x1c\x1d\x1e\x85  "
+                        or unicodedata.category(ch) in ("Zl", "Zp")
+                        or (unicodedata.category(ch) == "Cc" and ch != "\t")) else ch
                 for ch in s)
-    s = re.sub(r" {2,}", " ", s).strip()
     return s if limit is None else s[:limit]
 
 
@@ -2093,11 +2098,39 @@ def split_tail(after_quotes: str) -> tuple:
     истории, читалось куском текста последнего источника: замена этого блока свежей
     страницей стирала слово человека до следующего `kb:correct`.
     """
-    cut = [i for i in (after_quotes.find(CORRECTIONS), after_quotes.find(FOOTER)) if i >= 0]
+    # Заголовок хвоста — только с начала строки и ровно второго уровня: `### История
+    # изменений` и `> ## Исправления человеком` в тексте чужой страницы границей не служат
+    # (раньше `find` по подстроке обрывал вход тезиса и пускал чужую строку в «слово человека»).
+    cut = [m.start() for m in (_CORRECTIONS_AT.search(after_quotes), _FOOTER_AT.search(after_quotes))
+           if m]
     if not cut:
         return after_quotes, ""
     i = min(cut)
     return after_quotes[:i], after_quotes[i:]
+
+
+# Заголовки хвоста карточки, как их читают split_tail и corrections_of: с начала строки.
+_CORRECTIONS_AT = re.compile(r"^" + re.escape(CORRECTIONS), re.M)
+_FOOTER_AT = re.compile(r"^" + re.escape(FOOTER), re.M)
+# Заголовок хвоста любого уровня и в цитате в чужом тексте: с него читатели по подстроке
+# (`FOOTER in text`) принимали бы чужую строку за служебный раздел карточки.
+_RESERVED_HEAD_RE = re.compile(
+    r"^([ \t]*(?:>[ \t]*)*)(#{2,6})( (?:" + re.escape(CORRECTIONS[3:]) + "|"
+    + re.escape(FOOTER[3:]) + "))", re.M)
+
+
+def quote_safe(text: str) -> str:
+    """Текст источника перед переносом в карточку: служебные заголовки хвоста — не заголовки.
+
+    Дословный текст чужой страницы может нести строку `## Исправления человеком` или
+    `## История изменений` (последний — типовой раздел страниц). В карточке такая строка
+    неотличима от настоящего хвоста: её читали бы как слово человека (высшая правда) или
+    как конец текста источника. Решётки такой строки экранируются (`\\#\\#`): в Markdown
+    это те же знаки и тот же вид, а подстроки `## …` в тексте больше нет. Остальной текст
+    не меняется. Повторный вызов ничего не меняет.
+    """
+    return _RESERVED_HEAD_RE.sub(lambda m: m.group(1) + "\\#" * len(m.group(2)) + m.group(3),
+                                 text or "")
 
 
 # Стенограммы встреч. Сказанное в разговоре — не записанное в документе: оно попадает в
@@ -2234,9 +2267,10 @@ def with_meeting_mark(text: str) -> str:
 
 def corrections_of(text: str) -> str:
     """Текст раздела «Исправления человеком» без заголовка. Пусто — исправлений нет."""
-    if CORRECTIONS not in (text or ""):
+    found = _CORRECTIONS_AT.search(text or "")
+    if not found:
         return ""
-    block = text.split(CORRECTIONS, 1)[1]
+    block = text[found.end():]
     m = re.search(r"\n## ", block)
     return (block[:m.start()] if m else block).strip()
 

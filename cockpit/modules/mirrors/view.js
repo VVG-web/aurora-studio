@@ -54,7 +54,7 @@ function mirrorCard(ctx, inst, m, src, p){
   const key = Object.keys(m).find(k => k.toLowerCase() === inst.id.toLowerCase());
   const data = m[key], man = src.installed.find(x => x.id === inst.module) || {};
   const tokenOk = !inst.env_prefix || (p.tokens || []).includes(inst.env_prefix);
-  const bad = data && (data.no_state || data.missing || data.orphan);
+  const bad = data && (data.no_state || data.missing || data.orphan || data.dup_head);
   // зеркало без файла состояния сверить не с чем: показываем это прямо, а не нулями
   const numbers = data && data.no_state
     ? el("div", {class:"row"},
@@ -63,6 +63,7 @@ function mirrorCard(ctx, inst, m, src, p){
     : data ? el("div", {class:"row"},
         el("span", {class:"chip " + (data.missing ? "bad" : "ok")}, "MISSING " + data.missing),
         el("span", {class:"chip " + (data.orphan ? "bad" : "ok")}, "ORPHAN " + data.orphan),
+        data.dup_head ? el("span", {class:"chip bad"}, t("mirrors.dup_head", {n: data.dup_head})) : null,
         data.age_days != null ? el("span", {class:"chip"}, t("mirrors.age", {n: data.age_days})) : null)
     : el("div", {class:"chip"}, t("mirrors.empty"));
   return el("div", {class:"card", style:"padding:18px"},

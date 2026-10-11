@@ -13,6 +13,7 @@
   "mirrors.folder": "Папка: {path}.",
   "mirrors.sync": "Синхронизировать",
   "mirrors.audit": "Проверить целостность",
+  "mirrors.dup_head": "шапок с повтором поля: {n}",
   "mirrors.drifted": "есть расхождения — сначала аудит",
   "mirrors.not_installed": "модуль не установлен",
   "mirrors.sources_empty": "Ни в Sources/, ни в Raw/ документов нет — базе не из чего собираться.",

@@ -3340,12 +3340,14 @@ def source_is_feed(cwd: str, source: str) -> bool:
         return False
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
-            head = f.read(600)
+            head = f.read(8000)
     except OSError:
         return False
-    if not head.startswith("---") or head.count("---") < 2:
-        return False
-    return bool(re.search(r"(?m)^feed:\s*true\s*$", head.split("---")[1]))
+    # Шапку режет разбор (`\n---` в начале строки), а не подстрока `---`: заголовок страницы
+    # «Новости --- архив» обрывал шапку, и отметка ленты терялась.
+    from aurora_common import head_scalar, split_frontmatter
+    head, _rest = split_frontmatter(head)
+    return head is not None and (head_scalar(head, "feed") or "").lower() == "true"
 
 
 PROMPT_BUILD = """Ты разбираешь источник на карточки знаний.

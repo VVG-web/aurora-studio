@@ -168,6 +168,11 @@ The footer gets **only a change of meaning and structure**, not every edit: ordi
 log`, and duplicating history in the text is pointless. "Meaning" is a claim that artifacts referred to through
 `based_on`: if it changed, everyone who relied on the card must see it.
 
+The card footer (`## Исправления человеком`, `## История изменений`) is recognised only by a second-level heading at the
+start of a line. When a foreign page's text carries the same line, its hashes are escaped (`\#\#`) as it moves into a
+card: otherwise the page could pass its own line off as the human's word or cut itself short. The rest of the source
+text stays verbatim.
+
 ## 6. Twins: a trusted one and a draft one
 
 Two cards may exist about one concept: one assembled from trusted sources and one from untrusted ones. They are linked
