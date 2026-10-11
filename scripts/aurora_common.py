@@ -1517,8 +1517,12 @@ MCP_LAUNCH_ENV_RE = re.compile(
     r"|^(?:PATH|PATHEXT|COMSPEC|BASH_ENV|ENV|IFS|SHELLOPTS|PS4|PROMPT_COMMAND|CLASSPATH|GOFLAGS"
     r"|HOME|JAVA_HOME|TMPDIR|TMP|TEMP|(?:HTTPS?|ALL|NO)_PROXY|SSL_CERT_FILE|SSL_CERT_DIR"
     r"|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)$", re.I)
-# Имя переменной, похожее на секрет: значение остаётся под маской даже в плане переноса.
-MCP_SECRET_NAME_RE = re.compile(r"TOKEN|KEY|SECRET|PASS|AUTH|CRED|COOKIE", re.I)
+# Имя переменной, похожее на секрет: значение остаётся под маской даже в плане переноса, и
+# даже если имя подходит под `MCP_LAUNCH_ENV_RE` (`HTTPS_PROXY_PASSWORD`, `NODE_AUTH_TOKEN`).
+# Короткие PAT, PW, PWD ищутся целым словом между `_`: иначе под них попал бы `PATH`.
+MCP_SECRET_NAME_RE = re.compile(
+    r"TOKEN|KEY|SECRET|PASS|AUTH|CRED|COOKIE|BEARER|JWT|SESSION|SIGNATURE|PRIVATE"
+    r"|(?:^|_)(?:PAT|PW|PWD)(?:$|_)", re.I)
 
 
 def mcp_risky_env(spec) -> list:
@@ -1531,17 +1535,17 @@ def mcp_risky_env(spec) -> list:
 def mcp_masked(spec: dict, show_launch_env: bool = False) -> dict:
     """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`) стоит маска.
 
-    `show_launch_env` — значения `env`, которые не похожи на секрет (имя без TOKEN, KEY,
-    SECRET, PASS, AUTH, CRED, COOKIE) и любое окружение, меняющее запуск (`mcp_risky_env`),
-    оставить открытым текстом: владелец обязан увидеть перед переносом, что запустится на самом
-    деле (HOME, JAVA_HOME, прокси…), а перечню «опасных» имён полностью верить нельзя.
+    `show_launch_env` — значения `env`, имя которых не похоже на секрет (`MCP_SECRET_NAME_RE`:
+    TOKEN, KEY, SECRET, PASS, AUTH, PAT, PW…), оставить открытым текстом: владелец обязан увидеть
+    перед переносом, что запустится на самом деле (HOME, JAVA_HOME, прокси…), а перечню
+    «опасных» имён полностью верить нельзя. Секретное имя маскируется всегда, в том числе у
+    окружения, меняющего запуск (`mcp_risky_env`): имя в плане и так видно.
     """
     one = json.loads(json.dumps(spec, default=str))
     for key in MCP_SECRET_MAPS:
         if isinstance(one.get(key), dict):
             one[key] = {k: (v if v in ("", None) or (
-                show_launch_env and key == "env" and (
-                    MCP_LAUNCH_ENV_RE.match(str(k)) or not MCP_SECRET_NAME_RE.search(str(k))))
+                show_launch_env and key == "env" and not MCP_SECRET_NAME_RE.search(str(k)))
                 else MCP_MASK) for k, v in one[key].items()}
     if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
         one["auth"] = MCP_MASK

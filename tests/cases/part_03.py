@@ -2394,6 +2394,15 @@ def test_mcp_plan_shows_launch_env_and_ui_texts_match_the_model(tmp: Path):
     assert one["env"]["HTTPS_PROXY"] == "http://p:3128" and one["env"]["LANG"] == "C", one
     assert one["env"]["API_TOKEN"] == C.MCP_MASK and one["env"]["DB_PASSWORD"] == C.MCP_MASK, one
     assert one["headers"]["X-Key"] == C.MCP_MASK
+    # секретное имя маскируется всегда, даже если оно подходит под «окружение запуска»
+    sec = C.mcp_masked({"command": "npx", "env": {
+        "HTTPS_PROXY_PASSWORD": "к1", "NODE_OPTIONS_TOKEN": "к2", "NODE_AUTH_TOKEN": "к3",
+        "UV_INDEX_PRIV_PASSWORD": "к4", "NPM_CONFIG__AUTH": "к5", "JIRA_PAT": "к6", "DB_PW": "к7",
+        "PATH": "/usr/bin", "HTTPS_PROXY": "http://p:3128"}}, show_launch_env=True)["env"]
+    for k in ("HTTPS_PROXY_PASSWORD", "NODE_OPTIONS_TOKEN", "NODE_AUTH_TOKEN", "UV_INDEX_PRIV_PASSWORD",
+              "NPM_CONFIG__AUTH", "JIRA_PAT", "DB_PW"):
+        assert sec[k] == C.MCP_MASK, (k, sec[k])
+    assert sec["PATH"] == "/usr/bin" and sec["HTTPS_PROXY"] == "http://p:3128", sec
     assert C.mcp_masked({"command": "x", "env": {"HOME": "/h"}})["env"]["HOME"] == C.MCP_MASK, \
         "вне плана переноса значения остаются под маской"
     assert C.mcp_migrate_problem("n", {"command": "npx", "env": {"HOME": "/h"}}), "HOME переносится из проекта"

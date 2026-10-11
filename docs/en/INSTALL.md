@@ -283,7 +283,8 @@ into the project; the moved file goes to `.aurora/mcp.json.migrated` — a folde
 (if it was in git, delete it there yourself: the secrets stay in the history). Not moved: a server that fails the
 check (malformed fields, the name `aurora` — it is taken by the built-in server) and a server whose environment
 changes how the program starts (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHON*`, `PATH` and alike): it is shown in
-plain text (so is any variable whose name does not look like a secret: `HOME`, `JAVA_HOME`, proxies…), and such a server has to be entered by hand in "Kit setup". An unreadable kit `local/mcp.json` is not
+plain text when the name does not look like a secret (so is any such variable: `HOME`, `JAVA_HOME`, proxies…), while
+the value of a variable with a secret-looking name (`NODE_AUTH_TOKEN`, `HTTPS_PROXY_PASSWORD`, `JIRA_PAT`) always stays masked, and such a server has to be entered by hand in "Kit setup". An unreadable kit `local/mcp.json` is not
 overwritten — the move refuses; an unreadable project `.gitignore` (not UTF-8) also stops it: the servers are moved but `mcp.json` stays — remove it yourself.
 
 **The kit's servers start in the project folder** (as a run sees them): `npx` prefers the project's
