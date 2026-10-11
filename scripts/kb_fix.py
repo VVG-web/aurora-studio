@@ -577,10 +577,10 @@ class Plan:
         Планировщики считают назначение от исходного пути, не зная друг о друге: `--names`
         меняет имя файла, `--sections` — папку, `--homoglyphs` снова имя. Два `renames` от
         одного пути роняли `apply_plan` на втором `os.rename` посреди записи. Здесь шаги
-        сводятся: имя — от шага, менявшего имя, папка — от шага, менявшего папку; назначение
-        прежнего шага, ставшее источником, продолжает цепочку. Оба шага меняют одно и то же
-        по-разному, два источника идут в одно назначение, назначение занято на диске — отказ:
-        это решение человека, а не перекодирование.
+        сводятся: имя — от шага, менявшего имя, папка — от шага, менявшего папку. Источник всегда
+        исходный путь карточки на диске, поэтому цепочек «назначение → источник» не бывает.
+        Оба шага меняют одно и то же по-разному, два источника идут в одно назначение,
+        назначение занято на диске — отказ: это решение человека, а не перекодирование.
         """
         old, new = old.replace("\\", "/"), new.replace("\\", "/")
         dst = dict((o.replace("\\", "/"), n.replace("\\", "/")) for o, n in self.renames)
@@ -608,10 +608,6 @@ class Plan:
         others = set(dst.values())
         if new in others or (new != old and os.path.exists(new)):
             return None
-        for i, (o, n) in enumerate(self.renames):
-            if n.replace("\\", "/") == old:          # цепочка: прежний шаг привёл сюда
-                self.renames[i] = (o, new)
-                return new
         self.renames.append((old, new))
         return new
 
@@ -777,7 +773,8 @@ def plan_homoglyphs(cards: dict, idx: Index, plan: Plan):
 
     Имя-цель занимается один раз: если в одно каноничное имя метятся два файла (или оно
     уже занято существующей карточкой) — это двойники, их решает человек через --merge.
-    Индекс обновляется под новые имена, чтобы последующая починка ссылок вела на них.
+    Индекс обновляется под новые имена, чтобы последующая починка ссылок вела на них; пути
+    в нём прежние — карточка на диске ещё лежит там.
     """
     renames = {}
     claimed = set(idx.by_stem)
@@ -800,11 +797,14 @@ def plan_homoglyphs(cards: dict, idx: Index, plan: Plan):
         text = plan.file_writes.get(path, c.text)
         plan.file_writes[path] = add_alias(Card(path, text), c.stem)
         plan.notes.append(f"  файл {c.stem}.md → {canon}.md (смешанный скрипт)")
-        # индекс: цель теперь под новым именем, старое имя разрешается как alias
+        # индекс: цель теперь под новым именем, старое имя разрешается как alias. Путь в индексе
+        # остаётся ПРЕЖНИМ: файла по новому пути ещё нет, а `plan_links` ищет по пути карточку в
+        # `cards` и пишет в план под ним же (запись идёт до переименования).
         idx.by_stem.pop(c.stem, None)
-        idx.by_stem[canon] = new_path
-        idx.by_alias.setdefault(c.stem, new_path)
-        idx.by_fold.setdefault(fold(canon), []).append(new_path)
+        idx.by_stem[canon] = path
+        idx.by_alias.setdefault(c.stem, path)
+        if path not in idx.by_fold.setdefault(fold(canon), []):
+            idx.by_fold[fold(canon)].append(path)
     if renames:
         for path, c in cards.items():
             base = plan.file_writes.get(path, c.text)
@@ -3004,10 +3004,6 @@ def apply_plan(plan: Plan) -> int:
     for old, new in renames:
         if os.path.exists(new):
             print(f"  ! пропущено переименование {old} → {new}: файл уже существует", file=sys.stderr)
-            skipped += 1
-            continue
-        if not os.path.exists(old):
-            print(f"  ! пропущено переименование {old} → {new}: источника уже нет", file=sys.stderr)
             skipped += 1
             continue
         os.makedirs(os.path.dirname(new) or ".", exist_ok=True)

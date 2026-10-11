@@ -897,6 +897,36 @@ def test_kb_fix_sections_and_homoglyphs_compose_on_one_card(tmp: Path):
 
 
 @test
+def test_kb_fix_homoglyphs_and_links_compose_on_a_nonexact_link(tmp: Path):
+    """Смешанный скрипт в имени карточки и ссылка на неё не по точному имени (код документа
+    впереди): `--all` не падает, ссылка и синоним пишутся в файл под ПРЕЖНИМ путём.
+
+    Раньше `plan_homoglyphs` направлял индекс на новый путь — файла, которого ещё нет, а
+    `plan_links` брал `cards[tpath]` и падал `KeyError` (код 3) даже без `--apply`.
+    """
+    root, kb = _kbf_project(tmp)
+    mixed = "Р\u0065естр"                  # латинская «e» среди кириллицы: «Реестр»
+    (kb / "Concepts" / f"{mixed}.md").write_text(
+        f'---\ntitle: "{mixed}"\ntype: concept\nstatus: knowledge\n---\n\n# {mixed}\n\nТело.\n',
+        encoding="utf-8")
+    (kb / "Concepts" / "Ссылка.md").write_text(
+        '---\ntitle: "Ссылка"\ntype: concept\nstatus: knowledge\n---\n\n# Ссылка\n\n'
+        'См. [[AC-1.2 Реестр]].\n', encoding="utf-8")
+    dry = subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), "--all"],
+                         cwd=root, capture_output=True, text=True, encoding="utf-8",
+                         errors="replace")
+    assert dry.returncode in (0, 1) and "Traceback" not in dry.stderr, dry.stderr[-600:]
+    cp = _kbf_run(root, "--all")
+    assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, cp.stderr[-600:]
+    tree = _kbf_tree(kb)
+    assert sorted(tree) == ["Concepts/Реестр.md", "Concepts/Ссылка.md"], list(tree)
+    assert "[[Реестр]]" in tree["Concepts/Ссылка.md"], "ссылка не переведена на новое имя"
+    again = _kbf_run(root, "--all")
+    assert again.returncode in (0, 1) and "Traceback" not in again.stderr, again.stderr[-600:]
+    assert _kbf_tree(kb) == tree, "повторный прогон изменил базу"
+
+
+@test
 def test_kb_fix_conflicting_destination_leaves_the_card_in_place(tmp: Path):
     """Если свёрнутое назначение занято другой карточкой, перенос не выполняется и не падает:
     карточка остаётся под новым именем в прежнем разделе, обе карточки целы."""
@@ -916,7 +946,7 @@ def test_kb_fix_conflicting_destination_leaves_the_card_in_place(tmp: Path):
 
 
 @test
-def test_kb_fix_plan_rename_folds_chains_and_refuses_conflicts(tmp: Path):
+def test_kb_fix_plan_rename_folds_compositions_and_refuses_conflicts(tmp: Path):
     """`Plan.rename`: имя от одного шага и папка от другого сводятся в одно переименование;
     два разных назначения одного источника и два источника в одно назначение — отказ."""
     sys.path.insert(0, str(SCRIPTS))
@@ -939,9 +969,6 @@ def test_kb_fix_plan_rename_folds_chains_and_refuses_conflicts(tmp: Path):
         # два источника — одно назначение
         assert p.rename("K/Concepts/Иное.md", "K/Processes/Имя.md") is None
         assert len(p.renames) == 1
-        # цепочка: назначение прежнего шага стало источником следующего
-        assert p.rename("K/Processes/Имя.md", "K/Reference/Имя.md") == "K/Reference/Имя.md"
-        assert p.renames == [("K/Concepts/AC-1 Имя.md", "K/Reference/Имя.md")]
     finally:
         os.chdir(old)
 
