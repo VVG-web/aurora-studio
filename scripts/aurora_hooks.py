@@ -126,8 +126,12 @@ while read -r local_ref local_sha remote_ref _r; do
   # `HEAD^`, `@~2`: предок текущей ветки — её же история) разворачиваем в текущую ветку; голый sha и отсоединённый HEAD — в ветки, которые на этот коммит указывают.
   # Для явного `refs/...` так не делаем: имя названо, а другая ветка на том же коммите
   # (`development` сразу после слияния равна `master`) — не повод останавливать публикацию.
-  case "$local_ref" in
-    refs/*) ;;
+  # Назван только полный `refs/...` БЕЗ суффикса: `refs/heads/development~1`, `refs/heads/development^0`,
+  # `refs/heads/main@{{1}}` git тоже отдаёт как набрано, и для них нужен разбор суффикса, как у короткого имени.
+  kind=other
+  case "$local_ref" in refs/*[~^]*|refs/*@[{{]*) ;; refs/*) kind=named ;; esac
+  case "$kind" in
+    named) ;;
     *)
       cur=""
       case "$local_ref" in HEAD|HEAD[~^@]*|@|@[~^]*) cur=$(git symbolic-ref -q HEAD 2>/dev/null) ;; esac
@@ -142,7 +146,8 @@ while read -r local_ref local_sha remote_ref _r; do
       fi
       # Отсоединённый HEAD `rev-parse --symbolic-full-name` называет литералом `HEAD`: это не ветка,
       # и такой ответ приравнивался бы к найденной ветке, пропуская проверку по коммиту.
-      case "$cur" in refs/*) ;; *) cur="" ;; esac
+      # Только ветка: тег и remote-tracking (`v1^0`, `origin/development~0`) — не ветка, по ним нужна проверка по коммиту.
+      case "$cur" in refs/heads/*) ;; *) cur="" ;; esac
       pts=""
       # Запись reflog (`HEAD@{{1}}`, `master@{{2}}`) — это коммит, а не текущая ветка: стоя на `master`,
       # `HEAD@{{1}}` может быть кончиком `development`, поэтому ветки на коммите смотрим всегда.

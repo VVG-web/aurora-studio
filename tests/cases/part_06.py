@@ -2420,6 +2420,29 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = push(alias, lsha=other)
         assert cp.returncode == 0, f"{alias} при отсоединённом HEAD на коммите main остановлен:\n{cp.stderr}"
     g("checkout", "-q", "main")
+    # Тег и remote-tracking на кончике development — не ветки: форма с суффиксом проверяется по коммиту
+    # (раньше `refs/*` принимал `refs/tags/v1` за найденную ветку, и проверка по коммиту отключалась).
+    g("tag", "v1", sha)
+    g("tag", "-a", "-m", "t", "v2", sha)
+    g("update-ref", "refs/remotes/priv/development", sha)
+    for alias in ("v1^0", "v1~0", "v1^{commit}", "v2^0", "priv/development^0", "priv/development~0"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo (тег/remote-tracking на кончике development) уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    g("tag", "v3", other)
+    cp = push("v3^0", lsha=other)
+    assert cp.returncode == 0, f"v3^0 (тег на коммите обычной ветки) остановлен:\n{cp.stderr}"
+    # Полное имя с суффиксом: git отдаёт как набрано, суффикс разбирается как у короткого имени
+    for alias in ("refs/heads/development~1", "refs/heads/development^", "refs/heads/development^0",
+                  "refs/heads/development~0", "refs/heads/development^{commit}", "refs/heads/development@{0}"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    cp = push("refs/heads/main@{1}", lsha=sha)     # запись reflog — коммит, на нём стоит development
+    assert cp.returncode == 1 and "development" in cp.stderr, f"refs/heads/main@{{1}} (кончик development) ушёл:\n{cp.stderr}"
+    for alias in ("refs/heads/main^0", "refs/heads/main~0"):
+        cp = push(alias, lsha=other)
+        assert cp.returncode == 0, f"{alias} (обычная ветка) остановлен:\n{cp.stderr}"
 
     # То же настоящим `git push`: git сам решает, что отдать хуку в local_ref
     real = tmp / "real"
@@ -2450,6 +2473,15 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = rg("push", "origin", alias + ":refs/heads/foo", check=False)
         assert cp.returncode != 0 and "development" in cp.stderr, \
             f"git push {alias}:foo при отсоединённом HEAD на development ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
+    rg("tag", "v1", "development")
+    rg("tag", "-a", "-m", "t", "v2", "development")
+    rg("update-ref", "refs/remotes/priv/development", rg("rev-parse", "development").stdout.strip())
+    for alias in ("v1^0", "v1~0", "v1^{commit}", "v2^0", "priv/development^0", "priv/development~0",
+                  "refs/heads/development~0", "refs/heads/development^0", "refs/heads/development^{commit}",
+                  "refs/heads/development@{0}"):
+        cp = rg("push", "origin", alias + ":refs/heads/foo", check=False)
+        assert cp.returncode != 0 and "development" in cp.stderr, \
+            f"git push {alias}:foo (кончик development) ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
     assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "в публичный remote что-то уехало"
     cp = rg("push", "origin", "main:refs/heads/foo", check=False)
     assert cp.returncode == 0, f"обычная ветка main остановлена:\n{cp.stderr}"
