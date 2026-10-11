@@ -140,9 +140,17 @@ while read -r local_ref local_sha remote_ref _r; do
           cur=$(git rev-parse --symbolic-full-name "$base" 2>/dev/null | head -n 1)
         fi
       fi
+      # Отсоединённый HEAD `rev-parse --symbolic-full-name` называет литералом `HEAD`: это не ветка,
+      # и такой ответ приравнивался бы к найденной ветке, пропуская проверку по коммиту.
+      case "$cur" in refs/*) ;; *) cur="" ;; esac
+      pts=""
+      # Запись reflog (`HEAD@{{1}}`, `master@{{2}}`) — это коммит, а не текущая ветка: стоя на `master`,
+      # `HEAD@{{1}}` может быть кончиком `development`, поэтому ветки на коммите смотрим всегда.
+      case "$local_ref" in *@[{{]*) pts=1 ;; esac
       if [ -n "$cur" ]; then
         names="$names $cur"
-      else
+      fi
+      if [ -z "$cur" ] || [ -n "$pts" ]; then
         names="$names $(git for-each-ref --points-at "$local_sha" --format='%(refname)' refs/heads 2>/dev/null)"
       fi
       ;;

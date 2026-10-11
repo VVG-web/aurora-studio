@@ -2397,6 +2397,63 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
     # явное имя ссылки не сверяется с другими ветками на коммите
     assert push("refs/heads/main").returncode == 0, "явная refs/heads/main остановлена соседней веткой кухни"
 
+    # Запись reflog и отсоединённый HEAD: у `HEAD@{N}` коммит — не обязательно текущая ветка, а у
+    # отсоединённого HEAD `rev-parse --symbolic-full-name` отдаёт литерал `HEAD` (не ветку).
+    tree = g("rev-parse", sha + "^{tree}")
+    other = g("commit-tree", tree, "-p", sha, "-m", "z")
+    g("update-ref", "refs/heads/main", other)
+    g("checkout", "-q", "development")
+    g("checkout", "-q", "main")          # HEAD@{1} — кончик development, стоим на main
+    for alias in ("HEAD@{1}", "@{1}"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo на main, где {alias} — кончик development, уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    cp = push("HEAD@{0}", lsha=other)
+    assert cp.returncode == 0, f"HEAD@{{0}} на коммите обычной ветки остановлен:\n{cp.stderr}"
+    g("checkout", "-q", "--detach", "development")
+    for alias in ("HEAD^0", "HEAD~0", "HEAD@{0}", "@^0", "HEAD", "@"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo при отсоединённом HEAD на кончике development уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    g("checkout", "-q", "--detach", "main")
+    for alias in ("HEAD^0", "HEAD~0", "@^0"):
+        cp = push(alias, lsha=other)
+        assert cp.returncode == 0, f"{alias} при отсоединённом HEAD на коммите main остановлен:\n{cp.stderr}"
+    g("checkout", "-q", "main")
+
+    # То же настоящим `git push`: git сам решает, что отдать хуку в local_ref
+    real = tmp / "real"
+    bare = tmp / "bare.git"
+    for d in (real / ".git/hooks", real / "scripts"):
+        d.mkdir(parents=True)
+    subprocess.run([git, "init", "-q", "--bare", str(bare)], env=env, check=True, capture_output=True)
+
+    def rg(*a, check=True):
+        return subprocess.run([git, *a], cwd=str(real), env=env, check=check, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace")
+    rg("init", "-q")
+    rg("symbolic-ref", "HEAD", "refs/heads/development")
+    rg("commit", "-q", "--allow-empty", "-m", "x")
+    rg("remote", "add", "origin", str(bare))
+    rg("config", "aurora.publicRemotes", "origin")
+    (real / "scripts/aurora_hooks.py").write_text("import sys\nsys.stdin.read()\n", encoding="utf-8")
+    rhook = real / ".git/hooks/pre-push"
+    rhook.write_text(H.PUSH_HOOK.format(marker=H.PUSH_MARKER, branches=" ".join(H.PRIVATE_BRANCHES)), encoding="utf-8")
+    rhook.chmod(0o755)
+    rg("checkout", "-q", "-b", "main")          # до этого стояли на development: HEAD@{1} — его кончик
+    rg("commit", "-q", "--allow-empty", "-m", "y")
+    cp = rg("push", "origin", "HEAD@{1}:refs/heads/foo", check=False)
+    assert cp.returncode != 0 and "development" in cp.stderr, \
+        f"git push HEAD@{{1}}:foo со стояния на main выпустил кончик development: rc={cp.returncode}\n{cp.stderr}"
+    rg("checkout", "-q", "--detach", "development")
+    for alias in ("HEAD^0", "HEAD~0", "HEAD@{0}", "@^0"):
+        cp = rg("push", "origin", alias + ":refs/heads/foo", check=False)
+        assert cp.returncode != 0 and "development" in cp.stderr, \
+            f"git push {alias}:foo при отсоединённом HEAD на development ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
+    assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "в публичный remote что-то уехало"
+    cp = rg("push", "origin", "main:refs/heads/foo", check=False)
+    assert cp.returncode == 0, f"обычная ветка main остановлена:\n{cp.stderr}"
+
     # скан без --hook (хуки v2–v4) сам называет хук старым
     cmd = [sys.executable, str(KIT / "scripts/aurora_hooks.py"), "--scan-push"]
     cp = subprocess.run(cmd, cwd=str(repo), input="", capture_output=True, text=True, encoding="utf-8", errors="replace")
