@@ -42,8 +42,13 @@ TEXT_NAMES = {"dockerfile", "makefile", "readme", "license", "changelog", "procf
 # Никогда — ни по ссылке, ни в папке: секреты и служебное. Имена строчными: на macOS и
 # Windows `.GIT` — та же папка, и сравнение с учётом регистра её пропустило бы. Список один
 # на движок: им же пользуются инструменты чтения модели (`agents/pydantic_ai_adapter`).
-NEVER_DIRS = {".git", ".ssh", ".aws", "node_modules", "local", ".venv", "venv", "__pycache__",
-              ".sisyphus", "runs", "state"}
+# Две части. Папки VCS, ключей и окружений служебны на любой глубине. `local`, `runs`,
+# `state` служебны только у корня проекта (и под `.aurora/`): `src/state/store.py` и
+# `AuroraKnowledgeDB/state/n.md` — обычные файлы, а не память движка.
+ANY_DEPTH_DIRS = {".git", ".ssh", ".aws", "node_modules", ".venv", "venv", "__pycache__",
+                  ".sisyphus"}
+ROOT_DIRS = {"local", "runs", "state"}
+NEVER_DIRS = ANY_DEPTH_DIRS | ROOT_DIRS
 SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|ed25519|ecdsa)\w*|"
                          r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.\w+)?)$", re.I)
 
@@ -60,12 +65,36 @@ def utc_day(when=None) -> str:
     return utc_slug("%Y-%m-%d", when)
 
 
-def is_secret(rel: str) -> bool:
-    """Путь ведёт к секрету или служебному — в задание не читаем."""
+def secret_kind(rel: str, strict: bool = True) -> str:
+    """Чем путь закрыт для чтения: "secret" (имя файла с доступами), "service" (служебная
+    папка) или "" (можно). `rel` — путь от корня проекта.
+
+    `strict` — строгая мерка для заданий и вложений: любая папка из `NEVER_DIRS` на любой
+    глубине и любое секретное имя. Без `strict` — мерка чтения проекта (инструменты модели,
+    ссылки базы): секретное имя не применяется к карточке `.md` (законная `Credentials.md` в
+    глоссарии; `.env*.md` по-прежнему закрыт), `local`/`runs`/`state` служебны лишь у корня
+    проекта и под `.aurora/`, остальное из `ANY_DEPTH_DIRS` — на любой глубине.
+    """
     parts = [p for p in Path(rel).parts if p not in ("", ".")]
-    if any(p.lower() in NEVER_DIRS for p in parts[:-1]):
-        return True
-    return bool(parts) and bool(SECRET_NAME.match(parts[-1]))
+    if not parts:
+        return ""
+    low = [p.lower() for p in parts]
+    if strict:
+        if any(p in NEVER_DIRS for p in low[:-1]):
+            return "service"
+        return "secret" if SECRET_NAME.match(parts[-1]) else ""
+    card = low[-1].endswith(".md") and not low[-1].startswith(".env")
+    if SECRET_NAME.match(parts[-1]) and not card:
+        return "secret"
+    if any(p in ANY_DEPTH_DIRS for p in low):
+        return "service"
+    head = low[1:] if low[0] == ".aurora" else low
+    return "service" if head and head[0] in ROOT_DIRS else ""
+
+
+def is_secret(rel: str, strict: bool = True) -> bool:
+    """Путь ведёт к секрету или служебному — в задание не читаем (`secret_kind`)."""
+    return bool(secret_kind(rel, strict))
 
 
 def is_text_name(name: str) -> bool:
@@ -92,14 +121,15 @@ def inside(cwd: str, rel: str) -> str:
     return full if full == root or full.startswith(root + os.sep) else ""
 
 
-def _link_escapes(path: str, boundary: str) -> bool:
-    """Граница чтения ссылок — одна на движок, в `aurora_common` (ленивый импорт: цикла нет)."""
+def _read_verdict(path: str, boundary: str) -> str:
+    """Граница чтения — одна на движок, в `aurora_common.read_verdict` (ленивый импорт: цикла
+    нет). Задание и вложения — в строгой мерке, проверяется любой файл, а не только ссылка."""
     import sys
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
         sys.path.insert(0, here)
-    from aurora_common import link_escapes
-    return link_escapes(path, boundary)
+    from aurora_common import read_verdict
+    return read_verdict(path, boundary, strict=True, every_file=True)
 
 
 def _read(full: str, cap: int) -> tuple:
@@ -119,7 +149,8 @@ def read_context(cwd: str, paths: list) -> tuple:
         if not full or not os.path.exists(full):
             notes.append(f"«{rel}» — нет в проекте, пропущен")
             continue
-        if is_secret(os.path.relpath(full, os.path.realpath(cwd))):
+        real_cwd = os.path.realpath(cwd)
+        if _read_verdict(full, real_cwd):
             notes.append(f"«{rel}» — секреты и служебное в задание не идут")
             continue
         files = [full] if os.path.isfile(full) else []
@@ -131,20 +162,16 @@ def read_context(cwd: str, paths: list) -> tuple:
                 notes.append(f"«{rel}» — в папке {len(files)} текстовых файлов, взяты первые "
                              f"{FOLDER_FILES}")
                 files = files[:FOLDER_FILES]
-        real_cwd = os.path.realpath(cwd)
         for f in files:
             frel = os.path.relpath(f, real_cwd).replace(os.sep, "/")
-            if is_secret(frel):
-                continue
-            # os.walk выдаёт файлы-ссылки по имени ссылки: читает же open() цель. Граница та же,
-            # что у прямого упоминания в inside(): цель в проекте и не секрет, не служебное.
-            # Проверка границы общая с читателями карточек (`aurora_common.link_escapes`);
-            # секретное имя цели здесь строже: и для `.md`-ссылки на `credentials.md`.
-            real_f = os.path.realpath(f)
-            if real_f != f:
-                if _link_escapes(f, real_cwd) or is_secret(os.path.relpath(real_f, real_cwd)):
+            # os.walk выдаёт файлы-ссылки по имени ссылки: читает же open() цель. Граница одна на
+            # движок (`aurora_common.read_verdict`), здесь в строгой мерке: секретное имя и
+            # служебная папка закрыты и по имени ссылки, и по цели — и для `.md`-ссылки на
+            # `credentials.md`.
+            if _read_verdict(f, real_cwd):
+                if os.path.realpath(f) != f:
                     notes.append(f"«{frel}» — ссылка ведёт за пределы проекта или к секретам, пропущена")
-                    continue
+                continue
             if used >= TOTAL_CAP:
                 notes.append(f"«{frel}» — не вошёл: общий предел {TOTAL_CAP} знаков")
                 continue

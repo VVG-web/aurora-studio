@@ -386,9 +386,12 @@ def outbound_hook(server: str, guard: dict, root: str):
 
 # Границы проекта мало: секреты лежат внутри него. Модель, прочитавшая файл с токенами,
 # может вписать их в артефакт — а артефакт уходит в Confluence и в git. Закрываем по имени,
-# а не по расширению. Имена файлов и служебные папки — один список на движок
-# (`request_context.SECRET_NAME` и `NEVER_DIRS`): своя копия разошлась с ним — в ней не было
-# ни mcp.json, ни ключей `*.pem`, ни `local`, `runs`, `.aurora/state`.
+# а не по расширению. Граница — одна на движок (`aurora_common.read_verdict`, имена —
+# `request_context.secret_kind`): своя копия разошлась с ней — в ней не было ни mcp.json, ни
+# ключей `*.pem`, ни `local`, `runs`, `.aurora/state`, а общая строгая мерка, перенесённая сюда
+# как есть, закрыла обычную карточку `Credentials.md` и любой `src/state/`.
+_REFUSED = {"outside": "путь вне проекта", "secret": "файл с доступами читать нельзя",
+            "service": "служебная папка: читать нечего"}
 
 
 def resolve_project_path(root: str, rel: str) -> str:
@@ -398,27 +401,20 @@ def resolve_project_path(root: str, rel: str) -> str:
     `Templates/notes.md -> ~/.ssh/id_rsa` по строке лежит внутри проекта, а открывается за
     его пределами. Секреты и служебные папки сверяются дважды — по имени самой ссылки и по
     имени цели: ссылка с обычным именем на `.env` не должна пройти, как и обычный файл по
-    ссылке `.env`. Возвращается путь цели — читает модель именно его.
+    ссылке `.env`. Мерка мягкая (`strict=False`): карточка `Credentials.md` и папка `state/`
+    в коде проекта читаются, а `local/`, `runs/`, `.aurora/state` у корня и `.git`, `.ssh`,
+    `.aws` на любой глубине — нет. Возвращается путь цели — читает модель именно его.
     """
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if here not in sys.path:        # list_dir зовёт функцию на каждую запись: без этой проверки sys.path разбухает
         sys.path.insert(0, here)
-    from request_context import NEVER_DIRS, SECRET_NAME
+    from aurora_common import read_verdict
     base = os.path.abspath(root)
-    real_base = os.path.realpath(root)
     joined = os.path.join(base, rel)
-    link = os.path.abspath(joined)
-    target = os.path.realpath(joined)
-    if not (link == base or link.startswith(base + os.sep)) \
-            or not (target == real_base or target.startswith(real_base + os.sep)):
-        raise ValueError("путь вне проекта")
-    for shown, start in ((link, base), (target, real_base)):
-        parts = [p for p in os.path.relpath(shown, start).split(os.sep) if p not in ("", ".")]
-        if parts and SECRET_NAME.match(parts[-1]):
-            raise ValueError("файл с доступами читать нельзя")
-        if any(p.lower() in NEVER_DIRS for p in parts):
-            raise ValueError("служебная папка: читать нечего")
-    return target
+    why = read_verdict(joined, base, strict=False, every_file=True)
+    if why:
+        raise ValueError(_REFUSED[why])
+    return os.path.realpath(joined)
 
 
 def register_tools(agent, allowed: list) -> None:

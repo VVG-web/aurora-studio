@@ -24,7 +24,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import RETIRED_FIELDS, config_list, python_status
+from aurora_common import RETIRED_FIELDS, config_list, python_status, root_link_escapes
 from pathlib import Path
 
 ROOT = Path.cwd()
@@ -547,6 +547,30 @@ def check_mirror_heads() -> list:
     return out
 
 
+def check_linked_roots() -> list:
+    """Предупреждение о каталогах базы и источников, которые сами — ссылка наружу проекта.
+
+    `AuroraKnowledgeDB`, `Sources/<зеркало>`, `Raw/<папка>`, закоммиченные как symlink на чужую
+    папку (хранилище Obsidian, общее зеркало), движок не читает: граница чтения отказывает
+    каждому файлу. Одна строка вместо ошибки на каждую карточку; данные не трогаем."""
+    found = []
+    for top in ("AuroraKnowledgeDB", "Sources", "Raw"):
+        if not os.path.isdir(top):
+            continue
+        if root_link_escapes(top):
+            found.append(top)
+            continue
+        if top != "AuroraKnowledgeDB":
+            found += [f"{top}/{d}" for d in sorted(os.listdir(top))
+                      if os.path.isdir(os.path.join(top, d)) and root_link_escapes(os.path.join(top, d))]
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    if found:
+        shown = ", ".join(found[:3]) + (" …" if len(found) > 3 else "")
+        out.append(f"каталог базы или источников — ссылка наружу проекта: движок его не читает ({shown}) "
+                   "— положите папку в проект или уберите ссылку")
+    return out
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -652,6 +676,7 @@ def main() -> int:
     warns += check_portable_names()
     warns += check_kit_hooks()
     warns += check_mirror_heads()
+    warns += check_linked_roots()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

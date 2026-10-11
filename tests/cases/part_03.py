@@ -875,17 +875,18 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
         "инструмент записи бота пишет не в папку прогона"
     assert 'if task.get("outdir"):\n            register_output(' in ad, \
         "инструмент записи подключается не только боту"
-    assert 'raise ValueError("путь вне проекта")' in ad, \
+    assert 'raise ValueError(_REFUSED[why])' in ad and '"outside": "путь вне проекта"' in ad, \
         "инструменты не держат границу проекта — модель прочитает что угодно на машине"
     # Границы проекта мало: секреты лежат ВНУТРИ него. Модель, прочитавшая
     # `.env.aurora.local`, может вписать токен в артефакт, а артефакт уходит в Confluence
     # и в git. Найдено на живом коде уже после того, как инструменты были написаны.
-    assert 'raise ValueError("файл с доступами читать нельзя")' in ad, \
+    assert '"secret": "файл с доступами читать нельзя"' in ad, \
         "модель может прочитать токены проекта и вписать их в документ"
-    assert "from request_context import NEVER_DIRS, SECRET_NAME" in ad \
-        and "SECRET = (" not in ad and "HIDDEN" not in ad, \
+    assert "from aurora_common import read_verdict" in ad \
+        and "SECRET = (" not in ad and "HIDDEN" not in ad and "SECRET_NAME" not in ad.split(
+            "def resolve_project_path")[1].split("def register_tools")[0], \
         "список файлов с доступами или служебных папок в адаптере снова своя копия: разойдётся с request_context"
-    assert '"служебная папка: читать нечего"' in ad, \
+    assert '"service": "служебная папка: читать нечего"' in ad, \
         "модель ходит в .git и .ssh — там нет знания, но есть чем навредить"
 
     # планировщик получает инструменты, воркер — нет: у него есть план и пак, а лишний

@@ -1212,116 +1212,166 @@ def is_service(path: str) -> bool:
 _PROJECT_MARKERS = ("AuroraKnowledgeDB", "Sources", ".aurora")
 
 
-def project_root_of(path: str) -> str:
-    """Настоящий корень проекта, к которому относится путь: граница чтения файлов.
-
-    Сначала текущая папка процесса (скрипты Авроры идут из корня проекта), если путь лежит
-    под ней и она похожа на проект; иначе ближайший предок с базой, источниками или
-    `.aurora/`; иначе папка самого пути — самая узкая граница, то есть безопасная.
-    """
-    real = os.path.realpath(path)
-    start = real if os.path.isdir(real) else os.path.dirname(real)
-    cwd = os.path.realpath(os.getcwd())
-    if (start == cwd or start.startswith(cwd + os.sep)) \
-            and any(os.path.isdir(os.path.join(cwd, m)) for m in _PROJECT_MARKERS):
-        return cwd
-    cur = start
+def _dir_chain(start: str) -> list:
+    """Папка и все её предки до корня файловой системы."""
+    chain, cur = [], start
     while True:
-        if any(os.path.isdir(os.path.join(cur, m)) for m in _PROJECT_MARKERS):
-            return cur
+        chain.append(cur)
         up = os.path.dirname(cur)
         if up == cur:
-            return start
+            return chain
         cur = up
+
+
+def _has_markers(folder: str) -> bool:
+    return any(os.path.isdir(os.path.join(folder, m)) for m in _PROJECT_MARKERS)
+
+
+def project_root_of(path: str, boundary: str = "", lexical: bool = False) -> str:
+    """Корень проекта, к которому относится путь: граница чтения файлов.
+
+    Явный `boundary` — он и есть корень. Иначе текущая папка процесса (скрипты Авроры идут
+    из корня проекта), если путь лежит под ней и она похожа на проект; иначе ближайший
+    предок с базой, источниками или `.aurora/`; иначе папка самого пути — самая узкая
+    граница, то есть безопасная.
+
+    По умолчанию путь берётся по `realpath`. Для проверки ссылок нужен `lexical`: путь без
+    разрешения ссылок, как он записан (`os.path.islink` смотрит только последнюю компоненту,
+    поэтому каталоги между файлом и корнем смотрит `_project_base`). Папка с маркерами внутри
+    каталога-ссылки, лежащего в другом проекте, — чужой проект, а не граница. Системные
+    ссылки выше корня (`/tmp`, `/var` на macOS) не в счёт.
+    """
+    if boundary:
+        return os.path.abspath(boundary)
+    if lexical:
+        start = os.path.dirname(os.path.abspath(path))
+        cwd = os.getcwd()
+    else:
+        real = os.path.realpath(path)
+        start = real if os.path.isdir(real) else os.path.dirname(real)
+        cwd = os.path.realpath(os.getcwd())
+    if (start == cwd or start.startswith(cwd + os.sep)) and _has_markers(cwd):
+        return cwd
+    chain = _dir_chain(start)
+    marked = [i for i, d in enumerate(chain) if _has_markers(d)]
+    if lexical:
+        is_link = [os.path.islink(d) for d in chain]
+        for i in marked:
+            # папка с маркерами внутри каталога-ссылки, лежащего в другом проекте, — не корень
+            if not any(is_link[j] and any(m > j for m in marked) for j in range(i + 1, len(chain))):
+                return chain[i]
+        return start
+    return chain[marked[0]] if marked else start
 
 
 def _project_base(path: str, boundary: str = "", linked: bool = False) -> tuple:
     """(корень проекта по пути без разрешения ссылок, лежит ли файл в каталоге-ссылке).
 
     `os.path.islink` смотрит только последнюю компоненту: файл внутри каталога-ссылки на папку
-    вне проекта выглядит обычным. Поэтому смотрим каталоги между файлом и корнем проекта.
-    Корень — `boundary`, текущая папка процесса (если путь под ней и она похожа на проект)
-    или ближайший предок с базой, источниками или `.aurora/`, который сам не лежит в каталоге-
-    ссылке внутри проекта (папка с маркерами за такой ссылкой — чужой проект, не граница).
-    Системные ссылки выше корня (`/tmp`, `/var` на macOS) не в счёт. Нет маркеров — папка самого
-    файла (самая узкая граница). Без ссылок на пути и без `linked` корень не нужен.
+    вне проекта выглядит обычным. Поэтому смотрим каталоги между файлом и корнем проекта
+    (корень выбирает `project_root_of(lexical=True)`). Нет маркеров — папка самого файла (самая
+    узкая граница). Без ссылок на пути и без `linked` корень не нужен.
     """
-    chain = []
-    cur = os.path.dirname(os.path.abspath(path))
-    while True:
-        chain.append(cur)
-        up = os.path.dirname(cur)
-        if up == cur:
-            break
-        cur = up
+    chain = _dir_chain(os.path.dirname(os.path.abspath(path)))
     is_link = [os.path.islink(d) for d in chain]
     if not linked and not any(is_link):
         return chain[0], False
-    cwd = os.getcwd()
-    if boundary:
-        base = os.path.abspath(boundary)
-    elif (chain[0] == cwd or chain[0].startswith(cwd + os.sep)) \
-            and any(os.path.isdir(os.path.join(cwd, m)) for m in _PROJECT_MARKERS):
-        base = cwd
-    else:
-        marked = [i for i, d in enumerate(chain)
-                  if any(os.path.isdir(os.path.join(d, m)) for m in _PROJECT_MARKERS)]
-        base = chain[0]
-        for i in marked:
-            # папка с маркерами внутри каталога-ссылки, лежащего в другом проекте, — не корень
-            if not any(is_link[j] and any(m > j for m in marked) for j in range(i + 1, len(chain))):
-                base = chain[i]
-                break
+    base = project_root_of(path, boundary, lexical=True)
     if base not in chain:
         return base, False
     return base, any(is_link[:chain.index(base)])
 
 
-def link_escapes(path: str, boundary: str = "", deep: bool = True) -> bool:
-    """Файл-ссылка, которая ведёт за пределы проекта или к секретам.
+def read_verdict(path: str, boundary: str = "", strict: bool = False,
+                 every_file: bool = False, deep: bool = True) -> str:
+    """Единственная граница чтения файлов проекта: "" — читать можно, иначе причина отказа:
+    "outside" (цель за пределами проекта), "secret" (имя файла с доступами), "service"
+    (служебная папка движка).
 
-    Единственная проверка границы чтения для всех читателей карточек и вложений. Git хранит
-    символические ссылки, а `open()` и `os.walk` отдают такой файл по имени ссылки: цель
-    (ключ, `.env`, чужая заметка вне проекта) читалась бы как карточка или источник и
-    уходила модели, в артефакт и в git. Обычный файл и ссылка внутри проекта проходят.
+    Ею пользуются все читатели: обход базы и источников, чтение карточек и вложений
+    (`link_escapes`, `safe_walk`, `walk_md`, `read_card_text`), инструменты чтения модели
+    (`agents/pydantic_ai_adapter.resolve_project_path`) и задание по `@`-упоминаниям
+    (`request_context.read_context`). Расходятся они только двумя параметрами:
 
-    Граница — `boundary` или корень проекта (`project_root_of`). Цель обязана лежать внутри
-    по `realpath`; служебные папки (`local`, `.git`, …) закрыты; ссылка с именем `.md` обязана
-    вести на `.md` (карточка — всегда `.md`, а секретные имена на `.md` не кончаются, и
-    законная карточка `Credentials.md` не отсекается); остальные имена — по общему списку
-    секретов `request_context`. Файл внутри каталога-ссылки на папку вне проекта проверяется
-    так же, как сама ссылка (`deep`): `islink` видит только последнюю компоненту пути. Обход
-    `safe_walk` в каталоги-ссылки не заходит и просит дешёвую проверку (`deep=False`).
+    - `every_file` — проверять любой файл (инструменты модели, задание), а не только
+      ссылку и файл в каталоге-ссылке (читатели базы: обычный файл границей не ограничен).
+      Тогда границей служит `boundary` (корень проекта), а имя секрета и служебные папки
+      сверяются дважды — по пути, как он записан, и по цели;
+    - `strict` — мерка имён (`request_context.secret_kind`): строгая для задания, мягкая для
+      чтения проекта (карточка `Credentials.md` — законная, `local/` служебна у корня, а не
+      на любой глубине).
+
+    Git хранит символические ссылки, а `open()` и `os.walk` отдают такой файл по имени
+    ссылки: цель (ключ, `.env`, чужая заметка вне проекта) читалась бы как карточка или
+    источник и уходила модели, в артефакт и в git. Обычный файл и ссылка внутри проекта
+    проходят. Ссылка с именем `.md` обязана вести на `.md` (карточка — всегда `.md`).
+    Файл внутри каталога-ссылки на папку вне проекта проверяется так же, как сама ссылка
+    (`deep`): `islink` видит только последнюю компоненту пути. Обход `safe_walk` в каталоги-
+    ссылки не заходит и просит дешёвую проверку (`deep=False`).
     """
     linked = os.path.islink(path)
-    if not linked and not deep:
-        return False
-    base_abs, in_link = _project_base(path, boundary, linked)
-    if not linked and not in_link:
-        return False
+    if every_file:
+        base_abs = project_root_of(path, boundary)
+    else:
+        if not linked and not deep:
+            return ""
+        base_abs, in_link = _project_base(path, boundary, linked)
+        if not linked and not in_link:
+            return ""
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
         sys.path.insert(0, here)
-    from request_context import NEVER_DIRS, is_secret
-    real = os.path.realpath(path)
+    from request_context import secret_kind
     # корень ищем от папки самой ссылки: realpath(ссылки) уже указывает за пределы проекта
     base = os.path.realpath(base_abs)
+    real = os.path.realpath(path)
     if not (real == base or real.startswith(base + os.sep)):
-        return True
-    rel = os.path.relpath(real, base)
-    if any(p.lower() in NEVER_DIRS for p in rel.split(os.sep)[:-1]):
-        return True
-    if os.fspath(path).lower().endswith(".md"):
-        return not real.lower().endswith(".md")
-    return is_secret(rel)
+        return "outside"
+    shown = [(real, base)]
+    if every_file:
+        link = os.path.abspath(path)
+        if not (link == base_abs or link.startswith(base_abs + os.sep)):
+            return "outside"
+        shown.insert(0, (link, base_abs))
+    for where, start in shown:
+        why = secret_kind(os.path.relpath(where, start), strict)
+        if why:
+            return why
+    if not every_file and os.fspath(path).lower().endswith(".md") and not real.lower().endswith(".md"):
+        return "secret"
+    return ""
+
+
+def link_escapes(path: str, boundary: str = "", deep: bool = True) -> bool:
+    """Файл-ссылка, которая ведёт за пределы проекта или к секретам (`read_verdict`).
+
+    Проверка границы чтения для читателей карточек и вложений: обычный файл и ссылка внутри
+    проекта проходят.
+    """
+    return bool(read_verdict(path, boundary, deep=deep))
+
+
+def root_link_escapes(root: str) -> bool:
+    """Сам каталог `root` (база, зеркало источников, `Raw/…`) — ссылка за пределы проекта.
+
+    Хранилище, закоммиченное как symlink на чужую папку: его файлы читает `open()`, а граница
+    их не пустит. Читатели такой каталог не обходят вовсе (`safe_walk`), линтер и доктор
+    называют его одной строкой, а не ошибкой на каждую карточку.
+    """
+    return link_escapes(os.path.join(os.path.abspath(root), "_"))
 
 
 def safe_walk(root: str, **kw):
     """`os.walk`, который не отдаёт файлы-ссылки наружу проекта (`link_escapes`).
 
     Заменяет `os.walk` везде, где найденные файлы затем читаются или правятся. Список папок
-    отдаётся тот же, что у `os.walk`: вызывающий может сужать `dirs[:]`.
+    отдаётся тот же, что у `os.walk`: вызывающий может сужать `dirs[:]`. Корень-ссылка за
+    пределы проекта не обходится совсем (`root_link_escapes`): иначе чужая папка считалась бы
+    «своим» проектом, а читатели с прямым `open()` читали бы её, тогда как `read_card_text`
+    отказывает.
     """
+    if root_link_escapes(root):
+        return
     boundary = project_root_of(root)
     for dirpath, dirs, files in os.walk(root, **kw):
         files[:] = [f for f in files

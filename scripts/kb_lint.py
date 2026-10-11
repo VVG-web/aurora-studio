@@ -22,7 +22,7 @@ import argparse
 import json, os, re, sys
 
 from aurora_common import QUOTES, looks_like_expansion  # noqa: F401
-from aurora_common import link_escapes
+from aurora_common import link_escapes, root_link_escapes
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
@@ -205,6 +205,15 @@ def main():
     if not os.path.isdir(ROOT):
         print(f"kb_lint: нет папки {ROOT}/ — запускайте из корня репозитория проекта", file=sys.stderr)
         return 1
+
+    # Хранилище-ссылка (`AuroraKnowledgeDB -> чужая папка`): движок её не читает ни в поиске,
+    # ни в правках. Одна строка вместо ошибки на каждую карточку; хук не падает на раскладке,
+    # которую линтер всё равно проверить не может.
+    if root_link_escapes(ROOT):
+        print(f"kb_lint: каталог базы {ROOT}/ — ссылка наружу проекта: не читается, проверять "
+              "нечего; положите базу в проект или уберите ссылку")
+        print("kb_lint: карточек 0, ошибок 0")      # итоговая строка нужна хуку pre-commit
+        return 0
 
     for dirpath, _, files in os.walk(ROOT):
         for f in files:

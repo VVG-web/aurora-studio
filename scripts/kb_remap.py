@@ -59,7 +59,7 @@ STATE_ROW_RE = re.compile(r"^\|\s*\d+\s*\|\s*(\d{4,})\s*\|\s*(.+?)\s*\|\s*([^|]+
 def scan_disk(mirror: str) -> dict:
     """{page_id: [пути относительно зеркала]} по файлам, лежащим сейчас на диске."""
     out: dict = {}
-    for dirpath, _, files in os.walk(mirror):
+    for dirpath, _, files in safe_walk(mirror):
         for f in files:
             if not f.endswith(".md") or f == STATE:
                 continue

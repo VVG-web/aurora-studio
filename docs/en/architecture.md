@@ -250,7 +250,21 @@ not read by any reader of cards and sources: the shared walk of the base and sou
 conversations, publishing, templates and prompts. A file inside a linked directory that points outside the
 project is checked like the link itself. Readers skip such a file as if it were not there; the base linter
 (`kb:lint`) names a card that is a link, so it is clear why the engine does not see it. A link inside the
-project works as usual. There is one check — `aurora_common.link_escapes`.
+project works as usual. There is one check — `aurora_common.read_verdict` (`link_escapes` is its wrapper for
+links): the model's read tools (`read_file`, `list_dir` through `resolve_project_path`) and the `@` mentions in
+a task (`request_context.read_context`) use it too. They differ in two parameters only: whether to check every
+file rather than just links, and the strictness of names (`request_context.secret_kind`). The soft measure is
+for reading the project: a card `Credentials.md` and code in `src/state/` are readable, while `local/`, `runs/`,
+`state/` and `.aurora/state` at the project root and `.git`, `.ssh`, `.aws` at any depth are service. The strict
+one is for tasks: a secret name and any service folder are closed at any depth.
+
+A linked store. If the folder of the base or sources itself (`AuroraKnowledgeDB`, `Sources/<mirror>`,
+`Raw/<folder>`) is committed as a link to a folder outside the project (an Obsidian vault, someone else's
+mirror), the engine does not read that folder at all: the walk skips it instead of handing the files of a
+foreign folder to some readers and hiding them from others. The linter (`kb:lint`) and `kit:doctor` name it
+with one line, "the base folder is a link out of the project", instead of an error per card; pre-commit does
+not fail on such a layout. A link to a folder inside the project is supported; a store outside the project
+should be moved inside it.
 
 ## 5. The knowledge-base MCP server
 

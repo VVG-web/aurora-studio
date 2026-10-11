@@ -847,3 +847,223 @@ def test_publish_thread_template_and_lint_handle_a_link_out_of_the_project(tmp: 
     assert "Внешняя.md" in cp.stdout + cp.stderr and "за пределы проекта" in cp.stdout + cp.stderr, \
         f"линтер промолчал о карточке-ссылке:\n{cp.stdout}\n{cp.stderr}"
     assert secret not in cp.stdout + cp.stderr
+
+
+def _linked_kb_fixture(tmp: Path):
+    """Проект A, у которого `AuroraKnowledgeDB` и зеркало `Sources/Web` — ссылки на папки чужого
+    проекта B (BL-NEW-01). → (корень A, секрет, корень B) или None без ссылок."""
+    root = make_project(tmp)
+    other = tmp / "проект-B"
+    secret = "ТАЙНАЧУЖОЙБАЗЫ"
+    (other / "AuroraKnowledgeDB" / "Concepts").mkdir(parents=True)
+    (other / "AuroraKnowledgeDB" / "Concepts" / "чужая.md").write_text(
+        f'---\ntitle: "Чужая"\ntype: concept\nstatus: verified\n---\n\n# Чужая\n\n{secret} чужая.\n',
+        encoding="utf-8")
+    (other / "Web").mkdir()
+    (other / "Web" / "страница.md").write_text("# Чужая страница\n\nid: 4242\n\n" + secret + "\n",
+                                                encoding="utf-8")
+    shutil.rmtree(root / "AuroraKnowledgeDB")
+    web = root / "Sources" / "Web"
+    shutil.rmtree(web, ignore_errors=True)
+    if not (_link(other / "AuroraKnowledgeDB", root / "AuroraKnowledgeDB") and _link(other / "Web", web)):
+        return None
+    return root, secret, other
+
+
+@test
+def test_a_linked_root_directory_is_not_walked_by_any_reader(tmp: Path):
+    """Каталог базы или зеркала — сам ссылка за пределы проекта: не читает никто (BL-NEW-01).
+
+    `safe_walk` брал границу от `realpath(корня)`, то есть от чужого проекта, и отдавал все его
+    файлы; читатели с прямым `open()` (`kb_embed`, `kb_moc`, `kb_graph`, `kb_fix`, `kb_supersede`,
+    `kb_remap`) их читали, а `read_card_text` отказывал — граница получалась неодинаковой.
+    """
+    fx = _linked_kb_fixture(tmp)
+    if not fx:
+        return
+    root, secret, other = fx
+    import importlib
+
+    def go():
+        AC = importlib.import_module("aurora_common")
+        assert list(AC.walk_md("AuroraKnowledgeDB")) == [], "walk_md отдал файлы чужой папки"
+        assert list(AC.safe_walk("AuroraKnowledgeDB")) == [], "safe_walk зашёл в корень-ссылку"
+        assert list(AC.safe_walk("AuroraKnowledgeDB/Concepts")) == [], "подкаталог корня-ссылки обойдён"
+        assert AC.root_link_escapes("AuroraKnowledgeDB") and AC.root_link_escapes("Sources/Web")
+        assert not AC.root_link_escapes("Sources"), "обычный каталог принят за ссылку наружу"
+        assert AC.read_card_text("AuroraKnowledgeDB/Concepts/чужая.md") is None
+        assert AC.load_cards("AuroraKnowledgeDB") == {}
+        KE = importlib.import_module("kb_embed")
+        assert secret not in " ".join(map(str, KE.card_texts("AuroraKnowledgeDB").values())), \
+            "kb_embed взял текст чужой базы"
+        MOC = importlib.import_module("kb_moc")
+        assert "чужая" not in MOC.read_cards(), "kb_moc.read_cards прочитал чужую базу"
+        KG = importlib.import_module("kb_graph")
+        graph = KG.write_cards_graph(str(tmp / "graph.json"))
+        dumped = (tmp / "graph.json").read_text(encoding="utf-8") + json.dumps(graph, ensure_ascii=False)
+        assert "чужая" not in dumped and secret not in dumped, "граф карточек включил чужую базу"
+        KF = importlib.import_module("kb_fix")
+        assert not any("чужая" in k for k in KF.load_cards("AuroraKnowledgeDB")), \
+            "kb_fix открыл чужую базу на правку"
+        KS = importlib.import_module("kb_supersede")
+        assert KS.find_card("чужая") is None, "kb_supersede нашёл карточку чужой базы"
+        KR = importlib.import_module("kb_remap")
+        assert KR.scan_disk("Sources/Web") == {}, "kb_remap.scan_disk прочитал чужое зеркало"
+    _in_project(root, go)
+
+
+@test
+def test_linted_and_doctored_linked_root_gets_one_line_not_one_error_per_card(tmp: Path):
+    """Хранилище-ссылка: линтер и доктор называют каталог одной строкой, храповик не падает (BL-NEW-01)."""
+    fx = _linked_kb_fixture(tmp)
+    if not fx:
+        return
+    root, secret, other = fx
+    # несколько карточек в чужой базе: раньше на каждую шла своя ошибка
+    for i in range(5):
+        (other / "AuroraKnowledgeDB" / "Concepts" / f"ещё{i}.md").write_text(
+            f'---\ntitle: "Ещё"\ntype: concept\nstatus: verified\n---\n\n# Ещё\n\n{secret}\n', encoding="utf-8")
+    cp = run("kb_lint.py", cwd=root)
+    out = cp.stdout + cp.stderr
+    assert cp.returncode == 0, f"линтер упал на хранилище-ссылке:\n{out}"
+    assert out.count("ссылка наружу проекта") == 1, f"ожидалась одна строка о каталоге:\n{out}"
+    assert "ошибок 0" in out, "хуку pre-commit нужна итоговая строка"
+    assert "ведёт за пределы проекта" not in out and secret not in out, out
+    cp = run("kb_lint.py", "--summary", cwd=root)
+    assert cp.returncode == 0 and "ошибок 0" in cp.stdout, (cp.returncode, cp.stdout, cp.stderr)
+
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    D = importlib.import_module("aurora_doctor")
+    cwd = os.getcwd()
+    os.chdir(root)
+    try:
+        warns = D.check_linked_roots()
+    finally:
+        os.chdir(cwd)
+    assert len(warns) == 1 and "AuroraKnowledgeDB" in warns[0] and "Sources/Web" in warns[0], warns
+
+
+@test
+def test_a_linked_root_inside_the_project_still_reads_and_lints(tmp: Path):
+    """Контроль: база-ссылка на папку ВНУТРИ проекта читается и линтится как обычная (BL-NEW-01)."""
+    root = make_project(tmp)
+    store = root / "хранилище"
+    shutil.move(str(root / "AuroraKnowledgeDB"), str(store))
+    if not _link(store, root / "AuroraKnowledgeDB"):
+        return
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified")
+    import importlib
+
+    def go():
+        AC = importlib.import_module("aurora_common")
+        assert not AC.root_link_escapes("AuroraKnowledgeDB")
+        assert [p for p in AC.walk_md("AuroraKnowledgeDB") if p.endswith("Обеспечение.md")], \
+            "база-ссылка внутри проекта перестала обходиться"
+        assert "обеспечения" in (AC.read_card_text("AuroraKnowledgeDB/Concepts/Обеспечение.md") or "")
+    _in_project(root, go)
+    cp = run("kb_lint.py", cwd=root)
+    assert "ссылка наружу проекта" not in cp.stdout + cp.stderr, cp.stdout + cp.stderr
+
+
+@test
+def test_agent_file_tools_read_ordinary_cards_and_code_named_like_service_folders(tmp: Path):
+    """Инструменты чтения модели не отказывают обычным файлам с «служебными» именами (BL-NEW-01).
+
+    После перехода на общий список `read_file` и `list_dir` закрывали карточку
+    `AuroraKnowledgeDB/Glossary/Credentials.md` и любой путь с компонентом `state`, `runs`,
+    `local` (`src/state/store.py`). Служебное — `local/`, `runs/`, `state/`, `.aurora/state` у
+    корня проекта и `.git`, `.ssh`, `.aws` на любой глубине.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(SCRIPTS / "agents"))
+    import importlib
+    AD = importlib.import_module("pydantic_ai_adapter")
+    AC = importlib.import_module("aurora_common")
+    RC = importlib.import_module("request_context")
+    root = tmp / "проект"
+    files = {
+        "AuroraKnowledgeDB/Glossary/Credentials.md": "учётные данные — термин",
+        "AuroraKnowledgeDB/state/n.md": "карточка раздела state",
+        "src/state/store.py": "x = 1",
+        "src/runs/plan.md": "план прогонов",
+        "docs/local/readme.md": "локально",
+    }
+    closed = {
+        "local/models.json": "service", "runs/a.md": "service", "state/s.json": "service",
+        ".aurora/state/p.json": "service", ".aurora/Runs/a.md": "service",
+        ".git/config": "service", "sub/.git/config": "service", "sub/.ssh/id": "service",
+        "node_modules/x/a.js": "service", ".env.aurora.local": "secret", "sub/.env": "secret",
+        "docs/credentials.json": "secret", "docs/.env.md": "secret", "mcp.json": "secret",
+        "keys/server.pem": "secret",
+    }
+    for rel, text in {**files, **{k: "x" for k in closed}}.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    msg = {"service": "служебная папка", "secret": "доступами"}
+    for rel, text in files.items():
+        got = AD.resolve_project_path(str(root), rel)
+        assert Path(got).read_text(encoding="utf-8") == text, rel
+    for rel, kind in closed.items():
+        try:
+            AD.resolve_project_path(str(root), rel)
+        except ValueError as e:
+            assert msg[kind] in str(e) or kind == "secret", f"{rel}: причина {e}"
+        else:
+            raise AssertionError(f"{rel}: закрытый путь прочитан")
+    # инструменты целиком
+    tools = {}
+
+    class FakeAgent:
+        def tool_plain(self, fn):
+            tools[fn.__name__] = fn
+            return fn
+
+    AD.register_tools(FakeAgent(), [str(root)])
+    assert tools["read_file"]("AuroraKnowledgeDB/Glossary/Credentials.md") == "учётные данные — термин"
+    assert tools["read_file"]("src/state/store.py") == "x = 1"
+    assert tools["read_file"]("local/models.json").startswith("не прочитан")
+    assert set(tools["list_dir"]("src").split("\n")) == {"state", "runs"}, "list_dir прячет обычные имена"
+    assert tools["list_dir"]("AuroraKnowledgeDB/Glossary") == "Credentials.md"
+    top = set(tools["list_dir"](".").split("\n"))
+    assert {"src", "docs", "AuroraKnowledgeDB"} <= top, top
+    assert not top & {"local", "runs", "state", ".git", ".env.aurora.local", "mcp.json"}, top
+    # одна граница: ссылка на карточку в `state/` внутри проекта — не «побег»
+    alias = root / "AuroraKnowledgeDB" / "Glossary" / "алиас.md"
+    if _link(root / "AuroraKnowledgeDB" / "state" / "n.md", alias):
+        assert not AC.link_escapes(str(alias), str(root)), "ссылка на карточку state/ принята за побег"
+        assert AD.resolve_project_path(str(root), "AuroraKnowledgeDB/Glossary/алиас.md")
+    # строгая мерка (задание по `@`) прежняя: карточка Credentials.md и state/ там закрыты
+    assert RC.secret_kind("AuroraKnowledgeDB/Glossary/Credentials.md") == "secret"
+    assert RC.secret_kind("src/state/store.py") == "service"
+    assert RC.secret_kind("AuroraKnowledgeDB/Glossary/Credentials.md", strict=False) == ""
+    assert RC.secret_kind("src/state/store.py", strict=False) == ""
+    store = str(root / "src/state/store.py")
+    assert AC.read_verdict(store, str(root), strict=True, every_file=True) == "service"
+    assert AC.read_verdict(store, str(root), strict=False, every_file=True) == ""
+    assert AC.read_verdict(str(root / ".." / "x.md"), str(root), every_file=True) == "outside"
+
+
+@test
+def test_one_read_boundary_function_serves_every_reader(tmp: Path):
+    """Граница чтения одна: у адаптера и `@`-упоминаний нет своих копий правил (BL-NEW-01)."""
+    ad = (KIT / "scripts/agents/pydantic_ai_adapter.py").read_text(encoding="utf-8")
+    rc = (KIT / "scripts/request_context.py").read_text(encoding="utf-8")
+    ac = (KIT / "scripts/aurora_common.py").read_text(encoding="utf-8")
+    resolver = ad.split("def resolve_project_path")[1].split("def register_tools")[0]
+    assert "read_verdict(" in resolver and "SECRET_NAME" not in resolver and "NEVER_DIRS" not in resolver, \
+        "resolve_project_path снова держит свою копию правил"
+    assert "read_verdict" in rc and "def _link_escapes" not in rc, "request_context держит свою проверку границы"
+    # `_project_base` выбирает корень через `project_root_of`, а не своей копией
+    base_fn = ac.split("def _project_base(")[1].split("\ndef ")[0]
+    assert "project_root_of(" in base_fn and "_PROJECT_MARKERS" not in base_fn, \
+        "_project_base снова дублирует выбор корня проекта"
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    root = make_project(tmp)
+    (root / "Templates").mkdir(exist_ok=True)
+    f = root / "Templates" / "обычный.md"
+    f.write_text("x", encoding="utf-8")
+    assert AC.read_verdict(str(f), str(root)) == "" and AC.read_verdict(str(f), str(root), every_file=True) == ""
+    assert AC.link_escapes(str(f)) is False
