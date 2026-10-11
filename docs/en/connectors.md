@@ -20,20 +20,25 @@ tasks and documents, and trust is computed for them differently.
 
 Bundled: `jira-dc` (board / tasks), `confluence-dc` (wiki / artifacts), `web` (board / artifacts).
 
-A document module may declare trust **per record** — `web` does: every link has its own tick, because a law and somebody's
+The web mirror declares trust **per record**: every link has its own tick, because a law and somebody's
 blog come from the same internet but must not be trusted equally. The declaration is written into the saved file's header as
-`trusted: true|false`, and `kb:trust` reads it from there. So trust remains a property of the source and is not derived
+`trusted: true|false`, and `kb:trust` reads it from there. It is believed only from mirrors whose
+`source_kind` is in `WEB_SOURCE_KINDS` (`web`, `web-document`): another document module that wants to
+declare trust the same way must add its own value to that list (later it moves into the connector manifest). So trust remains a property of the source and is not derived
 from a path match on disk, and no second list of trusted folders is needed in the config.
 
 Foreign values (a page title, an author name, an address) are collapsed to a single line when the header is written: a
 line break inside a title would otherwise create a new header field, such as a second `trusted`. The field is read by
 parsing the header, not by a substring match: a header line is only a real line of the file (U+2028/2029 and U+0085 do
 not break it), and trust is believed only from a file that names itself a web mirror (exactly one `source_kind: web` or
-`web-document`) — Confluence and Jira mirrors have no `trusted` field, so there it is foreign text. A `trusted` field
-written twice counts as untrusted; the sync root's `page_id` and a Jira task's key, status, parent and type are read the
+`web-document`) — Confluence and Jira mirrors have no `trusted` field, so there it is foreign text. These count as a forgery, that
+is "do not trust": `trusted` written twice, `source_kind` written twice with one web value, a web-mirror
+mark next to `page_id` or `key` (what Confluence and Jira write), a header with no closing line within the
+read ceiling (262144 characters) and a header cut short by a forged line inside a title. The header is read
+whole, not through a window of a few lines, so padding cannot hide the real field; the sync root's `page_id` and a Jira task's key, status, parent and type are read the
 same way: a repeated field is a forgery and its value is not believed. Mirrors already written are not rewritten, but
 `sync:audit` and `kit:doctor` name such files ("header with a repeated field or a forgery": a repeat, a line-break
-character in a value, `trusted` outside a web mirror) — rewrite them with `--force` of the mirror's sync command.
+character in a value, `trusted` outside a web mirror, an unclosed or cut-short header) — rewrite them with `--force` of the mirror's sync command.
 
 Confluence Data Center (`confluence-dc`), Jira Data Center (`jira-dc`) and `web` ship with the kit and are always
 installed. Everything else — Notion, SharePoint, Confluence Cloud, YouTrack, GitLab Issues — is added as a folder in

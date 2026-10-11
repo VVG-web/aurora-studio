@@ -2066,7 +2066,7 @@ def test_trust_is_read_from_a_header_by_one_parse_and_old_forged_mirrors_are_rep
         f.write_text(f"---\n{head}\n---\n\nТекст.\n", encoding="utf-8")
     got = {rel: T.declared_trust(str(tmp / rel)) for rel in mirrors}
     assert got == {"Sources/Confluence/Root/plain.md": None, "Sources/Confluence/Root/u2028.md": None,
-                   "Sources/JIRA/AB-1.md": None, "Sources/Web/two_kinds.md": None,
+                   "Sources/JIRA/AB-1.md": None, "Sources/Web/two_kinds.md": False,
                    "Sources/Web/other_kind.md": None, "Sources/Web/ok.md": True,
                    "Sources/Web/doc.md": True}, got
     cwd = os.getcwd()
@@ -2136,3 +2136,94 @@ def test_trust_is_read_from_a_header_by_one_parse_and_old_forged_mirrors_are_rep
         D.mirror_owners = real_owners
     assert {p.name: p.read_bytes() for p in (mir / "Root").iterdir()} == before, \
         "обнаружение переписало данные проекта"
+
+
+@test
+def test_trust_header_is_read_whole_and_padding_or_foreign_marks_do_not_hide_forgery(tmp: Path):
+    """Доработка 2 BL-SEC-13: заполнение шапки, повтор source_kind, отметка веб-зеркала у Confluence/Jira.
+
+    Прежний `declared_trust` читал не больше 60 строк и не требовал закрывающей черты, а
+    обнаружение — 8000 знаков и молча пропускало незакрытую шапку: старый файл с заполнителем
+    в заголовке читался как «ровно одно source_kind web и trusted: true» — доверие по
+    определению. Тест падает на прежнем коде.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    T = importlib.import_module("kb_trust")
+    SA = importlib.import_module("sync_audit")
+    empty = {"direct": {}, "indirect": {}}
+    web = tmp / "Sources" / "Web"
+    web.mkdir(parents=True)
+
+    def pad(n, width):
+        return "".join(f"x{i:0{width - 1}d}\n" for i in range(n))
+
+    forged_tail = "source_kind: web\ntrusted: true"
+    real_tail = ('\nurl: https://x\ntrusted: false\nsource_kind: web\n---\n\nТекст.\n')
+    files = {
+        # заполнение в 56 строк по 8 и по 200 знаков (шапка 11 КБ, больше окна обнаружения)
+        "pad8.md": f'---\ntitle: "Блог\n{pad(56, 8)}{forged_tail}"{real_tail}',
+        "pad200.md": f'---\ntitle: "Блог\n{pad(56, 200)}{forged_tail}"{real_tail}',
+        # шапка не закрывается в пределах потолка чтения
+        "open.md": f'---\ntitle: "Блог\n{forged_tail}\n{pad(1500, 200)}"{real_tail}',
+        # honest: короткая шапка
+        "ok.md": '---\ntitle: "Закон"\nurl: https://x\ntrusted: true\nsource_kind: web\n---\n\nТекст.\n',
+        # source_kind дважды, одно из значений веб — не «ничего не сказала», а подделка
+        "kinds.md": '---\ntitle: "Б"\ntrusted: true\nsource_kind: web-document\nsource_kind: web\n---\n\nТ.\n',
+        # черта внутри заголовка прежнего файла: настоящие поля остались ниже подложной черты
+        "split.md": ('---\ntitle: "Б\nsource_kind: web\ntrusted: true\n---"\nurl: https://x\n'
+                     'trusted: false\nsource_kind: web\n---\n\nТ.\n'),
+        # честный документ, начинающийся с `---` без закрытия: верить нечему, обвинять не в чем
+        "hr.md": "---\nПросто текст с чертой в начале\n",
+    }
+    for name, text in files.items():
+        (web / name).write_text(text, encoding="utf-8")
+    assert len((web / "pad200.md").read_text(encoding="utf-8").split("source_kind")[0]) > 8000
+    assert (web / "open.md").stat().st_size > 262144
+
+    got = {n: T.declared_trust(str(web / n)) for n in files}
+    assert got == {"pad8.md": False, "pad200.md": False, "open.md": False, "ok.md": True,
+                   "kinds.md": False, "split.md": False, "hr.md": None}, got
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    try:
+        for n in ("pad8.md", "pad200.md", "open.md", "kinds.md", "split.md"):
+            cls, why = T.source_class(f"Sources/Web/{n}", empty, {}, set(), set(),
+                                      docs=("Sources/Web",))
+            assert cls == "draft" and "доверенным" not in why, (n, cls, why)
+        assert T.source_class("Sources/Web/ok.md", empty, {}, set(), set())[0] == "raw"
+    finally:
+        os.chdir(cwd)
+    # обнаружение читает тот же файл целиком и называет подделки новыми кодами
+    odd = dict(SA.odd_head_files(str(web)))
+    assert "dup" in odd["pad8.md"] and "dup" in odd["pad200.md"], odd
+    assert odd["open.md"][0] == "open" and odd["split.md"][0] == "split", odd
+    assert "dup" in odd["kinds.md"] and "ok.md" not in odd, odd
+    assert "open" in odd["hr.md"], odd
+    dup = dict(SA.duplicate_head_files(str(web)))
+    assert "pad200.md" in dup and "ok.md" not in dup, dup
+
+    # отметка веб-зеркала рядом с page_id/key (поля Confluence и Jira) — подделка, а не None
+    forged = 'title: "Т\nsource_kind: web\ntrusted: true"'
+    assert AC.head_trust(f"page_id: 5\n{forged}") is False
+    assert AC.head_trust(f'key: "AB-1"\n{forged}') is False
+    assert AC.head_trust('page_id: 5\ntitle: "Т"\ntrusted: true') is None
+    assert AC.head_trust('trusted: true\nsource_kind: web\nsource_kind: web-document') is False
+    assert AC.head_trust('source_kind: web\nsource_kind: note\ntrusted: true') is False
+    assert AC.head_trust('trusted: true\nsource_kind: note\nsource_kind: note') is None
+    assert "trusted" in AC.head_odd(f"page_id: 5\n{forged}")
+    conf = tmp / "Sources" / "Confluence"
+    conf.mkdir(parents=True)
+    (conf / "real_nl.md").write_text(
+        '---\npage_id: 5\ntitle: "Страница\nsource_kind: web\ntrusted: true"\nspace: S\n---\n\nТ.\n',
+        encoding="utf-8")
+    assert T.declared_trust(str(conf / "real_nl.md")) is False
+    assert "trusted" in dict(SA.odd_head_files(str(conf)))["real_nl.md"]
+    # Jira: U+2028 в названии не рождает второй ключ — ключ задачи не подменить
+    jira = tmp / "kb2" / "Sources" / "JIRA"
+    jira.mkdir(parents=True)
+    (jira / "AB-1.md").write_text('---\nkey: "AB-1"\ntitle: "Задача\u2028key: AB-9"\n'
+                                  'status: "Done"\n---\n\nТ.\n', encoding="utf-8")
+    st = T.task_status(str(tmp / "kb2"))
+    assert st == {"AB-1": "Done"} and "AB-9" not in st, st

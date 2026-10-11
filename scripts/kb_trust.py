@@ -49,7 +49,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
-from aurora_common import TODAY, head_trust  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, file_head, head_pairs, head_trust  # noqa: E402 — дата в UTC, одна на движок
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -210,27 +210,25 @@ def declared_trust(src: str):
 
     None значит «не сказал ничего»: так ведут себя зеркала, где доверие считается не по
     объявлению, а по статусу связанной задачи (Confluence, Jira: поле `trusted` они не
-    пишут, и оно там — чужой текст). Читаем только шапку (до закрывающей `---`, не больше
-    60 строк) — файл зеркала бывает в мегабайт, а ответ лежит вверху. Разбор один на все
-    читалки доверия (`aurora_common.head_trust`): первая настоящая строка поля, без
-    подстрок, и только у файла, назвавшегося веб-зеркалом. Поле `trusted`, записанное
-    дважды, — признак подделки через значение другого поля: ответ False.
+    пишут, и оно там — чужой текст). Шапку читаем целиком, до закрывающей `---`
+    (`aurora_common.file_head`: файл зеркала бывает в мегабайт, а ответ лежит вверху).
+    Разбор один на все читалки доверия (`aurora_common.head_trust`): первая настоящая
+    строка поля, без подстрок, и только у файла, назвавшегося веб-зеркалом. Подделка
+    отвечает False: `trusted` дважды, шапка без закрывающей черты в пределах потолка или
+    оборванная подложной чертой (заполнитель строк прятал настоящее поле за окном чтения).
     """
     if not os.path.isfile(src):
         return None
-    lines = []
-    try:
-        with open(src, encoding="utf-8", errors="ignore") as f:
-            if f.readline().strip(" \t\r\n") != "---":
-                return None
-            for _ in range(60):
-                line = f.readline()
-                if not line or line.strip(" \t\r\n") == "---":
-                    break
-                lines.append(line)
-    except OSError:
+    head, state = file_head(src)
+    if state == "none":
         return None
-    return head_trust("".join(lines))
+    if state == "split":
+        return False
+    if state == "open":
+        # Шапка не закрылась: не знаем, что в ней. Файл, где уже есть отметка веб-зеркала
+        # или `trusted`, — подделка (False); обычный документ с `---` в начале — не наше дело.
+        return False if any(k in ("source_kind", "trusted") for k, _v in head_pairs(head)) else None
+    return head_trust(head)
 
 
 def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
@@ -260,9 +258,11 @@ def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,
     if root_title:
         return "raw", (f"раздел Confluence «{root_title}» отмечен «доверять» в настройке "
                        "импорта — доверие по определению")
-    # Модуль-документ мог объявить доверие прямо в файле зеркала — так делает `sync:web`,
-    # где галочку ставит человек на КАЖДУЮ ссылку: закон и стандарт доверены, чужой блог
-    # с пересказом нет. Спрашиваем сам источник, а не гадаем по совпадению пути.
+    # Веб-зеркало объявляет доверие прямо в файле — так делает `sync:web`, где галочку ставит
+    # человек на КАЖДУЮ ссылку: закон и стандарт доверены, чужой блог с пересказом нет.
+    # Спрашиваем сам источник, а не гадаем по совпадению пути. Верим только зеркалам с
+    # `source_kind` из `WEB_SOURCE_KINDS`: другому модулю-документу своё значение нужно
+    # добавить туда (позже — в манифест коннектора как возможность «объявляет доверие записи»).
     said = declared_trust(src)
     if said is True:
         return "raw", "источник объявлен доверенным при подключении ссылки — доверие по определению"

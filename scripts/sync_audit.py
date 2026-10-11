@@ -16,8 +16,10 @@ wiki (дерево страниц с номерами) или board (плоск�
   MOVED       — файл найден по page_id, но лежит не там, где записано состояние
   COLLISION   — один page_id зарегистрирован под разными путями (или путь — дважды)
   STALE       — состояние синка старше N дней (по умолчанию 14)
-  ШАПКА С ПОВТОРОМ ПОЛЯ ИЛИ ПОДЛОГОМ — поле записано дважды, в значении знак конца строки или
-                `trusted` в зеркале, которое его не пишет (след подделки через заголовок)
+  ШАПКА С ПОВТОРОМ ПОЛЯ ИЛИ ПОДЛОГОМ — поле записано дважды, в значении знак конца строки,
+                `trusted` или отметка веб-зеркала в зеркале, которое их не пишет, шапка не
+                закрыта в пределах потолка чтения или оборвана подложной чертой (след
+                подделки через заголовок)
 
 Запуск из корня проекта:
   python3 .aurora/scripts/sync_audit.py
@@ -41,7 +43,7 @@ import sys
 from datetime import date, datetime
 
 import sources_registry as R
-from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guard,
+from aurora_common import (KB_ROOT, TRUSTED, card_sources, file_head, frontmatter, git_guard,
                            head_dupes, head_odd, split_frontmatter, walk_md, with_fields)
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
@@ -320,11 +322,7 @@ def duplicate_head_files(root: str) -> list:
     """
     bad = []
     for rel, full in sorted(disk_files(root).items()):
-        try:
-            head = split_frontmatter(open(full, encoding="utf-8", errors="ignore").read(8000))[0]
-        except OSError:
-            continue
-        dup = head_dupes(head or "")
+        dup = head_dupes(file_head(full)[0] or "")
         if dup:
             bad.append((rel, dup))
     return bad
@@ -341,18 +339,21 @@ def odd_head_files(root: str) -> list:
     """
     bad = []
     for rel, full in sorted(disk_files(root).items()):
-        try:
-            head = split_frontmatter(open(full, encoding="utf-8", errors="ignore").read(8000))[0]
-        except OSError:
+        head, state = file_head(full)
+        if state == "none":
             continue
-        codes = head_odd(head or "")
+        # open/split — шапка не закрыта в пределах потолка или оборвана подложной чертой:
+        # читалка доверия (`declared_trust`) такому файлу не верит, и мы его называем.
+        codes = ([state] if state in ("open", "split") else []) + head_odd(head or "")
         if codes:
             bad.append((rel, codes))
     return bad
 
 
 ODD_WHY = {"dup": "поле записано дважды", "break": "в значении знак конца строки",
-           "trusted": "`trusted` в зеркале, которое его не пишет"}
+           "trusted": "`trusted` или отметка веб-зеркала в зеркале, которое их не пишет",
+           "open": "шапка не закрыта в пределах потолка чтения (заполнение)",
+           "split": "шапку обрывает подложная черта в заголовке"}
 
 
 def audit_heads(src: dict, out: list, stats: dict) -> int:

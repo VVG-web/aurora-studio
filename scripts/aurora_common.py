@@ -603,6 +603,16 @@ def head_scalar(head: str, key: str):
 WEB_SOURCE_KINDS = ("web", "web-document")
 
 
+# Поля, которые пишут только зеркала Confluence (`page_id`) и Jira (`key`) — в шапке веб-зеркала
+# их не бывает, и рядом с отметкой веб-зеркала они значат подделку.
+FOREIGN_MIRROR_KEYS = ("page_id", "key")
+
+
+def head_kinds(pairs: list) -> list:
+    """Значения `source_kind` шапки — первое слово каждого, в порядке файла."""
+    return [v.split()[0] if v.split() else "" for k, v in pairs if k == "source_kind"]
+
+
 def head_trust(head: str):
     """True / False / None — что о доверии сказала шапка веб-зеркала.
 
@@ -611,13 +621,18 @@ def head_trust(head: str):
     строке поля между разделителями шапки, без подстрок, и только тому файлу, который сам
     назвал себя веб-зеркалом: ровно одно `source_kind` со значением `web` или `web-document`.
     Зеркала Confluence и Jira поле `trusted` не пишут, и оно там — чужой текст. None — шапка
-    о доверии не сказала (или назвалась не веб-зеркалом: решает статус задачи); `trusted`,
-    записанное дважды, — подделка через значение соседнего поля, ответ False.
+    о доверии не сказала (или назвалась не веб-зеркалом: решает статус задачи). Подделкой
+    считается и отвечает False: `trusted`, записанное дважды; `source_kind` дважды, если одно
+    из значений веб; отметка веб-зеркала рядом с `page_id` или `key` (так пишут Confluence и
+    Jira, веб-зеркало этих полей не пишет). Ответ None в этих случаях отдал бы источник
+    остальным правилам (`trusted_sources` и другим) — для подделки это лазейка.
     """
     pairs = head_pairs(head)
-    kinds = [v.split()[0] if v.split() else "" for k, v in pairs if k == "source_kind"]
-    if len(kinds) != 1 or kinds[0] not in WEB_SOURCE_KINDS:
+    kinds = head_kinds(pairs)
+    if not any(k in WEB_SOURCE_KINDS for k in kinds):
         return None
+    if len(kinds) != 1 or any(k in FOREIGN_MIRROR_KEYS for k, _v in pairs):
+        return False
     vals = [v for k, v in pairs if k == "trusted"]
     if not vals:
         return None
@@ -636,16 +651,46 @@ def head_odd(head: str) -> list:
     синк держит из кэша), поэтому прежние зеркала обнаруживаем, а не переписываем:
     `dup` — поле записано дважды; `break` — внутри значения знак конца строки, которым рвут
     строку `splitlines` и YAML (U+2028/2029, U+0085, `\\x0b`, `\\x0c`); `trusted` — поле
-    `trusted` в файле, который не веб-зеркало, и ему не верят.
+    `trusted` в файле, который не веб-зеркало, и ему не верят; он же — отметка веб-зеркала
+    рядом с `page_id` или `key` (поля Confluence и Jira).
     """
     out = []
     if head_dupes(head):
         out.append("dup")
     if re.search("[\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", head or ""):
         out.append("break")
-    if any(k == "trusted" for k, _v in head_pairs(head)) and head_trust(head) is None:
+    pairs = head_pairs(head)
+    web = any(k in WEB_SOURCE_KINDS for k in head_kinds(pairs))
+    foreign = web and any(k in FOREIGN_MIRROR_KEYS for k, _v in pairs)
+    if foreign or (any(k == "trusted" for k, _v in pairs) and head_trust(head) is None):
         out.append("trusted")
     return out
+
+
+# Строка `ключ: значение` сразу за закрывающей чертой шапки: честный писатель после неё ставит
+# пустую строку. Так выглядит шапка, оборванная подложной чертой внутри заголовка.
+HEAD_SPLIT_RE = re.compile(r"\n---[^\n]*\n[ \t]*[\w_]+[ \t]*:")
+
+
+def file_head(path: str) -> tuple:
+    """Шапка файла зеркала целиком: (шапка | None, состояние).
+
+    Состояния: `ok`; `none` — шапки нет; `open` — файл начался с `---`, но закрывающей черты
+    нет в пределах потолка `head_text` (честная шапка зеркала короче килобайта, такой файл
+    подделан заполнением); `split` — шапка называет себя веб-зеркалом, а сразу за чертой идут
+    ещё поля (черта подложена в заголовке прежнего файла, настоящие поля остались ниже). Один
+    разбор на читалку доверия (`kb_trust.declared_trust`) и обнаружение (`sync_audit`):
+    раньше они читали разные окна, и заполнитель шапки прятал подделку от обоих.
+    """
+    text = head_text(path, tail=600)
+    if not text.startswith("---"):
+        return None, "none"
+    head, rest = split_frontmatter(text)
+    if head is None:
+        return text[3:], "open"
+    if any(k in WEB_SOURCE_KINDS for k in head_kinds(head_pairs(head))) and HEAD_SPLIT_RE.match(rest):
+        return head, "split"
+    return head, "ok"
 
 
 def list_field(text: str, field: str) -> list:
@@ -686,7 +731,7 @@ def aliases(text: str) -> list:
     return list_field(text, "aliases")
 
 
-def head_text(path: str, window: int = 4000, cap: int = 262144) -> str:
+def head_text(path: str, window: int = 4000, cap: int = 262144, tail: int = 0) -> str:
     """Прочитать столько, чтобы шапка карточки поместилась целиком. → текст.
 
     Шапку читали фиксированным окном в 4000 знаков — ради скорости на обходе тысяч
@@ -701,12 +746,18 @@ def head_text(path: str, window: int = 4000, cap: int = 262144) -> str:
 
     Читаем окно, а если шапка в него не закрылась — дочитываем до её конца. Потолок на
     случай файла без закрывающей черты: не тянуть в память гигабайт из-за опечатки.
+    `tail` — сколько знаков гарантированно прочесть за закрывающей чертой (читалке доверия
+    нужно видеть, что идёт сразу за шапкой).
     """
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             head = f.read(window)
             if head.startswith("---") and "\n---" not in head[3:]:
                 head += f.read(cap - window)
+            if tail and head.startswith("---"):
+                end = head.find("\n---", 3)
+                if end != -1 and len(head) - end < tail:
+                    head += f.read(tail)
         return head
     except OSError:
         return ""
