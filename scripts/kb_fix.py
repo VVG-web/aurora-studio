@@ -388,9 +388,13 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
             else:
                 stuck.append((rel, f"имя «{new_stem}» уже занято — это слияние, а не переименование"))
             continue
+        card = current(path, card, plan)
         head = card.text[:card.fm_end] if card.has_frontmatter else ""
         if not head:
             stuck.append((rel, "нет шапки — синонимы записать некуда"))
+            continue
+        if new_rel != rel and plan.rename(path, new_rel) is None:
+            stuck.append((rel, f"имя «{new_stem}» уже поставлено другим шагом плана"))
             continue
         # Прежнее имя тоже в синонимы: по нему ходят ссылки, и терять их нельзя.
         free_codes = [c for c in codes if c not in claimed]
@@ -407,8 +411,6 @@ def plan_names(cards: dict, plan: "Plan") -> tuple:
         rest = card.text[card.fm_end:]
         rest = re.sub(r"^(#\s+).*$", lambda m, clean=clean: m.group(1) + clean, rest, count=1, flags=re.M)
         plan.write(path, "---" + new_head + rest)
-        if new_rel != rel:
-            plan.renames.append((path, new_rel))
         renamed.append((rel, clean))
         taken.add(new_rel)
     return plan_portable_names(cards, plan, renamed, stuck, taken)
@@ -439,7 +441,9 @@ def plan_portable_names(cards: dict, plan: "Plan", renamed=None, stuck=None,
         if not new_stem or new_rel in taken or os.path.exists(new_rel):
             stuck.append((rel, f"имя «{new_stem}» уже занято — это слияние, а не переименование"))
             continue
-        plan.renames.append((path, new_rel))
+        if plan.rename(path, new_rel) is None:
+            stuck.append((rel, f"имя «{new_stem}» уже поставлено другим шагом плана"))
+            continue
         renamed.append((rel, new_stem))
         taken.add(new_rel)
     return renamed, stuck
@@ -476,6 +480,7 @@ def plan_rename(cards: dict, plan: "Plan", old: str, new: str) -> tuple:
     new_rel = os.path.join(os.path.dirname(rel), new_stem + ".md").replace("\\", "/")
     if new_rel != rel and (new_rel in cards or os.path.exists(new_rel)):
         return "", f"имя «{new_stem}» уже занято — это слияние, а не переименование"
+    card = current(rel, card, plan)
     head = card.text[:card.fm_end] if card.has_frontmatter else ""
     if not head:
         return "", "нет шапки — синонимы записать некуда"
@@ -488,9 +493,9 @@ def plan_rename(cards: dict, plan: "Plan", old: str, new: str) -> tuple:
         new_head = new_head.rstrip("\n") + "\naliases:\n" + lines
     rest = card.text[card.fm_end:]
     rest = re.sub(r"^(#\s+).*$", lambda m: m.group(1) + new, rest, count=1, flags=re.M)
+    if new_rel != rel and plan.rename(rel, new_rel) is None:
+        return "", f"имя «{new_stem}» уже поставлено другим шагом плана"
     plan.write(rel, "---" + new_head + rest)
-    if new_rel != rel:
-        plan.renames.append((rel, new_rel))
     return f"{rel} → {new_stem}.md", ""
 
 
@@ -521,8 +526,8 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
                 stuck.append((rel, f"тип «{kind}» не сходится ни с одним разделом"))
             flat = "/".join([parts[0], section] + rest)
             if flat != rel and flat not in taken and not os.path.exists(flat):
-                plan.renames.append((path, flat))
-                moved.append((rel, flat))
+                if plan.rename(path, flat) is not None:
+                    moved.append((rel, flat))
             continue
         want = TYPE_SECTION[want_type]
         new_rel = "/".join([parts[0], want] + rest)
@@ -533,13 +538,22 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
             # разные карточки в одну. Это не перекодирование, а слияние знания — человеку.
             stuck.append((rel, f"в разделе {want} уже есть карточка с таким именем"))
             continue
+        if new_rel != rel:
+            final = plan.rename(path, new_rel)
+            if final is None:
+                # Назначение занято или уже решено другим шагом плана: перенос не делаем
+                # вовсе, чтобы тип не разошёлся с папкой наполовину.
+                stuck.append((rel, f"в разделе {want} имя занято или поставлено другим шагом"))
+                continue
+            new_rel = final
         if want_type != kind:
-            head = card.text[:card.fm_end] if card.has_frontmatter else ""
+            # Текст — с правками прежних шагов этого прогона (`--names` писал шапку).
+            cur = current(path, card, plan)
+            head = cur.text[:cur.fm_end] if cur.has_frontmatter else ""
             if head:
                 plan.write(path, "---" + set_field(head[3:], "type", want_type)
-                           + card.text[card.fm_end:])
+                           + cur.text[cur.fm_end:])
         if new_rel != rel:
-            plan.renames.append((path, new_rel))
             moved.append((rel, new_rel))
     return moved, stuck
 
@@ -555,6 +569,51 @@ class Plan:
 
     def write(self, path: str, text: str):
         self.file_writes[path] = text
+
+    def rename(self, old: str, new: str):
+        """Поставить переименование `old` → `new`, сведя его с уже поставленными. → итоговый путь
+        или None, если назначение конфликтует (тогда план не меняется).
+
+        Планировщики считают назначение от исходного пути, не зная друг о друге: `--names`
+        меняет имя файла, `--sections` — папку, `--homoglyphs` снова имя. Два `renames` от
+        одного пути роняли `apply_plan` на втором `os.rename` посреди записи. Здесь шаги
+        сводятся: имя — от шага, менявшего имя, папка — от шага, менявшего папку; назначение
+        прежнего шага, ставшее источником, продолжает цепочку. Оба шага меняют одно и то же
+        по-разному, два источника идут в одно назначение, назначение занято на диске — отказ:
+        это решение человека, а не перекодирование.
+        """
+        old, new = old.replace("\\", "/"), new.replace("\\", "/")
+        dst = dict((o.replace("\\", "/"), n.replace("\\", "/")) for o, n in self.renames)
+        if old in dst:
+            mid = dst[old]
+            if new == mid:
+                return mid
+            d_new, d_mid = (os.path.dirname(new) != os.path.dirname(old),
+                            os.path.dirname(mid) != os.path.dirname(old))
+            n_new, n_mid = (os.path.basename(new) != os.path.basename(old),
+                            os.path.basename(mid) != os.path.basename(old))
+            if d_new and not n_new and n_mid and not d_mid:
+                target = os.path.join(os.path.dirname(new), os.path.basename(mid))
+            elif n_new and not d_new and d_mid and not n_mid:
+                target = os.path.join(os.path.dirname(mid), os.path.basename(new))
+            else:
+                return None
+            target = target.replace("\\", "/")
+            others = {n for o, n in dst.items() if o != old}
+            if target in others or (target != old and os.path.exists(target)):
+                return None
+            self.renames = [(o, target if o.replace("\\", "/") == old else n)
+                            for o, n in self.renames]
+            return target
+        others = set(dst.values())
+        if new in others or (new != old and os.path.exists(new)):
+            return None
+        for i, (o, n) in enumerate(self.renames):
+            if n.replace("\\", "/") == old:          # цепочка: прежний шаг привёл сюда
+                self.renames[i] = (o, new)
+                return new
+        self.renames.append((old, new))
+        return new
 
 
 # Несделанная работа --set-alias: вызывающему (агенту) она обязана прийти кодом возврата,
@@ -732,9 +791,12 @@ def plan_homoglyphs(cards: dict, idx: Index, plan: Plan):
                 f"  двойник (переименование невозможно): {path} ↔ "
                 f"{idx.by_stem.get(canon, new_path)} — слить через --merge")
             continue
+        if plan.rename(path, new_path) is None:
+            plan.notes.append(
+                f"  имя {path} уже решено другим шагом плана — повторите --homoglyphs после записи")
+            continue
         claimed.add(canon)
         renames[c.stem] = canon
-        plan.renames.append((path, new_path))
         text = plan.file_writes.get(path, c.text)
         plan.file_writes[path] = add_alias(Card(path, text), c.stem)
         plan.notes.append(f"  файл {c.stem}.md → {canon}.md (смешанный скрипт)")
@@ -2917,17 +2979,40 @@ def free_archive_name(dst: str) -> str:
 def apply_plan(plan: Plan) -> int:
     """Записать план. Никогда не перезаписывает существующий файл при переименовании/переносе."""
     skipped = 0
+    # Предпроверка плана ДО первой записи: второе переименование того же файла, второй
+    # источник в одно назначение и источник, которого уже нет, раньше роняли `os.rename`
+    # посреди записи (`FileNotFoundError`) — переносы в архив и сброс манифеста не
+    # выполнялись. Планировщики ставят их через `Plan.rename`, здесь — страховка.
+    renames, seen_src, seen_dst = [], set(), set()
+    for old, new in plan.renames:
+        ko, kn = old.replace("\\", "/"), new.replace("\\", "/")
+        if ko in seen_src or kn in seen_dst:
+            why = "источник уже переименован другим шагом" if ko in seen_src \
+                else "назначение уже взято другим переименованием"
+        elif not os.path.exists(old) and ko not in plan.file_writes:
+            why = "источника уже нет"
+        else:
+            seen_src.add(ko)
+            seen_dst.add(kn)
+            renames.append((old, new))
+            continue
+        print(f"  ! пропущено переименование {old} → {new}: {why}", file=sys.stderr)
+        skipped += 1
     for path, text in plan.file_writes.items():
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
-    for old, new in plan.renames:
+    for old, new in renames:
         if os.path.exists(new):
             print(f"  ! пропущено переименование {old} → {new}: файл уже существует", file=sys.stderr)
             skipped += 1
             continue
+        if not os.path.exists(old):
+            print(f"  ! пропущено переименование {old} → {new}: источника уже нет", file=sys.stderr)
+            skipped += 1
+            continue
         os.makedirs(os.path.dirname(new) or ".", exist_ok=True)
         os.rename(old, new)
-    renamed_to = dict(plan.renames)
+    renamed_to = dict(renames)
     for src, dst in plan.moves:
         if os.path.abspath(src) == os.path.abspath(dst):
             continue

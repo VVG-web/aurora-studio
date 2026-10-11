@@ -821,3 +821,150 @@ def test_the_token_goes_to_the_loopback_port_and_never_to_the_host_from_the_sess
         assert not ck.alive("не адрес", ck.TOKEN)
     finally:
         srv.shutdown()
+
+
+# ------------------------------------------------------------ kb_fix: планировщики композируются
+
+def _kbf_project(tmp: Path) -> tuple:
+    """Синтетический проект для `kb_fix` во временной папке: (корень, папка базы)."""
+    root = tmp / "proj"
+    kb = root / "AuroraKnowledgeDB"
+    for sec in ("Concepts", "Processes", "Glossary", "Reference"):
+        (kb / sec).mkdir(parents=True)
+    return root, kb
+
+
+def _kbf_run(root: Path, *flags: str):
+    return subprocess.run([sys.executable, str(KIT / "scripts/kb_fix.py"), *flags, "--apply"],
+                          cwd=root, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace")
+
+
+def _kbf_tree(kb: Path) -> dict:
+    return {str(p.relative_to(kb)).replace("\\", "/"): p.read_text(encoding="utf-8")
+            for p in sorted(kb.rglob("*.md"))}
+
+
+@test
+def test_kb_fix_names_and_sections_compose_on_one_card(tmp: Path):
+    """Карточке нужны и снятие кода из имени, и перенос в раздел своего типа: оба шага
+    применяются к одному файлу.
+
+    Раньше `plan_sections` брал исходный текст карточки, затирая запись `plan_names` (заголовок
+    и синонимы), и ставил второе переименование от того же старого пути: `os.rename` падал на
+    `FileNotFoundError` посреди записи. Теперь план читает свои записи и сводит два переименования
+    в одно: имя — от снятия кода, папка — от раздела.
+    """
+    root, kb = _kbf_project(tmp)
+    (kb / "Concepts" / "AC-3.4.2-Отправка.md").write_text(
+        '---\ntitle: "AC-3.4.2 Отправка начислений"\naliases:\n  - "Своё"\n'
+        'type: algorithm\nstatus: knowledge\n---\n\n# AC-3.4.2 Отправка начислений\n\nТело.\n',
+        encoding="utf-8")
+    cp = _kbf_run(root, "--names", "--sections")
+    assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, cp.stderr[-600:]
+    tree = _kbf_tree(kb)
+    assert list(tree) == ["Processes/Отправка-начислений.md"], \
+        f"карточка потеряна или раздвоилась: {list(tree)}"
+    text = tree["Processes/Отправка-начислений.md"]
+    assert 'title: "Отправка начислений"' in text, "правка имён затёрта правкой разделов"
+    assert "type: process" in text, "тип не приведён к схемному"
+    for keep in ("AC-3.4.2", "Своё"):
+        assert f'"{keep}"' in text, f"синоним «{keep}» потерян"
+    # Повторный прогон ничего не меняет: ремонт идемпотентен.
+    again = _kbf_run(root, "--names", "--sections")
+    assert again.returncode in (0, 1) and "Traceback" not in again.stderr, again.stderr[-600:]
+    assert _kbf_tree(kb) == tree, "повторный прогон изменил базу"
+
+
+@test
+def test_kb_fix_sections_and_homoglyphs_compose_on_one_card(tmp: Path):
+    """Смешанный скрипт в имени и чужой раздел у одной карточки: папка — от переноса, имя — от
+    починки гомоглифов, один `rename`, и повторный прогон ничего не меняет."""
+    root, kb = _kbf_project(tmp)
+    mixed = "Т\u0065ма"                    # латинская «e» среди кириллицы
+    (kb / "Concepts" / f"{mixed}.md").write_text(
+        f'---\ntitle: "{mixed}"\ntype: process\nstatus: knowledge\n---\n\n# {mixed}\n\nТело.\n',
+        encoding="utf-8")
+    cp = _kbf_run(root, "--sections", "--homoglyphs")
+    assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, cp.stderr[-600:]
+    tree = _kbf_tree(kb)
+    assert list(tree) == ["Processes/Тема.md"], list(tree)
+    assert f'"{mixed}"' in tree["Processes/Тема.md"], "прежнее имя не ушло в синонимы"
+    again = _kbf_run(root, "--sections", "--homoglyphs")
+    assert again.returncode in (0, 1) and "Traceback" not in again.stderr, again.stderr[-600:]
+    assert _kbf_tree(kb) == tree, "повторный прогон изменил базу"
+
+
+@test
+def test_kb_fix_conflicting_destination_leaves_the_card_in_place(tmp: Path):
+    """Если свёрнутое назначение занято другой карточкой, перенос не выполняется и не падает:
+    карточка остаётся под новым именем в прежнем разделе, обе карточки целы."""
+    root, kb = _kbf_project(tmp)
+    (kb / "Concepts" / "US-1.1-Тема.md").write_text(
+        '---\ntitle: "US-1.1 Тема"\ntype: process\nstatus: knowledge\n---\n\n# US-1.1 Тема\n\nА.\n',
+        encoding="utf-8")
+    (kb / "Processes" / "Тема.md").write_text(
+        '---\ntitle: "Тема"\ntype: process\nstatus: knowledge\n---\n\n# Тема\n\nБ.\n',
+        encoding="utf-8")
+    cp = _kbf_run(root, "--names", "--sections")
+    assert cp.returncode in (0, 1) and "Traceback" not in cp.stderr, cp.stderr[-600:]
+    tree = _kbf_tree(kb)
+    assert sorted(tree) == ["Concepts/Тема.md", "Processes/Тема.md"], list(tree)
+    assert "Б." in tree["Processes/Тема.md"] and "А." in tree["Concepts/Тема.md"], \
+        "тело одной из карточек затёрто другой"
+
+
+@test
+def test_kb_fix_plan_rename_folds_chains_and_refuses_conflicts(tmp: Path):
+    """`Plan.rename`: имя от одного шага и папка от другого сводятся в одно переименование;
+    два разных назначения одного источника и два источника в одно назначение — отказ."""
+    sys.path.insert(0, str(SCRIPTS))
+    fx = importlib.import_module("kb_fix")
+    importlib.reload(fx)
+    old = os.getcwd()
+    os.chdir(tmp)                       # проверка занятости смотрит на диск: пустая папка
+    try:
+        p = fx.Plan()
+        assert p.rename("K/Concepts/AC-1 Имя.md", "K/Concepts/Имя.md") == "K/Concepts/Имя.md"
+        # перенос по разделу считан от исходного пути, а имя уже сменено — сводим
+        assert p.rename("K/Concepts/AC-1 Имя.md", "K/Processes/AC-1 Имя.md") == "K/Processes/Имя.md"
+        assert p.renames == [("K/Concepts/AC-1 Имя.md", "K/Processes/Имя.md")]
+        # повтор того же назначения — не новая запись
+        assert p.rename("K/Concepts/AC-1 Имя.md", "K/Processes/Имя.md") == "K/Processes/Имя.md"
+        assert len(p.renames) == 1
+        # оба шага меняют имя по-разному — решает человек, прежняя запись остаётся
+        assert p.rename("K/Concepts/AC-1 Имя.md", "K/Concepts/Другое.md") is None
+        assert p.renames == [("K/Concepts/AC-1 Имя.md", "K/Processes/Имя.md")]
+        # два источника — одно назначение
+        assert p.rename("K/Concepts/Иное.md", "K/Processes/Имя.md") is None
+        assert len(p.renames) == 1
+        # цепочка: назначение прежнего шага стало источником следующего
+        assert p.rename("K/Processes/Имя.md", "K/Reference/Имя.md") == "K/Reference/Имя.md"
+        assert p.renames == [("K/Concepts/AC-1 Имя.md", "K/Reference/Имя.md")]
+    finally:
+        os.chdir(old)
+
+
+@test
+def test_kb_fix_apply_plan_skips_a_vanished_source_without_crashing(tmp: Path):
+    """`apply_plan` не падает на `FileNotFoundError`: источник, которого уже нет, и второе
+    переименование того же файла пропускаются со счётчиком, остальной план применяется."""
+    sys.path.insert(0, str(SCRIPTS))
+    fx = importlib.import_module("kb_fix")
+    importlib.reload(fx)
+    old = os.getcwd()
+    os.chdir(tmp)
+    try:
+        (tmp / "a").mkdir()
+        (tmp / "a" / "x.md").write_text("x", encoding="utf-8")
+        (tmp / "a" / "y.md").write_text("y", encoding="utf-8")
+        p = fx.Plan()
+        p.renames.extend([("a/x.md", "b/x.md"), ("a/x.md", "c/x.md"),     # два назначения у одного
+                          ("a/нет.md", "b/нет.md"),                      # источника уже нет
+                          ("a/y.md", "b/y.md")])
+        skipped = fx.apply_plan(p)
+        assert skipped == 2, skipped
+        assert (tmp / "b" / "x.md").is_file() and not (tmp / "c" / "x.md").exists()
+        assert (tmp / "b" / "y.md").is_file(), "остальной план не применён"
+    finally:
+        os.chdir(old)
