@@ -1719,6 +1719,26 @@ def replace_file(src, dst, *, windows: bool | None = None, attempts: int = 40,
             time.sleep(pause * min(n + 1, 8))
 
 
+def write_text_atomic(path, text: str) -> None:
+    """Записать текстовый файл целиком или не трогать его: через временный файл рядом и подмену.
+
+    Прямая запись обрывается посреди файла вместе с процессом (убитый `update`, закрытая
+    крышка, диск полон) — и обрезок остаётся настоящим файлом проекта: конфиг без конца,
+    `.gitignore` с половиной правила. Повторное обновление такой файл принимает за
+    человеческий и не чинит. Здесь на месте остаётся либо прежний файл, либо новый.
+    Имя временного файла — своё у каждого процесса: два обновления разом не делят его.
+    Ссылка (общий файл вне проекта) не заменяется — пишется файл, на который она ведёт.
+    """
+    from pathlib import Path
+    real = Path(os.path.realpath(path))
+    tmp = real.with_name(f"{real.name}.{os.getpid()}.aurora-tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        replace_file(tmp, real)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _win_pid_alive(pid: int, kernel32=None, last_error=None) -> bool:
     """`pid_alive` для Windows: `OpenProcess` + `GetExitCodeProcess`, без сигналов.
 

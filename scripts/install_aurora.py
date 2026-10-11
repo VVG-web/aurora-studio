@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 KIT_ROOT = Path(__file__).resolve().parents[1]
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком
 
 def manifest_pairs() -> list:
     """[(файл в kit, путь в проекте)] из engine_manifest.txt — тот же список, по которому
@@ -86,6 +86,8 @@ __pycache__/
 .ruff_cache/
 ~$*
 *.log
+# Временный файл атомарной записи: остаётся только после убитого процесса
+*.aurora-tmp
 
 # Движок Авроры — копия кита: `aurora.py update` ставит её из кита, версия записана в
 # AuroraKnowledgeDB/meta/aurora_version.txt. Внутри — и состояние, прогоны, вложения, кэш.
@@ -164,8 +166,7 @@ def merge_gitignore(path, block: str = "") -> list:
             notes = []
     if add:
         head = "" if not cur else cur.rstrip() + "\n\n"
-        path.write_text(head + "# Aurora — правила движка\n" + "\n".join(add) + "\n",
-                        encoding="utf-8")
+        write_text_atomic(path, head + "# Aurora — правила движка\n" + "\n".join(add) + "\n")
     return [ln for ln in add if not ln.strip().startswith("#")]
 
 

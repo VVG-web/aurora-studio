@@ -320,6 +320,7 @@ as a list, no shell, an undeclared flag is rejected) and does not accept arbitra
 | Fixtures | `python3 tests/run_tests.py` | "a script does what was intended" — hundreds of checks on synthetic projects in temporary folders |
 | The golden corpus | the same run, data in `tests/corpus/` | "the engine sees real shapes as it did yesterday": homoglyphs, duplicates, legacy headers |
 | The live base | `python3 tests/smoke_live.py <project>` | "nothing moved on this project": a snapshot of numbers and names inside the project itself |
+| The life cycle | the same run, `tests/cases/part_40.py` | "an update does not break the project": a project created by a past release (git tags) is updated by the current kit; an `update` cut off and run in parallel; a repeated `update` that changes nothing |
 
 CI (`.github/workflows/test.yml`) runs smoke and the full suite on Python 3.14, the full suite on the lowest supported 3.11, the full suite on 3.12 and 3.13, and compilation plus smoke
 on 3.10 (those, Windows on 3.14 and macOS are non-blocking for now; Windows on 3.12 blocks the release). Version policy: 3.11+ is supported, 3.10 works with a warning, anything older stops. Releasing a version — the tag and the GitHub Release — is done by

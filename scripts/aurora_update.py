@@ -31,7 +31,7 @@ import argparse, difflib, json, re, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aurora_common import utc_today  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import utc_today, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком
 import folder_guides as FG  # noqa: E402 — описания папок проекта (README.md)
 
 def find_kit() -> Path:
@@ -84,7 +84,7 @@ def project_fields(target: Path) -> dict:
     cfg = target / "aurora.config.yaml"
     f = {"name": target.name, "slug": target.name, "jira": "PROJECT", "space": "SPACE"}
     if cfg.is_file():
-        t = cfg.read_text(encoding="utf-8")
+        t = cfg.read_text(encoding="utf-8", errors="replace")
         def g(key, default):
             m = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$', t, re.M)
             return m.group(1).strip() if m else default
@@ -186,7 +186,7 @@ def relayout_rewrite(target: Path) -> list:
                 continue
             fixed = legacy_paths(text)
             if fixed != text:
-                p.write_text(fixed, encoding="utf-8")
+                write_text_atomic(p, fixed)
                 done.append(p.relative_to(target).as_posix())
     return done
 
@@ -262,10 +262,13 @@ def relayout_moves(target: Path, rp: dict) -> list:
     ui = target / UPDATE_IGNORE
     if ui.is_file():
         # Пути в списке — к навыкам на прежнем месте: правило должно указывать на новое.
-        text = ui.read_text(encoding="utf-8")
-        fixed = re.sub(r"\.(?:opencode|aurora)/skills/", ".claude/skills/", text)
-        if fixed != text:
-            ui.write_text(fixed, encoding="utf-8")
+        try:
+            text = ui.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = None          # не UTF-8 — не наш текст: молча не переписываем
+        fixed = re.sub(r"\.(?:opencode|aurora)/skills/", ".claude/skills/", text or "")
+        if text is not None and fixed != text:
+            write_text_atomic(ui, fixed)
     return failed
 
 
@@ -381,7 +384,7 @@ def load_ignore(target: Path) -> list:
     if not path.is_file():
         return []
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
             out.append(line)
@@ -497,7 +500,7 @@ def project_version(target: Path) -> str:
 def stamp_version(target: Path, ver: str):
     vf = target / "AuroraKnowledgeDB/meta/aurora_version.txt"
     vf.parent.mkdir(parents=True, exist_ok=True)
-    vf.write_text(ver + "\n", encoding="utf-8")
+    write_text_atomic(vf, ver + "\n")
 
 
 # ---------- main ----------
@@ -586,7 +589,7 @@ def refresh_gitignore(target: Path) -> list:
         return []
     try:
         return merge_gitignore(target / ".gitignore")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
 
 
@@ -637,7 +640,7 @@ def refresh_gitattributes(target: Path) -> list:
         return []
     try:
         return merge_gitignore(target / ".gitattributes", GITATTRIBUTES_BLOCK)
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return []
 
 
@@ -657,7 +660,10 @@ def config_defaults(target: Path, ignore: list) -> tuple:
         from aurora_setup import fill_trust_defaults
     except Exception:                                    # noqa: BLE001
         return "", []
-    text = cfg.read_text(encoding="utf-8")
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return "", []        # не UTF-8: не угадываем, что в нём, и обратно не пишем
     new, done = fill_trust_defaults(text)
     return (new, done) if new != text else ("", [])
 
@@ -714,6 +720,15 @@ def run(target: Path, apply: bool, structure_only: bool = False):
 
     if not changes and not new_dirs and not retired and not cfg_done and not moving and not guides:
         print("✅ Движок и структура уже актуальны — изменений нет.")
+        if apply:
+            # Правила .gitignore/.gitattributes кит дописывает в конце прогона «по возможности»
+            # (отказ записи обновление не останавливает). Оборванный прогон успел поставить
+            # движок, а правил — нет: повтор видел «всё актуально» и штамповал версию, и правила
+            # не появлялись, пока кит не изменит что-то ещё. Слияние идемпотентно: недорого
+            # проверить и здесь.
+            late = refresh_gitignore(target) + refresh_gitattributes(target)
+            if late:
+                print(f"   Дописано правил .gitignore/.gitattributes: {len(late)}")
         if apply and pv != kv:
             stamp_version(target, kv)
             print(f"   Проставлен штамп версии: {kv}")
@@ -776,9 +791,9 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         # Второе обновление (кнопка и Cron разом) могло убрать файл раньше: это не ошибка.
         (target / r).unlink(missing_ok=True)
     if cfg_done:
-        (target / "aurora.config.yaml").write_text(cfg_text, encoding="utf-8")
+        write_text_atomic(target / "aurora.config.yaml", cfg_text)
     (target / ".aurora").mkdir(parents=True, exist_ok=True)
-    (target / ".aurora/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    write_text_atomic(target / ".aurora/kit_path.txt", str(KIT) + "\n")
     if moving:
         failed += relayout_cleanup(target, rp)
     guides = FG.plan(target, KIT)        # после папок схемы и переезда: им тоже описания

@@ -74,9 +74,9 @@ def _tagged_kit(tag: str, dest: Path) -> Path:
     return dest
 
 
-def _new_project(kit: Path, root: Path, name: str = "Old") -> Path:
+def _new_project(kit: Path, root: Path, name: str = "Old", slug: str = "") -> Path:
     """Проект, заведённый китом `kit` настоящей командой `new` (без терминала)."""
-    _py(kit / "aurora.py", "new", str(root), "--name", name, "--slug", name, cwd=root.parent)
+    _py(kit / "aurora.py", "new", str(root), "--name", name, "--slug", slug or name, cwd=root.parent)
     return root
 
 
@@ -229,12 +229,18 @@ def test_lifecycle_update_from_past_releases_n_to_n_plus_k(tmp: Path):
         assert engine(root) == engine(final["v1.140.0"]), "цепочка через 1.157.1 дала иной движок, чем прямое обновление"
 
 
-def _aged_project(tmp: Path, name: str = "Old") -> Path:
+def _aged_project(tmp: Path, name: str = "Old", old_world: bool = False) -> Path:
     """Проект текущего кита, «состаренный» до старого состояния: чужая версия, правленые и пропавшие файлы.
 
     Работает без тегов, поэтому обновление «проект старше кита» проверяется на любой машине.
+
+    `old_world=True` — проект таким, каким его держит большинство живых: кириллица в имени,
+    значения доверия в конфиге пусты (их обновление дописывает), в git с хуком, у `.gitignore`
+    и `.gitattributes` нет правил, появившихся позже. Именно такой проект заставляет `update`
+    писать конфиг, `.gitignore`, `.gitattributes` и хук: у только что заведённого проекта
+    эти записи не нужны, и обрыв на них проверять не на чем.
     """
-    root = _new_project(KIT, tmp / "aged", name)
+    root = _new_project(KIT, tmp / "aged", name, "old" if old_world else "")
     (root / "AuroraKnowledgeDB/meta/aurora_version.txt").write_text("1.100.0\n", encoding="utf-8")
     scripts = root / ".aurora/scripts"
     (scripts / "kb_lint.py").write_text("# старая копия\n", encoding="utf-8")
@@ -249,6 +255,16 @@ def _aged_project(tmp: Path, name: str = "Old") -> Path:
     for folder in ("docs", "skills", "connectors"):
         shutil.rmtree(root / ".aurora" / folder, ignore_errors=True)
     shutil.rmtree(root / "Deliverables/_archive", ignore_errors=True)
+    if old_world:
+        cfg = root / "aurora.config.yaml"
+        text = re.sub(r"(?m)^(\s*(?:trust_statuses|trusted_sources)\s*:).*$", r"\1 []",
+                      cfg.read_text(encoding="utf-8"))
+        cfg.write_text(text, encoding="utf-8")
+        (root / ".gitignore").write_text("# мой список\n.DS_Store\n.env\n", encoding="utf-8")
+        (root / ".gitattributes").write_text("*.md text eol=lf\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=str(root), check=True, capture_output=True)
+        _py(root / ".aurora/scripts/aurora_hooks.py", "--install", cwd=root)
+        _git_commit_all(root)
     return root
 
 
@@ -292,18 +308,23 @@ class _Fault:
     """
 
     def __init__(self, target: Path, at: int = 0, torn: bool = False, hook=None):
+        # и настоящий путь тоже: запись через временный файл идёт по `realpath` (на macOS
+        # `/var/…` временной папки — ссылка на `/private/var/…`)
         self.target, self.at, self.torn, self.hook = str(target), at, torn, hook
+        self.roots = (str(target), os.path.realpath(target))
         self.count = 0
+        self.ops = []          # путь каждой операции по порядку: чтобы выбрать, где обрывать
         self.busy = False
         self._saved = {}
 
     def _mine(self, p) -> bool:
-        return str(p).startswith(self.target)
+        return str(p).startswith(self.roots)
 
     def _tick(self, path, partial) -> None:
         if self.busy or not self._mine(path):
             return
         self.count += 1
+        self.ops.append(str(path))
         if self.count != self.at:
             return
         if self.hook:
@@ -351,8 +372,11 @@ def _au():
     return importlib.import_module("aurora_update")
 
 
-def _run_in_process(AU, root: Path, **fault):
-    """Один `update --apply` в этом процессе; → (число операций записи, исключение или None)."""
+def _run_in_process(AU, root: Path, ops: list | None = None, **fault):
+    """Один `update --apply` в этом процессе; → (число операций записи, исключение или None).
+
+    `ops`, если дан, пополняется путями операций по порядку.
+    """
     f = _Fault(root, **fault)
     err = None
     with f, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -360,46 +384,72 @@ def _run_in_process(AU, root: Path, **fault):
             AU.run(root, True)
         except Exception as e:  # noqa: BLE001 — обрыв проверки и есть исключение
             err = e
+    if ops is not None:
+        ops.extend(f.ops)
     return f.count, err
 
 
 @test
 def test_lifecycle_update_interrupted_midway_leaves_project_recoverable(tmp: Path):
-    """Обрыв `update` на любой записи: проект не врёт про версию, повтор достраивает его до чистого состояния.
+    """Обрыв `update` посреди записи: проект не врёт про версию, повтор достраивает его до чистого состояния.
 
-    Обрыв — отказ n-й записи и «убитый процесс» (запись обрывается на половине файла). В обоих
-    случаях штамп версии остаётся прежним (он ставится последним: проект не выдаёт себя за
-    обновлённый), а повторное обновление приводит дерево ровно к тому, что дал бы непрерывный
-    прогон. Файл, до которого обрыв не дошёл, остаётся целым — прежним или новым, не пустым.
+    Проект — «старого мира» (`_aged_project(old_world=True)`): конфиг с пустым доверием,
+    `.gitignore`, `.gitattributes` и хук в git, кириллица в имени; у только что заведённого
+    проекта этих записей нет, и обрыв на них проверять не на чем. Обрыв — отказ n-й записи и
+    «убитый процесс» (запись обрывается на половине файла); n — каждая запись единственных
+    файлов проекта (конфиг, `.gitignore`, `.gitattributes`, штамп, `kit_path.txt`) и выборка
+    остальных. Штамп версии остаётся прежним (он ставится последним: проект не выдаёт себя за
+    обновлённый), единственные файлы никогда не остаются обрезком, а повторное обновление
+    приводит дерево ровно к тому, что дал бы непрерывный прогон.
     """
     AU = _au()
-    base = _aged_project(tmp)
+    base = _aged_project(tmp, "Старый проект", old_world=True)
     _put_user_data(base)
     ref = tmp / "ref"
     shutil.copytree(base, ref, symlinks=True)
-    total, err = _run_in_process(AU, ref)
+    ops: list = []
+    total, err = _run_in_process(AU, ref, ops=ops)
     assert err is None, f"непрерывное обновление упало: {str(repr(err))[:300]}"
     reference = _tree(ref)
     assert total > 40, f"подсчёт операций записи не сработал: {total}"
 
+    # Файлы, которые у проекта в единственном экземпляре и которые человек правит сам: обрезок
+    # здесь не лечится повтором (тот принимает его за человеческий), поэтому обрыв на каждой их
+    # записи проверяется отдельно, а не «вдруг попадёт в выборку».
+    single = ("aurora.config.yaml", ".gitignore", ".gitattributes", "aurora_version.txt",
+              "kit_path.txt")
+
+    def name_of(path: str) -> str:
+        return re.sub(r"\.\d+\.aurora-tmp$", "", path.replace("\\", "/")).rsplit("/", 1)[-1]
+
+    at_single = [i + 1 for i, path in enumerate(ops) if name_of(path) in single]
+    for name in ("aurora.config.yaml", ".gitignore", ".gitattributes"):
+        assert any(name_of(path) == name for path in ops), \
+            f"обновление «старого мира» не пишет {name}: обрыв на этой записи нечем проверять"
     old_stamp = _stamp(base)
-    points = sorted({1, 2, total // 4, total // 2, 3 * total // 4, total - 1, total})
+    points = sorted({1, 2, total // 4, total // 2, 3 * total // 4, total - 1, total, *at_single})
     for torn in (False, True):
         for n in points:
             root = tmp / f"cut-{int(torn)}-{n}"
             shutil.copytree(base, root, symlinks=True)
             before = _tree(root)
             _count, err = _run_in_process(AU, root, at=n, torn=torn)
-            assert isinstance(err, OSError), f"обрыв на записи {n}/{total} не дошёл до движка: {str(repr(err))[:300]}"
-            if n < total:
+            # `.gitignore`, `.gitattributes` и хук кит пишет «по возможности» (отказ записи не
+            # останавливает обновление), поэтому обрыв на них исключением не кончается — и штамп
+            # тогда по праву ставится; повтор всё равно обязан довести дерево до того же.
+            assert err is None or isinstance(err, OSError), \
+                f"обрыв на записи {n}/{total} кончился не отказом записи: {str(repr(err))[:300]}"
+            if err is not None and n < total:
                 assert _stamp(root) == old_stamp, \
                     f"обрыв на {n}/{total}: проект уже назвался обновлённым ({_stamp(root)})"
-            if not torn:
-                for rel, h in _tree(root).items():
-                    assert rel in before or h, rel
-                    if rel in before and h != before[rel]:
-                        assert h == reference.get(rel), \
-                            f"обрыв на {n}/{total}: {rel} ни прежний, ни новый (файл побит)"
+            # Файл ни прежний, ни новый — обрезок. Без обрыва посреди записи их быть не должно, с
+            # обрывом — не больше одного (того, что писался), и не из числа единственных.
+            broken = sorted(rel for rel, h in _tree(root).items()
+                            if h != before.get(rel) and h != reference.get(rel))
+            assert len(broken) <= (1 if torn else 0), \
+                f"обрыв на {n}/{total} (torn={torn}): побито больше одного файла: {broken[:6]}"
+            assert not [rel for rel in broken if name_of(rel) in single], \
+                f"обрыв на {n}/{total}: единственный файл проекта остался обрезком: {broken}"
             _count, err = _run_in_process(AU, root)
             assert err is None, f"повторное обновление после обрыва на {n}/{total} упало: {str(repr(err))[:300]}"
             got = _tree(root)
@@ -440,6 +490,11 @@ def test_lifecycle_two_updates_at_once_converge(tmp: Path):
         assert not diff, f"два обновления разом (запись {n}/{total}) не сошлись: {diff[:6]}"
         shutil.rmtree(root, ignore_errors=True)
 
+    if sys.platform == "win32":
+        # Открытый другим процессом файл на Windows не подменить: два настоящих процесса,
+        # идущих почти в ногу, там падают по причине самой системы, а не движка. Гонку
+        # двух писателей без этой помехи проверяют части выше и test_folder_guides_*.
+        return
     root = tmp / "procs"
     shutil.copytree(base, root, symlinks=True)
     _own_home()
@@ -454,6 +509,97 @@ def test_lifecycle_two_updates_at_once_converge(tmp: Path):
     got = _tree(root)
     diff = sorted(k for k in set(got) | set(reference) if got.get(k) != reference.get(k))
     assert not diff, f"два процесса разом не сошлись: {diff[:6]}"
+
+
+@test
+def test_folder_guides_two_writers_never_share_a_temp_file(tmp: Path):
+    """Два писателя описаний папок: пока первый между записью и подменой, второй проходит целиком.
+
+    Настоящие процессы попадают в это окно лишь иногда (проверка не должна зависеть от удачи),
+    поэтому окно держим сами: подмена файла первого писателя вызывает второго (другой pid).
+    С общим именем временного файла второй уносил файл первого, и первый падал на подмене.
+    Остаться должен целый файл, а временных файлов — ни одного.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import folder_guides as FG
+    root = tmp / "p"
+    rel = "Raw/README.md"
+    first, second = [(rel, "первый\n", "create")], [(rel, "второй\n", "create")]
+    real_replace, real_getpid = os.replace, os.getpid
+    state = {"inner": False}
+
+    def replace(src, dst, *a, **kw):
+        if not state["inner"]:
+            state["inner"] = True
+            os.getpid = lambda: real_getpid() + 1          # «другой процесс»
+            try:
+                FG.apply(root, second)
+            finally:
+                os.getpid = real_getpid
+        return real_replace(src, dst, *a, **kw)
+
+    os.replace = replace
+    try:
+        FG.apply(root, first)
+    finally:
+        os.replace, os.getpid = real_replace, real_getpid
+    assert state["inner"], "второй писатель не вызывался: окно не воспроизведено"
+    assert (root / rel).read_text(encoding="utf-8") in ("первый\n", "второй\n"), "файл побит"
+    assert not list(root.rglob("*.aurora-tmp")), f"остались временные файлы: {list(root.rglob('*.aurora-tmp'))}"
+
+
+@test
+def test_lifecycle_update_structure_only_creates_folders_and_leaves_engine(tmp: Path):
+    """`update --structure-only`: недостающие папки и описания и штамп версии, движок не тронут.
+
+    Этот режим советует `aurora_doctor` как лечение, и у него свой путь записи. Повторный запуск
+    ничего не меняет, а без `--apply` ничего не пишется.
+    """
+    root = _aged_project(tmp)
+    scripts = root / ".aurora/scripts"
+    stale = sorted(f for f in scripts.glob("*.py") if f.read_text(encoding="utf-8") == "# старая копия\n")
+    assert stale, "в состаренном проекте нет устаревших копий движка"
+    assert not (root / "Deliverables/_archive").exists()
+    (root / "Raw/README.md").unlink(missing_ok=True)
+    stamp = _stamp(root)
+    before = _tree(root)
+
+    dry = _py(KIT / "scripts/aurora_update.py", str(root), "--structure-only", cwd=root)
+    assert "Ничего не создано" in dry.stdout, dry.stdout[-400:]
+    assert _tree(root) == before, "dry-run режима «только структура» изменил проект"
+
+    out = _py(KIT / "scripts/aurora_update.py", str(root), "--structure-only", "--apply", cwd=root)
+    assert "Движок не тронут" in out.stdout, out.stdout[-400:]
+    assert (root / "Deliverables/_archive").is_dir(), "недостающая папка схемы не создана"
+    assert (root / "Raw/README.md").is_file(), "описание папки не создано"
+    assert _stamp(root) == (KIT / "VERSION").read_text(encoding="utf-8").strip() != stamp
+    assert all(f.read_text(encoding="utf-8") == "# старая копия\n" for f in stale), "режим тронул движок"
+    assert not (scripts / "aurora_doctor.py").exists(), "режим доложил пропавший скрипт движка"
+    assert (scripts / "kb_queue.py").exists(), "режим убрал выведенный скрипт: это дело полного обновления"
+
+    after = _tree(root)
+    again = _py(KIT / "scripts/aurora_update.py", str(root), "--structure-only", "--apply", cwd=root)
+    assert "Структура актуальна" in again.stdout, again.stdout[-400:]
+    assert _tree(root) == after, "повторный запуск изменил проект"
+
+
+@test
+def test_lifecycle_update_survives_files_that_are_not_utf8(tmp: Path):
+    """Конфиг и список исключений не в UTF-8 (обрезок убитого процесса, правка в cp1251) обновление не роняют.
+
+    Читаются они «с заменой», а писать обратно то, что не прочитано как есть, нельзя: файл
+    остаётся байт в байт, как был.
+    """
+    root = _aged_project(tmp)
+    cfg = root / "aurora.config.yaml"
+    cfg.write_bytes(cfg.read_bytes() + "\n# Старый".encode("utf-8")[:-1])
+    ign = root / "aurora.update_ignore.txt"
+    ign.write_bytes("# мой список\n".encode("cp1251") + b"Templates/*\n")
+    keep = {p: p.read_bytes() for p in (cfg, ign)}
+    _update(KIT, root)
+    for p, data in keep.items():
+        assert p.read_bytes() == data, f"{p.name}: обновление переписало файл не в UTF-8"
+    assert _stamp(root) == (KIT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 @test

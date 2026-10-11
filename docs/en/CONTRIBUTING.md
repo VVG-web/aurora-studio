@@ -146,7 +146,7 @@ python3 scripts/kit_i18n.py --check         # completeness of the panel's transl
 | Fixtures | `python3 tests/run_tests.py` | "a script does what was intended": every test builds a project from scratch in a temp folder |
 | The golden corpus | the same run, data in `tests/corpus/` | "the engine sees real shapes as yesterday": homoglyphs, duplicates, legacy headers, personal data next to requisites, NFD names, artifacts in knowledge; the numbers are fixed in `EXPECTED.json` |
 | The live base | `python3 tests/smoke_live.py <project>` | "nothing moved on this project": a snapshot of numbers and names in the project's own `meta/smoke_snapshot.json` (`--update` after a deliberate edit) |
-| The life cycle | the same run, `tests/cases/part_40.py` | "an update does not break the project": a project created by a past release (`git archive` of a tag into a temp folder; without tags the scenario is skipped, in CI it is required) is updated by the current kit, an `update` cut off at any write, two `update`s at once, a repeated `update` that changes nothing |
+| The life cycle | the same run, `tests/cases/part_40.py` | "an update does not break the project": a project created by a past release (`git archive` of a tag into a temp folder; without tags the scenario is skipped, in CI it is required) is updated by the current kit, an `update` cut off at the write of the config, `.gitignore`, `.gitattributes` and the version stamp and at a sample of the others, two `update`s at once, a repeated `update` that changes nothing |
 
 The corpus is rebuilt by `python3 tests/make_corpus.py` and lies in git. Found a new pathology in the field — add it to the
 corpus, otherwise it will come back. A bug found by hand is closed by a check that fails **without** your fix; the cause is
@@ -169,6 +169,7 @@ per-OS branching in YAML, the venv paths go to `GITHUB_ENV` before the install, 
 cp1252 pipe is simulated by the test itself). The weekly
 `canary.yml` (a separate workflow, it does not affect the release) runs everything on the latest versions with no constraints and
 opens an issue when red.
+The update scenarios from past releases (`tests/cases/part_40.py`) take the releases from git tags, and a shallow clone has none: `AURORA_REQUIRE_TAGS=1` turns a skip without tags into a failure, and in the main CI job it is set together with `fetch-depth: 0` on `actions/checkout`. Without the full history (`fetch-depth: 0`) a job that needs these scenarios would quietly check less than it seems. The Windows jobs still run without tags (`windows-314` gets the history to show a green run before the blocking `windows` does).
 
 A Dependabot PR is red in the `authors` check by design: its commits are signed `dependabot[bot]`, and an author must be a person.
 Do not merge such a PR with the button (master would get a commit by a bot author, `engine-tests` on master would go red and the

@@ -233,7 +233,13 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
+      # История с тегами: сценарий обновления с прежних выпусков (tests/cases/part_40.py) берёт их
+      # из тегов, а без них молча возвращается. Самый важный для Windows случай — проект,
+      # заведённый прежним выпуском (CRLF у .bat). Пока без AURORA_REQUIRE_TAGS: блокирующим
+      # `windows` его делают после зелёных прогонов здесь.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"

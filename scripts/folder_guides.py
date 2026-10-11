@@ -15,7 +15,6 @@
 """
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -106,14 +105,10 @@ def plan(target, kit) -> list:
 
 
 def apply(target, changes: list) -> None:
+    from aurora_common import write_text_atomic
     for rel, text, _kind in changes:
         p = Path(target) / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        # Имя временного файла — своё у каждого процесса: два обновления разом (кнопка в панели
-        # и Cron) делили одно `.aurora-tmp`, и второе падало на подмене уже подмененного файла.
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.aurora-tmp")
-        try:
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, p)
-        finally:
-            tmp.unlink(missing_ok=True)
+        # Временный файл — свой у каждого процесса: два обновления разом (кнопка в панели и
+        # Cron) делили одно `.aurora-tmp`, и второе падало на подмене уже подмененного файла.
+        write_text_atomic(p, text)
