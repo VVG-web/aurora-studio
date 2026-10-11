@@ -335,13 +335,22 @@ def run(project: str, script: str, args: list, timeout: int = 120, fail_from: in
 
 def card_path(project: str, name: str) -> str:
     """Путь карточки по имени. Имя приходит от модели — путь она задать не может."""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    from request_context import SECRET_NAME
     safe = os.path.basename(name.strip()).removesuffix(".md")
     root = os.path.join(project, "AuroraKnowledgeDB")
+    real_root = os.path.realpath(root)
     for dirpath, dirs, files in os.walk(root):
         # архив — снятое из базы (слитые двойники, заглушки): знанием оно уже не служит
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != "_archive"]
         if safe + ".md" in files:
-            return os.path.join(dirpath, safe + ".md")
+            path = os.path.join(dirpath, safe + ".md")
+            # git хранит символические ссылки: карточка-ссылка на файл вне базы (ключ, .env)
+            # читалась бы как карточка. Цель обязана лежать в базе и не быть секретным именем.
+            target = os.path.realpath(path)
+            if target.startswith(real_root + os.sep) and not SECRET_NAME.match(os.path.basename(target)):
+                return path
     return ""
 
 

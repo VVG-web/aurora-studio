@@ -143,6 +143,46 @@ def test_mcp_reports_a_failed_tool_as_an_error_not_as_knowledge(tmp: Path):
 
 
 @test
+def test_mcp_card_by_name_does_not_follow_a_link_out_of_the_base(tmp: Path):
+    """`kb_card` не читает карточку-ссылку на файл вне базы (BL-NEW-01).
+
+    git хранит символические ссылки: `AuroraKnowledgeDB/x/leak.md -> файл вне проекта`
+    находилась обходом базы и читалась `open()` как карточка. Имя приходит от модели
+    (ассистента или бота), а репозиторий может быть чужим. Ссылка наружу и ссылка на
+    секретное имя внутри базы — «карточки нет»; обычная карточка и ссылка на другую
+    карточку базы читаются. Ссылки создаются только во временном каталоге.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    M = importlib.import_module("aurora_mcp")
+    root = make_project(tmp)
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified",
+         type="concept")
+    outside = tmp / "снаружи"
+    outside.mkdir()
+    (outside / "чужое.md").write_text("OUTSIDE\n", encoding="utf-8")
+    base = root / "AuroraKnowledgeDB" / "Concepts"
+    (base / "ключ.pem").write_text("KEY\n", encoding="utf-8")
+    try:
+        os.symlink(outside / "чужое.md", base / "утечка.md")
+        os.symlink(base / "ключ.pem", base / "обычное-имя.md")
+        os.symlink(base / "Обеспечение.md", base / "алиас.md")
+    except (OSError, NotImplementedError):
+        return      # без прав на ссылки (Windows) проверять нечего
+    for name in ("утечка", "обычное-имя"):
+        assert M.card_path(str(root), name) == "", f"{name}: ссылка из базы наружу прошла как карточка"
+        try:
+            M.call_tool(str(root), "kb_card", {"name": name})
+        except M.ToolError as e:
+            assert "в базе нет" in str(e), str(e)
+        else:
+            raise AssertionError(f"{name}: kb_card отдал файл за пределами базы")
+    assert "Правила обеспечения" in M.call_tool(str(root), "kb_card", {"name": "Обеспечение"})
+    assert "Правила обеспечения" in M.call_tool(str(root), "kb_card", {"name": "алиас"}), \
+        "ссылка на карточку внутри базы перестала читаться"
+
+
+@test
 def test_installing_a_skill_never_leaves_the_agent_without_it(tmp: Path):
     """Обновление скилла не оставляет агента без скилла: сбой копирования не стирает прежний.
 

@@ -386,9 +386,9 @@ def outbound_hook(server: str, guard: dict, root: str):
 
 # Границы проекта мало: секреты лежат внутри него. Модель, прочитавшая файл с токенами,
 # может вписать их в артефакт — а артефакт уходит в Confluence и в git. Закрываем по имени,
-# а не по расширению. Список имён один на движок (`request_context.SECRET_NAME`): своя
-# копия разошлась с ним — в ней не было ни mcp.json, ни ключей `*.pem`.
-HIDDEN = (".git", ".ssh", ".aws", ".venv", "node_modules")
+# а не по расширению. Имена файлов и служебные папки — один список на движок
+# (`request_context.SECRET_NAME` и `NEVER_DIRS`): своя копия разошлась с ним — в ней не было
+# ни mcp.json, ни ключей `*.pem`, ни `local`, `runs`, `.aurora/state`.
 
 
 def resolve_project_path(root: str, rel: str) -> str:
@@ -400,8 +400,10 @@ def resolve_project_path(root: str, rel: str) -> str:
     имени цели: ссылка с обычным именем на `.env` не должна пройти, как и обычный файл по
     ссылке `.env`. Возвращается путь цели — читает модель именно его.
     """
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from request_context import SECRET_NAME
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if here not in sys.path:        # list_dir зовёт функцию на каждую запись: без этой проверки sys.path разбухает
+        sys.path.insert(0, here)
+    from request_context import NEVER_DIRS, SECRET_NAME
     base = os.path.abspath(root)
     real_base = os.path.realpath(root)
     joined = os.path.join(base, rel)
@@ -414,7 +416,7 @@ def resolve_project_path(root: str, rel: str) -> str:
         parts = [p for p in os.path.relpath(shown, start).split(os.sep) if p not in ("", ".")]
         if parts and SECRET_NAME.match(parts[-1]):
             raise ValueError("файл с доступами читать нельзя")
-        if any(p in HIDDEN for p in parts):
+        if any(p.lower() in NEVER_DIRS for p in parts):
             raise ValueError("служебная папка: читать нечего")
     return target
 

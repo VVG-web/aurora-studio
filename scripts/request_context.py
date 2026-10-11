@@ -39,9 +39,11 @@ TEXT_EXT = {
 }
 TEXT_NAMES = {"dockerfile", "makefile", "readme", "license", "changelog", "procfile"}
 
-# Никогда — ни по ссылке, ни в папке: секреты и служебное.
-NEVER_DIRS = {".git", "node_modules", "local", ".venv", "venv", "__pycache__", ".sisyphus",
-              "runs", "state"}
+# Никогда — ни по ссылке, ни в папке: секреты и служебное. Имена строчными: на macOS и
+# Windows `.GIT` — та же папка, и сравнение с учётом регистра её пропустило бы. Список один
+# на движок: им же пользуются инструменты чтения модели (`agents/pydantic_ai_adapter`).
+NEVER_DIRS = {".git", ".ssh", ".aws", "node_modules", "local", ".venv", "venv", "__pycache__",
+              ".sisyphus", "runs", "state"}
 SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|ed25519|ecdsa)\w*|"
                          r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.\w+)?)$", re.I)
 
@@ -61,7 +63,7 @@ def utc_day(when=None) -> str:
 def is_secret(rel: str) -> bool:
     """Путь ведёт к секрету или служебному — в задание не читаем."""
     parts = [p for p in Path(rel).parts if p not in ("", ".")]
-    if any(p in NEVER_DIRS for p in parts[:-1]):
+    if any(p.lower() in NEVER_DIRS for p in parts[:-1]):
         return True
     return bool(parts) and bool(SECRET_NAME.match(parts[-1]))
 
@@ -113,7 +115,7 @@ def read_context(cwd: str, paths: list) -> tuple:
         files = [full] if os.path.isfile(full) else []
         if os.path.isdir(full):
             for base, dirs, names in os.walk(full):
-                dirs[:] = sorted(d for d in dirs if d not in NEVER_DIRS and not d.startswith("."))
+                dirs[:] = sorted(d for d in dirs if d.lower() not in NEVER_DIRS and not d.startswith("."))
                 files += [os.path.join(base, n) for n in sorted(names) if is_text_name(n)]
             if len(files) > FOLDER_FILES:
                 notes.append(f"«{rel}» — в папке {len(files)} текстовых файлов, взяты первые "
@@ -277,7 +279,7 @@ def suggest(cwd: str, query: str, mcp_names=(), kit: str = "", limit: int = 20) 
             out.append({"kind": "mcp", "value": "@" + n, "label": n})
     root = os.path.realpath(cwd)
     for base, dirs, names in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d not in NEVER_DIRS and not d.startswith("."))
+        dirs[:] = sorted(d for d in dirs if d.lower() not in NEVER_DIRS and not d.startswith("."))
         rel_base = os.path.relpath(base, root)
         for d in dirs:
             rel = os.path.normpath(os.path.join(rel_base, d)).replace(os.sep, "/")

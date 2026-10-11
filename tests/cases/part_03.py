@@ -974,8 +974,9 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
     # и в git. Найдено на живом коде уже после того, как инструменты были написаны.
     assert 'raise ValueError("файл с доступами читать нельзя")' in ad, \
         "модель может прочитать токены проекта и вписать их в документ"
-    assert "from request_context import SECRET_NAME" in ad and "SECRET = (" not in ad, \
-        "список файлов с доступами в адаптере снова своя копия: разойдётся с request_context"
+    assert "from request_context import NEVER_DIRS, SECRET_NAME" in ad \
+        and "SECRET = (" not in ad and "HIDDEN" not in ad, \
+        "список файлов с доступами или служебных папок в адаптере снова своя копия: разойдётся с request_context"
     assert '"служебная папка: читать нечего"' in ad, \
         "модель ходит в .git и .ssh — там нет знания, но есть чем навредить"
 
@@ -1024,6 +1025,10 @@ def test_agent_file_tools_follow_links_before_trusting_the_path(tmp: Path):
     (root / ".git-credentials").write_text("https://u:p@h\n", encoding="utf-8")
     (root / ".git").mkdir()
     (root / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    # служебные папки движка: ключи шлюзов в local/, память прогонов, состояние .aurora
+    for rel in ("local/models.json", "runs/a.md", ".aurora/state/p.json", ".ssh/config", ".aws/credentials"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("x\n", encoding="utf-8")
     try:
         os.symlink(outside / "id_rsa", root / "Templates" / "notes.md")
         os.symlink(outside / "заметка.md", root / "Templates" / "безобидно.md")
@@ -1056,6 +1061,23 @@ def test_agent_file_tools_follow_links_before_trusting_the_path(tmp: Path):
     for rel in (".env.aurora.local", "mcp.json", "server.pem", ".git-credentials"):
         assert "доступами" in refused(rel), f"{rel}: секретное имя не закрыто"
     assert "служебная" in refused(".git/config")
+    # служебные папки — тот же список, что у request_context (`NEVER_DIRS`), а не своя копия
+    for rel in ("local/models.json", "runs/a.md", ".aurora/state/p.json", ".ssh/config",
+                ".aws/credentials", "local", "Runs/a.md"):
+        assert refused(rel), f"{rel}: служебная папка движка не закрыта"
+    # регистр: на macOS и Windows `.GIT` — та же папка, что `.git`
+    assert "служебная" in refused(".GIT/config") and "служебная" in refused(".Aurora/State/p.json")
+    assert "доступами" in refused(".ENV.aurora.local") and "доступами" in refused("MCP.json")
+    # один список на движок: адаптер не добавляет и не теряет имён
+    import request_context as RC
+    assert {".ssh", ".aws", ".git", "local", "runs", "state"} <= RC.NEVER_DIRS
+    assert RC.is_secret(".GIT/config") and RC.is_secret("Local/models.json")
+
+    # sys.path не растёт на каждый вызов: list_dir зовёт проверку на каждую запись папки
+    before = len(sys.path)
+    for _ in range(50):
+        refused("Templates/обычный.md")
+    assert len(sys.path) == before, "resolve_project_path вставляет в sys.path при каждом вызове"
 
     # инструменты целиком: read_file и list_dir на зарегистрированном агенте
     tools = {}
