@@ -384,6 +384,41 @@ def outbound_hook(server: str, guard: dict, root: str):
     return check
 
 
+# Границы проекта мало: секреты лежат внутри него. Модель, прочитавшая файл с токенами,
+# может вписать их в артефакт — а артефакт уходит в Confluence и в git. Закрываем по имени,
+# а не по расширению. Список имён один на движок (`request_context.SECRET_NAME`): своя
+# копия разошлась с ним — в ней не было ни mcp.json, ни ключей `*.pem`.
+HIDDEN = (".git", ".ssh", ".aws", ".venv", "node_modules")
+
+
+def resolve_project_path(root: str, rel: str) -> str:
+    """Настоящий путь файла или папки внутри проекта, иначе ValueError с причиной.
+
+    Граница считается по `realpath`, а не по строке пути: git хранит символические ссылки, и
+    `Templates/notes.md -> ~/.ssh/id_rsa` по строке лежит внутри проекта, а открывается за
+    его пределами. Секреты и служебные папки сверяются дважды — по имени самой ссылки и по
+    имени цели: ссылка с обычным именем на `.env` не должна пройти, как и обычный файл по
+    ссылке `.env`. Возвращается путь цели — читает модель именно его.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from request_context import SECRET_NAME
+    base = os.path.abspath(root)
+    real_base = os.path.realpath(root)
+    joined = os.path.join(base, rel)
+    link = os.path.abspath(joined)
+    target = os.path.realpath(joined)
+    if not (link == base or link.startswith(base + os.sep)) \
+            or not (target == real_base or target.startswith(real_base + os.sep)):
+        raise ValueError("путь вне проекта")
+    for shown, start in ((link, base), (target, real_base)):
+        parts = [p for p in os.path.relpath(shown, start).split(os.sep) if p not in ("", ".")]
+        if parts and SECRET_NAME.match(parts[-1]):
+            raise ValueError("файл с доступами читать нельзя")
+        if any(p in HIDDEN for p in parts):
+            raise ValueError("служебная папка: читать нечего")
+    return target
+
+
 def register_tools(agent, allowed: list) -> None:
     """Инструменты модели — все на чтение и все внутри проекта.
 
@@ -398,25 +433,8 @@ def register_tools(agent, allowed: list) -> None:
 
     root = os.path.abspath(allowed[0]) if allowed and isinstance(allowed[0], str) else "."
 
-    # Границы проекта мало: секреты лежат внутри него. Модель, прочитавшая
-    # `.env.aurora.local`, может вписать токен в артефакт — а артефакт уходит в
-    # Confluence и в git. Закрываем по имени, а не по расширению: `.env.aurora.local`
-    # и `.env` — разные файлы с одинаковой ценой ошибки.
-    SECRET = (".env", ".env.aurora.local", ".env.local", "id_rsa", ".netrc",
-              "credentials", ".pypirc", ".npmrc")
-    HIDDEN = (".git", ".ssh", ".aws", ".venv", "node_modules")
-
     def inside(rel: str) -> str:
-        path = os.path.abspath(os.path.join(root, rel))
-        if not (path == root or path.startswith(root + os.sep)):
-            raise ValueError("путь вне проекта")
-        parts = os.path.relpath(path, root).split(os.sep)
-        base = parts[-1]
-        if base in SECRET or base.startswith(".env"):
-            raise ValueError("файл с доступами читать нельзя")
-        if any(p in HIDDEN for p in parts):
-            raise ValueError("служебная папка: читать нечего")
-        return path
+        return resolve_project_path(root, rel)
 
     @agent.tool_plain
     def read_file(path: str) -> str:
@@ -431,7 +449,14 @@ def register_tools(agent, allowed: list) -> None:
     def list_dir(path: str = ".") -> str:
         """Что лежит в папке проекта — например, какие артефакты уже созданы."""
         try:
-            return "\n".join(sorted(os.listdir(inside(path)))[:200])
+            shown = []
+            for name in sorted(os.listdir(inside(path))):
+                try:
+                    inside(os.path.join(path, name))
+                except ValueError:
+                    continue       # ссылка наружу, секрет, служебное: даже имени не показываем
+                shown.append(name)
+            return "\n".join(shown[:200])
         except (OSError, ValueError) as e:
             return f"не прочитана: {e}"
 

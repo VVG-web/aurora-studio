@@ -43,7 +43,7 @@ TEXT_NAMES = {"dockerfile", "makefile", "readme", "license", "changelog", "procf
 NEVER_DIRS = {".git", "node_modules", "local", ".venv", "venv", "__pycache__", ".sisyphus",
               "runs", "state"}
 SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|ed25519|ecdsa)\w*|"
-                         r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|credentials(\.\w+)?)$", re.I)
+                         r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.\w+)?)$", re.I)
 
 SKILL_ALIASES = {"grill-me": "aurora-grill", "grilling": "aurora-grill"}
 MENTION_SKILL = re.compile(r"(?<![\w/.:\-])/([A-Za-z][\w.\-]{0,63})\b")

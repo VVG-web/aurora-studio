@@ -513,8 +513,8 @@
         }
       ],
       "tools": {
-        "ru": "у планировщика: read_file, list_dir, kb_search, kb_context, artifact_spec и MCP запроса; сторож исходящего пропускает наружу только слова задания и пака",
-        "en": "the planner has read_file, list_dir, kb_search, kb_context, artifact_spec and the request's MCP; the outgoing guard lets out only words of the task and the pack"
+        "ru": "у планировщика: read_file и list_dir (только внутри проекта, ссылки наружу и файлы с доступами закрыты), kb_search, kb_context, artifact_spec и MCP запроса; сторож исходящего пропускает наружу только слова задания и пака",
+        "en": "the planner has read_file and list_dir (inside the project only; links out of it and credential files are refused), kb_search, kb_context, artifact_spec and the request's MCP; the outgoing guard lets out only words of the task and the pack"
       },
       "engine": "pydantic_ai"
     },
@@ -605,8 +605,8 @@
         }
       ],
       "tools": {
-        "ru": "read_file, list_dir, kb_search, kb_context, artifact_spec, save_output и MCP бота (сервер aurora — ревью, Jira, Confluence, память, замок, время); не больше 40 вызовов",
-        "en": "read_file, list_dir, kb_search, kb_context, artifact_spec, save_output and the bot's MCP (the aurora server — review, Jira, Confluence, memory, lock, time); at most 40 calls"
+        "ru": "read_file и list_dir (только внутри проекта, ссылки наружу и файлы с доступами закрыты), kb_search, kb_context, artifact_spec, save_output и MCP бота (сервер aurora — ревью, Jira, Confluence, память, замок, время); не больше 40 вызовов",
+        "en": "read_file and list_dir (inside the project only; links out of it and credential files are refused), kb_search, kb_context, artifact_spec, save_output and the bot's MCP (the aurora server — review, Jira, Confluence, memory, lock, time); at most 40 calls"
       },
       "engine": "pydantic_ai",
       "after": {

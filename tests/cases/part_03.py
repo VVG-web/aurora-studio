@@ -974,7 +974,8 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
     # и в git. Найдено на живом коде уже после того, как инструменты были написаны.
     assert 'raise ValueError("файл с доступами читать нельзя")' in ad, \
         "модель может прочитать токены проекта и вписать их в документ"
-    assert 'SECRET = (' in ad and '".env"' in ad, "список файлов с доступами не объявлен"
+    assert "from request_context import SECRET_NAME" in ad and "SECRET = (" not in ad, \
+        "список файлов с доступами в адаптере снова своя копия: разойдётся с request_context"
     assert '"служебная папка: читать нечего"' in ad, \
         "модель ходит в .git и .ssh — там нет знания, но есть чем навредить"
 
@@ -995,6 +996,83 @@ def test_the_agent_can_hold_a_conversation_and_use_tools(tmp: Path):
     # и он не затирает чужой grill-me в общем каталоге
     assert not (KIT / "skills/grill-me").exists(), \
         "навык назван так же, как чужой в ~/.claude/skills — установка затрёт настроенное"
+
+
+@test
+def test_agent_file_tools_follow_links_before_trusting_the_path(tmp: Path):
+    """Инструменты чтения модели проверяют настоящий путь, а не строку (BL-NEW-01).
+
+    git хранит символические ссылки: `Templates/notes.md -> ~/.ssh/id_rsa` по строке пути
+    внутри проекта, а `open()` читает файл за его пределами. Ссылка с обычным именем на
+    секрет проекта и секретное имя без ссылки — тоже отказ, по одному списку имён с
+    `request_context`. Ссылки создаются только во временном каталоге.
+    """
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "scripts" / "agents"))
+    import importlib
+    AD = importlib.import_module("pydantic_ai_adapter")
+    root = tmp / "проект"
+    outside = tmp / "снаружи"
+    (root / "Templates").mkdir(parents=True)
+    outside.mkdir()
+    (root / "Templates" / "обычный.md").write_text("шаблон\n", encoding="utf-8")
+    (outside / "id_rsa").write_text("PRIVATE KEY\n", encoding="utf-8")
+    (outside / "заметка.md").write_text("чужое\n", encoding="utf-8")
+    (root / ".env.aurora.local").write_text("TOKEN=x\n", encoding="utf-8")
+    (root / "mcp.json").write_text("{}\n", encoding="utf-8")
+    (root / "server.pem").write_text("pem\n", encoding="utf-8")
+    (root / ".git-credentials").write_text("https://u:p@h\n", encoding="utf-8")
+    (root / ".git").mkdir()
+    (root / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    try:
+        os.symlink(outside / "id_rsa", root / "Templates" / "notes.md")
+        os.symlink(outside / "заметка.md", root / "Templates" / "безобидно.md")
+        os.symlink(outside, root / "Templates" / "папка")
+        os.symlink(root / ".env.aurora.local", root / "Templates" / "обычное-имя.md")
+        os.symlink(root / ".git", root / "Templates" / "гит")
+        os.symlink(root / "Templates" / "обычный.md", root / "Templates" / "id_ed25519")
+    except (OSError, NotImplementedError):
+        return      # без прав на ссылки (Windows) проверять нечего
+
+    def refused(rel: str) -> str:
+        try:
+            AD.resolve_project_path(str(root), rel)
+        except ValueError as e:
+            return str(e)
+        return ""
+
+    ok = AD.resolve_project_path(str(root), "Templates/обычный.md")
+    assert Path(ok).read_text(encoding="utf-8") == "шаблон\n", "обычный файл проекта не читается"
+    assert AD.resolve_project_path(str(root), ".") == os.path.realpath(root)
+    # ссылки наружу — файл и папка; чужая заметка с обычным именем тоже снаружи
+    for rel in ("Templates/notes.md", "Templates/безобидно.md", "Templates/папка/заметка.md",
+                "Templates/папка", "../снаружи/заметка.md"):
+        assert refused(rel) == "путь вне проекта", f"{rel}: выход из проекта по ссылке не закрыт"
+    # секретное имя цели при обычном имени ссылки, и наоборот: обычная цель по секретной ссылке
+    assert "доступами" in refused("Templates/обычное-имя.md"), "ссылка на файл с токенами прошла"
+    assert "доступами" in refused("Templates/id_ed25519"), "ссылка с именем ключа прошла"
+    assert "служебная" in refused("Templates/гит/config"), "ссылка в .git прошла"
+    # список секретных имён — общий с request_context, а не уже его
+    for rel in (".env.aurora.local", "mcp.json", "server.pem", ".git-credentials"):
+        assert "доступами" in refused(rel), f"{rel}: секретное имя не закрыто"
+    assert "служебная" in refused(".git/config")
+
+    # инструменты целиком: read_file и list_dir на зарегистрированном агенте
+    tools = {}
+
+    class FakeAgent:
+        def tool_plain(self, fn):
+            tools[fn.__name__] = fn
+            return fn
+
+    AD.register_tools(FakeAgent(), [str(root)])
+    assert tools["read_file"]("Templates/notes.md").startswith("не прочитан"), \
+        "read_file отдал файл за пределами проекта"
+    assert "PRIVATE" not in tools["read_file"]("Templates/notes.md")
+    assert tools["read_file"]("Templates/обычный.md") == "шаблон\n"
+    listing = tools["list_dir"]("Templates").split("\n")
+    assert listing == ["обычный.md"], f"list_dir показал цели за пределами проекта: {listing}"
+    assert ".env.aurora.local" not in tools["list_dir"](".").split("\n")
 
 
 @test

@@ -216,7 +216,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Critic (critic) | Checking against the form and the plan. | `PROMPT_MAKE_CRITIC` (agent_runner.py) |
 | Momus (qa) | Momus: the document's claims rest on the pack. | `PROMPT_MOMUS` (agent_runner.py) |
 
-- **Tools:** the planner has read_file, list_dir, kb_search, kb_context, artifact_spec and the request's MCP; the outgoing guard lets out only words of the task and the pack.
+- **Tools:** the planner has read_file and list_dir (inside the project only; links out of it and credential files are refused), kb_search, kb_context, artifact_spec and the request's MCP; the outgoing guard lets out only words of the task and the pack.
 - **Path:** Pydantic AI.
 
 <a id="review"></a>
@@ -247,7 +247,7 @@ Where Aurora calls models: when, which roles by step, which prompt, which tools 
 | Planner (planner) — without reasoning | Before work: concepts, terms and codes from the task and the links — for the knowledge pack (project context). Without reasoning. | `PROMPT` (bot_context.py) |
 | Writer (worker) — chosen, with tools | The bot's prompt with the knowledge pack. A role or exactly a model — in the bot's "Model" card. | `bots/*.md` |
 
-- **Tools:** read_file, list_dir, kb_search, kb_context, artifact_spec, save_output and the bot's MCP (the aurora server — review, Jira, Confluence, memory, lock, time); at most 40 calls.
+- **Tools:** read_file and list_dir (inside the project only; links out of it and credential files are refused), kb_search, kb_context, artifact_spec, save_output and the bot's MCP (the aurora server — review, Jira, Confluence, memory, lock, time); at most 40 calls.
 - **Path:** Pydantic AI.
 - **Then:** A run without tool calls while it has its MCP is a failure with the reason.
 
