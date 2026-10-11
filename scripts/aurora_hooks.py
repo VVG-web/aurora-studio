@@ -126,10 +126,17 @@ while read -r local_ref local_sha remote_ref _r; do
   # `HEAD^`, `@~2`: предок текущей ветки — её же история) разворачиваем в текущую ветку; голый sha и отсоединённый HEAD — в ветки, которые на этот коммит указывают.
   # Для явного `refs/...` так не делаем: имя названо, а другая ветка на том же коммите
   # (`development` сразу после слияния равна `master`) — не повод останавливать публикацию.
-  # Назван только полный `refs/...` БЕЗ суффикса: `refs/heads/development~1`, `refs/heads/development^0`,
+  # Назван только полный `refs/heads/...` БЕЗ суффикса: `refs/heads/development~1`, `refs/heads/development^0`,
   # `refs/heads/main@{{1}}` git тоже отдаёт как набрано, и для них нужен разбор суффикса, как у короткого имени.
+  # Голые `refs/tags/v1` и `refs/remotes/origin/development` (`git push origin v1:foo`) — не ветки: кончик ветки кухни
+  # уехал бы под другим именем, поэтому их проверка идёт по коммиту, как у форм с суффиксом. Исключение — тег,
+  # публикуемый как тег (`v1:refs/tags/v1`, обычный выпуск): он не делает ветку кухни веткой на публичном remote.
   kind=other
-  case "$local_ref" in refs/*[~^]*|refs/*@[{{]*) ;; refs/*) kind=named ;; esac
+  case "$local_ref" in
+    refs/*[~^]*|refs/*@[{{]*) ;;
+    refs/heads/*) kind=named ;;
+    refs/tags/*) case "$remote_ref" in refs/heads/*) ;; *) kind=named ;; esac ;;
+  esac
   case "$kind" in
     named) ;;
     *)

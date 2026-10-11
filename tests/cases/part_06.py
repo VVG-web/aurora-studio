@@ -2429,9 +2429,21 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
         cp = push(alias, lsha=sha)
         assert cp.returncode == 1 and "development" in cp.stderr, \
             f"{alias}:foo (тег/remote-tracking на кончике development) уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    # Голые теги и remote-tracking без суффикса git отдаёт хуку полным именем (`refs/tags/v1`,
+    # `refs/remotes/priv/development`): они тоже не ветки, и под другим именем кончик development не уходит.
+    for alias in ("refs/tags/v1", "refs/remotes/priv/development"):
+        cp = push(alias, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"{alias}:foo (голый тег/remote-tracking на кончике development) уехал наружу: rc={cp.returncode}\n{cp.stderr}"
+    # тег, публикуемый как тег (обычный выпуск), ветку на публичном remote не создаёт — не останавливается
+    for alias in ("refs/tags/v1",):
+        cp = push(alias, remote=alias, lsha=sha)
+        assert cp.returncode == 0, f"выпуск тега {alias} на кончике development остановлен:\n{cp.stderr}"
     g("tag", "v3", other)
     cp = push("v3^0", lsha=other)
     assert cp.returncode == 0, f"v3^0 (тег на коммите обычной ветки) остановлен:\n{cp.stderr}"
+    cp = push("refs/tags/v3", lsha=other)
+    assert cp.returncode == 0, f"refs/tags/v3:foo (тег на коммите обычной ветки) остановлен:\n{cp.stderr}"
     # Полное имя с суффиксом: git отдаёт как набрано, суффикс разбирается как у короткого имени
     for alias in ("refs/heads/development~1", "refs/heads/development^", "refs/heads/development^0",
                   "refs/heads/development~0", "refs/heads/development^{commit}", "refs/heads/development@{0}"):
@@ -2478,11 +2490,19 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
     rg("update-ref", "refs/remotes/priv/development", rg("rev-parse", "development").stdout.strip())
     for alias in ("v1^0", "v1~0", "v1^{commit}", "v2^0", "priv/development^0", "priv/development~0",
                   "refs/heads/development~0", "refs/heads/development^0", "refs/heads/development^{commit}",
-                  "refs/heads/development@{0}"):
+                  "refs/heads/development@{0}",
+                  # голые теги и remote-tracking: git отдаёт хуку refs/tags/v1, refs/remotes/priv/development
+                  # (аннотированный тег в refs/heads/* remote всё равно отвергает: это не коммит)
+                  "v1", "refs/tags/v1", "priv/development", "refs/remotes/priv/development"):
         cp = rg("push", "origin", alias + ":refs/heads/foo", check=False)
         assert cp.returncode != 0 and "development" in cp.stderr, \
             f"git push {alias}:foo (кончик development) ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
     assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "в публичный remote что-то уехало"
+    # обычный выпуск: тег уходит как тег и не останавливается, даже стоя на кончике development
+    cp = rg("push", "origin", "refs/tags/v1", check=False)
+    assert cp.returncode == 0, f"выпуск тега v1 на кончике development остановлен:\n{cp.stderr}"
+    assert "refs/tags/v1" in rg("ls-remote", "--tags", "origin").stdout, "тег v1 не доехал"
+    assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "тег создал ветку на публичном remote"
     cp = rg("push", "origin", "main:refs/heads/foo", check=False)
     assert cp.returncode == 0, f"обычная ветка main остановлена:\n{cp.stderr}"
 
