@@ -130,8 +130,9 @@ def main() -> int:
     live: dict = {}
     for path in paths:
         live.setdefault(os.path.splitext(os.path.basename(path))[0], []).append(path)
-    if any(n not in live for n in human):
-        was_names = name_lineage(os.path.join(root, KB), live)
+    missing = [n for n in human if n not in live]
+    if missing:
+        was_names = name_lineage(os.path.join(root, KB), live, missing)
         for n, k in list(human.items()):
             to = was_names.get(n) if n not in live else None
             if to:

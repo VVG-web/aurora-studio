@@ -144,8 +144,9 @@ def test_split_keeps_human_word_and_history_and_sanitises_titles(tmp: Path):
         ('Часть "первая"\nstatus: verified', "первый кусок"),
         ("Вторая", "второй кусок"),
         ("Занято", "кусок под занятым именем"),
+        ("Вторая", "второй кусок с тем же названием"),
     ])
-    assert len(made) == 2, made
+    assert len(made) == 4, made
     kept = path.read_text(encoding="utf-8")
     assert kept.count(CORR) == 1 and "Слово человека." in kept and FOOT in kept, kept
     assert "corrected_by" in kept and "status: index" in kept, kept
@@ -153,8 +154,21 @@ def test_split_keeps_human_word_and_history_and_sanitises_titles(tmp: Path):
     first = root / "AuroraKnowledgeDB/Concepts" / (made[0][0] + ".md")
     fm = com.frontmatter(first.read_text(encoding="utf-8"))
     assert fm.get("status") == "draft", f"название вписало поле в шапку: {fm}"
-    assert not (root / "AuroraKnowledgeDB/Concepts/Занято.md").exists(), \
-        "имя, занятое в другом разделе, повторено"
+    kb = root / "AuroraKnowledgeDB"
+    assert not (kb / "Concepts/Занято.md").exists(), "имя, занятое в другом разделе, повторено"
+    # текст куска не пропал: занятое имя получило суффикс, а карта называет часть
+    stems = {m[0] for m in made}
+    assert "Занято-Большая" in stems and "Вторая-Большая" in stems, stems
+    assert "кусок под занятым именем" in (kb / "Concepts/Занято-Большая.md").read_text(
+        encoding="utf-8")
+    assert "второй кусок с тем же названием" in (kb / "Concepts/Вторая-Большая.md").read_text(
+        encoding="utf-8")
+    assert "[[Занято-Большая|" in kept and "[[Вторая-Большая|" in kept, kept
+    assert "кусок под занятым именем" not in (kb / "Processes/Занято.md").read_text(
+        encoding="utf-8"), "чужая карточка тронута"
+    # повторный прогон ничего не плодит: части уже вынесены этим родителем
+    assert AR.apply_split_parts(str(path), [("Вторая", "второй кусок"),
+                                            ("Занято", "кусок под занятым именем")]) == []
 
 
 @test
@@ -174,3 +188,150 @@ def test_split_by_headings_keeps_human_word_out_of_parts(tmp: Path):
     assert kept.count(CORR) == 1 and "слово человека." in kept and FOOT in kept, kept[-600:]
     for part in concepts.glob("Часть-*.md"):
         assert "слово человека" not in part.read_text(encoding="utf-8"), part.name
+
+
+@test
+def test_split_by_headings_keeps_text_under_a_taken_name(tmp: Path):
+    """`kb_fix --split`: заголовок, чьё имя занято в другом разделе, и повтор заголовка в том же
+    документе не теряют текст куска: имя получает суффикс, карта называет часть."""
+    root = make_project(tmp)
+    big = "\n\n".join(f"## {t}\n\n" + f"текст {t}. " * 80
+                      for t in ("Часть 1", "Описание", "Часть 3", "Описание"))
+    card(root, "Concepts/Большая.md", big, type="concept",
+         source='"Sources/Confluence/Документ.md"')
+    card(root, "Processes/Описание.md", "Отдельная карточка, не часть.", status="draft")
+    run("kb_fix.py", "--split", "Большая", "--apply", "--allow-dirty", cwd=root, expect_rc=0)
+    kb = root / "AuroraKnowledgeDB"
+    everything = "".join(p.read_text(encoding="utf-8") for p in kb.rglob("*.md"))
+    assert everything.count("текст Описание.") == 160, "текст куска «Описание» потерян"
+    assert (kb / "Concepts/Описание-Большая.md").is_file(), \
+        sorted(p.name for p in (kb / "Concepts").glob("*.md"))
+    assert (kb / "Concepts/Описание-2.md").is_file()
+    assert "Отдельная карточка" in (kb / "Processes/Описание.md").read_text(encoding="utf-8")
+    kept = (kb / "Concepts/Большая.md").read_text(encoding="utf-8")
+    assert "[[Описание-Большая|" in kept and "[[Описание-2|" in kept, kept
+
+
+@test
+def test_name_lineage_reads_dotted_successors_and_suffixed_archive_names(tmp: Path):
+    """Преемник с точкой в имени (`US-3.6.14`) читается целиком, а не как `US-3.6` с
+    «расширением»: слово человека уходит победителю, а не живой карточке с усечённым именем.
+    Архивная копия с суффиксом времени находится по прежнему имени; имя, набранное иначе
+    (точка вместо дефиса), — по запасному ходу без разделителей."""
+    root = make_project(tmp)
+    card(root, "Concepts/US-3.6.md", "Усечённое имя — другая карточка.", status="draft")
+    card(root, "Concepts/US-3.6.14.md", "Победитель.", status="draft")
+    card(root, "_archive/US-3.6.15.md", "Слита.", status="deprecated",
+         superseded_by='"[[US-3.6.14]]"')
+    card(root, "Concepts/Итог.md", "Итог.", status="draft")
+    card(root, "_archive/Потеряна-20261011-2308Z.md", "Слита дважды.", status="deprecated",
+         superseded_by='"[[Итог|подпись]]"')
+    card(root, "Concepts/ALG-014-Подготовка.md", "Подготовка.", status="draft")
+    _correction(root, "а-точка", "US-3.6.15", "Слово по преемнику с точкой.")
+    _correction(root, "б-суффикс", "Потеряна", "Слово по архивной с суффиксом.")
+    _correction(root, "в-набрано-иначе", "ALG-014. Подготовка", "Слово по имени, набранному иначе.")
+    cp = run("kb_corrections.py", "--apply", cwd=root, expect_rc=0)
+    kb = root / "AuroraKnowledgeDB"
+    read = lambda n: (kb / f"Concepts/{n}.md").read_text(encoding="utf-8")
+    assert "Слово по преемнику с точкой" in read("US-3.6.14"), cp.stdout
+    assert "Слово по преемнику" not in read("US-3.6"), "слово уехало в карточку с усечённым именем"
+    assert "Слово по архивной с суффиксом" in read("Итог"), cp.stdout
+    assert "Слово по имени, набранному иначе" in read("ALG-014-Подготовка"), cp.stdout
+    assert "Пропущено" not in cp.stdout, cp.stdout
+
+
+@test
+def test_name_lineage_is_only_computed_when_a_correction_names_a_missing_card(tmp: Path):
+    """Панельный `--check` не читает шапки всех карточек, пока исправления называют живые."""
+    root = make_project(tmp)
+    card(root, "Concepts/Живая.md", "Тезис.", status="draft")
+    sys.path.insert(0, str(SCRIPTS))
+    KC = importlib.import_module("kb_corrections")
+    calls = []
+    real = KC.name_lineage
+    KC.name_lineage = lambda *a, **k: calls.append(a) or {}
+    old = Path.cwd()
+    try:
+        import os
+        os.chdir(root)
+        live = KC.cards()
+        assert KC.named(live, ["Живая"]) == live and not calls, "лишний обход шапок"
+        KC.named(live, ["Нет-такой"])
+        assert len(calls) == 1, calls
+    finally:
+        KC.name_lineage = real
+        os.chdir(old)
+
+
+@test
+def test_theme_with_human_word_is_not_merged_into_renamed_theme(tmp: Path):
+    """`--gone-sources`: старая тема со словом человека не сводится с темой новой папки (тема
+    остаётся, синоним-двойник и перенаправленные ссылки не заводятся); без слова — сводится."""
+    root = make_project(tmp, git=True)
+    new_dir = root / "Sources/Confluence/Алгоритмы/ALG_Налоговые_декларации"
+    new_dir.mkdir(parents=True)
+    (new_dir / "Страница.md").write_text("---\ntitle: x\n---\n\nтекст\n", encoding="utf-8")
+    src = lambda p: f'\n  - "{p}"'
+    card(root, "Concepts/ALG-Налоговые-декларации.md", "Тема папки.", built="machine",
+         tags="[тема]", sources=src("Sources/Confluence/Алгоритмы/ALG_Налоговые_декларации"))
+    card(root, "Concepts/Налоговые-декларации.md", "Тема папки.", built="machine",
+         tags="[тема]", corrected_by='"х"',
+         sources=src("Sources/Confluence/Алгоритмы/Налоговые_декларации"))
+    card(root, "Concepts/Читатель.md", "См. [[Налоговые-декларации]].", built="machine")
+    run("kb_fix.py", "--gone-sources", "--apply", "--allow-dirty", cwd=root)
+    kb = root / "AuroraKnowledgeDB"
+    assert (kb / "Concepts/Налоговые-декларации.md").is_file(), "тема со словом человека ушла"
+    live = (kb / "Concepts/ALG-Налоговые-декларации.md").read_text(encoding="utf-8")
+    assert 'aliases' not in live.split("---")[1], "в живую тему записан синоним защищённой карточки"
+    reader = (kb / "Concepts/Читатель.md").read_text(encoding="utf-8")
+    assert "[[Налоговые-декларации]]" in reader and "[[ALG-Налоговые" not in reader, reader
+
+
+@test
+def test_copies_planner_keeps_a_card_with_human_word(tmp: Path):
+    """`--copies`: карточка, собранная только из машинной расшифровки, но со словом человека, в
+    архив не уходит; такая же без слова — уходит."""
+    root = make_project(tmp)
+    d = root / "Raw/customer/FAQ"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "Памятка_для_перевозчиков.md").write_text(
+        "# Памятка\n\n" + "Перевозчик предъявляет QR-код на границе. " * 20, encoding="utf-8")
+    (d / "Памятка для перевозчиков.md").write_text(
+        '---\ntitle: "Памятка"\nconverted_from: "Raw/customer/FAQ/Памятка для перевозчиков.pdf"'
+        '\n---\n\n' + "Перевозчик предъявляет код. " * 20, encoding="utf-8")
+    srcs = '\n  - "Raw/customer/FAQ/Памятка для перевозчиков.md"'
+    card(root, "Concepts/Со-словом.md", "Знание.", status="knowledge", sources=srcs,
+         corrected_by='"х"')
+    card(root, "Concepts/Без-слова.md", "Знание.", status="knowledge", sources=srcs)
+    run("kb_fix.py", "--copies", "--apply", "--allow-dirty", cwd=root)
+    kb = root / "AuroraKnowledgeDB"
+    assert (kb / "Concepts/Со-словом.md").is_file(), "слово человека не удержало карточку"
+    assert (kb / "_archive/Без-слова.md").is_file(), "защита держит карточки без слова человека"
+
+
+@test
+def test_protection_says_so_when_corrections_cannot_be_read(tmp: Path):
+    """Не прочитался `Raw/corrections` — защита по файлам не работает, и отчёт это говорит;
+    раздел и `corrected_by` в самой карточке по-прежнему держат её."""
+    import os
+    root = make_project(tmp)
+    sys.path.insert(0, str(SCRIPTS))
+    KF = importlib.import_module("kb_fix")
+    KC = importlib.import_module("kb_corrections")
+    com = _common()
+    real = KC.corrections
+    def broken():
+        raise PermissionError("нет доступа")
+    KC.corrections = broken
+    old = Path.cwd()
+    try:
+        os.chdir(root)
+        plan = KF.Plan()
+        held = KF.Card("x.md", "---\ntitle: x\ncorrected_by: \"a\"\n---\n\nтекст")
+        free = KF.Card("y.md", "---\ntitle: y\n---\n\nтекст")
+        assert plan.protects(held, note=False) and not plan.protects(free, note=False)
+        assert any("Raw/corrections не прочитан" in n for n in plan.notes), plan.notes
+        assert com.corrections_of("") == ""
+    finally:
+        KC.corrections = real
+        os.chdir(old)

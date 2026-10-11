@@ -43,7 +43,7 @@ import sys
 
 from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
                            card_title_safe, corrections_of, cut_corrections, put_corrections,
-                           split_tail, stem_taken,
+                           split_tail, part_stem, ARCHIVE_SUFFIX,
                            is_meeting,
                            sources_block,
                            RETIRED_STATUS, STUB_MARK,
@@ -587,8 +587,10 @@ class Plan:
                 import kb_corrections as KC
                 self._word_names = {o for x in KC.corrections() if x["status"] == "active"
                                     for o in x["owners"]}
-            except Exception:            # исправлений нет или папка не читается — защиты нет
+            except (OSError, ValueError):    # папка не читается — защиты по файлам нет, и это видно
                 self._word_names = set()
+                self.notes.append("  Raw/corrections не прочитан: защита по исправлениям "
+                                  "в файлах не работает (раздел и corrected_by учтены)")
         held = (bool(corrections_of(c.text)) or bool((c.fm.get("corrected_by") or "").strip())
                 or bool(self._word_names & ({c.stem} | set(c.aliases))))
         if held and note:
@@ -940,12 +942,18 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
                 f"(порог {min_chars} симв.) — резать нечего", False)
 
     for title, chunk in parts:
-        name = normalize_title(title)[:90]
-        path = os.path.join(root, section, name + ".md")
-        # Имя карточки уникально по всей базе, а не только в своём разделе.
-        if (path in cards or os.path.exists(path) or stem_taken(name, root)
-                or any(name == n for n, _t in made)):
+        # Имя карточки уникально по всей базе, а не только в своём разделе: занятое имя не
+        # отбрасывает кусок (его текст пропал бы из базы), а получает суффикс. Пусто — часть
+        # уже вынесена этим родителем.
+        base = normalize_title(title)[:90]
+        name = part_stem(base, root, hit.stem, [n for n, _t in made])
+        if not name:
             continue
+        path = os.path.join(root, section, name + ".md")
+        if path in cards:
+            continue
+        if name != base:
+            title = f"{title} ({name[len(base) + 1:]})"
         card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
                 f'type: {frontmatter(text).get("type") or "concept"}\n'
                 + (f'source: {src}\n' if src else "")
@@ -1904,7 +1912,8 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
                 other = (x + "/index.md") if os.path.isfile(x + "/index.md") else code_twin(x)
                 if not other and theme(c) and not x.endswith(".md"):
                     other = renamed_dir(x)
-                    if other and themes.get(other, path) != path:
+                    if (other and themes.get(other, path) != path
+                            and not plan.protects(c)):
                         merge_to = themes[other]
                         notes.append(f"папка переименована: `{x}` → `{other}`; тема для неё "
                                      f"уже есть — [[{cards[merge_to].stem}]]")
@@ -2892,9 +2901,9 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
     return 0
 
 
-# Метка архивной копии: к занятому имени в `_archive` дописывается дата-время или номер
-# (`free_archive_name`, метка UTC с «Z»), и имя донора надо искать и без неё.
-ARCHIVE_SUFFIX = re.compile(r"-(?:\d{8}-\d{4}(?:\d{2})?Z|\d{1,2})$")
+# Метка архивной копии (`ARCHIVE_SUFFIX`, aurora_common): к занятому имени в `_archive`
+# дописывается дата-время или номер (`free_archive_name`, метка UTC с «Z»), и имя донора
+# надо искать и без неё.
 
 
 def audit_merges(cards: dict, base: str = ".", unchecked: "list | None" = None) -> tuple:

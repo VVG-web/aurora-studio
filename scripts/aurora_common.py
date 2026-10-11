@@ -2575,6 +2575,16 @@ def card_title_safe(name: str) -> str:
     return HEAD_BREAKS_RE.sub(" ", str(name or "")).replace('"', "'").replace("\\", "/").strip()
 
 
+def stem_paths(stem: str, kb: str = "AuroraKnowledgeDB") -> list:
+    """Пути живых карточек с таким именем — в любом разделе, без учёта регистра."""
+    want = f"{stem}.md".lower()
+    out = []
+    for dirpath, dirs, files in safe_walk(kb):
+        dirs[:] = [d for d in dirs if d != "_archive"]
+        out += [os.path.join(dirpath, f) for f in files if f.lower() == want]
+    return out
+
+
 def stem_taken(stem: str, kb: str = "AuroraKnowledgeDB") -> bool:
     """Есть ли в базе живая карточка с таким именем — в любом разделе.
 
@@ -2582,22 +2592,61 @@ def stem_taken(stem: str, kb: str = "AuroraKnowledgeDB") -> bool:
     разделов, и вторая карточка с тем же именем делает её неоднозначной. Архив не считается:
     слитая карточка там живёт под прежним именем.
     """
-    want = f"{stem}.md".lower()
-    for dirpath, dirs, files in safe_walk(kb):
-        dirs[:] = [d for d in dirs if d != "_archive"]
-        if any(f.lower() == want for f in files):
-            return True
-    return False
+    return bool(stem_paths(stem, kb))
 
 
-def name_lineage(kb: str, live: dict) -> dict:
+def part_stem(base: str, kb: str, parent: str, taken=()) -> str:
+    """Свободное имя для части разрезанной карточки `parent`. → имя; пусто — часть уже вынесена.
+
+    Имя уникально по всей базе, но занятое имя не повод выбросить кусок: текст части тогда
+    пропал бы из базы, а карта родителя о нём промолчала бы. Берётся первое свободное из
+    `base`, `base-<родитель>`, `base-2`, `base-3`…; пусто — только когда карточка с таким
+    именем уже часть этого родителя (`part_of`): её вынес прошлый прогон. Имена, занятые в
+    этом же прогоне (`taken`), считаются занятыми.
+    """
+    taken = set(taken)
+    for i in range(0, 60):
+        tail = "" if i == 0 else f"-{parent}" if i == 1 else f"-{i}"
+        cand = base[:max(1, 90 - len(tail))] + tail
+        if cand in taken:
+            continue
+        have = stem_paths(cand, kb)
+        if not have:
+            return cand
+        if any(leaf_name(((frontmatter(head_text(p)) or {}).get("part_of") or "")
+                          .strip().strip('"').strip("[]").split("|")[0]) == parent
+               for p in have):
+            return ""
+    return ""
+
+
+# Суффикс имени архивной карточки: время (`-20261011-2308Z`) или счётчик (`-2`), когда в
+# `_archive` уже лежит одноимённая. Прежнее имя карточки — то, что до суффикса.
+ARCHIVE_SUFFIX = re.compile(r"-(?:\d{8}-\d{4}(?:\d{2})?Z|\d{1,2})$")
+
+
+def superseded_target(fm: dict) -> str:
+    """Имя преемника из `superseded_by` без пути, подписи, якоря и ложного «расширения».
+
+    `as_list` отрезал бы после последней точки: преемник «US-3.6.14» читался бы «US-3.6» —
+    другой карточкой, и слово человека уходило бы не туда.
+    """
+    v = (fm.get("superseded_by") or "").strip()
+    m = re.search(r"\[\[([^\]]+)\]\]", v)
+    return leaf_name((m.group(1) if m else v.strip(" \"'[]").split(",")[0]).split("|")[0])
+
+
+def name_lineage(kb: str, live: dict, want=None) -> dict:
     """Прежние имена живых карточек: {имя → [пути живой карточки]}. Живые имена не входят.
 
     Слово человека (`Raw/corrections`, `corrects: "[[Имя]]"`) указывает карточку по имени, а
     имя меняется: ремонт снимает код документа (прежнее имя уходит в `aliases`), слияние и
     замена уносят карточку в `_archive` с `superseded_by`. Имя находится по синониму живой
-    карточки (если он один) и по цепочке `superseded_by` архивных карточек до живой. Не нашлось
-    или неоднозначно — имени здесь нет: угадывать, чьё это слово, нельзя.
+    карточки (если он один) и по цепочке `superseded_by` архивных карточек до живой (имя
+    архивной без суффикса времени и счётчика тоже). Для имён из `want` есть ещё запасной ход,
+    как у ссылок в `kb_fix`: сравнение без разделителей и гомоглифов (имя, которое ремонт
+    привёл к переносимому). Не нашлось или неоднозначно — имени здесь нет: угадывать, чьё это
+    слово, нельзя.
     """
     out: dict = {}
     claims: dict = {}
@@ -2611,14 +2660,20 @@ def name_lineage(kb: str, live: dict) -> dict:
         if len(who) == 1:
             out[a] = live[next(iter(who))]
     heirs: dict = {}
+    bare: dict = {}
     for dirpath, _dirs, files in safe_walk(os.path.join(kb, "_archive")):
         for f in sorted(files):
             if not f.endswith(".md") or f.startswith("_"):
                 continue
-            fm = frontmatter(head_text(os.path.join(dirpath, f))) or {}
-            to = as_list(fm.get("superseded_by"))
+            to = superseded_target(frontmatter(head_text(os.path.join(dirpath, f))) or {})
             if to:
-                heirs.setdefault(os.path.splitext(f)[0], to[0].split("|")[0].strip())
+                stem = f[:-3]
+                heirs.setdefault(stem, to)
+                if ARCHIVE_SUFFIX.sub("", stem) != stem:
+                    bare.setdefault(ARCHIVE_SUFFIX.sub("", stem), set()).add(to)
+    for b, tos in bare.items():
+        if b not in heirs and len(tos) == 1:
+            heirs[b] = next(iter(tos))
     for old, heir in heirs.items():
         if old in live or old in out:
             continue
@@ -2629,6 +2684,16 @@ def name_lineage(kb: str, live: dict) -> dict:
         target = live.get(cur) or out.get(cur)
         if target:
             out[old] = target
+    keys: dict = {}
+    for n in want or ():
+        if n in live or n in out:
+            continue
+        if not keys:
+            for stem in live:
+                keys.setdefault(fold_hard(stem), set()).add(stem)
+        hit = keys.get(fold_hard(n)) or keys.get(fold_hard(card_filename(n))) or set()
+        if len(hit) == 1:
+            out[n] = live[next(iter(hit))]
     return out
 
 _GLUED_QUOTES = re.compile(r"(?<=\S)[ \t]*(?=" + re.escape(QUOTES) + ")")

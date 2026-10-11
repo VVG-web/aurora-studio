@@ -6028,8 +6028,8 @@ def apply_split_parts(path: str, parts: list) -> list:
     приходят от планировщика: в шапку и заголовок они идут очищенными, а имя файла должно
     быть свободно во всей базе (имя карточки уникально глобально), а не только в папке.
     """
-    from aurora_common import (card_title_safe, frontmatter, set_field, split_frontmatter,
-                               split_tail, stem_taken)
+    from aurora_common import (card_title_safe, frontmatter, part_stem, set_field,
+                               split_frontmatter, split_tail)
     text = open(path, encoding="utf-8", errors="ignore").read()
     fm = frontmatter(text)
     head, rest = split_frontmatter(text)
@@ -6041,11 +6041,15 @@ def apply_split_parts(path: str, parts: list) -> list:
     made = []
     for i, (name, chunk) in enumerate(parts):
         name = card_title_safe(name)
-        safe = re.sub(r"[^\w\- ]+", "", name).strip().replace(" ", "-")[:90] or f"часть-{i+1}"
-        dest = os.path.join(folder, safe + ".md")
-        if os.path.exists(dest) or stem_taken(safe, kb) or any(m[0] == safe for m in made):
+        base = re.sub(r"[^\w\- ]+", "", name).strip().replace(" ", "-")[:90] or f"часть-{i+1}"
+        # Занятое имя не отбрасывает кусок (его текст пропал бы из базы), а получает суффикс;
+        # пусто — часть уже вынесена этим родителем (прошлый прогон).
+        safe = part_stem(base, kb, stem, [m[0] for m in made])
+        if not safe:
             continue
-        made.append((safe, name, dest, chunk))
+        if safe != base:
+            name = f"{name} ({safe[len(base) + 1:]})"
+        made.append((safe, name, os.path.join(folder, safe + ".md"), chunk))
     if len(made) < 2:
         return []
     for i, (safe, name, dest, chunk) in enumerate(made):
@@ -6061,7 +6065,8 @@ def apply_split_parts(path: str, parts: list) -> list:
     # Статус — служебный: знание теперь в частях, а это карта, и в паке ей не место.
     # Иначе одна и та же мысль попадёт в контекст дважды — списком и текстом.
     body = (f"\n\nКарточка была разрезана: тело выросло до размеров документа, а знание "
-            f"ищут атомарным. Границы предложил планировщик, текст перенесён дословно.\n\n"
+            f"ищут атомарным. Границы предложил планировщик; части — дословный текст источника (у карточки "
+            f"знания без блоков шаблона страницы: они остались в самом источнике).\n\n"
             + "\n".join(f"- [[{s}|{n}]]" for s, n, _d, _c in made) + "\n")
     _before, tail = split_tail(rest or "")
     if tail.strip():

@@ -65,14 +65,18 @@ def cards() -> dict:
     return out
 
 
-def named(live: dict) -> dict:
+def named(live: dict, want=()) -> dict:
     """Имена, под которыми карточку можно назвать в `corrects:`: живые и прежние.
 
     Прежнее имя — синоним живой карточки (ремонт снял код документа, прежнее имя ушло в
-    `aliases`) или имя карточки, замещённой через `superseded_by` (слияние, замена). Живое
-    имя всегда первее: оно не перекрывается ни синонимом, ни преемником.
+    `aliases`) или имя карточки, замещённой через `superseded_by` (слияние, замена), или имя,
+    которое ремонт привёл к переносимому. Живое имя всегда первее: оно не перекрывается ни
+    синонимом, ни преемником. Шапки читаются только если среди `want` есть не живое имя:
+    пока все исправления называют живые карточки, прогон (в том числе панельный `--check`)
+    ничего лишнего не читает.
     """
-    return {**name_lineage(KB, live), **live}
+    miss = [n for n in want if n and n not in live]
+    return {**name_lineage(KB, live, miss), **live} if miss else live
 
 
 def body_of(text: str) -> str:
@@ -172,7 +176,8 @@ def ambiguous(owner: str, known: dict) -> str:
 
 
 def cmd_new(owner: str, text: str) -> int:
-    known = named(cards())
+    live = cards()
+    known = named(live, [owner])
     if owner not in known:
         near = [c for c in known if owner.lower() in c.lower()][:5]
         print(f"kb_corrections: карточки «{owner}» в базе нет.", file=sys.stderr)
@@ -321,7 +326,7 @@ def main() -> int:
         print(f"kb_corrections: нет {KB}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     live = cards()
-    known = named(live)
+    known = named(live, [o for c in corrections() for o in c["owners"]])
 
     if a.new:
         return cmd_new(a.new, a.text)

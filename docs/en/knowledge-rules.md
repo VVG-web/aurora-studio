@@ -175,12 +175,14 @@ text stays verbatim.
 
 **The human's word survives changes to a card.** A correction (`Raw/corrections/`) names its card by name, and names
 change, so `kb:correct` and `kb:kind` look the card up by its live name, by a synonym (the former name after a
-document code was stripped) and along the `superseded_by` chain from `_archive` (merge, supersede); the report lists
+document code was stripped) and along the `superseded_by` chain from `_archive` (merge, supersede; the successor name is read whole, dots included), and a name typed differently (dot instead of hyphen,
+homoglyphs) by a separator-free comparison; the report lists
 whatever was found by a former name on its own line. An archived copy under the same name no longer makes the name
-ambiguous. A split (`agent:build`, `kb:fix --split`) does not carry "Исправления человеком" and "История изменений"
+ambiguous. A split (`agent:distill`, `kb:split`) does not carry "Исправления человеком" and "История изменений"
 into the parts: they stay with the document map below the list of parts, and part titles are sanitised before they are
-written into the header and checked for uniqueness across the whole base. A merge moves the donor's section into the
-survivor's section, not into "Слияние". The `kb:fix` planners that move cards to `_archive` leave alone a card that has
+written into the header; a part name must be free across the whole base: a taken name does not drop the chunk but
+gets a suffix (`-<map>`, `-2`…). A merge moves the donor's section into the
+survivor's section, not into "Слияние". The `kb:repair` planners that move cards to `_archive` leave alone a card that has
 a corrections section, a `corrected_by` field or an active correction in `Raw/corrections`.
 
 ## 6. Twins: a trusted one and a draft one
