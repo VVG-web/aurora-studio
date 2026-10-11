@@ -264,8 +264,8 @@ arguments, environment, tokens — exists only there. The panel accepts tokens b
 of the values of `env`, `headers`, `auth` and of a secret flag in `args` (`--token X`, `--api-key=X`,
 `Authorization: …`) it shows "••••••", and a mask that comes back means "keep as it was". It is simpler to keep
 secrets in `env` and `headers`: hiding in `args` goes by the flag name, and flags that decide what runs
-(`--password-command`, `credential.helper=…`, `--token-file`) stay visible. The "Check the servers" button
-starts the kit's servers as a run would and names their tools.
+(`--password-command`, `credential.helper=…`, `--token-file`) stay visible. The panel does not hide the address (`url`) or addresses in `args`: put tokens in `headers` and `env`.
+The "Check the servers" button starts the kit's servers from the panel's folder (not a project's) and names their tools.
 
 MCP is not configured in a project; leftovers from earlier versions are silently ignored by the engine. The
 agent takes all of the kit's servers, a bot — those named in its `mcp:` field.

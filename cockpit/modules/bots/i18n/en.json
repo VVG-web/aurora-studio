@@ -41,7 +41,7 @@
   "bots.mode.wysiwyg": "like Word",
   "bots.mcp": "MCP servers",
   "bots.mcp_about": "Connected right away; the bot sees no other servers.",
-  "bots.mcp_none": "No MCP servers. They are added once in «Kit setup» → machine MCP servers; a project picks the ones it needs in «Project settings».",
+  "bots.mcp_none": "No MCP servers. They are added once in «Kit setup» → machine MCP servers.",
   "bots.skills": "Skills",
   "bots.skills_about": "Their method (SKILL.md) goes into the bot's task.",
   "bots.skills_filter": "Find a skill",

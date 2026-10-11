@@ -1953,6 +1953,14 @@ def mcp_mask(servers: dict) -> dict:
     return {name: mcp_masked(spec) for name, spec in servers.items()}
 
 
+def _mcp_arg_key(args: list, i: int):
+    """Чьё значение скрыто маской в `args[i]`: сама строка (`--api-key=••••••`) или, у голой
+    маски, имя флага перед ней."""
+    if args[i] == MCP_MASK:
+        return ("flag", args[i - 1] if i and isinstance(args[i - 1], str) else None)
+    return args[i]
+
+
 def mcp_unmask(servers: dict, old: dict, renamed: dict = None) -> str:
     """Маска → прежнее значение с диска, на месте. Вернёт ошибку, если восстанавливать нечего.
 
@@ -1981,19 +1989,24 @@ def mcp_unmask(servers: dict, old: dict, renamed: dict = None) -> str:
             spec["auth"] = src["auth"]
         args = spec.get("args")
         if isinstance(args, list) and any(isinstance(a, str) and MCP_MASK in a for a in args):
-            # Строки args под маской вернутся по порядку: первая такая же маска — первое
-            # скрытое значение с диска. Лишней маске взять нечего — это потерянный секрет.
-            old_args = [a for a in (src.get("args") or []) if isinstance(a, str)]
-            hidden = [(m, a) for a, m in zip(old_args, mcp_mask_args(old_args)) if m != a]
+            # Значение под маской возвращается тому же флагу: ключ — строка маски с именем
+            # (`--api-key=••••••`, `Authorization:••••••`) или, у голой маски, предыдущий
+            # элемент (имя флага). Очередь на ключ хранит значения в порядке файла; поменяли
+            # один из двух разных флагов — второй получит своё, а не чужое.
+            old_args = src.get("args") if isinstance(src.get("args"), list) else []
+            shown = mcp_mask_args(old_args)
+            hidden = {}
+            for i, (m, a) in enumerate(zip(shown, old_args)):
+                if m != a:
+                    hidden.setdefault(_mcp_arg_key(shown, i), []).append(a)
             for i, a in enumerate(args):
                 if not (isinstance(a, str) and MCP_MASK in a):
                     continue
-                found = next((h for h in hidden if h[0] == a), None)
-                if found is None:
+                queue = hidden.get(_mcp_arg_key(args, i))
+                if not queue:
                     return (f"у сервера «{name}» значение в args скрыто маской, а сохранённого "
                             "нет — впишите его")
-                hidden.remove(found)
-                args[i] = found[1]
+                args[i] = queue.pop(0)
     return ""
 
 

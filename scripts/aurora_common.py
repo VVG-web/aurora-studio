@@ -1726,8 +1726,19 @@ MCP_SECRET_NAME_RE = re.compile(
 # В `args` флаги вроде `--password-command`, `-c credential.helper=…`, `--keyring-provider`,
 # `--token-file` задают, ЧТО запустится или откуда читать секрет, а не сам секрет: их значение
 # владелец обязан видеть. Имя, оканчивающееся на `command`, `helper`, `provider`, `file`…,
-# секретным не считается.
-_MCP_ARG_PLAIN_RE = re.compile(r"[_.](?:COMMAND|CMD|HELPER|PROVIDER|FILE|PATH|DIR|SCRIPT|EXEC)$", re.I)
+# а также на `timeout`, `type`, `mode`, `name`, `layout`, секретным не считается.
+_MCP_ARG_PLAIN_RE = re.compile(
+    r"[_.](?:COMMAND|CMD|HELPER|PROVIDER|FILE|PATH|DIR|SCRIPT|EXEC|TIMEOUT|TYPE|MODE|NAME|LAYOUT)$", re.I)
+# В `args` список имён уже, чем у `env`/`headers`: составные слова — подстрокой, короткие
+# (`KEY`, `PASS`, `AUTH`, `SESSION`…) — только целым словом, иначе под маску попадали бы
+# `--oauth <адрес>`, `--keyboard-layout`, `--session-timeout`, `--passthrough`. `--no-auth`,
+# `--no-session` — выключатели, значения у них нет.
+_MCP_ARG_STRONG_RE = re.compile(
+    r"TOKEN(?!S)|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|BEARER|COOKIE"
+    r"|CREDENTIAL|JWT|DSN|WEBHOOK|SIGNATURE|CONN_?STR", re.I)
+_MCP_ARG_WORD_RE = re.compile(
+    r"(?:^|[_.])(?:KEY|PASS|AUTH|AUTHORIZATION|SESSION|CRED|CONNECTION|PAT|PW|PWD)(?:$|[_.])", re.I)
+_MCP_ARG_OFF_RE = re.compile(r"^(?:NO|WITHOUT|DISABLE|SKIP)[_.]", re.I)
 # Имя ключа или флага целиком (`Authorization: …`, `--api-key=…`). Совпадение начинается
 # в начале строки и не возвращается назад по длинной: разбор на `re` держит GIL панели.
 _MCP_NAMED_ARG_RE = re.compile(r"^(-{0,2}[A-Za-z0-9_.\-]+)\s*([:=])\s*(.+)$", re.S)
@@ -1737,7 +1748,10 @@ _MCP_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_.\-]*$")
 def _mcp_arg_secret_named(name: str) -> bool:
     """Имя флага в `args` секретное (`--token`, `--api-key`); `--password-command` — нет."""
     n = name.lstrip("-").replace("-", "_")
-    return bool(MCP_SECRET_NAME_RE.search(n)) and not _MCP_ARG_PLAIN_RE.search(n)
+    if _MCP_ARG_PLAIN_RE.search(n) or _MCP_ARG_OFF_RE.match(n):
+        return False
+    return bool(_MCP_ARG_STRONG_RE.search(n)
+                or (_MCP_ARG_WORD_RE.search(n) and not re.search(r"[_.]URL$", n, re.I)))
 
 
 def mcp_mask_args(args: list) -> list:
@@ -1751,7 +1765,7 @@ def mcp_mask_args(args: list) -> list:
         if not isinstance(a, str):
             out.append(a)
             continue
-        if hide and not a.startswith("-"):
+        if hide and not a.startswith("--"):
             out.append(MCP_MASK)
             hide = False
             continue

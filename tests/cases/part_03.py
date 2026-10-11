@@ -2256,6 +2256,55 @@ def test_mcp_args_secrets_are_masked_for_the_panel_and_restored_on_save(tmp: Pat
 
 
 @test
+def test_mcp_args_secret_goes_back_to_its_own_flag_and_names_are_narrow(tmp: Path):
+    """Секрет под маской в `args` возвращается тому флагу, у которого стоял: два разных флага
+    (`--api-key`, `--token`) не обмениваются значениями, если один изменили, удалили или
+    переставили. Список имён в `args` не прячет то, что секретом не является (`--oauth <адрес>`,
+    `--session-timeout`), а значение, начинающееся с «-», скрыто. Ни одна подпись панели
+    (каталоги ядра и модулей) не отсылает к выбору MCP-серверов проектом."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import importlib
+    C = importlib.import_module("aurora_common")
+    ck = importlib.import_module("aurora_cockpit")
+    M = C.MCP_MASK
+    old = {"s": {"command": "x", "args": ["--api-key", "AAA", "--token", "BBB", "--auth=CCC"]}}
+
+    def back(args):
+        spec = {"command": "x", "args": list(args)}
+        err = ck.mcp_unmask({"s": spec}, old)
+        return err, spec["args"]
+
+    # поменяли один флаг — второй сохраняет своё
+    assert back(["--api-key", "NEW", "--token", M, "--auth=" + M]) == ("", ["--api-key", "NEW", "--token", "BBB", "--auth=CCC"])
+    assert back(["--api-key", M, "--token", "NEW", "--auth=" + M])[1] == ["--api-key", "AAA", "--token", "NEW", "--auth=CCC"]
+    # удалили первую пару, переставили пары
+    assert back(["--token", M, "--auth=" + M]) == ("", ["--token", "BBB", "--auth=CCC"])
+    assert back(["--token", M, "--api-key", M])[1] == ["--token", "BBB", "--api-key", "AAA"]
+    # у флага, которого на диске не было, взять нечего — ошибка, а не чужой секрет
+    err, _ = back(["--password", M])
+    assert "args скрыто маской" in err, err
+    err, _ = back(["--token", M, "--token", M])
+    assert "args скрыто маской" in err, err
+    # узкий список имён: на виду всё, что секретом не является
+    for plain in (["--oauth", "https://x/sse"], ["--no-auth", "pkg"], ["--session-timeout", "30"],
+                  ["--connection-timeout", "5"], ["--keyboard-layout", "us"], ["--passthrough", "p"],
+                  ["--keystore", "/p"], ["--max-tokens", "100"], ["--auth-url", "https://x"]):
+        assert C.mcp_mask_args(plain) == plain, plain
+    # значение с «-» в начале у секретного флага скрыто; следующий флаг — нет
+    assert C.mcp_mask_args(["--token", "-Abc_1", "--port", "80"]) == ["--token", M, "--port", "80"]
+    assert C.mcp_mask_args(["--token", "--verbose"]) == ["--token", "--verbose"]
+    # подписи панели (ядро и модули) не говорят, что проект выбирает MCP-серверы
+    cats = list((KIT / "cockpit" / "i18n").glob("*.json")) + list((KIT / "cockpit" / "modules").glob("*/i18n/*.json"))
+    assert cats
+    for f in cats:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        for key, val in data.items():
+            if isinstance(val, str) and re.search("mcp", val, re.I):
+                assert not re.search(r"Настройки проекта|Project settings|проект выбирает|project picks", val), (f.name, key, val)
+
+
+@test
 def test_project_that_is_its_own_kit_defines_no_mcp_servers(tmp: Path):
     """Копия движка без `.aurora/kit_path.txt` считает китом сам проект: его `local/mcp.json`
     приехал через git и не определяет серверы ни для прогона, ни для проверки."""
