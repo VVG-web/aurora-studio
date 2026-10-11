@@ -13,8 +13,9 @@
 * находит проекты Авроры (файл `aurora.config.yaml`) в заданных корнях;
 * запускает команды движка **из реестра `commands.txt`** — произвольную строку выполнить
   нельзя, аргументы уходят списком, без оболочки;
-* слушает только петлевой интерфейс и требует токен сессии, выданный при старте: браузер
-  получает его вместе со страницей, чужая вкладка — нет;
+* слушает только петлевой интерфейс и требует токен сессии: браузер получает его в обмен
+  на одноразовый код из адреса, который печатается при старте (`/?c=<код>`), и держит в
+  памяти страницы; на каждый запрос токен идёт заголовком, а не строкой адреса;
 * флаг `--apply` не подставляет сам: его присылает интерфейс после подтверждения человеком;
 * секретов не касается — про токены синка знает только «заполнено» или «пусто».
 """
@@ -73,9 +74,11 @@ import git_sync as GS                            # noqa: E402 — Git проек
 import git_auto as GITA                          # noqa: E402 — автоматика Git: события и тик
 import bots as BOTS                              # noqa: E402 — боты проектов: раздел «Боты»
 
-# Токен сессии. Переданный новому процессу при перезапуске «из панели» сохраняется:
-# иначе открытая вкладка после нажатия кнопки перестала бы работать — адрес тот же,
-# токен другой. Знает его тот же, кто и просил перезапуск.
+# Токен сессии. Страница его не получает «просто так»: он выдаётся в обмен на одноразовый
+# код (`issue_launch_code`), а дальше идёт заголовком `X-Aurora-Token`. Переданный новому
+# процессу при перезапуске «из панели» сохраняется: иначе открытая вкладка после нажатия
+# кнопки перестала бы работать. Знает его тот же, кто и просил перезапуск; при любом другом
+# запуске токен новый, и прежние вкладки получают просьбу обновить страницу.
 TOKEN = os.environ.pop("AURORA_COCKPIT_TOKEN", "") or secrets.token_urlsafe(24)
 # Когда запустился этот процесс. Обновление кита правит файлы на диске, а работающая
 # панель продолжает жить прежним кодом: страница отдаётся свежая, а сервер — старый, и
@@ -4440,6 +4443,71 @@ VENDOR_PATCHES = {
 }
 
 
+# --- вход в панель: одноразовый код → токен, билеты на ссылки
+# Токен сессии даёт запуск команд, поэтому его нельзя ни вшивать в страницу, которую отдают
+# любому, кто достучался до порта (общий сервер, терминальный Windows), ни носить в адресе
+# (история браузера, `argv` программы «открыть», Referer). В адресе — код: живёт две минуты,
+# расходуется первым обменом. Ссылкам, которые открывает сам браузер (отчёт в новой вкладке),
+# заголовок приложить нечем — им выдаётся билет на один адрес и одно открытие.
+LAUNCH_TTL = 120
+LINK_TTL = 60
+LINK_PATHS = ("/api/report/file",)
+MAX_BODY = 10 * 1024 * 1024
+_AUTH_LOCK = threading.Lock()
+_LAUNCH_CODES: dict = {}            # код -> когда истекает (monotonic)
+_LINK_TICKETS: dict = {}            # билет -> (когда истекает, адрес, на который выдан)
+
+
+def _auth_prune(store: dict) -> None:
+    now = time.monotonic()
+    for k in [k for k, v in store.items() if (v if isinstance(v, float) else v[0]) < now]:
+        store.pop(k, None)
+    while len(store) > 200:         # выдают только вошедшие; предел — от забывчивой страницы
+        store.pop(next(iter(store)), None)
+
+
+def issue_launch_code() -> str:
+    """Код для входа в панель: `/?c=<код>`. Расходуется первым обменом на токен."""
+    code = secrets.token_urlsafe(18)
+    with _AUTH_LOCK:
+        _auth_prune(_LAUNCH_CODES)
+        _LAUNCH_CODES[code] = time.monotonic() + LAUNCH_TTL
+    return code
+
+
+def take_launch_code(code: str) -> bool:
+    with _AUTH_LOCK:
+        _auth_prune(_LAUNCH_CODES)
+        return _LAUNCH_CODES.pop(str(code or ""), None) is not None
+
+
+def link_path_ok(path: str) -> bool:
+    """Билет выдаётся только на чтение файла отчёта: остальным адресам заголовка достаточно."""
+    u = urlparse(path)
+    return (u.path in LINK_PATHS and not u.fragment and path.startswith("/")
+            and not path.startswith("//"))
+
+
+def issue_link(path: str) -> str:
+    """Адрес с билетом: `<путь>&c=<билет>`; «» — этот путь билетом открывать нельзя."""
+    if not link_path_ok(path):
+        return ""
+    ticket = secrets.token_urlsafe(18)
+    with _AUTH_LOCK:
+        _auth_prune(_LINK_TICKETS)
+        _LINK_TICKETS[ticket] = (time.monotonic() + LINK_TTL, path)
+    return path + ("&" if "?" in path else "?") + "c=" + ticket
+
+
+def take_link(full_path: str, ticket: str) -> bool:
+    """Билет подходит, если выдан на этот самый адрес (без `c=`) и ещё не истёк."""
+    bare = re.sub(r"[?&]c=[^&]*$", "", full_path)
+    with _AUTH_LOCK:
+        _auth_prune(_LINK_TICKETS)
+        row = _LINK_TICKETS.pop(str(ticket or ""), None)
+    return row is not None and row[1] == bare
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AuroraCockpit"
 
@@ -4449,7 +4517,7 @@ class Handler(BaseHTTPRequestHandler):
     # --- защита: только localhost, только со своим токеном
     def host_ok(self) -> bool:
         """Запрос пришёл на петлевой адрес. Иначе чужая страница, чьё имя перенаправили на
-        127.0.0.1 (DNS rebinding), прочла бы и токен сессии, вшитый в главную страницу."""
+        127.0.0.1 (DNS rebinding), прочла бы ответы панели от имени владельца."""
         host = (self.headers.get("Host") or "").strip()
         host = host[:host.index("]") + 1] if host.startswith("[") and "]" in host \
             else host.split(":")[0]
@@ -4473,17 +4541,53 @@ class Handler(BaseHTTPRequestHandler):
         # код, одинаковый у всех; всё, что отдаёт данные, остаётся под токеном.
         if self.path.startswith("/modules/"):
             return True
-        tok = (query.get("t", [""])[0] or self.headers.get("X-Aurora-Token", ""))
+        if not self.fetch_ok():
+            return False
+        tok = self.headers.get("X-Aurora-Token", "")
         # Сравнение по байтам: со строкой не из ASCII `compare_digest` падает TypeError, и
         # вместо отказа клиент получал оборванное соединение.
-        if not secrets.compare_digest(tok.encode("utf-8"), TOKEN.encode("utf-8")):
-            self.send_json({"error": "нет токена сессии — откройте адрес из консоли"}, 403)
+        if tok and secrets.compare_digest(tok.encode("utf-8"), TOKEN.encode("utf-8")):
+            return True
+        # Ссылка, которую браузер открывает сам (отчёт в новой вкладке): заголовок ей
+        # приложить нечем, у неё билет на этот адрес и одно открытие.
+        u = urlparse(self.path)
+        ticket = (query.get("c") or [""])[0]
+        if (ticket and self.command == "GET" and u.path in LINK_PATHS
+                and take_link(self.path, ticket)):
+            return True
+        # Прежние вкладки и скрипты носили токен в адресе (`?t=`): говорим прямо, что делать.
+        if "t" in query:
+            self.send_json({"error": "токен в адресе (?t=) больше не принимается — обновите "
+                            "страницу (F5); скрипту — передавайте заголовок X-Aurora-Token",
+                            "code": "session"}, 403)
+        elif tok:
+            self.send_json({"error": "сессия панели закончилась (панель запущена заново) — "
+                            "обновите страницу (F5) или откройте адрес из консоли",
+                            "code": "session"}, 403)
+        else:
+            self.send_json({"error": "нет токена сессии — откройте адрес из консоли",
+                            "code": "session"}, 403)
+        return False
+
+    def fetch_ok(self) -> bool:
+        """Запрос сделала страница самой панели, а не чужая. Токен в заголовке чужой странице
+        недоступен, но проверка источника — второй рубеж: он не зависит от того, не утёк ли
+        токен, и закрывает запросы, которые браузер шлёт сам (формы, `<img>`, `text/plain`)."""
+        site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+        origin = self.headers.get("Origin")
+        port = self.server.server_address[1]
+        own = {f"http://{h}:{port}" for h in ("127.0.0.1", "localhost", "[::1]")}
+        # `none` — человек сам открыл адрес (ссылка, закладка): чужая страница так не умеет.
+        if (site and site not in ("same-origin", "none")) or (origin is not None and origin not in own):
+            self.send_json({"error": "запрос пришёл не со страницы панели", "code": "origin"}, 403)
             return False
         return True
 
     def send_safety_headers(self, csp: str = "", frame: bool = False):
         """Заголовки, без которых браузер вправе угадать тип ответа и встроить его в чужую рамку."""
         self.send_header("X-Content-Type-Options", "nosniff")
+        # Код входа живёт в адресе страницы: уходить дальше в Referer он не должен.
+        self.send_header("Referrer-Policy", "no-referrer")
         if frame:
             self.send_header("X-Frame-Options", "DENY")
         if csp:
@@ -4564,7 +4668,7 @@ class Handler(BaseHTTPRequestHandler):
             nonce = secrets.token_urlsafe(18)
             # Встроенный скрипт страницы — единственный; ему и выдаём одноразовый nonce.
             html = html.replace("<script>", f'<script nonce="{nonce}">')
-            html = html.replace("__AURORA_TOKEN__", TOKEN)
+            # Токена в странице нет: она его выменивает на код из адреса (`/?c=`), см. panel.js.
             # Русский каталог уезжает вместе со страницей, а не отдельным запросом.
             # Пока за ним ходили по сети, панель зависела от него до первой отрисовки:
             # сервер не ответил — и вместо надписей человек видит имена ключей, а то и
@@ -4579,7 +4683,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_safety_headers(PAGE_CSP.format(nonce=nonce, hashes=page_csp_hashes()), frame=True)
             self.send_header("Content-Length", str(len(body)))
-            # Страница собирается заново на каждый запрос (токен, каталог строк) — её
+            # Страница собирается заново на каждый запрос (nonce, каталог строк) — её
             # кэширование делает обновление кита невидимым до очистки кэша браузера.
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -4690,9 +4794,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(mcp_kit_state())
         elif u.path == "/api/mcp/probe":
             # Работают ли серверы кита: каждый запускается как в прогоне и называет свои
-            # инструменты.
-            import agent_core as AC
-            self.send_json(AC.mcp_probe(""))
+            # инструменты. Запуск — только POST (см. `do_POST`): GET ничего не исполняет.
+            self.send_json({"error": "проверка запускает серверы — только запросом POST"}, 405)
         elif u.path == "/api/runlog":
             # Журнал запусков — своим маршрутом. Он читается мгновенно, а ехал внутри
             # `/api/health`, который зовёт несколько команд и занимает секунды: на живом
@@ -4928,7 +5031,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(backend_models((q.get("n") or ["1"])[0]))
         elif u.path == "/api/graph":
             project = (q.get("project") or [""])[0]
-            self.send_json(graph_state(project, (q.get("rebuild") or [""])[0] == "1")
+            if (q.get("rebuild") or [""])[0]:
+                # Пересчёт запускает обход базы — только POST (см. `do_POST`).
+                self.send_json({"error": "пересчёт графа — только запросом POST"}, 405)
+                return
+            self.send_json(graph_state(project, False)
                            if project and self._known(project)
                            else {"error": "проект не выбран"})
         elif u.path == "/api/files/clean":
@@ -4991,16 +5098,76 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json({"error": "неизвестный маршрут"}, 404)
 
-    def do_POST(self):
-        u = urlparse(self.path)
-        q = parse_qs(u.query)
-        if not self.guarded(q):
-            return
-        length = int(self.headers.get("Content-Length") or 0)
+    def read_json_body(self):
+        """Тело запроса как объект; при отказе ответ уже отправлен, возвращается None.
+
+        Только `application/json`: тело `text/plain` браузер шлёт чужой странице без
+        предварительной проверки, и без этого условия оно прошло бы как JSON."""
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self.send_json({"error": "тело запроса должно быть JSON (Content-Type: "
+                            "application/json)"}, 415)
+            return None
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self.send_json({"error": "слишком большой запрос"}, 413)
+            return None
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             self.send_json({"error": "тело запроса не разобрано"}, 400)
+            return None
+        return payload
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        if u.path == "/api/session":
+            # Единственный маршрут без токена: здесь токен и выдаётся — за код из адреса.
+            if not (self.host_ok() and self.fetch_ok()):
+                return
+            payload = self.read_json_body()
+            if payload is None:
+                return
+            if take_launch_code(str(payload.get("code") or "") if isinstance(payload, dict) else ""):
+                self.send_json({"token": TOKEN})
+            else:
+                self.send_json({"error": "код входа не подошёл: он живёт две минуты и "
+                                "работает один раз — запустите `aurora.py cockpit` ещё раз",
+                                "code": "session"}, 403)
+            return
+        if not self.guarded(q):
+            return
+        payload = self.read_json_body()
+        if payload is None:
+            return
+        if not isinstance(payload, dict):
+            self.send_json({"error": "тело запроса не разобрано"}, 400)
+            return
+        if u.path == "/api/launch":
+            # Новый код для второго запуска `aurora.py cockpit`: панель уже работает, а
+            # адрес прежнего запуска давно израсходован.
+            self.send_json({"code": issue_launch_code()})
+            return
+        if u.path == "/api/link":
+            # Билет на открытие отчёта в новой вкладке: ссылке заголовок не приложить.
+            url = issue_link(str(payload.get("path") or ""))
+            self.send_json({"url": url} if url else {"error": "для этого адреса билет не выдаётся"},
+                           200 if url else 400)
+            return
+        if u.path == "/api/mcp/probe":
+            # Запускает чужие серверы MCP — действие, а не чтение, поэтому не GET.
+            import agent_core as AC
+            self.send_json(AC.mcp_probe(""))
+            return
+        if u.path == "/api/graph":
+            project = payload.get("project", "")
+            if not self._known(project):
+                return
+            self.send_json(graph_state(project, bool(payload.get("rebuild"))))
             return
         if u.path == "/api/route/run":
             project = payload.get("project", "")
@@ -5986,20 +6153,29 @@ def running_now() -> dict:
         return {}
 
 
-def write_session(port: int, url: str) -> None:
+def write_session(port: int, url: str = "") -> None:
     """Куда стучаться, если панель уже работает.
 
-    Адрес одноразовый и содержит токен, поэтому второй процесс сам его не придумает:
-    без этого файла «открой уже запущенную панель» невозможно — только убить и поднять
-    заново, потеряв то, что человек в ней открыл.
+    Второй процесс сам токена не придумает: без этого файла «открой уже запущенную панель»
+    невозможно — только убить и поднять заново, потеряв то, что человек в ней открыл. Токен
+    в файле, а не в адресе: адрес с кодом одноразовый, а файл читает только владелец. Файл
+    создаётся сразу с правами 0600 и подменяется целиком — окна, когда он уже записан, но
+    ещё открыт всем, нет (на Windows права POSIX не действуют, там защищает профиль).
     """
+    base = f"http://127.0.0.1:{port}/"
+    row = {"port": port, "url": url or base, "pid": os.getpid(), "kit": kit_version(),
+           "auth": "code", "token": TOKEN}
+    tmp = f"{SESSION}.{os.getpid()}.tmp"
     try:
-        with open(SESSION, "w", encoding="utf-8") as f:
-            json.dump({"port": port, "url": url, "pid": os.getpid(),
-                       "kit": kit_version()}, f)
-        os.chmod(SESSION, 0o600)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(row, f)
+        os.replace(tmp, SESSION)
     except OSError:
-        pass
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def read_session() -> dict:
@@ -6010,17 +6186,51 @@ def read_session() -> dict:
         return {}
 
 
-def alive(url: str) -> bool:
-    """Отвечает ли по этому адресу именно панель, а не чужая программа на том же порту."""
+def session_token(sess: dict) -> str:
+    """Токен работающей панели: из файла или, у панели до 1.171, из прежнего адреса `?t=`."""
+    return str(sess.get("token") or "") or str(sess.get("url") or "").partition("?t=")[2]
+
+
+def panel_request(sess: dict, path: str, method: str = "GET", timeout: float = 2):
+    """Запрос к работающей панели с её токеном заголовком; None — не ответила."""
+    port = int(sess.get("port") or 0)
+    if not port:
+        return None
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", method=method,
+        data=b"{}" if method == "POST" else None,
+        headers={"X-Aurora-Token": session_token(sess), "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(url.replace("/?t=", "/api/ping?t="), timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def alive(url: str, token: str = "") -> bool:
+    """Отвечает ли по этому адресу именно панель, а не чужая программа на том же порту."""
+    base, _, legacy = url.partition("?t=")      # адрес прежних панелей нёс токен в строке
+    req = urllib.request.Request(base.rstrip("/") + "/api/ping",
+                                 headers={"X-Aurora-Token": token or legacy})
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
             return json.load(r).get("app") == "aurora-cockpit"
     except Exception:  # noqa: BLE001
         return False
 
 
+def reopen_url(sess: dict) -> str:
+    """Адрес для входа в уже работающую панель. Новая панель выдаёт код заново; панель до
+    1.171 кода не знает — её адрес с токеном прежний, как и был."""
+    if sess.get("auth") != "code":
+        return str(sess.get("url") or "")
+    got = panel_request(sess, "/api/launch", "POST") or {}
+    code = got.get("code")
+    return f"http://127.0.0.1:{int(sess['port'])}/?c={code}" if code else ""
+
+
 def main() -> int:
-    # Адрес панели одноразовый: без токена её не открыть. Когда вывод перенаправлен —
+    # Адрес панели одноразовый: без кода из него её не открыть. Когда вывод перенаправлен —
     # запуск из IDE, из скрипта, из ассистента — буфер stdout держит адрес у себя, и
     # человек видит молчащую команду вместо ссылки.
     try:
@@ -6042,7 +6252,7 @@ def main() -> int:
     a = ap.parse_args()
 
     prev = read_session()
-    if a.restart and prev.get("pid") and alive(prev.get("url", "")):
+    if a.restart and prev.get("pid") and alive(prev.get("url", ""), session_token(prev)):
         # Вывод прогона идёт в трубу панели: убьём панель — прогон умрёт следом, когда
         # в следующий раз что-нибудь напечатает. Ночной разбор базы теряется от одного
         # обновления кита, и человек узнаёт об этом по «задание шага потеряно».
@@ -6060,7 +6270,7 @@ def main() -> int:
         try:
             os.kill(prev["pid"], signal.SIGTERM)
             for _ in range(20):
-                if not alive(prev["url"]):
+                if not alive(prev["url"], session_token(prev)):
                     break
                 time.sleep(0.25)
             print(f"Прежняя панель остановлена (pid {prev['pid']}).")
@@ -6082,10 +6292,13 @@ def main() -> int:
     except OSError as e:
         if e.errno not in (48, 98, 10048):        # EADDRINUSE на macOS, Linux, Windows
             raise
-        url = prev.get("url", "")
-        if url and alive(url):
+        url = (reopen_url(prev)
+               if prev.get("url") and alive(prev["url"], session_token(prev)) else "")
+        if url:
             print(f"Панель уже работает на порту {prev.get('port', a.port)} — открываю её.")
             print(f"\n  {url}\n")
+            if prev.get("auth") == "code":
+                print("Адрес одноразовый: код в нём живёт две минуты и работает один раз.")
             print("Перезапустить (например, после обновления kit): "
                   "aurora.py cockpit --restart")
             if not a.no_browser:
@@ -6105,13 +6318,14 @@ def main() -> int:
             if not a.roots:
                 save_roots(roots)
     srv.roots = roots
-    url = f"http://127.0.0.1:{a.port}/?t={TOKEN}"
+    url = f"http://127.0.0.1:{a.port}/?c={issue_launch_code()}"
     print(f"Aurora Cockpit · kit {kit_version()}")
     print(f"Проекты ищу в: {', '.join(srv.roots)}")
     print(f"\n  {url}\n")
-    print("Адрес одноразовый: токен живёт в памяти процесса, при перезапуске меняется.")
+    print("Адрес одноразовый: код в нём живёт две минуты и работает один раз; токен сессии")
+    print("страница получает в обмен и держит в памяти. Новая ссылка — `aurora.py cockpit`.")
     print("Остановить — Ctrl+C.")
-    write_session(a.port, url)
+    write_session(a.port)
     # Реестр собираем сразу, в фоне: после обновления кита его кэш недействителен, и без
     # этого первый же запрос страницы висел, пока `--help` обходил все скрипты.
     threading.Thread(target=registry, daemon=True).start()

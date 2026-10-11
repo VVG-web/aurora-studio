@@ -1827,7 +1827,7 @@ def test_live_output_of_a_long_job_does_not_freeze_after_4000_lines(tmp: Path):
 
     def get(path: str):
         c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=30)
-        c.request("GET", path + "&t=" + ck.TOKEN)
+        c.request("GET", path, headers={"X-Aurora-Token": ck.TOKEN})
         return json.loads(c.getresponse().read().decode("utf-8"))
 
     big = {"id": "long-job-test", "cmd": "kb:lint", "args": [], "project": str(root),

@@ -1221,11 +1221,11 @@ def test_cockpit_scenarios_skins_and_about(tmp: Path):
     # --- вторая панель на занятом порту: адрес уже работающей берётся из отпечатка
     import json as _json
     ck.SESSION = str(tmp / "session.json")
-    ck.write_session(8787, "http://127.0.0.1:8787/?t=xyz")
+    ck.write_session(8787)
     saved = _json.loads(Path(ck.SESSION).read_text(encoding="utf-8"))
-    assert saved["url"].endswith("t=xyz") and saved["pid"] == os.getpid(), saved
+    assert "?" not in saved["url"] and saved["pid"] == os.getpid(), saved
     assert ck.read_session()["port"] == 8787, "отпечаток панели не читается"
-    assert ck.alive("http://127.0.0.1:9/?t=xyz") is False, \
+    assert ck.alive("http://127.0.0.1:9/") is False and ck.alive("http://127.0.0.1:9/?t=xyz") is False, \
         "молчащий порт не должен считаться работающей панелью"
 
     # --- реестр перечитывается, когда kit обновился под работающей панелью

@@ -116,7 +116,8 @@ class _Panel:
 
     def get(self, path: str):
         c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=120)
-        c.request("GET", path + ("&" if "?" in path else "?") + "lang=en&t=" + self.ck.TOKEN)
+        c.request("GET", path + ("&" if "?" in path else "?") + "lang=en",
+                  headers={"X-Aurora-Token": self.ck.TOKEN})
         r = c.getresponse()
         body = r.read().decode("utf-8", "replace")
         try:

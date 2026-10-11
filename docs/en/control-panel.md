@@ -9,7 +9,8 @@ and help. This document describes what it can do, how it is built and by which r
 python3 aurora.py cockpit
 ```
 
-The browser opens at `http://127.0.0.1:8787/?t=<token>`.
+The browser opens at `http://127.0.0.1:8787/?c=<code>`. The code is one-time: it lives two minutes and is spent
+by the first sign-in; the same command on a running panel prints and opens a new link.
 
 ## 1. Principles
 
@@ -155,13 +156,28 @@ flowchart LR
 
 ## 6. Safety
 
-- The server listens **only on `127.0.0.1`** and requires a session token issued at start. The token lives in the process's
-  memory: restarted — the address changed.
+- The server listens **only on `127.0.0.1`** and requires a session token. The token is not embedded in the page that
+  any loopback client receives (shared server, terminal Windows): at start an address with a one-time code is printed
+  (`/?c=…`, two minutes, one sign-in), the page exchanges the code for the token (`POST /api/session`), erases it from
+  the address and keeps the token in memory (across a tab reload — in `sessionStorage`). Every request carries the token in
+  the `X-Aurora-Token` header; in the address line it is not accepted, and an old tab or a script gets "reload the page"
+  instead of a silent refusal. The file `cockpit/.session.json` (port, pid, token) is created with mode 0600 from the
+  start; a repeated `aurora.py cockpit` asks the running panel for a fresh code (`POST /api/launch`). The token changes
+  on every start except a restart from the panel itself: there the new process receives it so that an open tab does not
+  lose the connection.
+- A request is checked by its origin: a foreign page's `Origin` and `Sec-Fetch-Site` are refused even with the right token
+  (`Referrer-Policy: no-referrer` keeps the code in the address at home), a POST must be `Content-Type: application/json`,
+  the body is limited to 10 MB. Starting MCP servers and rebuilding the graph are POST only. A link opened by the browser
+  (a report in a new tab) cannot carry a header: `POST /api/link` issues a ticket for one report address and one opening
+  (one minute).
+- Residual risk: the code sits in the address that the browser's "open" program receives until it expires; another user of
+  the machine who read the process list before the browser did could use it. On a shared machine start the panel with
+  `--no-browser` and open the link from the console.
 - **Only commands from the registry** can be run; arguments go as a list, with no shell; a flag the command did not declare is
   rejected.
 - A project is chosen from the discovered list, an arbitrary path is not accepted.
 - Documents can be read only from `docs/`, `skills/aurora-vault`, `CHANGELOG.md`, `commands.txt`, `README.md`.
-- A section's files (code, not project data) are served without a token so that relative imports inside a section work.
+- A section's files (code, not project data) are served without a token so that relative imports inside a section work; the page without a token is a shell with no data.
 - The form neither accepts nor shows secrets.
 - Foreign text (Confluence and website mirrors, people's names from Jira) must not become code in the
   panel's origin, which holds the session token. So the page is served with a `Content-Security-Policy`

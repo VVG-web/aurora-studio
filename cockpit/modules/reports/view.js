@@ -54,10 +54,9 @@ function card(ctx, r){
     row.append(el("button", {class:"btn", title: t("reports.recalc_hint"),
       onclick: () => build(ctx, r, true)}, t("reports.recalc")));
   if (built)
-    row.append(el("a", {class:"btn", target:"_blank",
-      href: `/api/report/file?project=${encodeURIComponent(ctx.project.path)}`
-          + `&id=${encodeURIComponent(r.id)}&t=${encodeURIComponent(ctx.token)}`},
-      t("reports.open")));
+    row.append(el("button", {class:"btn", onclick: () => ctx.openLink(
+      `/api/report/file?project=${encodeURIComponent(ctx.project.path)}`
+      + `&id=${encodeURIComponent(r.id)}`)}, t("reports.open")));
   box.append(row);
 
   // История версий. Отчёт собирается в один и тот же файл, и каждая сборка затирает
@@ -74,10 +73,10 @@ function card(ctx, r){
           el("div", {style:"flex:1"},
             el("span", {class:"mono", style:"font-size:12.5px"}, fmt.when(v.when)),
             el("span", {class:"muted", style:"font-size:12px;margin-left:8px"}, fmt.kb(v.size))),
-          el("a", {class:"btn", target:"_blank",
-            href: `/api/report/file?project=${encodeURIComponent(ctx.project.path)}`
-                + `&id=${encodeURIComponent(r.id)}&stamp=${encodeURIComponent(v.stamp)}`
-                + `&t=${encodeURIComponent(ctx.token)}`}, t("reports.open")),
+          el("button", {class:"btn", onclick: () => ctx.openLink(
+            `/api/report/file?project=${encodeURIComponent(ctx.project.path)}`
+            + `&id=${encodeURIComponent(r.id)}&stamp=${encodeURIComponent(v.stamp)}`)},
+            t("reports.open")),
           el("button", {class:"btn", onclick: async () => {
             if (!confirm(t("reports.delete_ask", {when: fmt.when(v.when)}))) return;
             const res = await ctx.api("/api/report/forget", {method:"POST", body: JSON.stringify(

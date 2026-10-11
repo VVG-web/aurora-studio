@@ -1,4 +1,10 @@
-const TOKEN = "__AURORA_TOKEN__";
+// Токена в странице нет: он приходит в обмен на одноразовый код из адреса (`/?c=…`, его
+// печатает `aurora.py cockpit`) и живёт в памяти страницы, а на перезагрузку вкладки — в
+// sessionStorage (он свой у каждой вкладки и пропадает вместе с ней). Каждый запрос несёт его
+// заголовком `X-Aurora-Token`; в строку адреса токен не попадает: ни в историю браузера, ни в
+// ссылки, ни в Referer.
+let TOKEN = "";
+const SESSION_KEY = "aurora-session";
 // Версия панели: под какую версию ядра она собрана. Ядро уходит вперёд быстрее, чем
 // интерфейс, и молча отставший интерфейс — худший вид отставания: он выглядит рабочим.
 // Правило: младшая версия должна совпадать с ядром (1.11.x ↔ kit 1.11.y), иначе панель
@@ -86,13 +92,70 @@ const api = async (path, opts={}) => {
   // Язык интерфейса сервер знает от страницы: описания команд и маршруты приходят от него
   // готовыми. `S` объявлен ниже, а первый запрос идёт до выбора языка — тогда русский.
   const lang = (!path.includes("lang=") && typeof S !== "undefined" && S.lang && S.lang !== "ru")
-    ? "&lang=" + encodeURIComponent(S.lang) : "";
-  const r = await fetch(path + sep + "t=" + encodeURIComponent(TOKEN) + lang,
-    {...opts, headers:{"Content-Type":"application/json", ...(opts.headers||{})}});
+    ? sep + "lang=" + encodeURIComponent(S.lang) : "";
+  const r = await fetch(path + lang, {...opts, headers:{"Content-Type":"application/json",
+    "X-Aurora-Token": TOKEN, ...(opts.headers||{})}});
   const d = await r.json();
+  // Токен не принят — панель запущена заново или вкладка старая: поток отказов превращается
+  // в одно понятное окно «обновите страницу», а не в тост на каждый опрос.
+  if (r.status === 403 && d.code === "session"){ showAuthGate(); return d; }
   if (d.error && !opts.quiet) toast(d.error, "err");
   return d;
 };
+
+// Окно «нет доступа»: токена нет или он не подошёл. Закрыть его нельзя — без токена панель
+// всё равно не получит ни одного ответа; выход один: перечитать страницу или взять новую
+// ссылку у команды `aurora.py cockpit`.
+function showAuthGate(){
+  if ($("#authGate")) return;
+  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* хранилище закрыто */ }
+  TOKEN = "";
+  $("body").append(el("div", {id:"authGate", role:"alertdialog",
+      style:"position:fixed;inset:0;z-index:9999;display:flex;align-items:center;"
+          + "justify-content:center;background:var(--bg);padding:16px"},
+    el("div", {class:"card", style:"max-width:540px;padding:24px"},
+      el("h2", {style:"margin:0 0 12px"}, t("auth.title")),
+      el("p", {}, t("auth.body")),
+      el("p", {html: tick(t("auth.how"))}),
+      el("button", {class:"btn primary", onclick:()=>location.reload()}, t("auth.reload")))));
+}
+
+// Войти: код из адреса → токен (код тут же стирается из адреса), иначе токен этой вкладки.
+// Адрес прежней версии (`?t=`) принимается один раз — на случай вкладки, которую панель
+// перезапустила «из панели»: токен у неё прежний, а адрес в строке браузера старый.
+async function acquireSession(){
+  const q = new URLSearchParams(location.search);
+  const code = q.get("c"), old = q.get("t");
+  try {
+    if (code){
+      const r = await fetch("/api/session", {method:"POST", body: JSON.stringify({code}),
+        headers:{"Content-Type":"application/json"}});
+      TOKEN = (await r.json()).token || "";
+    } else if (old) TOKEN = old;
+    else TOKEN = sessionStorage.getItem(SESSION_KEY) || "";
+  } catch (e) { TOKEN = TOKEN || ""; }
+  if (code || old) history.replaceState(null, "", location.pathname + location.hash);
+  if (TOKEN){
+    try {
+      const r = await fetch("/api/ping", {headers:{"X-Aurora-Token": TOKEN}});
+      if (r.status === 403) TOKEN = "";
+    } catch (e) { /* панель не ответила — не значит, что токен плох */ }
+  }
+  if (!TOKEN){ showAuthGate(); return false; }
+  try { sessionStorage.setItem(SESSION_KEY, TOKEN); } catch (e) { /* хранилище закрыто */ }
+  return true;
+}
+
+// Ссылка, которую открывает сам браузер (отчёт в новой вкладке), заголовка не несёт: сервер
+// выдаёт на неё билет — один адрес, одно открытие. Вкладку открываем сразу, пока длится жест
+// человека: после ожидания ответа блокировщик окон её отрезал бы.
+async function openLink(path){
+  const w = window.open("about:blank", "_blank");
+  if (w) w.opener = null;
+  const d = await api("/api/link", {method:"POST", body: JSON.stringify({path})});
+  if (!d.url){ if (w) w.close(); return; }
+  if (w) w.location.href = d.url; else window.open(d.url, "_blank", "noopener");
+}
 function toast(msg, kind="ok"){
   const t = el("div",{class:"toast "+kind}, msg);
   $("#toasts").append(t);
@@ -166,7 +229,7 @@ async function restartPanel(opts = {}){
   await new Promise(ok => setTimeout(ok, 1500));      // прежний процесс ещё отвечает
   while (Date.now() - started < limit){
     try {
-      const r = await fetch("/api/ping?t=" + encodeURIComponent(TOKEN));
+      const r = await fetch("/api/ping", {headers:{"X-Aurora-Token": TOKEN}});
       const p = r.ok ? await r.json() : null;
       if (p && p.ready){ location.reload(); return; }
       if (p){
@@ -1238,6 +1301,7 @@ document.documentElement.dataset.theme = localStorage.getItem("aurora-theme")
 
 /* ---------------- загрузка ---------------- */
 async function boot(){
+  if (!await acquireSession()) return;     // без токена панели нечего показывать
   $("#towers").innerHTML = '<div class="skel"></div><div class="skel"></div><div class="skel"></div>';
   await loadI18n();      // строки до первой отрисовки: иначе экран моргнёт с русского на выбранный
   drawGlobalMetrics();   // плитки Мостика с подписями — сразу, числа придут следом
@@ -3511,7 +3575,7 @@ async function renderMcpKit(){
       names.length ? el("button", {class:"btn sm", onclick: async e => {
         e.target.disabled = true;
         e.target.textContent = t("mcp.probing");
-        const r = await api("/api/mcp/probe", {quiet:true});
+        const r = await api("/api/mcp/probe", {method:"POST", body:"{}", quiet:true});
         if (r.error){
           e.target.disabled = false;
           e.target.textContent = t("mcp.probe");
@@ -4119,7 +4183,7 @@ async function loadSkins(){
 }
 async function applySkin(id){
   try{
-    const r = await fetch(`/api/skin?id=${encodeURIComponent(id)}&t=${encodeURIComponent(TOKEN)}`);
+    const r = await fetch(`/api/skin?id=${encodeURIComponent(id)}`, {headers:{"X-Aurora-Token": TOKEN}});
     if (!r.ok) throw new Error(t("skin.no_such"));
     $("#skin").textContent = await r.text();
     localStorage.setItem("aurora-skin", id);
@@ -4187,7 +4251,8 @@ function moduleCtx(id, root){
     t, el, api, toast,
     $: (sel) => $(sel, root),
     $$: (sel) => $$(sel, root),
-    token: TOKEN,
+    token: TOKEN,                 // только чтение; в адреса его не класть — для ссылок есть `openLink`
+    openLink,
     show, run: runStep, runWatched, busyElsewhere, openRun, openDoc, reloadHealth,
     // Маршрут ведёт ядро: он переживает перезагрузку вкладки, пишет в проект
     // и продолжается с той же точки. Раздел только показывает список.
@@ -4220,7 +4285,7 @@ async function mountModule(id, payload){
   if (!rec) return;
   if (!rec.mod){
     try{
-      const url = f => `/modules/${id}/${f}?t=${encodeURIComponent(TOKEN)}`;
+      const url = f => `/modules/${id}/${f}`;       // код раздела отдаётся без токена
       const r = await fetch(url("view.html"));
       if (!r.ok) throw new Error(t("modules.no_html", {status: r.status}));
       rec.section = el("section", {class:"view", id:"view-" + id, html: await r.text()});

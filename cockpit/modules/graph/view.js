@@ -139,8 +139,11 @@ async function load(ctx, rebuild){
   const note = ctx.$("#graphNote");
   if (!ctx.project){ note.textContent = ctx.t("graph.pick_project"); return; }
   note.textContent = ctx.t("graph.loading");
-  const d = await ctx.api("/api/graph?project=" + encodeURIComponent(ctx.project.path)
-                          + (rebuild ? "&rebuild=1" : ""), {quiet: true});
+  // Пересчёт запускает обход базы — это действие, поэтому POST; чтение из кэша — GET.
+  const d = await (rebuild
+    ? ctx.api("/api/graph", {method: "POST", quiet: true,
+        body: JSON.stringify({project: ctx.project.path, rebuild: true})})
+    : ctx.api("/api/graph?project=" + encodeURIComponent(ctx.project.path), {quiet: true}));
   if (d.error){ note.textContent = d.error; return; }
   G.data = d;
   ctx.$("#graphStamp").textContent = ctx.t("graph.when",

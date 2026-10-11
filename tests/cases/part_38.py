@@ -1,4 +1,5 @@
-"""Проверки движка Aurora, часть 38: чужой текст в панели не становится кодом в её origin.
+"""Проверки движка Aurora, часть 38: чужой текст в панели не становится кодом в её origin;
+токен панели не отдаётся любому клиенту петли и не ездит в адресе.
 
 Каркас и помощники — tests/harness.py. Зеркала Confluence и сайтов пишут посторонние, имена
 людей в отчётах — пользователи чужой Jira. У origin панели токен сессии, а токен даёт запуск
@@ -8,8 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import importlib
+import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 
 from harness import KIT, SCRIPTS, test  # noqa: F401
 
@@ -32,7 +38,7 @@ def _server(ck, tmp):
     def get(path: str):
         import http.client
         c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=20)
-        c.request("GET", path)
+        c.request("GET", path, headers={"X-Aurora-Token": ck.TOKEN} if path.startswith("/api/") else {})
         r = c.getresponse()
         return r.status, {k.lower(): v for k, v in r.getheaders()}, r.read().decode("utf-8", "replace")
     return srv, get
@@ -136,7 +142,7 @@ def test_reports_are_served_in_a_sandbox_without_the_panel_origin(tmp: Path):
     ck.report_version_path = lambda p, i, stamp: str(tmp / "out.html")
     srv, get = _server(ck, tmp)
     try:
-        base = f"/api/report/file?project={tmp}&id=analyst&t={ck.TOKEN}"
+        base = f"/api/report/file?project={tmp}&id=analyst"
         now = get(base)
         old = get(base + "&stamp=20260101-000000")
     finally:
@@ -162,3 +168,372 @@ def test_the_report_page_escapes_people_names_before_putting_them_into_markup(_t
                 "<b>${emp}</b>", "<td>${d.role}</td>", "<b>${fio}</b>", 'title="${t}"',
                 "(${MERGED[p].aliases.join(', ')})"):
         assert raw not in src, f"имя идёт в разметку без esc(): {raw}"
+
+
+# --------------------------------------------------------------------------- токен панели
+
+
+def _http(srv):
+    """Запрос к настоящему серверу: (код, заголовки, тело). Заголовки — как передали."""
+    import http.client
+
+    def call(method: str, path: str, headers=None, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=20)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        raw = r.read().decode("utf-8", "replace")
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, raw
+    return call
+
+
+def _json_of(raw: str):
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}
+
+
+@test
+def test_the_panel_page_carries_no_token_and_gives_it_for_a_one_time_code(tmp: Path):
+    """Страница панели отдаётся любому на петле, поэтому токена в ней нет: он выдаётся в обмен
+    на код из адреса, который живёт недолго и расходуется первым обменом. Раньше токен лежал в
+    теле `GET /`, и любой процесс или пользователь той же машины забирал его одним запросом."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    srv, get = _server(ck, tmp)
+    call = _http(srv)
+    js = {"Content-Type": "application/json"}
+    try:
+        code, _head, body = get("/")
+        assert code == 200 and ck.TOKEN not in body and "__AURORA_TOKEN__" not in body, \
+            "страница отдана вместе с токеном"
+        # код из адреса печатной ссылки — один раз
+        c1 = ck.issue_launch_code()
+        st, _h, raw = call("POST", "/api/session", js, json.dumps({"code": c1}))
+        assert st == 200 and _json_of(raw).get("token") == ck.TOKEN, (st, raw)
+        st, _h, raw = call("POST", "/api/session", js, json.dumps({"code": c1}))
+        assert st == 403 and _json_of(raw).get("code") == "session", "код сработал дважды"
+        # чужой код и пустое тело
+        for bad in ({"code": "выдуманный"}, {}, {"code": None}):
+            st, _h, raw = call("POST", "/api/session", js, json.dumps(bad))
+            assert st == 403 and ck.TOKEN not in raw, bad
+        # истёкший код
+        c2 = ck.issue_launch_code()
+        ck._LAUNCH_CODES[c2] = time.monotonic() - 1
+        st, _h, _r = call("POST", "/api/session", js, json.dumps({"code": c2}))
+        assert st == 403, "истёкший код принят"
+        # чужая страница не может потратить код и забрать токен: источник проверяется до кода
+        c3 = ck.issue_launch_code()
+        st, _h, raw = call("POST", "/api/session", {**js, "Origin": "http://evil.example"},
+                           json.dumps({"code": c3}))
+        assert st == 403 and ck.TOKEN not in raw, "чужой Origin получил токен"
+        st, _h, raw = call("POST", "/api/session", {"Content-Type": "text/plain"},
+                           json.dumps({"code": c3}))
+        assert st == 415 and ck.TOKEN not in raw, "тело text/plain принято как JSON"
+        st, _h, raw = call("POST", "/api/session", {**js, "Origin": f"http://localhost:{srv.server_address[1]}"},
+                           json.dumps({"code": c3}))
+        assert st == 200, "свой Origin и целый код отвергнуты — отказы выше потратили код"
+        # новая запись выдаётся уже вошедшему, тот же код чужому не годится
+        st, _h, raw = call("POST", "/api/launch", {**js, "X-Aurora-Token": ck.TOKEN}, "{}")
+        fresh = _json_of(raw).get("code")
+        assert st == 200 and fresh and fresh in ck._LAUNCH_CODES
+        st, _h, _r = call("POST", "/api/launch", js, "{}")
+        assert st == 403, "код входа выдан без токена"
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_the_token_travels_only_in_a_header_and_old_tabs_are_told_to_reload(tmp: Path):
+    """Токен в строке адреса не принимается — даже верный; старая вкладка и старый скрипт
+    получают понятное «обновите страницу», а не молчаливый обрыв. Запрос с чужого Origin или
+    Sec-Fetch-Site отклоняется и с верным токеном; вендоренная статика и код разделов — без токена."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    port = srv.server_address[1]
+    auth = {"X-Aurora-Token": ck.TOKEN}
+    try:
+        st, _h, raw = call("GET", "/api/ping", auth)
+        assert st == 200 and _json_of(raw).get("app") == "aurora-cockpit"
+        st, _h, raw = call("GET", f"/api/ping?t={ck.TOKEN}")
+        err = _json_of(raw)
+        assert st == 403 and err.get("code") == "session" and "обновите страницу" in err["error"], raw
+        assert "X-Aurora-Token" in err["error"], "скрипту не сказано, что передавать"
+        st, _h, raw = call("GET", "/api/ping?lang=en&t=old")
+        assert st == 403 and "reload the page" in _json_of(raw)["error"], raw
+        st, _h, raw = call("GET", "/api/ping", {"X-Aurora-Token": "прежний-токен".encode("utf-8").decode("latin-1")})
+        err = _json_of(raw)
+        assert st == 403 and err.get("code") == "session" and "обновите страницу" in err["error"], raw
+        st, _h, raw = call("GET", "/api/ping")
+        assert st == 403 and _json_of(raw).get("code") == "session", "без токена не отказано"
+        # источник запроса
+        for extra in ({"Origin": "http://evil.example"}, {"Origin": "null"},
+                      {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}):
+            st, _h, raw = call("GET", "/api/ping", {**auth, **extra})
+            assert st == 403 and _json_of(raw).get("code") == "origin", (extra, st, raw)
+        for extra in ({"Origin": f"http://127.0.0.1:{port}"}, {"Origin": f"http://localhost:{port}"},
+                      {"Sec-Fetch-Site": "same-origin"}):
+            st, _h, _r = call("GET", "/api/ping", {**auth, **extra})
+            assert st == 200, (extra, st)
+        # статика и код разделов — без токена (браузер грузит их сам, заголовка не приложить)
+        st, _h, _r = call("GET", "/modules/reports/view.js")
+        assert st == 200, "код раздела требует токен"
+        st, head, _r = call("GET", "/api/ping", auth)
+        assert head.get("referrer-policy") == "no-referrer", "код входа может уйти в Referer"
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_mutating_requests_need_json_and_the_body_is_limited(tmp: Path):
+    """POST принимает только `application/json`: тело `text/plain` браузер шлёт чужой странице
+    без предварительной проверки, и без этого условия оно проходило как JSON. Тело больше
+    предела отклоняется до чтения."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    auth = {"X-Aurora-Token": ck.TOKEN}
+    try:
+        st, _h, raw = call("POST", "/api/job/stop", {**auth, "Content-Type": "text/plain"}, "{}")
+        assert st == 415, f"text/plain принят: {st} {raw}"
+        st, _h, _r = call("POST", "/api/job/stop", auth, "{}")
+        assert st == 415, "без Content-Type принято"
+        st, _h, raw = call("POST", "/api/job/stop", {**auth, "Content-Type": "application/json; charset=utf-8"}, "{}")
+        assert st == 200, (st, raw)
+        st, _h, _r = call("POST", "/api/job/stop", {**auth, "Content-Type": "application/json",
+                                                   "Origin": "http://evil.example"}, "{}")
+        assert st == 403, "чужой Origin с верным токеном"
+        st, _h, _r = call("POST", "/api/job/stop", {"Content-Type": "application/json"}, "{}")
+        assert st == 403, "POST без токена"
+        st, _h, _r = call("POST", "/api/job/stop", {**auth, "Content-Type": "application/json",
+                                                   "Content-Length": str(ck.MAX_BODY + 1)}, "{}")
+        assert st == 413, f"тело сверх предела не отклонено: {st}"
+        st, _h, _r = call("POST", "/api/job/stop", {**auth, "Content-Type": "application/json"}, "[1]")
+        assert st == 400, "массив вместо объекта должен отклоняться, а не падать"
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_running_servers_and_rebuilding_the_graph_are_not_get_requests(tmp: Path):
+    """Запуск чужих серверов MCP и пересчёт графа — действия: GET их не выполняет, POST выполняет."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    AC = importlib.import_module("agent_core")
+    saved = (ck.find_projects, ck.graph_state, AC.mcp_probe)
+    seen = []
+    ck.find_projects = lambda roots: [{"path": str(tmp)}]
+    ck.graph_state = lambda project, rebuild=False: seen.append(("graph", rebuild)) or {"nodes": []}
+    AC.mcp_probe = lambda _x: seen.append(("probe",)) or {"servers": {}}
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    auth = {"X-Aurora-Token": ck.TOKEN}
+    js = {**auth, "Content-Type": "application/json"}
+    try:
+        st, _h, _r = call("GET", "/api/mcp/probe", auth)
+        assert st == 405 and not seen, "GET запустил серверы"
+        st, _h, _r = call("GET", f"/api/graph?project={tmp}&rebuild=1", auth)
+        assert st == 405 and not seen, "GET пересчитал граф"
+        st, _h, _r = call("GET", f"/api/graph?project={tmp}", auth)
+        assert st == 200 and seen == [("graph", False)], seen
+        seen.clear()
+        st, _h, _r = call("POST", "/api/mcp/probe", js, "{}")
+        assert st == 200 and seen == [("probe",)], seen
+        seen.clear()
+        st, _h, _r = call("POST", "/api/graph", js, json.dumps({"project": str(tmp), "rebuild": True}))
+        assert st == 200 and seen == [("graph", True)], seen
+        st, _h, _r = call("POST", "/api/graph", js, json.dumps({"project": "/нет/такого", "rebuild": True}))
+        assert st == 400 and seen == [("graph", True)], "чужой путь принят"
+    finally:
+        srv.shutdown()
+        ck.find_projects, ck.graph_state, AC.mcp_probe = saved
+
+
+@test
+def test_a_report_link_ticket_opens_exactly_one_address_once(tmp: Path):
+    """Отчёт открывается в новой вкладке ссылкой, заголовка у которой нет. Токен в такую ссылку
+    не кладётся: сервер выдаёт билет на один адрес и одно открытие, а отчёт всё так же идёт в
+    песочнице."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    (tmp / "out.html").write_text("<html>отчёт</html>", encoding="utf-8")
+    saved = (ck.find_projects, ck.report_state, ck.report_version_path)
+    ck.find_projects = lambda roots: [{"path": str(tmp)}]
+    ck.report_state = lambda p: {"reports": [{"id": "analyst",
+                                              "output": {"exists": True, "path": "out.html"}}]}
+    ck.report_version_path = lambda p, i, stamp: str(tmp / "out.html")
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    auth = {"X-Aurora-Token": ck.TOKEN}
+    js = {**auth, "Content-Type": "application/json"}
+    path = f"/api/report/file?project={tmp}&id=analyst"
+    try:
+        st, _h, raw = call("POST", "/api/link", js, json.dumps({"path": path}))
+        url = _json_of(raw).get("url", "")
+        assert st == 200 and url.startswith(path + "&c=") and ck.TOKEN not in url, raw
+        st, head, body = call("GET", url)                  # без заголовка токена — по билету
+        assert st == 200 and "отчёт" in body and head.get("content-security-policy", "").startswith("sandbox"), (st, body)
+        st, _h, _r = call("GET", url)
+        assert st == 403, "билет сработал дважды"
+        # билет — на этот адрес: подмена запроса и чужой путь не проходят
+        url = _json_of(call("POST", "/api/link", js, json.dumps({"path": path}))[2])["url"]
+        st, _h, _r = call("GET", url.replace("id=analyst", "id=other"))
+        assert st == 403, "билет подошёл к другому адресу"
+        ticket = url.rsplit("c=", 1)[1]
+        st, _h, _r = call("GET", f"/api/state?c={ticket}")
+        assert st == 403, "билет открыл другой маршрут"
+        st, _h, _r = call("POST", "/api/link", js, json.dumps({"path": "/api/state"}))
+        assert st == 400, "билет выдан на маршрут, которому он не нужен"
+        st, _h, _r = call("POST", "/api/link", js, json.dumps({"path": "//evil.example/api/report/file"}))
+        assert st == 400, "билет выдан на чужой адрес"
+        st, _h, _r = call("POST", "/api/link", {"Content-Type": "application/json"}, json.dumps({"path": path}))
+        assert st == 403, "билет выдан без токена"
+        # истёкший
+        url = _json_of(call("POST", "/api/link", js, json.dumps({"path": path}))[2])["url"]
+        ticket = url.rsplit("c=", 1)[1]
+        exp, bound = ck._LINK_TICKETS[ticket]
+        ck._LINK_TICKETS[ticket] = (time.monotonic() - 1, bound)
+        st, _h, _r = call("GET", url)
+        assert st == 403, "истёкший билет принят"
+    finally:
+        srv.shutdown()
+        ck.find_projects, ck.report_state, ck.report_version_path = saved
+
+
+@test
+def test_the_session_file_is_private_from_the_first_byte_and_has_no_token_in_the_address(tmp: Path):
+    """Файл сессии создаётся сразу с правами владельца (раньше — «записать, потом chmod», и на это
+    время токен читали все), а в адресе токена нет; повторный вход в работающую панель идёт по
+    свежему коду, а не по адресу с токеном."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    old = (ck.SESSION, os.chmod)
+    ck.SESSION = str(tmp / "session.json")
+    umask = os.umask(0)
+    os.chmod = lambda *a, **k: None          # поздний chmod не должен быть тем, что спасает
+    try:
+        ck.write_session(8787)
+    finally:
+        os.chmod = old[1]
+        os.umask(umask)
+        ck.SESSION = old[0]
+    path = tmp / "session.json"
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["token"] == ck.TOKEN and row["auth"] == "code" and row["port"] == 8787, row
+    assert "?" not in row["url"] and ck.TOKEN not in row["url"], "токен в адресе файла сессии"
+    if os.name == "posix":
+        assert (path.stat().st_mode & 0o777) == 0o600, oct(path.stat().st_mode)
+    assert not list(tmp.glob("session.json.*")), "временный файл остался"
+
+    # повторный запуск: новая панель отдаёт свежий код, прежняя — свой адрес как был
+    srv, _get = _server(ck, tmp)
+    try:
+        sess = {"port": srv.server_address[1], "token": ck.TOKEN, "auth": "code",
+                "url": f"http://127.0.0.1:{srv.server_address[1]}/"}
+        assert ck.alive(sess["url"], ck.TOKEN) and not ck.alive(sess["url"], "чужой")
+        url = ck.reopen_url(sess)
+        code = url.rsplit("?c=", 1)[1]
+        assert url.startswith(f"http://127.0.0.1:{srv.server_address[1]}/?c=") and ck.TOKEN not in url, url
+        assert ck.take_launch_code(code) and not ck.take_launch_code(code)
+        legacy = {"port": 1, "url": "http://127.0.0.1:1/?t=abc"}
+        assert ck.reopen_url(legacy) == legacy["url"] and ck.session_token(legacy) == "abc"
+        assert ck.reopen_url({**sess, "port": 9}) == "", "отвечает не та панель, а адрес выдан"
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_the_page_script_takes_the_token_for_a_code_and_never_puts_it_in_an_address(tmp: Path):
+    """Страница под node со стабами: код из адреса меняется на токен и стирается из адреса,
+    токен идёт заголовком, отказ «сессия» показывает одно окно «обновите страницу» без потока
+    тостов, ссылка на отчёт берёт билет. Ни одного адреса с токеном (`?t=`) в коде панели."""
+    ui = (KIT / "cockpit/ui/panel.js").read_text(encoding="utf-8")
+    for rel in ("cockpit/ui/panel.js", *[str(p.relative_to(KIT)) for p in (KIT / "cockpit/modules").rglob("*.js")]):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "encodeURIComponent(TOKEN)" not in text and "encodeURIComponent(ctx.token)" not in text, \
+            f"{rel}: токен снова в адресе"
+    node = shutil.which("node")
+    if not node:
+        return
+    head = ui[:ui.index("const UI_VERSION")]
+    body = ui[ui.index("const tick = s =>"):ui.index("function toast(")]
+    harness = """
+const calls = [], toasts = [], store = {}, nodes = [];
+let search = "", answers = {};
+const location = {get search(){ return search; }, pathname: "/", hash: "", reload(){ calls.push("reload"); }};
+const history = {replaceState(_a, _b, u){ search = ""; calls.push("replace:" + u); }};
+const sessionStorage = {getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = v; },
+                        removeItem: k => { delete store[k]; }};
+const S = {lang: "ru"};
+const t = k => k;
+const $ = sel => nodes.find(n => "#" + n.id === sel) || (sel === "body" ? body : null);
+const body = {append: n => nodes.push(n)};
+const el = (tag, attrs = {}) => ({tag, id: attrs.id});
+const toast = (m, k) => toasts.push([m, k]);
+const window = {open(u){ calls.push("open:" + u); return w; }};
+const w = {opener: 1, location: {set href(v){ calls.push("goto:" + v); }}, close(){ calls.push("close"); }};
+globalThis.fetch = async (url, opts = {}) => {
+  calls.push([opts.method || "GET", url, opts.headers && opts.headers["X-Aurora-Token"] || "", opts.body || ""]);
+  const a = answers[url] || {status: 200, json: {}};
+  return {ok: a.status < 400, status: a.status, json: async () => a.json};
+};
+HEAD
+BODY
+const out = {};
+// 1. вход по коду
+search = "?c=CODE1";
+answers = {"/api/session": {status: 200, json: {token: "T-1"}}, "/api/ping": {status: 200, json: {}}};
+out.byCode = {ok: await acquireSession(), token: TOKEN, saved: store[SESSION_KEY], calls: calls.splice(0)};
+// 2. перезагрузка вкладки: адрес пуст, токен в sessionStorage
+TOKEN = ""; search = "";
+out.reload = {ok: await acquireSession(), token: TOKEN, calls: calls.splice(0)};
+// 3. запрос идёт заголовком и без ?t=
+answers = {"/api/state?x=1&lang=en": {status: 200, json: {a: 1}}};
+S.lang = "en";
+await api("/api/state?x=1");
+out.header = calls.splice(0);
+// 4. токен отвергнут сервером: одно окно, без тостов
+S.lang = "ru";
+answers = {"/api/state": {status: 403, json: {error: "сессия", code: "session"}}};
+await api("/api/state"); await api("/api/state");
+out.gate = {nodes: nodes.filter(n => n.id === "authGate").length, toasts: toasts.length, token: TOKEN, saved: store[SESSION_KEY] ?? null};
+calls.length = 0;
+// 5. код не подошёл — окно, токена нет
+nodes.length = 0; TOKEN = ""; search = "?c=BAD"; delete store[SESSION_KEY];
+answers = {"/api/session": {status: 403, json: {error: "нет", code: "session"}}};
+out.badCode = {ok: await acquireSession(), token: TOKEN, gate: nodes.some(n => n.id === "authGate"), calls: calls.splice(0)};
+// 6. старая закладка с ?t=: токен берём, из адреса стираем, проверяем
+nodes.length = 0; TOKEN = ""; search = "?t=OLD";
+answers = {"/api/ping": {status: 200, json: {}}};
+out.legacy = {ok: await acquireSession(), token: TOKEN, calls: calls.splice(0)};
+// 7. ссылка на отчёт: вкладка сразу, билет, переход
+TOKEN = "T-1";
+answers = {"/api/link": {status: 200, json: {url: "/api/report/file?id=a&c=TICKET"}}};
+await openLink("/api/report/file?id=a");
+out.link = {calls: calls.splice(0), opener: w.opener};
+answers = {"/api/link": {status: 400, json: {error: "нет"}}};
+await openLink("/api/state");
+out.refused = calls.splice(0).filter(c => typeof c === "string");
+console.log(JSON.stringify(out));
+""".replace("HEAD", head.replace("let TOKEN", "var TOKEN").replace("const SESSION_KEY", "var SESSION_KEY")).replace("BODY", body)
+    src = tmp / "session.mjs"
+    src.write_text(harness, encoding="utf-8")
+    cp = subprocess.run([node, str(src)], capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=60)
+    assert cp.returncode == 0 and cp.stdout.strip(), (cp.stderr or cp.stdout)[:1200]
+    r = json.loads(cp.stdout.strip().splitlines()[-1])
+    assert r["byCode"]["ok"] and r["byCode"]["token"] == "T-1" and r["byCode"]["saved"] == "T-1", r["byCode"]
+    assert "replace:/" in r["byCode"]["calls"], "код остался в адресе"
+    assert r["byCode"]["calls"][0] == ["POST", "/api/session", "", '{"code":"CODE1"}'], r["byCode"]["calls"]
+    assert r["reload"]["ok"] and r["reload"]["token"] == "T-1", r["reload"]
+    assert r["header"] == [["GET", "/api/state?x=1&lang=en", "T-1", ""]], r["header"]
+    assert r["gate"] == {"nodes": 1, "toasts": 0, "token": "", "saved": None}, r["gate"]
+    assert not r["badCode"]["ok"] and r["badCode"]["token"] == "" and r["badCode"]["gate"], r["badCode"]
+    assert r["legacy"]["ok"] and r["legacy"]["token"] == "OLD" and "replace:/" in r["legacy"]["calls"], r["legacy"]
+    link = r["link"]["calls"]
+    assert link[0] == "open:about:blank" and r["link"]["opener"] is None, link
+    assert link[-1] == "goto:/api/report/file?id=a&c=TICKET" and "TICKET" not in json.dumps(link[1:-1]), link
+    assert r["refused"] == ["open:about:blank", "close"], r["refused"]

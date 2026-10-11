@@ -1931,7 +1931,7 @@ def test_clashes_remember_what_they_have_examined(tmp: Path):
 
 @test
 def test_the_panel_checks_the_host_before_it_gives_the_token_away(tmp: Path):
-    """Главная страница с токеном сессии отдаётся только на петлевой адрес.
+    """Панель отвечает только на петлевой адрес; токена в главной странице нет.
 
     Страница отдавалась раньше проверки `Host`: чужой сайт, чьё имя перенаправили на
     127.0.0.1, читал её и забирал токен. И токен не из ASCII ронял `compare_digest`
@@ -1947,10 +1947,12 @@ def test_the_panel_checks_the_host_before_it_gives_the_token_away(tmp: Path):
     srv.roots = [str(tmp)]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-    def get(path: str, host: str):
+    def get(path: str, host: str, token: str = ""):
         c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=20)
         c.putrequest("GET", path, skip_host=True)
         c.putheader("Host", host)
+        if token:
+            c.putheader("X-Aurora-Token", token)
         c.endheaders()
         r = c.getresponse()
         return r.status, r.read().decode("utf-8", "replace")
@@ -1958,10 +1960,10 @@ def test_the_panel_checks_the_host_before_it_gives_the_token_away(tmp: Path):
         code, body = get("/", "evil.example:8787")
         assert code == 403 and ck.TOKEN not in body, "токен отдан на чужое имя хоста"
         code, body = get("/", "localhost:8787")
-        assert code == 200 and ck.TOKEN in body, "на свой адрес страница не отдана"
+        assert code == 200 and ck.TOKEN not in body, "на свой адрес страница не отдана или с токеном"
         code, body = get("/", "[::1]:8787")
         assert code == 200, "адрес [::1] с портом не опознан"
-        code, body = get("/api/ping?t=%D1%82%D0%BE%D0%BA%D0%B5%D0%BD", "127.0.0.1:8787")
+        code, body = get("/api/ping", "127.0.0.1:8787", token="t\u00e9ken")
         assert code == 403, f"токен не из ASCII: ждали отказ, получили {code}"
     finally:
         srv.shutdown()
@@ -2887,8 +2889,8 @@ def test_the_panel_server_answers_in_the_language_the_page_asks_for(tmp: Path):
 
     def call(method: str, path: str, body: str = ""):
         c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=60)
-        c.request(method, path + ("&" if "?" in path else "?") + "t=" + ck.TOKEN, body=body or None,
-                  headers={"Content-Type": "application/json"})
+        c.request(method, path, body=body or None,
+                  headers={"Content-Type": "application/json", "X-Aurora-Token": ck.TOKEN})
         r = c.getresponse()
         return r.status, json.loads(r.read().decode("utf-8"))
     cyr = re.compile("[а-яА-ЯёЁ]")
@@ -3966,7 +3968,8 @@ def test_restart_endpoint_keeps_the_old_panel_alive_on_refusal(tmp: Path):
 
     def post():
         c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=20)
-        c.request("POST", "/api/restart?t=" + ck.TOKEN, body="{}", headers={"Content-Type": "application/json"})
+        c.request("POST", "/api/restart", body="{}",
+                  headers={"Content-Type": "application/json", "X-Aurora-Token": ck.TOKEN})
         r = c.getresponse()
         return r.status, json.loads(r.read().decode("utf-8"))
     os._exit = lambda code=0: exits.append(code)         # сами не умираем, только записываем
