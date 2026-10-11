@@ -946,14 +946,15 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
         # отбрасывает кусок (его текст пропал бы из базы), а получает суффикс. Пусто — часть
         # уже вынесена этим родителем.
         base = normalize_title(title)[:90]
-        name = part_stem(base, root, hit.stem, [n for n, _t in made])
+        name, mark = part_stem(base, root, hit.stem, [n for n, _t in made],
+                               os.path.join(root, section))
         if not name:
             continue
         path = os.path.join(root, section, name + ".md")
         if path in cards:
             continue
-        if name != base:
-            title = f"{title} ({name[len(base) + 1:]})"
+        if mark:
+            title = f"{title} ({mark})"
         card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
                 f'type: {frontmatter(text).get("type") or "concept"}\n'
                 + (f'source: {src}\n' if src else "")

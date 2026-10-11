@@ -65,7 +65,7 @@ def cards() -> dict:
     return out
 
 
-def named(live: dict, want=()) -> dict:
+def named(live: dict, want=(), guessed=None) -> dict:
     """Имена, под которыми карточку можно назвать в `corrects:`: живые и прежние.
 
     Прежнее имя — синоним живой карточки (ремонт снял код документа, прежнее имя ушло в
@@ -73,10 +73,11 @@ def named(live: dict, want=()) -> dict:
     которое ремонт привёл к переносимому. Живое имя всегда первее: оно не перекрывается ни
     синонимом, ни преемником. Шапки читаются только если среди `want` есть не живое имя:
     пока все исправления называют живые карточки, прогон (в том числе панельный `--check`)
-    ничего лишнего не читает.
+    ничего лишнего не читает. Имена, найденные только по написанию (не по записи в базе),
+    добавляются в `guessed`: отчёт просит их проверить.
     """
     miss = [n for n in want if n and n not in live]
-    return {**name_lineage(KB, live, miss), **live} if miss else live
+    return {**name_lineage(KB, live, miss, guessed), **live} if miss else live
 
 
 def body_of(text: str) -> str:
@@ -326,10 +327,13 @@ def main() -> int:
         print(f"kb_corrections: нет {KB}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     live = cards()
-    known = named(live, [o for c in corrections() for o in c["owners"]])
-
     if a.new:
         return cmd_new(a.new, a.text)
+    # Только действующие исправления: карточка снятого нередко давно ушла, и из-за неё
+    # каждый прогон читал бы шапки всех карточек.
+    guessed: set = set()
+    known = named(live, [o for c in corrections() if c["status"] == "active"
+                         for o in c["owners"]], guessed)
 
     if a.retire:
         found = next((c for c in corrections() if c["name"] == a.retire), None)
@@ -423,10 +427,15 @@ def main() -> int:
             if doubt:
                 skipped.append((c["name"], doubt.replace("\n  ", " ")))
                 continue
-            by_card.setdefault(known[owner][0], []).append(c)
+            # Несколько имён одной карточки в одном `corrects:` (прежнее и нынешнее после
+            # слияния или переименования) — одно исправление, а не два.
+            bucket = by_card.setdefault(known[owner][0], [])
+            if all(x["name"] != c["name"] for x in bucket):
+                bucket.append(c)
             if owner not in live:
                 heir = os.path.splitext(os.path.basename(known[owner][0]))[0]
-                redirected.append((c["name"], owner, heir))
+                if (c["name"], owner, heir) not in redirected:
+                    redirected.append((c["name"], owner, heir))
     for card, cs in sorted(by_card.items()):
         # Одна кривая карточка не имеет права остановить все исправления: до 1.99.0
         # карточка без шапки роняла прогон трассировкой, и остальные не применялись.
@@ -442,7 +451,9 @@ def main() -> int:
     if redirected:
         print(f"\nНайдено по прежнему имени: {len(redirected)}")
         for name, was, heir in redirected:
-            print(f"- `{name}`: «{was}» → [[{heir}]] (синоним или `superseded_by`); "
+            how = ("найдено по написанию, проверьте, та ли это карточка" if was in guessed
+                   else "синоним или `superseded_by`")
+            print(f"- `{name}`: «{was}» → [[{heir}]] ({how}); "
                   "поправьте `corrects:`, чтобы привязка не зависела от цепочки")
     if skipped:
         print(f"\nПропущено: {len(skipped)}")

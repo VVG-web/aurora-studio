@@ -6044,11 +6044,11 @@ def apply_split_parts(path: str, parts: list) -> list:
         base = re.sub(r"[^\w\- ]+", "", name).strip().replace(" ", "-")[:90] or f"часть-{i+1}"
         # Занятое имя не отбрасывает кусок (его текст пропал бы из базы), а получает суффикс;
         # пусто — часть уже вынесена этим родителем (прошлый прогон).
-        safe = part_stem(base, kb, stem, [m[0] for m in made])
+        safe, mark = part_stem(base, kb, stem, [m[0] for m in made], folder)
         if not safe:
             continue
-        if safe != base:
-            name = f"{name} ({safe[len(base) + 1:]})"
+        if mark:
+            name = f"{name} ({mark})"
         made.append((safe, name, os.path.join(folder, safe + ".md"), chunk))
     if len(made) < 2:
         return []

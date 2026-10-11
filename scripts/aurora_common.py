@@ -2575,49 +2575,58 @@ def card_title_safe(name: str) -> str:
     return HEAD_BREAKS_RE.sub(" ", str(name or "")).replace('"', "'").replace("\\", "/").strip()
 
 
+def name_key(name: str) -> str:
+    """Ключ сравнения имён файлов: Unicode NFC и регистр (так видит имя файловая система).
+
+    «Общий» в NFD (так имя приходит из macOS) и в NFC — один файл, а «Описание» и «ОПИСАНИЕ»
+    на macOS и Windows — тоже один файл.
+    """
+    return unicodedata.normalize("NFC", name).lower()
+
+
 def stem_paths(stem: str, kb: str = "AuroraKnowledgeDB") -> list:
-    """Пути живых карточек с таким именем — в любом разделе, без учёта регистра."""
-    want = f"{stem}.md".lower()
-    out = []
-    for dirpath, dirs, files in safe_walk(kb):
-        dirs[:] = [d for d in dirs if d != "_archive"]
-        out += [os.path.join(dirpath, f) for f in files if f.lower() == want]
-    return out
-
-
-def stem_taken(stem: str, kb: str = "AuroraKnowledgeDB") -> bool:
-    """Есть ли в базе живая карточка с таким именем — в любом разделе.
+    """Пути живых карточек с таким именем — в любом разделе, без учёта регистра и NFC/NFD.
 
     Имя карточки уникально по всей базе, а не в своей папке: ссылка `[[Имя]]` не знает
     разделов, и вторая карточка с тем же именем делает её неоднозначной. Архив не считается:
     слитая карточка там живёт под прежним именем.
     """
-    return bool(stem_paths(stem, kb))
+    want = name_key(f"{stem}.md")
+    out = []
+    for dirpath, dirs, files in safe_walk(kb):
+        dirs[:] = [d for d in dirs if d != "_archive"]
+        out += [os.path.join(dirpath, f) for f in files if name_key(f) == want]
+    return out
 
 
-def part_stem(base: str, kb: str, parent: str, taken=()) -> str:
-    """Свободное имя для части разрезанной карточки `parent`. → имя; пусто — часть уже вынесена.
+def part_stem(base: str, kb: str, parent: str, taken=(), folder: str = "") -> tuple:
+    """Свободное имя для части разрезанной карточки `parent`. → (имя, суффикс); имя пусто — часть уже вынесена.
 
     Имя уникально по всей базе, но занятое имя не повод выбросить кусок: текст части тогда
     пропал бы из базы, а карта родителя о нём промолчала бы. Берётся первое свободное из
-    `base`, `base-<родитель>`, `base-2`, `base-3`…; пусто — только когда карточка с таким
-    именем уже часть этого родителя (`part_of`): её вынес прошлый прогон. Имена, занятые в
-    этом же прогоне (`taken`), считаются занятыми.
+    `base`, `base-<родитель>`, `base-2`, `base-3`…; имя пусто — только когда карточка с таким
+    именем уже часть этого родителя (`part_of`): её вынес прошлый прогон. Суффикс (без дефиса)
+    отдаётся готовым: срез по длине `base` ломался, когда основа обрезана до 90 знаков.
+    Имена, занятые в этом же прогоне (`taken`), считаются занятыми — без учёта регистра и
+    NFC/NFD; `folder` — папка, куда ляжет файл: имя, которое файловая система считает уже
+    существующим файлом, тоже занято, даже если обход базы его не увидел.
     """
-    taken = set(taken)
+    taken = {name_key(t) for t in taken}
     for i in range(0, 60):
         tail = "" if i == 0 else f"-{parent}" if i == 1 else f"-{i}"
         cand = base[:max(1, 90 - len(tail))] + tail
-        if cand in taken:
+        if name_key(cand) in taken:
             continue
         have = stem_paths(cand, kb)
+        if not have and folder and os.path.exists(os.path.join(folder, cand + ".md")):
+            have = [os.path.join(folder, cand + ".md")]
         if not have:
-            return cand
+            return cand, tail[1:]
         if any(leaf_name(((frontmatter(head_text(p)) or {}).get("part_of") or "")
                           .strip().strip('"').strip("[]").split("|")[0]) == parent
                for p in have):
-            return ""
-    return ""
+            return "", ""
+    return "", ""
 
 
 # Суффикс имени архивной карточки: время (`-20261011-2308Z`) или счётчик (`-2`), когда в
@@ -2636,17 +2645,30 @@ def superseded_target(fm: dict) -> str:
     return leaf_name((m.group(1) if m else v.strip(" \"'[]").split(",")[0]).split("|")[0])
 
 
-def name_lineage(kb: str, live: dict, want=None) -> dict:
+def fold_soft(name: str) -> str:
+    """Ключ сравнения имён, где серия разделителей — один дефис: «ALG-014. Подготовка» ==
+    «ALG-014-Подготовка», «US-3.6.14» == «US-3-6-14», но «US-1.1» != «US-11».
+
+    `fold_hard` выкидывает разделители совсем и сворачивает границы цифр: для ссылок в тексте
+    это допустимо (опечатка в ссылке), для слова человека — нет: поправка к «US-1.1» не должна
+    уезжать в карточку «US-11».
+    """
+    return re.sub(r"[\s\-_.,·:;#]+", "-", fold(name)).strip("-")
+
+
+def name_lineage(kb: str, live: dict, want=None, guessed=None) -> dict:
     """Прежние имена живых карточек: {имя → [пути живой карточки]}. Живые имена не входят.
 
     Слово человека (`Raw/corrections`, `corrects: "[[Имя]]"`) указывает карточку по имени, а
     имя меняется: ремонт снимает код документа (прежнее имя уходит в `aliases`), слияние и
     замена уносят карточку в `_archive` с `superseded_by`. Имя находится по синониму живой
     карточки (если он один) и по цепочке `superseded_by` архивных карточек до живой (имя
-    архивной без суффикса времени и счётчика тоже). Для имён из `want` есть ещё запасной ход,
-    как у ссылок в `kb_fix`: сравнение без разделителей и гомоглифов (имя, которое ремонт
-    привёл к переносимому). Не нашлось или неоднозначно — имени здесь нет: угадывать, чьё это
-    слово, нельзя.
+    архивной без суффикса времени и счётчика тоже; если одноимённые архивные копии ведут к
+    разным карточкам, имя неоднозначно). Для имён из `want` есть ещё запасной ход: сравнение
+    без учёта написания разделителей и гомоглифов (`fold_soft`: имя, которое ремонт привёл к
+    переносимому); найденные им имена попадают в `guessed` — это догадка по написанию, а не
+    запись в базе. Не нашлось или неоднозначно — имени здесь нет: угадывать, чьё это слово,
+    нельзя.
     """
     out: dict = {}
     claims: dict = {}
@@ -2659,8 +2681,7 @@ def name_lineage(kb: str, live: dict, want=None) -> dict:
     for a, who in claims.items():
         if len(who) == 1:
             out[a] = live[next(iter(who))]
-    heirs: dict = {}
-    bare: dict = {}
+    successors: dict = {}
     for dirpath, _dirs, files in safe_walk(os.path.join(kb, "_archive")):
         for f in sorted(files):
             if not f.endswith(".md") or f.startswith("_"):
@@ -2668,12 +2689,11 @@ def name_lineage(kb: str, live: dict, want=None) -> dict:
             to = superseded_target(frontmatter(head_text(os.path.join(dirpath, f))) or {})
             if to:
                 stem = f[:-3]
-                heirs.setdefault(stem, to)
+                successors.setdefault(stem, set()).add(to)
                 if ARCHIVE_SUFFIX.sub("", stem) != stem:
-                    bare.setdefault(ARCHIVE_SUFFIX.sub("", stem), set()).add(to)
-    for b, tos in bare.items():
-        if b not in heirs and len(tos) == 1:
-            heirs[b] = next(iter(tos))
+                    successors.setdefault(ARCHIVE_SUFFIX.sub("", stem), set()).add(to)
+    # Один преемник — имя разрешимо; два разных (одноимённые копии в архиве) — нет.
+    heirs = {k: next(iter(v)) for k, v in successors.items() if len(v) == 1}
     for old, heir in heirs.items():
         if old in live or old in out:
             continue
@@ -2690,11 +2710,14 @@ def name_lineage(kb: str, live: dict, want=None) -> dict:
             continue
         if not keys:
             for stem in live:
-                keys.setdefault(fold_hard(stem), set()).add(stem)
-        hit = keys.get(fold_hard(n)) or keys.get(fold_hard(card_filename(n))) or set()
+                keys.setdefault(fold_soft(stem), set()).add(stem)
+        hit = keys.get(fold_soft(n)) or keys.get(fold_soft(card_filename(n))) or set()
         if len(hit) == 1:
             out[n] = live[next(iter(hit))]
+            if guessed is not None:
+                guessed.add(n)
     return out
+
 
 _GLUED_QUOTES = re.compile(r"(?<=\S)[ \t]*(?=" + re.escape(QUOTES) + ")")
 

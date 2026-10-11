@@ -176,9 +176,10 @@ text stays verbatim.
 **The human's word survives changes to a card.** A correction (`Raw/corrections/`) names its card by name, and names
 change, so `kb:correct` and `kb:kind` look the card up by its live name, by a synonym (the former name after a
 document code was stripped) and along the `superseded_by` chain from `_archive` (merge, supersede; the successor name is read whole, dots included), and a name typed differently (dot instead of hyphen,
-homoglyphs) by a separator-free comparison; the report lists
-whatever was found by a former name on its own line. An archived copy under the same name no longer makes the name
-ambiguous. A split (`agent:distill`, `kb:split`) does not carry "Исправления человеком" and "История изменений"
+homoglyphs) by a comparison in which a run of separators equals one hyphen ("US-1.1" is not "US-11"); the report
+lists whatever was found by a former name on its own line, and asks you to check what was found by spelling alone.
+An archived copy under the same name does not make the name ambiguous if it points to the same card; copies pointing
+to different cards do. A correction that lists both the former and the current name of one card is written into it once. A split (`agent:distill`, `kb:split`) does not carry "Исправления человеком" and "История изменений"
 into the parts: they stay with the document map below the list of parts, and part titles are sanitised before they are
 written into the header; a part name must be free across the whole base: a taken name does not drop the chunk but
 gets a suffix (`-<map>`, `-2`…). A merge moves the donor's section into the

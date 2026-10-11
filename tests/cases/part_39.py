@@ -335,3 +335,127 @@ def test_protection_says_so_when_corrections_cannot_be_read(tmp: Path):
     finally:
         KC.corrections = real
         os.chdir(old)
+
+
+@test
+def test_name_found_by_spelling_does_not_cross_digit_boundaries(tmp: Path):
+    """Запасной ход по написанию сворачивает серию разделителей в один дефис, а не выкидывает
+    их: «US-1.1» не равно «US-11» (слово человека не уезжает в чужую карточку), а «ALG-014.
+    Подготовка» равно «ALG-014-Подготовка» и отчёт просит проверить такую привязку."""
+    root = make_project(tmp)
+    card(root, "Concepts/US-11.md", "Другая карточка.", status="draft")
+    card(root, "Concepts/ALG-014-Подготовка.md", "Подготовка.", status="draft")
+    _correction(root, "а-цифры", "US-1.1", "Слово про US-1.1.")
+    _correction(root, "б-написание", "ALG-014. Подготовка", "Слово по написанию.")
+    cp = run("kb_corrections.py", "--apply", cwd=root, expect_rc=0)
+    kb = root / "AuroraKnowledgeDB"
+    assert "Слово про US-1.1" not in (kb / "Concepts/US-11.md").read_text(encoding="utf-8"), \
+        f"слово уехало в чужую карточку:\n{cp.stdout}"
+    assert "нет карточки «US-1.1»" in cp.stdout, cp.stdout
+    assert "Слово по написанию" in (kb / "Concepts/ALG-014-Подготовка.md").read_text(
+        encoding="utf-8"), cp.stdout
+    assert "найдено по написанию" in cp.stdout, cp.stdout
+    com = _common()
+    assert com.fold_soft("US-3.6.14") == com.fold_soft("US-3-6-14") != com.fold_soft("US-36.14")
+
+
+@test
+def test_correction_naming_one_card_twice_is_applied_once(tmp: Path):
+    """`corrects:` с прежним и нынешним именем одной карточки (так пишет движок после слияния
+    двойников): блок «Исправления человеком» и `corrected_by` без повторов."""
+    root = make_project(tmp)
+    card(root, "Concepts/Новое-имя.md", "Тезис.", status="draft", aliases='["Старое-имя"]')
+    d = root / "Raw" / "corrections"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "икс.md").write_text(
+        '---\ncorrects: ["[[Старое-имя]]", "[[Новое-имя]]"]\ncreated: 2026-09-01\nstatus: active\n'
+        "---\n\n# Исправление\n\nСлово икс.\n", encoding="utf-8")
+    cp = run("kb_corrections.py", "--apply", cwd=root, expect_rc=0)
+    text = (root / "AuroraKnowledgeDB/Concepts/Новое-имя.md").read_text(encoding="utf-8")
+    assert text.count("Слово икс.") == 1 and text.count("> Источник исправления") == 1, text
+    assert 'corrected_by: "икс"' in text, text
+    assert "Записано в карточки: 1" in cp.stdout, cp.stdout
+
+
+@test
+def test_archived_twins_with_different_successors_make_name_ambiguous(tmp: Path):
+    """Одноимённые копии в архиве ведут к разным карточкам — имя неоднозначно, слово не
+    уходит ни в одну из них; ведут к одной — имя разрешается."""
+    root = make_project(tmp)
+    card(root, "Concepts/А.md", "Первая.", status="draft")
+    card(root, "Concepts/Б.md", "Вторая.", status="draft")
+    card(root, "_archive/Двойник.md", "Архив.", status="deprecated", superseded_by='"[[А]]"')
+    card(root, "_archive/Двойник-20261011-2308Z.md", "Архив.", status="deprecated",
+         superseded_by='"[[Б]]"')
+    card(root, "_archive/Согласны.md", "Архив.", status="deprecated", superseded_by='"[[А]]"')
+    card(root, "_archive/Согласны-2.md", "Архив.", status="deprecated", superseded_by='"[[А]]"')
+    com = _common()
+    live = {"А": ["a"], "Б": ["b"]}
+    got = com.name_lineage(str(root / "AuroraKnowledgeDB"), live)
+    assert "Двойник" not in got, "выбран первый из двух разных преемников"
+    assert got.get("Согласны") == ["a"], got
+
+
+@test
+def test_retired_corrections_do_not_trigger_header_scan(tmp: Path):
+    """Снятое исправление с именем ушедшей карточки не заставляет прогон читать шапки всех
+    карточек; действующее — заставляет."""
+    root = make_project(tmp)
+    card(root, "Concepts/Живая.md", "Тезис.", status="draft")
+    _correction(root, "снятое", "Ушла", "Слово.", extra="")
+    p = root / "Raw/corrections/снятое.md"
+    p.write_text(p.read_text(encoding="utf-8").replace("status: active", "status: archived"),
+                 encoding="utf-8")
+    sys.path.insert(0, str(SCRIPTS))
+    KC = importlib.import_module("kb_corrections")
+    calls = []
+    real = KC.name_lineage
+    KC.name_lineage = lambda *a, **k: calls.append(a) or {}
+    import os
+    old = Path.cwd()
+    try:
+        os.chdir(root)
+        import io
+        from contextlib import redirect_stdout
+        sys.argv = ["kb_corrections.py", "--check"]
+        with redirect_stdout(io.StringIO()):
+            KC.main()
+        assert not calls, "снятое исправление вызвало обход шапок"
+        _correction(root, "действующее", "Ушла", "Слово.")
+        with redirect_stdout(io.StringIO()):
+            KC.main()
+        assert len(calls) == 1, calls
+    finally:
+        KC.name_lineage = real
+        os.chdir(old)
+
+
+@test
+def test_part_stem_is_case_nfd_and_folder_aware_and_returns_real_suffix(tmp: Path):
+    """Имя части: различие только регистром и NFC/NFD — то же имя; файл в папке, которого не
+    видит обход, тоже занят; суффикс отдаётся как есть, даже когда основа обрезана до 90."""
+    import unicodedata
+    root = make_project(tmp)
+    kb = root / "AuroraKnowledgeDB"
+    com = _common()
+    # регистр внутри одного прогона
+    assert com.part_stem("ОПИСАНИЕ", str(kb), "Большая", ["Описание"]) == \
+        ("ОПИСАНИЕ-Большая", "Большая")
+    # карточка в NFD в другом разделе
+    card(root, "Processes/" + unicodedata.normalize("NFD", "Общий") + ".md", "Чужая.",
+         status="draft")
+    assert com.part_stem("Общий", str(kb), "Большая") == ("Общий-Большая", "Большая")
+    # основа длиной 89, занята: суффикс не срезается по длине основы
+    long_base = "я" * 89
+    card(root, "Concepts/" + long_base + ".md", "Чужая.", status="draft")
+    name, tail = com.part_stem(long_base, str(kb), "Большая")
+    assert tail == "Большая" and name.endswith("-Большая") and len(name) <= 90, (name, tail)
+    # разрез с занятыми по регистру именами не теряет куски
+    path = card(root, "Concepts/Родитель.md", "Тезис.", status="draft", kind="knowledge")
+    AR = importlib.import_module("agent_runner")
+    made = AR.apply_split_parts(str(path), [("Описание", "первый кусок"),
+                                            ("ОПИСАНИЕ", "второй кусок")])
+    assert len(made) == 2 and len({n.lower() for n, _t in made}) == 2, made
+    both = "".join(p.read_text(encoding="utf-8") for p in (kb / "Concepts").glob("*.md"))
+    assert "первый кусок" in both and "второй кусок" in both
+    assert any(t == "ОПИСАНИЕ (Родитель)" for _n, t in made), made
