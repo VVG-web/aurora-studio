@@ -852,7 +852,9 @@ function ensureVditor(){
   VDITOR_READY = new Promise((ok, fail)=>{
     const css = el("link",{rel:"stylesheet", href:"/vendor/vditor/dist/index.css"});
     document.head.append(css);
-    const s = el("script",{src:"/vendor/vditor/dist/index.min.js"});
+    // `?s=1` — адрес сменился вместе с правкой при отдаче (mermaid `strict`): браузер, державший
+    // прежний файл сутки, обязан взять новый, а не старый.
+    const s = el("script",{src:"/vendor/vditor/dist/index.min.js?s=1"});
     s.onload = ok;
     s.onerror = ()=>{ toast(t("files.editor_failed"), "err"); fail(); };
     document.head.append(s);
@@ -4496,6 +4498,11 @@ function renderGitCard(box){
 function openDoc(path){
   show("reference", {doc: path});
 }
+// Ссылка справки не ведёт никуда (адрес из документа не берём), а гасит переход делегатом:
+// встроенный `onclick=` запрещён политикой страницы (CSP без `unsafe-inline` для скриптов).
+document.addEventListener("click", e => {
+  if (e.target && e.target.closest && e.target.closest("a.md-dead")) e.preventDefault();
+});
 function md(src){
   if (src.startsWith("---")){            // YAML-шапка документа читателю не нужна
     const end = src.indexOf("\n---", 3);
@@ -4506,7 +4513,7 @@ function md(src){
     .replace(/`([^`]+)`/g,"<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g,"$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="#" onclick="return false">$1</a>');
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="#" class="md-dead">$1</a>');
   for (let i=0;i<lines.length;i++){
     const l = lines[i];
     if (l.startsWith("```")){ out.push(inCode?"</code></pre>":"<pre><code>"); inCode=!inCode; continue; }

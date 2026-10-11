@@ -552,6 +552,10 @@ td.max-val{color:#f87171;font-weight:600}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 const DATA = __DATA__;
+// Имена людей и учётные записи приходят из Jira и Confluence — их пишут сами пользователи
+// чужих систем. В разметку они идут только через esc(): иначе имя с тегом исполняется.
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 // Время сборки хранится в UTC; показываем по часовому поясу системы того, кто открыл отчёт.
 document.querySelectorAll("time[data-utc]").forEach(t => {
   const d = new Date(t.dataset.utc);
@@ -633,11 +637,11 @@ function mergedTitle(name) {
 }
 function mergedMark(name) {
   const t = mergedTitle(name);
-  return t ? ` <span class="merged-mark" title="${t}">≡</span>` : '';
+  return t ? ` <span class="merged-mark" title="${esc(t)}">≡</span>` : '';
 }
 document.getElementById('merged-note').innerHTML = Object.keys(MERGED).length
   ? '≡ — строки объединены по учётной записи: ' + Object.entries(MERGED)
-      .map(([fio, m]) => `<b>${fio}</b> = ${m.aliases.join(', ')}${m.account ? ' · ' + m.account : ''}`)
+      .map(([fio, m]) => `<b>${esc(fio)}</b> = ${esc(m.aliases.join(', '))}${m.account ? ' · ' + esc(m.account) : ''}`)
       .join('; ')
   : '';
 
@@ -665,7 +669,7 @@ function fillFilterGroups() {
   [...roles].sort().forEach(r => {
     const lbl = document.createElement('label');
     lbl.className = 'chkgrp-label';
-    lbl.innerHTML = `<input type="checkbox" value="${r}"><span>${r}</span>`;
+    lbl.innerHTML = `<input type="checkbox" value="${esc(r)}"><span>${esc(r)}</span>`;
     chkgrpRole.appendChild(lbl);
   });
 
@@ -673,16 +677,16 @@ function fillFilterGroups() {
     const lbl = document.createElement('label');
     lbl.className = 'chkgrp-label';
     // прежние ФИО показываем рядом: по ним ищут и по ним же узнают человека
-    const alias = MERGED[p] ? ` <i class="alias-hint">(${MERGED[p].aliases.join(', ')})</i>` : '';
+    const alias = MERGED[p] ? ` <i class="alias-hint">(${esc(MERGED[p].aliases.join(', '))})</i>` : '';
     if (MERGED[p]) lbl.title = mergedTitle(p);
-    lbl.innerHTML = `<input type="checkbox" value="${p}"><span>${p}${alias}</span>`;
+    lbl.innerHTML = `<input type="checkbox" value="${esc(p)}"><span>${esc(p)}${alias}</span>`;
     chkgrpPerson.appendChild(lbl);
   });
 
   [...weeks].forEach(w => {
     const lbl = document.createElement('label');
     lbl.className = 'chkgrp-label';
-    lbl.innerHTML = `<input type="checkbox" value="${w}"><span>${w}</span>`;
+    lbl.innerHTML = `<input type="checkbox" value="${esc(w)}"><span>${esc(w)}</span>`;
     chkgrpWeek.appendChild(lbl);
   });
 }
@@ -1416,7 +1420,7 @@ function updateBlock3() {
       else if (mean === maxes[k] && mins[k] !== maxes[k]) cls = 'max-val';
       return `<td class="${cls}">${mean.toFixed(1)}</td>`;
     }).join('');
-    return `<tr><td><b>${emp}</b>${mergedMark(emp)}</td><td>${d.role}</td><td>${d.totalN}</td>${cells}</tr>`;
+    return `<tr><td><b>${esc(emp)}</b>${mergedMark(emp)}</td><td>${esc(d.role)}</td><td>${d.totalN}</td>${cells}</tr>`;
   }).join('');
 }
 

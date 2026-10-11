@@ -163,6 +163,13 @@ flowchart LR
 - Documents can be read only from `docs/`, `skills/aurora-vault`, `CHANGELOG.md`, `commands.txt`, `README.md`.
 - A section's files (code, not project data) are served without a token so that relative imports inside a section work.
 - The form neither accepts nor shows secrets.
+- Foreign text (Confluence and website mirrors, people's names from Jira) must not become code in the
+  panel's origin, which holds the session token. So the page is served with a `Content-Security-Policy`
+  (own scripts plus a single inline one with a one-time `nonce`; no `object`, `<base>` or foreign frame;
+  `X-Frame-Options: DENY`), the panel code has no inline `onclick=` handlers or `javascript:` links (a test
+  checks), mermaid in the editor is drawn in `strict` mode (patched while serving the vendored file, the
+  file itself is untouched), and built reports are served in a sandbox without `allow-same-origin` and with
+  the network closed; people's names in the report template are escaped.
 
 ## 7. Look and feel
 

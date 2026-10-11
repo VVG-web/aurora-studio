@@ -21,7 +21,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import codecs
+import functools
 import getpass
 import hashlib
 import importlib.util
@@ -4449,6 +4451,54 @@ def start_job(project: str, cmd: str, extra: list, parent: str = "") -> str:
 
 # --------------------------------------------------------------------- сервер
 
+# Панель показывает чужое: зеркала Confluence и сайтов, отчёты с именами людей из Jira. Всё,
+# что там попадёт в разметку, не должно стать кодом в origin панели: у этого origin токен
+# сессии, а токен даёт запуск команд. Поэтому у страницы своя политика — скрипты только свои
+# и один встроенный с одноразовым `nonce` (атрибутов-обработчиков и `javascript:` нет), без
+# плагинов, без `<base>`, без вставки в чужую рамку. Стили оставлены встроенными: их держат
+# атрибуты `style=` и сам редактор, а исполнять они ничего не могут.
+PAGE_CSP = ("default-src 'self'; script-src 'self' 'nonce-{nonce}'{hashes}; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            "font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; "
+            "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+# Редактор сам вставляет в страницу встроенный скрипт со значками панели: читает `icons/ant.js`
+# запросом и кладёт текст в `<script>` (nonce у него, конечно, нет). Разрешаем ровно этот
+# текст по хэшу, а не встроенные скрипты вообще; хэш считается с файла, а не вшит —
+# обновление вендора ничего не ломает.
+VENDOR_INLINE_SCRIPTS = ("vditor/dist/js/icons/ant.js",)
+
+
+@functools.lru_cache(maxsize=1)
+def page_csp_hashes() -> str:
+    """Хэши встроенных скриптов вендора для `script-src`: ` 'sha256-…'` на каждый файл."""
+    out = ""
+    for rel in VENDOR_INLINE_SCRIPTS:
+        full = inside(VENDOR_DIR, rel)
+        if full and os.path.isfile(full):
+            with open(full, "rb") as f:
+                out += " 'sha256-%s'" % base64.b64encode(hashlib.sha256(f.read()).digest()).decode()
+    return out
+
+
+# Отчёт — самостоятельный документ чужой сборки. Он отдаётся в песочнице без своего origin
+# (нет `allow-same-origin`): токена в хранилище и куках у него нет. Сеть закрыта целиком
+# (`connect-src 'none'`, картинки только из самой страницы), чтобы скрипт отчёта не мог
+# дёрнуть API панели; единственный разрешённый внешний скрипт — график с публичного CDN,
+# как и было (в закрытом контуре его кладут рядом, см. шаблон отчёта).
+REPORT_CSP = ("sandbox allow-scripts allow-downloads; default-src 'none'; "
+              "script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; "
+              "img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; "
+              "base-uri 'none'; frame-ancestors 'none'")
+# Правки вендоренного кода при отдаче (сам файл в репозитории остаётся как пришёл от
+# автора): редактор рисует mermaid с `securityLevel:"loose"` и этого не настраивает — в
+# этом режиме `click A href "javascript:…"` в чужой схеме исполняется по клику, а итоговый
+# SVG не чистится. Включаем `strict`: ссылки чистятся, вызов функций по имени выключен.
+# Тест следит, что подменяемая строка в файле есть: сменился вендор — правка пересматривается.
+VENDOR_PATCHES = {
+    "vditor/dist/index.min.js": ((b'securityLevel:"loose"', b'securityLevel:"strict"'),),
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AuroraCockpit"
 
@@ -4490,6 +4540,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def send_safety_headers(self, csp: str = "", frame: bool = False):
+        """Заголовки, без которых браузер вправе угадать тип ответа и встроить его в чужую рамку."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if frame:
+            self.send_header("X-Frame-Options", "DENY")
+        if csp:
+            self.send_header("Content-Security-Policy", csp)
+
     def send_json(self, payload, code: int = 200):
         # Язык просит страница (`?lang=en`, в том числе у POST): сообщения об ошибках и отказах
         # переводятся здесь, в одной точке, а не в каждом из сотни мест, где они рождаются.
@@ -4501,6 +4559,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_safety_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -4528,6 +4587,7 @@ class Handler(BaseHTTPRequestHandler):
         # Модуль — наш код и меняется вместе с китом: кэшировать его нельзя, иначе
         # после обновления человек получит старый раздел и новое ядро.
         self.send_header("Cache-Control", "no-store")
+        self.send_safety_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -4540,11 +4600,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         with open(full, "rb") as f:
             body = f.read()
+        for was, now in VENDOR_PATCHES.get(os.path.relpath(full, os.path.realpath(base)).replace("\\", "/"), ()):
+            body = body.replace(was, now)
         self.send_response(200)
         self.send_header("Content-Type", self.STATIC_TYPES[ext] + "; charset=utf-8"
                          if ext in (".js", ".css", ".json", ".svg") else self.STATIC_TYPES[ext])
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "max-age=86400")
+        self.send_safety_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -4557,16 +4620,23 @@ class Handler(BaseHTTPRequestHandler):
             html = ui_source()
             if not html:
                 html = "<h1>cockpit/ui/index.html не найден</h1>"
+            nonce = secrets.token_urlsafe(18)
+            # Встроенный скрипт страницы — единственный; ему и выдаём одноразовый nonce.
+            html = html.replace("<script>", f'<script nonce="{nonce}">')
             html = html.replace("__AURORA_TOKEN__", TOKEN)
             # Русский каталог уезжает вместе со страницей, а не отдельным запросом.
             # Пока за ним ходили по сети, панель зависела от него до первой отрисовки:
             # сервер не ответил — и вместо надписей человек видит имена ключей, а то и
             # пустые экраны. Язык по умолчанию не имеет права зависеть от сети.
+            # «<» в JSON уходит как \u003c: строка с `</script>` иначе закрывает встроенный
+            # скрипт посреди каталога и дописывает свой.
             html = html.replace('"__AURORA_I18N__"', json.dumps(
-                i18n_catalogue(DEFAULT_LANG).get("strings") or {}, ensure_ascii=False))
+                i18n_catalogue(DEFAULT_LANG).get("strings") or {},
+                ensure_ascii=False).replace("<", "\\u003c"))
             body = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_safety_headers(PAGE_CSP.format(nonce=nonce, hashes=page_csp_hashes()), frame=True)
             self.send_header("Content-Length", str(len(body)))
             # Страница собирается заново на каждый запрос (токен, каталог строк) — её
             # кэширование делает обновление кита невидимым до очистки кэша браузера.
@@ -4779,6 +4849,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = read_text(old_path, limit=64_000_000).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_safety_headers(REPORT_CSP, frame=True)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -4792,6 +4863,7 @@ class Handler(BaseHTTPRequestHandler):
                              limit=64_000_000).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_safety_headers(REPORT_CSP, frame=True)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
