@@ -121,10 +121,19 @@ def read_context(cwd: str, paths: list) -> tuple:
                 notes.append(f"«{rel}» — в папке {len(files)} текстовых файлов, взяты первые "
                              f"{FOLDER_FILES}")
                 files = files[:FOLDER_FILES]
+        real_cwd = os.path.realpath(cwd)
         for f in files:
-            frel = os.path.relpath(f, os.path.realpath(cwd)).replace(os.sep, "/")
+            frel = os.path.relpath(f, real_cwd).replace(os.sep, "/")
             if is_secret(frel):
                 continue
+            # os.walk выдаёт файлы-ссылки по имени ссылки: читает же open() цель. Граница та же,
+            # что у прямого упоминания в inside(): цель в проекте и не секрет, не служебное.
+            real_f = os.path.realpath(f)
+            if real_f != f:
+                if not (real_f == real_cwd or real_f.startswith(real_cwd + os.sep)) \
+                        or is_secret(os.path.relpath(real_f, real_cwd)):
+                    notes.append(f"«{frel}» — ссылка ведёт за пределы проекта или к секретам, пропущена")
+                    continue
             if used >= TOTAL_CAP:
                 notes.append(f"«{frel}» — не вошёл: общий предел {TOTAL_CAP} знаков")
                 continue

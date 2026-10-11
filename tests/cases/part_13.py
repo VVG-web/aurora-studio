@@ -220,6 +220,27 @@ def test_request_context_reads_mentions_attachments_and_never_secrets(tmp: Path)
     assert "секрет" not in block, "секрет попал в задание модели"
     assert any("секреты" in n for n in notes) and any("чужое" in n for n in notes), notes
 
+    # ссылки внутри упомянутой ПАПКИ: os.walk отдаёт имя ссылки, читать нужно цель (BL-NEW-01)
+    (root / "Links").mkdir()
+    (root / "Links" / "обычный.md").write_text("ОБЫЧНЫЙ-ТЕКСТ\n", encoding="utf-8")
+    (root / "Links" / "свой.md").write_text("СВОЙ-ТЕКСТ\n", encoding="utf-8")
+    outside = tmp / "снаружи"
+    outside.mkdir()
+    (outside / "чужое.md").write_text("OUTSIDE-TEXT\n", encoding="utf-8")
+    try:
+        os.symlink(outside / "чужое.md", root / "Links" / "наружу.md")
+        os.symlink(root / ".env.aurora.test", root / "Links" / "секрет.md")
+        os.symlink(root / "local" / "mcp.json", root / "Links" / "служебное.md")
+        os.symlink(root / "Links" / "свой.md", root / "Links" / "алиас.md")
+    except (OSError, NotImplementedError):
+        pass        # без прав на ссылки (Windows) проверять нечего
+    else:
+        block, notes = RC.read_context(str(root), ["Links"])
+        assert "ОБЫЧНЫЙ-ТЕКСТ" in block and "СВОЙ-ТЕКСТ" in block, "обычные файлы папки не прочитаны"
+        for leak in ("OUTSIDE-TEXT", "TOKEN=секрет", '"k"'):
+            assert leak not in block, f"ссылка внутри папки вывела к «{leak}»"
+        assert sum("пропущена" in n for n in notes) == 3, notes
+
     # навыки: проект → кит → ~/.claude/skills; вложенный навык — на один уровень
     home = tmp / "home"
     (home / ".claude" / "skills" / "grill-me").mkdir(parents=True)

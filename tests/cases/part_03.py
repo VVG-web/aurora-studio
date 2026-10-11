@@ -1095,6 +1095,12 @@ def test_agent_file_tools_follow_links_before_trusting_the_path(tmp: Path):
     listing = tools["list_dir"]("Templates").split("\n")
     assert listing == ["обычный.md"], f"list_dir показал цели за пределами проекта: {listing}"
     assert ".env.aurora.local" not in tools["list_dir"](".").split("\n")
+    # большая папка: показаны первые 200 разрешённых, проверка не идёт по всем записям
+    (root / "Many").mkdir()
+    for i in range(300):
+        (root / "Many" / f"f{i:04d}.md").write_text("x", encoding="utf-8")
+    many = tools["list_dir"]("Many").split("\n")
+    assert many == [f"f{i:04d}.md" for i in range(200)], f"список папки: {len(many)} записей"
 
 
 @test

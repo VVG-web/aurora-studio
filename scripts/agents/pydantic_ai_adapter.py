@@ -453,6 +453,8 @@ def register_tools(agent, allowed: list) -> None:
         try:
             shown = []
             for name in sorted(os.listdir(inside(path))):
+                if len(shown) >= 200:
+                    break          # realpath на каждую запись тысяч файлов дорог: хватит и показанных
                 try:
                     inside(os.path.join(path, name))
                 except ValueError:

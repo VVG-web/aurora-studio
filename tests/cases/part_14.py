@@ -158,6 +158,8 @@ def test_mcp_card_by_name_does_not_follow_a_link_out_of_the_base(tmp: Path):
     root = make_project(tmp)
     card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified",
          type="concept")
+    card(root, "Concepts/Credentials.md", "Понятие про учётные данные.", status="verified",
+         type="concept")
     outside = tmp / "снаружи"
     outside.mkdir()
     (outside / "чужое.md").write_text("OUTSIDE\n", encoding="utf-8")
@@ -180,6 +182,8 @@ def test_mcp_card_by_name_does_not_follow_a_link_out_of_the_base(tmp: Path):
     assert "Правила обеспечения" in M.call_tool(str(root), "kb_card", {"name": "Обеспечение"})
     assert "Правила обеспечения" in M.call_tool(str(root), "kb_card", {"name": "алиас"}), \
         "ссылка на карточку внутри базы перестала читаться"
+    assert "учётные данные" in M.call_tool(str(root), "kb_card", {"name": "Credentials"}), \
+        "карточка с именем Credentials.md отсечена как секретный файл"
 
 
 @test
