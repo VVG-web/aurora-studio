@@ -1764,7 +1764,7 @@ def _mcp_migrate_state(project: str, kit=None) -> dict:
         state["rows"].append({
             "name": name, "action": action, "why": problem,
             "project": mcp_masked(spec, show_launch_env=True),
-            "kit": mcp_masked(have) if have else None,
+            "kit": mcp_masked(have, scrub_text=True) if have else None,
             "secrets": _mcp_secret_count(spec)})
     return state
 
@@ -1812,11 +1812,14 @@ def _mcp_ignore_engine_dir(project: str) -> bool:
 def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
     """Перенести показанные серверы в кит. Без отпечатка показанного плана — отказ.
 
-    Файл проекта после переноса (если в нём не осталось конфликтов и негодных серверов)
-    уходит в `<проект>/.aurora/mcp.json.migrated`: движок его не читает, предупреждение
-    гаснет, а секреты не остаются ни в рабочих файлах проекта, ни в его git (`.aurora/`
-    закрыта .gitignore). Секреты, которые были в файле проекта, уходят в `local/mcp.json`
-    кита; в ответ и в журнал не попадают.
+    Файл проекта после переноса целиком уходит в `<проект>/.aurora/mcp.json.migrated`:
+    движок его не читает, предупреждение гаснет, а секреты не остаются ни в рабочих файлах
+    проекта, ни в его git (`.aurora/` закрыта .gitignore). Так и при частичном переносе (часть
+    серверов — конфликт имён или не прошла проверку): иначе в проекте остался бы файл с
+    токенами уже перенесённых серверов. Неперенесённые серверы названы в `note`, их
+    определения лежат в том же файле. Если не перенесено и не совпало с китом ничего (все
+    конфликты и негодные), файл остаётся как был. Секреты, которые были в файле проекта,
+    уходят в `local/mcp.json` кита; в ответ и в журнал не попадают.
     """
     st = _mcp_migrate_state(project, kit)
     if st.get("error"):
@@ -1838,7 +1841,10 @@ def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
             return {"error": f"не удалось записать local/mcp.json: {e}"}
     left = [r["name"] for r in st["rows"] if r["action"] in ("conflict", "invalid")]
     renamed = False
-    if not left:
+    # Секреты перенесённых и совпавших с китом серверов уже живут в ките: файл с ними в
+    # проекте убирается целиком, даже если часть серверов осталась (конфликт, негодный).
+    shared = moved or any(r["action"] == "same" for r in st["rows"])
+    if shared or not left:
         keep = os.path.join(project, ".aurora", "mcp.json.migrated")
         if not _mcp_ignore_engine_dir(project):
             return {"error": "серверы перенесены, но .gitignore не прочитан: уберите mcp.json сами",
@@ -1851,7 +1857,11 @@ def mcp_migrate_apply(project: str, digest: str, kit=None) -> dict:
         except OSError as e:
             return {"error": f"серверы перенесены, но mcp.json проекта не убран: {e}",
                     "moved": moved}
-    return {"ok": True, "moved": moved, "conflicts": left, "renamed": renamed}
+    out = {"ok": True, "moved": moved, "conflicts": left, "renamed": renamed}
+    if renamed and left:
+        out["note"] = (f"mcp.json проекта убран целиком, не перенесены серверы: {', '.join(left)}. "
+                       "Их определения — в .aurora/mcp.json.migrated: впишите их в «Настройка кита»")
+    return out
 
 
 def looks_like_timeout(err) -> bool:
@@ -2949,7 +2959,8 @@ def cmd_mcp_migrate(confirm: bool, digest: str, as_json: bool) -> int:
                f"✓ перенесено в кит: {', '.join(out['moved']) or 'ничего нового'}"
                + (f"; не перенесено (конфликт имён или не прошли проверку): {', '.join(out['conflicts'])}"
                   if out["conflicts"] else "")
-               + ("; mcp.json проекта убран в .aurora/mcp.json.migrated" if out["renamed"] else "")))
+               + ("; mcp.json проекта убран в .aurora/mcp.json.migrated" if out["renamed"] else "")
+               + (f"\n! {out['note']}" if out.get("note") else "")))
         return 1 if out.get("error") else 0
     if as_json:
         print(json.dumps(plan, ensure_ascii=False))

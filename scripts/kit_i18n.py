@@ -163,7 +163,7 @@ REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask",
 # проекта живут в `aurora_common` и `agent_core`, а не в сервере панели. Читаются только эти
 # функции — остальной `agent_core` в каталог сообщений не входит.
 ENGINE_REASONS = {"aurora_common.py": ("mcp_check", "mcp_migrate_problem"),
-                  "agent_core.py": ("mcp_selection_error", "mcp_migrate_apply",
+                  "agent_core.py": ("mcp_selection_error", "mcp_migrate_apply", "mcp_probe",
                                     "_mcp_migrate_state", "mcp_no_kit")}
 
 

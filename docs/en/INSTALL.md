@@ -279,12 +279,13 @@ what is already there, what will not move because the name is taken or the check
 explicitly confirm what was shown; every server is shown whole (variable and header names, `cwd`, roles, secret
 values masked) (on the command line: `--mcp-migrate --yes --digest <fingerprint from the
 preview>`; the assistant and bots do not get this command). Tokens from the old file go to `local/mcp.json`, not
-into the project; the moved file goes to `.aurora/mcp.json.migrated` — a folder outside git, owner-only
+into the project; the moved file goes to `.aurora/mcp.json.migrated` whole — also when some servers stayed behind: the response names
+them in `note` and their definitions are in the same file — a folder outside git, owner-only
 (if it was in git, delete it there yourself: the secrets stay in the history). Not moved: a server that fails the
 check (malformed fields, the name `aurora` — it is taken by the built-in server) and a server whose environment
 changes how the program starts (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHON*`, `PATH` and alike): it is shown in
 plain text when the name does not look like a secret (so is any such variable: `HOME`, `JAVA_HOME`, proxies…), while
-the value of a variable with a secret-looking name (`NODE_AUTH_TOKEN`, `HTTPS_PROXY_PASSWORD`, `JIRA_PAT`) always stays masked, and such a server has to be entered by hand in "Kit setup". An unreadable kit `local/mcp.json` is not
+the value of a variable with a secret-looking name (`NODE_AUTH_TOKEN`, `HTTPS_PROXY_PASSWORD`, `JIRA_PAT`, `*_WEBHOOK_URL`, `*_DSN`) always stays masked; credentials inside an address (`HTTPS_PROXY`, `DATABASE_URL`), `Password=…` in a connection string, `?api_key=…` in `url` and the value after `--token` in `args` are hidden in the preview too (the host stays visible), and such a server has to be entered by hand in "Kit setup". An unreadable kit `local/mcp.json` is not
 overwritten — the move refuses; an unreadable project `.gitignore` (not UTF-8) also stops it: the servers are moved but `mcp.json` stays — remove it yourself.
 
 **The kit's servers start in the project folder** (as a run sees them): `npx` prefers the project's

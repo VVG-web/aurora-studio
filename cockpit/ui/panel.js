@@ -3655,6 +3655,7 @@ async function openMcpMigrate(){
                                             digest: r.digest});
         if (w.error) return errBox.append(el("div", {class:"warnbox"}, w.error));
         toast(t("mcp.migrate_done", {n: (w.moved || []).length}), "ok");
+        if (w.note) toast(w.note, "warn");         // часть серверов осталась: где их искать
         closeMcp(true);
         MCPK.project.probe = null;
         renderMcp("project");

@@ -2193,12 +2193,99 @@ def test_mcp_migration_shows_servers_whole_and_refuses_unsafe_ones(tmp: Path):
     finally:
         ck.KIT = old_kit
     assert "NODE_OPTIONS" in json.dumps(panel, ensure_ascii=False)
-    # перенос: только годное; файл с негодными остаётся на месте
+    # перенос: только годное; файл уходит целиком (токен перенесённого сервера не остаётся в
+    # проекте), неперенесённые названы в `note`, а их определения лежат в `.aurora/`
     done = A.mcp_migrate_apply(str(proj), plan["digest"], str(kit))
-    assert done["moved"] == ["good"] and not done["renamed"], done
+    assert done["moved"] == ["good"] and done["renamed"], done
+    assert "busy" in done["note"] and "mcp.json.migrated" in done["note"], done
+    assert not re.search("[а-яё]", ck.translate_message(done["note"], "en"), re.I), \
+        f"note не переведён: {ck.translate_message(done['note'], 'en')!r}"
     got = json.loads((kit / "local" / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
     assert set(got) == {"busy", "good"}, f"в кит попало лишнее: {sorted(got)}"
+    assert not (proj / "mcp.json").exists(), "файл проекта с токенами перенесённого сервера остался"
+    for base, dirs, files in os.walk(proj):
+        if ".aurora" in Path(base).relative_to(proj).parts:
+            continue
+        for f in files:
+            body = (Path(base) / f).read_text(encoding="utf-8", errors="ignore")
+            assert "канарейка-токен" not in body, f"токен перенесённого сервера в {Path(base) / f}"
+    assert "канарейка-заголовок" in json.dumps(json.loads(
+        (proj / ".aurora" / "mcp.json.migrated").read_text(encoding="utf-8")), ensure_ascii=False)
+
+
+@test
+def test_mcp_migration_plan_hides_secrets_inside_values_and_partial_move_tells_about_leftovers(tmp: Path):
+    """План и вывод CLI не печатают секреты внутри значений с безобидным именем (адрес с
+    логином-паролем, `Password=…`, `?api_key=…`, `--token X`), хост виден; при частичном
+    переносе файл проекта уходит целиком, а CLI и ответ называют оставшиеся серверы; тексты
+    проверки серверов переводятся."""
+    sys.path.insert(0, str(KIT / "scripts"))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    import contextlib
+    import importlib
+    import io
+    A = importlib.import_module("agent_core")
+    C = importlib.import_module("aurora_common")
+    ck = importlib.import_module("aurora_cockpit")
+    kit = kit_with_mcp(tmp, {"busy": {"command": "uvx", "args": ["kit-version", "--token", "канарейка-кит"]}})
+    proj = tmp / "проект"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text("project:\n  name: P\n", encoding="utf-8")
+    servers = {
+        "wide": {"command": "npx", "args": ["-y", "pkg", "--token", "канарейка-флаг", "--api-key=канарейка-ключ",
+                                            "--header", "Authorization: Bearer канарейка-заголовок"],
+                 "env": {"HTTPS_PROXY": "http://user:канарейка-прокси@proxy.corp:3128",
+                         "UV_INDEX_URL": "https://__token__:канарейка-индекс@host/simple",
+                         "PIP_INDEX_URL": "https://u:канарейка-пип@h/simple",
+                         "DATABASE_URL": "postgres://u:канарейка-бд@db/x",
+                         "SLACK_WEBHOOK_URL": "https://hooks/services/T/B/канарейка-вебхук",
+                         "CONN": "Server=a;Password=канарейка-строка",
+                         "HOME": "/home/work"}},
+        "remote": {"url": "https://h.example/mcp?api_key=канарейка-запрос&x=1"},
+        "busy": {"command": "uvx", "args": ["project-version"]}}
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    plan = A.mcp_migrate_plan(str(proj), str(kit))
+    shown = json.dumps(plan, ensure_ascii=False)
+    saved, buf = A._roots, io.StringIO()
+    A._roots = lambda: (kit, proj)
+    try:
+        with contextlib.redirect_stdout(buf):
+            assert A.cmd_mcp_migrate(False, "", False) == 0
+        printed = buf.getvalue()
+        assert "канарейка-" not in shown + printed, "план или CLI отдали секрет из значения"
+        row = {r["name"]: r for r in plan["rows"]}
+        assert row["wide"]["project"]["env"]["HTTPS_PROXY"].endswith("@proxy.corp:3128"), "хост спрятан"
+        assert "proxy.corp" in printed and row["wide"]["project"]["env"]["HOME"] == "/home/work"
+        assert row["remote"]["project"]["url"].startswith("https://h.example/mcp?api_key=" + C.MCP_MASK)
+        assert "--token" in row["wide"]["project"]["args"] and "kit-version" in printed
+        # частичный перенос через CLI: конфликт `busy` остаётся, файл проекта убран целиком
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            assert A.cmd_mcp_migrate(True, plan["digest"], False) == 0
+    finally:
+        A._roots = saved
+    out = buf.getvalue()
+    assert "busy" in out and "mcp.json.migrated" in out and "!" in out, out
+    assert not (proj / "mcp.json").exists(), "после частичного переноса в проекте остался mcp.json"
+    assert "канарейка-флаг" in json.dumps(json.loads(
+        (proj / ".aurora" / "mcp.json.migrated").read_text(encoding="utf-8")), ensure_ascii=False)
+    # все серверы конфликтуют или негодны — переносить нечего, файл остаётся как был
+    (proj / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "busy": {"command": "uvx", "args": ["other"]}, "aurora": {"command": "x"}}}), encoding="utf-8")
+    plan = A.mcp_migrate_plan(str(proj), str(kit))
+    done = A.mcp_migrate_apply(str(proj), plan["digest"], str(kit))
+    assert done["moved"] == [] and not done["renamed"] and "note" not in done, done
     assert (proj / "mcp.json").exists()
+    # тексты проверки серверов переводятся
+    old = A._adapter_argv
+    A._adapter_argv = lambda: None
+    try:
+        err = A.mcp_probe(str(proj), str(kit), servers={"x": {"command": "x"}})["error"]
+    finally:
+        A._adapter_argv = old
+    for text in (err, "проверка серверов не уложилась в 90 с", "адаптер не ответил (код 3)"):
+        tr = ck.translate_message(text, "en")
+        assert not re.search("[а-яё]", tr, re.I), f"не переведено: {tr!r}"
 
 
 @test
@@ -2666,9 +2753,13 @@ def test_mcp_migration_shows_differences_and_needs_confirmation(tmp: Path):
     assert moved["new"]["env"] == {"API_KEY": "канарейка-ключ"}, "токен не перенесён в кит"
     assert moved["busy"]["args"] == ["kit-version"], "конфликтный сервер перезаписан"
     assert oct(kit_file.stat().st_mode & 0o777) == "0o600" or os.name == "nt"
-    assert (proj / "mcp.json").exists() and not (proj / "mcp.json.migrated").exists(), \
-        "файл с конфликтами переименован — предупреждение пропало бы, а работа не сделана"
-    # без конфликтов файл уходит в mcp.json.migrated, и предупреждение гаснет
+    # частичный перенос: токен перенесённого `new` не должен оставаться в проекте, поэтому
+    # файл уходит целиком, а неперенесённые серверы названы (CLI напечатал `!`-строку)
+    assert not (proj / "mcp.json").exists() and (proj / ".aurora" / "mcp.json.migrated").is_file(), \
+        "файл с токеном перенесённого сервера остался в проекте"
+    assert "busy" in buf.getvalue() and "part" in buf.getvalue(), buf.getvalue()
+    (proj / ".aurora" / "mcp.json.migrated").unlink()
+    # файл с одним `same` уходит в mcp.json.migrated, и предупреждение гаснет
     (proj / "mcp.json").write_text(json.dumps({"mcpServers": {"new": spec["mcpServers"]["new"]}}),
                                    encoding="utf-8")
     again = A.mcp_migrate_plan(str(proj), str(kit))

@@ -1522,7 +1522,54 @@ MCP_LAUNCH_ENV_RE = re.compile(
 # Короткие PAT, PW, PWD ищутся целым словом между `_`: иначе под них попал бы `PATH`.
 MCP_SECRET_NAME_RE = re.compile(
     r"TOKEN|KEY|SECRET|PASS|AUTH|CRED|COOKIE|BEARER|JWT|SESSION|SIGNATURE|PRIVATE"
+    r"|DSN|WEBHOOK|CONNECTION|CONN_?STR"
     r"|(?:^|_)(?:PAT|PW|PWD)(?:$|_)", re.I)
+# Секрет внутри значения с безобидным именем: логин и пароль в адресе (`HTTPS_PROXY`,
+# `DATABASE_URL`, `UV_INDEX_URL`), пара `ключ=значение` в строке подключения или в запросе
+# адреса (`Server=a;Password=b`, `?api_key=…`), заголовок `Authorization: …`.
+_MCP_URL_USERINFO_RE = re.compile(r"(?<=://)[^/\s@?#'\"]*@")
+_MCP_PAIR_RE = re.compile(r"([A-Za-z0-9_.\-]+)(=)([^&;\s'\"#]*)")
+_MCP_AUTH_HEADER_RE = re.compile(
+    r"(authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s'\"&;]+", re.I)
+# Имя ключа или флага целиком (`Authorization`, `--api-key`, `--token`): значение — секрет.
+_MCP_NAMED_ARG_RE = re.compile(r"^(-{0,2}[A-Za-z0-9_.\-]+)\s*([:=])\s*(.+)$", re.S)
+_MCP_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_.\-]*$")
+
+
+def _mcp_secret_named(name: str) -> bool:
+    """Имя переменной, ключа или флага (`--api-key`) похоже на секрет."""
+    return bool(MCP_SECRET_NAME_RE.search(name.lstrip("-").replace("-", "_")))
+
+
+def mcp_scrub_text(text: str) -> str:
+    """Строка со спрятанными секретами внутри: адрес виден, логин-пароль и пары `ключ=…` — маской."""
+    text = _MCP_URL_USERINFO_RE.sub(MCP_MASK + "@", text)
+    text = _MCP_AUTH_HEADER_RE.sub(lambda m: m.group(1) + MCP_MASK, text)
+    return _MCP_PAIR_RE.sub(
+        lambda m: m.group(1) + m.group(2) + (MCP_MASK if m.group(3) and _mcp_secret_named(m.group(1))
+                                             else m.group(3)), text)
+
+
+def _mcp_scrub_args(args: list) -> list:
+    """`args` для показа: значение после флага с секретным именем (`--token X`, `--token=X`,
+    `--header Authorization: …`) и секреты внутри строк — маской."""
+    out, hide = [], False
+    for a in args:
+        if not isinstance(a, str):
+            out.append(a)
+            continue
+        if hide and not a.startswith("-"):
+            out.append(MCP_MASK)
+            hide = False
+            continue
+        hide = False
+        m = _MCP_NAMED_ARG_RE.match(a)
+        if m and _mcp_secret_named(m.group(1)):
+            out.append(m.group(1) + m.group(2) + MCP_MASK)
+        else:
+            out.append(mcp_scrub_text(a))
+            hide = bool(_MCP_FLAG_RE.match(a)) and _mcp_secret_named(a)
+    return out
 
 
 def mcp_risky_env(spec) -> list:
@@ -1532,7 +1579,7 @@ def mcp_risky_env(spec) -> list:
         if isinstance(env, dict) else []
 
 
-def mcp_masked(spec: dict, show_launch_env: bool = False) -> dict:
+def mcp_masked(spec: dict, show_launch_env: bool = False, scrub_text=None) -> dict:
     """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`) стоит маска.
 
     `show_launch_env` — значения `env`, имя которых не похоже на секрет (`MCP_SECRET_NAME_RE`:
@@ -1540,15 +1587,32 @@ def mcp_masked(spec: dict, show_launch_env: bool = False) -> dict:
     перед переносом, что запустится на самом деле (HOME, JAVA_HOME, прокси…), а перечню
     «опасных» имён полностью верить нельзя. Секретное имя маскируется всегда, в том числе у
     окружения, меняющего запуск (`mcp_risky_env`): имя в плане и так видно.
+
+    `scrub_text` (по умолчанию как `show_launch_env`) — то, что остаётся видно, чистится от
+    секретов внутри: логин-пароль в адресе (`HTTPS_PROXY`, `DATABASE_URL`), `Password=…` в
+    строке подключения, `?api_key=…` и `--token X` в `url` и `args`; хост и остальное видны.
+    Для формы редактирования не годится: маска записалась бы обратно вместо значения.
     """
+    scrub = show_launch_env if scrub_text is None else scrub_text
     one = json.loads(json.dumps(spec, default=str))
     for key in MCP_SECRET_MAPS:
         if isinstance(one.get(key), dict):
-            one[key] = {k: (v if v in ("", None) or (
-                show_launch_env and key == "env" and not MCP_SECRET_NAME_RE.search(str(k)))
-                else MCP_MASK) for k, v in one[key].items()}
+            shown = {}
+            for k, v in one[key].items():
+                if v in ("", None):
+                    shown[k] = v
+                elif show_launch_env and key == "env" and not MCP_SECRET_NAME_RE.search(str(k)):
+                    shown[k] = mcp_scrub_text(v) if scrub and isinstance(v, str) else v
+                else:
+                    shown[k] = MCP_MASK
+            one[key] = shown
     if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
         one["auth"] = MCP_MASK
+    if scrub:
+        if isinstance(one.get("url"), str):
+            one["url"] = mcp_scrub_text(one["url"])
+        if isinstance(one.get("args"), list):
+            one["args"] = _mcp_scrub_args(one["args"])
     return one
 
 
