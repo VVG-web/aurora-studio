@@ -1506,9 +1506,13 @@ def lock_read(path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _lock_live(path, held: dict, stale_s=None) -> bool:
+def _lock_live(path, held: dict, stale_s=None, missing=False):
     """Держит ли замок живой процесс: pid жив и (если задан `stale_s`) замок не залежался.
-    Возраст — по полю `at`, а без него — по времени изменения файла."""
+    Возраст — по полю `at`, а без него — по времени изменения файла. Файла нет вовсе —
+    вернуть `missing`: «нет держателя» (False) годится читателю, но снимающему нельзя
+    считать исчезнувший замок мёртвым — его только что отпустили, и на его месте уже мог
+    появиться чужой свежий. Поэтому `lock_take` спрашивает с `missing=None` и берёт заново,
+    а `_lock_break` — с `missing=True` и ничего не снимает."""
     import time
     try:
         pid = int(held.get("pid") or 0)
@@ -1517,7 +1521,7 @@ def _lock_live(path, held: dict, stale_s=None) -> bool:
     try:
         age = time.time() - os.path.getmtime(str(path))
     except OSError:
-        return False                   # файл успели убрать — держателя нет
+        return missing                 # файл успели убрать — держателя нет
     if stale_s is not None:
         try:
             age = time.time() - float(held["at"])
@@ -1563,18 +1567,23 @@ def _lock_break(path, held: dict, stale_s=None) -> bool:
         except OSError:
             pass
         return False
+    removed = True
     try:
-        if lock_read(path) == held and not _lock_live(path, held, stale_s):
+        # Исчезнувший замок (`missing=True`) не снимаем: его отпустили, и на месте мог
+        # появиться свежий замок третьего — `os.remove` убрал бы чужой.
+        if lock_read(path) == held and not _lock_live(path, held, stale_s, missing=True):
             try:
                 os.remove(str(path))
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError:
+                removed = False        # Windows: файл открыт читателем — снять не вышло
     finally:
         try:
             os.remove(guard)
         except OSError:
             pass
-    return True
+    return removed
 
 
 def lock_take(path, info=None, stale_s=None):
@@ -1583,7 +1592,9 @@ def lock_take(path, info=None, stale_s=None):
     Замок мёртвого или залежавшегося держателя снимается и берётся заново; снятие
     сериализовано охранным файлом (`_lock_break`), поэтому и в этом случае владелец один.
     Перед снятием запись перечитывается: если за это время замок сменили, чужой свежий
-    замок не трогаем. Ошибки файловой системы, кроме «файл уже есть», поднимаются —
+    замок не трогаем. Замок, который отпустили на наших глазах (файл исчез), мёртвым не
+    считается: берём заново, а не снимаем — на его месте мог встать замок третьего.
+    Ошибки файловой системы, кроме «файл уже есть», поднимаются —
     решает вызывающий.
     """
     import time
@@ -1597,7 +1608,10 @@ def lock_take(path, info=None, stale_s=None):
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             held = lock_read(path)
-            if _lock_live(path, held, stale_s) or lock_read(path) != held:
+            live = _lock_live(path, held, stale_s, missing=None)
+            if live is None:           # держатель вышел, пока мы смотрели, — берём заново
+                continue
+            if live or lock_read(path) != held:
                 return False, held
             if not _lock_break(path, held, stale_s):
                 time.sleep(0.02)

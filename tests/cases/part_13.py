@@ -2343,6 +2343,109 @@ def test_a_stale_file_lock_is_broken_by_exactly_one_starter(tmp: Path):
 
 
 @test
+def test_a_released_file_lock_is_not_broken_under_a_new_owner(tmp: Path):
+    """Замок, который отпустили на глазах у стартующего, не считается мёртвым.
+
+    Ход гонки: стартующий X получил «файл уже есть», владелец успел сделать `lock_release`,
+    X прочитал пусто. Если «файла нет» читать как «держатель мёртв», X идёт снимать замок и
+    под охраной стирает свежий замок третьего (Z), созданный в этот момент. Детерминированно:
+    между проверкой живости и `os.remove` подставляется замок Z. Затем — короткий прогон
+    процессов «взять — прочитать — записать счётчик — снять»: в критической секции не больше
+    одного, и снятый на лету замок не теряет шагов. И `_lock_break` с неудавшимся `os.remove`
+    (Windows: файл открыт читателем) сообщает, что не снял, — вызывающий подождёт.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import aurora_common as C
+    path = tmp / "state" / "released.lock"
+    path.parent.mkdir(parents=True)
+
+    # 1. Файла нет: «живость» для снимающего — True, для берущего — None, для читателя — False.
+    assert C._lock_live(path, {}) is False
+    assert C._lock_live(path, {}, missing=True) is True
+    assert C._lock_live(path, {}, missing=None) is None
+
+    # 2. Z создаёт замок между проверкой и удалением: он должен уцелеть.
+    real = C._lock_live
+
+    def live_then_z_takes(p, held, stale_s=None, missing=False):
+        verdict = real(p, held, stale_s, missing)
+        Path(p).write_text(json.dumps({"pid": os.getpid(), "task": "Z"}), encoding="utf-8")
+        return verdict
+    C._lock_live = live_then_z_takes
+    try:
+        C._lock_break(str(path), {})
+    finally:
+        C._lock_live = real
+    assert C.lock_read(path).get("task") == "Z", "свежий замок третьего стёрт снятием исчезнувшего"
+    path.unlink()
+    assert not Path(str(path) + ".break").exists()
+
+    # 3. lock_take при исчезнувшем замке берёт заново, а не идёт в снятие.
+    calls = []
+    real_break = C._lock_break
+    seen = {"n": 0}
+
+    def vanishing(p, held, stale_s=None, missing=False):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return None                 # замок исчез, пока на него смотрели
+        return real(p, held, stale_s, missing)
+    path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    C._lock_live = vanishing
+    C._lock_break = lambda *a, **k: calls.append(a) or real_break(*a, **k)
+    try:
+        path.unlink()                   # владелец отпустил
+        ok, held = C.lock_take(path, {"task": "X"})
+    finally:
+        C._lock_live, C._lock_break = real, real_break
+    assert ok and not calls, "исчезнувший замок пошёл в снятие"
+    C.lock_release(path)
+
+    # 4. Снять не вышло (файл открыт читателем) — _lock_break говорит «не удалось».
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    path.write_text(json.dumps({"pid": gone.pid}), encoding="utf-8")
+    real_remove = os.remove
+
+    def denied(p, *a, **k):
+        if str(p) == str(path):
+            raise PermissionError(13, "занято")
+        return real_remove(p, *a, **k)
+    os.remove = denied
+    try:
+        assert C._lock_break(str(path), C.lock_read(path)) is False
+    finally:
+        os.remove = real_remove
+    assert C._lock_break(str(path), C.lock_read(path)) is True and not path.exists()
+
+    # 5. Процессы: взять — прочитать — записать счётчик — снять; шаги не теряются.
+    counter = tmp / "state" / "counter.txt"
+    counter.write_text("0", encoding="utf-8")
+    code = (
+        "import sys, time\n"
+        f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+        "from aurora_common import lock_take, lock_release\n"
+        f"lock, counter = {str(path)!r}, {str(counter)!r}\n"
+        "end, mine = time.time() + 1.5, 0\n"
+        "while time.time() < end:\n"
+        "    if not lock_take(lock)[0]:\n"
+        "        continue\n"
+        "    n = int(open(counter).read())\n"
+        "    open(counter, 'w').write(str(n + 1))\n"
+        "    mine += 1\n"
+        "    lock_release(lock)\n"
+        "print(mine)\n"
+    )
+    procs = [subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE) for _ in range(5)]
+    outs = [p.communicate() for p in procs]
+    assert all(p.returncode == 0 for p in procs), [e.decode() for _, e in outs]
+    # Каждый успешный круг прибавляет единицу под замком; двое внутри — потерянный шаг.
+    done = sum(int(o.decode().strip() or 0) for o, _ in outs)
+    assert done > 0 and int(counter.read_text(encoding="utf-8")) == done, "двое в критической секции"
+
+
+@test
 def test_a_project_git_lock_never_signals_its_holder_on_windows(tmp: Path):
     """Занятый замок git-действий не «проверяется» сигналом, который на Windows убивает.
 
