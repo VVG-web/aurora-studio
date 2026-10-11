@@ -487,13 +487,14 @@ def test_fallback_provider_gets_a_fair_chance(tmp: Path):
 
 @test
 def test_project_settings_page_draws_every_block(tmp: Path):
-    """«Настройки проекта» дорисовываются до конца: MCP, конфиг, агент с ролями, виды.
+    """«Настройки проекта» дорисовываются до конца: конфиг, агент с ролями, виды.
 
     Живая жалоба: «модели и роли LLM и MCP выводились на странице настройки проекта сразу
-    после разделения, потом пропали». Блок MCP обходил серверы как массив, а сервер отдаёт
-    их объектом «имя → настройка», как в самом mcp.json. У объекта нет forEach: исключение
-    обрывало отрисовку, и всё ниже — полный текст конфига, карточка агента с моделями по
-    ролям, виды артефактов — молча не появлялось. С экрана это читалось как «так задумано».
+    после разделения, потом пропали». Блок MCP (теперь он живёт только в «Настройке кита»)
+    обходил серверы как массив, а сервер отдаёт их объектом «имя → настройка», как в самом
+    mcp.json. У объекта нет forEach: исключение обрывало отрисовку, и всё ниже — полный текст
+    конфига, карточка агента с моделями по ролям, виды артефактов — молча не появлялось. С
+    экрана это читалось как «так задумано».
     """
     import re as _re
     sys.path.insert(0, str(KIT / "cockpit"))
@@ -501,16 +502,16 @@ def test_project_settings_page_draws_every_block(tmp: Path):
     ui = panel_sources()
 
     body = _js_function(ui, "async function renderProject(")
-    blocks = ['t("mcp.title"', 'renderMcp("project")', 't("yaml.title")',
-              'renderModelsCard(box, "project")', "renderKinds(box)", "drawSetupJump(box)"]
+    blocks = ['t("yaml.title")', 'renderModelsCard(box, "project")', "renderKinds(box)",
+              "drawSetupJump(box)"]
     for b in blocks:
         assert b in body, f"на странице настроек проекта нет блока {b}"
     where = [body.index(b) for b in blocks]
     assert where == sorted(where), "блоки страницы настроек проекта переставлены"
-    mcp = _js_function(ui, "async function renderMcp(")
-    mcp_project = _js_function(ui, "function renderMcpProject(")
-    assert "Object.keys(d.servers || {})" in mcp and "Object.keys(kit)" in mcp_project, \
-        "серверы MCP обходятся не как объект — страница оборвётся на первом же проекте"
+    assert 'renderMcp' not in body, "в настройках проекта снова блок MCP"
+    mcp = _js_function(ui, "async function renderMcpKit(")
+    assert "Object.keys(d.servers || {})" in mcp, \
+        "серверы MCP обходятся не как объект — «Настройка кита» оборвётся на первой же отрисовке"
     # Тот же класс ошибки в любом месте панели: метод массива у заглушки-объекта. Законно,
     # когда скобку открыл Object.keys/values/entries, — тогда метод вызывается у массива.
     stub = []

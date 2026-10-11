@@ -260,7 +260,7 @@ def test_saving_the_same_settings_twice_keeps_the_rollback_copy(tmp: Path):
         a = {"alpha": {"command": "a"}}
         b = {"alpha": {"command": "a"}, "beta": {"command": "b"}}
         assert ck.mcp_write(a).get("ok")
-        path = ck.mcp_file()
+        path = ck.kit_mcp_file()
         assert not os.path.exists(path + ".bak"), "первая запись создала копию из ничего"
         assert ck.mcp_write(b).get("ok")
         was = Path(path + ".bak").read_text(encoding="utf-8")

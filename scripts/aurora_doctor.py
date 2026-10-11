@@ -497,41 +497,6 @@ def blocker_why(text: str) -> str:
     return ""
 
 
-def check_mcp() -> list:
-    """MCP-серверы настраиваются один раз на кит (BL-SEC-12): `mcp.json` проекта движок не
-    читает, выбор серверов проекта должен называть серверы кита, а запись в Jira разрешает кит.
-    Молча терять настройку нельзя — человек правил бы файл, который ни на что не влияет."""
-    out = []
-    try:
-        import agent_core as _ag
-        from aurora_common import kit_mcp_permission, mcp_block
-        mine = _ag.project_mcp_servers(str(ROOT))
-        if mine:
-            out.append(f"mcp.json проекта не используется: определения серверов MCP живут в ките "
-                       f"(<кит>/local/mcp.json), а проект лишь выбирает их по имени; в файле "
-                       f"серверов: {len(mine)} ({', '.join(list(mine)[:4])}) — перенесите: панель, "
-                       "«Настройки проекта» → MCP → «Перенести серверы в кит»")
-        _chosen, unknown = _ag.mcp_selection(str(ROOT), _ag.read_mcp_servers(_ag.kit_mcp_path()))
-        bad = _ag.mcp_selection_bad(str(ROOT))
-        if bad:
-            out.append(f"mcp: servers в aurora.config.yaml записан непонятно ({bad}) — напишите "
-                       "servers: [имя, имя]; пока она не исправлена, прогон с инструментами не начнётся")
-        if unknown:
-            out.append(f"mcp: servers в aurora.config.yaml называет серверы, которых нет в ките: "
-                       f"{', '.join(unknown)} — настройте их в «Настройка кита» → MCP-серверы "
-                       "машины или поправьте имена")
-        cfg = ROOT / "aurora.config.yaml"
-        asked = mcp_block(cfg.read_text(encoding="utf-8", errors="ignore"))["jira_write"] \
-            if cfg.is_file() else None
-        if asked and not kit_mcp_permission("jira_write"):
-            out.append("aurora.config.yaml просит jira_write: true, но запись в Jira разрешает кит, "
-                       "а не проект — запись выключена; владелец машины включает её в «Настройка "
-                       "кита» → MCP-серверы")
-    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
-        pass
-    return out
-
-
 def check_kit_hooks() -> list:
     """Предупреждения о git-хуках самого кита на этой машине: свой pre-push старее скрипта проверки.
 
@@ -660,7 +625,6 @@ def main() -> int:
                      + " → уберите: kb_fix.py --retire --apply")
 
     warns += check_portable_names()
-    warns += check_mcp()
     warns += check_kit_hooks()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)

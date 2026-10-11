@@ -20,13 +20,9 @@
     echo '{"op": "confluence_find", "query": "US-3.6.21"}' | python3 …
     echo '{"op": "confluence_page", "page": "123456"}' | python3 …
 
-Запись в Jira выключена, пока её не разрешили ОБА: кит (право машины: `permissions:
-{"jira_write": true}` в `<кит>/local/mcp.json`, включается в «Настройка кита») и проект:
-
-    mcp:
-      jira_write: true      # aurora.config.yaml проекта: может только сузить право кита
-
-Пробный прогон (`dry_run`) показывает, что было бы сделано, и работает всегда.
+Запись в Jira выключена, пока её не разрешил кит (право машины: `permissions:
+{"jira_write": true}` в `<кит>/local/mcp.json`, включается в «Настройка кита»); проект про это
+ничего не говорит. Пробный прогон (`dry_run`) показывает, что было бы сделано, и работает всегда.
 
 Публикация атомарна на задачу: вложение первым; комментарий и метки — только если вложение
 легло (или уже лежало с тем же именем — повтор не грузит второе). Статус задачи не меняется,
@@ -66,24 +62,19 @@ class OpError(Exception):
 def settings(root: str = "", kit=None) -> dict:
     """Адреса и разрешение записи.
 
-    Адреса — из aurora.config.yaml проекта. Запись в Jira разрешает КИТ (`permissions:
-    jira_write` в `<кит>/local/mcp.json`, папка закрыта .gitignore), а проект может только
-    сузить: `mcp: jira_write: true` в его конфиге без права кита ничего не включает, а
-    `false` или отсутствие строки выключают запись (BL-SEC-12, ADR-026). Иначе строка в
-    файле из git давала бы агенту право писать во внешнюю систему.
+    Адреса — из aurora.config.yaml проекта. Запись в Jira разрешает только КИТ (`permissions:
+    jira_write` в `<кит>/local/mcp.json`, папка закрыта .gitignore): файл из git не должен
+    давать агенту право писать во внешнюю систему (BL-SEC-12, ADR-026).
     """
     text = config_text(os.path.join(root, CONFIG)) if root else config_text()
     jira = block(text, "jira:", "auth:", "\nconfluence:")
     conf = block(text, "confluence:", "jira:")
-    from aurora_common import kit_mcp_permission, mcp_block, yaml_scalar
-    asked = mcp_block(text)["jira_write"]
-    granted = kit_mcp_permission("jira_write", kit)
+    from aurora_common import kit_mcp_permission, yaml_scalar
     return {"jira_url": yaml_scalar(jira, "base_url").rstrip("/"),
             "jira_key": yaml_scalar(jira, "project_key"),
             "confluence_url": yaml_scalar(conf, "base_url").rstrip("/"),
             "space": yaml_scalar(conf, "space"),
-            "jira_write": granted and asked is True,
-            "jira_write_kit": granted, "jira_write_project": asked}
+            "jira_write": kit_mcp_permission("jira_write", kit)}
 
 
 def jira(root: str = ""):
@@ -252,11 +243,9 @@ def op_jira_publish(req: dict, root: str = "") -> dict:
     dry = bool(req.get("dry_run"))
     s = settings(root)
     if not dry and not s["jira_write"]:
-        raise OpError("запись в Jira выключена: " + (
-            "проект её не просит — в aurora.config.yaml нужно `mcp:` → `jira_write: true`"
-            if s["jira_write_kit"] else
-            "право записи выдаёт кит, а не проект — владелец машины включает его в «Настройка "
-            "кита» → MCP-серверы (jira_write)") + ". Пробный прогон (dry_run) работает без неё")
+        raise OpError("запись в Jira выключена: право записи выдаёт кит, а не проект — владелец "
+                      "машины включает его в «Настройка кита» → MCP-серверы (jira_write). "
+                      "Пробный прогон (dry_run) работает без неё")
     filename = os.path.basename(str(req.get("filename") or "").strip())
     content = req.get("content")
     path = str(req.get("path") or "").strip()

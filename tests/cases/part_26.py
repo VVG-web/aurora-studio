@@ -186,7 +186,7 @@ def test_review_tools_score_by_the_template_and_one_run_counts(tmp: Path):
 @test
 def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
     """Публикация: вложение → комментарий → метки; не легло вложение — метки не трогаются;
-    повтор не грузит то же вложение; запись — только с разрешения проекта; пробный прогон —
+    повтор не грузит то же вложение; запись — только с разрешения кита; пробный прогон —
     всегда."""
     root = make_project(tmp)
     _path()
@@ -197,7 +197,7 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
            "comment": "итог", "labels_add": ["done"], "labels_remove": ["todo"]}
     try:
         A.run(dict(req), str(root))
-        raise AssertionError("записал без разрешения проекта")
+        raise AssertionError("записал без разрешения кита")
     except A.OpError as e:
         assert "jira_write" in str(e)
     # Запись выдаёт кит: строка проекта без права кита ничего не включает (BL-SEC-12, SEC-02).
@@ -207,10 +207,13 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
         A.run(dict(req), str(root))
         raise AssertionError("записал по строке проекта без права кита")
     except A.OpError as e:
-        assert "кит" in str(e), e
+        assert "кит" in str(e) and "проект её не просит" not in str(e), e
     cfg.write_text(base, encoding="utf-8")
     kit_with_mcp(tmp, permissions={"jira_write": True})
-    assert A.settings(str(root))["jira_write"] is False, "право кита без просьбы проекта включило запись"
+    assert A.settings(str(root))["jira_write"] is True, "право кита не включило запись без просьбы проекта"
+    cfg.write_text(base + "\nmcp:\n  jira_write: false\n", encoding="utf-8")
+    assert A.settings(str(root))["jira_write"] is True, "проект сузил право кита: решает один кит"
+    cfg.write_text(base, encoding="utf-8")
     calls = []
 
     class Fake:
@@ -232,11 +235,6 @@ def test_jira_publish_goes_step_by_step_and_needs_permission(tmp: Path):
         A.jira = lambda root="": Fake()
         dry = A.run({**req, "dry_run": True}, str(root))
         assert dry["ok"] and not calls and len(dry["steps"]) == 3, dry
-        cfg.write_text(base + "\nmcp:\n  jira_write: true\n", encoding="utf-8")
-        assert A.settings(str(root))["jira_write"] is True
-        cfg.write_text(base + "\nmcp:\n  jira_write: false\n", encoding="utf-8")
-        assert A.settings(str(root))["jira_write"] is False, "проект не смог сузить право кита"
-        cfg.write_text(base + "\nmcp:\n  jira_write: true\n", encoding="utf-8")
         out = A.run(dict(req), str(root))
         assert out["ok"] and calls == ["attach", "comment", "labels"], (out, calls)
         calls.clear()

@@ -3404,7 +3404,7 @@ function sgroupRemember(id, open){
 }
 
 // Группа в `box`: заголовок с «+/−» и тело. → тело: в него части страницы и кладут себя.
-// `id` не зависит от языка и проекта — «project:mcp», «setup:agent».
+// `id` не зависит от языка и проекта — «project:yaml», «setup:agent».
 function sgroup(box, id, title){
   const focus = SGROUPS.focus === id;
   const open = focus || sgroupsOpen().has(id);
@@ -3456,10 +3456,10 @@ function drawSetupJump(box){
 
    Серверы, общие для всех проектов: `<кит>/local/mcp.json`, стандартная форма. Карточка на
    сервер, окно правки, вставка готовой настройки из JSON и весь файл текстом. Секреты
-   (`env`, `headers`, `auth`) сервер отдаёт маской; маска, пришедшая обратно, значит «не
-   менять». Своей копии маски у страницы нет — её называет сервер (`mask`). */
-const MCPK = {kit: {state: null, box: null}, project: {state: null, box: null, probe: null},
-              touched: false};
+   (`env`, `headers`, `auth`, значение секретного флага в `args`) сервер отдаёт маской; маска,
+   пришедшая обратно, значит «не менять». Своей копии маски у страницы нет — её называет
+   сервер (`mask`). Проверка серверов (`/api/mcp/probe`) запускает серверы кита, как прогон. */
+const MCPK = {kit: {state: null, box: null, probe: null}, touched: false};
 
 function mcpHow(spec){
   const tr = String(spec.transport || spec.type || "").toLowerCase();
@@ -3467,22 +3467,8 @@ function mcpHow(spec){
   return "stdio";
 }
 
-// Куда смотрит и куда пишет раздел: машина или выбранный проект. Процедура одна на обе
-// области — правила серверов одни, различается только файл. Серверы машины видны и в
-// проекте, но только для чтения — как кольцо шлюзов (решение пользователя 29.09.2026).
-function mcpGet(scope){
-  return api(scope === "project" ? "/api/mcp?project=" + encodeURIComponent(S.project.path)
-                                 : "/api/mcp/kit");
-}
-function mcpPost(scope, body){
-  return api(scope === "project" ? "/api/mcp" : "/api/mcp/kit", {method:"POST", quiet:true,
-    body: JSON.stringify(scope === "project" ? {project: S.project.path, ...body} : body)});
-}
-// Откуда брать настройку сервера для окна: свои серверы области или машинные в проекте.
-function mcpSource(scope){
-  if (scope === "kit-ro") return (MCPK.project.state || {}).kit || {};
-  return (MCPK[scope].state || {}).servers || {};
-}
+const mcpGet = () => api("/api/mcp/kit");
+const mcpPost = body => api("/api/mcp/kit", {method:"POST", quiet:true, body: JSON.stringify(body)});
 
 // Поиск Авроры для других агентов: один сервер на все проекты машины, проект — аргумент
 // `project` каждого инструмента. Настройку отдаёт сам сервер (`aurora_mcp.py --all --configs`).
@@ -3505,33 +3491,45 @@ function auroraSearchCard(a){
     block(t("mcpk.aurora_claude"), a.mcpServers));
 }
 
-async function renderMcpKit(){ return renderMcp("kit"); }
-
-async function renderMcp(scope){
-  const M = MCPK[scope], box = M.box;
-  if (!box || (scope === "project" && !S.project)) return;
-  const d = await mcpGet(scope);
+async function renderMcpKit(){
+  const M = MCPK.kit, box = M.box, probe = M.probe;
+  if (!box) return;
+  const d = await mcpGet();
   M.state = d;
   box.innerHTML = "";
-  if (scope === "project") return renderMcpProject(box, d, M);
   const names = Object.keys(d.servers || {});
   const cards = el("div", {class:"grid tiles"});
-  names.forEach(n => cards.append(mcpCard(scope, n, d.servers[n], d.mask)));
+  names.forEach(n => cards.append(mcpCard(n, d.servers[n], d.mask, probe && probe[n])));
+  const good = probe ? names.filter(n => probe[n] && probe[n].ok).length : 0;
   box.append(el("div", {class:"card", style:"padding:20px"},
     el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcpk.about")),
     d.error ? el("div", {class:"warnbox"}, d.error) : null,
     el("div", {class:"row", style:"gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px"},
-      el("button", {class:"btn sm primary", onclick:()=>openMcpCard(scope, "")}, t("mcpk.add")),
-      el("button", {class:"btn sm", onclick:()=>openMcpPaste(scope)}, t("mcpk.paste")),
-      el("button", {class:"btn sm", onclick:()=>openMcpRaw(scope)}, t("mcpk.raw")),
+      el("button", {class:"btn sm primary", onclick:()=>openMcpCard("")}, t("mcpk.add")),
+      el("button", {class:"btn sm", onclick:()=>openMcpPaste()}, t("mcpk.paste")),
+      el("button", {class:"btn sm", onclick:()=>openMcpRaw()}, t("mcpk.raw")),
+      names.length ? el("button", {class:"btn sm", onclick: async e => {
+        e.target.disabled = true;
+        e.target.textContent = t("mcp.probing");
+        const r = await api("/api/mcp/probe", {quiet:true});
+        if (r.error){
+          e.target.disabled = false;
+          e.target.textContent = t("mcp.probe");
+          return toast(r.error, "warn");
+        }
+        M.probe = r.servers || {};
+        renderMcpKit();
+      }}, t("mcp.probe")) : null,
       el("span", {class:"muted mono", style:"font-size:11.5px;overflow-wrap:anywhere"},
         d.path || "")),
-    // Право машины: проект из git его выдать не может, только сузить.
+    names.length ? el("div", {class:"muted", style:"font-size:12px;margin:0 0 10px"},
+      probe ? t("mcp.probe_done", {ok: good, n: names.length}) : t("mcp.probe_hint")) : null,
+    // Право машины: запись в Jira разрешает только кит.
     el("label", {class:"row", style:"gap:8px;font-size:13px;margin-bottom:4px;align-items:center"},
       el("input", {type:"checkbox", checked: (d.permissions || {}).jira_write ? "" : null,
         onchange: async e => {
-          const r = await mcpPost("kit", {action:"set_permission", name:"jira_write",
-                                          value: e.target.checked});
+          const r = await mcpPost({action:"set_permission", name:"jira_write",
+                                   value: e.target.checked});
           if (r.error){ e.target.checked = !e.target.checked; return toast(r.error, "warn"); }
           toast(t("mcpk.perm_saved"), "ok");
         }}), t("mcpk.perm_jira")),
@@ -3539,131 +3537,6 @@ async function renderMcp(scope){
     names.length ? cards
                  : el("div", {class:"muted", style:"font-size:13px"}, t("mcpk.empty"))));
   if (d.aurora && d.aurora.opencode) box.append(auroraSearchCard(d.aurora));
-}
-
-// Проект серверов не определяет: он выбирает серверы кита по имени, видит неиспользуемый
-// mcp.json (его можно перенести в кит) и итог по записи в Jira. Токенов и команд здесь нет.
-function renderMcpProject(box, d, M){
-  const probe = M.probe;
-  const kit = d.kit || {};
-  const kitNames = Object.keys(kit);
-  const chosen = new Set(d.selection || kitNames);
-  let all = d.selection === null || d.selection === undefined;
-  const picks = el("div", {class:"row", style:"gap:12px;flex-wrap:wrap;margin:8px 0"});
-  const drawPicks = () => {
-    picks.innerHTML = "";
-    kitNames.forEach(n => picks.append(el("label", {class:"row", style:"gap:6px;font-size:13px"},
-      el("input", {type:"checkbox", disabled: all ? "" : null, checked: chosen.has(n) ? "" : null,
-        onchange: e => { e.target.checked ? chosen.add(n) : chosen.delete(n); }}),
-      el("span", {class:"mono"}, n))));
-  };
-  const modeSel = el("select", {class:"btn", style:"font-weight:400", onchange: e => {
-      all = e.target.value === "all"; drawPicks(); }},
-    el("option", {value:"all", selected: all ? "" : null}, t("mcp.sel_all")),
-    el("option", {value:"chosen", selected: all ? null : ""}, t("mcp.sel_chosen")));
-  drawPicks();
-  const jw = d.jira_write || {};
-  box.append(el("div", {class:"card", style:"padding:20px"},
-    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcp.about")),
-    d.kit_error ? el("div", {class:"warnbox"}, d.kit_error) : null,
-    d.ignored ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
-      el("div", {}, t("mcp.ignored", {n: d.ignored.names.length, list: d.ignored.names.join(", ")})),
-      el("button", {class:"btn sm", style:"margin-top:8px", onclick: openMcpMigrate},
-        t("mcp.migrate"))) : null,
-    (d.unknown || []).length ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
-      t("mcp.unknown", {list: d.unknown.join(", ")})) : null,
-    d.selection_bad ? el("div", {class:"warnbox", style:"margin-bottom:12px"},
-      t("mcp.sel_bad", {text: d.selection_bad})) : null,
-    el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
-      el("b", {}, t("mcp.sel_title")), modeSel,
-      el("button", {class:"btn sm primary", onclick: async () => {
-        const r = await mcpPost("project", {action:"select_servers",
-          names: all ? null : kitNames.filter(n => chosen.has(n))});
-        if (r.error) return toast(r.error, "warn");
-        toast(r.unchanged ? t("mcp.unchanged") : t("mcp.sel_saved"), "ok");
-        M.probe = null;
-        renderMcp("project");
-      }}, t("mcp.sel_save"))),
-    picks,
-    el("div", {class:"muted", style:"font-size:12.5px;margin-top:6px"},
-      jw.effective ? t("mcp.jira_on") : jw.kit ? t("mcp.jira_off_project") : t("mcp.jira_off_kit"))));
-
-  const kitCards = el("div", {class:"grid tiles"});
-  kitNames.forEach(n => kitCards.append(mcpCard("kit-ro", n, kit[n], d.mask, probe && probe[n])));
-  box.append(el("div", {class:"card", style:"padding:20px;margin-top:14px"},
-    el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"},
-      el("b", {}, t("mcp.kit_title")),
-      el("span", {class:"chip"}, t("mcp.readonly")),
-      el("div", {class:"spacer"}),
-      el("button", {class:"btn sm", onclick: mcpToKit}, t("mcp.to_kit"))),
-    el("p", {class:"muted", style:"font-size:13px;margin:0 0 12px"}, t("mcp.kit_about")),
-    kitNames.length ? kitCards
-                    : el("div", {class:"muted", style:"font-size:13px"}, t("mcp.kit_empty"))));
-
-  // Проверка — то, что получит прогон: серверы кита, выбранные проектом, в папке проекта.
-  // Считаем по тем серверам, которые проба и правда запускает: выбранные проектом (сохранённый
-  // выбор, а не галочки на экране) и собственный `aurora` кита, если он там есть.
-  const saved = Array.isArray(d.selection) ? d.selection : null;
-  const shown = saved === null ? kitNames : kitNames.filter(n => saved.includes(n) || n === "aurora");
-  const good = probe ? shown.filter(n => probe[n] && probe[n].ok).length : 0;
-  box.append(el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px"},
-    shown.length ? el("button", {class:"btn sm", onclick: async e => {
-      e.target.disabled = true;
-      e.target.textContent = t("mcp.probing");
-      const r = await api("/api/mcp/probe?project=" + encodeURIComponent(S.project.path),
-                          {quiet:true});
-      if (r.error){
-        e.target.disabled = false;
-        e.target.textContent = t("mcp.probe");
-        return toast(r.error, "warn");
-      }
-      M.probe = r.servers || {};
-      renderMcp("project");
-    }}, t("mcp.probe")) : null,
-    el("span", {class:"muted", style:"font-size:12px"},
-      !shown.length ? "" : probe ? t("mcp.probe_done", {ok: good, n: shown.length})
-                                    : t("mcp.probe_hint"))));
-}
-
-// Перенос серверов из mcp.json проекта в кит: сначала различия (секреты — маской), перенос —
-// только по явному подтверждению показанного (отпечаток файла уходит обратно на сервер).
-async function openMcpMigrate(){
-  const r = await mcpPost("project", {action:"migrate", project: S.project.path});
-  if (r.error) return toast(r.error, "warn");
-  const drawer = mcpOpen(true);
-  // Сервер показывается целиком: имена окружения и заголовков, cwd, роли — значения секретов
-  // маской, окружение, меняющее запуск, открытым текстом; для конфликта — запуск в ките рядом.
-  const dump = o => JSON.stringify(o, null, 2);
-  const rows = (r.rows || []).map(x => {
-    return el("div", {class:"list-item", style:"gap:8px;flex-wrap:wrap;align-items:flex-start"},
-      el("b", {class:"mono"}, x.name),
-      el("span", {class:"chip " + (x.action === "add" ? "ok" : x.action === "same" ? "" : "warn")},
-        t("mcp.migrate_" + x.action)),
-      x.secrets ? el("span", {class:"chip warn"}, t("mcp.migrate_secrets", {n: x.secrets})) : null,
-      x.why ? el("div", {class:"warnbox", style:"flex-basis:100%"}, x.why) : null,
-      el("pre", {class:"mono muted", style:"font-size:12px;margin:0;flex-basis:100%;white-space:pre-wrap;overflow-wrap:anywhere"},
-        t("mcp.migrate_project") + "\n" + dump(x.project)),
-      x.action === "conflict" && x.kit
-        ? el("pre", {class:"mono muted", style:"font-size:12px;margin:0;flex-basis:100%;white-space:pre-wrap;overflow-wrap:anywhere"},
-            t("mcp.migrate_kit") + "\n" + dump(x.kit)) : null);
-  });
-  const errBox = el("div", {});
-  drawer.append(el("h2", {style:"margin-top:0"}, t("mcp.migrate_title")),
-    el("p", {class:"muted", style:"font-size:13px;margin:0 0 10px"}, t("mcp.migrate_about")),
-    ...rows, errBox,
-    el("div", {class:"row", style:"gap:8px;margin-top:12px"},
-      el("button", {class:"btn primary", onclick: async () => {
-        const w = await mcpPost("project", {action:"migrate", project: S.project.path,
-                                            digest: r.digest});
-        if (w.error) return errBox.append(el("div", {class:"warnbox"}, w.error));
-        toast(t("mcp.migrate_done", {n: (w.moved || []).length}), "ok");
-        if (w.note) toast(w.note, "warn");         // часть серверов осталась: где их искать
-        closeMcp(true);
-        MCPK.project.probe = null;
-        renderMcp("project");
-      }}, t("mcp.migrate_go")),
-      el("div", {class:"spacer"}),
-      el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close"))));
 }
 
 // Итог проверки на карточке: работает и сколько инструментов — или почему не поднялся.
@@ -3675,20 +3548,18 @@ function mcpProbeChip(p){
     : el("span", {class:"chip warn", title: p.error || ""}, t("mcp.fails"));
 }
 
-function mcpCard(scope, name, spec, mask, probe){
+function mcpCard(name, spec, mask, probe){
   const how = mcpHow(spec);
-  const ro = scope === "kit-ro";
   const line = how === "stdio" ? [spec.command, ...(spec.args || [])].join(" ") : spec.url;
   const secrets = Object.keys(spec.env || {}).length + Object.keys(spec.headers || {}).length
                 + (spec.auth === mask ? 1 : 0);
   const about = spec.about || spec.description || "";
-  return el("button", {class:"card mcp-card" + (ro ? " ro" : ""),
-      title: ro ? t("mcp.ro_open") : t("mcpk.open"),
-      "aria-label": name + " · " + (ro ? t("mcp.ro_open") : t("mcpk.open")),
-      onclick:()=>openMcpCard(scope, name)},
+  return el("button", {class:"card mcp-card",
+      title: t("mcpk.open"),
+      "aria-label": name + " · " + t("mcpk.open"),
+      onclick:()=>openMcpCard(name)},
     el("div", {class:"row", style:"gap:8px;align-items:center;flex-wrap:wrap"},
       el("b", {class:"mono"}, name), el("span", {class:"chip"}, t("mcpk.how." + how)),
-      ro ? el("span", {class:"chip"}, t("mcp.from_kit")) : null,
       mcpProbeChip(probe)),
     el("div", {class:"mono muted mcp-line", title: line || ""}, line || "—"),
     (secrets || (spec.roles || []).length || spec.outbound)
@@ -3701,13 +3572,6 @@ function mcpCard(scope, name, spec, mask, probe){
     probe && !probe.ok ? el("div", {class:"muted", style:"font-size:12px;overflow-wrap:anywhere"},
                             probe.error || "") : null,
     about ? el("div", {class:"muted", style:"font-size:12px"}, about) : null);
-}
-
-// Из проекта — к серверам машины: вкладка «Настройка кита», группа MCP раскрыта.
-function mcpToKit(){
-  closeMcp(true);
-  SGROUPS.focus = "setup:mcp";
-  show("setup");
 }
 
 function mcpOpen(wide){
@@ -3768,13 +3632,10 @@ function mcpPairs(entries, mask, addLabel){
   }};
 }
 
-// Окно сервера. `scope`: "kit" — сервер машины в «Настройке кита»; "kit-ro" — сервер
-// машины, открытый из проекта: только посмотреть (проект серверов не определяет).
-function openMcpCard(scope, name){
-  const ro = scope === "kit-ro";
-  const home = ro ? "project" : scope;
-  const d = MCPK[home].state || {}, mask = d.mask;
-  const orig = name ? JSON.parse(JSON.stringify(mcpSource(scope)[name] || {})) : {};
+// Окно сервера машины в «Настройке кита».
+function openMcpCard(name){
+  const d = MCPK.kit.state || {}, mask = d.mask;
+  const orig = name ? JSON.parse(JSON.stringify((d.servers || {})[name] || {})) : {};
   const drawer = mcpOpen(false);
   let how = mcpHow(orig);
   const nameIn = mcpInput(name, {placeholder:"github"});
@@ -3804,7 +3665,7 @@ function openMcpCard(scope, name){
                    "outbound", "about", "description"];
   const extra = Object.keys(orig).filter(k => !MANAGED.includes(k));
   const errBox = el("div", {});
-  const done = () => { closeMcp(true); MCPK[home].probe = null; renderMcp(home); };
+  const done = () => { closeMcp(true); MCPK.kit.probe = null; renderMcpKit(); };
   const save = async () => {
     errBox.innerHTML = "";
     const newName = nameIn.value.trim();
@@ -3832,17 +3693,15 @@ function openMcpCard(scope, name){
     if (outIn.checked) spec.outbound = true; else delete spec.outbound;
     delete spec.description;
     if (aboutIn.value.trim()) spec.about = aboutIn.value.trim(); else delete spec.about;
-    const r = await mcpPost(scope, {action:"save_server", name: newName, rename_from: name, spec});
+    const r = await mcpPost({action:"save_server", name: newName, rename_from: name, spec});
     if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
     toast(r.unchanged ? t("mcp.unchanged") : t("mcpk.saved", {n: r.count}), "ok");
     done();
   };
-  const title = ro ? t("mcp.ro_title", {name})
-              : name ? t("mcpk.edit_title", {name}) : t("mcpk.new_title");
+  const title = name ? t("mcpk.edit_title", {name}) : t("mcpk.new_title");
   // Родной `append` печатает пустое место словом «null» — пустые части отбрасываем.
   drawer.append(...[
     el("h2", {style:"margin-top:0"}, title),
-    ro ? el("div", {class:"warnbox", style:"margin-bottom:12px"}, t("mcp.ro_about")) : null,
     mcpField(t("mcpk.f_name"), nameIn, t("mcpk.f_name_hint")),
     mcpField(t("mcpk.f_how"), howSel), stdioBox, urlBox,
     el("div", {style:"margin-bottom:12px"},
@@ -3858,15 +3717,11 @@ function openMcpCard(scope, name){
     extra.length ? el("div", {class:"muted", style:"font-size:12px;margin-bottom:12px"},
       t("mcpk.kept_fields", {list: extra.join(", ")})) : null,
     errBox,
-    ro ? el("div", {class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"},
-      el("button", {class:"btn primary", onclick: mcpToKit}, t("mcp.to_kit")),
-      el("div", {class:"spacer"}),
-      el("button", {class:"btn sm", onclick:()=>closeMcp(true)}, t("mcpk.close")))
-    : el("div", {class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"},
+    el("div", {class:"row", style:"gap:8px;margin-top:8px;flex-wrap:wrap"},
       el("button", {class:"btn primary", onclick: save}, t("mcpk.save")),
       name ? el("button", {class:"btn sm danger", onclick: async () => {
         if (!confirm(t("mcpk.delete_ask", {name}))) return;
-        const r = await mcpPost(scope, {action:"delete_server", name});
+        const r = await mcpPost({action:"delete_server", name});
         if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
         toast(t("mcpk.deleted", {name}), "ok");
         done();
@@ -3874,20 +3729,14 @@ function openMcpCard(scope, name){
       el("div", {class:"spacer"}),
       el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close")))].filter(Boolean));
   showHow();
-  // Сервер машины из проекта — только посмотреть: поля видны, но не правятся.
-  if (ro){
-    drawer.querySelectorAll("input, select, textarea").forEach(n => { n.disabled = true; });
-    [stdioBox, urlBox].forEach(b => b.querySelectorAll("button")
-      .forEach(n => { n.disabled = true; }));
-  }
 }
 
-function openMcpPaste(scope){
+function openMcpPaste(){
   const drawer = mcpOpen(true);
   const text = el("textarea", {class:"mcp-text", spellcheck:"false", autocomplete:"off",
     style:"min-height:30vh", placeholder: t("mcpk.paste_ph")});
   const out = el("div", {});
-  const send = dry => mcpPost(scope, {action:"import", text: text.value, dry});
+  const send = dry => mcpPost({action:"import", text: text.value, dry});
   const parse = async () => {
     out.innerHTML = "";
     const r = await send(true);
@@ -3912,8 +3761,8 @@ function openMcpPaste(scope){
       if (w.error) return out.append(el("div", {class:"warnbox"}, w.error));
       toast(t("mcpk.imported", {n: w.servers.length}), "ok");
       closeMcp(true);
-      MCPK[scope].probe = null;
-      renderMcp(scope);
+      MCPK.kit.probe = null;
+      renderMcpKit();
     }}, t("mcpk.import")));
   };
   drawer.append(el("h2", {style:"margin-top:0"}, t("mcpk.paste_title")),
@@ -3927,8 +3776,8 @@ function openMcpPaste(scope){
   text.focus();
 }
 
-function openMcpRaw(scope){
-  const d = MCPK[scope].state || {};
+function openMcpRaw(){
+  const d = MCPK.kit.state || {};
   const drawer = mcpOpen(true);
   const text = el("textarea", {class:"mcp-text", spellcheck:"false", autocomplete:"off"},
     d.text || "{\n  \"mcpServers\": {}\n}\n");
@@ -3942,12 +3791,12 @@ function openMcpRaw(scope){
     el("div", {class:"row", style:"gap:8px;margin-top:12px"},
       el("button", {class:"btn primary", onclick: async () => {
         errBox.innerHTML = "";
-        const r = await mcpPost(scope, {action:"save_raw", text: text.value});
+        const r = await mcpPost({action:"save_raw", text: text.value});
         if (r.error) return errBox.append(el("div", {class:"warnbox"}, r.error));
         toast(t("mcpk.raw_saved", {n: r.count}), "ok");
         closeMcp(true);
-        MCPK[scope].probe = null;
-        renderMcp(scope);
+        MCPK.kit.probe = null;
+        renderMcpKit();
       }}, t("mcpk.raw_save")),
       el("div", {class:"spacer"}),
       el("button", {class:"btn sm", onclick:()=>closeMcp()}, t("mcpk.close"))));
@@ -4205,13 +4054,7 @@ async function renderProject(){
         renderProject(); }
     })));
 
-  // 4. MCP-серверы — проекта и машины. Машинные здесь только для чтения: они работают в
-  // каждом проекте, а правятся в «Настройке кита» — как кольцо шлюзов.
-  MCPK.project.box = sgroup(box, "project:mcp", t("mcp.title", {project: S.project.name}));
-  MCPK.project.probe = null;
-  await renderMcp("project");
-
-  // 5. конфиг как текст — для того, чего нет в форме
+  // 4. конфиг как текст — для того, чего нет в форме
   const yamlBox = sgroup(box, "project:yaml", t("yaml.title"));
   const cfg = await api("/api/config?project=" + encodeURIComponent(S.project.path));
   const ta = watch(el("textarea",{class:"mono",spellcheck:"false",

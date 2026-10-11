@@ -159,12 +159,11 @@ REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask",
                 "_python_refusal", "doctor_start_failure", "restart_probe_failure")
 
 
-# Причины отказа, которые панель берёт у движка как есть: проверка серверов MCP и перенос из
-# проекта живут в `aurora_common` и `agent_core`, а не в сервере панели. Читаются только эти
-# функции — остальной `agent_core` в каталог сообщений не входит.
-ENGINE_REASONS = {"aurora_common.py": ("mcp_check", "mcp_migrate_problem"),
-                  "agent_core.py": ("mcp_selection_error", "mcp_migrate_apply", "mcp_probe",
-                                    "_mcp_migrate_state", "mcp_no_kit"),
+# Причины отказа, которые панель берёт у движка как есть: проверка серверов MCP кита живёт в
+# `aurora_common` и `agent_core`, а не в сервере панели. Читаются только эти функции — остальной
+# `agent_core` в каталог сообщений не входит.
+ENGINE_REASONS = {"aurora_common.py": ("mcp_check",),
+                  "agent_core.py": ("mcp_probe", "mcp_no_kit"),
                   # причина отказа одного сервера проверки (`servers.<имя>.error`) рождается в адаптере
                   os.path.join("agents", "pydantic_ai_adapter.py"): ("mcp_probe",)}
 

@@ -60,7 +60,7 @@ def _walk(obj, path=""):
 # Страницы данных панели, которые отвечают без сети и без записи. Остальные GET-пути названы
 # ниже с причиной: новый путь обязан попасть в один из двух списков — проверка это требует.
 CRAWLED = (
-    "/api/state", "/api/health", "/api/config", "/api/extras", "/api/mcp/kit", "/api/mcp", "/api/roots",
+    "/api/state", "/api/health", "/api/config", "/api/extras", "/api/mcp/kit", "/api/roots",
     "/api/kinds", "/api/artifacts", "/api/about", "/api/agent", "/api/kit/status", "/api/git",
     "/api/git/head", "/api/activity", "/api/jobs", "/api/scenarios", "/api/skins", "/api/modules",
     "/api/files/tree", "/api/graph", "/api/ask/threads", "/api/i18n", "/api/route/state",

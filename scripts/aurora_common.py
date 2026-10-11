@@ -1717,88 +1717,32 @@ MCP_NAME_RE = re.compile(r"^[\w.\-]{1,64}$")
 MCP_MASK = "••••••"
 MCP_SECRET_MAPS = ("env", "headers")
 MCP_ROLES = ("worker", "planner", "critic", "qa")
-# Имя встроенного сервера Авроры: его определение — движка, а не проекта.
-MCP_BUILTIN = "aurora"
-# Окружение, которое меняет, ЧТО на деле запустится: загрузка своих библиотек и модулей
-# (`LD_PRELOAD`, `NODE_OPTIONS=--require …`, `PYTHONPATH`), подмена поиска программ (`PATH`),
-# источников пакетов (`UV_`, `PIP_`, `NPM_CONFIG_`), скриптов оболочки (`BASH_ENV`), домашней
-# и временной папки (`HOME`, `TMPDIR`, `XDG_*`), прокси и сертификатов, настроек сборщиков
-# (`MAVEN_OPTS`, `GRADLE_*`, `DOTNET_*`, `CARGO_*`). Секретом оно не является, а исполняемый
-# код пронести может, поэтому при переносе из проекта его не переносят. Список неполон по
-# природе, поэтому показ от него не зависит: открытым текстом идёт всё, что не похоже на
-# секрет (`MCP_SECRET_NAME_RE`).
-MCP_LAUNCH_ENV_RE = re.compile(
-    r"^(?:LD_|DYLD_|PYTHON|NODE_|PERL|RUBY|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|JDK_JAVA_OPTIONS$"
-    r"|GIT_|NPM_CONFIG_|UV_|PIP_|XDG_|DOTNET_|CARGO_|RUSTUP_|GRADLE_|MAVEN_)"
-    r"|^(?:PATH|PATHEXT|COMSPEC|BASH_ENV|ENV|IFS|SHELLOPTS|PS4|PROMPT_COMMAND|CLASSPATH|GOFLAGS"
-    r"|HOME|JAVA_HOME|TMPDIR|TMP|TEMP|(?:HTTPS?|ALL|NO)_PROXY|SSL_CERT_FILE|SSL_CERT_DIR"
-    r"|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)$", re.I)
-# Имя переменной, похожее на секрет: значение остаётся под маской даже в плане переноса, и
-# даже если имя подходит под `MCP_LAUNCH_ENV_RE` (`HTTPS_PROXY_PASSWORD`, `NODE_AUTH_TOKEN`).
-# Короткие PAT, PW, PWD ищутся целым словом между `_`: иначе под них попал бы `PATH`.
+# Имя переменной, ключа или флага (`--api-key`), похожее на секрет: значение остаётся под
+# маской. Короткие PAT, PW, PWD ищутся целым словом между `_`: иначе под них попал бы `PATH`.
 MCP_SECRET_NAME_RE = re.compile(
     r"TOKEN|KEY|SECRET|PASS|AUTH|CRED|COOKIE|BEARER|JWT|SESSION|SIGNATURE|PRIVATE"
     r"|DSN|WEBHOOK|CONNECTION|CONN_?STR"
     r"|(?:^|_)(?:PAT|PW|PWD)(?:$|_)", re.I)
-# Секрет внутри значения с безобидным именем: логин и пароль в адресе (`HTTPS_PROXY`,
-# `DATABASE_URL`, `UV_INDEX_URL`), пара `ключ=значение` в строке подключения или в запросе
-# адреса (`Server=a;Password=b`, `?api_key=…`), заголовок `Authorization: …`. Это эвристика, а не
-# разбор формата: показ плана — подсказка владельцу, а не граница безопасности.
-# Все регэкспы начинают совпадение только в начале слова и не возвращаются назад по длинной
-# строке: файл `mcp.json` приходит из git проекта, и строка в сотни тысяч знаков без пробелов
-# не должна вешать панель (разбор на `re` держит GIL).
-# Логин-пароль в адресе: всё до ПОСЛЕДНЕГО `@` в части без `/` (в пароле бывает `@`).
-_MCP_URL_USERINFO_RE = re.compile(r"(?<=://)[^/\s?#'\"]*@")
-# То же без схемы: `user:secret@proxy:3128` — только если за `@` стоит похожий на хост адрес.
-# Длины ограничены: без этого строка из повторов `a:(` вела бы к разбору за квадратичное время.
-_MCP_BARE_USERINFO_RE = re.compile(
-    r"(?<![\w.\-/:@%+])[\w.\-%+]{1,128}:[^\s/'\",;&]{0,256}@"
-    r"(?=[\w.\-]+(?::\d{1,5})?(?:[/?#\s'\",;&]|$))")
-_MCP_PAIR_RE = re.compile(
-    r"(?<![A-Za-z0-9_.\-])([A-Za-z0-9_.\-]+)(\s*=\s*)"
-    r"(\"[^\"]*\"|'[^']*'|\{[^{}]*\}|[^&;\s'\"#]*)")
-_MCP_AUTH_HEADER_RE = re.compile(
-    r"(authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s'\"&;]+", re.I)
-# Имя ключа или флага целиком (`Authorization`, `--api-key`, `--token`): значение — секрет.
+# В `args` флаги вроде `--password-command`, `-c credential.helper=…`, `--keyring-provider`,
+# `--token-file` задают, ЧТО запустится или откуда читать секрет, а не сам секрет: их значение
+# владелец обязан видеть. Имя, оканчивающееся на `command`, `helper`, `provider`, `file`…,
+# секретным не считается.
+_MCP_ARG_PLAIN_RE = re.compile(r"[_.](?:COMMAND|CMD|HELPER|PROVIDER|FILE|PATH|DIR|SCRIPT|EXEC)$", re.I)
+# Имя ключа или флага целиком (`Authorization: …`, `--api-key=…`). Совпадение начинается
+# в начале строки и не возвращается назад по длинной: разбор на `re` держит GIL панели.
 _MCP_NAMED_ARG_RE = re.compile(r"^(-{0,2}[A-Za-z0-9_.\-]+)\s*([:=])\s*(.+)$", re.S)
 _MCP_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_.\-]*$")
-# В `args` скрывается только явно секретное значение: флаги вроде `--password-command`,
-# `-c credential.helper=!…`, `--keyring-provider` задают, ЧТО запустится, и владелец обязан это
-# видеть. Имя, оканчивающееся на `command`, `helper`, `provider`, `file`…, секретом не считается.
-_MCP_ARG_SECRET_RE = re.compile(
-    r"TOKEN|PASSWORD|PASSWD|SECRET|API[_.]?KEY|BEARER|AUTHORIZATION|COOKIE|CREDENTIALS?"
-    r"|PRIVATE[_.]?KEY|ACCESS[_.]?KEY|(?:^|[_.])(?:PWD|PW|PAT)(?:$|[_.])", re.I)
-_MCP_ARG_PLAIN_RE = re.compile(r"[_.](?:COMMAND|CMD|HELPER|PROVIDER|FILE|PATH|DIR|SCRIPT|EXEC|URL)$", re.I)
-
-
-def _mcp_secret_named(name: str) -> bool:
-    """Имя переменной, ключа или флага (`--api-key`) похоже на секрет."""
-    return bool(MCP_SECRET_NAME_RE.search(name.lstrip("-").replace("-", "_")))
 
 
 def _mcp_arg_secret_named(name: str) -> bool:
-    """Имя флага в `args` явно секретное (`--token`, `--api-key`); `--password-command` — нет."""
+    """Имя флага в `args` секретное (`--token`, `--api-key`); `--password-command` — нет."""
     n = name.lstrip("-").replace("-", "_")
-    return bool(_MCP_ARG_SECRET_RE.search(n)) and not _MCP_ARG_PLAIN_RE.search(n)
+    return bool(MCP_SECRET_NAME_RE.search(n)) and not _MCP_ARG_PLAIN_RE.search(n)
 
 
-def mcp_scrub_text(text: str, secret_named=None) -> str:
-    """Строка со спрятанными секретами внутри: адрес виден, логин-пароль и пары `ключ=…` — маской.
-
-    `secret_named` — какое имя ключа считать секретным (по умолчанию `_mcp_secret_named`).
-    """
-    secret_named = secret_named or _mcp_secret_named
-    text = _MCP_URL_USERINFO_RE.sub(MCP_MASK + "@", text)
-    text = _MCP_BARE_USERINFO_RE.sub(MCP_MASK + "@", text)
-    text = _MCP_AUTH_HEADER_RE.sub(lambda m: m.group(1) + MCP_MASK, text)
-    return _MCP_PAIR_RE.sub(
-        lambda m: m.group(1) + m.group(2) + (MCP_MASK if m.group(3) and secret_named(m.group(1))
-                                             else m.group(3)), text)
-
-
-def _mcp_scrub_args(args: list) -> list:
-    """`args` для показа: значение после флага с секретным именем (`--token X`, `--token=X`,
-    `--header Authorization: …`) и секреты внутри строк — маской; не строка и не число — целиком."""
+def mcp_mask_args(args: list) -> list:
+    """`args` для показа: значение после секретного флага (`--token X`, `--token=X`,
+    `Authorization: …`) — маской; не строка (объект, список) — целиком."""
     out, hide = [], False
     for a in args:
         if isinstance(a, (dict, list)):
@@ -1816,76 +1760,40 @@ def _mcp_scrub_args(args: list) -> list:
         if m and _mcp_arg_secret_named(m.group(1)):
             out.append(m.group(1) + m.group(2) + MCP_MASK)
         else:
-            out.append(mcp_scrub_text(a, _mcp_arg_secret_named))
+            out.append(a)
             hide = bool(_MCP_FLAG_RE.match(a)) and _mcp_arg_secret_named(a)
     return out
 
 
-def mcp_risky_env(spec) -> list:
-    """Имена переменных окружения сервера, способных изменить запуск процесса."""
-    env = spec.get("env") if isinstance(spec, dict) else None
-    return sorted(k for k in env if isinstance(k, str) and MCP_LAUNCH_ENV_RE.match(k)) \
-        if isinstance(env, dict) else []
-
-
-def mcp_masked(spec: dict, show_launch_env: bool = False, scrub_text=None) -> dict:
-    """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`) стоит маска.
-
-    `show_launch_env` — значения `env`, имя которых не похоже на секрет (`MCP_SECRET_NAME_RE`:
-    TOKEN, KEY, SECRET, PASS, AUTH, PAT, PW…), оставить открытым текстом: владелец обязан увидеть
-    перед переносом, что запустится на самом деле (HOME, JAVA_HOME, прокси…), а перечню
-    «опасных» имён полностью верить нельзя. Секретное имя маскируется всегда, в том числе у
-    окружения, меняющего запуск (`mcp_risky_env`): имя в плане и так видно.
-
-    `scrub_text` (по умолчанию как `show_launch_env`) — то, что остаётся видно, чистится от
-    секретов внутри: логин-пароль в адресе (`HTTPS_PROXY`, `DATABASE_URL`), `Password=…` в
-    строке подключения, `?api_key=…` и `--token X` в `url` и `args`; хост и остальное видны.
-    Для формы редактирования не годится: маска записалась бы обратно вместо значения.
-    """
-    scrub = show_launch_env if scrub_text is None else scrub_text
+def mcp_masked(spec: dict) -> dict:
+    """Копия сервера, где вместо каждого секрета (`env`, `headers`, `auth`, значение секретного
+    флага в `args`) стоит маска. Её и видит браузер; маска, пришедшая обратно, значит «оставить
+    как было» (`mcp_unmask` панели)."""
     one = json.loads(json.dumps(spec, default=str))
     for key in MCP_SECRET_MAPS:
         if one.get(key) and not isinstance(one[key], dict):
             one[key] = MCP_MASK          # форма не та (список, строка): что внутри, неизвестно
         elif isinstance(one.get(key), dict):
-            shown = {}
-            for k, v in one[key].items():
-                if v in ("", None):
-                    shown[k] = v
-                elif show_launch_env and key == "env" and not MCP_SECRET_NAME_RE.search(str(k)):
-                    shown[k] = (mcp_scrub_text(v) if scrub else v) if isinstance(v, str) \
-                        else (v if isinstance(v, (int, float, bool)) else MCP_MASK)
-                else:
-                    shown[k] = MCP_MASK
-            one[key] = shown
+            one[key] = {k: v if v in ("", None) else MCP_MASK for k, v in one[key].items()}
     if isinstance(one.get("auth"), str) and one["auth"] not in ("", "oauth"):
         one["auth"] = MCP_MASK
-    if scrub:
-        if isinstance(one.get("url"), str):
-            one["url"] = mcp_scrub_text(one["url"])
-        elif one.get("url"):
-            one["url"] = MCP_MASK
-        if isinstance(one.get("args"), list):
-            one["args"] = _mcp_scrub_args(one["args"])
-        elif one.get("args"):
-            one["args"] = MCP_MASK
+    if isinstance(one.get("args"), list):
+        one["args"] = mcp_mask_args(one["args"])
+    elif one.get("args"):
+        one["args"] = MCP_MASK
     return one
 
 
-def mcp_check(servers, reserved=()) -> str:
+def mcp_check(servers) -> str:
     """Пустая строка — серверы годятся к записи; иначе — что не так, словами.
 
-    Одна проверка на панель, кит и перенос из проекта. `reserved` — имена, которые занять
-    нельзя (при переносе из проекта — встроенный сервер Авроры).
-    """
+    Одна проверка на панель и кит."""
     if not isinstance(servers, dict):
         return "mcpServers должен быть объектом «имя → настройка»"
     for name, spec in servers.items():
         if not isinstance(name, str) or not MCP_NAME_RE.match(name):
             return (f"имя «{str(name)[:40]}» не годится: буквы, цифры, точка, дефис и "
                     "подчёркивание, до 64 знаков")
-        if name in reserved:
-            return f"имя «{name}» занято встроенным сервером Авроры"
         if not isinstance(spec, dict):
             return f"сервер «{name}»: ожидался объект"
         cmd, url = spec.get("command"), spec.get("url")
@@ -1907,158 +1815,10 @@ def mcp_check(servers, reserved=()) -> str:
     return ""
 
 
-def mcp_migrate_problem(name, spec) -> str:
-    """Почему сервер из `mcp.json` ПРОЕКТА нельзя переносить в кит; пусто — можно.
-
-    Файл приехал из git: помимо общей проверки (`mcp_check`) в кит не идут имя встроенного
-    сервера и окружение, меняющее запуск процесса.
-    """
-    why = mcp_check({name: spec}, reserved=(MCP_BUILTIN,))
-    if why:
-        return why
-    risky = mcp_risky_env(spec)
-    if risky:
-        return (f"сервер «{name}»: окружение {', '.join(risky)} меняет запуск программы — "
-                "такое из проекта не переносится, впишите его сами в «Настройка кита»")
-    return ""
-
-
-def _mcp_names(raw: str) -> list:
-    return [x.strip().strip("\"'") for x in raw.split(",") if x.strip().strip("\"'")]
-
-
-# Раздел `mcp:` в обеих записях YAML: блоком (`mcp:` и вложенные строки) или в одну строку
-# фигурными скобками (`mcp: {servers: [a]}`, `mcp: {}`).
-_MCP_BLOCK_RE = re.compile(r"(?m)^mcp:[ \t]*(?:#.*)?\n((?:[ \t]+.*\n?|[ \t]*\n)*)")
-_MCP_FLOW_RE = re.compile(r"(?m)^mcp:[ \t]*\{(.*)\}[ \t]*(?:#.*)?$\n?")
-# Любая другая запись ключа `mcp` на верхнем уровне (в том числе в кавычках).
-_MCP_ODD_RE = re.compile(r"(?m)^[\"']?mcp[\"']?[ \t]*:[ \t]*(.*)$")
-
-
-def _flow_pairs(inner: str) -> list:
-    """`a: 1, servers: [x, y]` → [("a", "1"), ("servers", "[x, y]")]: запятые внутри скобок не делят."""
-    parts, depth, cur = [], 0, ""
-    for ch in inner:
-        depth += ch in "[{"
-        depth -= ch in "]}"
-        if ch == "," and depth == 0:
-            parts.append(cur)
-            cur = ""
-        else:
-            cur += ch
-    parts.append(cur)
-    out = []
-    for p in parts:
-        k, sep, v = p.partition(":")
-        if sep and k.strip():
-            out.append((k.strip(), v.strip()))
-    return out
-
-
-def _mcp_top_indent(lines) -> str:
-    """Отступ первой значащей строки раздела: ключи первого уровня стоят с ним."""
-    for line in lines:
-        if line.strip() and not line.strip().startswith("#"):
-            return re.match(r"^[ \t]*", line).group(0)
-    return ""
-
-
-def mcp_block(text: str) -> dict:
-    """Раздел `mcp:` из текста `aurora.config.yaml` проекта → {servers, jira_write, bad}.
-
-    `servers` — имена серверов КИТА, которые проект выбрал (`servers: [a, b]`, пунктами
-    списка или одним именем `servers: a`); None — выбора нет, проект берёт все серверы кита;
-    `[]` — не берёт ни одного. Ключи читаются только на первом уровне раздела: вложенный
-    `servers:` — чужой. `bad` — запись выбора, которую не удалось прочесть (не молчим про
-    «все серверы», когда человек хотел сузить). Команд, адресов и токенов в проекте нет:
-    определения живут только в ките (`<кит>/local/mcp.json`, BL-SEC-12). `jira_write` —
-    запрос проекта на запись в Jira: True/False/None («не сказано»). Разрешение выдаёт кит
-    (`kit_mcp_permission`), проект может его только сузить.
-    """
-    out = {"servers": None, "jira_write": None, "bad": "", "unparsed": False}
-    flow = _MCP_FLOW_RE.search(text or "")
-    if flow:
-        lines = [f"  {k}: {v}" for k, v in _flow_pairs(flow.group(1))]
-        m = None
-    else:
-        m = _MCP_BLOCK_RE.search(text or "")
-        if not m:
-            # Ключ `mcp` есть, а ни блок, ни одну строку со скобками разобрать нельзя
-            # (`mcp: {` на нескольких строках, якорь `&m`, ключ в кавычках): проект мог
-            # хотеть сузить набор серверов, молча «взять все» нельзя.
-            odd = _MCP_ODD_RE.search(text or "")
-            val = re.sub(r"\s+#.*$", "", odd.group(1)).strip() if odd else ""
-            if odd and (odd.group(0)[0] in "\"'" or val not in ("", "~", "null")):
-                out["bad"], out["unparsed"] = odd.group(0).strip()[:60], True
-            return out
-        lines = m.group(1).splitlines()
-    top = _mcp_top_indent(lines)
-    for i, line in enumerate(lines):
-        w = re.match(r"^" + top + r"jira_write:\s*(\S+)", line)
-        if w:
-            out["jira_write"] = w.group(1).strip("'\"").lower() in ("true", "yes", "1", "on", "да")
-        s = re.match(r"^" + top + r"servers:\s*(.*?)\s*$", line)
-        if not s:
-            continue
-        rest = re.sub(r"\s+#.*$", "", s.group(1))
-        if rest.startswith("["):
-            if rest.endswith("]"):
-                out["servers"] = _mcp_names(rest.strip("[]"))
-            else:
-                out["bad"] = rest[:60]          # список не закрыт на этой строке: хвост потерялся бы
-        elif rest in ("", "~", "null"):
-            names = []
-            for nxt in lines[i + 1:]:
-                if not nxt.strip() or nxt.strip().startswith("#"):
-                    continue
-                item = re.match(r"^\s*-\s*(.+?)\s*(?:#.*)?$", nxt)
-                if not item:
-                    break
-                names.append(item.group(1).strip("\"'"))
-            out["servers"] = names
-        elif re.match(r"^[\w.\-\"']+$", rest):
-            out["servers"] = [rest.strip("\"'")]       # `servers: jira` — одно имя
-        else:
-            out["bad"] = rest[:60]
-    return out
-
-
-def mcp_set_servers(text: str, names) -> str:
-    """Текст конфига с выбором серверов кита (`mcp: servers: [...]`); `names` None — выбор
-    снимается (проект берёт все). Прочие строки раздела `mcp:` не трогаются; раздел в одну
-    строку (`mcp: {}`) превращается в блок, а не дублируется вторым ключом `mcp:`."""
-    text = text or ""
-    new = None if names is None else f"  servers: [{yaml_list(names)}]\n"
-    flow = _MCP_FLOW_RE.search(text)
-    if flow:
-        rest = [(k, v) for k, v in _flow_pairs(flow.group(1)) if k != "servers"]
-        block = "mcp:\n" + (new or "") + "".join(f"  {k}: {v}\n" for k, v in rest)
-        return text[:flow.start()] + (block if (new or rest) else "") + text[flow.end():]
-    m = _MCP_BLOCK_RE.search(text)
-    if not m:
-        if new is None:
-            return text
-        return text + ("" if text.endswith("\n") or not text else "\n") + "mcp:\n" + new
-    top = _mcp_top_indent(m.group(1).splitlines())
-    keep, skipping = [], False
-    for line in m.group(1).splitlines(keepends=True):
-        if re.match(r"^" + top + r"servers:", line):
-            skipping = not re.sub(r"\s+#.*$", "", line.split(":", 1)[1]).strip()
-            continue
-        if skipping and (re.match(r"^\s*-\s", line) or not line.strip()):
-            continue
-        skipping = False
-        keep.append(line)
-    body = "".join(keep)
-    if body and not body.endswith("\n"):
-        body += "\n"
-    return text[:m.start(1)] + (new or "") + body + text[m.end(1):]
-
-
 def kit_mcp_permission(name: str, kit=None) -> bool:
     """Выдано ли ЭТОЙ МАШИНЕ право `name` (например `jira_write`): ключ `permissions` в
-    `<кит>/local/mcp.json`. Папка `local/` закрыта .gitignore, так что содержимое проекта из
-    git право выдать не может — только сузить (BL-SEC-12, ADR-026)."""
+    `<кит>/local/mcp.json`. Право выдаёт только кит: папка `local/` закрыта .gitignore, а
+    проект про MCP ничего не говорит (BL-SEC-12, ADR-026)."""
     import json
     from pathlib import Path
     root = Path(kit) if kit else kit_root()

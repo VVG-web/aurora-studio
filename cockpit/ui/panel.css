@@ -361,7 +361,6 @@ tr:last-child td{border-bottom:0}
 .mcp-card{display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);
   text-align:left;padding:var(--sp-3) var(--sp-4);cursor:pointer;min-width:0}
 .mcp-card:hover,.mcp-card:focus-visible{border-color:var(--primary)}
-.mcp-card.ro{border-style:dashed;opacity:.92}
 #mcpDrawer .btn:disabled{opacity:.45;cursor:not-allowed}
 .mcp-line{font-size:var(--text-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mcp-kv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) auto;gap:6px;
