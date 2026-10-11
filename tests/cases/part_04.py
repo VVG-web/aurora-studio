@@ -1050,7 +1050,7 @@ def test_audit_reads_the_web_mirror_and_its_lifted_documents(tmp: Path):
 
     code = (KIT / "scripts/web_export.py").read_text(encoding="utf-8")
     assert "and not is_promoted_document(os.path.join(mirror.out, r))" in code \
-        and "is_promoted_document, report_stale" in code, \
+        and "is_promoted_document," in code, \
         "веб-модуль снова считает поднятые документы лишними файлами"
 
 

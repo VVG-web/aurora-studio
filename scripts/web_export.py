@@ -38,7 +38,8 @@ import urllib.error
 import urllib.request
 
 from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
-                           head_trust, head_value, safe_urlopen, same_origin, url_origin, utc_today)
+                           head_trust, head_value, is_loopback_host, safe_urlopen, same_origin,
+                           url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
                           is_promoted_document, remember_hosts, report_stale, trusted_hosts,
                           verify)
@@ -227,9 +228,11 @@ def token_refusal(url: str, seed: str, token: str, hosts: list | None = None,
         return f"адрес {url.split('?', 1)[0]} вне стартовой страницы {seed}"
     o = url_origin(url)
     if hosts and (not o or o[1] not in hosts):
-        return (f"хост {o[1] if o else url} не среди хостов токена ({', '.join(hosts)}); чтобы "
-                "разрешить новый адрес, добавьте его в AURORA_WEB_TOKEN_HOSTS файла машины "
-                "(.env.aurora.local)")
+        new = o[1] if o else url
+        return (f"хост {new} не среди хостов токена ({', '.join(hosts)}); чтобы разрешить новый "
+                "адрес, впишите в файл машины (.env.aurora.local) строку со ВСЕМИ хостами, "
+                "прежними тоже (она заменяет запомненный список): "
+                f"AURORA_WEB_TOKEN_HOSTS={','.join(list(hosts) + [new])}")
     return cleartext_secret_problem(url, allow_cleartext(env))
 
 
@@ -689,7 +692,8 @@ def run(a) -> int:
     learn = bool(token and not hosts and not trusted_hosts("WEB"))
     if token and not hosts:
         hosts = trusted_hosts("WEB")
-    worked: set = set()
+    tried: set = set()       # хосты, куда токен реально ушёл (свой компьютер не считается)
+    answered: set = set()    # из них те, что ответили: успех, 304 или любой HTTP-статус
     mirror = WebMirror(a.out)
     os.makedirs(mirror.out, exist_ok=True)
     print(f"# Веб-страницы — выгрузка\n\nАдресов в списке: **{len(pages)}** · "
@@ -720,10 +724,11 @@ def run(a) -> int:
             meta: dict = {}
             sent = token_for(url, seed, token, hosts, env)
             html, err = fetch(url, sent, known, meta)
-            if learn and sent and (not err or err == NOT_MODIFIED):
-                o = url_origin(url)
-                if o:
-                    worked.add(o[1])
+            o = url_origin(url) if learn and sent else ()
+            if o and not is_loopback_host(o[1]):
+                tried.add(o[1])
+                if not err or err == NOT_MODIFIED or err.startswith("HTTP "):
+                    answered.add(o[1])
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
                 unchanged += 1
@@ -816,8 +821,10 @@ def run(a) -> int:
         if queue:
             print(f"  … потолок {opt['max_pages']} страниц исчерпан, "
                   f"в очереди осталось {len(queue)}")
-    if learn and worked:
-        remember_hosts("WEB", worked)
+    # Запоминаем, только когда ответил каждый хост, куда ушёл токен: сбой сети (VPN выключен)
+    # закрепил бы случайный набор, и недоступный законный хост остался бы без токена навсегда.
+    if learn and tried and tried == answered:
+        remember_hosts("WEB", tried)
     # Расшифровки скачанных документов поднимаем в корень зеркала: их текст — источник
     # знания наравне со страницей, а из `_files/` разбор его не увидит.
     converted = convert_documents(mirror.out, a.apply)

@@ -60,10 +60,10 @@ them there). `AURORA_ALLOW_HTTP=1` allows plain `http://` for a server on a clos
 them to another host, a saved key is not carried over to a changed address, and the credential helper answers only the
 repository's server; plain `http://` stays allowed there (a local Gitea or gateway on a closed network). The website crawl
 token (`WEB_PERSONAL_TOKEN`) goes only to the host of the start page it is used with; a page added to the shared list
-would get it, so the engine remembers the hosts where the token worked in the first run (`.aurora/state/trusted-hosts.json`,
-not in git): a page added later on another host does not receive it, and the log says how to allow the new address. To bind
+would get it, so the engine remembers the hosts where the token worked in the first run, once every host it was sent to has answered
+(`.aurora/state/trusted-hosts.json`, not in git; your own computer is never remembered): a page added later on another host does not receive it, and the log says how to allow the new address. To bind
 the hosts before the first run (or to accept a new one), list them in `AURORA_WEB_TOKEN_HOSTS=wiki.example.com,…`: the line
-takes precedence and no other host receives the token.
+replaces the remembered list (name all hosts, the old ones too) and no other host receives the token.
 
 ## Checking a mirror
 

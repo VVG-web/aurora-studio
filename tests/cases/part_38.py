@@ -1459,6 +1459,8 @@ def test_web_token_follows_the_hosts_where_it_first_worked(tmp: Path):
         got = dict(sent)
         assert got["https://wiki.example.com/a"] == "SECRET" and got["https://new.example.org/c"] == "", sent
         assert "чтобы разрешить новый адрес" in out and "AURORA_WEB_TOKEN_HOSTS" in out, out
+        # подсказка готовая: все прежние хосты и новый (строка заменяет запомненный список)
+        assert ("AURORA_WEB_TOKEN_HOSTS=docs.example.com,wiki.example.com,new.example.org" in out), out
         # строка машины главнее запомненного: хост, которого нет в ней, токена не получает
         go(["https://wiki.example.com/a", "https://docs.example.com/b"],
            "AURORA_WEB_TOKEN_HOSTS=docs.example.com\n")
@@ -1468,6 +1470,65 @@ def test_web_token_follows_the_hosts_where_it_first_worked(tmp: Path):
         bare.mkdir()
         SC.remember_hosts("WEB", ["x.example.com"], str(bare))
         assert not (bare / ".aurora").exists() and SC.trusted_hosts("WEB", str(bare)) == []
+    finally:
+        os.chdir(cwd)
+        WE._get, sys.argv = real_get, real_argv
+
+
+@test
+def test_web_token_hosts_are_remembered_only_when_every_host_answered(tmp: Path):
+    """Запоминание хостов токена не закрепляет случайный набор: сбой сети у одного из хостов
+    первого прогона оставляет запоминание на следующий, а свой компьютер в список не попадает."""
+    _path()
+    WE = importlib.import_module("web_export")
+    SC = importlib.import_module("sources_core")
+    proj = tmp / "p"
+    (proj / ".aurora").mkdir(parents=True)
+    down: set = set()
+    sent = []
+
+    def fake(url, token="", timeout=0, headers=None, meta=None):
+        sent.append((url, token))
+        if any(h in url for h in down):
+            return b"", "", "URLError: сеть недоступна (попыток: 3)"
+        if "denied" in url:
+            return b"", "", "HTTP 403"
+        return b"<html><body>x</body></html>", "utf-8", ""
+
+    real_get, real_argv, cwd = WE._get, sys.argv, os.getcwd()
+    WE._get = fake
+
+    def go(pages: list) -> None:
+        (proj / "aurora.config.yaml").write_text(
+            "web:\n  pages:\n" + "".join(f"    - url: {p}\n      trusted: false\n" for p in pages),
+            encoding="utf-8")
+        (proj / ENV_LOCAL).write_text("WEB_PERSONAL_TOKEN=SECRET\nAURORA_ALLOW_HTTP=1\n",
+                                      encoding="utf-8")
+        sent.clear()
+        sys.argv = ["web_export.py", "--out", str(proj / "out")]
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            WE.main()
+
+    os.chdir(proj)
+    try:
+        pages = ["https://wiki.example.com/a", "https://docs.example.org/b"]
+        down.add("wiki.example.com")
+        go(pages)                                   # VPN выключен: ответил только один хост
+        assert SC.trusted_hosts("WEB") == [], SC.trusted_hosts("WEB")
+        down.clear()
+        go(pages)                                   # сеть вернулась: запомнены оба
+        assert SC.trusted_hosts("WEB") == ["docs.example.org", "wiki.example.com"], SC.trusted_hosts("WEB")
+        # свой компьютер не запоминается (как и в remember_origin), а HTTP-отказ — это ответ
+        (proj / ".aurora" / "state" / "trusted-hosts.json").unlink()
+        go(["http://127.0.0.1:9/a", "https://denied.example.net/x"])
+        assert SC.trusted_hosts("WEB") == ["denied.example.net"], SC.trusted_hosts("WEB")
+        (proj / ".aurora" / "state" / "trusted-hosts.json").unlink()
+        go(["http://127.0.0.1:9/a"])
+        assert SC.trusted_hosts("WEB") == [], SC.trusted_hosts("WEB")
+        go(["https://wiki.example.com/a"])          # токен не привязан к петле
+        assert SC.trusted_hosts("WEB") == ["wiki.example.com"] and dict(sent)["https://wiki.example.com/a"] == "SECRET"
     finally:
         os.chdir(cwd)
         WE._get, sys.argv = real_get, real_argv
