@@ -170,9 +170,12 @@ flowchart LR
   the body is limited to 10 MB. Starting MCP servers and rebuilding the graph are POST only. A link opened by the browser
   (a report in a new tab) cannot carry a header: `POST /api/link` issues a ticket for one report address and one opening
   (one minute).
-- Residual risk: the code sits in the address that the browser's "open" program receives until it expires; another user of
-  the machine who read the process list before the browser did could use it. On a shared machine start the panel with
-  `--no-browser` and open the link from the console.
+- The browser is not opened on the address with the code but on a local redirect file (folder 0700, file 0600, removed by a
+  timer): the code does not reach the process arguments that `ps` shows. What remains is that the code is printed to the
+  console; on a shared machine start the panel with `--no-browser` and open the link from there.
+- The page's `Origin` is compared with the port in the `Host` header (a port forward to another local port works), the host
+  name must be the loopback. A report link works once: after F5 open the report again from the "Reports" section.
+  Responses carry `Cross-Origin-Resource-Policy: same-origin`.
 - **Only commands from the registry** can be run; arguments go as a list, with no shell; a flag the command did not declare is
   rejected.
 - A project is chosen from the discovered list, an arbitrary path is not accepted.

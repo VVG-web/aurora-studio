@@ -352,6 +352,7 @@
     "нет имени раздела на языке по умолчанию": "there is no section name in the default language",
     "это не JSON: {} — строка {}, позиция {}": "this is not JSON: {} — line {}, position {}",
     "нет токена сессии — откройте адрес из консоли": "no session token — open the address from the console",
+    "ссылка на отчёт одноразовая — откройте отчёт из раздела «Отчёты» ещё раз": "the report link works once — open the report again from the «Reports» section",
     "токен в адресе (?t=) больше не принимается — обновите страницу (F5); скрипту — передавайте заголовок X-Aurora-Token": "a token in the address (?t=) is no longer accepted — reload the page (F5); a script should send the X-Aurora-Token header",
     "сессия панели закончилась (панель запущена заново) — обновите страницу (F5) или откройте адрес из консоли": "the panel session has ended (the panel was started again) — reload the page (F5) or open the address from the console",
     "запрос пришёл не со страницы панели": "the request did not come from the panel page",

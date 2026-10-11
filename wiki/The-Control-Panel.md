@@ -43,8 +43,9 @@ are switched in the header.
 - **A stopped route resumes** where it stood, and a card on the Bridge says what is running and what stopped.
 - **Secrets never come back.** A token you enter is written to `.env.aurora.local`; the panel only ever shows
   "filled / empty".
-- **Nothing leaves the loopback.** The page and its token are served to `127.0.0.1` only, and the panel refuses a foreign
-  `Host`.
+- **Nothing leaves the loopback.** The panel answers `127.0.0.1` only and refuses a foreign `Host` and a foreign page's
+  `Origin`. The page itself carries no token: you sign in with a one-time code from the console address (two minutes, one
+  use), the page exchanges it for the session token and sends it only in the `X-Aurora-Token` header, never in an address.
 - **The interface is translated** (Russian, English). What the engine prints into the console — reports, linter output —
   stays Russian; the panel's own texts, command and flag descriptions, routes and error messages follow the language.
 

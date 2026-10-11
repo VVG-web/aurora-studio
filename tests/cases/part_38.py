@@ -537,3 +537,155 @@ console.log(JSON.stringify(out));
     assert link[0] == "open:about:blank" and r["link"]["opener"] is None, link
     assert link[-1] == "goto:/api/report/file?id=a&c=TICKET" and "TICKET" not in json.dumps(link[1:-1]), link
     assert r["refused"] == ["open:about:blank", "close"], r["refused"]
+
+
+# --------------------------------------------------------------------------- доработка BL-SEC-03
+
+
+@test
+def test_the_origin_is_compared_with_the_host_header_so_a_port_forward_still_works(tmp: Path):
+    """При пробросе порта (`ssh -L 9000:127.0.0.1:8787`) страница открыта на другом порту, и её
+    Origin — с этим портом. Сверка с портом сервера отвечала 403 на каждый POST, включая вход.
+    Теперь Origin сверяется с Host: свой порт проходит, чужой порт петли (другая программа на
+    той же машине) — нет."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    js = {"Content-Type": "application/json"}
+    try:
+        for host, origin, want in (
+                ("localhost:9000", "http://localhost:9000", 200),
+                ("127.0.0.1:9000", "http://127.0.0.1:9000", 200),
+                ("[::1]:9000", "http://[::1]:9000", 200),
+                ("localhost:9000", "http://localhost:3000", 403),          # чужой порт петли
+                ("localhost:9000", f"http://localhost:{srv.server_address[1]}", 403),
+                ("localhost:9000", "http://evil.example:9000", 403),
+                ("localhost:9000", "https://localhost:9000", 403),
+                ("localhost:9000", "http://localhost:9000/x", 403),
+                ("localhost", "http://localhost", 200)):                    # порт по умолчанию
+            st, _h, raw = call("GET", "/api/ping",
+                               {"Host": host, "Origin": origin, "X-Aurora-Token": ck.TOKEN})
+            assert st == want, (host, origin, st, raw)
+            if want == 403:
+                assert _json_of(raw).get("code") == "origin", (host, origin, raw)
+        # вход и действие через проброс: код меняется на токен, POST с токеном проходит
+        fwd = {**js, "Host": "localhost:9000", "Origin": "http://localhost:9000"}
+        st, _h, raw = call("POST", "/api/session", fwd, json.dumps({"code": ck.issue_launch_code()}))
+        assert st == 200 and _json_of(raw).get("token") == ck.TOKEN, (st, raw)
+        st, _h, raw = call("POST", "/api/launch", {**fwd, "X-Aurora-Token": ck.TOKEN}, "{}")
+        assert st == 200 and _json_of(raw).get("code"), (st, raw)
+        # чужая страница на соседнем порту по-прежнему не получает токен
+        st, _h, raw = call("POST", "/api/session",
+                           {**js, "Host": "localhost:9000", "Origin": "http://localhost:3000"},
+                           json.dumps({"code": ck.issue_launch_code()}))
+        assert st == 403 and ck.TOKEN not in raw, (st, raw)
+    finally:
+        srv.shutdown()
+
+
+@test
+def test_a_report_link_ticket_survives_the_browser_normalising_the_address(tmp: Path):
+    """Браузер приводит адрес к своему виду: апостроф в запросе уходит как `%27`, а страница
+    отправила путь с апострофом как есть. Билет сверялся строкой, и «Открыть» у отчёта проекта
+    с таким путём (`/Users/O'Brien/…`) открывал вкладку с ошибкой. Сверка теперь по разобранному
+    адресу. Повторное открытие отвечает понятно, а не «откройте адрес из консоли»."""
+    _path()
+    from urllib.parse import quote
+    ck = importlib.import_module("aurora_cockpit")
+    proj = tmp / "O'Brien proj x"
+    proj.mkdir()
+    (proj / "out.html").write_text("<html>отчёт</html>", encoding="utf-8")
+    saved = (ck.find_projects, ck.report_state, ck.report_version_path)
+    ck.find_projects = lambda roots: [{"path": str(proj)}]
+    ck.report_state = lambda p: {"reports": [{"id": "analyst",
+                                              "output": {"exists": True, "path": "out.html"}}]}
+    ck.report_version_path = lambda p, i, stamp: str(proj / "out.html")
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    js = {"X-Aurora-Token": ck.TOKEN, "Content-Type": "application/json"}
+    # как строит адрес страница: encodeURIComponent оставляет апостроф как есть
+    path = f"/api/report/file?project={quote(str(proj), safe=chr(39))}&id=analyst"
+    assert "'" in path and " " not in path
+    try:
+        url = _json_of(call("POST", "/api/link", js, json.dumps({"path": path}))[2])["url"]
+        browser = url.replace("'", "%27")                  # так запрос уходит из браузера
+        assert browser != url
+        st, head, body = call("GET", browser)
+        assert st == 200 and "отчёт" in body, (st, body)
+        assert head.get("cross-origin-resource-policy") == "same-origin", head
+        # то же в другом порядке параметров и с другим написанием пробела — тот же адрес
+        url = _json_of(call("POST", "/api/link", js, json.dumps({"path": path}))[2])["url"]
+        ticket = url.rsplit("c=", 1)[1]
+        other = f"/api/report/file?id=analyst&project={quote(str(proj), safe='')}&c={ticket}"
+        st, _h, _b = call("GET", other)
+        assert st == 200, "тот же адрес в другой записи не принят"
+        # чужой проект или параметр — отказ
+        url = _json_of(call("POST", "/api/link", js, json.dumps({"path": path}))[2])["url"]
+        st, _h, _b = call("GET", url.replace("analyst", "analyst2"))
+        assert st == 403
+        # повторное открытие: сообщение про отчёт, а не про консоль, в том числе по-английски
+        st, _h, raw = call("GET", browser)
+        err = _json_of(raw)
+        assert st == 403 and err.get("code") == "link" and "консол" not in err["error"] \
+            and "«Отчёты»" in err["error"], raw
+        st, _h, raw = call("GET", browser + "&lang=en")
+        assert "Reports" in _json_of(raw)["error"] and "консол" not in raw, raw
+        # билет не выдаётся на адрес, где уже есть параметр `c`
+        st, _h, _r = call("POST", "/api/link", js, json.dumps({"path": path + "&c=x"}))
+        assert st == 400
+    finally:
+        srv.shutdown()
+        ck.find_projects, ck.report_state, ck.report_version_path = saved
+
+
+@test
+def test_the_browser_gets_a_local_redirect_file_and_not_the_code_in_its_arguments(tmp: Path):
+    """Адрес с кодом входа, переданный `webbrowser.open`, лежит в `argv` программы «открыть» и
+    виден другому пользователю машины. Браузеру отдаётся путь к файлу в закрытой папке; в файле —
+    переход на адрес панели. Проба идёт во временной папке теста."""
+    _path()
+    import tempfile
+    ck = importlib.import_module("aurora_cockpit")
+    opened = []
+    old = (ck.webbrowser.open, tempfile.tempdir, ck.OPEN_FILE_TTL)
+    stale = tmp / (ck.OPEN_PREFIX + "stale")
+    stale.mkdir()
+    os.utime(stale, (time.time() - 3600, time.time() - 3600))
+    ck.webbrowser.open = lambda u, *a, **k: opened.append(u) or True
+    tempfile.tempdir = str(tmp)
+    ck.OPEN_FILE_TTL = 0.3                 # таймер уборки не должен жить дольше теста
+    try:
+        url = "http://127.0.0.1:8787/?c=SECRETCODE123"
+        assert ck.open_in_browser(url) is True
+        assert len(opened) == 1 and opened[0].startswith("file://") and "SECRETCODE123" not in opened[0], opened
+        page = Path(opened[0][len("file://"):].replace("%20", " "))
+        assert page.is_file() and url in page.read_text(encoding="utf-8")
+        assert "location.replace" in page.read_text(encoding="utf-8")
+        if os.name == "posix":
+            assert (page.stat().st_mode & 0o777) == 0o600, oct(page.stat().st_mode)
+            assert (page.parent.stat().st_mode & 0o777) == 0o700, oct(page.parent.stat().st_mode)
+        assert not stale.exists(), "прежняя папка с кодом не убрана"
+        for _ in range(60):                # короткий таймер уборки
+            if not page.exists():
+                break
+            time.sleep(0.1)
+        assert not page.exists(), "файл с кодом остался после срока кода"
+    finally:
+        ck.webbrowser.open, tempfile.tempdir, ck.OPEN_FILE_TTL = old
+
+
+@test
+def test_the_token_goes_to_the_loopback_port_and_never_to_the_host_from_the_session_file(tmp: Path):
+    """`alive()` берёт из адреса файла сессии только порт: токен уходит на 127.0.0.1, а не на
+    хост, который туда записан."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    srv, _get = _server(ck, tmp)
+    try:
+        port = srv.server_address[1]
+        assert ck.alive(f"http://evil.example:{port}/", ck.TOKEN), "порт из адреса не использован"
+        assert not ck.alive("http://evil.example/", ck.TOKEN), "адрес без порта принят"
+        assert not ck.alive("не адрес", ck.TOKEN)
+    finally:
+        srv.shutdown()

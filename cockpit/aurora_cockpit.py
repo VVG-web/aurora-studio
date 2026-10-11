@@ -53,7 +53,7 @@ import traceback
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(KIT, "cockpit", "ui", "index.html")
@@ -4485,7 +4485,16 @@ def link_path_ok(path: str) -> bool:
     """Билет выдаётся только на чтение файла отчёта: остальным адресам заголовка достаточно."""
     u = urlparse(path)
     return (u.path in LINK_PATHS and not u.fragment and path.startswith("/")
-            and not path.startswith("//"))
+            and not path.startswith("//") and "c" not in parse_qs(u.query))
+
+
+def _link_key(path: str) -> tuple:
+    """Адрес без билета в каноническом виде: путь и параметры запроса, а не строка. Браузер
+    нормализует адрес (апостроф в запросе уходит как `%27`, а страница отправила его как есть),
+    и сравнение строк отказывало бы в открытии отчёта, чей путь содержит такой знак."""
+    u = urlparse(path)
+    return (u.path, tuple(sorted((k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
+                                 if k != "c")))
 
 
 def issue_link(path: str) -> str:
@@ -4495,17 +4504,37 @@ def issue_link(path: str) -> str:
     ticket = secrets.token_urlsafe(18)
     with _AUTH_LOCK:
         _auth_prune(_LINK_TICKETS)
-        _LINK_TICKETS[ticket] = (time.monotonic() + LINK_TTL, path)
+        _LINK_TICKETS[ticket] = (time.monotonic() + LINK_TTL, _link_key(path))
     return path + ("&" if "?" in path else "?") + "c=" + ticket
 
 
 def take_link(full_path: str, ticket: str) -> bool:
     """Билет подходит, если выдан на этот самый адрес (без `c=`) и ещё не истёк."""
-    bare = re.sub(r"[?&]c=[^&]*$", "", full_path)
+    key = _link_key(full_path)
     with _AUTH_LOCK:
         _auth_prune(_LINK_TICKETS)
         row = _LINK_TICKETS.pop(str(ticket or ""), None)
-    return row is not None and row[1] == bare
+    return row is not None and row[1] == key
+
+
+def _split_hostport(value: str):
+    """`localhost:8787` -> (`localhost`, `8787`); `[::1]:8787` -> (`[::1]`, `8787`)."""
+    value = value.strip().lower()
+    if value.startswith("[") and "]" in value:
+        end = value.index("]") + 1
+        return value[:end], value[end:].lstrip(":")
+    host, _, port = value.partition(":")
+    return host, port
+
+
+def _origin_matches_host(origin: str, host_header: str) -> bool:
+    """Origin страницы — петлевой адрес с тем же портом, что в Host запроса."""
+    origin = origin.strip().lower()
+    if not origin.startswith("http://"):
+        return False
+    o_host, o_port = _split_hostport(origin[len("http://"):])
+    _h_host, h_port = _split_hostport(host_header)
+    return o_host in ("127.0.0.1", "localhost", "[::1]") and o_port == h_port
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -4555,8 +4584,13 @@ class Handler(BaseHTTPRequestHandler):
         if (ticket and self.command == "GET" and u.path in LINK_PATHS
                 and take_link(self.path, ticket)):
             return True
+        # Вкладка отчёта: билет расходуется первым открытием, и F5, «Назад» или восстановление
+        # вкладок приходят уже без него. «Откройте адрес из консоли» тут сбивает с толку.
+        if self.command == "GET" and u.path in LINK_PATHS:
+            self.send_json({"error": "ссылка на отчёт одноразовая — откройте отчёт из раздела "
+                            "«Отчёты» ещё раз", "code": "link"}, 403)
         # Прежние вкладки и скрипты носили токен в адресе (`?t=`): говорим прямо, что делать.
-        if "t" in query:
+        elif "t" in query:
             self.send_json({"error": "токен в адресе (?t=) больше не принимается — обновите "
                             "страницу (F5); скрипту — передавайте заголовок X-Aurora-Token",
                             "code": "session"}, 403)
@@ -4575,10 +4609,13 @@ class Handler(BaseHTTPRequestHandler):
         токен, и закрывает запросы, которые браузер шлёт сам (формы, `<img>`, `text/plain`)."""
         site = (self.headers.get("Sec-Fetch-Site") or "").lower()
         origin = self.headers.get("Origin")
-        port = self.server.server_address[1]
-        own = {f"http://{h}:{port}" for h in ("127.0.0.1", "localhost", "[::1]")}
+        # Порт берём из заголовка Host, а не у сервера: при пробросе порта (`ssh -L 9000:…`)
+        # страница открыта на другом порту, и Origin у неё соответственно другой. Имя хоста
+        # уже ограничено петлёй в `host_ok`; чужая страница на соседнем порту петли
+        # (Origin `localhost:3000` при Host `localhost:8787`) по-прежнему отклоняется.
+        own = origin is not None and _origin_matches_host(origin, self.headers.get("Host") or "")
         # `none` — человек сам открыл адрес (ссылка, закладка): чужая страница так не умеет.
-        if (site and site not in ("same-origin", "none")) or (origin is not None and origin not in own):
+        if (site and site not in ("same-origin", "none")) or (origin is not None and not own):
             self.send_json({"error": "запрос пришёл не со страницы панели", "code": "origin"}, 403)
             return False
         return True
@@ -4588,6 +4625,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         # Код входа живёт в адресе страницы: уходить дальше в Referer он не должен.
         self.send_header("Referrer-Policy", "no-referrer")
+        # Ответы панели не встраиваются чужой страницей (`<img>`, `<script>` с другого origin).
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if frame:
             self.send_header("X-Frame-Options", "DENY")
         if csp:
@@ -6210,13 +6249,59 @@ def panel_request(sess: dict, path: str, method: str = "GET", timeout: float = 2
 def alive(url: str, token: str = "") -> bool:
     """Отвечает ли по этому адресу именно панель, а не чужая программа на том же порту."""
     base, _, legacy = url.partition("?t=")      # адрес прежних панелей нёс токен в строке
-    req = urllib.request.Request(base.rstrip("/") + "/api/ping",
+    # Токен уходит только на петлю: хост из файла сессии не берём, нужен лишь порт.
+    try:
+        port = urlparse(base).port
+    except ValueError:
+        port = None
+    if not port:
+        return False
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/ping",
                                  headers={"X-Aurora-Token": token or legacy})
     try:
         with urllib.request.urlopen(req, timeout=2) as r:
             return json.load(r).get("app") == "aurora-cockpit"
     except Exception:  # noqa: BLE001
         return False
+
+
+OPEN_PREFIX = "aurora-open-"
+OPEN_FILE_TTL = LAUNCH_TTL + 30      # файл-переход живёт чуть дольше кода в нём
+
+
+def open_in_browser(url: str) -> bool:
+    """Открыть адрес с кодом входа так, чтобы код не попал в аргументы процесса браузера.
+
+    Прямой вызов `webbrowser.open` с адресом кладёт его в `argv` программы «открыть», а его
+    видит любой пользователь общей машины (`ps`) — и забирает код раньше браузера. Поэтому
+    браузеру передаётся путь к файлу: папка 0700 (создаёт `mkdtemp`), файл 0600, в нём переход
+    на адрес панели. Код после обмена бесполезен; файл убирается по таймеру и при следующем
+    открытии (запуск, после которого процесс сразу завершается, таймера не дождётся)."""
+    from html import escape
+    root = tempfile.gettempdir()
+    try:
+        for name in os.listdir(root):               # прежние файлы: код в них давно истёк
+            old = os.path.join(root, name)
+            if name.startswith(OPEN_PREFIX) and time.time() - os.path.getmtime(old) > 600:
+                shutil.rmtree(old, ignore_errors=True)
+    except OSError:
+        pass
+    try:
+        folder = tempfile.mkdtemp(prefix=OPEN_PREFIX)
+        page = os.path.join(folder, "open.html")
+        fd = os.open(page, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write('<!doctype html><meta charset="utf-8">'
+                    f'<meta http-equiv="refresh" content="0;url={escape(url, quote=True)}">'
+                    f'<script>location.replace({json.dumps(url)})</script>'
+                    f'<a href="{escape(url, quote=True)}">Aurora</a>')
+    except OSError:
+        return False                                # адрес и так напечатан в консоли
+    cleaner = threading.Timer(OPEN_FILE_TTL, shutil.rmtree, args=(folder,),
+                              kwargs={"ignore_errors": True})
+    cleaner.daemon = True
+    cleaner.start()
+    return bool(webbrowser.open(Path(page).as_uri()))
 
 
 def reopen_url(sess: dict) -> str:
@@ -6302,7 +6387,7 @@ def main() -> int:
             print("Перезапустить (например, после обновления kit): "
                   "aurora.py cockpit --restart")
             if not a.no_browser:
-                webbrowser.open(url)
+                open_in_browser(url)
             return 0
         print(f"Порт {a.port} занят другой программой.\n"
               f"  Свободный порт:  aurora.py cockpit --port {a.port + 1}\n"
@@ -6344,7 +6429,7 @@ def main() -> int:
     threading.Thread(target=warm_health, args=(lambda: find_projects(srv.roots),),
                      daemon=True, name="aurora-health").start()
     if not a.no_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.5, open_in_browser, args=(url,)).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         srv.serve_forever()
