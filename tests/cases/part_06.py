@@ -2439,6 +2439,11 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
     for alias in ("refs/tags/v1",):
         cp = push(alias, remote=alias, lsha=sha)
         assert cp.returncode == 0, f"выпуск тега {alias} на кончике development остановлен:\n{cp.stderr}"
+    # тот же тег в любую ссылку, кроме `refs/tags/*`, — не выпуск: кончик development уехал бы под другим именем
+    for dst in ("refs/custom/x", "refs/remotes/leak/x", "refs/heads/foo"):
+        cp = push("refs/tags/v1", remote=dst, lsha=sha)
+        assert cp.returncode == 1 and "development" in cp.stderr, \
+            f"тег v1 на кончике development уехал в {dst}: rc={cp.returncode}\n{cp.stderr}"
     g("tag", "v3", other)
     cp = push("v3^0", lsha=other)
     assert cp.returncode == 0, f"v3^0 (тег на коммите обычной ветки) остановлен:\n{cp.stderr}"
@@ -2503,6 +2508,16 @@ def test_push_hook_resolves_head_aliases_and_old_hooks_are_called_out(tmp: Path)
     assert cp.returncode == 0, f"выпуск тега v1 на кончике development остановлен:\n{cp.stderr}"
     assert "refs/tags/v1" in rg("ls-remote", "--tags", "origin").stdout, "тег v1 не доехал"
     assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "тег создал ветку на публичном remote"
+    # тег в ссылку не из `refs/tags/*` — отказ; `v1:foo` git сам превращает в `refs/tags/foo` — выпуск
+    for dst in ("refs/custom/x", "refs/remotes/leak/x"):
+        cp = rg("push", "origin", "v1:" + dst, check=False)
+        assert cp.returncode != 0 and "development" in cp.stderr, \
+            f"git push v1:{dst} (кончик development) ушёл наружу: rc={cp.returncode}\n{cp.stderr}"
+    cp = rg("push", "origin", "v1:foo", check=False)
+    assert cp.returncode == 0, f"git push v1:foo (становится тегом foo) остановлен:\n{cp.stderr}"
+    assert not rg("ls-remote", "--heads", "origin").stdout.strip(), "v1:foo создал ветку на публичном remote"
+    assert not [l for l in rg("ls-remote", "origin").stdout.splitlines()
+                if "refs/custom" in l or "refs/remotes" in l], "тег уехал в посторонние ссылки"
     cp = rg("push", "origin", "main:refs/heads/foo", check=False)
     assert cp.returncode == 0, f"обычная ветка main остановлена:\n{cp.stderr}"
 
