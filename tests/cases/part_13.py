@@ -339,6 +339,10 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
     server = tmp / "demo_server.py"
     server.write_text(textwrap.dedent("""
         import json, pathlib, sys
+        # Труба на Windows — в кодовой странице системы (cp1252): без этого «эхо» роняет сервер, а
+        # привет клиента читается кракозябрами. Клиент говорит UTF-8 в обе стороны.
+        sys.stdin.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")
         pathlib.Path(sys.argv[1]).write_text("started")
         def send(o):
             sys.stdout.write(json.dumps(o, ensure_ascii=False) + "\\n"); sys.stdout.flush()
@@ -363,13 +367,16 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
     scenario = tmp / "scenario.py"
     scenario.write_text(textwrap.dedent("""
         import json, os, sys
+        sys.stdout.reconfigure(encoding="utf-8")    # печатаем кириллицу: труба может быть в cp1252
         sys.path.insert(0, sys.argv[1])
         import pydantic_ai_adapter as AD
         from pydantic_ai import Agent
         from pydantic_ai.models.function import FunctionModel
         from pydantic_ai.messages import ModelResponse, ToolCallPart, TextPart, ToolReturnPart
         S, mark = sys.argv[2], os.path.join(sys.argv[2], "started.txt")
-        cfg = {"mcpServers": {"demo": {"command": sys.executable, "args": [os.path.join(S, "demo_server.py"), mark]},
+        # Окружение сервера — как у трубы Windows: проверка не зависит от кодовой страницы машины.
+        cfg = {"mcpServers": {"demo": {"command": sys.executable, "args": [os.path.join(S, "demo_server.py"), mark],
+                                       "env": {"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}},
                               "broken": {"command": "/nonexistent/mcp-nope"}}}
         state = {"active": set()}
         ts = AD.lazy_mcp_toolsets(cfg, {}, S, "", state)
@@ -385,8 +392,11 @@ def test_mcp_servers_start_only_when_needed(tmp: Path):
         out = Agent(FunctionModel(fn), toolsets=ts).run_sync("go").output
         print(json.dumps({"seen": seen, "returns": json.loads(out)}, ensure_ascii=False))
     """), encoding="utf-8")
+    # Сценарий идёт с трубой Windows (cp1252, без режима UTF-8): живая проверка в CI на windows-latest
+    # не должна зависеть от кодовой страницы раннера. Свой вывод читаем как UTF-8: его так пишет сценарий.
+    pipe = {**os.environ, "PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}
     cp = subprocess.run([str(vpy), str(scenario), str(KIT / "scripts" / "agents"), str(tmp)],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=240, env=pipe)
     assert cp.returncode == 0, cp.stderr[-1500:]
     d = json.loads(cp.stdout.strip().splitlines()[-1])
     assert d["seen"][0] == [["mcp_connect"], False], f"сервер поднят до нужды: {d['seen'][0]}"

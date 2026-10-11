@@ -160,10 +160,12 @@ non-blocking for now (`continue-on-error`) and become blocking after stable gree
 
 Pinning and drift: actions are referenced by version (`@v6`), not by branch; the `beautifulsoup4`, `markdownify` and `ruff`
 versions for CI live in `.github/requirements-ci.txt` (installed with `-c`; `requirements.txt` for users stays unpinned), updates to
-the actions and to that file come from Dependabot (`.github/dependabot.yml`); node is installed with a version (LTS 24), otherwise
-the JS checks are silently skipped. The `adapter-live` job (Linux and Windows, non-blocking) installs the Pydantic AI venv the way
-the panel does, runs `--selfcheck` and three live checks; `AURORA_REQUIRE_VENV=1` turns a skip without a venv into a failure, and
-`AURORA_ADAPTER_VENV` sets the venv directory (locally the checks use the real `~/.aurora/venv`, read-only). The weekly
+the actions and to that file come from Dependabot (`.github/dependabot.yml`: monthly, one PR per ecosystem, new releases wait 7 days); node is installed with a version (LTS 24), otherwise
+the JS checks are silently skipped. The `adapter-live` job (Linux and Windows, non-blocking) installs the Pydantic AI venv with the engine's real
+install (`agent_core.py --venv-install` under a temporary HOME on the runner: the rollback and fallback specs are exercised too, no
+per-OS branching in YAML), runs `--selfcheck` and three live checks; `AURORA_REQUIRE_VENV=1` turns a skip without a venv into a failure, and
+`AURORA_ADAPTER_VENV` sets the venv directory (locally the checks use the real `~/.aurora/venv`, read-only); the live MCP check does not depend on the code page (a Windows
+cp1252 pipe is simulated by the test itself). The weekly
 `canary.yml` (a separate workflow, it does not affect the release) runs everything on the latest versions with no constraints and
 opens an issue when red.
 

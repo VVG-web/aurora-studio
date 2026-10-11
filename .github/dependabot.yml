@@ -1,12 +1,25 @@
 # Обновления закреплённого в CI: действия GitHub и версии из requirements-ci.txt приходят
-# отдельными PR раз в неделю, а не ломают прогон сами. Тесты PR видны до слияния.
+# отдельными PR раз в месяц, а не ломают прогон сами. Тесты PR видны до слияния.
+# Одна PR на экосистему (`groups`), а не по одной на пакет: каждая PR красна в проверке `authors`
+# по замыслу (коммиты `dependabot[bot]`) и разбирается руками, поэтому их должно быть мало.
+# Новые релизы ждут 7 суток (`cooldown`, карантин по ADR-060); дрейф раньше срока видят canary и adapter-live.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: pip
     directory: "/.github"
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      ci-pins:
+        patterns: ["*"]

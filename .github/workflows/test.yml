@@ -124,10 +124,13 @@ jobs:
     # настоящем фреймворке (шлюз с нестандартными метаданными, откат при несовместимом обновлении,
     # ленивый MCP со сторожем). Раньше без `~/.aurora/venv` они возвращали «пропускаем» и считались
     # зелёными, а Windows (`Scripts/python.exe`) пропускал их даже при поставленном venv.
-    # AURORA_REQUIRE_VENV=1 превращает пропуск в падение. venv ставится так же, как его ставит
-    # панель (`aurora_extras.EXTRAS`), но в папку на раннере, а не в домашнюю. Неблокирующее
-    # (BL-DEC-02): красный здесь — сигнал о дрейфе чужой библиотеки, а не повод останавливать выпуск;
-    # блокирующим его делают после стабильных зелёных прогонов. Свежие версии — canary.yml.
+    # AURORA_REQUIRE_VENV=1 превращает пропуск в падение. venv ставит сам движок
+    # (`agent_core.py --venv-install` → `aurora_extras.install()`: обновление pip, запасные спецификации,
+    # проверка совместимости с откатом), но под временным HOME раннера, а не в домашней папке.
+    # Неблокирующее (BL-DEC-02): красный здесь — сигнал о дрейфе чужой библиотеки, а не повод
+    # останавливать выпуск; блокирующим его делают после стабильных зелёных прогонов. Свежие
+    # версии — canary.yml. PYTHONUTF8=1 только для читаемого вывода шагов: сами проверки от
+    # кодовой страницы не зависят (труба Windows в cp1252 моделируется в тесте).
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     continue-on-error: true
@@ -137,34 +140,33 @@ jobs:
         os: [ubuntu-24.04, windows-latest]
     env:
       AURORA_REQUIRE_VENV: "1"
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v6
-      # Контекст `runner` в `env:` уровня задания недоступен (workflow целиком не проходит проверку),
-      # поэтому каталог venv кладём в окружение шагом. Слэши прямые: так путь понимают и bash, и python на Windows.
-      - name: Adapter venv location
-        shell: bash
-        run: echo "AURORA_ADAPTER_VENV=${RUNNER_TEMP//\\//}/adapter-venv" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Engine dependencies
         run: python -m pip install --quiet -r requirements.txt -c .github/requirements-ci.txt
-      - name: Pydantic AI venv (as the panel installs it)
+      # Контекст `runner` в `env:` уровня задания недоступен (workflow целиком не проходит проверку),
+      # поэтому домашнюю папку и путь venv задаём шагом. Слэши прямые: так путь понимают и bash, и python на Windows.
+      # Пути берём у движка (`aurora_extras`), а не собираем по ОС (`Scripts/python.exe` или `bin/python`).
+      - name: Pydantic AI venv (installed by the engine)
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv "$AURORA_ADAPTER_VENV"
-          if [ -d "$AURORA_ADAPTER_VENV/Scripts" ]; then VPY="$AURORA_ADAPTER_VENV/Scripts/python.exe"; else VPY="$AURORA_ADAPTER_VENV/bin/python"; fi
-          SPEC="$(python -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(' '.join(E.EXTRAS['pydantic-ai']['pip']))")"
-          "$VPY" -m pip install --quiet $SPEC
-          "$VPY" -c "from importlib.metadata import version; print('pydantic-ai', version('pydantic-ai'))"
+          H="${RUNNER_TEMP//\\//}/h"
+          mkdir -p "$H"
+          HOME="$H" USERPROFILE="$H" python scripts/agent_core.py --venv-install
+          paths="$(HOME="$H" USERPROFILE="$H" python -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(E.EXTRAS['pydantic-ai']['venv'].as_posix()); print(E.venv_python('pydantic-ai').as_posix())")"
+          echo "AURORA_ADAPTER_VENV=$(echo "$paths" | sed -n 1p)" >> "$GITHUB_ENV"
+          echo "AURORA_ADAPTER_PYTHON=$(echo "$paths" | sed -n 2p)" >> "$GITHUB_ENV"
       - name: Adapter self-check on the real framework
         shell: bash
         run: |
           set -euo pipefail
-          if [ -d "$AURORA_ADAPTER_VENV/Scripts" ]; then VPY="$AURORA_ADAPTER_VENV/Scripts/python.exe"; else VPY="$AURORA_ADAPTER_VENV/bin/python"; fi
           # --selfcheck печатает JSON и возвращает 0 при любом итоге: красным шаг делает только проверка ok.
-          "$VPY" scripts/agents/pydantic_ai_adapter.py --selfcheck | python -c "import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(d); sys.exit(0 if d.get('ok') else 1)"
+          "$AURORA_ADAPTER_PYTHON" scripts/agents/pydantic_ai_adapter.py --selfcheck | python -c "import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(d); sys.exit(0 if d.get('ok') else 1)"
       # Каждая проверка отдельно: --only берёт одну подстроку, а за один прогон нужен весь список падений.
       - name: Live adapter checks
         shell: bash

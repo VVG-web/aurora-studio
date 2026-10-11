@@ -27,9 +27,6 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v6
-      # `runner` в `env:` уровня задания недоступен, поэтому путь venv задаётся шагом.
-      - name: Adapter venv location
-        run: echo "AURORA_ADAPTER_VENV=$RUNNER_TEMP/adapter-venv" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -38,18 +35,24 @@ jobs:
           node-version: "24"
       - name: Engine dependencies (latest, no constraints)
         run: python3 -m pip install --quiet -r requirements.txt
-      - name: Pydantic AI venv (latest)
+      # venv ставит сам движок (`--venv-install` → `aurora_extras.install()`, без пина версии — то есть
+      # последняя Pydantic AI), под временным HOME раннера. `runner` в `env:` уровня задания недоступен,
+      # поэтому пути задаём шагом; их называет движок, а не YAML.
+      - name: Pydantic AI venv (latest, installed by the engine)
         run: |
-          python3 -m venv "$AURORA_ADAPTER_VENV"
-          SPEC="$(python3 -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(' '.join(E.EXTRAS['pydantic-ai']['pip']))")"
-          "$AURORA_ADAPTER_VENV/bin/python" -m pip install --quiet --upgrade $SPEC
-          "$AURORA_ADAPTER_VENV/bin/python" -c "from importlib.metadata import version; print('pydantic-ai', version('pydantic-ai'))"
+          set -euo pipefail
+          H="$RUNNER_TEMP/h"
+          mkdir -p "$H"
+          HOME="$H" USERPROFILE="$H" python3 scripts/agent_core.py --venv-install
+          paths="$(HOME="$H" USERPROFILE="$H" python3 -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(E.EXTRAS['pydantic-ai']['venv'].as_posix()); print(E.venv_python('pydantic-ai').as_posix())")"
+          echo "AURORA_ADAPTER_VENV=$(echo "$paths" | sed -n 1p)" >> "$GITHUB_ENV"
+          echo "AURORA_ADAPTER_PYTHON=$(echo "$paths" | sed -n 2p)" >> "$GITHUB_ENV"
       - name: Adapter self-check on the latest framework
         id: selfcheck
         # --selfcheck возвращает 0 при любом итоге, красным шаг делает только проверка ok.
         run: |
           set -euo pipefail
-          "$AURORA_ADAPTER_VENV/bin/python" scripts/agents/pydantic_ai_adapter.py --selfcheck | python3 -c "import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(d); sys.exit(0 if d.get('ok') else 1)"
+          "$AURORA_ADAPTER_PYTHON" scripts/agents/pydantic_ai_adapter.py --selfcheck | python3 -c "import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(d); sys.exit(0 if d.get('ok') else 1)"
       - name: Full suite on the latest dependencies
         id: suite
         if: success() || failure()

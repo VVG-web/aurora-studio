@@ -166,6 +166,18 @@ def test_ci_matrix_pins_versions_and_runs_the_live_venv(tmp: Path):
         [ln for ln in installs if "-c .github/requirements-ci.txt" not in ln]
     dep = (KIT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     assert "package-ecosystem: github-actions" in dep and "package-ecosystem: pip" in dep
+    # каждая PR Dependabot — ручная работа (красная `authors`): раз в месяц, одна на экосистему, новые релизы ждут 7 суток
+    code = "\n".join(ln for ln in dep.splitlines() if not ln.lstrip().startswith("#"))
+    assert "weekly" not in code and code.count("interval: monthly") == 2, "Dependabot чаще раза в месяц"
+    assert code.count("groups:") == 2 and code.count('patterns: ["*"]') == 2, "PR Dependabot не сгруппированы по экосистеме"
+    assert code.count("default-days: 7") == 2, "у Dependabot нет карантина новых релизов (ADR-060)"
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml:   # структура файлов CI разобрана настоящим парсером: сети для проверки GitHub нет
+        for f in [*sorted(wf_dir.glob("*.yml")), KIT / ".github" / "dependabot.yml"]:
+            assert isinstance(yaml.safe_load(f.read_text(encoding="utf-8")), dict), f.name
     # Dependabot подписывает коммиты `dependabot[bot]`, а проверка authors такое отвергает по замыслу: оговорка в обеих документациях
     for rel in ("docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md"):
         doc = (KIT / rel).read_text(encoding="utf-8")
@@ -174,6 +186,18 @@ def test_ci_matrix_pins_versions_and_runs_the_live_venv(tmp: Path):
     ad = jobs["adapter-live"]
     assert "ubuntu-" in ad and "windows-latest" in ad and 'AURORA_REQUIRE_VENV: "1"' in ad and "AURORA_ADAPTER_VENV" in ad
     assert "--selfcheck" in ad and "aurora_extras" in ad
+    # venv ставит настоящая установка движка (откат, запасные спецификации), а не копия в YAML; ОС не ветвится по Scripts/bin
+    for what, body in (("adapter-live", ad), ("canary", (wf_dir / "canary.yml").read_text(encoding="utf-8"))):
+        code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        assert "scripts/agent_core.py --venv-install" in code, f"{what}: venv не ставится командой движка"
+        assert "-m venv" not in code and "pip install" not in code.replace("-m pip install --quiet -r", "") \
+            and "['pip']" not in code, f"{what}: venv снова собран вручную"
+        assert "/Scripts" not in code and "bin/python" not in code, f"{what}: ветвление Scripts/bin в YAML"
+        assert re.search(r'HOME="\$H"\s+USERPROFILE="\$H"\s+python3? scripts/agent_core\.py', code), \
+            f"{what}: установка идёт не во временный HOME"
+        assert "AURORA_ADAPTER_PYTHON" in code
+    # проверка живого MCP не зависит от кодовой страницы раннера; для читаемого вывода шагов Windows-ветка в UTF-8
+    assert 'PYTHONUTF8: "1"' in ad
     # контекст `runner` в `env:` уровня задания недоступен: GitHub отвергает весь workflow, и engine-tests
     # (а за ним release.yml) не запускается; путь venv задаётся шагом через GITHUB_ENV (PyYAML этого не ловит)
     canary_text = (wf_dir / "canary.yml").read_text(encoding="utf-8")
