@@ -166,10 +166,25 @@ def test_ci_matrix_pins_versions_and_runs_the_live_venv(tmp: Path):
         [ln for ln in installs if "-c .github/requirements-ci.txt" not in ln]
     dep = (KIT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     assert "package-ecosystem: github-actions" in dep and "package-ecosystem: pip" in dep
+    # Dependabot подписывает коммиты `dependabot[bot]`, а проверка authors такое отвергает по замыслу: оговорка в обеих документациях
+    for rel in ("docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md"):
+        doc = (KIT / rel).read_text(encoding="utf-8")
+        assert "reset-author" in doc and "dependabot[bot]" in doc, f"{rel}: нет оговорки о PR Dependabot и проверке authors"
     # venv надстройки: Linux и Windows, ставится как панель, пропуск = падение, три живые проверки по именам
     ad = jobs["adapter-live"]
     assert "ubuntu-" in ad and "windows-latest" in ad and 'AURORA_REQUIRE_VENV: "1"' in ad and "AURORA_ADAPTER_VENV" in ad
     assert "--selfcheck" in ad and "aurora_extras" in ad
+    # контекст `runner` в `env:` уровня задания недоступен: GitHub отвергает весь workflow, и engine-tests
+    # (а за ним release.yml) не запускается; путь venv задаётся шагом через GITHUB_ENV (PyYAML этого не ловит)
+    canary_text = (wf_dir / "canary.yml").read_text(encoding="utf-8")
+    for fname, wf in (("test.yml", text), ("canary.yml", canary_text)):
+        for name, body in _workflow_jobs(wf).items():
+            for blk in re.findall(r"(?m)^    env:\n((?:      .*\n?)+)", body + "\n"):
+                assert "runner." not in blk, f"{fname}/{name}: `runner` в env уровня задания недоступен"
+    assert 'echo "AURORA_ADAPTER_VENV=' in ad and "GITHUB_ENV" in ad
+    assert not re.search(r"(?m)^      AURORA_ADAPTER_VENV:", ad)
+    # --selfcheck возвращает 0 при любом итоге: шаг обязан разобрать ok, иначе он всегда зелёный
+    assert re.search(r"--selfcheck\s*\|.*d\.get\('ok'\)", ad), "adapter-live: итог --selfcheck не проверяется"
     known = set()
     for rel in ("tests/cases/part_05.py", "tests/cases/part_13.py"):
         known |= set(re.findall(r"(?m)^def (test_\w+)", (KIT / rel).read_text(encoding="utf-8")))
@@ -181,5 +196,7 @@ def test_ci_matrix_pins_versions_and_runs_the_live_venv(tmp: Path):
     canary = (wf_dir / "canary.yml").read_text(encoding="utf-8")
     assert re.search(r"(?m)^\s*-\s*cron:", canary) and "workflow_dispatch" in canary and "issues: write" in canary
     assert "-c .github" not in canary, "canary закреплён, а он для свежих"
+    assert 'echo "AURORA_ADAPTER_VENV=' in canary and "GITHUB_ENV" in canary
+    assert re.search(r"--selfcheck\s*\|.*d\.get\('ok'\)", canary), "canary: итог --selfcheck не проверяется"
     assert re.search(r"(?m)^name:\s*canary\s*$", canary) and "workflow_run" not in canary
     assert re.search(r"(?m)^name:\s*engine-tests\s*$", text) and "schedule:" not in text

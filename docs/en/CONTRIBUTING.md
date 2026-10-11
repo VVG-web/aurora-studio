@@ -167,6 +167,12 @@ the panel does, runs `--selfcheck` and three live checks; `AURORA_REQUIRE_VENV=1
 `canary.yml` (a separate workflow, it does not affect the release) runs everything on the latest versions with no constraints and
 opens an issue when red.
 
+A Dependabot PR is red in the `authors` check by design: its commits are signed `dependabot[bot]`, and an author must be a person.
+Do not merge such a PR with the button (master would get a commit by a bot author, `engine-tests` on master would go red and the
+release would not build). Either rewrite the author with the command from the `authors` output (`git rebase -r <base> --exec
+'git commit --amend --no-edit --reset-author'` under your own `git config user.name`, then push), or apply the change by hand and
+close the PR.
+
 Version policy: 3.11+ is supported and tested, 3.10 works with a warning, anything older stops.
 The thresholds live in `scripts/aurora_common.py`, the version guard in `aurora.py` and at the top of `aurora_common.py`, so
 those two files must stay readable to an old Python). Do not write syntax only newer versions understand (for example quotes of the same kind inside an

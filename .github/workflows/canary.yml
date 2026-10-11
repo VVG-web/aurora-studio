@@ -23,11 +23,13 @@ jobs:
       issues: write
     env:
       AURORA_REQUIRE_VENV: "1"
-      AURORA_ADAPTER_VENV: ${{ runner.temp }}/adapter-venv
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v6
+      # `runner` в `env:` уровня задания недоступен, поэтому путь venv задаётся шагом.
+      - name: Adapter venv location
+        run: echo "AURORA_ADAPTER_VENV=$RUNNER_TEMP/adapter-venv" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -44,7 +46,10 @@ jobs:
           "$AURORA_ADAPTER_VENV/bin/python" -c "from importlib.metadata import version; print('pydantic-ai', version('pydantic-ai'))"
       - name: Adapter self-check on the latest framework
         id: selfcheck
-        run: '"$AURORA_ADAPTER_VENV/bin/python" scripts/agents/pydantic_ai_adapter.py --selfcheck'
+        # --selfcheck возвращает 0 при любом итоге, красным шаг делает только проверка ok.
+        run: |
+          set -euo pipefail
+          "$AURORA_ADAPTER_VENV/bin/python" scripts/agents/pydantic_ai_adapter.py --selfcheck | python3 -c "import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(d); sys.exit(0 if d.get('ok') else 1)"
       - name: Full suite on the latest dependencies
         id: suite
         if: success() || failure()

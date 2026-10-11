@@ -137,9 +137,13 @@ jobs:
         os: [ubuntu-24.04, windows-latest]
     env:
       AURORA_REQUIRE_VENV: "1"
-      AURORA_ADAPTER_VENV: ${{ runner.temp }}/adapter-venv
     steps:
       - uses: actions/checkout@v6
+      # Контекст `runner` в `env:` уровня задания недоступен (workflow целиком не проходит проверку),
+      # поэтому каталог venv кладём в окружение шагом. Слэши прямые: так путь понимают и bash, и python на Windows.
+      - name: Adapter venv location
+        shell: bash
+        run: echo "AURORA_ADAPTER_VENV=${RUNNER_TEMP//\\//}/adapter-venv" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -159,7 +163,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d "$AURORA_ADAPTER_VENV/Scripts" ]; then VPY="$AURORA_ADAPTER_VENV/Scripts/python.exe"; else VPY="$AURORA_ADAPTER_VENV/bin/python"; fi
-          "$VPY" scripts/agents/pydantic_ai_adapter.py --selfcheck
+          # --selfcheck печатает JSON и возвращает 0 при любом итоге: красным шаг делает только проверка ok.
+          "$VPY" scripts/agents/pydantic_ai_adapter.py --selfcheck | python -c "import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(d); sys.exit(0 if d.get('ok') else 1)"
       # Каждая проверка отдельно: --only берёт одну подстроку, а за один прогон нужен весь список падений.
       - name: Live adapter checks
         shell: bash
