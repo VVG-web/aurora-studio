@@ -6278,8 +6278,15 @@ OPEN_FILE_TTL = LAUNCH_TTL + 30      # файл-переход живёт чут
 
 
 def direct_open() -> bool:
-    """Открывать адрес браузеру напрямую, без файла-перехода: явный выбор человека или WSL."""
-    if (os.environ.get("AURORA_COCKPIT_OPEN") or "").strip().lower() == "direct":
+    """Открывать адрес браузеру напрямую, без файла-перехода.
+
+    Явный выбор: `AURORA_COCKPIT_OPEN=direct` или `=file`. Без него — прямое открытие на macOS и
+    Windows (личные машины) и в WSL: файл-переход там открывается программой, назначенной на
+    `.html` (нередко редактором), а не браузером. Файл-переход — на Linux."""
+    choice = (os.environ.get("AURORA_COCKPIT_OPEN") or "").strip().lower()
+    if choice in ("direct", "file"):
+        return choice == "direct"
+    if sys.platform in ("darwin", "win32"):
         return True
     try:
         return "microsoft" in platform.release().lower()
@@ -6298,8 +6305,9 @@ def open_in_browser(url: str) -> bool:
 
     Файл-переход там, где браузер не видит локальный путь панели, не открывается: Firefox и
     Chromium из snap (свой /tmp) и браузер Windows при панели в WSL. Для них адрес открывается
-    напрямую (код виден в `argv` — на личной машине это приемлемо): в WSL выбор автоматический,
-    в остальных случаях `AURORA_COCKPIT_OPEN=direct`. Если вкладка не показала панель, откройте
+    напрямую (код одноразовый и живёт две минуты; в `argv` он виден — на личной машине это
+    приемлемо): на macOS, Windows и в WSL выбор автоматический, на Linux — `AURORA_COCKPIT_OPEN=direct`;
+    `AURORA_COCKPIT_OPEN=file` возвращает файл-переход. Если вкладка не показала панель, откройте
     адрес из консоли."""
     from html import escape
     if direct_open():

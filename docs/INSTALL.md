@@ -583,3 +583,4 @@ git -C /path/to/your-project add -A && git -C /path/to/your-project commit -m "U
 | Переименование `raw` → `Raw` на macOS | в два шага: `mv raw tmp && mv tmp Raw` |
 | `agent:ping` — «не отвечал» | `agent:probe`: различит связь, ключ и имя модели |
 | macOS блокирует `start-aurora.command` | правой кнопкой → «Открыть» |
+| Панель открылась в редакторе, а не в браузере (или вкладка пуста) | на macOS и Windows адрес открывается напрямую (одноразовый код живёт две минуты); на Linux — через файл-переход. Режим: `AURORA_COCKPIT_OPEN=direct` или `file`; иначе откройте адрес из консоли |

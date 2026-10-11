@@ -576,3 +576,4 @@ In detail — `skills/aurora-vault/references/migration.md` (in Russian). In sho
 | Renaming `raw` → `Raw` on macOS | in two steps: `mv raw tmp && mv tmp Raw` |
 | `agent:ping` — "did not answer" | `agent:probe`: distinguishes the connection, the key and the model name |
 | macOS blocks `start-aurora.command` | right-click → "Open" |
+| The panel opened in an editor instead of the browser (or the tab is empty) | on macOS and Windows the address is opened directly (the single-use code lives two minutes); on Linux through a redirect file. Choose the mode with `AURORA_COCKPIT_OPEN=direct` or `file`; otherwise open the address from the console |

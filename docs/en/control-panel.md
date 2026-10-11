@@ -173,10 +173,12 @@ flowchart LR
   the body is limited to 10 MB. Starting MCP servers and rebuilding the graph are POST only. A link opened by the browser
   (a report in a new tab) cannot carry a header: `POST /api/link` issues a ticket for one report address and one opening
   (one minute).
-- The browser is not opened on the address with the code but on a local redirect file (folder 0700, file 0600, removed by a
-  timer): the code does not reach the process arguments that `ps` shows. If the browser cannot see the file (Firefox and
-  Chromium from snap, a Windows browser with the panel in WSL), the tab stays empty: open the address from the console or
-  start with `AURORA_COCKPIT_OPEN=direct` (the address is opened directly; in WSL this happens by itself). What remains is that the code is printed to the
+- On Linux the browser is not opened on the address with the code but on a local redirect file (folder 0700, file 0600,
+  removed by a timer): the code does not reach the process arguments that `ps` shows. On macOS and Windows the address is
+  opened directly (a `.html` file there is opened by whatever program is assigned to it, often an editor; the code is
+  single-use and lives two minutes), and likewise in WSL. If the browser cannot see the file (Firefox and Chromium from
+  snap), the tab stays empty: open the address from the console or start with `AURORA_COCKPIT_OPEN=direct`;
+  `AURORA_COCKPIT_OPEN=file` brings the redirect file back. What remains is that the code is printed to the
   console; on a shared machine start the panel with `--no-browser` and open the link from there.
 - The page's `Origin` is compared with the port in the `Host` header (a port forward to another local port works), the host
   name must be the loopback. A report link works once: after F5 open the report again from the "Reports" section.

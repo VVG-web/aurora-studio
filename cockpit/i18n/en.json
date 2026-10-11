@@ -454,7 +454,7 @@
   "tokens.nothing": "There is nothing to save",
   "tokens.saved": "The tokens are written",
   "mcpk.perm_jira": "Let agents and bots write to Jira (jira_write)",
-  "mcpk.perm_jira_about": "A machine right: only the kit allows writing to Jira. The dry run of a publication always works.",
+  "mcpk.perm_jira_about": "A machine right: only the kit allows writing to Jira, and it applies to all projects on this machine. The dry run of a publication always works.",
   "mcpk.perm_saved": "The right is written to local/mcp.json",
   "yaml.title": "aurora.config.yaml · the full text",
   "yaml.about": "The form above covers the usual fields. Here is the whole file: the lists of Jira statuses (done_statuses, cancelled_statuses), the recommended skills, the paths. Before writing, the previous version is saved next to it as .bak.",

@@ -706,11 +706,12 @@ def test_the_browser_opens_the_address_directly_where_a_local_file_does_not_reac
     ck = importlib.import_module("aurora_cockpit")
     opened = []
     old = (ck.webbrowser.open, tempfile.tempdir, os.environ.get("AURORA_COCKPIT_OPEN"),
-           ck.platform.release)
+           ck.platform.release, ck.sys.platform)
     ck.webbrowser.open = lambda u, *a, **k: opened.append(u) or True
     tempfile.tempdir = str(tmp)
     try:
         os.environ.pop("AURORA_COCKPIT_OPEN", None)
+        ck.sys.platform = "linux"
         ck.platform.release = lambda: "5.15.90.1-microsoft-standard-WSL2"
         assert ck.direct_open() is True
         ck.platform.release = lambda: "6.8.0-generic"
@@ -721,7 +722,7 @@ def test_the_browser_opens_the_address_directly_where_a_local_file_does_not_reac
         assert ck.open_in_browser(url) is True and opened == [url], opened
         assert not any(tmp.iterdir()), "файл-переход создан при прямом пути"
     finally:
-        ck.webbrowser.open, tempfile.tempdir, env, ck.platform.release = old
+        ck.webbrowser.open, tempfile.tempdir, env, ck.platform.release, ck.sys.platform = old
         if env is None:
             os.environ.pop("AURORA_COCKPIT_OPEN", None)
         else:
@@ -741,6 +742,44 @@ def test_the_browser_opens_the_address_directly_where_a_local_file_does_not_reac
     main_src = src[src.index("\ndef main()"):]
     assert "open_in_browser(url)" in main_src and "open_in_browser, args=(url,)" in main_src, \
         "main() не открывает браузер через open_in_browser"
+
+
+@test
+def test_the_browser_opening_mode_follows_the_platform_unless_the_owner_chooses(tmp: Path):
+    """Файл-переход `open.html` на macOS и Windows открывает программу, назначенную на `.html`
+    (часто редактор), а не браузер. Поэтому там по умолчанию прямое открытие, на Linux — файл;
+    `AURORA_COCKPIT_OPEN=file|direct` перекрывает платформу. Браузер не запускается: подменены
+    `sys.platform`, `platform.release` и `webbrowser.open`."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    old = (os.environ.get("AURORA_COCKPIT_OPEN"), ck.platform.release, ck.sys.platform,
+           ck.webbrowser.open)
+    opened = []
+    ck.webbrowser.open = lambda u, *a, **k: opened.append(u) or True
+    ck.platform.release = lambda: "6.8.0-generic"
+    try:
+        os.environ.pop("AURORA_COCKPIT_OPEN", None)
+        for plat, want in (("darwin", True), ("win32", True), ("linux", False)):
+            ck.sys.platform = plat
+            assert ck.direct_open() is want, (plat, want)
+        ck.sys.platform = "darwin"
+        os.environ["AURORA_COCKPIT_OPEN"] = " File "
+        assert ck.direct_open() is False, "file должен вернуть файл-переход на macOS"
+        ck.sys.platform = "linux"
+        os.environ["AURORA_COCKPIT_OPEN"] = "direct"
+        assert ck.direct_open() is True
+        os.environ["AURORA_COCKPIT_OPEN"] = "мусор"
+        assert ck.direct_open() is False, "незнакомое значение не меняет выбор платформы"
+        os.environ.pop("AURORA_COCKPIT_OPEN", None)
+        ck.sys.platform = "darwin"
+        url = "http://127.0.0.1:8787/?c=ABC"
+        assert ck.open_in_browser(url) is True and opened == [url], opened
+    finally:
+        env, ck.platform.release, ck.sys.platform, ck.webbrowser.open = old
+        if env is None:
+            os.environ.pop("AURORA_COCKPIT_OPEN", None)
+        else:
+            os.environ["AURORA_COCKPIT_OPEN"] = env
 
 
 @test
