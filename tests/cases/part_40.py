@@ -602,7 +602,7 @@ def test_lifecycle_update_structure_only_creates_folders_and_leaves_engine(tmp: 
 
 @test
 def test_lifecycle_update_survives_files_that_are_not_utf8(tmp: Path):
-    """Конфиг и список исключений не в UTF-8 (обрезок убитого процесса, правка в cp1251) обновление не роняют.
+    """Конфиг, список исключений и README папки не в UTF-8 (обрезок убитого процесса, правка в cp1251) обновление не роняют.
 
     Читаются они «с заменой», а писать обратно то, что не прочитано как есть, нельзя: файл
     остаётся байт в байт, как был.
@@ -612,7 +612,10 @@ def test_lifecycle_update_survives_files_that_are_not_utf8(tmp: Path):
     cfg.write_bytes(cfg.read_bytes() + "\n# Старый".encode("utf-8")[:-1])
     ign = root / "aurora.update_ignore.txt"
     ign.write_bytes("# мой список\n".encode("cp1251") + b"Templates/*\n")
-    keep = {p: p.read_bytes() for p in (cfg, ign)}
+    # README папки схемы, сохранённый в cp1251: «чтение с заменой» стёрло бы буквы навсегда
+    guide = root / "Raw/README.md"
+    guide.write_bytes("# Моё описание папки Raw\nТекст человека\n".encode("cp1251"))
+    keep = {p: p.read_bytes() for p in (cfg, ign, guide)}
     _update(KIT, root)
     for p, data in keep.items():
         assert p.read_bytes() == data, f"{p.name}: обновление переписало файл не в UTF-8"

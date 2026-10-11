@@ -81,7 +81,8 @@ def render(path: str, g: dict) -> str:
 
 def plan(target, kit) -> list:
     """[(путь README от корня проекта, новый текст, что будет: create|update)] — только то,
-    что надо записать. Папки, которых в проекте нет, пропускаются: схему заводит update."""
+    что надо записать. Папки, которых в проекте нет, пропускаются: схему заводит update.
+    README, не читающийся как UTF-8, остаётся как есть: его не переписывают."""
     target = Path(target)
     out = []
     for path, g in load(kit).items():
@@ -93,7 +94,13 @@ def plan(target, kit) -> list:
         if not readme.is_file():
             out.append((f"{path}/{GUIDE}", block, "create"))
             continue
-        old = readme.read_text(encoding="utf-8", errors="replace")
+        try:
+            old = readme.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Текст человека не в UTF-8 (Блокнот на Windows сохраняет в cp1251): «чтение с
+            # заменой» вернуло бы U+FFFD вместо букв, и запись обратно стёрла бы их навсегда.
+            # Файл не наш — не трогаем, как есть.
+            continue
         if BLOCK_RE.search(old):
             m = BLOCK_RE.search(old)
             new = old[:m.start()] + block + old[m.end():]
