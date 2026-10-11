@@ -39,6 +39,7 @@ from aurora_common import (CORRECTIONS, FOOTER, aliases as card_aliases,  # noqa
 KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 MARK = CORRECTIONS
 
 
@@ -50,7 +51,7 @@ def cards() -> dict:
     Исправление уедет не в ту карточку, и заметят это нескоро.
     """
     out: dict = {}
-    for dirpath, dirs, files in os.walk(KB):
+    for dirpath, dirs, files in safe_walk(KB):
         dirs[:] = [d for d in dirs if d not in ("meta",)]
         for f in sorted(files):
             if not f.endswith(".md"):

@@ -60,6 +60,7 @@ OUT_MOC = "AuroraKnowledgeDB/MOC/Связи.md"
 LOOK_ALIKE = 0.93
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 # «US-4.4.2», «US 4.4.2», «us_4.4.2», «AC-3.6.19»: разделитель не значим, регистр тоже.
 STORY_RE = re.compile(r"\b(US|AC)[ ._-]?(\d+(?:\.\d+)+)", re.I)
@@ -99,7 +100,7 @@ class Graph:
 
     # ------------------------------------------------------------ чтение
     def read_confluence(self, root: str) -> None:
-        for dirpath, _, files in os.walk(root):
+        for dirpath, _, files in safe_walk(root):
             for f in sorted(files):
                 if not f.endswith(".md") or SERVICE_RE.search(f):
                     continue
@@ -214,7 +215,7 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
 
     nodes, edges = [], []
     by_stem: dict = {}
-    for dirpath, dirs, files in os.walk(KB_DIR):
+    for dirpath, dirs, files in safe_walk(KB_DIR):
         dirs[:] = [d for d in dirs if d not in ("meta", "_archive")]
         for f in sorted(files):
             if not f.endswith(".md"):
@@ -307,7 +308,7 @@ def write_cards_graph(path: str, typed: dict | None = None) -> dict:
 def cards_by_source(conf_root: str, jira_root: str) -> dict:
     """{путь файла зеркала → [карточки]}: чем подтверждается знание, тем и связывается."""
     out: dict = {}
-    for dirpath, dirs, files in os.walk(KB_DIR):
+    for dirpath, dirs, files in safe_walk(KB_DIR):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for f in sorted(files):
             if not f.endswith(".md") or f.startswith("_"):
@@ -372,7 +373,7 @@ def glossary_links(root: str = KB_DIR) -> list:
     """
     terms: dict = {}
     cards = []
-    for dirpath, dirs, files in os.walk(root):
+    for dirpath, dirs, files in safe_walk(root):
         dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
         # meta/ — служебное: манифест, журналы прогонов агента, базовая линия линтера.
         # Журнал прогона не карточка, а связывать по нему темы — значит рисовать граф

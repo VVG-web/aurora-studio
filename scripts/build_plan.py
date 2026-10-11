@@ -41,6 +41,7 @@ from aurora_common import (KB_ROOT, aliases as card_aliases, card_filename,
 
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY, file_hash, replace_file  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
@@ -255,7 +256,7 @@ def sources() -> list:
     for group, root in GROUPS:
         if not os.path.isdir(root):
             continue
-        for dirpath, dirs, files in os.walk(root):
+        for dirpath, dirs, files in safe_walk(root):
             # Папка с подчёркиванием — отложенное: `_outdated`, `_archive`, `_black`.
             # Разбирать устаревшую копию договора наравне с действующей значит заводить
             # карточки, противоречащие друг другу, и тратить на это партию целиком.
@@ -758,6 +759,10 @@ def slice_report(path: str, chars: int = 110) -> int:
     """
     if not os.path.isfile(path):
         print(f"build_plan: нет файла {path}", file=sys.stderr)
+        return 1
+    if link_escapes(path):
+        print(f"build_plan: {path} — ссылка за пределы проекта или к секретам, не читаю",
+              file=sys.stderr)
         return 1
     text = open(path, encoding="utf-8", errors="ignore").read()
     secs = sections(text)
@@ -1330,6 +1335,10 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     read_from = source if (not root or os.path.isabs(source)) else os.path.join(root, source)
     if not os.path.isfile(read_from):
         print(f"build_plan: нет файла {source}", file=sys.stderr)
+        return 1
+    if link_escapes(read_from):
+        print(f"build_plan: {source} — ссылка за пределы проекта или к секретам, не читаю",
+              file=sys.stderr)
         return 1
     # Раздел базы — закрытый список, а не свободная строка: `--to «Модель данных»`
     # молча заводил папку вне схемы, и doctor находил её блокером уже после того,

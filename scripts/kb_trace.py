@@ -32,6 +32,7 @@ from aurora_common import TRUSTED, as_list, config_value, frontmatter, link_targ
 ROOT = "AuroraKnowledgeDB"
 PRODUCTS = ["Artifacts", "Deliverables"]
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 REQ_DIR = "AuroraKnowledgeDB/Requirements"
 SPEC_DIR = "AuroraKnowledgeDB/Specs"
@@ -48,7 +49,7 @@ def scan(paths: list) -> dict:
     for root in paths:
         if not os.path.isdir(root):
             continue
-        for dirpath, _, files in os.walk(root):
+        for dirpath, _, files in safe_walk(root):
             for f in files:
                 if not f.endswith(".md"):
                     continue

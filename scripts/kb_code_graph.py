@@ -28,6 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import TODAY, config_list, walk_md  # noqa: E402
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 KB = "AuroraKnowledgeDB"
 OUT = os.path.join(KB, "meta", "graphify", "code.json")
@@ -49,7 +50,7 @@ def sql_sources(root: str) -> list:
             # Зеркало экранирует разметку: `\_` в запросе — это `_`.
             out.append((os.path.relpath(p, root).replace("\\", "/"),
                         m.group(1).replace("\\_", "_").replace("\\*", "*")))
-    for base, dirs, files in os.walk(root):
+    for base, dirs, files in safe_walk(root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for f in files:
             if f.lower().endswith(".sql"):

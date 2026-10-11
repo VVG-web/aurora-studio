@@ -45,6 +45,7 @@ ROOT = "AuroraKnowledgeDB"
 MOC_DIR = os.path.join(ROOT, "MOC")
 GROUPS_FILE = "moc_groups.txt"
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 GENERATED = "<!-- ФАЙЛ ГЕНЕРИРУЕТСЯ kb_moc.py — ручные правки будут потеряны. -->"
 LINK_RE = re.compile(r"\[\[([^\]|#]+)")
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\.md\)")
@@ -103,7 +104,7 @@ def match(card: dict, rules: list) -> bool:
 def read_cards() -> dict:
     """{stem: карточка}. Служебное и архив не карточки: входа им не нужно."""
     cards = {}
-    for dirpath, dirs, files in os.walk(ROOT):
+    for dirpath, dirs, files in safe_walk(ROOT):
         dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
         for f in sorted(files):
             if not f.endswith(".md") or f.startswith("_") or is_service(os.path.join(dirpath, f)):
@@ -316,7 +317,7 @@ def drop_links_to(names: set, root: str = "AuroraKnowledgeDB") -> int:
     item = re.compile(r"^\s*[-*]\s*\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|[^\]]*)?\]\]\s*$")
     inline = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\\?\|([^\]]*))?\]\]")
     changed = 0
-    for dp, dirs, files in os.walk(root):
+    for dp, dirs, files in safe_walk(root):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
             if not f.endswith(".md"):

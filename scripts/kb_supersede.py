@@ -32,10 +32,11 @@ from aurora_common import frontmatter, rewrite_links, set_field, split_frontmatt
 ROOT = "AuroraKnowledgeDB"
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 
 def find_card(stem: str) -> str | None:
-    for dirpath, _, files in os.walk(ROOT):
+    for dirpath, _, files in safe_walk(ROOT):
         for f in files:
             if f == f"{stem}.md":
                 return os.path.join(dirpath, f).replace("\\", "/")
@@ -142,7 +143,7 @@ def main() -> int:
         writes[new_path] = "---" + nhead + nrest
 
     # 3. входящие ссылки → на преемника
-    for dirpath, _, files in os.walk(ROOT):
+    for dirpath, _, files in safe_walk(ROOT):
         for f in files:
             if not f.endswith(".md"):
                 continue

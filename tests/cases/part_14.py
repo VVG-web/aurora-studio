@@ -187,6 +187,96 @@ def test_mcp_card_by_name_does_not_follow_a_link_out_of_the_base(tmp: Path):
 
 
 @test
+def test_every_card_and_source_reader_refuses_a_link_out_of_the_project(tmp: Path):
+    """Ссылка на файл вне проекта не читается ни одним читателем карточек и источников (BL-NEW-01).
+
+    Граница `realpath` стояла в трёх местах (инструменты адаптера, `@`-упоминания, `kb_card`),
+    а обход базы (`walk_md`), поиск, контекст-паки («Спросить»), разбор источников и правки
+    базы открывали карточку-ссылку `open()` и читали цель. Теперь один помощник
+    (`aurora_common.link_escapes`) стоит в общем обходе и в точках разового чтения. Файл вне
+    проекта лежит только во временном каталоге; ссылка внутри проекта по-прежнему читается.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    AC = importlib.import_module("aurora_common")
+    M = importlib.import_module("aurora_mcp")
+    root = make_project(tmp)
+    card(root, "Concepts/Обеспечение.md", "Правила обеспечения поставки.", status="verified",
+         type="concept")
+    outside = tmp / "снаружи"
+    outside.mkdir()
+    secret = "ТАЙНАСНАРУЖИ"
+    (outside / "чужое.md").write_text(
+        f'---\ntitle: "Утечка"\ntype: concept\nstatus: verified\n---\n\n# Утечка\n\n{secret} '
+        "утечка утечка утечка.\n", encoding="utf-8")
+    (outside / "ключ").write_text(secret + "\n", encoding="utf-8")
+    kb = root / "AuroraKnowledgeDB" / "Concepts"
+    body = ("Источник " + "слово " * 60 + secret + "\n\n" + "второй абзац " * 40)
+    (root / "Sources" / "Confluence").mkdir(parents=True, exist_ok=True)
+    real_page = root / "Sources" / "Confluence" / "Настоящая.md"
+    real_page.write_text("# Настоящая\n\n" + body, encoding="utf-8")
+    (outside / "страница.md").write_text("# Чужая\n\n" + body, encoding="utf-8")
+    try:
+        os.symlink(outside / "чужое.md", kb / "утечка.md")
+        os.symlink(outside / "ключ", kb / "ключ.md")
+        os.symlink(kb / "Обеспечение.md", kb / "алиас.md")
+        os.symlink(outside / "страница.md", root / "Sources" / "Confluence" / "Ссылка.md")
+        os.symlink(real_page, root / "Sources" / "Confluence" / "Внутренняя.md")
+    except (OSError, NotImplementedError):
+        return      # без прав на ссылки (Windows) проверять нечего
+
+    base = str(root / "AuroraKnowledgeDB")
+    walked = {os.path.basename(p) for p in AC.walk_md(base)}
+    assert "утечка.md" not in walked and "ключ.md" not in walked, f"обход базы отдал ссылку наружу: {walked}"
+    assert {"Обеспечение.md", "алиас.md"} <= walked, f"ссылка внутри базы перестала обходиться: {walked}"
+    assert AC.read_card_text(str(kb / "утечка.md")) is None, "read_card_text прочитал цель ссылки наружу"
+    assert "обеспечения" in (AC.read_card_text(str(kb / "алиас.md")) or ""), "ссылка внутри не читается"
+    assert not any(secret in c.text for c in AC.load_cards(base).values()), "load_cards унёс текст снаружи"
+    assert AC.link_escapes(str(kb / "утечка.md")) and not AC.link_escapes(str(kb / "алиас.md"))
+    assert not AC.link_escapes(str(kb / "Обеспечение.md")), "обычный файл принят за ссылку наружу"
+
+    # поиск, контекст-пак и «Спросить» собираются из одного обхода
+    for tool, args in (("kb_search", {"query": "утечка"}),
+                       ("kb_context", {"topic": "утечка", "mode": "ask"})):
+        out = M.call_tool(str(root), tool, args)
+        assert secret not in out, f"{tool}: текст файла вне проекта ушёл в ответ"
+    assert "Обеспечение" in M.call_tool(str(root), "kb_search", {"query": "обеспечение"}), \
+        "контроль: поиск перестал находить обычную карточку"
+
+    # индекс поиска, правки базы
+    KE = importlib.import_module("kb_embed")
+    assert secret not in " ".join(map(str, KE.card_texts(base).values())), "kb_embed взял текст снаружи"
+    KF = importlib.import_module("kb_fix")
+    assert not any("утечка" in k for k in KF.load_cards(base)), "kb_fix открыл бы ссылку наружу на правку"
+
+    # разбор источников
+    BP = importlib.import_module("build_plan")
+    cur = os.getcwd()
+    os.chdir(root)
+    try:
+        names = {os.path.basename(p) for _g, p, _s in BP.sources()}
+    finally:
+        os.chdir(cur)
+    assert "Ссылка.md" not in names, f"план разбора включил ссылку наружу: {names}"
+    assert {"Настоящая.md", "Внутренняя.md"} <= names, f"ссылка внутри проекта выпала из плана: {names}"
+    cp = run("build_plan.py", "--card", "Демо", "--source", "Sources/Confluence/Ссылка.md",
+             "--paras", "1", "--to", "Concepts", cwd=root)
+    assert cp.returncode != 0 and "за пределы проекта" in cp.stderr, (cp.returncode, cp.stdout, cp.stderr)
+    assert secret not in cp.stdout + cp.stderr
+    cp = run("build_plan.py", "--card", "Демо", "--source", "Sources/Confluence/Внутренняя.md",
+             "--paras", "1", "--to", "Concepts", cwd=root)
+    assert cp.returncode == 0, f"ссылка внутри проекта не читается:\n{cp.stdout}\n{cp.stderr}"
+
+    # шаблон и промпт для агента
+    AR = importlib.import_module("agent_runner")
+    (root / "Templates").mkdir(exist_ok=True)
+    os.symlink(outside / "ключ", root / "Templates" / "t.md")
+    os.symlink(real_page, root / "Templates" / "внутри.md")
+    assert AR.read_text_file(str(root / "Templates" / "t.md")) == "", "агенту отдан файл вне проекта"
+    assert "Настоящая" in AR.read_text_file(str(root / "Templates" / "внутри.md"))
+
+
+@test
 def test_installing_a_skill_never_leaves_the_agent_without_it(tmp: Path):
     """Обновление скилла не оставляет агента без скилла: сбой копирования не стирает прежний.
 

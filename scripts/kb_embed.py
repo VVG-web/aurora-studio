@@ -51,6 +51,7 @@ META = os.path.join(KB_ROOT, "meta")
 VECTORS = os.path.join(META, "embeddings.bin")
 INDEX = os.path.join(META, "embeddings.json")
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 BATCH = 32                 # столько текстов за один запрос: шлюз отвечает ~секунду
 PIECE = 1500               # символов в одном куске карточки
 PIECE_OVERLAP = 200        # нахлёст: мысль, разрезанная границей, найдётся хотя бы раз
@@ -76,7 +77,7 @@ PF_EPS = 1e-6               # запас на округление: связка
 def card_texts(root: str = KB_ROOT) -> dict:
     """{имя карточки: текст для вектора}. Заголовок и синонимы весомее хвоста тела."""
     out = {}
-    for dirpath, dirs, files in os.walk(root):
+    for dirpath, dirs, files in safe_walk(root):
         dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
         if "/meta" in dirpath.replace("\\", "/"):
             continue

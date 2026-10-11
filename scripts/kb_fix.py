@@ -60,6 +60,7 @@ JSON_ONLY = -7               # сигнал main: машинный вывод н
 MERGE_REPORT: list = []      # (слитые, отказы) — для отчёта после прогона
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 
 # Служебные файлы навигации/механики — не карточки знаний.
@@ -103,7 +104,7 @@ class Card(BaseCard):
 
 def load_cards(root: str) -> dict:
     cards = {}
-    for dirpath, _, files in os.walk(root):
+    for dirpath, _, files in safe_walk(root):
         for f in files:
             if not f.endswith(".md"):
                 continue
@@ -569,7 +570,7 @@ def source_file(name: str) -> str:
     for base in ("Sources", "Raw"):
         if not os.path.isdir(base):
             continue
-        for dp, dirs, files in os.walk(base):
+        for dp, dirs, files in safe_walk(base):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             if leaf in files:
                 return os.path.join(dp, leaf).replace("\\", "/")
@@ -1364,7 +1365,7 @@ def plan_unparsed_sources(cards: dict, plan: Plan, root: str) -> tuple:
     for group, base in BP.GROUPS:
         if not os.path.isdir(base):
             continue
-        for dirpath, dirs, files in os.walk(base):
+        for dirpath, dirs, files in safe_walk(base):
             dirs[:] = [d for d in dirs if not d.startswith((".", "_"))]
             for f in sorted(files):
                 if not f.endswith(".md") or f in BP.SKIP or f.startswith("~"):
@@ -1681,7 +1682,7 @@ _CODE_RE = re.compile(r"^((?:[A-Za-z]{2,}[A-Za-z]*[-_. ]?)?\d+(?:[.\-]\d+)*)[._ 
 def _mirror_codes(top: str) -> dict:
     """{код документа: [пути]} — по именам файлов зеркала."""
     out: dict = {}
-    for dp, dirs, files in os.walk(top):
+    for dp, dirs, files in safe_walk(top):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
             if not f.endswith(".md"):

@@ -1208,10 +1208,84 @@ def is_service(path: str) -> bool:
 
 # ------------------------------------------------------------------ обход и ссылки
 
+# Маркеры корня проекта: рядом с ними лежат база, источники и движок.
+_PROJECT_MARKERS = ("AuroraKnowledgeDB", "Sources", ".aurora")
+
+
+def project_root_of(path: str) -> str:
+    """Настоящий корень проекта, к которому относится путь: граница чтения файлов.
+
+    Сначала текущая папка процесса (скрипты Авроры идут из корня проекта), если путь лежит
+    под ней и она похожа на проект; иначе ближайший предок с базой, источниками или
+    `.aurora/`; иначе папка самого пути — самая узкая граница, то есть безопасная.
+    """
+    real = os.path.realpath(path)
+    start = real if os.path.isdir(real) else os.path.dirname(real)
+    cwd = os.path.realpath(os.getcwd())
+    if (start == cwd or start.startswith(cwd + os.sep)) \
+            and any(os.path.isdir(os.path.join(cwd, m)) for m in _PROJECT_MARKERS):
+        return cwd
+    cur = start
+    while True:
+        if any(os.path.isdir(os.path.join(cur, m)) for m in _PROJECT_MARKERS):
+            return cur
+        up = os.path.dirname(cur)
+        if up == cur:
+            return start
+        cur = up
+
+
+def link_escapes(path: str, boundary: str = "") -> bool:
+    """Файл-ссылка, которая ведёт за пределы проекта или к секретам.
+
+    Единственная проверка границы чтения для всех читателей карточек и вложений. Git хранит
+    символические ссылки, а `open()` и `os.walk` отдают такой файл по имени ссылки: цель
+    (ключ, `.env`, чужая заметка вне проекта) читалась бы как карточка или источник и
+    уходила модели, в артефакт и в git. Обычный файл и ссылка внутри проекта проходят.
+
+    Граница — `boundary` или корень проекта (`project_root_of`). Цель обязана лежать внутри
+    по `realpath`; служебные папки (`local`, `.git`, …) закрыты; ссылка с именем `.md` обязана
+    вести на `.md` (карточка — всегда `.md`, а секретные имена на `.md` не кончаются, и
+    законная карточка `Credentials.md` не отсекается); остальные имена — по общему списку
+    секретов `request_context`.
+    """
+    if not os.path.islink(path):
+        return False
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from request_context import NEVER_DIRS, is_secret
+    real = os.path.realpath(path)
+    # корень ищем от папки самой ссылки: realpath(ссылки) уже указывает за пределы проекта
+    base = os.path.realpath(boundary) if boundary else project_root_of(os.path.dirname(os.path.abspath(path)))
+    if not (real == base or real.startswith(base + os.sep)):
+        return True
+    rel = os.path.relpath(real, base)
+    if any(p.lower() in NEVER_DIRS for p in rel.split(os.sep)[:-1]):
+        return True
+    if os.fspath(path).lower().endswith(".md"):
+        return not real.lower().endswith(".md")
+    return is_secret(rel)
+
+
+def safe_walk(root: str, **kw):
+    """`os.walk`, который не отдаёт файлы-ссылки наружу проекта (`link_escapes`).
+
+    Заменяет `os.walk` везде, где найденные файлы затем читаются или правятся. Список папок
+    отдаётся тот же, что у `os.walk`: вызывающий может сужать `dirs[:]`.
+    """
+    boundary = project_root_of(root)
+    for dirpath, dirs, files in os.walk(root, **kw):
+        files[:] = [f for f in files if not link_escapes(os.path.join(dirpath, f), boundary)]
+        yield dirpath, dirs, files
+
+
 def walk_md(root: str, skip_service: bool = False, skip_archive: bool = False):
     """Все markdown-файлы под корнем (пути в posix-виде). Описание папки (`README.md` от
-    кита) не содержимое ни в одной папке — его обход не отдаёт никогда."""
-    for dirpath, _, files in os.walk(root):
+    кита) не содержимое ни в одной папке — его обход не отдаёт никогда. Карточка-ссылка
+    на файл вне проекта (`link_escapes`) не отдаётся: тот же обход кормит поиск, паки
+    контекста, раздел «Спросить» и правки базы."""
+    for dirpath, _, files in safe_walk(root):
         p = dirpath.replace("\\", "/")
         if skip_archive and "/_archive" in p:
             continue
@@ -2382,6 +2456,8 @@ def is_placeholder(fm: dict, text: str = "") -> bool:
 def read_card_text(path: str):
     """Текст карточки или None, если файл не читается: один нечитаемый файл не должен
     ронять обход всей базы. Общее для всех `load_cards` — остальное у них своё."""
+    if link_escapes(path):
+        return None
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             return f.read()

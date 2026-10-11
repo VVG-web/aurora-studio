@@ -243,6 +243,13 @@ perimeter forbids sending texts to a gateway, semantics is not switched on — w
 Requests of an agent's MCP server flagged `outbound` (internet search) go through a guard: four words in a row
 from the task or cards do not leave; the guard is closed by default, the journal is `Workspaces/_outbound.md`.
 
+**The read boundary is the project root.** git stores symbolic links, and `open()` reads the target, not the
+link. So a link file that leads outside the project, into a service folder (`local`, `.git`) or to secrets is
+not read by any reader of cards and sources: the shared walk of the base and sources (`aurora_common.walk_md`,
+`safe_walk`), search, context packs and "Ask", source parsing, base fixes, templates and prompts. Such a file
+is skipped silently, as if it were not there; a link inside the project works as usual. There is one check —
+`aurora_common.link_escapes`.
+
 ## 5. The knowledge-base MCP server
 
 `aurora_mcp.py` gives the base to any assistant (Claude Code, OpenCode, Cursor) over JSON-RPC 2.0 through

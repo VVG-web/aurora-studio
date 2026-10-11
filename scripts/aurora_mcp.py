@@ -343,11 +343,9 @@ def card_path(project: str, name: str) -> str:
         if safe + ".md" in files:
             path = os.path.join(dirpath, safe + ".md")
             # git хранит символические ссылки: карточка-ссылка на файл вне базы (ключ, .env)
-            # читалась бы как карточка. Цель обязана лежать в базе и быть .md (карточка — всегда
-            # .md; а секретные имена — .env, ключи, mcp.json — на .md не кончаются). Имя
-            # credentials.md — законная карточка, по SECRET_NAME её отсекать нельзя.
-            target = os.path.realpath(path)
-            if target.startswith(real_root + os.sep) and target.lower().endswith(".md"):
+            # читалась бы как карточка. Граница — сама база, правило общее с остальными
+            # читателями карточек (`aurora_common.link_escapes`).
+            if not aurora_common.link_escapes(path, real_root):
                 return path
     return ""
 

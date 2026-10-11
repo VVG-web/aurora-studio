@@ -92,6 +92,16 @@ def inside(cwd: str, rel: str) -> str:
     return full if full == root or full.startswith(root + os.sep) else ""
 
 
+def _link_escapes(path: str, boundary: str) -> bool:
+    """Граница чтения ссылок — одна на движок, в `aurora_common` (ленивый импорт: цикла нет)."""
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    from aurora_common import link_escapes
+    return link_escapes(path, boundary)
+
+
 def _read(full: str, cap: int) -> tuple:
     with open(full, "rb") as f:
         data = f.read(cap * 4 + 1)
@@ -128,10 +138,11 @@ def read_context(cwd: str, paths: list) -> tuple:
                 continue
             # os.walk выдаёт файлы-ссылки по имени ссылки: читает же open() цель. Граница та же,
             # что у прямого упоминания в inside(): цель в проекте и не секрет, не служебное.
+            # Проверка границы общая с читателями карточек (`aurora_common.link_escapes`);
+            # секретное имя цели здесь строже: и для `.md`-ссылки на `credentials.md`.
             real_f = os.path.realpath(f)
             if real_f != f:
-                if not (real_f == real_cwd or real_f.startswith(real_cwd + os.sep)) \
-                        or is_secret(os.path.relpath(real_f, real_cwd)):
+                if _link_escapes(f, real_cwd) or is_secret(os.path.relpath(real_f, real_cwd)):
                     notes.append(f"«{frel}» — ссылка ведёт за пределы проекта или к секретам, пропущена")
                     continue
             if used >= TOTAL_CAP:

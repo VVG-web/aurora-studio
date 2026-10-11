@@ -44,6 +44,7 @@ SNAPSHOT = os.path.join(KB, "meta", "mirror_snapshot.json")
 DEFAULT_MIRROR = "Sources/Confluence"
 STATE = "sync_state.md"
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
 
 ID_RE = re.compile(r"^\s*(?:page_id:\s*|-\s*\*\*ID:\*\*\s*)(\d{4,})\s*$", re.M)
 JIRA_KEY_RE = re.compile(r"\*\*Key\*\*\s*\|\s*([A-Z][A-Z0-9]+-\d+)"
@@ -167,7 +168,7 @@ def follow_moves(mirror: str, apply: bool, kb: str = KB, everywhere: bool = Fals
     if not moves and not everywhere:
         return st
 
-    for dirpath, _, files in os.walk(kb):
+    for dirpath, _, files in safe_walk(kb):
         if os.path.basename(dirpath) == "meta":
             continue
         for f in files:
@@ -319,7 +320,7 @@ def remap_jira(mirror: str, apply: bool) -> dict:
     if not pairs and not by_story:
         return stats
     ref_re = re.compile(r"Sources/JIRA/([^\s\"\'\)\]]+)\.md")
-    for dirpath, _, files in os.walk(KB):
+    for dirpath, _, files in safe_walk(KB):
         if os.path.basename(dirpath) == "meta":      # генерируемые файлы правит их автор
             continue
         for f in files:
@@ -370,7 +371,7 @@ def remap(mirror: str, old_map: dict, apply: bool) -> dict:
     stats = {"по id": 0, "по заголовку": 0, "уже верно": 0, "не сопоставлено": 0}
     unmapped, touched = [], 0
 
-    for dirpath, _, files in os.walk(KB):
+    for dirpath, _, files in safe_walk(KB):
         for f in files:
             if not f.endswith(".md"):
                 continue

@@ -64,7 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_core as AG  # noqa: E402
-from aurora_common import QUOTES, fold, replace_file  # noqa: E402
+from aurora_common import QUOTES, fold, link_escapes, replace_file  # noqa: E402
 
 RUNS_DIR = Path("AuroraKnowledgeDB") / "meta" / "agent-runs"
 
@@ -5515,6 +5515,8 @@ def write_artifact(cwd: str, st: dict) -> str:
 
 
 def read_text_file(path: str, limit: int = 200_000) -> str:
+    if link_escapes(path):          # шаблон-ссылка на файл вне проекта модели не отдаём
+        return ""
     try:
         return open(path, encoding="utf-8", errors="ignore").read(limit)
     except OSError:
