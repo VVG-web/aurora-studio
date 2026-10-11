@@ -125,8 +125,8 @@ jobs:
     # ленивый MCP со сторожем). Раньше без `~/.aurora/venv` они возвращали «пропускаем» и считались
     # зелёными, а Windows (`Scripts/python.exe`) пропускал их даже при поставленном venv.
     # AURORA_REQUIRE_VENV=1 превращает пропуск в падение. venv ставит сам движок
-    # (`agent_core.py --venv-install` → `aurora_extras.install()`: обновление pip, запасные спецификации,
-    # проверка совместимости с откатом), но под временным HOME раннера, а не в домашней папке.
+    # (`agent_core.py --venv-install` → `aurora_extras.install()`: venv, обновление pip, установка,
+    # проверка совместимости адаптера; откат проверяет отдельный тест), но под временным HOME раннера, а не в домашней папке.
     # Неблокирующее (BL-DEC-02): красный здесь — сигнал о дрейфе чужой библиотеки, а не повод
     # останавливать выпуск; блокирующим его делают после стабильных зелёных прогонов. Свежие
     # версии — canary.yml. PYTHONUTF8=1 только для читаемого вывода шагов: сами проверки от
@@ -153,16 +153,18 @@ jobs:
       # Пути берём у движка (`aurora_extras`), а не собираем по ОС (`Scripts/python.exe` или `bin/python`).
       - name: Pydantic AI venv (installed by the engine)
         shell: bash
+        # Пути пишутся в GITHUB_ENV до установки: красная установка не должна прятать причину от шагов ниже.
         run: |
           set -euo pipefail
           H="${RUNNER_TEMP//\\//}/h"
           mkdir -p "$H"
-          HOME="$H" USERPROFILE="$H" python scripts/agent_core.py --venv-install
           paths="$(HOME="$H" USERPROFILE="$H" python -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(E.EXTRAS['pydantic-ai']['venv'].as_posix()); print(E.venv_python('pydantic-ai').as_posix())")"
           echo "AURORA_ADAPTER_VENV=$(echo "$paths" | sed -n 1p)" >> "$GITHUB_ENV"
           echo "AURORA_ADAPTER_PYTHON=$(echo "$paths" | sed -n 2p)" >> "$GITHUB_ENV"
+          HOME="$H" USERPROFILE="$H" python scripts/agent_core.py --venv-install
       - name: Adapter self-check on the real framework
         shell: bash
+        if: success() || failure()
         run: |
           set -euo pipefail
           # --selfcheck печатает JSON и возвращает 0 при любом итоге: красным шаг делает только проверка ok.
@@ -170,6 +172,7 @@ jobs:
       # Каждая проверка отдельно: --only берёт одну подстроку, а за один прогон нужен весь список падений.
       - name: Live adapter checks
         shell: bash
+        if: success() || failure()
         run: |
           fail=0
           for name in "pydantic ai reads a gateway with nonstandard metadata" \

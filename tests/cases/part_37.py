@@ -171,13 +171,29 @@ def test_ci_matrix_pins_versions_and_runs_the_live_venv(tmp: Path):
     assert "weekly" not in code and code.count("interval: monthly") == 2, "Dependabot чаще раза в месяц"
     assert code.count("groups:") == 2 and code.count('patterns: ["*"]') == 2, "PR Dependabot не сгруппированы по экосистеме"
     assert code.count("default-days: 7") == 2, "у Dependabot нет карантина новых релизов (ADR-060)"
+    # Структура без парсера (в CI PyYAML нет): у каждого задания каждого workflow есть runs-on, steps и timeout
+    for f in sorted(wf_dir.glob("*.yml")):
+        wf_text = f.read_text(encoding="utf-8")
+        assert re.search(r"(?m)^jobs:\s*$", wf_text), f"{f.name}: нет jobs"
+        wf_jobs = _workflow_jobs(wf_text)
+        assert wf_jobs, f"{f.name}: заданий нет"
+        for name, body in wf_jobs.items():
+            assert re.search(r"(?m)^    runs-on:", body), f"{f.name}/{name}: нет runs-on"
+            assert re.search(r"(?m)^    steps:\s*$", body), f"{f.name}/{name}: нет steps"
     try:
         import yaml
     except ImportError:
         yaml = None
-    if yaml:   # структура файлов CI разобрана настоящим парсером: сети для проверки GitHub нет
-        for f in [*sorted(wf_dir.glob("*.yml")), KIT / ".github" / "dependabot.yml"]:
-            assert isinstance(yaml.safe_load(f.read_text(encoding="utf-8")), dict), f.name
+    if yaml:   # локально парсер обычно есть: тот же разбор настоящим YAML (в CI эту ветку пропускаем)
+        for f in sorted(wf_dir.glob("*.yml")):
+            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+            assert isinstance(data.get("jobs"), dict) and data["jobs"], f.name
+            for name, job in data["jobs"].items():
+                assert "runs-on" in job and isinstance(job.get("steps"), list) and job["steps"], f"{f.name}/{name}"
+        upd = yaml.safe_load((KIT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))["updates"]
+        assert len(upd) == 2, upd
+        for u in upd:
+            assert u["schedule"]["interval"] == "monthly" and u["cooldown"]["default-days"] == 7 and u["groups"], u
     # Dependabot подписывает коммиты `dependabot[bot]`, а проверка authors такое отвергает по замыслу: оговорка в обеих документациях
     for rel in ("docs/CONTRIBUTING.md", "docs/en/CONTRIBUTING.md"):
         doc = (KIT / rel).read_text(encoding="utf-8")
@@ -196,6 +212,15 @@ def test_ci_matrix_pins_versions_and_runs_the_live_venv(tmp: Path):
         assert re.search(r'HOME="\$H"\s+USERPROFILE="\$H"\s+python3? scripts/agent_core\.py', code), \
             f"{what}: установка идёт не во временный HOME"
         assert "AURORA_ADAPTER_PYTHON" in code
+    # красная установка (несовместимая версия) не прячет причину: пути в GITHUB_ENV пишутся ДО установки, а
+    # самопроверка идёт и после неё (`if: success() || failure()`), иначе живые проверки падают на «нет venv»
+    canary_code = (wf_dir / "canary.yml").read_text(encoding="utf-8")
+    for what, body in (("adapter-live", ad), ("canary", canary_code)):
+        code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+        assert code.index('>> "$GITHUB_ENV"') < code.index("agent_core.py --venv-install"), \
+            f"{what}: пути venv пишутся в GITHUB_ENV после установки — красная установка их потеряет"
+        step = re.search(r"- name: Adapter self-check[^\n]*\n(?:        .*\n)+", code)
+        assert step and "if: success() || failure()" in step.group(0), f"{what}: самопроверка не идёт после красной установки"
     # проверка живого MCP не зависит от кодовой страницы раннера; для читаемого вывода шагов Windows-ветка в UTF-8
     assert 'PYTHONUTF8: "1"' in ad
     # контекст `runner` в `env:` уровня задания недоступен: GitHub отвергает весь workflow, и engine-tests

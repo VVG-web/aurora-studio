@@ -37,18 +37,22 @@ jobs:
         run: python3 -m pip install --quiet -r requirements.txt
       # venv ставит сам движок (`--venv-install` → `aurora_extras.install()`, без пина версии — то есть
       # последняя Pydantic AI), под временным HOME раннера. `runner` в `env:` уровня задания недоступен,
-      # поэтому пути задаём шагом; их называет движок, а не YAML.
+      # поэтому пути задаём шагом; их называет движок, а не YAML. Пути от установки не зависят, поэтому
+      # пишутся в GITHUB_ENV ДО неё: несовместимая свежая версия делает установку красной (код 1), а
+      # selfcheck и живые проверки ниже всё равно должны смотреть в этот venv и показать настоящую поломку.
       - name: Pydantic AI venv (latest, installed by the engine)
         run: |
           set -euo pipefail
           H="$RUNNER_TEMP/h"
           mkdir -p "$H"
-          HOME="$H" USERPROFILE="$H" python3 scripts/agent_core.py --venv-install
           paths="$(HOME="$H" USERPROFILE="$H" python3 -c "import sys; sys.path.insert(0, 'scripts'); import aurora_extras as E; print(E.EXTRAS['pydantic-ai']['venv'].as_posix()); print(E.venv_python('pydantic-ai').as_posix())")"
           echo "AURORA_ADAPTER_VENV=$(echo "$paths" | sed -n 1p)" >> "$GITHUB_ENV"
           echo "AURORA_ADAPTER_PYTHON=$(echo "$paths" | sed -n 2p)" >> "$GITHUB_ENV"
+          HOME="$H" USERPROFILE="$H" python3 scripts/agent_core.py --venv-install
       - name: Adapter self-check on the latest framework
         id: selfcheck
+        # После красной установки (несовместимая версия) всё равно печатаем полный JSON самопроверки.
+        if: success() || failure()
         # --selfcheck возвращает 0 при любом итоге, красным шаг делает только проверка ok.
         run: |
           set -euo pipefail
