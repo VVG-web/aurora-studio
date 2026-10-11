@@ -1717,27 +1717,24 @@ MCP_NAME_RE = re.compile(r"^[\w.\-]{1,64}$")
 MCP_MASK = "••••••"
 MCP_SECRET_MAPS = ("env", "headers")
 MCP_ROLES = ("worker", "planner", "critic", "qa")
-# Имя переменной, ключа или флага (`--api-key`), похожее на секрет: значение остаётся под
-# маской. Короткие PAT, PW, PWD ищутся целым словом между `_`: иначе под них попал бы `PATH`.
-MCP_SECRET_NAME_RE = re.compile(
-    r"TOKEN|KEY|SECRET|PASS|AUTH|CRED|COOKIE|BEARER|JWT|SESSION|SIGNATURE|PRIVATE"
-    r"|DSN|WEBHOOK|CONNECTION|CONN_?STR"
-    r"|(?:^|_)(?:PAT|PW|PWD)(?:$|_)", re.I)
 # В `args` флаги вроде `--password-command`, `-c credential.helper=…`, `--keyring-provider`,
 # `--token-file` задают, ЧТО запустится или откуда читать секрет, а не сам секрет: их значение
 # владелец обязан видеть. Имя, оканчивающееся на `command`, `helper`, `provider`, `file`…,
 # а также на `timeout`, `type`, `mode`, `name`, `layout`, секретным не считается.
 _MCP_ARG_PLAIN_RE = re.compile(
     r"[_.](?:COMMAND|CMD|HELPER|PROVIDER|FILE|PATH|DIR|SCRIPT|EXEC|TIMEOUT|TYPE|MODE|NAME|LAYOUT)$", re.I)
-# В `args` список имён уже, чем у `env`/`headers`: составные слова — подстрокой, короткие
-# (`KEY`, `PASS`, `AUTH`, `SESSION`…) — только целым словом, иначе под маску попадали бы
-# `--oauth <адрес>`, `--keyboard-layout`, `--session-timeout`, `--passthrough`. `--no-auth`,
-# `--no-session` — выключатели, значения у них нет.
+# В `args` значение скрывается только у секретного флага (у `env`/`headers` — у всех): составные
+# слова — подстрокой, короткие (`KEY`, `PASS`, `AUTH`, `SESSION`…) — целым словом или концом
+# имени, иначе под маску попадали бы `--oauth <адрес>`, `--keyboard-layout`,
+# `--session-timeout`, `--passthrough`. `--no-auth`, `--no-session` — выключатели, значения нет.
 _MCP_ARG_STRONG_RE = re.compile(
     r"TOKEN(?!S)|SECRET|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|BEARER|COOKIE"
     r"|CREDENTIAL|JWT|DSN|WEBHOOK|SIGNATURE|CONN_?STR", re.I)
 _MCP_ARG_WORD_RE = re.compile(
     r"(?:^|[_.])(?:KEY|PASS|AUTH|AUTHORIZATION|SESSION|CRED|CONNECTION|PAT|PW|PWD)(?:$|[_.])", re.I)
+# Склеенные имена без разделителя (`--appkey`, `--dbpass`, `--basicauth`, `--sessionid`,
+# `--creds`): секретное слово в конце. `OAUTH` и `BYPASS` под него не попадают.
+_MCP_ARG_SUFFIX_RE = re.compile(r"(?:(?<!O)AUTH|(?<!BY)PASS|KEYS?|CREDS?|SESSION_?ID)$", re.I)
 _MCP_ARG_OFF_RE = re.compile(r"^(?:NO|WITHOUT|DISABLE|SKIP)[_.]", re.I)
 # Имя ключа или флага целиком (`Authorization: …`, `--api-key=…`). Совпадение начинается
 # в начале строки и не возвращается назад по длинной: разбор на `re` держит GIL панели.
@@ -1747,11 +1744,14 @@ _MCP_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_.\-]*$")
 
 def _mcp_arg_secret_named(name: str) -> bool:
     """Имя флага в `args` секретное (`--token`, `--api-key`); `--password-command` — нет."""
-    n = name.lstrip("-").replace("-", "_")
+    # camelCase (`--authKey`, `--connectionString`) режем на слова, как и kebab-case
+    n = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name.lstrip("-")).replace("-", "_")
     if _MCP_ARG_PLAIN_RE.search(n) or _MCP_ARG_OFF_RE.match(n):
         return False
-    return bool(_MCP_ARG_STRONG_RE.search(n)
-                or (_MCP_ARG_WORD_RE.search(n) and not re.search(r"[_.]URL$", n, re.I)))
+    if _MCP_ARG_STRONG_RE.search(n):
+        return True
+    return bool((_MCP_ARG_WORD_RE.search(n) or _MCP_ARG_SUFFIX_RE.search(n))
+                and not re.search(r"[_.]URL$", n, re.I))
 
 
 def mcp_mask_args(args: list) -> list:

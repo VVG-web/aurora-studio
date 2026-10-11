@@ -2289,8 +2289,21 @@ def test_mcp_args_secret_goes_back_to_its_own_flag_and_names_are_narrow(tmp: Pat
     # узкий список имён: на виду всё, что секретом не является
     for plain in (["--oauth", "https://x/sse"], ["--no-auth", "pkg"], ["--session-timeout", "30"],
                   ["--connection-timeout", "5"], ["--keyboard-layout", "us"], ["--passthrough", "p"],
-                  ["--keystore", "/p"], ["--max-tokens", "100"], ["--auth-url", "https://x"]):
+                  ["--keystore", "/p"], ["--max-tokens", "100"], ["--auth-url", "https://x"],
+                  ["--authUrl", "https://x"], ["--tokenFile", "/p"], ["--passwordCommand", "pw"],
+                  ["--bypass", "a,b"], ["--noAuth", "x"], ["--keyring-provider", "disabled"]):
         assert C.mcp_mask_args(plain) == plain, plain
+    # camelCase и склеенные имена секретны так же, как kebab-case: значение под маской
+    glued = ("--authKey", "--appKey", "--appkey", "--sessionKey", "--licenseKey", "--masterkey",
+             "--dbpass", "--userpass", "--basicauth", "--connectionString", "--sessionid", "--creds")
+    for flag in glued:
+        assert C.mcp_mask_args([flag, "SECRET"]) == [flag, M], flag
+        assert C.mcp_mask_args([flag + "=SECRET"]) == [flag + "=" + M], flag
+    # и возвращаются на своё место по флагу: правка соседнего не трогает склеенный
+    old2 = {"s": {"command": "x", "args": ["--appkey", "AAA", "--connectionString", "Server=a;Password=b"]}}
+    spec2 = {"command": "x", "args": ["--appkey", M, "--connectionString", M]}
+    assert ck.mcp_unmask({"s": spec2}, old2) == ""
+    assert spec2["args"] == old2["s"]["args"], spec2["args"]
     # значение с «-» в начале у секретного флага скрыто; следующий флаг — нет
     assert C.mcp_mask_args(["--token", "-Abc_1", "--port", "80"]) == ["--token", M, "--port", "80"]
     assert C.mcp_mask_args(["--token", "--verbose"]) == ["--token", "--verbose"]

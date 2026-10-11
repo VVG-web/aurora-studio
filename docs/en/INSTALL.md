@@ -270,8 +270,8 @@ The "Check the servers" button starts the kit's servers from the panel's folder 
 MCP is not configured in a project; leftovers from earlier versions are silently ignored by the engine. The
 agent takes all of the kit's servers, a bot — those named in its `mcp:` field.
 
-**The kit's servers start in the project folder** (as a run sees them): `npx` prefers the project's
-`node_modules/.bin`. The kit's own servers (the base graph) start with `python -I`, so a folder from the repository cannot replace the module.
+**A run starts the kit's servers in the project folder:** `npx` prefers the project's
+`node_modules/.bin`. The check from the panel starts them from the panel's folder, so `npx` may resolve a package differently. The kit's own servers (the base graph) start with `python -I`, so a folder from the repository cannot replace the module.
 
 **Writing to Jira** is a right of the machine: the checkbox "Let agents and bots write to Jira" in "Kit setup"
 (key `permissions.jira_write` in `local/mcp.json`). Only the kit grants it; a project can neither turn it on
