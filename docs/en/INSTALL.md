@@ -279,14 +279,14 @@ what is already there, what will not move because the name is taken or the check
 explicitly confirm what was shown; every server is shown whole (variable and header names, `cwd`, roles, secret
 values masked) (on the command line: `--mcp-migrate --yes --digest <fingerprint from the
 preview>`; the assistant and bots do not get this command). Tokens from the old file go to `local/mcp.json`, not
-into the project; the moved file goes to `.aurora/mcp.json.migrated` whole — also when some servers stayed behind: the response names
-them in `note` and their definitions are in the same file — a folder outside git, owner-only
+into the project; the moved file goes whole to `.aurora/mcp.json.migrated` (a folder outside git, owner-only) — also when some servers stayed behind: the response names
+them in `note` and their definitions are in the same file
 (if it was in git, delete it there yourself: the secrets stay in the history). Not moved: a server that fails the
 check (malformed fields, the name `aurora` — it is taken by the built-in server) and a server whose environment
 changes how the program starts (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHON*`, `PATH` and alike): it is shown in
 plain text when the name does not look like a secret (so is any such variable: `HOME`, `JAVA_HOME`, proxies…), while
-the value of a variable with a secret-looking name (`NODE_AUTH_TOKEN`, `HTTPS_PROXY_PASSWORD`, `JIRA_PAT`, `*_WEBHOOK_URL`, `*_DSN`) always stays masked; credentials inside an address (`HTTPS_PROXY`, `DATABASE_URL`), `Password=…` in a connection string, `?api_key=…` in `url` and the value after `--token` in `args` are hidden in the preview too (the host stays visible), and such a server has to be entered by hand in "Kit setup". An unreadable kit `local/mcp.json` is not
-overwritten — the move refuses; an unreadable project `.gitignore` (not UTF-8) also stops it: the servers are moved but `mcp.json` stays — remove it yourself.
+the value of a variable with a secret-looking name (`NODE_AUTH_TOKEN`, `HTTPS_PROXY_PASSWORD`, `JIRA_PAT`, `*_WEBHOOK_URL`, `*_DSN`) always stays masked; credentials inside an address (`HTTPS_PROXY`, `DATABASE_URL`), `Password=…` in a connection string, `?api_key=…` in `url` and the value after `--token` in `args` are hidden in the preview too (the host stays visible; so are quoted values, a password containing `@`, an address without a scheme and spaces around `=`), and such a server has to be entered by hand in "Kit setup". Hiding inside values is a heuristic, not a format parser: it helps the owner, it does not guarantee the preview holds no secret; in `args` only the value of clearly secret flags (`--token`, `--password`, `--api-key`…) is hidden, while `--password-command`, `credential.helper=…` and alike, which decide what runs, stay visible. An `env`, `headers`, `args` or `url` of the wrong shape (a list instead of an object, etc.) is shown fully masked. An unreadable kit `local/mcp.json` is not
+overwritten — the move refuses; a project `.gitignore` in UTF-16/32 (`echo > .gitignore` in PowerShell) also stops it: the servers are moved but `mcp.json` stays — remove it yourself; a UTF-8 or cp1251 `.gitignore` is read as bytes, the `.aurora/` line is appended at the end and the rest of the file is left untouched.
 
 **The kit's servers start in the project folder** (as a run sees them): `npx` prefers the project's
 `node_modules/.bin`. The kit's own servers (the base graph) start with `python -I`, so a folder from the repository cannot replace the module.

@@ -164,7 +164,9 @@ REASON_FUNCS = ("why_readonly", "why_no_create", "graph_state", "mcp_unmask",
 # функции — остальной `agent_core` в каталог сообщений не входит.
 ENGINE_REASONS = {"aurora_common.py": ("mcp_check", "mcp_migrate_problem"),
                   "agent_core.py": ("mcp_selection_error", "mcp_migrate_apply", "mcp_probe",
-                                    "_mcp_migrate_state", "mcp_no_kit")}
+                                    "_mcp_migrate_state", "mcp_no_kit"),
+                  # причина отказа одного сервера проверки (`servers.<имя>.error`) рождается в адаптере
+                  os.path.join("agents", "pydantic_ai_adapter.py"): ("mcp_probe",)}
 
 
 def _skeleton(node):

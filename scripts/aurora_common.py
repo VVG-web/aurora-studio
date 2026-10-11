@@ -1526,14 +1526,33 @@ MCP_SECRET_NAME_RE = re.compile(
     r"|(?:^|_)(?:PAT|PW|PWD)(?:$|_)", re.I)
 # Секрет внутри значения с безобидным именем: логин и пароль в адресе (`HTTPS_PROXY`,
 # `DATABASE_URL`, `UV_INDEX_URL`), пара `ключ=значение` в строке подключения или в запросе
-# адреса (`Server=a;Password=b`, `?api_key=…`), заголовок `Authorization: …`.
-_MCP_URL_USERINFO_RE = re.compile(r"(?<=://)[^/\s@?#'\"]*@")
-_MCP_PAIR_RE = re.compile(r"([A-Za-z0-9_.\-]+)(=)([^&;\s'\"#]*)")
+# адреса (`Server=a;Password=b`, `?api_key=…`), заголовок `Authorization: …`. Это эвристика, а не
+# разбор формата: показ плана — подсказка владельцу, а не граница безопасности.
+# Все регэкспы начинают совпадение только в начале слова и не возвращаются назад по длинной
+# строке: файл `mcp.json` приходит из git проекта, и строка в сотни тысяч знаков без пробелов
+# не должна вешать панель (разбор на `re` держит GIL).
+# Логин-пароль в адресе: всё до ПОСЛЕДНЕГО `@` в части без `/` (в пароле бывает `@`).
+_MCP_URL_USERINFO_RE = re.compile(r"(?<=://)[^/\s?#'\"]*@")
+# То же без схемы: `user:secret@proxy:3128` — только если за `@` стоит похожий на хост адрес.
+# Длины ограничены: без этого строка из повторов `a:(` вела бы к разбору за квадратичное время.
+_MCP_BARE_USERINFO_RE = re.compile(
+    r"(?<![\w.\-/:@%+])[\w.\-%+]{1,128}:[^\s/'\",;&]{0,256}@"
+    r"(?=[\w.\-]+(?::\d{1,5})?(?:[/?#\s'\",;&]|$))")
+_MCP_PAIR_RE = re.compile(
+    r"(?<![A-Za-z0-9_.\-])([A-Za-z0-9_.\-]+)(\s*=\s*)"
+    r"(\"[^\"]*\"|'[^']*'|\{[^{}]*\}|[^&;\s'\"#]*)")
 _MCP_AUTH_HEADER_RE = re.compile(
     r"(authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s'\"&;]+", re.I)
 # Имя ключа или флага целиком (`Authorization`, `--api-key`, `--token`): значение — секрет.
 _MCP_NAMED_ARG_RE = re.compile(r"^(-{0,2}[A-Za-z0-9_.\-]+)\s*([:=])\s*(.+)$", re.S)
 _MCP_FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_.\-]*$")
+# В `args` скрывается только явно секретное значение: флаги вроде `--password-command`,
+# `-c credential.helper=!…`, `--keyring-provider` задают, ЧТО запустится, и владелец обязан это
+# видеть. Имя, оканчивающееся на `command`, `helper`, `provider`, `file`…, секретом не считается.
+_MCP_ARG_SECRET_RE = re.compile(
+    r"TOKEN|PASSWORD|PASSWD|SECRET|API[_.]?KEY|BEARER|AUTHORIZATION|COOKIE|CREDENTIALS?"
+    r"|PRIVATE[_.]?KEY|ACCESS[_.]?KEY|(?:^|[_.])(?:PWD|PW|PAT)(?:$|[_.])", re.I)
+_MCP_ARG_PLAIN_RE = re.compile(r"[_.](?:COMMAND|CMD|HELPER|PROVIDER|FILE|PATH|DIR|SCRIPT|EXEC|URL)$", re.I)
 
 
 def _mcp_secret_named(name: str) -> bool:
@@ -1541,20 +1560,34 @@ def _mcp_secret_named(name: str) -> bool:
     return bool(MCP_SECRET_NAME_RE.search(name.lstrip("-").replace("-", "_")))
 
 
-def mcp_scrub_text(text: str) -> str:
-    """Строка со спрятанными секретами внутри: адрес виден, логин-пароль и пары `ключ=…` — маской."""
+def _mcp_arg_secret_named(name: str) -> bool:
+    """Имя флага в `args` явно секретное (`--token`, `--api-key`); `--password-command` — нет."""
+    n = name.lstrip("-").replace("-", "_")
+    return bool(_MCP_ARG_SECRET_RE.search(n)) and not _MCP_ARG_PLAIN_RE.search(n)
+
+
+def mcp_scrub_text(text: str, secret_named=None) -> str:
+    """Строка со спрятанными секретами внутри: адрес виден, логин-пароль и пары `ключ=…` — маской.
+
+    `secret_named` — какое имя ключа считать секретным (по умолчанию `_mcp_secret_named`).
+    """
+    secret_named = secret_named or _mcp_secret_named
     text = _MCP_URL_USERINFO_RE.sub(MCP_MASK + "@", text)
+    text = _MCP_BARE_USERINFO_RE.sub(MCP_MASK + "@", text)
     text = _MCP_AUTH_HEADER_RE.sub(lambda m: m.group(1) + MCP_MASK, text)
     return _MCP_PAIR_RE.sub(
-        lambda m: m.group(1) + m.group(2) + (MCP_MASK if m.group(3) and _mcp_secret_named(m.group(1))
+        lambda m: m.group(1) + m.group(2) + (MCP_MASK if m.group(3) and secret_named(m.group(1))
                                              else m.group(3)), text)
 
 
 def _mcp_scrub_args(args: list) -> list:
     """`args` для показа: значение после флага с секретным именем (`--token X`, `--token=X`,
-    `--header Authorization: …`) и секреты внутри строк — маской."""
+    `--header Authorization: …`) и секреты внутри строк — маской; не строка и не число — целиком."""
     out, hide = [], False
     for a in args:
+        if isinstance(a, (dict, list)):
+            out.append(MCP_MASK)
+            continue
         if not isinstance(a, str):
             out.append(a)
             continue
@@ -1564,11 +1597,11 @@ def _mcp_scrub_args(args: list) -> list:
             continue
         hide = False
         m = _MCP_NAMED_ARG_RE.match(a)
-        if m and _mcp_secret_named(m.group(1)):
+        if m and _mcp_arg_secret_named(m.group(1)):
             out.append(m.group(1) + m.group(2) + MCP_MASK)
         else:
-            out.append(mcp_scrub_text(a))
-            hide = bool(_MCP_FLAG_RE.match(a)) and _mcp_secret_named(a)
+            out.append(mcp_scrub_text(a, _mcp_arg_secret_named))
+            hide = bool(_MCP_FLAG_RE.match(a)) and _mcp_arg_secret_named(a)
     return out
 
 
@@ -1596,13 +1629,16 @@ def mcp_masked(spec: dict, show_launch_env: bool = False, scrub_text=None) -> di
     scrub = show_launch_env if scrub_text is None else scrub_text
     one = json.loads(json.dumps(spec, default=str))
     for key in MCP_SECRET_MAPS:
-        if isinstance(one.get(key), dict):
+        if one.get(key) and not isinstance(one[key], dict):
+            one[key] = MCP_MASK          # форма не та (список, строка): что внутри, неизвестно
+        elif isinstance(one.get(key), dict):
             shown = {}
             for k, v in one[key].items():
                 if v in ("", None):
                     shown[k] = v
                 elif show_launch_env and key == "env" and not MCP_SECRET_NAME_RE.search(str(k)):
-                    shown[k] = mcp_scrub_text(v) if scrub and isinstance(v, str) else v
+                    shown[k] = (mcp_scrub_text(v) if scrub else v) if isinstance(v, str) \
+                        else (v if isinstance(v, (int, float, bool)) else MCP_MASK)
                 else:
                     shown[k] = MCP_MASK
             one[key] = shown
@@ -1611,8 +1647,12 @@ def mcp_masked(spec: dict, show_launch_env: bool = False, scrub_text=None) -> di
     if scrub:
         if isinstance(one.get("url"), str):
             one["url"] = mcp_scrub_text(one["url"])
+        elif one.get("url"):
+            one["url"] = MCP_MASK
         if isinstance(one.get("args"), list):
             one["args"] = _mcp_scrub_args(one["args"])
+        elif one.get("args"):
+            one["args"] = MCP_MASK
     return one
 
 

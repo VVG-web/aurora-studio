@@ -322,6 +322,7 @@
     "Pydantic AI не установлен — «Установка» → Pydantic AI: серверы MCP подключает он": "Pydantic AI is not installed — Install → Pydantic AI: it connects the MCP servers",
     "проверка серверов не уложилась в {} с": "the server check did not finish in {} s",
     "адаптер не ответил (код {})": "the adapter did not answer (code {})",
+    "не ответил за {} с": "did not answer within {} s",
     "mcp.json проекта убран целиком, не перенесены серверы: {}. Их определения — в .aurora/mcp.json.migrated: впишите их в «Настройка кита»": "the project's mcp.json was removed whole; servers not moved: {}. Their definitions are in .aurora/mcp.json.migrated: add them in Kit setup",
     "неизвестная надстройка: {}": "unknown add-on: {}",
     "флаг {} не объявлен командой «{}»": "the flag {} is not declared by the command «{}»",

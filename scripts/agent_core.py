@@ -1790,8 +1790,11 @@ def _mcp_ignore_engine_dir(project: str) -> bool:
     """`.aurora/` проекта — в .gitignore: туда уходит перенесённый файл с секретами.
 
     True — папка закрыта (строка уже была или дописана). False — убедиться нельзя: файл не
-    читается или не в UTF-8 (cp1251, UTF-16 после `echo > .gitignore` в PowerShell); тогда в
-    него ничего не дописывается, а файл с секретами в `.aurora/` не уходит.
+    читается или в UTF-16/32 (`echo > .gitignore` в PowerShell) — строку в нём не найти, а
+    дописанная байтами она сломала бы файл; тогда в него ничего не дописывается, а файл с
+    секретами в `.aurora/` не уходит. Остальные кодировки (UTF-8, cp1251 — совместимы с ASCII)
+    читаются по байтам: строку `.aurora/` видно в любой, и дописывается она байтами же,
+    прежнее содержимое не перекодируется.
     """
     gi = os.path.join(project, ".gitignore")
     try:
@@ -1799,13 +1802,15 @@ def _mcp_ignore_engine_dir(project: str) -> bool:
         if os.path.isfile(gi):
             with open(gi, "rb") as f:
                 raw = f.read()
-        text = raw.decode("utf-8-sig")       # BOM не мешает; \r снимает strip()
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or b"\x00" in raw:
+            return False
+        text = raw.decode("utf-8-sig", errors="replace")       # BOM не мешает; \r снимает strip()
         if not any(l.strip() in (".aurora", ".aurora/", "/.aurora", "/.aurora/")
                    for l in text.splitlines()):
-            with open(gi, "a", encoding="utf-8") as f:
-                f.write(("" if not text or text.endswith("\n") else "\n") + ".aurora/\n")
+            with open(gi, "ab") as f:
+                f.write((b"" if not raw or raw.endswith(b"\n") else b"\n") + b".aurora/\n")
         return True
-    except (OSError, ValueError):
+    except OSError:
         return False
 
 
