@@ -257,7 +257,7 @@ def test_the_token_travels_only_in_a_header_and_old_tabs_are_told_to_reload(tmp:
     try:
         st, _h, raw = call("GET", "/api/ping", auth)
         assert st == 200 and _json_of(raw).get("app") == "aurora-cockpit"
-        st, _h, raw = call("GET", f"/api/ping?t={ck.TOKEN}")
+        st, _h, raw = call("GET", f"/api/state?t={ck.TOKEN}")
         err = _json_of(raw)
         assert st == 403 and err.get("code") == "session" and "обновите страницу" in err["error"], raw
         assert "X-Aurora-Token" in err["error"], "скрипту не сказано, что передавать"
@@ -631,6 +631,17 @@ def test_a_report_link_ticket_survives_the_browser_normalising_the_address(tmp: 
             and "«Отчёты»" in err["error"], raw
         st, _h, raw = call("GET", browser + "&lang=en")
         assert "Reports" in _json_of(raw)["error"] and "консол" not in raw, raw
+        # без билета совет «откройте отчёт ещё раз» никуда не ведёт: ответ про токен и сессию
+        base = f"/api/report/file?project={quote(str(proj), safe='')}&id=analyst"
+        st, _h, raw = call("GET", base + f"&t={ck.TOKEN}")
+        assert st == 403 and _json_of(raw).get("code") == "session" \
+            and "обновите страницу" in _json_of(raw)["error"], raw
+        st, _h, raw = call("GET", base)
+        assert st == 403 and _json_of(raw).get("code") == "session" \
+            and "«Отчёты»" not in _json_of(raw)["error"], raw
+        st, _h, raw = call("GET", base, {"X-Aurora-Token": "old-token"})
+        assert st == 403 and _json_of(raw).get("code") == "session" \
+            and "закончилась" in _json_of(raw)["error"], raw
         # билет не выдаётся на адрес, где уже есть параметр `c`
         st, _h, _r = call("POST", "/api/link", js, json.dumps({"path": path + "&c=x"}))
         assert st == 400
@@ -653,13 +664,18 @@ def test_the_browser_gets_a_local_redirect_file_and_not_the_code_in_its_argument
     stale.mkdir()
     os.utime(stale, (time.time() - 3600, time.time() - 3600))
     ck.webbrowser.open = lambda u, *a, **k: opened.append(u) or True
+    saved_env = os.environ.pop("AURORA_COCKPIT_OPEN", None)
+    saved_direct = ck.direct_open
+    ck.direct_open = lambda: False         # проба идёт и в WSL, где выбран прямой путь
     tempfile.tempdir = str(tmp)
     ck.OPEN_FILE_TTL = 0.3                 # таймер уборки не должен жить дольше теста
     try:
         url = "http://127.0.0.1:8787/?c=SECRETCODE123"
         assert ck.open_in_browser(url) is True
         assert len(opened) == 1 and opened[0].startswith("file://") and "SECRETCODE123" not in opened[0], opened
-        page = Path(opened[0][len("file://"):].replace("%20", " "))
+        from urllib.parse import urlparse
+        from urllib.request import url2pathname
+        page = Path(url2pathname(urlparse(opened[0]).path))     # на Windows адрес — file:///C:/…
         assert page.is_file() and url in page.read_text(encoding="utf-8")
         assert "location.replace" in page.read_text(encoding="utf-8")
         if os.name == "posix":
@@ -673,6 +689,83 @@ def test_the_browser_gets_a_local_redirect_file_and_not_the_code_in_its_argument
         assert not page.exists(), "файл с кодом остался после срока кода"
     finally:
         ck.webbrowser.open, tempfile.tempdir, ck.OPEN_FILE_TTL = old
+        ck.direct_open = saved_direct
+        if saved_env is not None:
+            os.environ["AURORA_COCKPIT_OPEN"] = saved_env
+
+
+@test
+def test_the_browser_opens_the_address_directly_where_a_local_file_does_not_reach_it(tmp: Path):
+    """Браузер из snap (свой /tmp) и браузер Windows при панели в WSL не видят файл-переход.
+    `AURORA_COCKPIT_OPEN=direct` и WSL возвращают прямой вызов с адресом; ничего не пишется в
+    папку для файлов. Второй случай — запрет вернуть прямой вызов вне `open_in_browser`: код входа
+    в аргументах программы «открыть» — то, ради чего сделан файл-переход."""
+    _path()
+    import ast
+    import tempfile
+    ck = importlib.import_module("aurora_cockpit")
+    opened = []
+    old = (ck.webbrowser.open, tempfile.tempdir, os.environ.get("AURORA_COCKPIT_OPEN"),
+           ck.platform.release)
+    ck.webbrowser.open = lambda u, *a, **k: opened.append(u) or True
+    tempfile.tempdir = str(tmp)
+    try:
+        os.environ.pop("AURORA_COCKPIT_OPEN", None)
+        ck.platform.release = lambda: "5.15.90.1-microsoft-standard-WSL2"
+        assert ck.direct_open() is True
+        ck.platform.release = lambda: "6.8.0-generic"
+        assert ck.direct_open() is False
+        os.environ["AURORA_COCKPIT_OPEN"] = "Direct"
+        assert ck.direct_open() is True
+        url = "http://127.0.0.1:8787/?c=ABC"
+        assert ck.open_in_browser(url) is True and opened == [url], opened
+        assert not any(tmp.iterdir()), "файл-переход создан при прямом пути"
+    finally:
+        ck.webbrowser.open, tempfile.tempdir, env, ck.platform.release = old
+        if env is None:
+            os.environ.pop("AURORA_COCKPIT_OPEN", None)
+        else:
+            os.environ["AURORA_COCKPIT_OPEN"] = env
+    # вызовы webbrowser.open — только внутри open_in_browser; main() зовёт именно её
+    src = (KIT / "cockpit" / "aurora_cockpit.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    holders = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "open" and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "webbrowser"):
+                    holders.add(fn.name)
+    assert holders == {"open_in_browser"}, holders
+    main_src = src[src.index("\ndef main()"):]
+    assert "open_in_browser(url)" in main_src and "open_in_browser, args=(url,)" in main_src, \
+        "main() не открывает браузер через open_in_browser"
+
+
+@test
+def test_a_pre_update_tab_polling_ping_with_the_token_in_the_address_sees_the_panel_come_up(tmp: Path):
+    """Страница до 1.171 после «Обновить кит» опрашивает `/api/ping?t=<токен>`; ответ 403 вёл
+    к ложному «панель не поднялась». Верный токен принимается только на GET /api/ping (там версия
+    и готовность); неверный и любой другой путь — отказ."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    srv, _get = _server(ck, tmp)
+    call = _http(srv)
+    try:
+        st, _h, raw = call("GET", f"/api/ping?t={ck.TOKEN}")
+        assert st == 200 and _json_of(raw).get("app") == "aurora-cockpit" and "ready" in _json_of(raw), raw
+        st, _h, raw = call("GET", "/api/ping?t=old")
+        assert st == 403, raw
+        st, _h, raw = call("GET", f"/api/ping?t={ck.TOKEN}", {"Origin": "http://evil.example"})
+        assert st == 403 and _json_of(raw).get("code") == "origin", raw
+        st, _h, raw = call("POST", f"/api/ping?t={ck.TOKEN}", {}, "{}")
+        assert st != 200, raw
+        for path in ("/api/state", "/api/jobs"):
+            st, _h, raw = call("GET", f"{path}?t={ck.TOKEN}")
+            assert st == 403, (path, raw)
+    finally:
+        srv.shutdown()
 
 
 @test

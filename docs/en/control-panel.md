@@ -164,14 +164,19 @@ flowchart LR
   instead of a silent refusal. The file `cockpit/.session.json` (port, pid, token) is created with mode 0600 from the
   start; a repeated `aurora.py cockpit` asks the running panel for a fresh code (`POST /api/launch`). The token changes
   on every start except a restart from the panel itself: there the new process receives it so that an open tab does not
-  lose the connection.
+  lose the connection. The only exception in the address: `GET /api/ping?t=<token>` is answered (version, readiness) — a
+  page older than 1.171 that updated the kit from the panel waits for the new process this way and reloads. On Windows the
+  0600 mode of the session file has no effect: it is protected only by the kit lying inside the user's profile; on a shared
+  terminal server keep the kit in a personal folder.
 - A request is checked by its origin: a foreign page's `Origin` and `Sec-Fetch-Site` are refused even with the right token
   (`Referrer-Policy: no-referrer` keeps the code in the address at home), a POST must be `Content-Type: application/json`,
   the body is limited to 10 MB. Starting MCP servers and rebuilding the graph are POST only. A link opened by the browser
   (a report in a new tab) cannot carry a header: `POST /api/link` issues a ticket for one report address and one opening
   (one minute).
 - The browser is not opened on the address with the code but on a local redirect file (folder 0700, file 0600, removed by a
-  timer): the code does not reach the process arguments that `ps` shows. What remains is that the code is printed to the
+  timer): the code does not reach the process arguments that `ps` shows. If the browser cannot see the file (Firefox and
+  Chromium from snap, a Windows browser with the panel in WSL), the tab stays empty: open the address from the console or
+  start with `AURORA_COCKPIT_OPEN=direct` (the address is opened directly; in WSL this happens by itself). What remains is that the code is printed to the
   console; on a shared machine start the panel with `--no-browser` and open the link from there.
 - The page's `Origin` is compared with the port in the `Host` header (a port forward to another local port works), the host
   name must be the loopback. A report link works once: after F5 open the report again from the "Reports" section.
