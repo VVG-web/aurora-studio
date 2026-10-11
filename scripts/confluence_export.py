@@ -49,7 +49,7 @@ from sources_core import (CONFIG, RestApi, WikiMirror, block, config_text, no_ac
                           drop_empty_dirs, report_stale, scalar, verify)
 from sources_core import read_secret as core_secret
 from kb_remap import follow_moves, moves_report, page_moves  # noqa: E402
-from aurora_common import PATH_CHARS, TODAY, portable_name, safe_relpath  # noqa: E402
+from aurora_common import PATH_CHARS, TODAY, head_value, portable_name, safe_relpath  # noqa: E402
 
 DEFAULT_OUT = "Sources/Confluence"
 STATE = WikiMirror.state_name
@@ -672,6 +672,8 @@ def ry_keys(storage_html: str) -> tuple:
 
 def render_front_matter(meta: dict) -> str:
     """Только поля, зависящие от содержимого: даты экспорта здесь нет намеренно."""
+    # Заголовок и путь страницы — чужие данные: перевод строки в них породил бы поле шапки.
+    meta = {k: (head_value(v) if isinstance(v, str) else v) for k, v in meta.items()}
     return ("---\n"
             f"page_id: {meta['id']}\n"
             f"title: \"{meta['title'].replace(chr(34), chr(39))}\"\n"
@@ -907,7 +909,7 @@ class Exporter(WikiMirror):
                 "url": self.base_url + data["_links"]["webui"],
                 "breadcrumbs": " / ".join(ancestors + [title]).replace('"', "'"),
                 "hash": hashlib.md5(md.encode("utf-8")).hexdigest()[:16]}
-        text = render_front_matter(meta) + f"# {title}\n\n" + md + "\n"
+        text = render_front_matter(meta) + f"# {head_value(title)}\n\n" + md + "\n"
         full = os.path.join(self.out, rel)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         # Сверка с тем, что уже лежит: страница без правок не должна давать дифф в git.

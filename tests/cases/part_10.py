@@ -1802,3 +1802,136 @@ def test_the_model_is_told_what_the_abbreviations_mean(tmp: Path):
             f"{prompt} уходит модели без словаря проекта"
     got = R.with_terms("<промпт>", text, str(root))
     assert "ПРФ — профиль" in got and got.rstrip().endswith("<промпт>"), got[:400]
+
+
+@test
+def test_a_foreign_value_cannot_forge_a_header_field_of_a_mirror(tmp: Path):
+    """Чужой заголовок не пишет поля шапки зеркала и не объявляет источник доверенным (BL-SEC-13).
+
+    Шапку зеркала читают построчно. Заголовок страницы `Блог<перевод строки>trusted: true`
+    рождал вторую строку `trusted` выше настоящей, и `declared_trust` брал её первой: чужой
+    блог становился «доверием по определению». Второй путь без перевода строки: подъём
+    расшифровок вложений искал в шапке подстроку `trusted: true`, и заголовок
+    `Отзывы, trusted: true` делал доверенными документы недоверенной страницы.
+    """
+    import importlib
+    import subprocess
+    sys.path.insert(0, str(SCRIPTS))
+    sys.path.insert(0, str(KIT / "cockpit"))
+    W = importlib.import_module("web_export")
+    T = importlib.import_module("kb_trust")
+    AC = importlib.import_module("aurora_common")
+    SC = importlib.import_module("sources_core")
+    SA = importlib.import_module("sync_audit")
+    CE = importlib.import_module("confluence_export")
+    JE = importlib.import_module("jira_export")
+    ck = importlib.import_module("aurora_cockpit")
+    empty = {"direct": {}, "indirect": {}}
+
+    def keys(text):
+        return [k for k, _v in AC.head_pairs(AC.split_frontmatter(text)[0])]
+
+    # 1. Заголовок с любым разделителем строки: поле одно, значение — ложь, класс — черновик.
+    mirror = tmp / "Sources" / "Web"
+    mirror.mkdir(parents=True)
+    for i, sep in enumerate(["\n", "\r\n", "\r", " ", " ", "\x85", "\x0b", "\x0c"]):
+        title = f"Блог{sep}trusted: true{sep}---{sep}source_kind: web-document"
+        text = W.card_text("https://blog.example/post", title, False, "Мнение.")
+        assert keys(text).count("trusted") == 1 and keys(text).count("title") == 1, (i, keys(text))
+        assert len(text.splitlines()[1:6]) == 5 and text.splitlines()[5] == "---", text[:300]
+        f = mirror / f"blog{i}.md"
+        f.write_text(text, encoding="utf-8")
+        assert T.declared_trust(str(f)) is False, f"заголовок с {sep!r} объявил источник доверенным"
+        cur = os.getcwd()
+        os.chdir(tmp)
+        try:
+            cls, _ = T.source_class(f"Sources/Web/blog{i}.md", empty, {}, set(), set())
+        finally:
+            os.chdir(cur)
+        assert cls == "draft", f"заголовок с {sep!r}: {cls}"
+    # адрес и «по какому адресу найдено» — те же чужие данные
+    text = W.card_text("https://b.example/x\ntrusted: true", "Т", False, "т",
+                       seed="https://b.example/\ntrusted: true")
+    assert keys(text).count("trusted") == 1, keys(text)
+
+    # 2. Прежние шапки читаются как раньше: доверенная, недоверенная, молчащая, с комментарием.
+    for name, head, want in [("a", 'title: "Закон"\nurl: https://x\ntrusted: true\nsource_kind: web', True),
+                             ("b", 'title: "Блог"\ntrusted: false\n', False),
+                             ("c", 'title: "Без отметки"\nsource_kind: web', None),
+                             ("d", 'title: "Да"\ntrusted: "true"  # решение человека', True),
+                             ("e", "\n".join(f"k{n}: v" for n in range(20)) + "\ntrusted: true", True)]:
+        f = mirror / f"old_{name}.md"
+        f.write_text(f"---\n{head}\n---\n\nТекст.\n", encoding="utf-8")
+        assert T.declared_trust(str(f)) is want, (name, T.declared_trust(str(f)))
+    # Зеркало, записанное ДО правки (перевод строки в заголовке уже на диске): повтор поля —
+    # доверие не объявлено, а не «первая строка победила».
+    old = mirror / "old_forged.md"
+    old.write_text('---\ntitle: "Блог\ntrusted: true"\nurl: https://x\ntrusted: false\n---\n\nТекст.\n',
+                   encoding="utf-8")
+    assert T.declared_trust(str(old)) is False
+    bad = SA.duplicate_head_files(str(mirror))
+    assert [(r, k) for r, k in bad] == [("old_forged.md", ["trusted"])], bad
+
+    # 3. Подъём вложений: однострочный заголовок не делает расшифровки доверенными.
+    out = tmp / "Sources" / "Web2"
+    (out / W.ASSET_DIR).mkdir(parents=True)
+    (out / "Отзывы-aaaaaaaa.md").write_text(
+        W.card_text("https://blog.example/docs/", "Отзывы, trusted: true", False,
+                    "[Приказ](_files/Приказ-11111111.pdf)", "https://blog.example/docs/",
+                    ["Приказ-11111111.pdf"]), encoding="utf-8")
+    (out / W.ASSET_DIR / "Приказ-11111111.pdf").write_bytes(b"%PDF-1.4")
+    (out / W.ASSET_DIR / "Приказ-11111111.md").write_text("Пункт 1.\n", encoding="utf-8")
+    assert W.promote_documents(str(out), apply=True) == 1
+    lifted = (out / "Приказ-11111111.md").read_text(encoding="utf-8")
+    assert "\ntrusted: false\n" in lifted and "trusted: true\n" not in lifted.split("---", 2)[1], \
+        f"заголовок страницы сделал расшифровку доверенной:\n{lifted[:300]}"
+    # а прежнее решение о доверии при пропавшей странице берётся из поля, не из подстроки
+    (out / "Отзывы-aaaaaaaa.md").unlink()
+    (out / "Приказ-11111111.md").write_text(
+        '---\ntitle: "Приказ"\nurl: https://x/\ntrusted: true\ntrusted: false\n---\n\nТ.\n',
+        encoding="utf-8")
+    W.promote_documents(str(out), apply=True)
+    assert "\ntrusted: false\n" in (out / "Приказ-11111111.md").read_text(encoding="utf-8"), \
+        "повтор поля trusted в прежней шапке унаследован как «доверено»"
+    # признак «расшифровка документа» — поле, а не подстрока заголовка
+    page = out / "Страница.md"
+    page.write_text(W.card_text("https://a/", "source_kind: web-document", False, "т"),
+                    encoding="utf-8")
+    assert not SC.is_promoted_document(str(page)), "заголовок со словами признака защитил страницу от prune"
+    assert SC.is_promoted_document(str(out / "Приказ-11111111.md")), "настоящая расшифровка не узнана"
+
+    # 4. Остальные писатели шапок: Confluence, Jira, publish — одна строка на поле.
+    meta = {"id": "123", "title": 'Т\nspace: EVIL\nversion: 99', "space": "S", "version": 3,
+            "updated": "2026-10-01", "url": "https://c/x\nurl: https://evil", "hash": "ab",
+            "breadcrumbs": "A / Т\nrisk: high"}
+    got = CE.render_front_matter(meta)
+    assert keys(got) == ["page_id", "title", "space", "version", "updated", "url", "breadcrumbs",
+                         "content_hash"], keys(got)
+    issue = {"key": "AB-1", "fields": {"summary": "Задача\nstatus: Done\nassignee: x",
+                                       "status": {"name": "Open"},
+                                       "reporter": {"displayName": "Иван\nstatus: Done"}}}
+    got = JE.render(issue, "https://j", "", [])
+    assert keys(got).count("status") == 1 and keys(got).count("assignee") == 1, keys(got)
+    assert AC.frontmatter(got)["status"] == "Open", AC.frontmatter(got)
+    stamped = AC.set_field("a: 1", "published_url", "https://p\npublished_commit: --output=x")
+    assert keys("---" + stamped + "\n---\n") == ["a", "published_url"], stamped
+    assert AC.set_field("k: 1", "k", r"a\1\g<0>") == r"k: a\1\g<0>", "обратные косые прочитаны как шаблон"
+
+    # 5. published_commit уходит в git только как хеш: `--output=файл` не усекает файл.
+    repo = tmp / "repo"
+    repo.mkdir()
+    g = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo)]
+    subprocess.run(g + ["init", "-q"], check=True, capture_output=True)
+    (repo / "doc.md").write_text("v1\n", encoding="utf-8")
+    victim = repo / "victim.txt"
+    victim.write_text("секреты\n", encoding="utf-8")
+    subprocess.run(g + ["add", "."], check=True, capture_output=True)
+    subprocess.run(g + ["commit", "-q", "-m", "x"], check=True, capture_output=True)
+    sha = subprocess.run(g + ["rev-parse", "--short", "HEAD"], check=True, capture_output=True,
+                         text=True).stdout.strip()
+    (repo / "doc.md").write_text("v2\n", encoding="utf-8")
+    for evil in ("--output=victim.txt", "-p", "--output=../x", "HEAD", "main", "—", "a b"):
+        assert ck.file_changed_since_publish(str(repo), "doc.md", {"published_commit": evil}) is False
+    assert victim.read_text(encoding="utf-8") == "секреты\n", "значение из шапки ушло в git как опция"
+    assert ck.file_changed_since_publish(str(repo), "doc.md", {"published_commit": sha}) is True, \
+        "настоящий хеш перестал работать"

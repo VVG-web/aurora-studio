@@ -16,6 +16,7 @@ wiki (дерево страниц с номерами) или board (плоск�
   MOVED       — файл найден по page_id, но лежит не там, где записано состояние
   COLLISION   — один page_id зарегистрирован под разными путями (или путь — дважды)
   STALE       — состояние синка старше N дней (по умолчанию 14)
+  ШАПКА С ПОВТОРОМ ПОЛЯ — одно поле шапки записано дважды (след подделки через заголовок)
 
 Запуск из корня проекта:
   python3 .aurora/scripts/sync_audit.py
@@ -40,7 +41,7 @@ from datetime import date, datetime
 
 import sources_registry as R
 from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guard,
-                           split_frontmatter, walk_md, with_fields)
+                           head_dupes, split_frontmatter, walk_md, with_fields)
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
@@ -310,6 +311,42 @@ def audit_wiki(src: dict, stale_days: int, out: list, stats: dict) -> int:
     return problems
 
 
+def duplicate_head_files(root: str) -> list:
+    """Файлы зеркала, где одно поле шапки записано дважды: [(путь, [ключи])].
+
+    Повтор ключа — след подделки через значение соседнего поля (заголовок страницы с
+    переводом строки, объявивший себя `trusted: true`): писатели зеркал такого не делают.
+    """
+    bad = []
+    for rel, full in sorted(disk_files(root).items()):
+        try:
+            head = split_frontmatter(open(full, encoding="utf-8", errors="ignore").read(8000))[0]
+        except OSError:
+            continue
+        dup = head_dupes(head or "")
+        if dup:
+            bad.append((rel, dup))
+    return bad
+
+
+def audit_heads(src: dict, out: list, stats: dict) -> int:
+    """Предупреждение о шапках с повторенными полями; каждая такая — проблема зеркала."""
+    if not os.path.isdir(src["path"]):
+        return 0
+    bad = duplicate_head_files(src["path"])
+    if not bad:
+        return 0
+    out.append(f"- ⚠️ **ШАПКА С ПОВТОРОМ ПОЛЯ: {len(bad)}** — доверие такого источника не "
+               "объявлено; проверьте заголовок страницы и перевыгрузите зеркало:")
+    for rel, keys in bad[:20]:
+        out.append(f"  - `{rel}`: {', '.join(keys)}")
+    if len(bad) > 20:
+        out.append(f"  - … ещё {len(bad) - 20}")
+    out.append("")
+    stats.setdefault(src["id"], {})["dup_head"] = len(bad)
+    return len(bad)
+
+
 def superseded_documents(files: dict) -> list:
     """[(файл, чем заменён)] — поднятые расшифровки с `superseded_by:` в шапке.
 
@@ -555,6 +592,7 @@ def main() -> int:
             problems += 1
             continue
         problems += auditor(src, a.stale_days, out, stats)
+        problems += audit_heads(src, out, stats)
 
     if a.json:
         print(json.dumps({"problems": problems, "mirrors": stats}, ensure_ascii=False))

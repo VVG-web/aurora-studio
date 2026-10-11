@@ -25,6 +25,11 @@ blog come from the same internet but must not be trusted equally. The declaratio
 `trusted: true|false`, and `kb:trust` reads it from there. So trust remains a property of the source and is not derived
 from a path match on disk, and no second list of trusted folders is needed in the config.
 
+Foreign values (a page title, an author name, an address) are collapsed to a single line when the header is written: a
+line break inside a title would otherwise create a new header field, such as a second `trusted`. The field is read by
+parsing the header, not by a substring match; a `trusted` field written twice counts as untrusted, and `sync:audit`
+names such files ("header with a repeated field").
+
 Confluence Data Center (`confluence-dc`), Jira Data Center (`jira-dc`) and `web` ship with the kit and are always
 installed. Everything else — Notion, SharePoint, Confluence Cloud, YouTrack, GitLab Issues — is added as a folder in
 `connectors/`.

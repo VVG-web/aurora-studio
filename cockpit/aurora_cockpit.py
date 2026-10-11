@@ -624,7 +624,10 @@ def file_changed_since_publish(project: str, rel: str, fm: dict) -> bool:
     а страница всё равно будет старой.
     """
     commit = (fm.get("published_commit") or "").strip()
-    if not commit:
+    # Значение пришло из шапки файла, а шапку пишет и чужая рука (зеркало, присланный
+    # документ). Значение с `-` в начале git прочёл бы как опцию (`--output=файл` усекает
+    # файл), поэтому до git доходит только хеш коммита; «—» и прочее — «не выяснили».
+    if not re.fullmatch(r"[0-9a-fA-F]{4,64}", commit):
         return False
     r = subprocess.run(["git", "-C", project, "diff", "--quiet", commit, "--", rel],
                        capture_output=True, text=True, encoding="utf-8", errors="replace")

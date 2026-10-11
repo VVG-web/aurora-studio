@@ -49,7 +49,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
-from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, head_pairs  # noqa: E402 — дата в UTC, одна на движок
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -207,25 +207,36 @@ def declared_trust(src: str):
     """True / False / None — что о доверии сказал сам файл зеркала.
 
     None значит «не сказал ничего»: так ведут себя зеркала, где доверие считается не по
-    объявлению, а по статусу связанной задачи. Читаем ровно две первые строки шапки —
-    файл зеркала бывает в мегабайт, а ответ лежит вверху.
+    объявлению, а по статусу связанной задачи. Читаем только шапку (до закрывающей `---`,
+    не больше 60 строк) — файл зеркала бывает в мегабайт, а ответ лежит вверху. Разбор
+    общий с остальными читалками шапки (`head_pairs`). Поле `trusted`, записанное дважды,
+    — признак подделки через значение другого поля (заголовок страницы с переводом
+    строки): такому источнику доверие не объявлено, ответ False.
     """
     if not os.path.isfile(src):
         return None
+    lines = []
     try:
         with open(src, encoding="utf-8", errors="ignore") as f:
             if f.readline().strip() != "---":
                 return None
-            for _ in range(12):
+            for _ in range(60):
                 line = f.readline()
                 if not line or line.strip() == "---":
-                    return None
-                m = re.match(r"^trusted\s*:\s*(\S+)", line.strip())
-                if m:
-                    return m.group(1).strip().strip("\"'").lower() in ("true", "yes", "да")
+                    break
+                lines.append(line)
     except OSError:
         return None
-    return None
+    head = "".join(lines)
+    vals = [v for k, v in head_pairs(head) if k == "trusted"]
+    if not vals:
+        return None
+    if len(vals) > 1:
+        return False
+    words = vals[0].split()
+    if not words:
+        return None
+    return words[0].strip("\"'").lower() in ("true", "yes", "да")
 
 
 def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,

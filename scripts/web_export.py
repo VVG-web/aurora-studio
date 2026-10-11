@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
-from aurora_common import utc_today
+from aurora_common import head_scalar, head_value, split_frontmatter, utc_today
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
                           is_promoted_document, report_stale, verify)
 
@@ -432,6 +432,9 @@ def is_feed(url: str, declared=None) -> bool:
 def card_text(url: str, title: str, trusted: bool, body: str, seed: str = "",
               files: list = (), feed: bool = False) -> str:
     """Файл зеркала. Даты выгрузки в шапке НЕТ — иначе каждый прогон даёт дифф на всю папку."""
+    # Заголовок и адрес — чужие данные: перевод строки в них рождал бы поле шапки
+    # (`Блог<перевод строки>trusted: true`), а читают шапку построчно. Схлопываем в одну строку.
+    title, url, seed = head_value(title), head_value(url), head_value(seed)
     head = [f'title: "{(title or url).replace(chr(34), chr(39))}"',
             f"url: {url}",
             f"trusted: {'true' if trusted else 'false'}",
@@ -450,6 +453,11 @@ def card_text(url: str, title: str, trusted: bool, body: str, seed: str = "",
                 + "\n".join(f"- [{n}]({ASSET_DIR}/{n})" for n in sorted(files)) + "\n")
     return ("---\n" + "\n".join(head) + "\n---\n\n"
             f"# {title or url}\n\n{body}\n{tail}")
+
+
+def head_flag(head: str) -> bool:
+    """Доверена ли страница по её шапке: ровно одно поле `trusted` со значением true."""
+    return (head_scalar(head, "trusted") or "").split(" ")[0].lower() == "true"
 
 
 def local_links(md: str, base_url: str, saved: dict) -> str:
@@ -534,9 +542,11 @@ def promote_documents(out_dir: str, apply: bool) -> int:
         if not name.endswith(".md"):
             continue
         text = open(os.path.join(out_dir, name), encoding="utf-8", errors="ignore").read()
-        head = text.split("---", 2)[1] if text.startswith("---") else ""
-        trusted = "trusted: true" in head
-        page_url = (re.search(r"^url:\s*(\S+)", head, re.M) or [None, ""])[1]
+        head = split_frontmatter(text)[0] or ""
+        # Доверие — поле шапки, а не подстрока в ней: заголовок `Отзывы, trusted: true` в одну
+        # строку иначе делал доверенными расшифровки всех вложений чужой страницы.
+        trusted = head_flag(head)
+        page_url = (head_scalar(head, "url") or "").split(" ")[0]
         for m in re.finditer(rf"\({re.escape(ASSET_DIR)}/([^)]+)\)", text):
             owner.setdefault(m.group(1), (trusted, page_url))
 
@@ -559,18 +569,19 @@ def promote_documents(out_dir: str, apply: bool) -> int:
             family = VERSION_TAIL_RE.sub("", stem)
             newer = sorted(f for f in owner
                            if VERSION_TAIL_RE.sub("", os.path.splitext(f)[0]) == family)
-            prev = open(dest, encoding="utf-8", errors="ignore").read(800) \
+            prev = open(dest, encoding="utf-8", errors="ignore").read(4000) \
                 if os.path.isfile(dest) else ""
-            was_trusted = re.search(r"^trusted:[ \t]*(\S+)", prev, re.M)
-            was_url = re.search(r"^url:[ \t]*(\S*)[ \t]*$", prev, re.M)
+            prev_head = split_frontmatter(prev)[0] or ""
+            was_trusted = head_scalar(prev_head, "trusted")
+            was_url = head_scalar(prev_head, "url")
             if newer:
                 trusted, page_url = owner[newer[-1]]
                 superseded = os.path.splitext(newer[-1])[0] + ".md"
                 SUPERSEDED.append((f"{stem}.md", superseded))
             elif was_trusted:
                 # Страницы нет, но решение о доверии уже было принято — сохраняем его.
-                trusted = was_trusted.group(1).strip().lower() == "true"
-                page_url = was_url.group(1) if was_url else ""
+                trusted = was_trusted.split(" ")[0].lower() == "true"
+                page_url = (was_url or "").split(" ")[0]
             else:
                 trusted, page_url = False, ""
         src = open(os.path.join(files_dir, name), encoding="utf-8", errors="ignore").read()

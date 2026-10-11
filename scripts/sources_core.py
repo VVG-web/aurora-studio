@@ -27,7 +27,7 @@ import re
 import sys
 import tempfile
 
-from aurora_common import yaml_scalar
+from aurora_common import head_scalar, split_frontmatter, yaml_scalar
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -542,8 +542,9 @@ def is_promoted_document(path: str) -> bool:
         head = open(path, encoding="utf-8", errors="ignore").read(1500)
     except OSError:
         return False
-    parts = head.split("---", 2)
-    return head.startswith("---") and len(parts) > 2 and "source_kind: web-document" in parts[1]
+    # Признак — поле шапки, а не подстрока: заголовок страницы с этими словами не должен
+    # делать её «расшифровкой документа», защищённой от `--prune`.
+    return head_scalar(split_frontmatter(head)[0] or "", "source_kind") == "web-document"
 
 
 def report_stale(kind: str, extra: list, out_dir: str) -> None:

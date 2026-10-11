@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
+from aurora_common import head_value
 
 import argparse
 import os
@@ -224,6 +225,9 @@ def render(issue: dict, base_url: str, epic_field: str, comments: list,
         "fix_versions": names(f.get("fixVersions")),
         "url": f"{base_url}/browse/{issue['key']}",
     }
+    # Значения — чужие данные (заголовок задачи, имена): перевод строки в них породил бы
+    # новое поле шапки, поэтому каждое схлопывается в одну строку.
+    fm = {k: head_value(v) for k, v in fm.items()}
     head = "".join(f'{k}: "{v}"\n' if v else f"{k}:\n" for k, v in fm.items())
     out = [f"---\n{head}---\n", f"# {issue['key']}: {fm['title']}\n"]
     desc = jira_to_md(f.get("description") or "")

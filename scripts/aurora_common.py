@@ -522,6 +522,58 @@ def frontmatter(text: str) -> dict:
     return fm
 
 
+def head_value(value, limit: "int | None" = 1000) -> str:
+    """Внешнее значение для ОДНОЙ строки шапки зеркала: без переводов строк и управляющих знаков.
+
+    Заголовок чужой страницы, имя пользователя, адрес — это данные, а не разметка. Шапку
+    читают построчно (`frontmatter`, `declared_trust`), поэтому перевод строки внутри
+    значения рождал бы новое поле: `Блог<перевод строки>trusted: true` объявлял чужой
+    источник доверенным. Любой пробельный, разделитель строк (U+0085, U+2028/2029) и
+    управляющий знак схлопывается в один пробел; длина ограничена. Кавычки не трогаем —
+    их правила у каждого поля свои, а байтовый вид прежних зеркал не должен меняться.
+    """
+    s = "" if value is None else str(value)
+    s = "".join(" " if ch.isspace() or unicodedata.category(ch) in ("Cc", "Zl", "Zp") else ch
+                for ch in s)
+    s = re.sub(r" {2,}", " ", s).strip()
+    return s if limit is None else s[:limit]
+
+
+# Всё, что `splitlines` и YAML считают концом строки: такое значение рождало бы новое поле шапки.
+HEAD_BREAKS_RE = re.compile("[\r\n\x0b\x0c\x1c-\x1e\x85\u2028\u2029]+")
+HEAD_KEY_RE = re.compile(r"^([\w_]+)\s*:(.*)$")
+
+
+def head_pairs(head: str) -> list:
+    """Все поля верхнего уровня шапки как [(ключ, значение)] — в порядке файла, с повторами.
+
+    Единый разбор для читалок доверия: словарь `frontmatter` прячет повтор ключа (побеждает
+    последний), а повтор — признак подделки через значение другого поля.
+    """
+    out = []
+    for line in (head or "").splitlines():
+        m = HEAD_KEY_RE.match(line)
+        if m:
+            out.append((m.group(1), m.group(2).strip().strip('"').strip("'")))
+    return out
+
+
+def head_dupes(head: str) -> list:
+    """Ключи, записанные в шапке больше одного раза."""
+    seen, dup = set(), []
+    for k, _v in head_pairs(head):
+        if k in seen and k not in dup:
+            dup.append(k)
+        seen.add(k)
+    return dup
+
+
+def head_scalar(head: str, key: str):
+    """Значение поля шапки; None — поля нет или оно повторено (повтору не верим)."""
+    vals = [v for k, v in head_pairs(head) if k == key]
+    return vals[0] if len(vals) == 1 else None
+
+
 def list_field(text: str, field: str) -> list:
     """Список из шапки: поддерживаются и inline-запись, и блочная.
 
@@ -649,9 +701,13 @@ def with_sources(text: str, paths: list) -> str:
 
 
 def set_field(head: str, key: str, value: str) -> str:
-    """Проставить/заменить поле в шапке (head — без разделителей)."""
+    """Проставить/заменить поле в шапке (head — без разделителей).
+
+    Значение — одна строка: перевод строки внутри породил бы чужое поле шапки.
+    """
+    value = HEAD_BREAKS_RE.sub(" ", str(value))
     if re.search(rf"^{key}:", head, re.M):
-        return re.sub(rf"^{key}:.*$", f"{key}: {value}", head, flags=re.M)
+        return re.sub(rf"^{key}:.*$", lambda _m: f"{key}: {value}", head, flags=re.M)
     return head.rstrip("\n") + f"\n{key}: {value}"
 
 
