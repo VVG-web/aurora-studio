@@ -109,6 +109,11 @@ def apply(target, changes: list) -> None:
     for rel, text, _kind in changes:
         p = Path(target) / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".aurora-tmp")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, p)
+        # Имя временного файла — своё у каждого процесса: два обновления разом (кнопка в панели
+        # и Cron) делили одно `.aurora-tmp`, и второе падало на подмене уже подмененного файла.
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.aurora-tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, p)
+        finally:
+            tmp.unlink(missing_ok=True)

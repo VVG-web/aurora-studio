@@ -6,8 +6,14 @@ jobs:
     # (docs/CONTRIBUTING.md): 3.14. Нижняя поддерживаемая (3.11) проверяется заданием floor.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # Обновление с прежних выпусков (tests/cases/part_40.py) берёт их из git-тегов: без тегов
+      # сценарий молча пропускался бы, а с этой переменной — падает.
+      AURORA_REQUIRE_TAGS: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"

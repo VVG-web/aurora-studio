@@ -400,9 +400,16 @@ def plan(target: Path, f: dict):
         dst = target / rel_dst
         ext = _external_target(target, dst) if dst.exists() or dst.parent.is_symlink() else None
         if dst.is_file():
-            old = dst.read_text(encoding="utf-8")
+            # Файл, оборванный посреди записи (убитый процесс), может быть не UTF-8: он просто
+            # «отличается» и перепишется, а не роняет каждое следующее обновление.
+            old = dst.read_text(encoding="utf-8", errors="replace")
             if old == new_text:
                 return  # идентично — нечего делать
+            if legacy_paths(new_text) == old:
+                # Шаблон кита ещё помнит прежний путь (например, в ссылке на историю git), а
+                # копия в проекте уже переписана на новый. Это одно и то же: не плодить `.new`
+                # на свежем проекте при каждом обновлении.
+                return
             if legacy_paths(old) == new_text:
                 # Разница только в путях движка (`.opencode/` → `.aurora/`, 1.158.0): это
                 # не правка кита, а переезд — поправить на месте, без `.new` на разбор.
@@ -766,7 +773,8 @@ def run(target: Path, apply: bool, structure_only: bool = False):
         if dst.suffix in (".command", ".sh"):
             dst.chmod(0o755)     # без бита исполнения двойной щелчок не сработает
     for r in retired:
-        (target / r).unlink()
+        # Второе обновление (кнопка и Cron разом) могло убрать файл раньше: это не ошибка.
+        (target / r).unlink(missing_ok=True)
     if cfg_done:
         (target / "aurora.config.yaml").write_text(cfg_text, encoding="utf-8")
     (target / ".aurora").mkdir(parents=True, exist_ok=True)
