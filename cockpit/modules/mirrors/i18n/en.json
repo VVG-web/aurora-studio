@@ -13,7 +13,7 @@
   "mirrors.folder": "Folder: {path}.",
   "mirrors.sync": "Synchronise",
   "mirrors.audit": "Check integrity",
-  "mirrors.dup_head": "headers with a repeated field: {n}",
+  "mirrors.dup_head": "headers with a repeated field or a forgery: {n}",
   "mirrors.drifted": "there are discrepancies — audit first",
   "mirrors.not_installed": "module is not installed",
   "mirrors.sources_empty": "Neither Sources/ nor Raw/ has any documents — the base has nothing to be built from.",

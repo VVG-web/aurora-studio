@@ -503,15 +503,32 @@ def split_frontmatter(text: str):
     return text[3:end], text[end:]
 
 
-def frontmatter(text: str) -> dict:
-    """Плоские поля шапки. Значения очищены от кавычек; списки остаются строкой."""
+def head_lines(head: str) -> list:
+    """Настоящие строки шапки: только `\\n`, `\\r\\n` и `\\r`, как их видит `open()` без `newline`.
+
+    `str.splitlines` рвёт ещё и по U+2028/2029, U+0085, `\\x0b`, `\\x0c`, `\\x1c-\\x1e`: заголовок
+    чужой страницы `Блог<U+2028>trusted: true`, записанный в одну настоящую строку, рождал
+    при таком разборе второе поле. Все читатели шапки идут через эту функцию, чтобы шапка
+    читалась одинаково — как её читал прежний построчный `readline()`.
+    """
+    return re.split(r"\r\n|\r|\n", head or "")
+
+
+def frontmatter(text: str, unique: bool = False) -> dict:
+    """Плоские поля шапки. Значения очищены от кавычек; списки остаются строкой.
+
+    `unique=True` — для читалок доверия (ключ и статус задачи, `page_id` корня): поле,
+    записанное в шапке больше одного раза, выбрасывается, а не «побеждает последним».
+    Повтор — след подделки через значение соседнего поля, и верить ему нельзя.
+    """
     head, _ = split_frontmatter(text)
     if head is None:
         return {}
-    fm = {}
-    for line in head.splitlines():
+    fm, seen = {}, {}
+    for line in head_lines(head):
         m = re.match(r"^([\w_]+)\s*:(.*)$", line)
         if m:
+            seen[m.group(1)] = seen.get(m.group(1), 0) + 1
             val = m.group(2)
             # Статус — одно слово из закрытого словаря, и хвост ` # …` в нём — комментарий
             # YAML (шаблон DR когда-то нёс его на этой строке). Остальные поля комментарий
@@ -519,6 +536,8 @@ def frontmatter(text: str) -> dict:
             if m.group(1) == "status":
                 val = re.sub(r"\s+#.*$", "", val)
             fm[m.group(1)] = val.strip().strip('"').strip("'")
+    if unique:
+        fm = {k: v for k, v in fm.items() if seen[k] == 1}
     return fm
 
 
@@ -556,7 +575,7 @@ def head_pairs(head: str) -> list:
     последний), а повтор — признак подделки через значение другого поля.
     """
     out = []
-    for line in (head or "").splitlines():
+    for line in head_lines(head):
         m = HEAD_KEY_RE.match(line)
         if m:
             out.append((m.group(1), m.group(2).strip().strip('"').strip("'")))
@@ -577,6 +596,56 @@ def head_scalar(head: str, key: str):
     """Значение поля шапки; None — поля нет или оно повторено (повтору не верим)."""
     vals = [v for k, v in head_pairs(head) if k == key]
     return vals[0] if len(vals) == 1 else None
+
+
+# Значения `source_kind`, которыми писатель веб-зеркала помечает свои файлы: только он пишет
+# в шапку поле `trusted` (галочка на каждую ссылку). У Confluence и Jira такого поля нет.
+WEB_SOURCE_KINDS = ("web", "web-document")
+
+
+def head_trust(head: str):
+    """True / False / None — что о доверии сказала шапка веб-зеркала.
+
+    Единый разбор для всех читателей доверия по шапке (`kb_trust.declared_trust`, подъём
+    вложений и перенос прежнего решения в `web_export`). Верим только первой настоящей
+    строке поля между разделителями шапки, без подстрок, и только тому файлу, который сам
+    назвал себя веб-зеркалом: ровно одно `source_kind` со значением `web` или `web-document`.
+    Зеркала Confluence и Jira поле `trusted` не пишут, и оно там — чужой текст. None — шапка
+    о доверии не сказала (или назвалась не веб-зеркалом: решает статус задачи); `trusted`,
+    записанное дважды, — подделка через значение соседнего поля, ответ False.
+    """
+    pairs = head_pairs(head)
+    kinds = [v.split()[0] if v.split() else "" for k, v in pairs if k == "source_kind"]
+    if len(kinds) != 1 or kinds[0] not in WEB_SOURCE_KINDS:
+        return None
+    vals = [v for k, v in pairs if k == "trusted"]
+    if not vals:
+        return None
+    if len(vals) > 1:
+        return False
+    words = vals[0].split()
+    if not words:
+        return None
+    return words[0].strip("\"'").lower() in ("true", "yes", "да")
+
+
+def head_odd(head: str) -> list:
+    """Что в шапке уже записанного зеркала выглядит подделкой: коды причин, пусто — чисто.
+
+    Писатели зеркал такого не делают, а файлы на диске живут долго (неизменную страницу
+    синк держит из кэша), поэтому прежние зеркала обнаруживаем, а не переписываем:
+    `dup` — поле записано дважды; `break` — внутри значения знак конца строки, которым рвут
+    строку `splitlines` и YAML (U+2028/2029, U+0085, `\\x0b`, `\\x0c`); `trusted` — поле
+    `trusted` в файле, который не веб-зеркало, и ему не верят.
+    """
+    out = []
+    if head_dupes(head):
+        out.append("dup")
+    if re.search("[\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", head or ""):
+        out.append("break")
+    if any(k == "trusted" for k, _v in head_pairs(head)) and head_trust(head) is None:
+        out.append("trusted")
+    return out
 
 
 def list_field(text: str, field: str) -> list:

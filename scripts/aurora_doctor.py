@@ -522,6 +522,31 @@ def check_kit_hooks() -> list:
     return out
 
 
+def check_mirror_heads() -> list:
+    """Предупреждение о зеркалах `Sources/` с подозрительной шапкой (BL-SEC-13).
+
+    Зеркала, записанные до закрытия подделки полей шапки через заголовок страницы, лежат на
+    диске и дальше (неизменную страницу синк держит из кэша). Читатели доверия таким шапкам
+    уже не верят, но человек должен знать, какие файлы перезаписать. Данные проекта не
+    трогаем: только называем и говорим чем лечить."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import sync_audit as SA
+        found = []
+        for path in sorted(mirror_owners()):
+            if os.path.isdir(path):
+                found += [f"{path}/{rel}" for rel, _codes in SA.odd_head_files(path)]
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return []
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    if found:
+        shown = ", ".join(found[:3]) + (" …" if len(found) > 3 else "")
+        out.append(f"в зеркалах Sources/ шапок с повтором поля или подложным trusted: {len(found)} "
+                   f"({shown}) — доверию таких файлов не верим; подробно: `sync:audit`, лечится "
+                   "перезаписью файла: `--force` команды синка зеркала")
+    return out
+
+
 def check_python(errors: list, warns: list, vi=None, platform=None) -> None:
     """Версия Python, на котором идёт doctor: 3.11+ — OK, 3.10 — предупреждение (снят с
     поддержки), ниже — ошибка с подсказкой по системе. `vi` подменяют тесты."""
@@ -626,6 +651,7 @@ def main() -> int:
 
     warns += check_portable_names()
     warns += check_kit_hooks()
+    warns += check_mirror_heads()
 
     s_err, s_warn, s_lines = check_structure(structure_verbose)
     errors += s_err

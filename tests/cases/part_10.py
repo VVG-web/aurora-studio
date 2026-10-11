@@ -1854,19 +1854,21 @@ def test_a_foreign_value_cannot_forge_a_header_field_of_a_mirror(tmp: Path):
                        seed="https://b.example/\ntrusted: true")
     assert keys(text).count("trusted") == 1, keys(text)
 
-    # 2. Прежние шапки читаются как раньше: доверенная, недоверенная, молчащая, с комментарием.
+    # 2. Прежние шапки читаются как раньше: доверенная, недоверенная, молчащая, с комментарием
+    #    (так их пишет `sync:web` с v1.101.0: рядом с `trusted` всегда стоит `source_kind: web`).
     for name, head, want in [("a", 'title: "Закон"\nurl: https://x\ntrusted: true\nsource_kind: web', True),
-                             ("b", 'title: "Блог"\ntrusted: false\n', False),
+                             ("b", 'title: "Блог"\ntrusted: false\nsource_kind: web\n', False),
                              ("c", 'title: "Без отметки"\nsource_kind: web', None),
-                             ("d", 'title: "Да"\ntrusted: "true"  # решение человека', True),
-                             ("e", "\n".join(f"k{n}: v" for n in range(20)) + "\ntrusted: true", True)]:
+                             ("d", 'title: "Да"\ntrusted: "true"  # решение человека\nsource_kind: web', True),
+                             ("e", "\n".join(f"k{n}: v" for n in range(20)) + "\ntrusted: true\nsource_kind: web",
+                              True)]:
         f = mirror / f"old_{name}.md"
         f.write_text(f"---\n{head}\n---\n\nТекст.\n", encoding="utf-8")
         assert T.declared_trust(str(f)) is want, (name, T.declared_trust(str(f)))
     # Зеркало, записанное ДО правки (перевод строки в заголовке уже на диске): повтор поля —
     # доверие не объявлено, а не «первая строка победила».
     old = mirror / "old_forged.md"
-    old.write_text('---\ntitle: "Блог\ntrusted: true"\nurl: https://x\ntrusted: false\n---\n\nТекст.\n',
+    old.write_text('---\ntitle: "Блог\ntrusted: true"\nurl: https://x\ntrusted: false\nsource_kind: web\n---\n\nТекст.\n',
                    encoding="utf-8")
     assert T.declared_trust(str(old)) is False
     bad = SA.duplicate_head_files(str(mirror))
@@ -2021,3 +2023,116 @@ def test_a_header_value_keeps_its_bytes_and_a_source_text_cannot_fake_the_card_t
     assert q3.rstrip() == quotes.rstrip() and f3.startswith("## Исправления человеком"), f3
     assert AC.corrections_of(f3) == "На деле 7 %."
     assert AC.quote_safe(AC.quote_safe(made)) == AC.quote_safe(made)
+
+
+@test
+def test_trust_is_read_from_a_header_by_one_parse_and_old_forged_mirrors_are_reported(tmp: Path):
+    """Доработка BL-SEC-13: читатели доверия делят один разбор шапки; прежние подделки видно.
+
+    Закрыта была запись шапки, а чтение осталось слабым: `declared_trust` верил полю
+    `trusted` в любом зеркале (в том числе Confluence и Jira, которые его не пишут),
+    разбор шапки рвал строку по U+2028 и подобным знакам, а `trusted_roots` брал последний
+    `page_id`. Зеркала, записанные до правки, лежат на диске дальше (неизменную страницу
+    синк держит из кэша) — их обнаруживают `sync:audit` и doctor, данные не переписываются.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    T = importlib.import_module("kb_trust")
+    SA = importlib.import_module("sync_audit")
+    D = importlib.import_module("aurora_doctor")
+    empty = {"direct": {}, "indirect": {}}
+
+    # 1. Строка шапки — настоящая строка: U+2028 и подобные не рождают поле.
+    for sep in ("\u2028", "\u2029", "\x85", "\x0b", "\x0c"):
+        pairs = AC.head_pairs(f"title: Блог{sep}trusted: true\nurl: x")
+        assert [k for k, _v in pairs] == ["title", "url"], (sep, pairs)
+        assert "trusted" not in AC.frontmatter(f"---\ntitle: Б{sep}trusted: true\n---\n"), sep
+    assert [k for k, _v in AC.head_pairs("a: 1\r\nb: 2\rc: 3\nd: 4")] == ["a", "b", "c", "d"]
+
+    # 2. `trusted` верят только у файла, назвавшегося веб-зеркалом; Confluence/Jira — статус задачи.
+    mirrors = {
+        "Sources/Confluence/Root/plain.md": 'page_id: 5\ntitle: "Страница"\ntrusted: true',
+        "Sources/Confluence/Root/u2028.md": 'page_id: 6\ntitle: "Notes\u2028trusted: true"',
+        "Sources/JIRA/AB-1.md": 'key: "AB-1"\ntitle: "Задача"\nstatus: "Open"\ntrusted: true',
+        "Sources/Web/two_kinds.md": 'title: "Т"\ntrusted: true\nsource_kind: web\nsource_kind: web-document',
+        "Sources/Web/other_kind.md": 'title: "Т"\ntrusted: true\nsource_kind: note',
+        "Sources/Web/ok.md": 'title: "Закон"\nurl: https://x\ntrusted: true\nsource_kind: web',
+        "Sources/Web/doc.md": 'title: "Приказ"\ntrusted: true\nsource_kind: web-document',
+    }
+    for rel, head in mirrors.items():
+        f = tmp / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"---\n{head}\n---\n\nТекст.\n", encoding="utf-8")
+    got = {rel: T.declared_trust(str(tmp / rel)) for rel in mirrors}
+    assert got == {"Sources/Confluence/Root/plain.md": None, "Sources/Confluence/Root/u2028.md": None,
+                   "Sources/JIRA/AB-1.md": None, "Sources/Web/two_kinds.md": None,
+                   "Sources/Web/other_kind.md": None, "Sources/Web/ok.md": True,
+                   "Sources/Web/doc.md": True}, got
+    cwd = os.getcwd()
+    os.chdir(tmp)
+    try:
+        for rel in ("Sources/Confluence/Root/plain.md", "Sources/Confluence/Root/u2028.md"):
+            cls, why = T.source_class(rel, empty, {}, set(), set())
+            assert cls != "raw" and "доверенным" not in why, (rel, cls, why)
+        assert T.source_class("Sources/Web/ok.md", empty, {}, set(), set())[0] == "raw"
+    finally:
+        os.chdir(cwd)
+    # поднятые вложения читают то же самое: решение не берётся из чужой шапки
+    assert AC.head_trust('title: "А"\ntrusted: true') is None
+    assert AC.head_trust('trusted: true\nsource_kind: web') is True
+    assert AC.head_trust('trusted: false\nsource_kind: web-document') is False
+    assert AC.head_trust('trusted: true\ntrusted: true\nsource_kind: web') is False
+
+    # 3. Корень синка и задачи: повтор поля в шапке — подделка, значению не верим.
+    conf = tmp / "kb" / "Sources" / "Confluence"
+    for name, head in {"RootA": 'page_id: 111\ntitle: "Team\u2028page_id: 222"',
+                       "RootB": 'page_id: 111\ntitle: "Team"\npage_id: 333',
+                       "RootC": 'page_id: 444\ntitle: "Честный"'}.items():
+        (conf / name).mkdir(parents=True)
+        (conf / name / "index.md").write_text(f"---\n{head}\n---\n\nТ.\n", encoding="utf-8")
+    roots = [{"page_id": "222", "title": "A", "trusted": True},
+             {"page_id": "333", "title": "B", "trusted": True},
+             {"page_id": "444", "title": "C", "trusted": True}]
+    assert T.trusted_roots(str(tmp / "kb"), roots) == [("Sources/Confluence/RootC/", "C")]
+    jira = tmp / "kb" / "Sources" / "JIRA"
+    jira.mkdir(parents=True)
+    (jira / "AB-1.md").write_text('---\nkey: "AB-1"\ntitle: "Задача\nkey: AB-9"\n'
+                                  'status: "Done"\nparent: "AB-5"\ntype: "Story"\n---\n\nТ.\n',
+                                  encoding="utf-8")
+    (jira / "AB-2.md").write_text('---\nkey: "AB-2"\ntitle: "Честная"\nstatus: "Open"\n---\n\nТ.\n',
+                                  encoding="utf-8")
+    assert T.task_status(str(tmp / "kb")) == {"AB-2": "Open"}, T.task_status(str(tmp / "kb"))
+    assert T.task_parents(str(tmp / "kb")) == {} and T.task_types(str(tmp / "kb")) == {"AB-2": ""}
+
+    # 4. Уже записанные зеркала обнаруживаются предупреждением, ничего не переписывается.
+    mir = tmp / "mir"
+    (mir / "Root").mkdir(parents=True)
+    for rel, head in {"Root/u2028.md": 'page_id: 6\ntitle: "Notes\u2028trusted: true"',
+                      "Root/plain.md": 'page_id: 5\ntitle: "С"\ntrusted: true',
+                      "Root/dup.md": 'page_id: 7\ntitle: "С"\ntrusted: true\ntrusted: false',
+                      "Root/clean.md": 'page_id: 8\ntitle: "Чистая"'}.items():
+        (mir / rel).write_text(f"---\n{head}\n---\n\nТекст.\n", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in (mir / "Root").iterdir()}
+    odd = dict(SA.odd_head_files(str(mir)))
+    assert odd == {"Root/u2028.md": ["break"], "Root/plain.md": ["trusted"],
+                   "Root/dup.md": ["dup", "trusted"]}, odd
+    out, stats = [], {}
+    assert SA.audit_heads({"id": "Confluence", "path": str(mir)}, out, stats) == 3
+    assert stats["Confluence"]["dup_head"] == 3 and "Root/u2028.md" in "\n".join(out)
+    web = tmp / "web"
+    web.mkdir()
+    (web / "ok.md").write_text("---\ntitle: \"З\"\ntrusted: true\nsource_kind: web\n---\n\nТ.\n",
+                               encoding="utf-8")
+    assert SA.odd_head_files(str(web)) == [], "нормальная шапка веб-зеркала названа подозрительной"
+    real_owners = D.mirror_owners
+    try:
+        D.mirror_owners = lambda: {str(mir): "confluence-dc", str(web): "web"}
+        warn = D.check_mirror_heads()
+        assert len(warn) == 1 and "3" in warn[0] and "sync:audit" in warn[0], warn
+        D.mirror_owners = lambda: {str(web): "web"}
+        assert D.check_mirror_heads() == [], "чистые зеркала дали предупреждение"
+    finally:
+        D.mirror_owners = real_owners
+    assert {p.name: p.read_bytes() for p in (mir / "Root").iterdir()} == before, \
+        "обнаружение переписало данные проекта"

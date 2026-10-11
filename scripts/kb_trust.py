@@ -49,7 +49,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
-from aurora_common import TODAY, head_pairs  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, head_trust  # noqa: E402 — дата в UTC, одна на движок
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -75,7 +75,7 @@ def task_status(root: str) -> dict:
     if not os.path.isdir(base):
         return out
     for p in walk_md(base):
-        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
+        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read(), unique=True)
         key = (fm.get("key") or "").strip().strip('"')
         if key:
             out[key] = (fm.get("status") or "").strip().strip('"')
@@ -89,7 +89,7 @@ def task_parents(root: str) -> dict:
     if not os.path.isdir(base):
         return out
     for p in walk_md(base):
-        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
+        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read(), unique=True)
         key = (fm.get("key") or "").strip().strip('"')
         parent = (fm.get("parent") or "").strip().strip('"')
         if key and parent:
@@ -120,7 +120,7 @@ def task_types(root: str) -> dict:
     if not os.path.isdir(base):
         return out
     for p in walk_md(base):
-        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read())
+        fm = frontmatter(open(p, encoding="utf-8", errors="ignore").read(), unique=True)
         key = (fm.get("key") or "").strip().strip('"')
         if key:
             out[key] = (fm.get("type") or "").strip().strip('"')
@@ -157,7 +157,9 @@ def trusted_roots(root: str, roots: list) -> list:
         if not head.endswith(".md") or not os.path.isfile(head):
             continue
         with open(head, encoding="utf-8", errors="ignore") as f:
-            fm = frontmatter(f.read(4000))
+            # Повтор поля в шапке (заголовок страницы с переводом строки объявил свой
+            # `page_id`) — подделка: такому корню не верим, а не берём последнее значение.
+            fm = frontmatter(f.read(4000), unique=True)
         pid = str(fm.get("page_id") or "").strip().strip("\"'")
         if pid in want:
             out.append((WIKI + name + ("/" if os.path.isdir(full) else ""), want.pop(pid)))
@@ -207,36 +209,28 @@ def declared_trust(src: str):
     """True / False / None — что о доверии сказал сам файл зеркала.
 
     None значит «не сказал ничего»: так ведут себя зеркала, где доверие считается не по
-    объявлению, а по статусу связанной задачи. Читаем только шапку (до закрывающей `---`,
-    не больше 60 строк) — файл зеркала бывает в мегабайт, а ответ лежит вверху. Разбор
-    общий с остальными читалками шапки (`head_pairs`). Поле `trusted`, записанное дважды,
-    — признак подделки через значение другого поля (заголовок страницы с переводом
-    строки): такому источнику доверие не объявлено, ответ False.
+    объявлению, а по статусу связанной задачи (Confluence, Jira: поле `trusted` они не
+    пишут, и оно там — чужой текст). Читаем только шапку (до закрывающей `---`, не больше
+    60 строк) — файл зеркала бывает в мегабайт, а ответ лежит вверху. Разбор один на все
+    читалки доверия (`aurora_common.head_trust`): первая настоящая строка поля, без
+    подстрок, и только у файла, назвавшегося веб-зеркалом. Поле `trusted`, записанное
+    дважды, — признак подделки через значение другого поля: ответ False.
     """
     if not os.path.isfile(src):
         return None
     lines = []
     try:
         with open(src, encoding="utf-8", errors="ignore") as f:
-            if f.readline().strip() != "---":
+            if f.readline().strip(" \t\r\n") != "---":
                 return None
             for _ in range(60):
                 line = f.readline()
-                if not line or line.strip() == "---":
+                if not line or line.strip(" \t\r\n") == "---":
                     break
                 lines.append(line)
     except OSError:
         return None
-    head = "".join(lines)
-    vals = [v for k, v in head_pairs(head) if k == "trusted"]
-    if not vals:
-        return None
-    if len(vals) > 1:
-        return False
-    words = vals[0].split()
-    if not words:
-        return None
-    return words[0].strip("\"'").lower() in ("true", "yes", "да")
+    return head_trust("".join(lines))
 
 
 def source_class(src: str, table: dict, statuses: dict, trust: set, draft: set,

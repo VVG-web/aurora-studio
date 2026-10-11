@@ -27,8 +27,13 @@ from a path match on disk, and no second list of trusted folders is needed in th
 
 Foreign values (a page title, an author name, an address) are collapsed to a single line when the header is written: a
 line break inside a title would otherwise create a new header field, such as a second `trusted`. The field is read by
-parsing the header, not by a substring match; a `trusted` field written twice counts as untrusted, and `sync:audit`
-names such files ("header with a repeated field").
+parsing the header, not by a substring match: a header line is only a real line of the file (U+2028/2029 and U+0085 do
+not break it), and trust is believed only from a file that names itself a web mirror (exactly one `source_kind: web` or
+`web-document`) — Confluence and Jira mirrors have no `trusted` field, so there it is foreign text. A `trusted` field
+written twice counts as untrusted; the sync root's `page_id` and a Jira task's key, status, parent and type are read the
+same way: a repeated field is a forgery and its value is not believed. Mirrors already written are not rewritten, but
+`sync:audit` and `kit:doctor` name such files ("header with a repeated field or a forgery": a repeat, a line-break
+character in a value, `trusted` outside a web mirror) — rewrite them with `--force` of the mirror's sync command.
 
 Confluence Data Center (`confluence-dc`), Jira Data Center (`jira-dc`) and `web` ship with the kit and are always
 installed. Everything else — Notion, SharePoint, Confluence Cloud, YouTrack, GitLab Issues — is added as a folder in

@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
-from aurora_common import head_scalar, head_value, split_frontmatter, utc_today
+from aurora_common import head_scalar, head_trust, head_value, split_frontmatter, utc_today
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
                           is_promoted_document, report_stale, verify)
 
@@ -458,8 +458,8 @@ def card_text(url: str, title: str, trusted: bool, body: str, seed: str = "",
 
 
 def head_flag(head: str) -> bool:
-    """Доверена ли страница по её шапке: ровно одно поле `trusted` со значением true."""
-    return (head_scalar(head, "trusted") or "").split(" ")[0].lower() == "true"
+    """Доверена ли страница по её шапке — тем же разбором, что и `kb:trust` (`head_trust`)."""
+    return head_trust(head) is True
 
 
 def local_links(md: str, base_url: str, saved: dict) -> str:
@@ -574,15 +574,15 @@ def promote_documents(out_dir: str, apply: bool) -> int:
             prev = open(dest, encoding="utf-8", errors="ignore").read(4000) \
                 if os.path.isfile(dest) else ""
             prev_head = split_frontmatter(prev)[0] or ""
-            was_trusted = head_scalar(prev_head, "trusted")
+            was_trusted = head_trust(prev_head)
             was_url = head_scalar(prev_head, "url")
             if newer:
                 trusted, page_url = owner[newer[-1]]
                 superseded = os.path.splitext(newer[-1])[0] + ".md"
                 SUPERSEDED.append((f"{stem}.md", superseded))
-            elif was_trusted:
+            elif was_trusted is not None:
                 # Страницы нет, но решение о доверии уже было принято — сохраняем его.
-                trusted = was_trusted.split(" ")[0].lower() == "true"
+                trusted = was_trusted
                 page_url = (was_url or "").split(" ")[0]
             else:
                 trusted, page_url = False, ""

@@ -16,7 +16,8 @@ wiki (дерево страниц с номерами) или board (плоск�
   MOVED       — файл найден по page_id, но лежит не там, где записано состояние
   COLLISION   — один page_id зарегистрирован под разными путями (или путь — дважды)
   STALE       — состояние синка старше N дней (по умолчанию 14)
-  ШАПКА С ПОВТОРОМ ПОЛЯ — одно поле шапки записано дважды (след подделки через заголовок)
+  ШАПКА С ПОВТОРОМ ПОЛЯ ИЛИ ПОДЛОГОМ — поле записано дважды, в значении знак конца строки или
+                `trusted` в зеркале, которое его не пишет (след подделки через заголовок)
 
 Запуск из корня проекта:
   python3 .aurora/scripts/sync_audit.py
@@ -41,7 +42,7 @@ from datetime import date, datetime
 
 import sources_registry as R
 from aurora_common import (KB_ROOT, TRUSTED, card_sources, frontmatter, git_guard,
-                           head_dupes, split_frontmatter, walk_md, with_fields)
+                           head_dupes, head_odd, split_frontmatter, walk_md, with_fields)
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
@@ -329,18 +330,43 @@ def duplicate_head_files(root: str) -> list:
     return bad
 
 
+def odd_head_files(root: str) -> list:
+    """Файлы зеркала с подозрительной шапкой: [(путь, [коды причин])] (`aurora_common.head_odd`).
+
+    Не только повтор поля: заголовок с U+2028 и подобными знаками конца строки или одиночное
+    `trusted` в зеркале Confluence/Jira, которое такого поля не пишет, — тот же след, а
+    дублей поля в нём нет. Писатели зеркал сегодня такого не пишут, но неизменные страницы
+    живут на диске (у Confluence до недели, у Jira до правки задачи), поэтому уже записанное
+    обнаруживаем и сообщаем, а данные проекта сами не переписываем.
+    """
+    bad = []
+    for rel, full in sorted(disk_files(root).items()):
+        try:
+            head = split_frontmatter(open(full, encoding="utf-8", errors="ignore").read(8000))[0]
+        except OSError:
+            continue
+        codes = head_odd(head or "")
+        if codes:
+            bad.append((rel, codes))
+    return bad
+
+
+ODD_WHY = {"dup": "поле записано дважды", "break": "в значении знак конца строки",
+           "trusted": "`trusted` в зеркале, которое его не пишет"}
+
+
 def audit_heads(src: dict, out: list, stats: dict) -> int:
-    """Предупреждение о шапках с повторенными полями; каждая такая — проблема зеркала."""
+    """Предупреждение о подозрительных шапках; каждая такая — проблема зеркала."""
     if not os.path.isdir(src["path"]):
         return 0
-    bad = duplicate_head_files(src["path"])
+    bad = odd_head_files(src["path"])
     if not bad:
         return 0
-    out.append(f"- ⚠️ **ШАПКА С ПОВТОРОМ ПОЛЯ: {len(bad)}** — доверие такого источника не "
-               "объявлено; проверьте заголовок страницы и перезапишите файл "
+    out.append(f"- ⚠️ **ШАПКА С ПОВТОРОМ ПОЛЯ ИЛИ ПОДЛОГОМ: {len(bad)}** — доверие такого источника "
+               "не объявлено; проверьте заголовок страницы и перезапишите файл "
                "(`sync:web --force`, у остальных зеркал — `--force` их команды):")
-    for rel, keys in bad[:20]:
-        out.append(f"  - `{rel}`: {', '.join(keys)}")
+    for rel, codes in bad[:20]:
+        out.append(f"  - `{rel}`: {', '.join(ODD_WHY[c] for c in codes)}")
     if len(bad) > 20:
         out.append(f"  - … ещё {len(bad) - 20}")
     out.append("")
@@ -607,7 +633,7 @@ def main() -> int:
             "- CASE → повторить синк: с 1.17.2 он сам выправляет регистр папок;",
             "- COLLISION → страницы с именами, различающимися только регистром/гомоглифами:",
             "  переименовать зеркало и прогнать `kb_fix.py --links`;",
-            "- ШАПКА С ПОВТОРОМ ПОЛЯ → файл записан до правки заголовков: обычный синк держит",
+            "- ШАПКА С ПОВТОРОМ ПОЛЯ ИЛИ ПОДЛОГОМ → файл записан до правки заголовков: обычный синк держит",
             "  неизменную страницу из кэша (до недели), поэтому перезапишите её `sync:web --force`",
             "  (у остальных зеркал — `--force` своей команды) или дождитесь недельного обновления.", ""]
     report = "\n".join(out)

@@ -52,7 +52,7 @@ does not hand out its credentials. Check a token: `python3 .aurora/scripts/jira_
 
 | Command | Finds |
 |---|---|
-| `sync:audit` | `MISSING`, `ORPHAN`, `MOVED`, `COLLISION`, stale state, foreign files, headers with a repeated field |
+| `sync:audit` | `MISSING`, `ORPHAN`, `MOVED`, `COLLISION`, stale state, foreign files, headers with a repeated field or a forged `trusted` |
 | `sync:diff` | drift — a source changed after the knowledge was built on it |
 | `sync:jira-status` | issues closed while the requirement is not; work without requirements; links by mention |
 | `kit:remap-sources`, `kb:repair --gone-sources` | a page moved: cards' `source:` follows it by `page_id` or document code |
