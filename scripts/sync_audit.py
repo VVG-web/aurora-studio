@@ -18,8 +18,8 @@ wiki (дерево страниц с номерами) или board (плоск�
   STALE       — состояние синка старше N дней (по умолчанию 14)
   ШАПКА С ПОВТОРОМ ПОЛЯ ИЛИ ПОДЛОГОМ — поле записано дважды, в значении знак конца строки,
                 `trusted` или отметка веб-зеркала в зеркале, которое их не пишет, шапка не
-                закрыта в пределах потолка чтения или оборвана подложной чертой (след
-                подделки через заголовок)
+                закрыта в пределах потолка чтения, оборвана подложной чертой или у заголовка нет
+                закрывающей кавычки (след подделки через заголовок)
 
 Запуск из корня проекта:
   python3 .aurora/scripts/sync_audit.py
@@ -44,7 +44,7 @@ from datetime import date, datetime
 
 import sources_registry as R
 from aurora_common import (KB_ROOT, TRUSTED, card_sources, file_head, frontmatter, git_guard,
-                           head_dupes, head_odd, split_frontmatter, walk_md, with_fields)
+                           head_dupes, head_odd, head_pairs, split_frontmatter, walk_md, with_fields)
 from sources_core import (ASSET_DIR_RE, SERVICE_RE, cited_by_cards,  # noqa: E402
                           is_promoted_document, nfc)
 
@@ -344,7 +344,9 @@ def odd_head_files(root: str) -> list:
             continue
         # open/split — шапка не закрыта в пределах потолка или оборвана подложной чертой:
         # читалка доверия (`declared_trust`) такому файлу не верит, и мы его называем.
-        codes = ([state] if state in ("open", "split") else []) + head_odd(head or "")
+        if state == "open" and not any(k in MIRROR_FIELDS for k, _v in head_pairs(head or "")):
+            continue          # обычный документ с `---` в начале: полей зеркала нет, обвинять не в чем
+        codes = ([state] if state in ("open", "split", "quote") else []) + head_odd(head or "")
         if codes:
             bad.append((rel, codes))
     return bad
@@ -353,7 +355,12 @@ def odd_head_files(root: str) -> list:
 ODD_WHY = {"dup": "поле записано дважды", "break": "в значении знак конца строки",
            "trusted": "`trusted` или отметка веб-зеркала в зеркале, которое их не пишет",
            "open": "шапка не закрыта в пределах потолка чтения (заполнение)",
-           "split": "шапку обрывает подложная черта в заголовке"}
+           "split": "шапку обрывает подложная черта в заголовке",
+           "quote": "в заголовке нет закрывающей кавычки (его разорвал перевод строки)"}
+
+# Поля, по которым файл узнаётся как зеркало (веб, Confluence, Jira): без них файл с незакрытой
+# шапкой — обычный документ, а не подделка.
+MIRROR_FIELDS = ("source_kind", "trusted", "page_id", "key")
 
 
 def audit_heads(src: dict, out: list, stats: dict) -> int:

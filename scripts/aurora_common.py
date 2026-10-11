@@ -514,15 +514,30 @@ def head_lines(head: str) -> list:
     return re.split(r"\r\n|\r|\n", head or "")
 
 
+# Незакрытая кавычка в `title:` / `breadcrumbs:`. Писатели зеркал (`web_export.card_text`,
+# `confluence_export.render_front_matter`, `jira_export.render`) пишут эти поля в двойных
+# кавычках, заменяя `"` внутри значения на `'`: честная строка кавычку закрывает. Перевод
+# строки внутри заголовка рвёт строку, и оставшаяся без закрывающей кавычки `title:` в шапке —
+# след подделки; кавычку подделать нельзя, она стоит за значением.
+HEAD_OPEN_QUOTE_RE = re.compile(r'^(?:title|breadcrumbs):[ \t]*"[^"]*$')
+
+
+def head_broken(head: str) -> bool:
+    """Шапка рвётся посреди кавычек: значение поля `title`/`breadcrumbs` не закрыто на своей строке."""
+    return any(HEAD_OPEN_QUOTE_RE.match(line) for line in head_lines(head))
+
+
 def frontmatter(text: str, unique: bool = False) -> dict:
     """Плоские поля шапки. Значения очищены от кавычек; списки остаются строкой.
 
     `unique=True` — для читалок доверия (ключ и статус задачи, `page_id` корня): поле,
     записанное в шапке больше одного раза, выбрасывается, а не «побеждает последним».
-    Повтор — след подделки через значение соседнего поля, и верить ему нельзя.
+    Повтор — след подделки через значение соседнего поля, и верить ему нельзя. Шапка с
+    незакрытой кавычкой заголовка (`head_broken`) не читается совсем: подложная черта в
+    заголовке прежнего файла оставляла настоящие поля ниже неё, и дублей поля не было.
     """
     head, _ = split_frontmatter(text)
-    if head is None:
+    if head is None or (unique and head_broken(head)):
         return {}
     fm, seen = {}, {}
     for line in head_lines(head):
@@ -678,9 +693,12 @@ def file_head(path: str) -> tuple:
     Состояния: `ok`; `none` — шапки нет; `open` — файл начался с `---`, но закрывающей черты
     нет в пределах потолка `head_text` (честная шапка зеркала короче килобайта, такой файл
     подделан заполнением); `split` — шапка называет себя веб-зеркалом, а сразу за чертой идут
-    ещё поля (черта подложена в заголовке прежнего файла, настоящие поля остались ниже). Один
-    разбор на читалку доверия (`kb_trust.declared_trust`) и обнаружение (`sync_audit`):
-    раньше они читали разные окна, и заполнитель шапки прятал подделку от обоих.
+    ещё поля (черта подложена в заголовке прежнего файла, настоящие поля остались ниже);
+    `quote` — у `title`/`breadcrumbs` нет закрывающей кавычки (`head_broken`): заголовок прежнего
+    файла разорван переводом строки, а что стоит за подложной чертой — не важно (строка `x`,
+    `#`, пустая), поэтому признак не зависит от вида зеркала. Один разбор на читалку доверия
+    (`kb_trust.declared_trust`, `web_export`) и обнаружение (`sync_audit`): раньше они читали
+    разные окна, и заполнитель шапки прятал подделку от обоих.
     """
     text = head_text(path, tail=600)
     if not text.startswith("---"):
@@ -690,6 +708,8 @@ def file_head(path: str) -> tuple:
         return text[3:], "open"
     if any(k in WEB_SOURCE_KINDS for k in head_kinds(head_pairs(head))) and HEAD_SPLIT_RE.match(rest):
         return head, "split"
+    if head_broken(head):
+        return head, "quote"
     return head, "ok"
 
 

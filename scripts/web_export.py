@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
-from aurora_common import head_scalar, head_trust, head_value, split_frontmatter, utc_today
+from aurora_common import file_head, head_scalar, head_trust, head_value, utc_today
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
                           is_promoted_document, report_stale, verify)
 
@@ -544,10 +544,13 @@ def promote_documents(out_dir: str, apply: bool) -> int:
         if not name.endswith(".md"):
             continue
         text = open(os.path.join(out_dir, name), encoding="utf-8", errors="ignore").read()
-        head = split_frontmatter(text)[0] or ""
         # Доверие — поле шапки, а не подстрока в ней: заголовок `Отзывы, trusted: true` в одну
-        # строку иначе делал доверенными расшифровки всех вложений чужой страницы.
-        trusted = head_flag(head)
+        # строку иначе делал доверенными расшифровки всех вложений чужой страницы. Шапку
+        # читаем тем же `file_head`, что и `kb:trust`: оборванная или незакрытая шапка
+        # (подложная черта в заголовке прежнего файла) доверия не даёт.
+        head, state = file_head(os.path.join(out_dir, name))
+        head = head or ""
+        trusted = state == "ok" and head_flag(head)
         page_url = (head_scalar(head, "url") or "").split(" ")[0]
         for m in re.finditer(rf"\({re.escape(ASSET_DIR)}/([^)]+)\)", text):
             owner.setdefault(m.group(1), (trusted, page_url))
@@ -571,11 +574,13 @@ def promote_documents(out_dir: str, apply: bool) -> int:
             family = VERSION_TAIL_RE.sub("", stem)
             newer = sorted(f for f in owner
                            if VERSION_TAIL_RE.sub("", os.path.splitext(f)[0]) == family)
-            prev = open(dest, encoding="utf-8", errors="ignore").read(4000) \
-                if os.path.isfile(dest) else ""
-            prev_head = split_frontmatter(prev)[0] or ""
-            was_trusted = head_trust(prev_head)
-            was_url = head_scalar(prev_head, "url")
+            prev_head, prev_state = file_head(dest) if os.path.isfile(dest) else (None, "none")
+            prev_head = prev_head or ""
+            # Прежнюю расшифровку, шапка которой оборвана или не закрыта, не «отмываем» в
+            # доверенную: решение о доверии из неё не читается — False, а не None.
+            torn = prev_state in ("open", "split", "quote")
+            was_trusted = False if torn else head_trust(prev_head)
+            was_url = None if torn else head_scalar(prev_head, "url")
             if newer:
                 trusted, page_url = owner[newer[-1]]
                 superseded = os.path.splitext(newer[-1])[0] + ".md"

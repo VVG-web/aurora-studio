@@ -541,7 +541,7 @@ def check_mirror_heads() -> list:
     out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
     if found:
         shown = ", ".join(found[:3]) + (" …" if len(found) > 3 else "")
-        out.append(f"в зеркалах Sources/ шапок с повтором поля или подложным trusted: {len(found)} "
+        out.append(f"в зеркалах Sources/ шапок с повтором поля, подложным trusted, незакрытой или оборванной шапкой: {len(found)} "
                    f"({shown}) — доверию таких файлов не верим; подробно: `sync:audit`, лечится "
                    "перезаписью файла: `--force` команды синка зеркала")
     return out

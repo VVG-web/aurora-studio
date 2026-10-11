@@ -34,11 +34,13 @@ not break it), and trust is believed only from a file that names itself a web mi
 `web-document`) — Confluence and Jira mirrors have no `trusted` field, so there it is foreign text. These count as a forgery, that
 is "do not trust": `trusted` written twice, `source_kind` written twice with one web value, a web-mirror
 mark next to `page_id` or `key` (what Confluence and Jira write), a header with no closing line within the
-read ceiling (262144 characters) and a header cut short by a forged line inside a title. The header is read
+read ceiling (262144 characters) a header cut short by a forged line inside a title, and a title with no closing quote (mirror writers always
+close it, while a line break in the title of an older file tore it off — whatever stands behind the forged line, such a file is
+not read). The header is read
 whole, not through a window of a few lines, so padding cannot hide the real field; the sync root's `page_id` and a Jira task's key, status, parent and type are read the
 same way: a repeated field is a forgery and its value is not believed. Mirrors already written are not rewritten, but
 `sync:audit` and `kit:doctor` name such files ("header with a repeated field or a forgery": a repeat, a line-break
-character in a value, `trusted` outside a web mirror, an unclosed or cut-short header) — rewrite them with `--force` of the mirror's sync command.
+character in a value, `trusted` outside a web mirror, an unclosed or cut-short header, an unclosed title quote; an ordinary document that merely starts with `---` and has no mirror fields is not named) — rewrite them with `--force` of the mirror's sync command.
 
 Confluence Data Center (`confluence-dc`), Jira Data Center (`jira-dc`) and `web` ship with the kit and are always
 installed. Everything else — Notion, SharePoint, Confluence Cloud, YouTrack, GitLab Issues — is added as a folder in

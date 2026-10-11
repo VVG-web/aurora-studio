@@ -49,7 +49,7 @@ from aurora_common import (OWN_LIFECYCLE, card_type, is_meeting, branch_kind, LE
                            is_placeholder, split_frontmatter,
                            walk_md, with_fields)
 
-from aurora_common import TODAY, file_head, head_pairs, head_trust  # noqa: E402 — дата в UTC, одна на движок
+from aurora_common import TODAY, file_head, head_pairs, head_text, head_trust  # noqa: E402 — дата в UTC, одна на движок
 TABLE = os.path.join("AuroraKnowledgeDB", "meta", "trace", "trace.json")
 KB = "AuroraKnowledgeDB"
 FOOTER = "## История изменений"
@@ -156,10 +156,12 @@ def trusted_roots(root: str, roots: list) -> list:
         head = os.path.join(full, "index.md") if os.path.isdir(full) else full
         if not head.endswith(".md") or not os.path.isfile(head):
             continue
-        with open(head, encoding="utf-8", errors="ignore") as f:
-            # Повтор поля в шапке (заголовок страницы с переводом строки объявил свой
-            # `page_id`) — подделка: такому корню не верим, а не берём последнее значение.
-            fm = frontmatter(f.read(4000), unique=True)
+        # Повтор поля в шапке (заголовок страницы с переводом строки объявил свой `page_id`)
+        # или незакрытая кавычка заголовка — подделка: такому корню не верим, а не берём
+        # последнее значение. Шапку читаем целиком (`head_text`): у корня с длинными
+        # `ry_defines`/`ry_links` она не умещалась в окно 4000 знаков, и корень с галочкой
+        # молча не находился.
+        fm = frontmatter(head_text(head), unique=True)
         pid = str(fm.get("page_id") or "").strip().strip("\"'")
         if pid in want:
             out.append((WIKI + name + ("/" if os.path.isdir(full) else ""), want.pop(pid)))
@@ -215,14 +217,15 @@ def declared_trust(src: str):
     Разбор один на все читалки доверия (`aurora_common.head_trust`): первая настоящая
     строка поля, без подстрок, и только у файла, назвавшегося веб-зеркалом. Подделка
     отвечает False: `trusted` дважды, шапка без закрывающей черты в пределах потолка или
-    оборванная подложной чертой (заполнитель строк прятал настоящее поле за окном чтения).
+    оборванная подложной чертой (заполнитель строк прятал настоящее поле за окном чтения),
+    заголовок без закрывающей кавычки (что бы ни стояло за подложной чертой).
     """
     if not os.path.isfile(src):
         return None
     head, state = file_head(src)
     if state == "none":
         return None
-    if state == "split":
+    if state in ("split", "quote"):
         return False
     if state == "open":
         # Шапка не закрылась: не знаем, что в ней. Файл, где уже есть отметка веб-зеркала

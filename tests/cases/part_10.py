@@ -2200,7 +2200,7 @@ def test_trust_header_is_read_whole_and_padding_or_foreign_marks_do_not_hide_for
     assert "dup" in odd["pad8.md"] and "dup" in odd["pad200.md"], odd
     assert odd["open.md"][0] == "open" and odd["split.md"][0] == "split", odd
     assert "dup" in odd["kinds.md"] and "ok.md" not in odd, odd
-    assert "open" in odd["hr.md"], odd
+    assert "hr.md" not in odd, odd      # документ с `---` без полей зеркала — не подделка
     dup = dict(SA.duplicate_head_files(str(web)))
     assert "pad200.md" in dup and "ok.md" not in dup, dup
 
@@ -2227,3 +2227,88 @@ def test_trust_header_is_read_whole_and_padding_or_foreign_marks_do_not_hide_for
                                   'status: "Done"\n---\n\nТ.\n', encoding="utf-8")
     st = T.task_status(str(tmp / "kb2"))
     assert st == {"AB-1": "Done"} and "AB-9" not in st, st
+
+
+@test
+def test_trust_header_forgery_does_not_depend_on_what_follows_the_forged_rule(tmp: Path):
+    """Доработка 3 BL-SEC-13: подложная черта в заголовке — по незакрытой кавычке, а не по строке за ней.
+
+    Реальные поля остаются ниже подложной черты, а за ней атакующий ставит что угодно (`x`, `#`,
+    пустую строку): прежний признак ждал сразу `ключ:`. Читалка доверия `web_export.promote_documents`
+    не знала состояний шапки и отмывала такую страницу в расшифровку `trusted: true`. Корень
+    Confluence читался окном в 4000 знаков. Тест падает на прежнем коде.
+    """
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    T = importlib.import_module("kb_trust")
+    SA = importlib.import_module("sync_audit")
+    W = importlib.import_module("web_export")
+    web = tmp / "Sources" / "Web"
+    web.mkdir(parents=True)
+    real_tail = 'url: https://x\ntrusted: false\nsource_kind: web\n---\n\nТекст.\n'
+    for name, after in (("x.md", "x"), ("hash.md", "#"), ("blank.md", ""), ("key.md", "url: y")):
+        (web / name).write_text(
+            f'---\ntitle: "Блог\ntrusted: true\nsource_kind: web\n---\n{after}"\n{real_tail}',
+            encoding="utf-8")
+    (web / "ok.md").write_text('---\ntitle: "Закон"\nurl: https://x\ntrusted: true\nsource_kind: web\n---\n\nТ.\n',
+                              encoding="utf-8")
+    # без подложного source_kind: поля веб-зеркала настоящие, но ниже подложной черты
+    (web / "nokind.md").write_text(f'---\ntitle: "Б\ntrusted: true\n---\nx"\n{real_tail}', encoding="utf-8")
+    for n in ("x.md", "hash.md", "blank.md", "key.md", "nokind.md"):
+        assert AC.file_head(str(web / n))[1] in ("quote", "split"), (n, AC.file_head(str(web / n)))
+        assert T.declared_trust(str(web / n)) is not True, n
+    for n in ("x.md", "hash.md", "blank.md"):
+        assert T.declared_trust(str(web / n)) is False, n
+    assert AC.file_head(str(web / "ok.md"))[1] == "ok" and T.declared_trust(str(web / "ok.md")) is True
+    odd = dict(SA.odd_head_files(str(web)))
+    assert all(n in odd for n in ("x.md", "hash.md", "blank.md", "key.md", "nokind.md")), odd
+    assert "ok.md" not in odd, odd
+
+    # Jira старого формата: подложный status при настоящем статусе ниже черты
+    kb = tmp / "kb"
+    jira = kb / "Sources" / "JIRA"
+    jira.mkdir(parents=True)
+    for n, after in (("AB-1", "x"), ("AB-2", "#"), ("AB-3", "")):
+        (jira / f"{n}.md").write_text(
+            f'---\nkey: "{n}"\ntitle: "Hostile\nstatus: Done\n---\n{after}"\ntype: "Task"\nstatus: "Open"\n---\n\nТ.\n',
+            encoding="utf-8")
+    (jira / "AB-4.md").write_text('---\nkey: "AB-4"\ntitle: "Честная"\nstatus: "Done"\n---\n\nТ.\n',
+                                  encoding="utf-8")
+    assert T.task_status(str(kb)) == {"AB-4": "Done"}, T.task_status(str(kb))
+    assert AC.frontmatter((jira / "AB-4.md").read_text(encoding="utf-8"), unique=True)["status"] == "Done"
+    assert set(dict(SA.odd_head_files(str(jira)))) == {"AB-1.md", "AB-2.md", "AB-3.md"}
+
+    # подъём вложений: оборванная страница не делает расшифровку доверенной ни сейчас, ни по прежней шапке
+    out = tmp / "Sources" / "Web3"
+    (out / W.ASSET_DIR).mkdir(parents=True)
+    (out / "Блог-aaaaaaaa.md").write_text(
+        '---\ntitle: "Blog\ntrusted: true\nsource_kind: web\n---"\nurl: https://x\ntrusted: false\n'
+        'source_kind: web\n---\n\n[Закон](_files/law-11111111.pdf)\n', encoding="utf-8")
+    (out / W.ASSET_DIR / "law-11111111.pdf").write_bytes(b"%PDF-1.4")
+    (out / W.ASSET_DIR / "law-11111111.md").write_text("Пункт 1.\n", encoding="utf-8")
+    assert W.promote_documents(str(out), apply=True) == 1
+    law = out / "law-11111111.md"
+    assert "\ntrusted: false\n" in law.read_text(encoding="utf-8")
+    assert T.declared_trust(str(law)) is False
+    # прежняя расшифровка с оборванной шапкой: страницы нет, решение не наследуется
+    (out / "Блог-aaaaaaaa.md").unlink()
+    law.write_text('---\ntitle: "Law\ntrusted: true\nsource_kind: web-document\n---"\nurl: https://x\n'
+                   'trusted: false\nsource_kind: web-document\n---\n\nТ.\n', encoding="utf-8")
+    W.promote_documents(str(out), apply=True)
+    assert "\ntrusted: false\n" in law.read_text(encoding="utf-8").split("\n---\n", 1)[0] + "\n"
+    assert T.declared_trust(str(law)) is False
+
+    # корень Confluence с длинной шапкой читается целиком, а с подложной чертой — нет
+    kbc = tmp / "kbc"
+    conf = kbc / "Sources" / "Confluence"
+    conf.mkdir(parents=True)
+    defines = ", ".join(f"Определение{i}" for i in range(400))
+    assert len(defines) > 4000
+    (conf / "Root.md").write_text(f'---\npage_id: 77\ntitle: "Корень"\nry_defines: [{defines}]\n---\n\nТ.\n',
+                                  encoding="utf-8")
+    (conf / "Fake.md").write_text('---\npage_id: 88\ntitle: "Корень\npage_id: 99\n---\nx"\n'
+                                  'space: S\n---\n\nТ.\n', encoding="utf-8")
+    roots = T.trusted_roots(str(kbc), [{"page_id": "77", "title": "Корень", "trusted": True},
+                                       {"page_id": "99", "title": "Подмена", "trusted": True}])
+    assert roots == [("Sources/Confluence/Root.md", "Корень")], roots
