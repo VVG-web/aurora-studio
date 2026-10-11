@@ -192,7 +192,7 @@ hand out its credentials, while sync scripts go to Confluence and Jira directly 
 | `JIRA_PERSONAL_TOKEN` (or `JIRA_PAT`) | a token for Jira Server / Data Center |
 | `JIRA_USER` + `JIRA_PASSWORD` | a fallback |
 | `AURORA_CONFLUENCE_SERVER`, `AURORA_JIRA_SERVER` | optional: the server the key belongs to; another `base_url` in the shared config never gets the key (without the line the engine remembers the server after the first successful reply) |
-| `AURORA_WEB_TOKEN_HOSTS` | optional: the hosts the website crawl token may go to, comma-separated |
+| `AURORA_WEB_TOKEN_HOSTS` | optional: the hosts the website crawl token may go to, comma-separated (without it the engine remembers the hosts where the token worked in the first run) |
 | `AURORA_ALLOW_HTTP=1` | a server on `http://` in a closed network: otherwise the key is not sent over plain http (localhost excepted) |
 
 Check that a token is accepted: `python3 .aurora/scripts/jira_export.py --limit 1`.

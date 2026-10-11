@@ -941,7 +941,8 @@ def cred_merge(project, given: dict | None, remote: str | None = None,
 
     `server` — новая настройка этого сервера (`server_view`): сохранённый ключ принадлежит
     сохранённому серверу, а при смене адреса не переходит на новый — ключ вводят заново
-    (замечание `required`), иначе подмена адреса в форме унесла бы старый токен (BL-SEC-05)."""
+    (замечание `required`), иначе подмена адреса в форме унесла бы старый токен (BL-SEC-05).
+    Ключ, вписанный человеком в форме, всегда остаётся: даже равный сохранённому."""
     old = cred_load(project, remote)
     g = given if isinstance(given, dict) else {}
     c = dict(old)
@@ -950,10 +951,13 @@ def cred_merge(project, given: dict | None, remote: str | None = None,
     c["auth"] = auth if auth in AUTHS else "system"
     if "user" in g:
         c["user"] = " ".join(str(g.get("user") or "").split())
+    carried = True          # ключ перенесён с прежнего сервера, а не вписан человеком сейчас
     if "secret" in g:
         sec = str(g.get("secret") or "")
-        c["secret"] = old["secret"] if sec == MASK else sec.strip()
-    if server is not None and c["secret"] and c["secret"] == old["secret"]:
+        carried = sec == MASK
+        c["secret"] = old["secret"] if carried else sec.strip()
+    # Вписанное побеждает: тот же токен на новом адресе (переезд сервера) — выбор человека.
+    if server is not None and carried and c["secret"]:
         saved = load_saved(project)
         if saved is not None \
                 and _servers(server, c) != _servers(server_view(saved, remote), old):

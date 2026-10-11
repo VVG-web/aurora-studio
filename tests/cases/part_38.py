@@ -1412,8 +1412,65 @@ def test_saved_secrets_do_not_follow_a_changed_server_on_save(tmp: Path):
         assert GS.cred_load(str(proj))["secret"] == "SAVED-TOKEN", "прежнее сохранённое не тронуто"
         r = GS.save(str(proj), s2, {"auth": "token", "user": "u", "secret": "NEW-TOKEN"})
         assert r.get("ok") and GS.cred_load(str(proj))["secret"] == "NEW-TOKEN", r
+        # человек вписал тот же ключ на новом адресе (переезд сервера): вписанное побеждает
+        r = GS.save(str(proj), {**s1, "instance": "https://git2.example.com"},
+                    {"auth": "token", "user": "u", "secret": "NEW-TOKEN"})
+        assert r.get("ok") and GS.cred_load(str(proj))["secret"] == "NEW-TOKEN", r
     finally:
         GS.cred_file = real
+
+
+@test
+def test_web_token_follows_the_hosts_where_it_first_worked(tmp: Path):
+    """Без строки `AURORA_WEB_TOKEN_HOSTS` токен обхода сайтов запоминает хосты первого
+    удачного прогона (`.aurora/state/trusted-hosts.json`): страница, добавленная в общий
+    конфиг позже на другом хосте, его не получает, а причина называет, что сделать."""
+    _path()
+    WE = importlib.import_module("web_export")
+    SC = importlib.import_module("sources_core")
+    proj = tmp / "p"
+    (proj / ".aurora").mkdir(parents=True)
+    sent = []
+    real_get, real_argv, cwd = WE._get, sys.argv, os.getcwd()
+    WE._get = lambda url, token="", timeout=0, headers=None, meta=None: (
+        sent.append((url, token)) or (b"<html><body>x</body></html>", "utf-8", ""))
+
+    def go(pages: list, env_lines: str = "") -> str:
+        (proj / "aurora.config.yaml").write_text(
+            "web:\n  pages:\n" + "".join(f"    - url: {p}\n      trusted: false\n" for p in pages),
+            encoding="utf-8")
+        (proj / ENV_LOCAL).write_text("WEB_PERSONAL_TOKEN=SECRET\n" + env_lines, encoding="utf-8")
+        sent.clear()
+        sys.argv = ["web_export.py", "--out", str(proj / "out")]
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            WE.main()
+        return buf.getvalue()
+
+    os.chdir(proj)
+    try:
+        go(["https://wiki.example.com/a", "https://docs.example.com/b"])
+        assert all(t == "SECRET" for _u, t in sent) and sent, sent        # первый прогон: оба хоста
+        assert SC.trusted_hosts("WEB") == ["docs.example.com", "wiki.example.com"]
+        # страницу добавили в общий список позже: токен ей не уходит, причина видна
+        out = go(["https://wiki.example.com/a", "https://new.example.org/c"])
+        got = dict(sent)
+        assert got["https://wiki.example.com/a"] == "SECRET" and got["https://new.example.org/c"] == "", sent
+        assert "чтобы разрешить новый адрес" in out and "AURORA_WEB_TOKEN_HOSTS" in out, out
+        # строка машины главнее запомненного: хост, которого нет в ней, токена не получает
+        go(["https://wiki.example.com/a", "https://docs.example.com/b"],
+           "AURORA_WEB_TOKEN_HOSTS=docs.example.com\n")
+        assert dict(sent) == {"https://wiki.example.com/a": "", "https://docs.example.com/b": "SECRET"}, sent
+        # проект без `.aurora/` ничего не запоминает (прежнее правило: хост своей страницы)
+        bare = tmp / "bare"
+        bare.mkdir()
+        SC.remember_hosts("WEB", ["x.example.com"], str(bare))
+        assert not (bare / ".aurora").exists() and SC.trusted_hosts("WEB", str(bare)) == []
+    finally:
+        os.chdir(cwd)
+        WE._get, sys.argv = real_get, real_argv
 
 
 @test

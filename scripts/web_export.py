@@ -40,7 +40,8 @@ import urllib.request
 from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
                            head_trust, head_value, safe_urlopen, same_origin, url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text, read_env,
-                          is_promoted_document, report_stale, verify)
+                          is_promoted_document, remember_hosts, report_stale, trusted_hosts,
+                          verify)
 
 DEFAULT_OUT = "Sources/Web"
 # Страница, которую сервер назвал неизменной (304), заново не качается и не разбирается.
@@ -226,8 +227,9 @@ def token_refusal(url: str, seed: str, token: str, hosts: list | None = None,
         return f"адрес {url.split('?', 1)[0]} вне стартовой страницы {seed}"
     o = url_origin(url)
     if hosts and (not o or o[1] not in hosts):
-        return (f"хост {o[1] if o else url} не в AURORA_WEB_TOKEN_HOSTS "
-                f"({', '.join(hosts)}) файла машины")
+        return (f"хост {o[1] if o else url} не среди хостов токена ({', '.join(hosts)}); чтобы "
+                "разрешить новый адрес, добавьте его в AURORA_WEB_TOKEN_HOSTS файла машины "
+                "(.env.aurora.local)")
     return cleartext_secret_problem(url, allow_cleartext(env))
 
 
@@ -680,7 +682,14 @@ def run(a) -> int:
     # разрешение http из файла иначе молча не действовали бы (в панели их кладёт child_env).
     env = read_env()
     token = env.get("WEB_PERSONAL_TOKEN", "") or env.get("WEB_PAT", "")
+    # Привязка токена к хостам: строка машины главнее; без неё — хосты, где токен уже сработал
+    # в первом прогоне (`.aurora/state/trusted-hosts.json`): страница, добавленная в общий
+    # конфиг позже на другом хосте, токен не получит (BL-SEC-05). Диалогов нет (ADR-026).
     hosts = token_hosts(env)
+    learn = bool(token and not hosts and not trusted_hosts("WEB"))
+    if token and not hosts:
+        hosts = trusted_hosts("WEB")
+    worked: set = set()
     mirror = WebMirror(a.out)
     os.makedirs(mirror.out, exist_ok=True)
     print(f"# Веб-страницы — выгрузка\n\nАдресов в списке: **{len(pages)}** · "
@@ -709,7 +718,12 @@ def run(a) -> int:
             if known and not cache_usable(known, mirror.out, trusted, seed, feed, today):
                 known = None
             meta: dict = {}
-            html, err = fetch(url, token_for(url, seed, token, hosts, env), known, meta)
+            sent = token_for(url, seed, token, hosts, env)
+            html, err = fetch(url, sent, known, meta)
+            if learn and sent and (not err or err == NOT_MODIFIED):
+                o = url_origin(url)
+                if o:
+                    worked.add(o[1])
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
                 unchanged += 1
@@ -802,6 +816,8 @@ def run(a) -> int:
         if queue:
             print(f"  … потолок {opt['max_pages']} страниц исчерпан, "
                   f"в очереди осталось {len(queue)}")
+    if learn and worked:
+        remember_hosts("WEB", worked)
     # Расшифровки скачанных документов поднимаем в корень зеркала: их текст — источник
     # знания наравне со страницей, а из `_files/` разбор его не увидит.
     converted = convert_documents(mirror.out, a.apply)

@@ -126,6 +126,27 @@ def trusted_origin(prefix: str, root: str = "") -> str:
     return got if isinstance(got, str) else ""
 
 
+def _store_trusted(prefix: str, value, root: str = "") -> None:
+    """Записать `value` под ключом `prefix` в файл доверенных серверов машины (вне git)."""
+    path = _trusted_path(root)
+    try:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[prefix] = value
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    except OSError:
+        pass            # не записалось — защиты чуть меньше, синк от этого не страдает
+
+
 def remember_origin(prefix: str, base: str, root: str = "") -> None:
     """Первый удачный ответ сервера: запомнить его адрес для ключа этого префикса, чтобы
     подмена `base_url` в общем конфиге потом не увела ключ. Без диалога: смену адреса
@@ -136,23 +157,29 @@ def remember_origin(prefix: str, base: str, root: str = "") -> None:
             or not os.path.isdir(os.path.join(root or ".", ".aurora")) \
             or trusted_origin(prefix, root):
         return
-    path = _trusted_path(root)
+    _store_trusted(prefix, f"{o[0]}://{o[1]}" + ("" if o[2] in (80, 443) else f":{o[2]}"), root)
+
+
+def trusted_hosts(prefix: str, root: str = "") -> list:
+    """Хосты, где ключ этого префикса уже сработал (токен обхода сайтов: несколько хостов)."""
     try:
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        data[prefix] = f"{o[0]}://{o[1]}" + ("" if o[2] in (80, 443) else f":{o[2]}")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + f".{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)
-    except OSError:
-        pass            # не записалось — защиты чуть меньше, синк от этого не страдает
+        with open(_trusted_path(root), encoding="utf-8") as f:
+            got = json.load(f).get(prefix, [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [h for h in got if isinstance(h, str)] if isinstance(got, list) else []
+
+
+def remember_hosts(prefix: str, hosts, root: str = "") -> None:
+    """Хосты, на которых ключ впервые сработал, — для токена обхода сайтов: хостов может быть
+    несколько, и они запоминаются один раз, целиком. Страница, добавленная в общий список
+    позже, на другом хосте токен не получит, пока человек не добавит хост строкой
+    `AURORA_WEB_TOKEN_HOSTS`. Проект без `.aurora/` не запоминается."""
+    hosts = sorted({str(h).lower() for h in hosts if h})
+    if not prefix or not hosts or trusted_hosts(prefix, root) \
+            or not os.path.isdir(os.path.join(root or ".", ".aurora")):
+        return
+    _store_trusted(prefix, hosts, root)
 
 
 def run_main(main) -> int:
