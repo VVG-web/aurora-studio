@@ -983,6 +983,7 @@ class _Hosts:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         self.seen = {"a": [], "b": []}
         self.to = ""
+        self.redirect_all = False       # сервер `a` на любой путь отвечает редиректом на `to`
         outer = self
 
         def make(name):
@@ -990,9 +991,9 @@ class _Hosts:
                 def do_GET(self):
                     outer.seen[name].append(
                         (self.path, {k.lower(): v for k, v in self.headers.items()}))
-                    if self.path in ("/go", "/same"):
+                    if self.path in ("/go", "/same") or (name == "a" and outer.redirect_all):
                         self.send_response(302)
-                        self.send_header("Location", outer.to if self.path == "/go" else "/ok")
+                        self.send_header("Location", outer.to if self.path != "/same" else "/ok")
                         self.send_header("Content-Length", "0")
                         self.end_headers()
                         return
@@ -1050,7 +1051,7 @@ def test_redirect_to_another_host_does_not_carry_the_secret_headers(tmp: Path):
         assert h.seen["a"][-1][1].get("authorization") == "Bearer SECRET"
         # то же через REST-клиент Atlassian и транспорт шлюзов моделей
         h.seen["b"].clear()
-        api = SC.RestApi(h.url("a"), "Bearer SECRET")
+        api = SC.RestApi(h.url("a"), "Bearer SECRET", str(tmp))
         assert api.get("/go") == {"ok": True}
         assert api.fetch("/go") == b'{"ok": true}'
         status, _body, err, _dt = AG.http_json(h.url("a", "/go"), None, "GW-KEY", 10)
@@ -1069,7 +1070,7 @@ def test_rest_api_refuses_foreign_absolute_urls_and_cleartext(tmp: Path):
     SC = importlib.import_module("sources_core")
     h = _Hosts()
     try:
-        api = SC.RestApi(h.url("a"), "Bearer SECRET")
+        api = SC.RestApi(h.url("a"), "Bearer SECRET", str(tmp))
         for call in (lambda: api.get(h.url("b", "/x")), lambda: api.fetch(h.url("b", "/x")),
                      lambda: api.send("POST", h.url("b", "/x"), {})):
             try:
@@ -1092,14 +1093,15 @@ def test_rest_api_refuses_foreign_absolute_urls_and_cleartext(tmp: Path):
         assert SC.RestApi("http://wiki.example.com", "Bearer S", str(tmp))._url("/a") \
             == "http://wiki.example.com/a", "явное разрешение человека должно действовать"
         # без ключа запрет не нужен: уходить нечему
-        assert SC.RestApi("http://wiki.example.com", "")._url("/a") == "http://wiki.example.com/a"
+        assert SC.RestApi("http://wiki.example.com", "", str(tmp))._url("/a") \
+            == "http://wiki.example.com/a"
     finally:
         h.close()
 
 
 @test
 def test_atlassian_server_pin_rejects_a_changed_config_address(tmp: Path):
-    """`<PREFIX>_SERVER` в файле машины привязывает ключ к серверу: адрес в общем
+    """`AURORA_<PREFIX>_SERVER` в файле машины привязывает ключ к серверу: адрес в общем
     `aurora.config.yaml`, смененный в PR, ключ не получает — и сеть не затрагивается."""
     _path()
     CE = importlib.import_module("confluence_export")
@@ -1107,18 +1109,18 @@ def test_atlassian_server_pin_rejects_a_changed_config_address(tmp: Path):
     SC = importlib.import_module("sources_core")
     h = _Hosts()
     try:
-        (tmp / ".env.aurora.local").write_text(f"CONFLUENCE_SERVER={h.url('a')}\n"
-                                               f"JIRA_SERVER={h.url('a')}\n", encoding="utf-8")
+        (tmp / ".env.aurora.local").write_text(f"AURORA_CONFLUENCE_SERVER={h.url('a')}\n"
+                                               f"AURORA_JIRA_SERVER={h.url('a')}\n", encoding="utf-8")
         try:
             CE.Api(h.url("b"), "Bearer SECRET", str(tmp)).get("/rest/api/content")
             raise AssertionError("ключ ушёл на подменённый адрес")
         except SC.UnsafeTarget as e:
-            assert "CONFLUENCE_SERVER" in str(e)
+            assert "AURORA_CONFLUENCE_SERVER" in str(e)
         try:
             JE.Api(h.url("b"), "Bearer SECRET", str(tmp)).get("/rest/api/2/myself")
             raise AssertionError("ключ Jira ушёл на подменённый адрес")
         except SC.UnsafeTarget as e:
-            assert "JIRA_SERVER" in str(e)
+            assert "AURORA_JIRA_SERVER" in str(e)
         assert h.seen["b"] == []
         assert CE.Api(h.url("a"), "Bearer SECRET", str(tmp)).get("/ok") == {"ok": True}
         assert h.seen["a"][-1][1].get("authorization") == "Bearer SECRET"
@@ -1180,3 +1182,234 @@ def test_models_list_does_not_send_a_saved_key_to_another_address(tmp: Path):
         assert ck.models_list({"id": "p2", "url": "http://127.0.0.1:9090/v1", "key": ""}).get("models")
     finally:
         AG.models_of, ck.models_data = real_models_of, real_data
+
+
+@test
+def test_atlassian_server_is_remembered_and_a_changed_address_is_refused(tmp: Path):
+    """Без привязки в файле машины первый удачный ответ запоминает сервер (вне git), и другой
+    `base_url` в общем конфиге ключа уже не получает; строка `AURORA_<PREFIX>_SERVER` — принятие
+    нового адреса. Свой компьютер не запоминается, проект без `.aurora/` — тоже."""
+    _path()
+    SC = importlib.import_module("sources_core")
+    JE = importlib.import_module("jira_export")
+    (tmp / ".aurora").mkdir()
+    root = str(tmp)
+    # проект без запомненного сервера: любой https-адрес пока допустим
+    assert SC.RestApi("https://jira.example.com", "Bearer S", root)._url("/a") \
+        == "https://jira.example.com/a"
+    SC.remember_origin("JIRA", "https://jira.example.com", root)
+    assert SC.trusted_origin("JIRA", root) == "https://jira.example.com"
+    SC.remember_origin("JIRA", "https://other.example.org", root)       # первое запоминание не меняется
+    assert SC.trusted_origin("JIRA", root) == "https://jira.example.com"
+    state = json.loads((tmp / ".aurora" / "state" / "trusted-hosts.json").read_text(encoding="utf-8"))
+    assert state == {"JIRA": "https://jira.example.com"}, state
+    # подмена адреса — отказ с причиной и подсказкой, как принять
+    try:
+        JE.Api("https://jira-evil.example.net", "Bearer S", root)._url("/rest/api/2/myself")
+        raise AssertionError("ключ ушёл на подменённый адрес")
+    except SC.UnsafeTarget as e:
+        assert "AURORA_JIRA_SERVER=https://jira-evil.example.net" in str(e), str(e)
+    # тот же сервер и обновление http → https проходят; другой префикс (Confluence) не затронут
+    assert JE.Api("https://jira.example.com/", "Bearer S", root)._url("/a") == "https://jira.example.com/a"
+    assert SC.RestApi("https://x.example.net", "Bearer S", root)._url("/a") == "https://x.example.net/a"
+    # без ключа уходить нечему
+    assert JE.Api("https://jira-evil.example.net", "", root)._url("/a") == "https://jira-evil.example.net/a"
+    # человек принял переезд строкой в файле машины
+    (tmp / ".env.aurora.local").write_text("AURORA_JIRA_SERVER=https://jira-evil.example.net\n",
+                                           encoding="utf-8")
+    assert JE.Api("https://jira-evil.example.net", "Bearer S", root)._url("/a") \
+        == "https://jira-evil.example.net/a"
+    # свой компьютер и проект без .aurora/ не запоминаются
+    other = tmp / "other"
+    other.mkdir()
+    SC.remember_origin("JIRA", "http://127.0.0.1:9", str(other))
+    SC.remember_origin("JIRA", "https://jira.example.com", str(other))
+    assert not (other / ".aurora").exists()
+    (other / ".aurora").mkdir()
+    SC.remember_origin("JIRA", "http://127.0.0.1:9", str(other))
+    assert SC.trusted_origin("JIRA", str(other)) == ""
+    # настоящий ответ сервера запоминает его (свой компьютер для проверки выдан за чужой)
+    h = _Hosts()
+    real = SC.is_loopback_host
+    try:
+        third = tmp / "third"
+        (third / ".aurora").mkdir(parents=True)
+        (third / ".env.aurora.local").write_text("AURORA_ALLOW_HTTP=1\n", encoding="utf-8")
+        SC.is_loopback_host = lambda host: False
+        api = JE.Api(h.url("a"), "Bearer S", str(third))
+        assert api.get("/ok") == {"ok": True}
+        assert SC.trusted_origin("JIRA", str(third)) == h.url("a")
+        try:
+            JE.Api(h.url("b"), "Bearer S", str(third)).get("/ok")
+            raise AssertionError("ключ ушёл на другой сервер")
+        except SC.UnsafeTarget as e:
+            assert "изменился" in str(e), str(e)
+        assert h.seen["b"] == []
+    finally:
+        SC.is_loopback_host = real
+        h.close()
+
+
+@test
+def test_watchdog_probe_sends_no_key_to_a_foreign_host_or_cleartext(tmp: Path):
+    """Сторож зависаний проверяет связь с Jira/Confluence тем же клиентом: редирект на другой
+    хост уходит без Authorization, а открытый http (чужая машина) не опрашивается вовсе."""
+    _path()
+    WD = importlib.import_module("watchdog")
+    AG = importlib.import_module("agent_core")
+    h = _Hosts()
+    MC = importlib.import_module("model_config")
+    real = (AG.models_of, AG.kit_env, MC.load)
+    # Модели и настройка кита сторожу в тесте не нужны: к настоящим шлюзам и файлам кита не ходим.
+    AG.models_of, AG.kit_env = (lambda b, timeout=20: {}), (lambda *a, **k: {})
+    MC.load = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("тест"))
+    try:
+        h.to = h.url("b", "/landing")
+        (tmp / "aurora.config.yaml").write_text(
+            f'atlassian:\n  jira:\n    base_url: "{h.url("a")}"\n    project_key: "P"\n',
+            encoding="utf-8")
+        (tmp / ".env.aurora.local").write_text("JIRA_PAT=FAKE-JIRA-TOKEN\n", encoding="utf-8")
+        import atlassian_ops as AO
+        # живой сервер: связь есть, ключ ушёл только на свой адрес
+        got = WD.probe(str(tmp))
+        assert got == {"ok": True, "down": []}, got
+        assert h.seen["a"][-1][1].get("authorization") == "Bearer FAKE-JIRA-TOKEN"
+        # сервер отвечает редиректом на чужой хост: туда ключ не доходит
+        h.redirect_all = True
+        h.seen["a"].clear()
+        got = WD.probe(str(tmp))
+        assert got == {"ok": True, "down": []}, got
+        assert h.seen["a"][-1][1].get("authorization") == "Bearer FAKE-JIRA-TOKEN"
+        assert h.seen["b"] and all("authorization" not in hd for _p, hd in h.seen["b"]), h.seen["b"]
+        # открытый http на чужой машине: запроса нет, это не «связь упала»
+        (tmp / "aurora.config.yaml").write_text(
+            'atlassian:\n  jira:\n    base_url: "http://jira.invalid"\n    project_key: "P"\n',
+            encoding="utf-8")
+        assert AO.settings(str(tmp))["jira_url"] == "http://jira.invalid"
+        assert WD.probe(str(tmp)) == {"ok": True, "down": []}
+    finally:
+        AG.models_of, AG.kit_env, MC.load = real
+        h.close()
+
+
+@test
+def test_report_scripts_send_the_key_only_to_their_own_server(tmp: Path):
+    """Шаги отчёта аналитика ходят в Jira/Confluence через `paths.open_secure`: редирект на
+    другой хост уходит без Authorization, чужой/открытый адрес отклоняется до запроса."""
+    _path()
+    rp = str(KIT / "reports" / "analyst")
+    if rp not in sys.path:
+        sys.path.insert(0, rp)
+    cwd = os.getcwd()
+    os.chdir(tmp)           # отчёт читает привязку машины из папки проекта
+    try:
+        paths = importlib.import_module("paths")
+        SC = importlib.import_module("sources_core")
+        import urllib.request
+        h = _Hosts()
+        try:
+            h.to = h.url("b", "/landing")
+            req = urllib.request.Request(h.url("a", "/go"), headers={"Authorization": "Bearer FAKE"})
+            with paths.open_secure(req, h.url("a"), "JIRA"):
+                pass
+            assert h.seen["a"][-1][1].get("authorization") == "Bearer FAKE"
+            assert h.seen["b"] and all("authorization" not in hd for _p, hd in h.seen["b"]), h.seen["b"]
+            n = len(h.seen["b"])
+            for evil in (h.url("b", "/x"), "http://jira.example.com/rest"):
+                try:
+                    paths.open_secure(urllib.request.Request(evil, headers={"Authorization": "Bearer FAKE"}),
+                                      h.url("a"), "JIRA")
+                    raise AssertionError("ключ ушёл на чужой адрес")
+                except SC.UnsafeTarget:
+                    pass
+            assert len(h.seen["b"]) == n
+        finally:
+            h.close()
+        # привязка машины: base_url, не совпавший с ней, ключа не получает
+        (tmp / ".env.aurora.local").write_text("AURORA_JIRA_SERVER=https://jira.example.com\n",
+                                               encoding="utf-8")
+        try:
+            paths.open_secure(urllib.request.Request("https://jira-evil.example.net/x"),
+                              "https://jira-evil.example.net", "JIRA")
+            raise AssertionError("ключ ушёл на подменённый адрес")
+        except SC.UnsafeTarget as e:
+            assert "AURORA_JIRA_SERVER" in str(e)
+    finally:
+        os.chdir(cwd)
+
+
+@test
+def test_a_refused_target_is_one_line_not_a_traceback(tmp: Path):
+    """Отказ `UnsafeTarget` в командных скриптах — одна строка причины и код 1, без трейсбека."""
+    proj = tmp / "p"
+    proj.mkdir()
+    (proj / "aurora.config.yaml").write_text(
+        'atlassian:\n  jira:\n    base_url: "http://jira.invalid"\n    project_key: "P"\n'
+        '  confluence:\n    base_url: "http://wiki.invalid"\n    space: "S"\n    sync_roots:\n'
+        '      - page_id: "1"\n      - page_id: "2"\n', encoding="utf-8")
+    (proj / ".env.aurora.local").write_text("JIRA_PAT=FAKE\nCONFLUENCE_PAT=FAKE\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "AURORA_ALLOW_HTTP"}
+    for script in ("jira_export.py", "confluence_export.py"):
+        cp = subprocess.run([sys.executable, str(SCRIPTS / script)] + (["--limit", "1"] if script[0] == "j" else []),
+                            cwd=str(proj), capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", env=env)
+        assert cp.returncode == 1, (script, cp.returncode, cp.stderr[-400:])
+        assert "Traceback" not in cp.stderr and "AURORA_ALLOW_HTTP" in cp.stderr, cp.stderr[-400:]
+        assert cp.stderr.count("AURORA_ALLOW_HTTP") == 1, (script, cp.stderr)
+
+
+@test
+def test_web_token_is_pinned_to_the_hosts_the_machine_lists(tmp: Path):
+    """`AURORA_WEB_TOKEN_HOSTS` в файле машины: токен только перечисленным хостам; страница,
+    добавленная в общий список, его не получает, и человек видит причину."""
+    _path()
+    WE = importlib.import_module("web_export")
+    hosts = WE.token_hosts({"AURORA_WEB_TOKEN_HOSTS": "Wiki.example.com, https://docs.example.com:8443/x;"})
+    assert hosts == ["wiki.example.com", "docs.example.com"], hosts
+    assert WE.token_hosts({}) == []
+    assert WE.token_for("https://wiki.example.com/a", "https://wiki.example.com/", "T", hosts) == "T"
+    assert WE.token_for("https://new.example.org/a", "https://new.example.org/", "T", hosts) == ""
+    assert "AURORA_WEB_TOKEN_HOSTS" in WE.token_refusal(
+        "https://new.example.org/a", "https://new.example.org/", "T", hosts)
+    # привязки нет — прежнее правило: токен хосту своей стартовой страницы
+    assert WE.token_for("https://new.example.org/a", "https://new.example.org/", "T", []) == "T"
+    assert WE.token_refusal("https://x.example.org/", "https://x.example.org/", "", hosts) == ""
+
+
+@test
+def test_saved_secrets_do_not_follow_a_changed_server_on_save(tmp: Path):
+    """Сохранение настройки с маской вместо ключа и другим адресом сервера не переносит
+    старый ключ на новый адрес (Git: замечание `required`; провайдер моделей: ключ пуст)."""
+    _path()
+    GS = importlib.import_module("git_sync")
+    MC = importlib.import_module("model_config")
+    # провайдеры моделей
+    old = {"providers": [{"id": "p1", "url": "https://gw.example.com/v1", "key": "SAVED"},
+                         {"id": "p2", "url": "gateway.local:8080", "key": "K2"}]}
+    new = {"providers": [{"id": "p1", "url": "https://GW.example.com/v1/", "key": MC.MASK},
+                         {"id": "p2", "url": "gateway.local:8080", "key": MC.MASK}]}
+    got = MC.unmask(new, old)["providers"]
+    assert [p["key"] for p in got] == ["SAVED", "K2"], got
+    new["providers"][0]["url"] = "https://evil.example.net/v1"
+    assert MC.unmask(new, old)["providers"][0]["key"] == "", "ключ ушёл вслед за подменой адреса"
+    # Git: учётные данные хранятся в домашней папке — подменяем на временную
+    real = GS.cred_file
+    GS.cred_file = lambda: tmp / "home" / "credentials.json"
+    proj = tmp / "proj"
+    proj.mkdir()
+    subprocess.run(["git", "init", "-q", str(proj)], check=True)
+    try:
+        s1 = {"provider": "gitea", "instance": "https://git.example.com", "repo": "team/repo",
+              "remote": "origin", "branch": "main", "auth": "token"}
+        GS.cred_save(str(proj), {**GS.CRED_DEFAULT, "auth": "token", "user": "u", "secret": "SAVED-TOKEN"})
+        assert GS.save(str(proj), s1, {"auth": "token", "user": "u", "secret": GS.MASK}).get("ok"), \
+            "тот же сервер: ключ остаётся"
+        assert GS.cred_load(str(proj))["secret"] == "SAVED-TOKEN"
+        s2 = {**s1, "instance": "https://git-evil.example.net"}
+        r = GS.save(str(proj), s2, {"auth": "token", "user": "u", "secret": GS.MASK})
+        assert not r.get("ok") and {"field": "secret", "code": "required"} in r["problems"], r
+        assert GS.cred_load(str(proj))["secret"] == "SAVED-TOKEN", "прежнее сохранённое не тронуто"
+        r = GS.save(str(proj), s2, {"auth": "token", "user": "u", "secret": "NEW-TOKEN"})
+        assert r.get("ok") and GS.cred_load(str(proj))["secret"] == "NEW-TOKEN", r
+    finally:
+        GS.cred_file = real

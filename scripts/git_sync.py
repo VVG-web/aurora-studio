@@ -934,9 +934,14 @@ def cred_masked(project, remote: str | None = None) -> dict:
     return {**c, "secret": MASK if c["secret"] else ""}
 
 
-def cred_merge(project, given: dict | None, remote: str | None = None) -> tuple:
+def cred_merge(project, given: dict | None, remote: str | None = None,
+               server: dict | None = None) -> tuple:
     """(учётные данные, замечания): маска — «не трогали», пусто — «убрать», вставленный
-    ключ — в файл с правами 600 вне проекта."""
+    ключ — в файл с правами 600 вне проекта.
+
+    `server` — новая настройка этого сервера (`server_view`): сохранённый ключ принадлежит
+    сохранённому серверу, а при смене адреса не переходит на новый — ключ вводят заново
+    (замечание `required`), иначе подмена адреса в форме унесла бы старый токен (BL-SEC-05)."""
     old = cred_load(project, remote)
     g = given if isinstance(given, dict) else {}
     c = dict(old)
@@ -948,6 +953,11 @@ def cred_merge(project, given: dict | None, remote: str | None = None) -> tuple:
     if "secret" in g:
         sec = str(g.get("secret") or "")
         c["secret"] = old["secret"] if sec == MASK else sec.strip()
+    if server is not None and c["secret"] and c["secret"] == old["secret"]:
+        saved = load_saved(project)
+        if saved is not None \
+                and _servers(server, c) != _servers(server_view(saved, remote), old):
+            c["secret"] = ""
     if "ssh_key" in g:
         key = str(g.get("ssh_key") or "").strip()
         c["ssh_key"] = os.path.expanduser(key) if key else ""
@@ -1079,12 +1089,13 @@ def save(project, settings: dict, creds: dict | None = None,
     """Сохранить настройку проекта и учётные данные всех её серверов. Есть замечания —
     не сохраняется ничего."""
     s, probs = normalize(settings)
-    c, cprobs = cred_merge(project, creds)
+    c, cprobs = cred_merge(project, creds, None, s)
     probs += cprobs + _token_user(s, c, "")
     given = mirror_creds if isinstance(mirror_creds, dict) else {}
     mc = {}
     for i, m in enumerate(s["mirrors"]):
-        cm, mp = cred_merge(project, given.get(m["remote"]), m["remote"])
+        cm, mp = cred_merge(project, given.get(m["remote"]), m["remote"],
+                            server_view(s, m["remote"]))
         probs += [{**p, "field": f"mirrors.{i}." + p["field"]} for p in mp]
         probs += _token_user(server_view(s, m["remote"]), cm, f"mirrors.{i}.")
         mc[m["remote"]] = cm

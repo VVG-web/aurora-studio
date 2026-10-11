@@ -98,6 +98,11 @@ REGISTRY: list = []
 os.environ["AURORA_TESTS_ISOLATED"] = "1"
 for _k in [k for k in os.environ if k.startswith("AURORA_AGENT_BACKEND_")]:
     del os.environ[_k]
+# То же для привязок ключа к серверу и разрешения открытого http: стоят в оболочке разработчика —
+# тесты на отказ видят чужой выбор (BL-SEC-05).
+for _k in ("AURORA_ALLOW_HTTP", "AURORA_CONFLUENCE_SERVER", "AURORA_JIRA_SERVER",
+           "AURORA_WEB_TOKEN_HOSTS"):
+    os.environ.pop(_k, None)
 
 
 # ------------------------------------------------------------------ каркас

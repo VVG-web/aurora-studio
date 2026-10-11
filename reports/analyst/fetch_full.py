@@ -15,7 +15,8 @@ def _utc(value: str) -> str:
     dt = parse_time(value)
     return utc_stamp(dt) if dt else ""
 
-BASE = paths.jira()["base_url"] + "/rest/api/2"
+SERVER = paths.jira()["base_url"]
+BASE = SERVER + "/rest/api/2"
 TOK = os.environ.get("JIRA_PERSONAL_TOKEN")
 if not TOK:
     raise RuntimeError("JIRA_PERSONAL_TOKEN environment variable is not set")
@@ -31,7 +32,7 @@ RESPONSIBLE_FIELD_NAME = "Ответственный"
 
 def resolve_field_id(name):
     req = urllib.request.Request(f"{BASE}/field", headers={"Authorization": f"Bearer {TOK}"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with paths.open_secure(req, SERVER, "JIRA") as r:
         for fld in json.loads(r.read().decode()):
             if (fld.get("name") or "").strip().casefold() == name.casefold():
                 return fld["id"]
@@ -59,7 +60,7 @@ def get_changelog(key):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOK}"})
     for _ in range(4):
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with paths.open_secure(req, SERVER, "JIRA") as r:
                 return json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 429:

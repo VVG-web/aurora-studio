@@ -26,6 +26,16 @@ from aurora_common import local_now as _local_now, yaml_scalar as _yaml_scalar  
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def open_secure(req, base: str, prefix: str, timeout: float = 60):
+    """Запрос с ключом к серверу источника: `urlopen`, который не уносит `Authorization` при
+    редиректе и не шлёт ключ на чужой хост, по открытому http, на адрес вне привязки машины
+    и вне сервера, где ключ уже сработал (BL-SEC-05). `prefix` — `JIRA` или `CONFLUENCE`.
+    Отказ — `sources_core.UnsafeTarget` (это `ValueError` с причиной словами)."""
+    import sources_core as SC
+    SC.secret_target(req.full_url, base, prefix)
+    return SC.safe_urlopen(req, timeout=timeout)
+
+
 def config_text(path: str) -> str:
     return open(path, encoding="utf-8", errors="ignore").read() if os.path.isfile(path) else ""
 

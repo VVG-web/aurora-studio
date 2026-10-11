@@ -38,7 +38,7 @@ import urllib.error
 import urllib.request
 
 from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
-                           head_trust, head_value, safe_urlopen, same_origin, utc_today)
+                           head_trust, head_value, safe_urlopen, same_origin, url_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
                           is_promoted_document, report_stale, verify)
 
@@ -203,13 +203,37 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
     return b"", "", f"{last} (попыток: {RETRIES})"
 
 
-def token_for(url: str, seed: str, token: str) -> str:
-    """Личный токен принадлежит хосту своей стартовой страницы: на чужие хосты обхода и на
-    открытый http (кроме своего компьютера и `AURORA_ALLOW_HTTP=1`) он не уходит."""
-    if token and same_origin(url, seed) \
-            and not cleartext_secret_problem(url, allow_cleartext()):
-        return token
-    return ""
+def token_hosts(env=None) -> list:
+    """Хосты, которым машина разрешает токен: `AURORA_WEB_TOKEN_HOSTS=wiki.example.com,…` в
+    файле машины. Список адресов страниц лежит в общем конфиге, и страница, добавленная туда
+    чужим PR, без этой привязки получила бы токен. Пусто — привязки нет."""
+    raw = str((os.environ if env is None else env).get("AURORA_WEB_TOKEN_HOSTS", "") or "")
+    out = []
+    for h in raw.replace(";", ",").split(","):
+        h = h.strip().lower()
+        o = url_origin(h) if "://" in h else ()
+        out.append(o[1] if o else h.split("/")[0].split(":")[0])
+    return [h for h in out if h]
+
+
+def token_refusal(url: str, seed: str, token: str, hosts: list | None = None) -> str:
+    """Почему токен не уходит на этот адрес (пусто — уходит)."""
+    if not token:
+        return ""
+    if not same_origin(url, seed):
+        return f"адрес {url.split('?', 1)[0]} вне стартовой страницы {seed}"
+    o = url_origin(url)
+    if hosts and (not o or o[1] not in hosts):
+        return (f"хост {o[1] if o else url} не в AURORA_WEB_TOKEN_HOSTS "
+                f"({', '.join(hosts)}) файла машины")
+    return cleartext_secret_problem(url, allow_cleartext())
+
+
+def token_for(url: str, seed: str, token: str, hosts: list | None = None) -> str:
+    """Личный токен принадлежит хосту своей стартовой страницы: на чужие хосты обхода, на
+    открытый http (кроме своего компьютера и `AURORA_ALLOW_HTTP=1`) и на хосты вне
+    `AURORA_WEB_TOKEN_HOSTS` (если машина их перечислила) он не уходит."""
+    return "" if token_refusal(url, seed, token, hosts) else token
 
 
 def fetch(url: str, token: str = "", known: dict | None = None,
@@ -650,6 +674,7 @@ def run(a) -> int:
         return 0
     opt = settings_from_config(cfg)
     token = os.environ.get("WEB_PERSONAL_TOKEN", "") or os.environ.get("WEB_PAT", "")
+    hosts = token_hosts()
     mirror = WebMirror(a.out)
     os.makedirs(mirror.out, exist_ok=True)
     print(f"# Веб-страницы — выгрузка\n\nАдресов в списке: **{len(pages)}** · "
@@ -666,6 +691,9 @@ def run(a) -> int:
         taken = 0
         print(f"## {seed} · {'доверенная' if trusted else 'недоверенная'}"
               + (" · лента: карточка только на предмет, не на событие" if feed else ""))
+        why = token_refusal(seed, seed, token, hosts)
+        if why:
+            print(f"  ⚠️  токен не отправляется: {why}")
         while queue and taken < opt["max_pages"]:
             url, depth = queue.pop(0)
             if url in seen:
@@ -675,7 +703,7 @@ def run(a) -> int:
             if known and not cache_usable(known, mirror.out, trusted, seed, feed, today):
                 known = None
             meta: dict = {}
-            html, err = fetch(url, token_for(url, seed, token), known, meta)
+            html, err = fetch(url, token_for(url, seed, token, hosts), known, meta)
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
                 unchanged += 1

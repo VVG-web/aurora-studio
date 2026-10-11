@@ -28,7 +28,8 @@ import sys
 import tempfile
 
 from aurora_common import (allow_cleartext, cleartext_secret_problem, head_scalar, root_link_escapes,
-                           safe_urlopen, same_origin, split_frontmatter, yaml_scalar)
+                           is_loopback_host, safe_urlopen, same_origin, split_frontmatter, url_origin,
+                           yaml_scalar)
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -105,6 +106,94 @@ class UnsafeTarget(ValueError):
     """Ключ на этот адрес не уходит: чужой хост, не тот сервер или открытый http."""
 
 
+def server_pin(prefix: str, env: dict) -> str:
+    """Привязка машины: `AURORA_<PREFIX>_SERVER=https://хост` в файле машины. Имя с
+    префиксом `AURORA_`, чтобы не спутаться с `JIRA_SERVER` других инструментов Jira."""
+    return str(env.get(f"AURORA_{prefix}_SERVER", "") or "").strip() if prefix else ""
+
+
+def _trusted_path(root: str) -> str:
+    return os.path.join(root or ".", ".aurora", "state", "trusted-hosts.json")
+
+
+def trusted_origin(prefix: str, root: str = "") -> str:
+    """Сервер, на котором ключ этого префикса уже сработал (вне git: состояние машины)."""
+    try:
+        with open(_trusted_path(root), encoding="utf-8") as f:
+            got = json.load(f).get(prefix, "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return got if isinstance(got, str) else ""
+
+
+def remember_origin(prefix: str, base: str, root: str = "") -> None:
+    """Первый удачный ответ сервера: запомнить его адрес для ключа этого префикса, чтобы
+    подмена `base_url` в общем конфиге потом не увела ключ. Без диалога: смену адреса
+    человек принимает строкой `AURORA_<PREFIX>_SERVER` (ADR-026). Свой компьютер и проект
+    без `.aurora/` не запоминаются."""
+    o = url_origin(base)
+    if not prefix or not o or is_loopback_host(o[1]) \
+            or not os.path.isdir(os.path.join(root or ".", ".aurora")) \
+            or trusted_origin(prefix, root):
+        return
+    path = _trusted_path(root)
+    try:
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[prefix] = f"{o[0]}://{o[1]}" + ("" if o[2] in (80, 443) else f":{o[2]}")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    except OSError:
+        pass            # не записалось — защиты чуть меньше, синк от этого не страдает
+
+
+def run_main(main) -> int:
+    """Запуск `main()` командного скрипта: отказ `UnsafeTarget` — ожидаемая настройка (чужой
+    адрес, открытый http), а не сбой: одна строка причины в stderr и код 1, без трейсбека."""
+    try:
+        return main()
+    except UnsafeTarget as e:
+        print(f"! {e}", file=sys.stderr)
+        return 1
+
+
+def secret_target(url: str, base: str, prefix: str = "", root: str = "",
+                  env: dict | None = None) -> str:
+    """Адрес запроса с ключом — или `UnsafeTarget`, если ключ на него отправлять нельзя:
+    `base` не совпал с привязкой машины или с сервером, где ключ уже сработал; адрес чужого
+    хоста; открытый http. Общая проверка клиента источников и шагов отчётов."""
+    env = read_env(root) if env is None else env
+    base = base.rstrip("/")
+    pin = server_pin(prefix, env)
+    if pin and not same_origin(base, pin):
+        raise UnsafeTarget(f"адрес сервера в aurora.config.yaml ({base}) не совпадает с "
+                           f"AURORA_{prefix}_SERVER из файла машины ({pin}): "
+                           "ключ на него не отправляется")
+    if prefix and not pin:
+        was, o = trusted_origin(prefix, root), url_origin(base)
+        if was and o and not is_loopback_host(o[1]) and not same_origin(base, was):
+            raise UnsafeTarget(f"адрес сервера изменился: был {was}, в aurora.config.yaml стал "
+                               f"{base} — ключ на него не отправляется. Если переезд "
+                               f"настоящий, поставьте AURORA_{prefix}_SERVER={base} в файл "
+                               "машины (.env.aurora.local)")
+    url = url if url.startswith("http") else base + url
+    if not same_origin(url, base):
+        raise UnsafeTarget(f"адрес {url.split('?', 1)[0]} вне сервера {base}: "
+                           "ключ на чужой хост не отправляется")
+    why = cleartext_secret_problem(url, allow_cleartext(env))
+    if why:
+        raise UnsafeTarget(why)
+    return url
+
+
 class RestApi:
     """Минимальный REST-клиент: токен в заголовке, JSON на выходе, свой User-Agent.
 
@@ -114,17 +203,20 @@ class RestApi:
     Токен принадлежит серверу из `base`: абсолютный адрес от сервера (`_links.next`,
     вложение) принимается только с того же хоста, редирект на другой хост уходит без
     `Authorization`, а по открытому `http://` ключ не шлётся (кроме своего компьютера и
-    `AURORA_ALLOW_HTTP=1`). Адрес `base` живёт в общем `aurora.config.yaml`, поэтому на
-    машине есть привязка: `<PREFIX>_SERVER=https://хост` в `.env.aurora.local` — и любой
-    другой адрес в конфиге отклоняется, пока ключ не ушёл.
+    `AURORA_ALLOW_HTTP=1`). Адрес `base` живёт в общем `aurora.config.yaml`, поэтому его
+    подмена в общем файле не должна уводить ключ: первый удачный ответ запоминает сервер
+    (`.aurora/state/trusted-hosts.json`), и другой `base_url` отклоняется, пока человек не
+    принял его строкой `AURORA_<PREFIX>_SERVER=https://хост` в файле машины (она же —
+    привязка заранее, до первого запуска).
     """
 
     agent = "aurora-sync/1.0"
-    secret_prefix = ""      # CONFLUENCE / JIRA: по нему ищется привязка `<PREFIX>_SERVER`
+    secret_prefix = ""      # CONFLUENCE / JIRA: по нему ищется привязка и доверенный сервер
 
     def __init__(self, base: str, auth: str, root: str = ""):
         self.base, self.auth, self.root = base.rstrip("/"), auth, root
         self._env = None
+        self._seen = False
 
     def _url(self, path: str) -> str:
         """Полный адрес запроса — или `UnsafeTarget`, если ключ на него отправлять нельзя."""
@@ -132,26 +224,21 @@ class RestApi:
             return path if path.startswith("http") else self.base + path
         if self._env is None:       # файл читаем один раз: запросов в синке тысячи
             self._env = read_env(self.root)
-        env = self._env
-        pin = env.get(f"{self.secret_prefix}_SERVER", "").strip() if self.secret_prefix else ""
-        if pin and not same_origin(self.base, pin):
-            raise UnsafeTarget(f"адрес сервера в aurora.config.yaml ({self.base}) не совпадает с "
-                               f"{self.secret_prefix}_SERVER из .env.aurora.local ({pin}): "
-                               "ключ на него не отправляется")
-        url = path if path.startswith("http") else self.base + path
-        if not same_origin(url, self.base):
-            raise UnsafeTarget(f"адрес {url.split('?', 1)[0]} вне сервера {self.base}: "
-                               "ключ на чужой хост не отправляется")
-        why = cleartext_secret_problem(url, allow_cleartext(env))
-        if why:
-            raise UnsafeTarget(why)
-        return url
+        return secret_target(path, self.base, self.secret_prefix, self.root, self._env)
+
+    def _ok(self) -> None:
+        """Сервер ответил на запрос с ключом: запомнить его (один раз за жизнь клиента)."""
+        if self.auth and not self._seen:
+            self._seen = True
+            if not server_pin(self.secret_prefix, self._env or {}):
+                remember_origin(self.secret_prefix, self.base, self.root)
 
     def get(self, path: str) -> dict:
         req = urllib.request.Request(self._url(path), headers={
             "Authorization": self.auth, "Accept": "application/json",
             "User-Agent": self.agent})
         with safe_urlopen(req, timeout=60) as r:
+            self._ok()
             return json.load(r)
 
     def fetch(self, url: str) -> bytes:
@@ -159,6 +246,7 @@ class RestApi:
         req = urllib.request.Request(self._url(url), headers={"Authorization": self.auth,
                                                               "User-Agent": self.agent})
         with safe_urlopen(req, timeout=120) as r:
+            self._ok()
             return r.read()
 
     def send(self, method: str, path: str, body=None, files: dict | None = None,
@@ -194,6 +282,7 @@ class RestApi:
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
                 with safe_urlopen(req, timeout=timeout) as r:
+                    self._ok()
                     raw = r.read()
                 return json.loads(raw) if raw.strip() else {}
             except urllib.error.HTTPError as e:

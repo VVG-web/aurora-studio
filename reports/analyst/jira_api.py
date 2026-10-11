@@ -15,8 +15,10 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths
+import sources_core as SC  # noqa: E402 — путь к scripts/ добавил paths
 
-BASE_URL = paths.jira()["base_url"] + "/rest/api/2"
+SERVER = paths.jira()["base_url"]
+BASE_URL = SERVER + "/rest/api/2"
 
 # Поля, на которых стоит весь дальнейший счёт: тип задачи, статус, исполнитель, даты.
 FIELDS = ("key,issuetype,status,resolution,assignee,reporter,created,updated,"
@@ -37,8 +39,10 @@ def api(path: str, params: dict | None = None, max_tries: int = 4):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token()}"})
     for i in range(max_tries):
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with paths.open_secure(req, SERVER, "JIRA") as r:
                 return json.loads(r.read().decode())
+        except SC.UnsafeTarget:     # ключ на этот адрес не уходит — повтор не поможет
+            raise
         except Exception:
             if i == max_tries - 1:
                 raise

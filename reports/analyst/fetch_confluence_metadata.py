@@ -53,7 +53,7 @@ def api_request(endpoint: str, params: dict = None) -> dict:
     )
     
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with paths.open_secure(req, BASE_URL, "CONFLUENCE") as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         log(f"HTTP Error {e.code}: {e.reason}")

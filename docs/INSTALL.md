@@ -190,6 +190,9 @@ start-aurora.command · start-aurora.bat      пусковые файлы
 | `CONFLUENCE_USER` + `CONFLUENCE_PASSWORD` | запасной вариант, если токены недоступны |
 | `JIRA_PERSONAL_TOKEN` (или `JIRA_PAT`) | токен Jira Server / Data Center |
 | `JIRA_USER` + `JIRA_PASSWORD` | запасной вариант |
+| `AURORA_CONFLUENCE_SERVER`, `AURORA_JIRA_SERVER` | необязательно: сервер, которому принадлежит ключ; другой `base_url` в общем конфиге ключа не получит (без строки движок запоминает сервер после первого удачного ответа) |
+| `AURORA_WEB_TOKEN_HOSTS` | необязательно: хосты, которым уходит токен обхода сайтов, через запятую |
+| `AURORA_ALLOW_HTTP=1` | сервер по `http://` в закрытой сети: по открытому http ключ иначе не отправляется (кроме localhost) |
 
 Проверить принятие токена: `python3 .aurora/scripts/jira_export.py --limit 1`.
 

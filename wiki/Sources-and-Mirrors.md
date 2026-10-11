@@ -52,11 +52,14 @@ does not hand out its credentials. Check a token: `python3 .aurora/scripts/jira_
 a pull request would carry the token away. So the REST client sends the key only to the server in `base_url`: an
 absolute address that comes from the server (`_links.next`, an attachment) with another host is refused, and a redirect
 to another host goes without `Authorization`. The key is never sent over plain `http://` (your own computer excepted).
-Two optional lines in `.env.aurora.local` close the rest: `CONFLUENCE_SERVER=https://wiki.example.com` and
-`JIRA_SERVER=https://jira.example.com` pin the key to the server — any other `base_url` in the config is refused before
-the key leaves; `AURORA_ALLOW_HTTP=1` allows plain `http://` for a server on a closed network. The same rule holds for
-model gateway keys, the website crawl token (`WEB_PERSONAL_TOKEN` goes only to the host of its start page) and the Git
-password (the credential helper answers only the repository's server).
+The engine also remembers the server after the first successful reply (`.aurora/state/trusted-hosts.json`, not in git):
+a different `base_url` afterwards is refused, with one line saying so, until you accept it. Accepting is one line in
+`.env.aurora.local`: `AURORA_CONFLUENCE_SERVER=https://wiki.example.com` or `AURORA_JIRA_SERVER=https://jira.example.com`
+(the same lines pin the server in advance — and for a project that has never synced, nothing is remembered yet, so set
+them there). `AURORA_ALLOW_HTTP=1` allows plain `http://` for a server on a closed network. The same rule holds for
+model gateway keys and the Git password (the credential helper answers only the repository's server). The website crawl
+token (`WEB_PERSONAL_TOKEN`) goes only to the host of the start page it is used with; a page added to the shared list
+would get it, so list the hosts in `AURORA_WEB_TOKEN_HOSTS=wiki.example.com,…` and no other host receives it.
 
 ## Checking a mirror
 

@@ -195,19 +195,33 @@ def probe(project: str) -> dict:
         try:
             import urllib.error
             import urllib.request
-            from sources_core import read_secret
+            from aurora_common import safe_urlopen
+            from sources_core import UnsafeTarget, read_secret
             import atlassian_ops as AO
+            import confluence_export as CE
+            import jira_export as JE
             s = AO.settings(project)
-            for name, base, path, prefix in (
-                    ("Jira", s["jira_url"], "/rest/api/2/serverInfo", "JIRA"),
-                    ("Confluence", s["confluence_url"], "/rest/api/space?limit=1", "CONFLUENCE")):
+            for name, base, path, prefix, api_cls in (
+                    ("Jira", s["jira_url"], "/rest/api/2/serverInfo", "JIRA", JE.Api),
+                    ("Confluence", s["confluence_url"], "/rest/api/space?limit=1", "CONFLUENCE",
+                     CE.Api)):
                 if not base:
                     continue
                 auth, _how = read_secret(prefix, project)
-                req = urllib.request.Request(base + path, headers={
-                    "Authorization": auth, "Accept": "application/json"})
+                # Запрос строит клиент источника: ключ уходит только на свой сервер, не по
+                # открытому http и не по привязке машины (BL-SEC-05); редирект на другой хост
+                # идёт без Authorization (`safe_urlopen`).
+                api = api_cls(base, auth, project)
                 try:
-                    with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as r:
+                    url = api._url(path)
+                except (UnsafeTarget, ValueError):
+                    continue    # адрес небезопасен для ключа: это не «связь упала», скажет синк
+                headers = {"Accept": "application/json", "User-Agent": api.agent}
+                if auth:
+                    headers["Authorization"] = auth
+                try:
+                    with safe_urlopen(urllib.request.Request(url, headers=headers),
+                                      timeout=PROBE_TIMEOUT) as r:
                         r.read(64)
                 except urllib.error.HTTPError as e:
                     if e.code >= 500:

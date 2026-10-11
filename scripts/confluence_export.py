@@ -993,6 +993,7 @@ def drop_nested_roots(api: Api, roots: list) -> tuple:
 
 def run_export(cfg: dict, roots: list, out: str, auth: str, force: bool) -> Exporter:
     api = Api(cfg["base_url"], auth)
+    api._url("/")       # ключ на этот сервер нельзя — отказ один, а не по строке на корень
     # Один корень, записанный в настройке дважды, обходился дважды: на PRJ-C с 10.08
     # «Страниц: 1202» вместо 1058 и ~12 % лишних запросов на каждом синке.
     uniq = list(dict.fromkeys(str(r) for r in roots))
@@ -1109,4 +1110,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from sources_core import run_main
+    sys.exit(run_main(main))

@@ -433,6 +433,7 @@
     "кэш графа не прочитан: {}": "the graph cache could not be read: {}",
     "{}: переменные моделей больше не действуют — настройка моделей одна на кит (раздел «Модели»); уберите их: {}{}": "{}: model variables no longer apply — the model setup is one per kit (the «Models» section); remove them: {}{}",
     "адрес провайдера — http(s)://…": "the provider address is http(s)://…",
+    "адрес отличается от сохранённого у этого провайдера: сохранённый ключ на него не отправляется — введите ключ заново": "the address differs from the one saved for this provider: the saved key is not sent to it, enter the key again",
     "настройка не разобрана": "the setup could not be read",
     "сертификат проверяется только у адреса https://": "a certificate is checked only for an https:// address",
     "в ките нет модуля «{}»": "the kit has no module «{}»",

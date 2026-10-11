@@ -363,4 +363,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from sources_core import run_main
+    sys.exit(run_main(main))
