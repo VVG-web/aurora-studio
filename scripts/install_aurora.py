@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 KIT_ROOT = Path(__file__).resolve().parents[1]
-from aurora_common import TODAY, write_text_atomic  # noqa: E402 — дата в UTC, одна на движок; запись целиком
+from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
 def manifest_pairs() -> list:
     """[(файл в kit, путь в проекте)] из engine_manifest.txt — тот же список, по которому
@@ -166,7 +166,16 @@ def merge_gitignore(path, block: str = "") -> list:
             notes = []
     if add:
         head = "" if not cur else cur.rstrip() + "\n\n"
-        write_text_atomic(path, head + "# Aurora — правила движка\n" + "\n".join(add) + "\n")
+        text = head + "# Aurora — правила движка\n" + "\n".join(add) + "\n"
+        try:
+            from aurora_common import write_text_atomic
+        except ImportError:
+            # Обновление запущено копией `update` из проекта: `aurora_common` в этом процессе —
+            # проектный, прежний, и новых имён в нём нет. Верхний импорт ронял бы здесь весь
+            # модуль, а `update` глотает сбой и не дописывает правил вовсе.
+            path.write_text(text, encoding="utf-8")
+        else:
+            write_text_atomic(path, text)
     return [ln for ln in add if not ln.strip().startswith("#")]
 
 

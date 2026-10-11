@@ -1728,12 +1728,20 @@ def write_text_atomic(path, text: str) -> None:
     человеческий и не чинит. Здесь на месте остаётся либо прежний файл, либо новый.
     Имя временного файла — своё у каждого процесса: два обновления разом не делят его.
     Ссылка (общий файл вне проекта) не заменяется — пишется файл, на который она ведёт.
+    Права прежнего файла переходят к новому: временный файл рождается с правами по
+    умолчанию, и без этого исполняемый скрипт человека (`Scripts/run.sh`, 0755) после
+    переписывания путей переставал бы запускаться.
     """
+    import shutil
     from pathlib import Path
     real = Path(os.path.realpath(path))
     tmp = real.with_name(f"{real.name}.{os.getpid()}.aurora-tmp")
     try:
         tmp.write_text(text, encoding="utf-8")
+        try:
+            shutil.copymode(real, tmp)       # нет прежнего файла — остаются права по умолчанию
+        except OSError:
+            pass
         replace_file(tmp, real)
     finally:
         tmp.unlink(missing_ok=True)

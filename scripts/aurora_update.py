@@ -87,7 +87,10 @@ def project_fields(target: Path) -> dict:
         t = cfg.read_text(encoding="utf-8", errors="replace")
         def g(key, default):
             m = re.search(rf'^\s*{key}\s*:\s*"?([^"\n#]+?)"?\s*$', t, re.M)
-            return m.group(1).strip() if m else default
+            v = m.group(1).strip() if m else default
+            # Значение не в UTF-8 (правка в cp1251) читается «с заменой» и стало бы мусором в
+            # AGENTS.md и прочих файлах, которые update переписывает; берём значение по умолчанию.
+            return default if "\ufffd" in v else v
         f["name"] = g("name", f["name"])
         f["slug"] = g("slug", f["slug"])
         f["jira"] = g("project_key", f["jira"])
@@ -726,9 +729,21 @@ def run(target: Path, apply: bool, structure_only: bool = False):
             # движок, а правил — нет: повтор видел «всё актуально» и штамповал версию, и правила
             # не появлялись, пока кит не изменит что-то ещё. Слияние идемпотентно: недорого
             # проверить и здесь.
+            #
+            # Прогон, не дошедший до штампа (`pv != kv`), не сделал и остальных хвостовых шагов:
+            # хук, снятие журнала с учёта git, дата обновления базы. Все они идемпотентны.
             late = refresh_gitignore(target) + refresh_gitattributes(target)
             if late:
                 print(f"   Дописано правил .gitignore/.gitattributes: {len(late)}")
+            if pv != kv:
+                hook = refresh_hooks(target)
+                if hook:
+                    print(f"   Хук обновлён ({hook})")
+                if untrack_runlog(target):
+                    print("   Журнал запусков снят с учёта git (файл на месте)")
+                kb_date = backfill_kb_updated(target)
+                if kb_date:
+                    print(f"   Дата обновления базы из истории прогонов: {kb_date}")
         if apply and pv != kv:
             stamp_version(target, kv)
             print(f"   Проставлен штамп версии: {kv}")

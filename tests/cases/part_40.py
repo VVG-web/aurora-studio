@@ -313,6 +313,7 @@ class _Fault:
         self.target, self.at, self.torn, self.hook = str(target), at, torn, hook
         self.roots = (str(target), os.path.realpath(target))
         self.count = 0
+        self.fired = False     # дошёл ли счёт до n: мёртвая инъекция не должна давать зелёный тест
         self.ops = []          # путь каждой операции по порядку: чтобы выбрать, где обрывать
         self.busy = False
         self._saved = {}
@@ -327,6 +328,7 @@ class _Fault:
         self.ops.append(str(path))
         if self.count != self.at:
             return
+        self.fired = True
         if self.hook:
             self.busy = True
             try:
@@ -372,10 +374,11 @@ def _au():
     return importlib.import_module("aurora_update")
 
 
-def _run_in_process(AU, root: Path, ops: list | None = None, **fault):
+def _run_in_process(AU, root: Path, ops: list | None = None, fired: list | None = None, **fault):
     """Один `update --apply` в этом процессе; → (число операций записи, исключение или None).
 
-    `ops`, если дан, пополняется путями операций по порядку.
+    `ops`, если дан, пополняется путями операций по порядку, `fired` — признаком, что обрыв
+    (или вторая сторона гонки) в этот прогон действительно случился.
     """
     f = _Fault(root, **fault)
     err = None
@@ -386,6 +389,8 @@ def _run_in_process(AU, root: Path, ops: list | None = None, **fault):
             err = e
     if ops is not None:
         ops.extend(f.ops)
+    if fired is not None:
+        fired.append(f.fired)
     return f.count, err
 
 
@@ -419,6 +424,8 @@ def test_lifecycle_update_interrupted_midway_leaves_project_recoverable(tmp: Pat
     single = ("aurora.config.yaml", ".gitignore", ".gitattributes", "aurora_version.txt",
               "kit_path.txt")
 
+    BEST_EFFORT = (".gitignore", ".gitattributes")
+
     def name_of(path: str) -> str:
         return re.sub(r"\.\d+\.aurora-tmp$", "", path.replace("\\", "/")).rsplit("/", 1)[-1]
 
@@ -433,12 +440,21 @@ def test_lifecycle_update_interrupted_midway_leaves_project_recoverable(tmp: Pat
             root = tmp / f"cut-{int(torn)}-{n}"
             shutil.copytree(base, root, symlinks=True)
             before = _tree(root)
-            _count, err = _run_in_process(AU, root, at=n, torn=torn)
-            # `.gitignore`, `.gitattributes` и хук кит пишет «по возможности» (отказ записи не
+            fired: list = []
+            _count, err = _run_in_process(AU, root, fired=fired, at=n, torn=torn)
+            # Обрыв обязан случиться: без этого сорванная или мёртвая инъекция сбоев давала бы
+            # зелёный тест на любой записи.
+            assert fired == [True], f"обрыв на записи {n}/{total} не сработал: инъекция сбоев мертва"
+            # `.gitignore` и `.gitattributes` кит пишет «по возможности» (отказ записи не
             # останавливает обновление), поэтому обрыв на них исключением не кончается — и штамп
-            # тогда по праву ставится; повтор всё равно обязан довести дерево до того же.
-            assert err is None or isinstance(err, OSError), \
-                f"обрыв на записи {n}/{total} кончился не отказом записи: {str(repr(err))[:300]}"
+            # тогда по праву ставится; повтор всё равно обязан довести дерево до того же. Любая
+            # другая запись обязана кончиться отказом.
+            if name_of(ops[n - 1]) in BEST_EFFORT:
+                assert err is None or isinstance(err, OSError), \
+                    f"обрыв на записи {n}/{total} кончился не отказом записи: {str(repr(err))[:300]}"
+            else:
+                assert isinstance(err, OSError), \
+                    f"обрыв на записи {n}/{total} ({name_of(ops[n - 1])}) не дошёл до движка: {str(repr(err))[:300]}"
             if err is not None and n < total:
                 assert _stamp(root) == old_stamp, \
                     f"обрыв на {n}/{total}: проект уже назвался обновлённым ({_stamp(root)})"
@@ -490,10 +506,11 @@ def test_lifecycle_two_updates_at_once_converge(tmp: Path):
         assert not diff, f"два обновления разом (запись {n}/{total}) не сошлись: {diff[:6]}"
         shutil.rmtree(root, ignore_errors=True)
 
-    if sys.platform == "win32":
-        # Открытый другим процессом файл на Windows не подменить: два настоящих процесса,
-        # идущих почти в ногу, там падают по причине самой системы, а не движка. Гонку
-        # двух писателей без этой помехи проверяют части выше и test_folder_guides_*.
+    if sys.platform == "win32" and os.environ.get("AURORA_TEST_PARALLEL_WIN") != "1":
+        # Настоящие процессы на Windows проверяются только в неблокирующем задании windows-314
+        # (AURORA_TEST_PARALLEL_WIN=1): replace_file повторяет подмену около 7 секунд, но причина
+        # возможных падений там не подтверждена. Причину называют по итогу этого задания, а не
+        # заранее. Гонку двух писателей без помехи системы проверяют части выше и test_folder_guides_*.
         return
     root = tmp / "procs"
     shutil.copytree(base, root, symlinks=True)
@@ -599,6 +616,132 @@ def test_lifecycle_update_survives_files_that_are_not_utf8(tmp: Path):
     _update(KIT, root)
     for p, data in keep.items():
         assert p.read_bytes() == data, f"{p.name}: обновление переписало файл не в UTF-8"
+    assert _stamp(root) == (KIT / "VERSION").read_text(encoding="utf-8").strip()
+
+
+@test
+def test_lifecycle_update_keeps_mode_of_rewritten_files(tmp: Path):
+    """Исполняемый скрипт человека после переписывания путей остаётся исполняемым (0755 → 0755).
+
+    `relayout_rewrite` правит пути `.opencode/` в `Scripts/*.sh`; временный файл рождается с
+    правами по умолчанию, и без переноса прав скрипт переставал запускаться (в git проекта —
+    смена режима 100755 на 100644). Тот же хелпер пишет и остальные файлы проекта.
+    """
+    if sys.platform == "win32":
+        return                                   # бита исполнения там нет
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import write_text_atomic
+    one = tmp / "one.sh"
+    one.write_text("старое\n", encoding="utf-8")
+    one.chmod(0o750)
+    write_text_atomic(one, "новое\n")
+    assert one.read_text(encoding="utf-8") == "новое\n" and one.stat().st_mode & 0o777 == 0o750, \
+        "write_text_atomic потерял права прежнего файла"
+    fresh = tmp / "fresh.txt"
+    write_text_atomic(fresh, "с нуля\n")           # прежнего файла нет — права по умолчанию, без ошибки
+    assert fresh.read_text(encoding="utf-8") == "с нуля\n"
+
+    root = _aged_project(tmp)
+    run = root / "Scripts/run.sh"
+    run.parent.mkdir(exist_ok=True)
+    run.write_text("#!/bin/sh\npython3 .opencode/scripts/kb_lint.py\n", encoding="utf-8")
+    run.chmod(0o755)
+    _update(KIT, root)
+    assert ".opencode/" not in run.read_text(encoding="utf-8"), "обновление не переписало пути скрипта"
+    assert run.stat().st_mode & 0o777 == 0o755, \
+        f"скрипт человека потерял бит исполнения: {oct(run.stat().st_mode & 0o777)}"
+
+
+@test
+def test_install_gitignore_merge_works_with_the_old_common_of_a_project_copy(tmp: Path):
+    """Слияние `.gitignore` не зависит от новых имён в `aurora_common`.
+
+    Обновление, запущенное копией `update` из проекта (так его запускает панель), уже держит
+    проектный `aurora_common` — прежний, без `write_text_atomic`. Верхний импорт этого имени в
+    `install_aurora` ронял модуль, а `update` глотает сбой: правила кита не дописывались вовсе.
+    """
+    text = (SCRIPTS / "aurora_common.py").read_text(encoding="utf-8")
+    cut = re.sub(r"(?s)def write_text_atomic\(.*?(?=\ndef _win_pid_alive)", "", text)
+    assert cut != text and "def write_text_atomic" not in cut, "прежний aurora_common не воспроизведён"
+    old = tmp / "old_scripts"
+    old.mkdir()
+    (old / "aurora_common.py").write_text(cut, encoding="utf-8")
+    target = tmp / ".gitignore"
+    target.write_text("# мой список\n.DS_Store\n", encoding="utf-8")
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); import aurora_common; "
+            "assert not hasattr(aurora_common, 'write_text_atomic'); "
+            "sys.path.insert(0, sys.argv[2]); import install_aurora; "
+            "print(len(install_aurora.merge_gitignore(sys.argv[3])))")
+    cp = subprocess.run([sys.executable, "-c", code, str(old), str(SCRIPTS), str(target)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(tmp))
+    assert cp.returncode == 0, f"слияние упало на прежнем aurora_common:\n{cp.stderr[-600:]}"
+    assert int(cp.stdout.strip()) > 3, cp.stdout
+    got = target.read_text(encoding="utf-8")
+    assert got.startswith("# мой список\n.DS_Store\n") and "*.aurora-tmp" in got, got[:300]
+
+
+@test
+def test_lifecycle_update_from_project_copy_of_a_past_release_adds_gitignore_rules(tmp: Path):
+    """Проект прежнего выпуска обновляется СВОЕЙ копией `update` (через `kit_path.txt`) и получает правила кита.
+
+    Без тегов (мелкий клон) проверка пропускается; в проверке GitHub теги обязательны.
+    """
+    tag = "v1.169.0"
+    if tag not in _tags():
+        assert os.environ.get("AURORA_REQUIRE_TAGS") != "1", f"в проверке нет тега {tag}"
+        return
+    root = _new_project(_tagged_kit(tag, tmp / "kit-old"), tmp / "p")
+    (root / ".aurora/kit_path.txt").write_text(str(KIT) + "\n", encoding="utf-8")
+    ignore = root / ".gitignore"
+    before = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
+    assert "*.aurora-tmp" not in before
+    cp = _py(root / ".aurora/scripts/aurora_update.py", str(root), "--apply", cwd=root)
+    assert "Traceback" not in cp.stderr, cp.stderr[-400:]
+    got = ignore.read_text(encoding="utf-8")
+    assert "*.aurora-tmp" in got, "правила кита не дописаны: слияние молча упало в копии update из проекта"
+    assert _stamp(root) == (KIT / "VERSION").read_text(encoding="utf-8").strip()
+
+
+@test
+def test_lifecycle_update_does_not_write_garbage_from_a_non_utf8_project_name(tmp: Path):
+    """Имя проекта в конфиге не в UTF-8: мусора (U+FFFD) нет ни в выводе, ни в AGENTS.md.
+
+    Прежде такой конфиг ронял обновление (громкий отказ); чтение «с заменой» убрало падение,
+    но пустило замену в имя, а оно пишется в файлы, которые `update` переписывает.
+    """
+    root = _aged_project(tmp, "Old")
+    cfg = root / "aurora.config.yaml"
+    raw = cfg.read_bytes()
+    assert b'name: "Old"' in raw, "в конфиге нет name: \"Old\""
+    cfg.write_bytes(raw.replace(b'name: "Old"', 'name: "Проект"'.encode("cp1251"), 1))
+    keep = cfg.read_bytes()
+    out = _update(KIT, root)
+    assert "\ufffd" not in out.stdout, f"в выводе мусор из имени проекта: {out.stdout[:300]}"
+    for rel in ("AGENTS.md",):
+        assert "\ufffd" not in (root / rel).read_text(encoding="utf-8", errors="replace"), \
+            f"в {rel} попала замена вместо имени проекта"
+    assert cfg.read_bytes() == keep, "обновление переписало конфиг не в UTF-8"
+
+
+@test
+def test_lifecycle_rerun_after_interrupted_run_finishes_the_tail_steps(tmp: Path):
+    """Прогон оборван сразу после записи движка (штамп не поставлен): повтор доделывает и хук.
+
+    Повтор видит «движок уже актуален» и раньше лишь досылал правила `.gitignore` и штамп:
+    хук с устаревшими путями оставался, и коммит проекта вызывал несуществующий линтер.
+    """
+    AU = _au()
+    root = _aged_project(tmp, "Старый проект", old_world=True)
+    _count, err = _run_in_process(AU, root)
+    assert err is None, repr(err)[:300]
+    hook = root / ".git/hooks/pre-commit"
+    good = hook.read_text(encoding="utf-8")
+    assert ".aurora/scripts/kb_lint.py" in good, "хук не поставлен обновлением: проверять нечем"
+    hook.write_text(good.replace(".aurora/scripts/", ".opencode/scripts/"), encoding="utf-8")
+    (root / "AuroraKnowledgeDB/meta/aurora_version.txt").write_text("1.100.0\n", encoding="utf-8")
+    out = _update(KIT, root)
+    assert "уже актуальны" in out.stdout, out.stdout[-400:]
+    assert hook.read_text(encoding="utf-8") == good, "повтор после обрыва не обновил хук"
     assert _stamp(root) == (KIT / "VERSION").read_text(encoding="utf-8").strip()
 
 
