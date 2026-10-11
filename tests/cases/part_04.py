@@ -642,6 +642,11 @@ def test_bridge_knows_what_runs_and_what_stopped(tmp: Path):
     assert agent and not agent["alive"] and agent["task"] == "agent:distill", \
         f"оборванный прогон выдан за идущий: {agent}"
 
+    lock.write_text(str(os.getpid()), encoding="utf-8")      # голый pid прежнего замка (BL-LCY-05)
+    agent = ck.project_activity(str(busy))["agent"]
+    assert agent and agent["alive"] and agent["pid"] == os.getpid(), \
+        f"замок голым pid не прочитан единым примитивом: {agent}"
+
     lock.write_text("{порван", encoding="utf-8")
     assert ck.project_activity(str(busy))["agent"] is None, "порванный замок уронил отметку"
 

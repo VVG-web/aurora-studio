@@ -3800,6 +3800,7 @@ def project_activity(project: str) -> dict:
     видно: следа в проекте она не оставляет.
     """
     from agent_runner import LOCK as AGENT_LOCK, pid_alive
+    from aurora_common import lock_read
     with JOBS_LOCK:
         running = sorted(({"id": j["id"], "cmd": j["cmd"], "args": j["args"],
                            "started": j["started"]}
@@ -3809,12 +3810,13 @@ def project_activity(project: str) -> dict:
     agent = None
     lock = os.path.join(project, AGENT_LOCK)
     try:
-        with open(lock, encoding="utf-8") as f:
-            held = json.load(f)
-        pid = int(held.get("pid") or 0)
-        agent = {"task": str(held.get("task") or ""), "pid": pid,
-                 "since": str(held.get("since") or ""), "at": os.path.getmtime(lock),
-                 "alive": pid > 0 and pid_alive(pid)}
+        # Формат замка знает только `lock_read`: и JSON, и голое число прежнего замка.
+        held = lock_read(lock)
+        if held:
+            pid = int(held.get("pid") or 0)
+            agent = {"task": str(held.get("task") or ""), "pid": pid,
+                     "since": str(held.get("since") or ""), "at": os.path.getmtime(lock),
+                     "alive": pid > 0 and pid_alive(pid)}
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     # Идущий маршрут пишет «сделанное» после каждого шага — на случай перезапуска панели.

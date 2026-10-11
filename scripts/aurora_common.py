@@ -1533,34 +1533,74 @@ def _lock_live(path, held: dict, stale_s=None) -> bool:
 
 
 def lock_holder(path, stale_s=None) -> dict:
-    """Живой держатель замка (его запись) или пусто. Ничего не снимает и не пишет."""
+    """Живой держатель замка (его запись) или пусто. Ничего не снимает и не пишет.
+    Замок, который пишут прямо сейчас (файл есть, записи ещё нет), — живой: `{"pid": 0}`,
+    ровно так его видит и `lock_take`."""
     held = lock_read(path)
-    return held if os.path.exists(str(path)) and _lock_live(path, held, stale_s) else {}
+    if not (os.path.exists(str(path)) and _lock_live(path, held, stale_s)):
+        return {}
+    return held or {"pid": 0}
+
+
+LOCK_BREAK_ABANDONED_S = 10  # охранный файл снятия старше — его хозяин не дожил, он брошен
+
+
+def _lock_break(path, held: dict, stale_s=None) -> bool:
+    """Снять замок, который при чтении оказался мёртвым. Снятие — под охранным файлом
+    `<замок>.break` (`O_EXCL`): без него двое видят один и тот же мёртвый замок, первый
+    его снимает и берёт свой, второй снимает уже СВЕЖИЙ чужой замок — и владельцев двое.
+    Под охраной запись перечитывается и проверяется ещё раз: снимаем только тот же самый
+    замок, и только пока он по-прежнему мёртв. → удалось ли захватить охрану (занято —
+    вызывающий чуть подождёт и повторит)."""
+    import time
+    guard = str(path) + ".break"
+    try:
+        os.close(os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        try:                           # хозяин охраны умер на полпути — не вечно же ждать
+            if time.time() - os.path.getmtime(guard) > LOCK_BREAK_ABANDONED_S:
+                os.remove(guard)
+        except OSError:
+            pass
+        return False
+    try:
+        if lock_read(path) == held and not _lock_live(path, held, stale_s):
+            try:
+                os.remove(str(path))
+            except OSError:
+                pass
+    finally:
+        try:
+            os.remove(guard)
+        except OSError:
+            pass
+    return True
 
 
 def lock_take(path, info=None, stale_s=None):
     """Взять замок атомарно. → (взят, запись держателя; пусто, если взят нами).
 
-    Замок мёртвого или залежавшегося держателя снимается и берётся заново. Перед снятием
-    запись перечитывается: если за это время замок сменили, чужой свежий замок не трогаем.
-    Ошибки файловой системы, кроме «файл уже есть», поднимаются — решает вызывающий.
+    Замок мёртвого или залежавшегося держателя снимается и берётся заново; снятие
+    сериализовано охранным файлом (`_lock_break`), поэтому и в этом случае владелец один.
+    Перед снятием запись перечитывается: если за это время замок сменили, чужой свежий
+    замок не трогаем. Ошибки файловой системы, кроме «файл уже есть», поднимаются —
+    решает вызывающий.
     """
+    import time
     path = str(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     payload = {"pid": os.getpid()}
     payload.update(info or {})
     held = {}
-    for _ in range(3):
+    for _ in range(200):               # охрана занята ~мс; ~4 с ожидания с запасом
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             held = lock_read(path)
             if _lock_live(path, held, stale_s) or lock_read(path) != held:
                 return False, held
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            if not _lock_break(path, held, stale_s):
+                time.sleep(0.02)
             continue
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)

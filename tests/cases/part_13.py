@@ -2289,9 +2289,57 @@ def test_file_locks_are_one_primitive_atomic_and_read_old_formats(tmp: Path):
     # Файл без pid: только что созданный — чужой, давний — мусор.
     path.write_text("", encoding="utf-8")
     assert not lock_take(path)[0], "замок, который пишут прямо сейчас, снят"
+    assert lock_holder(path) == {"pid": 0}, "замок «в момент записи» назван свободным"
     old = _t.time() - 600
     os.utime(path, (old, old))
     assert lock_take(path)[0], "давний мусор запер замок"
+
+
+@test
+def test_a_stale_file_lock_is_broken_by_exactly_one_starter(tmp: Path):
+    """Замок, оставшийся от убитого прогона, снимает и занимает ровно один из стартующих.
+
+    Без охраны снятия двое видят один мёртвый замок: первый его снимает и берёт свой, второй
+    снимает уже свежий чужой замок и берёт его тоже — владельцев двое. Восемь потоков через
+    барьер, на каждом круге — заново оставленный замок мёртвого pid. Брошенная охрана
+    (хозяин умер внутри снятия) не запирает замок навсегда.
+    """
+    import threading
+    import time as _t
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import LOCK_BREAK_ABANDONED_S, lock_read, lock_take
+    path = tmp / "state" / "stale.lock"
+    path.parent.mkdir(parents=True)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+
+    for rnd in range(40):
+        path.write_text(json.dumps({"pid": gone.pid, "task": "dead"}), encoding="utf-8")
+        won = []
+        gate = threading.Barrier(8)
+
+        def racer(n):
+            gate.wait()
+            if lock_take(path, {"task": f"t{n}"})[0]:
+                won.append(n)
+        ts = [threading.Thread(target=racer, args=(n,)) for n in range(8)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert len(won) == 1, f"круг {rnd}: мёртвый замок взяли {len(won)} владельцев: {won}"
+        assert lock_read(path)["task"] == f"t{won[0]}"
+        path.unlink()
+    assert not Path(str(path) + ".break").exists(), "охрана снятия осталась после работы"
+
+    # Охрана, брошенная давно, не мешает; свежая охрана — мешает, пока не истечёт.
+    guard = Path(str(path) + ".break")
+    path.write_text(json.dumps({"pid": gone.pid}), encoding="utf-8")
+    guard.write_text("", encoding="utf-8")
+    old = _t.time() - LOCK_BREAK_ABANDONED_S - 5
+    os.utime(guard, (old, old))
+    assert lock_take(path, {"task": "after-crash"})[0], "брошенная охрана заперла замок"
+    assert not guard.exists()
 
 
 @test
