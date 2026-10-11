@@ -65,6 +65,8 @@ providers of the setup: if your perimeter forbids sending materials out, do not 
 ## Safety properties
 
 - **One writer per project.** A writing agent run takes a lock in the project; a second one is refused with the holder's
-  pid and start time. A run killed with Ctrl+C does not lock the base.
+  pid and start time. The lock is taken atomically (two runs starting at once cannot both become owners), and one engine
+  function answers "is the holder alive" everywhere — on Windows it never terminates a foreign process. A run killed with
+  Ctrl+C does not lock the base.
 - **A checkpoint first.** Before a writing run the agent commits the current state; no git → it refuses to write.
 - **A failure on one card does not stop the run;** three in a row do.

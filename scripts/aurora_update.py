@@ -299,15 +299,11 @@ def relayout_cleanup(target: Path, rp: dict) -> list:
 
 def agent_running(target: Path) -> str:
     """Идёт ли в проекте пишущий прогон агента (замок на новом или прежнем месте)."""
-    from aurora_common import pid_alive
+    from aurora_common import lock_holder
     for base in (ENGINE, LEGACY):
-        lock = target / base / "state" / "agent.lock"
-        try:
-            held = json.loads(lock.read_text(encoding="utf-8"))
-            if pid_alive(int(held.get("pid") or 0)):
-                return f"{held.get('task')} (pid {held.get('pid')})"
-        except (OSError, ValueError, TypeError):
-            continue
+        held = lock_holder(target / base / "state" / "agent.lock")
+        if held:
+            return f"{held.get('task')} (pid {held.get('pid')})"
     return ""
 
 

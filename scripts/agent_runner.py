@@ -113,8 +113,8 @@ def prune_runs(runs: Path, task: str) -> int:
         except OSError:
             pass
     return len(old)
-from aurora_common import (local_now, local_view, pid_alive, utc_label,  # noqa: E402,F401
-                           utc_slug, utc_stamp, utc_today)
+from aurora_common import (local_now, local_view, lock_holder, lock_release,  # noqa: E402,F401
+                           lock_take, pid_alive, utc_label, utc_slug, utc_stamp, utc_today)
 TODAY_STR = utc_today()
 ASK_DIR = Path("AuroraKnowledgeDB") / "meta" / "ask"
 ASK_TAIL = 4          # столько прошлых пар вопрос-ответ уходит в контекст уточнения
@@ -381,42 +381,24 @@ def writing_lock(cwd: str, task: str):
     """
     path = os.path.join(cwd, LOCK)
     # Проект, переезжающий с 1.158: прогон прежнего движка держит замок в `.opencode/state`.
-    alive, held = False, {}
-    for probe in (path, os.path.join(cwd, LOCK_LEGACY)):
+    held = lock_holder(os.path.join(cwd, LOCK_LEGACY))
+    if not held:
         try:
-            with open(probe, encoding="utf-8") as f:
-                held = json.load(f)
-            pid = int(held.get("pid") or 0)
-            alive = pid > 0 and pid_alive(pid)
-        except (OSError, ValueError, TypeError):
-            alive, held = False, {}
-        if alive:
-            break
-    if alive:
-        return False, (f"уже идёт пишущий прогон: {held.get('task')} "
-                       f"(pid {held.get('pid')}, с {local_view(held.get('since'))})")
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(), "task": task,
-                       "since": utc_stamp()}, f, ensure_ascii=False)
-    except OSError:
-        return True, ""          # не смогли записать замок — работать это не мешает
-    return True, ""
+            # Атомарно (O_EXCL): два прогона, стартовавшие разом, не оба станут владельцами.
+            taken, held = lock_take(path, {"task": task, "since": utc_stamp()})
+        except OSError:
+            return True, ""      # не смогли записать замок — работать это не мешает
+        if taken:
+            return True, ""
+    return False, (f"уже идёт пишущий прогон: {held.get('task')} "
+                   f"(pid {held.get('pid')}, с {local_view(held.get('since'))})")
 
 
 def release_lock(cwd: str) -> None:
     """Снять СВОЙ замок. Чужой не трогаем: читающий прогон, сняв чужой замок, открыл бы
     дверь второму писателю — ровно тому, от чего замок и заведён. Отсутствие файла не
     ошибка: его мог убрать уже завершившийся прогон."""
-    path = os.path.join(cwd, LOCK)
-    try:
-        with open(path, encoding="utf-8") as f:
-            if int(json.load(f).get("pid") or 0) != os.getpid():
-                return
-        os.remove(path)
-    except (OSError, ValueError, TypeError):
-        pass
+    lock_release(os.path.join(cwd, LOCK))
 
 
 class _ThreadRoutedStream:

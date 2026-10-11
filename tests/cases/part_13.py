@@ -2226,6 +2226,138 @@ def test_windows_pid_check_reads_the_exit_code_not_a_signal(tmp: Path):
 
 
 @test
+def test_file_locks_are_one_primitive_atomic_and_read_old_formats(tmp: Path):
+    """Замок процесса — один примитив в `aurora_common` (BL-LCY-05).
+
+    Берётся атомарно: из многих потоков, пришедших разом, владелец один. Занятый живым
+    держателем не снимается, замок мёртвого и залежавшегося — снимается; голое число
+    (прежний замок бота) читается как pid; снять можно только свой замок; файл без pid,
+    созданный только что, — чужой замок «в момент записи», а не мусор.
+    """
+    import threading
+    import time as _t
+    sys.path.insert(0, str(SCRIPTS))
+    from aurora_common import lock_holder, lock_read, lock_release, lock_take
+    path = tmp / "state" / "x.lock"
+
+    won = []
+    gate = threading.Barrier(8)
+
+    def racer(n):
+        gate.wait()
+        ok, _ = lock_take(path, {"task": f"t{n}"})
+        if ok:
+            won.append(n)
+    ts = [threading.Thread(target=racer, args=(n,)) for n in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(won) == 1, f"замок взяли {len(won)} владельцев вместо одного: {won}"
+    assert lock_read(path)["pid"] == os.getpid() and lock_read(path)["task"] == f"t{won[0]}"
+    ok, held = lock_take(path, {"task": "second"})
+    assert not ok and held["task"] == f"t{won[0]}", "живой замок снят или причина не названа"
+    assert lock_holder(path)["pid"] == os.getpid()
+
+    # Чужой замок снять нельзя; свой — можно; отсутствие файла — не ошибка.
+    path.write_text(json.dumps({"pid": os.getppid(), "task": "other"}), encoding="utf-8")
+    assert lock_release(path) is False and path.is_file(), "чужой замок снят"
+    path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    assert lock_release(path) is True and not path.exists()
+    assert lock_release(path) is False
+
+    # Мёртвый держатель замок не держит; залежавшийся по полю at — тоже.
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    path.write_text(json.dumps({"pid": gone.pid, "task": "dead"}), encoding="utf-8")
+    assert lock_holder(path) == {}
+    ok, _ = lock_take(path, {"task": "new"})
+    assert ok and lock_read(path)["task"] == "new"
+    path.write_text(json.dumps({"pid": os.getpid(), "at": _t.time() - 7200}), encoding="utf-8")
+    assert lock_take(path, stale_s=3600)[0], "залежавшийся замок не снят"
+    lock_release(path)
+    path.write_text(json.dumps({"pid": os.getpid(), "at": _t.time()}), encoding="utf-8")
+    assert not lock_take(path, stale_s=3600)[0], "свежий замок снят по возрасту"
+
+    # Прежний замок бота — голый pid.
+    path.write_text(str(os.getppid()), encoding="utf-8")
+    assert lock_read(path) == {"pid": os.getppid()} and not lock_take(path)[0]
+    path.write_text(str(gone.pid), encoding="utf-8")
+    assert lock_take(path)[0], "голый pid мёртвого процесса запер замок"
+    lock_release(path)
+
+    # Файл без pid: только что созданный — чужой, давний — мусор.
+    path.write_text("", encoding="utf-8")
+    assert not lock_take(path)[0], "замок, который пишут прямо сейчас, снят"
+    old = _t.time() - 600
+    os.utime(path, (old, old))
+    assert lock_take(path)[0], "давний мусор запер замок"
+
+
+@test
+def test_a_project_git_lock_never_signals_its_holder_on_windows(tmp: Path):
+    """Занятый замок git-действий не «проверяется» сигналом, который на Windows убивает.
+
+    Раньше `OpLock` спрашивал держателя через `os.kill(pid, 0)`: на Windows это завершение
+    процесса, и вторая git-операция обрывала первую посреди слияния или отправки. Теперь
+    проверка — `pid_alive`: имитируем Windows (`os.name`, ответ `kernel32`) и запрещаем
+    `os.kill`; живой замок остаётся, замок мёртвого снимается, а `agent_running` и
+    `writing_lock` проверяют держателя той же проверкой.
+    """
+    sys.path.insert(0, str(SCRIPTS))
+    import aurora_common as C
+    import agent_runner
+    import aurora_update
+    import git_sync
+    assert not hasattr(git_sync, "_alive"), "у git_sync осталась своя проверка живости"
+    proj = tmp / "proj"
+    proj.mkdir()
+    subprocess.run(["git", "-C", str(proj), "init", "-q"], check=True)
+    lock = git_sync.OpLock(proj, "push").path
+    lock.parent.mkdir(parents=True, exist_ok=True)
+
+    def forbidden(pid, sig):
+        raise AssertionError(f"os.kill({pid}, {sig}) на Windows завершает процесс")
+
+    asked = []
+    verdict = {"alive": True}
+    first, second = (git_sync.OpLock(proj, "push") for _ in range(2))   # Path — до смены os.name
+    real = (os.name, os.kill, C._win_pid_alive)
+    C._win_pid_alive = lambda pid, *a, **k: asked.append(pid) or verdict["alive"]
+    os.kill = forbidden
+    os.name = "nt"
+    try:
+        lock.write_text(json.dumps({"pid": 4242, "at": __import__("time").time(),
+                                    "action": "pull"}), encoding="utf-8")
+        with first as busy:
+            assert not busy.ok, "второе git-действие вошло при живом держателе"
+        assert lock.is_file() and json.loads(lock.read_text(encoding="utf-8"))["pid"] == 4242, \
+            "замок живого держателя снят"
+        assert asked == [4242], f"держателя спросили не через pid_alive: {asked}"
+        verdict["alive"] = False
+        with second as mine:
+            assert mine.ok, "замок мёртвого держателя не снят"
+            assert json.loads(lock.read_text(encoding="utf-8")) ["pid"] == os.getpid()
+        assert not lock.exists(), "свой замок не снят на выходе"
+        # Замок агента проверяется той же проверкой.
+        agent = tmp / "agent"
+        (agent / ".aurora/state").mkdir(parents=True)
+        (agent / ".aurora/state/agent.lock").write_text(
+            json.dumps({"pid": 777, "task": "build"}), encoding="utf-8")
+        assert aurora_update.agent_running(agent) == ""
+        got, _busy = agent_runner.writing_lock(str(agent), "distill")
+        assert got, "замок мёртвого писателя не снят"
+        agent_runner.release_lock(str(agent))
+        verdict["alive"] = True
+        (agent / ".aurora/state/agent.lock").write_text(
+            json.dumps({"pid": 777, "task": "build"}), encoding="utf-8")
+        assert aurora_update.agent_running(agent).startswith("build")
+        assert agent_runner.writing_lock(str(agent), "distill")[0] is False
+    finally:
+        os.name, os.kill, C._win_pid_alive = real
+
+
+@test
 def test_child_processes_speak_utf8_whatever_the_system_codepage(tmp: Path):
     """Дочерний Python пишет в трубу UTF-8, а не в кодовой странице системы.
 

@@ -115,14 +115,9 @@ def owner_file() -> str:
 
 
 def _alive(pid: int) -> bool:
-    try:
-        from aurora_common import pid_alive
-    except ImportError:                       # панель без движка рядом — проверка попроще
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+    # Общая проверка движка: на Windows `os.kill(pid, 0)` убивает процесс, а не проверяет,
+    # поэтому своей запасной копии на `os.kill` здесь нет.
+    from aurora_common import pid_alive
     return pid_alive(pid)
 
 

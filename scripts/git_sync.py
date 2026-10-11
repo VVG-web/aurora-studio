@@ -61,7 +61,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aurora_common import kit_root  # noqa: E402 — кит: сам скрипт или указатель копии движка
+from aurora_common import kit_root, lock_release, lock_take  # noqa: E402 — кит: сам скрипт или указатель копии движка
 
 MASK = "••••••"
 PROVIDERS = ("github", "gitlab", "bitbucket", "gitea", "generic")
@@ -1188,47 +1188,15 @@ class OpLock:
         self.ok = False
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump({"pid": os.getpid(), "at": time.time(), "action": self.action}, f)
-                self.ok = True
-                return self
-            except FileExistsError:
-                held = _read_json(self.path, {})
-                if time.time() - float(held.get("at") or 0) > LOCK_STALE_S or not _alive(held.get("pid")):
-                    try:
-                        os.remove(self.path)
-                    except OSError:
-                        pass
-                    continue
-                return self
+        # Замок берёт общий примитив: атомарно (O_EXCL), а живость держателя — через
+        # `pid_alive` (на Windows `os.kill(pid, 0)` убивал бы чужую git-операцию).
+        self.ok, _ = lock_take(self.path, {"at": time.time(), "action": self.action},
+                               stale_s=LOCK_STALE_S)
         return self
 
     def __exit__(self, *exc):
         if self.ok:
-            try:
-                os.remove(self.path)
-            except OSError:
-                pass
-
-
-def _alive(pid) -> bool:
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid == os.getpid():
-        return True
-    try:
-        os.kill(pid, 0)
-        return True
-    except PermissionError:
-        return True
-    except (OSError, ValueError):
-        return False
+            lock_release(self.path)
 
 
 # ---------------------------------------------------------------- состояние

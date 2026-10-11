@@ -10,6 +10,7 @@ from pathlib import Path
 import json
 import os
 import re
+import subprocess
 import sys
 
 from harness import KIT, SCRIPTS, kit_with_mcp, set_home, test  # noqa: F401
@@ -156,9 +157,14 @@ def test_a_bot_runs_with_its_mcp_skills_and_attachments(tmp: Path):
             assert shown["code"] == code and "title" not in shown and "fix" not in shown, \
                 "итог прогона несёт русские слова на экран — английская панель их покажет"
         lock = B.state_file(p, r["file"]).with_suffix(".lock")
-        lock.write_text("1", encoding="utf-8")
+        lock.write_text(str(os.getpid()), encoding="utf-8")        # прежний замок: голый pid живого
         assert B.run(p, r["file"], call=fake, say=lambda s: None)["problem"]["code"] == "busy"
         lock.unlink()
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        lock.write_text(str(gone.pid), encoding="utf-8")           # убитый прогон бота не держит бота
+        assert (B.run(p, r["file"], call=fake, say=lambda s: None).get("problem") or {}).get("code") != "busy"
+        assert not lock.exists(), "замок бота не снят после прогона"
         AG.role_chain = lambda cfg, role: []
         assert B.run(p, r["file"], call=fake, say=lambda s: None)["problem"]["code"] == "no_models"
     finally:

@@ -63,7 +63,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import is_folder_guide, kit_root  # noqa: E402 — кит; описание папки — не бот
+from aurora_common import is_folder_guide, kit_root, lock_release, lock_take  # noqa: E402 — кит; описание папки — не бот
 
 BOTS_DIR = "bots"
 STATE_DIR = (".aurora", "state", "bots")
@@ -763,19 +763,15 @@ def run(project, rel: str, trigger: str = "manual", call=None, say=print) -> dic
     rel = bot["file"]
     lock = state_file(project, rel).with_suffix(".lock")
     lock.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-    except FileExistsError:
-        if time.time() - lock.stat().st_mtime < 6 * 3600:
-            return {"ok": False, "problem": problem("busy", rel)}
-        lock.unlink(missing_ok=True)
-        return run(project, rel, trigger, call, say)
+    # Замок общий с остальными (aurora_common.lock_take): занят, пока жив держатель и
+    # прошло меньше шести часов; убитый прогон не держит бота шесть часов.
+    taken, _held = lock_take(lock, {"at": time.time()}, stale_s=6 * 3600)
+    if not taken:
+        return {"ok": False, "problem": problem("busy", rel)}
     try:
         res = _run(project, rel, meta, body, trigger, call, say, AG, RC, utc_slug)
     finally:
-        lock.unlink(missing_ok=True)
+        lock_release(lock)
     res["seconds"] = round(time.time() - started, 1)
     state = {"at": utc_stamp(), "trigger": trigger, "ok": res["ok"],
              "summary": (res.get("summary") or "")[:400], "seconds": res["seconds"],

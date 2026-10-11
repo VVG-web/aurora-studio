@@ -1479,6 +1479,107 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------------
+# Файловые замки процессов (BL-LCY-05). Один примитив на всех: замок git-действий проекта,
+# замок пишущего прогона агента, замок бота, проверка «идёт ли прогон» при обновлении.
+# Раньше у каждого была своя копия: одна проверяла держателя через `os.kill(pid, 0)`
+# (на Windows это завершение процесса), другая писала файл без `O_EXCL` и пускала двух
+# писателей в базу разом, третья доверяла только возрасту файла.
+#
+# Замок — JSON-файл `{"pid": …, + то, что передал владелец (task, at, action…)}`. Берётся
+# атомарно (`O_CREAT|O_EXCL`); держатель считается живым, пока жив его pid (`pid_alive`) и —
+# если задан предел — файл не старше предела. Голое число в файле (прежний замок бота)
+# читается как `{"pid": N}`.
+# ---------------------------------------------------------------------------------
+LOCK_WRITE_GRACE_S = 5       # столько секунд файл без pid считается «ещё пишется»
+
+
+def lock_read(path) -> dict:
+    """Содержимое замка. Нет файла или мусор — пусто; голое число — `{"pid": число}`."""
+    try:
+        with open(str(path), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if isinstance(data, int) and not isinstance(data, bool):
+        return {"pid": data}
+    return data if isinstance(data, dict) else {}
+
+
+def _lock_live(path, held: dict, stale_s=None) -> bool:
+    """Держит ли замок живой процесс: pid жив и (если задан `stale_s`) замок не залежался.
+    Возраст — по полю `at`, а без него — по времени изменения файла."""
+    import time
+    try:
+        pid = int(held.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    try:
+        age = time.time() - os.path.getmtime(str(path))
+    except OSError:
+        return False                   # файл успели убрать — держателя нет
+    if stale_s is not None:
+        try:
+            age = time.time() - float(held["at"])
+        except (KeyError, TypeError, ValueError):
+            pass
+        if age > stale_s:
+            return False
+    if pid <= 0:
+        # Файл создан, но pid ещё не записан: владелец в двух шагах от записи. Только по
+        # истечении короткой отсрочки это мусор, иначе чужой свежий замок был бы снят.
+        return age < LOCK_WRITE_GRACE_S
+    return pid_alive(pid)
+
+
+def lock_holder(path, stale_s=None) -> dict:
+    """Живой держатель замка (его запись) или пусто. Ничего не снимает и не пишет."""
+    held = lock_read(path)
+    return held if os.path.exists(str(path)) and _lock_live(path, held, stale_s) else {}
+
+
+def lock_take(path, info=None, stale_s=None):
+    """Взять замок атомарно. → (взят, запись держателя; пусто, если взят нами).
+
+    Замок мёртвого или залежавшегося держателя снимается и берётся заново. Перед снятием
+    запись перечитывается: если за это время замок сменили, чужой свежий замок не трогаем.
+    Ошибки файловой системы, кроме «файл уже есть», поднимаются — решает вызывающий.
+    """
+    path = str(path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    payload = {"pid": os.getpid()}
+    payload.update(info or {})
+    held = {}
+    for _ in range(3):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            held = lock_read(path)
+            if _lock_live(path, held, stale_s) or lock_read(path) != held:
+                return False, held
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        return True, {}
+    return False, held
+
+
+def lock_release(path) -> bool:
+    """Снять СВОЙ замок (pid в файле — наш). Чужой не трогаем: снятый чужой замок открыл бы
+    дверь второму писателю. Нет файла — не ошибка. → снят ли."""
+    try:
+        if int(lock_read(path).get("pid") or 0) != os.getpid():
+            return False
+        os.remove(str(path))
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
 def child_env(project: str = "", **extra) -> dict:
     """Окружение дочернего процесса: без отладочного мусора, с настройками движка.
 
