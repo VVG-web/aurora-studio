@@ -173,6 +173,16 @@ start of a line. When a foreign page's text carries the same line, its hashes ar
 card: otherwise the page could pass its own line off as the human's word or cut itself short. The rest of the source
 text stays verbatim.
 
+**The human's word survives changes to a card.** A correction (`Raw/corrections/`) names its card by name, and names
+change, so `kb:correct` and `kb:kind` look the card up by its live name, by a synonym (the former name after a
+document code was stripped) and along the `superseded_by` chain from `_archive` (merge, supersede); the report lists
+whatever was found by a former name on its own line. An archived copy under the same name no longer makes the name
+ambiguous. A split (`agent:build`, `kb:fix --split`) does not carry "Исправления человеком" and "История изменений"
+into the parts: they stay with the document map below the list of parts, and part titles are sanitised before they are
+written into the header and checked for uniqueness across the whole base. A merge moves the donor's section into the
+survivor's section, not into "Слияние". The `kb:fix` planners that move cards to `_archive` leave alone a card that has
+a corrections section, a `corrected_by` field or an active correction in `Raw/corrections`.
+
 ## 6. Twins: a trusted one and a draft one
 
 Two cards may exist about one concept: one assembled from trusted sources and one from untrusted ones. They are linked

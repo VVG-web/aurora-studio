@@ -2525,6 +2525,112 @@ def corrections_of(text: str) -> str:
     m = re.search(r"\n## ", block)
     return (block[:m.start()] if m else block).strip()
 
+
+def cut_corrections(text: str) -> tuple:
+    """Текст без раздела «Исправления человеком» → (текст без раздела, текст раздела без заголовка).
+
+    Раздел кончается следующим заголовком второго уровня или концом текста. Нет раздела —
+    текст возвращается как есть и пустой раздел.
+    """
+    found = _CORRECTIONS_AT.search(text or "")
+    if not found:
+        return text, ""
+    m = re.search(r"\n## ", text[found.end():])
+    end = found.end() + m.start() + 1 if m else len(text)
+    rest = (text[:found.start()].rstrip("\n") + "\n\n" + text[end:].lstrip("\n")).strip("\n")
+    return rest + "\n", text[found.end():end].strip()
+
+
+def put_corrections(text: str, word: str) -> str:
+    """Дописать слово человека в раздел «Исправления человеком» карточки (раздела нет — завести).
+
+    Новый раздел встаёт перед историей изменений, если она есть, иначе в конец: как у
+    `kb_corrections`. Тот же текст дважды не пишется. Слово человека не теряется, когда
+    карточка-носитель уходит (слияние, разрез); при следующем `kb:correct --apply` раздел
+    всё равно пересобирается из `Raw/corrections`.
+    """
+    word = (word or "").strip()
+    if not word:
+        return text
+    have = corrections_of(text)
+    if word in have:
+        return text
+    if have:
+        rest, was = cut_corrections(text)
+        return put_corrections(rest, was + "\n\n" + word) if was else text
+    block = f"{CORRECTIONS}\n\n{word}\n"
+    found = _FOOTER_AT.search(text)
+    if found:
+        return text[:found.start()].rstrip("\n") + "\n\n" + block + "\n" + text[found.start():]
+    return text.rstrip("\n") + "\n\n" + block
+
+
+def card_title_safe(name: str) -> str:
+    """Название карточки для строки `title: "…"` и заголовка: без кавычки и переводов строки.
+
+    Название части разрезанной карточки приходит от планировщика (модели) или из заголовка
+    источника. Кавычка рвала строку шапки, перевод строки дописывал в шапку чужие поля
+    (`status: verified`): значение подставлялось в YAML как есть.
+    """
+    return HEAD_BREAKS_RE.sub(" ", str(name or "")).replace('"', "'").replace("\\", "/").strip()
+
+
+def stem_taken(stem: str, kb: str = "AuroraKnowledgeDB") -> bool:
+    """Есть ли в базе живая карточка с таким именем — в любом разделе.
+
+    Имя карточки уникально по всей базе, а не в своей папке: ссылка `[[Имя]]` не знает
+    разделов, и вторая карточка с тем же именем делает её неоднозначной. Архив не считается:
+    слитая карточка там живёт под прежним именем.
+    """
+    want = f"{stem}.md".lower()
+    for dirpath, dirs, files in safe_walk(kb):
+        dirs[:] = [d for d in dirs if d != "_archive"]
+        if any(f.lower() == want for f in files):
+            return True
+    return False
+
+
+def name_lineage(kb: str, live: dict) -> dict:
+    """Прежние имена живых карточек: {имя → [пути живой карточки]}. Живые имена не входят.
+
+    Слово человека (`Raw/corrections`, `corrects: "[[Имя]]"`) указывает карточку по имени, а
+    имя меняется: ремонт снимает код документа (прежнее имя уходит в `aliases`), слияние и
+    замена уносят карточку в `_archive` с `superseded_by`. Имя находится по синониму живой
+    карточки (если он один) и по цепочке `superseded_by` архивных карточек до живой. Не нашлось
+    или неоднозначно — имени здесь нет: угадывать, чьё это слово, нельзя.
+    """
+    out: dict = {}
+    claims: dict = {}
+    for stem, paths in live.items():
+        if len(paths) != 1:
+            continue
+        for a in aliases(head_text(paths[0])):
+            if a and a not in live:
+                claims.setdefault(a, set()).add(stem)
+    for a, who in claims.items():
+        if len(who) == 1:
+            out[a] = live[next(iter(who))]
+    heirs: dict = {}
+    for dirpath, _dirs, files in safe_walk(os.path.join(kb, "_archive")):
+        for f in sorted(files):
+            if not f.endswith(".md") or f.startswith("_"):
+                continue
+            fm = frontmatter(head_text(os.path.join(dirpath, f))) or {}
+            to = as_list(fm.get("superseded_by"))
+            if to:
+                heirs.setdefault(os.path.splitext(f)[0], to[0].split("|")[0].strip())
+    for old, heir in heirs.items():
+        if old in live or old in out:
+            continue
+        cur, seen = heir, {old}
+        while cur not in live and cur not in out and cur in heirs and cur not in seen:
+            seen.add(cur)
+            cur = heirs[cur]
+        target = live.get(cur) or out.get(cur)
+        if target:
+            out[old] = target
+    return out
+
 _GLUED_QUOTES = re.compile(r"(?<=\S)[ \t]*(?=" + re.escape(QUOTES) + ")")
 
 

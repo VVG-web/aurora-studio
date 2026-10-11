@@ -41,7 +41,9 @@ import re
 import shutil
 import sys
 
-from aurora_common import (CORRECTIONS, FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+from aurora_common import (FOOTER, LINK_RE, PLACEHOLDER, QUOTES, RETIRED_FIELDS,
+                           card_title_safe, corrections_of, cut_corrections, put_corrections,
+                           split_tail, stem_taken,
                            is_meeting,
                            sources_block,
                            RETIRED_STATUS, STUB_MARK,
@@ -566,9 +568,33 @@ class Plan:
         self.reopen: list = []           # источники — обратно в план разбора
         self.notes: list = []            # строки отчёта
         self.unresolved: list = []       # ссылки, которые движок не берёт
+        self._word_names = None          # кому человек написал исправление (Raw/corrections)
 
     def write(self, path: str, text: str):
         self.file_writes[path] = text
+
+    def protects(self, c, note: bool = True) -> bool:
+        """У карточки есть слово человека — в архив её не уносим. → да/нет.
+
+        Слово человека — высшая правда базы, а `corrects:` в `Raw/corrections` держится за имя
+        карточки: уйдёт карточка (без `superseded_by`), и исправление повиснет. Признак —
+        раздел «Исправления человеком», поле `corrected_by` или действующее исправление,
+        которое называет карточку по имени или синониму (оно ещё не применено). Одна проверка
+        на все планировщики, уносящие карточки в `_archive`.
+        """
+        if self._word_names is None:
+            try:
+                import kb_corrections as KC
+                self._word_names = {o for x in KC.corrections() if x["status"] == "active"
+                                    for o in x["owners"]}
+            except Exception:            # исправлений нет или папка не читается — защиты нет
+                self._word_names = set()
+        held = (bool(corrections_of(c.text)) or bool((c.fm.get("corrected_by") or "").strip())
+                or bool(self._word_names & ({c.stem} | set(c.aliases))))
+        if held and note:
+            self.notes.append(f"  оставлена в базе: у «{c.stem}» есть слово человека "
+                              "(Исправления человеком / Raw/corrections)")
+        return held
 
     def rename(self, old: str, new: str):
         """Поставить переименование `old` → `new`, сведя его с уже поставленными. → итоговый путь
@@ -891,6 +917,10 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
         return f"карточка «{target}» не найдена", False
     text = hit.text
     head, _sep, rest = text.partition("\n---\n") if text.startswith("---") else ("", "", text)
+    # «Исправления человеком» и «История изменений» — не текст источника: в части они не
+    # едут (раньше последний заголовок увозил их в часть или в отдельную карточку), а у карты
+    # документа остаются ниже списка частей.
+    rest, tail = split_tail(rest)
     marks = list(SPLIT_HEAD_RE.finditer(rest))
     if len(marks) < 2:
         return f"«{hit.stem}»: заголовков в теле меньше двух — резать не по чему", False
@@ -901,7 +931,7 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(rest)
         chunk = rest[m.end():end].strip()
-        title = m.group(2).strip().strip("*_`")
+        title = card_title_safe(m.group(2).strip().strip("*_`"))
         if len(chunk) < min_chars or not title:
             continue
         parts.append((title, chunk))
@@ -912,7 +942,9 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
     for title, chunk in parts:
         name = normalize_title(title)[:90]
         path = os.path.join(root, section, name + ".md")
-        if path in cards or os.path.exists(path):
+        # Имя карточки уникально по всей базе, а не только в своём разделе.
+        if (path in cards or os.path.exists(path) or stem_taken(name, root)
+                or any(name == n for n, _t in made)):
             continue
         card = (f'---\ntitle: "{title}"\naliases: []\nstatus: draft\n'
                 f'type: {frontmatter(text).get("type") or "concept"}\n'
@@ -928,7 +960,8 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
     keep = (f"# {frontmatter(text).get('title', hit.stem).strip(chr(34))}\n\n"
             f"Карточка была разрезана на части: тело раздулось до {len(rest)} знаков, "
             "а знание ищут атомарным. Ниже — части в исходном порядке.\n\n"
-            + "\n".join(f"- [[{n}|{ttl}]]" for n, ttl in made) + "\n")
+            + "\n".join(f"- [[{n}|{ttl}]]" for n, ttl in made) + "\n"
+            + (("\n" + tail.strip() + "\n") if tail.strip() else ""))
     plan.file_writes[hit.path] = (("---" + head[3:] if head.startswith("---") else head)
                                   + "\n---\n\n" + keep)
     return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа", True
@@ -1282,6 +1315,8 @@ def plan_drop_jira(cards: dict, plan: Plan) -> list:
         srcs = [x for x in card_sources(c.text) if x]
         if not srcs or not all(x.replace("\\", "/").startswith("Sources/JIRA/") for x in srcs):
             continue
+        if plan.protects(c):
+            continue
         plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                              os.path.basename(rel)).replace("\\", "/")))
         dropped.append((c.stem, ", ".join(srcs[:3])))
@@ -1312,6 +1347,8 @@ def plan_drop_code_stubs(cards: dict, plan: Plan) -> list:
         section = rel.split("/")[1] if rel.count("/") >= 2 else ""
         if not is_code_name(c.stem, (c.fm.get("title") or c.stem).strip().strip('"'),
                             (card_sources(c.text) or [""])[0], section):
+            continue
+        if plan.protects(c):
             continue
         plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                              os.path.basename(rel)).replace("\\", "/")))
@@ -1350,6 +1387,8 @@ def plan_stale_stubs(cards: dict, plan: Plan, root: str) -> list:
     for path, c in sorted(cards.items()):
         rel = path.replace("\\", "/")
         if is_service(rel) or "/_archive/" in rel:
+            continue
+        if plan.protects(c, note=False):
             continue
         title = (c.fm.get("title") or "").strip().strip('"')
         own = c.body().split(QUOTES, 1)[0]
@@ -1553,7 +1592,8 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
         # `kb_kind` перетирал `template` правилом раздела, и у ALG-305 PRJ-C стоял `dictionary`.
         if (kind == "template" or "шаблон" in (c.fm.get("tags") or "")
                 or FORM_MARK in c.body()[:600]):
-            if srcs and os.path.isfile(srcs[0]) and not BP.is_template(srcs[0]):
+            if (srcs and os.path.isfile(srcs[0]) and not BP.is_template(srcs[0])
+                    and not plan.protects(c)):
                 plan.moves.append((rel, dst))
                 forms.append(c.stem)
                 gone[c.stem] = title
@@ -1584,6 +1624,8 @@ def plan_template(cards: dict, plan: Plan, root: str) -> tuple:
             if common / len(words) >= BORN_SHARE and common / len(lead) >= BORN_SHARE:
                 hit = (par, n)
                 break
+        if hit and plan.protects(c):
+            continue
         if hit:
             plan.moves.append((rel, dst))
             plan.reopen += [s for s in srcs if s.startswith(("Sources/", "Raw/"))]
@@ -1696,6 +1738,8 @@ def plan_copies(cards: dict, plan: Plan) -> tuple:
         keep = [s for s in srcs if s not in machine]
         title = (c.fm.get("title") or "").strip().strip('"') or c.stem
         if not keep:
+            if plan.protects(c):
+                continue
             plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                                  os.path.basename(rel)).replace("\\", "/")))
             gone[c.stem] = title
@@ -1810,7 +1854,7 @@ def plan_gone_sources(cards: dict, plan: Plan) -> tuple:
     def orphan(c) -> bool:
         """Машинная карточка, которой без источника опереться не на что."""
         return ((c.fm.get("built") or "").strip() == "machine"
-                and not is_placeholder(c.fm, c.text) and CORRECTIONS not in c.text)
+                and not is_placeholder(c.fm, c.text) and not plan.protects(c, note=False))
 
     themes: dict = {}                    # папка → путь живой темы
     for path, c in cards.items():
@@ -1918,6 +1962,8 @@ GONE_NOTE = "источника больше нет в зеркале"
 def _retire(c, path: str, plan: Plan, gone_cards: dict, retired: list, notes: list = None,
             why: str = "", to: str = "") -> None:
     """В архив — с записью в истории, почему: через месяц иначе не понять, куда делась."""
+    if plan.protects(c):
+        return
     why = why or "снята в архив: страницы-источника больше нет в зеркале — знание ушло вместе с ней"
     rel = path.replace("\\", "/")
     text = plan.file_writes.get(path, c.text)
@@ -2049,6 +2095,8 @@ def plan_themes(cards: dict, plan: Plan, root: str, floor: int = 3) -> list:
             continue
         srcs = card_sources(c.text)
         if srcs and all(is_meeting(x) for x in srcs) and not any(x.endswith(".md") for x in srcs):
+            if plan.protects(c):
+                continue
             plan.moves.append((rel, os.path.join(ROOT, "_archive",
                                                  os.path.basename(rel)).replace("\\", "/")))
     made = []
@@ -2787,6 +2835,22 @@ def merge_paths(cards: dict, kpath: str, dpath: str, plan: Plan) -> int:
                 head = head.rstrip("\n") + "\n" + new_block
             text = head + rest
     merged_body = drop.body().strip()
+    # Слово человека донора переезжает в раздел «Исправления человеком» выжившей, а не в
+    # «## Слияние»: там маркер раздела читался бы наравне с настоящим, и `kb:correct` обновлял
+    # бы первый попавшийся. Поле `corrected_by` объединяется.
+    merged_body, word = cut_corrections(merged_body)
+    merged_body = merged_body.strip()
+    if word or (drop.fm.get("corrected_by") or "").strip():
+        from aurora_common import with_fields
+        text = put_corrections(text, word)
+        by = [x.strip() for x in ((Card(kpath, text).fm.get("corrected_by") or "") + ","
+                                  + (drop.fm.get("corrected_by") or "")).replace('"', "").split(",")
+              if x.strip()]
+        try:
+            text = with_fields(text, {"corrected_by": '"' + ", ".join(dict.fromkeys(by)) + '"'}) \
+                if by else text
+        except (ValueError, AssertionError):
+            pass                    # карточка без шапки: поле ставить некуда, раздел уже записан
     # Повторное слияние того же донора ничего не прибавляет, а тело удваивает. Раньше
     # это и происходило: донор не уходил в архив, и каждый прогон вклеивал его снова.
     # Метка несёт имя донора, а у двойников из разных разделов имя одно: по метке одной

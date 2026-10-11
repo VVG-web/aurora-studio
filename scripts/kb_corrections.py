@@ -39,20 +39,22 @@ from aurora_common import (CORRECTIONS, FOOTER, aliases as card_aliases,  # noqa
 KB = "AuroraKnowledgeDB"
 DIR = os.path.join("Raw", "corrections")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
-from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+from aurora_common import link_escapes, name_lineage, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
 MARK = CORRECTIONS
 
 
 def cards() -> dict:
-    """{имя карточки → [пути]}. Служебное — не карточка.
+    """{имя карточки → [пути]}. Служебное — не карточка, архив — тоже.
 
+    Архив не считается: слитая карточка уходит туда под прежним именем, и двойник с живой
+    делал имя «неоднозначным» — исправление не применялось, а новое не заводилось.
     Список, а не путь: имена в базе бывают неуникальны (это находка линтера, но она
     случается), и молча выбрать одну из двух — то же самое, что выдать догадку за факт.
     Исправление уедет не в ту карточку, и заметят это нескоро.
     """
     out: dict = {}
     for dirpath, dirs, files in safe_walk(KB):
-        dirs[:] = [d for d in dirs if d not in ("meta",)]
+        dirs[:] = [d for d in dirs if d not in ("meta", "_archive")]
         for f in sorted(files):
             if not f.endswith(".md"):
                 continue
@@ -61,6 +63,16 @@ def cards() -> dict:
                 continue
             out.setdefault(os.path.splitext(f)[0], []).append(rel)
     return out
+
+
+def named(live: dict) -> dict:
+    """Имена, под которыми карточку можно назвать в `corrects:`: живые и прежние.
+
+    Прежнее имя — синоним живой карточки (ремонт снял код документа, прежнее имя ушло в
+    `aliases`) или имя карточки, замещённой через `superseded_by` (слияние, замена). Живое
+    имя всегда первее: оно не перекрывается ни синонимом, ни преемником.
+    """
+    return {**name_lineage(KB, live), **live}
 
 
 def body_of(text: str) -> str:
@@ -160,7 +172,7 @@ def ambiguous(owner: str, known: dict) -> str:
 
 
 def cmd_new(owner: str, text: str) -> int:
-    known = cards()
+    known = named(cards())
     if owner not in known:
         near = [c for c in known if owner.lower() in c.lower()][:5]
         print(f"kb_corrections: карточки «{owner}» в базе нет.", file=sys.stderr)
@@ -173,6 +185,9 @@ def cmd_new(owner: str, text: str) -> int:
     if doubt:
         print(f"kb_corrections: {doubt}", file=sys.stderr)
         return 1
+    # Исправление привязывается к нынешнему имени карточки, а не к синониму или к имени
+    # замещённой: так оно живёт и дальше, а не только пока работает разрешение по цепочке.
+    owner = os.path.splitext(os.path.basename(known[owner][0]))[0]
     os.makedirs(DIR, exist_ok=True)
     path = os.path.join(DIR, f"{TODAY}-{slug(owner)}.md")
     n = 2
@@ -305,7 +320,8 @@ def main() -> int:
     if not os.path.isdir(KB):
         print(f"kb_corrections: нет {KB}/ — запускайте из корня проекта", file=sys.stderr)
         return 1
-    known = cards()
+    live = cards()
+    known = named(live)
 
     if a.new:
         return cmd_new(a.new, a.text)
@@ -379,13 +395,13 @@ def main() -> int:
             print("\nЗаписать в карточки: `kb:correct --apply`")
         return 0
 
-    changed, skipped = [], []
+    changed, skipped, redirected = [], [], []
     by_card: dict = {}
     for c in rows:
         if c["status"] != "active":
             continue
         if not c["owners"]:
-            c["owners"] = resolve_owners(c, known)
+            c["owners"] = resolve_owners(c, live)
             if not c["owners"]:
                 skipped.append((c["name"], "не понять, какую карточку исправляет: укажите "
                                            "в шапке `corrects: \"[[Имя карточки]]\"`"))
@@ -403,6 +419,9 @@ def main() -> int:
                 skipped.append((c["name"], doubt.replace("\n  ", " ")))
                 continue
             by_card.setdefault(known[owner][0], []).append(c)
+            if owner not in live:
+                heir = os.path.splitext(os.path.basename(known[owner][0]))[0]
+                redirected.append((c["name"], owner, heir))
     for card, cs in sorted(by_card.items()):
         # Одна кривая карточка не имеет права остановить все исправления: до 1.99.0
         # карточка без шапки роняла прогон трассировкой, и остальные не применялись.
@@ -415,6 +434,11 @@ def main() -> int:
     print(f"Записано в карточки: {len(changed)}")
     for name, path in changed:
         print(f"- `{name}` → `{path}`")
+    if redirected:
+        print(f"\nНайдено по прежнему имени: {len(redirected)}")
+        for name, was, heir in redirected:
+            print(f"- `{name}`: «{was}» → [[{heir}]] (синоним или `superseded_by`); "
+                  "поправьте `corrects:`, чтобы привязка не зависела от цепочки")
     if skipped:
         print(f"\nПропущено: {len(skipped)}")
         for name, why in skipped:

@@ -6016,6 +6016,61 @@ def chunks(text: str, budget: int) -> list:
 from aurora_common import FOOTER  # noqa: E402 — граница истории одна на движок
 
 
+def apply_split_parts(path: str, parts: list) -> list:
+    """Записать части разрезанной карточки и превратить её в карту документа. → [(имя файла, название)].
+
+    Части получают `part_of` и ссылки на соседей: карточка без связей — ошибка
+    линтера, а нарезка, порождающая сирот, чинит одно и ломает другое. Пусто или одна
+    часть — ничего не записано: части уже вынесены, имена заняты в базе.
+
+    Слово человека и история остаются у карты: «Исправления человеком» и «История
+    изменений» тела не касаются, они не текст источника и в части не едут. Названия частей
+    приходят от планировщика: в шапку и заголовок они идут очищенными, а имя файла должно
+    быть свободно во всей базе (имя карточки уникально глобально), а не только в папке.
+    """
+    from aurora_common import (card_title_safe, frontmatter, set_field, split_frontmatter,
+                               split_tail, stem_taken)
+    text = open(path, encoding="utf-8", errors="ignore").read()
+    fm = frontmatter(text)
+    head, rest = split_frontmatter(text)
+    folder = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    where = os.path.normpath(path).split(os.sep)
+    kb = os.sep.join(where[:where.index("AuroraKnowledgeDB") + 1]) \
+        if "AuroraKnowledgeDB" in where else "AuroraKnowledgeDB"
+    made = []
+    for i, (name, chunk) in enumerate(parts):
+        name = card_title_safe(name)
+        safe = re.sub(r"[^\w\- ]+", "", name).strip().replace(" ", "-")[:90] or f"часть-{i+1}"
+        dest = os.path.join(folder, safe + ".md")
+        if os.path.exists(dest) or stem_taken(safe, kb) or any(m[0] == safe for m in made):
+            continue
+        made.append((safe, name, dest, chunk))
+    if len(made) < 2:
+        return []
+    for i, (safe, name, dest, chunk) in enumerate(made):
+        neighbours = [made[j][0] for j in (i - 1, i + 1) if 0 <= j < len(made)]
+        related = ", ".join(f'"[[{n}]]"' for n in neighbours)
+        open(dest, "w", encoding="utf-8").write(
+            f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
+            f'type: {fm.get("type") or "concept"}\nkind: {fm.get("kind") or "knowledge"}\n'
+            + sources_block(card_sources(text))
+            + f'part_of: "[[{stem}]]"\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
+            f'built: machine\nrelated: [{related}]\n---\n\n# {name}\n\n{chunk}\n')
+    # Исходная карточка остаётся входом: тело уехало в части, вход и провенанс здесь.
+    # Статус — служебный: знание теперь в частях, а это карта, и в паке ей не место.
+    # Иначе одна и та же мысль попадёт в контекст дважды — списком и текстом.
+    body = (f"\n\nКарточка была разрезана: тело выросло до размеров документа, а знание "
+            f"ищут атомарным. Границы предложил планировщик, текст перенесён дословно.\n\n"
+            + "\n".join(f"- [[{s}|{n}]]" for s, n, _d, _c in made) + "\n")
+    _before, tail = split_tail(rest or "")
+    if tail.strip():
+        body += "\n" + tail.strip() + "\n"
+    open(path, "w", encoding="utf-8").write(
+        "---" + set_field(head, "status", "index") + "\n---" + body)
+    return [(s, n) for s, n, _d, _c in made]
+
+
 def plan_split(cfg: dict, title: str, text: str, call, deadline: float,
                prefer: int = 0) -> list:
     """Границы нарезки раздутой карточки от планировщика. → [(имя части, текст), …].
@@ -6458,45 +6513,11 @@ def run_distill(cfg: dict, cwd: str, apply: bool, limit: int, momus: bool = True
                 busy -= 1
 
     def apply_split(path: str, step: dict) -> None:
-        """Записать части и превратить исходную карточку в карту документа.
-
-        Части получают `part_of` и ссылки на соседей: карточка без связей — ошибка
-        линтера, а нарезка, порождающая сирот, чинит одно и ломает другое.
-        """
-        from aurora_common import frontmatter, split_frontmatter
-        text = open(path, encoding="utf-8", errors="ignore").read()
-        fm = frontmatter(text)
-        head, _ = split_frontmatter(text)
-        folder = os.path.dirname(path)
-        stem = os.path.splitext(os.path.basename(path))[0]
-        made = []
-        for i, (name, chunk) in enumerate(step["split"]):
-            safe = re.sub(r"[^\w\- ]+", "", name).strip().replace(" ", "-")[:90] or f"часть-{i+1}"
-            dest = os.path.join(folder, safe + ".md")
-            if os.path.exists(dest):
-                continue
-            made.append((safe, name, dest, chunk))
+        """Записать части и превратить исходную карточку в карту документа."""
+        made = apply_split_parts(path, step["split"])
         if len(made) < 2:
             step["note"] += "; части уже вынесены"
             return
-        for i, (safe, name, dest, chunk) in enumerate(made):
-            neighbours = [made[j][0] for j in (i - 1, i + 1) if 0 <= j < len(made)]
-            related = ", ".join(f'"[[{n}]]"' for n in neighbours)
-            open(dest, "w", encoding="utf-8").write(
-                f'---\ntitle: "{name}"\naliases: []\nstatus: draft\n'
-                f'type: {fm.get("type") or "concept"}\nkind: {fm.get("kind") or "knowledge"}\n'
-                + sources_block(card_sources(text))
-                + f'part_of: "[[{stem}]]"\ncreated: {TODAY_STR}\nupdated: {TODAY_STR}\n'
-                f'built: machine\nrelated: [{related}]\n---\n\n# {name}\n\n{chunk}\n')
-        # Исходная карточка остаётся входом: тело уехало в части, вход и провенанс здесь.
-        # Статус — служебный: знание теперь в частях, а это карта, и в паке ей не место.
-        # Иначе одна и та же мысль попадёт в контекст дважды — списком и текстом.
-        from aurora_common import set_field
-        body = (f"\n\nКарточка была разрезана: тело выросло до размеров документа, а знание "
-                f"ищут атомарным. Границы предложил планировщик, текст перенесён дословно.\n\n"
-                + "\n".join(f"- [[{s}|{n}]]" for s, n, _d, _c in made) + "\n")
-        open(path, "w", encoding="utf-8").write(
-            "---" + set_field(head, "status", "index") + "\n---" + body)
         step["note"] += f"; разрезана на {len(made)}"
 
     written = [0]

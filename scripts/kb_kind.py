@@ -36,8 +36,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from aurora_common import (card_sources, frontmatter, link_escapes, split_frontmatter,  # noqa: E402
-                           walk_md, with_fields)
+from aurora_common import (card_sources, frontmatter, link_escapes, name_lineage,  # noqa: E402
+                           split_frontmatter, walk_md, with_fields)
 
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 KB = "AuroraKnowledgeDB"
@@ -123,8 +123,20 @@ def main() -> int:
         print("kb_kind: нет AuroraKnowledgeDB/ — запускайте из корня проекта", file=sys.stderr)
         return 1
     counts, set_now, kept = {}, [], 0
+    paths = list(walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True))
     human = human_kinds(root)
-    for path in walk_md(os.path.join(root, KB), skip_service=True, skip_archive=True):
+    # Исправление называет карточку по имени, а имя меняется (синоним после снятия кода
+    # документа, слияние и замена через `superseded_by`): тип остаётся за той же карточкой.
+    live: dict = {}
+    for path in paths:
+        live.setdefault(os.path.splitext(os.path.basename(path))[0], []).append(path)
+    if any(n not in live for n in human):
+        was_names = name_lineage(os.path.join(root, KB), live)
+        for n, k in list(human.items()):
+            to = was_names.get(n) if n not in live else None
+            if to:
+                human.setdefault(os.path.splitext(os.path.basename(to[0]))[0], k)
+    for path in paths:
         text = open(path, encoding="utf-8", errors="ignore").read()
         # `split_frontmatter` отдаёт шапку БЕЗ разделителей, а хвост — начиная с «\n---».
         # Собирать файл обратно надо ровно этой парой: любая попытка отрезать хвост по
