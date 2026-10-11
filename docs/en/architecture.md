@@ -266,7 +266,8 @@ A linked store. If the folder of the base or sources itself (`AuroraKnowledgeDB`
 mirror), the engine does not read that folder at all: the walk skips it instead of handing the files of a
 foreign folder to some readers and hiding them from others. The linter (`kb:lint`) and `kit:doctor` name it
 with one line, "the base folder is a link out of the project", instead of an error per card; pre-commit does
-not fail on such a layout. A link to a folder inside the project is supported; a store outside the project
+not fail on such a layout, yet the linter still searches skills and `aurora.config.yaml` for secrets as usual.
+`kb:reset` refuses on such a base (code 2): there is nothing of its own to wipe in a foreign folder. A link to a folder inside the project is supported; a store outside the project
 should be moved inside it.
 
 ## 5. The knowledge-base MCP server

@@ -198,7 +198,6 @@ def main():
         picked += [l.strip() for l in open(args.only_from, encoding="utf-8").read().splitlines()
                    if l.strip()]
     only = [x.replace("\\", "/").lstrip("./") for x in picked] or None
-    releases = load_releases()
     names, alias_owner, cards = set(), {}, {}
     dup_aliases, errors = [], []
 
@@ -206,16 +205,18 @@ def main():
         print(f"kb_lint: нет папки {ROOT}/ — запускайте из корня репозитория проекта", file=sys.stderr)
         return 1
 
+    base_linked = root_link_escapes(ROOT)
+    releases = set() if base_linked else load_releases()
     # Хранилище-ссылка (`AuroraKnowledgeDB -> чужая папка`): движок её не читает ни в поиске,
-    # ни в правках. Одна строка вместо ошибки на каждую карточку; хук не падает на раскладке,
-    # которую линтер всё равно проверить не может.
-    if root_link_escapes(ROOT):
-        print(f"kb_lint: каталог базы {ROOT}/ — ссылка наружу проекта: не читается, проверять "
-              "нечего; положите базу в проект или уберите ссылку")
-        print("kb_lint: карточек 0, ошибок 0")      # итоговая строка нужна хуку pre-commit
-        return 0
+    # ни в правках. Одна строка вместо ошибки на каждую карточку. Не читается только то, что
+    # лежит в базе (карточки, вложенные папки, `_assets`, реестр релизов, остаток починки);
+    # остальные проверки — секреты в навыках и в aurora.config.yaml — идут как обычно: хук
+    # pre-commit не должен пропускать токен только потому, что база лежит ссылкой.
+    if base_linked:
+        print(f"kb_lint: каталог базы {ROOT}/ — ссылка наружу проекта: не читается, карточки "
+              "не проверяются; положите базу в проект или уберите ссылку")
 
-    for dirpath, _, files in os.walk(ROOT):
+    for dirpath, _, files in ([] if base_linked else os.walk(ROOT)):
         for f in files:
             if not f.endswith(".md"):
                 continue
@@ -264,7 +265,7 @@ def main():
     # и второй такой же уровень означает, что карточки одного типа разъехались по двум
     # адресам. Ссылка по имени ведёт в один, ищут в другом; оглавление раздела собирает
     # верхний и не видит нижнего. На живом проекте так потерялись три десятка справочников.
-    for dirpath, dirnames, _ in os.walk(ROOT):
+    for dirpath, dirnames, _ in ([] if base_linked else os.walk(ROOT)):
         parts = dirpath.replace("\\", "/").split("/")
         for d in dirnames:
             if d.startswith(".") or d in ("meta", "_archive", "_assets"):
@@ -474,7 +475,7 @@ def main():
 
     # orphan binaries in _assets
     assets = os.path.join(ROOT, "_assets")
-    if os.path.isdir(assets):
+    if os.path.isdir(assets) and not base_linked:
         referenced = set()
         for _, (_, text) in cards.items():
             for target in link_refs(text):
@@ -531,13 +532,13 @@ def main():
         # «Новое» считается до того, как остаток перезапишется: иначе «Починить базу»,
         # прибавившая ошибок, каждый раз сообщала «нового: 0» и «ошибок не было» — на PRJ-C
         # 30.09.2026 линтер вырос с 34 до 53, а итог маршрута был чистым.
-        if os.path.isfile(residue_path):
+        if os.path.isfile(residue_path) and not base_linked:
             try:
                 left = set(json.load(open(residue_path, encoding="utf-8")))
                 fresh = sum(1 for e in errors if e not in left)
             except (OSError, ValueError):
                 fresh = None
-        if args.residue:
+        if args.residue and not base_linked:
             fresh = fresh or 0              # первый остаток: сравнивать не с чем, нового нет
             os.makedirs(os.path.dirname(residue_path), exist_ok=True)
             with open(residue_path, "w", encoding="utf-8") as fh:

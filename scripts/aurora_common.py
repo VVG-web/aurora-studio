@@ -1261,7 +1261,13 @@ def project_root_of(path: str, boundary: str = "", lexical: bool = False) -> str
             # папка с маркерами внутри каталога-ссылки, лежащего в другом проекте, — не корень
             if not any(is_link[j] and any(m > j for m in marked) for j in range(i + 1, len(chain))):
                 return chain[i]
-        # проекта выше нет, а сама папка — ссылка: граница — её родитель, цель за ним «наружу»
+        # Проекта выше нет. Сам проверяемый каталог (`chain[0]`) корнем не бывает, а ссылка выше
+        # него с маркерами — бывает: проект открыт по пути-ссылке (облачное хранилище), и
+        # ссылки внутри него — свои, а не побег наружу.
+        for i in range(1, len(chain)):
+            if is_link[i] and _has_markers(chain[i]):
+                return chain[i]
+        # И ссылки с маркерами нет, а сама папка — ссылка: граница — её родитель, цель за ним «наружу»
         return chain[1] if is_link[0] and len(chain) > 1 else start
     marked = [i for i, d in enumerate(chain) if _has_markers(d)]
     return chain[marked[0]] if marked else start

@@ -48,7 +48,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (card_sources, frontmatter, git_guard,  # noqa: E402
                            head_text,
-                           is_service)
+                           is_service, root_link_escapes)
 
 ROOT = "AuroraKnowledgeDB"
 from aurora_common import utc_slug  # noqa: E402
@@ -170,6 +170,14 @@ def main() -> int:
     ap.add_argument("--allow-dirty", action="store_true",
                     help="работать по незакоммиченному дереву (откат станет невозможным)")
     a = ap.parse_args()
+
+    # База — ссылка наружу проекта: обход и удаление пошли бы по чужой папке (git проекта
+    # её не видит, git_guard не защитит). Движок такой каталог не читает вовсе, и сносить в
+    # нём тоже нечего. Код 2: команда не отработала.
+    if root_link_escapes(ROOT):
+        print(f"kb_reset: каталог базы {ROOT}/ — ссылка наружу проекта: сброс не выполняется; "
+              "положите базу в проект или уберите ссылку", file=sys.stderr)
+        return 2
 
     # Снимок «карточка → источник» перед сносом. Имена карточек агент выберет заново, и
     # `based_on:` артефактов после пересборки указывал бы в никуда. Артефакт — сданный

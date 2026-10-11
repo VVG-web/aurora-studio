@@ -27,7 +27,7 @@ import re
 import sys
 import tempfile
 
-from aurora_common import head_scalar, split_frontmatter, yaml_scalar
+from aurora_common import head_scalar, root_link_escapes, split_frontmatter, yaml_scalar
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -506,6 +506,8 @@ def drop_empty_dirs(root: str) -> int:
     как «синк развалился». Удаляем снизу вверх; `.DS_Store` и подобное — не содержимое.
     """
     gone = 0
+    if root_link_escapes(root):       # зеркало — ссылка наружу проекта: чужое не чистим
+        return gone
     for dirpath, _dirs, _files in os.walk(root, topdown=False):
         if os.path.abspath(dirpath) == os.path.abspath(root):
             continue

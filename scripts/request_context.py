@@ -48,7 +48,7 @@ TEXT_NAMES = {"dockerfile", "makefile", "readme", "license", "changelog", "procf
 ANY_DEPTH_DIRS = {".git", ".ssh", ".aws", "node_modules", ".venv", "venv", "__pycache__",
                   ".sisyphus"}
 ROOT_DIRS = {"local", "runs", "state"}
-ENGINE_DIRS = (".aurora", ".opencode")      # папка движка проекта и прежняя (`aurora_common.LEGACY_ENGINE_DIR`)
+ENGINE_DIRS = (".aurora", ".opencode")      # копия `aurora_common.ENGINE_DIRS` (модуль легче: без импорта); равенство держит тест
 NEVER_DIRS = ANY_DEPTH_DIRS | ROOT_DIRS
 SECRET_NAME = re.compile(r"^(\.env.*|.*\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|ed25519|ecdsa)\w*|"
                          r"\.?mcp\.json|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.\w+)?)$", re.I)

@@ -1125,3 +1125,91 @@ def test_a_linked_root_with_marker_folders_is_not_walked_from_any_cwd(tmp: Path)
     own = root / "Sources"
     (own / "Web").mkdir(parents=True, exist_ok=True)
     assert not _in_project(elsewhere, lambda: AC.root_link_escapes(str(own / "Web")))
+
+
+@test
+def test_linted_linked_root_still_finds_secrets_in_skills_and_config(tmp: Path):
+    """Корень-ссылка не отключает остальные проверки линтера: секреты ловятся по-прежнему (BL-NEW-01).
+
+    Ранний `return 0` пропускал и поиск токена в навыках и в `aurora.config.yaml`: хук pre-commit
+    получал «ошибок 0» и пускал коммит с паролем. Сама ссылка ошибкой не считается.
+    """
+    fx = _linked_kb_fixture(tmp)
+    if not fx:
+        return
+    root, secret, other = fx
+    cp = run("kb_lint.py", cwd=root)
+    assert cp.returncode == 0 and "ссылка наружу проекта" in cp.stdout, (cp.returncode, cp.stdout, cp.stderr)
+    with open(root / "aurora.config.yaml", "a", encoding="utf-8") as fh:
+        fh.write("password: hunter2\n")
+    skill = root / ".claude" / "skills" / "x"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("ATLASSIAN_API_TOKEN=abc123\n", encoding="utf-8")
+    cp = run("kb_lint.py", cwd=root)
+    out = cp.stdout + cp.stderr
+    assert cp.returncode == 1, f"секрет при корне-ссылке пропущен:\n{out}"
+    assert "aurora.config.yaml: возможный секрет" in out and ".claude/skills/x/SKILL.md" in out, out
+    assert out.count("ссылка наружу проекта") == 1 and "карточек 0, ошибок 2" in out, out
+    assert secret not in out, out
+
+
+@test
+def test_project_opened_by_a_link_path_keeps_its_own_card_links(tmp: Path):
+    """Проект открыт по пути-ссылке, рабочая папка вне него: ссылка на карточку внутри читается (BL-NEW-01).
+
+    `project_root_of(lexical=True)` исключал из корней любую ссылку, и граница сужалась до папки
+    файла: карточка-ссылка на соседнюю карточку проекта считалась побегом наружу. Ссылка наружу
+    по-прежнему отказывает.
+    """
+    lab = tmp / "lab"
+    proj = lab / "real" / "proj"
+    for d in ("AuroraKnowledgeDB/Concepts", "AuroraKnowledgeDB/Glossary", "Sources"):
+        (proj / d).mkdir(parents=True)
+    (proj / "AuroraKnowledgeDB" / "Glossary" / "y.md").write_text("# Y\n\nСВОЁ\n", encoding="utf-8")
+    (lab / "outside.md").write_text("# Снаружи\n\nЧУЖОЕ\n", encoding="utf-8")
+    if not (_link("../Glossary/y.md", proj / "AuroraKnowledgeDB" / "Concepts" / "x.md")
+            and _link("../../../outside.md", proj / "AuroraKnowledgeDB" / "Concepts" / "out.md")
+            and _link(proj, lab / "projlink")):
+        return
+    import importlib
+    sys.path.insert(0, str(SCRIPTS))
+    AC = importlib.import_module("aurora_common")
+    base = lab / "projlink" / "AuroraKnowledgeDB" / "Concepts"
+
+    def go():
+        assert not AC.link_escapes(str(base / "x.md")), "ссылка внутри проекта принята за побег"
+        assert "СВОЁ" in (AC.read_card_text(str(base / "x.md")) or "")
+        assert AC.link_escapes(str(base / "out.md")), "ссылка наружу проекта прошла"
+        assert AC.read_card_text(str(base / "out.md")) is None
+    _in_project(lab, go)
+
+
+@test
+def test_kb_reset_refuses_a_linked_root_and_leaves_the_foreign_base_alone(tmp: Path):
+    """`kb:reset --apply --drop-unknown` при корне-ссылке отказывает кодом 2, чужая база цела (BL-NEW-01)."""
+    fx = _linked_kb_fixture(tmp)
+    if not fx:
+        return
+    root, secret, other = fx
+    foreign = other / "AuroraKnowledgeDB" / "Concepts" / "чужая.md"
+    for args in (("--apply", "--drop-unknown", "--allow-dirty"), ()):
+        cp = run("kb_reset.py", *args, cwd=root)
+        assert cp.returncode == 2, (args, cp.returncode, cp.stdout, cp.stderr)
+        assert "ссылка наружу проекта" in cp.stderr, cp.stderr
+        assert foreign.is_file(), f"kb_reset удалил карточку чужой базы ({args})"
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    SC = importlib.import_module("sources_core")
+    (other / "Web" / "пусто").mkdir()
+    assert _in_project(root, lambda: SC.drop_empty_dirs("Sources/Web")) == 0
+    assert (other / "Web" / "пусто").is_dir(), "drop_empty_dirs почистил чужое зеркало"
+
+
+@test
+def test_request_context_engine_dirs_match_the_engine_constant(tmp: Path):
+    """Мягкая мерка закрывает `state/runs/local` под теми же папками движка, что и сам движок (BL-NEW-01)."""
+    sys.path.insert(0, str(SCRIPTS))
+    import importlib
+    RC = importlib.import_module("request_context")
+    AC = importlib.import_module("aurora_common")
+    assert tuple(RC.ENGINE_DIRS) == tuple(AC.ENGINE_DIRS), (RC.ENGINE_DIRS, AC.ENGINE_DIRS)
