@@ -2640,6 +2640,7 @@ def part_stem(base: str, kb: str, parent: str, taken=(), folder: str = "") -> tu
     существующим файлом, тоже занято, даже если обход базы его не увидел.
     """
     taken = {name_key(t) for t in taken}
+    base = base or "часть"  # пустая основа не должна совпасть с ответом «уже вынесена»
     for i in range(0, 60):
         tail = "" if i == 0 else f"-{parent}" if i == 1 else f"-{i}"
         cand = base[:max(1, 90 - len(tail))] + tail

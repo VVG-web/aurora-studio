@@ -459,3 +459,24 @@ def test_part_stem_is_case_nfd_and_folder_aware_and_returns_real_suffix(tmp: Pat
     both = "".join(p.read_text(encoding="utf-8") for p in (kb / "Concepts").glob("*.md"))
     assert "первый кусок" in both and "второй кусок" in both
     assert any(t == "ОПИСАНИЕ (Родитель)" for _n, t in made), made
+
+
+@test
+def test_split_by_headings_keeps_text_under_a_nameless_heading(tmp: Path):
+    """`kb_fix --split`: заголовок без букв («???», «—», «...», «#») даёт пустое имя файла; текст
+    куска не пропадает, часть получает «часть-N» и названа картой. `part_stem` с пустой
+    основой не возвращает ответ «уже вынесена»."""
+    root = make_project(tmp)
+    heads = ("Часть 1", "???", "—", "...", "#", "Часть 6")
+    big = "\n\n".join(f"## {t}\n\n" + f"текст {i}. " * 80 for i, t in enumerate(heads, 1))
+    card(root, "Concepts/Большая.md", big, type="concept",
+         source='"Sources/Confluence/Документ.md"')
+    run("kb_fix.py", "--split", "Большая", "--apply", "--allow-dirty", cwd=root, expect_rc=0)
+    kb = root / "AuroraKnowledgeDB"
+    everything = "".join(p.read_text(encoding="utf-8") for p in kb.rglob("*.md"))
+    for i in range(1, 7):
+        assert everything.count(f"текст {i}.") >= 80, f"текст куска {i} потерян"
+    kept = (kb / "Concepts/Большая.md").read_text(encoding="utf-8")
+    assert kept.count("- [[") == 6, kept
+    assert (kb / "Concepts/часть-2.md").is_file(), sorted(p.name for p in (kb / "Concepts").glob("*.md"))
+    assert _common().part_stem("", str(kb), "Большая")[0], "пустая основа дала «уже вынесена»"

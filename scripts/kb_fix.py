@@ -941,11 +941,12 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
         return (f"«{hit.stem}»: содержательных частей меньше двух "
                 f"(порог {min_chars} симв.) — резать нечего", False)
 
-    for title, chunk in parts:
+    for i, (title, chunk) in enumerate(parts, 1):
         # Имя карточки уникально по всей базе, а не только в своём разделе: занятое имя не
         # отбрасывает кусок (его текст пропал бы из базы), а получает суффикс. Пусто — часть
-        # уже вынесена этим родителем.
-        base = normalize_title(title)[:90]
+        # уже вынесена этим родителем. Заголовок без букв («???», «—») даёт пустое имя файла:
+        # кусок получает «часть-N» по номеру в документе, как при разрезе агентом.
+        base = normalize_title(title)[:90] or f"часть-{i}"
         name, mark = part_stem(base, root, hit.stem, [n for n, _t in made],
                                os.path.join(root, section))
         if not name:
