@@ -182,7 +182,7 @@ An archived copy under the same name does not make the name ambiguous if it poin
 to different cards do. A correction that lists both the former and the current name of one card is written into it once. A split (`agent:distill`, `kb:split`) does not carry "Исправления человеком" and "История изменений"
 into the parts: they stay with the document map below the list of parts, and part titles are sanitised before they are
 written into the header; a part name must be free across the whole base: a taken name does not drop the chunk but
-gets a suffix (`-<map>`, `-2`…), and a heading without letters ("???", "—") gets the name `часть-N`. A merge moves the donor's section into the
+gets a suffix (`-<map>`, `-2`…), and a heading without letters ("???", "—", including markup only such as "** **") gets the name `часть-N`; text left out of the parts (an intro paragraph, short sections) is reported by the split note as a size. A merge moves the donor's section into the
 survivor's section, not into "Слияние". The `kb:repair` planners that move cards to `_archive` leave alone a card that has
 a corrections section, a `corrected_by` field or an active correction in `Raw/corrections`.
 

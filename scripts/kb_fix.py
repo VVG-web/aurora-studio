@@ -930,11 +930,19 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
     section = os.path.relpath(hit.path, root).replace("\\", "/").split("/")[0]
     src = (card_sources(text) or [""])[0]
     parts, made = [], []
+    # Что не попало ни в одну часть: вводный текст до первого заголовка и короткие разделы.
+    # Карта документа их не несёт, поэтому заметка называет объём: текст остаётся в Sources и
+    # в истории git, но молча он не теряется.
+    # Заголовок первого уровня («# Название») — имя карточки, а не текст: его в счёт не берём.
+    left_out = len(re.sub(r"^#\s.*$", "", rest[:marks[0].start()], flags=re.M).strip())
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(rest)
         chunk = rest[m.end():end].strip()
-        title = card_title_safe(m.group(2).strip().strip("*_`"))
-        if len(chunk) < min_chars or not title:
+        # Заголовок из одной разметки («** **», «``») после очистки пуст: кусок не выбрасывается,
+        # а получает название «Часть N» ниже; отсекает только порог длины.
+        title = card_title_safe(m.group(2).strip().strip("*_`")).strip()
+        if len(chunk) < min_chars:
+            left_out += len(chunk)
             continue
         parts.append((title, chunk))
     if len(parts) < 2:
@@ -942,6 +950,7 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
                 f"(порог {min_chars} симв.) — резать нечего", False)
 
     for i, (title, chunk) in enumerate(parts, 1):
+        title = title or f"Часть {i}"
         # Имя карточки уникально по всей базе, а не только в своём разделе: занятое имя не
         # отбрасывает кусок (его текст пропал бы из базы), а получает суффикс. Пусто — часть
         # уже вынесена этим родителем. Заголовок без букв («???», «—») даёт пустое имя файла:
@@ -974,7 +983,9 @@ def plan_split(cards: dict, plan: Plan, target: str, min_chars: int, root: str):
             + (("\n" + tail.strip() + "\n") if tail.strip() else ""))
     plan.file_writes[hit.path] = (("---" + head[3:] if head.startswith("---") else head)
                                   + "\n---\n\n" + keep)
-    return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа", True
+    lost = (f"; вне частей осталось {left_out} знаков (вводный текст и короткие разделы), "
+            "они есть в источнике и в git" if left_out else "")
+    return f"«{hit.stem}» → частей {len(made)}, сама стала картой документа{lost}", True
 
 
 # Голый код артефакта проекта: история, критерии приёмки, требование, спецификация, эпик.
