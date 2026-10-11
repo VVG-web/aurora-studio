@@ -27,7 +27,8 @@ import re
 import sys
 import tempfile
 
-from aurora_common import head_scalar, root_link_escapes, split_frontmatter, yaml_scalar
+from aurora_common import (allow_cleartext, cleartext_secret_problem, head_scalar, root_link_escapes,
+                           safe_urlopen, same_origin, split_frontmatter, yaml_scalar)
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -100,32 +101,64 @@ def read_secret(prefix: str, root: str = "") -> tuple:
 
 # --------------------------------------------------------------------- REST
 
+class UnsafeTarget(ValueError):
+    """Ключ на этот адрес не уходит: чужой хост, не тот сервер или открытый http."""
+
+
 class RestApi:
     """Минимальный REST-клиент: токен в заголовке, JSON на выходе, свой User-Agent.
 
     Ничего на сервер источника не ставится, третьих библиотек не нужно — синк должен
     заводиться там, где есть только стандартный Python.
+
+    Токен принадлежит серверу из `base`: абсолютный адрес от сервера (`_links.next`,
+    вложение) принимается только с того же хоста, редирект на другой хост уходит без
+    `Authorization`, а по открытому `http://` ключ не шлётся (кроме своего компьютера и
+    `AURORA_ALLOW_HTTP=1`). Адрес `base` живёт в общем `aurora.config.yaml`, поэтому на
+    машине есть привязка: `<PREFIX>_SERVER=https://хост` в `.env.aurora.local` — и любой
+    другой адрес в конфиге отклоняется, пока ключ не ушёл.
     """
 
     agent = "aurora-sync/1.0"
+    secret_prefix = ""      # CONFLUENCE / JIRA: по нему ищется привязка `<PREFIX>_SERVER`
 
-    def __init__(self, base: str, auth: str):
-        self.base, self.auth = base.rstrip("/"), auth
+    def __init__(self, base: str, auth: str, root: str = ""):
+        self.base, self.auth, self.root = base.rstrip("/"), auth, root
+        self._env = None
+
+    def _url(self, path: str) -> str:
+        """Полный адрес запроса — или `UnsafeTarget`, если ключ на него отправлять нельзя."""
+        if not self.auth:
+            return path if path.startswith("http") else self.base + path
+        if self._env is None:       # файл читаем один раз: запросов в синке тысячи
+            self._env = read_env(self.root)
+        env = self._env
+        pin = env.get(f"{self.secret_prefix}_SERVER", "").strip() if self.secret_prefix else ""
+        if pin and not same_origin(self.base, pin):
+            raise UnsafeTarget(f"адрес сервера в aurora.config.yaml ({self.base}) не совпадает с "
+                               f"{self.secret_prefix}_SERVER из .env.aurora.local ({pin}): "
+                               "ключ на него не отправляется")
+        url = path if path.startswith("http") else self.base + path
+        if not same_origin(url, self.base):
+            raise UnsafeTarget(f"адрес {url.split('?', 1)[0]} вне сервера {self.base}: "
+                               "ключ на чужой хост не отправляется")
+        why = cleartext_secret_problem(url, allow_cleartext(env))
+        if why:
+            raise UnsafeTarget(why)
+        return url
 
     def get(self, path: str) -> dict:
-        url = path if path.startswith("http") else self.base + path
-        req = urllib.request.Request(url, headers={
+        req = urllib.request.Request(self._url(path), headers={
             "Authorization": self.auth, "Accept": "application/json",
             "User-Agent": self.agent})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with safe_urlopen(req, timeout=60) as r:
             return json.load(r)
 
     def fetch(self, url: str) -> bytes:
         """Сырое тело по адресу: вложения (схемы, диаграммы) — не JSON."""
-        req = urllib.request.Request(url if url.startswith("http") else self.base + url,
-                                     headers={"Authorization": self.auth,
-                                              "User-Agent": self.agent})
-        with urllib.request.urlopen(req, timeout=120) as r:
+        req = urllib.request.Request(self._url(url), headers={"Authorization": self.auth,
+                                                              "User-Agent": self.agent})
+        with safe_urlopen(req, timeout=120) as r:
             return r.read()
 
     def send(self, method: str, path: str, body=None, files: dict | None = None,
@@ -138,7 +171,7 @@ class RestApi:
         """
         import time
         import urllib.error
-        url = path if path.startswith("http") else self.base + path
+        url = self._url(path)
         headers = {"Authorization": self.auth, "Accept": "application/json",
                    "User-Agent": self.agent}
         if files:
@@ -160,7 +193,7 @@ class RestApi:
         for attempt in range(tries):
             req = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as r:
+                with safe_urlopen(req, timeout=timeout) as r:
                     raw = r.read()
                 return json.loads(raw) if raw.strip() else {}
             except urllib.error.HTTPError as e:

@@ -36,7 +36,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aurora_common import (KB_ROOT, TRUSTED, as_list, body as md_body, clean_copy, git_commit,
-                           frontmatter, link_escapes,
+                           frontmatter, link_escapes, safe_urlopen,
                            set_field, split_frontmatter)
 
 from confluence_export import Api, read_config, read_secret
@@ -51,13 +51,12 @@ class Writer(Api):
     """Api умеет только читать — публикация добавляет запись."""
 
     def send(self, method: str, path: str, payload: dict) -> dict:
-        url = path if path.startswith("http") else self.base + path
         req = urllib.request.Request(
-            url, method=method, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            self._url(path), method=method, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             headers={"Authorization": self.auth, "Accept": "application/json",
                      "Content-Type": "application/json",
                      "User-Agent": "aurora-publish/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with safe_urlopen(req, timeout=60) as r:
             return json.load(r)
 
     def find_by_title(self, space: str, title: str) -> dict:

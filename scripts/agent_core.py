@@ -44,7 +44,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from aurora_common import child_env, load_env
+from aurora_common import child_env, load_env, safe_urlopen
 
 from aurora_common import TODAY, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import engine_dir, utc_stamp  # noqa: E402
@@ -433,7 +433,8 @@ def http_json(url: str, payload: dict | None, key: str, timeout: float) -> tuple
                                  data=json.dumps(payload).encode() if payload else None)
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        # Ключ шлюза не должен уходить на другой хост вслед за редиректом.
+        with safe_urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read()), "", time.time() - t0
     except urllib.error.HTTPError as e:
         try:

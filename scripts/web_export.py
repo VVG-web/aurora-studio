@@ -37,7 +37,8 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
-from aurora_common import file_head, head_scalar, head_trust, head_value, utc_today
+from aurora_common import (allow_cleartext, cleartext_secret_problem, file_head, head_scalar,
+                           head_trust, head_value, safe_urlopen, same_origin, utc_today)
 from sources_core import (BoardMirror, block, cited_by_cards, config_text,
                           is_promoted_document, report_stale, verify)
 
@@ -186,7 +187,7 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
     last = ""
     for attempt in range(1, RETRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with safe_urlopen(req, timeout=timeout) as r:
                 if meta is not None:
                     meta["etag"] = r.headers.get("ETag") or ""
                     meta["modified"] = r.headers.get("Last-Modified") or ""
@@ -200,6 +201,15 @@ def _get(url: str, token: str, timeout: int, headers: dict | None = None,
             if attempt < RETRIES:
                 time.sleep(RETRY_WAIT * attempt)
     return b"", "", f"{last} (попыток: {RETRIES})"
+
+
+def token_for(url: str, seed: str, token: str) -> str:
+    """Личный токен принадлежит хосту своей стартовой страницы: на чужие хосты обхода и на
+    открытый http (кроме своего компьютера и `AURORA_ALLOW_HTTP=1`) он не уходит."""
+    if token and same_origin(url, seed) \
+            and not cleartext_secret_problem(url, allow_cleartext()):
+        return token
+    return ""
 
 
 def fetch(url: str, token: str = "", known: dict | None = None,
@@ -665,7 +675,7 @@ def run(a) -> int:
             if known and not cache_usable(known, mirror.out, trusted, seed, feed, today):
                 known = None
             meta: dict = {}
-            html, err = fetch(url, token, known, meta)
+            html, err = fetch(url, token_for(url, seed, token), known, meta)
             if err == NOT_MODIFIED and known:
                 rel = known["rel"]
                 unchanged += 1

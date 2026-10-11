@@ -81,9 +81,10 @@ def read_secret() -> tuple:
 
 class Api(RestApi):
     agent = "aurora-jira-export/1.0"
+    secret_prefix = "JIRA"
 
-    def __init__(self, base: str, auth: str):
-        super().__init__(base, auth)
+    def __init__(self, base: str, auth: str, root: str = ""):
+        super().__init__(base, auth, root)
         self._titles: dict = {}
 
     def search(self, jql: str, fields: str, limit: int = 0) -> list:

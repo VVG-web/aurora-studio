@@ -27,7 +27,7 @@
 Зависимостей нет: urllib из стандартной библиотеки.
 """
 from __future__ import annotations
-import aurora_common  # noqa: F401 — защита версии Python: на старом — понятный текст, а не traceback
+import aurora_common as AC  # защита версии Python: на старом — понятный текст, а не traceback; и безопасный urlopen
 
 import argparse
 import json
@@ -93,7 +93,7 @@ def ask(url: str, key: str, payload, timeout: float, path: str) -> tuple:
         req.add_header("Authorization", "Bearer " + key)
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with AC.safe_urlopen(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf-8", "replace"), "", time.time() - t0
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace") if hasattr(e, "read") else ""

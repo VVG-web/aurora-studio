@@ -85,7 +85,7 @@ def jira(root: str = ""):
     auth, _how = read_secret("JIRA", root)
     if not auth:
         raise OpError("нет ключа Jira: JIRA_PAT в .env.aurora.local проекта")
-    return Api(s["jira_url"], auth)
+    return Api(s["jira_url"], auth, root)
 
 
 def confluence(root: str = ""):
@@ -97,7 +97,7 @@ def confluence(root: str = ""):
     auth, _how = read_secret("CONFLUENCE", root)
     if not auth:
         raise OpError("нет ключа Confluence: CONFLUENCE_PAT в .env.aurora.local проекта")
-    return Api(s["confluence_url"], auth)
+    return Api(s["confluence_url"], auth, root)
 
 
 def http_why(e: Exception) -> str:

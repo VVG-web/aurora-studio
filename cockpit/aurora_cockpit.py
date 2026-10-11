@@ -61,7 +61,7 @@ sys.path.insert(0, os.path.join(KIT, "scripts"))
 # путь до scripts добавлен выше
 from aurora_common import (child_env, engine_dir, is_folder_guide, kit_mcp_permission,  # noqa: E402
                            local_view, mtime_stamp, personal_kit_file, replace_file,
-                           utc_slug, utc_stamp, yaml_scalar)
+                           same_origin, utc_slug, utc_stamp, yaml_scalar)
 from aurora_common import (MCP_MASK, MCP_ROLES, MCP_SECRET_MAPS,  # noqa: E402, F401
                            mcp_check, mcp_mask_args, mcp_masked)
 import run_summary as RS                         # noqa: E402 — итог прогона, один на движок
@@ -872,6 +872,11 @@ def models_list(payload: dict) -> dict:
         old = next((p for p in models_data()["providers"]
                     if p["id"] == payload.get("id")), None) or {}
         secret = old.get("key", "")
+        # Сохранённый ключ принадлежит своему серверу: на другой адрес из формы (опечатка,
+        # подмена запроса) он не уходит — ключ вводят заново (BL-SEC-05).
+        if secret and not same_origin(url, str(old.get("url") or "")):
+            return {"error": "адрес отличается от сохранённого у этого провайдера: "
+                             "сохранённый ключ на него не отправляется — введите ключ заново"}
     got = AG.models_of({"n": 0, "url": url, "key": secret})
     return {k: v for k, v in got.items() if k in ("models", "error")}
 
@@ -5642,7 +5647,7 @@ class Handler(BaseHTTPRequestHandler):
         cfg = C.read_config(project)
         auth, _kind = C.read_secret(project)
         out = []
-        api = C.Api(cfg["base_url"], auth) if (auth and cfg.get("base_url")) else None
+        api = C.Api(cfg["base_url"], auth, project) if (auth and cfg.get("base_url")) else None
         for raw in refs:
             pid, space, title = C.parse_ref(str(raw))
             if pid:

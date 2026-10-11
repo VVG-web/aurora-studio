@@ -968,3 +968,215 @@ def test_kb_fix_apply_plan_skips_a_vanished_source_without_crashing(tmp: Path):
         assert (tmp / "b" / "y.md").is_file(), "остальной план не применён"
     finally:
         os.chdir(old)
+
+
+# ------------------------------------------------------------------ ключ ходит только к своему хосту
+
+class _Hosts:
+    """Два настоящих HTTP-сервера на 127.0.0.1 (разные порты — разные хосты для ключа).
+
+    `a` отвечает 302 на адрес в `to` по пути `/go`, 302 на свой `/ok` по пути `/same`; оба
+    пишут заголовки каждого запроса. Так видно, что реально ушло по сети."""
+
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.seen = {"a": [], "b": []}
+        self.to = ""
+        outer = self
+
+        def make(name):
+            class H(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    outer.seen[name].append(
+                        (self.path, {k.lower(): v for k, v in self.headers.items()}))
+                    if self.path in ("/go", "/same"):
+                        self.send_response(302)
+                        self.send_header("Location", outer.to if self.path == "/go" else "/ok")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    body = b'{"ok": true}'
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                do_POST = do_GET
+
+                def log_message(self, *a):
+                    pass
+            return H
+        self.srv = {n: ThreadingHTTPServer(("127.0.0.1", 0), make(n)) for n in ("a", "b")}
+        self.port = {n: s.server_address[1] for n, s in self.srv.items()}
+        for s in self.srv.values():
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+
+    def url(self, name: str, path: str = "") -> str:
+        return f"http://127.0.0.1:{self.port[name]}{path}"
+
+    def close(self):
+        for s in self.srv.values():
+            s.shutdown()
+            s.server_close()
+
+
+@test
+def test_redirect_to_another_host_does_not_carry_the_secret_headers(tmp: Path):
+    """Редирект на другой хост уходит без Authorization и ключа; на тот же хост — с ними.
+
+    Стандартный `urllib` переносит все заголовки на цель редиректа: на Data Center с SSO
+    токен улетал провайдеру идентификации, а подставной адрес получал ключ шлюза (BL-SEC-05)."""
+    _path()
+    import urllib.request
+    AC = importlib.import_module("aurora_common")
+    AG = importlib.import_module("agent_core")
+    SC = importlib.import_module("sources_core")
+    h = _Hosts()
+    try:
+        h.to = h.url("b", "/landing")
+        # общий клиент
+        req = urllib.request.Request(h.url("a", "/go"), headers={
+            "Authorization": "Bearer SECRET", "Private-Token": "P", "User-Agent": "t"})
+        with AC.safe_urlopen(req, timeout=10) as r:
+            assert r.status == 200
+        got = h.seen["b"][-1][1]
+        assert "authorization" not in got and "private-token" not in got, got
+        assert got.get("user-agent") == "t", "обычные заголовки должны сохраняться"
+        # редирект на тот же хост — ключ остаётся
+        req = urllib.request.Request(h.url("a", "/same"), headers={"Authorization": "Bearer SECRET"})
+        with AC.safe_urlopen(req, timeout=10):
+            pass
+        assert h.seen["a"][-1][1].get("authorization") == "Bearer SECRET"
+        # то же через REST-клиент Atlassian и транспорт шлюзов моделей
+        h.seen["b"].clear()
+        api = SC.RestApi(h.url("a"), "Bearer SECRET")
+        assert api.get("/go") == {"ok": True}
+        assert api.fetch("/go") == b'{"ok": true}'
+        status, _body, err, _dt = AG.http_json(h.url("a", "/go"), None, "GW-KEY", 10)
+        assert status == 200 and not err, (status, err)
+        assert len(h.seen["b"]) == 3, h.seen["b"]
+        assert all("authorization" not in hd for _p, hd in h.seen["b"]), h.seen["b"]
+    finally:
+        h.close()
+
+
+@test
+def test_rest_api_refuses_foreign_absolute_urls_and_cleartext(tmp: Path):
+    """Абсолютный адрес от сервера (`_links.next`, вложение) с другим хостом ключ не получает;
+    по открытому http (не свой компьютер) ключ не уходит, пока человек не разрешил."""
+    _path()
+    SC = importlib.import_module("sources_core")
+    h = _Hosts()
+    try:
+        api = SC.RestApi(h.url("a"), "Bearer SECRET")
+        for call in (lambda: api.get(h.url("b", "/x")), lambda: api.fetch(h.url("b", "/x")),
+                     lambda: api.send("POST", h.url("b", "/x"), {})):
+            try:
+                call()
+            except SC.UnsafeTarget:
+                continue
+            raise AssertionError("ключ ушёл на чужой хост")
+        assert h.seen["b"] == [], "на чужой хост дошёл запрос"
+        assert api.get("/same") == {"ok": True}, "свой сервер должен работать"
+        # открытый http на чужой машине
+        api = SC.RestApi("http://wiki.example.com", "Bearer SECRET", str(tmp))
+        try:
+            api.get("/rest/api/content")
+            raise AssertionError("ключ ушёл по открытому http")
+        except SC.UnsafeTarget as e:
+            assert "AURORA_ALLOW_HTTP" in str(e)
+        assert SC.RestApi("https://wiki.example.com", "Bearer S", str(tmp))._url("/a") \
+            == "https://wiki.example.com/a"
+        (tmp / ".env.aurora.local").write_text("AURORA_ALLOW_HTTP=1\n", encoding="utf-8")
+        assert SC.RestApi("http://wiki.example.com", "Bearer S", str(tmp))._url("/a") \
+            == "http://wiki.example.com/a", "явное разрешение человека должно действовать"
+        # без ключа запрет не нужен: уходить нечему
+        assert SC.RestApi("http://wiki.example.com", "")._url("/a") == "http://wiki.example.com/a"
+    finally:
+        h.close()
+
+
+@test
+def test_atlassian_server_pin_rejects_a_changed_config_address(tmp: Path):
+    """`<PREFIX>_SERVER` в файле машины привязывает ключ к серверу: адрес в общем
+    `aurora.config.yaml`, смененный в PR, ключ не получает — и сеть не затрагивается."""
+    _path()
+    CE = importlib.import_module("confluence_export")
+    JE = importlib.import_module("jira_export")
+    SC = importlib.import_module("sources_core")
+    h = _Hosts()
+    try:
+        (tmp / ".env.aurora.local").write_text(f"CONFLUENCE_SERVER={h.url('a')}\n"
+                                               f"JIRA_SERVER={h.url('a')}\n", encoding="utf-8")
+        try:
+            CE.Api(h.url("b"), "Bearer SECRET", str(tmp)).get("/rest/api/content")
+            raise AssertionError("ключ ушёл на подменённый адрес")
+        except SC.UnsafeTarget as e:
+            assert "CONFLUENCE_SERVER" in str(e)
+        try:
+            JE.Api(h.url("b"), "Bearer SECRET", str(tmp)).get("/rest/api/2/myself")
+            raise AssertionError("ключ Jira ушёл на подменённый адрес")
+        except SC.UnsafeTarget as e:
+            assert "JIRA_SERVER" in str(e)
+        assert h.seen["b"] == []
+        assert CE.Api(h.url("a"), "Bearer SECRET", str(tmp)).get("/ok") == {"ok": True}
+        assert h.seen["a"][-1][1].get("authorization") == "Bearer SECRET"
+    finally:
+        h.close()
+
+
+@test
+def test_web_token_goes_only_to_its_own_seed_host(tmp: Path):
+    """Личный токен обхода сайтов уходит на хост своей стартовой страницы, а не на любую из
+    страниц списка; на открытом http (чужая машина) — тоже нет."""
+    _path()
+    WE = importlib.import_module("web_export")
+    assert WE.token_for("https://wiki.example.com/a/b", "https://wiki.example.com/", "T") == "T"
+    assert WE.token_for("https://other.example.org/a", "https://wiki.example.com/", "T") == ""
+    assert WE.token_for("https://wiki.example.com:8443/a", "https://wiki.example.com/", "T") == ""
+    assert WE.token_for("http://wiki.example.com/a", "http://wiki.example.com/", "T") == ""
+    assert WE.token_for("http://127.0.0.1:9/a", "http://127.0.0.1:9/", "T") == "T"
+    assert WE.token_for("https://wiki.example.com/a", "https://wiki.example.com/", "") == ""
+    h = _Hosts()
+    try:
+        h.to = h.url("b", "/page")
+        _raw, _enc, err = WE._get(h.url("a", "/go"), "T", 10)
+        assert not err, err
+        assert "authorization" not in h.seen["b"][-1][1], "токен ушёл вслед за редиректом"
+    finally:
+        h.close()
+
+
+@test
+def test_models_list_does_not_send_a_saved_key_to_another_address(tmp: Path):
+    """`/api/models/list`: сохранённый ключ провайдера уходит только на его же адрес;
+    на другой — отказ без запроса; введённый в форме ключ идёт как есть."""
+    _path()
+    ck = importlib.import_module("aurora_cockpit")
+    AG = importlib.import_module("agent_core")
+    MC = importlib.import_module("model_config")
+    calls = []
+    real_models_of, real_data = AG.models_of, ck.models_data
+    AG.models_of = lambda b, timeout=20: calls.append(dict(b)) or {"n": 0, "url": b["url"],
+                                                                    "models": ["m1"]}
+    ck.models_data = lambda: {"providers": [{"id": "p1", "url": "https://gw.example.com/v1",
+                                             "key": "SAVED-KEY"}]}
+    try:
+        ok = ck.models_list({"id": "p1", "url": "https://GW.example.com/v1/", "key": MC.MASK})
+        assert ok.get("models") == ["m1"] and calls[-1]["key"] == "SAVED-KEY", (ok, calls)
+        n = len(calls)
+        for evil in ("https://evil.example.net/v1", "http://gw.example.com/v1",
+                     "https://gw.example.com:8443/v1"):
+            for key in (MC.MASK, ""):
+                r = ck.models_list({"id": "p1", "url": evil, "key": key})
+                assert r.get("error") and "models" not in r, (evil, r)
+        assert len(calls) == n, "запрос на чужой адрес ушёл"
+        typed = ck.models_list({"id": "p1", "url": "https://evil.example.net/v1", "key": "TYPED"})
+        assert typed.get("models") and calls[-1]["key"] == "TYPED", "введённый ключ — выбор человека"
+        # провайдер без сохранённого ключа (локальный шлюз): проверять любой адрес можно
+        ck.models_data = lambda: {"providers": [{"id": "p2", "url": "http://127.0.0.1:8080/v1",
+                                                 "key": ""}]}
+        assert ck.models_list({"id": "p2", "url": "http://127.0.0.1:9090/v1", "key": ""}).get("models")
+    finally:
+        AG.models_of, ck.models_data = real_models_of, real_data

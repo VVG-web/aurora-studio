@@ -3009,3 +3009,103 @@ def terms_block(text: str, terms: dict, limit: int = 40) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------ HTTP: ключ ходит только к своему хосту
+# Токен Atlassian, ключ шлюза модели, токен git-сервера принадлежат тому серверу, для которого
+# выданы. Стандартный `urllib` при редиректе переносит ВСЕ заголовки (в том числе Authorization)
+# на другой хост, а адрес сервера лежит в файле, который в команде общий. Поэтому весь исходящий
+# HTTP с секретом идёт через `safe_urlopen`, а адреса, пришедшие от сервера, сверяются с
+# исходным (`same_origin`). Без подтверждений человека: правила не требуют диалога (ADR-026).
+
+# Заголовки, которые несут секрет: на чужой хост не переходят никогда.
+SECRET_HEADERS = ("authorization", "proxy-authorization", "cookie", "private-token",
+                  "x-api-key", "x-auth-token", "api-key")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def url_origin(url: str) -> tuple:
+    """(схема, хост, порт) адреса в нижнем регистре; для чужого, пустого или битого — ()."""
+    from urllib.parse import urlsplit
+    try:
+        p = urlsplit(str(url or "").strip())
+        scheme, host, port = (p.scheme or "").lower(), (p.hostname or "").lower(), p.port
+    except ValueError:
+        return ()
+    if scheme not in _DEFAULT_PORTS or not host:
+        return ()
+    return scheme, host, port or _DEFAULT_PORTS[scheme]
+
+
+def same_origin(url: str, base: str) -> bool:
+    """Тот ли сервер: схема, хост и порт совпали. Единственное послабление — обновление
+    `http://хост` → `https://хост` на стандартных портах: ключ при этом не открывается."""
+    a, b = url_origin(url), url_origin(base)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return b[0] == "http" and a[0] == "https" and a[1] == b[1] and a[2] == 443 and b[2] == 80
+
+
+def is_loopback_host(host: str) -> bool:
+    """Свой компьютер: `localhost`, `*.localhost`, `127.x.x.x`, `::1`."""
+    h = (host or "").strip("[]").lower()
+    return (h == "localhost" or h.endswith(".localhost") or h == "::1"
+            or re.fullmatch(r"127(?:\.\d{1,3}){3}", h) is not None)
+
+
+def allow_cleartext(env: dict | None = None) -> bool:
+    """Человек разрешил секрет по открытому http: `AURORA_ALLOW_HTTP=1` в окружении или в
+    `.env.aurora.local` машины (не в `aurora.config.yaml`: тот файл общий для команды)."""
+    return str((os.environ if env is None else env).get("AURORA_ALLOW_HTTP", "")
+               ).strip().lower() in ("1", "true", "yes")
+
+
+def cleartext_secret_problem(url: str, allow: bool = False) -> str:
+    """Причина отказа, если по адресу нельзя посылать секрет открытым текстом; иначе пусто.
+
+    Секрет по `http://` идёт без шифрования; допустим только свой компьютер или явное
+    разрешение человека на машине (`AURORA_ALLOW_HTTP=1` в `.env.aurora.local`)."""
+    o = url_origin(url)
+    if not o:
+        return f"адрес «{url}» не http(s): секрет на него не отправляется"
+    if o[0] == "https" or allow or is_loopback_host(o[1]):
+        return ""
+    return (f"адрес {o[0]}://{o[1]} без шифрования: секрет по нему не отправляется. Укажите "
+            "https:// или, если сервер действительно только в закрытой сети, добавьте "
+            "AURORA_ALLOW_HTTP=1 в .env.aurora.local")
+
+
+_SAFE_REDIRECT = None
+
+
+def safe_redirect_handler():
+    """Обработчик редиректов `urllib`: на другой хост (и на понижение https → http) уходит
+    запрос БЕЗ секретных заголовков. Класс строим при первом вызове: `urllib.request` тянет
+    за собой ssl, а `aurora_common` читают даже короткие команды."""
+    global _SAFE_REDIRECT
+    if _SAFE_REDIRECT is None:
+        import urllib.request as _rq
+
+        class _SafeRedirect(_rq.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                new = super().redirect_request(req, fp, code, msg, headers, newurl)
+                if new is not None and not same_origin(newurl, req.full_url):
+                    for store in (new.headers, new.unredirected_hdrs):
+                        for k in [k for k in store if k.lower() in SECRET_HEADERS]:
+                            del store[k]
+                return new
+
+        _SAFE_REDIRECT = _SafeRedirect
+    return _SAFE_REDIRECT()
+
+
+def safe_urlopen(req, timeout: float | None = None, context=None):
+    """`urllib.request.urlopen`, который не уносит секретные заголовки на другой хост."""
+    import urllib.request as _rq
+    handlers = [safe_redirect_handler()]
+    if context is not None:
+        handlers.append(_rq.HTTPSHandler(context=context))
+    opener = _rq.build_opener(*handlers)
+    return opener.open(req) if timeout is None else opener.open(req, timeout=timeout)

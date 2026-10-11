@@ -150,9 +150,10 @@ def resolve_ref(api, raw: str, default_space: str = "") -> tuple:
 
 class Api(RestApi):
     agent = "aurora-confluence-export/1.0"
+    secret_prefix = "CONFLUENCE"
 
-    def __init__(self, base: str, auth: str):
-        super().__init__(base, auth)
+    def __init__(self, base: str, auth: str, root: str = ""):
+        super().__init__(base, auth, root)
         self._users: dict = {}      # ключ → имя: один запрос на человека, а не на страницу
 
     def page(self, page_id: str) -> dict:

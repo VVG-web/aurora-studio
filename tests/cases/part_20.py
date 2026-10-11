@@ -717,3 +717,69 @@ def test_gitignore_opens_from_the_git_section_as_plain_markup(tmp: Path):
     assert 'md ? (localStorage.getItem("aurora-editor-mode") || "sv") : "sv"' in mount, \
         "не-markdown файл откроется видом «как в Word» и будет переписан"
     assert 'mode: heavy || !md ? "editor" : "both"' in panel, "у .gitignore предпросмотр рисует # заголовком"
+
+
+@test
+def test_git_credential_helper_answers_only_its_own_host(tmp: Path):
+    """Помощник учётных данных отдаёт пароль только серверу, для которого дан токен: git
+    спрашивает его через настоящий `git credential fill`, а на чужой хост ответа нет
+    (редирект, подмодуль, LFS на чужом адресе — BL-SEC-05)."""
+    GS = _gs()
+    assert GS.hostport("https://Me:pw@Git.Example.com:3100/a/b.git") == "git.example.com:3100"
+    assert GS.hostport("git@git.example.com:a/b.git") == "" and GS.hostport("/srv/a.git") == ""
+    restore = set_home(tmp / "home")
+    try:
+        s = {"provider": "gitea", "instance": "https://git.example.com:3100", "repo": "team/a"}
+        c = {"auth": "token", "user": "me", "secret": "tok-abcdef-123"}
+        env = GS._env()
+        args = GS.auth_config(s, c, env)
+        assert env["AURORA_GIT_HOST"] == "git.example.com:3100", env.get("AURORA_GIT_HOST")
+
+        def ask(host: str, host_env: str | None = None) -> str:
+            e = dict(env)
+            if host_env is not None:
+                e["AURORA_GIT_HOST"] = host_env
+            r = subprocess.run(["git", *args, "credential", "fill"], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", env=e,
+                               input=f"protocol=https\nhost={host}\n\n", timeout=30)
+            return r.stdout
+        got = ask("git.example.com:3100")
+        assert "password=tok-abcdef-123" in got and "username=me" in got, got
+        assert "password=tok-abcdef-123" in ask("GIT.example.com:3100"), "регистр хоста не важен"
+        for other in ("evil.example.net", "git.example.com", "git.example.com:3101"):
+            assert "tok-abcdef-123" not in ask(other), f"пароль ушёл на {other}"
+        assert "tok-abcdef-123" not in ask("git.example.com:3100", host_env=""), \
+            "без привязки хоста помощник молчит"
+    finally:
+        restore()
+
+
+@test
+def test_git_check_does_not_reuse_the_saved_secret_for_another_server(tmp: Path):
+    """«Проверить подключение» с другим сервером в форме сохранённый ключ не получает:
+    маска или пустое поле — это «взять сохранённый», но только для сохранённого сервера."""
+    GS = _gs()
+    restore = set_home(tmp / "home")
+    seen = []
+    real = GS._check
+    GS._check = lambda project, s, c: seen.append((s["instance"], c["secret"])) or {"ok": True}
+    try:
+        a = _repo(tmp / "a")
+        base = {"provider": "gitea", "instance": "https://git.example.com:3100", "repo": "team/a",
+                "branch": "main"}
+        assert GS.save(a, base, {"auth": "token", "user": "me", "secret": "tok-abcdef-123"})["ok"]
+        other = {**base, "instance": "https://evil.example.net"}
+        mask = {"auth": "token", "user": "me", "secret": GS.MASK}
+        GS.check(a, base, mask)                                    # тот же сервер — ключ есть
+        GS.check(a, other, mask)                                   # другой — ключа нет
+        GS.check(a, other, None)                                   # без полей входа — тоже нет
+        GS.check(a, other, {"auth": "token", "user": "me"})        # поля secret нет — «не трогали»
+        GS.check(a, other, {"auth": "token", "user": "me", "secret": "typed-by-human"})
+        assert seen == [("https://git.example.com:3100", "tok-abcdef-123"),
+                        ("https://evil.example.net", ""), ("https://evil.example.net", ""),
+                        ("https://evil.example.net", ""),
+                        ("https://evil.example.net", "typed-by-human")], seen
+        assert GS.cred_load(a)["secret"] == "tok-abcdef-123", "проверка стёрла сохранённый ключ"
+    finally:
+        GS._check = real
+        restore()

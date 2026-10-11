@@ -61,7 +61,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aurora_common import kit_root, lock_release, lock_take  # noqa: E402 — кит: сам скрипт или указатель копии движка
+from aurora_common import kit_root, lock_release, lock_take, safe_urlopen  # noqa: E402 — кит: сам скрипт или указатель копии движка
 
 MASK = "••••••"
 PROVIDERS = ("github", "gitlab", "bitbucket", "gitea", "generic")
@@ -615,14 +615,26 @@ def github_versions(slug: str, branch: str = "master", fresh: bool = False,
 
 # ---------------------------------------------------------------- запуск git
 
-HELPER = ('!f() { test "$1" = get || exit 0; '
+# Помощник отвечает только серверу, для которого дан токен (`AURORA_GIT_HOST` — хост[:порт] из
+# адреса репозитория): git присылает `host=…` на stdin, и на любой другой хост — редирект,
+# подмодуль, LFS на чужом адресе — пароль не уходит.
+HELPER = ('!f() { test "$1" = get || exit 0; h=; '
+          'while IFS== read -r k v; do test "$k" = host && h=$v; done; '
+          'test -n "$AURORA_GIT_HOST" || exit 0; '
+          'h=$(printf "%s" "$h" | tr A-Z a-z); test "$h" = "$AURORA_GIT_HOST" || exit 0; '
           'printf "%s\\n" "username=$AURORA_GIT_USER" "password=$AURORA_GIT_PASS"; }; f')
+
+
+def hostport(url: str) -> str:
+    """хост[:порт] http(s)-адреса в нижнем регистре, без логина; для остального — пусто."""
+    m = re.match(r"^https?://(?:[^/@\s]*@)?([^/\s?#]+)", url or "", re.I)
+    return m.group(1).lower() if m else ""
 
 
 def _env(localized: bool = False) -> dict:
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "Malloc"))}
-    for k in ("GIT_ASKPASS", "SSH_ASKPASS", "AURORA_GIT_USER", "AURORA_GIT_PASS"):
+    for k in ("GIT_ASKPASS", "SSH_ASKPASS", "AURORA_GIT_USER", "AURORA_GIT_PASS", "AURORA_GIT_HOST"):
         env.pop(k, None)
     env.update(GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never", GIT_EDITOR="true",
                GIT_MERGE_AUTOEDIT="no", SSH_ASKPASS_REQUIRE="never", PYTHONUTF8="1",
@@ -652,6 +664,7 @@ def auth_config(s: dict, c: dict, env: dict) -> list:
     if auth in ("token", "password") and c.get("secret"):
         env["AURORA_GIT_USER"] = c.get("user") or default_user(s)
         env["AURORA_GIT_PASS"] = c["secret"]
+        env["AURORA_GIT_HOST"] = hostport(repo_url(s, c))
         _SECRETS.add(c["secret"])
         cfg += ["-c", "credential.helper=", "-c", "credential.helper=" + HELPER]
     elif auth == "ssh" and c.get("ssh_key"):
@@ -1870,7 +1883,8 @@ def make_http(tls: dict | None):
                                                    "User-Agent": "aurora-studio",
                                                    **(headers or {})})
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            # Токен (Authorization / PRIVATE-TOKEN) не уходит на другой хост при редиректе.
+            with safe_urlopen(req, timeout=timeout, context=ctx) as r:
                 body = r.read(3_000_000)
                 hdrs = {k.lower(): v for k, v in r.headers.items()}
                 try:
@@ -1911,6 +1925,12 @@ def check(project, settings: dict | None = None, creds: dict | None = None,
             c["ssh_key"] = str(tmp_key)
     else:
         c = cred_load(project, mirror)
+    # Сохранённый ключ принадлежит сохранённому серверу: проверка с другим адресом из
+    # формы (опечатка, подмена) его не получает — человек вводит ключ заново.
+    reuse = creds is None or str(creds.get("secret", MASK)) == MASK
+    saved = server_view(load(project), mirror)
+    if reuse and c.get("secret") and (_servers(s, c) != _servers(saved, cred_load(project, mirror))):
+        c = {**c, "secret": ""}
     try:
         return _check(project, s, c)
     finally:
@@ -1919,6 +1939,11 @@ def check(project, settings: dict | None = None, creds: dict | None = None,
                 tmp_key.unlink()
             except OSError:
                 pass
+
+
+def _servers(s: dict, c: dict) -> tuple:
+    """Хосты, куда уйдёт ключ: адрес репозитория и адрес сервера для API провайдера."""
+    return hostport(repo_url(s, c)), hostport(s.get("instance") or "")
 
 
 def _check(project, s: dict, c: dict) -> dict:

@@ -48,6 +48,16 @@ with a `connector.json`; see [source modules](../docs/en/connectors.md).
 Sync scripts talk to Confluence and Jira directly over REST. The Atlassian MCP in your editor does not help them: it
 does not hand out its credentials. Check a token: `python3 .aurora/scripts/jira_export.py --limit 1`.
 
+**A token goes only to its own server.** The address in `aurora.config.yaml` is shared by the team, and swapping it in
+a pull request would carry the token away. So the REST client sends the key only to the server in `base_url`: an
+absolute address that comes from the server (`_links.next`, an attachment) with another host is refused, and a redirect
+to another host goes without `Authorization`. The key is never sent over plain `http://` (your own computer excepted).
+Two optional lines in `.env.aurora.local` close the rest: `CONFLUENCE_SERVER=https://wiki.example.com` and
+`JIRA_SERVER=https://jira.example.com` pin the key to the server — any other `base_url` in the config is refused before
+the key leaves; `AURORA_ALLOW_HTTP=1` allows plain `http://` for a server on a closed network. The same rule holds for
+model gateway keys, the website crawl token (`WEB_PERSONAL_TOKEN` goes only to the host of its start page) and the Git
+password (the credential helper answers only the repository's server).
+
 ## Checking a mirror
 
 | Command | Finds |
