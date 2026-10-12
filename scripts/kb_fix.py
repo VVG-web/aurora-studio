@@ -63,6 +63,7 @@ MERGE_REPORT: list = []      # (слитые, отказы) — для отчё�
 ARCHIVE = os.path.join(ROOT, "_archive")
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import safe_walk  # noqa: E402 — обход без ссылок за пределы проекта
+from card_types import section_type_table  # noqa: E402 — единый источник «раздел → тип»
 
 
 # Служебные файлы навигации/механики — не карточки знаний.
@@ -244,12 +245,10 @@ def add_alias(card: Card, alias: str) -> str:
 
 
 
-SECTION_TYPE = {
-    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
-    "Systems": "system", "Roles": "role", "Statuses": "status-model",
-    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
-    "Decisions": "decision", "Questions": "question", "MOC": "moc",
-}
+def section_type() -> dict:
+    """{раздел: тип} — реестр типов карточек (`card_types`); без шаблонов — прежние двенадцать пар.
+    Таблица одна на весь движок: у ремонта, линтера, разбора и схемы своих копий нет."""
+    return section_type_table()
 
 
 # Поля, выведенные из схемы (список — в aurora_common): движок их больше не читает,
@@ -304,8 +303,9 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
     add = ""
     if not card.fm.get("status"):
         add += "status: draft\n"
-    if not card.fm.get("type") and SECTION_TYPE.get(section):
-        add += f"type: {SECTION_TYPE[section]}\n"
+    want = section_type().get(section)
+    if not card.fm.get("type") and want:
+        add += f"type: {want}\n"
     if not add:
         return head + rest if head != card.text[:card.fm_end] else card.text
     return head.rstrip("\n") + "\n" + add.rstrip("\n") + rest
@@ -321,10 +321,15 @@ def ensure_frontmatter(card: Card, section: str = "") -> str:
 #
 # Перенос безопасен: ссылки в базе идут по имени карточки, а не по пути, поэтому
 # `[[ALG-148…]]` продолжает работать. Оглавления и карты пересобираются следом.
-TYPE_SECTION = {v: k for k, v in SECTION_TYPE.items()}
+def type_section() -> dict:
+    """{тип: раздел} — та же таблица в обратную сторону."""
+    return {v: k for k, v in section_type().items()}
+
 
 # Типы, которые модель придумывает вместо схемных. Не выбрасываем и не молчим: пишем
 # схемный, а прежний оставляем строкой в отчёте — это перекодирование, а не решение.
+# Целевой тип обязан быть в реестре: синоним, ведущий в тип без раздела, не переводит ничего
+# (`plan_sections` сверяет его с `type_section()`).
 TYPE_ALIASES = {
     "entity": "concept", "userstory": "requirement", "user-story": "requirement",
     # Критерии приёмки описывают требуемое поведение — это требование, а не понятие.
@@ -507,6 +512,7 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
     # Занятые ПУТИ, а не имена: карточка видела саму себя занявшей своё имя, и не
     # переезжала ни одна. Проверять надо, стоит ли в целевом разделе ДРУГАЯ карточка.
     taken = {p.replace("\\", "/") for p in cards}
+    by_type = type_section()
     for path, card in sorted(cards.items()):
         rel = path.replace("\\", "/")
         parts = rel.split("/")
@@ -523,7 +529,7 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
             rest = rest[1:]
         kind = (card.fm.get("type") or "").strip().strip('"')
         want_type = TYPE_ALIASES.get(kind, kind)
-        if not want_type or want_type not in TYPE_SECTION:
+        if not want_type or want_type not in by_type:
             if kind:
                 stuck.append((rel, f"тип «{kind}» не сходится ни с одним разделом"))
             flat = "/".join([parts[0], section] + rest)
@@ -531,7 +537,7 @@ def plan_sections(cards: dict, plan: "Plan") -> tuple:
                 if plan.rename(path, flat) is not None:
                     moved.append((rel, flat))
             continue
-        want = TYPE_SECTION[want_type]
+        want = by_type[want_type]
         new_rel = "/".join([parts[0], want] + rest)
         if new_rel == rel and want_type == kind:
             continue
@@ -1093,7 +1099,7 @@ def plan_stubs(cards: dict, idx, plan: Plan, root: str):
         plan.write(path,
                    f"---\ntitle: \"{clean}\"\naliases: {alias_lines}\n"
                    f"status: {PLACEHOLDER}\n"
-                   f"type: {SECTION_TYPE.get(section, 'concept')}\n"
+                   f"type: {section_type().get(section, 'concept')}\n"
                    f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
                    f"related: []\n---\n\n# {clean}\n\n"
                    "_Заготовка: ссылка на это понятие уже есть, знания пока нет._\n"
@@ -1293,7 +1299,7 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
             origin, srcs = term_origin(cards, name, meaning)
             plan.write(path,
                        f"---\ntitle: \"{name}\"\naliases: []\nstatus: draft\n"
-                       f"type: {SECTION_TYPE.get(section, 'concept')}\n"
+                       f"type: {section_type().get(section, 'concept')}\n"
                        + sources_block(srcs) +
                        f"created: {TODAY}\nupdated: {TODAY}\nrelated: []\n---\n\n# {name}\n\n"
                        f"{name} — {meaning}.\n"
@@ -1308,7 +1314,7 @@ def plan_term_stubs(cards: dict, idx, plan: Plan, root: str, floor: int = 3):
         plan.write(path,
                    f"---\ntitle: \"{name}\"\naliases: []\n"
                    f"status: {PLACEHOLDER}\n"
-                   f"type: {SECTION_TYPE.get(section, 'concept')}\n"
+                   f"type: {section_type().get(section, 'concept')}\n"
                    f"tags: [заготовка]\ncreated: {TODAY}\nupdated: {TODAY}\n"
                    f"related: []\n---\n\n# {name}\n\n" + body)
         created.append((name, section, seen))

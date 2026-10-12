@@ -543,6 +543,38 @@ def check_linked_roots() -> list:
     return out
 
 
+def check_card_templates(root: Path | None = None) -> list:
+    """Сведения о шаблонах карточек: сколько типов кита доставлено в проект, есть ли проблемы реестра, сколько
+    карточек без `template:`. → строки уровня «сведение».
+
+    Отдельного уровня «сведение» (`info`) у доктора нет, и заводить механизм ради трёх строк незачем: сведения —
+    обычные строки без `ERROR:` и `WARN:`, так печатаются «агент:» и «приватность:». Страница «Здоровье» их не
+    собирает, итог «OK with warnings» они не меняют: пока шаблоны только советуют, доктор ими ничего не краснит.
+    Что делать с нарушениями шаблонов — `kb:cards --check`."""
+    root = root or ROOT
+    out = []   # через .append: реестр переводов kit_i18n собирает сообщения доктора именно по вызовам append
+    try:
+        from card_types import delivered_kit_types, registry, template_stamps
+        reg = registry(str(root))
+        got, total = delivered_kit_types(reg)
+        cards, stamped = template_stamps(str(root)) if (root / "AuroraKnowledgeDB").is_dir() else (None, 0)
+    except Exception:  # noqa: BLE001 — справка не имеет права ронять доктора
+        return out
+    if got == total:
+        out.append(f"шаблоны карточек: {got} из {total} доставлены")
+    else:
+        out.append(f"шаблоны карточек: {got} из {total} доставлены — доставьте остальные обновлением проекта: `kit:update`")
+    if reg.problems:
+        # паспорт шаблона пишет человек: в одну строку, чтобы чужой текст не стал строкой `WARN:` или `ERROR:`
+        shown = "; ".join(" ".join(p.split())[:140] for p in reg.problems[:2]) + (" …" if len(reg.problems) > 2 else "")
+        out.append(f"типы: проблемы реестра — {len(reg.problems)}: {shown}")
+    else:
+        out.append("типы: проблемы реестра — нет")
+    if cards is not None:
+        out.append(f"карточек без шаблона: {cards - stamped}")
+    return out
+
+
 def check_web_token_binding(root: Path | None = None, environ: dict | None = None) -> list:
     """Токен обхода сайтов есть, а привязки к хостам нет — предупреждение (пусто — всё в
     порядке). Привязка — строка `AURORA_WEB_TOKEN_HOSTS` в файле машины или запомненные хосты
@@ -725,6 +757,8 @@ def main() -> int:
     for w in warns:
         print("WARN:", w)
     for line in s_lines:
+        print(line)
+    for line in check_card_templates():           # сведения, не находки: итог ниже они не меняют
         print(line)
     if not errors and not warns:
         print("OK: config and onboarding look ready")

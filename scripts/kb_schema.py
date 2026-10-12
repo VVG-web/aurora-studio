@@ -33,13 +33,7 @@ from aurora_common import (KB_ROOT, PLACEHOLDER, RETIRED_STATUS,
 CURRENT = 6
 from aurora_common import TODAY  # noqa: E402 — дата в UTC, одна на движок
 
-# Разделы базы → тип карточки: та же таблица, по которой достраивает тип `kb:repair`.
-SECTION_TYPE = {
-    "Concepts": "concept", "Processes": "process", "Systems": "system",
-    "Glossary": "glossary", "Reference": "reference", "Decisions": "decision",
-    "Requirements": "requirement", "Specs": "spec", "Questions": "question",
-    "Roles": "role", "Statuses": "status-model", "MOC": "moc",
-}
+from card_types import section_type_table  # noqa: E402 — единый источник «раздел → тип»
 
 
 def drop_fields(head: str, fields: tuple) -> str:
@@ -62,8 +56,9 @@ def m2(head: str, section: str) -> tuple:
     if not fm.get("trust"):
         head = set_field(head, "trust", "medium")
         changed.append("trust")
-    if not fm.get("type") and SECTION_TYPE.get(section):
-        head = set_field(head, "type", SECTION_TYPE[section])
+    want = section_type_table().get(section)     # та же таблица, по которой достраивает тип `kb:repair`
+    if not fm.get("type") and want:
+        head = set_field(head, "type", want)
         changed.append("type")
     return head, changed
 

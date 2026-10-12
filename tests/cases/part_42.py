@@ -8,11 +8,14 @@
 паспортов, примеров, общего блока и выжимки идут и по ним (`_kit_templates`), а в конце части —
 проверки самих файлов (сборка по формуле, общий блок побайтно, примеры, README) и их доставки в
 проекты (`aurora.py new`, путь панели, `aurora_update.py`).
+Пакет CT-04 (в конце части): «раздел → тип» живёт в одном месте — реестре; линтер читает типы и статусы из
+него и печатает раздел «шаблоны карточек» (предупреждения) после итоговой строки; доктор называет шаблоны.
 Модель и сеть не используются; проекты — только во временных папках, запуски, которые пишут, — под
 временным HOME прогона.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import dataclasses
 import hashlib
@@ -1442,3 +1445,458 @@ def test_update_delivers_the_templates_once(tmp: Path):
     snap = _tree(root)
     _update(root)
     assert _tree(root) == snap, "повторный update изменил проект (.new пишется тем же текстом)"
+
+
+# ------------------------------------------------------------------ CT-04: единый источник типов, линтер, доктор
+
+HEAD_LINT = "### шаблоны карточек (предупреждения, не ошибки)"
+POLICY = ("policy", "entity", "Policies", "", "", "knowledge", "knowledge, draft, active", "Правила", "", 0)
+LEGACY_PAIRS = 12
+
+
+def _mod(name: str):
+    """Скрипт движка как модуль (`scripts/` кита — в пути поиска)."""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    return importlib.import_module(name)
+
+
+def _lint(root: Path, *args) -> subprocess.CompletedProcess:
+    """`kb:lint` движка проекта (копия в `.aurora/scripts/`: кита рядом нет, реестр — только из проекта)."""
+    return _py(root / ".aurora" / "scripts" / "kb_lint.py", *args, cwd=root, expect=None)
+
+
+def _lint_project(base: Path, templates: bool = True) -> Path:
+    """Проект с двумя карточками: исправный пример и карточка с советами шаблона (статус вне типа, лишнее поле)."""
+    root = _cli_project(base, templates=templates)
+    kb = root / "AuroraKnowledgeDB"
+    _put(kb / "Concepts" / "Заявка-на-поставку.md", _example(CATALOGUE[0]))
+    _put(kb / "Concepts" / "Плохая.md", mk(status="imported", pdated="1", title='"Плохая"', template=None))
+    return root
+
+
+def _section_of(out: str) -> list:
+    """Строки раздела «шаблоны карточек» вывода линтера: от заголовка до первого «## …» или конца."""
+    lines = out.splitlines()
+    if HEAD_LINT not in lines:
+        return []
+    got = []
+    for line in lines[lines.index(HEAD_LINT):]:
+        if line.startswith("## "):
+            break
+        got.append(line)
+    return got
+
+
+def _summary_line(out: str) -> str:
+    return next(l for l in out.splitlines() if l.startswith("kb_lint: карточек "))
+
+
+@test
+def test_section_type_single_source(_t):
+    """«Раздел → тип» записана один раз — в `card_types.py`; остальные места читают реестр."""
+    C = _C()
+    legacy = set(C.LEGACY_SECTION_TYPE.items())
+    assert len(legacy) == LEGACY_PAIRS, "прежняя таблица — ровно двенадцать пар"
+    files = [p for folder in ("scripts", "cockpit", "reports", "tests") for p in sorted((KIT / folder).rglob("*.py"))]
+    files.append(KIT / "aurora.py")
+    # AC-CT-04.1: определение пары «раздел: тип» (то же, что `grep` по scripts и tests) — только в реестре
+    pair = re.compile('"Concepts":' + ' *"concept"')
+    found = [str(p.relative_to(KIT)) for p in files if pair.search(p.read_text(encoding="utf-8"))]
+    assert found == ["scripts/card_types.py"], f"таблица «раздел → тип» записана вне реестра: {found}"
+    # словарный литерал из восьми и более пар таблицы — копия, где бы он ни лежал
+    copies = []
+    for path in files:
+        if path.name == "card_types.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Dict):
+                pairs = {(k.value, v.value) for k, v in zip(node.keys, node.values)
+                         if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)}
+                if len(pairs & legacy) >= 8:
+                    copies.append(f"{path.relative_to(KIT)}:{node.lineno}")
+    assert not copies, f"копия таблицы «раздел → тип» вне реестра: {copies}"
+    # пять мест, где копии жили, читают реестр
+    for rel in ("scripts/build_plan.py", "scripts/kb_fix.py", "scripts/kb_lint.py", "scripts/kb_schema.py", "tests/harness.py"):
+        text = (KIT / rel).read_text(encoding="utf-8")
+        assert "card_types" in text, f"{rel} не читает реестр типов"
+        assert not re.search(r"(?m)^SECTION_TYPE\s*=", text), f"{rel}: осталась таблица SECTION_TYPE"
+
+
+@test
+def test_section_type_table_follows_the_registry(tmp: Path):
+    """`section_type_table`: без шаблонов — прежняя таблица; с шаблонами — разделы реестра; изменение набора
+    шаблонов видно сразу; сбой реестра не роняет скрипт; для разбора цитируемые документы закрыты."""
+    C = _C()
+    legacy = dict(C.LEGACY_SECTION_TYPE)
+    legacy.update(C.UNMANAGED_SECTION_TYPES)
+    bare, no_kit = tmp / "bare", str(tmp / "no-kit")
+    bare.mkdir()
+    assert C.section_type_table(str(bare), no_kit) == legacy and len(legacy) == LEGACY_PAIRS, \
+        "без шаблонов и без кита таблица не равна прежней"
+    root = _project(tmp)
+    assert C.section_type_table(str(root), no_kit) == {**legacy, "Documents": "cited-document"}
+    build = C.section_type_table(str(root), no_kit, for_build=True)
+    assert build == legacy, "разбору открыты разделы, которые ведёт только свой скрипт"
+    # свой тип проекта появляется и исчезает вместе с файлом шаблона (кэш не держит прежнее)
+    own = _put(root / "Templates" / "akdb_policy_v1.0.md", _template_text(POLICY))
+    assert C.section_type_table(str(root), no_kit)["Policies"] == "policy"
+    assert C.section_type_table(str(root), no_kit, for_build=True)["Policies"] == "policy"
+    own.unlink()
+    assert "Policies" not in C.section_type_table(str(root), no_kit), "кэш пережил удаление шаблона"
+    # реестр не собрался — прежняя таблица, а не падение
+    real = C.registry
+    try:
+        C.registry = lambda *a, **k: 1 / 0
+        other = tmp / "other"
+        other.mkdir()
+        assert C.section_type_table(str(other), no_kit) == legacy
+    finally:
+        C.registry = real
+    # тип и статусы линтера: тип без раздела (исправление) в базе не бывает
+    reg = _reg(root)
+    assert reg.known_types() == set(legacy.values()) | {"cited-document"} and "correction" not in reg.known_types()
+    assert reg.statuses_for("decision") == ("proposed", "accepted", "rejected", "superseded")
+    assert "active" not in reg.statuses_for("correction"), "статусы исправления попали в базу"
+    assert reg.statuses_for("cited-document") == ("knowledge", "draft", "deprecated")
+    assert C.registry(str(bare), kit_root=no_kit).known_types() == set(legacy.values())
+    # заготовки тестов читают тот же реестр
+    import harness as H
+    assert dict(H.section_type()) == {**legacy, "Documents": "cited-document"}
+
+
+@test
+def test_scripts_read_the_section_table_from_the_registry(tmp: Path):
+    """Разбор, ремонт и схема берут таблицу из реестра: свой тип проекта виден, а без шаблонов всё как раньше
+    (AC-CT-04.4: `kb:repair --sections` даёт тот же результат, что до правки)."""
+    root = _cli_project(tmp / "own")
+    _put(root / "Templates" / "akdb_policy_v1.0.md", _template_text(POLICY))
+    code = ("import sys, json; sys.path.insert(0, '.aurora/scripts'); import kb_fix as F, kb_schema as S; "
+            "head, changed = S.m2('\\ntitle: \"x\"\\n', 'Policies'); "
+            "print(json.dumps({'fix': F.section_type(), 'back': F.type_section(), 'schema': changed, "
+            "'aliases': F.TYPE_ALIASES['entity']}))")
+    cp = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert cp.returncode == 0, cp.stderr[-500:]
+    got = json.loads(cp.stdout)
+    assert got["fix"]["Policies"] == "policy" and got["back"]["policy"] == "Policies" and got["back"]["concept"] == "Concepts"
+    assert "type" in got["schema"] and got["aliases"] == "concept", got
+    # `--sections`: карточка своего типа уходит в свой раздел; тип вне реестра остаётся спорным, как раньше
+    kb = root / "AuroraKnowledgeDB"
+    _put(kb / "Concepts" / "Правило-отпуска.md", mk(type="policy", title='"Правило отпуска"'))
+    _put(kb / "Concepts" / "Чужой.md", mk(type="person", title='"Чужой"'))
+    cp = _py(root / ".aurora" / "scripts" / "kb_fix.py", "--sections", "--apply", "--allow-dirty", cwd=root, expect=None)
+    assert (kb / "Policies" / "Правило-отпуска.md").is_file(), f"карточка своего типа не переехала:\n{cp.stdout[-600:]}"
+    assert (kb / "Concepts" / "Чужой.md").is_file() and "тип «person» не сходится ни с одним разделом" in cp.stdout, cp.stdout[-600:]
+    # `build_plan --to`: свой раздел принят, раздел цитируемых документов и неизвестный отвергаются списком прежних
+    _put(root / "Raw" / "project" / "Ист.md", "## Правило\n\n" + "Отпуск оформляется заявлением сотрудника за две недели. " * 6 + "\n")
+    bp = root / ".aurora" / "scripts" / "build_plan.py"
+    args = ("--card", "Порядок согласования", "--source", "Raw/project/Ист.md", "--sections", "1")
+    ok = _py(bp, *args, "--to", "Policies", "--apply", cwd=root, expect=None)
+    made = kb / "Policies" / "Порядок-согласования.md"
+    assert ok.returncode == 0 and made.is_file() and "type: policy" in made.read_text(encoding="utf-8"), (ok.stdout + ok.stderr)[-500:]
+    for refused in ("Documents", "Bogus"):
+        bad = _py(bp, *args, "--to", refused, cwd=root, expect=None)
+        assert f"раздела «{refused}» нет в схеме базы" in bad.stderr and "Policies" in bad.stderr and "Documents," not in bad.stderr, bad.stderr
+
+    # без шаблонов и в проекте с шаблонами кита `--sections` даёт одно и то же (проекты равны по картотеке)
+    def fixture(base: Path, templates: bool) -> tuple:
+        r = _cli_project(base, templates=templates)
+        k = r / "AuroraKnowledgeDB"
+        _put(k / "Concepts" / "Алгоритм.md", mk(type="process", title='"Алгоритм"'))
+        _put(k / "Reference" / "Термин.md", mk(type="glossary", title='"Термин"'))
+        _put(k / "Concepts" / "Понятие.md", mk(type="concept", title='"Понятие"'))
+        _put(k / "Concepts" / "Сущность.md", mk(type="entity", title='"Сущность"'))
+        _put(k / "Concepts" / "Чужой.md", mk(type="person", title='"Чужой"'))
+        out = _py(r / ".aurora" / "scripts" / "kb_fix.py", "--sections", "--apply", "--allow-dirty", cwd=r, expect=None)
+        files = {p.relative_to(k).as_posix(): p.read_bytes() for p in sorted(k.rglob("*.md"))}
+        return out.returncode, out.stdout.replace(str(r), "<R>"), files
+    plain, shipped = fixture(tmp / "a", False), fixture(tmp / "b", True)
+    assert plain == shipped, "`kb:repair --sections` с шаблонами кита ведёт себя не так, как без них"
+    names = sorted(plain[2])
+    assert "Processes/Алгоритм.md" in names and "Glossary/Термин.md" in names and "Concepts/Понятие.md" in names, names
+    assert b"type: concept" in plain[2]["Concepts/Сущность.md"], "синоним типа не переведён в схемный"
+
+
+@test
+def test_lint_section_uses_registry(tmp: Path):
+    """Линтер берёт известные типы, раздел типа и допустимые статусы из реестра: тип проекта не «вне схемы»."""
+    own = _cli_project(tmp / "own")
+    _put(own / "Templates" / "akdb_policy_v1.0.md", _template_text(POLICY))
+    bare = _cli_project(tmp / "bare")
+    for root in (own, bare):
+        kb = root / "AuroraKnowledgeDB"
+        _put(kb / "Policies" / "Правило-отпуска.md", mk(type="policy", status="active", title='"Правило отпуска"'))
+        _put(kb / "Concepts" / "Не-там.md", mk(type="policy", status="draft", title='"Не там"'))
+        _put(kb / "Documents" / "Закон.md", mk(type="cited-document", status="draft", title='"Закон"'))
+        _put(kb / "Concepts" / "Исправление.md", mk(type="correction", status="active", title='"Исправление"'))
+    mine = _lint(own, "--full").stdout
+    plain = _lint(bare, "--full").stdout
+    named = lambda out, name: [l for l in out.splitlines() if name in l and l.lstrip().startswith("- ")]  # noqa: E731
+    # тип проекта в своём разделе — чисто; статус из паспорта шаблона принят
+    types_only = lambda lines: [l for l in lines if any(w in l for w in ("вне схемы", "вне шкалы", "ожидается"))]  # noqa: E731
+    assert not types_only(named(mine, "Правило-отпуска")), f"тип проекта назван ошибкой: {named(mine, 'Правило-отпуска')}"
+    assert any("вне схемы" in l for l in named(plain, "Правило-отпуска")) and any("вне шкалы" in l for l in named(plain, "Правило-отпуска")), \
+        "тип и статус вне реестра не названы ошибками (фикстура ничего не проверяет)"
+    # тип проекта не в своём разделе — прежняя ошибка «ожидается»
+    assert any("тип `policy` в разделе Concepts — ожидается `concept`" in l for l in named(mine, "Не-там")), named(mine, "Не-там")
+    # цитируемый документ лежит в своём разделе, а тип без раздела (исправление) в базе по-прежнему вне схемы
+    assert not types_only(named(mine, "Закон")), named(mine, "Закон")
+    assert any("тип `correction` вне схемы" in l for l in named(mine, "Исправление")) and \
+        any("статус «active» вне шкалы" in l for l in named(mine, "Исправление")), named(mine, "Исправление")
+
+
+@test
+def test_lint_without_templates_falls_back(tmp: Path):
+    """AC-CT-04.2: без шаблонов линтер судит, как судил до реестра; с шаблонами кита вывод тот же, плюс раздел о шаблонах."""
+    def fixture(base: Path, templates: bool) -> Path:
+        root = _cli_project(base, templates=templates)
+        kb = root / "AuroraKnowledgeDB"
+        _put(kb / "Concepts" / "Ок.md", mk(title='"Ок"', status="draft"))
+        _put(kb / "Concepts" / "Чужой.md", mk(title='"Чужой"', type="person", status="draft"))
+        _put(kb / "Processes" / "Не-там.md", mk(title='"Не там"', type="concept", status="draft"))
+        _put(kb / "Glossary" / "Статус.md", mk(title='"Статус"', type="glossary", status="active"))
+        _put(kb / "Specs" / "Спека.md", mk(title='"Спека"', type="spec", status="draft"))
+        _put(kb / "Concepts" / "Без-типа.md", mk(title='"Без типа"', type=None, status="draft"))
+        return root
+    bare, shipped = fixture(tmp / "bare", False), fixture(tmp / "shipped", True)
+    assert _C().registry(str(bare), kit_root=str(tmp / "no-kit")).types == {}, "в проекте без шаблонов реестр не пуст"
+    old = _lint(bare, "--full")
+    new = _lint(shipped, "--full")
+    assert old.returncode == new.returncode == 1
+    for needle in ("тип `person` вне схемы", "тип `concept` в разделе Processes — ожидается `process`",
+                   "статус «active» вне шкалы (knowledge, draft, placeholder, deprecated, index)", "нет type: — раздел Concepts ждёт `concept`"):
+        assert needle in old.stdout, f"прежняя ошибка линтера пропала без шаблонов: {needle}\n{old.stdout[:900]}"
+    assert HEAD_LINT not in old.stdout, "раздел о шаблонах напечатан там, где шаблонов нет"
+    # с шаблонами вывод тот же с точностью до раздела о шаблонах
+    rest = [l for l in new.stdout.splitlines() if l not in _section_of(new.stdout)]
+    assert [l for l in old.stdout.splitlines() if l] == [l for l in rest if l], \
+        f"шаблоны кита изменили вывод линтера:\n{old.stdout}\n---\n{new.stdout}"
+    assert HEAD_LINT in new.stdout and _summary_line(old.stdout) == _summary_line(new.stdout)
+    assert _lint(bare, "--summary").stdout == _lint(shipped, "--summary").stdout
+
+
+@test
+def test_lint_templates_section_is_warnings_only(tmp: Path):
+    """Раздел «шаблоны карточек»: только предупреждения — число ошибок и код возврата те же, что без шаблонов; он
+    печатается после итоговой строки, под `###`, без «ошибок N»/«карточек N» и без новых «## …»."""
+    root, bare = _lint_project(tmp / "a"), _lint_project(tmp / "b", templates=False)
+    full, plain = _lint(root, "--full"), _lint(bare, "--full")
+    assert full.returncode == plain.returncode and _summary_line(full.stdout) == _summary_line(plain.stdout), \
+        "шаблоны изменили число ошибок или код возврата линтера"
+    lines = full.stdout.splitlines()
+    assert lines[0] == _summary_line(full.stdout) and lines.index(HEAD_LINT) > 0, "раздел стоит не после итоговой строки"
+    section = [l for l in _section_of(full.stdout) if l]
+    assert section[0] == HEAD_LINT and not [l for l in section[1:] if l.startswith("#")], section
+    assert section[1] == "   проверено: 2 · с шаблоном (template:): 1 · без шаблона: 1 · с нарушениями: 1", section
+    assert [l.split(":")[0].strip() for l in section[2:-1]] == ["V-06 — статус вне допустимых для типа", "V-07 — поле шапки вне словаря"] \
+        and section[-1] == "   подробно: kb:cards --check", section
+    for line in section:
+        assert not re.search(r"ошибок\s+\d|карточек\s+\d", line), f"строка раздела читается как итоговая: {line}"
+    # проблема реестра называет значения паспорта, а паспорт пишет человек: «ошибок 5» в нём итоговой строкой не станет
+    odd = _put(root / "Templates" / "akdb_x_v1.0.md", _template_text(("x", "entity", "Xs", "", "", "knowledge", "knowledge", "", "", 0),
+                                                                      card_class="ошибок 5 карточек 7"))
+    odd_out = _lint(root, "--full").stdout
+    odd_section = [l for l in _section_of(odd_out) if l]
+    assert any("проблема реестра: akdb_x_v1.0.md: паспорт не принят" in l for l in odd_section), odd_section
+    assert [l for l in odd_out.splitlines() if re.search(r"ошибок\s+\d|карточек\s+\d", l)] == [_summary_line(odd_out)], odd_out
+    odd.unlink()
+    # заголовки «## …» те же, что без шаблонов: ops:todo и «Здоровье» не получают новых видов ошибок
+    heads = lambda out: [l for l in out.splitlines() if l.startswith("## ")]  # noqa: E731
+    assert heads(full.stdout) == heads(plain.stdout)
+    # раздела нет там, где нужна только итоговая строка, и там, где судят отдельные файлы (хук, сохранение в панели)
+    assert _lint(root, "--summary").stdout.splitlines() == [_summary_line(full.stdout)]
+    only = _lint(root, "--only", "AuroraKnowledgeDB/Concepts/Плохая.md").stdout
+    assert HEAD_LINT not in only and only.startswith("kb_lint: карточек 2, ошибок ")
+    # база без нарушений шаблона: заголовок и счёт есть, кодов нет; пустая база — раздела нет
+    clean = _cli_project(tmp / "c")
+    assert HEAD_LINT not in _lint(clean, "--full").stdout
+    _put(clean / "AuroraKnowledgeDB" / "Concepts" / "Заявка-на-поставку.md", _example(CATALOGUE[0]))
+    sec = [l for l in _section_of(_lint(clean, "--full").stdout) if l]
+    assert sec[1] == "   проверено: 1 · с шаблоном (template:): 1 · без шаблона: 0 · с нарушениями: 0" and len(sec) == 3, sec
+
+
+@test
+def test_lint_summary_line_survives_the_templates_section(tmp: Path):
+    """Итоговую строку `kb_lint: карточек N, ошибок M` читают хук pre-commit, панель, `smoke_live`, «Что осталось»
+    и агент; строка раздела не должна попасть под их разбор (Г-07)."""
+    root = _lint_project(tmp / "p")
+    kb = root / "AuroraKnowledgeDB"
+    for i in range(3):                                  # настоящие ошибки линтера: ссылки в никуда
+        _put(kb / "Concepts" / f"Ссылка-{i}.md", mk(f"Определение {i}. См. [[Нет-такой-{i}]].\n", title=f'"Ссылка {i}"'))
+    out = _lint(root, "--full").stdout
+    m = re.search(r"карточек (\d+), ошибок (\d+)", out)
+    cards, errors = int(m.group(1)), int(m.group(2))
+    assert cards == 5 and errors >= 3 and HEAD_LINT in out
+    assert [l for l in out.splitlines() if re.search(r"ошибок\s+\d", l)] == [_summary_line(out)], "«ошибок N» есть не только в итоговой строке"
+    assert [l for l in out.splitlines() if re.search(r"карточек\s+\d", l)] == [_summary_line(out)], "«карточек N» есть не только в итоговой строке"
+
+    # панель: «Здоровье» читает итог и виды ошибок по заголовкам «## …»
+    sys.path.insert(0, str(KIT / "cockpit"))
+    ck = importlib.import_module("aurora_cockpit")
+    info = ck._health_lint(str(root), "ru")["lint"]
+    kinds = {k for k in re.findall(r"(?m)^## (.+?):\s*\d+\s*$", out)}
+    assert (info["cards"], info["errors"]) == (cards, errors) and set(info["kinds"]) == kinds, info
+    assert not [k for k in info["kinds"] if "шаблон" in k or k.startswith("V-")], info["kinds"]
+    # `tests/smoke_live.py` и `aurora_hooks.current_errors` ищут итог теми же выражениями, что записаны в их тексте
+    smoke = (KIT / "tests" / "smoke_live.py").read_text(encoding="utf-8")
+    found = re.findall(r're\.search\(r"(карточек[^"]+)", lint\)', smoke)
+    assert found, "`smoke_live` перестал искать итог линтера выражением со словом «карточек»"
+    assert re.search(found[0], out).groups() == (str(cards), str(errors)), "`smoke_live` взял не итоговую строку"
+    hooks = (KIT / "scripts" / "aurora_hooks.py").read_text(encoding="utf-8")
+    seen = re.findall(r'm = re\.search\(r"(ошибок[^"]+)", out\)', hooks)
+    assert seen and re.search(seen[0], out).group(1) == str(errors), "`kit:hooks` взял не итоговую строку"
+    # «Что осталось»: разделы отчёта — только виды ошибок, строки раздела о шаблонах в них не попадают
+    todo = _mod("aurora_todo")
+    sections = todo.lint_sections(out)
+    assert set(sections) == kinds and not [f for items in sections.values() for f in items if "V-0" in f or "проверено:" in f], sections
+    # агент: оракул «ошибок стало больше» берёт первое «ошибок N»
+    AR = _mod("agent_runner")
+    orphans = int(m2.group(1)) if (m2 := re.search(r"карточки без связей:\s*(\d+)", out)) else 0
+    assert AR.lint_errors(str(root), orphans=False) == errors - orphans and AR.lint_errors(str(root)) == errors
+
+
+def _hook_commit(base: Path, lint_text: str, baseline: int, base_cards: int, card_staged: bool = False) -> tuple:
+    """Настоящий pre-commit проекта на подставном линтере, который печатает заданный вывод: хук читает вывод,
+    а не считает. → (код возврата коммита, вывод хука, файл планки после коммита, вывод `kit:hooks --install`)."""
+    base.mkdir(parents=True, exist_ok=True)
+    root = make_project(base, git=True)
+    (root / "lint_out.txt").write_text(lint_text, encoding="utf-8")
+    (root / ".aurora" / "scripts" / "kb_lint.py").write_text(
+        "import sys\nsys.stdout.write(open('lint_out.txt', encoding='utf-8').read())\nsys.exit(1)\n", encoding="utf-8")
+    installed = _py(KIT / "scripts" / "aurora_hooks.py", "--install", cwd=root).stdout
+    meta = root / "AuroraKnowledgeDB" / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "lint_baseline.txt").write_text(f"{baseline}\n", encoding="utf-8")
+    (meta / "lint_baseline.txt.cards").write_text(f"{base_cards}\n", encoding="utf-8")
+    if card_staged:
+        _put(root / "AuroraKnowledgeDB" / "Concepts" / "Новая.md", mk(title='"Новая"'))
+        subprocess.run(["git", "add", "AuroraKnowledgeDB/Concepts/Новая.md"], cwd=str(root), check=True)
+    else:
+        (root / "notes.txt").write_text("заметка", encoding="utf-8")
+        subprocess.run(["git", "add", "notes.txt"], cwd=str(root), check=True)
+    env = {k: v for k, v in os.environ.items() if k != "AURORA_SKIP_RATCHET"}
+    cp = subprocess.run(["git", "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "правка"],
+                        cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    return cp.returncode, cp.stdout + cp.stderr, (meta / "lint_baseline.txt").read_text(encoding="utf-8").strip(), installed
+
+
+@test
+def test_pre_commit_hook_takes_the_summary_line_not_the_templates_section(tmp: Path):
+    """Хук pre-commit на выводе линтера со строками раздела «шаблоны карточек» берёт итоговую строку (его `sed … tail -1`
+    — последняя строка со словами «ошибок N» и «карточек N»); контроль: строка раздела с такими словами хук сбивает."""
+    root = _lint_project(tmp / "p")
+    real = _lint(root, "--full").stdout
+    assert HEAD_LINT in real
+    text = real.replace(_summary_line(real), "kb_lint: карточек 40, ошибок 3", 1)    # числа, которых нет в разделе
+    # плотность по всей базе: ошибок 3 на 40 карточек — 7 на сто
+    rc, out, _base, installed = _hook_commit(tmp / "h1", text, baseline=1, base_cards=100)
+    assert rc == 0 and "(1 → 7 на 100" in out, f"хук прочёл не ту строку:\n{out}"
+    assert "Базовая линия зафиксирована: 3 ошибок" in installed, f"`kit:hooks --install` взял не итоговую строку:\n{installed}"
+    # планка опускается до числа из итоговой строки
+    rc, out, base, _inst = _hook_commit(tmp / "h2", text, baseline=9, base_cards=100)
+    assert rc == 0 and "база чище (9 → 3)" in out and base == "3", f"{out}\n{base}"
+    # проверка «в том, что вы коммитите»: отказ называет число из итоговой строки
+    rc, out, _base, _inst = _hook_commit(tmp / "h3", text, baseline=9, base_cards=100, card_staged=True)
+    assert rc != 0 and "в том, что вы коммитите, ошибок 3 — они ваши" in out, out
+    # контроль чувствительности: строка раздела с итоговыми словами после итоговой строки хук обманывает
+    bad = text.replace("   подробно: kb:cards --check", "   нарушений шаблона: ошибок 9, карточек 5\n   подробно: kb:cards --check", 1)
+    assert bad != text
+    rc, out, base, _inst = _hook_commit(tmp / "h4", bad, baseline=20, base_cards=100)
+    assert "база чище (20 → 9)" in out and base == "9", "контроль не сработал: хук не читает последнюю строку со словами «ошибок N»"
+
+
+@test
+def test_lint_survives_a_failing_templates_module(tmp: Path):
+    """Сбой модуля шаблонов не роняет линтер: вывод — как без раздела, код возврата и итоговая строка те же."""
+    root = _lint_project(tmp / "p")
+    good = _lint(root, "--full")
+    code = ("import sys; sys.path.insert(0, '.aurora/scripts'); import card_types as C; "
+            "C.lint_section = lambda *a, **k: 1 / 0; import kb_lint; sys.argv = ['kb_lint', '--full']; "
+            "sys.exit(kb_lint.main())")
+    cp = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    assert cp.returncode == good.returncode and cp.stderr == "", cp.stderr[-400:]
+    expected = [l for l in good.stdout.splitlines() if l not in _section_of(good.stdout) and l]
+    assert HEAD_LINT not in cp.stdout and [l for l in cp.stdout.splitlines() if l] == expected, \
+        f"вывод без модуля шаблонов отличается от вывода без раздела:\n{cp.stdout}"
+
+
+@test
+def test_moc_groups_no_unknown_types(_t):
+    """В `moc_groups.txt` нет правил `type:` вне реестра карточек, нет групп без правил; группы людей, организаций,
+    мест, проектов и данных собираются по меткам."""
+    C = _C()
+    known = C.registry(str(KIT / "scaffold" / "no-project"), kit_root=str(KIT)).known_types()
+    assert known, "реестр кита пуст"
+    groups, types = {}, set()
+    for line in (KIT / "moc_groups.txt").read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        rules = [r.strip() for r in parts[1].split(";") if r.strip()] if len(parts) > 1 else []
+        assert rules, f"группа без правил: {line}"
+        groups[parts[0]] = rules
+        types |= {r.partition(":")[2].strip() for r in rules if r.startswith("type:")}
+    assert types <= known, f"в moc_groups.txt типы вне реестра: {sorted(types - known)}"
+    assert not types & {"person", "org", "company", "place", "project", "entity"}
+    assert groups["Люди"] == ["tag:person"] and groups["Организации"] == ["tag:org"] and groups["Места"] == ["tag:place"]
+    assert groups["Проекты"] == ["tag:project"] and groups["Данные"] == ["tag:erd"] and len(groups) == 16
+    # читают файл тем же разбором, что и `kb:moc`, и метки по-прежнему собирают карточки в группы
+    moc = _mod("kb_moc")
+    read = {name: rules for name, rules, _cap in moc.read_groups()}
+    assert read == groups, "разбор `kb_moc.read_groups` расходится с файлом"
+    card_ = {"type": "concept", "section": "Concepts", "tags": ["person"], "title": "Иванов"}
+    assert moc.match(card_, read["Люди"]) and not moc.match({**card_, "tags": ["org"]}, read["Люди"])
+    assert moc.match({**card_, "type": "person", "tags": []}, read["Люди"]) is False, "тип вне схемы всё ещё собирает группу"
+
+
+def _doctor_lines(root: Path) -> tuple:
+    """→ (строки о шаблонах, весь вывод) `kit:doctor` проекта."""
+    out = _py(root / ".aurora" / "scripts" / "aurora_doctor.py", cwd=root, expect=None).stdout
+    mine = [l for l in out.splitlines() if l.startswith(("шаблоны карточек:", "типы: проблемы реестра", "карточек без шаблона:"))]
+    return mine, out
+
+
+@test
+def test_doctor_card_template_lines(tmp: Path):
+    """`kit:doctor` называет, сколько шаблонов доставлено, есть ли проблемы реестра и сколько карточек без шаблона;
+    это сведения: без `WARN:` и `ERROR:`, итог доктора они не меняют."""
+    fresh = _new_kit_project(tmp / "fresh")
+    mine, out = _doctor_lines(fresh)
+    assert mine == ["шаблоны карточек: 13 из 13 доставлены", "типы: проблемы реестра — нет", "карточек без шаблона: 0"], mine
+    kb = fresh / "AuroraKnowledgeDB"
+    _put(kb / "Concepts" / "Заявка-на-поставку.md", mk(template="akdb_concept_v1.0.md"))
+    _put(kb / "Concepts" / "Плохая.md", mk(title='"Плохая"', template=None))
+    _put(kb / "Concepts" / "Ещё-одна.md", mk(title='"Ещё одна"', template=None))
+    assert _doctor_lines(fresh)[0][-1] == "карточек без шаблона: 2"
+    # проект, поставленный до шаблонов: часть файлов не доставлена — сказано, чем это лечится
+    old = _new_kit_project(tmp / "old")
+    for name in ("akdb_moc_v1.0.md", "akdb_role_v1.0.md", "akdb_system_v1.0.md"):
+        (old / "TemplatesCommon" / name).unlink()
+    mine, _out = _doctor_lines(old)
+    assert mine[0] == "шаблоны карточек: 10 из 13 доставлены — доставьте остальные обновлением проекта: `kit:update`", mine
+    # проблема реестра: паспорт без card_type
+    _put(old / "Templates" / "akdb_broken_v1.0.md", "---\nfile: akdb_broken_v1.0.md\n---\n\n# сломанный шаблон\n")
+    mine, out = _doctor_lines(old)
+    assert mine[1].startswith("типы: проблемы реестра — 1: akdb_broken_v1.0.md: паспорт не принят"), mine
+    # без базы строки о карточках нет, остальные есть
+    shutil.rmtree(old / "AuroraKnowledgeDB")
+    mine, _out = _doctor_lines(old)
+    assert len(mine) == 2 and mine[1].startswith("типы: проблемы реестра"), mine
+    # сведения не находки: ни «WARN:», ни «ERROR:», итоговая строка определяется только находками
+    for root in (fresh, old):
+        mine, out = _doctor_lines(root)
+        lines = out.splitlines()
+        assert not [l for l in lines if l.startswith(("WARN:", "ERROR:")) and any(w in l for w in ("шаблоны карточек", "проблемы реестра", "без шаблона"))]
+        warned = any(l.startswith("WARN:") for l in lines)
+        if not any(l.startswith("ERROR:") for l in lines):
+            assert lines[-1] == ("OK with warnings" if warned else "OK: config and onboarding look ready"), lines[-3:]
+    # переводы: сообщения доктора собираются по `.append(...)`, у каждой строки есть английский текст
+    K = _mod("kit_i18n")
+    mine_sk = {s for s in K.message_skeletons() if s.startswith(("шаблоны карточек:", "типы: проблемы реестра", "карточек без шаблона:"))}
+    en = json.loads((KIT / "cockpit" / "i18n" / "data" / "en.json").read_text(encoding="utf-8"))["messages"]
+    assert len(mine_sk) == 5, sorted(mine_sk)
+    for sk in mine_sk:
+        assert en.get(sk) and en[sk].count("{}") == sk.count("{}") and not re.search("[а-яА-ЯёЁ]", en[sk]), sk

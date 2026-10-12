@@ -12,6 +12,14 @@
   7. Форма артефактов (`Artifacts/us`, `Artifacts/ac`, `Specs/`) — модуль `artifact_lint.py`:
      разделы шаблона, формула истории, шаги, остатки `{{…}}`. Только предупреждения: в код
      возврата они не входят.
+  8. Шаблоны карточек — раздел «шаблоны карточек» (модуль `card_types.py`): сколько карточек
+     проверено по шаблону их типа, у скольких стоит `template:`, нарушения по кодам V-NN. Только
+     предупреждения; печатается ПОСЛЕ итоговой строки и только в полном прогоне (не с
+     `--summary` и не с `--only`). Итоговую строку «карточек N, ошибок M» читают хук pre-commit,
+     панель и `smoke_live`, а заголовки «## …» — `ops:todo` и «Здоровье»: в разделе нет ни
+     «ошибок N», ни «карточек N», ни новых «##».
+  Типы карточек, раздел каждого типа и допустимые статусы берутся из реестра типов
+  (`card_types.registry()`), своей таблицы у линтера нет.
 
 Легаси-карточки без status валидны (= imported) и не флагуются за отсутствие полей.
 Запуск из корня репозитория: python3 .aurora/scripts/kb_lint.py [--summary]
@@ -29,17 +37,13 @@ from aurora_common import link_escapes, root_link_escapes, scan_secret_files
 from aurora_common import (OWN_LIFECYCLE, STATUSES, aliases, body_hash, card_body, card_stem, card_type,
                            card_sources, config_list, config_value, frontmatter, is_service, not_a_card_link,
                            leaf_name, link_refs, project_terms)
+from card_types import lint_section, registry
 
 ROOT = "AuroraKnowledgeDB"
 
-
-# Раздел базы → тип карточки (по frontmatter.md)
-SECTION_TYPE = {
-    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
-    "Systems": "system", "Roles": "role", "Statuses": "status-model",
-    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
-    "Decisions": "decision", "Questions": "question", "MOC": "moc",
-}
+# Таблицы «раздел → тип» здесь нет: раздел, известные типы и допустимые статусы читаются из реестра типов
+# (`card_types.registry()`: шаблоны проекта и кита). Без шаблонов реестр отдаёт прежнюю таблицу, и линтер
+# судит как раньше.
 
 # Признак артефакта — обозначение В НАЧАЛЕ имени (возможен префикс проекта «RU.PRJ.»).
 # Упоминание «US-3.1.11» в середине заголовка — это ссылка, а не сам артефакт;
@@ -262,7 +266,9 @@ def main():
     resolvable = names | set(alias_owner.keys())
     key = config_value("project_key")
     jira_re = re.compile(rf"(?i)^{re.escape(key)}-\d+") if key else None
-    known_types = set(SECTION_TYPE.values())
+    reg = registry(".")
+    section_type = reg.section_type()
+    known_types = reg.known_types()
 
     # Папка, вложенная сама в себя: `Glossary/Glossary`. Раздел базы — это тип карточки,
     # и второй такой же уровень означает, что карточки одного типа разъехались по двум
@@ -300,7 +306,7 @@ def main():
                 errors.append(f"{rel}: артефакт в знаниях — это {kind}, "
                               f"а не дистиллированное знание")
             else:
-                actual, expected = (fm.get("type") or "").strip(), SECTION_TYPE.get(section)
+                actual, expected = (fm.get("type") or "").strip(), section_type.get(section)
                 if not actual:
                     # Своя папка проекта типа в схеме не имеет: ошибку «нет type» здесь не
                     # убрал бы ни ремонт, ни человек — ставить нечего.
@@ -317,6 +323,7 @@ def main():
         # У типа со своим жизненным циклом (Decision Record) свой словарь статусов.
         own = OWN_LIFECYCLE.get(card_type(fm, section), ())
         if status and status not in STATUSES and status not in own \
+                and status not in reg.statuses_for(card_type(fm, section)) \
                 and status not in ("imported", "in-review", "verified", "canonical"):
             # У типа со своим циклом `kb:trust` статус не пересчитывает — совет «пересчитайте»
             # для него тупик, правят руками.
@@ -564,6 +571,18 @@ def main():
                         print(f"       {it['id']}: {it['msg']}")
                 if len(found) > shown:
                     print(f"   … ещё артефактов: {len(found) - shown}")
+    # Шаблоны карточек (CT-04): сколько карточек проверено по шаблону их типа и какие нарушения кодов V-NN
+    # найдены. Только предупреждения: ни в код возврата, ни в остаток починки, ни в итоговую строку они не
+    # входят. Печатается ПОСЛЕ итоговой строки и без `--summary`/`--only`: итоговую строку разбирают хук
+    # pre-commit (последняя строка с «ошибок N»), панель и `smoke_live`, а заголовки «## …» — `ops:todo` и
+    # «Здоровье». В строках раздела нет ни «ошибок <число>», ни «карточек <число>», заголовок — «###».
+    if not only and not summary:
+        try:
+            lines = lint_section(".", reg)
+            if lines:
+                print("\n" + "\n".join(lines))
+        except Exception:  # noqa: BLE001 — раздел о шаблонах не должен ронять линтер базы
+            pass
     if summary or not errors:
         return 1 if errors else 0
 

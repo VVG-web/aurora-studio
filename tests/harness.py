@@ -224,20 +224,25 @@ def make_project(tmp: Path, git: bool = False) -> Path:
     return root
 
 
-# Раздел → тип карточки: тот же список, что в kb_lint. Фикстура без `type:` — это
-# карточка, на которую линтер справедливо ругается, а не «обычная карточка».
-SECTION_TYPE = {
-    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
-    "Systems": "system", "Roles": "role", "Statuses": "status-model",
-    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
-    "Decisions": "decision", "Questions": "question", "MOC": "moc",
-}
+# Раздел → тип карточки: та же таблица, что у линтера, — реестр типов кита (`card_types`), без своей копии.
+# Фикстура без `type:` — это карточка, на которую линтер справедливо ругается, а не «обычная карточка».
+_SECTION_TYPE: dict = {}
+
+
+def section_type() -> dict:
+    if not _SECTION_TYPE:
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        import importlib
+        _SECTION_TYPE.update(importlib.import_module("card_types")
+                             .section_type_table(str(KIT / ".no-project"), str(KIT)))
+    return _SECTION_TYPE
 
 
 def card(root: Path, rel: str, body: str = "", **fm) -> Path:
     p = root / "AuroraKnowledgeDB" / rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    fm.setdefault("type", SECTION_TYPE.get(rel.split("/")[0], "concept"))
+    fm.setdefault("type", section_type().get(rel.split("/")[0], "concept"))
     head = "".join(f"{k}: {v}\n" for k, v in fm.items())
     p.write_text(f"---\ntitle: \"{p.stem}\"\n{head}---\n\n# {p.stem}\n\n{body}\n", encoding="utf-8")
     return p

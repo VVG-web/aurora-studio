@@ -20,6 +20,12 @@
 блок `cards:` конфига, инструкция выбора типа и `classify_answer` добавляют следующие пакеты:
 в этом модуле они появятся рядом, под теми же именами.
 
+Единый источник «раздел → тип» (CT-04): таблица записана здесь один раз (`LEGACY_SECTION_TYPE`), а разбор
+(`build_plan`), ремонт (`kb_fix`), линтер, схема и заготовки тестов читают её через `section_type_table` и
+реестр. Линтер добавляет раздел «шаблоны карточек» (`lint_section`) — предупреждения после итоговой строки;
+доктор называет доставленные шаблоны, проблемы реестра и карточки без шаблона (`delivered_kit_types`,
+`template_stamps`).
+
 Уровни проверки. `advisory` — всё, что найдено, советует (ошибки показываются предупреждениями):
 так работает первая фаза, поведение разбора и ремонта не меняется. `strict` — ошибки остаются
 ошибками; так проверяет вход записи и `--strict`.
@@ -355,6 +361,17 @@ class Registry:
         return [t for t in self.types.values()
                 if t.enabled and t.cls in ("entity", "source") and t.id not in SCRIPT_ONLY_TYPES]
 
+    def known_types(self) -> set:
+        """Типы, которых линтер не назовёт «вне схемы»: значения таблицы «раздел → тип». Тип без раздела
+        (исправление живёт в `Raw/corrections`) в базе не бывает и сюда не входит."""
+        return set(self.section_type().values())
+
+    def statuses_for(self, type_id: str) -> tuple:
+        """Статусы, допустимые типу сверх общей шкалы: цикл `OWN_LIFECYCLE` и статусы из паспорта шаблона.
+        Паспорт читается у типов с разделом: тип без раздела в базе не живёт, его статусы базе не нужны."""
+        t = self.types.get(type_id)
+        return tuple(dict.fromkeys(tuple(OWN_LIFECYCLE.get(type_id, ())) + (t.statuses if t and t.section else ())))
+
 
 def _scan(folder, origin: str) -> list:
     """Файлы шаблонов `akdb_*_v*.md` папки: [(origin, имя, путь, тип, версия)]; нет папки — пусто."""
@@ -550,6 +567,62 @@ def _close_sections(reg: Registry) -> None:
         if t.id in broken:
             reg.files[name] = replace(t, enabled=False)
     reg.by_section = {t.section: t.id for t in reg.types.values() if t.section and t.id not in broken}
+
+
+# Таблица «раздел → тип» для скриптов, которым нужна она, а не весь реестр (разбор, ремонт, линтер, схема,
+# заготовки тестов). Раньше она жила пятью копиями; теперь копия одна — `LEGACY_SECTION_TYPE` выше, а читают
+# её через эту функцию. Реестр читается лениво и один раз на корень проекта: модульная константа вычислялась
+# бы при импорте по той папке, где запущен процесс, а не по проекту.
+_TABLE_CACHE: dict = {}
+
+
+def _stamp(path: str):
+    """Отпечаток папки шаблонов: время изменения и имена файлов (создание и удаление видны и в одну долю секунды)."""
+    try:
+        return (os.stat(path).st_mtime_ns, tuple(sorted(os.listdir(path))))
+    except OSError:
+        return None
+
+
+def section_type_table(project_root: str = ".", kit_root: "str | None" = None, *, for_build: bool = False) -> dict:
+    """{раздел: тип} — единый источник вместо пяти копий таблицы.
+
+    Берётся `registry(project_root).section_type()`: прежние двенадцать пар плюс разделы типов реестра
+    (`Documents` — цитируемые документы, свои типы проекта). Нет шаблонов — ровно прежняя таблица.
+    Реестр не собрался (сбой чтения) — тоже прежняя таблица: скрипт, которому нужен только тип по разделу,
+    не должен падать из-за шаблонов.
+
+    `for_build=True` — разделы, куда разбор источников вправе класть карточки: без тех, что ведёт только свой
+    скрипт (`SCRIPT_ONLY_TYPES`, цитируемые документы). Раздел вне этой таблицы `build_plan --to` отвергал и раньше.
+
+    Кэш — по корню проекта и по отпечатку папок шаблонов (время изменения и имена файлов): новый или
+    удалённый файл шаблона виден сразу, а на тысячах карточек (`kb_fix` спрашивает таблицу на каждую)
+    реестр не собирается заново.
+    """
+    root = str(project_root or ".")
+    try:
+        kit = kit_root
+        if kit is None:
+            found = _kit_root()
+            kit = str(found) if found else ""
+        stamp = (_stamp(os.path.join(root, "Templates")), _stamp(os.path.join(root, "TemplatesCommon")),
+                 _stamp(os.path.join(kit, "scaffold", "TemplatesCommon")) if kit else None)
+        key = (os.path.realpath(root), str(kit or ""))
+        hit = _TABLE_CACHE.get(key)
+        if hit is None or hit[0] != stamp:
+            reg = registry(root, kit_root=kit)
+            script_sections = {t.section for t in reg.types.values() if t.id in SCRIPT_ONLY_TYPES and t.section}
+            hit = (stamp, reg.section_type(), script_sections)
+            _TABLE_CACHE[key] = hit
+        table = dict(hit[1])
+        if for_build:
+            for section in hit[2]:
+                table.pop(section, None)
+        return table
+    except Exception:  # noqa: BLE001 — прежняя таблица всегда лучше падения скрипта разбора или ремонта
+        out = dict(LEGACY_SECTION_TYPE)
+        out.update(UNMANAGED_SECTION_TYPES)
+        return out
 
 
 def prompt_extract(card_type: str, reg: Registry, *, common: bool = True) -> str:
@@ -1049,6 +1122,60 @@ def stats_of(results: list, reg: Registry) -> dict:
             "pre_template": pre_template, "by_template": dict(sorted(by_template.items())), "outdated": outdated,
             "with_violations": with_issues, "by_code": dict(sorted(codes.items())),
             "types": len(reg.types)}
+
+
+# Вывод `kb:lint` и `kit:doctor`: сведения о шаблонах рядом с проверками базы. Это не ошибки и не входят в
+# код возврата. Читатели итоговой строки линтера (хук pre-commit, панель, `smoke_live`, `agent_runner`) ищут
+# в выводе «ошибок <число>» и «карточек <число>»: в строках ниже этих сочетаний нет (проверено тестом), а
+# заголовок — «###», потому что «## …» разбирают `ops:todo` и «Здоровье».
+LINT_HEADING = "### шаблоны карточек (предупреждения, не ошибки)"
+_SUMMARY_WORDS_RE = re.compile(r"(ошибок|карточек)(\s+\d)")
+
+
+def _calm(text: str, limit: int = 200) -> str:
+    """Чужой текст (проблема реестра называет значения паспорта шаблона, а паспорт пишет человек) → в одну
+    строку и без «ошибок <число>» и «карточек <число>»: такая строка в выводе линтера сошла бы за итоговую."""
+    return _SUMMARY_WORDS_RE.sub(r"\1:\2", " ".join(str(text).split())[:limit])
+
+
+def lint_section(project_root: str = ".", reg: "Registry | None" = None) -> list:
+    """Строки раздела «шаблоны карточек» вывода `kb:lint`: сколько проверено, сколько с `template:`, нарушения
+    по кодам V-NN (советы, `advisory`). Пусто — сказать нечего: шаблонов нет или база пуста."""
+    reg = reg if reg is not None else registry(project_root)
+    if not reg.types:
+        return []
+    results = check_cards(project_root, reg, (), "advisory")
+    if not results:
+        return []
+    st = stats_of(results, reg)
+    lines = [LINT_HEADING,
+             f"   проверено: {st['cards']} · с шаблоном (template:): {st['stamped']} · "
+             f"без шаблона: {st['legacy']} · с нарушениями: {st['with_violations']}"]
+    for code, n in st["by_code"].items():
+        lines.append(f"   {code} — {TITLES.get(code, '')}: {n}")
+    for problem in reg.problems[:3]:
+        lines.append(f"   проблема реестра: {_calm(problem)}")
+    if len(reg.problems) > 3:
+        lines.append(f"   … ещё проблем реестра: {len(reg.problems) - 3}")
+    lines.append("   подробно: kb:cards --check")
+    return lines
+
+
+def delivered_kit_types(reg: Registry) -> tuple:
+    """(сколько типов кита имеет шаблон в самом проекте, сколько типов в ките). Шаблон «в проекте» — файл
+    `TemplatesCommon/` (доставлен обновлением) или своя редакция в `Templates/`; запасной путь кита не в счёт."""
+    have = {t.id for t in reg.files.values() if t.origin in ("kit", "project")}
+    return sum(1 for tid in KIT_TYPE_ORDER if tid in have), len(KIT_TYPE_ORDER)
+
+
+def template_stamps(project_root: str = ".") -> tuple:
+    """(карточек в базе, из них с `template:` в шапке). Читаются только шапки, тела не разбираются."""
+    total = stamped = 0
+    for path in walk_md(os.path.join(project_root, KB_ROOT), skip_service=True, skip_archive=True):
+        total += 1
+        if (frontmatter(head_text(path)).get("template") or "").strip():
+            stamped += 1
+    return total, stamped
 
 
 # ----------------------------------------------------------------------------- команда kb:cards

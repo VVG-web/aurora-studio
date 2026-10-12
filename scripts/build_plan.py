@@ -42,6 +42,7 @@ from aurora_common import (HEAD_BLOCK_TAIL, KB_ROOT, aliases as card_aliases, ca
 MANIFEST = os.path.join(KB_ROOT, "meta", "manifest.json")
 from aurora_common import TODAY, file_hash, replace_file  # noqa: E402 — дата в UTC, одна на движок
 from aurora_common import link_escapes, safe_walk  # noqa: E402 — чтение без ссылок за пределы проекта
+from card_types import section_type_table  # noqa: E402 — единый источник «раздел → тип»
 
 # Порядок групп — из build.md: терминология раньше того, что на неё ссылается.
 GROUPS = [
@@ -163,12 +164,12 @@ def add_er_labels(path: str, labels: list) -> None:
     open(path, "w", encoding="utf-8").write("---" + head + "\n---" + rest)
 
 
-SECTION_TYPE = {
-    "Concepts": "concept", "Processes": "process", "Glossary": "glossary",
-    "Systems": "system", "Roles": "role", "Statuses": "status-model",
-    "Reference": "reference", "Requirements": "requirement", "Specs": "spec",
-    "Decisions": "decision", "Questions": "question", "MOC": "moc",
-}
+def section_type(root: str = "") -> dict:
+    """{раздел: тип}, куда разбор вправе класть карточки. Таблица одна на весь движок — реестр типов
+    (`card_types`); без шаблонов она прежняя. Разделы типов, которые ведёт только свой скрипт
+    (цитируемые документы), сюда не входят: `--to` их отвергал и раньше. `root` — корень проекта,
+    когда процесс стоит не в нём (разбор в несколько потоков)."""
+    return section_type_table(root or ".", for_build=True)
 
 
 BARE_CODE_RE = re.compile(r"^[A-ZА-ЯЁ][A-ZА-ЯЁ0-9]*(?:[.\-_][A-ZА-ЯЁ0-9]+)*[.\-_]\d+$")
@@ -1343,9 +1344,10 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # Раздел базы — закрытый список, а не свободная строка: `--to «Модель данных»`
     # молча заводил папку вне схемы, и doctor находил её блокером уже после того,
     # как карточки туда легли. Схему расширяют релизом кита, а не опечаткой в флаге.
-    if into not in SECTION_TYPE:
+    table = section_type(root)
+    if into not in table:
         print(f"build_plan: раздела «{into}» нет в схеме базы. Разделы: "
-              + ", ".join(sorted(SECTION_TYPE)), file=sys.stderr)
+              + ", ".join(sorted(table)), file=sys.stderr)
         return 1
     raw = open(read_from, encoding="utf-8", errors="ignore").read()
     if paras:
@@ -1493,7 +1495,7 @@ def build_card(title: str, source: str, spec: str, into: str, apply: bool,
     # и все они в неё накапливаются. С одним полем после первого же дополнения оно начнёт
     # называть один источник из пяти.
     card = (f'---\ntitle: "{title}"\naliases:{codes_list}\nstatus: draft\n'
-            f'type: {SECTION_TYPE.get(into, "concept")}\n{head_summary}'
+            f'type: {table.get(into, "concept")}\n{head_summary}'
             f'{sources_block([source])}'
             f"source_synced: {TODAY}\ncreated: {TODAY}\nupdated: {TODAY}\n"
             f"built: machine\n{by_line(by)}"
