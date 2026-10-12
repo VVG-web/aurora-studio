@@ -399,6 +399,13 @@ def test_artifact_lint_hint_filter_keeps_lines_with_one_placeholder(_t):
         two, 1)
     got = AL.lint_text(only_given, "spec")
     assert _ids(got) == ["SPEC-03"] and len(got) == 2, got
+    # Строка, что начинается с «Тогда:» / «Когда:», — сценарий, даже с двумя «<…>» в значении.
+    two_then = GOOD_SPEC.replace("- **Тогда:** система должна сохранить документ",
+                                 "- **Тогда:** система должна показать <Имя> и <Фамилия>")
+    assert AL.lint_text(two_then, "spec") == [], AL.lint_text(two_then, "spec")
+    two_when = GOOD_SPEC.replace("- **Когда:** приходит запрос на приём",
+                                 "Когда: оператор выбирает <Да> или <Нет>")
+    assert AL.lint_text(two_when, "spec") == [], AL.lint_text(two_when, "spec")
 
 
 @test
@@ -417,6 +424,12 @@ def test_artifact_lint_closing_hashes_and_formula_forms_still_read(_t):
     assert AL.lint_text(one, "us") == [], AL.lint_text(one, "us")
     empty = GOOD_US.replace("| **Я хочу** | получить документ из смежной системы |", "| **Я хочу** |  |")
     assert _ids(AL.lint_text(empty, "us")) == ["US-01"], AL.lint_text(empty, "us")
+    # Ключи формулы в таблице читаются без учёта регистра: пустая строчная таблица — не «чисто».
+    low = GOOD_US.replace("| **Как** | Оператор системы |\n| **Я хочу** | получить документ из смежной системы |\n"
+                          "| **Чтобы** | документ был сохранён и доступен для обработки |",
+                          "| как |  |\n| я хочу |  |\n| чтобы |  |")
+    got = AL.lint_text(low, "us")
+    assert _ids(got) == ["US-01"] and "«Как», «Я хочу», «Чтобы»" in got[0]["msg"], got
 
 
 @test
@@ -428,13 +441,19 @@ def test_artifact_lint_long_whitespace_runs_are_linear(_t):
     пробелами разбирался десять секунд, 200000 не кончились бы никогда.
     """
     import json
+    from aurora_common import clean_copy
     cases = []
+
+    def before_mark(extra: str) -> str:
+        # Хвост после MADE_MARK линтер отбрасывает (`clean_copy`): проверяемое ставим выше него.
+        return GOOD_US.replace("<!-- ниже", extra + "\n<!-- ниже", 1)
+
     for ch in (" ", "\u00a0", "\t"):
         sp = ch * 200000
         cases += [
             ("head", GOOD_US.replace("## Описание", "## Описание" + sp + "x", 1), "us"),
-            ("head-closed", GOOD_US + "\n## x" + sp + "##" + sp + "\n", "us"),
-            ("head-empty", GOOD_US + "\n##" + sp + "\n", "us"),
+            ("head-closed", before_mark("## x" + sp + "##" + sp), "us"),
+            ("head-empty", before_mark("##" + sp + "\nx"), "us"),
             ("row", GOOD_US.replace("| Реализует | RU.PRJ.REQ-010 |",
                                     "| Реализует |" + sp + "a" + sp + "b |", 1), "us"),
             ("formula-row", GOOD_US.replace("| **Как** | Оператор системы |",
@@ -443,8 +462,8 @@ def test_artifact_lint_long_whitespace_runs_are_linear(_t):
                                      "Действие пользователя" + sp + "x", 1), "us"),
             ("step-stars", GOOD_US.replace("Реакция системы: принимает документ",
                                            "Реакция системы" + sp + "*" + sp + "x", 1), "us"),
-            ("blank", GOOD_US + "\n" + sp + "\n" + sp + "- x" + sp + "\n", "us"),
-            ("vague", GOOD_US + "\nсм." + sp + "алгоритм" + sp + "x\n", "us"),
+            ("blank", before_mark(sp + "\n" + sp + "- x" + sp), "us"),
+            ("vague", before_mark("см." + sp + "алгоритм" + sp + "x"), "us"),
             ("ac", "# Описание" + sp + "\n\n# Критерии приемки" + sp + "\n\n1." + sp + "x\n", "ac"),
             ("spec-key", GOOD_SPEC.replace("- **Когда:** приходит запрос на приём",
                                            "-" + sp + "**Когда:**" + sp + "*" + sp, 1), "spec"),
@@ -453,8 +472,22 @@ def test_artifact_lint_long_whitespace_runs_are_linear(_t):
             ("spec-ears", GOOD_SPEC + "\n### Сценарий 3\nесли ," + sp + "x\n", "spec"),
             ("based-on", "---\nbased_on: [a]" + sp + "x\n---\n" + GOOD_SPEC, "spec"),
         ]
-    # И не только пробелы: много «как» без «я хочу» — тот же откат у формулы одной фразой.
-    cases.append(("formula-words", GOOD_US.replace("## Описание", "## Описание\n" + "как " * 50000, 1), "us"))
+    # И не только пробелы. Много «как» без «я хочу» (таблицу формулы заменяем на них, иначе
+    # «я хочу» находится сразу и старое выражение не откатывается); незакрытые «<!--» и «```»,
+    # «{{» без «}», «- - - …» в открытых вопросах — тот же откат у остальных выражений.
+    table = ("| **Как** | Оператор системы |\n| **Я хочу** | получить документ из смежной системы |\n"
+             "| **Чтобы** | документ был сохранён и доступен для обработки |")
+    assert table in GOOD_US
+    cases += [
+        ("formula-words", GOOD_US.replace(table, "как " * 30000, 1), "us"),
+        ("comment-open", before_mark("<!--" * 30000), "us"),
+        ("fence-open", before_mark("```a\n" * 30000), "us"),
+        ("braces", before_mark("{{" * 60000), "us"),
+        ("open-questions", GOOD_SPEC.replace("## Открытые вопросы\n", "## Открытые вопросы\n" + "- " * 60000 + "x\n", 1), "spec"),
+    ]
+    # Случай, который после `clean_copy` короче проверяемого, ничего не проверяет.
+    short = [n for n, text, _ in cases if len(clean_copy(text)) < 100000]
+    assert not short, f"хвост отрезан MADE_MARK, случай пуст: {short}"
     child = ("import json, sys, time\nsys.path.insert(0, sys.argv[1])\nimport artifact_lint as AL\n"
              "out = []\nfor name, text, prof in json.load(sys.stdin):\n"
              "    t = time.time(); AL.lint_text(text, prof); out.append((name, time.time() - t))\n"
@@ -467,6 +500,29 @@ def test_artifact_lint_long_whitespace_runs_are_linear(_t):
     assert cp.returncode == 0, cp.stderr[-500:]
     slow = [(n, round(t, 2)) for n, t in json.loads(cp.stdout.strip().splitlines()[-1]) if t > 1.0]
     assert not slow, f"дольше секунды: {slow}"
+
+
+@test
+def test_artifact_lint_code_scanners_read_like_the_old_regexes(_t):
+    """Разбор блоков кода, комментариев, `{{…}}` и «нет вопросов» кодом даёт то же, что давали выражения."""
+    import random
+    AL = _lint()
+    fence = re.compile(r"(?ms)^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$")
+    comment = re.compile(r"(?s)<!--.*?-->")
+    holder = re.compile(r"\{\{[^}\n]*\}\}?")
+    none = re.compile(r"(?i)^\W*(нет|пусто|—|-)\W*$")
+    toks = ["```", "~~~", "``", "\n", "\n", "\n", " ", "\t", "a", "x", "<!--", "-->", "<!---->", "<!-->",
+            "{{", "}}", "}", "{", "\r\n", "- ", "—", "-", "нет", "пусто", "Нет"]
+    rnd = random.Random(7)
+    for _ in range(6000):
+        text = "".join(rnd.choice(toks) for _ in range(rnd.randint(0, 25)))
+        assert AL._strip_fences(text) == fence.sub("", text), repr(text)
+        assert AL._strip_comments(text) == comment.sub("", text), repr(text)
+        assert AL._placeholders(text) == holder.findall(text), repr(text)
+        for line in text.split("\n"):
+            core = line.strip()
+            if core:
+                assert AL._is_none_mark(core) == bool(none.match(core)), repr(core)
 
 
 @test

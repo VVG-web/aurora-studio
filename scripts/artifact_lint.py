@@ -49,8 +49,9 @@ LEVEL = "warn"        # одно место, где замечание стан�
 # Папки по умолчанию; вид из `artifacts:` проекта их перекрывает (см. `project_dirs`).
 DEFAULT_DIRS = {"us": "Artifacts/us", "ac": "Artifacts/ac", "spec": "AuroraKnowledgeDB/Specs"}
 
-_FENCE = re.compile(r"(?ms)^[ \t]*(```|~~~).*?^[ \t]*\1[ \t]*$")
-_COMMENT = re.compile(r"(?s)<!--.*?-->")
+# Блоки кода и комментарии режет код, а не `.*?`: незакрытая «```» или «<!--», повторённая тысячи
+# раз (зациклившаяся выдача модели), заставляла бы выражение каждый раз искать конец до конца
+# текста — квадрат; здесь конец ищут один раз (`find`, список закрывающих строк).
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 # Регулярные выражения линтера не держат рядом два квантификатора над одним символом
 # (`\s*#*\s*$`, `\s*\|?\s*`): на строке из тысяч пробелов откат растёт кубом. Хвосты строк
@@ -69,6 +70,64 @@ def _f(fid: str, msg: str) -> dict:
     return {"id": fid, "level": LEVEL, "msg": msg}
 
 
+def _strip_comments(text: str) -> str:
+    """Текст без HTML-комментариев `<!-- … -->`; незакрытый комментарий остаётся как есть."""
+    out, pos = [], 0
+    while True:
+        i = text.find("<!--", pos)
+        j = text.find("-->", i + 4) if i >= 0 else -1
+        if j < 0:
+            out.append(text[pos:])
+            return "".join(out)
+        out.append(text[pos:i])
+        pos = j + 3
+
+
+def _strip_fences(text: str) -> str:
+    """Текст без блоков кода «```…```» и «~~~…~~~» (маркер на своей строке, закрывает тот же).
+
+    Блок без закрывающей строки остаётся в тексте. Каждый блок заменяется пустой строкой.
+    """
+    lines = text.split("\n")
+    closing = {"```": [], "~~~": []}
+    for n, ln in enumerate(lines):
+        mark = ln.strip(" \t")
+        if mark in closing:
+            closing[mark].append(n)
+    out, i, at = [], 0, {"```": 0, "~~~": 0}
+    while i < len(lines):
+        head = lines[i].lstrip(" \t")
+        mark = "```" if head.startswith("```") else "~~~" if head.startswith("~~~") else None
+        j = None
+        if mark:
+            ends = closing[mark]
+            while at[mark] < len(ends) and ends[at[mark]] <= i:
+                at[mark] += 1
+            j = ends[at[mark]] if at[mark] < len(ends) else None
+        if j is None:
+            out.append(lines[i])
+            i += 1
+        else:
+            out.append("")
+            i = j + 1
+    return "\n".join(out)
+
+
+def _placeholders(text: str) -> list:
+    """Плейсхолдеры `{{…}}` в пределах строки (закрывающие скобки — одна или две)."""
+    out = []
+    for line in text.split("\n"):
+        pos = 0
+        while True:
+            i = line.find("{{", pos)
+            j = line.find("}", i + 2) if i >= 0 else -1
+            if j < 0:
+                break               # дальше по строке закрывающей «}» нет — и ни у одного начала
+            pos = j + 2 if line.startswith("}", j + 1) else j + 1
+            out.append(line[i:pos])
+    return out
+
+
 def _head_title(rest: str) -> str:
     """Название заголовка без «закрывающих» `#` и пробелов (`## Название ##` → «Название»)."""
     return rest.rstrip().rstrip("#").rstrip()
@@ -81,7 +140,7 @@ def _visible(text: str, code: bool = True) -> str:
     технические имена, так что ячейка «`RU.PRJ.REQ-010`» не пуста. Только поиск остатков
     шаблона (`code=False`) его отбрасывает: артефакт вправе показывать `{{…}}` как пример.
     """
-    text = _COMMENT.sub("", _FENCE.sub("", text))
+    text = _strip_comments(_strip_fences(text))
     return _INLINE_CODE.sub("" if not code else (lambda m: m.group(0)[1:-1]), text)
 
 
@@ -134,12 +193,12 @@ def _residue(text: str, fid: str) -> list:
     """
     out = []
     # Блоки кода не судим: артефакт про саму шаблонизацию вправе их показывать.
-    plain = _FENCE.sub("", text)
+    plain = _strip_fences(text)
     if _TEMPLATE_COMMENT.search(_INLINE_CODE.sub("", plain)):
         out.append(_f(fid, "остался служебный комментарий шаблона (ИНСТРУКЦИЯ / ПРИМЕР / "
                            "ОПЦИОНАЛЬНО / УДАЛИТЬ): в сданном документе его быть не должно"))
     seen = _visible(text, code=False)
-    left = re.findall(r"\{\{[^}\n]*\}\}?", seen)
+    left = _placeholders(seen)
     if left:
         out.append(_f(fid, f"не заполнен плейсхолдер шаблона: {left[0][:60]}"
                            + (f" (и ещё {len(left) - 1})" if len(left) > 1 else "")))
@@ -178,16 +237,16 @@ def _status_of(line: str):
     return None
 
 
-def _row(line: str, name: str, sep: str):
+def _row(line: str, name: str, sep: str, ci: bool = False):
     """Значение строки «| Имя | … |» (`sep` — «|») или «Имя: …» (`sep` — «:») либо None.
 
     Строку сначала обрезают, потом ищут «Имя» и разделитель одним проходом: без соседних
-    `\\s*` откат на длинной серии пробелов линеен.
+    `\\s*` откат на длинной серии пробелов линеен. `ci` — без учёта регистра (формула «как»).
     """
     s = line.strip()
     if sep == "|" and s.startswith("|"):
         s = s[1:].lstrip()
-    m = re.match(rf"\*{{0,2}}{name}\*{{0,2}}\s*{re.escape(sep)}", s)
+    m = re.match(rf"\*{{0,2}}{name}\*{{0,2}}\s*{re.escape(sep)}", s, re.I if ci else 0)
     if not m:
         return None
     val = s[m.end():].strip()
@@ -233,7 +292,7 @@ def lint_us(text: str) -> list:
     for k in doc.find(r"^описание"):
         body = "\n".join(doc.body(k))
         if _one_phrase_formula(body) and not any(
-                _row(ln, "Как", "|") is not None for ln in body.splitlines()):
+                _row(ln, "Как", "|", ci=True) is not None for ln in body.splitlines()):
             break               # формула одной фразой
         lost = []
         for key in ("Как", "Я хочу", "Чтобы"):
@@ -375,8 +434,21 @@ def _spec_value(lines: list, key: str):
 
 
 # Строка-подсказка шаблона: целиком курсивом (`_…_`) или с двумя плейсхолдерами подряд
-# («<триггер> … <реакция>»). Одно «<имя>» — часть обычной фразы: «Файл <имя> не найден».
+# («<триггер> … <реакция>»). Одно «<имя>» — часть обычной фразы: «Файл <имя> не найден». Строка,
+# что начинается с «Дано:» / «Когда:» / «Тогда:», — всегда сценарий (`_SPEC_LINE`), сколько бы
+# «<…>» в ней ни стояло: подсказка шаблона стоит отдельной строкой.
+_SPEC_LINE = re.compile(rf"^\s*(?:[*\-+]\s*)?\*{{0,2}}{_SPEC_KEYS}\*{{0,2}}\s*:")
 _HINT = re.compile(r"^\s*_[^_].*_\s*$|<[А-Яа-яЁё][^<>\n]*>[^<>\n]*<[А-Яа-яЁё][^<>\n]*>")
+
+
+def _is_none_mark(core: str) -> bool:
+    """Строка-отметка «нет вопросов»: «нет», «пусто» или одни знаки с тире (`- — -`).
+
+    Было `^\\W*(нет|пусто|—|-)\\W*$`: тире входит в `\\W`, и на строке «- - - … x» откат степенной.
+    """
+    if re.fullmatch(r"\W*", core):
+        return "-" in core or "—" in core
+    return bool(re.fullmatch(r"\W*(?:нет|пусто)\W*", core, re.I))
 
 
 def lint_spec(text: str) -> list:
@@ -394,7 +466,7 @@ def lint_spec(text: str) -> list:
     for k in doc.find(r"^сценарий\s*\d+"):
         num = re.search(r"\d+", doc.heads[k][1]).group(0)
         # Подсказки шаблона («_Формулировки — в EARS-стиле: «Когда <триггер>, …»_») — не сценарий.
-        body = [ln for ln in doc.body(k) if not _HINT.search(ln)]
+        body = [ln for ln in doc.body(k) if _SPEC_LINE.match(ln) or not _HINT.search(ln)]
         scen[num] = doc.heads[k][1]
         if _EARS.search("\n".join(body)):
             continue
@@ -435,7 +507,7 @@ def lint_spec(text: str) -> list:
     # Открытые вопросы: для передачи в разработку раздел должен быть пуст.
     for k in doc.find(r"^открытые вопросы"):
         real = [ln for ln in doc.body(k) if ln.strip() and "{{" not in ln
-                and not re.match(r"(?i)^\W*(нет|пусто|—|-)\W*$", ln.strip())]
+                and not _is_none_mark(ln.strip())]
         if real:
             out.append(_f("SPEC-07", f"открытых вопросов в разделе: {len(real)} — каждый блокирует "
                                      "передачу спеки в разработку"))
